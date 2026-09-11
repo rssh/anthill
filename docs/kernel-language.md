@@ -1877,6 +1877,10 @@ existential readings of the same list:
   constructors with each field's own domain conjoined inside its branch. This is
   what makes a typed relational head a GENERATOR; see *A closed sort defines its
   domain* under the rule section, where the rule that reads it is written up.
+- `<Sort>.domain` — that same domain as a first-class `Relation` value, the
+  1-ary projection of it at this sort. Derived for a sort with constructors and
+  no type parameters, unless the sort writes its own `domain`, in which case the
+  written relation is the value face.
 
 Both take the constructors in DECLARATION order, from one walk, so their case
 orders cannot disagree.
@@ -2192,7 +2196,8 @@ This is the requirement-binding half of proposal 060. Its typed-head half is
 delivered separately, below. What remains unimplemented there is the ANCHOR
 combination: a `require[X]` in a clause whose only grounding is a typed head
 binding is still refused for want of a covered body call. WI-20260908-VVM1R
-owns that residue. §2.2's domain generation is delivered (WI-743); see the entry
+owns that residue. §2.2's domain generation is delivered (WI-743), and its VALUE
+face for a non-parameterized sort with it (WI-20260911-WT8WG); see the entry
 after the typed-head one below. Do not confuse proposal 060 with the unrelated
 work item WI-060.
 
@@ -2226,7 +2231,8 @@ the clause is a clause, and the generated guard becomes its whole body. What
 keeps its loud rejection is the **untagged equational** head, which has neither
 reader — no rewrite fires it, and it is not a relational clause.
 
-**A closed sort defines its DOMAIN (proposal 060 §2.2, WI-743).** A sort with
+**A closed sort defines its DOMAIN (proposal 060 §2.2, WI-743; the value face,
+WI-20260911-WT8WG).** A sort with
 constructors already says what its inhabitants are; a typed relational head is
 what RANGES over them. The loader derives, from the same constructor list the
 induction principle is derived from, one clause of a member relation — "`?x` is
@@ -2247,11 +2253,18 @@ as an argument**, which is what lets one clause serve a parameterized sort at
 every instantiation and every nesting depth:
 
 ```
-domain(?x, Letter)       :- ?x <=> a() | ?x <=> b() | ?x <=> c()
-domain(?x, List[T = ?T]) :- ?x <=> nil()
-                          | (?x <=> cons(head: ?h, tail: ?t)
-                               & domain(?t, List[T = ?T]) & domain(?h, ?T))
+domain_member(?x, Letter)       :- ?x <=> a() | ?x <=> b() | ?x <=> c()
+domain_member(?x, List[T = ?T]) :- ?x <=> nil()
+                                 | (?x <=> cons(head: ?h, tail: ?t)
+                                      & domain_member(?t, List[T = ?T])
+                                      & domain_member(?h, ?T))
 ```
+
+`anthill.kernel.domain_member` is the relation (the clauses above and one
+catch-all); `anthill.kernel.domain` is the conformance guard §2 prepends. Both
+are declared and both are writable from a rule body — a goal on the 2-ary
+`domain_member` is the spelling to reach for when the TYPE is itself a variable.
+The 1-ary `<Sort>.domain` below is the ordinary one.
 
 The `List` head binds `?T` from the caller's `List[T = Letter]` by ordinary
 unification — types are terms with logical variables — and the element goal
@@ -2272,15 +2285,42 @@ and the two placements are not interchangeable: a generator ahead of the written
 body enumerates a recursive type forever before the body can prune it. The
 conformance guard stays, and is what a sort with no domain has.
 
-**Any sort may write its own `domain`**, as a relation `domain(?x, T)` in the
-sort's body, and it then REPLACES the derivation for that sort — today's wrapper
-pattern (a `Palette` sort plus three facts) is a hand-written domain the language
-gave no name. It is DOMAIN-DEFINING, not a generator hint: where a sort defines
-its domain, BOTH modes read it, so a value that conforms to the sort but is not a
+**`<Sort>.domain` is the VALUE face of the same relation** — the sort's domain
+cited by name, as an ordinary `Relation` (proposal 052). It is DERIVED beside the
+clause above, in the sort's own scope, the way `<Sort>.induction` is; the author
+writes no domain expression at either face:
+
+```
+Colour.domain(?x)  ==  domain_member(?x, Colour)
+
+Colour.domain            -- Relation[T = (x: Colour), E = {Error}]
+Colour.domain.takeN(5)   -- three rows, every one definite
+Colour.domain.where(lambda c -> eq(c.x, red()))
+```
+
+Its column is typed at the sort, so `Colour.domain.head.x` is a `Colour`. An
+infinite domain is a lazy stream like any other (`Nat.domain.takeN(4)` is `z`,
+`s(z)`, `s(s(z))`, `s(s(s(z)))`); a `Relation` has no full drain to flounder in.
+
+**A PARAMETERIZED sort has the goal face and no value face yet.** `List` keeps its
+derived clause and every typed head that reads it, but `List[T = Letter].domain`
+is a load error: a rule citation's query is built from the clause head alone, so
+the receiver bracket reaches no clause. Bare `List.domain` names no element type
+and is refused for the same reason (WI-20260911-5G28A).
+
+**Any sort may write its own `domain`**, as a relation `domain(?x)` in the sort's
+body, and it then REPLACES the derivation for that sort — today's wrapper pattern
+(a `Palette` sort plus three facts) is a hand-written domain the language gave no
+name. A written `domain` IS the value face, and the kernel's 2-ary form forwards
+to it. It is DOMAIN-DEFINING, not a generator hint: where a sort defines its
+domain, BOTH modes read it, so a value that conforms to the sort but is not a
 member is REFUTED. A `domain` in a sort's scope that is not a relation of that
-shape — a field named `domain`, an operation — is not the sort's domain and
-changes nothing. A rule-local narrowing ("this rule's `x` ranges over a subset")
-stays an ordinary body goal, as today.
+shape — an operation, a const — is not the sort's domain and changes nothing; a
+sort in that position has a domain and no `.domain` to cite it by. (A FIELD named
+`domain` is not such a case: a field is reached through its entity, so
+`Address.domain` the relation and `addr.domain` the field coexist.) A rule-local
+narrowing ("this rule's `x` ranges over a subset") stays an ordinary body goal, as
+today.
 
 **Not yet:** an ABSTRACT `T` (a type-variable bound introduced by the rule's own
 bracket) does not enumerate — nothing is derived for a spec, so the bound keeps

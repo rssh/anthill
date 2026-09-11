@@ -64,6 +64,12 @@ namespace classic.mapcolouring
     =
       let sols = colouring.takeN(20)
       let _ = println(console(), to_string(length(sols)))
+      -- The sort IS the domain, and the domain is a VALUE: `Colour.domain` is
+      -- derived beside `Colour`'s constructors and cited like any other relation
+      -- (WI-20260911-WT8WG). Nothing below is written anywhere else in this file —
+      -- the three rows are the three `entity` lines above, read back.
+      let colours = Colour.domain.takeN(9)
+      let _ = println(console(), to_string(length(colours)))
       0
   end
 end

@@ -155,15 +155,44 @@ Bounds of the form:
   loader-verified re-measurement belongs at implementation, at the
   classification site.
 
-### 2.2 A sort defines its `domain` — the generator arm (WI-743, delivered)
+### 2.2 A sort defines its `domain` — the generator arm (WI-743, delivered; the value face, WI-20260911-WT8WG)
 
 Mode (out) does not special-case enums in the resolver: `domain(?x, T)`
 dispatches to a **member relation T defines, named `domain`** — the goal is that
 member read through the type, which is why they share the name. (Delivery note:
-one NOTION, two FUNCTORS. The conformance goal of §2 and this member relation
-cannot share a symbol — a functor carrying a builtin tag never reaches the clause
-path, and the two sit at opposite ends of the body. See
+one NOTION, two FUNCTORS. The conformance goal of §2 (`anthill.kernel.domain`)
+and this member relation (`anthill.kernel.domain_member`) cannot share a symbol —
+a functor carrying a builtin tag never reaches the clause path, and the two sit
+at opposite ends of the body. Both are DECLARED and both are writable from a rule
+body; the 2-ary member goal is the spelling to reach for when the type is itself
+a variable. See
 [`../design/060-implementation.md`](../design/060-implementation.md) §7.)
+
+**THE AUTHOR WRITES NO DOMAIN EXPRESSION, at either face.** They write a sort.
+The loader derives the clause; a typed head reads it as a goal; and a citation
+reads it as a value:
+
+```anthill
+sort Colour { entity red  entity green  entity blue }   -- the author writes THIS
+
+Colour.domain(?x)  ==  anthill.kernel.domain_member(?x, Colour)
+
+Colour.domain            -- Relation[T = (x: Colour), E = {Error}]  (derived)
+Colour.domain.takeN(5)   -- 3 rows, every one definite
+```
+
+`<Sort>.domain` is the 1-ary PROJECTION of the kernel relation at that sort,
+derived in the sort's own scope beside the clause — the `<Sort>.induction` idiom.
+Being a member relation, 052 cites it by name and the whole `Relation` API
+follows; its column is typed at the sort, so `Colour.domain.head.x` is a
+`Colour`. The three readers — mode (in), mode (out), the citation — read ONE set
+of clauses and cannot disagree.
+
+**A PARAMETERIZED sort has the goal face and no value face yet.** `List` keeps
+its derived clause and every typed head that reads it; `List[T = Letter].domain`
+is a load error naming **WI-20260911-5G28A**, because a rule citation's query is
+built from the clause head alone and no type argument reaches it. Bare
+`List.domain` names no element type and is refused for the same reason.
 
 - **Derived for ANY closed ADT**, not only an all-nullary one — the finiteness
   gate this section first proposed turned out to be unnecessary, and is
@@ -173,10 +202,11 @@ path, and the two sit at opposite ends of the body. See
   clause serves a parameterized sort at every instantiation:
 
   ```anthill
-  domain(?x, Letter)       :- ?x <=> a() | ?x <=> b() | ?x <=> c()
-  domain(?x, List[T = ?T]) :- ?x <=> nil()
-                            | (?x <=> cons(head: ?h, tail: ?t)
-                                 & domain(?t, List[T = ?T]) & domain(?h, ?T))
+  domain_member(?x, Letter)       :- ?x <=> a() | ?x <=> b() | ?x <=> c()
+  domain_member(?x, List[T = ?T]) :- ?x <=> nil()
+                                   | (?x <=> cons(head: ?h, tail: ?t)
+                                        & domain_member(?t, List[T = ?T])
+                                        & domain_member(?h, ?T))
   ```
 
   Declaration order, once each. The 058 §3.10 move (derive a row from structure),
@@ -195,11 +225,20 @@ path, and the two sit at opposite ends of the body. See
 - **User-definable for any sort** — a hand-written `domain` makes any sort a
   generator. Today's wrapper pattern (`sort Palette` + three `palette(c: …)`
   facts) *is* a hand-written `domain` the language gave no name; this absorbs it
-  into the sort. The hook keys on the member SHAPE — a relation `domain(?x, T)`
-  in the sort's body — and never on the name alone: `domain` is an ordinary word
-  and a field may already carry it. A parameterized sort's hand-written `domain`
-  is refused for now; its head would have to bind the sort's type parameters from
-  the caller's type argument, which only the derivation does.
+  into the sort. It is written **1-ARY**, `domain(?x)` in the sort's body: that
+  relation IS the sort's value face, and the kernel's `domain_member(?x, S)`
+  forwards to it. The 2-ary spelling WI-743 first admitted is a load error naming
+  this one — a sort holding both arities under one name would let load order
+  decide which a citation answers through. The hook keys on the member SHAPE and
+  never on the name alone: `domain` is an ordinary word and a field may already
+  carry it (a field is no obstacle — it is reached through its entity, not
+  through this name). A parameterized sort's hand-written `domain` is refused for
+  now; its head would have to bind the sort's type parameters from the caller's
+  type argument, which only the derivation does.
+- **A clause of a written `S.domain` is never generated FROM.** It gets §2's
+  conformance goal and not the member goal, so the natural annotated spelling
+  `rule domain(?x: S) :- …` does not re-enter itself through the forwarding
+  clause. A written domain IS the generator.
 - **Domain-defining, not a generator hint.** Where T defines its `domain`,
   *both* modes read it: mode (in) checks conformance **and** membership, mode
   (out) enumerates. A mode split — generate from the subset but accept anything
@@ -211,7 +250,9 @@ path, and the two sit at opposite ends of the body. See
   written as a goal, as today.
 - **A sort with no `domain`** keeps §2's behavior unchanged: delay, re-ask on
   binding, flounder loudly at the end — `rule f(?x: String) :- eq(?x, "abe")`
-  stays legal and yields its one row.
+  stays legal and yields its one row. It has no `<Sort>.domain` either, so a
+  citation of one is an ordinary unknown-member error — LOUD AT LOAD, where a
+  derived-but-floundering member would have been loud only at the drain.
 - **Abstract T does NOT enumerate**, and this bullet's earlier wording —
   "dispatches through the requirement channel (§3's anchor; WI-1040)" — named no
   mechanism and had no owner. A rule-bracket bound records the SPEC, nothing is

@@ -133,4 +133,32 @@ namespace anthill.kernel
   -- here (§6.6's position-directed booleans), so goal conjunction has a functor
   -- as well as the comma.
   rule and(?a, ?b) :- push_and(?a, ?b)
+
+  {< `?x` is an inhabitant of type `?t` — proposal 060 §2.2's derived domain relation,
+     DECLARED here (061's body-less form) and given its clauses by the loader: one per
+     sort with constructors, plus a catch-all whose body is `domain_leaf`. Every clause
+     is generated; this declaration asserts no row of its own.
+
+     WRITABLE. The clauses used to be hung on a symbol minted at the END of the load
+     batch (`derive_domain_member_clauses`), which put the name out of reach of every
+     body in that batch: `domain`, `domain_leaf`, `find_dictionary` and `push_and` all
+     resolved under `import anthill.kernel.*` and `domain_member` alone "named nothing" —
+     an accident of timing, not a policy. So a rule body can now ask the question
+     directly:
+
+       rule some_red(?x) :- domain_member(?x, Colour), eq(?x, red())
+
+     THIS DECLARATION IS THE DOCUMENTED SURFACE AND NOT THE SUPPLY, which is worth saying
+     because the two are easy to confuse. What registers the name is the bootstrap
+     (`load::register_prelude`), as it does for `push_choice`, `and`, `or` and `cut`: the
+     derivation must find the predicate in a KB that never reads this file at all.
+     MEASURED — withdrawing these two lines fails no row of `wi743_finite_domain_test` or
+     `wi_wt8wg_domain_value_face_test`. They are here for the reason those four are also
+     written out below: so a reader of the kernel learns what exists.
+
+     THE VALUE FACE IS THE ORDINARY SPELLING (WI-20260911-WT8WG). `<Sort>.domain` is the
+     1-ary projection of this relation at that sort, derived beside the clause, and it is
+     what application code cites: `Colour.domain.takeN(5)`. Reach for the 2-ary form only
+     when the TYPE is itself a variable. >}
+  rule domain_member(?x, ?t)
 end

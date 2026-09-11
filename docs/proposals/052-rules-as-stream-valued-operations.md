@@ -382,6 +382,14 @@ projection reading (kernel spec §6.7, *A dotted paren-less name in a LOGICAL po
 spells*). So 052's arm below is scoped to positions that denote a value: an operation body, and any data
 slot. That is the same split the bare *unqualified* `queens` already has.
 
+**A DERIVED member relation is cited like any other** (WI-20260911-WT8WG). A sort's
+`domain` is derived by the loader, not written — `sort Colour { entity red … }` alone
+gives `Colour.domain : Relation[T = (x: Colour), E = {Error}]` (proposal 060 §2.2) — and
+the arm above is what serves it: nothing in this section distinguishes a clause the author
+typed from one the loader derived, and nothing needs to. That is also the first
+confirmation of OQ2's default in a case nobody could route around: there is no bare
+unqualified spelling of `Colour.domain` to fall back to.
+
 **`x.name` on a *runtime value* is not a way to name a relation.** Dot on a value `x` is
 operation-dispatch (the provides cluster): it reaches `x`'s *operations / fields*, and a rule is not a
 member of a value's sort. A value yields a relation only via an **operation or field that *returns*
@@ -555,6 +563,10 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    unqualified `queens` + applied `Sort.rule(…)` enough, leaving bare *qualified* relation values rare?
    Default: **add the arm** — a sort-symbol receiver is statically distinguishable from a value receiver,
    so there is no runtime ambiguity, and it keeps `Queen.find.map(…)` working.
+   **Settled in the affirmative by use** (WI-20260911-WT8WG): a sort's DERIVED `domain` is
+   reached only through this arm — there is no bare unqualified spelling of it — so the
+   bare-qualified relation value is not rare, it is how a generated member relation is
+   named at all.
 3. **Projection surface — DECIDED: the distribute-dot `x.(f1, f2)`; `select` retired.** `x.(m1, …, mn)`
    ⇒ the **ordered/named** tuple `(m1: x.m1, …)`; general over any named tuple (members are any
    dot-member, not only fields), lifting over a relation to `r.(f1, f2)` → `projected`. **Safe by

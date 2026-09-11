@@ -36,6 +36,12 @@ else is written down. There is still no separate notion of "domain" in the
 language: a domain *is* a relation, and the one a closed sort defines is derived
 from its constructor list (WI-743, proposal 060 §2.2).
 
+And it is a relation you can hold. `Colour.domain` is that same derived relation
+under a name, so `main` below counts the colours with `Colour.domain.takeN(9)` —
+three rows, and the only place they are written is the three `entity` lines
+(WI-20260911-WT8WG). The author writes no domain expression at either face: the
+annotation reads it as a goal, the citation reads it as a value.
+
 **The annotation is what does it.** `wa: Colour` in the head is a parameter
 (proposal 060 §2.1): it introduces a clause variable named `wa`, typed `Colour`,
 and that annotation is read twice — as the column's TYPE, so `colouring` is

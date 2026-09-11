@@ -6052,34 +6052,107 @@ impl KnowledgeBase {
         if self.value_is_unbound_var(&value) {
             return BuiltinResult::delay();
         }
-        // The bound rides as the interned type term the loader resolved
-        // (`install_rule_type_bounds`), spliced into the generated goal as an
-        // `Expr::Spliced` leaf. `walk_arg` hands back the NODE carrier for it, so
-        // cancel the wrapper (`Value::carried`, WI-1025) before reading the term —
-        // MEASURED: without this the operand arrives as `Value::Node`, the arm below
-        // fires, and every typed head panics on its first row. Anything still not a
-        // type term is the generator having changed shape — say so rather than
-        // quietly admitting every value.
-        let Value::Term { id: bound_tid, .. } = *bound.carried() else {
-            debug_assert!(
-                false,
-                "domain(?x, T): the bound operand is not a type term — the generator \
-                 and `install_rule_type_bounds` have diverged",
-            );
-            return BuiltinResult::Error(ResolveError {
-                message: "domain(?x, T): the type-bound operand is not a type term — \
-                          the loader's generator and `install_rule_type_bounds` have \
-                          diverged, so no type bound was checked here"
-                    .to_string(),
-            });
+        // TWO CARRIERS, ONE QUESTION, and the split is by PROVENANCE of the operand
+        // rather than by anything this goal means.
+        //
+        // A GENERATED guard's bound is the interned type term the loader resolved
+        // (`install_rule_type_bounds`), spliced into the goal as an `Expr::Spliced`
+        // leaf. `walk_arg` hands back the NODE carrier for it, so the wrapper is
+        // cancelled (`Value::carried`, WI-1025) and the `TermId` front is taken —
+        // MEASURED: without the cancel the operand arrives as `Value::Node`, the other
+        // arm fires, and every typed head reads its bound through a path
+        // `type_is_undetermined` calls DETERMINED unconditionally, turning a bound
+        // carrying a type variable from a suspend into a verdict.
+        //
+        // A SOURCE-WRITTEN `domain(?x, T)` has no such splice: `T` is an ordinary goal
+        // argument and rides whatever carrier the body lowering produced. That spelling
+        // is reachable — `domain` resolves under `import anthill.kernel.*`, measured —
+        // and demanding `Value::Term` of it was an ABORT (`debug_assert!(false)`) in a
+        // debug build and a resolver `Error` in release, for a goal the author is
+        // entitled to write. WI-20260911-WT8WG makes it read through the VIEW instead,
+        // which is exactly what [`Self::builtin_domain_leaf`] already does with a `?T`
+        // bound by unification. Nothing is admitted that was not admitted before: the
+        // generated path keeps its own arm, byte for byte.
+        let verdict = match *bound.carried() {
+            Value::Term { id: bound_tid, .. } => {
+                super::typing::type_bound_verdict(self, subst, &value, bound_tid)
+            }
+            // AND IT MUST NOT DECIDE AN OPEN TYPE. `type_is_undetermined` walks for type
+            // variables only on the `Value::Term` carrier — every other carrier is called
+            // DETERMINED the moment its HEAD is decidable — so a written
+            // `domain(?x, List[T = ?e])` reached `types_compatible` with a free `?e` in
+            // it and came back REFUTED. MEASURED, with `?x` bound by `?x <=> [a()]` so the
+            // unbound-value delay above could not stand in: 0 rows, where the ground twin
+            // `domain(?x, List[T = Letter])` answers 1 definite and the wrong-type twin
+            // `domain(?x, Int64)` answers 0. A refutation is a VERDICT, and WI-067's rule
+            // is that an open variable never gets one.
+            //
+            // CHECKED THROUGH THE VIEW rather than by widening `type_is_undetermined`,
+            // whose `Value::Term` arm is load-bearing: WI-743's `/code-review` measured
+            // that making it carrier-generic UNWRAPS a spliced node to its interned term
+            // and walks it, turning definite rows conditional. So the new rule lives with
+            // the new carrier, and the generated path is untouched.
+            _ if view_has_type_variable(self, bound.carried()) => {
+                return BuiltinResult::delay();
+            }
+            _ => super::typing::type_bound_verdict_view(self, subst, &value, bound.carried()),
         };
-        match super::typing::type_bound_verdict(self, subst, &value, bound_tid) {
+        match verdict {
             super::typing::TypeBoundVerdict::Holds => BuiltinResult::Success,
             super::typing::TypeBoundVerdict::Refuted => BuiltinResult::Failure,
             super::typing::TypeBoundVerdict::Suspend => BuiltinResult::delay(),
         }
     }
+}
 
+/// WI-20260911-WT8WG — does this type, read CARRIER-NEUTRALLY, mention a type variable
+/// anywhere in it?
+///
+/// The open-type guard for a SOURCE-WRITTEN `domain(?x, T)`, whose `T` rides whatever
+/// carrier the body lowering produced rather than the typer's interned splice.
+/// [`crate::kb::typing::type_bound_verdict_view`]'s own `type_is_undetermined` walks for
+/// variables ONLY on the `Value::Term` arm — every other carrier is called determined as
+/// soon as its head is decidable — so without this a written `domain(?x, List[T = ?e])`
+/// reaches `types_compatible` with a free `?e` and comes back REFUTED. WI-067's rule is
+/// that an open variable gets no verdict, refutation included.
+///
+/// NOT A WIDENING OF `type_is_undetermined`, deliberately: WI-743's `/code-review`
+/// measured that making that predicate carrier-generic unwraps a SPLICED node to its
+/// interned term and walks it, so a type it used to call determined became undetermined
+/// and definite rows went conditional. The new rule therefore lives with the new carrier.
+///
+/// A `ViewHead::Var` ANYWHERE, at any depth, through positional and named children alike
+/// — `List[T = ?e]` carries its parameter as a NAMED argument, so walking only the
+/// positional ones would answer `false` for the very shape this exists to catch.
+fn view_has_type_variable<V: TermView + ?Sized>(kb: &KnowledgeBase, v: &V) -> bool {
+    match v.head(kb) {
+        ViewHead::Var(_) => true,
+        ViewHead::Functor {
+            pos_arity,
+            named_arity,
+            ..
+        } => {
+            for i in 0..pos_arity {
+                if v.pos_arg(kb, i).is_some_and(|a| view_has_type_variable(kb, &a)) {
+                    return true;
+                }
+            }
+            if named_arity > 0 {
+                for key in v.named_keys(kb) {
+                    if v.named_arg(kb, key)
+                        .is_some_and(|a| view_has_type_variable(kb, &a))
+                    {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+impl KnowledgeBase {
     /// WI-743 (proposal 060 §2.2) — `domain_leaf(?x, ?T)`: the body of the single
     /// CATCH-ALL clause of `anthill.kernel.domain_member`, and the whole of that
     /// relation's answer for a type the loader derived no structural clause for.

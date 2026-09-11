@@ -16,6 +16,7 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §2 `?x: T` on a relational head | `domain(?x, T)` body goal | WI-742 | **delivered** — §3–§5 |
 | §2.1 parameter form `p(x: T)` | sigil-free typed clause variable | WI-742 | **delivered** — §6 |
 | §2.2 a sort defines its `domain` | mode-(out) enumeration | WI-743 | **delivered** — §7 |
+| §2.2 the VALUE face `<Sort>.domain` | the domain cited as a `Relation` | **WI-20260911-WT8WG** | **delivered** for a sort with no type parameters — §7.1; the parameterised half is **WI-20260911-5G28A** |
 | §3 anchor (requirement half) | covered body call grounds the spec | WI-1040 | delivered |
 | §3 anchor (typed-head half) | `?x: T` grounds the spec | **WI-20260908-VVM1R** | **design settled, not built** — §8, mechanism at §8.2–§8.6 |
 | channel §10 item 1 | retain the spec's type-args | **WI-20260908-VVM1R** | **settled, not built** — §8.6, taken inline |
@@ -26,8 +27,9 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 
 Everything delivered is driven and controlled in
 `anthill-core/tests/include/wi742_typed_relational_head_test.rs` and
-`anthill-core/tests/include/wi743_finite_domain_test.rs`, whose headers name which rows
-fail per back-out.
+`anthill-core/tests/include/wi743_finite_domain_test.rs` and
+`anthill-core/tests/include/wi_wt8wg_domain_value_face_test.rs`, whose headers name which
+rows fail per back-out.
 
 `domain` in §2.2 is the **member relation a sort defines**, not a second name for the
 §2 goal. The two are one NOTION and two FUNCTORS, and the split is not a naming
@@ -306,7 +308,16 @@ before the others.
 **The hand-written hook keys on the member SHAPE, not on the name.** Keying on
 `<Sort>.domain` alone refused `guardians.Address`, whose `entity Address(local: String,
 domain: String)` gives a FIELD that exact qualified name — 39 rows, one word. A `domain`
-that is not a 2-ary relation over (value, this sort) is simply not the sort's domain.
+that is not a relation of the member shape is simply not the sort's domain.
+
+(WI-20260911-WT8WG re-measured the `guardians.Address` half of that and it is NOT a
+collision: a field is reached through its entity's field table, never through this
+symbol. `sort Thing { entity Thing(domain: Colour) }` beside a relation `domain` in the
+same scope loads clean, `Thing.domain.takeN(9)` answers the sort's three rows, and
+`Thing(domain: red()).domain` still reads `red()`. What the original measurement actually
+found was the name-only hook mistaking a field for a HAND-WRITTEN domain and suppressing
+the derivation — the shape test is still what fixes that. §5.3's live case is an
+OPERATION or a const named `domain`, not a field.)
 
 **What is NOT delivered**, each with its owner:
 * ABSTRACT `T` (an introducer bound, recorded as the SPEC) enumerating through the
@@ -314,8 +325,9 @@ that is not a 2-ary relation over (value, this sort) is simply not the sort's do
   §2.2's sentence "abstract T dispatches through the requirement channel" names no
   mechanism: it needs `domain` to be the member of a kernel finiteness spec AND a
   dictionary channel that carries a RELATION, which is WI-20260909-NAR1X (§8.10).
-* The VALUE face. `Colour.domain` cited as a relation VALUE is not delivered; §2.2
-  promises the GOAL face only.
+* ~~The VALUE face.~~ **DELIVERED by WI-20260911-WT8WG for a sort with no type
+  parameters** — see §7.1. The PARAMETERISED half is not: `List[T = Letter].domain` is a
+  load error naming **WI-20260911-5G28A**.
 * A PARAMETERISED sort's hand-written `domain` — refused loudly: its clause head would
   have to bind the sort's type parameters from the caller's type argument, which only the
   derivation does.
@@ -324,6 +336,83 @@ that is not a 2-ary relation over (value, this sort) is simply not the sort's do
   061 gives a body-less `rule f(…)` the DECLARATION reading, and a declaration that also
   enumerated would assert a row of every inhabitant of every annotated column merely by
   stating the predicate's schema. `:- true` is the clause spelling and it generates.
+
+## 7.1 §2.2's VALUE face — `<Sort>.domain` — WI-20260911-WT8WG
+
+The equation, and the whole of the design:
+
+```
+Colour.domain(?x)  ==  anthill.kernel.domain_member(?x, Colour)
+```
+
+The kernel relation is 2-ary and type-indexed (§7 above). A sort's `domain` is its 1-ary
+PROJECTION at that sort, derived in the sort's own scope — the `<Sort>.induction` idiom —
+and being a member relation, 052 cites it by name and the whole `Relation` API follows.
+**The author writes no domain expression at either face.**
+
+| piece | where |
+|---|---|
+| the name, minted in pass 1 | `load::mint_domain_value_face_name`, from `DefinePass::exit_scope` and the free-standing-entity arm |
+| the clause `domain(?x) :- true`, plus the bound `x: <Self>` and the sort's head span | `load::emit_domain_value_face`, at the derivation's drain |
+| the goals that make it answer | nothing new — `typing::install_typed_head_domain_goals` prepends the conformance goal and appends the member goal, as for any bound clause |
+| the citation | nothing new — `typing::relation_reference_type` / `eval::build_relation_value`, 052's existing arm |
+
+**THE NAME IS MINTED IN PASS 1 AND THE CLAUSE AT THE DRAIN, and the split is forced.**
+The clause cannot be built earlier: the drain runs after every file's sorts are loaded
+because a field type naming a parameterised sort bare must be repaired against that
+sort's parameter list. But a CITATION is lowered during the item walk —
+`Colour.domain.takeN(5)` reaches `try_identifier_dot_call`, which asks whether the
+receiver `Colour.domain` denotes anything. MEASURED, with the whole derivation in place
+and the name minted only at the drain: every citation in the fixture failed as *unknown
+functor … `Colour.domain.takeN`*.
+
+**The span on the derived clause is load-bearing.** The clause is body-less and carries a
+type bound, and the sweep anchors such a clause's generated goals on `rule_head_span`;
+without one it hits its own `debug_assert!(false, "a type bound on a body-less clause with
+no source head span")` and generates nothing — leaving a body-less clause that answers
+everything. `DomainMemberJob` therefore carries the sort's declaration span.
+
+**Three changes to §2.2's surface came with it:**
+
+1. **A written `domain` is 1-ARY** (`domain(?x)` in the sort's body) and the kernel's
+   `domain_member(?x, S)` forwards to it. The written relation IS the value face. The
+   2-ary spelling WI-743 admitted for one day is a load error naming this one: a sort
+   holding both arities under one name would let load order decide which a citation
+   answers through, since a citation's query is built from the FIRST clause's head shape.
+   Three test fixtures wrote it; no corpus file did.
+2. **The self-call trap moved from the loader to the typer.** WI-743 refused a clause of
+   a sort's own `domain` annotated with that sort; at the 2-ary spelling the annotation
+   was redundant so refusing cost nothing, but at the 1-ary spelling it is the natural
+   thing to write. So `install_typed_head_domain_goals` gives a clause of a WRITTEN
+   `S.domain` the conformance goal and NOT the member goal — a written domain is never
+   generated FROM. The loader records which sorts those are
+   (`KnowledgeBase::sort_domain_is_written`); the typer never tests a name.
+3. **`anthill.kernel.domain_member` is DECLARED** in `stdlib/anthill/kernel/kernel.anthill`
+   (061's body-less form) and pre-declared in `register_prelude` for a bare KB, instead of
+   being minted at the drain. Minting there put the name out of reach of every body in its
+   own batch: MEASURED, under `import anthill.kernel.*`, `domain`, `domain_leaf`,
+   `find_dictionary` and `push_and` all resolved and `domain_member` alone "named
+   nothing". The recorded reason for the late mint — "a surface declaration would let code
+   capture the name" — was never applied to the other four, so it protected nothing.
+   With the goal reachable, `builtin_type_domain` also stopped demanding the `Value::Term`
+   carrier the TYPER's splice produces: a source-written `domain(?x, Colour)` in mode (in)
+   hit `debug_assert!(false, "the bound operand is not a type term")` — an abort in debug,
+   a resolver `Error` in release — and now reads its type through the VIEW, which is what
+   `builtin_domain_leaf` already did.
+
+**The parameterised refusal replaces a SILENT acceptance.** MEASURED before this ticket,
+on a hand-written twin inside a parameterised sort: `Wrap[T = Colour].dom.takeN(5)` AND
+bare `Wrap.dom.takeN(5)` BOTH load clean — the bracket is validated and dropped, the bound
+is a type variable so the sweep skips the member goal, and the citation can only flounder
+at the drain. The name is therefore minted for a parameterised sort too, with no clause
+behind it, precisely so the citation can say whose ticket it is
+(`typing::domain_value_face_refusal`, reading
+`KnowledgeBase::domain_value_face_decline_reason`) instead of reporting an unknown member.
+
+**Not delivered here:** the parameterised value face (WI-20260911-5G28A, which also owns
+the general "receiver bracket on a rule citation" binding — RS2G4 did the OPERATION half);
+`Bool` (WI-20260910-5TK6B); fairness for two recursive positions (09E6M); abstract `T`
+(NAR1X).
 
 ## 8. §3 — the typed head as the second anchor — DESIGN SETTLED, NOT BUILT
 

@@ -1701,3 +1701,6 @@ mod wi_fdpj8_apply_within_shape_test;
 
 #[path = "include/wi_7tn1q_occurs_check_sort_alias_test.rs"]
 mod wi_7tn1q_occurs_check_sort_alias_test;
+
+#[path = "include/wi_wt8wg_domain_value_face_test.rs"]
+mod wi_wt8wg_domain_value_face_test;

@@ -288,11 +288,16 @@ namespace test.wi743.narrow
   -- §2.2: today's wrapper pattern IS a hand-written `domain` the language gave no
   -- name. Written inside the sort, it SUPPRESSES the derivation for that sort, and it
   -- is DOMAIN-DEFINING: both modes read it, so a conforming NON-MEMBER is refuted.
+  --
+  -- 1-ARY since WI-20260911-WT8WG: `Palette.domain` is now also the sort's VALUE face,
+  -- and the kernel's 2-ary `domain_member(?x, Palette)` FORWARDS to it. The 2-ary
+  -- spelling this fixture used to write is a load error naming this one
+  -- (`a_two_ary_hand_written_domain_names_the_one_ary_spelling`).
   sort Palette
     entity red
     entity green
     entity blue
-    rule domain(?x, Palette) :- ?x <=> red() | ?x <=> green()
+    rule domain(?x) :- ?x <=> red() | ?x <=> green()
   end
 
   rule pick(?x: Palette) :- true
@@ -709,55 +714,46 @@ fn a_bare_parameterised_bound_still_answers_its_bound_value() {
     );
 }
 
+/// WI-20260911-WT8WG — THE 2-ARY WRITTEN SPELLING IS RETIRED, and every reading of its
+/// second argument with it.
+///
+/// WI-743 admitted three: the sort's own name, a variable (`domain(?x, ?t)`, "for any
+/// ascription"), and a REFUSAL for anything else. All three are gone, because the second
+/// argument is: `Palette.domain` is now the sort's VALUE FACE — a 1-ary relation cited as
+/// `Palette.domain.takeN(5)` — and a sort holding BOTH arities under one name would let
+/// load order decide which one a citation answers through (a citation's query is built
+/// from the FIRST clause's head shape, `eval::build_relation_value`).
+///
+/// BOTH of the old admitted spellings are checked here, so neither slips through as a
+/// silent second definition; the previously-refused third is the same message now.
 #[test]
-fn a_hand_written_domain_may_name_its_type_with_a_variable() {
-    // `domain(?x, ?t)` is the natural spelling for "for any ascription", and requiring
-    // the sort NAME in that position silently ignored it: the author's clause became
-    // dead code and the DERIVATION answered, 3 rows where their `domain` says 1
-    // (`/code-review`). The hook's question is the member SHAPE — a 2-ary relation named
-    // `domain` in the sort's own scope — and both spellings of its second argument are
-    // that shape.
-    let mut kb = crate::common::load_kb_with(
-        r#"
-namespace test.wi743.varhand
-  import anthill.prelude.{Int64}
-  sort Palette
-    entity red
-    entity green
-    entity blue
-    rule domain(?x, ?t) :- ?x <=> red()
-  end
-  rule pick(?x: Palette) :- true
-end
-"#,
-    );
-    assert_eq!(definite_answers(&mut kb, "test.wi743.varhand.pick(?x)"), 1);
-}
-
-#[test]
-fn a_domain_naming_another_sort_is_refused() {
-    // THE THIRD SHAPE, and the reason the widening above is not a slide into "any 2-ary
-    // `domain` means the hook": a clause whose second argument names some OTHER sort is
-    // neither a domain for THIS sort nor plausibly anything else at that name and arity.
-    // Loud, rather than a third silent reading.
-    crate::common::expect_load_errors(
-        crate::common::try_load_kb_with(
+fn a_two_ary_hand_written_domain_names_the_one_ary_spelling() {
+    for second in ["Palette", "?t", "Other"] {
+        let src = format!(
             r#"
-namespace test.wi743.wronghand
-  import anthill.prelude.{Int64}
+namespace test.wi743.twoary
+  import anthill.prelude.{{Int64}}
   sort Other
     entity o
   end
   sort Palette
     entity red
     entity green
-    rule domain(?x, Other) :- ?x <=> red()
+    entity blue
+    rule domain(?x, {second}) :- ?x <=> red()
   end
 end
-"#,
-        ),
-        &["second argument is neither"],
-    );
+"#
+        );
+        let errs = crate::common::try_load_kb_with(&src)
+            .err()
+            .unwrap_or_else(|| panic!("a 2-ary `domain(?x, {second})` must be refused"));
+        crate::common::assert_refused_naming(
+            &errs,
+            &["has a 2-ary clause", "1-ARY"],
+            "the migration message must name the 1-ary spelling to move to",
+        );
+    }
 }
 
 #[test]

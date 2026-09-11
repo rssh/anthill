@@ -7813,6 +7813,58 @@ fn relation_reference_type(
     relation_type_from_columns(kb, sym, columns, occ.span, span)
 }
 
+/// WI-20260911-WT8WG — the citation-site diagnostic for a `<Sort>.domain` that was
+/// MINTED but never given a clause, or `None` when `sym` is not such a name.
+///
+/// THE PARAMETERISED SORT IS WHY THIS EXISTS. `List[T = Letter].domain` needs the
+/// citation's type argument to reach a clause, and a rule citation's query is built from
+/// the clause HEAD ALONE (`eval::build_relation_value`) — WI-20260911-RS2G4 delivered the
+/// receiver-bracket binding for OPERATION members only. Until **WI-20260911-5G28A** does
+/// the rule half, no value face is derived for a parameterised sort. MEASURED before this
+/// ticket, on the hand-written twin: `Wrap[T = Colour].dom.takeN(5)` AND bare
+/// `Wrap.dom.takeN(5)` BOTH LOAD CLEAN — the bracket is validated and dropped, the bound
+/// is a type variable so the sweep skips the member goal, and the citation can only
+/// flounder at the drain. That silent acceptance is what this turns loud, at load.
+///
+/// AND IT IS WHY THE NAME IS MINTED WITH NO CLAUSE TO HANG ON IT
+/// (`load::mint_domain_value_face_name`): without the name there is nothing to attach a
+/// reason to, and the author gets "no such member `domain`" — true, and useless.
+fn domain_value_face_refusal(
+    kb: &KnowledgeBase,
+    sym: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    let qn = kb.qualified_name_of(sym).to_string();
+    let sort_qn = qn.strip_suffix(".domain")?;
+    let sort = kb.try_resolve_symbol(sort_qn)?;
+    // TWO RECORDS, TWO QUESTIONS, and the message must not merge them. The first says
+    // "the relation EXISTS, the name does not" — a parameterised sort, whose goal face is
+    // intact. The second says the sort has NO derived domain at all (a field type this
+    // derivation cannot name), which is `domain_member_decline_reason`'s own answer and
+    // the reason a name minted in pass 1 can still have no clause behind it. Saying "has
+    // a domain" in that second case would be false, so the two get their own sentence.
+    // Without the second arm at all, a declined sort's citation reports the name as
+    // unresolved — true, and useless.
+    let (has_domain, reason) = match kb.domain_value_face_decline_reason(sort) {
+        Some(reason) => (true, reason),
+        None => (false, kb.domain_member_decline_reason(sort)?),
+    };
+    Some(TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::Rule {
+            name: sym,
+            field: RuleField::Whole,
+        },
+        expected: format!("`{qn}`, the derived domain of sort `{sort_qn}`, as a relation"),
+        actual: if has_domain {
+            format!("sort `{sort_qn}` has a domain but no `.domain` to cite it by: {reason}")
+        } else {
+            format!("sort `{sort_qn}` has no derived domain, so no `.domain` to cite: {reason}")
+        },
+    })
+}
+
 /// WI-20260902-4NEKZ — THE DOTTED NAME a LOADER-BUILT `field_access` chain spells, when
 /// every segment of it is already resolved.
 ///
@@ -8043,9 +8095,12 @@ fn relation_columns_across_clauses(
 ) -> Result<Vec<ClauseColumn>, TypeError> {
     let qn = kb.qualified_name_of(sym).to_string();
     let rids = kb.rule_ids_by_qn(&qn);
-    let first = *rids
-        .first()
-        .ok_or(TypeError::UnresolvedName { span, name: sym })?;
+    let first = *rids.first().ok_or_else(|| {
+        // WI-20260911-WT8WG — a derived `<Sort>.domain` whose clause was NOT derived
+        // says WHY, instead of reporting the name as unresolved.
+        domain_value_face_refusal(kb, sym, span)
+            .unwrap_or(TypeError::UnresolvedName { span, name: sym })
+    })?;
     let head_err = |kb: &KnowledgeBase, msg: &str| TypeError::Other {
         site: TypeError::here(),
         span,
@@ -71233,11 +71288,32 @@ fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
                 continue;
             }
             let member_bound = bound_tid;
-            // THE SELF-CALL TRAP has no arm here, and that is deliberate: a clause of
-            // a sort's OWN `domain` carrying that sort's bound would loop through the
-            // loader's forwarding clause, and `derive_domain_member_clauses` REFUSES
-            // that sort outright — so it never reaches this sweep with a member clause
-            // to call. One refusal, at the site that would build the loop.
+            // THE SELF-CALL TRAP, cut here — WI-20260911-WT8WG moved it from the loader.
+            //
+            // A clause of a sort's OWN written `domain` carrying that sort's bound
+            // (`rule domain(?x: Colour) :- …`, inside `sort Colour`) would get a member
+            // goal appended, which resolves through the loader's forwarding clause
+            // `domain_member(?x, Colour) :- Colour.domain(?x)`, which re-enters the
+            // clause: a loop with no base case. WI-743 refused such a clause at the
+            // loader, which cost nothing while the written spelling was 2-ary and the
+            // annotation was redundant. At the 1-ARY spelling that annotation is the
+            // NATURAL thing to write — it is the derived clause's own shape — so
+            // refusing it would refuse the feature's majority spelling.
+            //
+            // A WRITTEN DOMAIN IS NEVER GENERATED FROM: it IS the generator. So the
+            // clause keeps the prepended CONFORMANCE goal (which only tests, and is
+            // WI-742's whole behaviour) and loses only the appended MEMBER goal.
+            //
+            // THE LOADER'S SHAPE DECISION, read back — never a name test. This pass does
+            // not ask whether a rule is called `domain`; `record_sort_domain_is_written`
+            // is written exactly where the 1-ary hook accepted one, which is the only
+            // place that decision is made.
+            if kb.sort_domain_is_written(bound_head)
+                && rule_defines_sort_domain(kb, rid, bound_head)
+            {
+                continue;
+            }
+
             let var =
                 NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(db_index)), anchor.span, owner);
             let ty = NodeOccurrence::new_expr(
@@ -71262,6 +71338,38 @@ fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
         // APPENDED, after the written body — see this function's doc for the measurement.
         kb.append_generated_body_goals(rid, member_body);
     }
+}
+
+/// WI-20260911-WT8WG — is `rid` a clause of `<sort>.domain` itself?
+///
+/// The narrowing that makes the self-call exclusion right. `sort_domain_is_written` says
+/// the SORT writes its own domain; it does not say this clause is one of them, and the
+/// difference is the whole feature: `rule pick(?x: Palette) :- true` beside a written
+/// `Palette.domain` MUST keep its member goal — that appended goal is what makes it
+/// answer the written domain's 2 rows instead of the sort's 3. Only `Palette.domain`'s
+/// OWN clauses are the ones whose member goal would re-enter them.
+///
+/// BY SYMBOL, not by name: the head functor is compared against the symbol
+/// `<sort_qn>.domain` resolves to, so a rule merely SPELLED `domain` somewhere else is
+/// not mistaken for one.
+fn rule_defines_sort_domain(kb: &KnowledgeBase, rid: crate::kb::RuleId, sort: Symbol) -> bool {
+    // CANONICALISED, because its caller's other half is. `sort_domain_is_written` keys on
+    // `canonical_sort_sym`, so asking this one under the sort's WRITTEN name would let an
+    // ALIAS pass the first test and fail the second — the exclusion skipped, the member
+    // goal appended to a clause of the written `S.domain`, and the loop it exists to cut
+    // closed through the forwarding clause. One question, asked the same way twice.
+    // Raised by `/code-review`.
+    let qn = format!(
+        "{}.domain",
+        kb.qualified_name_of(kb.canonical_sort_sym(sort))
+    );
+    let Some(dom_sym) = kb.try_resolve_symbol(&qn) else {
+        return false;
+    };
+    kb.rule_head_value(rid)
+        .head(kb)
+        .functor_sym()
+        .is_some_and(|f| f == dom_sym)
 }
 
 /// WI-743 — does this bound name a type the derived `domain_member` relation can

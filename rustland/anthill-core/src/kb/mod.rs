@@ -1271,6 +1271,34 @@ pub struct KnowledgeBase {
     /// Draining after the walk is what makes every referenced sort's parameters known.
     pub(crate) domain_member_jobs: Vec<load::DomainMemberJob>,
 
+    /// WI-20260911-WT8WG — the sorts whose `domain` is WRITTEN rather than derived,
+    /// keyed by [`Self::canonical_sort_sym`].
+    ///
+    /// ONE READER, the typer's sweep ([`typing::install_typed_head_domain_goals`]),
+    /// and it reads this to cut a loop: a clause of a written `S.domain` annotated
+    /// `?x: S` would otherwise get the generated member goal, which resolves through
+    /// the loader's forwarding clause `domain_member(?x, S) :- S.domain(?x)`, which
+    /// re-enters the clause. A written domain is never generated FROM — it IS the
+    /// generator.
+    ///
+    /// THE LOADER'S SHAPE DECISION, recorded, rather than a name the typer could
+    /// re-test. `domain` is an ordinary English word and the hook that accepts one
+    /// keys on the member SHAPE (WI-743's measurement: keying on the name alone took
+    /// 39 guardians rows down). Asking the same question twice, once by shape and once
+    /// by name, is how the two answers come to differ.
+    pub(crate) sort_domain_is_written: std::collections::HashSet<Symbol>,
+
+    /// WI-20260911-WT8WG — the sorts that got a derived `domain_member` clause but NO
+    /// `<Sort>.domain` VALUE face, with the reason, keyed by canonical sort symbol.
+    ///
+    /// A SECOND MAP, not a second meaning for [`Self::domain_member_declined`]. That one
+    /// answers "this sort has no derived member clause at all", which is what
+    /// `has_domain_member` and `domain_leaf` key on; this one answers "the relation
+    /// exists, the NAME does not". A parameterised sort is in exactly this position —
+    /// full goal face, no citation — and folding the two would make
+    /// [`Self::domain_member_decline_reason`] say `List` was declined.
+    pub(crate) domain_value_face_declined: HashMap<Symbol, String>,
+
     /// WI-743 — the sorts whose derivation was DECLINED, with the reason, keyed by
     /// canonical sort symbol.
     ///
@@ -2089,6 +2117,8 @@ impl KnowledgeBase {
             domain_member_params: HashMap::new(),
             domain_member_jobs: Vec::new(),
             domain_member_declined: HashMap::new(),
+            domain_value_face_declined: HashMap::new(),
+            sort_domain_is_written: std::collections::HashSet::new(),
             provider_dict_chain_cache: RefCell::new(HashMap::new()),
             sort_alias_index: None,
             provides_index: None,
@@ -2523,6 +2553,36 @@ impl KnowledgeBase {
     pub(crate) fn forget_domain_member(&mut self, sort: Symbol) {
         let canon = self.canonical_sort_sym(sort);
         self.domain_member_params.remove(&canon);
+    }
+
+    /// WI-20260911-WT8WG — record that `sort` has a derived domain but no `<Sort>.domain`
+    /// value face, and why. See [`Self::domain_value_face_declined`].
+    pub(crate) fn record_domain_value_face_declined(&mut self, sort: Symbol, reason: String) {
+        let canon = self.canonical_sort_sym(sort);
+        self.domain_value_face_declined.insert(canon, reason);
+    }
+
+    /// WI-20260911-WT8WG — why `sort` got no `<Sort>.domain`, or `None` when it got one
+    /// (or has no derived domain at all — [`Self::domain_member_decline_reason`] answers
+    /// for that).
+    pub fn domain_value_face_decline_reason(&self, sort: Symbol) -> Option<&str> {
+        let canon = self.canonical_sort_sym(sort);
+        self.domain_value_face_declined
+            .get(&canon)
+            .map(String::as_str)
+    }
+
+    /// WI-20260911-WT8WG — record that `sort`'s domain is WRITTEN, not derived. See
+    /// [`Self::sort_domain_is_written`].
+    pub(crate) fn record_sort_domain_is_written(&mut self, sort: Symbol) {
+        let canon = self.canonical_sort_sym(sort);
+        self.sort_domain_is_written.insert(canon);
+    }
+
+    /// WI-20260911-WT8WG — is `sort`'s domain written rather than derived?
+    pub fn sort_domain_is_written(&self, sort: Symbol) -> bool {
+        self.sort_domain_is_written
+            .contains(&self.canonical_sort_sym(sort))
     }
 
     /// WI-743 — record that `sort` got NO derived `domain_member` clause, and why.
@@ -4030,7 +4090,7 @@ impl KnowledgeBase {
                 ..resolve::ResolveConfig::default()
             };
             let (solutions, stats) = self.resolve_goals_with_stats(goals, &config);
-        let truncated = stats.truncated;
+            let truncated = stats.truncated;
             // WI-628: negation holds iff the inner query has no DEFINITE solution;
             // but an empty result from a TRUNCATED search is UNDECIDED (the
             // refuting solution may sit past the depth cut), so it must NOT read as

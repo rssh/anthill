@@ -3,9 +3,9 @@
 - id: WI-20260911-WT8WG-domain-the-value-face-citing-a
 - created: 2026-09-11T10:03:05Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-09-11T21:34:01Z
+- status_at: 2026-09-11T23:42:53Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -455,4 +455,139 @@ rule reference IS a `Relation`), and it needed the author to meet a builtin.
    field-named-`domain` census (3 sorts); `Colour.dom.takeN(5)` = 3 typed `Colour` (entry of
    11:12, item 1, on 1eb89144); `rule_ids_by_qn` / `cites_a_relation` serving a derived
    sort-scoped Goal exactly as they serve `<Sort>.induction`.
+
+### 2026-09-11T23:42:39Z — feedback — claude
+
+DELIVERED (claude, 2026-09-11, session with user): the VALUE face for a sort with NO TYPE
+PARAMETERS, per the user's scope call. The parameterised half is refused loudly and named
+to WI-20260911-5G28A.
+
+THE EQUATION, unchanged from the plan:
+
+    Colour.domain(?x)  ==  anthill.kernel.domain_member(?x, Colour)
+
+    sort Colour { entity red  entity green  entity blue }   -- the author writes THIS
+    Colour.domain            -- Relation[T = (x: Colour), E = {Error}]  (derived)
+    Colour.domain.takeN(5)   -- 3 rows, every one definite
+
+DRIVEN — `tests/include/wi_wt8wg_domain_value_face_test.rs`, 17 rows, all calling the
+operation and asserting the value: `Colour.domain.takeN(5)` = 3; a one-constructor sort =
+1; `Nat.domain.takeN(4)` = the depths [0, 1, 2, 3] IN ORDER (the value face inherits
+WI-743's fairness; a count alone passes reversed); `Colour.domain.head.x` evaluates to
+`red()` AND is refused against an `Int64` return; `Colour.domain.where(λ)` = 1;
+hand-written 1-ary = 2 rows at the citation AND at the typed head AND mode (in) refutes the
+third constructor; the annotated hand-written clause answers 2 without looping;
+`domain_member(?x, Colour)` written in a rule body = 3 definite; a written
+`domain(?x, Colour)` in mode (in) holds and refutes at `Int64`; both parameterised
+citations refused naming 5G28A while `List` KEEPS its derived member clause; a sort with a
+`domain` FIELD gets both; `String.domain` is an unknown-member error.
+
+DECISIONS, as the user settled them:
+  (A) `domain_member` is WRITABLE — the user's call ("better yes"). NO source-goal
+      refusal was added; `domain`, `domain_member` and `domain_leaf` all stay writable.
+      Declared in `kernel.anthill` (061's body-less form) and pre-declared in
+      `register_prelude`; the late `domain_member_symbol` mint is deleted.
+      CORRECTION TO THE PLAN, measured: the SOURCE declaration is not what supplies the
+      name. Backing it out fails NO row — `register_prelude` is the channel, as it is for
+      `push_choice`/`and`/`or`/`cut`, and it has to be, because 36 tests build a bare
+      `KnowledgeBase::new()` + `register_prelude` KB with a user sort in it. Stated in the
+      test header and in both comments rather than left to be credited to the wrong guard.
+      Making the goal reachable also made `resolve.rs:6064`'s `debug_assert!(false, "the
+      bound operand is not a type term")` reachable from source — MEASURED as an abort.
+      `builtin_type_domain` now reads a non-splice carrier through the VIEW, which is what
+      `builtin_domain_leaf` already did; the generated path keeps its own arm unchanged.
+  (B) a written `domain` is 1-ARY. The 2-ary spelling is a load error naming the 1-ary one;
+      the "second argument is neither" refusal and the variable-spelling row are retired
+      with it (three wi743 fixtures migrated; no corpus file wrote it).
+  (C) parameterised → refused at load, naming 5G28A. The user confirmed the refusal.
+  (D) CORRECTED BY MEASUREMENT: a FIELD named `domain` is NOT a collision. `sort Thing {
+      entity Thing(domain: Colour) }` beside a relation `domain` in the same scope loads
+      clean, `Thing.domain.takeN(9)` = 3, and `Thing(domain: red()).domain` still reads
+      `red()` — a field is reached through its entity's field table, never through this
+      symbol. So `guardians.Address` and github-todo's `FactRef`/`FactHolds` all KEEP a
+      derived value face and no `_domain` fallback is needed (the user raised that
+      possibility; it turned out to have nothing to fall back FROM). §5.3's live case is
+      an OPERATION or a const named `domain`. The plan's row (9) predicted a merged-kind
+      collision and was wrong.
+
+TWO THINGS THE PLAN DID NOT ANTICIPATE, both found by running:
+  * THE NAME MUST BE MINTED IN PASS 1, not at the derivation's drain. The clause cannot
+    move earlier (the drain exists so a bare parameterised field type can be repaired), but
+    a CITATION is lowered during the item walk — `try_identifier_dot_call` asks whether
+    `Colour.domain` denotes anything. With the whole derivation in place and the name
+    minted only at the drain, EVERY citation failed as *unknown functor*. So
+    `mint_domain_value_face_name` runs from `DefinePass::exit_scope` (and the
+    free-standing-entity arm), and the drain contributes the clause to it. The two are
+    separate back-out axes ([a] withholds the clause, [f] the name) and neither is
+    redundant.
+  * THE SELF-CALL TRAP MOVED TO THE TYPER. At the 2-ary spelling the self-annotation was
+    redundant, so WI-743 could refuse it for free; at the 1-ary spelling
+    `rule domain(?x: S) :- …` is the natural thing to write. The sweep now gives a clause
+    of a WRITTEN `S.domain` the conformance goal and NOT the member goal.
+
+`/code-review` (high) RAISED SIX; THREE WERE REAL, ONE WAS REAL BY A DIFFERENT MECHANISM,
+TWO DISSOLVED. Each was MEASURED before being believed, and each repair has its own row:
+  * THE MINT SHADOWED THE KERNEL GOAL — the serious one, and my defect. `define` inserts
+    the SHORT name into the scope's `locals`, and `resolve_in_scope` reads locals before
+    imports, so a minted `domain` sat in front of `anthill.kernel.domain` for every rule
+    body written INSIDE that sort. MEASURED: `rule mine(?x) :- domain(?x, Colour)` written
+    in `sort Colour` was a LOAD ERROR — which is the opposite of the writability the user
+    asked for. Now `define_qualified_only` (WI-422's API, for this exact leak); the
+    citation is a qualified lookup and loses nothing. Row:
+    `the_minted_name_does_not_shadow_the_kernel_goal`.
+  * A `domain` AT AN UNRECOGNISED ARITY DECLINED IN SILENCE. The ladder knows 1-ary and
+    2-ary; a bare nullary or 3-ary one fell through to a bare `return`. MEASURED: a 3-ary
+    `domain` loaded clean, the goal face answered the sort's 3 rows, and BOTH decline
+    records were `None` — invisible in every count. Now recorded with the arity found and
+    the spelling expected. Row: `a_domain_at_an_unrecognised_arity_declines_readably`.
+  * `rule_defines_sort_domain` DID NOT CANONICALISE while its caller's other half
+    (`sort_domain_is_written`) did, so a sort ALIAS could pass one test and fail the
+    other — the self-call exclusion skipped, and the loop it exists to cut closed through
+    the forwarding clause. One `canonical_sort_sym` call.
+  * THE WRITTEN-BOUND FINDING WAS REAL BUT NOT AS STATED, and this is the part worth
+    keeping. The reviewer predicted a bound carrying a type variable would HOLD
+    unconditionally. Driven with `?x` bound first (so the unbound-value delay could not
+    stand in), it REFUTED: 0 rows, against a ground control at 1 definite and a wrong-type
+    control at 0. Also wrong — WI-067 says an open variable gets no verdict, refutation
+    included — and it is MY regression, since that shape was a loud abort before this
+    ticket. Repaired with a carrier-neutral `view_has_type_variable` beside the new arm
+    rather than by widening `type_is_undetermined`, whose `Value::Term` arm WI-743's own
+    review measured as load-bearing. Row:
+    `a_written_bound_carrying_a_type_variable_suspends`, with both controls.
+  * The `by_qualified_name`-vs-`locals` guard asymmetry DISSOLVED with the
+    qualified-only mint: `define_qualified_only` is idempotent on the qualified name,
+    which is the question the guard already asked.
+  * The §5.3 staleness check came back clean — it already says `domain(?x)`, and the
+    remaining "2-ary" mentions are the KERNEL relation, correctly.
+
+NINE BACK-OUTS, each RUN over both files and recorded in the test header:
+[a] the derived clause → 6; [b] its BOUND → 5 (and the count moves: 1 row, not 3);
+[b2] its SPAN → the BINARY ABORTS, 0/33 (the sweep's own debug_assert); [c] the 1-ary hook
+→ 2, one per file; [d] the sweep exclusion → exactly 1; [e] the source declaration → 0,
+stated above; [f] the pass-1 mint → 6, the same rows by a different mechanism; [g] the
+carrier-neutral read → 1, an abort; [h] the parameterised diagnostic → 1 (still refused,
+message lost).
+
+THIS TICKET'S OWN ACCEPTANCE LINE IS CORRECTED. "A full drain of an infinite domain raises
+`Error[RelationFloundered]`" has no referent: an infinite derived domain is a lazy stream
+and a `Relation` has no full drain (no `collect`, 052). Floundering belongs to a
+constructor-less sort — which under this design has no `.domain` to drain at all, so its
+citation is an unknown-member error at LOAD.
+
+DOCS: kernel-language.md §5.3 (the value face, the parameterised refusal, the reworded
+"not the sort's domain" sentence, the 2-ary→1-ary written form) and the derived-members
+list beside `induction`; proposal 060 §2.2 (the equation, decisions A–D, the 1-ary written
+form, the never-generated-from rule); docs/design/060-implementation.md §0 row and a new
+§7.1; proposal 052 §Naming plus OQ2 settled in the affirmative (a derived member relation
+is reached ONLY through the bare-qualified arm). The plan named an "OQ4" about the dispatch
+surface — no such open question exists in 052; nothing was invented in its place.
+`examples/classic-mini/map-colouring` now cites `Colour.domain` in `main` and the README
+says why.
+
+SCALAND: no domain derivation exists there (grep: nothing), so there was nothing to port;
+its tests DO parse `stdlib/`, so the kernel declaration had to parse under fastparse too.
+
+NOT IN SCOPE, each with its owner: the parameterised value face and the general
+receiver-bracket-on-a-rule-citation binding (5G28A); `Bool` (5TK6B); two-recursive-position
+fairness (09E6M); abstract T (NAR1X).
 
