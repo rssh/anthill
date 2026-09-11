@@ -30,28 +30,41 @@ entity blue }` — three variants, so a colour is one of exactly three things an
 `colouring` types as `Relation[(wa: Colour, nt: Colour, …)]`. A consumer of a row
 gets a colour, not any old text.
 
-**The domain is facts.** `fact palette(c: red())` and friends. A free colour
-variable ranges over exactly these three, because SLD enumerates the facts. There
-is no separate notion of "domain" in the language — a domain *is* a relation.
+**The domain is the sort.** A free colour variable ranges over exactly `red`,
+`green` and `blue` because the sort says those are the constructors — nothing
+else is written down. There is still no separate notion of "domain" in the
+language: a domain *is* a relation, and the one a closed sort defines is derived
+from its constructor list (WI-743, proposal 060 §2.2).
 
-The two are not the redundancy they look like; they do different jobs, and both
-are load-bearing (each verified by deleting it):
+**The annotation is what does it.** `wa: Colour` in the head is a parameter
+(proposal 060 §2.1): it introduces a clause variable named `wa`, typed `Colour`,
+and that annotation is read twice — as the column's TYPE, so `colouring` is
+`Relation[(wa: Colour, …)]`, and as the DOMAIN `wa` ranges over.
 
-- **The sort is the type, not a generator.** SLD resolves goals against facts and
-  rules; a sort declaration is not something you can call. Drop the palette facts
-  and keep only `rule colouring(?wa: Colour, ?nt: Colour) :- ?wa != ?nt` and
-  nothing generates — `?wa` stays unbound, the guard cannot decide, and it raises
-  `relation_floundered` rather than enumerating.
-- **The entity field is what carries the type.** The palette could have been a
+It used to take two more pieces, and this example was where both were measured:
+
+- **The sort was the type, not a generator.** SLD resolves goals against facts
+  and rules, and a sort declaration was not something you could call — so a
+  `palette` relation had to be written beside `Colour` to enumerate it:
+  `fact palette(c: red())` and friends. Dropping those facts and keeping only
+  `rule colouring(?wa: Colour, ?nt: Colour) :- ?wa != ?nt` left `?wa` unbound, the
+  guard unable to decide, and raised `relation_floundered` rather than
+  enumerating. Measured, and that is what WI-743 removed.
+- **The entity field was what carried the type.** The palette could have been a
   rule (`rule palette(?c) :- eq(?c, red())`, three clauses, no wrapper sort) — it
-  enumerates fine, but the columns come out as `(wa: ?_, nt: ?_)`, *untyped*,
-  because a rule subgoal constrains nothing. It is `palette(c: Colour)`'s entity
-  field that tells the typer a column is a `Colour`.
+  enumerated fine, but the columns came out as `(wa: ?_, nt: ?_)`, *untyped*,
+  because a rule subgoal constrains nothing. It was `palette(c: Colour)`'s entity
+  field that told the typer a column was a `Colour`. WI-742 moved that job to the
+  annotation, which is why the wrapper sort could go.
 
-**The map is a rule.** `colouring(?wa, ?nt, ?sa, ?q, ?nsw, ?v)` says: each region
-takes some colour, and every bordering pair differs. The `palette(c: ?x)` goals
+**The map is a rule.** `colouring(wa: Colour, …)` says: each region takes some
+colour of the three there are, and every bordering pair differs. The annotations
 generate; the `!=` goals test. Read it as a definition of what a valid colouring
 *is* — the search is not written down anywhere.
+
+The generated domain goal is placed AFTER the written body, not before it. For
+this example either order works; for a RECURSIVE domain it is the difference
+between terminating and not — see `alphabet-words`.
 
 `?a != ?b` is infix sugar: the parser desugars it to `neq(?a, ?b)` via an
 ordinary entry in the operator table (`parse/pratt.rs`), alongside `=`, `<`,

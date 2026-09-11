@@ -12810,6 +12810,15 @@ fn load_phase_inner(
     // ABOVE the typer, whose `is_builtin` readers must see the derived tags.
     all_errors.extend(derive_carrier_builtin_tags(kb));
     mark!("derive_carrier_builtin_tags");
+    // WI-743 (proposal 060 §2.2) — derive `anthill.kernel.domain_member` from the
+    // constructor lists the item walk collected. HERE, after every file's sorts are
+    // loaded, because a field type that names a parameterised sort bare must be repaired
+    // against THAT sort's parameter list, which a forward reference does not have at its
+    // use site. ABOVE the `run_typer` gate: the typer's
+    // `install_typed_head_domain_goals` reads `has_domain_member` to decide which typed
+    // heads get a generator, and the partial load path must leave the same KB behind.
+    all_errors.extend(derive_domain_member_clauses(kb));
+    mark!("derive_domain_member_clauses");
     // WI-352/WI-353: derive `flow(kind, from, to)` facts from operation bodies
     // BEFORE op-body type-checking, because the typer's operation-boundary
     // masking (WI-353, `region::op_boundary_effects`) consumes them via
@@ -14795,6 +14804,530 @@ pub fn build_host_op_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     }
     kb.set_host_op_mappings(out);
     errors
+}
+
+/// WI-743 (proposal 060 §2.2) — one sort's collected derivation, built during the item
+/// walk and consumed by [`derive_domain_member_clauses`].
+#[derive(Clone)]
+pub(crate) struct DomainMemberJob {
+    /// The sort whose inhabitants the derived clause enumerates.
+    pub(crate) sort: Symbol,
+    /// The namespace/sort the derived clause is asserted into — the same one the sort's
+    /// induction rule takes.
+    pub(crate) domain: Symbol,
+    /// The sort's declared type parameters in declaration order: the bare short-name
+    /// symbol a written `List[T = …]` uses as its binding key, and the parameter's
+    /// canonical variable (the very variable the entity field types carry).
+    pub(crate) params: Vec<(Symbol, TermId)>,
+    /// One entry per constructor, in DECLARATION order.
+    pub(crate) ctors: Vec<DomainMemberCtor>,
+}
+
+/// WI-743 — one constructor of a [`DomainMemberJob`].
+#[derive(Clone)]
+pub(crate) struct DomainMemberCtor {
+    pub(crate) ctor: Symbol,
+    /// One entry per field in DECLARATION order: the field's name, and its declared
+    /// type as the loader lowered it.
+    pub(crate) fields: Vec<(Symbol, TermId)>,
+}
+
+/// WI-743 (proposal 060 §2.2) — derive `anthill.kernel.domain_member`, the relation a
+/// typed relational head reads in mode (out).
+///
+/// ONE CLAUSE PER SORT WITH CONSTRUCTORS: a disjunction over the constructors, with each
+/// field's own domain conjoined inside its branch.
+///
+/// ```text
+/// domain_member(?x, Letter) :- ?x <=> a() | ?x <=> b() | ?x <=> c()
+/// domain_member(?x, List[T = ?T])
+///   :- ?x <=> nil()
+///    | (?x <=> cons(head: ?h, tail: ?t) & domain_member(?t, List[T = ?T])
+///                                       & domain_member(?h, ?T))
+/// ```
+///
+/// THE TYPE TRAVELS AS THE SECOND ARGUMENT, and that is what makes one clause serve
+/// every element sort and every nesting depth: the `List` head binds `?T` from the
+/// caller's `List[T = Letter]` by ordinary unification — types are terms with logical
+/// variables — and the element goal dispatches on the bound term. No dictionary, no
+/// per-sort name lookup at run time, and `List[T = Bit]` and `List[T = Letter]` are the
+/// same clause.
+///
+/// FINITENESS IS NOT A GATE (settled design §2). It says only whether the stream ENDS. A
+/// closed sort with a recursive constructor on an unbound head is a fair, lazy, INFINITE
+/// relation — `takeN` is fine, a full drain does not return — and fairness BY LENGTH
+/// comes from ORDER alone, which is why the two orderings below are semantic rules and
+/// not style:
+///   * BASE CONSTRUCTORS FIRST — the constructors with no recursive field, in
+///     declaration order, then the recursive ones, in declaration order. For an
+///     all-nullary sort that IS declaration order, which is what the ticket's acceptance
+///     asks for; for `List` it is what puts `nil` ahead of `cons`.
+///   * INSIDE A BRANCH, RECURSIVE POSITIONS FIRST — `tail` before `head`, so a free word
+///     comes out by length (`nil`, `[a]`, `[b]`, `[c]`, `[a, a]`, …) rather than
+///     descending one spine forever.
+///
+/// FAIR FOR ONE RECURSIVE POSITION PER CONSTRUCTOR, and no further. The two orderings
+/// make a CHAIN (`List`, and every sort shaped like it) come out by length. A
+/// constructor with TWO recursive fields — `node(l: Tree, r: Tree)` — still descends
+/// depth-first in the later one, so `l` stays at the base constructor forever and
+/// `node(node(leaf, leaf), leaf)` is never reached. Interleaving that (an iterative
+/// deepening over size) is a capability no part of this resolver has; the limit is
+/// stated here and pinned by `two_recursive_positions_in_one_constructor_are_not_fair`
+/// rather than left for a reader to discover from a stream that looks fine.
+///
+/// CLAUSES, NOT FACTS (settled design §4). Ground `domain_member(red(), Colour)` facts
+/// would be selected through the variable-position walk whose run-to-run order
+/// WI-20260911-SXZ3G records (four orders in six runs); clauses that share a
+/// var-headed leaf enumerate in CLAUSE order, which is the declaration order this
+/// derivation writes.
+///
+/// A SORT WITH NO DERIVED CLAUSE keeps WI-742's ladder exactly — the prepended
+/// conformance goal delays, a later goal may bind, and a still-unbound variable
+/// flounders loudly at the drain. The catch-all clause below is what routes it there,
+/// and [`KnowledgeBase::domain_member_decline_reason`] says why a candidate declined.
+pub fn derive_domain_member_clauses(kb: &mut KnowledgeBase) -> Vec<LoadError> {
+    let mut errors: Vec<LoadError> = Vec::new();
+    let jobs = std::mem::take(&mut kb.domain_member_jobs);
+    if jobs.is_empty() {
+        return errors;
+    }
+    let Some(member_sym) = domain_member_symbol(kb) else {
+        errors.push(LoadError::Other {
+            message: "WI-743: the `anthill.kernel` namespace is missing, so no \
+                      `domain_member` relation could be defined"
+                .to_string(),
+        });
+        return errors;
+    };
+    let (Some(leaf_sym), Some(unify_sym), Some(choice_sym), Some(and_sym)) = (
+        kb.try_resolve_symbol(crate::kb::typing::DOMAIN_LEAF_GOAL),
+        kb.try_resolve_symbol("anthill.kernel.unify"),
+        kb.try_resolve_symbol("anthill.kernel.push_choice"),
+        kb.try_resolve_symbol("anthill.kernel.push_and"),
+    ) else {
+        errors.push(LoadError::Other {
+            message: "WI-743: a resolver primitive the derived `domain_member` clauses \
+                      are built from (`unify` / `push_choice` / `push_and` / \
+                      `domain_leaf`) is not registered"
+                .to_string(),
+        });
+        return errors;
+    };
+
+    // PASS 1 — CLASSIFY AND RECORD, before anything is emitted. The record is what the
+    // bare-reference repair in pass 2 reads: a field type naming a parameterised sort
+    // BARE must be re-applied against THAT sort's parameter list, and the sort may be
+    // declared later in this file, in another file, or in an EARLIER LOAD BATCH. That
+    // last case is why the table is KB state (`domain_member_params`) rather than a map
+    // built from this batch's jobs — a user file loaded into a KB that already holds the
+    // stdlib must still repair a `List` field.
+    let mut pending: Vec<(DomainMemberJob, Option<Symbol>)> = Vec::with_capacity(jobs.len());
+    for job in jobs {
+        if kb.has_domain_member(job.sort) {
+            // Already defined — a re-load of the same file, or an earlier batch. A
+            // second derivation would be a second set of answers, not a replacement.
+            continue;
+        }
+        let sort_qn = kb.qualified_name_of(job.sort).to_string();
+
+        // §2.2 / settled design §6 — A HAND-WRITTEN `domain` IN THE SORT'S SCOPE WINS.
+        // `scan_definitions` mints every rule-head Goal before any body loads, so a
+        // written one is already defined here. It is FORWARDED rather than copied: the
+        // sort's own clauses stay the single definition, and a second definer reaching
+        // that name is the ordinary duplicate-head story, never a union.
+        //
+        // THE HOOK KEYS ON THE MEMBER SHAPE, NOT ON THE NAME, and that is not caution —
+        // `domain` is an ordinary English word and the corpus already uses it for
+        // something else. MEASURED: keying on the qualified name alone refused
+        // `guardians.Address`, whose `entity Address(local: String, domain: String)`
+        // gives a FIELD that exact name, and took 39 guardians rows down with it.
+        //
+        // THE SHAPE IS "a 2-ARY RELATION named `domain`", and its second argument may
+        // name this sort (`domain(?x, Palette)`) or be a VARIABLE (`domain(?x, ?t)`,
+        // the natural spelling for "for any ascription"). Requiring the sort NAME was
+        // measured silently ignoring the variable spelling — the author's clause became
+        // dead code and the derivation answered 3 rows where their `domain` says 1
+        // (`/code-review`). A relation named `domain` in a sort's own scope at that
+        // arity has one meaning, so a 2-ary one whose second argument is NEITHER is a
+        // LOUD refusal below rather than a third silent reading.
+        let hand_sym = kb
+            .symbols
+            .by_qualified_name
+            .get(&format!("{sort_qn}.domain"))
+            .copied()
+            .filter(|&sym| kb.has_kind(sym, SymbolKind::Goal))
+            .filter(|&sym| {
+                kb.rules_by_functor(sym).iter().any(|&rid| {
+                    matches!(
+                        kb.rule_head_value(rid).head(kb),
+                        crate::kb::term_view::ViewHead::Functor { pos_arity: 2, .. }
+                    )
+                })
+            });
+        if let Some(sym) = hand_sym {
+            let mismatched: Vec<String> = kb
+                .rules_by_functor(sym)
+                .iter()
+                .filter(|&&rid| {
+                    let head = kb.rule_head_value(rid);
+                    if !matches!(
+                        head.head(kb),
+                        crate::kb::term_view::ViewHead::Functor { pos_arity: 2, .. }
+                    ) {
+                        return false;
+                    }
+                    match head.pos_arg(kb, 1) {
+                        None => true,
+                        Some(a) => {
+                            let view = crate::kb::term_view::TermView::head(&a, kb);
+                            let is_var = matches!(view, crate::kb::term_view::ViewHead::Var(_));
+                            let names_sort = view.functor_sym().is_some_and(|s| {
+                                kb.canonical_sort_sym(s) == kb.canonical_sort_sym(job.sort)
+                            });
+                            !is_var && !names_sort
+                        }
+                    }
+                })
+                .map(|&rid| format!("{rid:?}"))
+                .collect();
+            if !mismatched.is_empty() {
+                errors.push(LoadError::Other {
+                    message: format!(
+                        "WI-743: `{sort_qn}.domain` has a 2-ary clause whose second \
+                         argument is neither `{sort_qn}` nor a variable. A relation \
+                         named `domain` in a sort's body IS that sort's domain — a \
+                         relation over (value, type term) — so its second argument must \
+                         be the sort it defines, or a variable standing for it."
+                    ),
+                });
+                continue;
+            }
+        }
+        if let Some(hand) = hand_sym {
+            if !job.params.is_empty() {
+                errors.push(LoadError::Other {
+                    message: format!(
+                        "WI-743: sort `{sort_qn}` is PARAMETERISED and writes its own \
+                         `domain`; a hand-written domain for a parameterised sort is \
+                         refused for now — its clause head would have to bind the \
+                         sort's type parameters from the caller's type argument, which \
+                         only the derivation does. Remove the hand-written `domain` to \
+                         take the derived one, or make the sort non-parameterised."
+                    ),
+                });
+                continue;
+            }
+            // THE SELF-CALL TRAP, refused where the loop would be built. A clause of
+            // the sort's own `domain` that ALSO annotates its value parameter with that
+            // sort (`rule domain(?x: Colour, ?t)`) would get the typer's generated
+            // member goal, which calls the forwarding clause below, which calls the
+            // clause again — a loop with no base case. Inside a sort's own `domain` the
+            // type is already the relation's second argument, so the annotation is
+            // redundant as well as fatal.
+            let loops = kb.rules_by_functor(hand).iter().any(|&rid| {
+                kb.rule_type_bounds(rid).iter().any(|&(_, b)| {
+                    term_head_sort(kb, b).is_some_and(|s| {
+                        kb.canonical_sort_sym(s) == kb.canonical_sort_sym(job.sort)
+                    })
+                })
+            });
+            if loops {
+                errors.push(LoadError::Other {
+                    message: format!(
+                        "WI-743: a clause of `{sort_qn}.domain` annotates a head \
+                         parameter with `{sort_qn}` itself, which would make the clause \
+                         call its own domain through the derived member relation — a \
+                         loop with no base case. Drop the annotation: inside a sort's \
+                         `domain` the type is already the relation's second argument."
+                    ),
+                });
+                continue;
+            }
+        }
+        kb.record_domain_member(job.sort, job.params.clone());
+        pending.push((job, hand_sym));
+    }
+
+    // PASS 2 — EMIT. Every sort's parameters are known now, so the repair below can ask
+    // about any of them.
+    for (job, hand) in pending {
+        let self_type = domain_self_type(kb, job.sort, &job.params);
+
+        // A hand-written `domain` is FORWARDED, never copied: the sort's own clauses
+        // stay the single definition of its domain.
+        if let Some(hand) = hand {
+            let x = fresh_global(kb, "x");
+            let head = pos_fn(kb, member_sym, &[x, self_type]);
+            let body = vec![pos_fn(kb, hand, &[x, self_type])];
+            let body_nodes = kb.term_body_to_nodes(&body);
+            kb.assert_rule_debruijn_with_nodes(
+                head,
+                body_nodes,
+                ClauseKind::Rule,
+                job.domain,
+                None,
+            );
+            continue;
+        }
+
+        // BASE CONSTRUCTORS FIRST — see the fairness rule in this function's doc.
+        let mut repaired: Vec<Vec<(Symbol, TermId, bool)>> = Vec::with_capacity(job.ctors.len());
+        let mut unrepairable: Option<(Symbol, Symbol)> = None;
+        for c in &job.ctors {
+            let mut fields: Vec<(Symbol, TermId, bool)> = Vec::with_capacity(c.fields.len());
+            for &(f, t) in &c.fields {
+                match repair_self_reference(kb, t, job.sort, self_type) {
+                    Some(t) => {
+                        let rec = term_head_sort(kb, t).is_some_and(|s| {
+                            kb.canonical_sort_sym(s) == kb.canonical_sort_sym(job.sort)
+                        });
+                        fields.push((f, t, rec));
+                    }
+                    None => {
+                        unrepairable = Some((c.ctor, f));
+                        break;
+                    }
+                }
+            }
+            if unrepairable.is_some() {
+                break;
+            }
+            repaired.push(fields);
+        }
+        // A BARE REFERENCE TO SOME OTHER PARAMETERISED SORT names no element type, and
+        // inventing one enumerates TYPES rather than values (see `repair_self_reference`).
+        // Decline the WHOLE sort — a branch that constrained only SOME of a
+        // constructor's fields would answer `ctor(f: ?unbound)` and call it a member —
+        // and undo the record, so the catch-all answers for it and `domain_leaf` does
+        // not stand aside for a clause that was never emitted.
+        if let Some((ctor, field)) = unrepairable {
+            let (c, f) = (
+                kb.qualified_name_of(ctor).to_string(),
+                kb.qualified_name_of(field).to_string(),
+            );
+            kb.forget_domain_member(job.sort);
+            kb.record_domain_member_declined(
+                job.sort,
+                format!(
+                    "field `{f}` of constructor `{c}` names a parameterised sort with no \
+                     type arguments, which has no element domain to enumerate"
+                ),
+            );
+            continue;
+        }
+        // STABLE, so declaration order survives inside each group: the constructors with
+        // no recursive field keep their written order and come first, then the recursive
+        // ones in theirs. For an all-nullary sort that IS declaration order.
+        let mut branch_index: Vec<usize> = (0..job.ctors.len()).collect();
+        branch_index.sort_by_key(|&i| repaired[i].iter().any(|&(_, _, rec)| rec));
+
+        let x = fresh_global(kb, "x");
+        let mut branches: Vec<TermId> = Vec::with_capacity(branch_index.len());
+        for &i in &branch_index {
+            let ctor = job.ctors[i].ctor;
+            let fields = &repaired[i];
+            let mut field_vars: Vec<(Symbol, TermId)> = Vec::with_capacity(fields.len());
+            for &(f, _, _) in fields {
+                let name = kb.symbols.local_name(f).to_owned();
+                field_vars.push((f, fresh_global(kb, &name)));
+            }
+            let ctor_term = if fields.is_empty() {
+                kb.alloc(Term::Ref(ctor))
+            } else {
+                let named: SmallVec<[(Symbol, TermId); 2]> = field_vars.iter().copied().collect();
+                kb.make_entity_term(ctor, SmallVec::new(), named)
+            };
+            let mut goals: Vec<TermId> = vec![pos_fn(kb, unify_sym, &[x, ctor_term])];
+            // RECURSIVE POSITIONS FIRST inside the branch — the other half of fairness.
+            for want_rec in [true, false] {
+                for (idx, &(_, ty, rec)) in fields.iter().enumerate() {
+                    if rec != want_rec {
+                        continue;
+                    }
+                    goals.push(pos_fn(kb, member_sym, &[field_vars[idx].1, ty]));
+                }
+            }
+            branches.push(right_fold(kb, and_sym, &goals));
+        }
+        let head = pos_fn(kb, member_sym, &[x, self_type]);
+        let body = vec![right_fold(kb, choice_sym, &branches)];
+        let body_nodes = kb.term_body_to_nodes(&body);
+        kb.assert_rule_debruijn_with_nodes(head, body_nodes, ClauseKind::Rule, job.domain, None);
+    }
+
+    // THE CATCH-ALL, LAST. `domain_member(?x, ?T) :- domain_leaf(?x, ?T)` is a candidate
+    // for EVERY call — both positions are variables — which is what lets a type with no
+    // structural clause (`String`, a primitive, a spec, a declined sort) still answer the
+    // CONFORMANCE question. It contributes no answer where a structural clause owns the
+    // call, because `domain_leaf` refuses exactly there (`BuiltinTag::DomainLeaf`), so
+    // its position in the clause order changes nothing about the answers.
+    if !kb.rules_by_functor(member_sym).iter().any(|&rid| {
+        kb.rule_head_value(rid).pos_arg(kb, 1).is_some_and(|a| {
+            matches!(
+                crate::kb::term_view::TermView::head(&a, kb),
+                crate::kb::term_view::ViewHead::Var(_)
+            )
+        })
+    }) {
+        let kernel = kb
+            .try_resolve_symbol("anthill.kernel")
+            .unwrap_or(member_sym);
+        let x = fresh_global(kb, "x");
+        let t = fresh_global(kb, "T");
+        let head = pos_fn(kb, member_sym, &[x, t]);
+        let body = vec![pos_fn(kb, leaf_sym, &[x, t])];
+        let body_nodes = kb.term_body_to_nodes(&body);
+        kb.assert_rule_debruijn_with_nodes(head, body_nodes, ClauseKind::Rule, kernel, None);
+    }
+    errors
+}
+
+/// WI-743 — the `anthill.kernel.domain_member` Goal symbol, defined on first use.
+///
+/// Defined rather than declared in `kernel.anthill` for the reason `find_dictionary` and
+/// the WI-742 guard are: it is reached only by GENERATION — the loader's derivation and
+/// the typer's sweep — and a surface declaration would add a name application code can
+/// capture by writing its own `domain_member`.
+fn domain_member_symbol(kb: &mut KnowledgeBase) -> Option<Symbol> {
+    if let Some(&s) = kb
+        .symbols
+        .by_qualified_name
+        .get(crate::kb::typing::DOMAIN_MEMBER_GOAL)
+    {
+        return Some(s);
+    }
+    let ns = kb
+        .symbols
+        .by_qualified_name
+        .get("anthill.kernel")
+        .copied()?;
+    let scope = kb.symbols.scope_id(ns);
+    Some(kb.symbols.define(
+        "domain_member",
+        crate::kb::typing::DOMAIN_MEMBER_GOAL,
+        SymbolKind::Goal,
+        scope,
+    ))
+}
+
+/// WI-743 — the type term a sort's own `domain_member` head carries: `Colour` for a
+/// non-parameterised sort, `List[T = ?T]` for a parameterised one, where `?T` is the
+/// parameter's CANONICAL variable — the same one its constructors' field types carry, so
+/// binding it at the head binds it in every field goal.
+fn domain_self_type(kb: &mut KnowledgeBase, sort: Symbol, params: &[(Symbol, TermId)]) -> TermId {
+    let base = kb.make_sort_ref(sort);
+    if params.is_empty() {
+        return base;
+    }
+    let bindings: Vec<(Symbol, TermId)> = params.to_vec();
+    kb.make_parameterized_type(base, &bindings)
+}
+
+/// WI-743 — re-apply a BARE reference to a parameterised sort, so a domain goal over it
+/// can match that sort's own derived head.
+///
+/// `entity cons(head: T, tail: List)` lowers `tail` to `Ref(List)`. The derived head for
+/// `List` is `List[T = ?T]`, and the two do not unify — so without this the `cons` branch
+/// would match nothing and the constructor would silently drop out of its own domain.
+///
+/// THE SELF REFERENCE ONLY, and `None` for every other bare one. A bare `List` inside
+/// `List` means "a list of the SAME elements", so it takes the enclosing head's own
+/// variables and the recursion closes. A bare reference to some OTHER parameterised sort
+/// names no element type at all, and the obvious repair — fresh variables, "a list of
+/// something" — is WRONG in a way that is easy to miss: `domain_member(?x, ?T)` with an
+/// unbound `?T` unifies with the head of EVERY derived clause, so the goal stops asking
+/// "is `?x` in this type" and starts enumerating TYPES. MEASURED at 20 rows (the
+/// solution cap) for `rule nest(?w: List[T = List]) :- ?w <=> [[a()]]`, whose body binds
+/// `?w` outright and can have at most one. So: no fresh variables anywhere, and a sort
+/// whose constructor field reaches one DECLINES — keeping WI-742's ladder, which is
+/// loud at the drain. Found by `/code-review`.
+pub(crate) fn repair_self_reference(
+    kb: &mut KnowledgeBase,
+    t: TermId,
+    self_sort: Symbol,
+    self_type: TermId,
+) -> Option<TermId> {
+    match kb.get_term(t).clone() {
+        Term::Ref(s) => {
+            let canon = kb.canonical_sort_sym(s);
+            match kb.domain_member_params_of(canon) {
+                Some(ps) if !ps.is_empty() => {
+                    if canon == kb.canonical_sort_sym(self_sort) {
+                        Some(self_type)
+                    } else {
+                        None
+                    }
+                }
+                _ => Some(t),
+            }
+        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
+            let mut pos: SmallVec<[TermId; 4]> = SmallVec::new();
+            for &c in &pos_args {
+                pos.push(repair_self_reference(kb, c, self_sort, self_type)?);
+            }
+            let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            for &(k, c) in &named_args {
+                named.push((k, repair_self_reference(kb, c, self_sort, self_type)?));
+            }
+            if pos == pos_args && named == named_args {
+                Some(t)
+            } else {
+                // Plain `alloc`: the key set and its order are untouched, so the
+                // canonicalization the original term already went through still holds.
+                Some(kb.alloc(Term::Fn {
+                    functor,
+                    pos_args: pos,
+                    named_args: named,
+                }))
+            }
+        }
+        _ => Some(t),
+    }
+}
+
+/// WI-743 — the sort a type term heads with, for the recursive-position test.
+fn term_head_sort(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
+    match kb.get_term(t) {
+        Term::Ref(s) => Some(*s),
+        Term::Fn { functor, .. } => Some(*functor),
+        _ => None,
+    }
+}
+
+/// WI-743 — a fresh `Var::Global` term named `name`.
+fn fresh_global(kb: &mut KnowledgeBase, name: &str) -> TermId {
+    let sym = kb.intern(name);
+    let vid = kb.fresh_var(sym);
+    kb.alloc(Term::Var(Var::Global(vid)))
+}
+
+/// WI-743 — `f(args…)` at arity `args.len()`, positional.
+fn pos_fn(kb: &mut KnowledgeBase, f: Symbol, args: &[TermId]) -> TermId {
+    kb.alloc(Term::Fn {
+        functor: f,
+        pos_args: SmallVec::from_slice(args),
+        named_args: SmallVec::new(),
+    })
+}
+
+/// WI-743 — fold `goals` into a right-nested binary chain under `connective`
+/// (`push_and` / `push_choice`), which is the shape `a | b | c` and `a & b & c` take.
+/// A single goal is itself; an EMPTY list is a loader bug, and the `Bottom` it answers
+/// refutes rather than vacuously succeeding.
+fn right_fold(kb: &mut KnowledgeBase, connective: Symbol, goals: &[TermId]) -> TermId {
+    match goals {
+        [] => kb.alloc(Term::Bottom),
+        [only] => *only,
+        [first, rest @ ..] => {
+            let tail = right_fold(kb, connective, rest);
+            pos_fn(kb, connective, &[*first, tail])
+        }
+    }
 }
 
 /// WI-879 — MIRROR each spec op's [`BuiltinTag`] onto the CARRIER MEMBERS a binding
@@ -28328,6 +28861,15 @@ impl<'a> Loader<'a> {
         let mut op_refs = Vec::new();
         let mut param_refs = Vec::new();
         let mut req_terms = Vec::new();
+        // WI-743 — the sort's declared type parameters as the DERIVED DOMAIN needs
+        // them: the bare short-name symbol a written `List[T = …]` uses as its binding
+        // key, paired with the parameter's canonical variable. Collected in the SAME
+        // walk as `param_refs` so the two orders are one order, and through
+        // `type_param_var` — the call the entity FIELD types went through — so the
+        // variable in `domain_member(?x, List[T = ?T])`'s head is the very variable
+        // `entity cons(head: T, …)`'s field type carries. Two mints of "the same"
+        // parameter never unify, and nothing would say so.
+        let mut domain_params: Vec<(Symbol, TermId)> = Vec::new();
 
         for item in &s.items {
             match item {
@@ -28349,6 +28891,10 @@ impl<'a> Loader<'a> {
                     if matches!(abs.definition, TypeExpr::Variable { .. }) {
                         let sym = self.remap_name(&abs.name);
                         param_refs.push(self.kb.alloc(Term::Ref(sym)));
+                        let short = self.parsed.symbols.local_name(abs.name.last()).to_owned();
+                        let key = self.kb.intern(&short);
+                        let var = self.type_param_var(sym, &short);
+                        domain_params.push((key, var));
                     }
                 }
                 Item::RequiresDecl(r) => {
@@ -28406,6 +28952,97 @@ impl<'a> Loader<'a> {
                 })
                 .collect();
             self.emit_induction_rule(&entities, sort_functor, parent_domain);
+            // WI-743 (proposal 060 §2.2) — the EXISTENTIAL reading of the same
+            // constructor list. `induction` says "for every inhabitant of this sort",
+            // `domain_member` says "?x is one of them"; one walk, one order, so the
+            // case order and the enumeration order cannot disagree. The GATES differ
+            // and that is correct: induction needs closedness only (a recursive sort
+            // has an induction principle and an infinite domain), while a derived
+            // domain also needs every field's type to be one this can name.
+            self.collect_domain_member_job(&entities, sort_functor, domain_params);
+        }
+    }
+
+    /// WI-743 (proposal 060 §2.2) — record what [`derive_domain_member_clauses`] needs
+    /// to build this sort's `domain_member` clause, or record WHY it will build none.
+    ///
+    /// COLLECTED HERE, EMITTED LATER, and the reason is a field type that names a
+    /// PARAMETERISED sort bare. `entity cons(head: T, tail: List)` lowers `tail` to
+    /// `Ref(List)`, which does not unify with the head this derivation gives `List` —
+    /// `List[T = ?T]` — so the recursive branch would match nothing and the constructor
+    /// would silently drop out of its own domain. Repairing it needs the referenced
+    /// sort's parameter list, which a sort declared later in the file, or in another
+    /// file, does not have yet at this point. The drain is where every sort has one.
+    ///
+    /// A DECLINE IS NOT A SILENT SKIP. A sort with no derived clause keeps WI-742's
+    /// ladder exactly: the prepended conformance goal delays, a later goal may bind it,
+    /// and a variable still unbound at the end flounders LOUDLY when the relation is
+    /// drained (`Error[RelationFloundered]`, WI-737). The reason is recorded so the
+    /// route is readable rather than inferred from an absence.
+    fn collect_domain_member_job(
+        &mut self,
+        entities: &[&Entity],
+        sort_functor: Symbol,
+        params: Vec<(Symbol, TermId)>,
+    ) {
+        let domain = self.current_domain();
+        let mut ctors: Vec<DomainMemberCtor> = Vec::with_capacity(entities.len());
+        for &e in entities {
+            let ctor = self.remap_name(&e.name);
+            let Some(declared) = self.kb.entity_field_types(ctor).map(|fs| fs.to_vec()) else {
+                // The declaration pass visits every `Item::Entity` the load pass does
+                // (`declared_field_values`' invariant), so this is unreachable through
+                // the loader's own walk — recorded rather than asserted so a release
+                // build cannot derive a domain that silently omits a field.
+                let name = self.kb.qualified_name_of(ctor).to_string();
+                self.kb.record_domain_member_declined(
+                    sort_functor,
+                    format!("constructor `{name}` has no registered field types"),
+                );
+                return;
+            };
+            let mut fields: Vec<(Symbol, TermId)> = Vec::with_capacity(declared.len());
+            for (f_sym, v) in declared {
+                let Some(tid) = self.domain_field_type_term(&v) else {
+                    // A value-in-type / dependent field type (`Vector[Int64, 3]`,
+                    // `Modify[c]`) rides as a `Value::Node`, which has no type TERM to
+                    // put in the goal slot. Decline the WHOLE sort rather than the one
+                    // field: a branch that constrains only SOME of a constructor's
+                    // fields would answer `?x = ctor(f: ?unbound)` and call it a member.
+                    let name = self.kb.qualified_name_of(ctor).to_string();
+                    let field = self.kb.qualified_name_of(f_sym).to_string();
+                    self.kb.record_domain_member_declined(
+                        sort_functor,
+                        format!(
+                            "field `{field}` of constructor `{name}` has a type this \
+                             derivation cannot name as a term (a value-in-type or \
+                             dependent field type)"
+                        ),
+                    );
+                    return;
+                };
+                fields.push((f_sym, tid));
+            }
+            ctors.push(DomainMemberCtor { ctor, fields });
+        }
+        self.kb.domain_member_jobs.push(DomainMemberJob {
+            sort: sort_functor,
+            domain,
+            params,
+            ctors,
+        });
+    }
+
+    /// WI-743 — the type TERM behind a lowered field type, or `None` when the field's
+    /// type has no term spelling (a `Value::Node` carrier).
+    fn domain_field_type_term(&mut self, v: &crate::eval::value::Value) -> Option<TermId> {
+        use crate::eval::value::Value;
+        match v.carried() {
+            Value::Term { id, .. } => Some(*id),
+            // A type PARAMETER in value-position spelling (WI-20260904-02ERR) — the
+            // same variable, one carrier out.
+            Value::Var(v) => Some(self.kb.alloc(Term::Var(*v))),
+            _ => None,
         }
     }
 
@@ -28919,6 +29556,10 @@ impl<'a> Loader<'a> {
             // own name resolves). The long form has emitted it since proposal 030;
             // its omission here was a straight one.
             self.emit_induction_rule(&[e], functor, domain);
+            // WI-743 — and its existential twin. A free-standing `entity E` is
+            // `sort E { entity E }` (§6.3), so its domain is the one-branch
+            // disjunction; it has no type parameters to bind.
+            self.collect_domain_member_job(&[e], functor, Vec::new());
         }
     }
 

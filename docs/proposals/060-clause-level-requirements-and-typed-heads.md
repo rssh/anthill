@@ -155,20 +155,51 @@ Bounds of the form:
   loader-verified re-measurement belongs at implementation, at the
   classification site.
 
-### 2.2 A sort defines its `domain` — the generator arm (WI-743)
+### 2.2 A sort defines its `domain` — the generator arm (WI-743, delivered)
 
 Mode (out) does not special-case enums in the resolver: `domain(?x, T)`
 dispatches to a **member relation T defines, named `domain`** — the goal is that
-member read through the type, which is why they share the name.
+member read through the type, which is why they share the name. (Delivery note:
+one NOTION, two FUNCTORS. The conformance goal of §2 and this member relation
+cannot share a symbol — a functor carrying a builtin tag never reaches the clause
+path, and the two sit at opposite ends of the body. See
+[`../design/060-implementation.md`](../design/060-implementation.md) §7.)
 
-- **Derived for an all-nullary closed ADT** (the WI-743 finiteness gate): the
-  loader derives `domain(red())`, `domain(green())`, `domain(blue())` from
-  `sort Colour`'s variants — declaration order, once each. The 058 §3.10 move
-  (derive a row from structure), applied to values.
+- **Derived for ANY closed ADT**, not only an all-nullary one — the finiteness
+  gate this section first proposed turned out to be unnecessary, and is
+  WITHDRAWN. The loader derives one clause per sort with constructors: a
+  disjunction over the constructors, with each field's own domain conjoined
+  inside its branch, and **the type travelling as the second argument** so one
+  clause serves a parameterized sort at every instantiation:
+
+  ```anthill
+  domain(?x, Letter)       :- ?x <=> a() | ?x <=> b() | ?x <=> c()
+  domain(?x, List[T = ?T]) :- ?x <=> nil()
+                            | (?x <=> cons(head: ?h, tail: ?t)
+                                 & domain(?t, List[T = ?T]) & domain(?h, ?T))
+  ```
+
+  Declaration order, once each. The 058 §3.10 move (derive a row from structure),
+  applied to values — and derived as CLAUSES rather than as ground facts, so the
+  order is the clause order and not a hash walk (WI-20260911-SXZ3G).
+- **Finiteness decides only whether the STREAM ENDS.** A closed sort with a
+  recursive constructor has a fair, lazy, infinite domain: `takeN` is fine, a
+  full drain does not return. Fairness comes from order alone — base
+  constructors before recursive ones, recursive field positions before the
+  others inside a branch — so a free `List[T = Letter]` comes out by length.
+  Only a sort with NO constructors keeps §2's delay/flounder ladder.
+- **The member goal is APPENDED**, where §2's conformance goal is prepended.
+  "Prepended" in §2 must be read as covering the conformance goal only: a
+  generator ahead of the written body enumerates a recursive type forever before
+  the body can prune it (measured).
 - **User-definable for any sort** — a hand-written `domain` makes any sort a
   generator. Today's wrapper pattern (`sort Palette` + three `palette(c: …)`
   facts) *is* a hand-written `domain` the language gave no name; this absorbs it
-  into the sort.
+  into the sort. The hook keys on the member SHAPE — a relation `domain(?x, T)`
+  in the sort's body — and never on the name alone: `domain` is an ordinary word
+  and a field may already carry it. A parameterized sort's hand-written `domain`
+  is refused for now; its head would have to bind the sort's type parameters from
+  the caller's type argument, which only the derivation does.
 - **Domain-defining, not a generator hint.** Where T defines its `domain`,
   *both* modes read it: mode (in) checks conformance **and** membership, mode
   (out) enumerates. A mode split — generate from the subset but accept anything
@@ -181,10 +212,14 @@ member read through the type, which is why they share the name.
 - **A sort with no `domain`** keeps §2's behavior unchanged: delay, re-ask on
   binding, flounder loudly at the end — `rule f(?x: String) :- eq(?x, "abe")`
   stays legal and yields its one row.
-- **Abstract T dispatches through the requirement channel** (§3's anchor;
-  WI-1040); a concrete T is pinned at typing. No tension with 058 §3.10:
-  `domain` enumerates **values** by ordinary SLD choice — an instance is never
-  chosen.
+- **Abstract T does NOT enumerate**, and this bullet's earlier wording —
+  "dispatches through the requirement channel (§3's anchor; WI-1040)" — named no
+  mechanism and had no owner. A rule-bracket bound records the SPEC, nothing is
+  derived for a spec, and the bound keeps §2's delay. Reaching the caller's
+  instantiation needs `domain` to be the member of a kernel finiteness spec AND a
+  dictionary channel that carries a RELATION — WI-20260909-NAR1X. A concrete T is
+  pinned at typing. No tension with 058 §3.10 either way: `domain` enumerates
+  **values** by ordinary SLD choice — an instance is never chosen.
 
 The payoff, with §2.1's parameter form — map-colouring with no `Palette` sort
 and no domain facts:

@@ -1866,6 +1866,21 @@ rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 
 These illustrate the `<=>` equational-rule *mechanism*. In the current prelude such per-constructor equations for an operation with a body (`length`, `append`, `contains`) are **not** hand-written: WI-580 makes the operation body the single source of truth and derives its equational and relational views from it on demand (the SLD one-step body-unfold; see docs/design/abstract-interpreter-and-rules.md §3.3). Hand-written `<=>` rules survive for genuine standalone equations (`neq(?a, ?b) <=> not(eq(?a, ?b))`, carrier `eq` overrides).
 
+**A closed sort's DERIVED MEMBERS.** The constructor list is not only a pattern
+vocabulary — two relations are derived from it, and they are the universal and
+existential readings of the same list:
+
+- `<Sort>.induction(?P)` — the induction principle: one case per constructor,
+  with an inductive hypothesis at each self-typed field (proposal 025). Derived
+  for every sort with constructors.
+- the sort's **domain** — "`?x` is an inhabitant of `T`", a disjunction over the
+  constructors with each field's own domain conjoined inside its branch. This is
+  what makes a typed relational head a GENERATOR; see *A closed sort defines its
+  domain* under the rule section, where the rule that reads it is written up.
+
+Both take the constructors in DECLARATION order, from one walk, so their case
+orders cannot disagree.
+
 **A `Bool`-valued expression in goal position is a CONDITION** (WI-20260822-J38JE item 1): it evaluates, and the goal succeeds iff the value is `true`. The reading is **type-directed** — it follows from the term denoting a truth value, not from a list of admitted shapes — so every spelling of a boolean expression means the same thing wherever a goal is expected.
 
 | in goal position | reads as |
@@ -2177,8 +2192,9 @@ This is the requirement-binding half of proposal 060. Its typed-head half is
 delivered separately, below. What remains unimplemented there is the ANCHOR
 combination: a `require[X]` in a clause whose only grounding is a typed head
 binding is still refused for want of a covered body call. WI-20260908-VVM1R
-owns that residue; WI-743 owns finite/user-defined domain generation. Do not confuse
-proposal 060 with the unrelated work item WI-060.
+owns that residue. §2.2's domain generation is delivered (WI-743); see the entry
+after the typed-head one below. Do not confuse proposal 060 with the unrelated
+work item WI-060.
 
 **A type annotation on a relational rule head (proposal 060 §2, WI-742).** A
 variable in the head of a rule with a body may carry a type bound, and it means
@@ -2209,6 +2225,69 @@ see that entry below.
 the clause is a clause, and the generated guard becomes its whole body. What
 keeps its loud rejection is the **untagged equational** head, which has neither
 reader — no rewrite fires it, and it is not a relational clause.
+
+**A closed sort defines its DOMAIN (proposal 060 §2.2, WI-743).** A sort with
+constructors already says what its inhabitants are; a typed relational head is
+what RANGES over them. The loader derives, from the same constructor list the
+induction principle is derived from, one clause of a member relation — "`?x` is
+an inhabitant of `T`" — and the typer appends a goal of it to every clause whose
+head annotates a variable with such a `T`. So
+
+```
+rule colouring(wa: Colour, nt: Colour, sa: Colour) :- wa != nt, wa != sa, nt != sa
+```
+
+enumerates, with no generator written down: `sort Colour { entity red, entity
+green, entity blue }` is the generator.
+
+The derived clause is the constructor list read EXISTENTIALLY — a disjunction
+over the constructors, with each field's own domain conjoined inside its branch —
+where the induction principle reads the same list universally. **The type travels
+as an argument**, which is what lets one clause serve a parameterized sort at
+every instantiation and every nesting depth:
+
+```
+domain(?x, Letter)       :- ?x <=> a() | ?x <=> b() | ?x <=> c()
+domain(?x, List[T = ?T]) :- ?x <=> nil()
+                          | (?x <=> cons(head: ?h, tail: ?t)
+                               & domain(?t, List[T = ?T]) & domain(?h, ?T))
+```
+
+The `List` head binds `?T` from the caller's `List[T = Letter]` by ordinary
+unification — types are terms with logical variables — and the element goal
+dispatches on the bound term. `List[T = Bit]` and `List[T = Letter]` are one
+clause; no dictionary and no per-sort lookup happens at run time.
+
+**Finiteness is not a condition.** It decides only whether the stream ENDS. A
+closed sort with a recursive constructor has a fair, lazy, INFINITE domain
+(`takeN` is fine; a full drain does not return), and fairness comes from ORDER
+alone — base constructors before recursive ones, and inside a branch the
+recursive field positions before the others — so a free `List[T = Letter]` comes
+out by length. Only a sort with NO constructors (`String`, a primitive, an
+abstract sort, a spec) keeps §2's ladder: delay, re-ask on binding, flounder
+loudly at the end.
+
+**The generated goal is APPENDED, where §2's conformance guard is prepended**,
+and the two placements are not interchangeable: a generator ahead of the written
+body enumerates a recursive type forever before the body can prune it. The
+conformance guard stays, and is what a sort with no domain has.
+
+**Any sort may write its own `domain`**, as a relation `domain(?x, T)` in the
+sort's body, and it then REPLACES the derivation for that sort — today's wrapper
+pattern (a `Palette` sort plus three facts) is a hand-written domain the language
+gave no name. It is DOMAIN-DEFINING, not a generator hint: where a sort defines
+its domain, BOTH modes read it, so a value that conforms to the sort but is not a
+member is REFUTED. A `domain` in a sort's scope that is not a relation of that
+shape — a field named `domain`, an operation — is not the sort's domain and
+changes nothing. A rule-local narrowing ("this rule's `x` ranges over a subset")
+stays an ordinary body goal, as today.
+
+**Not yet:** an ABSTRACT `T` (a type-variable bound introduced by the rule's own
+bracket) does not enumerate — nothing is derived for a spec, so the bound keeps
+§2's delay. Reaching the caller's instantiation needs `domain` to be a member of a
+kernel finiteness spec and a dictionary channel that carries a RELATION
+(WI-20260909-NAR1X). `Bool` has no derived domain either: its values are
+literals, not entity constructors, so there is no constructor list to read.
 
 **The parameter form (proposal 060 §2.1).** In the head of the predicate a rule
 DEFINES, `name: Type` introduces a typed clause variable with no `?` sigil:
@@ -2256,7 +2335,12 @@ atom (WI-20260910-7NBZX):
   connective, which under 061 DECLARES the predicate — is refused in both
   spellings: a declaration stores no clause for the bound's one enforcer to run
   in (see the `?x: T` entry above), so `rule f(?d, x: Red)` is refused just as
-  `rule f(?d, ?x: Red)` is. Write `:- true` to make it a clause. (An equation
+  `rule f(?d, ?x: Red)` is. Write `:- true` to make it a clause. **It stays
+  refused now that a closed sort generates** (WI-743), and 061 is the reason: the
+  shape DECLARES the predicate, and a declaration that also enumerated would
+  assert a row of every inhabitant of every annotated column merely by saying what
+  the predicate's schema is. The two readings cannot share one spelling, and the
+  clause reading already has one. (An equation
   head is body-less too and is NOT what this refuses — it has the rewrite reader,
   per the bullet above.) A declaration that claims no bound is unaffected, and so
   is a named argument that is not a parameter (`rule reaches(from: ?a)`).

@@ -2,13 +2,11 @@
 -- generate-and-test over the domain of assignments.
 --
 -- An assignment is a `List[Bit]`, one cell per variable, so the domain is a
--- recursive type again — the same `domain` relation as in `alphabet-words`,
--- over a different element sort. That reuse is the point of the type
--- travelling as an argument: `List[T = Bit]` and `List[T = Letter]` are one
--- clause. The formula is the test.
---
--- As in `alphabet-words`, the hand-written `domain` is the shape WI-743
--- derives; a typed head `rule model(vs: List[T = Bit])` replaces it then.
+-- recursive type again — the same derived domain as in `alphabet-words`, over a
+-- different element sort. That reuse is the point of the type travelling as an
+-- argument: `List[T = Bit]` and `List[T = Letter]` are ONE derived clause, whose
+-- head binds the element type from the caller's type argument. The formula is
+-- the test.
 
 namespace classic.sat
   import anthill.cli.Main
@@ -22,11 +20,6 @@ namespace classic.sat
     entity no
   end
 
-  rule domain(?x, Bit) :- ?x <=> yes() | ?x <=> no()
-  rule domain(?x, List[T = ?T])
-    :- ?x <=> nil()
-     | (?x <=> cons(head: ?h, tail: ?t) & domain(?t, List[T = ?T]) & domain(?h, ?T))
-
   -- Negation of a bit, and a two-literal clause. `or2`'s two cases are
   -- EXCLUSIVE — first literal true; first false and second true — so an
   -- assignment satisfying a clause is counted ONCE. A plain `|` over the two
@@ -37,10 +30,10 @@ namespace classic.sat
   rule or2(?a, ?b) :- ?a <=> no(), ?b <=> yes()
 
   -- (p or not q) and (q or r) and (not p or not r). Two models: p q r = yes yes no
-  -- and no no yes. The spine fixes three variables; the domain fills them; the
-  -- three clauses test.
-  rule model(?vs)
-    :- ?vs <=> [?p, ?q, ?r], domain(?vs, List[T = Bit]),
+  -- and no no yes. The spine fixes three variables; `neg` binds them; the three
+  -- clauses test; and the typed head's domain has the last word on every cell.
+  rule model(vs: List[T = Bit])
+    :- vs <=> [?p, ?q, ?r],
        neg(?p, ?np), neg(?q, ?nq), neg(?r, ?nr),
        or2(?p, ?nq), or2(?q, ?r), or2(?np, ?nr)
 

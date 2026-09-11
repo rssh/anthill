@@ -1,10 +1,11 @@
 -- Map colouring: assign one of three colours to each region of Australia so
 -- that no two regions sharing a border get the same colour.
 --
--- The classic generate-and-test program: `palette(c: ?x)` GENERATES, `!=`
--- TESTS, and the search does the rest. Nothing here is a search algorithm — the
--- rule states what a valid colouring IS, and SLD resolution finds the ones that
--- satisfy it.
+-- The classic generate-and-test program — except that nothing here generates
+-- explicitly. The sort `Colour` has three constructors, which IS its domain
+-- (WI-743), and a typed rule head is what ranges over it. `!=` tests, and the
+-- search does the rest. Nothing here is a search algorithm: the rule states what
+-- a valid colouring IS, and SLD resolution finds the ones that satisfy it.
 
 namespace classic.mapcolouring
   import anthill.cli.Main
@@ -14,28 +15,15 @@ namespace classic.mapcolouring
   import anthill.prelude.{Int64, String, List, Bool, Error}
 
   -- A colour is one of exactly three things — so it is a sort with three
-  -- variants, not a string. The sort says what a colour IS; the facts below say
-  -- which ones are on the palette. Because the columns are `Colour` and not
-  -- `String`, `colouring` types as
-  -- `Relation[(wa: Colour, nt: Colour, sa: Colour, q: Colour, nsw: Colour, v: Colour)]`
-  -- and a consumer of a row gets a colour, not any old text.
+  -- variants, not a string. The declaration says BOTH things at once: what a
+  -- colour IS (the type of every column below), and which ones there are (the
+  -- domain a free colour variable ranges over). It used to say only the first;
+  -- the second needed a wrapper sort and three `palette` facts beside it.
   sort Colour
     entity red
     entity green
     entity blue
   end
-
-  -- These facts ARE the domain: SLD enumerates them, so a free colour variable
-  -- ranges over exactly red / green / blue. The wrapper sort is what carries the
-  -- TYPE — an entity field (`c: Colour`) is what tells the typer a column is a
-  -- Colour, which is why the palette is an entity + facts rather than a rule.
-  sort Palette
-    entity palette(c: Colour)
-  end
-
-  fact palette(c: red())
-  fact palette(c: green())
-  fact palette(c: blue())
 
   -- A valid colouring of the six mainland states and territories.
   --
@@ -44,24 +32,30 @@ namespace classic.mapcolouring
   -- — Western Australia borders Northern Territory and South Australia; South
   -- Australia borders everything except WA's far side; and so on.
   --
+  -- `wa: Colour` is a PARAMETER (proposal 060 §2.1): it introduces a clause
+  -- variable named `wa`, read bare in the body, whose type is `Colour`. That
+  -- annotation is the generator — the loader derives `Colour`'s domain from its
+  -- constructors and the typed head reads it — and it is also what types the
+  -- column, so `colouring` is
+  -- `Relation[(wa: Colour, nt: Colour, sa: Colour, q: Colour, nsw: Colour, v: Colour)]`
+  -- and a consumer of a row gets a colour, not any old text.
+  --
   -- `?a != ?b` is infix sugar that desugars to `neq(?a, ?b)` — the same
   -- operation, the same resolver path.
   --
   -- Queried with every column free, this is mode (out,out,out,out,out,out) —
   -- generate-and-test with the answer unknown, which is the whole point.
-  rule colouring(?wa, ?nt, ?sa, ?q, ?nsw, ?v)
-    :- palette(c: ?wa), palette(c: ?nt), palette(c: ?sa),
-       palette(c: ?q), palette(c: ?nsw), palette(c: ?v),
-       ?wa != ?nt, ?wa != ?sa,
-       ?nt != ?sa, ?nt != ?q,
-       ?sa != ?q,  ?sa != ?nsw, ?sa != ?v,
-       ?q != ?nsw,
-       ?nsw != ?v
+  rule colouring(wa: Colour, nt: Colour, sa: Colour, q: Colour, nsw: Colour, v: Colour)
+    :- wa != nt, wa != sa,
+       nt != sa, nt != q,
+       sa != q,  sa != nsw, sa != v,
+       q != nsw,
+       nsw != v
 
   sort Program
     requires anthill.cli.Main
 
-    -- `colouring` cited BY NAME is a Relation over its six free head params
+    -- `colouring` cited BY NAME is a Relation over its six head parameters
     -- (proposal 052), which provides a stream — so the whole program is one
     -- query, drained and counted. There is exactly one valid 3-colouring up to
     -- the choice of colours for the WA/NT/SA triangle: 3! = 6.

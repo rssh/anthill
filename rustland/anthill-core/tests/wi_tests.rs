@@ -80,6 +80,9 @@ mod gamma_verdict_three_valued_test;
 #[path = "include/wi742_typed_relational_head_test.rs"]
 mod wi742_typed_relational_head_test;
 
+#[path = "include/wi743_finite_domain_test.rs"]
+mod wi743_finite_domain_test;
+
 #[path = "include/wi_9c2pz_per_application_type_params_test.rs"]
 mod wi_9c2pz_per_application_type_params_test;
 

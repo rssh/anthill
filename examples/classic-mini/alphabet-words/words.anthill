@@ -5,12 +5,10 @@
 -- type. A word is a `List[Letter]`, so "ranges over all words" is "ranges over
 -- all lists whose elements range over `Letter`": a one-step case split per
 -- constructor, with the fields' domains as new goals. That is the inductive
--- definition of the type's inhabitants, read as a generator.
---
--- The hand-written `domain` below is exactly the shape WI-743 derives from the
--- sort declarations. When it lands, the rule and the explicit `domain(...)`
--- goals go, and a typed head — `rule word(w: List[T = Letter]) :- ...` —
--- carries the domain instead.
+-- definition of the type's inhabitants, read as a generator — and since WI-743
+-- the loader derives it from the sort declarations, so a typed head is the
+-- whole of it. `List` and `Letter` are two ordinary sorts; nothing here is
+-- written for this program.
 
 namespace classic.alphabet
   import anthill.cli.Main
@@ -25,34 +23,22 @@ namespace classic.alphabet
     entity c
   end
 
-  -- The domain of a type, as a relation over (value, type). One clause per
-  -- sort: a disjunction over its constructors, with each field's domain
-  -- conjoined inside the branch. THE TYPE TRAVELS AS THE SECOND ARGUMENT: the
-  -- `List` clause binds `?T` from the caller's `List[T = Letter]` and hands it
-  -- to the element, so one clause serves every element sort.
-  --
-  -- Clause order is the enumeration order: the base constructor first, and in
-  -- the `cons` branch the tail BEFORE the head, so a fully free word comes out
-  -- by length — `nil`, `[a]`, `[b]`, `[c]`, `[a, a]`, ... — fair, and infinite.
-  rule domain(?x, Letter) :- ?x <=> a() | ?x <=> b() | ?x <=> c()
-  rule domain(?x, List[T = ?T])
-    :- ?x <=> nil()
-     | (?x <=> cons(head: ?h, tail: ?t) & domain(?t, List[T = ?T]) & domain(?h, ?T))
-
   -- Every three-letter word: 27. The body binds the SPINE first — three cells —
-  -- and the domain goal after it fills the cells. Put the domain goal FIRST and
-  -- it enumerates every word of every length before the `<=>` can prune: still
-  -- fair, but infinite, so the program never ends (measured).
-  rule word(?w) :- ?w <=> [?, ?, ?], domain(?w, List[T = Letter])
+  -- and the domain the typed head carries fills the cells. The order is not a
+  -- choice: the generated domain goal goes AFTER the written body, because a
+  -- generator ahead of it would enumerate every word of every length before the
+  -- `<=>` could prune — still fair, but infinite, so the program would never end
+  -- (measured).
+  rule word(w: List[T = Letter]) :- w <=> [?, ?, ?]
 
   -- ...with no letter next to itself: 12.
-  rule no_repeat(?w)
-    :- ?w <=> [?x, ?y, ?z], domain(?w, List[T = Letter]), ?x != ?y, ?y != ?z
+  rule no_repeat(w: List[T = Letter]) :- w <=> [?x, ?y, ?z], ?x != ?y, ?y != ?z
 
-  -- Every word of every length: the domain with nothing binding the spine. An
-  -- INFINITE relation — fair by length, never exhausted — so `main` does not
-  -- drain it; query it with `--max-results`, or `takeN` it.
-  rule any_word(?w) :- domain(?w, List[T = Letter])
+  -- Every word of every length: the typed head with nothing binding the spine.
+  -- An INFINITE relation — fair by length, never exhausted — so `main` does not
+  -- drain it; query it with `--max-results`, or `takeN` it. Finiteness is not a
+  -- condition on the domain existing; it only decides whether the stream ends.
+  rule any_word(w: List[T = Letter]) :- true
 
   sort Program
     requires anthill.cli.Main

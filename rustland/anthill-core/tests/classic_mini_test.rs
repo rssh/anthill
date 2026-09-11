@@ -141,7 +141,9 @@ fn classic_mini_ancestor_yields_the_transitive_closure() {
     );
 }
 
-/// Map colouring: six free columns, three colours, nine border constraints.
+/// Map colouring: six free columns, three colours, nine border constraints, and
+/// since WI-743 NO generator written down — `sort Colour`'s three constructors are
+/// the domain, and `wa: Colour` in the head is what ranges over it.
 ///
 /// Pins the ANSWER (6), not just that it loads — and pins that every row is
 /// DEFINITE. The bug this example exists to demonstrate (WI-739, composing with
@@ -171,16 +173,16 @@ fn classic_mini_map_colouring_yields_six_definite_colourings() {
     );
 }
 
-/// Words over an alphabet: the domain of a RECURSIVE type as a relation over
-/// (value, type term), hand-written in the shape WI-743 derives.
+/// Words over an alphabet: the domain of a RECURSIVE type, DERIVED from the sort
+/// declarations (WI-743) and read by a typed head.
 ///
-/// Pins the ANSWERS (27 and 12) and that every row is DEFINITE. A typed head over
-/// `List[T = Letter]` gives TODAY one CONDITIONAL answer with the domain goal
-/// undischarged (measured 2026-09-11, `wi742_typed_relational_head_test` pins the
-/// shape), which a count alone would read as "1 solution". When WI-743 lands the
-/// example drops its hand-written `domain` for the typed head, and these numbers
-/// must hold unchanged — that is what makes the example a driver rather than a
-/// demo.
+/// Pins the ANSWERS (27 and 12) and that every row is DEFINITE. The numbers are the
+/// same ones this test pinned while the `domain` relation was hand-written in the
+/// example, which is what made it a driver rather than a demo: the hand-written
+/// relation and the explicit goals were deleted, the heads were typed, and these
+/// held. Back the derivation out and the typed head gives ONE CONDITIONAL answer
+/// with the domain goal undischarged — which a count alone would read as "1
+/// solution", so the definiteness assertion is not decoration.
 #[test]
 fn classic_mini_alphabet_words_enumerates_every_word() {
     let mut kb = load_example("alphabet-words");
@@ -224,10 +226,12 @@ fn classic_mini_alphabet_words_enumerates_every_word() {
     );
 }
 
-/// Tiny SAT: the same domain relation over `List[T = Bit]`, the formula as the
-/// test. Pins that there are exactly two models and that each is one DEFINITE row
-/// — the `or2` cases are exclusive, so an assignment satisfying both literals of
-/// a clause is not counted twice.
+/// Tiny SAT: the same DERIVED `List` domain clause at a different element sort, the
+/// formula as the test. Pins that there are exactly two models and that each is one
+/// DEFINITE row — the `or2` cases are exclusive, so an assignment satisfying both
+/// literals of a clause is not counted twice. Sharing the clause with
+/// `alphabet-words` is the row that measures "the type travels as an argument": two
+/// element sorts, one derived clause.
 #[test]
 fn classic_mini_tiny_sat_finds_both_models() {
     let mut kb = load_example("tiny-sat");

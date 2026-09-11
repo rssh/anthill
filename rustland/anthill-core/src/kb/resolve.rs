@@ -279,6 +279,23 @@ pub enum BuiltinTag {
     /// sort defines. Performs no typing operation: `types_compatible` reads the
     /// load-built sort relations (proposal 060's staging rule).
     TypeDomain,
+
+    /// WI-743 (proposal 060 §2.2) — `domain_leaf(?x, ?T)`: the LEAF ARM of the derived
+    /// member relation `anthill.kernel.domain_member`, and the only body of its
+    /// catch-all clause.
+    ///
+    /// The member relation is CLAUSES (one derived per sort with constructors), so it
+    /// cannot also carry a builtin tag — `step_init` dispatches a tagged functor to the
+    /// builtin and never reaches the clause path. This is the second functor that split
+    /// buys: a type with no structural clause (`String`, a primitive, a spec, an
+    /// abstract sort) must still answer the CONFORMANCE question, and this is where the
+    /// member relation sends it.
+    ///
+    /// EXACTLY ONCE is the rule it enforces (settled design §5): the catch-all matches
+    /// EVERY call, so for a `?T` that a derived clause already answers structurally it
+    /// must REFUSE rather than answer a second time — otherwise every enumerated value
+    /// comes back twice.
+    DomainLeaf,
 }
 
 /// A fault the resolver DETECTED but could not previously report — the payload of
@@ -5401,6 +5418,7 @@ impl KnowledgeBase {
             BuiltinTag::OperationBody => self.builtin_operation_body(goal, answer_subst),
             BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst),
             BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst),
+            BuiltinTag::DomainLeaf => self.builtin_domain_leaf(goal, answer_subst),
         }
     }
 
@@ -6056,6 +6074,72 @@ impl KnowledgeBase {
             });
         };
         match super::typing::type_bound_verdict(self, subst, &value, bound_tid) {
+            super::typing::TypeBoundVerdict::Holds => BuiltinResult::Success,
+            super::typing::TypeBoundVerdict::Refuted => BuiltinResult::Failure,
+            super::typing::TypeBoundVerdict::Suspend => BuiltinResult::delay(),
+        }
+    }
+
+    /// WI-743 (proposal 060 §2.2) — `domain_leaf(?x, ?T)`: the body of the single
+    /// CATCH-ALL clause of `anthill.kernel.domain_member`, and the whole of that
+    /// relation's answer for a type the loader derived no structural clause for.
+    ///
+    /// `domain_member` is a RELATION (one derived clause per sort with constructors,
+    /// `load::derive_domain_member_clauses`), so it cannot carry a builtin tag:
+    /// `step_init` dispatches a tagged functor to [`Self::execute_builtin`] and never
+    /// reaches the clause path. The catch-all is how the two meet.
+    ///
+    /// | `?T` at the read | here |
+    /// |---|---|
+    /// | unbound | `Delay` — the element type of a still-unbound container is not decided yet |
+    /// | a sort the loader DERIVED a clause for | `Failure` — that clause is the answer |
+    /// | anything else | the same three-valued conformance verdict [`Self::builtin_type_domain`] gives |
+    ///
+    /// THE SECOND ROW IS THE "EXACTLY ONCE" RULE (settled design §5). The catch-all's
+    /// head is `domain_member(?x, ?T)` — a variable in both positions — so it is a
+    /// candidate for EVERY call, including the ones a structural clause answers. Let it
+    /// answer there too and each enumerated value comes back twice: once structurally
+    /// and once as "its carried type conforms". Refusing is not a silent skip; it is
+    /// this arm saying the question has an owner, and [`KnowledgeBase::has_domain_member`]
+    /// is the one table that decides which.
+    fn builtin_domain_leaf<V: TermView>(
+        &mut self,
+        goal: &V,
+        subst: &Substitution,
+    ) -> BuiltinResult {
+        let (Some(value), Some(bound)) = (
+            self.walk_arg(goal.pos_arg(self, 0), subst),
+            self.walk_arg(goal.pos_arg(self, 1), subst),
+        ) else {
+            debug_assert!(
+                false,
+                "domain_leaf(?x, ?T): the derived catch-all is missing an operand",
+            );
+            return BuiltinResult::Error(ResolveError {
+                message: "domain_leaf(?x, ?T): the derived catch-all clause and this \
+                          reader disagree about its shape, so no domain was read here"
+                    .to_string(),
+            });
+        };
+        // `?T` FIRST, and the order is the point: which of the three rows applies is a
+        // question about the TYPE, and asking about `?x` before the type is known would
+        // answer `Delay` for a `?T` whose structural clause owns the call.
+        if self.value_is_unbound_var(&bound) {
+            return BuiltinResult::delay();
+        }
+        if let Some(sort) = bound.head(self).functor_sym() {
+            if self.has_domain_member(sort) {
+                return BuiltinResult::Failure;
+            }
+        }
+        // READ THROUGH THE VIEW, never as a demanded `Value::Term`. `?T` here is an
+        // ordinary goal argument — bound by unifying the caller's `List[T = String]`
+        // against the derived clause's `List[T = ?T]` — so it rides whatever carrier
+        // that unification produced. MEASURED: requiring the interned carrier reported
+        // a malformed-goal Error for every leaf element type and turned
+        // `rule text(?w: List[T = String]) :- ?w <=> ["ab"]` from one definite row into
+        // a conditional one. See `typing::type_bound_verdict_view`.
+        match super::typing::type_bound_verdict_view(self, subst, &value, &bound) {
             super::typing::TypeBoundVerdict::Holds => BuiltinResult::Success,
             super::typing::TypeBoundVerdict::Refuted => BuiltinResult::Failure,
             super::typing::TypeBoundVerdict::Suspend => BuiltinResult::delay(),

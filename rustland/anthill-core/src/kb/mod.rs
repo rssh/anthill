@@ -1244,6 +1244,43 @@ pub struct KnowledgeBase {
     /// loader-produced, typer-consumed, no runtime or persistence surface.
     pub(crate) type_param_canonical_var: HashMap<Symbol, TermId>,
 
+    /// WI-743 (proposal 060 §2.2) — every sort `anthill.kernel.domain_member` has a
+    /// clause for, keyed by [`Self::canonical_sort_sym`], mapped to that sort's declared
+    /// TYPE PARAMETERS (the binding-key symbol and the parameter's canonical variable).
+    ///
+    /// THREE readers, and the parameter list is why it is a map rather than a set. The
+    /// TYPER ([`typing::install_typed_head_domain_goals`]) asks membership, to decide
+    /// whether a typed head's bound has a generator to append. The RESOLVER
+    /// ([`resolve::Resolver::builtin_domain_leaf`]) asks membership, to decide whether
+    /// the catch-all clause must stand aside. And the DERIVATION
+    /// ([`load::derive_domain_member_clauses`]) asks for the PARAMETERS, to repair a
+    /// field type that names a parameterised sort bare — `entity cons(head: T, tail:
+    /// List)` lowers `tail` to `Ref(List)`, which does not unify with the head `List`
+    /// gets. It is KB state and not a per-batch map because that sort may have been
+    /// derived in an EARLIER LOAD BATCH.
+    pub(crate) domain_member_params: HashMap<Symbol, Vec<(Symbol, TermId)>>,
+
+    /// WI-743 — the derivations collected during the item walk and drained ONCE by
+    /// [`load::derive_domain_member_clauses`], after every file's sorts are loaded.
+    ///
+    /// NOT emitted where they are collected, and the reason is a field type that names
+    /// a PARAMETERISED sort bare: `entity cons(head: T, tail: List)` lowers `tail` to
+    /// `Ref(List)`, which does not unify with the head this derivation gives `List`
+    /// (`List[T = ?T]`). Re-applying it needs that sort's parameter list, and a sort
+    /// declared later in the file — or in another file — has none yet at its use site.
+    /// Draining after the walk is what makes every referenced sort's parameters known.
+    pub(crate) domain_member_jobs: Vec<load::DomainMemberJob>,
+
+    /// WI-743 — the sorts whose derivation was DECLINED, with the reason, keyed by
+    /// canonical sort symbol.
+    ///
+    /// A declined sort is not a silent skip: it keeps WI-742's ladder exactly — the
+    /// conformance goal delays, a later goal may bind, and a still-unbound variable
+    /// flounders LOUDLY at the drain (`Error[RelationFloundered]`, WI-737). This record
+    /// is what lets a test — and a reader — see WHICH sorts took that route and why,
+    /// rather than inferring it from an absence.
+    pub(crate) domain_member_declined: HashMap<Symbol, String>,
+
     /// WI-659 — the SortAlias resolution index (source sort → alias target), built
     /// once at type-check start by `typing::build_sort_alias_index`. `None` until
     /// built; while `None`, `resolve_sort_alias` falls back to its (slower) scan.
@@ -2049,6 +2086,9 @@ impl KnowledgeBase {
             rule_head_captures: HashMap::new(),
             named_requirement_slots: HashMap::new(),
             type_param_canonical_var: HashMap::new(),
+            domain_member_params: HashMap::new(),
+            domain_member_jobs: Vec::new(),
+            domain_member_declined: HashMap::new(),
             provider_dict_chain_cache: RefCell::new(HashMap::new()),
             sort_alias_index: None,
             provides_index: None,
@@ -2449,6 +2489,57 @@ impl KnowledgeBase {
     /// [`Self::type_param_canonical_var`] for why this is the only channel.
     pub(crate) fn canonical_type_param_var(&self, param_sym: Symbol) -> Option<TermId> {
         self.type_param_canonical_var.get(&param_sym).copied()
+    }
+
+    /// WI-743 — does `anthill.kernel.domain_member` have a clause for this sort? See
+    /// [`Self::domain_member_params`] for why one table answers for all three readers.
+    pub fn has_domain_member(&self, sort: Symbol) -> bool {
+        self.domain_member_params
+            .contains_key(&self.canonical_sort_sym(sort))
+    }
+
+    /// WI-743 — `sort`'s declared type parameters, as its derived `domain_member` head
+    /// binds them. `None` when the sort has no clause. Cloned, because the caller is
+    /// mid-derivation and needs `&mut self` to build terms with them.
+    pub(crate) fn domain_member_params_of(&self, sort: Symbol) -> Option<Vec<(Symbol, TermId)>> {
+        self.domain_member_params
+            .get(&self.canonical_sort_sym(sort))
+            .cloned()
+    }
+
+    /// WI-743 — record that `sort` now has a `domain_member` clause, with the parameter
+    /// list its head binds. Keyed by [`Self::canonical_sort_sym`] on BOTH sides, so a
+    /// sort reached under a second spelling of its name is the same row.
+    pub(crate) fn record_domain_member(&mut self, sort: Symbol, params: Vec<(Symbol, TermId)>) {
+        let canon = self.canonical_sort_sym(sort);
+        self.domain_member_params.insert(canon, params);
+    }
+
+    /// WI-743 — undo [`Self::record_domain_member`] for a sort whose derivation turned
+    /// out to be impossible. Pass 1 records before pass 2 builds, because the repair
+    /// pass 2 makes needs every sort's parameters — so a sort that only pass 2 can
+    /// decline has to be taken back out, or `domain_leaf` stands aside for a clause
+    /// nobody emitted and the sort answers nothing at all.
+    pub(crate) fn forget_domain_member(&mut self, sort: Symbol) {
+        let canon = self.canonical_sort_sym(sort);
+        self.domain_member_params.remove(&canon);
+    }
+
+    /// WI-743 — record that `sort` got NO derived `domain_member` clause, and why.
+    pub(crate) fn record_domain_member_declined(&mut self, sort: Symbol, reason: String) {
+        let canon = self.canonical_sort_sym(sort);
+        // ONE ROW PER SORT, newest reason. A `Vec` accumulated a duplicate row per load
+        // batch and the reader found the FIRST, so a sort that declined for a different
+        // reason on a later batch reported the older one (`/code-review`).
+        self.domain_member_declined.insert(canon, reason);
+    }
+
+    /// WI-743 — why a sort has no derived `domain_member` clause, or `None` when it
+    /// has one (or was never a candidate). The reading face of
+    /// [`Self::domain_member_declined`].
+    pub fn domain_member_decline_reason(&self, sort: Symbol) -> Option<&str> {
+        let canon = self.canonical_sort_sym(sort);
+        self.domain_member_declined.get(&canon).map(String::as_str)
     }
 
     /// WI-242 — record the value-typed body node for an operation.
@@ -6314,6 +6405,38 @@ impl KnowledgeBase {
         if was_fact {
             // The clause has just become bodied; the gate counts indexed bodied rules
             // per head functor, so bump it exactly where the assert would have.
+            let head = self.rules[id.index()].head.clone();
+            if let Some(f) = term_view::TermView::head(&head, self).functor_sym() {
+                self.inc_bodied_rule_count(f);
+            }
+        }
+    }
+
+    /// WI-743 — the APPEND peer of [`Self::prepend_generated_body_goals`], for the
+    /// generated goal whose placement is the OTHER end of the body.
+    ///
+    /// The two placements are not a style choice and the split is measured (settled
+    /// design §3): the WI-742 conformance guard is PREPENDED, because in mode (in) it
+    /// prunes at the earliest point the binding exists and in mode (out) it only
+    /// suspends; the WI-743 member goal is APPENDED, because it GENERATES, and a
+    /// generator ahead of the body enumerates a recursive type forever before the body
+    /// can prune it — `word(?w) :- domain(?w, List[T = Letter]), ?w <=> [?, ?, ?]` did
+    /// not terminate where its twin with the goal last answers 27 and stops.
+    ///
+    /// Same fact-ness bookkeeping as the prepend, for the same reason: a body-less
+    /// clause that gains its first goal here has become bodied, and the WI-812 gate
+    /// counts indexed bodied rules per head functor.
+    pub(crate) fn append_generated_body_goals(
+        &mut self,
+        id: RuleId,
+        goals: Vec<Rc<NodeOccurrence>>,
+    ) {
+        if goals.is_empty() {
+            return;
+        }
+        let was_fact = self.rules[id.index()].body_nodes.is_empty();
+        self.rules[id.index()].body_nodes.extend(goals);
+        if was_fact {
             let head = self.rules[id.index()].head.clone();
             if let Some(f) = term_view::TermView::head(&head, self).functor_sym() {
                 self.inc_bodied_rule_count(f);
@@ -10384,6 +10507,10 @@ impl KnowledgeBase {
         // (`typing::install_typed_head_domain_goals`) from the type bound the loader
         // already installed, which is why the name is looked up rather than written.
         self.register_builtin_tag(crate::kb::typing::TYPE_DOMAIN_GOAL, BuiltinTag::TypeDomain);
+        // WI-743 (proposal 060 §2.2) — the LEAF arm of the derived member relation.
+        // `domain_member` itself gets NO tag: it is clauses, and a tagged functor never
+        // reaches the clause path. See [`BuiltinTag::DomainLeaf`].
+        self.register_builtin_tag(crate::kb::typing::DOMAIN_LEAF_GOAL, BuiltinTag::DomainLeaf);
         // Arithmetic and comparison. WI-616 (proposal 051 Phase 2): `=`/`eq`
         // and `neq` are the SEMANTIC `Eq` ops — structural until a carrier
         // declares its own `eq` override (`Set.eq`/`Map.eq`), which then

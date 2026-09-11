@@ -15,7 +15,7 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §1 `require[X]` | dictionary into clause scope | WI-1040 | **delivered** — §1 below |
 | §2 `?x: T` on a relational head | `domain(?x, T)` body goal | WI-742 | **delivered** — §3–§5 |
 | §2.1 parameter form `p(x: T)` | sigil-free typed clause variable | WI-742 | **delivered** — §6 |
-| §2.2 a sort defines its `domain` | mode-(out) enumeration | WI-743 | not started — §7 |
+| §2.2 a sort defines its `domain` | mode-(out) enumeration | WI-743 | **delivered** — §7 |
 | §3 anchor (requirement half) | covered body call grounds the spec | WI-1040 | delivered |
 | §3 anchor (typed-head half) | `?x: T` grounds the spec | **WI-20260908-VVM1R** | **design settled, not built** — §8, mechanism at §8.2–§8.6 |
 | channel §10 item 1 | retain the spec's type-args | **WI-20260908-VVM1R** | **settled, not built** — §8.6, taken inline |
@@ -25,13 +25,14 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | C666A relaxation | admit the guarded non-enclosing join | WI-742 | **delivered** — §9 |
 
 Everything delivered is driven and controlled in
-`anthill-core/tests/include/wi742_typed_relational_head_test.rs`, whose header names
-which rows fail per back-out.
+`anthill-core/tests/include/wi742_typed_relational_head_test.rs` and
+`anthill-core/tests/include/wi743_finite_domain_test.rs`, whose headers name which rows
+fail per back-out.
 
 `domain` in §2.2 is the **member relation a sort defines**, not a second name for the
-§2 goal — they share the name because the goal *is* that member read through the type.
-WI-742 builds the goal with no enumeration arm; WI-743 adds the arm. Nothing in §2
-depends on §2.2 landing.
+§2 goal. The two are one NOTION and two FUNCTORS, and the split is not a naming
+accident — see §7, which records what forced it. Nothing in §2 depends on §2.2, and §2
+is unchanged by it for every sort with no constructors.
 
 ## 1. §1 — delivered, and what it established
 
@@ -166,11 +167,12 @@ domain(?x, T)
   loudly" is that existing route, reached because the goal is ordinary — it needs
   driving as acceptance, not new machinery.
 - **Naming.** The goal is a kernel relation like `find_dictionary`
-  (`parse/desugar_target.rs:198`), reached only by generation; `domain` as a *user*
-  member relation (§2.2 / WI-743) resolves by the ordinary ladder. Two things, one name,
-  and the plan is that WI-743 makes the builtin's (out) arm dispatch to the member —
-  so the builtin must be registered under a desugar target the surface cannot reach
-  bare, exactly as `find_dictionary` is (WI-909 removed it from the implicit prelude).
+  (`parse/desugar_target.rs:198`), reached only by generation. The plan here — that
+  WI-743 would make this builtin's (out) arm dispatch to the member relation, so the two
+  would be "two things, one name" — did NOT survive: a tagged functor never reaches the
+  clause path, and the two goals sit at opposite ends of the body anyway. §7 records what
+  shipped and what forced it. This builtin's unbound arm stays `delay()`, which is also
+  the final behaviour for every sort with no domain.
 
 ## 5. Lifting the WI-582 refusal — what stays refused
 
@@ -185,13 +187,16 @@ At `load.rs:28639` the `NotARewrite` arm becomes a three-way classification:
 | **relational head, body-less** (`fact h(?x: T)`, `rule h(?x: T)`) | refused at `load.rs:19756`, a different error | **unchanged** — see below |
 
 The body-less relational case is refused today by the `in_rule_head` flag never being
-set for a fact head, and it must STAY refused in WI-742: prepending to an empty body
-flips fact-ness and trips `set_rule_body_nodes`' assertion (§1), and the shape's only
-sound meaning — "h holds of every T" — is §2.2's enumeration, which is WI-743's. Its
-message names a reason that will no longer be true once relational heads are typed
-("only meaningful in a rule head pattern"), so it is reworded, not re-scoped, in this
-change: *a body-less head has no body to carry the generated guard; give it a body, or
-wait for the sort's `domain` (WI-743)*.
+set for a fact head, and it STAYS refused: prepending to an empty body flips fact-ness
+and trips `set_rule_body_nodes`' assertion (§1, since solved by
+`prepend_generated_body_goals`), and the shape's only sound meaning was taken to be
+§2.2's enumeration — "h holds of every T" — which would be WI-743's. **That reading is
+WITHDRAWN** (§7): 061 gives a body-less `rule f(…)` the DECLARATION reading, and a
+declaration that also enumerated would assert a row of every inhabitant of every
+annotated column merely by stating the predicate's schema. Its message names a reason
+that is no longer true once relational heads are typed ("only meaningful in a rule head
+pattern"), so it is reworded, not re-scoped: *a body-less head has no body to carry the
+generated guard; give it a body (`:- true`)*.
 
 `NotARewrite`'s doc comment and `typed_pattern_refusal_detail`'s wording both name the
 equational shape as the only admitted one; both are part of the change. So is
@@ -250,16 +255,75 @@ The proposal's four steps map to one new decision in the loader's head conversio
   is not a term the body can match), and that WAS found by `/code-review` rather than by
   the suite.
 
-## 7. §2.2 — WI-743's arm, and the seam WI-742 must leave
+## 7. §2.2 — WI-743's arm, DELIVERED, and the seam it turned out to need
 
-WI-742 delivers modes (in) and *delay*. WI-743 adds: derive `domain` rows for an
-all-nullary closed ADT, admit a hand-written `domain` member on any sort, and make the
-builtin's unbound arm enumerate through it instead of delaying.
+WI-742 delivered modes (in) and *delay*. WI-743 adds the generator. What the plan here
+said — "the seam is one branch in §4's builtin", the unbound arm dispatching to the
+member — is NOT what shipped, and the two reasons are worth keeping because each was a
+plan that had to be measured before it could be dropped.
 
-The seam is one branch in §4's builtin. What WI-742 must NOT do is make the unbound arm
-*fail* or *succeed vacuously* — both would be answers, and both would have to be
-un-answered later. Delay is the honest placeholder, and it is also the final behaviour
-for a sort with no `domain`.
+**The builtin cannot hold the clauses.** `step_init` sends a functor carrying a
+`BuiltinTag` to `execute_builtin` and never looks for clauses, so `anthill.kernel.domain`
+cannot both be the WI-742 builtin and carry the derived member clauses. (The earlier
+claim that a builtin *cannot push a sub-goal* was false and is corrected on the ticket:
+`push_and`, `push_choice`, `cut`, `ho_apply`, `not` and the `forall_*` expansions all
+bypass `execute_builtin` and rewrite the frame's goal queue. That route was buildable;
+the reasons it was not taken are the four on the ticket — same input so decide once,
+visibility of a stored body goal over a spliced one, the re-splice marker, and a
+per-evaluation name lookup.)
+
+**And the two goals must not share a functor anyway**, because they sit at opposite ends
+of the body. §2 says "prepended"; that must now be read as **conformance goal prepended,
+member goal appended**. MEASURED: with the member goal first,
+`word(?w) :- domain(?w, List[T = Letter]), ?w <=> [?, ?, ?]` does not terminate — it
+enumerates every word of every length before the `<=>` can prune — while the twin with
+the goal last answers 27 and stops. One functor at both positions puts a generator at the
+prepended one.
+
+So what shipped is:
+
+| name | what | where |
+|---|---|---|
+| `anthill.kernel.domain` | WI-742's conformance builtin, PREPENDED | unchanged |
+| `anthill.kernel.domain_member` | the member RELATION: one derived clause per sort with constructors, plus one catch-all | `load::derive_domain_member_clauses`, appended by `typing::install_typed_head_domain_goals` |
+| `anthill.kernel.domain_leaf` | the catch-all's body: the conformance read for a type with no structural clause | `BuiltinTag::DomainLeaf` |
+
+`domain_leaf` REFUSES a `?T` that has a structural clause, and that is the "exactly once"
+rule: the catch-all's head is variable in both positions, so it is a candidate for every
+call, and answering there too would return each enumerated value twice.
+
+**The derived shape** is the constructor list read existentially — a disjunction over the
+constructors with each field's domain conjoined inside its branch — and **the type travels
+as the second argument**, so one `List` clause serves every element sort and nesting
+depth. Derived as CLAUSES, not ground facts: facts at a variable position take the walk
+whose run-to-run order WI-20260911-SXZ3G records.
+
+**Finiteness is not a gate.** It decides only whether the stream ends. Fairness by length
+comes from order alone, so the derivation writes two orderings as semantic rules: base
+constructors before recursive ones, and inside a branch the recursive field positions
+before the others.
+
+**The hand-written hook keys on the member SHAPE, not on the name.** Keying on
+`<Sort>.domain` alone refused `guardians.Address`, whose `entity Address(local: String,
+domain: String)` gives a FIELD that exact qualified name — 39 rows, one word. A `domain`
+that is not a 2-ary relation over (value, this sort) is simply not the sort's domain.
+
+**What is NOT delivered**, each with its owner:
+* ABSTRACT `T` (an introducer bound, recorded as the SPEC) enumerating through the
+  caller's instantiation. Nothing is derived for a spec, so the bound keeps §2's delay.
+  §2.2's sentence "abstract T dispatches through the requirement channel" names no
+  mechanism: it needs `domain` to be the member of a kernel finiteness spec AND a
+  dictionary channel that carries a RELATION, which is WI-20260909-NAR1X (§8.10).
+* The VALUE face. `Colour.domain` cited as a relation VALUE is not delivered; §2.2
+  promises the GOAL face only.
+* A PARAMETERISED sort's hand-written `domain` — refused loudly: its clause head would
+  have to bind the sort's type parameters from the caller's type argument, which only the
+  derivation does.
+* The BODY-LESS relational typed head. §5 below predicted this ticket would admit it
+  ("the shape's only sound meaning is §2.2's enumeration"). That prediction is WITHDRAWN:
+  061 gives a body-less `rule f(…)` the DECLARATION reading, and a declaration that also
+  enumerated would assert a row of every inhabitant of every annotated column merely by
+  stating the predicate's schema. `:- true` is the clause spelling and it generates.
 
 ## 8. §3 — the typed head as the second anchor — DESIGN SETTLED, NOT BUILT
 
@@ -851,8 +915,11 @@ suggestion.
 
 ## 11. Boundaries this plan does not cross
 
-- **The map-colouring `Palette` wrapper is not retired here.** WI-742 stops the column
-  TYPE depending on the entity field; the facts still generate. Retirement is WI-743.
+- **The map-colouring `Palette` wrapper is RETIRED** (WI-743). WI-742 stopped the column
+  TYPE depending on the entity field; §2.2's derived domain removed the facts. The
+  example now reads `rule colouring(wa: Colour, …) :- wa != nt, …` with no wrapper sort
+  and no `palette` fact, and `examples/classic-mini/alphabet-words` and `tiny-sat` drop
+  their hand-written `domain` relations the same way.
 - **A `[simp]`-tagged relational head** — proposal §2's open (4). The tag is meaningless
   on a `:-` head; today it is what the WI-582 guard DEMANDS, which is backwards. Decide
   and state it at step 3; do not leave the tag silently accepted-and-ignored.

@@ -65319,15 +65319,43 @@ pub(crate) fn type_bound_verdict(
     value: &Value,
     bound_tid: TermId,
 ) -> TypeBoundVerdict {
+    type_bound_verdict_view(kb, subst, value, &Value::term(bound_tid))
+}
+
+/// WI-743 — [`type_bound_verdict`] over a bound READ THROUGH THE VIEW rather than
+/// handed in as a `TermId`.
+///
+/// The `TermId` front is right for WI-742's generated guard, whose bound IS an interned
+/// term the loader resolved and the typer spliced. It is wrong for the derived
+/// `domain_member` relation's leaf arm, where the type arrives as an ordinary GOAL
+/// ARGUMENT — bound by unifying the caller's `List[T = String]` against the derived
+/// clause's `List[T = ?T]`, so it rides whatever carrier that unification produced.
+/// MEASURED: demanding `Value::Term` there reported a malformed-goal Error on
+/// `rule text(?w: List[T = String]) :- ?w <=> ["ab"]` — the element type arrived as a
+/// `Value::Node` occurrence and the row came back conditional instead of definite.
+///
+/// `Value` AND NOT A GENERIC `TermView`, which is what an earlier draft took and what
+/// `/code-review` caught: making it generic forced [`type_is_undetermined`] generic too,
+/// which replaced its `Value::Term` carrier match with `as_bind_value` — and that
+/// UNWRAPS A SPLICED NODE to its interned term and walks it, so a type the predicate
+/// used to call determined became undetermined and a definite row became conditional.
+/// A `Value` is already a `TermView`, so the leaf arm's carrier reaches
+/// `types_compatible` with no change to what either predicate decides.
+pub(crate) fn type_bound_verdict_view(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    value: &Value,
+    bound: &Value,
+) -> TypeBoundVerdict {
     let ty = value_type_term(kb, subst, value);
     // WI-20260908-PW9A0 — SUSPEND IS FOR AN UNDER-DETERMINED SIDE, NOT FOR A NON-NOMINAL
     // ONE, and either side may be the undetermined one. `domain` RESTRICTS: where both
     // sides are determined types there is a verdict, and withholding one leaves a row
     // the guard was written to reject standing as a conditional answer.
-    if type_is_undetermined(kb, &ty) || type_is_undetermined(kb, &Value::term(bound_tid)) {
+    if type_is_undetermined(kb, &ty) || type_is_undetermined(kb, bound) {
         return TypeBoundVerdict::Suspend; // WI-067 — never NAF-decide an open variable
     }
-    if types_compatible(kb, &mut Substitution::new(), &ty, &TermIdView(bound_tid)) {
+    if types_compatible(kb, &mut Substitution::new(), &ty, bound) {
         TypeBoundVerdict::Holds
     } else {
         TypeBoundVerdict::Refuted
@@ -70125,6 +70153,30 @@ fn type_rule_bodies(
 /// member a DIFFERENT name rather than a capture of this one.
 pub(crate) const TYPE_DOMAIN_GOAL: &str = "anthill.kernel.domain";
 
+/// WI-743 (proposal 060 §2.2) — the qualified name of the DERIVED MEMBER RELATION,
+/// `domain_member(?x, T)`: "`?x` is an inhabitant of type `T`".
+///
+/// A RELATION, not a builtin. One clause is derived per sort with constructors
+/// ([`crate::kb::load::derive_domain_member_clauses`]) — a disjunction over the sort's
+/// constructors with each field's own domain conjoined inside the branch — plus ONE
+/// catch-all clause whose body is [`DOMAIN_LEAF_GOAL`]. That shape is what makes the
+/// recursion work: `domain_member(?h, ?T)` inside the `List` clause dispatches on
+/// whatever `?T` the caller's `List[T = …]` bound, so one clause serves every element
+/// sort and every nesting depth, with no dictionary and no name lookup at run time.
+///
+/// A SECOND NAME, and deliberately not [`TYPE_DOMAIN_GOAL`]. The two goals a typed head
+/// generates ask different questions and sit at opposite ends of the body: the
+/// conformance guard is prepended and only TESTS, this one is appended and GENERATES.
+/// Sharing one functor would put a generator at the prepended position too, which is
+/// the non-termination the settled design measured. It is also mechanically impossible:
+/// `step_init` sends a functor with a builtin tag to the builtin and never looks for
+/// clauses, so the relation and the builtin cannot be one name.
+pub(crate) const DOMAIN_MEMBER_GOAL: &str = "anthill.kernel.domain_member";
+
+/// WI-743 — the qualified name of the leaf arm behind [`DOMAIN_MEMBER_GOAL`]'s
+/// catch-all clause. See [`crate::kb::resolve::BuiltinTag::DomainLeaf`].
+pub(crate) const DOMAIN_LEAF_GOAL: &str = "anthill.kernel.domain_leaf";
+
 /// The synthesizing pass that owns every generated [`TYPE_DOMAIN_GOAL`] node — the
 /// provenance stamp, and with it the IDEMPOTENCE test for
 /// [`install_typed_head_domain_goals`].
@@ -70159,6 +70211,25 @@ fn typed_head_domain_pass(kb: &mut KnowledgeBase) -> crate::kb::occurrence::Pass
 /// exists; in mode (out) the goal suspends and rotation carries it to wherever it can
 /// decide, so the placement costs nothing there. (`docs/design/060-implementation.md` §3.)
 ///
+/// WI-743 ADDS A SECOND GOAL AT THE OTHER END — `domain_member(?x, T)`, APPENDED, where
+/// `T` is a sort the loader derived a member clause for
+/// ([`KnowledgeBase::has_domain_member`]). That one GENERATES, which is what turns a
+/// typed head from a filter into a domain: `rule colouring(wa: Colour, …) :- wa != nt`
+/// enumerates with no `palette` facts.
+///
+/// THE TWO PLACEMENTS ARE MEASURED, not symmetric (settled design §3). A generator ahead
+/// of the written body enumerates a recursive type forever before the body can prune it:
+/// `word(?w) :- domain(?w, List[T = Letter]), ?w <=> [?, ?, ?]` did not terminate, while
+/// the twin with the goal LAST answers 27 and stops. Neither placement gives early
+/// pruning of a DELAYED test — that needs wake-on-bind, which is not this.
+///
+/// THE CONFORMANCE GOAL STAYS, and is not made redundant by the member goal. It is what
+/// a sort with NO derived domain has (`String`, a primitive, a spec, a declined sort):
+/// its delay/rotate/flounder ladder is WI-742's whole behaviour and is unchanged here.
+/// Where both are generated they answer the same question two ways and the member goal
+/// is the stricter — a hand-written `domain` narrowing a sort makes mode (in) refute a
+/// CONFORMING NON-MEMBER, which is proposal §2.2's domain-defining rule.
+///
 /// THE POPULATION IS EXACTLY THE CLAUSES THE LOADER LET KEEP A BOUND, and the loader's
 /// refusal is what makes that list right:
 ///   * a DIRECTIONAL EQUATION keeps WI-582's match-time reader (`apply_eq_rules`) and is
@@ -70174,6 +70245,9 @@ fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
     let Some(dom_sym) = kb.try_resolve_symbol(TYPE_DOMAIN_GOAL) else {
         return; // builtin not registered — nothing to generate against
     };
+    // WI-743 — `None` only where the loader derived nothing at all, in which case no
+    // bound can have a member clause either and the lookup below never fires.
+    let mem_sym = kb.try_resolve_symbol(DOMAIN_MEMBER_GOAL);
     let pass = typed_head_domain_pass(kb);
     for rid in kb.live_rule_ids() {
         if kb.rule_type_bounds(rid).is_empty() {
@@ -70248,6 +70322,7 @@ fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
         let bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
         let owner = anchor.owner;
         let mut new_body: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(bounds.len());
+        let mut member_body: Vec<Rc<NodeOccurrence>> = Vec::new();
         for (db_index, bound_tid) in bounds {
             // `?x` rides as the SAME DeBruijn index the bound is keyed by
             // (`install_rule_type_bounds` stores `len - 1 - position`, which is
@@ -70274,8 +70349,118 @@ fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
                 pass,
                 owner,
             ));
+            // WI-743 (proposal 060 §2.2) — the GENERATOR half, for a bound whose sort
+            // the loader derived a `domain_member` clause for. A bound with none gets
+            // nothing here and keeps WI-742's ladder exactly, which is what makes
+            // `rule f(?x: String) :- ?x <=> "abe"` still answer its one row.
+            let Some(member_sym) = mem_sym else {
+                continue;
+            };
+            let Some(bound_head) = type_term_head_sym(kb, bound_tid) else {
+                continue;
+            };
+            if !kb.has_domain_member(bound_head) {
+                continue;
+            }
+            // THE BOUND MUST NAME A DETERMINATE TYPE, everywhere in it. A bare
+            // reference to a PARAMETERISED sort (`?w: List`, or `List` nested inside
+            // `List[T = List]`) names no element domain, and a type VARIABLE names no
+            // type at all — and in both cases the generated goal would end up asking
+            // `domain_member(?x, ?T)` with `?T` unbound, which unifies with the head of
+            // EVERY derived clause and starts enumerating TYPES instead of values.
+            // MEASURED at 20 rows (the solution cap) for
+            // `rule nest(?w: List[T = List]) :- ?w <=> [[a()]]`, whose body binds `?w`
+            // outright and can have at most one. Found by `/code-review`.
+            //
+            // SKIPPED, not repaired: WI-742's reading of such an annotation stands
+            // unchanged — conformance, then the delay/flounder ladder. There is nothing
+            // here to enumerate, and inventing an element type would be inventing an
+            // answer.
+            if !bound_names_a_determinate_type(kb, bound_tid) {
+                continue;
+            }
+            let member_bound = bound_tid;
+            // THE SELF-CALL TRAP has no arm here, and that is deliberate: a clause of
+            // a sort's OWN `domain` carrying that sort's bound would loop through the
+            // loader's forwarding clause, and `derive_domain_member_clauses` REFUSES
+            // that sort outright — so it never reaches this sweep with a member clause
+            // to call. One refusal, at the site that would build the loop.
+            let var =
+                NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(db_index)), anchor.span, owner);
+            let ty = NodeOccurrence::new_expr(
+                Expr::Spliced(Value::term(member_bound)),
+                anchor.span,
+                owner,
+            );
+            member_body.push(NodeOccurrence::synthesized_expr(
+                Expr::Apply {
+                    recv_type: None,
+                    functor: member_sym,
+                    pos_args: vec![var, ty],
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                },
+                Rc::clone(&anchor),
+                pass,
+                owner,
+            ));
         }
         kb.prepend_generated_body_goals(rid, new_body);
+        // APPENDED, after the written body — see this function's doc for the measurement.
+        kb.append_generated_body_goals(rid, member_body);
+    }
+}
+
+/// WI-743 — does this bound name a type the derived `domain_member` relation can
+/// actually range over, all the way down?
+///
+/// TWO ways it cannot, and they are one defect: the goal would carry an UNBOUND type,
+/// which unifies with every derived clause head and enumerates types.
+///   * a TYPE VARIABLE — nothing names the type;
+///   * a BARE reference to a PARAMETERISED sort — `Ref(List)` and the nullary `Fn{List}`
+///     are one spelling (WI-20260902-CZJ2N), and neither names the element type. A sort
+///     with NO parameters is fine bare; that is what `Colour` is.
+fn bound_names_a_determinate_type(kb: &KnowledgeBase, t: TermId) -> bool {
+    use crate::kb::term::Term;
+    match kb.get_term(t) {
+        Term::Var(_) => false,
+        Term::Ref(_) => !sort_takes_parameters(kb, t),
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            if pos_args.is_empty() && named_args.is_empty() {
+                return !sort_takes_parameters(kb, t);
+            }
+            let children: Vec<TermId> = pos_args
+                .iter()
+                .copied()
+                .chain(named_args.iter().map(|&(_, c)| c))
+                .collect();
+            children
+                .into_iter()
+                .all(|c| bound_names_a_determinate_type(kb, c))
+        }
+        _ => true,
+    }
+}
+
+/// WI-743 — does the sort this type term heads with declare type parameters?
+fn sort_takes_parameters(kb: &KnowledgeBase, t: TermId) -> bool {
+    type_term_head_sym(kb, t)
+        .and_then(|s| kb.domain_member_params_of(s))
+        .is_some_and(|ps| !ps.is_empty())
+}
+
+/// WI-743 — the sort a stored TYPE TERM heads with: `Colour` for `Ref(Colour)`,
+/// `List` for `List[T = ?T]`. `None` for anything that is not a nominal type head
+/// (a variable bound, an arrow, a tuple) — none of which a sort derives a domain for.
+fn type_term_head_sym(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
+    match kb.get_term(t) {
+        crate::kb::term::Term::Ref(s) => Some(*s),
+        crate::kb::term::Term::Fn { functor, .. } => Some(*functor),
+        _ => None,
     }
 }
 
