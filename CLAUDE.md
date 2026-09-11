@@ -113,7 +113,7 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
 
 # Repository rules
 
-- before commit, check - if all test passed. Also run the `/code-review` skill (formerly called "simplicity"); remind if it was not run.
+- before commit, when it is not documentation-only: check - if all test passed. Also run the `/code-review` skill (formerly called "simplicity"); remind if it was not run.
 - do not add attribution to commit.
 - when running rust test, use script which allows monitoring:  rustland/scripts/test.sh 
 
