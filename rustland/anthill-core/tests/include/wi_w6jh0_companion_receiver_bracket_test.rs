@@ -24,6 +24,26 @@
 //! key, before this change and after it — [`the_callee_bracket_still_does_not_reach_the_result`]
 //! pins it. The binding has nowhere to land, so the receiver has to name the RESULT.
 //!
+//! **WI-20260911-RS2G4 CHANGED FOUR OF THESE ROWS, AND WIDENED THE FEATURE.** 058 rule
+//! 1's SORT half now BINDS: a companion receiver's bracket seeds the enclosing sort's
+//! type parameters in the call's substitution, before argument unification, exactly as
+//! the CALLEE bracket has since WI-841. So the receiver is no longer read only at the
+//! result, only on a callee whose declared return is its own sort — it is read on every
+//! member, and the two spellings give one verdict. Each moved row carries its own before
+//! and after at its site; the summary is:
+//!   * [`a_receiver_bracket_on_a_non_constructor_callee_is_read`] — RENAMED and flipped.
+//!     It was the gate's control ("left alone"); it is now the row that separates the two
+//!     tickets. This is the ONE corpus verdict this file changes.
+//!   * [`the_two_bracket_spelling_honours_the_receiver`] — a disagreement is now ONE
+//!     contradiction naming both brackets, not two argument errors against the winner.
+//!   * [`a_contradicting_partial_receiver_bracket_is_refused`] — still exactly one error;
+//!     it moved from `put.return` to `put.value`, where the author can act on it.
+//!   * [`the_receiver_bracket_reads_the_same_with_named_arguments`] — 2 errors, not 1:
+//!     the receiver binds BOTH parameters for the call, so both arguments are judged.
+//! The back-out measurements below are of W6JH0's OWN change and were taken against its
+//! parent; they are not re-measured here. RS2G4's five axes are measured in
+//! `wi_rs2g4_receiver_bracket_binds_sort_params_test`.
+//!
 //! WHAT FAILS WHEN THE CHANGE IS BACKED OUT. THREE AXES, THREE BACK-OUTS — measured
 //! separately, because a single "turn it all off" run credits one mechanism for another's
 //! rows. Each is a MUTATION (the reader still runs, its answer is discarded), never a
@@ -53,9 +73,9 @@
 //! AND pins the length.
 //!
 //! THE CONTROLS, green under all three: [`a_correct_receiver_bracket_still_loads`],
-//! [`the_bare_companion_call_is_unchanged`] (form (2)),
-//! [`a_receiver_bracket_on_a_non_constructor_callee_is_left_alone`] (the gate), and
-//! [`the_callee_bracket_still_does_not_reach_the_result`] (the stated boundary).
+//! [`the_bare_companion_call_is_unchanged`] (form (2)), and
+//! [`the_callee_bracket_still_does_not_reach_the_result`] (the stated boundary — a BARE
+//! self-sort return is still untied, which RS2G4 did not reopen).
 //!
 //! `map_builtins_test::form_3_instantiation_receiver_parses_and_runs` is the other control
 //! and passes either way: it EVALUATES a form-(3) call, so it holds the change to the
@@ -67,6 +87,8 @@
 //! WI-1082's decision — a change to every companion call that returns its own sort, rather
 //! than to the programs that write a receiver bracket. That is its own ticket; this one is
 //! gated on a written receiver bracket, which was inert, so nothing else can move.
+//! STILL TRUE AFTER RS2G4, and its row is still green: RS2G4 made both brackets bind the
+//! sort's PARAMETERS, which is a different channel from the self-sort RETURN tie.
 
 use crate::common::try_load_kb_with;
 
@@ -139,28 +161,40 @@ fn an_undeclared_receiver_parameter_name_is_refused() {
 /// THE TICKET'S EXPLICIT QUESTION — "what happens when the receiver's bindings and the
 /// callee's bracket bind the SAME name", which WI-20260829-BAD3V's spelling admits.
 ///
-/// They do not compete, because they answer different questions: the callee bracket binds
-/// the callee's (and its parent sort's) type params in the CALL's substitution, which is
-/// what it has always done; the receiver names the RESULT. So where they disagree, the
-/// receiver is the one that reaches the value — here `K = Bool` wins over the callee's
-/// `K = String` and the `String` key is refused. Deterministic, and not a tie to break.
-/// Making a disagreement itself LOUD would require the callee bracket to reach the result,
-/// which is the half this ticket leaves alone.
+/// REWRITTEN AT WI-20260911-RS2G4, AND THE OLD ANSWER IS WORTH KEEPING because it was
+/// right while it stood. It read: "they do not compete, because they answer different
+/// questions — the callee bracket binds the call's substitution, the receiver names the
+/// RESULT; so where they disagree the receiver reaches the value", and it noted that
+/// making a disagreement LOUD "would require the callee bracket to reach the result,
+/// which is the half this ticket leaves alone". RS2G4 closed that half from the other
+/// side: the receiver now binds the enclosing sort's parameters in the SAME substitution
+/// the callee bracket binds, so the two are no longer answering different questions and
+/// there is nothing left for precedence to decide. Two written bindings disagreeing about
+/// one parameter is a contradiction the author wrote.
+///
+/// ONE error naming the parameter and BOTH sources, where this used to report two
+/// ARGUMENT errors against whichever claim happened to win.
 #[test]
 fn the_two_bracket_spelling_honours_the_receiver() {
-    // Agreeing brackets: nothing to report.
+    // Agreeing brackets: nothing to report. UNCHANGED, and it is the control that keeps
+    // the row above from being "refuse the two-bracket spelling".
     assert_eq!(
         load_errors(&prog(
             "size(put(Map[K = Bool, V = Bool].empty[K = Bool, V = Bool](), true, true))"
         )),
         Vec::<String>::new()
     );
-    // Disagreeing: the RECEIVER decides, so the arguments are checked against `Bool`.
+    // Disagreeing: ONE contradiction, naming the parameter and where each claim was
+    // written.
     let errs = load_errors(&prog(
         r#"size(put(Map[K = Bool, V = Bool].empty[K = String, V = Int64](), "a", 1))"#,
     ));
-    assert_eq!(errs.len(), 2, "{errs:#?}");
-    assert!(errs[0].contains("expected Bool, got String"), "{errs:#?}");
+    assert_eq!(errs.len(), 1, "{errs:#?}");
+    assert!(
+        errs[0].contains("expected the receiver bracket's K = Bool")
+            && errs[0].contains("got the callee bracket's K = String"),
+        "{errs:#?}"
+    );
 }
 
 /// THE SECOND PRODUCER. A rule body is lowered by a DIFFERENT walk than an operation body
@@ -213,22 +247,49 @@ fn the_bare_companion_call_is_unchanged() {
     );
 }
 
-/// CONTROL, AND THE GATE. `size` returns `Int64`, not a `Map`, so the receiver's bindings
-/// say nothing this arm can honour and the result is left alone — reading `Map[…]` as the
-/// type of an `Int64` would be inventing a claim. Green either way.
+/// THE GATE — AND WI-20260911-RS2G4 MOVED IT, which is the row that separates the two
+/// tickets and the one corpus verdict this file flips.
 ///
-/// SPLIT FROM [`an_undeclared_parameter_is_refused_on_a_non_constructor_callee_too`] so
-/// each row's back-out status is its own: this one passes with the change backed out and
-/// that one does not, and a single test asserting both would have reported only the
-/// stronger half.
+/// WHAT THIS ROW SAID: `size` returns `Int64`, not a `Map`, so the receiver's bindings
+/// "say nothing this arm can honour and the result is left alone — reading `Map[…]` as
+/// the type of an `Int64` would be inventing a claim". That remains true OF THE RESULT
+/// ARM, which still fires only when the callee's declared return is the receiver's own
+/// sort. What was wrong was the conclusion drawn from it: that the bracket therefore
+/// means nothing on such a callee. It means what it says — the receiver is a `Map[K =
+/// Bool, V = Bool]` — and `size(m: Map)` is tied to that instance (WI-1082), so a
+/// `String` key put into it contradicts the receiver. 058 rule 1's SORT half binds it,
+/// and the refusal is the one the CALLEE spelling `Map.size[K = Bool, V = Bool](…)` has
+/// given since WI-841, byte for byte.
+///
+/// So the bracket is READ on every member now, not only on one whose return is the
+/// receiver's sort. Its sibling
+/// [`an_undeclared_parameter_is_refused_on_a_non_constructor_callee_too`] stays a
+/// separate row for the reason it always was: the NAME check follows from lowering the
+/// receiver at all, and the two halves must keep their own back-out status.
 #[test]
-fn a_receiver_bracket_on_a_non_constructor_callee_is_left_alone() {
-    assert_eq!(
-        load_errors(&prog(
-            r#"Map[K = Bool, V = Bool].size(put(Map.empty(), "a", 1))"#
-        )),
-        Vec::<String>::new()
+fn a_receiver_bracket_on_a_non_constructor_callee_is_read() {
+    let errs = load_errors(&prog(
+        r#"Map[K = Bool, V = Bool].size(put(Map.empty(), "a", 1))"#,
+    ));
+    assert_eq!(errs.len(), 1, "{errs:#?}");
+    assert!(errs[0].contains("size.type_args (op-type-params)"), "{errs:#?}");
+    assert!(
+        errs[0].contains("first bound to Bool") && errs[0].contains("got String"),
+        "{errs:#?}"
     );
+
+    // ONE RULE, TWO SPELLINGS: the callee bracket says the same thing and must read the
+    // same. Asserting only that the receiver spelling errors would pass on a change that
+    // gave the two forms different verdicts, which is exactly what RS2G4 closed.
+    let callee = load_errors(&prog(
+        r#"Map.size[K = Bool, V = Bool](put(Map.empty(), "a", 1))"#,
+    ));
+    let msg = |v: Vec<String>| -> Vec<String> {
+        v.into_iter()
+            .map(|e| e.split_once(": ").map(|(_, m)| m.to_string()).unwrap_or(e))
+            .collect()
+    };
+    assert_eq!(msg(errs), msg(callee));
 }
 
 /// The two halves are INDEPENDENT: only the result-typing is gated on the callee's return,
@@ -280,7 +341,12 @@ fn the_receiver_bracket_reads_the_same_with_named_arguments() {
     let named = load_errors(&prog(
         r#"size(put(Map[K = Bool, V = Bool].put(m: Map.empty(), key: "a", value: 1), "b", 2))"#,
     ));
-    assert_eq!(positional.len(), 1, "{positional:#?}");
+    // TWO, since WI-20260911-RS2G4: the receiver binds `K` and `V` for the call itself,
+    // so BOTH the `"a"` key and the `1` value contradict it. It was 1 while the receiver
+    // reached only the RESULT, which reported the `V` fault one call out and said nothing
+    // about the key. The COUNT is pinned for the reason the doc above gives — two
+    // spellings agreeing on a wrong answer is still agreeing.
+    assert_eq!(positional.len(), 2, "{positional:#?}");
     assert_eq!(named, positional, "spelling the args by name must not change the verdict");
 
     // CONTROL — with no receiver bracket the two spellings already agreed, so the
@@ -314,16 +380,22 @@ fn a_true_partial_receiver_bracket_keeps_the_inferred_slots() {
 }
 
 /// FINDING 2, OTHER POLARITY — a receiver that CONTRADICTS what the call determined is a
-/// fault the author wrote, and discarding the failed unify made it load clean. Reported at
-/// the receiver, because that is where the wrong claim is.
+/// fault the author wrote, and discarding the failed unify made it load clean.
+///
+/// STILL EXACTLY ONE ERROR; WI-20260911-RS2G4 moved WHERE it is reported, and the move is
+/// the improvement. This used to be reported at the RESULT (`put.return`: "expected
+/// `Map[V = Bool]`"), because the result arm was the only place the receiver was read.
+/// The receiver now binds `V` BEFORE the arguments are checked, so the fault is named
+/// where the author can act on it — the `1` written into a `V = Bool` map — and it is
+/// byte-identical to what the callee spelling `Map.put[V = Bool](…)` has always said.
 #[test]
 fn a_contradicting_partial_receiver_bracket_is_refused() {
     let errs = load_errors(&prog(
         r#"size(put(Map[V = Bool].put(Map.empty(), "a", 1), "b", true))"#,
     ));
     assert_eq!(errs.len(), 1, "{errs:#?}");
-    assert!(errs[0].contains("op-return"), "{errs:#?}");
-    assert!(errs[0].contains("expected Map[V = Bool]"), "{errs:#?}");
+    assert!(errs[0].contains("put.value (op-arg)"), "{errs:#?}");
+    assert!(errs[0].contains("expected Bool, got Int64"), "{errs:#?}");
 }
 
 /// FINDINGS 3 AND 4 — ONE MECHANISM. The channel had no "read or reported" sweep, so every

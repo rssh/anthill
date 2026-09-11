@@ -3209,6 +3209,7 @@ impl Interpreter {
                 got: arg_values.len(),
             });
         }
+        let type_args = self.inherit_enclosing_sort_type_args(target, type_args)?;
         if self.profiling {
             OP_PROF.with(|p| p.borrow_mut().entry(target).or_insert((0, 0)).0 += 1);
         }
@@ -3244,6 +3245,76 @@ impl Interpreter {
             awaiting: None,
         };
         Ok(StepOutcome::Continue)
+    }
+
+    /// WI-20260911-RS2G4 — A BARE SIBLING CALL KEEPS THE ENCLOSING INSTANCE's type
+    /// arguments.
+    ///
+    /// A sort parameter read inside a member is a projection off the RECEIVER's instance,
+    /// and the WI-272 channel now carries it ([`crate::kb::typing`]'s
+    /// `set_resolved_type_args`). But the typer can only write an entry where the CALL
+    /// SITE determined one: inside a member body, `selfType()` written bare says nothing
+    /// about `T` — it means "the same instance I am running at" — and the typer's σ has
+    /// only the WI-424 body rigid there, which is not a type. So the entry is absent and
+    /// the value has to come from the frame the call is made IN. MEASURED without this:
+    /// `Box[T = Letter].viaSibling()`, whose body is the single call `selfType()`,
+    /// returned the dangling `Box[T = Box.T]` while the direct
+    /// `Box[T = Letter].selfType()` returned `Box[T = Letter]`.
+    ///
+    /// THE FRAME INSTALL, not a dispatch route. `start_apply_same_sort` applies the WI-841
+    /// same-sort rule to REQUIREMENTS, but it is reached only for a callee with a
+    /// dictionary to install — `sort Box[T]` declares no `requires`, so its members are a
+    /// plain apply that never sees it. Type arguments differ from dictionaries in exactly
+    /// the way that matters here: a dictionary depends on the dispatch ROUTE, a type
+    /// argument does not, so one place — where every route installs the callee's frame —
+    /// is both sufficient and the only spelling that cannot drift between routes.
+    ///
+    /// THE GATE IS THE KEY ITSELF: a caller entry is inherited only when its symbol is one
+    /// of the CALLEE's parent sort's declared type parameters. That is "same sort" stated
+    /// as the question the inheritance actually asks, and it subsumes it — a caller in a
+    /// different sort holds that sort's parameter symbols, which are different symbols, and
+    /// an op-scoped `<ns>.<op>.T` is never a sort's declared parameter. A spec call
+    /// entering an IMPL of another sort therefore inherits nothing, which is right: the
+    /// impl's parameters are its own.
+    ///
+    /// UNLESS THE CALL SITE CHOSE EXPLICITLY — WI-841's own proviso. A key the callee's
+    /// channel already carries is left alone, so `Box[T = Int64].empty()` written inside
+    /// `sort Box[T]` runs at `Int64` and not at the enclosing instance.
+    fn inherit_enclosing_sort_type_args(
+        &self,
+        target: Symbol,
+        mut type_args: FrameTypeArgs,
+    ) -> Result<FrameTypeArgs, EvalError> {
+        // THE CALLER'S CHANNEL FIRST, and it is not tidiness: this runs on EVERY
+        // operation entry, and the two steps below are string-keyed hash lookups —
+        // `impl_parent_sort_of_op` splits the qualified name and resolves the parent
+        // through `by_qualified_name`, `type_param_syms_of` canonicalizes and looks up a
+        // scope. A caller frame with NO type arguments has nothing to give, which is
+        // every call outside a parameterised sort's members, so the common path pays one
+        // `is_empty()` (found by `/code-review`).
+        let Some(caller) = self.stack.top() else {
+            return Err(EvalError::Internal(
+                "inherit_enclosing_sort_type_args with no parent frame".into(),
+            ));
+        };
+        if caller.type_args.is_empty() {
+            return Ok(type_args);
+        }
+        let Some(parent) = crate::kb::typing::impl_parent_sort_of_op(&self.kb, target) else {
+            return Ok(type_args);
+        };
+        let declared = self.kb.type_param_syms_of(parent);
+        if declared.is_empty() {
+            return Ok(type_args);
+        }
+        let inherited: FrameTypeArgs = caller
+            .type_args
+            .iter()
+            .filter(|(sym, _)| declared.contains(sym) && !type_args.iter().any(|(k, _)| k == sym))
+            .copied()
+            .collect();
+        type_args.extend(inherited);
+        Ok(type_args)
     }
 
     /// WI-20260903-FC2X4 — a LAMBDA THE RESOLVER PROVED, as the closure this apply can

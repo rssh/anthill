@@ -355,6 +355,35 @@ pub enum TypeError {
         op: Symbol,
         name: Symbol,
     },
+    /// WI-20260911-RS2G4 (058 rule 1, the SORT half of the BINDING): a form-(3)
+    /// companion receiver's bracket and the CALLEE's own bracket bind one of the
+    /// enclosing sort's type parameters to two different types —
+    /// `Map[K = Bool, V = Bool].empty[K = String, V = Int64]()`.
+    ///
+    /// Both spellings bind the SAME variable now (rule 1 spans the operation's scope
+    /// and its enclosing sort's, and the receiver reaches that seeding as of this
+    /// ticket), so two disagreeing brackets are a contradiction the author wrote, not
+    /// a precedence question. Before, the receiver silently won and the arguments were
+    /// checked against its claim — one written binding meant nothing, which is exactly
+    /// the silent drop WI-839 refused for the other channel.
+    ///
+    /// ITS OWN VARIANT rather than a [`Self::TypeMismatch`]: the two sides are two
+    /// BRACKETS, not an expression and the context that rejected it, and the message
+    /// has to say which spelling said what — a bare `expected X, got Y` would send the
+    /// author to neither.
+    ReceiverBracketConflict {
+        span: Option<Span>,
+        /// The callee — whose call carries both brackets.
+        op: Symbol,
+        /// The enclosing sort's parameter both brackets bind.
+        param: Symbol,
+        /// What the RECEIVER's bracket wrote for it.
+        receiver: Value,
+        /// What the call had ALREADY bound it to when the receiver was read. The only
+        /// earlier writer at this point is [`seed_op_type_args`] — `subst` is fresh and
+        /// nothing else has touched it — so this is the callee bracket's value.
+        callee: Value,
+    },
     /// WI-839: a call-site bracket on a callee that is not an OPERATION at all — a
     /// function VALUE (arrow-typed variable or lambda), an applied rule citation
     /// (WI-714), a bare-functor constructor invocation. Only an operation carries the
@@ -1132,6 +1161,22 @@ impl TypeError {
                     kb.local_name_of(*name),
                 )
             }
+            TypeError::ReceiverBracketConflict {
+                op,
+                param,
+                receiver,
+                callee,
+                ..
+            } => {
+                format!(
+                    "the receiver bracket and the callee bracket on the call to {} bind \
+                     '{}' differently: '{}' at the receiver, '{}' at the callee",
+                    kb.qualified_name_of(*op),
+                    kb.local_name_of(*param),
+                    type_display_name_value(kb, receiver),
+                    type_display_name_value(kb, callee),
+                )
+            }
             TypeError::TypeArgsOnNonOperation { callee, .. } => {
                 format!(
                     "'{}' is not an operation, so it has no type-parameter list a \
@@ -1467,6 +1512,7 @@ impl TypeError {
             | TypeError::NoSuchTypeParam { span, .. }
             | TypeError::ExcessCallTypeArgs { span, .. }
             | TypeError::DuplicateCallTypeArg { span, .. }
+            | TypeError::ReceiverBracketConflict { span, .. }
             | TypeError::TypeArgsOnNonOperation { span, .. }
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
@@ -1701,6 +1747,28 @@ impl TypeError {
                 actual_type: format!(
                     "type-param '{}' bound twice in one bracket",
                     kb.local_name_of(*name),
+                ),
+                span: self.span(kb),
+            },
+            TypeError::ReceiverBracketConflict {
+                op,
+                param,
+                receiver,
+                callee,
+                ..
+            } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*op).to_string(),
+                field_name: "type_args".to_string(),
+                expected_type: format!(
+                    "the receiver bracket's {} = {}",
+                    kb.local_name_of(*param),
+                    type_display_name_value(kb, receiver),
+                ),
+                actual_type: format!(
+                    "the callee bracket's {} = {}",
+                    kb.local_name_of(*param),
+                    type_display_name_value(kb, callee),
                 ),
                 span: self.span(kb),
             },
@@ -17432,6 +17500,12 @@ fn check_apply_iter(
         // both dispatch routes, the spec-op one (`dispatch_spec_op_cached`) and the
         // Direct-call dictionary build (`build_concrete_dispatch_dict`).
         let selections = seed_op_type_args(kb, &mut subst, &op, occ, fn_sym, span)?;
+        // WI-20260911-RS2G4 (058 rule 1, the SORT half of the BINDING) — and the
+        // receiver bracket, which writes the SAME channel. See
+        // [`seed_receiver_type_args`] for why it is here and not at the W6JH0 result arm
+        // below: form (3) has to read as the callee bracket, including its diagnostics,
+        // and a WRITTEN receiver must beat the WI-424 rigid fill immediately following.
+        seed_receiver_type_args(kb, &mut subst, occ, callee_parent_sort, fn_sym, span)?;
         // WI-424: a SAME-SORT sibling call inside a member body shares the
         // enclosing instance's sort params — seed the callee's canonical param
         // vars with the body's rigids (the WI-392 skolems, extended to sort
@@ -19013,9 +19087,32 @@ fn check_apply_iter(
         // `seed_op_type_args` matches call-site `[T = …]` labels (also
         // bare-interned) against it — so only the eval channel is translated,
         // making the two keyings agree on the op-scoped identity.
-        if !op.type_params.is_empty() {
+        //
+        // WI-20260911-RS2G4: and the ENCLOSING SORT's parameters, on the same channel.
+        // A member body reads `T` exactly as it reads an op-scoped one — `reduce_var` /
+        // the nullary-head arm consult `Frame.type_args` by SYMBOL — and nothing wrote
+        // it, so `operation selfType() -> Type = Box[T = T]` called as
+        // `Box[T = Letter].selfType()` evaluated to a dangling `Box[T = Box.T]`. WI-708's
+        // keying rule ONE LEVEL UP: the key is the symbol a BODY reference resolves to,
+        // which for a sort parameter IS the sort-scoped `<ns>.<Sort>.T` —
+        // [`sort_type_params_as_pairs`]' own first element, so no re-resolution is needed
+        // here (`a_sort_param_channel_key_is_the_symbol_a_body_read_resolves_to` asserts
+        // the identity rather than assuming it).
+        //
+        // KEY DISTINCTNESS IS NOT AN ORDERING QUESTION. `find_type_arg` scans in REVERSE
+        // and takes the last match, so a shared key would make declaration order decide.
+        // It cannot arise: the op-scoped `<ns>.<op>.T` and the sort-scoped
+        // `<ns>.<Sort>.T` are different symbols, and WI-840's
+        // `check_op_type_param_shadowing` refuses an operation whose own bracket repeats
+        // its enclosing sort's SHORT name — which is the 058 §4.2 rule-1 collision half,
+        // the other half of the rule this ticket delivers.
+        let sort_params = callee_parent_sort
+            .map(|parent| sort_type_params_as_pairs(kb, parent))
+            .unwrap_or_default();
+        if !op.type_params.is_empty() || !sort_params.is_empty() {
             let op_scope = kb.symbols.scope_id(fn_sym);
-            let mut resolved: Vec<(Symbol, TermId)> = Vec::with_capacity(op.type_params.len());
+            let mut resolved: Vec<(Symbol, TermId)> =
+                Vec::with_capacity(op.type_params.len() + sort_params.len());
             for (name, var) in &op.type_params {
                 let var_term = type_param_var_term(kb, *var);
                 let walked = walk_type_deep(kb, &subst, var_term);
@@ -19026,6 +19123,34 @@ fn check_apply_iter(
                 let walked = surface_node_binding_to_term(kb, &subst, walked);
                 let key = op_scoped_type_param_symbol(kb, op_scope, *name);
                 resolved.push((key, walked));
+            }
+            // THE WRITE STAYS UNCONDITIONAL under the STATIC guard above, and is
+            // therefore an empty `Vec` when every sort-param walk is skipped (raised by
+            // `/code-review`). That is LAST-WINS, which is the rule this channel already
+            // has — the op half has overwritten on re-typing since WI-272, and
+            // `set_inferred_type`'s doc states the same for the type beside it. Guarding
+            // on `!resolved.is_empty()` would make it FIRST-wins for the sort half alone,
+            // preserving entries a later, better-informed pass chose not to write. Not
+            // driven either way: no program was found that re-types such an occurrence.
+            for (param, var_term) in sort_params.iter() {
+                let walked = walk_type_deep(kb, &subst, *var_term);
+                let walked = surface_node_binding_to_term(kb, &subst, walked);
+                // A WALK THAT LANDS ON A BARE VARIABLE IS NOT A TYPE, and writing it
+                // would be worse than writing nothing twice over. The two shapes it
+                // takes are the two ways this call said nothing about the parameter:
+                //  * a FLEXIBLE var — the call pinned it from no bracket, no argument
+                //    and no context. There is no answer to carry.
+                //  * a RIGID (the WI-424 seeded body skolem) — the body's name for "the
+                //    ENCLOSING instance", which has no type-time value at all. Its value
+                //    is in the CALLER's frame, and forwarding it is the eval's job
+                //    ([`Interpreter::enter_operation`]'s same-sort inheritance).
+                // Either entry would also OCCUPY the key, and an occupied key is exactly
+                // what that inheritance treats as "the call site chose explicitly" — so
+                // writing one here would silently disable it.
+                if matches!(kb.get_term(walked), Term::Var(_)) {
+                    continue;
+                }
+                resolved.push((*param, walked));
             }
             occ.set_resolved_type_args(resolved);
         }
@@ -26651,11 +26776,17 @@ fn seed_op_type_args(
             // so `provides Foo[Int64, 3]` would stop reporting the WI-366 "not yet
             // resolved" diagnostic and start silently accepting an unresolved clause.
             let grounded = ground_literal_denoted(kb, value);
+            let written = grounded.as_ref().unwrap_or(value);
+            // WI-20260911-RS2G4: a BARE parametric sort written as a bracket value
+            // (`[T = List]`) erased whatever an argument said about its element. See
+            // [`expand_written_bracket_value`]; the receiver spelling runs the same
+            // expansion at [`seed_receiver_type_args`], one rule at both writers.
+            let expanded = expand_written_bracket_value(kb, written, target.slot_spec().is_some());
             unify_types(
                 kb,
                 subst,
                 &TermIdView(param),
-                grounded.as_ref().unwrap_or(value),
+                expanded.as_ref().unwrap_or(written),
             );
         }
         let Some(spec_sort) = target.slot_spec() else {
@@ -26680,6 +26811,215 @@ fn seed_op_type_args(
         push_selection(kb, &mut selections, spec_sort, witness, slots, fn_sym, span)?;
     }
     Ok(selections)
+}
+
+/// WI-20260911-RS2G4 (058 rule 1, the SORT half of the binding) — a form-(3) COMPANION
+/// RECEIVER's bracket BINDS the enclosing sort's type parameters for this call, exactly
+/// as the callee's own bracket already does through [`call_bracket_scopes`].
+///
+/// ONE RULE, TWO SPELLINGS. `Map.size[K = Bool, V = Bool](m)` and
+/// `Map[K = Bool, V = Bool].size(m)` write the same thing in the two places proposal 035
+/// lists as interchangeable, and only the first was heard: `call_bracket_scopes` spans
+/// the enclosing sort's params, [`seed_op_type_args`] binds the sort's CANONICAL var, and
+/// the signature's `Option[T = T]` / `Map[K = K, V = V]` sees it. The receiver channel
+/// (`recv_type`, WI-20260829-W6JH0) was read ONCE and LATE, and only when the declared
+/// return was the receiver's own sort — so on every OTHER member the bracket was
+/// validated for parameter NAMES and then dropped, which is a silent wrong answer rather
+/// than a missing feature: with nothing else carrying `T`, `Box[T = Int64].empty()` in an
+/// `Option[T = Letter]` position typed as whatever the context wanted.
+///
+/// EARLY — before the WI-424 rigid fill and the WI-367 carrier pass — for three reasons,
+/// in order of force:
+///  * form (3) then reads EXACTLY as the callee bracket, including its diagnostics. The
+///    rows `Box.empty[T = Int64]()`, `Map.size[…](…)`, `Map.put[…](…)` refuse at
+///    `op-return` / `op-type-params` / `op-arg`; the receiver spelling now refuses at the
+///    same site with the same bytes, which is what keeps 035's three forms one meaning.
+///  * a WRITTEN receiver must beat WI-424's IMPLICIT rigid fill (WI-1082: a written slot
+///    is never rewritten). A sibling call at another instance — `Box[T = Int64].empty()`
+///    inside `sort Box[T]` — types at `Int64`; seeding after the fill would refuse it
+///    against the enclosing instance's rigid.
+///  * the W6JH0 arm stays as the RESULT rule for a BARE self-sort return (`empty() ->
+///    Map`, WI-1082's untied return). It now finds the receiver already agreeing, reports
+///    nothing new, and its merge is untouched.
+///
+/// GATED ON THE RECEIVER'S HEAD BEING THE CALLEE'S PARENT SORT. A receiver naming some
+/// other sort binds none of this callee's parameters and is left to the W6JH0 arm exactly
+/// as before; its parameter NAMES were already checked at load (`build_recv_type` →
+/// `type_expr_to_child_inner`, WI-709/WI-710).
+///
+/// THE VERDICT IS READ, and it can only mean one thing. `subst` is fresh and
+/// [`seed_op_type_args`] is the only earlier writer, so a `false` here is two WRITTEN
+/// brackets binding one parameter differently — [`TypeError::ReceiverBracketConflict`],
+/// the sibling of WI-839's `DuplicateCallTypeArg` one spelling over. Before this, the
+/// receiver silently won.
+fn seed_receiver_type_args(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    occ: &Rc<NodeOccurrence>,
+    parent: Option<Symbol>,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    let Some(rt) = call_recv_type_of(occ).cloned() else {
+        return Ok(());
+    };
+    let Some(parent) = parent else {
+        return Ok(());
+    };
+    // The receiver must name the callee's OWN sort. A bare `Map` (no bracket at all)
+    // writes no bindings, so it drops out of the loop below with nothing done and needs
+    // no arm of its own.
+    let Some((recv_base, written)) = sort_application_parts(kb, &rt) else {
+        return Ok(());
+    };
+    if !same_sort_canonical(kb, recv_base, parent) {
+        return Ok(());
+    }
+    // WHAT THIS LEG DOES NOT DO, stated because "one rule, two spellings" would
+    // otherwise overclaim (found by `/code-review`). [`seed_op_type_args`] runs TWO
+    // extra checks on a binding that names a REQUIREMENT SLOT — `SelectionValueNotASort`
+    // for a value with no sort head, and [`validate_instance_selection`]'s §3.5 checks —
+    // and this leg runs neither. A receiver-bound slot still SELECTS, through the
+    // type-carried producer [`selections_from_slot_bindings`] reading the parameter back
+    // out of σ; that producer `continue`s on a headless value and calls no validation, so
+    // `SortedSet[T = Int64, O = <not a sort>].empty()` is accepted with the slot quietly
+    // unselected where the callee spelling refuses it.
+    //
+    // PRE-EXISTING AND ONE SPELLING WIDER, not new: the asymmetry is between the BRACKET
+    // producer and the WI-844 TYPE producer, and an ARGUMENT carrying the same type has
+    // always reached the unvalidated one. Closing it means giving that producer the
+    // validations, which changes what an argument-carried selection is allowed to be —
+    // its own census. LATENT meanwhile: the delivery census found no form-(3) call in
+    // `stdlib/`, `examples/` or the loaded `anthill-todo` code at all.
+    for (param, var_term) in sort_type_params_as_pairs(kb, parent).iter() {
+        // BY SHORT NAME. The receiver's keys are bare interns of the written spelling
+        // and the declared list is qualified — the same split [`BindingKeyMatch`] closes
+        // for two WHOLE types, asked here one key at a time exactly as
+        // [`expand_foreign_sort_application`] asks it.
+        let short = kb.local_name_of(*param).to_string();
+        let Some((_, written_value)) = written.iter().find(|(k, _)| kb.local_name_of(*k) == short)
+        else {
+            continue;
+        };
+        let written_value = written_value.clone();
+        // The receiver channel's own spelling of "does this key name a PROVIDER SLOT" —
+        // see [`expand_written_bracket_value`] for the rule both channels obey. By NAME,
+        // because the declared list is qualified and a slot's binder is a bare intern,
+        // exactly as the key match one line above.
+        let binds_slot = kb
+            .named_requirement_slots(parent)
+            .iter()
+            .any(|slot| kb.local_name_of(slot.binder) == short);
+        let expanded = expand_written_bracket_value(kb, &written_value, binds_slot);
+        let value = expanded.unwrap_or_else(|| written_value.clone());
+        // READ BEFORE THE UNIFY, because it is what decides WHICH fault a `false` is.
+        // [`seed_op_type_args`] is the only earlier writer, so a parameter that is
+        // already BOUND can only have been bound by the callee's bracket — that is the
+        // two-bracket contradiction. A parameter that is still FREE cannot be
+        // contradicted by anything, and `bind_resolved` refuses it for exactly one
+        // reason: the OCCURS check, i.e. the receiver's own value mentions the parameter
+        // it is binding (`Box[T = Box[T = T]]` written inside `sort Box[T]`). Reporting
+        // that as "the callee bracket says …" would name a bracket the author never
+        // wrote.
+        // `sort_type_params_as_pairs` publishes a `Var::Global` term per parameter
+        // (`published_param_var`), so the match is total in practice; a non-var term
+        // would answer `None` and take the occurs arm, which is the honest reading of
+        // "nothing was bound here".
+        let prior = match kb.get_term(*var_term) {
+            Term::Var(Var::Global(vid)) => subst.resolve_as_value(*vid).cloned(),
+            _ => None,
+        };
+        if !unify_types(kb, subst, &TermIdView(*var_term), &value) {
+            // AS WRITTEN, not as expanded: `[T = List]` is what the author typed, and
+            // telling them their `List` disagrees with `List[T = ?T]` names a variable
+            // this pass minted.
+            let Some(prior) = prior else {
+                return Err(TypeError::Other {
+                    site: TypeError::here(),
+                    span,
+                    context: TypeErrorContext::OperationTypeParams { op_name: fn_sym },
+                    expected: format!(
+                        "a receiver binding for '{}' that does not mention '{0}' itself",
+                        kb.local_name_of(*param),
+                    ),
+                    actual: type_display_name_value(kb, &written_value),
+                });
+            };
+            let callee = walk_type_deep_value(kb, subst, &prior);
+            return Err(TypeError::ReceiverBracketConflict {
+                span,
+                op: fn_sym,
+                param: *param,
+                receiver: written_value,
+                callee,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// WI-20260911-RS2G4 — a bracket VALUE with a BARE parametric sort in it
+/// (`Box.mine[T = List](box(v: [1]))`) ERASES what an argument says about the inner
+/// element, in BOTH spellings. `[T = List]` seeds `?T := Ref(List)`; the argument's
+/// `List[T = Int64]` then unifies against that through
+/// [`unify_parameterized_with_sort_ref`], whose expansion variable is transient, so the
+/// `Int64` reaches nothing and the result carries a bare `List` the context completes.
+/// MEASURED: with the declared return `Option[T = List[T = String]]`, the bare call
+/// refuses (`got Option[T = List[T = Int64]]`) and the bracketed one loads clean.
+///
+/// This is WI-1082's width-ignoring exploit shape re-entered through a bracket value, and
+/// the repair is the one WI-374 already applies to the callee's PARAMETERS: mint a fresh
+/// FLEXIBLE variable per unwritten slot, so `[T = List]` seeds `?T := List[T = ?f]`, the
+/// argument binds `?f`, and a contradiction is loud. A value nothing else determines —
+/// `Box.empty[T = List]()` — keeps loading, because `?f` is then filled by the context;
+/// that is the partial-annotation reading, and it is a control.
+///
+/// THE EXPANSION ALONE IS NOT ENOUGH, which the ticket's own predicted mechanism assumed
+/// it would be ("the argument binds `?f := Int64`"). Measured, it does not:
+/// [`unify_parameterized_with_sort_ref`] RAW-BINDS the canonical parameter, so the
+/// already-present bracket claim wins and the refinement is thrown away. That second site
+/// is [`bind_or_refine_member_param`].
+///
+/// NO SELF-SORT EXEMPTION, deliberately, which is the one place this differs from
+/// [`expand_foreign_sort_application`]'s signature use. That exemption keeps a member's
+/// own sort riding the canonical channel for the §3 parametricity tie — a rule about a
+/// SIGNATURE. A bracket value is not a signature: `Box[T = Box]` inside `sort Box` says
+/// "a Box of Boxes", whose inner parameter is unwritten and must be fresh rather than the
+/// enclosing instance's.
+///
+/// TOP LEVEL ONLY, the same depth WI-374 expands a signature position to, and stated
+/// rather than assumed: a bare sort NESTED inside a written binding (`[T = Pair[A =
+/// List]]`) is not expanded, so the erasure survives one level in. Deep expansion is
+/// [`expand_foreign_sort_application`]'s own follow-on scope and closing it there closes
+/// it here, since this is a call to it.
+///
+/// NEVER A PROVIDER SELECTION, which is what `binds_a_provider_slot` gates and the one
+/// place this differs from the parameter channel it copies. A NAMED REQUIREMENT SLOT is
+/// an ordinary type parameter for TYPING (058 §3.4) and a provider choice for DISPATCH,
+/// and its VALUE is a witness SORT — `SortedSet.empty[T = Pair[Int64, Int64], O =
+/// BySnd]()`. There is no argument that could pin anything inside it: the witness's own
+/// parameters are instantiated by `resolve_inner` at the GOAL's bindings, not by
+/// unification against the slot's variable. Expanding it does two wrong things, both
+/// MEASURED on `wi858_pair_orderings_test`: `BySnd` declares `requires OA: Ord[A]`, so
+/// the expansion mints a FLEX variable for `OA` — "some provider", which no author
+/// wrote — and [`witness_value_slot_selections`] reads that variable back as a slot
+/// binding that is not a sort (5 rows refused with `SelectionValueNotASort`); and the
+/// slot's type stops rendering as the provider's NAME (`O = BySnd` became
+/// `O = BySnd[A = ?A, B = ?B]`), which is what the merge-safety diagnostic names.
+///
+/// EACH CHANNEL ANSWERS IN ITS OWN CURRENCY — the callee bracket has the resolved
+/// [`CallTypeArgTarget`], the receiver has its sort's own [`KnowledgeBase::
+/// named_requirement_slots`] list — and the RULE lives here, once, so a third writer
+/// cannot forget it.
+fn expand_written_bracket_value(
+    kb: &mut KnowledgeBase,
+    value: &Value,
+    binds_a_provider_slot: bool,
+) -> Option<Value> {
+    if binds_a_provider_slot {
+        return None;
+    }
+    expand_foreign_sort_application(kb, value, None)
 }
 
 /// WI-870 (058 §3.3) — the SELECTIONS a bracket VALUE makes on the witness it names:
@@ -53816,9 +54156,11 @@ fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
         let vid = *vid;
         match value {
             // Ground (term-carried): bind after the occurs-check guards a cycle.
+            // WI-20260911-RS2G4: through [`bind_or_refine_member_param`], because this
+            // var may already carry a WRITTEN bracket's claim about the same parameter.
             Value::Term { id: t, .. } => {
                 if !occurs_in(kb, vid, *t) {
-                    subst.bind(kb, vid, *t);
+                    bind_or_refine_member_param(kb, subst, vid, *t);
                 }
             }
             // Guaranteed an effect-row Node by `is_effect_row_node` above. (The
@@ -53830,6 +54172,105 @@ fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
         }
     }
     true
+}
+
+/// WI-20260911-RS2G4 — TWO CLAIMS ABOUT ONE CANONICAL SORT PARAMETER MUST BE UNIFIED,
+/// not first-wins.
+///
+/// [`Substitution::bind_term`] keeps the FIRST binding and records anything else as a
+/// conflict; [`enforce_member_tie`] then EXEMPTS a pair that re-unifies — in a `scratch`
+/// substitution, so the refinement it just proved is thrown away. That was invisible
+/// while argument unification was the only writer of these vars per call. It is not any
+/// more: a form-(3) receiver bracket ([`seed_receiver_type_args`]) and a callee bracket
+/// both bind this var BEFORE any argument reaches it, and a bracket value with an
+/// unwritten slot (`[T = List]`, expanded to `List[T = ?f]`) is strictly MORE GENERAL
+/// than what the argument carries. First-wins therefore let a TRUE partial claim delete
+/// what the argument determined — WI-20260829-W6JH0's finding 2 one level in.
+///
+/// MEASURED, on `mine(b: Box) -> Option[T = T]` inside `sort Box[T]` with the declared
+/// return `Option[T = List[T = String]]` and the argument `box(v: [1])`:
+///
+/// | call | before | after |
+/// |---|---|---|
+/// | `Box.mine(box(v: [1]))` | refused, `got Option[T = List[T = Int64]]` | unchanged — the control |
+/// | `Box.mine[T = List](box(v: [1]))` | **loads clean** | refused, same message |
+/// | `Box[T = List].mine(box(v: [1]))` | **loads clean** | refused, same message |
+///
+/// UNIFY, THEN FALL BACK TO THE RAW BIND, and the fallback is not defensive. It is what
+/// keeps every existing conflict diagnostic byte-identical: an irreconcilable pair
+/// (`Int64` vs `Letter`) must still land in `contradiction_details`, which is the only
+/// channel [`enforce_member_tie`] reads and the only thing that makes the §3 tie loud. So
+/// a refinable pair absorbs its refinement here, and an irreconcilable one is recorded
+/// exactly as before.
+fn bind_or_refine_member_param(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    vid: VarId,
+    t: TermId,
+) {
+    // The two fast paths are today's [`Substitution::bind_term`] verbatim, and they are
+    // what keeps the trial below off the hot path: an UNBOUND var (the overwhelmingly
+    // common case) and a re-bind to the identical hash-consed term never clone anything.
+    match subst.resolve_as_value(vid) {
+        None => {
+            subst.bind(kb, vid, t);
+            return;
+        }
+        Some(Value::Term { id, .. }) if *id == t => return,
+        _ => {}
+    }
+    // ON A TRIAL COPY, because a failed `unify_types` leaves bindings behind and — the
+    // shape that forced this — a BARE reference to a parametric sort rides that sort's
+    // CANONICAL variables, so refining through one can re-enter this very var.
+    // MEASURED, `wi374_expansion_test::member_tie_refinement_accepted`:
+    // `append(cons(head: nil, …), cons(head: cons(head: 1, …), …))` binds `List.T` to a
+    // bare `List` and then to `List[T = Int64]`; unifying those re-dispatches through
+    // [`unify_parameterized_with_sort_ref`], which resolves `List.T` to the SAME var and
+    // tries to bind it to `Int64`. The refinement is not a refinement at all, and
+    // committing the partial σ turned an accepted program into
+    // `first bound to List, got Int64`.
+    //
+    // A contradiction the trial RECORDED counts as failure even though the unify
+    // answered `true`: [`unify_parameterized_with_sort_ref`] returns `true`
+    // unconditionally, so its boolean does not see a nested bind conflict.
+    //
+    // A **NEW** ONE, not the absolute `is_contradiction()` flag, because the flag is not a
+    // statement about THIS bind. `enforce_member_tie` ACCEPTS a contradictory σ whenever
+    // every recorded detail is exempt — a WI-424 body rigid as the prior, or a pair that
+    // re-unifies — and those calls load. Reading the flag therefore made every LATER
+    // refinement in such a call fall back to the raw bind, which would make one program's
+    // verdict depend on argument ORDER. The census says the shape is live: a green
+    // `wi_tests` run records 12 505 conflicts against 93 429 refinements, so σ carries the
+    // flag on calls that pass.
+    //
+    // NOT DRIVEN, and said plainly rather than credited to a neighbour. Reaching it needs
+    // ONE call in which a tolerated conflict is recorded BEFORE a bracket value's
+    // refinement, and the two shapes that tolerate a conflict both resist that: inside a
+    // sort body the rigid exemption applies, but an argument there does not pin the
+    // enclosing sort's parameters at all (measured — a bracket-less sibling call returns
+    // `Option[T = ?B]`), and the re-unify exemption fires on the callee's OWN sort
+    // reference, which is the same variable the refinement would be for. The candidate
+    // driver that looked like it worked — `Duo3[B = List].two(d3(x: 1, y: [1]), …)` inside
+    // `sort Duo3[A, B]` — loads clean under BOTH readings, for the first of those reasons.
+    // This is hardening on a reachable path, not a fix for a measured row.
+    //
+    // The detail COUNT is the discriminator because a conflict `subst` already records
+    // pushes no second copy (`bind_term` dedups per var), so an exact repeat inside the
+    // trial is not news — σ already carries it and `enforce_member_tie` already judges
+    // it. The flag is still consulted for the one thing the count cannot say: a trial
+    // that turned it on where `subst` had it off.
+    let prior_details = subst.contradiction_details.len();
+    let prior_flag = subst.is_contradiction();
+    let mut trial = subst.clone();
+    let var_t = kb.alloc_or_find_var_term(Var::Global(vid));
+    if unify_types(kb, &mut trial, &TermIdView(var_t), &TermIdView(t))
+        && trial.contradiction_details.len() == prior_details
+        && (prior_flag || !trial.is_contradiction())
+    {
+        *subst = trial;
+        return;
+    }
+    subst.bind(kb, vid, t);
 }
 
 /// Occurs check: does `vid` appear anywhere inside `term`?

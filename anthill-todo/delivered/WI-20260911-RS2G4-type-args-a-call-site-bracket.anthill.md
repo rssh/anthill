@@ -3,9 +3,9 @@
 - id: WI-20260911-RS2G4-type-args-a-call-site-bracket
 - created: 2026-09-11T11:21:45Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-11T11:21:45Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-11T14:41:59Z
 
 - acceptance: cargo-test
 
@@ -386,4 +386,183 @@ position is no different from top level. The typer's deep walk, eval's nested `S
 frames (§2's first row) and a head variable at depth are one variable, and WI-840's collision
 refusal keeps an operation's own `[T]` from shadowing the sort's, so there is no second reading
 to choose between.
+
+### 2026-09-11T14:41:54Z — feedback — claude
+
+DELIVERED (claude, 2026-09-11). 058 rule 1's BINDING half for the SORT scope, at the typer
+and at eval. FIVE mechanisms, each with its own back-out measured SEPARATELY — the counts
+are in the header of `wi_rs2g4_receiver_bracket_binds_sort_params_test` (16 rows) and were
+re-measured after the review fixes.
+
+WHAT WAS BUILT.
+  1. TYPER, the RECEIVER leg — `seed_receiver_type_args`, called from `check_apply_iter`
+     immediately after `seed_op_type_args` and BEFORE the WI-424 rigid fill. A form-(3)
+     companion receiver's bracket binds the enclosing sort's CANONICAL parameter vars, the
+     same ones the callee bracket has bound since WI-841, so the two spellings give one
+     verdict at one site. Early for three reasons, stated at the site: form (3) then reads
+     exactly as the callee bracket including its diagnostics; a WRITTEN receiver must beat
+     WI-424's implicit rigid fill; and the W6JH0 result arm stays as the rule for a BARE
+     self-sort return, now finding the receiver already agreeing. Two written brackets
+     disagreeing on one name is the new `TypeError::ReceiverBracketConflict`, naming the
+     parameter and both sources.
+  2. TYPER, the bracket VALUE — `expand_written_bracket_value`, run on the written value in
+     BOTH spellings before seeding: an unwritten slot becomes a fresh flexible variable
+     (`[T = List]` becomes `List[T = ?f]`), which is the WI-374 call-site expansion applied
+     to written text. NEVER for a NAMED REQUIREMENT SLOT, whose value names a PROVIDER —
+     measured: expanding one mints a variable for the witness's own `requires OA: Ord[A]`
+     slot, and `witness_value_slot_selections` reads it back as "not a sort" (5 rows of
+     `wi858_pair_orderings_test`), while the slot's type stops rendering as the provider's
+     NAME.
+  3. TYPER, the refining re-bind — `bind_or_refine_member_param`, inside
+     `unify_parameterized_with_sort_ref`. THE TICKET'S PREDICTED MECHANISM WAS INCOMPLETE
+     and measuring it is what found this. The addendum assumed "the argument binds
+     `?f := Int64`"; it does not — that site RAW-binds the canonical parameter, keeps the
+     FIRST claim, and `enforce_member_tie` then proves the refinement in a `scratch`
+     substitution and throws it away. It now unifies on a TRIAL copy and commits only a
+     clean result. The trial is load-bearing and not defensive: a bare reference to a
+     parametric sort rides that sort's own canonical vars, so refining through one
+     re-enters the very variable — `wi374_expansion_test::member_tie_refinement_accepted`
+     is the driver that caught it.
+  4. EVAL, the channel — the sort's parameters join `set_resolved_type_args`, keyed by the
+     sort-scoped `<ns>.<Sort>.T` (WI-708's rule one scope up; `sort_type_params_as_pairs`
+     already hands that symbol, so no re-resolution is needed). An entry whose sigma-walk
+     lands on a bare VARIABLE is skipped — a flex var is "nobody said", a rigid is "the
+     enclosing instance" — and the skip matters twice over, since an occupied key is what
+     (5) reads as "the call site chose explicitly".
+  5. EVAL, inheritance — `Interpreter::enter_operation` forwards the caller frame's
+     sort-scoped entries to a callee of the same sort that has none. At the FRAME INSTALL
+     and not per dispatch route: dictionaries differ per route, type arguments do not. The
+     gate is the KEY itself — a caller entry is inherited only when its symbol is one of the
+     CALLEE parent sort's declared parameters, which is "same sort" asked as the question
+     the inheritance actually makes.
+
+MEASURED, before then after. Typing rows through CLI `anthill load`, eval rows through
+`interp.call`; every probe removed.
+
+  TYPING
+    `p8() -> Option[T = Letter] = Box[T = Int64].empty()`    CLEAN then refused, naming both
+    `Box[T = Letter].empty()` in the same position           CLEAN then CLEAN (control)
+    `let v: Option[T = Int64] = Box[T = Letter].empty()`     CLEAN then refused at the let
+    `Map[K = Bool, V = Bool].size(put(... "a" ...))`         CLEAN then the CALLEE spelling's
+                                                             own message, byte for byte
+    `Map[V = Bool].put(Map.empty(), "a", 1)`                 `put.return` then `put.value`,
+                                                             byte-identical to the callee
+    `Box[T = Letter].empty[T = Int64]()`                     1 return error then 1
+                                                             ReceiverBracketConflict
+    `Duo[A = X, B = Y].pairOf()`                             BOTH parameters read — a wrong
+                                                             A and a wrong B each refuse
+    `Box.mine[T = List](box(v: [1]))` against a declared
+      `Option[T = List[T = String]]`                         CLEAN then refused naming both
+                                                             inner types; likewise the
+                                                             receiver spelling and a let
+    `Box.empty[T = List]()`                                  CLEAN then CLEAN — the control:
+                                                             the context fills the slot
+  EVAL
+    `Box[T = Letter].selfType()`              Box[T = Box.T] then Box[T = Letter]
+    `Box.selfType[T = Letter]()`              Box[T = Box.T] then Box[T = Letter]
+    `Pair[A = Letter, B = Int64].both()`      Pair[A = Pair.A, B = Pair.B] then both read
+    `Box[T = Letter].viaSibling()`            Box[T = Box.T] then Box[T = Letter]
+    `Box[T = List[T = Letter]].nestedSelf()`  List[T = List[T = T]] then
+                                              List[T = List[T = List[T = Letter]]]
+    `ty[U = Letter]()`                        unchanged — the WI-708 control
+    `tyb[U = List]()`                         Box[T = List] then Box[T = List[T = ?T]] —
+                                              THE CARRIER DECIDED AND PINNED. The channel
+                                              carries what sigma holds; translating it back
+                                              would be a second representation of one
+                                              decision. WT8WG's value face must apply
+                                              `bound_names_a_determinate_type` and RAISE —
+                                              it refuses a bare `Ref` and a bare `Var`
+                                              alike, so the consumer's verdict is the same
+                                              either way.
+
+CENSUS — ZERO CORPUS VERDICTS FLIP.
+  STATIC, `Sort[...].member(` — a LOWER bound, nested brackets escape the regex: 0 in
+  `stdlib/`, 0 in `examples/`, 0 in the loaded `anthill-todo` code (its hits are ticket
+  prose), 61 across nine anthill-core test files.
+  DYNAMIC, counters at the new sites over `anthill load` of each corpus and over the whole
+  `wi_tests` binary, then removed:
+    stdlib (embedded)      0 receiver gates, 0 expansions, 15 refinements, 67 channel
+                           entries — loads clean
+    examples/github-todo   the same totals, i.e. 0 of its own — loads clean
+    rustland/anthill-todo  0 receiver gates, 0 expansions, 21 refinements, 325 channel
+                           entries — loads clean
+    wi_tests (4517 tests)  99 receiver-bracket calls / 152 bindings, 5 expansions,
+                           93 429 refinements, 12 505 rebind conflicts, 430 763 channel
+                           entries
+  NEWLY REFUSED: 4 rows, all in `wi_w6jh0_companion_receiver_bracket_test`, each rewritten
+  there with its own before and after. The largest is
+  `a_receiver_bracket_on_a_non_constructor_callee_is_left_alone` becoming `..._is_read` —
+  W6JH0 deliberately left that bracket alone, and it is the one row that separates the two
+  tickets. Nothing else in the workspace moved.
+  NEWLY PINNED: the eval channel's sort-scoped entries (67 per stdlib load, 325 per todo
+  load) and the 99 receiver-bracket calls in the test corpus. No corpus program writes form
+  (3) at all, which is why the flip count is zero in both directions.
+  PERF: the full `wi_tests` binary runs 427 s after against 431 s before — unchanged within
+  noise, and the workspace suite is green end to end.
+
+SPEC. `docs/kernel-language.md`: the W6JH0 paragraph is rewritten (the bracket BINDS;
+typing the result is one CONSEQUENCE of that; two brackets disagreeing is a contradiction,
+not a precedence question), plus two new paragraphs — an unwritten slot in a bracket VALUE,
+and a sort parameter reaching a member's body — and the one-principle note beside WI-1059
+in the semantics section: an operation READS the projection off the receiver's instance
+(Gamma, input only, rigid in the body), a rule UNIFIES it (sigma, both directions), with
+the rule half named as WI-20260911-5G28A. `docs/design/058-implementation.md` section 2
+records the second writer of rule 1's key, the value expansion and its named-slot
+exception, and the eval channel with the census.
+
+REVIEW. `/code-review` (high) run on a restored tree; 4 findings, all acted on, and one of
+them corrected my own claim:
+  * THE ABSOLUTE `is_contradiction()` GATE. `bind_or_refine_member_param` read the flag, but
+    `enforce_member_tie` ACCEPTS a contradictory sigma whenever every detail is exempt, so
+    a later refinement in the same call could fall back silently. Fixed to discriminate on
+    NEW details. NOT DRIVEN, and the site says so: reaching it needs a tolerated conflict
+    recorded BEFORE a bracket value's refinement in ONE call, and both tolerating shapes
+    resist that. The candidate driver I built turned out to load clean under both readings
+    for a different reason — inside a sort body an argument does not pin the enclosing
+    sort's parameters at all — so this ships as hardening on a reachable path, not as a fix
+    for a measured row.
+  * A MISATTRIBUTED CONFLICT. Every `unify_types` failure was reported as "the callee
+    bracket said ...". The prior binding is now read BEFORE the unify: only an
+    already-bound parameter can be a two-bracket contradiction, and a still-free one gets
+    its own arm. And the value is reported AS WRITTEN — `T = List`, not the `List[T = ?T]`
+    the expansion makes of it, which would name a variable this pass minted. Driven.
+  * THE RECEIVER LEG SKIPS THE CALLEE LEG'S NAMED-SLOT VALIDATIONS. Confirmed and
+    pre-existing one spelling wider: the asymmetry is between the BRACKET producer and
+    WI-844's TYPE-carried producer, which an ARGUMENT has always reached unvalidated.
+    Stated at the site with why closing it changes what an argument-carried selection may
+    be. Filed as WI-20260911-TX0G6.
+  * PERF on the hot eval path. `inherit_enclosing_sort_type_args` now checks the caller
+    frame's channel for emptiness before the two string-keyed hash lookups.
+  Plus one open question the reviewer could not turn into a program — the channel write is
+  an empty `Vec` when every sort-param walk is skipped. Kept unconditional under the STATIC
+  guard, because that is LAST-WINS, which is the rule this channel already has; the
+  reasoning is at the site and I could not construct the re-typing case either.
+
+WHAT THIS MAKES REACHABLE AND DOES NOT FIX, measured rather than assumed. A bracket whose
+VALUE mentions the enclosing sort's own type parameter — `Box.empty[T = Option[T = T]]()`
+inside `sort Box[T]` — does not terminate: the written inner `T` lowers to
+`Term::Ref(Box.T)`, `occurs_in` is structural over `Term::Var` and does not see it,
+`walk_type` resolves it through the SortAlias chain back to the same variable, and
+`walk_type_deep` chases it until the stack ends. MEASURED AT b7896119: the CALLEE spelling
+already aborted there, while the receiver spelling loaded clean BECAUSE the bracket was
+dropped. This ticket adds no defect and removes none — it gives the second spelling the
+first one's behaviour, crash included. Located with temporary depth and occurs tripwires,
+all removed; recorded in the test header in prose rather than as a row, because a crashing
+row takes the whole test binary with it. Filed as WI-20260911-7TN1Q.
+
+UNCHANGED, and stated: WI-840's 058 collision refusal — its own test is the pin, and it is
+the other half of rule 1; the callee bracket still does not reach a BARE self-sort return
+(WI-1082's untied return, `the_callee_bracket_still_does_not_reach_the_result` stays
+green); scaland untouched, which is RUST-ONLY as the ticket says.
+
+LIMIT, stated rather than assumed: the bracket-value expansion is TOP LEVEL only, the same
+depth `expand_foreign_sort_application` expands a signature position to. A bare parametric
+sort NESTED inside a written binding (`[T = Pair[A = List]]`) still erases one level in;
+deep expansion is that function's own follow-on scope, and closing it there closes it here,
+since this is a call to it.
+
+CLIENT: WI-20260911-WT8WG's derived `<Sort>.domain()` needed (1) and (4) and is unblocked.
+
+ACCEPTANCE: the full workspace suite is green via `rustland/scripts/test.sh` (exit 0, no
+failures; `wi_tests` 4517 passed); `/code-review` (high) run and its four findings acted on.
 
