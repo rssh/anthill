@@ -1261,6 +1261,18 @@ impl SearchStream {
         (solutions, stats)
     }
 
+    /// Faults this search has reported so far ([`ResolveError`]) — empty for a healthy
+    /// resolution.
+    ///
+    /// FOR THE LAZY CONSUMERS, which is the whole reason it is public. `ResolveStats`
+    /// carries the same list, but only `drain_all` produces stats, so a caller that
+    /// pulls with [`Self::split_first`] never sees one — the WI-628 note on `drain_all`
+    /// records the same property for `truncated`. A streaming face reads it here
+    /// instead, off the continuation it is handed.
+    pub fn errors(&self) -> &[ResolveError] {
+        &self.errors
+    }
+
     /// Check if the stream is obviously exhausted (empty stack).
     pub fn is_empty(&self) -> bool {
         self.stack.is_empty()

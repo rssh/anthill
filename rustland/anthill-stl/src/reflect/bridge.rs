@@ -597,6 +597,32 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         };
         match result {
             Some((sol, rest)) => {
+                // A FAULT TAKES THE `Err` ARM — the `Error` effect `execute` declares
+                // (`E = Error`), which this `Result` IS. Checked BEFORE the row is
+                // built, and it wins over it.
+                //
+                // WHY IT WINS. A faulted goal residualizes, so this pull is holding an
+                // `undecided(subst, residual)` row. Handing that over while dropping the
+                // fault tells the consumer "this goal has no answer" — a legitimate third
+                // outcome — when the truth is the goal could not be ASKED. That is the
+                // conflation this whole channel exists to end, reappearing on the reflect
+                // face. `undecided` is for goals genuinely not decided; it is not for
+                // goals that were never evaluated.
+                //
+                // NOT A NEW `Solution` VARIANT, considered and rejected: putting
+                // `faulted` beside `definite`/`undecided` would claim a fault is a kind
+                // of ANSWER. WI-519 keeps undecidedness as data because a self-hosted
+                // resolver must inspect which goals stayed pending — that argument is
+                // about an answer-shaped outcome and does not reach an error.
+                //
+                // The residual is not visible to this consumer as a result. That is the
+                // intended trade: the stream is in a faulted state, and the continuation
+                // is deliberately not stored, so a caller that catches and pulls again
+                // gets the "already consumed" refusal rather than more rows from a search
+                // whose premise failed.
+                if let Some(err) = rest.errors().first() {
+                    return Err(Error(err.message.clone()));
+                }
                 let elem = self.make_solution(sol);
                 let cont: Box<dyn Stream<Solution, Error>> = Box::new(SearchStreamAdapter {
                     inner: RefCell::new(Some(rest)),
@@ -604,6 +630,14 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
                 });
                 Ok(Some((elem, cont)))
             }
+            // EXHAUSTION DROPS THE STREAM, so a fault recorded on a branch that yielded
+            // NOTHING is not visible here — `split_first` takes `self` by value and
+            // returns no continuation on this path. Reachable only under
+            // `definite_only`, which suppresses the residual a faulted goal would
+            // otherwise yield; this face resolves with it off, so every fault reaches
+            // the arm above. Stated rather than assumed: a face that turns
+            // `definite_only` on would need `split_first` to hand the exhausted stream
+            // back.
             None => Ok(None),
         }
     }
@@ -1301,6 +1335,54 @@ sort Store {
             "empty query should return 1 result (trivial solution)"
         );
         assert!(matches!(results[0], Solution::Definite { .. }));
+    }
+
+    /// A search that could not EVALUATE part of the query takes the `Err` arm — the
+    /// `Error` effect `execute` declares (`-> Stream[T = Solution, E = Error]`), which
+    /// this `Result` is the Rust mapping of.
+    ///
+    /// BEFORE: the faulted goal residualizes, so the pull handed back
+    /// `Ok(Some(undecided(subst, residual)))` and the reason went nowhere — this face
+    /// drains with `split_first`, which never produces a `ResolveStats`. The consumer
+    /// was told "this goal has no answer", a legitimate third outcome, when the goal
+    /// could not be asked at all.
+    ///
+    /// CONTROL: `execute_pattern_query` above passes either way — a healthy query still
+    /// streams its rows, so the `Err` arm has not swallowed the ordinary path.
+    #[test]
+    fn a_faulted_query_takes_the_error_arm() {
+        let bridge = load_source_bridge_with_stdlib(
+            r#"
+namespace rstl.fault
+  import anthill.prelude.{Int64, String, Bool, PartialOrd}
+
+  -- `tag` declares no types, so the typer cannot see the operand sorts and
+  -- `gt(?x, 1)` reaches the resolver as a String/Int64 pair.
+  fact tag("a")
+  rule bad :- tag(?x), PartialOrd.gt(?x, 1)
+end
+"#,
+        );
+        let goal = {
+            let mut kb = bridge.kb.borrow_mut();
+            kb.resolve_qualified_name_term("rstl.fault.bad")
+        };
+        let query = LogicalQuery::PatternQuery {
+            term: ReflectTerm::new(Value::term(goal)),
+        };
+        let stream = bridge.execute(query).expect("execute builds the stream");
+        let text = match stream.split_first() {
+            Err(e) => format!("{e:?}"),
+            Ok(_) => panic!(
+                "a search that could not be evaluated must take the Err arm, not hand \
+                 back an `undecided` row as though the goal merely had no answer"
+            ),
+        };
+        assert!(
+            text.contains("two DIFFERENT literal sorts"),
+            "the Err must carry the resolver's own words, naming the operand sorts; \
+             got: {text}"
+        );
     }
 
     #[test]
