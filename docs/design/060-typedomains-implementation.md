@@ -284,15 +284,20 @@ the single largest reason this is exploratory rather than a plan.
 
 Written as questions, because none of them was measured.
 
-- **The spec states no column type, and there is no spelling that lets it.** §0's
-  measurement: the only two spellings that carry `?x: T` are refused (the body-less one) or
-  self-recursive (the `:- true` one), so the untyped declaration is what is left. Nothing
-  then checks that a provider's `member` ranges over its own `T` — `provides
-  SortDomain[T = Colour]` could define `member(?x) :- domain_member(?x, Letter)` and load.
-  The refusal's own message names the missing piece: "the declaration reading, where the
-  annotation is the column's type with nothing to enforce it, is **undelivered**". Whether
-  this direction needs that delivered, or whether the derivation being mechanical makes a
-  hand-written wrong provider unreachable, was not settled.
+- **Nothing states what `member` ranges over, and no spelling available today can.** The
+  argument of a relational head is a COLUMN (WI-714), and a column gets its TYPE from the
+  `?x: T` bound written on that head — it is how the derived `<Sort>.domain` gets `x:
+  <Self>`. §0's declaration is `rule member(?x)`, whose one column carries no bound, so the
+  spec says only *"there is a relation `member` of one argument"* and nothing about that
+  argument being a `T`. MEASURED 2026-09-12: under `provides SortDomain[T = Colour]`, a
+  provider that defines `member(?x) :- domain_member(?x, Letter)` — the wrong sort entirely
+  — **loads clean**, exactly as the right one does. The two spellings that WOULD state the
+  column's type are both unavailable: `rule member(?x: T)` is refused, and its own refusal
+  names the gap ("the declaration reading, where the annotation is the column's type with
+  nothing to enforce it, is **undelivered**"), while `rule member(?x: T) :- true` is §0's
+  self-recursive one. Whether this direction needs that reading delivered, or whether
+  deriving every provider mechanically makes a hand-written wrong one unreachable, was not
+  settled.
 - **Who provides it.** `provides SortDomain[T = Colour]` would have to be derived for every
   sort that derives a domain (`derive_domain_member_clauses`'s population), the way
   `<Sort>.domain` is derived in §7.1. Measured: the block loads when written inside the
