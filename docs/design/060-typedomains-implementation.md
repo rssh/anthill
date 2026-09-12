@@ -168,6 +168,95 @@ with three properties worth stating:
 - **The `[T]`-polymorphic case is the point.** In `g[T]()`, `SortDomain[T]`'s dictionary
   is whatever `g[Colour]()` threaded; there is no rigid anywhere in the clause.
 
+## 4.1 The `List[X]` example — why any of this exists
+
+A sort with no parameters needs none of this. `Colour.domain` is three constructors and a
+compile-time name reaches it. **The whole reason for the machinery is that `List[Colour]`
+and `List[Int64]` have DIFFERENT domains while sharing ONE clause**, and that the sharing
+has to survive being written inside a polymorphic caller.
+
+Today's derived clause carries the type as an ARGUMENT (060-implementation §7,
+`derive_domain_member_clauses`):
+
+```
+domain_member(?x, List[T = ?T])
+  :- ?x <=> nil()
+   | (?x <=> cons(head: ?h, tail: ?t) & domain_member(?t, List[T = ?T])
+                                      & domain_member(?h, ?T))
+```
+
+The same clause with the type carried as EVIDENCE instead:
+
+```anthill
+sort List
+  sort T = ?
+  entity nil
+  entity cons(head: T, tail: List)
+
+  provides SortDomain[T = List[T = T]]
+    requires SortDomain[T]                      -- the ELEMENT's domain: one sub-dictionary
+    rule member(?x)
+      :- ?x <=> nil()
+       | ( ?x <=> cons(head: ?y, tail: ?z),
+           member(?z),                          -- the TAIL: this same relation, __req_self
+           require[SortDomain[T]] = ?ed,        -- the ELEMENT's domain, a SUB-dictionary
+           apply_domain(?ed, ?y) )
+  end
+end
+```
+
+**THE DICTIONARY TREE IS THE TYPE TREE.** That is the sentence the whole direction rests on.
+A dictionary is `Dictionary(sub₀ … subₙ₋₁, impl: S)` (`dictionary.rs`), so the evidence for
+`SortDomain[List[Colour]]` is
+
+```
+Dictionary( Dictionary(impl: Colour),   impl: List )
+            └─ the element's domain ─┘
+```
+
+— and `require[SortDomain[T]]` inside the clause is exactly `dict.sub(0)`, the projection
+`expand_dispatching_dict` already performs along a `proj_path`. **Nothing new is invented for
+nesting**: `List[List[Colour]]` is one more level of a tree the channel already builds,
+projects and validates.
+
+`provides SortDomain[T = List[T = T]] requires SortDomain[T]` is a CONDITIONAL provision, and
+the channel is already built for the unbounded family that implies — `dictionary.rs`, on why
+dictionaries are not interned: *"a conditional provision composes over type arguments, so the
+distinct-dictionary family follows the carried types that actually occur (no static bound),
+while interned terms live for the KB's lifetime."* `List[List[Colour]]` needing a dictionary
+no one wrote down is the case that sentence was written for.
+
+**THE TWO RECURSIONS ARE DIFFERENT, and §0's defect is only one of them.**
+
+| | what recurses | base case | verdict |
+|---|---|---|---|
+| the TAIL, `member(?z)` above | the relation calls itself on a structurally smaller argument | `?x <=> nil()` | **fine** — the ordinary recursion `derive_domain_member_clauses` already emits |
+| §0's `rule member(?x: T) :- true` | the relation's own BOUND is enforced by the mechanism that runs the relation | none | **the defect** — the mechanism defined through itself |
+
+They look alike and are not: one is a recursive *definition*, the other a circular
+*justification*.
+
+**THE GOAL ORDER IS SEMANTIC, not style.** `derive_domain_member_clauses` states two rules
+and this clause must obey both: base constructors first (`nil` ahead of `cons`), and inside a
+branch **recursive positions first** — `tail` before `head` — so a free `?x` comes out by
+length (`[]`, `[a]`, `[b]`, `[a, a]`, …) instead of descending one spine forever. Hence
+`member(?z)` standing before `apply_domain(?ed, ?y)` above. The same limit carries over
+too: fair for ONE recursive position per constructor, and `node(l: Tree, r: Tree)` still is
+not.
+
+**AND THIS IS WHERE THE RIGID PROBLEM IS ACTUALLY SOLVED.** Write the caller polymorphically:
+
+```anthill
+operation g[X]() -> Int64 = List[T = X].domain.takeN(5).length()
+```
+
+Under any scheme that resolves the type when the clause is typed, `X` is `g`'s rigid: the
+element goal has no constructors to enumerate, and the query delays. Under this one, the
+typer resolves nothing — `g[Colour]()` threads `Dictionary(Dictionary(impl: Colour), impl:
+List)`, the clause projects `sub(0)` for its element domain, and the generator yields `[]`,
+`[red]`, `[green]`, `[blue]`, `[red, red]`, … The parameter never had to be guessed, so it
+never had to be a rigid.
+
 ## 5. What it depends on
 
 **The op→rule dictionary channel**, `channel §10 item 3`, owner **WI-20260909-NAR1X**,
@@ -203,10 +292,15 @@ Written as questions, because none of them was measured.
   sweep's population (bound clauses only), not driven, because the transform does not exist.
 - **Whether a dictionary can carry a relation at all.** A dictionary is documented as
   *immutable, acyclic and — after typing — GROUND* (`dictionary.rs`), an `(impl symbol,
-  ordered children)` tree. That is satisfied by an impl SYMBOL naming the derived domain
-  relation; it is not satisfied by a closure. So the dictionary should carry the name and
-  `apply_domain` should reach the clauses through it — but this was not checked against
-  `Dictionary::from_value`'s whole-tree validation.
+  ordered children)` tree. §4.1 relies on that being satisfied by an impl SYMBOL naming the
+  provider, with `apply_domain` reaching the clauses through it — never by a closure, which
+  would not be ground. Not checked against `Dictionary::from_value`'s whole-tree validation.
+- **Whether `apply_domain` needs the dictionary at all, or just its impl symbol.** §4.1's
+  clause projects `sub(0)` and hands the result to `apply_domain`, so what crosses is a
+  dictionary; but what `apply_domain` needs is the clauses of one relation, which the impl
+  symbol alone names. If the symbol suffices, `apply_domain` is a goal-with-a-symbol-argument
+  and not a metacall at all — which would make §3 unnecessary. This is the cheapest thing to
+  settle and was not settled.
 - **Termination and cost.** Every typed head gains two goals instead of one, and one of
   them is a dictionary search. §7's measurements are all against a single generated goal.
 - **What happens to `domain_member`.** Either it stays as the thing `apply_domain` reaches,
