@@ -17,7 +17,15 @@ channel**, instead of a relation named at compile time. Declare
 ```anthill
 sort anthill.reflect.SortDomain
   sort T = ?
-  rule member(?x: T) :- true          -- the BOUND is the whole content
+  rule member(?x)                     -- 061: DECLARES, defines nothing
+end
+
+-- derived per domain-bearing sort, inside that sort's own declaration
+sort Colour
+  entity red  entity green  entity blue
+  provides SortDomain[T = Colour]
+    rule member(?x) :- anthill.kernel.domain_member(?x, Colour)
+  end
 end
 ```
 
@@ -27,23 +35,42 @@ call — there is nothing to compute from. A domain is needed in exactly the opp
 direction: `?x` FREE must *enumerate*. Only a relation has that mode, and it is the mode
 `domain_member(?x, Colour)` already runs in.
 
-**And `:- true` is not a placeholder.** It is the shape `<Sort>.domain` is already derived
-with — `emit_domain_value_face` builds `domain(?x) :- true` and installs the bound
-`x: <Self>`, and the typing sweep then appends the member goal that makes it answer
-(060-implementation §7.1). Here the bound is `T`, the spec's own parameter, so the one
-clause is every sort's domain at once, with the dictionary saying which.
+**THE SPEC'S `member` MUST NOT CARRY A BOUND, and that is a soundness rule rather than a
+spelling preference.** The tempting spelling is `rule member(?x: T) :- true` — the shape
+`<Sort>.domain` is already derived with (`emit_domain_value_face` builds `domain(?x) :-
+true` and installs the bound `x: <Self>`; 060-implementation §7.1), and with `T` the spec's
+own parameter it reads as "every sort's domain at once, with the dictionary saying which".
+**It is self-recursive.** The typing sweep appends the member goal to every BOUND clause, so
+that spelling expands to
+
+```
+member(?x) :- domain(?x, T), domain_member(?x, T)
+```
+
+which makes `member` itself a typed head — and §4's transform rewrites every typed head's
+generated goal into `find_dictionary` + `apply_domain`, this one included. `member` would
+fetch a `SortDomain` and apply it, which runs `member`. **The mechanism's definition would
+go through the mechanism.**
+
+So `member` is DECLARED untyped in the spec and DEFINED by each provider against the kernel
+primitive, which is where the recursion bottoms out: `domain_member(?x, Colour)` reaches
+`Colour`'s derived structural clause and nothing fetches a dictionary. This is the
+bootstrap rule every such scheme needs, stated once — *the domain of the domain mechanism is
+the kernel relation, not another fetch* — and it is the reason the sketch in §0 of the first
+draft (`rule member(?x: T) :- true`) is wrong.
 
 MEASURED 2026-09-12, the three spellings, with the `provides` block written inside
 `sort Colour`:
 
 | written in the spec | verdict |
 |---|---|
-| `rule member(?x)` — untyped declaration | loads clean, 0 clauses (061: a declaration stores none) |
+| `rule member(?x)` — untyped declaration | loads clean, 0 clauses (061: a declaration stores none) — **the one this design uses** |
 | `rule member(?x: T)` — typed declaration | **REFUSED**: *"the declaration reading, where the annotation is the column's type with nothing to enforce it, is undelivered"* |
-| `rule member(?x: T) :- true` — typed clause | loads clean, 1 clause |
+| `rule member(?x: T) :- true` — typed clause | loads clean, 1 clause — and is the self-recursive one above |
 
-So a spec may carry this, and the spelling that works is the one the codebase already
-derives. The refused middle row is a real gap and is recorded in §6.
+The refused middle row is what the untyped declaration gives up: the spec states no column
+type, so nothing checks that a provider's `member` ranges over its own `T`. That is recorded
+in §6.
 
 A typed head then compiles to a clause that *fetches* its domain and then *runs* it:
 
@@ -153,20 +180,27 @@ the single largest reason this is exploratory rather than a plan.
 
 Written as questions, because none of them was measured.
 
-- **The TYPED DECLARATION is refused, and this direction may want it.** §0's measurement:
-  `rule member(?x: T)` with no body is refused because "a typed column has exactly one
-  enforcer, a rewrite's typed-pattern bound, or — on a relational CLAUSE — the generated
-  `domain(?x, T)` goal prepended to its body; a DECLARATION is neither … The declaration
-  reading, where the annotation is the column's type with nothing to enforce it, is
-  undelivered." `:- true` sidesteps it, and whether sidestepping is right — whether the
-  spec should DECLARE a shape providers fill, or CARRY the one clause they parameterise —
-  is the first thing to settle, not a detail of spelling.
+- **The spec states no column type, and there is no spelling that lets it.** §0's
+  measurement: the only two spellings that carry `?x: T` are refused (the body-less one) or
+  self-recursive (the `:- true` one), so the untyped declaration is what is left. Nothing
+  then checks that a provider's `member` ranges over its own `T` — `provides
+  SortDomain[T = Colour]` could define `member(?x) :- domain_member(?x, Letter)` and load.
+  The refusal's own message names the missing piece: "the declaration reading, where the
+  annotation is the column's type with nothing to enforce it, is **undelivered**". Whether
+  this direction needs that delivered, or whether the derivation being mechanical makes a
+  hand-written wrong provider unreachable, was not settled.
 - **Who provides it.** `provides SortDomain[T = Colour]` would have to be derived for every
   sort that derives a domain (`derive_domain_member_clauses`'s population), the way
   `<Sort>.domain` is derived in §7.1. Measured: the block loads when written inside the
   provider sort's own declaration, and is refused at namespace level ("a `provides` clause
   needs a type at its address"). That is mechanical, but it multiplies the provides facts
   by the number of domain-bearing sorts, and the dispatch cost was not measured.
+- **Whether the bootstrap really is structural.** With `member` declared untyped it carries
+  no bound, so the sweep generates nothing for it and §4's transform never reaches it; and a
+  provider's hand-written `domain_member(?x, Colour)` is not a generated goal either, so it
+  is not rewritten. That means NO exclusion list — the recursion bottoms out by shape rather
+  than by a special case, which is the property worth keeping. It was reasoned from the
+  sweep's population (bound clauses only), not driven, because the transform does not exist.
 - **Whether a dictionary can carry a relation at all.** A dictionary is documented as
   *immutable, acyclic and — after typing — GROUND* (`dictionary.rs`), an `(impl symbol,
   ordered children)` tree. That is satisfied by an impl SYMBOL naming the derived domain
