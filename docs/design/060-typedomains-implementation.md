@@ -274,57 +274,43 @@ never had to be a rigid.
 
 ## 4.2 Where the new logical variables come from
 
-§4's transform writes a variable the author did not — `?xd`, the fetched dictionary — into a
-clause that was already asserted. Nothing above says where that variable LIVES, and it is
-not a detail: a variable that is not in the rule's frame is a `Var::Global` shared by every
-firing of the rule.
+**Logically, nowhere new.** `apply_domain(?ed, ?y)` is an ordinary relation goal with an
+output argument; binding `?y` is unification, which every relation in the system already
+does. The provider's own `?y` / `?z` in §4.1 are ordinary clause variables — collected at
+the assert, De Bruijn-closed with the head and body, opened fresh per firing by
+`with_fresh_vars` — and so are the callee's when `apply_domain` activates the provider's
+`member`. There is no "create a variable" primitive to invent.
 
-**THE FAILURE IS MEASURED, on this very feature.** 060-implementation §7.2: while a bound's
-type variable was outside the frame, `rule two(?a, ?b) :- my_rule([1, 2], ?a),
-my_rule(["s"], ?b)` answered NO SOLUTIONS — the first call's `?t := Int64` refuted the
-second call's `List[T = String]`, because both firings shared one variable. That is exactly
-what a mis-placed `?xd` would do to two `p` goals in one body.
+**One MECHANICAL obligation, and it is about representation, not meaning.** §4's transform
+writes `?xd` into a clause that is ALREADY ASSERTED, and an asserted rule's variables are De
+Bruijn slots in a fixed frame. A variable the rewrite adds without growing that frame stays
+a `Var::Global` shared by every firing of the rule — measured on this feature
+(060-implementation §7.2): while a bound's type variable sat outside the frame, `rule
+two(?a, ?b) :- my_rule([1, 2], ?a), my_rule(["s"], ?b)` answered NO SOLUTIONS, the first
+call's `?t := Int64` refuting the second's.
 
-**THREE POPULATIONS, and only one of them is a question.**
+Two ways out, each with an owner already in the tree:
 
-| variables | where they come from | new work |
-|---|---|---|
-| the ones a provider's clause WRITES — `?y`, `?z` in §4.1 | ordinary clause variables: collected at the assert (`assert_rule_debruijn_with_bound_vars`), De Bruijn-closed with the head and body, opened fresh per firing by `with_fresh_vars` | none |
-| the CALLEE's, when `apply_domain` runs the provider's `member` | `with_fresh_vars` again, at that clause's own activation | none — **provided** `apply_domain` reduces to an ordinary goal activation rather than inventing its own opening; see below |
-| `?xd`, which the TRANSFORM introduces | — | **this is the question** |
+1. **Mint it before the assert**, which is what `require[X]` does — `rewrite_require_goal`
+   lowers it to `find_dictionary(Eq, out: ?<fresh>)` in the CONVERTER, so the variable is in
+   the parse tree and is collected like any other body variable. No frame surgery. But the
+   transform cannot live there: it keys on the head's BOUND, and at convert time `?x: A` is
+   still a `typed_var` marker with `A` an unresolved name.
+2. **Mint it in the typing sweep and grow the frame** — `extend_rule_frame_with_bounds`,
+   added by 5G28A for `expand_rule_head_bound_type_params`, the other pass that mints
+   post-assert. It PREPENDS: a De Bruijn index is `globals.len() - 1 - position`, so
+   inserting at the front leaves every existing index where it was, and `arity` moves with
+   `globals` so `with_fresh_vars` actually opens the new slot.
 
-**TWO PLACEMENTS FOR `?xd`, each with a precedent already in the tree.**
+Placement 2 is the reachable one. Open: whether one `?xd` per clause suffices or one per
+typed column is needed (`p(?x: A, ?y: B)` fetches two domains), and `set_rule_body_nodes`'
+constraint that fact-ness must not flip — so a body-less clause cannot be given a body this
+way (§1, and §5's body-less boundary in 060-implementation).
 
-1. **Mint it in the CONVERTER, before the rule is asserted.** This is what `require[X]`
-   already does: `rewrite_require_goal` lowers `require[Eq[T]]` to `find_dictionary(Eq, out:
-   ?<fresh>)` at parse time (convert.rs, §1). A variable minted there is in the parse tree,
-   so `assert_rule_debruijn_*` collects it like any other body variable and there is no frame
-   surgery at all. The catch is that the transform is not a converter rewrite: it keys on the
-   head's BOUND, which the converter has not resolved — at that point `?x: A` is still a
-   `typed_var` marker and `A` is a name.
-2. **Mint it in the TYPING sweep and GROW the frame.** The sweep may already rewrite a clause
-   body wholesale (`set_rule_body_nodes`, §1's first established property), and growing a
-   frame after the assert has one owner: `KnowledgeBase::extend_rule_frame_with_bounds`,
-   added by 5G28A for `expand_rule_head_bound_type_params` — the other pass that mints
-   variables post-assert. **It PREPENDS, and that is what makes it safe rather than a
-   renumbering**: a De Bruijn index is `globals.len() - 1 - position`, so inserting at the
-   FRONT moves every existing variable one position later and leaves its index exactly where
-   it was, while the new variables take the indices above the old top. `arity` moves with
-   `globals` because `with_fresh_vars` mints exactly `arity` fresh variables and indexes them
-   by De Bruijn index — a frame grown without it would leave the new slot unopened, which is
-   the sharing above.
-
-Placement 2 is the one the transform can actually reach, and it has the owner it needs. What
-is NOT worked out is whether one `?xd` per clause suffices or one per typed column is needed
-(`p(?x: A, ?y: B)` fetches two domains), and how that interacts with `set_rule_body_nodes`'
-one constraint — that fact-ness must not flip, so a body-less clause cannot be given a body
-this way (§1, §5's body-less boundary).
-
-**AND THE CALLEE MUST NOT BE SPECIAL.** The second row above holds only if `apply_domain`
-selects the provider's `member` clauses and lets the ORDINARY activation open them — the
-`with_fresh_vars` path `step_choice_point` already takes — rather than opening a clause
-itself. Stated as a constraint on §3's builtin because the alternative is a second clause
-opener, and two openers is how a frame invariant comes to be true in one of them.
+**And `apply_domain` must not open clauses itself** — it selects the provider's `member` and
+lets the ordinary activation open them, the `with_fresh_vars` path `step_choice_point`
+already takes. Stated because the alternative is a second clause opener, and two openers is
+how a frame invariant comes to hold in only one of them.
 
 ## 5. What it depends on
 
