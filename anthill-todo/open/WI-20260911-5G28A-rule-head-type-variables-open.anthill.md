@@ -642,3 +642,111 @@ deleted). Nothing was built.
    two loader sites, two typer sites, two eval sites, a KB accessor, and the WT8WG lift.
    scaland: no twin (05:43 note), `sbt test` a no-regression check.
 
+### 2026-09-12T07:14:48Z — feedback — claude
+
+THE PLAN'S CORPUS CENSUS WAS WRONG, AND MEASURING IT REOPENED DECISION B. Session with the
+user, 2026-09-12. L1 (the head-shape change) was BUILT and the head/bound wiring VERIFIED; it
+is not committed, because the measurement it produced argues for a different mechanism.
+
+1. THE CENSUS. §1 of the 06:17 plan says a text census "finds ZERO relational rules declared
+   inside a parameterised sort body — the only rules inside one are wi383's two `CpsMonad`
+   EQUATIONS". FALSE. Measured by building the append and instrumenting it on a stdlib load:
+   SEVEN clauses under FOUR predicates, none of which carries a head bound at all.
+
+     anthill.prelude.Set.eq/2         1 clause    in Set[T]
+     anthill.prelude.Set.subset/2     2 clauses   in Set[T]
+     anthill.prelude.Set.contains/2   2 clauses   in Set[T]
+     anthill.prelude.Lattice.less/2   2 clauses   in BoundedLattice (`sort T = ?` spelling)
+
+   Plus fixtures: `parameterized_provides_block_test`'s `Stack.is_full`, wi752's `Mid.rel`.
+   13 tests red, and one group names the reach the plan's site list does not contain: wi616 /
+   wi625 / wi939 drive `Set.eq` through the SPEC-OP DISPATCH bridge, which builds its goal at
+   the WRITTEN arity. An in-band head slot changes arity, so every such site must be found.
+
+2. L1 ITSELF WORKS, and the wiring the plan predicted is confirmed. Probe on `sort Wrap[T]
+   { rule dom(?x: Wrap[T = T]) :- true }`: with the slot appended, `globals = [x, T]` and the
+   stored bound is `Wrap[T = DeBruijn(0)]` — the bound closed to the SAME index as the slot,
+   so pinning one pins the other with nothing in between, exactly as §2 claimed. A written `T`
+   in a rule-head bound also lowers to the canonical `Var::Global`, not to `Term::Ref` (the
+   plan's v1), so the slot can carry the same term.
+
+3. AND FOUR BOUNDS ANSWER FOUR WAYS, which is a defect the ticket names and does not implement:
+
+     rule (inside `sort Wrap[T]` unless noted)   stored bound         its `T` is
+     `written(?x: Wrap[T = T])`                  Wrap[T = <db 0>]     the CANONICAL Wrap.T
+     `bare(?x: Wrap)`                            Wrap[T = <db 2>]     a FRESH clause variable
+     `other(?x: List)`                           List[T = <db 2>]     a FRESH clause variable
+     `outside(?x: Wrap)` at top level            Wrap[T = <db 1>]     a FRESH clause variable
+
+   `written` and `bare` MEAN DIFFERENT THINGS SILENTLY. Gap (3)'s own text says they should
+   not — "the self-reference stays its own rule keyed by declaration context
+   (`repair_self_reference`: a bare `List` inside `List`'s OWN definition is the same element
+   type)" — but `expand_unwritten_type_params` has no such arm; it mints fresh unconditionally.
+   That sentence is UNIMPLEMENTED for a rule-head bound, whichever mechanism ships.
+
+4. THE USER'S QUESTION SETTLED ONE THING OUTRIGHT: "when we have p(x: List) :- … then we should
+   have slot for T?" — NO. Gap (3), delivered, mints `List`'s `T` as an ordinary CLAUSE
+   variable opened fresh per firing, and that is the right reading: `p(?x: List)` means "for
+   any list, whatever its element type". A channel there would let a caller pin something `p`
+   never promised. THE RECEIVER'S PARAMETER IS THE ONLY ONE IN QUESTION.
+
+5. THE COMPARISON THE USER ASKED FOR — against the requires subtree — AND WHAT IT SAYS. Read
+   at the sites, the requirement channel has four properties:
+     * its SHAPE IS DECLARED, never inferred: `dict_layout` = `direct_requires_chain_rc(spec)`
+       + `provider_dict_entries(provider)`, a structural recursion over declarations. There is
+       no fixpoint over the call graph anywhere in it.
+     * EVERY MEMBER CARRIES IT, read or not (`Frame::requirements`, populated on frame push).
+     * A NESTED CALL GETS IT BY PROJECTING A SUBTREE: `Frame::child_context()` clones the
+       channel wholesale into the child, and a nested dispatch walks `proj_path` with
+       `dict.sub(k)`; `expand_dispatching_dict` hands the callee exactly its own half.
+     * THE TWO ENDS ARE CHECKED AGAINST ONE PREDICTED SHAPE (`dict_layout` vs
+       `DictLayout::from_halves`, `divergence_from`), loud on disagreement.
+   The declared/inferred axis rules the FIXPOINT out: this codebase decides who carries a
+   context channel from a DECLARATION, never from who-calls-whom. But the reason requires can
+   afford "every member carries it" is that a dictionary is OUT OF BAND and PER-ACTIVATION — it
+   changes no arity, no discrimination key, no call site. A hidden slot is IN BAND, which is
+   precisely why the uniform rule went red on the dispatch bridge. The analogy transfers only
+   if the type channel moves out of band too.
+
+6. SO DECISION B'S PREMISE WAS RE-READ, AND IT IS THE CODEBASE'S OWN KNOWN-FALSE CLAIM.
+   Decision B rests on "a rule has no frame channel — its head is its only interface".
+   `resolve.rs:840` documents that sentence as a defect: the claim "a rule has no caller to
+   thread a dictionary into a frame" is "written in `kb/typing.rs` and in
+   `docs/design/requirement-dictionaries.md`, and FALSE … What this frame lacks is a
+   requirement channel; it has callers, and it already threads a caller-inherited environment
+   in `assumed_facts`." Decision B's own MEASUREMENT stands (`eval::build_relation_value` does
+   build the query from the head alone) — but that is a fact about today's code path, not
+   about what a rule can have.
+
+7. AND THE OUT-OF-BAND ROUTE IS REACHABLE, verified at the sites:
+     * THE BOUND IS ALREADY ENFORCED BY A BODY GOAL, not by a head match, on the SLD route:
+       `install_typed_head_domain_goals` appends `domain(?x, Wrap[T = ?T])` with `?T` a frame
+       slot. So `Wrap[T = Colour].dom` floundering today is exactly "nothing binds the opened
+       `?T`" — not "the head cannot carry it".
+     * THE GOAL IS IN SCOPE AT THE CLAUSE ACTIVATION: `step_choice_point` holds
+       `original_goal: Value` and calls `kb.with_fresh_vars(rid, &tree_subst)` at resolve.rs
+       ~4400.
+     * THE PIN IS ALREADY BUILT: `pin_type_vars` (gap 2) is "match a determined type against a
+       variable-bearing bound, binding what stands opposite each variable", and
+       `typed_pattern_bounds_hold` already opens a stored bound with `term_from_debruijn(bound,
+       fresh)`. Binding the clause's `?T` from a CALLER-supplied type is the same call with a
+       different source.
+     * WHAT IS NOT VERIFIED, said plainly: the citation's goal is a `Value::Entity` built by
+       `build_relation_value` (`pattern_query(term: …)`), so it carries NO occurrence and no
+       `resolved_type_args` today; that carrier would have to change. And `with_fresh_vars`
+       returns `(fresh_nodes, answer_links)`, not the fresh frame, so the opened slot's VarId
+       is not currently handed back.
+
+8. THE TRANSITIVITY QUESTION SURVIVES BOTH MECHANISMS, and requires answers it. Acceptance row
+   (g)'s `rule again(?y) :- dom(?y)` cited as `Wrap[T = Colour].again`: `again` has no bound,
+   so out of band there is nothing to pin, exactly as in band there is no slot to fill. The
+   requires analogue is `child_context()` — the channel is INHERITED by the body's goals, a
+   dynamically-scoped type environment keyed by (sort, parameter), which the resolver frame
+   already has the shape for (`assumed_facts`). That is a design choice, not a detail: it is
+   dynamic scoping, and an inner goal's own bracket would have to shadow it.
+
+NOTHING IS COMMITTED. The L1 tree (head append, `hidden_slot_params_of*`, the
+`rule_head_var_slots` exclusion, `emit_domain_value_face`'s parameterised arm) exists in the
+working tree as the measurement that produced §1–§3, and is to be kept or discarded by the
+mechanism decision above.
+
