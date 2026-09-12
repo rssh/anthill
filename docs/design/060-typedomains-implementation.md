@@ -17,11 +17,35 @@ channel**, instead of a relation named at compile time. Declare
 ```anthill
 sort anthill.reflect.SortDomain
   sort T = ?
-  operation member(x: T) -> Bool      -- the shape; see §6 for what it really is
+  rule member(?x: T) :- true          -- the BOUND is the whole content
 end
 ```
 
-and a typed head compiles to a clause that *fetches* its domain and then *runs* it:
+**It is a RELATION and not an operation, and the difference is the point.** An operation is
+a function: `member(red())` could answer `Bool`, but `member(?x)` with `?x` unbound is not a
+call — there is nothing to compute from. A domain is needed in exactly the opposite
+direction: `?x` FREE must *enumerate*. Only a relation has that mode, and it is the mode
+`domain_member(?x, Colour)` already runs in.
+
+**And `:- true` is not a placeholder.** It is the shape `<Sort>.domain` is already derived
+with — `emit_domain_value_face` builds `domain(?x) :- true` and installs the bound
+`x: <Self>`, and the typing sweep then appends the member goal that makes it answer
+(060-implementation §7.1). Here the bound is `T`, the spec's own parameter, so the one
+clause is every sort's domain at once, with the dictionary saying which.
+
+MEASURED 2026-09-12, the three spellings, with the `provides` block written inside
+`sort Colour`:
+
+| written in the spec | verdict |
+|---|---|
+| `rule member(?x)` — untyped declaration | loads clean, 0 clauses (061: a declaration stores none) |
+| `rule member(?x: T)` — typed declaration | **REFUSED**: *"the declaration reading, where the annotation is the column's type with nothing to enforce it, is undelivered"* |
+| `rule member(?x: T) :- true` — typed clause | loads clean, 1 clause |
+
+So a spec may carry this, and the spelling that works is the one the codebase already
+derives. The refused middle row is a real gap and is recorded in §6.
+
+A typed head then compiles to a clause that *fetches* its domain and then *runs* it:
 
 ```
 rule p(?x: A) :- g
@@ -129,15 +153,20 @@ the single largest reason this is exploratory rather than a plan.
 
 Written as questions, because none of them was measured.
 
-- **What `SortDomain[T]` actually declares.** §0 writes `operation member(x: T) -> Bool`,
-  which is the wrong shape: a *predicate* that also generates in mode (out) is not an
-  operation returning `Bool`. The honest declaration is probably a relation, and specs
-  declaring relations rather than operations is a question 060 has not asked anywhere else.
-- **Who provides it.** `provides SortDomain[Colour]` would have to be derived for every
+- **The TYPED DECLARATION is refused, and this direction may want it.** §0's measurement:
+  `rule member(?x: T)` with no body is refused because "a typed column has exactly one
+  enforcer, a rewrite's typed-pattern bound, or — on a relational CLAUSE — the generated
+  `domain(?x, T)` goal prepended to its body; a DECLARATION is neither … The declaration
+  reading, where the annotation is the column's type with nothing to enforce it, is
+  undelivered." `:- true` sidesteps it, and whether sidestepping is right — whether the
+  spec should DECLARE a shape providers fill, or CARRY the one clause they parameterise —
+  is the first thing to settle, not a detail of spelling.
+- **Who provides it.** `provides SortDomain[T = Colour]` would have to be derived for every
   sort that derives a domain (`derive_domain_member_clauses`'s population), the way
-  `<Sort>.domain` is derived in §7.1. That is mechanical, but it multiplies the provides
-  facts by the number of domain-bearing sorts, and the dispatch cost of that was not
-  measured.
+  `<Sort>.domain` is derived in §7.1. Measured: the block loads when written inside the
+  provider sort's own declaration, and is refused at namespace level ("a `provides` clause
+  needs a type at its address"). That is mechanical, but it multiplies the provides facts
+  by the number of domain-bearing sorts, and the dispatch cost was not measured.
 - **Whether a dictionary can carry a relation at all.** A dictionary is documented as
   *immutable, acyclic and — after typing — GROUND* (`dictionary.rs`), an `(impl symbol,
   ordered children)` tree. That is satisfied by an impl SYMBOL naming the derived domain
