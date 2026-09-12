@@ -284,20 +284,25 @@ the single largest reason this is exploratory rather than a plan.
 
 Written as questions, because none of them was measured.
 
-- **Nothing states what `member` ranges over, and no spelling available today can.** The
-  argument of a relational head is a COLUMN (WI-714), and a column gets its TYPE from the
-  `?x: T` bound written on that head — it is how the derived `<Sort>.domain` gets `x:
-  <Self>`. §0's declaration is `rule member(?x)`, whose one column carries no bound, so the
-  spec says only *"there is a relation `member` of one argument"* and nothing about that
-  argument being a `T`. MEASURED 2026-09-12: under `provides SortDomain[T = Colour]`, a
-  provider that defines `member(?x) :- domain_member(?x, Letter)` — the wrong sort entirely
-  — **loads clean**, exactly as the right one does. The two spellings that WOULD state the
-  column's type are both unavailable: `rule member(?x: T)` is refused, and its own refusal
-  names the gap ("the declaration reading, where the annotation is the column's type with
-  nothing to enforce it, is **undelivered**"), while `rule member(?x: T) :- true` is §0's
-  self-recursive one. Whether this direction needs that reading delivered, or whether
-  deriving every provider mechanically makes a hand-written wrong one unreachable, was not
-  settled.
+- **The spec cannot state what `member` ranges over — KNOWN, and it appears to cost
+  nothing.** Kept here so it is not rediscovered as a blocker. The argument of a relational
+  head is a COLUMN (WI-714) and a column takes its TYPE from the `?x: T` bound written on
+  that head, which is how the derived `<Sort>.domain` gets `x: <Self>`. §0's `rule
+  member(?x)` carries no bound, so the spec says only *"there is a relation `member` of one
+  argument"*; and neither spelling that would say more is available — `rule member(?x: T)`
+  is refused ("the declaration reading, where the annotation is the column's type with
+  nothing to enforce it, is **undelivered**") and `rule member(?x: T) :- true` is §0's
+  self-recursive one. **Nothing reads that type, which is why it costs nothing.** At run
+  time there is no declared type to read: a `Value` carries none, and a value's sort is
+  RECOVERED from its constructor (`value_type_term`, WI-578 — the read
+  `pin_bound_from_value` already makes). In the transform, `?x` is typed from `p`'s OWN
+  bound `A` in `p(?x: A)`, never from `member`'s column; `apply_domain` is a resolver
+  builtin and by then everything is `Value`. What the missing type would buy is a STATIC
+  check that a provider ranges over its own `T` — MEASURED 2026-09-12: under `provides
+  SortDomain[T = Colour]`, a provider defining `member(?x) :- domain_member(?x, Letter)`
+  loads clean, exactly as the right one does — and every provider here is derived, so a
+  hand-written wrong one is not on the path. It becomes a real question only if providers
+  are ever written by hand.
 - **Who provides it.** `provides SortDomain[T = Colour]` would have to be derived for every
   sort that derives a domain (`derive_domain_member_clauses`'s population), the way
   `<Sort>.domain` is derived in §7.1. Measured: the block loads when written inside the
