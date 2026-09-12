@@ -274,8 +274,16 @@ declared arity with zero and refuse every written occurrence — blaming the use
 for a bad fact. And a project declaring its **own** `Pair` in a sibling file wins when
 the caller includes that file in `ScalaTypes.resolve(projectFiles = ...)`; omitting
 the sibling deliberately restores the prelude fallback. An explicit `import` of
-another package still shadows the auto-import and is refused, since Bootstrap emits
-no Scala `import`.
+another package shadows the auto-import and is answered by the package it names: where
+the closure emits into that package the name is placed there fully qualified
+(`import anthill.prelude.algebra.{Ring}` inside `anthill.prelude` emits
+`_root_.anthill.prelude.algebra.Ring`), and where no supplied file declares the leaf
+there it is refused. Bootstrap emits no Scala `import` — it does not need one, since
+every non-local name is written out in full; what it cannot do is follow an import out
+of the emitted closure. An `import` names its package absolutely, unlike a written
+`a.b.c`, whose head is read in the enclosing namespace first (kernel §"a.b.c — relative,
+and only relative"), so the two spellings coincide only when no nearer reading of the
+head exists.
 
 `rust_std`'s hardcoded `map_primitive_type` (`rustland/anthill-core/src/codegen/rust.rs`)
 is **explicitly out of scope here**: it is a different backend in a different

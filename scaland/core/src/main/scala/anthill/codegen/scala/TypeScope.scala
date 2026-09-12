@@ -239,7 +239,9 @@ enum Placement:
     * package is where the name lives. It is a GUESS when they differ: a file emitting into
     * `anthill.reflect` that reaches a prelude name through the auto-import gets
     * `anthill.reflect.Foo`. No file does that today (the reflect namespace imports
-    * explicitly, and an explicit import is [[Unplaceable]] rather than this), and
+    * explicitly, and an explicit import is answered by [[TypeScope.importPlacement]] —
+    * placed against the package it names, or refused there — rather than reaching this),
+    * and
     * the wrong guess still fails at compile time rather than resolving to
     * something else — but it fails naming a package the reader did not write.
     *
@@ -440,11 +442,31 @@ case class TypeScope(
     * otherwise refuse.
     *
     * THE AUTO-IMPORT TABLE SITS BELOW what this file and the mentioning declaration's
-    * project package say, including their negative answers. [[shadowsThePrelude]] then
-    * handles explicit imports, and its every answer is a refusal. That ordering is
-    * anthill's own — a local/project declaration and an explicit `import` both shadow
-    * the auto-import — and it stopped being a formality when WI-1060 derived the table:
-    * six hand-picked names could rarely collide, every prelude sort collides often. */
+    * project package say, including their negative answers. [[importPlacement]] then
+    * handles explicit imports. That ordering is anthill's own — a local/project
+    * declaration and an explicit `import` both shadow the auto-import — and it stopped
+    * being a formality when WI-1060 derived the table: six hand-picked names could
+    * rarely collide, every prelude sort collides often.
+    *
+    * THE IMPORT RUNG CAN NOW PLACE, AND THAT MAKES ITS POSITION LOAD-BEARING — this
+    * paragraph used to say "its every answer is a refusal", which is what made the
+    * order above it safe to state without measuring. A rung that can only refuse is
+    * order-insensitive: whatever answers first, the import's own answer was the same
+    * either way. One that PLACES is not, and three links above it can now take a name
+    * an explicit `import` claimed:
+    *  - [[types.hostScalar]] (link 2) has no package guard at all, while [[inPackage]]
+    *    gates the same question on `owner == types.autoImportPackage` — so a project's
+    *    own `String` or `Unit`, imported by name, still reads as the host scalar;
+    *  - [[filePlacement]]'s `elsewhere` scan (link 4) returns a unique same-file
+    *    declaration from ANY package, which is not a scope relation, and its `many` arm
+    *    refuses as ambiguous what the import had already disambiguated;
+    *  - [[types.packagePlacement]] (link 5) walks dotted ANCESTORS, and for a mention
+    *    written in a NESTED namespace every parent package outranks the import.
+    * All three predate this rung's ability to place — the import was ignored in exactly
+    * the same cases before, and the name was captured rather than refused — so none is
+    * a regression, and none is measured by the corpus (no prelude file imports a leaf
+    * that any of the three also answers). They are recorded here because the premise
+    * that made them invisible is gone, and the ordering is the next thing to re-take. */
   private def place(anthillLeaf: String): Placement =
     // WI-1062 adds no link: an erased effect parameter is a PARAMETER, so it
     // answers from the same first link every other one does. That it cannot be
@@ -456,7 +478,7 @@ case class TypeScope(
       .orElse(enclosing.filter(_.anthillName == anthillLeaf).map(Placement.Enclosing(_)))
       .orElse(filePlacement(anthillLeaf))
       .orElse(types.packagePlacement(writtenIn, anthillLeaf))
-      .orElse(shadowsThePrelude(anthillLeaf))
+      .orElse(importPlacement(anthillLeaf))
       .orElse(types.preludeSort(anthillLeaf))
       .orElse(types.preludeNotEmitted(anthillLeaf))
       .getOrElse(ambient(anthillLeaf))
@@ -685,8 +707,8 @@ case class TypeScope(
             s"none visible from `$writtenIn`; a bare mention cannot choose one"))
     }
 
-  /** What THIS FILE says about the name, where that displaces the auto-imported
-    * prelude — and every such answer is a refusal.
+  /** What an explicit `import` in scope says about the name — it PLACES by the package
+    * it names, and refuses only where that package cannot answer.
     *
     * BEFORE the prelude table and not after it, which is anthill's own scoping rule:
     * a local declaration and an explicit `import` both shadow the auto-import. Read
@@ -695,23 +717,64 @@ case class TypeScope(
     * a different library's type, compiled green. That mattered little while the
     * prelude table was six hand-picked names; WI-1060 derived it, so it is now every
     * sort the prelude emits and the collision surface is ten times wider.
+    *
+    * IT USED TO REFUSE UNCONDITIONALLY, and that over-reached. The refusal read
+    * "Bootstrap emits no Scala `import`, so a bare mention cannot reach it" — true of
+    * `anthill.reflect`, the case it was written for, and false of any package the
+    * closure EMITS, because Bootstrap writes every non-local name out fully qualified
+    * and needs no `import` to reach one. field.anthill's `requires Ring[T]` is the
+    * corpus instance: `Ring` is declared in `anthill.prelude.algebra`, a nested
+    * namespace the prelude closure emits, and refusing it took the whole `Field`
+    * declaration out of the output for a type that was in the tree.
+    *
+    * SO IT ASKS [[inPackage]], WHICH IS WHAT [[placeQualified]] ASKS once a written
+    * path has resolved its head — one composer for "what does ONE package say", so the
+    * two positions that name a package cannot come to disagree about one. Its first two
+    * rungs are dead here by this arm's own guard (`from` is neither [[writtenIn]] nor
+    * the auto-import package), and the two that matter are exactly the ones a bare
+    * [[ScalaTypes.exactPlacement]] misses: a package THIS FILE declares into, and a leaf
+    * that package declares and Bootstrap emits no type for. Without them the refusal
+    * below fires for a package that is plainly present and says something false about it.
+    *
+    * THE TWO SPELLINGS ARE NOT ONE QUESTION, and the difference is the kernel's. An
+    * `import` names its package ABSOLUTELY, while a written `a.b.c` is "relative, and
+    * only relative" (kernel §"a.b.c — relative, and only relative"), so
+    * [[placeQualified]] reads its head in the ENCLOSING namespace first. Inside
+    * `namespace my.app`, `import other.lib.{Ring}` means `other.lib` outright, while a
+    * written `other.lib.Ring` means `my.app.other.lib.Ring` where that exists. They
+    * agree exactly when no nearer reading of the head does — which is every corpus case,
+    * and all the fixture pins. Pinning them equal in GENERAL would pin the wrong rule.
     */
-  private def shadowsThePrelude(anthillLeaf: String): Option[Placement] =
+  private def importPlacement(anthillLeaf: String): Option[Placement] =
     importedFrom.get(anthillLeaf) match
       // AN IMPORT OF THE PRELUDE ITSELF IS NOT A SHADOW — it names the same
       // declaration the auto-import would have found, and half the prelude writes
       // one (`cell.anthill`'s `import anthill.prelude.{Unit, Modifiable, …}`). Only
-      // an import from ELSEWHERE displaces the table, and then it is unreachable.
+      // an import from ELSEWHERE displaces the table.
       case Some(from) if from != writtenIn && from != types.autoImportPackage =>
-        // Provably wrong: the import says the name lives in ANOTHER package, and
-        // Bootstrap emits no Scala `import`, so the bare mention cannot reach it.
-        // `Term` / `NodeOccurrence` from `anthill.reflect` are this case, and
-        // emitting the Scala import would only move the failure — the reflect
-        // namespace is outside the generated closure.
-        Some(Placement.Unplaceable(
-          s"`$anthillLeaf` is imported from `$from`, but this declaration is emitted " +
-          s"into package `$emittedPkg` and Bootstrap emits no Scala `import`, so a bare " +
-          "mention cannot reach it"))
+        // The package the import NAMES, asked with no walk: an import writes one package
+        // down, so one package answers — positively, or with its own negative (a leaf it
+        // declares and Bootstrap emits no type for is refused in the DECLARATION's
+        // words, not the import's).
+        inPackage(from, anthillLeaf).orElse(Some(
+          // TWO MISSES, TWO REASONS, and they are not one fact. `inPackage` returning
+          // None says the LEAF is absent; whether the PACKAGE is absent is
+          // [[packageExists]]'s question. Conflated, the message told an author to widen
+          // a closure that already held the file, and widening it did not move the text.
+          if packageExists(from) then Placement.Unplaceable(
+            s"`$anthillLeaf` is imported from `$from`, and Bootstrap can see that " +
+            s"package, but nothing in it declares `$anthillLeaf` — so the import names " +
+            "no type in the emitted tree, and Bootstrap emits no Scala `import` that " +
+            "could reach one elsewhere")
+          else Placement.Unplaceable(
+            // The import leaves the generated tree entirely. `Term` / `NodeOccurrence`
+            // from `anthill.reflect` are this case under the narrow closure; widen it
+            // and they are refused one rung above instead, as the abstract sorts they
+            // are, which is what emitting a Scala `import` would only have moved.
+            s"`$anthillLeaf` is imported from `$from`, but this declaration is emitted " +
+            s"into package `$emittedPkg`, no supplied file declares anything in " +
+            s"`$from`, and Bootstrap emits no Scala `import`, so a bare mention cannot " +
+            "reach it")))
       case _ => None
 
   /** Nothing Bootstrap can see places the name, and nothing it can see says the name

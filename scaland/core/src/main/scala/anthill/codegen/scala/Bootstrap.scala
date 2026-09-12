@@ -549,6 +549,45 @@ object Bootstrap:
   private def importedNames(
     sym: SymbolTable, imports: IndexedSeq[Import], outer: Map[String, String]
   ): Map[String, String] =
+    // TWO IMPORTS OF ONE LEAF IN ONE SCOPE IS AMBIGUOUS, NOT LAST-WINS. This folded with
+    // `acc ++ …`, so `import a.lib.{Config}` followed by `import b.lib.{Config}` silently
+    // kept `b.lib` and swapping the two source lines changed every emitted `Config` with
+    // no diagnostic. That cost nothing while an import from elsewhere could only ever be
+    // refused — both spellings produced the same refusal — and became load-bearing the
+    // moment `TypeScope.importPlacement` started PLACING by the package an import names.
+    //
+    // SAME SCOPE ONLY: `outer` is the enclosing namespace's answer and a sort's own
+    // import is entitled to shadow it, which is ordinary nesting. What cannot be read is
+    // two answers at ONE level, so the check is over `imports` and the fold starts from
+    // `outer` untouched.
+    //
+    // REFUSED HERE AND NOT AT THE USE SITE, which costs the whole scope rather than the
+    // one declaration that mentions the name — the one place this deliberately steps
+    // outside WI-1080's per-declaration granularity. An unreadable import table is not a
+    // property of any single declaration, and every declaration under it would otherwise
+    // have to report the same ambiguity separately. MEASURED: no file in `stdlib/anthill`
+    // imports one leaf from two packages, so nothing in the corpus reaches this.
+    val collisions = imports.iterator.flatMap { imp =>
+      val path = imp.path.segments.map(sym.name)
+      imp.kind match
+        case ImportKind.Selective(names) =>
+          val from = Names.scalaPackagePath(path)
+          names.iterator.map(n => sym.name(n.last) -> (from, imp.path.span))
+        case ImportKind.Plain if path.length > 1 =>
+          Iterator.single(path.last -> (Names.scalaPackagePath(path.dropRight(1)), imp.path.span))
+        case _ => Iterator.empty
+    }.toIndexedSeq.groupBy(_._1).collect {
+      case (leaf, entries) if entries.map(_._2._1).distinct.length > 1 => (leaf, entries)
+    }
+    collisions.headOption.foreach { case (leaf, entries) =>
+      val froms = entries.map(_._2._1).distinct.sorted
+      throw BootstrapError(
+        s"`$leaf` is imported from ${froms.map(p => s"`$p`").mkString(" and ")} in one " +
+        "scope, so a bare mention of it names two packages. Bootstrap emits every " +
+        "non-local name fully qualified and cannot write an ambiguity down; drop one " +
+        "import, or write the type with its package prefix at each occurrence",
+        entries.map(_._2._2).minBy(sp => (sp.start, sp.end)))
+    }
     imports.foldLeft(outer) { (acc, imp) =>
       val path = imp.path.segments.map(sym.name)
       imp.kind match
@@ -559,6 +598,14 @@ object Bootstrap:
           acc + (path.last -> Names.scalaPackagePath(path.dropRight(1)))
         // A wildcard names nothing in particular, and a single-segment plain
         // import names a package rather than a member; neither places a name.
+        //
+        // THE WILDCARD IS A KNOWN GAP, not a decision: `import other.lib.*` records
+        // nothing, so a bare leaf falls through to the auto-import table and can be
+        // captured by a prelude sort of the same name — while the SELECTIVE spelling of
+        // the same import is now placed against `other.lib`. One program, two meanings,
+        // by spelling. Closing it needs the package's whole leaf set at this point,
+        // which `emittedTypes` has and this walk is not given; no stdlib file writes a
+        // cross-package wildcard, so nothing in the corpus reaches it today.
         case _ => acc
     }
 

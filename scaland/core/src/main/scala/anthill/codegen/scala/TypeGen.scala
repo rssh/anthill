@@ -266,9 +266,11 @@ object TypeGen:
   // WI-1021 DECIDED WHICH NAME GOES IN WHICH TABLE and that decision is unchanged;
   // its reasoning, and the defects it measured, are on [[ScalaTypes]].
   //
-  // IMPORTS AND SIBLING FILES (WI-1060/WI-1067). `TypeScope.shadowsThePrelude`
-  // refuses a project writing `import my.lib.{Numeric}` rather than emitting
-  // `_root_.anthill.prelude.Numeric` — a different library's type. A declaration in a
+  // IMPORTS AND SIBLING FILES (WI-1060/WI-1067). `TypeScope.importPlacement` answers a
+  // project writing `import my.lib.{Numeric}` from `my.lib` rather than emitting
+  // `_root_.anthill.prelude.Numeric` — a different library's type. It PLACES where the
+  // closure holds that package (`_root_.my.lib.Numeric`) and refuses where it does not;
+  // either way the auto-import table does not get to capture the name. A declaration in a
   // sibling project file is not an import: the caller supplies its complete parsed
   // project to `ScalaTypes.resolve`, whose package-keyed table is consulted before the
   // auto-import table. Thus `my.app.Pair` wins from another file in `my.app`, while a

@@ -1012,19 +1012,27 @@ class BootstrapTest extends munit.FunSuite:
   // caught. Every one asserts the message NAMES the declaration and is LOCATED —
   // a refusal that says only "cannot emit" recreates the blindness it replaced.
 
-  test("WI-1055 B1: a name imported from ANOTHER package is refused, not emitted bare") {
-    // `effects.anthill` writes `import anthill.reflect.{NodeOccurrence, Term}` and
-    // its sorts emit into `anthill.prelude`. A bare `NodeOccurrence` there reaches
-    // nothing, and Bootstrap can PROVE it: the import says which package the name
-    // lives in, and Bootstrap emits no Scala `import`.
+  test("WI-1055 B1: a name imported from a package OUTSIDE the closure is refused") {
+    // `effects.anthill` writes `import anthill.reflect.{NodeOccurrence, Term}` and its
+    // sorts emit into `anthill.prelude`. Under this closure no supplied file declares
+    // anything in `anthill.reflect`, so the import leads out of the emitted tree, and
+    // Bootstrap can PROVE it: the import says which package the name lives in.
+    //
+    // OUTSIDE THE CLOSURE is the whole of the claim, and the title used to say "ANOTHER
+    // package", which was the rule before `TypeScope.importPlacement` consulted the
+    // package an import names. An import from another package that the closure DOES
+    // emit is now PLACED there (`anthill.prelude.algebra.{Ring}`), not refused — the
+    // WI-1060 test below drives both halves. What stays refused is an import the
+    // emitted tree cannot follow, which is this one.
     //
     // This is the half of B1 that is decidable. The other half — a bare name a
     // sibling file declares in the same package — is NOT refused, and has its own
     // control below.
     //
-    // FAILS WHEN BACKED OUT: drop the `importedFrom` arm of `TypeScope.unreachable`
-    // and this file emits `case class MatchFailed(occurrence: NodeOccurrence, ...)`
-    // with no refusal at all.
+    // FAILS WHEN BACKED OUT: drop the `importedFrom` arm of `TypeScope.importPlacement`
+    // (the name has been `unreachable` and `shadowsThePrelude` in this comment's
+    // lifetime; it is the arm that reads `importedFrom`) and this file emits
+    // `case class MatchFailed(occurrence: NodeOccurrence, ...)` with no refusal at all.
     val err = intercept[BootstrapError](
       gen(parseStdlib("anthill/prelude/effects.anthill")))
     assert(err.getMessage.contains("NodeOccurrence"),
@@ -2179,13 +2187,32 @@ class BootstrapTest extends munit.FunSuite:
       ("arithmetic", "Multiplicative", "trait Multiplicative[T]:"),
       // WI-20260824-VT8CF — the FIRST rows carrying BOTH clause kinds on one sort, which
       // is why they are worth listing rather than just repairing. `Divisible` comes from
-      // a `provides` (the is-a conversion, as `Ord`'s and `Eq`'s rows above do) and
-      // `Numeric` from a `requires`; the emitted `extends` list holds them together, so a
+      // a `provides` (the is-a conversion, as `Ord`'s and `Eq`'s rows above do) and the
+      // others from a `requires`; the emitted `extends` list holds them together, so a
       // rule that read only one clause kind per sort would drop half of each line here.
       // `Field` gained its `Divisible` when `div` moved off it onto the shared base.
+      //
+      // TWO REQUIREMENTS NOW, AND ONE OF THEM IS CROSS-PACKAGE. `Field requires Ring,
+      // not Numeric` (commit cb875e77): `Numeric` carries `requires PartialOrd[T]`, so
+      // requiring it made every field owe an ORDER, and the complex numbers and the
+      // finite fields have none. `Ring` is the Ord-free base, and it is declared in the
+      // NESTED namespace `anthill.prelude.algebra` — so this is the corpus's only row
+      // whose supertrait is reached through an `import` of another package, and it
+      // emits `_root_.anthill.prelude.algebra.Ring[T]` for the same reason
+      // `PartialOrd`'s row emits a qualified `PartialEq`: Bootstrap writes every
+      // non-local name out in full and emits no Scala `import`. `PartialEq` is the
+      // second requirement, written out beside `Ring` because the guards in this file
+      // spell `eq`/`neq`.
+      //
+      // THIS ROW IS THE CORPUS INSTANCE OF THE IMPORT RULE, not just a supertrait pin:
+      // back out `TypeScope.importPlacement`'s consultation of the named package and
+      // it does not merely change, it THROWS — `Ring` is refused as unreachable, and
+      // `Field` leaves the output altogether — it made the WI-1055 refusal set SEVEN
+      // files instead of six for the six days between that stdlib commit and this fix,
+      // which is how the regression was found.
       ("field", "Field",
         "trait Field[T] extends _root_.anthill.prelude.Divisible[T], " +
-        "_root_.anthill.prelude.Numeric[T]:"),
+        "_root_.anthill.prelude.algebra.Ring[T], _root_.anthill.prelude.PartialEq[T]:"),
       // …and this one mixes the two QUALIFICATIONS as well as the two clause kinds:
       // `Divisible` is in the same file so it emits bare, `Numeric` is not so it emits
       // `_root_`-qualified — the same split `Ord`'s bare `WeakOrd` and `PartialOrd`'s
@@ -2573,7 +2600,7 @@ class BootstrapTest extends munit.FunSuite:
     // The consequence of normalising rather than giving `-` its own spelling, and the
     // one place it is observable beyond the emitted text: `TypeScope` compares an
     // import's package against the package the declaration is EMITTED into
-    // (`shadowsThePrelude`), and an import of one's own namespace must not read as an
+    // (`importPlacement`), and an import of one's own namespace must not read as an
     // import from elsewhere. Convert the emitted side alone and every name this file
     // imports becomes `Unplaceable` — "imported from `my-lib`, but this declaration is
     // emitted into package `my_lib`".
@@ -2582,7 +2609,7 @@ class BootstrapTest extends munit.FunSuite:
     // is a BootstrapError, not a wrong string.
     //
     // TWO FILES, and that is what makes it drive the comparison at all: `place`
-    // consults the file's OWN types before `shadowsThePrelude`, so an import of a
+    // consults the file's OWN types before `importPlacement`, so an import of a
     // sibling declared in the same file never reaches the package check. (Measured —
     // written as one file, this test passed with the conversion backed out.)
     val payload = gen(parseSource(
@@ -2924,12 +2951,22 @@ class BootstrapTest extends munit.FunSuite:
     val emitted = StdlibFixture.preludeByName.flatMap { case (_, pf) =>
       Bootstrap.generate(pf, scalaTypes).files
     }
-    // 60 SINCE WI-1081 (measured; 62 before), and this floor is re-measured with the
-    // ladder for a reason the `>= 55` it replaced makes plain: it sat five files below
-    // the emission it claimed to state, so it absorbed this ticket's own drop of two
-    // silently. A refused declaration emits NOTHING to compile, so the closure compile
-    // below stays green however many go — this line is the only thing that notices.
-    assert(emitted.length >= 60,
+    // 69, RE-MEASURED. It read `>= 60` (WI-1081's number, itself replacing a `>= 55`
+    // that sat five files below the emission it claimed to state) and had drifted NINE
+    // files below — prelude files added since are emitted and were never counted in.
+    //
+    // AND THE DRIFT COST THIS EXACT REGRESSION. A refused declaration emits NOTHING to
+    // compile, so the closure compile below stays green however many go, and this line
+    // is the only thing that notices a file leaving the tree. For the six days
+    // field.anthill's `Ring` import was refused, `Field.scala` was gone and 68 >= 60
+    // held: the loss had to be found through the refusal-set keySet instead. At 69 it
+    // is a real tripwire — back the import fix out today and this line fails at 68.
+    //
+    // A FLOOR AND NOT AN EQUALITY, for the reason the refusal-set test states at
+    // length: the number moves in both directions for good reasons. That is an argument
+    // for re-measuring it with every ticket that moves the emission, not for letting it
+    // sag — a floor nine below the truth is not a floor, it is a comment.
+    assert(emitted.length >= 69,
       s"expected the measured emission, got ${emitted.length} scala files")
 
     // CLEAN SINCE WI-1081, with NOTHING PEELED — the ladder above ends here. The four
@@ -2975,18 +3012,64 @@ class BootstrapTest extends munit.FunSuite:
     assert(scalaTypes.packagePlacement("anthill.reflect", "Monotonicity").isEmpty,
       "the narrow table must not, or the two inputs are the same input")
 
-    // ONE: the refusal never consulted the closure. `TypeScope.shadowsThePrelude`
-    // answers on the IMPORT — a name imported from another package cannot be reached by
-    // a bare mention, because Bootstrap emits no Scala `import` — and that is true
-    // whatever the table holds. Nor could the table have answered: a name mentioned in
-    // `anthill.prelude` is looked up in that package and its dotted ANCESTORS, and
-    // `anthill.reflect` is a sibling of `anthill.prelude`, not an ancestor. So the two
-    // emissions are identical: adding reflect.anthill to the closure changes nothing.
+    // ONE: the refusal PLACES nothing differently, and the decision was re-taken once.
+    //
+    // It used to read "the refusal never consulted the closure", and that was true of
+    // the code and became the wrong rule: `importPlacement` (then `shadowsThePrelude`)
+    // answered on the IMPORT
+    // alone, so a name imported from a package the closure DOES emit was refused too.
+    // field.anthill's `requires Ring[T]` is the corpus instance — `Ring` is declared in
+    // `anthill.prelude.algebra`, a nested namespace the prelude closure emits — and it
+    // cost the whole `Field` declaration. The import is consulted against its named
+    // package now, exactly as a written `anthill.prelude.algebra.Ring` prefix is
+    // (WI-1081), and the two spellings of one name answer alike.
+    //
+    // SO WIDENING IS OBSERVABLE, IN THE WORDING AND NOWHERE ELSE — which is this test's
+    // conclusion re-derived, not abandoned. Under the wide table `anthill.reflect` is a
+    // package the closure holds, so the refusal is the one its own DECLARATION earns
+    // ("an abstract sort has no declaration in the output") instead of the one the
+    // import earned; under the narrow table the package is absent and the import's
+    // refusal stands. Both refuse the SAME two declarations for the SAME two types, and
+    // the emitted text below is identical — the assertion that actually guards the
+    // conclusion. Were widening ever to PLACE one of these names, the count would drop
+    // and `MatchFailed` would emit; that is what these lines fail on.
     val narrowOut = Bootstrap.generate(effects, scalaTypes)
     val wideOut = Bootstrap.generate(effects, wide)
-    assertEquals(wideOut.refusals.map(_.getMessage), narrowOut.refusals.map(_.getMessage),
-      "the refusals differ, so widening the closure IS observable — the conclusion " +
-      "below is stale and the scoping decision needs re-taking")
+    // ABSOLUTE FIRST, then relative. Pinned only against each other, a symmetric drop
+    // to fewer than two passes `assertEquals(0, 0)` and then dies on `refusals(0)` with
+    // an IndexOutOfBounds instead of the diagnosis written here, and a THIRD refusal
+    // sliding in at index >= 2 is never looked at — both of which the full-list equality
+    // this replaced would have caught. effects.anthill's two are independently pinned in
+    // the WI-1055 refusal set above.
+    assertEquals(narrowOut.refusals.length, 2,
+      "effects.anthill must refuse exactly its two reflect-typed sorts, or the rows " +
+      "below are indexing a different refusal than they name")
+    assertEquals(wideOut.refusals.length, narrowOut.refusals.length,
+      "widening the closure changed how MANY declarations are refused — it has placed " +
+      "(or lost) one, so the conclusion below is stale and the scoping decision needs " +
+      "re-taking")
+    Seq(("MatchFailed", "NodeOccurrence"), ("RelationFloundered", "Term")).zipWithIndex
+      .foreach { case ((decl, tpe), i) =>
+        Seq("narrow" -> narrowOut, "wide" -> wideOut).foreach { case (which, out) =>
+          val m = out.refusals(i).getMessage
+          assert(m.contains(decl) && m.contains(tpe),
+            s"the $which table refuses a different declaration or type than `$decl`/" +
+            s"`$tpe`, so widening has moved a placement: $m")
+        }
+        // The wording is where the two part, and each is the true reason under its own
+        // table. Pinned in BOTH directions so neither collapses into the other: a
+        // wide-table refusal falling back to the import text would mean the named
+        // package stopped being consulted (WI-1081's rule lost again), and a
+        // narrow-table refusal claiming the declaration reason would mean a name no
+        // supplied file declares is being reported as declared-and-not-emitted.
+        assert(wideOut.refusals(i).getMessage.contains("emits no Scala type for"),
+          s"under the wide table the refusal must be the DECLARATION's: " +
+          s"${wideOut.refusals(i).getMessage}")
+        assert(narrowOut.refusals(i).getMessage
+            .contains("no supplied file declares anything in"),
+          s"under the narrow table the refusal must be the IMPORT's: " +
+          s"${narrowOut.refusals(i).getMessage}")
+      }
     // CONTENTS and not `relPath`: `ScalaTypes.resolve` passes the whole supplied closure
     // to `specMemberNames`, so `specMembers` genuinely differs between these two tables,
     // and a WI-1065 supertrait demotion flipping under the wider one would leave the
@@ -3051,7 +3134,7 @@ class BootstrapTest extends munit.FunSuite:
 
     // FAILS WHEN BACKED OUT: there is no code change to back out — this test records a
     // measurement, and it fails the day either reason stops holding. Teach
-    // `shadowsThePrelude` to place an imported name from a closure package and the
+    // `importPlacement` to place an imported name from a closure package and the
     // refusal comparison fails; give abstract sorts an emission and the promise-table
     // assertions do. Both are results WI-1020 would want to hear about, which is why
     // they are pinned rather than written down.
@@ -3672,7 +3755,7 @@ class BootstrapTest extends munit.FunSuite:
     // to be captured. Derived, it is every prelude sort — `Eq`, `Numeric`, `Cell`,
     // `Field`, `Ord`, `Time` — so the collision surface is ten times wider.
     //
-    // FAILS WHEN BACKED OUT: move `shadowsThePrelude` back below `types.preludeSort`
+    // FAILS WHEN BACKED OUT: move `importPlacement` back below `types.preludeSort`
     // in `place` and this emits `_root_.anthill.prelude.Option[X]` with no refusal.
     // MEASURED: this test alone fails — the corpus is unmoved, because no prelude file
     // imports a prelude name from anywhere but `anthill.prelude`.
@@ -3707,6 +3790,200 @@ class BootstrapTest extends munit.FunSuite:
     val imported = gen(holder("  import anthill.prelude.{Option}")).head.contents
     assert(imported.contains("def get(o: _root_.anthill.prelude.Option[X]): X"),
       s"an import of the auto-imported package must not shadow it:\n$imported")
+
+    // CONTROL 3, AND IT IS THE ARM THAT SEPARATES THE TWO HALVES: an import from a
+    // package the CLOSURE EMITS is FOLLOWED, not refused. `my.lib` above is refused
+    // because no supplied file declares anything in it — not because an import is
+    // unfollowable. Bootstrap emits no Scala `import`, but it emits every non-local
+    // name fully qualified, so the declaration the import names is reachable exactly
+    // when it is in the tree, and `_root_.other.lib.Option` reaches it.
+    //
+    // THE QUALIFIED SPELLING IS COMPUTED FIRST, deliberately: it is the arm that must
+    // keep passing under the back-out, and `genWith` THROWS on the import arm there, so
+    // written the other way round the comparison below is never reached and the stated
+    // control cannot be checked at all.
+    val otherLib = parseSource(
+      """namespace other.lib
+        |  sort Option
+        |    sort T = ?
+        |  end
+        |end
+        |""".stripMargin, "otherlib.anthill")
+    val withLib = ScalaTypes.resolve(
+      stdlibKb, StdlibFixture.preludeFiles, projectFiles = IndexedSeq(otherLib))
+    val qualified = genWith(parseSource(
+      """namespace my.app
+        |  sort Holder
+        |    sort X = ?
+        |    operation get(o: other.lib.Option[T = X]) -> X
+        |  end
+        |end
+        |""".stripMargin, "holder.anthill"), withLib).head.contents
+    assert(qualified.contains("def get(o: _root_.other.lib.Option[X]): X"),
+      s"the written prefix must place by the package it names:\n$qualified")
+
+    // FAILS WHEN BACKED OUT: restore `TypeScope.importPlacement`'s unconditional-refusal
+    // form (drop the `inPackage(from, …)` consultation) and THIS line throws, while the
+    // `qualified` arm above keeps passing — which is exactly the divergence between the
+    // two spellings that the consultation closes.
+    //
+    // MEASURED over the whole suite, SIX rows and no others (573 tests, 567 pass):
+    //   * this one, at the `followed` line above;
+    //   * WI-1055's refusal set and WI-1066's `Field` row — the corpus half, since
+    //     field.anthill's `requires Ring[T]` reads `anthill.prelude.algebra`, so `Field`
+    //     leaves the output;
+    //   * WI-1020's whole-closure test, at its `>= 69` emission floor (68 without
+    //     `Field.scala`) — the row that did NOT notice when this regression actually
+    //     shipped, because the floor had drifted to 60, and does now that it is
+    //     re-measured;
+    //   * WI-1020's widening control, whose wide-table refusal falls back to the
+    //     import's wording once the named package is no longer asked;
+    //   * the import-collision test below, whose arms all reach `importedNames` through
+    //     an emission the back-out refuses first.
+    // The other arms of THIS test pass either way by design — `my.lib` is outside the
+    // closure however the import is read, and an import of the prelude is not a shadow
+    // at all.
+    //
+    // THAT IS A CENSUS OF THE SUITE, NOT OF THE RULE'S REACH, and the two differ because
+    // `StdlibFixture.preludeByName` lists ONE directory (`stdlib/anthill/prelude`). Every
+    // cross-package import elsewhere in the stdlib went from an unconditional refusal to
+    // a placement with nothing asserting either way. Counted across `stdlib/anthill`, the
+    // ones whose leaf is a TYPE — the rest name OPERATIONS (`PartialEq.{eq}`,
+    // `Option.{some, none}`), which no type position mentions, so this arm never runs on
+    // them — are: `anthill.cli.{help,parse}`'s `anthill.cli.spec.{OperationSpec,
+    // ParamSpec, ParamKind}`; `anthill.logic.{classical,constructive}`'s `Constructive` /
+    // `Minimal`; `anthill.persistence.{store,filesystem}`'s `anthill.prelude.Meta.{Meta}`;
+    // `permission.anthill`'s `anthill.reflect.typing.{Contravariant}`; and the
+    // `anthill.realization.*` imports of `anthill.realization{,.platform}`. Each is a new
+    // placement this suite cannot see. `float.anthill` reads `anthill.prelude.algebra.
+    // {Ring}` exactly as field.anthill does and IS in the fixture — it was never refused,
+    // because it mentions `Ring` in no emitted type position, which is why the corpus
+    // half of this census is one file and not two.
+    val followed = genWith(holder("  import other.lib.{Option}"), withLib).head.contents
+    assert(followed.contains("def get(o: _root_.other.lib.Option[X]): X"),
+      s"an import of an EMITTED package must place the name there, not refuse it:\n$followed")
+
+    // THEY COINCIDE HERE, AND THAT IS A FACT ABOUT THIS FIXTURE RATHER THAN A RULE. An
+    // `import` names its package ABSOLUTELY; a written `a.b.c` is "relative, and only
+    // relative" (kernel §"a.b.c — relative, and only relative"), so `placeQualified`
+    // reads `other` in the enclosing namespace first — `my.app.other.lib.Option` would
+    // WIN for the written spelling and is not what the import means. Nothing declares
+    // `my.app.other.lib` here, so the two readings meet; asserting them equal in general
+    // would pin the wrong rule, and the divergent case is pinned separately below.
+    assertEquals(followed, qualified,
+      "with no nearer reading of the head, the two spellings must emit the same text")
+
+    // THE DIVERGENCE, DRIVEN: add a NEARER `my.app.other.lib.Option` and the written
+    // spelling moves to it while the import stays absolute. Without this row the
+    // `assertEquals` above reads as a general equivalence, which is the claim the
+    // kernel denies — and a future change making the import relative too would pass
+    // every other line in this test.
+    val nearer = parseSource(
+      """namespace my.app.other.lib
+        |  sort Option
+        |    sort T = ?
+        |  end
+        |end
+        |""".stripMargin, "nearer.anthill")
+    val withBoth = ScalaTypes.resolve(
+      stdlibKb, StdlibFixture.preludeFiles, projectFiles = IndexedSeq(otherLib, nearer))
+    val importAbsolute = genWith(holder("  import other.lib.{Option}"), withBoth).head.contents
+    assert(importAbsolute.contains("def get(o: _root_.other.lib.Option[X]): X"),
+      s"an import must name its package ABSOLUTELY, unshadowed by a nearer one:\n$importAbsolute")
+    val writtenRelative = genWith(parseSource(
+      """namespace my.app
+        |  sort Holder
+        |    sort X = ?
+        |    operation get(o: other.lib.Option[T = X]) -> X
+        |  end
+        |end
+        |""".stripMargin, "holder.anthill"), withBoth).head.contents
+    assert(writtenRelative.contains("def get(o: _root_.my.app.other.lib.Option[X]): X"),
+      s"a written path must bind its head in the enclosing namespace first:\n$writtenRelative")
+
+    // And the negative half of the named package is taken too, in the DECLARATION's
+    // words rather than the import's: a leaf `other.lib` declares and Bootstrap emits
+    // nothing for is refused there, so a package answers the whole question or none of
+    // it. Without this the consultation could silently place an abstract sort's name.
+    val abstractLib = parseSource(
+      """namespace other.lib
+        |  sort Option = ?
+        |end
+        |""".stripMargin, "otherlib.anthill")
+    val withAbstract = ScalaTypes.resolve(
+      stdlibKb, StdlibFixture.preludeFiles, projectFiles = IndexedSeq(abstractLib))
+    val abstractErr = intercept[BootstrapError](
+      genWith(holder("  import other.lib.{Option}"), withAbstract))
+    assert(abstractErr.getMessage.contains("emits no Scala type for"),
+      s"a not-emitted leaf in the named package must be refused as such: " +
+      s"${abstractErr.getMessage}")
+  }
+
+  test("an import table with one leaf from two packages is refused, not last-wins") {
+    // THE AMBIGUITY THE PLACING IMPORT RUNG MADE LOAD-BEARING. `Bootstrap.importedNames`
+    // folded with `acc ++ …`, so the LAST import of a leaf won and the loser vanished. It
+    // could not be observed while an import from elsewhere was refused whatever package
+    // it named — both spellings gave one refusal — and it decides an emitted type now
+    // that `TypeScope.importPlacement` places by the package an import names.
+    //
+    // DRIVEN BOTH WAYS, because "is refused" alone would pass against an emitter that
+    // refused every second import: the SOURCE ORDER is swapped between the two arms and
+    // the refusal must be the same either way. Under last-wins the two arms emit
+    // `_root_.b.lib.Config` and `_root_.a.lib.Config` respectively and neither refuses —
+    // that is what this fails on when the check is backed out.
+    def two(first: String, second: String) = parseSource(
+      s"""namespace my.app
+         |  import $first.{Config}
+         |  import $second.{Config}
+         |  sort Holder
+         |    sort X = ?
+         |    operation get(o: Config[T = X]) -> X
+         |  end
+         |end
+         |""".stripMargin, "twoimports.anthill")
+    def lib(pkg: String) = parseSource(
+      s"""namespace $pkg
+         |  sort Config
+         |    sort T = ?
+         |  end
+         |end
+         |""".stripMargin, s"${pkg.replace('.', '_')}.anthill")
+    val bothLibs = ScalaTypes.resolve(
+      stdlibKb, StdlibFixture.preludeFiles,
+      projectFiles = IndexedSeq(lib("a.lib"), lib("b.lib")))
+
+    Seq(("a.lib", "b.lib"), ("b.lib", "a.lib")).foreach { case (f, sec) =>
+      val err = intercept[BootstrapError](genWith(two(f, sec), bothLibs))
+      assert(err.getMessage.contains("`a.lib`") && err.getMessage.contains("`b.lib`"),
+        s"the refusal must name BOTH packages, whichever was written last: ${err.getMessage}")
+      assert(err.getMessage.contains("Config"),
+        s"the refusal must name the ambiguous leaf: ${err.getMessage}")
+      assert(err.getMessage.contains("twoimports.anthill:"),
+        s"the refusal must be located: ${err.getMessage}")
+    }
+
+    // CONTROL 1: one leaf, one package, twice. A repeated import is not an ambiguity —
+    // it names one declaration — and refusing it would take `distinct` out of the check.
+    val repeated = genWith(two("a.lib", "a.lib"), bothLibs).head.contents
+    assert(repeated.contains("def get(o: _root_.a.lib.Config[X]): X"),
+      s"a repeated import of ONE package is not an ambiguity:\n$repeated")
+
+    // CONTROL 2: an INNER scope shadowing an OUTER one is ordinary nesting, not a
+    // collision — the check is over one scope's own `imports`, and the fold still starts
+    // from `outer` untouched. Without this arm the check could key on the merged table
+    // and refuse every sort that narrows its namespace's import.
+    val nested = genWith(parseSource(
+      """namespace my.app
+        |  import a.lib.{Config}
+        |  sort Holder
+        |    import b.lib.{Config}
+        |    sort X = ?
+        |    operation get(o: Config[T = X]) -> X
+        |  end
+        |end
+        |""".stripMargin, "nested.anthill"), bothLibs).head.contents
+    assert(nested.contains("def get(o: _root_.b.lib.Config[X]): X"),
+      s"a sort's own import must shadow its namespace's, not collide with it:\n$nested")
   }
 
   test("WI-1060: a NESTED namespace's sorts are not reachable by a bare name") {
