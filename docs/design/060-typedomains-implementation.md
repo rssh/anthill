@@ -353,6 +353,17 @@ because `List`'s own `member` reads `require[SortDomain[T]]` for its element and
 Step 3 is the one with nowhere to write today — a `ResolverFrame` has no requirement
 channel — and is the same work as NAR1X (§5, §6).
 
+**AND STEP 2 IS FORCED BY HOW THE ENGINE FINDS CLAUSES AT ALL.** A rule is not a path in the
+discrimination tree: the tree INDEXES heads, its leaves are `RuleId`s, and a path is a
+structural fingerprint of a head that several rules may share. The engine never holds a rule
+— it holds a GOAL, and `kb.query_view(&goal_val)` walks the tree BY THE GOAL'S STRUCTURE to
+produce the candidate list, each candidate then confirmed by unification ("the
+discrimination-tree query *is* the unifier"). Selection is therefore goal-driven from end to
+end, so `apply_domain` cannot carry a rule around: it must BUILD the goal
+`<impl>.member(?x)` and let the ordinary lookup find the candidates. Two things come free
+with that and would have to be rebuilt otherwise — the `GoalKey` query cache, and the Γ
+overlay's own candidates (`gamma_candidates_for`).
+
 ## 5. What it depends on
 
 **The op→rule dictionary channel**, `channel §10 item 3`, owner **WI-20260909-NAR1X**,
