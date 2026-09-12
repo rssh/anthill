@@ -817,3 +817,35 @@ makes row (g) work as written; the alternative is lexical and would amend row (g
 `rule again(?y: Wrap[T = T]) :- dom(?y)`. Decide before building R0 — R1 and E1 do not depend
 on it.
 
+### 2026-09-12T08:30:54Z — feedback — claude
+
+WHERE THE DESIGN LIVES, and a SECOND DIRECTION that is not this ticket's. Written because
+neither document is reachable from the ticket text above, and a session claiming 5G28A would
+find only the decision and not the design.
+
+THIS TICKET'S REMAINING HALF IS `docs/design/060-implementation.md` §7.3, "The CITATION
+BRACKET". Decision C above is the DECISION; §7.3 is the design — the measured load/eval table
+of what is wrong today, the three distinct defects behind it (the paren-less bracket erased
+before validation; the citation typing columns at the clause's own variable so the AGREEING
+instance is refused; a bracketed chain followed by a projection not recognised as a citation),
+the site list (R0 R1 E1 L3 T1/T2 W1), and what is not settled. §7.2's closing paragraph and
+the §0 owner table now point at it. Build from §7.3, not from the 06:17 plan above, whose
+site list (L1 L2 L3 T1 T2 E1 E2 W1) belongs to the SUPERSEDED head-slot shape.
+
+AND A SECOND DIRECTION EXISTS, EXPLORATORY, NOT THIS TICKET'S:
+`docs/design/060-typedomains-implementation.md` — the sort's domain fetched at resolution
+time through the REQUIREMENT channel (`SortDomain[T]`, `find_dictionary`, `apply_domain`)
+instead of named at compile time. It is written up because it DISSOLVES the problem §7.3
+works around rather than repairing it: a dictionary is selected in the resolver against the σ
+of the firing, so nothing is decided early and there is no rigid to replace. No ticket owns
+it, nothing is scheduled, and it is blocked on WI-20260909-NAR1X (the op→rule dictionary
+channel) — which turns out to be the SAME work rather than a neighbour, since a rule
+activation has no requirement channel for `apply_domain` to write into.
+
+THE TWO ARE NOT COMPETITORS, and §7 of that document says so: §7.3 closes a silent acceptance
+that SHIPS TODAY (`Wrap[T = Colour].dom` and bare `Wrap.dom` are indistinguishable, and a
+bracketed citation floats to a flounder at the drain), which is a defect with users; the other
+is a direction. If it is ever taken, §7.3's typer work STAYS — the bracket still has to be
+read and validated — and only its frame-reading step is retired. So the order is §7.3 first,
+that after NAR1X, and NOTHING in §7.3 is rework.
+
