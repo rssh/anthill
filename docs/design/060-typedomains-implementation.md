@@ -366,22 +366,42 @@ overlay's own candidates (`gamma_candidates_for`).
 
 ## 5. What it depends on
 
-**A per-ACTIVATION requirement channel on the resolver frame — which NAR1X is NOT.** A rule
-reached from an operation body must receive the caller's dictionary, or `find_dictionary` in
-the generated body has nothing to find. WI-20260909-NAR1X (`channel §10 item 3`, *settled,
-not built*) is the nearest existing work, and READ AT ITS TICKET it is necessary but NOT
-sufficient — in two specific ways, both of which this direction needs:
+**THE RECURSION NEEDS NO CHANNEL — the dictionary rides as an ARGUMENT.** Stated first
+because an earlier draft of this section argued the opposite and was wrong. `List[List[Colour]]`
+does need two dictionaries live at once inside one resolve, but that is served by σ, exactly as
+`domain_member(?x, T)` carries the TYPE as an argument today:
 
-| NAR1X delivers | this direction needs |
-|---|---|
-| a **`ResolveConfig` field**, modelled on `gamma` expressly because that "rides the config, not the per-frame `assumed_facts` stack, BECAUSE it is global to one resolve call" | a **per-ACTIVATION** channel. `List[List[Colour]]` has TWO dictionaries live at once inside ONE resolve — `D(D(impl: Colour), impl: List)` at the outer `member` and `D(impl: Colour)` at the element's. A config field is constant for the whole call and cannot express that |
-| the **ground closed test**: its own boundary says "`PredicateProof` is Proved / Refuted / Undecided / Undefined — a CLOSED GROUND TEST. A generative `p(?out)` from an operation body does not traverse this edge at all, so this ticket delivers the ground call … NOT generative use" | exactly the **generative** case. Enumerating a domain IS `member(?x)` with `?x` free |
+```
+List.member(?x, ?d) :- ?x <=> nil()
+                     | ( ?x <=> cons(head: ?y, tail: ?z),
+                         member(?z, ?d),        -- the tail: the same dictionary
+                         ?ed <=> sub(?d, 0),    -- the element's, projected out of it
+                         apply_domain(?ed, ?y) )
+```
 
-So the dependency is not "wait for NAR1X and then build". The channel here is a field on
-`ResolverFrame`, inherited on push the way `assumed_facts` is and REPLACED at an
-`apply_domain` activation by the dictionary that call supplies — which is a different carrier
-from NAR1X's, serving a case NAR1X rules out. NAR1X's *attribution* half (which slot answers
-a spec, §6's "SUPPLY where Undecided, CHECK where unique") is the part that transfers.
+Every dictionary is then a σ binding, and rule→rule dictionary passing ALREADY WORKS —
+WI-1040's `a_clause_dictionary_crosses_a_rule_boundary_and_is_checked` drives a caller's `?d`
+reaching the callee's `require[…]`. No `ResolverFrame` field, no inheritance rule, no per-push
+clone. The dictionary is an ordinary value and needs no more than ordinary values get.
+
+**WHAT IS MISSING IS THE ENTRY, and specifically the GENERATIVE one.** There are two eval→rule
+edges and neither carries the caller's dictionary:
+
+| edge | site | owner |
+|---|---|---|
+| the GROUND closed test | `prove_rule_predicate_value` → `kb.prove_rule_predicate(pred, args)` — pred and args, nothing else, from a frame that HOLDS `frame.requirements` | **WI-20260909-NAR1X**, *settled, not built* |
+| the GENERATIVE call | `build_relation_value` → `Value::Relation` → `execute_logical_query` | **nobody** |
+
+NAR1X's own boundary rules the second one out in as many words: "`PredicateProof` is Proved /
+Refuted / Undecided / Undefined — a CLOSED GROUND TEST. A generative `p(?out)` from an
+operation body does not traverse this edge at all, so this ticket delivers the ground call …
+NOT generative use." Enumerating a domain IS `member(?x)` with `?x` free, so this direction
+lives entirely on the edge NAR1X excludes.
+
+It is a gap, not an impossibility: `build_relation_value` takes `&mut self` and can reach the
+frame; nothing reads `Frame::requirements` there today. And NAR1X's ATTRIBUTION half — supply
+where the local derivation is Undecided, CHECK where it is unique (WI-860) — is the rule this
+edge wants too, so what transfers is its reasoning rather than its carrier.
 
 ## 6. What is NOT known
 
@@ -439,14 +459,14 @@ Written as questions, because none of them was measured.
   ordered children)` tree. §4.1 relies on that being satisfied by an impl SYMBOL naming the
   provider, with `apply_domain` reaching the clauses through it — never by a closure, which
   would not be ground. Not checked against `Dictionary::from_value`'s whole-tree validation.
-- **How `apply_domain` installs the dictionary on a RULE activation** — the largest unknown,
-  and the reason this is a direction rather than a plan. It must install one (§3, §4.1 — the
-  impl symbol alone loses the components' types), and a rule activation has no requirement
-  channel: `ResolverFrame` is documented as lacking exactly that, while `Frame::requirements`
-  is the OPERATION frame's. §5 records why NAR1X does not supply it — its carrier is
-  per-RESOLVE and its scope is the ground test, where this needs per-ACTIVATION and
-  generative. Neither the shape of the frame field, nor how it is inherited versus replaced
-  at an activation, nor what it costs to clone per push, was worked out.
+- **The GENERATIVE op→rule entry** (§5) — the largest unknown. `build_relation_value` builds
+  a query carrying no dictionary, so a citation inside a polymorphic operation has nothing to
+  hand the clause. It CAN reach the frame (`&mut self`); what to read, how to attribute it to
+  a spec slot, and what a citation with no enclosing dictionary should do were not worked out.
+- **Whether `member` carrying `?d` as an argument disturbs anything** (§5). It is a head-shape
+  decision of the same kind the superseded hidden-slot design made for TYPES, and it inherits
+  that design's questions — every arity reader, the discrimination key, the printer round trip
+  — for the derived clauses only. Not censused.
 - **Termination and cost.** Every typed head gains two goals instead of one, and one of
   them is a dictionary search. §7's measurements are all against a single generated goal.
 - **What happens to `domain_member`.** Either it stays as the thing `apply_domain` reaches,
