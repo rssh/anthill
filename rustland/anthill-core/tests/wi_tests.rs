@@ -1704,3 +1704,6 @@ mod wi_fdpj8_apply_within_shape_test;
 
 #[path = "include/wi_7tn1q_occurs_check_sort_alias_test.rs"]
 mod wi_7tn1q_occurs_check_sort_alias_test;
+
+#[path = "include/wi_073gh_applied_parameter_is_not_a_constructor_test.rs"]
+mod wi_073gh_applied_parameter_is_not_a_constructor_test;

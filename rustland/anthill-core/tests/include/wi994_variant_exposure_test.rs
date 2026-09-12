@@ -16,11 +16,16 @@
 //! WHICH TESTS FAIL WHEN THE CHANGE IS BACKED OUT — measured, by restoring the
 //! `is_new &&` and re-running: `a_pre_registered_sorts_variants_are_exposed…` and
 //! `one_variant_name_exposed_by_two_namespaces_is_ambiguous` (3 load errors where
-//! 5 are expected). The other two PASS EITHER WAY, by design: they are the
-//! controls that make those failures attributable to pre-registration rather than
-//! to the wildcard import or to `guarded` itself. In
+//! the ambiguity is expected; the count that row pins has since gone 5 → 2 → 1,
+//! see its own doc). `…were_always_exposed` and `…resolves_guarded_uniquely` PASS
+//! EITHER WAY, by design: they are what make those failures attributable to
+//! pre-registration rather than to the wildcard import or to `guarded` itself. In
 //! `wi979_declaration_order_test` the same backout fails
 //! `variant_exposure_is_order_independent_wi994` alone.
+//!
+//! `two_distinct_references_…_report_twice` is NOT one of this ticket's controls —
+//! it belongs to WI-1005, which WI-20260911-073GH delivered; both rows' numbers and
+//! their separate back-out are at its own doc.
 
 use anthill_core::eval::{Interpreter, Value};
 
@@ -110,32 +115,14 @@ end
 "#,
         ),
         &[
-            // THE FINDING. Before the fix these two lines were absent and the
-            // three below were the whole diagnosis — all three about the wrong
-            // sort, and none of them saying a word about the choice.
+            // THE FINDING. Before the fix this line was absent and three others —
+            // two missing-field rows and a type mismatch — were the whole diagnosis,
+            // all three about the wrong sort and none of them saying a word about
+            // the choice.
             // WI-977: the scope is named QUALIFIED — as the candidate list beside it
             // always was. A bare `p` next to two fully-qualified candidates was the
             // one un-qualified name in the message.
             "ambiguous symbol 'guarded' in scope 'wi994.amb.p': candidates \
-             [\"anthill.prelude.EffectExpression.guarded\", \
-             \"anthill.reflect.LogicalQuery.guarded\"]",
-            // REPORTED TWICE, once per resolution of the one occurrence at 6:7 —
-            // the operation's scope and its enclosing namespace's. `dedup_key` is
-            // deliberately injective (WI-745) and the two renderings differ only
-            // in the scope name, so nothing collapses them; WI-745's own duplicate
-            // was eliminated at the PRODUCER, and this is a second producer doing
-            // the same thing. Pinned rather than fixed — it is a defect in the
-            // ambiguity-reporting path, not in the exposure link, and no fixture
-            // reached it before this one. WI-1005, whose acceptance is this list
-            // dropping to four. It used to be easy to miss: name the namespace and
-            // the operation alike and the two renderings coincided and dedup'd,
-            // which is what hid it from the probe this test was written from.
-            //
-            // WI-977 closed that hiding place as a side effect: a QUALIFIED scope
-            // name for the operation strictly extends its namespace's, so the two
-            // rows can no longer collide however the fixture is named, and this
-            // duplicate cannot go quiet again while WI-1005 is open.
-            "ambiguous symbol 'guarded' in scope 'wi994.amb': candidates \
              [\"anthill.prelude.EffectExpression.guarded\", \
              \"anthill.reflect.LogicalQuery.guarded\"]",
             // THE CASCADE IS GONE, and this note is the "visible rather than silent"
@@ -154,8 +141,72 @@ end
             //
             // WHICH candidate is arbitrary and the fix says so; what is NOT arbitrary is
             // that it is one of the two the user is being asked to choose between. The
-            // count dropping from five to two is therefore the blast radius SHRINKING to
-            // the one error that names the actual choice.
+            // count dropping from five to two was therefore the blast radius SHRINKING
+            // to the errors that name the actual choice.
+            //
+            // AND THE SECOND OF THOSE TWO IS NOW GONE TOO — WI-1005, delivered by
+            // WI-20260911-073GH rather than by a ticket of its own. The list used to
+            // carry a duplicate of the row above differing ONLY in the scope name
+            // (`in scope 'wi994.amb'`): the ONE occurrence at 6:7 was resolved twice,
+            // once by `convert_expr_term` in the operation's scope and once by
+            // `emit_operation_equation`, which lowered the same body again from the
+            // tail of `load_operation` — after the enclosing scope had been restored.
+            // `dedup_key` is deliberately INJECTIVE on the full rendering (WI-745), so
+            // two spellings of one finding could not collapse, and WI-1005 refused to
+            // widen it for the reason its doc gives.
+            //
+            // Nothing about the ambiguity path changed. The second resolution now runs
+            // in the operation's own scope — it has to, so that an applied parameter is
+            // the parameter and not a same-named constructor — so the two renderings
+            // COINCIDE and the existing injective key collapses them, which is WI-1005's
+            // "eliminate one producer rather than widen the key" reached from the other
+            // side. Its other two acceptance rows are measured at
+            // `two_distinct_references_to_one_ambiguous_name_still_report_twice` below
+            // (4 → 2 on back-out, against this row's 2 → 1) and at
+            // `run_cmd_test::ambiguous_symbol_blocks_the_run`'s count-is-1 assertion,
+            // which is UNMOVED — its fixture's ambiguity is in a FACT head, not an
+            // operation body, so no second lowering ever doubled it.
+        ],
+    );
+}
+
+/// WI-1005's CONTROL, and the row that says the collapse above is the DUPLICATE going
+/// and not a SITE going.
+///
+/// `dedup_key` is injective on the full rendering, span included, precisely so that two
+/// GENUINELY DISTINCT references to one bad name both survive — a short scope name is
+/// not a unique identity (no-short-name-comparison), so collapsing on it would hide a
+/// real second site. Two operations, two occurrences, two errors.
+///
+/// IT DOES NOT PASS EITHER WAY, and the first draft of this doc said it did. MEASURED by
+/// backing the change out and re-running: **4** errors, not 2 — each occurrence doubled,
+/// at 6:7 and 8:7, once `in scope 'wi994.amb2.<op>'` and once `in scope 'wi994.amb2'`.
+/// So the row is a measurement, and a sharper one than intended: the count goes 4 → 2
+/// PER OCCURRENCE, while the fixture above goes 2 → 1. A repair that merely stopped
+/// reporting the second SITE would take this row to 1 and the one above to 1 as well,
+/// and only this row can tell those two outcomes apart.
+#[test]
+fn two_distinct_references_to_one_ambiguous_name_still_report_twice() {
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(
+            r#"
+namespace wi994.amb2
+  import anthill.prelude.*
+  import anthill.reflect.*
+  operation p(t: Type, g: List[T = Term]) -> EffectExpression
+    = guarded(label: t, guard: g)
+  operation q(t: Type, g: List[T = Term]) -> EffectExpression
+    = guarded(label: t, guard: g)
+end
+"#,
+        ),
+        &[
+            "ambiguous symbol 'guarded' in scope 'wi994.amb2.p': candidates \
+             [\"anthill.prelude.EffectExpression.guarded\", \
+             \"anthill.reflect.LogicalQuery.guarded\"]",
+            "ambiguous symbol 'guarded' in scope 'wi994.amb2.q': candidates \
+             [\"anthill.prelude.EffectExpression.guarded\", \
+             \"anthill.reflect.LogicalQuery.guarded\"]",
         ],
     );
 }
