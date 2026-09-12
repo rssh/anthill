@@ -312,6 +312,47 @@ lets the ordinary activation open them, the `with_fresh_vars` path `step_choice_
 already takes. Stated because the alternative is a second clause opener, and two openers is
 how a frame invariant comes to hold in only one of them.
 
+## 4.3 What a rule IS at run time, and what that makes `apply_domain`
+
+**There is no `Value` variant for a rule.** The enum carries `OpRef { op, dict, … }` for an
+operation and has **no rule twin**. A rule exists only as a `RuleId` — an index into
+`kb.rules` — whose `RuleEntry` holds the head `Value`, `body_nodes: Vec<Rc<NodeOccurrence>>`,
+`globals: Vec<VarId>`, `arity` and `type_bounds`. That is a KB structure, not a value, and
+nothing can be bound to a variable.
+
+**`Value::Relation` is NOT that thing.** Its own doc calls it "a rule cited by name as a
+first-class, composable QUERY value": the payload is a `LogicalQuery` (a reified goal tree
+built from one specific head) plus the columns it projects. A query, not a handle to
+clauses — which is why §3 says `apply_domain` dispatches rather than lowering one.
+
+**So what crosses is a `Value::SymbolRef`, and the dictionary already carries one.**
+`Dictionary::build` writes `named: [(impl_key, Value::SymbolRef(impl_sort))]`. The provider
+sort IS the handle, and resolving `<impl>.member` from it reaches the clauses:
+
+MEASURED 2026-09-12, on §0's fixture —
+
+| name | clauses |
+|---|---|
+| `SortDomain.member` — the spec's declaration | **0** (061: a declaration stores none) |
+| `Colour.member` — written in `provides SortDomain[T = Colour]` | **1** |
+
+A `provides`-block rule lands in the PROVIDER's scope, which is the same place a spec op's
+implementation lands, so `apply_domain` finds its clauses by the route dispatch already uses.
+
+**THE SYMBOL FINDS, THE TREE RUNS**, and that is the sharp form of §3's and §4.1's point.
+Naming the clauses needs only `impl_sort()`; RUNNING them needs the whole dictionary,
+because `List`'s own `member` reads `require[SortDomain[T]]` for its element and only
+`sub(0)` holds it. Hence `apply_domain(?d, ?x)`:
+
+1. resolve `<?d.impl_sort()>.member` — the symbol;
+2. select its clauses and let the ORDINARY activation open them (`with_fresh_vars`, the
+   `step_choice_point` path), so no second clause opener exists (§4.2);
+3. install `?d` as that activation's `__req_self`, so the callee's own `require[…]` projects
+   `sub(0)` exactly as `expand_dispatching_dict` makes it project at an operation dispatch.
+
+Step 3 is the one with nowhere to write today — a `ResolverFrame` has no requirement
+channel — and is the same work as NAR1X (§5, §6).
+
 ## 5. What it depends on
 
 **The op→rule dictionary channel**, `channel §10 item 3`, owner **WI-20260909-NAR1X**,
