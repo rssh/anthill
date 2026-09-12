@@ -366,11 +366,22 @@ overlay's own candidates (`gamma_candidates_for`).
 
 ## 5. What it depends on
 
-**The op→rule dictionary channel**, `channel §10 item 3`, owner **WI-20260909-NAR1X**,
-status *settled, not built* (`060-implementation.md` §0 and §8.10). A rule reached from an
-operation body must receive the caller's dictionary, or `find_dictionary` in the generated
-body has nothing to find. This direction is blocked on it, and that is not a detail: it is
-the single largest reason this is exploratory rather than a plan.
+**A per-ACTIVATION requirement channel on the resolver frame — which NAR1X is NOT.** A rule
+reached from an operation body must receive the caller's dictionary, or `find_dictionary` in
+the generated body has nothing to find. WI-20260909-NAR1X (`channel §10 item 3`, *settled,
+not built*) is the nearest existing work, and READ AT ITS TICKET it is necessary but NOT
+sufficient — in two specific ways, both of which this direction needs:
+
+| NAR1X delivers | this direction needs |
+|---|---|
+| a **`ResolveConfig` field**, modelled on `gamma` expressly because that "rides the config, not the per-frame `assumed_facts` stack, BECAUSE it is global to one resolve call" | a **per-ACTIVATION** channel. `List[List[Colour]]` has TWO dictionaries live at once inside ONE resolve — `D(D(impl: Colour), impl: List)` at the outer `member` and `D(impl: Colour)` at the element's. A config field is constant for the whole call and cannot express that |
+| the **ground closed test**: its own boundary says "`PredicateProof` is Proved / Refuted / Undecided / Undefined — a CLOSED GROUND TEST. A generative `p(?out)` from an operation body does not traverse this edge at all, so this ticket delivers the ground call … NOT generative use" | exactly the **generative** case. Enumerating a domain IS `member(?x)` with `?x` free |
+
+So the dependency is not "wait for NAR1X and then build". The channel here is a field on
+`ResolverFrame`, inherited on push the way `assumed_facts` is and REPLACED at an
+`apply_domain` activation by the dictionary that call supplies — which is a different carrier
+from NAR1X's, serving a case NAR1X rules out. NAR1X's *attribution* half (which slot answers
+a spec, §6's "SUPPLY where Undecided, CHECK where unique") is the part that transfers.
 
 ## 6. What is NOT known
 
@@ -428,13 +439,14 @@ Written as questions, because none of them was measured.
   ordered children)` tree. §4.1 relies on that being satisfied by an impl SYMBOL naming the
   provider, with `apply_domain` reaching the clauses through it — never by a closure, which
   would not be ground. Not checked against `Dictionary::from_value`'s whole-tree validation.
-- **How `apply_domain` installs the dictionary on a RULE activation.** It must (§3, §4.1 —
-  the impl symbol alone loses the components' types), and a rule activation has no
-  requirement channel today: `ResolverFrame` is documented as lacking exactly that, while
-  `Frame::requirements` is the operation frame's. So the channel NAR1X adds is the thing
-  `apply_domain` writes into, and the two are one piece of work rather than a dependency and
-  a consumer. Neither the shape of that channel nor where `apply_domain` would push it was
-  worked out.
+- **How `apply_domain` installs the dictionary on a RULE activation** — the largest unknown,
+  and the reason this is a direction rather than a plan. It must install one (§3, §4.1 — the
+  impl symbol alone loses the components' types), and a rule activation has no requirement
+  channel: `ResolverFrame` is documented as lacking exactly that, while `Frame::requirements`
+  is the OPERATION frame's. §5 records why NAR1X does not supply it — its carrier is
+  per-RESOLVE and its scope is the ground test, where this needs per-ACTIVATION and
+  generative. Neither the shape of the frame field, nor how it is inherited versus replaced
+  at an activation, nor what it costs to clone per push, was worked out.
 - **Termination and cost.** Every typed head gains two goals instead of one, and one of
   them is a dictionary search. §7's measurements are all against a single generated goal.
 - **What happens to `domain_member`.** Either it stays as the thing `apply_domain` reaches,
