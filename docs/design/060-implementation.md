@@ -16,8 +16,9 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §2 `?x: T` on a relational head | `domain(?x, T)` body goal | WI-742 | **delivered** — §3–§5 |
 | §2.1 parameter form `p(x: T)` | sigil-free typed clause variable | WI-742 | **delivered** — §6 |
 | §2.2 a sort defines its `domain` | mode-(out) enumeration | WI-743 | **delivered** — §7 |
-| §2.2 the VALUE face `<Sort>.domain` | the domain cited as a `Relation` | **WI-20260911-WT8WG** | **delivered** for a sort with no type parameters — §7.1; the parameterised half is **WI-20260911-5G28A** |
+| §2.2 the VALUE face `<Sort>.domain` | the domain cited as a `Relation` | **WI-20260911-WT8WG** | **delivered** for a sort with no type parameters — §7.1; the parameterised half waits on §7.3 |
 | §2.2 / §8.1 rule-head type VARIABLES | a bound's variable is a clause variable | **WI-20260911-5G28A** | **delivered** except the citation bracket — §7.2 |
+| §2.2 / §8.1 the citation BRACKET | which instance a citation means | **WI-20260911-5G28A** | **design settled, not built** — §7.3 |
 | §3 anchor (requirement half) | covered body call grounds the spec | WI-1040 | delivered |
 | §3 anchor (typed-head half) | `?x: T` grounds the spec | **WI-20260908-VVM1R** | **design settled, not built** — §8, mechanism at §8.2–§8.6 |
 | channel §10 item 1 | retain the spec's type-args | **WI-20260908-VVM1R** | **settled, not built** — §8.6, taken inline |
@@ -479,15 +480,144 @@ projection off the RECEIVER's instance, not a clause variable — admitting it t
 would open a fresh one per firing and decouple the bound from the receiver. It keeps its
 pre-ticket representation, and reaching it from a citation is the half below.
 
-**Not delivered here:** the CITATION BRACKET. A rule's head is its only interface and a
-bound's variable is clause-internal, so `Wrap[T = Colour].dom` and bare `Wrap.dom` are still
-indistinguishable, and `List[T = Letter].domain` keeps §7.1's load error. The design is
-settled — a HIDDEN HEAD SLOT per enclosing-sort type parameter, filled by a bracketed
-citation and left free by an unbracketed one, shared with the bound so pinning the slot pins
-the bound; hidden = excluded from `rule_head_var_slots`, so it is not a COLUMN. The cheaper
-mechanism was measured and rejected: conjoining a guard at the citation cannot pin the
-CLAUSE's variable, so `<Sort>.domain`'s own member goal still has a free element type and
-deadlocks against the mode-(out) delay above.
+**Not delivered here:** the CITATION BRACKET, which decides the variable this section made
+a clause variable. `Wrap[T = Colour].dom` and bare `Wrap.dom` are still indistinguishable,
+and `List[T = Letter].domain` keeps §7.1's load error. Its design is §7.3.
+
+## 7.3 The CITATION BRACKET — `Wrap[T = Colour].dom` — WI-20260911-5G28A
+
+§7.2 made a bound's type variable a clause variable. This is the other end of it: how a
+CITATION says which instance it means, so that variable is decided rather than left free.
+
+The equation, and the whole of the design:
+
+```
+Wrap[T = Colour].dom(?x)   ==   dom(?x)        -- the goal keeps the shape the author wrote
+                                Wrap.T := Colour  -- riding BESIDE it, resolved at evaluation
+```
+
+**THE TYPE IS NOT AN ARGUMENT.** The goal reaching SLD is the one the head declares; the
+type travels next to it, the way a requirement dictionary travels in `Frame::requirements`
+rather than as an extra parameter. The resolver reads it when it opens the clause and binds
+the clause's own bound variable from it. Nothing that counts arguments sees it — not the
+arity checks, not the discrimination index, not a body goal, not the spec-op dispatch
+bridge.
+
+### What is wrong today
+
+MEASURED 2026-09-12 on `575683e5`, with `sort Wrap[T] { entity wrap(v: T); rule dom(?x:
+Wrap[T = T]) :- true }` beside `sort Colour { red green blue }`:
+
+| citation, in an operation body | load | eval |
+|---|---|---|
+| `Wrap[T = Colour].dom.takeN(5).length()` | clean | RAISES |
+| `Wrap[W = Colour].dom.takeN(5)` — bogus `W`, paren-less | clean | — |
+| `Wrap[W = Colour].dom().takeN(5)` — bogus `W`, applied | refused: "has no type parameter named 'W'" | — |
+| `Wrap.dom.takeN(5).length()` — no bracket at all | clean | RAISES |
+| `List[T = Letter].domain.takeN(5)` | refused, naming 5G28A (§7.1's arm) | — |
+
+RAISES is `Err(Raised …)` at the first row, `takeN(1)` included: the appended member goal
+carries `Wrap[T = ?T]` with `?T` the clause's own variable, which `bindable_type_var`
+rightly refuses to pin from one value, so the goal delays and the drain flounders.
+
+**THREE DEFECTS, and they are not one:**
+
+1. **The paren-less bracket is ERASED before any validation** — `convert.rs`'s
+   `collect_field_access_segments` `application` arm ("bindings erased") for a dot CALL's
+   receiver chain. The APPLIED spelling reaches `build_recv_type` and IS validated, then
+   dropped by the typer. So the same mistake is loud in one spelling and silent in the other.
+2. **The citation types the columns at the clause's own variable**, which is neither a
+   wildcard nor pinnable, so the AGREEING instance is refused with the same message as the
+   wrong one — a false refusal of a correct program, in every position that reads a column
+   type.
+3. **A paren-less bracketed chain followed by a projection is not recognised as a citation
+   at all**: `field_access_dotted_name_of` needs a `Term::Ident` root and 4NEKZ's
+   `loader_chain_dotted_name` an `Expr::Ref` root, and a type application is neither.
+
+### Why the type rides beside the goal and not as an extra head argument
+
+The alternative — one trailing positional per enclosing-sort type parameter, appended to
+the stored head, excluded from `rule_head_var_slots` so it is not a column — was designed,
+BUILT, and measured. Two measurements rejected it.
+
+**THE CORPUS IS NOT EMPTY, and the population is the wrong one.** An earlier text census
+reported zero relational rules declared inside a parameterised sort body. MEASURED instead,
+by building the append and instrumenting it on a stdlib load: seven clauses under four
+predicates — `Set.eq` (1), `Set.subset` (2), `Set.contains` (2), and `Lattice.less` (2,
+written in `BoundedLattice`) — plus `Stack.is_full` and `Mid.rel` in the fixtures. **Not
+one of them carries a head bound**, so the argument would be a channel their clauses never
+read. 13 tests went red, and the group that names the reach is `wi616`/`wi625`/`wi939`:
+they drive `Set.eq` through the SPEC-OP DISPATCH BRIDGE, which builds its goal at the
+WRITTEN arity. An argument changes arity, so every such site must be found and fixed.
+
+**AND THE TYPER IS THE WRONG PASS TO FILL IT.** This is the measurement that decides, and
+it is about WHEN the type is known, not about cost. With the type as a head argument, the
+typer is what pins it — so inside
+
+```anthill
+operation g[T]() -> Int64 = List[T = T].domain.takeN(5).length()
+```
+
+the argument is pinned to `g`'s **rigid** `T`, and the goal reaching the resolver carries a
+rigid. A rigid has no constructors, so the member goal cannot enumerate: it delays, and a
+CORRECT program gets the RAISES column above. The real type is known only at `g[Colour]()`,
+at RUN time — which is exactly where `Frame::type_args` holds it (WI-272,
+`(declared-param-name, resolved-type-term)`) and where `inherit_enclosing_sort_type_args`
+already carries a sort's parameters into a sibling's frame. Reading the frame at evaluation
+is native to the beside-the-goal shape and bolted onto the argument one.
+
+**THE PREMISE OF THE ARGUMENT SHAPE WAS THE CODEBASE'S OWN KNOWN-FALSE CLAIM.** It rested
+on "a rule has no frame channel — its head is its only interface". `resolve.rs`'s
+`ResolverFrame` documents that sentence as a defect: the claim "a rule has no caller to
+thread a dictionary into a frame" is *"written in `kb/typing.rs` and in
+`docs/design/requirement-dictionaries.md`, and FALSE … What this frame lacks is a
+requirement channel; it has callers, and it already threads a caller-inherited environment
+in `assumed_facts`."* The narrower measurement behind it stands — `eval::build_relation_value`
+does build the query from the head alone — but that is a fact about one code path, not
+about what a rule can have.
+
+**WHAT THE COMPARISON WITH THE REQUIREMENT CHANNEL SETTLES.** Read at its sites, that
+channel has four properties: its shape is DECLARED and never inferred (`dict_layout` is a
+structural recursion over `requires` declarations — there is no fixpoint over the call
+graph anywhere in it); EVERY member carries it, read or not; a nested call gets it by
+PROJECTING a subtree (`Frame::child_context` clones it, `dict.sub(k)` descends); and the
+two ends are checked against ONE predicted shape (`dict_layout` vs `DictLayout::from_halves`,
+compared by `divergence_from`). The type channel is the same kind of thing and is built the
+same way. In particular **there is no rule about which predicates "have" the channel** —
+that question only existed because an argument changes a head's shape and every clause of a
+predicate must agree. A clause whose bound mentions the receiver's parameter is pinned; one
+whose bound does not has nothing to pin, and whether its bracket means anything is decided
+at the TYPER, where the column types are.
+
+### The sites
+
+| step | site | what |
+|---|---|---|
+| **R0** | `ResolverFrame` | a type-argument channel, keyed by (sort, parameter symbol), inherited on push the way `assumed_facts` is |
+| **R1** | `step_choice_point`, at `with_fresh_vars` | open the clause's stored bounds against the fresh frame (`term_from_debruijn`, as `typed_pattern_bounds_hold` already does) and `pin_type_vars` the caller's type against each, binding into σ |
+| **E1** | `eval::build_relation_value` | attach the citation's types to the query, each walked through `Frame::type_args` FIRST so a rigid becomes the caller's real type |
+| **L3** | `visit_load`'s `field_access` ladder, and `convert.rs`'s dot-call receiver path | lower a paren-less `Sort[…].rel` as the zero-argument APPLIED citation both engines already take, so defects (1) and (3) close together and the bracket is validated once |
+| **T1/T2** | `relation_clause_columns`, `relation_reference_type_applied` | pin the bracket per citation and write it to `resolved_type_args`; a RIGID pin is left OFF that channel deliberately, for E1 to resolve from the frame |
+| **W1** | `emit_domain_value_face`, `domain_value_face_refusal` | delete the parameterised arm; a parameterised sort derives its value face like any other |
+
+**R1 AND E1 DO NOT DEPEND ON R0**, which is why it is listed first but built last: a
+citation whose own clause carries the bound is pinned without any inheritance.
+
+### Not settled
+
+**Whether the channel is INHERITED by a clause's body goals.** It decides one row:
+`rule again(?y) :- dom(?y)` inside `Wrap`, cited as `Wrap[T = Colour].again`. `again`
+carries no bound, so there is nothing on it to pin; inheritance (R0, the
+`Frame::child_context` analogue) makes the row answer, and a body goal writing its own
+bracket shadows it. The alternative is lexical — `again` must write
+`rule again(?y: Wrap[T = T]) :- dom(?y)` to be pinnable — which is one spelling the author
+must know and no dynamic scoping to explain. Inheritance is the requirement channel's
+answer to the same question; that is an argument for it, not a proof.
+
+**Whether `Set[T = Int64].eq` is refused or is a no-op.** `Set.eq`'s clause never mentions
+`T`, so the bracket cannot change a single row. Refusing it is loud and honest; accepting
+it as a no-op is what an argument-shaped design would have done silently. The decision
+belongs at the typer, with the column types in hand, and is not made here.
 
 ## 8. §3 — the typed head as the second anchor — DESIGN SETTLED, NOT BUILT
 
