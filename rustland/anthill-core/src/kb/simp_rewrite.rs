@@ -1712,7 +1712,7 @@ fn try_expand_macro(
     // cap hit (`run_in_bridge_interp` mem::takes the KB and reclaims it).
     let node_args: Vec<Value> = pos_args.iter().map(|o| Value::Node(Rc::clone(o))).collect();
     let Some(outcome) =
-        kb.run_in_bridge_interp(|interp| interp.call_op_bridged(functor, &node_args))
+        kb.run_in_bridge_interp(|interp| interp.call_op_bridged(functor, &node_args, None))
     else {
         return Ok(None);
     };

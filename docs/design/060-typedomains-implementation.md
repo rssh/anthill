@@ -368,7 +368,12 @@ because `List`'s own `member` reads `require[SortDomain[T]]` for its element and
    `sub(0)` exactly as `expand_dispatching_dict` makes it project at an operation dispatch.
 
 Step 3 is the one with nowhere to write today — a `ResolverFrame` has no requirement
-channel — and is the same work as NAR1X (§5, §6).
+channel. It was expected to be the same work as NAR1X; MEASURED 2026-09-12, it is not.
+NAR1X installed a dictionary in an EVAL frame (`expand_dispatching_dict`, entered through
+`call_op_bridged`), and an eval frame is what an operation activation has. A rule activation
+still has none, so `apply_domain` must take the other route this document already prefers —
+the dictionary as a WRITTEN argument on the provider's `member` (§4.1, §5, and §6's last
+bullet, which owns the census that route still needs).
 
 **AND STEP 2 IS FORCED BY HOW THE ENGINE FINDS CLAUSES AT ALL.** A rule is not a path in the
 discrimination tree: the tree INDEXES heads, its leaves are `RuleId`s, and a path is a
@@ -463,23 +468,32 @@ reaching the callee's `require[…]`. No `ResolverFrame` field, no inheritance r
 clone. The dictionary is an ordinary value and needs no more than ordinary values get.
 
 **WHAT IS MISSING IS THE ENTRY, and specifically the GENERATIVE one.** There are two eval→rule
-edges and neither carries the caller's dictionary:
+edges:
 
 | edge | site | owner |
 |---|---|---|
-| the GROUND closed test | `prove_rule_predicate_value` → `kb.prove_rule_predicate(pred, args)` — pred and args, nothing else, from a frame that HOLDS `frame.requirements` | **WI-20260909-NAR1X**, *settled, not built* |
+| the GROUND closed test | `prove_rule_predicate_value` → `kb.prove_rule_predicate(pred, args)` — pred and args, nothing else, from a frame that HOLDS `frame.requirements` | **NOT A GAP** — measured 2026-09-12, see below |
 | the GENERATIVE call | `build_relation_value` → `Value::Relation` → `execute_logical_query` | **nobody** |
 
-NAR1X's own boundary rules the second one out in as many words: "`PredicateProof` is Proved /
+**THE GROUND EDGE TURNED OUT NOT TO NEED A CHANNEL, and WI-20260909-NAR1X is the measurement.**
+That ticket was filed on the reading in the first row — "the crossing DROPS THE SLOT" — and
+building it showed the slot is not what is missing: a rule reached as a ground test DERIVES its
+own dictionary from the ground operand (the WI-1040 witness / WI-20260909-QMFC5 anchor paths),
+so the caller's `frame.requirements` has nothing to add. What failed was one goal LATER, at the
+rule→op call, and it was fixed as an ARGUMENT — WI-1040's `Expr::ApplyWithin { requirements:
+[?d] }` reaching the eval bridge, which expands it into the callee's frame. No `ResolverFrame`
+field was added, which is the same verdict this section reaches above for the recursion.
+
+NAR1X's own boundary rules the GENERATIVE row out in as many words: "`PredicateProof` is Proved /
 Refuted / Undecided / Undefined — a CLOSED GROUND TEST. A generative `p(?out)` from an
 operation body does not traverse this edge at all, so this ticket delivers the ground call …
 NOT generative use." Enumerating a domain IS `member(?x)` with `?x` free, so this direction
-lives entirely on the edge NAR1X excludes.
-
-It is a gap, not an impossibility: `build_relation_value` takes `&mut self` and can reach the
-frame; nothing reads `Frame::requirements` there today. And NAR1X's ATTRIBUTION half — supply
-where the local derivation is Undecided, CHECK where it is unique (WI-860) — is the rule this
-edge wants too, so what transfers is its reasoning rather than its carrier.
+still lives entirely on the edge NAR1X excludes, and that edge is still nobody's. It is a gap,
+not an impossibility: `build_relation_value` takes `&mut self` and can reach the frame; nothing
+reads `Frame::requirements` there today.
+[`op-to-rule-requirement-channel.md`](./op-to-rule-requirement-channel.md) §5.1 is where it is
+designed (capture in the `Value::Relation`, because a relation outlives the frame that built
+it), and its §7 step 4 is what would build it.
 
 ## 6. What is NOT known
 

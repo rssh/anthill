@@ -61,13 +61,26 @@
 //!
 //! ## WHICH CALLS ARE WOVEN — a narrower population than "every covered call"
 //!
-//! `collect_covered_calls` weaves only a callee the WI-938 functional-relation hook
-//! recognizes: a rule-less BODIED operation. A **body-less** spec op (the typeclass
-//! norm — `PartialEq.eq`) and a **builtin-backed** one are deliberately left alone,
-//! and keep exactly the `requires(X)` behaviour they had. MEASURED: weaving them
-//! turned a clause that answered into one that answers nothing, because
-//! `Expr::ApplyWithin` heads `Opaque` and a goal-position reader for it does not
-//! exist. Both halves are pinned by tests above.
+//! `collect_covered_calls` weaves only a callee some GOAL-SHAPE READER recognizes.
+//! When this file was written that meant one predicate — the WI-938
+//! functional-relation hook, i.e. a rule-less BODIED operation — and the note here
+//! said a **body-less** spec op and a **builtin-backed** one are both left alone,
+//! because "`Expr::ApplyWithin` heads `Opaque` and a goal-position reader for it does
+//! not exist".
+//!
+//! **HALF OF THAT EXPIRED.** WI-1057 built the missing reader for a body-less spec
+//! op (`body_less_relation_arity`, reached through `dispatched_relation_arity`'s
+//! woven-head arm), and WI-20260909-NAR1X admits the CARRIER-LESS ones through it —
+//! `Monoid.unit()` / `Zeroable.zero()`, the shape no value can ever dispatch. See
+//! `nar1x_carrier_less_spec_op_test`, which owns those rows.
+//!
+//! **The builtin-backed half stands, and it is the same measurement:**
+//! `require[PartialEq[T]], eq(?x, ?y)` went from ONE solution to ZERO when the weave
+//! reached it. `eq` is refused by the reader test itself (`body_less_relation_arity`
+//! bails on a builtin), so this file's own row keeps pinning it. A body-less
+//! CARRIER-BEARING spec op is also still left alone — deliberately, and the reason is
+//! at `collect_covered_calls`: the value route already decides it, so the dictionary
+//! would be a second answer rather than the only one.
 //!
 //! ## TWO BOUNDARIES, MEASURED AND PINNED BELOW — not delivered, not silent
 //!

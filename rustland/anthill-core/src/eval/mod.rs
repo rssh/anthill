@@ -687,11 +687,51 @@ impl Interpreter {
         &mut self,
         sym: Symbol,
         args: &[Value],
+        dispatched_through: Option<(Symbol, &value::Dictionary)>,
     ) -> Result<Value, EvalError> {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
         }
         use crate::kb::typing::BridgeRequirements;
+        // WI-20260909-NAR1X — THE CALLER'S DICTIONARY, WHERE THE CALLER HAS ONE.
+        //
+        // The resolution below pins the callee's chain FROM THE ARGUMENT TYPES, and
+        // `reduce_op_value`'s own note says why that is "the one entry that can" — for a
+        // call the resolver classified from its operands. A WOVEN call
+        // (`Expr::ApplyWithin`, WI-1040) is the other kind: the clause's `require[X]`
+        // resolved a dictionary at run time and that dictionary, not the arguments, is
+        // what says which instance the call means. For a CARRIER-LESS spec op
+        // (`Monoid.unit()`) the arguments say nothing at all — there are none — so the
+        // two are not even competing readings; one of them is the only one.
+        //
+        // So the woven route hands the dictionary here and the channel is EXPANDED from
+        // it — `expand_dispatching_dict`, the same projection an operation-body dispatch
+        // performs, so the frame `Wrap.zero()` is entered with is byte-identical whether
+        // the call came from an operation body or from a rule clause. Without it the
+        // impl's OWN chain (`Wrap provides Zeroable[T = Wrap] :- Zeroable[E]`) has
+        // nothing to pin `E` from and the call residualizes: MEASURED, `require[
+        // Zeroable[T]], Zeroable.zero(?r)` over `wrap(inner: sum())` answered ONE
+        // INDEFINITE solution where the value is `103`.
+        //
+        // AN ERROR HERE IS NOT SWALLOWED. `expand_dispatching_dict` reports an
+        // `EvalError::Internal` for a dictionary whose arity disagrees with the layout,
+        // and `bridge_op_to_eval`'s `debug_assert` makes that loud in a debug build
+        // rather than residualizing quietly — the same treatment every other
+        // evaluator-invariant failure gets on this path.
+        //
+        // THAT ARM IS UNREACHED IN THE CORPUS, MEASURED rather than argued, because a
+        // debug abort on a legal program would be the worst of the outcomes available
+        // (the sentence WI-20260909-S8CBV's projection gate records): with the failure
+        // instrumented, `wi_tests` (4579 tests) reaches it ZERO times. The two lists it
+        // compares have one producer each and the dictionary is the one the clause's own
+        // `find_dictionary` resolved for this spec at this carrier, so a disagreement
+        // between them is an inconsistency rather than a program shape — which is what
+        // makes the loud treatment the right one, and the census what says it is not
+        // firing on something ordinary today.
+        if let Some((dispatched_from, dict)) = dispatched_through {
+            let requirements = self.expand_dispatching_dict(dispatched_from, sym, dict)?;
+            return self.invoke_op_with_requirements(sym, args, requirements);
+        }
         let requirements =
             match crate::kb::typing::resolve_bridge_requirements(&mut self.kb, sym, args) {
                 BridgeRequirements::NoneNeeded => smallvec::SmallVec::new(),

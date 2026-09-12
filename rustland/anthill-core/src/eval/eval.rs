@@ -2061,7 +2061,7 @@ impl Interpreter {
     /// op (no impl member), the provider half when it landed on the provider's. This
     /// pair used to be read as ONE chain — the target's parent's — which agreed with
     /// what the producer bundled only when the provider was a chain-free witness.
-    fn expand_dispatching_dict(
+    pub(super) fn expand_dispatching_dict(
         &mut self,
         dispatched_from: Symbol,
         target: Symbol,

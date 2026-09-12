@@ -1132,6 +1132,27 @@ enum UnstampedDispatch {
     Refused,
 }
 
+/// WI-20260909-NAR1X — the evidence a WOVEN call (`Expr::ApplyWithin`, WI-1040)
+/// carries one hop past the member it selected.
+///
+/// [`KnowledgeBase::dictionary_dispatch_target`] answers TWO things from one
+/// dictionary and they are needed by two different readers: the impl MEMBER, which
+/// decides what to call, and the dictionary itself, which decides what that member's
+/// own `requires` chain resolves to. A leaf impl needs only the first; a CONDITIONAL
+/// provider (`Wrap provides Zeroable[T = Wrap] :- Zeroable[E]`) reads its element's
+/// dictionary out of its frame, and the only thing in the system that says what `E`
+/// is at this call is `sub(0)` of the tree in hand — the arguments cannot say, because
+/// a carrier-less spec op has none.
+///
+/// `spec_op` is the SPELLED spec op, not the target: `expand_dispatching_dict` reads
+/// it as `dispatched_from` to name the dictionary's SPEC (`dispatch_spec_of_op`), which
+/// is what the layout's two halves are counted against. Handing it the target instead
+/// would name the PROVIDER twice and mis-slice a chain the spec contributed to.
+struct WovenDispatch {
+    spec_op: Symbol,
+    dict: crate::eval::value::Dictionary,
+}
+
 impl SearchStream {
     /// Record a fault, mark the stream INCOMPLETE, and dedup.
     ///
@@ -9494,6 +9515,12 @@ impl KnowledgeBase {
         subst: &Substitution,
         depth: usize,
         dispatch_body_less: bool,
+        // WI-20260909-NAR1X — the WOVEN call's evidence, threaded from the
+        // `Expr::ApplyWithin` arm below to the eval bridge at the bottom. `Some` only
+        // for the one hop the arm makes onto the impl it just selected, and only when
+        // that impl needs a requirements channel; every other caller and every nested
+        // recursion passes `None`. See [`WovenDispatch`].
+        woven: Option<&WovenDispatch>,
     ) -> Value {
         const FOLD_DEPTH_CAP: usize = 64;
         let occ = match &v {
@@ -9550,8 +9577,37 @@ impl KnowledgeBase {
             type_args,
         }) = occ.as_expr()
         {
-            let target = self.dictionary_dispatch_target(*functor, requirements, subst);
-            let Some(target) = target else { return v };
+            let Some((target, dict)) =
+                self.dictionary_dispatch_target(*functor, requirements, subst)
+            else {
+                return v;
+            };
+            // WI-20260909-NAR1X — DOES THE SELECTED IMPL NEED THE DICTIONARY ITSELF?
+            //
+            // The re-stamp below says the callee is decided, and for a leaf impl
+            // (`Sum.zero() = 3`) that is the whole story. It is NOT the whole story for
+            // a CONDITIONAL provider (`Wrap provides Zeroable[T = Wrap] :- Zeroable[E]`),
+            // whose body reads its element's dictionary out of its own frame: the fold
+            // has no frame, and the bridge's argument-type pin has no argument to read
+            // when the spec op is carrier-less. The evidence for that slot is `sub(0)`
+            // of the dictionary in hand, so it is carried one hop further rather than
+            // dropped here — [`WovenDispatch`], read by `call_op_bridged`.
+            //
+            // The predicate is `classify_pin_or_apply_within`'s own (`needs_reqs ||
+            // has_op_slots`), asked of the TARGET, so the resolver's woven route and the
+            // typer's static route agree about which callees need a channel.
+            let woven_next = dict.and_then(|dict| {
+                let parent = super::typing::impl_parent_of_op(self, target);
+                let needs_reqs = parent
+                    .map(|p| super::typing::sort_reads_requirement_slots(self, p))
+                    .unwrap_or(false);
+                let has_op_slots = parent.is_some()
+                    && !super::typing::op_requires_chain_rc(self, target).is_empty();
+                (needs_reqs || has_op_slots).then(|| WovenDispatch {
+                    spec_op: *functor,
+                    dict,
+                })
+            });
             let call = occ.rebuilt_expr(Expr::Apply {
                 recv_type: None,
                 functor: target,
@@ -9579,7 +9635,13 @@ impl KnowledgeBase {
                 spec_op_sym: *functor,
                 impl_op_sym: target,
             });
-            return self.reduce_op_value(Value::Node(call), subst, depth, dispatch_body_less);
+            return self.reduce_op_value(
+                Value::Node(call),
+                subst,
+                depth,
+                dispatch_body_less,
+                woven_next.as_ref(),
+            );
         }
         let functor = match occ.as_expr() {
             Some(Expr::Apply { functor, .. }) => *functor,
@@ -9642,7 +9704,27 @@ impl KnowledgeBase {
             | node_occurrence::ApplyDispatch::NeedsDict(s) => s,
             node_occurrence::ApplyDispatch::Unclassified => functor,
         };
-        let needs_dict = matches!(dispatch, node_occurrence::ApplyDispatch::NeedsDict(_));
+        // WI-20260909-NAR1X — a woven hop with a dictionary to install is `needs_dict`
+        // for exactly the reason the typer's own class is: the callee reads requirement
+        // slots, so the frame-less structural fold must not run it and the spelled spec
+        // op's DEFAULT is the wrong answer rather than a missing one. The stamp on the
+        // rebuilt node says `PinNow` (the CALLEE is decided — that is what the
+        // dictionary just settled), so the verdict cannot be read back off it.
+        let needs_dict =
+            matches!(dispatch, node_occurrence::ApplyDispatch::NeedsDict(_)) || woven.is_some();
+        // TWO CONSEQUENCES OF THAT `||`, both deliberate:
+        //
+        //  * A WOVEN HOP BRIDGES AT ANY DEPTH, like the `NeedsDict` class beside it and
+        //    for the identical reason its own note gives: the `depth == 0` gate below
+        //    rests on "a nested call rides its ENCLOSING op's single bridge", and the
+        //    enclosing bridge knows nothing of this dictionary — it would run the callee
+        //    with a channel resolved from argument types, which for a carrier-less call
+        //    is no channel at all.
+        //  * THE `needs_dict` ARM IS THE ONLY ONE A WOVEN HOP REACHES, since it is
+        //    tested before both arms below. `woven` is still threaded to those two
+        //    rather than hardcoded `None`, so that reordering them cannot silently drop
+        //    the dictionary — they receive what is true, not what is currently
+        //    reachable.
         // A builtin (field_access, arith, eq, …) is reduced by its own path, not
         // folded. Only a CONCRETE operation (one with a stored body) folds; an
         // abstract / spec op has no body (its requires are abstract) — leave it.
@@ -9785,7 +9867,7 @@ impl KnowledgeBase {
             match self.walk_arg(item, subst) {
                 Some(a) => {
                     let a = if reduce_args && depth < FOLD_DEPTH_CAP {
-                        self.reduce_op_value(a, subst, depth + 1, dispatch_body_less)
+                        self.reduce_op_value(a, subst, depth + 1, dispatch_body_less, None)
                     } else {
                         a
                     };
@@ -9824,7 +9906,7 @@ impl KnowledgeBase {
         // the concrete argument types instead, which is the one entry that can.
         if needs_dict {
             return self
-                .bridge_op_to_eval(op, &params, &param_args, subst)
+                .bridge_op_to_eval(op, &params, &param_args, subst, woven)
                 .unwrap_or(v);
         }
         // WI-1057 — a BODY-LESS spec op: there is no body to fold, so the eval
@@ -9838,7 +9920,7 @@ impl KnowledgeBase {
         // the call term and calling that a definite answer.
         let Some(body) = body else {
             return self
-                .bridge_op_to_eval(op, &params, &param_args, subst)
+                .bridge_op_to_eval(op, &params, &param_args, subst, woven)
                 .unwrap_or(v);
         };
         // Build the fold substitution: every op-body var named after a param maps
@@ -9852,7 +9934,7 @@ impl KnowledgeBase {
         // op-call. A value (Term/scalar) ⇒ FOLDABLE; a residual `Node` (arith /
         // match / unfoldable op-call) ⇒ COMPLEX → return the ORIGINAL call.
         let reduced = self.reduce_dot_value(Value::Node(folded), subst);
-        let reduced = self.reduce_op_value(reduced, subst, depth + 1, false);
+        let reduced = self.reduce_op_value(reduced, subst, depth + 1, false, None);
         match reduced {
             // A COMPLEX body (`match`/`if`/`let`/recursion) the structural fold
             // can't collapse. WI-625 gap 1 — the SLD→eval dual of the eval→SLD eq
@@ -9869,13 +9951,14 @@ impl KnowledgeBase {
             // once per level. A complex body nested inside another op therefore
             // rides its enclosing op's single top-level bridge.
             Value::Node(_) if depth == 0 => self
-                .bridge_op_to_eval(op, &params, &param_args, subst)
+                .bridge_op_to_eval(op, &params, &param_args, subst, woven)
                 .unwrap_or(v),
             other => other,
         }
     }
 
-    /// WI-1040 — the implementation member a woven call's dictionary selects.
+    /// WI-1040 — the implementation member a woven call's dictionary selects, and
+    /// (WI-20260909-NAR1X) the dictionary itself where it can be read as one.
     ///
     /// The requirements channel holds ONE entry, the clause variable the
     /// `find_dictionary` goal bound; σ-walked it is the dictionary
@@ -9891,12 +9974,25 @@ impl KnowledgeBase {
     /// `None` — the caller leaves the call un-reduced — when the variable is still
     /// unbound, when the channel is not a single dictionary, or when the table has
     /// no member. Never a fallback to the spec op itself: that is the wrong answer.
+    ///
+    /// **THE PAIR'S SECOND HALF IS ITS OWN `Option`, and the nesting is the point**
+    /// (WI-20260909-NAR1X). The MEMBER is what this function has always answered, off
+    /// the `impl` child alone; the DICTIONARY is what the member's own `requires` chain
+    /// needs, and only a conditional provider has one. Folding the two into one
+    /// `Option` — failing the whole read when the tree cannot be recognized — is a
+    /// measured regression and not a hypothetical: it took WI-1040's
+    /// `a_clause_dictionary_crossing_a_rule_boundary_agrees_with_its_own_carrier` and
+    /// three WI-96ZTM rows from `7`/`9` to a residual, because a dictionary supplied
+    /// through a rule HEAD arrives on a carrier the value-shaped check does not read.
+    /// The read is [`Dictionary::from_view`] for that reason; the `Option` is what
+    /// keeps a carrier it still cannot read from costing the DISPATCH as well as the
+    /// hand-off.
     fn dictionary_dispatch_target(
         &mut self,
         spec_op: Symbol,
         requirements: &[Rc<NodeOccurrence>],
         subst: &Substitution,
-    ) -> Option<Symbol> {
+    ) -> Option<(Symbol, Option<crate::eval::value::Dictionary>)> {
         let [dict_occ] = requirements else {
             return None;
         };
@@ -9918,7 +10014,45 @@ impl KnowledgeBase {
             } => s,
             _ => return None,
         };
-        super::typing::resolve_op_target_checked(self, impl_sym, spec_op).ok()
+        let target = super::typing::resolve_op_target_checked(self, impl_sym, spec_op).ok()?;
+        // WI-20260909-NAR1X — THE DICTIONARY COMES BACK BESIDE THE MEMBER IT SELECTED,
+        // read CARRIER-NEUTRALLY, and it is an `Option` of its own.
+        //
+        // The impl read above goes through `TermView` and so never had to care which
+        // carrier the σ binding rides. A dictionary does: one has THREE
+        // (`requirement-channel.md` §9), and which one arrives here is decided by where
+        // the binding came from — `fetch_dictionary` builds a `Value::Entity`, while a
+        // dictionary supplied through a rule HEAD is materialized by the goal walk into
+        // `Value::Node(Expr::Dictionary { .. })`. So the read is
+        // [`Dictionary::from_view`], not `from_value`, which matches the value carrier
+        // structurally. MEASURED, and it is why this is a `from_view`: with `from_value`
+        // here, WI-1040's `a_clause_dictionary_crossing_a_rule_boundary_agrees_with_its_
+        // own_carrier` and three WI-96ZTM rows went from `7`/`9` to a residual.
+        //
+        // **AN UNREADABLE DICTIONARY MUST NOT TAKE THE MEMBER DOWN WITH IT.** The
+        // selection needs only the impl symbol; the SUBTREE is what the callee's own
+        // chain needs, and only a conditional provider has one. Returning `None` for the
+        // pair would turn "I cannot carry the evidence one hop further" into "this call
+        // does not dispatch at all" — a working row lost to a case that never had the
+        // hand-off. So the handle is optional and its absence degrades to exactly the
+        // pre-NAR1X behaviour: the bridge pins the callee's chain from the argument
+        // types, as it always did.
+        //
+        // WHY THE SUBTREE AND NOT THE IMPL SYMBOL: `060-typedomains-implementation.md`
+        // §4.1 — "the components' types live in the subtree, so the subtree is what must
+        // cross". The symbol FINDS the member; running it is what needs the tree.
+        let handle = match dict.as_bind_value() {
+            super::persist_subst::BindValue::Value(v) => {
+                crate::eval::value::Dictionary::from_view(self, &v)
+            }
+            super::persist_subst::BindValue::Term(t) => {
+                crate::eval::value::Dictionary::from_view(self, &t)
+            }
+            // A deferred fact-term path: a persisted-query artefact, whose value is not
+            // in hand at all here. No handle; the member still stands.
+            super::persist_subst::BindValue::Path(_) => None,
+        };
+        Some((target, handle))
     }
 
     /// WI-625 gap 1 (SLD→eval op-body dispatch bridge): run a CONCRETE op whose
@@ -9978,6 +10112,11 @@ impl KnowledgeBase {
         params: &[Symbol],
         param_args: &HashMap<Symbol, Value>,
         subst: &Substitution,
+        // WI-20260909-NAR1X — the woven call's dictionary, handed to the bridged
+        // interpreter EXPLICITLY. The design (`op-to-rule-requirement-channel.md` §5.2)
+        // rules out the ambient alternative in as many words: a thread-local would make
+        // the callee's dictionaries depend on who happened to be on the stack.
+        woven: Option<&WovenDispatch>,
     ) -> Option<Value> {
         // Reify + ground-gate each arg under σ, in declaration order (before
         // taking the KB — this needs σ, which the interpreter has not). `reify_value`
@@ -10005,7 +10144,9 @@ impl KnowledgeBase {
         // still costing a term intern per bridged Node operand (pinned for the
         // KB's lifetime, span discarded) and leaving the duty to convert
         // UNENFORCED at every future bridge site.
-        let outcome = self.run_in_bridge_interp(|interp| interp.call_op_bridged(op, &args))?;
+        let dispatched_through = woven.map(|w| (w.spec_op, &w.dict));
+        let outcome = self
+            .run_in_bridge_interp(|interp| interp.call_op_bridged(op, &args, dispatched_through))?;
         match outcome {
             Ok(value) => Some(value),
             // The bridge-mode suspend signal (an undecided semantic compare):
@@ -10115,7 +10256,7 @@ impl KnowledgeBase {
         // Operands ride on the carrier they were proved on — see the identical note
         // in `bridge_op_to_eval` (WI-20260827-3ZNBC).
         let Some(outcome) =
-            self.run_in_bridge_interp(|interp| interp.call_op_bridged(target, &[a, b]))
+            self.run_in_bridge_interp(|interp| interp.call_op_bridged(target, &[a, b], None))
         else {
             return Ok(BridgeEqOutcome::Undecided { truncated: true });
         };
@@ -10162,7 +10303,7 @@ impl KnowledgeBase {
     /// caller delays on it via [`Self::is_unreduced_op_call`].
     fn reduce_operand(&mut self, v: Value, subst: &Substitution) -> Value {
         let v = self.reduce_dot_value(v, subst);
-        self.reduce_op_value(v, subst, 0, false)
+        self.reduce_op_value(v, subst, 0, false, None)
     }
 
     /// WI-1057 — [`Self::reduce_operand`] for the ONE site that is deciding a call
@@ -10189,7 +10330,7 @@ impl KnowledgeBase {
     /// admitting and the deciding half of one decision, and they have one reader each.
     fn reduce_dispatched_goal_call(&mut self, v: Value, subst: &Substitution) -> Value {
         let v = self.reduce_dot_value(v, subst);
-        self.reduce_op_value(v, subst, 0, true)
+        self.reduce_op_value(v, subst, 0, true, None)
     }
 
     /// WI-483: is `v` a residual (unfolded) method-op call operand — a
@@ -10987,7 +11128,7 @@ impl KnowledgeBase {
     /// the shielding — a fact, an entity constructor or a plain rule predicate has no
     /// signature and leaves at the second line — and `body_less_dispatchable` re-checks
     /// it before its own scan for the same reason.
-    fn body_less_relation_arity(&self, f: Symbol) -> Option<usize> {
+    pub(crate) fn body_less_relation_arity(&self, f: Symbol) -> Option<usize> {
         if self.builtins.get(&f).is_some() {
             return None;
         }

@@ -73494,13 +73494,37 @@ fn goal_pos0(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
 ///   is body-less AND builtin-tagged — went from ONE solution to ZERO, a clause that
 ///   worked before the weave silently failing after it.
 ///
-///   So a **body-less** spec op (the typeclass norm) and a **builtin-backed** one are
-///   deliberately NOT woven: they keep exactly the `requires(X)` behaviour, which is
-///   what they had. Threading a dictionary into them needs a reader that does not
-///   exist yet — either a transparent head for `ApplyWithin` (which would then
-///   disagree with its own WRAPPED term twin, the WI-425/WI-815 cross-carrier miss)
-///   or a goal-position dispatch site of its own. Owned by WI-1040's ticket
-///   feedback; not silent, and not claimed as delivered.
+///   **WI-20260909-NAR1X ADDED A SECOND READER TEST BESIDE IT, AND THE SENTENCE THIS
+///   NOTE USED TO CARRY IS NO LONGER TRUE OF EVERY BODY-LESS OP** — kept corrected
+///   rather than deleted, because the reasoning is what a reader needs. It said: "a
+///   **body-less** spec op (the typeclass norm) and a **builtin-backed** one are
+///   deliberately NOT woven … threading a dictionary into them needs a reader that
+///   does not exist yet". WI-1057 BUILT that reader —
+///   [`KnowledgeBase::body_less_relation_arity`], read through
+///   `dispatched_relation_arity`'s woven-head arm in `step_init` — so the gate now
+///   asks BOTH predicates, and a body-less callee is admitted where that one answers.
+///
+///   The **builtin-backed** half is untouched and stays refused, by the reader test
+///   itself: `body_less_relation_arity` bails on `builtins.get(&f).is_some()`, so
+///   `eq` never reaches the carrier test below and WI-1040's measured regression
+///   cannot come back (`nar1x_carrier_less_spec_op_test::a_builtin_backed_spec_op_is_
+///   still_not_woven`).
+///
+/// * **A body-less callee must ALSO be CARRIER-LESS** (WI-20260909-NAR1X). The
+///   admission above is narrowed by `!op_has_spec_carrier_param(functor, spec)` — the
+///   marker NAR1X names — so `Zeroable.zero()` is woven and a body-less
+///   `Desc.describe(x: T)` is not. Not because weaving the latter is known to be
+///   wrong: MEASURED, dropping the carrier test changes no row in the corpus and the
+///   one hand-built fixture for the shape (`Desc.describe` body-less, one supplier)
+///   answers `7` either way — value-directed classification (WI-1044/WI-1057) already
+///   decides it from the operand it carries. The line is drawn where the design does,
+///   at the case with NO other route: a carrier-less call has no operand for the
+///   value route to read and no argument type for `resolve_bridge_requirements` to
+///   pin, so the clause's dictionary is not a better answer there, it is the only
+///   one. Widening to the carrier-BEARING half is a live choice about WI-1040's
+///   weaving population — the same choice the `classified_apply_target` note below
+///   leaves open — and belongs to whoever revisits it, with the two-supplier row
+///   (058 §4.9, where value-direction REFUSES) as the measurement that would decide.
 ///
 /// * **Only where the typer did not already pin** (channel doc §5). Where
 ///   `check_apply_iter` resolved the call at compile stage the dispatch is decided
@@ -73525,7 +73549,36 @@ fn collect_covered_calls(
         {
             continue;
         }
-        if kb.functional_relation_arity(*functor).is_none() {
+        // WI-20260909-NAR1X — …OR a CARRIER-LESS body-less spec op, which is the one
+        // shape nothing else can ever dispatch. `Monoid.unit()` / `Zeroable.zero()`
+        // exposes no parameter typed at the spec's carrier
+        // ([`op_has_spec_carrier_param`], the marker NAR1X names), so there is no
+        // carried type for value-directed classification to read and no argument type
+        // for the bridge's `resolve_bridge_requirements` to pin — MEASURED, such a goal
+        // answered `[]` in a clause that had asked for the dictionary explicitly. The
+        // clause's dictionary is the ONLY thing in the system that says which impl the
+        // call means, so weaving is not an optimisation here; it is the whole dispatch.
+        //
+        // THE CARRIER-BEARING body-less op STAYS OUT, and that half is what keeps
+        // WI-1040's measured regression from coming back: `require[PartialEq[T]],
+        // eq(?x, ?y)` went from ONE solution to ZERO when the weave admitted it,
+        // because `eq` is ALSO builtin-tagged and an `Expr::ApplyWithin` at goal
+        // position is `ViewHead::Opaque` to builtin dispatch. `body_less_relation_arity`
+        // is the goal-shape reader that DOES understand a woven goal (WI-1057, read
+        // through `dispatched_relation_arity`'s woven-head arm in `step_init`), and
+        // asking it here is how this gate keeps saying what it has always said: weave
+        // only a callee some reader will recognize. A builtin has none — it bails on
+        // `self.builtins.get(&f).is_some()` — so `eq` is refused by that leg, and the
+        // carrier test is what leaves every OTHER carrier-bearing body-less op on the
+        // value-directed route that already decides it.
+        //
+        // Driven by `nar1x_carrier_less_spec_op_test`; with this leg backed out its
+        // headline rows answer `[]` and its carrier-bearing control answers the same
+        // number either way.
+        if kb.functional_relation_arity(*functor).is_none()
+            && !(kb.body_less_relation_arity(*functor).is_some()
+                && !op_has_spec_carrier_param(kb, *functor, spec_canon))
+        {
             continue;
         }
         // WI-1037 — the NARROW read (`PinNow` alone), deliberately, now that

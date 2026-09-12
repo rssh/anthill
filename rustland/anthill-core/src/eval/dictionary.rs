@@ -123,6 +123,70 @@ impl Dictionary {
         Some(Dictionary(v.clone()))
     }
 
+    /// WI-20260909-NAR1X — the CARRIER-NEUTRAL twin of [`Self::from_value`]: recognize
+    /// a dictionary through [`TermView`], whatever carrier it rides, and REBUILD it as
+    /// the `Value::Entity` every accessor above reads.
+    ///
+    /// **WHY A SECOND READER RATHER THAN A SECOND ARM IN `from_value`.** One dictionary
+    /// has THREE carriers by design — a `TermId`, a `Value::Entity`, and a
+    /// `NodeOccurrence` (`Expr::Dictionary`) — and WI-1045's rule is that all three
+    /// present ONE head, ONE key set and ONE child list through `TermView`
+    /// (`requirement-channel.md` §9). `from_value` matches the `Value::Entity` carrier
+    /// STRUCTURALLY, so it is blind to the other two; that is right for its callers,
+    /// which hold a value eval itself built, and wrong for a resolver clause variable,
+    /// whose σ binding is materialized into an `Expr::Dictionary` occurrence by the goal
+    /// walk. MEASURED: `?d` supplied through a rule head reaches
+    /// `dictionary_dispatch_target` as `Value::Node(Expr::Dictionary { .. })`, and
+    /// `from_value` answers `None` for it.
+    ///
+    /// **NOT MERGED INTO `from_value`, and the reason is a census I did not take.** That
+    /// function is documented as THE ONE boundary check and is read on eval's hot paths;
+    /// widening it would widen every one of its callers at once, and its fast path
+    /// (wrap the value that was handed in, allocating nothing) is a property this
+    /// rebuild cannot keep. So the two are kept apart, and what stops them drifting is
+    /// that they answer the same question about the same three carriers: any change to
+    /// the SHAPE — the functor, the single `impl` child, sub-dictionaries positional —
+    /// must land in both, and each names the other.
+    ///
+    /// `None` for anything that is not a whole dictionary, on the same rule
+    /// `from_value` states: half a dictionary is not one.
+    pub(crate) fn from_view<V: crate::kb::term_view::TermView + ?Sized>(
+        kb: &KnowledgeBase,
+        v: &V,
+    ) -> Option<Dictionary> {
+        use crate::kb::term_view::{TermView, ViewHead};
+        let (ctor, impl_key) = crate::kb::term_view::dictionary_view_syms(kb)?;
+        let ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            named_arity: 1,
+        } = v.head(kb)
+        else {
+            return None;
+        };
+        if f != ctor {
+            return None;
+        }
+        // The `impl` child is a SYMBOL on every carrier — `Value::SymbolRef` on the
+        // value one, `Term::Ref` on the term one, an owned `SymbolRef` synthesized by
+        // `occ_view_named` on the occurrence one — so it is read as a nullary head
+        // rather than by variant, which is what makes this carrier-neutral.
+        let impl_sort = match v.named_arg(kb, impl_key)?.head(kb) {
+            ViewHead::Ident(s) => s,
+            ViewHead::Functor {
+                functor: Some(s),
+                pos_arity: 0,
+                ..
+            } => s,
+            _ => return None,
+        };
+        let mut subs: Vec<Dictionary> = Vec::with_capacity(pos_arity);
+        for i in 0..pos_arity {
+            subs.push(Self::from_view(kb, &v.pos_arg(kb, i)?)?);
+        }
+        Self::build(kb, impl_sort, subs)
+    }
+
     /// The impl this dictionary pins — the `impl` named child.
     ///
     /// Total: every constructor above established the single `impl →
