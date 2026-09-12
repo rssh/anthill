@@ -940,3 +940,24 @@ same kind the superseded hidden-slot design made for TYPES, and inherits that de
 only. Not censused. The difference that made the type version wrong does not apply: a dictionary
 is selected at RESOLUTION time by `find_dictionary`, never pinned by the typer, so no rigid.
 
+### 2026-09-12T08:44:51Z — feedback — claude
+
+WORDING CORRECTION, and it is the phrase that carried the retracted argument. Two entries above
+say `List[List[Colour]]` "has TWO dictionaries live at once inside ONE resolve". It has ONE —
+a TREE:
+
+    SortDomain[List[List[Colour]]]  =  D_outer  = Dictionary( D_mid,    impl: List )
+                                       D_mid    = Dictionary( D_colour, impl: List )
+                                       D_colour = Dictionary(           impl: Colour )
+
+`D_mid` is not a second dictionary; it is `sub(D_outer, 0)`, a NODE of the same tree. What is
+true is that while the inner `List.member(?y, D_mid)` runs, the outer `List.member(?x, D_outer)`
+is still on the stack, so two NODES are in play at once — each held by its own activation as an
+ordinary argument.
+
+WHY THE WORDING MATTERED: "two dictionaries" suggested two INDEPENDENT values needing two
+channels, which is exactly the false step that produced the per-activation `ResolverFrame`
+channel and the claim that NAR1X's `ResolveConfig` carrier could not serve. One projected tree
+needs no channel at all — `?d` for the tail, `sub(?d, 0)` for the element, both ordinary σ
+bindings.
+

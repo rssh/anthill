@@ -368,8 +368,19 @@ overlay's own candidates (`gamma_candidates_for`).
 
 **THE RECURSION NEEDS NO CHANNEL — the dictionary rides as an ARGUMENT.** Stated first
 because an earlier draft of this section argued the opposite and was wrong. `List[List[Colour]]`
-does need two dictionaries live at once inside one resolve, but that is served by σ, exactly as
-`domain_member(?x, T)` carries the TYPE as an argument today:
+has ONE dictionary — a TREE — and different activations hold different NODES of it, which σ
+serves directly, exactly as `domain_member(?x, T)` carries the TYPE as an argument today:
+
+```
+SortDomain[List[List[Colour]]]  =  D_outer = Dictionary( D_mid,    impl: List )
+                                   D_mid   = Dictionary( D_colour, impl: List )   -- = sub(D_outer, 0)
+                                   D_colour= Dictionary(           impl: Colour ) -- = sub(D_mid, 0)
+```
+
+While the inner `List.member(?y, D_mid)` runs, the outer `List.member(?x, D_outer)` is still on
+the stack — so two NODES are in play at once, each held by its own activation as an ordinary
+argument. They are not two dictionaries needing two channels; they are one value being
+projected as the search descends.
 
 ```
 List.member(?x, ?d) :- ?x <=> nil()
