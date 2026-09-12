@@ -849,3 +849,45 @@ is a direction. If it is ever taken, §7.3's typer work STAYS — the bracket st
 read and validated — and only its frame-reading step is retired. So the order is §7.3 first,
 that after NAR1X, and NOTHING in §7.3 is rework.
 
+### 2026-09-12T08:40:40Z — feedback — claude
+
+RE-AIMED AT THE TYPE-DOMAINS DIRECTION (user, 2026-09-12). This ticket's remaining half is no
+longer the citation bracket of `060-implementation.md` §7.3; it is
+`docs/design/060-typedomains-implementation.md` — the sort's domain fetched at resolution time
+through the REQUIREMENT channel (`SortDomain[T]`, `find_dictionary`, `apply_domain`) rather
+than named at compile time. Decision C (the type riding beside the goal) is SUPERSEDED with
+§7.3, not built. The ticket's DELIVERED half — a bound's type variable is a clause variable,
+the pin from the value, the loader expansion — stands unchanged and is not rework.
+
+WHY THE CHANGE: §7.3 repairs the rigid problem, this dissolves it. A dictionary is selected
+IN THE RESOLVER against the σ of the firing, so nothing is decided early and there is no
+stand-in to replace. `operation g[X]() = List[T = X].domain.takeN(5)` is the case: under any
+scheme that resolves the type when the clause is TYPED, `X` is `g`'s rigid and the element
+goal has no constructors to enumerate.
+
+WHAT OF §7.3 STILL HAS TO HAPPEN, because it is mechanism-independent and is a defect today:
+its L3 — a paren-less `Sort[…].rel` has its bracket ERASED before any validation
+(`convert.rs`'s `collect_field_access_segments` "bindings erased"), so `Wrap[W = Colour].dom`
+with a bogus parameter loads clean where the applied spelling is refused; and such a chain
+followed by a projection is not recognised as a citation at all. And the bracket must still be
+READ and VALIDATED under either mechanism (§7.3's T1/T2), because something has to say the
+citation means `List[Letter]` before any dictionary can be selected for it.
+
+FIRST STEP, SETTLED WITH THE USER BEFORE ANY CODE: the PER-ACTIVATION REQUIREMENT CHANNEL ON
+`ResolverFrame`. It is the whole mechanism and the only genuinely new engine work; SortDomain,
+its derivation, `apply_domain` and the transform are assembly on top. Work out its shape
+against the resolver — the field, inheritance on push, REPLACEMENT at an `apply_domain`
+activation, clone cost per push — and DRIVE a fixture where two dictionaries are live at once
+in one resolve, before designing the rest further. If that does not work, nothing else matters.
+
+AND NAR1X DOES NOT SUPPLY IT, measured at its ticket rather than assumed (the typedomains doc
+§5 carried the wrong claim until today). WI-20260909-NAR1X's channel is a `ResolveConfig`
+FIELD, modelled on `gamma` expressly because that "rides the config, not the per-frame
+`assumed_facts` stack, BECAUSE it is global to one resolve call" — while `List[List[Colour]]`
+has TWO dictionaries live at once inside ONE resolve (`D(D(impl: Colour), impl: List)` at the
+outer `member`, `D(impl: Colour)` at the element's). And NAR1X's own boundary excludes what
+this needs: "a generative `p(?out)` from an operation body does not traverse this edge at all
+… NOT generative use" — where enumerating a domain IS `member(?x)` with `?x` free. NAR1X's
+ATTRIBUTION half (supply where the local derivation is Undecided, check where it is unique)
+transfers; its carrier does not.
+
