@@ -26,6 +26,7 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | channel §10 item 3 | op→rule dictionary channel (polytypes) | **WI-20260909-NAR1X** | **settled, not built** — §8.10 |
 | §4 determinism | fetch, never choose | WI-855/857/860 | delivered (058) |
 | C666A relaxation | admit the guarded non-enclosing join | WI-742 | **delivered** — §9 |
+| — (no proposal §) | the domain as a runtime value via the requirement channel | — | **exploratory**, no owner — [`060-typedomains-implementation.md`](./060-typedomains-implementation.md) |
 
 Everything delivered is driven and controlled in
 `anthill-core/tests/include/wi742_typed_relational_head_test.rs` and
