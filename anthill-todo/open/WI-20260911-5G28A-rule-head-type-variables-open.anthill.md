@@ -322,4 +322,323 @@ positionally (three substrings demanded three errors), and the eval row asserted
 on a `Value::Node`'s DEBUG rendering — an occurrence tree of `Symbol(1234)` handles with no `a`,
 `b` or `1` in it as content, so it had been passing on the word "Span". It renders through
 `TermPrinter` now and asserts both halves: that the answer IS `x`'s list and is NOT `y`'s.
+### 2026-09-12T06:17:41Z — feedback — claude
+
+IMPLEMENTATION PLAN FOR WHAT REMAINS (claude, 2026-09-12, session with user; revised the
+same morning after the user's question "why can't B be an unfilled var?" — the earlier
+version refused an unwritten parameter BY SPELLING, this one refuses it only when it is
+still UNCONSTRAINED after typing, the rule an operation's own type parameter already has).
+Everything below was read at the site or driven on 575683e5 (typing rows through `anthill
+load` on the CLI built from that tree; eval rows through a direct-child scratch test,
+deleted). Nothing was built.
+
+0. WHAT REMAINS — a census of the acceptance against the delivery note of 05:43:
+  * NOT BUILT: the receiver bracket on a rule citation — rows (a)/(b)/(c) of the
+    2026-09-11T21:27 scope addition. Decision B settled the design (a hidden head slot);
+    this plan makes it concrete. WT8WG stays blocked on it and lifts its refusal when it
+    lands (its 03:35 note lists the three edits on its side).
+  * NOT MET AS WRITTEN: the `anylist(?w: List) :- true` row ("enumerates definite rows
+    without an undecided tail"). It answers ONE conditional row with the member goal in
+    the residual; enumerating was built and did not return (both operands free is a
+    product of two infinite streams — WI-20260911-09E6M's fairness). Decision (c) below.
+  * A DOC LINK TO NOTHING: `load::emit_domain_value_face`'s doc names
+    `typing::refuse_parameterised_rule_citation`, which does not exist — the refusal is
+    `record_domain_value_face_declined` read by `typing::domain_value_face_refusal`. Fix
+    when that function is edited (step W1).
+  * Everything else in the acceptance is met (05:43 note, row by row). scaland: no twin.
+
+1. MEASURED TODAY, on the written twin `sort Wrap[T] { entity wrap(v: T)
+   rule dom(?x: Wrap[T = T]) :- true }` beside `sort Colour { red green blue }`:
+
+    citation, in an operation body                       load               eval
+    `Wrap[T = Colour].dom.takeN(5).length()`             clean              RAISES
+    `Wrap[W = Colour].dom.takeN(5).length()`  (bogus W)  clean              —
+    `Wrap[T = Colour].dom().takeN(5).length()` (applied) clean              RAISES
+    `Wrap[W = Colour].dom().takeN(5)`         (bogus W)  refused: "has no type parameter named 'W'"
+    `Wrap[T = Colour].dom().head.x` -> Wrap[T = Colour]  REFUSED: "expected Wrap[T = Colour], got Wrap[T = ?T]"
+    `Wrap[T = Colour].dom().head.x` -> Wrap[T = Int64]   refused, same "got Wrap[T = ?T]"
+    `Wrap.dom.head.x`               -> either            refused, same "got Wrap[T = ?T]"
+    `Wrap[T = Colour].dom.head.x`   -> either            3 x "type mismatch in dom.name / head.name / x.name: expected resolved name, got unresolved"
+    `dom.takeN(5).length()` inside a member of Wrap      clean              RAISES
+    rule-body goals `Wrap.dom(?x)` outside, `dom(?y)` inside, `Wrap[T = Colour].dom(?x)`: all load clean
+    `List[T = Letter].domain.takeN(5)`                   refused naming 5G28A (WT8WG's row)
+
+  RAISES = `Err(Raised …)` at the first row, `takeN(1)` included: the appended member goal
+  carries `Wrap[T = ?T]` with `?T` the sort's canonical variable, which `bindable_type_var`
+  rightly refuses to pin from one value, so the goal delays and the drain flounders.
+
+  THREE DIFFERENT DEFECTS, and the plan has to close all three, not one:
+  (i)  the PAREN-LESS bracket is ERASED before any validation — `convert.rs`
+       `collect_field_access_segments`' `application` arm ("bindings erased") for a dot
+       CALL's receiver chain, so `Wrap[W = Colour].dom` loads clean; the APPLIED spelling
+       reaches `build_recv_type` (the `recv_type` aux rides only a call's `Fn` node) and is
+       validated, then DROPPED by the typer;
+  (ii) the citation's column types at the sort's CANONICAL variable, which is neither a
+       wildcard nor pinnable, so the agreeing instance is refused with the same message as
+       the wrong one — a FALSE REFUSAL of a correct program, not a silent acceptance, in
+       every position that reads the column type;
+  (iii) a paren-less bracketed chain followed by a PROJECTION is not recognised as a
+       citation at all: `field_access_dotted_name_of` needs a `Term::Ident` root and
+       4NEKZ's `loader_chain_dotted_name` an `Expr::Ref` root, and a type application is
+       neither, so it falls to the per-segment path WI-20260902-40KSW owns.
+
+  CORPUS: a text census (stdlib, examples, anthill-todo, every test fixture) finds ZERO
+  relational rules declared inside a parameterised sort body — the only rules inside one
+  are wi383's two `CpsMonad` EQUATIONS. So the head-shape change below has an EMPTY corpus
+  population; the clauses that gain a slot are the derived `<Sort>.domain` faces of the
+  parameterised sorts that derive a domain, plus this ticket's fixtures. Asserted at
+  delivery by a KB walk (the idiom of
+  `the_shipped_corpus_has_no_unwritten_parameter_in_a_rule_head_bound`), which is also the
+  tripwire for the day a corpus rule moves into a parameterised sort.
+
+2. THE DESIGN, made concrete (Decision B):
+
+    Wrap[T = τ].dom(?x)   ==   dom(?x, τ)        -- one trailing HIDDEN slot per parameter
+    List[T = Letter].domain(?x) == anthill.kernel.domain_member(?x, List[T = Letter])
+
+  * ONE TRAILING POSITIONAL SLOT PER ENCLOSING-SORT TYPE PARAMETER, in
+    `type_param_syms_of(sort)` order — the parameter list `seed_receiver_type_args`
+    already binds for an operation, so the two engines read one list. The slot holds the
+    parameter's CANONICAL variable term (`published_param_var`), which is the very term the
+    bound already carries: `assert_rule_debruijn_with_*` collects head variables into the
+    frame, the bound then closes to the same De Bruijn index, and pinning the slot pins the
+    bound with no second mechanism. The `is_canonical_type_param_var` exclusion at
+    `load_rule_inner` and in the expansion sweep becomes REDUNDANT for a relational head
+    (the variable is already in the frame from the head) and STAYS for an equation.
+  * WHICH CLAUSES: every RELATIONAL clause whose declaring scope is a sort with type
+    parameters, and the derived `<Sort>.domain` of a parameterised sort. An EQUATION — a
+    rule whose head is an equality connective, `flatMap(pure(?x), ?f) <=> ?f(?x)` or
+    `keep[T](?x: T, ?y) <=> ?y :- F[T] [simp]`, as opposed to a predicate head — is
+    EXCLUDED (`is_equational_head`): its clauses index under the connective, it fires as a
+    REWRITE in `apply_eq_rules` by matching a call at the arity the author wrote, and it
+    cannot be cited as a `Relation`, so a slot would change the redex and nothing could
+    fill it. The two `CpsMonad` equations above are the whole corpus population, and
+    pw9a0's `keep_id` row (bound stays a canonical `Var::Global`) is the control that says
+    equations were left alone. Uniform per predicate, which is what WI-6WVJB (one arity)
+    and `relation_columns_across_clauses` (one head shape) require.
+  * WHERE THE SLOT SPEC LIVES: derived from the GOAL SYMBOL's scope
+    (`hidden_slot_params_of(goal) -> &[Symbol]`: the owner's `type_param_syms_of` when the
+    owner is a parameterised sort, else empty), not stored per clause — one owner, no
+    second table, and decidable at the two mint sites (`scan_rule_goal`,
+    `mint_domain_value_face_name`) before any clause is asserted, so a body goal can be
+    lowered with its slots before the rule that owns the predicate is loaded.
+  * HIDDEN = excluded from `rule_head_var_slots`, the ONE enumeration the typer's schema
+    and eval's `build_relation_value` share — so a hidden slot is never a column on either
+    side by construction.
+  * AT A CITATION THE SLOT IS A FRESH TYPE VARIABLE, exactly as an operation's own type
+    parameter is at a call, and it is pinned by the same four sources or refused by the
+    same rule. Sources: (1) the receiver bracket, seeded into the citation's σ by short
+    name; (2) the EXPECTED type, arriving from any consumer up the chain — the op return
+    in `operation g() -> List[T = Letter] = List.domain.head.x`, a `let` annotation, an
+    argument slot; (3) an APPLIED argument — `Pair[A = Colour].domain(pair(red(), a()))`
+    binds column `x`, whose type `Pair[A = ?a, B = ?b]` unifies with the argument's
+    through the correlated-column unify this ticket's gap (1) already delivered; (4)
+    inside the sort's own body, the enclosing instance (RS2G4's bare-sibling rule). A
+    parameter STILL A VARIABLE when the walk ends is `TypeError::UnconstrainedTypeParam`
+    — WI-270's "expected a type for 'B'" from `check_unconstrained_type_params`, whose
+    doc states the rule: "every declared type-param must resolve to a non-Var term; an
+    unresolved Var means the caller can't recover the return type's concrete shape".
+    NOTHING ABOUT THE SPELLING DECIDES IT: `Pair[A = Colour].domain` with `B` pinned by
+    the return is accepted, bare `List.domain` with `T` pinned by the return is accepted,
+    `Wrap[T = Colour].dom.takeN(5).length()` is accepted, and `Wrap.dom.takeN(5).length()`
+    is refused naming `T` because nothing in it can say what `T` is.
+  * WHY A SLOT CANNOT STAY OPEN INTO EVAL, stated once: the resolver enumerates VALUES,
+    never types. A free type argument makes every derived clause a candidate (WI-743's
+    20-row measurement) and the mode-(out) guard turns that into a delay, which is the
+    RAISES column of §1. A rule-BODY goal is the exception and stays one: there an open
+    slot is the ordinary free variable of §8.1 and delays until a sibling binds it.
+  * THE PIN TRAVELS TYPER -> EVAL ON THE EXISTING CHANNEL. The typer writes the pinned
+    types to the citation occurrence with `set_resolved_type_args`, keyed by the PARAMETER
+    SYMBOL — the sort half RS2G4 added at typing.rs ~19291 already keys by it and already
+    skips a walk that lands on a bare variable. Eval's `build_relation_value` reads that
+    channel for the hidden slots and NEVER reads the bracket: the typer is the bracket's
+    only reader, as it is for an operation call, so the two engines cannot disagree about
+    what the bracket meant. A KB typed by nothing (a hand-built fixture) has an empty
+    channel, the slot opens as a fresh variable, and the goal delays — the same backstop
+    `UnknownOperation` gives a typer-less apply.
+  * WHY POSITIONAL AND TRAILING, stated because a named slot under a reserved key was the
+    alternative: `domain_member(?x, T)` is already that shape, `rule_head_written_columns`
+    and `resolve_relation_arg_columns` are positional-index readers (exclude "index >=
+    written arity"), and a trailing slot leaves every written column's index untouched.
+    THE COST is every `pos_arity` reader that means "written arity": the hand-written
+    `domain` hook's 1-ary test (`arity_of` in `derive_domain_member_clauses`), the "arity
+    {n} is not the member shape" decline in `emit_domain_value_face`, resolve.rs's
+    `declared_arity` / `bare_bodied_bool_relation` check (~2079), and the load-time "a term
+    a clause of `X` can match (k positional)" refusal — each must read `pos_arity -
+    hidden`. That last one is a GIFT, not only a cost: with the head shape changed and
+    nothing else, every rule-body goal the plan fails to convert is REFUSED AT LOAD by it,
+    so the goal-site census is "build L1, run the suite, read the arity refusals".
+
+3. SITES, in build order; each names the row that reddens when it is backed out.
+
+  L1 LOADER, HEAD SHAPE. `load_rule_inner`, after `kb_heads` and before
+     `assert_rule_debruijn_with_bound_vars`: for a relational head whose `domain` is a
+     parameterised sort, append the canonical var terms. `emit_domain_value_face`: delete
+     the `!job.params.is_empty()` early return; head `pos_fn(sym, [x, T1..Tn])` from
+     `job.params`; the bound is the `self_type` already built (`domain_self_type`, the same
+     term the kernel clause's head carries). VERIFY AT THE SITE (v1): that a written `T`
+     inside `Wrap[T = T]` in a rule-head bound lowers to the canonical `Var::Global` and
+     not to `Term::Ref(Wrap.T)` — pw9a0 asserts it for the guard-introduced form and the
+     exclusion at `load_rule_inner:31527` presumes it, but the direct form runs through
+     `convert_term` under `in_rule_head_bound`; if it is a `Ref`, the slot must carry the
+     same spelling or `term_to_debruijn` closes nothing and the slot is inert. (v3): a
+     NULLARY relational head inside a parameterised sort (`rule holds :- …`) becomes
+     `holds(?T)`, a `Fn` where `alloc`'s WI-511 rewrite gave a `Ref` — check
+     `rule_head_var_slots`' and `build_relation_value`'s `Term::Ref` arms.
+
+  L2 LOADER, GOAL SPELLING. Every rule-body goal and query pattern naming a hidden-slot
+     predicate is lowered WITH its slots: inside the sort's own scope, the canonical var
+     term (the tie — the enclosing clause's own hidden slot is the same variable, so
+     `Wrap[T = Colour].again` reaches `dom`'s slot through `again`'s); outside, one fresh
+     variable per slot (a rule body's ordinary free case, §8.1); a BRACKETED body goal
+     `Wrap[T = Colour].dom(?x)` takes the written binding. VERIFY (v2): where that body
+     goal loses its bracket today (P6 loads clean and `check_unconsumed_recv_types` does
+     not report it — that sweep only sees a call `Fn` node carrying the `recv_type` aux,
+     so either the aux is absent for a goal or it is consumed by something that drops it);
+     WI-839's rule is read-or-reported, so the outcome is read, never erased.
+
+  L3 LOADER, THE CITATION. Lower a paren-less `Sort[…].rel` whose chain ROOT is a type
+     application as `Expr::Apply { functor: rel, recv_type: Some(<the type value>),
+     pos: [], named: [] }` — the zero-argument applied citation both engines already take
+     (`start_relation_apply` with no args IS `build_relation_value`; typing.rs:17467 IS
+     `relation_reference_type_applied`). One node for both spellings, so (iii) closes and
+     (i)'s paren-less erasure closes with it. Two producer sites, because the bracket is
+     lost at two places: `visit_load`'s `field_access` ladder (a rung before
+     `try_qualified_rule_ref`, reading the application root the way `build_recv_type`
+     reads the aux) and the dot-CALL receiver path where `convert.rs:843` erases the
+     bindings — the converter must keep the application as the chain root (or attach the
+     `recv_type` aux to the chain) so the loader can read it. `build_recv_type` validates
+     parameter NAMES through `type_expr_to_child_inner` for free, which is row (e).
+
+  T1 TYPER, THE SLOT VARIABLE AND ITS SOURCES. `rule_head_var_slots` excludes hidden
+     slots. `relation_clause_columns` returns, beside the columns, the hidden slots'
+     PER-CITATION fresh variables `(param, VarId)` (it already mints a fresh frame per
+     citation for a clause with bounds, and a hidden-slot clause always has one); across
+     clauses each clause's slot variable is unified with one citation-level variable per
+     parameter. `relation_reference_type_applied` (and the bare arm, which becomes the
+     same code path) seeds source (1): `call_recv_type_of(occ)` -> `sort_application_parts`
+     -> per parameter BY SHORT NAME (the type-parameter-keys footgun: the bracket's keys
+     are bare interns, the declared list is qualified — exactly `seed_receiver_type_args`'
+     loop) -> `expand_written_bracket_value` -> unify with the slot variable in the walk's
+     σ. Factor the name-matching into ONE helper shared with `seed_receiver_type_args`, so
+     the two readers of a receiver bracket cannot drift. Sources (2) and (3) need no code:
+     the slot variable is inside the column type `x: Wrap[T = ?s]`, so `expected` and an
+     applied argument reach it through the unifications that already run. Source (4):
+     inside the sort's own body (`env.enclosing_sort()` is the relation's sort) seed the
+     slot with the enclosing instance's WI-424 body rigid, as a sibling operation call is.
+
+  T2 TYPER, THE DISCHARGE. The check cannot run at the citation node: an operation call
+     has `expected` threaded INTO `check_apply_iter`, so `check_unconstrained_type_params`
+     runs with a complete σ there, but a citation's pin may arrive from a consumer ABOVE
+     it (`.head.x` unified against the op return after the citation was typed). So the
+     citation registers `(occ, [(param, VarId)])` on `WalkSolutions` — the deferral
+     50B2K's `defer_abstract_dispatch` already uses, "held until the walk ends so the
+     binder's own uses can answer it" — and at the walk's end, with the final σ: every
+     variable bound -> `occ.set_resolved_type_args(pinned)` (walked and surfaced exactly as
+     ~19291 does; a rigid from source (4) is SKIPPED there so eval inherits the frame, the
+     rule that loop already states); any variable unbound ->
+     `TypeError::UnconstrainedTypeParam { op: <the relation>, type_param }`. VERIFY (v5):
+     `resolved_type_args` is written ONCE — `substitute_occurrence`'s `Apply` arm rewrites
+     `type_args` and `recv_type` through σ but not this channel, and every rebuild path
+     carries `resolved_type_args: _` — so writing the variable early and hoping a later
+     pass replaces it would leave a variable in the channel; the write must be the
+     deferred one.
+
+  E1 EVAL, THE FILL. `build_relation_value` takes the citation occurrence (the bare leaf
+     from `reduce_var`, the `Expr::Apply` from `start_relation_apply` — carried through
+     `AwaitState::RelationArgs`) and fills each hidden slot from
+     `occ.with_resolved_type_args` by parameter symbol; a parameter absent from the
+     channel takes a fresh variable that is NOT pushed to `columns`. No `recv_type`
+     plumbing at eval at all.
+
+  E2 EVAL, THE ENCLOSING INSTANCE. A citation inside a member whose parameter the typer
+     left off the channel (source (4), a rigid) fills the slot from the frame's
+     type-argument channel — the entries `inherit_enclosing_sort_type_args` carries into a
+     sibling's frame, keyed by the parameter symbol `hidden_slot_params_of` hands back.
+     Row (f) is the only row that reddens under this axis alone.
+
+  W1 WT8WG's LIFT: delete the parameterised arm of `domain_value_face_refusal` (and the
+     dangling doc link), flip `a_parameterised_sorts_citation_names_its_owner` into an
+     answering row with the unconstrained bare `List.domain` as its control, per its
+     03:35 note.
+
+  D1 DOCS: kernel-language.md §8.1 ("with one piece of the rule half still open …" —
+     delivered; a citation's hidden slot is pinned as an operation's type parameter is,
+     by the bracket, the expected type, an argument, or the enclosing instance, and
+     refused by WI-270's rule otherwise) and §5.3 (the parameterised value face);
+     proposal 060 §2.2's "no value face yet" paragraph; 052 §Naming (a receiver bracket
+     on a citation binds the sort's parameters, the twin of proposal 035 form (3));
+     060-implementation §7.1/§7.2. CLAUDE.md untouched.
+
+4. ROWS (one file, `wi_5g28a_receiver_bracket_test.rs`; every row DRIVES; back-out axes
+   [L1] [L2] [L3] [T1] [T2] [E1] [E2] [W1], each RUN not predicted, one mutation per axis):
+  (a) `List[T = Letter].domain.takeN(5)` = 5 definite rows; `List[T = Letter].domain.head.x`
+      accepted at `List[T = Letter]`, refused at `List[T = Int64]` with BOTH types in the
+      message. Fails [W1], [L1], [T1], [E1].
+  (b) PINNED WITHOUT A BRACKET: `operation g() -> Relation[T = (x: List[T = Letter]),
+      E = {Error}] = List.domain`, driven as `g().takeN(5).length()` = 5 — the return
+      pins `T`, the channel carries it, eval reads it. Fails [T2] (no deferred write: the
+      slot opens free and the drain raises) and [E1].
+  (c) UNCONSTRAINED: `Wrap.dom.takeN(5).length()` outside the sort, and
+      `Pair[A = Colour].domain.takeN(6).length()`, refused at load naming `T` / `B` with
+      WI-270's message. Fails [T2]: backed out, both load clean and RAISE at eval — §1's
+      column, and WT8WG's control (c) in the form it now takes (with this ticket backed
+      out the row is the 5G28A-naming load error, not a wrong count).
+  (d) the written twin, BOTH spellings: `Wrap[T = Colour].dom.takeN(5)` = 3 and
+      `Wrap[T = Colour].dom().takeN(5)` = 3 — one lowering. Paren-less fails [L3]; applied
+      fails [T1]/[E1] only. And `Wrap[T = Colour].dom.head.x` -> `Wrap[T = Colour]`
+      accepted, -> `Wrap[T = Int64]` refused naming both (today: three unresolved-name
+      errors; applied form today: `?T`).
+  (e) `Wrap[W = Colour].dom` (paren-less) refused "has no type parameter named 'W'" — today
+      clean. Fails [L3].
+  (f) inside the sort: `operation inside() = dom.takeN(5).length()`; `Wrap[T = Colour].inside()`
+      = 3 and `Wrap[T = Letter].inside()` = 2 (`sort Letter { a b }`) — two instances, two
+      counts, so a slot filled with the wrong instance or left free cannot pass. (Not
+      `Int64`: a primitive derives no domain, so its member goal delays and the row would
+      measure floundering, not the fill.) Fails [E2].
+  (g) rule bodies: `rule outside(?x) :- Wrap.dom(?x)` answers ONE conditional row (slot
+      free, the member goal delays — WI-737's route); `rule tied(?x) :- ?x <=> wrap(red()),
+      Wrap.dom(?x)` = 1 definite — the value is bound FIRST, so `pin_bound_from_value`
+      reads `T` off it into the bound's variable, which IS the slot's (the other goal
+      order delays inside the callee and comes back conditional; assert that too, it is
+      what makes the definite number readable); inside the sort `rule again(?y) :-
+      dom(?y)`, cited `Wrap[T = Colour].again` = 3. Fails [L2] — LOUDLY, at load, by the
+      arity refusal.
+  (h) two parameters: `sort Pair[A, B] { entity pair(a: A, b: B) }`;
+      `Pair[A = Colour, B = Letter].domain.takeN(6)` = 6 (slot ORDER and short-name
+      matching, `B = …, A = …` written in the other order answers the same);
+      PARTIALLY WRITTEN AND PINNED: `operation p() -> Pair[A = Colour, B = Letter] =
+      Pair[A = Colour].domain.head.x` accepted and evaluates to `pair(red(), a())`;
+      APPLIED ARGUMENT PINS: `Pair.domain(pair(red(), a()))` — no bracket at all — types
+      `Relation[Unit]` and answers 1 row, both parameters read off the argument.
+  (i) CONTROLS, pass either way BY DESIGN and say so: pw9a0's `keep_id` bound stays a
+      canonical `Var::Global` (equations excluded); `wi743_finite_domain_test` counts;
+      `wi_wt8wg` rows other than the flipped one; `wi714`'s rows (no sort, no slot);
+      `wi_5g28a`'s 18 rows; WI-270's own `UnconstrainedTypeParam` rows for operations.
+  (j) the corpus tripwire of §1: the set of relational clauses carrying a hidden slot in
+      the shipped corpus is exactly the derived faces of the parameterised sorts that
+      derive a domain — name the count.
+  (k) PERSISTENCE ROUND TRIP: a hidden-slot rule printed by `TermPrinter` and re-loaded
+      keeps ONE slot — the printer must omit hidden slots (or print the bracket form), or a
+      re-load appends a second. Fails on the printer axis; it is a row because the
+      failure is silent.
+
+5. DECISIONS. Settled with the user 2026-09-12: an unwritten parameter of a citation is
+   an ordinary fresh type variable, pinned by any of the four sources and refused only
+   when still unconstrained after typing — WI-270's rule, not a spelling rule. Still open,
+   each with my recommendation:
+  (b) a bare citation INSIDE the sort: the enclosing instance fills the slot (T1 source
+      (4) + E2; recommended — without it no member operation of `Wrap` can cite its own
+      domain).
+  (c) the `anylist` acceptance row: amend it to what ships (one conditional row, the
+      member goal in the residual; enumeration is 09E6M's) — recommended — or leave it
+      unmet and the ticket open on it after the bracket lands.
+  (e) equations excluded from hidden slots (recommended; §2 says what an equation is and
+      why; pw9a0 is the control).
+
+6. ORDER AND SIZE: L1 -> run the suite, the arity refusals ARE the goal-site census ->
+   L2 -> L3 -> T1/T2 -> E1/E2 -> W1 -> D1 -> corpus census -> `/code-review` on a
+   restored tree. It is the "second feature" Decision B called it — comparable to RS2G4:
+   two loader sites, two typer sites, two eval sites, a KB accessor, and the WT8WG lift.
+   scaland: no twin (05:43 note), `sbt test` a no-regression check.
 
