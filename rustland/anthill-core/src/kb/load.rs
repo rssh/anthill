@@ -22364,9 +22364,15 @@ impl<'a> Loader<'a> {
                 // does not do is answer whether an undeclared functor in a term position
                 // should be refused at all: WI-1058 refuses one in a rule BODY
                 // (`undefined_rule_body_term_message`, measured on both a colliding and a
-                // free spelling) and nothing refuses one in a fact-head ARGUMENT. That
-                // position is now uniformly silent, which is the state a ticket can act
-                // on. Flagged by `/code-review`.
+                // free spelling) and nothing refuses one in a fact-head ARGUMENT.
+                // WI-20260904-B8ESG OWNS THAT REFUSAL and predates this — it measured the
+                // same hole in the stdlib (`rule list_contains(?x, cons(head: ?x, …))`
+                // importing only the `List` sort answered nothing, on a file that loaded
+                // with an identical fact count). What this gate changes for it is that the
+                // position is now UNIFORMLY silent: a head argument that collided with
+                // some entity's short name used to be refused, loudly and about the wrong
+                // thing, and that accidental subset is gone. Recorded in its feedback.
+                // Flagged by `/code-review`.
                 if !new_pos.is_empty() && !is_type_app && written_entity_functor {
                     let named_syms: SmallVec<[Symbol; 2]> =
                         new_named.iter().map(|(s, _)| *s).collect();

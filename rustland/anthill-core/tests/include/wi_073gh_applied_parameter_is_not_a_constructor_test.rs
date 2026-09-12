@@ -544,9 +544,11 @@ fn a_stranger_entity_does_not_rename_a_written_terms_arguments() {
 /// application — `zz` denotes nothing at that site — and the identical program with the
 /// functor spelled `qq` always loaded clean. The change makes the two agree; it does not
 /// decide whether an undeclared functor in a FACT-HEAD ARGUMENT should be refused at
-/// all. That question is WI-1058's uncovered position — it refuses one in a rule BODY
-/// (measured, on both a colliding and a free spelling) and not here — and both `zz` and
-/// `qq` are equally silent now, which is the state a future ticket can act on.
+/// all. That is **WI-20260904-B8ESG**, which predates this ticket and owns the refusal:
+/// WI-1058 refuses one in a rule BODY (measured, on both a colliding and a free
+/// spelling) and nothing refuses one here. What this row changes for it is that `zz` and
+/// `qq` are now equally silent — the accidental refusal of the colliding subset, loud
+/// about the wrong thing, is gone — so its census runs over one population.
 ///
 /// Backed out, `load_kb_with` panics on this fixture.
 #[test]
