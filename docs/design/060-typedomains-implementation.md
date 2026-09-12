@@ -319,8 +319,8 @@ Two ways out, each with an owner already in the tree:
    inserting at the front leaves every existing index where it was, and `arity` moves with
    `globals` so `with_fresh_vars` actually opens the new slot.
 
-Placement 2 is the reachable one. Open: whether one `?xd` per clause suffices or one per
-typed column is needed (`p(?x: A, ?y: B)` fetches two domains), and `set_rule_body_nodes`'
+Placement 2 is the reachable one. One `?xd` PER TYPED COLUMN, not per clause — §4.4 measures
+the case and says what ties them. Still open: `set_rule_body_nodes`'
 constraint that fact-ness must not flip — so a body-less clause cannot be given a body this
 way (§1, and §5's body-less boundary in 060-implementation).
 
@@ -380,6 +380,56 @@ end, so `apply_domain` cannot carry a rule around: it must BUILD the goal
 `<impl>.member(?x)` and let the ordinary lookup find the candidates. Two things come free
 with that and would have to be rebuilt otherwise — the `GoalKey` query cache, and the Γ
 overlay's own candidates (`gamma_candidates_for`).
+
+## 4.4 More than one dictionary per clause — and what ties them
+
+§4.1's `List` clause carries ONE dictionary because it has one receiver instance. A USER's
+typed head does not. MEASURED 2026-09-12, this LOADS CLEAN today:
+
+```anthill
+rule p[A](?x: List, ?y: Leaf[A = A], ?z: Leaf[A = A]) :- Eq[A], eq(?y, ?z)
+```
+
+Three typed columns and a written guard, so the transform needs FOUR dictionaries:
+
+| for | dictionary |
+|---|---|
+| `?x: List` | `SortDomain[List[T = ?t]]` |
+| `?y: Leaf[A = A]` | `SortDomain[Leaf[A = ?a]]` |
+| `?z: Leaf[A = A]` | the same one — same type |
+| `:- Eq[A]` | `Eq[?a]` — the guard the author wrote, already WI-1040's business |
+
+**THESE ARE INDEPENDENT ROOTS, not nodes of one tree**, which is what separates this from
+§4.1. `sub` reaches from `SortDomain[Leaf[A]]` to `SortDomain[A]`; nothing reaches from it to
+`Eq[A]`, or to `?x`'s. So a clause gets one fetched variable PER TYPED COLUMN plus the written
+requires — answering §4.2's open question ("one `?xd` per clause or one per typed column") with
+**per column**.
+
+**AND WHAT CORRELATES THEM IS THE TYPE VARIABLE, which therefore does not go away.** `?y` and
+`?z` must draw from the SAME domain and `Eq` must be at the SAME `A` — three facts about one
+`A`. A dictionary cannot say that: `find_dictionary` derives each independently from the
+arguments' carried types and CHECKS for agreement (WI-860: two derivations of one relation must
+agree, disagreement is a loud failure), which is enforcement AFTER the fact and needs carried
+types to derive from. In the GENERATING mode this direction exists for, `?y` is free and there
+is nothing to carry.
+
+So the fetch is keyed on the clause's own type variable and the tie is ordinary unification:
+
+```
+p(?x, ?y, ?z) :- find_dictionary(SortDomain, … Leaf[A = ?a] …, out: ?yd), apply_domain(?yd, ?y),
+                 find_dictionary(SortDomain, … Leaf[A = ?a] …, out: ?zd), apply_domain(?zd, ?z),
+                 …
+```
+
+with `?a` ONE σ variable, so pinning it once decides both fetches.
+
+**CONSEQUENCE, AND IT IS THE STRUCTURAL POINT OF THIS SECTION: this direction sits ON TOP OF
+WI-20260911-5G28A's DELIVERED HALF rather than replacing it.** That half made a bound's type
+variable an ordinary clause variable — in the frame, De Bruijn-closed, opened fresh per firing
+— and taught the resolver to read it off a bound value (`pin_bound_from_value`). That is
+exactly the `?a` above. The dictionary does not replace the type machinery; it supplies a
+DOMAIN for a type the type machinery has identified. What the dictionary replaces is only the
+part that was going to be decided at TYPING time, which is where the rigid came from.
 
 ## 5. What it depends on
 
