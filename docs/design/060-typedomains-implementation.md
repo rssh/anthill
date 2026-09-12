@@ -201,15 +201,32 @@ sort List
 
   provides SortDomain[T = List[T = T]]
     requires SortDomain[T]                      -- the ELEMENT's domain: one sub-dictionary
-    rule member(?x)
+    rule member(?x, ?d)
       :- ?x <=> nil()
        | ( ?x <=> cons(head: ?y, tail: ?z),
-           member(?z),                          -- the TAIL: this same relation, __req_self
-           require[SortDomain[T]] = ?ed,        -- the ELEMENT's domain, a SUB-dictionary
+           member(?z, ?d),                      -- the TAIL: same relation, same node
+           ?ed <=> sub(?d, 0),                  -- the ELEMENT's, PROJECTED out of ?d
            apply_domain(?ed, ?y) )
   end
 end
 ```
+
+**THE DICTIONARY IS AN ARGUMENT AND IS READ BY PROJECTION — one of three reads in the tree,
+and the choice is forced by head arity.** There are three ways to get at a requirement here,
+and they are not interchangeable:
+
+| read | mechanism | who uses it |
+|---|---|---|
+| NAMED SLOT | `expand_dispatching_dict` expands the dictionary at frame push into `__req_self` plus one slot per chain entry; the body reads a slot by name | the interpreter's OPERATION frame (`Frame::requirements`) |
+| SEARCH | `find_dictionary(spec, op, args…)` DERIVES one from the arguments' carried types | `require[X]` in a rule body today (WI-1040) |
+| PROJECTION | `sub(?d, 0)` off a dictionary already in hand | this clause |
+
+Expansion is an OPTIMISATION of projection — `expand_dispatching_dict` projects `slots_for`
+out of the dictionary to build the named slots, so the body need not. A rule cannot copy it:
+expanding into slots means one head argument per chain entry, and a head's arity is fixed
+while a requires chain's length is not. Carrying the ROOT and projecting at each use gives the
+same information at arity one. And SEARCH cannot serve the generating mode at all: with `?x`
+free there are no carried types to derive from, which is exactly what §5's entry gap is about.
 
 **THE DICTIONARY TREE IS THE TYPE TREE.** That is the sentence the whole direction rests on.
 A dictionary is `Dictionary(sub₀ … subₙ₋₁, impl: S)` (`dictionary.rs`), so the evidence for
