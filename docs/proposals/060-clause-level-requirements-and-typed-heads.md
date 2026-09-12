@@ -192,7 +192,15 @@ of clauses and cannot disagree.
 its derived clause and every typed head that reads it; `List[T = Letter].domain`
 is a load error naming **WI-20260911-5G28A**, because a rule citation's query is
 built from the clause head alone and no type argument reaches it. Bare
-`List.domain` names no element type and is refused for the same reason.
+`List.domain` names no element type and is refused for the same reason. 5G28A
+delivered the rest of the rule half (the three bullets below) and settled this
+piece's design without building it: a rule has no frame channel — its head is its
+only interface — so an enclosing sort's parameter must travel as a **hidden head
+slot** a bracketed citation fills and an unbracketed one leaves free, which is
+WI-743's "the type travels as an argument" one level up. Conjoining a guard at the
+citation instead was measured and does not work: the citation's goal and the
+clause's bound are different variables, so the clause's own member goal still has
+a free element type and deadlocks against the delay above.
 
 - **Derived for ANY closed ADT**, not only an all-nullary one — the finiteness
   gate this section first proposed turned out to be unnecessary, and is
@@ -253,6 +261,23 @@ built from the clause head alone and no type argument reaches it. Bare
   stays legal and yields its one row. It has no `<Sort>.domain` either, so a
   citation of one is an ordinary unknown-member error — LOUD AT LOAD, where a
   derived-but-floundering member would have been loud only at the drain.
+- **An UNWRITTEN parameter is a rule-scoped type variable** (WI-20260911-5G28A).
+  `?x: List` means `?x: List[T = ?t]`, recursively at every depth and once per
+  occurrence — §8.1's unwritten-slot expansion on the rule side. The variable is
+  an ordinary clause variable: it rides the rule's frame and opens fresh per
+  firing, so two citations of one rule are two instantiations. This is what
+  gives such a head a generator at all; before it, the member goal was SKIPPED at
+  load for want of a determinate type and the author was told nothing.
+- **A free type is READ off the value, not guessed** (WI-20260911-5G28A). With
+  `?x` bound the goal is mode **(in, out)** — the value determines its own type
+  (WI-578), so `domain_member(?x, List[T = ?t])` pins `?t` in one step. With `?x`
+  unbound and `?t` still free the goal **delays** and residualizes: there is no
+  ONE domain to range over, and dispatching anyway unifies with the head of every
+  derived clause and enumerates TYPES (measured at 20 rows for a clause with one
+  answer, and at a non-terminating search for `rule anylist(?w: List) :- true`).
+  Making it delay moves that from a silent load-time skip to a residual that is
+  loud at the drain — WI-737's route. Fairness for the case where BOTH are free
+  is WI-20260911-09E6M's, not this.
 - **Abstract T does NOT enumerate**, and this bullet's earlier wording —
   "dispatches through the requirement channel (§3's anchor; WI-1040)" — named no
   mechanism and had no owner. A rule-bracket bound records the SPEC, nothing is

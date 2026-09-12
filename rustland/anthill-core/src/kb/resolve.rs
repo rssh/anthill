@@ -2496,6 +2496,36 @@ impl SearchStream {
         // that materialized expression occurrences now read from
         // `kb.op_bodies` (NodeOccurrence trees) at the reflection-op
         // layer, not via Resolve's candidate selection.
+        // WI-20260911-5G28A (proposal 060 §2.2) — MODE (out) OVER AN UNDETERMINED TYPE
+        // DELAYS; it does not enumerate types.
+        //
+        // §2.2's generator row reads "unbound, T defines its `domain` → enumerate a choice
+        // point over T's domain". A `List[T = ?t]` with `?t` free is not such a T: there
+        // is no ONE domain to range over, and dispatching the goal anyway unifies it with
+        // the head of EVERY derived clause — `domain_member(?h, ?t)`, the element goal
+        // inside the derived `List` clause, matches `Letter`, `Colour`, `Symbol`,
+        // `NodeOccurrence`, `Term`, … in turn. WI-743 measured that as 20 rows for a
+        // one-answer clause and gated it at LOAD, silently skipping the goal. This ticket
+        // lifts that gate (the value now PINS the type in mode (in), so the common case
+        // decides in one step) and moves the remaining case here, where it is VISIBLE:
+        // the goal rotates, and if nothing ever pins the type it residualizes and is loud
+        // at the drain on WI-737's route, instead of never having been asked.
+        //
+        // MEASURED, with the gate lifted and no guard here: `rule anylist(?w: List) :-
+        // true` did not come back at all — mode (out) with both the value and the element
+        // type free is a product of two infinite streams, whose FAIRNESS is
+        // WI-20260911-09E6M's, not this ticket's.
+        //
+        // AT THE DISPATCH SITE, and not as a builtin, because `domain_member` is a
+        // RELATION: a functor carrying a builtin tag never reaches the clause path
+        // (`builtin_domain_leaf`'s doc), so the one place a relation's dispatch can be
+        // guarded is just before its candidates are collected. The guard asks the goal's
+        // TYPE operand and nothing else, so a `domain_member` call whose type is
+        // determinate is untouched in either mode.
+        if self.domain_member_goal_is_undetermined(kb, &goal_val, &frame.subst) {
+            return self.delay_goal(depth, delay_mode);
+        }
+
         let mut candidates: Vec<Candidate> = Vec::new();
 
         // 6. Non-builtin goal → query discrimination tree via `TermView`
@@ -3020,6 +3050,57 @@ impl SearchStream {
             };
             Some(StepResult::Continue)
         }
+    }
+
+    /// WI-20260911-5G28A — is this goal a `domain_member(?x, T)` whose TYPE operand still
+    /// mentions a type variable? Such a goal has nothing to dispatch ON — see the call
+    /// site — so it delays until a sibling goal supplies the type.
+    ///
+    /// FALSE FOR EVERY OTHER GOAL, AND CHEAPLY — this runs once per non-builtin goal on
+    /// the resolver's hottest path. The order is the point and an earlier cut had it
+    /// backwards (`/code-review`): it resolved `"anthill.kernel.domain_member"` — a
+    /// `HashMap<String, _>` lookup over the full qualified name — BEFORE looking at the
+    /// goal's functor at all, so every goal in the search paid for a string hash. The
+    /// SHORT name is an array index off the `Symbol`, so it screens first and the
+    /// qualified resolve runs only for a functor actually spelled `domain_member`.
+    ///
+    /// It is also false for the LEAF functor — `domain_leaf` carries a builtin tag and
+    /// answers its own `Delay` row (row 1 of its table), which this must not pre-empt or
+    /// duplicate.
+    fn domain_member_goal_is_undetermined(
+        &self,
+        kb: &KnowledgeBase,
+        goal: &Value,
+        subst: &Substitution,
+    ) -> bool {
+        let Some(f) = goal.head(kb).functor_sym() else {
+            return false;
+        };
+        if kb.local_name_of(f) != "domain_member" {
+            return false;
+        }
+        // The SHORT name screened; now confirm it is the KERNEL's relation and not a
+        // user predicate that happens to share the word.
+        if kb.try_resolve_symbol(super::typing::DOMAIN_MEMBER_GOAL) != Some(f) {
+            return false;
+        }
+        let Some(bound) = kb.walk_arg(goal.pos_arg(kb, 1), subst) else {
+            return false; // not the 2-ary shape — leave it to the ordinary path
+        };
+        // THE TYPE ALONE DECIDES, in BOTH modes, and an earlier cut of this guard asked
+        // about the value too ("delay only when neither operand is supplied"). That was
+        // wrong in mode (in) and measurably so: `rule memberVar(?x) :- ?x <=> [a()],
+        // domain_member(?x, List[T = ?e])` — value BOUND, type free — dispatched anyway,
+        // and `domain_member(a(), ?e)` unified with the head of every derived clause:
+        // 204 rows, 1 definite, for a goal with one answer.
+        //
+        // With the type free there is nothing to dispatch ON in either mode. What supplies
+        // it is a SIBLING goal: the conformance goal `domain(?x, T)` is PREPENDED to every
+        // typed head and reads the type off the value (`pin_bound_from_value`), so the
+        // member goal rotates once and comes back with the type pinned. Where nothing ever
+        // pins it, the goal residualizes and is loud at the drain — WI-737's route, and
+        // more than WI-743's load-time gate said.
+        view_has_type_variable(kb, bound.carried())
     }
 
     /// Delay the current frame's `goals[0]` — rotate it to the back, entering or
@@ -6073,10 +6154,51 @@ impl KnowledgeBase {
         // which is exactly what [`Self::builtin_domain_leaf`] already does with a `?T`
         // bound by unification. Nothing is admitted that was not admitted before: the
         // generated path keeps its own arm, byte for byte.
+        // WI-20260911-5G28A — READ THE TYPE OFF THE VALUE, (in, out), BEFORE any verdict.
+        //
+        // A bound that MENTIONS a type variable (`List[T = ?t]` — this ticket's tie
+        // between two head columns, and since this ticket also the expansion of an
+        // UNWRITTEN parameter) gets no verdict from `type_bound_verdict`: WI-067's rule is
+        // that an open variable is never NAF-decided, so it suspends permanently. MEASURED
+        // on b43d9670: `my_rule([1, 2], ?r)` came back CONDITIONAL, carrying
+        // `domain([1, 2], List(T: ?t))` twice — a ground value, a known type, and a bound
+        // that PARKED instead of deciding.
+        //
+        // The value is already known to be bound (the delay above), and a value's type is
+        // functionally determined by it, so the variable is an OUTPUT to be READ, not a
+        // choice point to be guessed. Pinning it here is what makes the tie work: `?x`
+        // pins `?t := Int64` into the answer σ and the `?res` goal is then checked against
+        // `List[Int64]` — which is why `my_rule([1, 2], ["a"])` refutes rather than
+        // answering conditionally.
+        //
+        // CARRIER-NEUTRALLY, one read for both operand spellings. The generated splice and
+        // a source-written `domain(?x, T)` ask the same question of the same pair, so
+        // asking it once above the carrier split is what keeps them from drifting; the
+        // split below still owns the NO-VARIABLE case, where the two carriers genuinely
+        // differ in how a type is walked.
+        match super::typing::pin_bound_from_value(self, subst, &value, bound.carried()) {
+            super::typing::TypeBoundPin::NotApplicable => {}
+            super::typing::TypeBoundPin::Pinned { pin, .. } => {
+                return BuiltinResult::SuccessWithBindings(pin)
+            }
+            super::typing::TypeBoundPin::Refuted => return BuiltinResult::Failure,
+            super::typing::TypeBoundPin::Suspend => return BuiltinResult::delay(),
+        }
         let verdict = match *bound.carried() {
             Value::Term { id: bound_tid, .. } => {
                 super::typing::type_bound_verdict(self, subst, &value, bound_tid)
             }
+            // WI-20260911-5G28A NARROWED WHAT REACHES THIS ARM, and it is now a BACKSTOP
+            // rather than the answer for a variable-bearing bound. `pin_bound_from_value`
+            // above takes every bound `type_mentions_flex_var` names — a `TypeVar`, a
+            // `FlexVar`, a `Skolem` — and READS the type off the value instead of
+            // withholding. What is left for this arm is the one variable form
+            // `type_head` reports as `Error` rather than as a variable: a `Var::DeBruijn`,
+            // which an opened splice should never carry and which nothing above claims.
+            // Keeping the delay for it is WI-067's rule applied to a form no reader here
+            // can decide; deleting the arm would hand that form to `types_compatible`,
+            // which is how the refutation below was measured in the first place.
+            //
             // AND IT MUST NOT DECIDE AN OPEN TYPE. `type_is_undetermined` walks for type
             // variables only on the `Value::Term` carrier — every other carrier is called
             // DETERMINED the moment its HEAD is decidable — so a written
@@ -6193,6 +6315,44 @@ impl KnowledgeBase {
                           reader disagree about its shape, so no domain was read here"
                     .to_string(),
             });
+        };
+        // WI-20260911-5G28A — `?T` IS READ OFF `?x` BEFORE THE THREE ROWS ARE ASKED, when
+        // `?x` is the one that is bound. Mode (in, out): a value's type is functionally
+        // determined by the value, so a free `?T` here is an OUTPUT, not a row-3 fallback.
+        //
+        // WITHOUT IT THE CATCH-ALL LEAKS A CONDITIONAL ROW BESIDE EVERY STRUCTURAL
+        // ANSWER. `domain_member(a(), ?t)` — reached with `?t` free from a `List[T = ?t]`
+        // head whose element goal is being asked — matches the `Letter` clause (one
+        // definite row) AND this catch-all, whose head is a variable in both positions;
+        // with `?T` unbound row 1 said `Delay`, so the same call also came back as an
+        // undischarged residual. MEASURED with the gate lifted and this read placed after
+        // the rows instead of before: `nest(?w)` answered 2 solutions / 1 conditional
+        // (`residual: domain_leaf(a, ?_)`) where it has exactly one.
+        //
+        // AND THE PIN FEEDS ROW 2 RATHER THAN BYPASSING IT, which is the "exactly once"
+        // rule this arm exists for: once `?t` is pinned to `Letter`, `has_domain_member`
+        // says the structural clause OWNS this call and the catch-all fails, instead of
+        // answering "its carried type conforms" a second time.
+        let bound = match super::typing::pin_bound_from_value(self, subst, &value, &bound) {
+            super::typing::TypeBoundPin::NotApplicable => bound,
+            super::typing::TypeBoundPin::Pinned { pin, bound: pinned } => {
+                // ROW 2 ON THE PINNED TYPE. A `Failure` needs no bindings published —
+                // nothing downstream reads them — so the pin is dropped on that path.
+                if let Some(sort) = pinned.head(self).functor_sym() {
+                    if self.has_domain_member(sort) {
+                        return BuiltinResult::Failure;
+                    }
+                }
+                return match super::typing::type_bound_verdict_view(self, subst, &value, &pinned) {
+                    super::typing::TypeBoundVerdict::Holds => {
+                        BuiltinResult::SuccessWithBindings(pin)
+                    }
+                    super::typing::TypeBoundVerdict::Refuted => BuiltinResult::Failure,
+                    super::typing::TypeBoundVerdict::Suspend => BuiltinResult::delay(),
+                };
+            }
+            super::typing::TypeBoundPin::Refuted => return BuiltinResult::Failure,
+            super::typing::TypeBoundPin::Suspend => return BuiltinResult::delay(),
         };
         // `?T` FIRST, and the order is the point: which of the three rows applies is a
         // question about the TYPE, and asking about `?x` before the type is known would

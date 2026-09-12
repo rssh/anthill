@@ -2521,6 +2521,34 @@ impl KnowledgeBase {
         self.type_param_canonical_var.get(&param_sym).copied()
     }
 
+    /// WI-20260911-5G28A — is `vid` the canonical variable of some SORT's type parameter
+    /// (`sort F = ?`), as opposed to a variable a rule wrote in its own head bound?
+    ///
+    /// THE TWO LOOK IDENTICAL IN A BOUND and must not be treated alike. `?t` in
+    /// `rule r(?x: List[T = ?t])` is a rule-scoped variable: it belongs to this clause,
+    /// ties this clause's columns, and opens fresh per firing like every other clause
+    /// variable. `F` in `rule keep[T](?x: T, ?y) <=> ?y :- F[T]`, written inside
+    /// `sort Lib { sort F = ? }`, is a PROJECTION OFF THE RECEIVER'S INSTANCE (spec §8.1's
+    /// "one principle, two engines") — it is decided by whoever instantiates `Lib`, not by
+    /// this firing.
+    ///
+    /// SO IT IS EXCLUDED FROM THE RULE'S FRAME. Admitting it would open a fresh variable
+    /// per firing and DECOUPLE the bound from the receiver, so a bound that names the
+    /// enclosing sort's parameter would accept anything. Caught by
+    /// `wi_pw9a0_rule_tvar_in_bound_test::a_guard_whose_functor_is_a_type_parameter_lowers_
+    /// as_that_parameter`, whose bound went from `Var::Global` to a frame `Var::DeBruijn`
+    /// the first time this ticket admitted bound variables blindly.
+    ///
+    /// Reaching it from a citation needs a channel a rule does not have — its head is its
+    /// only interface — which is WI-20260911-5G28A's own remaining half (the receiver
+    /// bracket as a hidden head slot). Until that lands the pre-ticket representation
+    /// stands here, unchanged.
+    pub(crate) fn is_canonical_type_param_var(&self, vid: VarId) -> bool {
+        self.type_param_canonical_var
+            .values()
+            .any(|&t| matches!(self.terms.get(t), Term::Var(Var::Global(v)) if *v == vid))
+    }
+
     /// WI-743 — does `anthill.kernel.domain_member` have a clause for this sort? See
     /// [`Self::domain_member_params`] for why one table answers for all three readers.
     pub fn has_domain_member(&self, sort: Symbol) -> bool {
@@ -7732,12 +7760,62 @@ impl KnowledgeBase {
         domain: Symbol,
         meta: Option<TermId>,
     ) -> RuleId {
+        self.assert_rule_debruijn_with_bound_vars(
+            head,
+            body_nodes,
+            &[],
+            clause_kind,
+            domain,
+            meta,
+        )
+    }
+
+    /// WI-20260911-5G28A — [`Self::assert_rule_debruijn_with_nodes`] admitting a
+    /// rule-head BOUND's own type variables into the frame.
+    ///
+    /// WHY THEY HAVE TO BE IN IT, measured rather than assumed. `?t` in
+    /// `rule my_rule(?x: List[T = ?t], ?res: List[T = ?t])` appears in NEITHER the head
+    /// term (the annotation is stripped at load, WI-582's `typed_var` marker) NOR the
+    /// body, so neither collector above sees it: measured on b43d9670, that rule's
+    /// `globals` were `[x, res]` while the twin `rule p(?x) :- q(?x, ?y)` — whose `?y`
+    /// is BODY-ONLY — had `[x, y]`. A body-local variable was already a frame slot and a
+    /// bound-local one was not, and the difference was invisible only because nothing
+    /// ever BOUND a bound's variable: it stayed a free `Var::Global` shared by every
+    /// firing of the rule. The moment the resolver reads a type off the value and binds
+    /// it (this ticket's gap 2), that sharing is a leak across calls — one caller's
+    /// `?t := Int64` refutes the next caller's `List[T = String]`.
+    ///
+    /// SO THE ANSWER IS THE ORDINARY ONE, not a new mechanism: a bound's type variable
+    /// is a clause variable like any other, it rides the SAME frame, closes to De Bruijn
+    /// with the head and the body, and [`Self::with_fresh_vars`] opens it fresh per
+    /// resolution. Proposal 060 §2.2's derived clause already writes exactly this shape
+    /// by hand — `domain_member(?x, List[T = ?T])`, with `?T` an ordinary clause
+    /// variable — so this makes the WRITTEN spelling reach the frame the DERIVED one
+    /// always had.
+    ///
+    /// The extra vars go in AFTER the head's and the body's, so a rule with no bound
+    /// variables (every rule in the corpus before this ticket) collects the identical
+    /// list and is byte-identical through this path.
+    pub(crate) fn assert_rule_debruijn_with_bound_vars(
+        &mut self,
+        head: impl Into<crate::eval::value::Value>,
+        body_nodes: Vec<Rc<NodeOccurrence>>,
+        bound_vars: &[VarId],
+        clause_kind: ClauseKind,
+        domain: Symbol,
+        meta: Option<TermId>,
+    ) -> RuleId {
         let head = head.into();
         let mut vars = Vec::new();
         let mut seen = std::collections::HashSet::new();
         self.collect_value_head_vars(&head, &mut vars, &mut seen);
         for n in &body_nodes {
             node_occurrence::collect_occurrence_global_vars_ordered(self, n, &mut vars, &mut seen);
+        }
+        for &v in bound_vars {
+            if seen.insert(v.raw()) {
+                vars.push(v);
+            }
         }
         self.finalize_rule_debruijn_nodes(head, body_nodes, vars, 0, clause_kind, domain, meta)
     }
@@ -7971,6 +8049,21 @@ impl KnowledgeBase {
         let globals = self.rules[id.index()].globals.clone();
         let mut bounds: Vec<(u32, TermId)> = Vec::with_capacity(var_bounds.len());
         for &(vid, bound) in var_bounds {
+            // WI-20260911-5G28A — CLOSE THE BOUND TERM TOO, against the same frame the
+            // head and the body closed against. A bound's own type variables
+            // (`List[T = ?t]`) are frame slots since this ticket
+            // (`assert_rule_debruijn_with_bound_vars`), so leaving the stored bound on
+            // its pre-close `Var::Global`s would keep exactly the sharing that admitting
+            // them to the frame exists to end — the frame would be right and the term
+            // still wrong. Every reader opens it back: `typed_pattern_bounds_hold`
+            // against the globals its match already opened, the generated body goal
+            // through `open_debruijn_node`'s `Spliced` arm, and
+            // `typing::relation_clause_columns` per CITATION.
+            //
+            // A bound with no variables in it (every bound in the corpus before this
+            // ticket) closes to itself — `term_to_debruijn` rebuilds nothing when no
+            // child moved — so this is a no-op for them.
+            let bound = self.term_to_debruijn(bound, &globals);
             match globals.iter().position(|&g| g == vid) {
                 // The DeBruijn index is `len - 1 - position` (innermost-is-0), the
                 // SAME reversal `term_to_debruijn` / `node_to_debruijn` apply when
@@ -7992,6 +8085,39 @@ impl KnowledgeBase {
     /// bound_type)` pairs the firing check reads. Empty for untyped rules.
     pub fn rule_type_bounds(&self, id: RuleId) -> &[(u32, TermId)] {
         &self.rules[id.index()].type_bounds
+    }
+
+    /// WI-20260911-5G28A — grow an asserted rule's frame by `extra` variables and REPLACE
+    /// its bounds, for the one pass that must edit a bound after the assert:
+    /// [`load::expand_rule_head_bound_type_params`], which turns an UNWRITTEN type
+    /// parameter into a rule-scoped variable and can only run once every file's sorts are
+    /// loaded (the parameter list of a sort declared in a later file is not knowable at
+    /// `load_rule`).
+    ///
+    /// PREPENDED, and that is what makes it safe rather than a renumbering. A De Bruijn
+    /// index here is `globals.len() - 1 - position`, so inserting at the FRONT moves every
+    /// existing variable one position later and leaves its index exactly where it was;
+    /// the new variables take the indices above the old top (`old_len`, `old_len + 1`, …).
+    /// The already-closed head, body and bound terms therefore stay valid untouched —
+    /// appending instead would shift every one of them and silently re-point the head.
+    ///
+    /// `arity` moves with `globals` because [`Self::with_fresh_vars`] mints exactly
+    /// `arity` fresh variables and indexes them by De Bruijn index: a frame that grew
+    /// without it would leave the new slots unopened, which is the sharing across firings
+    /// that `assert_rule_debruijn_with_bound_vars` exists to prevent.
+    pub(crate) fn extend_rule_frame_with_bounds(
+        &mut self,
+        id: RuleId,
+        extra: &[VarId],
+        bounds: Vec<(u32, TermId)>,
+    ) {
+        let entry = &mut self.rules[id.index()];
+        let mut globals = Vec::with_capacity(extra.len() + entry.globals.len());
+        globals.extend_from_slice(extra);
+        globals.extend_from_slice(&entry.globals);
+        entry.globals = globals;
+        entry.arity = entry.globals.len() as u32;
+        entry.type_bounds = bounds;
     }
 
     /// WI-20260903-FCZ3N — install this equation's WRITTEN RHS occurrence (see the
@@ -8212,6 +8338,19 @@ impl KnowledgeBase {
 
     /// Convert a single term: replace Global(vid) with DeBruijn(index).
     /// Index is `var_order.len() - 1 - position_in_var_order`.
+    /// WI-20260911-5G28A — [`Self::term_to_debruijn`] for the one caller outside this
+    /// module: `load::expand_rule_head_bound_type_params`, which closes a bound it just
+    /// rewrote against the frame it just grew. Same walk, and it leaves an already-closed
+    /// `Var::DeBruijn` alone — which is what lets a bound be re-closed after the frame was
+    /// PREPENDED to, since prepending preserves every existing index.
+    pub(crate) fn term_to_debruijn_for_frame(
+        &mut self,
+        term: TermId,
+        var_order: &[VarId],
+    ) -> TermId {
+        self.term_to_debruijn(term, var_order)
+    }
+
     fn term_to_debruijn(&mut self, term: TermId, var_order: &[VarId]) -> TermId {
         match self.terms.get(term).clone() {
             Term::Var(Var::Global(vid)) => {

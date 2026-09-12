@@ -2463,6 +2463,40 @@ pub fn open_debruijn_node(
         Expr::Var(Var::DeBruijn(idx)) => fresh
             .get(*idx as usize)
             .map(|&vid| Expr::Var(Var::Global(vid))),
+        // WI-20260911-5G28A — a `Spliced` TERM is a leaf to `for_each_child` (it carries
+        // a `Value`, not child occurrences), so the generic recursion below cannot reach
+        // a De Bruijn var inside it. `install_typed_head_domain_goals` splices exactly
+        // such a term — the head's stored type bound, De Bruijn-closed against this
+        // rule's frame since this ticket — so without this arm `domain(?x, List[T = ?t])`
+        // would carry the SAME `?t` into every firing of the rule and one caller's
+        // binding would refute the next caller's. The rewrite is `term_from_debruijn`,
+        // the same opener `Apply.type_args` just above uses for the same reason.
+        //
+        // ONLY THE `Value::Term` CARRIER, and the `is_some_and` is what keeps it honest:
+        // a term with no De Bruijn var rebuilds nothing and this returns `None`, so every
+        // other splice (WI-1040's dictionaries, WI-714's relation values) is byte-identical
+        // to before. A non-term `Value` splice has no interned term to open and is left
+        // alone rather than silently half-walked.
+        Expr::Spliced(crate::eval::value::Value::Term { id, .. })
+            if kb.term_mentions_debruijn(*id) =>
+        {
+            let opened = kb.term_from_debruijn(*id, fresh);
+            // EVERY INDEX MUST HAVE BEEN IN RANGE. `term_from_debruijn` keeps an index it
+            // cannot map as a `Var::DeBruijn`, silently — and `type_head` classifies that
+            // as `TypeHead::Error`, so an unopened index would ride into the goal and be
+            // read as a malformed type rather than as the variable it is. The frame this
+            // opens against is the rule's own (`with_fresh_vars` mints `arity` of them),
+            // so a leftover means the stored bound was closed against a DIFFERENT frame
+            // than the one being opened — the exact drift
+            // `load::expand_rule_head_bound_type_params`' own error guards from the other
+            // side. Raised by `/code-review`.
+            debug_assert!(
+                !kb.term_mentions_debruijn(opened),
+                "a spliced rule-head bound kept a De Bruijn index its frame does not \
+                 cover: the term was closed against a different frame than this opening",
+            );
+            (opened != *id).then(|| Expr::Spliced(crate::eval::value::Value::term(opened)))
+        }
         // WI-298: Apply.type_args is a TermId field that can carry DeBruijn
         // vars from the rule's shared space — open it via `term_from_debruijn`
         // alongside the occurrence children, mirroring `close_type_args` on
@@ -5861,6 +5895,42 @@ pub fn substitute_occurrence(
     };
     let rebuilt: Option<Rc<NodeOccurrence>> = match expr {
         Expr::Var(Var::Global(vid)) => return subst_var_leaf(kb, *vid, subst, occ),
+        // WI-20260911-5G28A — σ-APPLY A SPLICED TERM'S OWN VARIABLES. `Spliced` sits in
+        // `for_each_child`'s no-children arm (its payload is a `Value`, not child
+        // occurrences), so the generic walk below cannot reach a variable inside it — the
+        // same blindness [`occurrence_has_unbound_var`] documents one screen up, here on
+        // the WRITE side.
+        //
+        // WHAT IT COSTS TO SKIP IT, measured on this ticket's own first cut: the typed-head
+        // sweep splices the rule's stored type bound as the generated goal's type operand,
+        // so once a bound could carry a variable (`List[T = ?t]`) the goal
+        // `domain_member(?x, List[T = ?t])` reached the MATCH with `?t` still free even
+        // though a sibling goal had already pinned it to `Int64`. It then unified with the
+        // head of every derived clause and enumerated TYPES — `rule r1(?x: List[T = ?t])`
+        // over a bound `[1]` came back 100 rows / 100 conditional, with residuals naming
+        // `Symbol`, `NodeOccurrence` and `Term`, where it has exactly one answer.
+        //
+        // TRANSIENT, NOT INTERNING (WI-20260906-7YPGM), like every other σ-applied goal:
+        // the walked form lives for this step. `collect_vars` first so a bound with no
+        // variables in it — every bound in the corpus before this ticket — returns `None`
+        // here and rides on as the SAME `Rc`, which is what keeps the `Value::Term`
+        // operand arm of `builtin_type_domain` byte-identical for them.
+        Expr::Spliced(v @ crate::eval::value::Value::Term { .. })
+            if !kb.collect_vars(v).is_empty() =>
+        {
+            let walked = kb.reify_value_transient(v, subst);
+            // Identity by the TERM id where the walk left the carrier alone, which is the
+            // no-op case this arm's `collect_vars` guard could not rule out (a variable
+            // that σ does not bind).
+            let moved = !matches!(
+                (&walked, v),
+                (
+                    crate::eval::value::Value::Term { id: a, .. },
+                    crate::eval::value::Value::Term { id: b, .. },
+                ) if a == b
+            );
+            moved.then(|| occ.rebuilt_expr(Expr::Spliced(walked)))
+        }
         // WI-298: apply σ to `Apply`'s TYPE channels — the `type_args` bracket and
         // (WI-20260829-W6JH0) the form-(3) `recv_type` — so a Global appearing in one
         // gets the same rewrite as elsewhere, mirroring the opener's `open_type_args`

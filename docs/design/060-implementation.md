@@ -17,6 +17,7 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §2.1 parameter form `p(x: T)` | sigil-free typed clause variable | WI-742 | **delivered** — §6 |
 | §2.2 a sort defines its `domain` | mode-(out) enumeration | WI-743 | **delivered** — §7 |
 | §2.2 the VALUE face `<Sort>.domain` | the domain cited as a `Relation` | **WI-20260911-WT8WG** | **delivered** for a sort with no type parameters — §7.1; the parameterised half is **WI-20260911-5G28A** |
+| §2.2 / §8.1 rule-head type VARIABLES | a bound's variable is a clause variable | **WI-20260911-5G28A** | **delivered** except the citation bracket — §7.2 |
 | §3 anchor (requirement half) | covered body call grounds the spec | WI-1040 | delivered |
 | §3 anchor (typed-head half) | `?x: T` grounds the spec | **WI-20260908-VVM1R** | **design settled, not built** — §8, mechanism at §8.2–§8.6 |
 | channel §10 item 1 | retain the spec's type-args | **WI-20260908-VVM1R** | **settled, not built** — §8.6, taken inline |
@@ -327,7 +328,9 @@ OPERATION or a const named `domain`, not a field.)
   dictionary channel that carries a RELATION, which is WI-20260909-NAR1X (§8.10).
 * ~~The VALUE face.~~ **DELIVERED by WI-20260911-WT8WG for a sort with no type
   parameters** — see §7.1. The PARAMETERISED half is not: `List[T = Letter].domain` is a
-  load error naming **WI-20260911-5G28A**.
+  load error naming **WI-20260911-5G28A**, which delivered everything else in that ticket
+  (§7.2) and left exactly the citation BRACKET — a rule's head is its only interface, so an
+  enclosing sort's parameter has no slot to travel in.
 * A PARAMETERISED sort's hand-written `domain` — refused loudly: its clause head would
   have to bind the sort's type parameters from the caller's type argument, which only the
   derivation does.
@@ -413,6 +416,78 @@ behind it, precisely so the citation can say whose ticket it is
 the general "receiver bracket on a rule citation" binding — RS2G4 did the OPERATION half);
 `Bool` (WI-20260910-5TK6B); fairness for two recursive positions (09E6M); abstract `T`
 (NAR1X).
+
+## 7.2 §8.1's rule half — rule-head type VARIABLES — WI-20260911-5G28A
+
+**THE REPRESENTATION IS THE FEATURE.** A type variable in a rule-head bound is an ORDINARY
+CLAUSE VARIABLE: collected into the rule's frame at the assert
+(`KnowledgeBase::assert_rule_debruijn_with_bound_vars`), de Bruijn-closed with the head and
+the body (`install_rule_type_bounds`), and opened fresh per firing like every other one.
+
+It was NOT, and the ticket's own text said otherwise ("opened per resolution"). MEASURED on
+b43d9670: `rule my_rule(?x: List[T = ?t], ?res: List[T = ?t])` had `globals = [x, res]`,
+while the twin `rule p(?x) :- q(?x, ?y)` — whose `?y` is BODY-ONLY — had `[x, y]`. A
+body-local variable was already a frame slot and a bound-local one was not, and nothing had
+ever BOUND one, so the difference was invisible. The (in, out) read below is what makes it a
+leak: with the sharing left in place, `rule two(?a, ?b) :- my_rule([1, 2], ?a),
+my_rule(["s"], ?b)` answers NO SOLUTIONS — the first call's `?t := Int64` refutes the
+second call's `List[T = String]`.
+
+**THE THREE SITES**, each with the measurement that named it:
+
+1. **The typer, at the applied citation** (`relation_reference_type_applied`). A column whose
+   type MENTIONS a variable is CORRELATED; before this, only a column that WAS one counted
+   (`resolved_var`), and the nested case fell to `types_compatible` — a SUBTYPE test, which
+   does not bind. It does not merely fail to pin: a raw `Var::Global` is `TypeHead::FlexVar`,
+   which carries no dispatch tag, so it is not even the `type_var` WILDCARD and the
+   structural arms REFUSE. All four driving rows came back "argument binding column `x` has
+   an incompatible type", the concrete and the rigid alike. Such a column now UNIFIES, with
+   σ threaded across the citation's arguments, so the surviving columns narrow with the pin.
+2. **The resolver, mode (in, out)** (`pin_bound_from_value`). A bound mentioning a variable
+   gets no verdict from `type_bound_verdict` — WI-067's rule is that an open variable is
+   never NAF-decided — so it suspended for good: `my_rule([1, 2], ?r)` answered
+   CONDITIONALLY, carrying `domain([1, 2], List(T: ?t))` twice undischarged, with a ground
+   value whose type was known. The pin READS the type off the value and instantiates the
+   variable; conformance then applies to the instantiated pair, so WI-067 is intact. The
+   match is ONE-WAY and purpose-built (`pin_type_vars`) rather than `unify_types`, because a
+   source-written bound lowers its `?e` as an `Expr::Var` occurrence, which `resolved_var`
+   does not recognise as a type variable — measured, the first cut answered 0 rows for
+   `rule varBound(?x) :- ?x <=> [a()], domain(?x, List[T = ?e])`.
+3. **The loader, the implicit introducer** (`expand_rule_head_bound_type_params`). An
+   unwritten parameter becomes a rule-scoped variable, recursively and per occurrence. It
+   runs AFTER `derive_domain_member_clauses` and not at `load_rule`, because it needs the
+   PARAMETER LIST of the sort a bound names and that sort may be declared in a later file —
+   measured, at the head's own conversion site the table is still empty and `?w: List` stayed
+   `Ref(List)` right through. The variables it mints join the frame there, which is why
+   `extend_rule_frame_with_bounds` PREPENDS: a De Bruijn index is `len - 1 - position`, so
+   inserting at the front leaves every existing index where it was.
+
+**WI-743's DETERMINACY GATE IS LIFTED, and its reason moved rather than vanished.** That gate
+skipped the member goal at LOAD for a bound that did not name a determinate type. Both of its
+reasons are now owned elsewhere — the bare reference is no longer a shape a bound can have
+(3), and the variable is no longer guessed (2) — so the goal is generated, and mode (out)
+over a type that is STILL free delays at the dispatch site
+(`domain_member_goal_is_undetermined`) instead of enumerating. That is a strict improvement in
+loudness: a skipped goal said nothing at load, a delayed one residualizes and is loud at the
+drain on WI-737's route. The guard asks about the TYPE alone, in BOTH modes — an earlier cut
+asked about the value too, and `rule memberVar(?x) :- ?x <=> [a()], domain_member(?x,
+List[T = ?e])` dispatched anyway at 204 rows / 1 definite for a goal with one answer.
+
+**A SORT's TYPE PARAMETER IS NOT ONE OF THESE** (`is_canonical_type_param_var`). `F` in
+`rule keep[T](?x: T, ?y) <=> ?y :- F[T]`, written inside `sort Lib { sort F = ? }`, is a
+projection off the RECEIVER's instance, not a clause variable — admitting it to the frame
+would open a fresh one per firing and decouple the bound from the receiver. It keeps its
+pre-ticket representation, and reaching it from a citation is the half below.
+
+**Not delivered here:** the CITATION BRACKET. A rule's head is its only interface and a
+bound's variable is clause-internal, so `Wrap[T = Colour].dom` and bare `Wrap.dom` are still
+indistinguishable, and `List[T = Letter].domain` keeps §7.1's load error. The design is
+settled — a HIDDEN HEAD SLOT per enclosing-sort type parameter, filled by a bracketed
+citation and left free by an unbracketed one, shared with the bound so pinning the slot pins
+the bound; hidden = excluded from `rule_head_var_slots`, so it is not a COLUMN. The cheaper
+mechanism was measured and rejected: conjoining a guard at the citation cannot pin the
+CLAUSE's variable, so `<Sort>.domain`'s own member goal still has a free element type and
+deadlocks against the mode-(out) delay above.
 
 ## 8. §3 — the typed head as the second anchor — DESIGN SETTLED, NOT BUILT
 

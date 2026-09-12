@@ -92,10 +92,13 @@
 //!    `Colour.domain` can match (1 positional), got 2 positional"). A short name in the
 //!    sort's `locals` sits in front of `anthill.kernel.domain` for every body written
 //!    inside that sort, which is the opposite of declaring the kernel goals writable.
-//!  * `a_written_bound_carrying_a_type_variable_suspends` — without
-//!    `resolve::view_has_type_variable`, `varBound` answers 0 (REFUTED) where it must
-//!    answer one conditional row; its two controls stay at 1-definite and 0 either way,
-//!    which is what makes the middle number readable.
+//!  * `a_written_bound_carrying_a_type_variable_is_read_off_the_value` — RENAMED and its
+//!    middle number moved by **WI-20260911-5G28A**, which determines what this ticket
+//!    could only withhold: the row is now 1 DEFINITE, pinned from the value's own type.
+//!    Its axis moved with it — the back-out is `typing::pin_bound_from_value`, not
+//!    `resolve::view_has_type_variable` (still load-bearing, but now for the `Var::DeBruijn`
+//!    form alone). Its two controls stay at 1-definite and 0 either way, which is what
+//!    makes the middle number readable.
 //!  * `a_domain_at_an_unrecognised_arity_declines_readably` — with the silent `return`,
 //!    the fixture still loads and the goal face still answers 3, and BOTH decline records
 //!    are `None`. That row fails on the reason alone, which is the whole point: the
@@ -591,19 +594,33 @@ end
     assert_eq!(int_op(SRC, "test.wt8wg.shadow.cited"), 3);
 }
 
-/// `/code-review` FINDING — A SOURCE-WRITTEN BOUND CARRYING A TYPE VARIABLE SUSPENDS.
+/// `/code-review` FINDING — A SOURCE-WRITTEN BOUND CARRYING A TYPE VARIABLE IS READ OFF
+/// THE VALUE.
 ///
-/// `type_is_undetermined` walks for type variables only on the `Value::Term` carrier;
-/// every other carrier is called DETERMINED as soon as its head is decidable. So the new
-/// source-written arm reached `types_compatible` with a free `?e` in the bound and came
-/// back REFUTED — a verdict, where WI-067's rule is that an open variable never gets one.
-/// Before this ticket the same shape was a loud abort, so the arm turned a loud error into
-/// a silently wrong answer until `view_has_type_variable` was added beside it.
+/// THIS ROW USED TO ASSERT A WITHHELD VERDICT, and WI-20260911-5G28A is what changed it —
+/// deliberately, and in the direction that ticket exists for. The finding behind it stands
+/// unaltered: `type_is_undetermined` walks for type variables only on the `Value::Term`
+/// carrier, every other carrier is called DETERMINED as soon as its head is decidable, and
+/// so the source-written arm reached `types_compatible` with a free `?e` and came back
+/// REFUTED — a verdict, where WI-067's rule is that an open variable never gets one. WT8WG
+/// answered that with a DELAY (`view_has_type_variable`), which was the only honest answer
+/// while nothing could determine `?e`.
 ///
-/// THE TWO CONTROLS ARE THE POINT: without them "0 rows" and "1 conditional row" are hard
-/// to tell from a fixture that simply cannot reach a verdict.
+/// 5G28A DETERMINES IT. A value's type is functionally determined by the value (WI-578),
+/// so with `?x` bound to `[a()]` the goal READS `List[T = Letter]` off it and pins
+/// `?e := Letter` (`typing::pin_bound_from_value`). The row is therefore 1 DEFINITE, not
+/// 1 conditional — WI-067 is intact, because nothing decided the open variable: it was
+/// instantiated from its only determiner, and ordinary conformance then applied.
+///
+/// THE PIN IS NOT `unify_types`, and that is the carrier half of the same finding: `?e`
+/// rides an `Expr::Var` occurrence here (a source-written bound lowers as an ordinary
+/// expression), which `resolved_var` does not recognise as a type variable — measured, the
+/// first cut of the pin answered 0 for this very fixture. See `typing::pin_type_vars`.
+///
+/// THE TWO CONTROLS ARE STILL THE POINT, and they are unchanged either way: they are what
+/// make the middle number readable.
 #[test]
-fn a_written_bound_carrying_a_type_variable_suspends() {
+fn a_written_bound_carrying_a_type_variable_is_read_off_the_value() {
     const SRC: &str = r#"
 namespace test.wt8wg.openbound
   import anthill.prelude.{Int64, String, List}
@@ -626,8 +643,10 @@ end
             answers(&mut kb, "test.wt8wg.openbound.varBound(?x)"),
             definite_answers(&mut kb, "test.wt8wg.openbound.varBound(?x)")
         ),
-        (1, 0),
-        "a free `?e` in the bound leaves the row CONDITIONAL — not refuted, not definite"
+        (1, 1),
+        "a free `?e` in the bound is PINNED from the value's own type (`List[T = Letter]`), \
+         so the row DECIDES — it was (1, 0) until WI-20260911-5G28A, when withholding was \
+         the only honest answer available"
     );
     assert_eq!(
         definite_answers(&mut kb, "test.wt8wg.openbound.groundBound(?x)"),

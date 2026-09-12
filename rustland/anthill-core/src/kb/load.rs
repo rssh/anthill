@@ -12926,6 +12926,19 @@ fn load_phase_inner(
     // heads get a generator, and the partial load path must leave the same KB behind.
     all_errors.extend(derive_domain_member_clauses(kb));
     mark!("derive_domain_member_clauses");
+    // WI-20260911-5G28A (proposal 060 §2.2) — a rule-head bound's UNWRITTEN type
+    // parameters become rule-scoped type variables.
+    //
+    // HERE, and not at `load_rule`, for exactly the reason the line above is here: the
+    // expansion needs the parameter LIST of the sort a bound names, and a bound may name a
+    // sort declared in a later file or in an earlier load batch — at the head's own
+    // conversion site `domain_member_params_of` is still empty, and the expansion silently
+    // did nothing (measured: `?w: List` stayed `Ref(List)` right through). BELOW the
+    // derivation because that pass is what fills the table, and ABOVE the typer because
+    // `install_typed_head_domain_goals` reads the expanded bound to decide whether a head
+    // gets a generator at all.
+    all_errors.extend(expand_rule_head_bound_type_params(kb));
+    mark!("expand_rule_head_bound_type_params");
     // WI-352/WI-353: derive `flow(kind, from, to)` facts from operation bodies
     // BEFORE op-body type-checking, because the typer's operation-boundary
     // masking (WI-353, `region::op_boundary_effects`) consumes them via
@@ -15317,6 +15330,236 @@ fn domain_self_type(kb: &mut KnowledgeBase, sort: Symbol, params: &[(Symbol, Ter
     }
     let bindings: Vec<(Symbol, TermId)> = params.to_vec();
     kb.make_parameterized_type(base, &bindings)
+}
+
+/// WI-20260911-5G28A — the SWEEP: expand every live rule's head bounds
+/// ([`expand_unwritten_type_params`]) and admit the variables it mints into that rule's
+/// frame.
+///
+/// ONE PASS OVER THE RULES WITH BOUNDS, which is the population `install_rule_type_bounds`
+/// wrote and `install_typed_head_domain_goals` reads — so a rule with no bound is not
+/// touched and a rule whose bounds write every parameter (`?x: List[T = Int64]`) expands to
+/// itself and is not touched either. Both are the corpus before this ticket, which is what
+/// keeps this pass a no-op for it.
+///
+/// THE FRAME MOVES WITH THE BOUND. A variable minted here must be opened fresh per firing
+/// like every other clause variable, or two callers of one rule share it and the first
+/// one's binding refutes the second (measured — see
+/// [`KnowledgeBase::assert_rule_debruijn_with_bound_vars`]). So the minted globals are
+/// PREPENDED to the frame ([`KnowledgeBase::extend_rule_frame_with_bounds`], which keeps
+/// every existing De Bruijn index) and the expanded bound is re-closed against it.
+fn expand_rule_head_bound_type_params(kb: &mut KnowledgeBase) -> Vec<LoadError> {
+    let mut errors = Vec::new();
+    // The generated conformance goal's functor, for the already-generated test below.
+    // `None` before the kernel is registered, in which case no goal can have been
+    // generated and the test is vacuous.
+    let dom_sym = kb.try_resolve_symbol(crate::kb::typing::TYPE_DOMAIN_GOAL);
+    for rid in kb.live_rule_ids() {
+        let bounds = kb.rule_type_bounds(rid).to_vec();
+        if bounds.is_empty() {
+            continue;
+        }
+        let mut expanded: Vec<(u32, TermId)> = Vec::with_capacity(bounds.len());
+        let mut changed = false;
+        for (db, bound) in bounds {
+            let e = expand_unwritten_type_params(kb, bound);
+            changed |= e != bound;
+            expanded.push((db, e));
+        }
+        if !changed {
+            continue;
+        }
+        // A BOUND MAY NOT CHANGE AFTER ITS GOALS WERE GENERATED, and this says so rather
+        // than trusting the phase order.
+        //
+        // THE COUPLING (`/code-review`): this sweep walks EVERY live rule, including ones a
+        // previous `load_phase_inner` already typed, while
+        // `typing::install_typed_head_domain_goals` is idempotent by provenance and will
+        // not regenerate. So if a bound only became expandable in a LATER batch, the stored
+        // bound would be rewritten while the already-spliced body goal kept the OLD term —
+        // the conformance goal then checking a different type from the one the bound
+        // records, with nothing said.
+        //
+        // IT SHOULD BE UNREACHABLE, which is why it is an error and not a repair: a bound
+        // can only name a sort whose declaration the rule's own batch resolved, and
+        // `derive_domain_member_clauses` records that sort's parameters in the same batch.
+        // If that ever stops holding, the load fails HERE instead of answering wrongly.
+        if dom_sym.is_some_and(|d| {
+            kb.rule_body_nodes(rid).iter().any(|n| {
+                matches!(
+                    crate::kb::term_view::TermView::head(
+                        &crate::eval::value::Value::Node(n.clone()),
+                        kb,
+                    ),
+                    crate::kb::term_view::ViewHead::Functor { functor: Some(f), .. } if f == d
+                )
+            })
+        }) {
+            errors.push(LoadError::Other {
+                message: format!(
+                    "WI-20260911-5G28A: the head bound of rule `{}` expands only now, after                      its `domain` goal was already generated from the unexpanded one — the                      stored bound and the goal would disagree about the type being checked",
+                    kb.rule_label(rid)
+                        .map(|l| kb.qualified_name_of(l).to_string())
+                        .unwrap_or_else(|| "<unlabeled>".to_string()),
+                ),
+            });
+            continue;
+        }
+        // The globals the expansion minted are exactly the ones the stored frame does not
+        // already hold — `collect_vars` reports `Var::Global`s only, and every variable
+        // the bound carried BEFORE this pass is already De Bruijn-closed, so it reports
+        // none of them.
+        let mut minted: Vec<VarId> = Vec::new();
+        for &(_, e) in &expanded {
+            for v in kb.collect_vars(&e) {
+                // Same exclusion as `load_rule`'s: an enclosing sort's type parameter is
+                // not a clause variable (`is_canonical_type_param_var`).
+                if !kb.is_canonical_type_param_var(v) && !minted.contains(&v) {
+                    minted.push(v);
+                }
+            }
+        }
+        let mut globals = minted.clone();
+        globals.extend_from_slice(kb.rule_globals(rid));
+        let closed: Vec<(u32, TermId)> = expanded
+            .into_iter()
+            .map(|(db, e)| (db, kb.term_to_debruijn_for_frame(e, &globals)))
+            .collect();
+        kb.extend_rule_frame_with_bounds(rid, &minted, closed);
+    }
+    errors
+}
+
+/// WI-20260911-5G28A — a rule-head BOUND's unwritten type parameters become rule-scoped
+/// type VARIABLES, one fresh variable per unwritten parameter per occurrence, recursively.
+///
+/// ```text
+/// ?w: List               -->  ?w: List[T = ?t1]
+/// ?w: List[T = List]     -->  ?w: List[T = List[T = ?t1]]
+/// ?m: Map[K = Int64]     -->  ?m: Map[K = Int64, V = ?t1]
+/// ```
+///
+/// WHAT IT IS. `Ref(List)` and the nullary `Fn{List}` are ONE spelling
+/// (WI-20260902-CZJ2N) and neither names an element type, so `?w: List` used to reach
+/// WI-743's `bound_names_a_determinate_type` gate and have its member goal SKIPPED —
+/// silently, which is what made `rule anylist(?w: List) :- true` answer one CONDITIONAL
+/// row (measured on b43d9670: `residual: domain(?_, List)`) rather than enumerating.
+/// Writing the variable makes the omission mean what §8.1 already makes it mean on an
+/// OPERATION parameter: an unwritten parameter is a parameter that was not PINNED, not one
+/// that does not exist. This is that expansion's rule twin — WI-582's `[T]` introducer,
+/// without having to write it.
+///
+/// AND IT IS ONLY SAFE BECAUSE THE OTHER TWO HALVES LANDED WITH IT. WI-743 declined to
+/// invent a variable here, and the reason it gave was correct AT THE TIME: an unbound `?T`
+/// in `domain_member(?x, ?T)` unifies with the head of every derived clause, so the goal
+/// stops asking "is `?x` in this type" and starts enumerating TYPES — measured at 20 rows
+/// for `rule nest(?w: List[T = List]) :- ?w <=> [[a()]]`, a clause that can have at most
+/// one answer. What removes that reason is the (in, out) read
+/// (`typing::pin_bound_from_value`): with the value bound, the type is READ off it in one
+/// step instead of guessed, so the variable is an output and not a choice point. Backing
+/// that read out while keeping this expansion is the control, and it reddens `nest` to
+/// exactly the 20 rows WI-743 recorded.
+///
+/// PER OCCURRENCE, not per sort: two `List`s in one bound are two independent element
+/// types unless the author ties them, which is what writing `?t` twice is FOR. The fresh
+/// variables become frame slots at the assert
+/// (`KnowledgeBase::assert_rule_debruijn_with_bound_vars`), so they open per firing like
+/// every other clause variable.
+///
+/// THE SELF-REFERENCE IS NOT THIS, and stays with its own owner. A bare `List` inside
+/// `List`'s OWN definition means "the same element type", and the recursion closes on the
+/// enclosing head's variables — [`repair_self_reference`]'s rule, and for the derived
+/// clause it is the only right one. That case never reaches here: this runs on a bound
+/// written in a rule head, where there is no enclosing derived head to borrow from.
+fn expand_unwritten_type_params(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+    match kb.get_term(t).clone() {
+        // A BARE reference to a parameterised sort: every parameter is unwritten.
+        Term::Ref(s) => match kb.domain_member_params_of(kb.canonical_sort_sym(s)) {
+            Some(ps) if !ps.is_empty() => {
+                let keys: Vec<Symbol> = ps.iter().map(|&(k, _)| k).collect();
+                let base = kb.make_sort_ref(s);
+                let bindings: Vec<(Symbol, TermId)> = keys
+                    .into_iter()
+                    .map(|k| {
+                        (
+                            k,
+                            fresh_global(kb, kb.local_name_of(k).to_string().as_str()),
+                        )
+                    })
+                    .collect();
+                kb.make_parameterized_type(base, &bindings)
+            }
+            _ => t,
+        },
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
+            // The NULLARY application is the bare reference's other spelling
+            // (WI-20260902-CZJ2N), so it takes the same arm rather than falling through
+            // as a var-free compound.
+            //
+            // AND IT MUST COME BACK AS ITSELF WHEN NOTHING EXPANDS. An earlier cut minted
+            // `Term::Ref(functor)` and recursed unconditionally, so a sort with NO
+            // parameters had its bound REWRITTEN from `Fn{S}` to `Ref(S)` — which flips
+            // `changed` and really replaces the stored bound. The two are one spelling for
+            // THIS question and not for every question: `type_head`'s own doc keeps them
+            // apart, `Fn{S}` being the concrete spec identity the loader builds
+            // deliberately and `Ref(S)` the dispatch wildcard `impl_param_ref` matches on.
+            // So a WI-582 spec bound stored as `Fn{Eq}` silently became a wildcard.
+            // Found by `/code-review`.
+            if pos_args.is_empty() && named_args.is_empty() {
+                if kb
+                    .domain_member_params_of(kb.canonical_sort_sym(functor))
+                    .is_none_or(|ps| ps.is_empty())
+                {
+                    return t;
+                }
+                let bare = kb.alloc(Term::Ref(functor));
+                return expand_unwritten_type_params(kb, bare);
+            }
+            // A PARTIALLY written application keeps what was written and fills the rest:
+            // `Map[K = Int64]` on a two-parameter `Map` gets `V = ?v`. Written arguments
+            // recurse, so a bare sort NESTED inside one expands too.
+            let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            for &(k, c) in &named_args {
+                named.push((k, expand_unwritten_type_params(kb, c)));
+            }
+            let mut pos: SmallVec<[TermId; 4]> = SmallVec::new();
+            for &c in &pos_args {
+                pos.push(expand_unwritten_type_params(kb, c));
+            }
+            if let Some(ps) = kb.domain_member_params_of(kb.canonical_sort_sym(functor)) {
+                let missing: Vec<Symbol> = ps
+                    .iter()
+                    .map(|&(k, _)| k)
+                    .filter(|k| !named.iter().any(|&(w, _)| w == *k))
+                    .collect();
+                for k in missing {
+                    let v = fresh_global(kb, kb.local_name_of(k).to_string().as_str());
+                    named.push((k, v));
+                }
+            }
+            if pos == pos_args && named == named_args {
+                t
+            } else {
+                let base = kb.alloc(Term::Ref(functor));
+                let bindings: Vec<(Symbol, TermId)> = named.to_vec();
+                let applied = kb.make_parameterized_type(base, &bindings);
+                if pos.is_empty() {
+                    applied
+                } else {
+                    kb.alloc(Term::Fn {
+                        functor,
+                        pos_args: pos,
+                        named_args: named,
+                    })
+                }
+            }
+        }
+        _ => t,
+    }
 }
 
 /// WI-743 — re-apply a BARE reference to a parameterised sort, so a domain goal over it
@@ -30970,6 +31213,19 @@ impl<'a> Loader<'a> {
                 // An introduced type-var with no bounding guard would yield a
                 // non-nominal bound that never fires — flag it loudly rather than
                 // silently load a rule that can never apply.
+                //
+                // WI-20260911-5G28A DECIDED NOT TO LIFT THIS, and named the OTHER spelling
+                // in the message instead. The two constructs answer different questions
+                // and must not merge. WI-582's guard records the SPEC
+                // (`rule_head_bound_alias` substitutes the introducer by the spec's own
+                // symbol, so `rule g[A](?a: A) :- Eq[A]` installs the NOMINAL bound
+                // `?a: Eq`), which is proposal 060 §3's requirement anchor. 5G28A's `?t`
+                // is a TIE between two columns with nothing required of it — an ordinary
+                // unification variable on the rule's frame. Letting an UNBOUNDED
+                // introducer mean the tie would give one spelling two readings, decided by
+                // whether a guard happens to appear elsewhere in the clause; adding a
+                // `:- Spec[A]` guard to a working rule would then change what its bound
+                // MEANS rather than narrowing it.
                 let unbounded: Vec<String> = introducers
                     .iter()
                     .filter(|tv| self.rule_head_tvar(tv) == Some(RuleTvar::Unbounded))
@@ -30979,7 +31235,11 @@ impl<'a> Loader<'a> {
                     self.errors.push(LoadError::Other {
                         message: format!(
                             "WI-582: rule type-variable `{tv}` has no bounding guard \
-                             (expected a `:- Spec[{tv}]` clause to bound it)"
+                             (expected a `:- Spec[{tv}]` clause to bound it). To TIE two \
+                             head columns to one unwritten type instead of requiring a \
+                             spec, write the variable in the bound itself — \
+                             `?x: List[T = ?{tv}]` — which needs no introducer \
+                             (WI-20260911-5G28A)"
                         ),
                     });
                 }
@@ -31248,9 +31508,34 @@ impl<'a> Loader<'a> {
         };
 
         for (head_idx, kb_head) in kb_heads.into_iter().enumerate() {
-            let rid = self.kb.assert_rule_debruijn_with_nodes(
+            // WI-20260911-5G28A — THIS HEAD'S BOUNDS CONTRIBUTE THEIR OWN VARIABLES TO
+            // THE FRAME. `?t` in `?x: List[T = ?t]` is in neither the head term (the
+            // annotation was stripped) nor the body, so without this it is a
+            // `Var::Global` no frame holds and no firing opens — see
+            // `assert_rule_debruijn_with_bound_vars` for what that costs. Collected in
+            // written order, deduped there; empty for every untyped head, which is what
+            // keeps this path byte-identical for them.
+            let bound_vars: Vec<VarId> = head_type_bounds
+                .get(head_idx)
+                .map(|bounds| {
+                    let mut vars: Vec<VarId> = Vec::new();
+                    for &(_, bound) in bounds {
+                        for v in self.kb.collect_vars(&bound) {
+                            // NOT an enclosing SORT's type parameter — that one is a
+                            // projection off the receiver, not a clause variable; see
+                            // `KnowledgeBase::is_canonical_type_param_var`.
+                            if !self.kb.is_canonical_type_param_var(v) && !vars.contains(&v) {
+                                vars.push(v);
+                            }
+                        }
+                    }
+                    vars
+                })
+                .unwrap_or_default();
+            let rid = self.kb.assert_rule_debruijn_with_bound_vars(
                 kb_head,
                 body_nodes.clone(),
+                &bound_vars,
                 rule_sort,
                 domain,
                 meta,

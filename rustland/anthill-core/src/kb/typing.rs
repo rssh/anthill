@@ -8053,6 +8053,40 @@ fn relation_reference_type_applied(
             // runnable `rel(5)`.
             let ok = if let Some(vid) = resolved_var(kb, &col_ty) {
                 bind_resolved(kb, &mut subst, vid, arg.ty.clone())
+            } else if type_mentions_flex_var(kb, &col_ty) {
+                // WI-20260911-5G28A — A COLUMN WHOSE TYPE *MENTIONS* A VARIABLE IS
+                // CORRELATED TOO, and before this ticket only a column that WAS one
+                // counted. `rule my_rule(?x: List[T = ?t], ?res: List[T = ?t])` ties its
+                // two columns through a variable NESTED in each bound, so the arm above
+                // never fires for it and `types_compatible` — a SUBTYPE test, which does
+                // not bind — decided the pair. It does not merely fail to pin `?t`: a raw
+                // `Var::Global` is `TypeHead::FlexVar`, which carries no dispatch tag, so
+                // it is not even the `type_var` WILDCARD and the structural arms REFUSE.
+                // MEASURED on b43d9670: all four driving rows — concrete argument,
+                // wrong-typed argument, and both rigid ones — came back "argument binding
+                // column `x` has an incompatible type", indistinguishable from a genuine
+                // mismatch.
+                //
+                // UNIFY, and the direction is the point: σ is threaded across the
+                // arguments of this citation (the loop's own shared `subst`), so a
+                // concrete `List[Int64]` pins `?t := Int64` and the surviving free column
+                // `res` walks out as `List[Int64]`; a RIGID `List[T = op.x.T]` pins `?t`
+                // to that neutral, so `-> List[T = x.T]` is accepted and `-> List[T =
+                // y.T]` refused by ordinary σ-equality of one projection. No receiver
+                // re-keying is needed because in a rule the tie IS a variable, not a path.
+                //
+                // A CONCRETE column keeps `types_compatible` — SUBTYPING is the right
+                // relation where nothing is to be pinned, and pinning there would refuse
+                // an argument whose type is a legitimate SUBTYPE of the column's.
+                //
+                // THE SAME READER THE RESOLVER USES, not a second one. `pin_type_vars` is
+                // where "match a determined type against a variable-bearing bound, binding
+                // what stands opposite each variable" is decided, and the typer's citation
+                // and the resolver's goal must not drift about what a bound MEANS. It also
+                // brings the subtype FALLBACK with it: `unify_types` alone (this arm's
+                // first cut) refused an argument whose type is a legitimate subtype of the
+                // column's, since unification is not subsumption — found by `/code-review`.
+                pin_type_vars(kb, &mut subst, &arg.ty, &col_ty)
             } else {
                 types_compatible(kb, &mut subst, &arg.ty, &col_ty)
             };
@@ -9365,7 +9399,40 @@ fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Vec<ClauseCol
     };
     let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
     let (var_types, _contradiction) = collect_rule_var_types(kb, head, &body_nodes);
-    let type_bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
+    // WI-20260911-5G28A — OPEN THIS CLAUSE'S BOUNDS PER CITATION, and that is what makes
+    // a TIE between two columns readable at a call site. `rule my_rule(?x: List[T = ?t],
+    // ?res: List[T = ?t])` stores both bounds De Bruijn-closed against one frame, so ONE
+    // fresh global per citation reaches BOTH columns — the two share a variable the
+    // caller's argument can then pin (`relation_reference_type_applied` binds it through
+    // σ), and `res` comes back at whatever `x` was.
+    //
+    // FRESH PER CITATION, not once per clause: two citations of the same rule in one
+    // program are two independent instantiations, exactly as two firings are. Reading the
+    // stored De Bruijn term directly instead would hand `types_compatible` a bound
+    // variable, which it treats as a WILDCARD — measured before this ticket, when the
+    // bound rode a shared `Var::Global`: every one of the four driving rows came back
+    // "argument binding column `x` has an incompatible type", the concrete and the rigid
+    // alike.
+    //
+    // NOTHING IS MINTED FOR A CLAUSE WITH NO BOUNDS, which is nearly every clause a
+    // citation names: the `is_empty` test comes FIRST because this runs once per clause
+    // per citation (`relation_columns_across_clauses` folds over all of them), and an
+    // earlier cut allocated a whole frame of throwaway `VarId`s before ever looking at
+    // `rule_type_bounds`. Found by `/code-review`.
+    //
+    // Each fresh variable keeps its SLOT's OWN NAME, so a diagnostic rendering a column
+    // type says `?x` / `?res` rather than one borrowed placeholder for every slot.
+    let stored_bounds = kb.rule_type_bounds(rid).to_vec();
+    let type_bounds: Vec<(u32, TermId)> = if stored_bounds.is_empty() {
+        Vec::new()
+    } else {
+        let names: Vec<Symbol> = kb.rule_globals(rid).iter().map(|v| v.name()).collect();
+        let fresh_frame: Vec<VarId> = names.into_iter().map(|n| kb.fresh_var(n)).collect();
+        stored_bounds
+            .into_iter()
+            .map(|(i, t)| (i, kb.term_from_debruijn(t, &fresh_frame)))
+            .collect()
+    };
     let slots = rule_head_var_slots(kb, rid);
     let mut columns: Vec<ClauseColumn> = Vec::with_capacity(slots.len());
     for (slot, name, d) in slots {
@@ -43847,6 +43914,81 @@ pub(crate) fn is_type_variable<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool 
     )
 }
 
+/// WI-20260911-5G28A — the `VarId` this type IS, when it is a variable a pin may BIND;
+/// `None` otherwise.
+///
+/// TWO EXCLUSIONS, and both were `/code-review` findings on this ticket's own first cut,
+/// where the gate asked [`is_type_variable`] — which names all THREE variable spellings —
+/// while the pin could only ever bind one of them:
+///
+///  * a reflect `TypeVar` and a `Skolem` are variables, and are NOT bindable here. A
+///    `Skolem` is a rigid unknown (it equals only an identical neutral) and a `TypeVar` is
+///    the reflect placeholder; neither has a `VarId` this σ may write. Admitting them to
+///    the gate and then failing to bind them turned a SUSPEND into a `Refuted` — a verdict
+///    on an open variable, which is exactly what WI-067 forbids and what
+///    [`pin_bound_from_value`]'s own doc promises not to do.
+///  * a SORT's canonical type-parameter variable ([`KnowledgeBase::is_canonical_type_param_var`])
+///    is a `Var::Global` like any other, so `type_head` reports it as a `FlexVar` and the
+///    pin would happily bind it. It must not: `F` in a rule written inside
+///    `sort Lib { sort F = ? }` is a projection off the RECEIVER's instance, decided by
+///    whoever instantiates `Lib`, and binding it from one value would pin the receiver's
+///    parameter for the whole resolution. It is the same exclusion the frame admission
+///    makes, asked here in the pin's own terms.
+///
+/// Everything excluded falls through to [`type_bound_verdict`], which suspends on it
+/// exactly as it did before this ticket.
+fn bindable_type_var<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<VarId> {
+    match type_head(kb, ty) {
+        TypeHead::FlexVar(vid) if !kb.is_canonical_type_param_var(vid) => Some(vid),
+        _ => None,
+    }
+}
+
+/// WI-20260911-5G28A — does this type MENTION a variable a pin may bind, at any depth?
+///
+/// The question [`resolved_var`] asks one level up: that one is "IS this type a
+/// variable" (a whole-variable column), this one "is there a bindable variable IN it"
+/// (`List[T = ?t]`, `Map[K = ?k, V = Int64]`). A rule head ties two columns through the
+/// SECOND shape, and the applied-citation checker needs the distinction to choose
+/// between pinning (bind the variable, narrow the surviving columns) and subtyping
+/// (nothing to pin).
+///
+/// Children are walked through the VIEW's positional and named arities, because a sort
+/// parameter rides as a NAMED argument (WI-361: `List[T = ?t]` is `Fn{List, T: ?t}`) and
+/// a positional-only walk would answer `false` for the very shape this exists to catch.
+fn type_mentions_flex_var<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    if bindable_type_var(kb, ty).is_some() {
+        return true;
+    }
+    let ViewHead::Functor {
+        pos_arity,
+        named_arity,
+        ..
+    } = ty.head(kb)
+    else {
+        return false;
+    };
+    for i in 0..pos_arity {
+        if ty
+            .pos_arg(kb, i)
+            .is_some_and(|a| type_mentions_flex_var(kb, &a))
+        {
+            return true;
+        }
+    }
+    if named_arity > 0 {
+        for key in ty.named_keys(kb) {
+            if ty
+                .named_arg(kb, key)
+                .is_some_and(|a| type_mentions_flex_var(kb, &a))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// WI-722: is this resolved type EXACTLY an occurrence type — a bare
 /// `anthill.reflect.NodeOccurrence` or reflect `Expr`? A CONTAINER of one
 /// (`Option[NodeOccurrence]`, `List[NodeOccurrence]`) is deliberately NOT — only
@@ -66158,6 +66300,13 @@ pub(crate) fn typed_pattern_bounds_hold(
         let Some(matched) = msubst.bindings.get(&gvid).cloned() else {
             return false; // the bound var did not match → cannot decide
         };
+        // WI-20260911-5G28A — OPEN THE BOUND against the same `fresh` globals the head
+        // was opened with. A bound's own type variables are frame slots since this
+        // ticket and the stored term is De Bruijn-closed, so reading it raw would ask
+        // `types_compatible` about a `DeBruijn(k)` — a variable, hence a permanent
+        // `Suspend`, hence a rewrite that never fires. A var-free bound (every bound the
+        // rewrite route carries in the corpus) opens to itself.
+        let bound_tid = kb.term_from_debruijn(bound_tid, fresh);
         // COLLAPSE, deliberately: a rewrite has two outcomes, so `Suspend` and
         // `Refuted` are both "don't fire" here. The goal reader (WI-742) keeps
         // them apart — that is the whole reason the decision is factored out.
@@ -66268,6 +66417,199 @@ pub(crate) fn type_bound_verdict_view(
     } else {
         TypeBoundVerdict::Refuted
     }
+}
+
+/// WI-20260911-5G28A — what a `domain` goal can say about a bound that MENTIONS A TYPE
+/// VARIABLE, read in mode **(in, out)**: the value is the INPUT and the type is the
+/// OUTPUT, because a value's type is FUNCTIONALLY DETERMINED by the value
+/// ([`value_type_term`], WI-578).
+///
+/// WHY THIS EXISTS. A bound like `List[T = ?t]` reaches [`type_bound_verdict`] with a
+/// free `?t`, and that predicate's whole rule (WI-067, WI-20260908-PW9A0) is that an
+/// open variable never gets a verdict — so it SUSPENDS, for good, whatever the value is.
+/// MEASURED on b43d9670: `my_rule([1, 2], ?r)` answered `?r = [1, 2]` as a CONDITIONAL,
+/// carrying `domain([1, 2], List(T: ?t))` twice as an undischarged residual. The value
+/// was ground, its type was `List[T = Int64]`, and nothing read it — the bound PARKED
+/// instead of deciding.
+///
+/// AND IT IS A PIN, NOT A VERDICT, which is why it is a separate answer rather than a
+/// fourth `TypeBoundVerdict`. WI-067's rule is intact: nothing here decides an open
+/// variable. It INSTANTIATES one, from the only thing that can determine it, and then
+/// ordinary conformance applies to the instantiated pair. The alternative — letting the
+/// goal enumerate the free type over every derived domain — opens one choice point per
+/// sort in the KB and was measured at WT8WG item 7 as 20 rows for a `nest` clause whose
+/// body binds its variable outright and can have at most ONE answer.
+pub(crate) enum TypeBoundPin {
+    /// The bound mentions no type variable — this reading does not apply, and the
+    /// ordinary [`type_bound_verdict`] owns the pair.
+    NotApplicable,
+    /// The value's type pins the bound's variables. `pin` is merged into the caller's σ,
+    /// so it is visible to every later goal — that is what makes a rule's two columns a
+    /// TIE rather than two independent checks. `bound` is the SAME bound resolved through
+    /// that pin, handed back so a caller that must re-ask a question ABOUT the type
+    /// (`builtin_domain_leaf`'s "does a structural clause own this call") asks it of the
+    /// pinned type rather than of the variable it started with.
+    Pinned { pin: Substitution, bound: Value },
+    /// The value's type is determined and cannot satisfy the bound under ANY pin
+    /// (`[1, 2]` against `List[T = ?t]` where σ already holds `?t := String`).
+    Refuted,
+    /// The value's own type is not determined yet, so it cannot pin anything. Re-asked
+    /// by rotation, exactly as [`TypeBoundVerdict::Suspend`] is.
+    Suspend,
+}
+
+/// [`TypeBoundPin`] for one `(value, bound)` pair — the (in, out) read.
+///
+/// `unify_types`, not `types_compatible`: the point is to BIND, and the subtype relation
+/// treats a variable as a wildcard and binds nothing. The σ handed back is fresh, so a
+/// failed unification leaves the caller's own σ untouched (the discipline
+/// `types_compatible`'s doc states for its threading callers).
+pub(crate) fn pin_bound_from_value(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    value: &Value,
+    bound: &Value,
+) -> TypeBoundPin {
+    if !type_mentions_flex_var(kb, bound) {
+        return TypeBoundPin::NotApplicable;
+    }
+    let ty = value_type_term(kb, subst, value);
+    // THE VALUE'S OWN TYPE MUST BE DETERMINED, and this is the same question
+    // [`type_bound_verdict_view`] asks of it — an under-determined input cannot pin an
+    // output. Without it a value whose carried type is itself a variable would unify the
+    // bound with a variable and call that a decision.
+    if type_is_undetermined(kb, &ty) {
+        return TypeBoundPin::Suspend;
+    }
+    let mut pin = Substitution::new();
+    // WALK THE BOUND THROUGH σ FIRST. A tie is only a tie if the SECOND column sees what
+    // the FIRST pinned: `my_rule(?x: List[T = ?t], ?res: List[T = ?t])` checks `?x`,
+    // binds `?t := Int64` into the caller's σ, and the `?res` goal must then read `?t`
+    // as `Int64` and REFUTE a `["a"]` — not re-bind it to `String`.
+    let bound = walk_type_deep_value(kb, subst, bound);
+    if pin_type_vars(kb, &mut pin, &ty, &bound) {
+        let bound = walk_type_deep_value(kb, &pin, &bound);
+        TypeBoundPin::Pinned { pin, bound }
+    } else {
+        TypeBoundPin::Refuted
+    }
+}
+
+/// WI-20260911-5G28A — MATCH a determined type against a bound, binding the bound's type
+/// VARIABLES to what stands opposite them. One-way, and that is the mode: the value's type
+/// is the INPUT and the bound's variables the OUTPUTS.
+///
+/// NOT [`unify_types`], and the difference is a carrier. `unify_types` recognises a
+/// variable through [`resolved_var`], whose occurrence arm reads a **`TypeNode::Var`** —
+/// the carrier a TYPE occurrence uses. A source-written `domain(?x, List[T = ?e])` lowers
+/// its bound as an ordinary **`Expr`** occurrence, so `?e` arrives as `Expr::Var(Global)`,
+/// `resolved_var` answers `None`, and the structural arms compare a variable against
+/// `Letter` and REFUSE. MEASURED: `rule varBound(?x) :- ?x <=> [a()], domain(?x,
+/// List[T = ?e])` answered 0 rows — a refutation, where WI-067's rule is that an open
+/// variable never gets a verdict, let alone that one. (WI-20260911-WT8WG hit the same
+/// carrier from the other side and answered it with a DELAY; this reads it instead.)
+///
+/// So the variable test here is [`type_head`]'s own `FlexVar`, which is carrier-neutral by
+/// construction — the same reader `view_has_type_variable` uses for the same shape — and
+/// widening `resolved_var` is deliberately NOT the repair: that predicate answers for
+/// every unifier in the typer, and an `Expr::Var` is a VALUE variable everywhere except a
+/// type position. Here the position is a type by construction.
+///
+/// A SUBTREE WITH NO VARIABLE IN IT FALLS TO [`types_compatible`], so the parts the author
+/// pinned keep the SUBTYPE relation they would have had; only the variable positions are
+/// bound. A variable that is already pinned (an earlier column of the same tie) is CHECKED
+/// against what stands opposite it rather than re-bound — that is what makes
+/// `my_rule([1, 2], ["a"])` refute.
+fn pin_type_vars(
+    kb: &mut KnowledgeBase,
+    pin: &mut Substitution,
+    ty: &Value,
+    bound: &Value,
+) -> bool {
+    if let Some(vid) = bindable_type_var(kb, bound) {
+        let ty_val = walk_type_deep_value(kb, pin, ty);
+        return match pin.resolve_as_value(vid).cloned() {
+            Some(prev) => types_compatible(kb, pin, &ty_val, &prev),
+            None => bind_resolved(kb, pin, vid, ty_val),
+        };
+    }
+    if !type_mentions_flex_var(kb, bound) {
+        return types_compatible(kb, pin, ty, bound);
+    }
+    let (
+        ViewHead::Functor {
+            functor: bf,
+            pos_arity: bp,
+            named_arity: bn,
+        },
+        ViewHead::Functor {
+            functor: tf,
+            pos_arity: tp,
+            named_arity: tn,
+        },
+    ) = (bound.head(kb), ty.head(kb))
+    else {
+        return false;
+    };
+    // SAME HEAD, SAME SHAPE — or this is not a PIN at all, and the question falls back to
+    // the relation it would have had.
+    //
+    // THE FALLBACK IS NOT BELT-AND-BRACES, it is what keeps SUBTYPING (`/code-review` on
+    // this ticket's first cut). The structural descent below is exact equality on the head
+    // and the arities, where `type_bound_verdict_view` used `types_compatible` — which
+    // honours `nothing`-is-bottom and nominal widening. Without the fallback, a value whose
+    // type is a strict subtype with a different head, or `Nothing` (a body ending in
+    // `Error.raise`), came back `Refuted` where it used to HOLD — and since
+    // `expand_unwritten_type_params` now turns every bare `?x: List` into `List[T = ?t]`,
+    // that narrowing would have reached bounds no author changed.
+    //
+    // NOTHING IS PINNED ON THAT PATH, which is the honest outcome: a subtype relation that
+    // is not a structural match supplies no value for the variable, and inventing one would
+    // be inventing an answer. `pin` is threaded in, so a partial bind made before the
+    // mismatch can survive into the `types_compatible` call — that is the same
+    // early-return-on-false discipline `types_compatible`'s own doc states for its
+    // threading callers, and the caller discards σ on `false`.
+    if bf != tf || bp != tp || bn != tn {
+        return types_compatible(kb, pin, ty, bound);
+    }
+    for i in 0..bp {
+        let (Some(b), Some(t)) = (bound.pos_arg(kb, i), ty.pos_arg(kb, i)) else {
+            return types_compatible(kb, pin, ty, bound);
+        };
+        let (b, t) = (b.to_value(), t.to_value());
+        if !pin_type_vars(kb, pin, &t, &b) {
+            return false;
+        }
+    }
+    // BY SHORT NAME, not by `Symbol` identity, and that is the neighbour's own rule:
+    // `parameterized_compatible_view` matches a binding with
+    // `short_name_of(kb.local_name_of(*p)) == short` for exactly this reason. The two sides
+    // of a comparison reach their parameter keys through different resolutions — a rule's
+    // stored bound and an operation parameter's filled slot both spell `T` and can carry
+    // two `Symbol`s for it. MEASURED with raw-symbol lookup: the RIGID rows
+    // (`op(x: List, y: List) -> List[T = x.T]`) fell out of the named loop on the very
+    // first key, took the `types_compatible` fallback, and were refused at the column bind
+    // — while the CONCRETE row, whose argument type came from the same place as its column
+    // type, passed. Found by this ticket's own suite after `/code-review`'s fix landed.
+    let ty_keys: Vec<Symbol> = ty.named_keys(kb);
+    for key in bound.named_keys(kb) {
+        let short = short_name_of(kb.local_name_of(key)).to_string();
+        let t_key = ty_keys
+            .iter()
+            .copied()
+            .find(|k| short_name_of(kb.local_name_of(*k)) == short);
+        let (Some(b), Some(t)) = (
+            bound.named_arg(kb, key),
+            t_key.and_then(|k| ty.named_arg(kb, k)),
+        ) else {
+            return types_compatible(kb, pin, ty, bound);
+        };
+        let (b, t) = (b.to_value(), t.to_value());
+        if !pin_type_vars(kb, pin, &t, &b) {
+            return false;
+        }
+    }
+    true
 }
 
 /// WI-20260908-PW9A0 — is this type a VARIABLE, the one thing
@@ -71270,23 +71612,50 @@ fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
             if !kb.has_domain_member(bound_head) {
                 continue;
             }
-            // THE BOUND MUST NAME A DETERMINATE TYPE, everywhere in it. A bare
-            // reference to a PARAMETERISED sort (`?w: List`, or `List` nested inside
-            // `List[T = List]`) names no element domain, and a type VARIABLE names no
-            // type at all — and in both cases the generated goal would end up asking
-            // `domain_member(?x, ?T)` with `?T` unbound, which unifies with the head of
-            // EVERY derived clause and starts enumerating TYPES instead of values.
-            // MEASURED at 20 rows (the solution cap) for
-            // `rule nest(?w: List[T = List]) :- ?w <=> [[a()]]`, whose body binds `?w`
-            // outright and can have at most one. Found by `/code-review`.
+            // WI-20260911-5G28A — THE DETERMINACY GATE IS LIFTED, because the two
+            // things it was protecting against are now owned elsewhere.
             //
-            // SKIPPED, not repaired: WI-742's reading of such an annotation stands
-            // unchanged — conformance, then the delay/flounder ladder. There is nothing
-            // here to enumerate, and inventing an element type would be inventing an
-            // answer.
-            if !bound_names_a_determinate_type(kb, bound_tid) {
-                continue;
-            }
+            // WI-743 SKIPPED a bound that did not name a determinate type, for two
+            // reasons that were the same defect: a BARE reference to a parameterised sort
+            // (`?w: List`) named no element domain, and a type VARIABLE named no type at
+            // all, so the generated goal asked `domain_member(?x, ?T)` with `?T` unbound
+            // — which unifies with the head of EVERY derived clause and enumerates TYPES
+            // instead of values. Measured at 20 rows (the solution cap) for
+            // `rule nest(?w: List[T = List]) :- ?w <=> [[a()]]`, a clause whose body binds
+            // `?w` outright and can have at most ONE answer.
+            //
+            // BOTH REASONS ARE GONE, and each to a different owner:
+            //   * the BARE reference is no longer a shape a bound can have — the loader's
+            //     `expand_rule_head_bound_type_params` writes the unwritten parameter as a
+            //     rule-scoped variable, so `?w: List` arrives here as `List[T = ?t]`;
+            //   * the VARIABLE is no longer guessed — `pin_bound_from_value` reads it off
+            //     the value in mode (in, out), so a bound value decides the goal in one
+            //     step instead of opening a choice point per derived domain. With the
+            //     value UNBOUND there is still nothing to range over, and the goal DELAYS
+            //     at the resolver's dispatch site (`domain_member_goal_is_undetermined`)
+            //     rather than being skipped here.
+            //
+            // WHAT THAT CHANGES FOR `rule anylist(?w: List) :- true` — stated exactly,
+            // because this paragraph is the reason the gate went. It answered ONE
+            // conditional row before and answers ONE conditional row now. What moved is
+            // WHERE: the goal is GENERATED and stands in the residual, where the gate left
+            // it un-asked with nothing said at load. Enumerating instead was built and
+            // measured, and it does not come back at all — both operands free is a product
+            // of two infinite streams, whose fairness is WI-20260911-09E6M's. An earlier
+            // draft of this paragraph claimed the row "now comes back as rows", which is
+            // not what ships; found by `/code-review`.
+            //
+            // SKIPPING WAS ALSO THE SILENT HALF. A skipped goal left `<Sort>.domain` and
+            // every `?t`-bearing head reading WI-742's conformance ladder only — a
+            // CONDITIONAL answer where the author wrote a generator — with nothing said
+            // at load. The control for lifting it is `pin_bound_from_value`: back that
+            // read out with this lifted and `nest` reddens to the 20 rows WI-743 measured.
+            //
+            // THE PREDICATE ITSELF IS GONE rather than left unread. A gate no caller asks
+            // is not a gate, and keeping one whose doc still claims to prevent the 20-row
+            // enumeration would misdescribe where that prevention now lives — at the
+            // resolver's `domain_member_goal_is_undetermined`, which asks the same question
+            // of the same bound at the moment the answer can be different.
             let member_bound = bound_tid;
             // THE SELF-CALL TRAP, cut here — WI-20260911-WT8WG moved it from the loader.
             //
@@ -71370,48 +71739,6 @@ fn rule_defines_sort_domain(kb: &KnowledgeBase, rid: crate::kb::RuleId, sort: Sy
         .head(kb)
         .functor_sym()
         .is_some_and(|f| f == dom_sym)
-}
-
-/// WI-743 — does this bound name a type the derived `domain_member` relation can
-/// actually range over, all the way down?
-///
-/// TWO ways it cannot, and they are one defect: the goal would carry an UNBOUND type,
-/// which unifies with every derived clause head and enumerates types.
-///   * a TYPE VARIABLE — nothing names the type;
-///   * a BARE reference to a PARAMETERISED sort — `Ref(List)` and the nullary `Fn{List}`
-///     are one spelling (WI-20260902-CZJ2N), and neither names the element type. A sort
-///     with NO parameters is fine bare; that is what `Colour` is.
-fn bound_names_a_determinate_type(kb: &KnowledgeBase, t: TermId) -> bool {
-    use crate::kb::term::Term;
-    match kb.get_term(t) {
-        Term::Var(_) => false,
-        Term::Ref(_) => !sort_takes_parameters(kb, t),
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => {
-            if pos_args.is_empty() && named_args.is_empty() {
-                return !sort_takes_parameters(kb, t);
-            }
-            let children: Vec<TermId> = pos_args
-                .iter()
-                .copied()
-                .chain(named_args.iter().map(|&(_, c)| c))
-                .collect();
-            children
-                .into_iter()
-                .all(|c| bound_names_a_determinate_type(kb, c))
-        }
-        _ => true,
-    }
-}
-
-/// WI-743 — does the sort this type term heads with declare type parameters?
-fn sort_takes_parameters(kb: &KnowledgeBase, t: TermId) -> bool {
-    type_term_head_sym(kb, t)
-        .and_then(|s| kb.domain_member_params_of(s))
-        .is_some_and(|ps| !ps.is_empty())
 }
 
 /// WI-743 — the sort a stored TYPE TERM heads with: `Colour` for `Ref(Colour)`,
