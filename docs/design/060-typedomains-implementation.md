@@ -296,12 +296,21 @@ Written as questions, because none of them was measured.
   every provider here is derived, so a hand-written wrong one is not on the path. It becomes
   a real question only if providers are ever written by hand. (§0 says why `member` cannot
   carry the type even if it wanted to.)
-- **Who provides it.** `provides SortDomain[T = Colour]` would have to be derived for every
-  sort that derives a domain (`derive_domain_member_clauses`'s population), the way
-  `<Sort>.domain` is derived in §7.1. Measured: the block loads when written inside the
-  provider sort's own declaration, and is refused at namespace level ("a `provides` clause
-  needs a type at its address"). That is mechanical, but it multiplies the provides facts
-  by the number of domain-bearing sorts, and the dispatch cost was not measured.
+- **Which pass DERIVES `provides SortDomain[T = Colour]`, and what it owes.** Not the
+  typer — a LOAD pass, beside `kb/eq_derive.rs`'s `run`, which is the one existing pass that
+  ASSERTS provisions (it files derived `NonEq` / `PartialEq` `SortProvidesInfo` facts for
+  Float-containing composites). Its population is `derive_domain_member_clauses`' — every
+  sort that derives a domain — and `<Sort>.domain`'s own derivation in §7.1 is the shape to
+  copy. Three obligations come with standing there, all documented at `eq_derive`'s call
+  site: drop `provides_index` to `None` FIRST so reads during the loop see the facts being
+  asserted, rebuild it after (`build_provides_index`) so the post-derivation checks and the
+  persisted runtime index read a complete one, and invalidate the requires-chain cache
+  (WI-1110 — `direct_requires` now reads provisions, so every pass asserting a
+  `SortProvidesInfo` owes that call). MEASURED 2026-09-12: a `provides` block loads when
+  written inside the provider sort's own declaration and is refused at namespace level ("a
+  `provides` clause needs a type at its address"), so the derivation must emit it at the
+  sort. Mechanical, but it multiplies the provision facts by the number of domain-bearing
+  sorts, and the dispatch cost of that was not measured.
 - **Whether the bootstrap really is structural.** With `member` declared untyped it carries
   no bound, so the sweep generates nothing for it and §4's transform never reaches it; and a
   provider's hand-written `domain_member(?x, Colour)` is not a generated goal either, so it
