@@ -12731,6 +12731,19 @@ fn load_phase_inner(
     // CHAIN CACHES rather than to this index, so a correction there must not silently take
     // the reset with it.
     kb.requires_index = None;
+    // WI-20260912-1QVWA — same reset for the `OperationInfo` index, same reason one step
+    // sideways: THIS phase's operations are converted below, and a bucket map inherited
+    // from a prior phase names none of them. A stale index there is not a slow answer —
+    // `op_info::op_info_fact_rids` takes the index arm whenever the index is `Some`, so a
+    // bucket that predates this phase's `OperationInfo` facts makes every operation
+    // declared in this phase's files look UNDECLARED: `lookup_operation_info` answers
+    // `None`, `operation_is_declared` answers `false`, and a call that should type-check
+    // is refused (or, via `declared_op_with_no_definition`, refutes where it should be
+    // undefined). Cleared here so the load-time lookups scan the live relation until
+    // `build_op_signatures` rebuilds it inside this phase's type-check; a
+    // `LoadOptions { run_typer: false }` load returns above that build point and so keeps
+    // scanning, which is slow and right.
+    kb.op_info_index = None;
 
     // WI-233: per-sub-phase timing, gated by ANTHILL_LOAD_TIMING=1.
     // Surfaces which step of the load pipeline dominates wall time

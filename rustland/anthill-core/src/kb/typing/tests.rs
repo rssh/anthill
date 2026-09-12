@@ -5928,3 +5928,300 @@ mod part_c_bare_var_collection_test {
         assert!(!value_vars_all_walk_local(&kb, &deep, watermark));
     }
 }
+
+/// WI-20260912-1QVWA — THE `OperationInfo` INDEX ([`crate::kb::KnowledgeBase::op_info_index`]).
+/// Its two obligations: the keyed readers of the `OperationInfo` facts must answer through
+/// a bucket exactly what they answered through the fact scan, and no reader may answer
+/// from a bucket map that predates the facts it is asked about.
+///
+/// THE DEFECT WAS THE MISS. `op_records` (WI-656) caches every operation's signature, so
+/// asking "is this symbol an operation?" about one that IS costs a map hit — and asking
+/// about one that is NOT cost a walk of every `OperationInfo` fact in the KB, to answer
+/// `None`. Entity CONSTRUCTORS are that population and the typer asks per application
+/// node (`constrain_application` asks the operation table first and only then
+/// `entity_field_types`, which is where the answer was). MEASURED on a debug stdlib load:
+/// 1712 of 3363 `lookup_operation_info` calls were such misses, 189 ms of that call's
+/// 198 ms.
+///
+/// A WRONG ANSWER HERE IS NOT A SLOW ONE, which is what these rows are for. A symbol that
+/// falls out of a bucket STOPS BEING AN OPERATION for every reader downstream: its calls
+/// lose their signature, [`operation_is_declared`] says no,
+/// `op_info::declared_op_with_no_definition` turns an undefined call into a REFUTATION,
+/// and `op_info::is_nullary_operation` rebuilds a bare goal as a plain name reference —
+/// WI-20260902-VNWAW's headline, where `:- flag` proved nothing.
+#[cfg(test)]
+mod wi_1qvwa_op_info_index_tests {
+    use crate::eval::value::Value;
+    use crate::intern::Symbol;
+    use crate::kb::node_occurrence::Expr;
+    use crate::kb::op_info::{
+        declared_arity, head_name_ref, lookup_operation_info, operation_info_fact_counts,
+        operation_is_declared,
+    };
+    use crate::kb::resolve::PredicateProof;
+    use crate::kb::term::TermId;
+    use crate::kb::test_support::load_stdlib;
+    use crate::kb::KnowledgeBase;
+
+    /// A nullary operation named BARE in a rule body — the loader reading that a stale
+    /// index silently changes (`load::Loader::nullary_op_call_or_ref`, which asks
+    /// `is_nullary_operation` WHILE the file is loading, long before that phase's
+    /// `build_op_signatures`). Loaded as a SECOND phase in the staleness row below, so the
+    /// index it is read against is the one the stdlib phase left behind.
+    const PHASE2: &str = r#"
+namespace test.q1vwa
+  import anthill.prelude.Bool
+  operation flag() -> Bool = true
+  rule bare_goal(1) :- flag
+end
+"#;
+
+    /// Every keyed reader of the `OperationInfo` facts, answering about one symbol, as one
+    /// comparable value. [`lookup_operation_info`] is reduced to its per-field COUNTS plus
+    /// the return type's `TermId`: its `Value` fields have no equality worth comparing, and
+    /// a bucket that served a different fact would move exactly these.
+    fn answers(
+        kb: &KnowledgeBase,
+        sym: Symbol,
+    ) -> (
+        bool,
+        Option<usize>,
+        Option<(usize, usize, usize)>,
+        Option<TermId>,
+    ) {
+        (
+            operation_is_declared(kb, sym),
+            declared_arity(kb, sym),
+            lookup_operation_info(kb, sym)
+                .map(|r| (r.params.len(), r.effects.len(), r.type_params.len())),
+            super::super::lookup_operation_return_type(kb, sym),
+        )
+    }
+
+    /// Force every reader through the FALLBACK tier, which is the only tier the index
+    /// serves. [`lookup_operation_info`] answers from `op_records`' cached signature first,
+    /// so a comparison taken on a finished KB would consult neither arm for any real
+    /// operation — it would compare the cache with itself, and the census would measure
+    /// the misses alone.
+    fn clear_signature_cache(kb: &mut KnowledgeBase) {
+        for rec in kb.op_records.values_mut() {
+            rec.signature = None;
+        }
+    }
+
+    /// THE EQUIVALENCE, over EVERY SYMBOL THE KB HAS MINTED — not over a fixture's names
+    /// and not over the operations alone. The population this index changed is the symbols
+    /// that are NOT operations, so a census restricted to operations would miss it
+    /// entirely; `symbol_count` is the whole table, so constructors, sorts, fields, params
+    /// and unresolved names are all in it.
+    ///
+    /// NOT VACUOUS, asserted in both directions: the run requires hundreds of symbols that
+    /// ARE declared operations and thousands that are not, so neither an index nor a scan
+    /// that answered the same thing everywhere could agree its way to a pass.
+    ///
+    /// CONTROL — `index.insert(op_sym, rid)` removed from `build_op_signatures` (the index
+    /// then published, `Some`, and empty): every operation answers `None`/`false` through
+    /// the index arm while the scan arm still finds it, and this fails on the first one.
+    /// Keying the bucket on `canonical_sort_sym` instead of the raw symbol is NOT pinned
+    /// here and this says so rather than crediting the row: it would take two distinct
+    /// symbols sharing one qualified name, and nothing in the stdlib writes that pair.
+    #[test]
+    fn the_index_answers_exactly_what_the_scan_answers() {
+        let mut kb = load_stdlib(None);
+        assert!(
+            kb.op_info_index.is_some(),
+            "premise: a full load leaves the index BUILT — otherwise both arms below are \
+             the scan and the comparison is with itself",
+        );
+        clear_signature_cache(&mut kb);
+
+        let n = kb.symbols.symbol_count();
+        assert!(
+            n > 2000,
+            "a stdlib load mints thousands of symbols; got {n} — the census is not the \
+             population it claims to be",
+        );
+        let syms: Vec<Symbol> = (0..n).map(Symbol::from_raw).collect();
+
+        let indexed: Vec<_> = syms.iter().map(|s| answers(&kb, *s)).collect();
+        kb.op_info_index = None;
+        let scanned: Vec<_> = syms.iter().map(|s| answers(&kb, *s)).collect();
+
+        let hits = scanned.iter().filter(|a| a.0).count();
+        let misses = scanned.len() - hits;
+        assert!(
+            hits > 100,
+            "the census must contain declared operations; got {hits}",
+        );
+        assert!(
+            misses > 1000,
+            "…and the MISSES this index exists for; got {misses}",
+        );
+
+        for ((sym, i), s) in syms.iter().zip(&indexed).zip(&scanned) {
+            assert_eq!(
+                i,
+                s,
+                "symbol {} ({}): the index arm and the scan arm must answer identically",
+                sym.index(),
+                kb.local_name_of(*sym),
+            );
+        }
+    }
+
+    /// A RETRACTED DECLARATION IS NOT IN THE RELATION, AND THE BUCKET MUST AGREE — the one
+    /// input on which the two arms are not interchangeable by construction.
+    /// `rules_by_functor` filters `retracted` at QUERY time (its doc says "all ACTIVE");
+    /// a bucket is frozen at BUILD time, and `is_fact` reads a retracted slot's empty body
+    /// as happily as a live one. So the filter has to be in `op_info_fact_rids` itself
+    /// rather than in a rule a future retractor must remember.
+    ///
+    /// THIS SIDE FAILS UPWARD, which is why it is its own row: everything else here guards
+    /// against an operation that stops existing, and this guards against one that will not
+    /// stop — a signature outliving the declaration it came from.
+    ///
+    /// CONTROL: drop `is_rule_alive` from `op_info_fact_rids`' filter and the INDEX half
+    /// fails while the SCAN half still passes, which is the disagreement stated as a test.
+    /// NO REBUILD after the retraction, deliberately: `build_op_signatures` reads
+    /// `rules_by_functor`, which filters retracted, so rebuilding here would refresh the
+    /// bucket and measure nothing.
+    #[test]
+    fn a_retracted_operation_fact_is_dropped_by_the_index_as_it_is_by_the_scan() {
+        let mut kb = load_stdlib(None);
+        let counts = operation_info_fact_counts(&kb);
+        let op_info = kb.resolve_symbol("anthill.reflect.OperationInfo");
+        // WHICHEVER operation the walk reaches first, among those carrying EXACTLY ONE
+        // fact: with two facts under one name, retracting the first leaves the second for
+        // the reader to find and the row would measure nothing. (A `load_all` into a live
+        // KB banks a second fact per type-parameter-bearing operation — WI-1049.)
+        let (rid, op) = kb
+            .rules_by_functor(op_info)
+            .into_iter()
+            .filter(|r| kb.is_fact(*r))
+            .filter_map(|r| head_name_ref(&kb, kb.rule_head_value(r)).map(|s| (r, s)))
+            .find(|(_, s)| counts.get(s).copied() == Some(1))
+            .expect("the stdlib declares operations carrying one fact each");
+
+        clear_signature_cache(&mut kb);
+        assert!(
+            operation_is_declared(&kb, op),
+            "premise: `{}` is declared before the retraction",
+            kb.qualified_name_of(op),
+        );
+
+        kb.retract(rid);
+        assert!(
+            kb.op_info_index.is_some(),
+            "the load's own index is still the live one — nothing has rebuilt or dropped it",
+        );
+        assert!(
+            !operation_is_declared(&kb, op),
+            "through the INDEX built BEFORE the retraction: `{}`'s retracted declaration \
+             must not be served",
+            kb.qualified_name_of(op),
+        );
+
+        kb.op_info_index = None;
+        assert!(
+            !operation_is_declared(&kb, op),
+            "through the SCAN, at the same KB state: `rules_by_functor` already filtered it",
+        );
+    }
+
+    /// THE BUILD-ONCE WINDOW IS ENFORCED, NOT MERELY DOCUMENTED. Asserting an
+    /// `OperationInfo` fact while the index is live files it in no bucket, so its operation
+    /// reads as UNDECLARED to every keyed reader with no diagnostic anywhere — the failure
+    /// the field doc's "standing rule" asks a future writer to avoid. Nothing in the tree
+    /// does it (the loader asserts strictly before the build; `constant` closes the runtime
+    /// door), so the rule was held by prose alone until `/code-review` said so.
+    ///
+    /// THE DOOR IS `assert_fact`'s OWN FUNNEL, not the three `assert_metadata_fact*`
+    /// wrappers: this row goes through `assert_fact` — a `kb.assert_fact_carrier` of a
+    /// reflect functor is what `wi1112_requires_index_tests` already does — and a guard on
+    /// the metadata wrappers alone would not see it.
+    ///
+    /// CONTROL: remove the `debug_assert!` from `KnowledgeBase::push_value_head_entry`'s
+    /// head-functor block and this row stops panicking, so `should_panic` fails. It is
+    /// DEBUG-ONLY by construction; `cargo test` builds with `debug_assertions` on.
+    #[test]
+    #[should_panic(expected = "WI-20260912-1QVWA")]
+    fn asserting_an_operation_info_fact_over_a_live_index_is_refused() {
+        use crate::kb::term::Term;
+        use crate::kb::ClauseKind;
+
+        let mut kb = load_stdlib(None);
+        assert!(
+            kb.op_info_index.is_some(),
+            "premise: the load leaves the index live, which is the window the guard is for",
+        );
+        let op_info = kb.resolve_symbol("anthill.reflect.OperationInfo");
+        let domain = kb.intern("test.q1vwa.guard");
+        let head = kb.alloc(Term::Ref(op_info));
+        kb.assert_fact(head, ClauseKind::Fact, domain, None);
+    }
+
+    /// THE STALE-INDEX GUARD, AT THE DOOR THAT OPENS IT. A second `load_all` into a live KB
+    /// declares operations the first phase's buckets know nothing about, and the loader
+    /// reads the relation WHILE that phase is loading — `nullary_op_call_or_ref` asks
+    /// `is_nullary_operation` as it builds each rule-body goal, long before this phase's
+    /// `build_op_signatures` replaces the index. With phase 1's index still live, `flag`
+    /// has no bucket, so it is not an operation, so `:- flag` is built as a plain NAME
+    /// reference and the goal proves nothing.
+    ///
+    /// CONTROL: back out `kb.op_info_index = None` at the top of `load_phase_inner` and
+    /// the `bare_goal` row fails — phase 2 reads its own operation through phase 1's
+    /// bucket map. The `declared_arity` row passes either way (phase 2's own
+    /// `build_op_signatures` has rebuilt the index by the time the load returns), which is
+    /// exactly why the loader-time reading is what this asserts.
+    #[test]
+    fn a_second_load_phase_is_not_read_through_the_first_phases_index() {
+        use crate::kb::load::{self, NullResolver};
+
+        let mut kb = load_stdlib(None);
+        assert!(
+            kb.op_info_index.is_some(),
+            "premise: phase 1 leaves an index BUILT, so there is something to go stale",
+        );
+
+        let parsed = crate::parse::parse(PHASE2).expect("parse fixture");
+        load::load_all(&mut kb, &[&parsed], &NullResolver)
+            .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>())
+            .expect("the second phase loads clean");
+
+        let flag = kb.try_resolve_symbol("test.q1vwa.flag").expect("flag");
+        assert_eq!(
+            declared_arity(&kb, flag),
+            Some(0),
+            "after the phase, the rebuilt index carries phase 2's own operation",
+        );
+
+        // THE LOADER'S READING, taken during phase 2 and frozen into the rule body: an
+        // `Apply` is the nullary CALL, a `Ref` is the bare name that denotes nothing here.
+        let bare = kb
+            .try_resolve_symbol("test.q1vwa.bare_goal")
+            .expect("bare_goal");
+        let rid = *kb
+            .rules_by_functor(bare)
+            .first()
+            .expect("the rule is indexed under its head functor");
+        let body = kb.rule_body_nodes(rid);
+        assert_eq!(body.len(), 1, "one body goal");
+        assert!(
+            matches!(
+                body[0].as_expr(),
+                Some(Expr::Apply { functor, pos_args, named_args, .. })
+                    if *functor == flag && pos_args.is_empty() && named_args.is_empty()
+            ),
+            "`:- flag` must have been built as the nullary CALL; got {:?}",
+            body[0].as_expr(),
+        );
+
+        assert!(
+            matches!(
+                kb.prove_rule_predicate(bare, vec![Value::Int(1)]),
+                PredicateProof::Proved
+            ),
+            "…and the goal proves, because `flag`'s body is `true`",
+        );
+    }
+}

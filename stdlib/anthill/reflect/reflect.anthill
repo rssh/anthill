@@ -83,8 +83,16 @@ namespace anthill.reflect
   -- guarantee a fallback-less build-once index over them needs: built once after
   -- load, it can never be desynced by a later runtime write, with no invalidation
   -- code. The planned `provides_index` (over SortProvidesInfo, WI-660) is the
-  -- motivating case; `op_records` (over OperationInfo, WI-656) already tolerates a
-  -- runtime add via its scan fallback, so here `constant` is belt-and-suspenders.
+  -- motivating case.
+  --
+  -- WI-20260912-1QVWA MADE IT LOAD-BEARING FOR OperationInfo TOO, and the sentence it
+  -- replaces said the opposite: "`op_records` (over OperationInfo, WI-656) already
+  -- tolerates a runtime add via its scan fallback, so here `constant` is
+  -- belt-and-suspenders." `op_records` does tolerate one — it is keyed per operation and
+  -- a symbol absent from it simply falls through. `op_info_index` does not: it is keyed
+  -- per operation over the SAME facts, and its fallback is chosen by whether the index
+  -- EXISTS, not by whether the symbol is in it, so once built a bucket-less symbol is
+  -- answered "not an operation" outright. That is the window this line closes.
   -- Specific functors (not a catch-all), so they mask no project override.
   --
   -- WI-1112 adds SortRequiresInfo, the last of the sort-relation trio to get an index

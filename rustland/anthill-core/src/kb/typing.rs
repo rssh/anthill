@@ -31302,6 +31302,18 @@ fn spec_warrants_abstract_check(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
 /// record) and WI-659 [`SortAliasIndex`] (maps to `TermId` targets under string /
 /// parent-sort keys) deliberately do NOT fold in — neither is a `Symbol → Vec<RuleId>`
 /// bucket.
+///
+/// ONE DOCUMENTED EXCEPTION TO THE CANONICAL RULE, and it is not a relaxation of it:
+/// [`crate::kb::KnowledgeBase::op_info_index`] (WI-20260912-1QVWA) keys `OperationInfo`
+/// facts on the RAW `name` symbol, because the readers it serves compare
+/// `op_info::head_name_ref(head) == Some(op_sym)` with raw `==` and `op_records` is keyed
+/// under one spelling too. Canonicalizing THAT key would MERGE two distinct symbols
+/// sharing a qualified name and flip a `None` to a `Some` — a behaviour change, where for
+/// the sort relations canonicalizing is what makes the bucket exact. So the rule is "key
+/// on whatever identity the consumer compares with", and for every sort-keyed index here
+/// that is `canonical_sort_sym`. Check the consumer before changing a key; a key that does
+/// not match its reader's comparison files facts in a bucket nobody looks in, which reads
+/// as the relation being EMPTY for that symbol.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct SymbolKeyedFactIndex {
     buckets: HashMap<Symbol, Vec<crate::kb::RuleId>>,
@@ -31312,12 +31324,17 @@ impl SymbolKeyedFactIndex {
     /// empty if none. Consumers still re-read each rid's field over the returned rids —
     /// the no-index fallback ([`Self::rids_or_scan`]) returns EVERY fact of the functor,
     /// so a per-fact re-filter is load-bearing there and stays at the call site.
-    fn get(&self, key_canon: Symbol) -> &[crate::kb::RuleId] {
+    /// `key_canon` is canonical for every SORT-keyed index here; `op_info_index` passes a
+    /// RAW operation symbol, by the exception stated on this type's doc. Whichever it is,
+    /// it must be the identity the CALLER's per-fact comparison uses.
+    pub(crate) fn get(&self, key_canon: Symbol) -> &[crate::kb::RuleId] {
         self.buckets.get(&key_canon).map_or(&[], |v| v.as_slice())
     }
 
     /// File `rid` under `key_canon`, appending so `rules_by_functor` order is preserved.
-    fn insert(&mut self, key_canon: Symbol, rid: crate::kb::RuleId) {
+    /// Same keying rule as [`Self::get`], and it has to be the SAME key the lookup will
+    /// use — canonical for the sort relations, raw for `op_info_index`.
+    pub(crate) fn insert(&mut self, key_canon: Symbol, rid: crate::kb::RuleId) {
         self.buckets.entry(key_canon).or_default().push(rid);
     }
 
@@ -53133,11 +53150,12 @@ fn lookup_operation_field(kb: &KnowledgeBase, functor: Symbol, field: &str) -> O
     // (Node-carrying) for ops with a `denoted` effect. Read fields through the
     // shared `op_info` helpers, which view either carrier. This path serves
     // `lookup_operation_return_type`, whose `field` is always ground.
-    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
-    for rid in kb.rules_by_functor(op_info_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
+    //
+    // WI-20260912-1QVWA — the third keyed reader of these facts, and it had the same
+    // miss shape as the two in `op_info`: asked about a functor that is not an
+    // operation, it walked every `OperationInfo` fact to answer `None`. It shares their
+    // rid source, so it shares the index.
+    for rid in super::op_info::op_info_fact_rids(kb, functor) {
         let head = kb.rule_head_value(rid);
         if super::op_info::head_name_ref(kb, head) == Some(functor) {
             return super::op_info::head_field_term(kb, head, field);

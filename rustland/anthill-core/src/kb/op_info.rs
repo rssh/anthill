@@ -259,6 +259,48 @@ pub fn operation_info_fact_counts(kb: &KnowledgeBase) -> std::collections::HashM
     counts
 }
 
+/// WI-20260912-1QVWA — THE `OperationInfo` FACTS THAT CAN CARRY `name = op_sym`: the
+/// [`crate::kb::KnowledgeBase::op_info_index`] bucket when that index is built, else every
+/// `OperationInfo` fact in the KB. Live facts only, in `rules_by_functor` order, so a
+/// keyed reader's loop body is identical on both arms — the index arm simply hands it a
+/// handful of rids instead of all of them. The caller still re-reads each fact's `name`,
+/// because the fallback arm returns the facts under EVERY name; that is
+/// [`crate::kb::typing::SymbolKeyedFactIndex::rids_or_scan`]' discipline, and this is its
+/// allocation-free twin (the speculative probes in [`operation_is_declared`] are the
+/// reason — WI-1092 removed a per-probe `Vec` from that path and this must not put one
+/// back).
+///
+/// THE MISS IS WHAT IT IS FOR. A keyed reader that finds nothing used to walk every
+/// `OperationInfo` fact to establish that, and the symbols it finds nothing for — entity
+/// constructors above all — are the bulk of what the typer asks about.
+///
+/// `is_rule_alive` on BOTH arms, for `rids_or_scan`' reason: a bucket is frozen at build
+/// time while `rules_by_functor` filters at query time, and `is_fact` reads a retracted
+/// slot as happily as a live one, so without this filter a retracted declaration would be
+/// SERVED from the index and dropped by the scan — the two arms disagreeing for one input,
+/// which is the invariant the whole index rests on.
+pub(crate) fn op_info_fact_rids(
+    kb: &KnowledgeBase,
+    op_sym: Symbol,
+) -> impl Iterator<Item = RuleId> + '_ {
+    let bucket: &[RuleId] = kb.op_info_index.as_ref().map_or(&[], |ix| ix.get(op_sym));
+    // Resolving the functor's qualified name is itself a per-call string lookup, so the
+    // index arm does not pay it; with no index there is nothing to scan without it.
+    let scan = if kb.op_info_index.is_some() {
+        None
+    } else {
+        kb.try_resolve_symbol("anthill.reflect.OperationInfo")
+    };
+    bucket
+        .iter()
+        .copied()
+        .chain(
+            scan.into_iter()
+                .flat_map(move |sym| kb.rules_by_functor_iter(sym)),
+        )
+        .filter(move |rid| kb.is_rule_alive(*rid) && kb.is_fact(*rid))
+}
+
 /// Walk `OperationInfo` facts, returning the record for `op_sym` if
 /// any. None means no OperationInfo fact carries `name = op_sym`.
 ///
@@ -278,13 +320,26 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
             return Some(op_info_from_signature(op_sym, sig, rec.body.clone()));
         }
     }
-    // Fallback: the linear scan. Taken by any lookup that runs BEFORE
-    // `build_op_signatures` — the const-purity gate and eq-dispatch-table build
-    // during load, when the index is still empty — or on a KB that never
-    // type-checks. Post-typecheck callers (the typer, then eval / reflect /
-    // codegen) hit the fast path above. Ground truth — behaviour-identical to the
-    // pre-WI-656 code, only slower — so the index is a pure accelerator, never a
-    // correctness change.
+    // Fallback: the fact read. Taken by any lookup that runs BEFORE
+    // `build_op_signatures` — the eq-dispatch-table build (`load.rs`'s
+    // `build_eq_dispatch_index`, which runs before `type_check_sorts`), when both the
+    // record map and the index are still empty — or on a KB that never type-checks. NOT
+    // the const-purity gate, which this comment used to name beside it: that one runs
+    // AFTER the type-check (`check_const_purity`, well below `type_check_sorts` in
+    // `load_phase_inner`), so both tiers are populated by the time it asks. The example
+    // was wrong before WI-656 indexed anything and stayed wrong (`/code-review`).
+    //
+    // IT IS ALSO EVERY MISS, which is what this comment used to deny. It said
+    // "post-typecheck callers (the typer, then eval / reflect / codegen) hit the fast
+    // path above", and the typer does not: the record above is keyed per OPERATION, so a
+    // question about a symbol that is NOT one reaches here by construction, and those
+    // questions are the majority. MEASURED on a debug stdlib load (WI-20260912-1QVWA):
+    // 1790 of 3363 calls took this path and 1712 of those answered `None` — 189 ms of the
+    // call's 198 ms. Entity constructors are the population; `constrain_application` asks
+    // the operation table first and `kb.entity_field_types` second.
+    //
+    // Ground truth — behaviour-identical to the pre-WI-656 code, only slower — so the
+    // index is a pure accelerator, never a correctness change.
     //
     // WI-1082 IS THE ONE EXCEPTION to that last sentence, and it is deliberate.
     // `typing::elaborate_self_ties` rewrites the CACHED signature — an elided slot
@@ -294,11 +349,12 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
     // fact scan the declaration as written. Every reader that matters takes the
     // cache; the scan is reached only during load and on a KB that never
     // type-checks, neither of which asks about a return type's slots.
-    let op_info_sym = kb.try_resolve_symbol("anthill.reflect.OperationInfo")?;
-    for rid in kb.rules_by_functor(op_info_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
+    //
+    // WI-20260912-1QVWA — the "scan" is [`op_info_fact_rids`], which is this symbol's
+    // INDEX BUCKET once `build_op_signatures` has run and the full walk before that. The
+    // per-fact `name` re-read below stays either way: on the pre-index arm it IS the
+    // filter, on the bucket arm it is what keeps the two arms' answers identical.
+    for rid in op_info_fact_rids(kb, op_sym) {
         let head = kb.rule_head_value(rid);
         if head_name_ref(kb, head) != Some(op_sym) {
             continue;
@@ -327,14 +383,14 @@ pub fn operation_is_declared(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
             return true;
         }
     }
-    let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") else {
-        return false;
-    };
-    // WI-1092: `_iter`, not the snapshot — this tier walks every `OperationInfo` fact
+    // WI-1092: an ITERATOR, never a snapshot — this tier walks every `OperationInfo` fact
     // in the KB and `any` stops at the first match, so materializing the whole list
-    // first was a per-probe allocation the scan never needed.
-    kb.rules_by_functor_iter(op_info_sym)
-        .any(|rid| kb.is_fact(rid) && head_name_ref(kb, kb.rule_head_value(rid)) == Some(op_sym))
+    // first was a per-probe allocation the scan never needed. WI-20260912-1QVWA keeps that
+    // property and removes the walk: [`op_info_fact_rids`] yields this symbol's index
+    // bucket once the index is built, so the PROBE THAT FINDS NOTHING — which is what this
+    // is called for — stops after zero facts instead of after every fact in the KB.
+    op_info_fact_rids(kb, op_sym)
+        .any(|rid| head_name_ref(kb, kb.rule_head_value(rid)) == Some(op_sym))
 }
 
 /// WI-1092 — is `sym` an operation that is DECLARED and NOWHERE DEFINED? A
@@ -565,14 +621,24 @@ pub fn build_op_signatures(kb: &mut KnowledgeBase) -> Vec<(Symbol, Value)> {
     let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
     let mut sigs: Vec<(Symbol, OpSignature)> = Vec::new();
     let mut malformed: Vec<(Symbol, Value)> = Vec::new();
+    // WI-20260912-1QVWA — the `name`-keyed bucket map, filled from THIS walk. Every fact
+    // per name, in this order, and BEFORE the `seen` de-duplication below: the index must
+    // answer what the un-indexed scan answered, and that scan saw a name's second fact
+    // whenever the first was malformed. `seen` is about which fact a SIGNATURE is read
+    // from, a different question.
+    let mut index = crate::kb::typing::SymbolKeyedFactIndex::default();
     for rid in kb.rules_by_functor(op_info_sym) {
         if !kb.is_fact(rid) {
             continue;
         }
         let head = kb.rule_head_value(rid);
         let Some(op_sym) = head_name_ref(kb, head) else {
+            // Faithful, not a silent skip: a head with no resolvable `name` ref is
+            // `continue`d by every keyed reader of these facts too, so a bucket entry for
+            // it could never be looked up under any symbol.
             continue;
         };
+        index.insert(op_sym, rid);
         if !seen.insert(op_sym) {
             continue;
         }
@@ -598,6 +664,11 @@ pub fn build_op_signatures(kb: &mut KnowledgeBase) -> Vec<(Symbol, Value)> {
     for (op_sym, sig) in sigs {
         kb.op_records.entry(op_sym).or_default().signature = Some(sig);
     }
+    // WI-20260912-1QVWA — published only now, after the walk that filled it, so no reader
+    // can see a half-built bucket map. A re-run REPLACES it wholesale, which is what a
+    // `load_all` into a live KB needs (the same re-runnability the signature cache above
+    // relies on).
+    kb.op_info_index = Some(index);
     malformed
 }
 

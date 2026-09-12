@@ -1439,6 +1439,71 @@ pub struct KnowledgeBase {
     /// silent desync.
     pub(crate) requires_index: Option<crate::kb::typing::SymbolKeyedFactIndex>,
 
+    /// WI-20260912-1QVWA — the `OperationInfo` index: every fact keyed by the `Symbol`
+    /// its `name` field refers to, in the shared `SymbolKeyedFactIndex` (WI-661), built
+    /// inside `op_info::build_op_signatures`' existing pass.
+    ///
+    /// IT FIXES THE MISS, NOT THE HIT, and that is the whole point. `op_records`
+    /// (WI-656) caches every operation's signature, so a symbol that IS an operation
+    /// already answers O(1) — but a symbol that is NOT one has no record, drops into
+    /// `op_info::lookup_operation_info`'s fact scan, walks every `OperationInfo` fact in
+    /// the KB and returns `None`. Entity CONSTRUCTORS are that population and the typer
+    /// asks about them constantly: `typing::constrain_application` asks the operation
+    /// table first and only then `entity_field_types`, which is where the answer was.
+    ///
+    /// MEASURED, and the measurement is the reason this exists. On a debug stdlib load,
+    /// 1790 of 3363 `lookup_operation_info` calls missed the record and 1712 of those
+    /// returned `None` — 189 ms of the call's 198 ms.
+    ///
+    /// Indexed, `anthill check` over an EMPTY namespace (so the stdlib load is the whole
+    /// run), alternated min-of-11 over pre-built debug binaries on an idle box: 857 → 654 ms
+    /// and, re-measured on the shipped tree, 864 → 647 ms. The noise floor for two copies of
+    /// ONE binary, same protocol, was 926 vs 923 ms — 0.3 %, two orders below the effect.
+    /// Per phase (paired min-of-7, `ANTHILL_LOAD_TIMING=1`), `type_check_sorts`
+    /// 419 → 270 ms and 606 → 222 ms on the two occasions it was taken.
+    ///
+    /// `load_with_visited` IS NOT SERVED BY THIS INDEX and the numbers say so rather than
+    /// the design alone: the index is `None` for the whole load phase, so that phase still
+    /// reads the facts, and the two paired measurements land on OPPOSITE sides of zero
+    /// (base 229 vs 239 ms, then base 310 vs 218 ms) — i.e. inside the noise. A future
+    /// author who finds this phase faster or slower has measured the box, not the index.
+    ///
+    /// SUITE-WIDE, from this box's archived run logs (`rustland/target/test-run-*.log`),
+    /// min-of-K with BOTH arms' spreads quoted — `wi_tests`, the 4578/4601-test binary that
+    /// dominates a run: WITHOUT the index 442.3 / 444.3 / 447.2 / 773.1 s, WITH it
+    /// 326.7 / 334.4 / 334.8 / 338.6 s. So 442.3 against 326.7 (−26 %), and the 773 s run is an
+    /// outlier that began with a full `Compiling anthill-core`, i.e. its tests ran against
+    /// the rest of the workspace still building — the condition measured at a ~33 % penalty,
+    /// which does not account for it, so it is reported rather than explained away. Do not
+    /// read 326.7 as the new floor: 338.6 is the same tree.
+    ///
+    /// KEYED BY THE RAW SYMBOL, not `canonical_sort_sym` — the one departure from
+    /// `SymbolKeyedFactIndex`' "identity is always the canonical symbol" rule, and
+    /// required rather than tolerated: the scan this replaces compares
+    /// `head_name_ref(head) == Some(op_sym)` with raw `==`, and `op_records` is keyed
+    /// under one spelling too (`resolve.rs`'s `canonical_sym`-twin note). Canonicalizing
+    /// would MERGE two distinct symbols that share a qualified name, flipping a `None`
+    /// to a `Some` — a behaviour change, not an accelerator.
+    ///
+    /// EVERY fact per name, un-deduped, in `rules_by_functor` order, so a bucket answers
+    /// exactly what the scan answers. The signature readers consult only the FIRST fact
+    /// per name (`build_op_signatures`' `seen` set) and a bucket that kept only that one
+    /// would diverge from the scan for a name whose first fact is malformed — the scan
+    /// re-derives `None` from the first fact, and so must the bucket.
+    ///
+    /// SOUND BUILD-ONCE, by `sort_info_index`' argument rather than a new one.
+    /// `OperationInfo` is marked `constant` (`fact_monotonicity`, reflect.anthill), so a
+    /// RUNTIME `Store.persist`/`retract` of it is a LOUD error — the case reflect.anthill's
+    /// own comment names as "the guarantee a fallback-less build-once index over them
+    /// needs" — and every loader assert runs strictly before `build_op_signatures`. Reset
+    /// to `None` at the start of `load_phase_inner` beside its sibling index resets;
+    /// `None` until built, and while `None` every consumer falls back to the live scan, so
+    /// a dropped index is slow, never wrong. THE STANDING RULE is `sort_info_index`': a
+    /// future writer of this relation must drop the index, because a retracted RuleId left
+    /// in a bucket is SERVED, not detected — `rids_or_scan`'s `is_rule_alive` filter (which
+    /// `op_info::op_info_fact_rids` shares) covers a retraction, never a later ASSERT.
+    pub(crate) op_info_index: Option<crate::kb::typing::SymbolKeyedFactIndex>,
+
     /// Proposal 039 / WI-084 — a term-level constant's DECLARED TYPE, keyed by
     /// its `SymbolKind::Const` symbol, as a carrier-agnostic `Value`. Read by
     /// the typer to type a bare const reference (fold-free: only the declared
@@ -2143,6 +2208,7 @@ impl KnowledgeBase {
             provides_index: None,
             sort_info_index: None,
             requires_index: None,
+            op_info_index: None,
             const_types: HashMap::new(),
             const_bodies: HashMap::new(),
             has_dot_applies: false,
@@ -3526,6 +3592,31 @@ impl KnowledgeBase {
                 f,
                 self.qualified_name_of(f),
                 self.canonical_sym(f),
+            );
+            // WI-20260912-1QVWA — THE BUILD-ONCE WINDOW, ENFORCED RATHER THAN DOCUMENTED.
+            // `op_info_index` is built once per load phase and `op_info::op_info_fact_rids`
+            // takes its bucket arm whenever the index EXISTS, not when the symbol is in it
+            // — so an `OperationInfo` fact asserted while the index is live lands in no
+            // bucket and its operation reads as UNDECLARED to every keyed reader, with no
+            // diagnostic anywhere. `constant` (`fact_monotonicity`, reflect.anthill) closes
+            // the RUNTIME door (`Store.persist`/`retract`/`update`) and the loader asserts
+            // strictly before the build, so nothing reaches this today; raised by
+            // `/code-review` as a prose rule — "a future writer must drop the index" — that
+            // nothing held to. THIS is the choke point rather than the three
+            // `assert_metadata_fact*` doors the finding named: `assert_fact_carrier` reaches
+            // a reflect functor too (a test does exactly that), and one door is one rule.
+            // The `is_some()` guard comes first so a load, where the index is `None`
+            // throughout, never pays the name resolve. Driven by
+            // `wi_1qvwa_op_info_index_tests`'
+            // `asserting_an_operation_info_fact_over_a_live_index_is_refused`.
+            debug_assert!(
+                self.op_info_index.is_none()
+                    || self.try_resolve_symbol("anthill.reflect.OperationInfo") != Some(f),
+                "WI-20260912-1QVWA: an `anthill.reflect.OperationInfo` fact is being \
+                 asserted while `op_info_index` is live, so it will land in no bucket and \
+                 `{}` will read as undeclared. Drop the index (`kb.op_info_index = None`) \
+                 at the writer, as `load_phase_inner` does.",
+                self.qualified_name_of(f),
             );
         }
 
