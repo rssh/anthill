@@ -891,3 +891,52 @@ this needs: "a generative `p(?out)` from an operation body does not traverse thi
 ATTRIBUTION half (supply where the local derivation is Undecided, check where it is unique)
 transfers; its carrier does not.
 
+### 2026-09-12T08:43:47Z — feedback — claude
+
+CORRECTION TO THE FIRST STEP, same day, prompted by the user's "why does NAR1X not supply the
+requirement channel?". THE ANSWER HAD TWO LEGS AND ONLY ONE SURVIVES.
+
+LEG 1 WAS WRONG: "per-ACTIVATION, so a ResolveConfig field cannot serve". `List[List[Colour]]`
+does have two dictionaries live at once inside one resolve, but that does NOT imply a frame
+channel — it is served by σ, with the dictionary as an ordinary ARGUMENT, exactly as
+`domain_member(?x, T)` carries the TYPE as one today:
+
+    List.member(?x, ?d) :- ?x <=> nil()
+                         | ( ?x <=> cons(head: ?y, tail: ?z),
+                             member(?z, ?d),        -- the tail: the same dictionary
+                             ?ed <=> sub(?d, 0),    -- the element's, projected
+                             apply_domain(?ed, ?y) )
+
+And rule→rule dictionary passing ALREADY WORKS: NAR1X's own ticket cites WI-1040's
+`a_clause_dictionary_crosses_a_rule_boundary_and_is_checked`, a caller's `?d` in σ reaching the
+callee's `require[…]`. So THE PER-ACTIVATION `ResolverFrame` CHANNEL IS NOT NEEDED and is not
+the first step. No field, no inheritance rule, no per-push clone.
+
+LEG 2 STANDS, and is the whole gap: THE GENERATIVE ENTRY. Two eval→rule edges exist and
+neither carries the caller's dictionary —
+
+  GROUND      `prove_rule_predicate_value` -> `kb.prove_rule_predicate(pred, args)`; pred and
+              args and nothing else, from a frame that HOLDS `frame.requirements`. NAR1X's.
+  GENERATIVE  `build_relation_value` -> `Value::Relation` -> `execute_logical_query`. NOBODY's.
+
+NAR1X's boundary excludes the second in as many words: "a generative `p(?out)` from an
+operation body does not traverse this edge at all … NOT generative use." Enumerating a domain
+IS `member(?x)` with `?x` free, so this direction lives entirely on the edge NAR1X excludes. It
+is a gap and not an impossibility — `build_relation_value` takes `&mut self` and can reach the
+frame; nothing reads `Frame::requirements` there. NAR1X's ATTRIBUTION half (supply where the
+local derivation is Undecided, CHECK where unique, WI-860) is the rule this edge wants too, so
+what transfers is its reasoning, not its carrier.
+
+THE FIRST STEP IS THEREFORE SMALLER AND DIFFERENT: drive a dictionary through a GENERATIVE rule
+call as an ordinary argument and project a sub-dictionary out of it — `member(?x, ?d)` with a
+hand-built `?d` and `sub(?d, 0)` — using WI-1040's existing crossing, BEFORE any of
+`SortDomain`, its derivation, `apply_domain` or the transform. That is testable against today's
+tree. If a dictionary cannot ride a generative rule call and be projected, nothing else matters;
+if it can, the remaining new work is `apply_domain`'s dispatch and the generative entry.
+
+AND ONE HEAD-SHAPE QUESTION COMES BACK WITH IT: `member(?x, ?d)` is a head-shape decision of the
+same kind the superseded hidden-slot design made for TYPES, and inherits that design's questions
+— every arity reader, the discrimination key, the printer round trip — for the DERIVED clauses
+only. Not censused. The difference that made the type version wrong does not apply: a dictionary
+is selected at RESOLUTION time by `find_dictionary`, never pinned by the typer, so no rigid.
+
