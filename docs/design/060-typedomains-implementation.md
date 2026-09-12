@@ -138,15 +138,21 @@ relation with a determinate functor:
 apply_domain(?xd, ?x)
 ```
 
-a builtin that reads `?xd`'s bound value, lowers it to goals, and pushes them —
-`Candidate::Continuation`, the path the bounded quantifier already takes. This is the
-ordinary way a metacall is added to a first-order resolver, and it keeps every existing
-invariant: one functor, one discrimination key, one arity.
+a builtin that reads `?xd`'s bound value and pushes the goals it selects —
+`Candidate::Continuation`, the path the bounded quantifier already takes for a goal list it
+only knows at run time. This is the ordinary way a metacall is added to a first-order
+resolver, and it keeps every existing invariant: one functor, one discrimination key, one
+arity.
 
-**And the value it reads already has a lowering.** A `Value::Relation { query, columns }`
-carries a reified `LogicalQuery`, and `KnowledgeBase::lower_query` turns one into a goal
-list — it is the single lowerer shared by `execute_logical_query` and the guard engine. So
-`apply_domain` is a small builtin over machinery that exists, not a new engine.
+**What it does with `?xd` is DISPATCH, not lowering.** An early draft had it read a
+`Value::Relation` and run `KnowledgeBase::lower_query` over the reified `LogicalQuery`. That
+is wrong for the case this exists for — see §4.1: the callee's own clause has
+sub-requirements, and a lowered goal list carries no channel to satisfy them. `apply_domain`
+must instead activate the `member` clauses of `?xd.impl_sort()` **with `?xd` installed as
+that activation's `__req_self`**, so the callee's `require[SortDomain[T]]` projects `sub(0)`
+exactly as `expand_dispatching_dict` makes it project at an operation dispatch. It is the
+SLD-side twin of `dispatch_apply_with_requirements`, which is why §5's dependency is not
+merely an enabler but the same mechanism.
 
 ## 4. What the transform would be
 
@@ -218,6 +224,15 @@ Dictionary( Dictionary(impl: Colour),   impl: List )
 `expand_dispatching_dict` already performs along a `proj_path`. **Nothing new is invented for
 nesting**: `List[List[Colour]]` is one more level of a tree the channel already builds,
 projects and validates.
+
+**AND THIS IS WHY THE DICTIONARY IS LOAD-BEARING AND ITS IMPL SYMBOL IS NOT ENOUGH.** It is
+tempting to have `apply_domain` take only `?ed.impl_sort()` — the name of the provider — and
+look its clauses up. That works for `Colour` and fails for every case the direction exists
+for: running `List`'s `member` requires THAT clause's own `require[SortDomain[T]]` to
+resolve, and the only thing in the system that says `T = Colour` is `sub(0)` of the
+dictionary handed in. Keep the root and drop the tree, and `List[Colour]` and `List[Int64]`
+are the same call. **The components' types live in the subtree, so the subtree is what must
+cross.**
 
 `provides SortDomain[T = List[T = T]] requires SortDomain[T]` is a CONDITIONAL provision, and
 the channel is already built for the unbounded family that implies — `dictionary.rs`, on why
@@ -295,12 +310,13 @@ Written as questions, because none of them was measured.
   ordered children)` tree. §4.1 relies on that being satisfied by an impl SYMBOL naming the
   provider, with `apply_domain` reaching the clauses through it — never by a closure, which
   would not be ground. Not checked against `Dictionary::from_value`'s whole-tree validation.
-- **Whether `apply_domain` needs the dictionary at all, or just its impl symbol.** §4.1's
-  clause projects `sub(0)` and hands the result to `apply_domain`, so what crosses is a
-  dictionary; but what `apply_domain` needs is the clauses of one relation, which the impl
-  symbol alone names. If the symbol suffices, `apply_domain` is a goal-with-a-symbol-argument
-  and not a metacall at all — which would make §3 unnecessary. This is the cheapest thing to
-  settle and was not settled.
+- **How `apply_domain` installs the dictionary on a RULE activation.** It must (§3, §4.1 —
+  the impl symbol alone loses the components' types), and a rule activation has no
+  requirement channel today: `ResolverFrame` is documented as lacking exactly that, while
+  `Frame::requirements` is the operation frame's. So the channel NAR1X adds is the thing
+  `apply_domain` writes into, and the two are one piece of work rather than a dependency and
+  a consumer. Neither the shape of that channel nor where `apply_domain` would push it was
+  worked out.
 - **Termination and cost.** Every typed head gains two goals instead of one, and one of
   them is a dictionary search. §7's measurements are all against a single generated goal.
 - **What happens to `domain_member`.** Either it stays as the thing `apply_domain` reaches,
