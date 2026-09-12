@@ -3,9 +3,9 @@
 - id: WI-20260911-073GH-defect-a-constructor-whose
 - created: 2026-09-11T07:49:06Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-09-11T07:49:06Z
+- status_at: 2026-09-12T15:51:03Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -20,4 +20,20 @@ CAUSE (read at the sites, not driven by a fix -- verify first). The error is Eva
 FIX DIRECTION (verify before building; two routes, measure both). (1) A parameter in scope must SHADOW a same-named constructor at an applied position -- the rule `rule_param_vars` already states for rule heads ("FIRST, so the parameter SHADOWS a same-named symbol in scope", load.rs): ask the frame's parameter map before the constructor table at whichever of the converter / body specializer / eval twin turns `g(args)` into a constructor application. (2) Per "make illegal state unrepresentable": stop marking a constructor under its scope-less short symbol and key `constructor_symbols` on the QUALIFIED symbol only -- but the `nullary_canon` note records that sending an unresolved functor to `Ident` was TRIED AND BACKED OUT (`is_entity_of` probes `Ref(c)` and the unit fixtures reach both through `kb.intern`), so census every reader of the bare spelling before choosing this route. Whichever route: it must cover rule bodies too (measured (b)).
 
 ACCEPTANCE (cargo-test via scripts/test.sh). (1) The (d) program loads and `twice((v) -> v + 1, 1)` evaluates to 3, asserted by VALUE. (2) `entity f` beside `length(args)` in an operation body loads and evaluates. (3) A rule body applying a parameter that shares a constructor's name answers by value. CONTROLS, each stated at its site: a hand-written over-arity constructor application `f(1)` stays a LOUD load error -- this is the row that separates "stop treating a parameter as a constructor" from "stop checking constructor arity", and the T2470 backstop must survive; `entity h` beside a value-only parameter `h` passes either way BY DESIGN. Say which rows fail with the fix backed out. Then rename tiny-sat's bits back to `t`/`f` and drop its README paragraph about this.
+
+## Changes
+
+### 2026-09-12T15:51:37Z — feedback — user
+
+DELIVERED in commit 7b6470d8, in TWO complementary halves — backing each out is what told them apart.
+
+CORRECTIONS TO THE TICKET, measured. (1) The CAUSE was wrong: a backtrace probe at the `PositionalPlan::OverArity` arm put ALL 8 raises in `load_operation -> emit_operation_equation -> convert_term`, a LOAD path. The eval twin (`finish_constructor`) and `is_constructor_symbol` are not involved; the gate is `entity_field_names`. (2) Reading (b) was a misattribution: `sort Bit { entity t; entity f }` ALONE, in a file with no operation, produces all five errors — they are raised from the PRELUDE's eight bodies that apply a parameter named `f` (List.foldLeft/foldRight/mapElemsOnto, Option.optionMap/optionFlatMap, Result.resultMap/resultFlatMap, Delay.delayFlatMap). The user's own `length(args)` and rule bodies were never failing. (3) Acceptance row 3 asks for a capability the language does not have: applying a sigil-free rule clause parameter is refused EITHER WAY — a colliding name gives the misleading 'constructor g given 1 positional argument(s)', a free one the correct 'rule-body term k names nothing'. The collision costs a MESSAGE in a rule body, never an answer. Pinned as a control rather than invented.
+
+WHAT SHIPPED. Route (1): the defining equation lowers in `op_scope` (it ran from the tail of `load_operation`, after the enclosing scope was restored), and `convert_term_inner` pushes the let/lambda/match binder frames the occurrence walk already had, over `{pattern} + [first_scoped..]`. Route (2), also done at your instruction: `written_entity_field_names` gates every schema reading in the three written-name walks on `is_resolved`, because an entity registers its field schema under its bare short name and that is the loader's resolves-to-nothing rung. NEITHER SUBSUMES THE OTHER — with only the gate an `entity f` in the operation's own namespace still captures (variant-exposure edge makes it resolve); with only the scope a stranger in another file still rewrote `fact holdsF(ff(1))` to `ff(a: 1)` silently.
+
+ALSO DELIVERS WI-1005: the second resolution of an ambiguous occurrence WAS this walk at the enclosing scope, so the two renderings now coincide and the injective dedup_key collapses them — a producer eliminated rather than the key widened. Its three acceptance rows are measured at wi994_variant_exposure_test and run_cmd_test.
+
+MEASUREMENT: 16 rows pass; with kb/load.rs and kb/mod.rs restored to HEAD, 8 pass and 8 fail. Full workspace green (36 binaries, 6924 passed, 0 failed). scaland is untouched and its only reds are two pre-existing BootstrapTest rows, confirmed identical on a clean HEAD worktree.
+
+LEFT OPEN, deliberately and stated at its site: a 0-field stranger's load ERROR became silence, because the message named an over-arity constructor application for a name that denotes nothing there and the same program with an unused spelling always loaded clean. That leaves WI-1058's uncovered position visible — a rule BODY refuses an undeclared functor, a fact-head ARGUMENT does not. Also unfixed and pre-existing: rewrite_param_refs never rewrites a FUNCTOR, so an applied parameter is dropped from the emitted equation (true of every higher-order stdlib equation); and emit_operation_equation still does not set in_op_body_value, so not/or/and differ between the two body lowerings. tiny-sat's bits are back to t/f.
 
