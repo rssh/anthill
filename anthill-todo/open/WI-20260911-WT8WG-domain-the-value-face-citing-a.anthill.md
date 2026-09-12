@@ -3,13 +3,13 @@
 - id: WI-20260911-WT8WG-domain-the-value-face-citing-a
 - created: 2026-09-11T10:03:05Z
 
-- status: Delivered
+- status: Open
 - status_agent: claude
-- status_at: 2026-09-11T23:42:53Z
+- status_at: 2026-09-12T03:35:55Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260911-RS2G4-type-args-a-call-site-bracket
+- depends_on: WI-20260911-RS2G4-type-args-a-call-site-bracket, WI-20260911-5G28A-rule-head-type-variables-open
 
 ## Description
 
@@ -590,4 +590,56 @@ its tests DO parse `stdlib/`, so the kernel declaration had to parse under fastp
 NOT IN SCOPE, each with its owner: the parameterised value face and the general
 receiver-bracket-on-a-rule-citation binding (5G28A); `Bool` (5TK6B); two-recursive-position
 fairness (09E6M); abstract T (NAR1X).
+
+### 2026-09-12T03:35:40Z — feedback — claude
+
+BACK TO OPEN (user's call, 2026-09-11). The NON-PARAMETERISED half is landed and committed
+(f834389c); what keeps this ticket open is its OWN acceptance line, one clause of which this
+delivery does not meet and cannot meet as written:
+
+    "the same citation over `List[T = Letter]` answers its cap and does not hang"
+
+That is not merely undone. This delivery installs a LOAD ERROR for it, naming
+WI-20260911-5G28A. So filing the ticket Delivered would have recorded an acceptance clause
+the shipped code refuses — the shape this project's own rule warns about, where a ticket reads
+as done and its stated criterion is unmet. I had corrected only the THIRD acceptance clause
+(the `Error[RelationFloundered]` drain, which has no referent: an infinite derived domain is a
+lazy stream and a `Relation` has no full drain) and passed over this one.
+
+WHAT IS DONE, and stays done — commit f834389c, no need to redo it:
+  * `<Sort>.domain` derived for a sort with NO type parameters: `Colour.domain.takeN(5)` = 3
+    definite, `Unit` = 1, `Nat.domain.takeN(4)` = depths [0,1,2,3] IN ORDER,
+    `Colour.domain.where(λ)` = 1, `Colour.domain.head.x` evaluates to `red()` and is refused
+    against an `Int64` return.
+  * the name minted in pass 1 (`define_qualified_only`), the clause at the derivation's drain,
+    with the bound and the sort's head span installed on it;
+  * a written `domain` is 1-ARY and IS the value face; the 2-ary spelling is a load error
+    naming it; a clause of a written `S.domain` is never generated FROM (the self-call
+    exclusion moved loader -> typer);
+  * `anthill.kernel.domain_member` writable — declared in `kernel.anthill`, pre-declared in
+    `register_prelude`, the drain-time mint deleted; `builtin_type_domain` reads a
+    source-written type operand through the VIEW instead of aborting, and withholds a verdict
+    when that operand carries a type variable;
+  * 17 driving rows in `wi_wt8wg_domain_value_face_test.rs` over nine RUN back-out axes;
+    wi743's three 2-ary fixtures migrated; docs (spec §5.3 + the derived-members list,
+    proposal 060 §2.2, 060-implementation §0 and a new §7.1, proposal 052 §Naming + OQ2);
+    map-colouring cites `Colour.domain`. Suite 36 binaries / 6913 passed / 0 failed.
+
+WHAT REMAINS, and it is exactly one thing: LIFT THE REFUSAL.
+  `List[T = Letter].domain.takeN(5)` must answer, and bare `List.domain` must stay refused
+  (it names no element type). The mechanism is NOT in this ticket — a rule citation's query is
+  built from the clause HEAD alone (`eval::build_relation_value`), so a receiver bracket
+  reaches no clause; WI-20260911-RS2G4 delivered that binding for OPERATION members only, and
+  the rule half is WI-20260911-5G28A, which already carries both rows in its acceptance
+  (its lines "ROWS ADDED TO ACCEPTANCE (a)/(b)"). So this ticket is BLOCKED on 5G28A rather
+  than holding work of its own.
+
+WHEN 5G28A LANDS, the whole of what is left here is:
+  (1) delete the refusal at `typing::domain_value_face_refusal`'s parameterised arm and the
+      `!job.params.is_empty()` early return in `load::emit_domain_value_face` — the derivation
+      below it already builds the right `self_type` (`List[T = ?T]`, from `domain_self_type`);
+  (2) drop the 5G28A sentence from kernel-language.md §5.3, proposal 060 §2.2 and
+      docs/design/060-implementation.md §7.1;
+  (3) turn `a_parameterised_sorts_citation_names_its_owner` from a refusal row into an
+      answering one, keeping bare `List.domain` refused as its control.
 
