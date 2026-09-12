@@ -156,6 +156,12 @@ kb_scoped_fields!(
     scope_text_files,
     named_requirement_slots,
     type_param_canonical_var,
+    // WI-20260909-NAR1X (`/code-review`) — the `VarId`-keyed twin rolls back WITH the
+    // map it indexes. One writer fills both (`record_type_param_var`); a layer that
+    // rolled back only one would leave a `VarId` in the set whose `Symbol` entry is
+    // gone, and `is_canonical_type_param_var` would keep answering `true` for a type
+    // parameter the layer took away.
+    type_param_canonical_vids,
     domain_member_params,
     domain_member_jobs,
     domain_member_declined,
@@ -361,6 +367,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         scope_text_files: _,
         named_requirement_slots: _,
         type_param_canonical_var: _,
+        type_param_canonical_vids: _,
         domain_member_params: _,
         domain_member_jobs: _,
         domain_member_declined: _,

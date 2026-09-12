@@ -15397,7 +15397,10 @@ fn expand_rule_head_bound_type_params(kb: &mut KnowledgeBase) -> Vec<LoadError> 
         }) {
             errors.push(LoadError::Other {
                 message: format!(
-                    "WI-20260911-5G28A: the head bound of rule `{}` expands only now, after                      its `domain` goal was already generated from the unexpanded one — the                      stored bound and the goal would disagree about the type being checked",
+                    "WI-20260911-5G28A: the head bound of rule `{}` expands only now, \
+                     after its `domain` goal was already generated from the unexpanded \
+                     one — the stored bound and the goal would disagree about the type \
+                     being checked",
                     kb.rule_label(rid)
                         .map(|l| kb.qualified_name_of(l).to_string())
                         .unwrap_or_else(|| "<unlabeled>".to_string()),
@@ -15673,7 +15676,7 @@ fn fresh_global(kb: &mut KnowledgeBase, name: &str) -> TermId {
 /// (`eval::build_relation_value`) — WI-20260911-RS2G4 delivered the receiver-bracket
 /// binding for OPERATION members only. **WI-20260911-5G28A** owns the rule half and the
 /// refusal that stands in for it meanwhile
-/// ([`crate::kb::typing::refuse_parameterised_rule_citation`]). The GOAL face for a
+/// ([`crate::kb::typing::domain_value_face_refusal`]). The GOAL face for a
 /// parameterised sort is untouched: `List` keeps its derived member clause and every row
 /// WI-743 measured.
 fn emit_domain_value_face(kb: &mut KnowledgeBase, job: &DomainMemberJob, self_type: TermId) {

@@ -1243,6 +1243,24 @@ pub struct KnowledgeBase {
     /// A SIDE TABLE, not a fact field, for [`Self::named_requirement_slots`]' reasons:
     /// loader-produced, typer-consumed, no runtime or persistence surface.
     pub(crate) type_param_canonical_var: HashMap<Symbol, TermId>,
+    /// WI-20260909-NAR1X (`/code-review`) — the same facts keyed the way the RESOLVER
+    /// asks for them: by `VarId`, so [`Self::is_canonical_type_param_var`] is a hash hit
+    /// rather than a scan of every declared type parameter.
+    ///
+    /// ONE WRITER, and that is what keeps it from drifting: both this and its
+    /// `Symbol`-keyed twin above are written only by [`Self::record_type_param_var`],
+    /// under the same first-write-wins rule (see there for why re-load must not
+    /// overwrite). A second writer of either would be the defect this pairing invites.
+    ///
+    /// WHY: `is_canonical_type_param_var` sits under `bindable_type_var`, which
+    /// `type_mentions_flex_var` calls at EVERY node of a bound, which
+    /// `pin_bound_from_value` calls on every `domain` / `domain_leaf` goal. MEASURED
+    /// with the scan instrumented: the map holds 202 entries with the stdlib loaded, so
+    /// each call walked 202 entries and did a `terms.get` on each. The corpus does not
+    /// pay much for that today (fewer than 5000 calls per test thread across the whole
+    /// `wi_tests` binary, ~100 in the domain suites), so this is a shape fix rather than
+    /// a measured win — recorded that way rather than dressed up as one.
+    type_param_canonical_vids: std::collections::HashSet<VarId>,
 
     /// WI-743 (proposal 060 §2.2) — every sort `anthill.kernel.domain_member` has a
     /// clause for, keyed by [`Self::canonical_sort_sym`], mapped to that sort's declared
@@ -2114,6 +2132,7 @@ impl KnowledgeBase {
             rule_head_captures: HashMap::new(),
             named_requirement_slots: HashMap::new(),
             type_param_canonical_var: HashMap::new(),
+            type_param_canonical_vids: std::collections::HashSet::new(),
             domain_member_params: HashMap::new(),
             domain_member_jobs: Vec::new(),
             domain_member_declined: HashMap::new(),
@@ -2512,6 +2531,8 @@ impl KnowledgeBase {
         }
         let tid = self.alloc(Term::Var(Var::Global(vid)));
         self.type_param_canonical_var.insert(param_sym, tid);
+        // The `VarId`-keyed twin, written HERE and nowhere else — see the field's doc.
+        self.type_param_canonical_vids.insert(vid);
     }
 
     /// WI-954 — the canonical `Var::Global` TERM `param_sym` denotes, or `None` when
@@ -2544,9 +2565,7 @@ impl KnowledgeBase {
     /// bracket as a hidden head slot). Until that lands the pre-ticket representation
     /// stands here, unchanged.
     pub(crate) fn is_canonical_type_param_var(&self, vid: VarId) -> bool {
-        self.type_param_canonical_var
-            .values()
-            .any(|&t| matches!(self.terms.get(t), Term::Var(Var::Global(v)) if *v == vid))
+        self.type_param_canonical_vids.contains(&vid)
     }
 
     /// WI-743 — does `anthill.kernel.domain_member` have a clause for this sort? See
