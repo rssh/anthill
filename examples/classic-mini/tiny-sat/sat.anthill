@@ -16,21 +16,21 @@ namespace classic.sat
   import anthill.prelude.{Int64, String, List, Bool, Error}
 
   sort Bit
-    entity yes
-    entity no
+    entity t
+    entity f
   end
 
   -- Negation of a bit, and a two-literal clause. `or2`'s two cases are
   -- EXCLUSIVE — first literal true; first false and second true — so an
   -- assignment satisfying a clause is counted ONCE. A plain `|` over the two
   -- tests would count it twice whenever both literals hold.
-  fact neg(yes(), no())
-  fact neg(no(), yes())
-  rule or2(?a, ?)  :- ?a <=> yes()
-  rule or2(?a, ?b) :- ?a <=> no(), ?b <=> yes()
+  fact neg(t(), f())
+  fact neg(f(), t())
+  rule or2(?a, ?)  :- ?a <=> t()
+  rule or2(?a, ?b) :- ?a <=> f(), ?b <=> t()
 
-  -- (p or not q) and (q or r) and (not p or not r). Two models: p q r = yes yes no
-  -- and no no yes. The spine fixes three variables; `neg` binds them; the three
+  -- (p or not q) and (q or r) and (not p or not r). Two models: p q r = t t f
+  -- and f f t. The spine fixes three variables; `neg` binds them; the three
   -- clauses test; and the typed head's domain has the last word on every cell.
   rule model(vs: List[T = Bit])
     :- vs <=> [?p, ?q, ?r],

@@ -1668,7 +1668,14 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                             any_unknown = true;
                             continue;
                         }
-                        print_solutions(&mut kb, &solutions, qt, cap, stats.truncated);
+                        print_solutions(
+                            &mut kb,
+                            &solutions,
+                            qt,
+                            cap,
+                            stats.truncated,
+                            !stats.errors.is_empty(),
+                        );
                     }
                 }
 
@@ -2309,12 +2316,38 @@ fn print_solutions(
     query_term: &QueryPattern,
     max: usize,
     truncated: bool,
+    faulted: bool,
 ) {
     // A depth-truncated search abandoned branches, so an absent answer is
     // UNDECIDED — without this line "no solutions" reads as a refutation
     // (WI-628 / WI-767 review).
+    //
+    // WI-20260911-0V0F7 — `truncated` HAS A SECOND CAUSE and this line named only the
+    // first. A goal the resolver could not EVALUATE marks the stream incomplete too,
+    // and since a bridged raise became a fault that is the common case rather than a
+    // corner: measured, `guardExhaustible(0, ?r)` printed the raise on the line above
+    // and then blamed a depth cap the search never approached. `BuiltinResult::Delay`'s
+    // own doc records the same complaint about the same wording. The faults have
+    // already been printed by the caller, so this says WHICH incompleteness it means
+    // and stops pointing at `--max-depth`.
     let depth_note = || {
-        if truncated {
+        if !truncated {
+            return;
+        }
+        if faulted {
+            // "FOR THE REASON ABOVE" WAS A LIE IN TWO WAYS, both raised by
+            // `/code-review`: the faults are printed to STDERR while this goes to
+            // stdout, so a redirected stream leaves it pointing at nothing; and on a
+            // non-empty answer this line runs at the END of the listing, many rows
+            // later. It also dropped `--max-depth`, which stays the actionable half
+            // when a search both faulted and truncated — `ResolveStats` carries one
+            // `truncated` bit for two causes, so neither can be ruled out here.
+            println!(
+                "note: the search is INCOMPLETE — a goal could not be evaluated (see \
+                 the warning(s) on stderr), and/or a branch was cut at --max-depth; a \
+                 missing answer is UNDECIDED, not refuted"
+            );
+        } else {
             println!(
                 "note: search truncated at --max-depth; a missing answer is UNDECIDED, not refuted"
             );

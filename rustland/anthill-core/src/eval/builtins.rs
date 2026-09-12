@@ -5921,7 +5921,13 @@ fn reflect_unify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
-    match interp.kb.unify_terms(a, b) {
+    // WI-20260911-0V0F7 — `unify_terms` reduces both operands, which reaches the
+    // SLD→eval bridge, so a callee that RAISED can decide this pair's fate. The sink
+    // is what it says so with; the OUTCOME is already right without it (a faulted
+    // bridge leaves its operand un-reduced, which `unify_values` delays on), so this
+    // recovers the sentence rather than changing the answer.
+    let mut faults = crate::kb::resolve::ReduceFaults::default();
+    match interp.kb.unify_terms(a, b, &mut faults) {
         TermUnification::Unifier(sigma) => {
             let handle = interp.alloc_subst(sigma);
             Ok(Value::Entity {
@@ -5949,8 +5955,11 @@ fn reflect_unify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
         // loud suspend is the honest half of the pair, per CLAUDE.md's "prefer a
         // loud error over a silent skip".
         TermUnification::Undecided => Err(EvalError::Suspended {
-            detail: "reflect.unify: an operand is an unevaluated call the reduction                      could not decide, so neither `some(σ)` nor `none` is true of                      this pair"
-                .to_string(),
+            detail: format!(
+                "reflect.unify: an operand is an unevaluated call the reduction could not \
+                 decide, so neither `some(σ)` nor `none` is true of this pair{}",
+                faults.rendered_suffix(),
+            ),
             truncated: false,
         }),
     }

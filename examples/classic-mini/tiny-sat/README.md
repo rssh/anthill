@@ -12,7 +12,7 @@ recursive type again — and it is the SAME derived domain as in
 loader derives from `sort Bit` and from the prelude's `List`:
 
 ```anthill
-domain(?x, Bit)          :- ?x <=> yes() | ?x <=> no()
+domain(?x, Bit)          :- ?x <=> t() | ?x <=> f()
 domain(?x, List[T = ?T]) :- ?x <=> nil()
                           | (?x <=> cons(head: ?h, tail: ?t)
                                & domain(?t, List[T = ?T]) & domain(?h, ?T))
@@ -27,13 +27,13 @@ reach one clause and differ only in what `?T` binds to.
 rule with two **exclusive** cases:
 
 ```anthill
-fact neg(yes(), no())
-fact neg(no(), yes())
-rule or2(?a, ?)  :- ?a <=> yes()
-rule or2(?a, ?b) :- ?a <=> no(), ?b <=> yes()
+fact neg(t(), f())
+fact neg(f(), t())
+rule or2(?a, ?)  :- ?a <=> t()
+rule or2(?a, ?b) :- ?a <=> f(), ?b <=> t()
 ```
 
-Exclusive matters. A plain `?a <=> yes() | ?b <=> yes()` is a choice point over
+Exclusive matters. A plain `?a <=> t() | ?b <=> t()` is a choice point over
 two tests, and an assignment that satisfies both literals would be counted
 twice. With the cases exclusive every model is one row.
 
@@ -51,15 +51,29 @@ rule model(vs: List[T = Bit])
 after the written body — see `alphabet-words`, where that placement is the
 difference between terminating and not.
 
-## What is a workaround here
+## What this example used to work around
 
-One thing, said loudly:
+The bits were `yes` / `no` rather than `t` / `f`, because **an entity named `f`
+used to take the identifier `f` away from every operation body in the load**:
+the prelude's `List.foldLeft`, `Option.optionMap` and six of their neighbours
+each apply a parameter named `f`, and their defining equations were lowered in a
+scope where that parameter was invisible, so `f(x)` was read as an application
+of the 0-field constructor. `sort Bit { entity t; entity f }` alone — in a file
+with no operation of its own — refused the load with five copies of
+`constructor 'f' given 1 positional argument(s)`, none of them locatable.
 
-- **The bits are `yes` / `no`, not `t` / `f`.** An entity named `f` currently
-  captures every one-argument call in an operation body — `length(args)` fails
-  to load as "constructor 'f' given 1 positional argument(s)" (measured
-  2026-09-11 on a minimal file with `entity f` and nothing else,
-  WI-20260911-073GH). The natural names come back when that is fixed.
+WI-20260911-073GH lowers an operation's defining equation in the operation's own
+scope, and gives that lowering the `let` / `lambda` / `match` binder frames the
+other one already had — so an applied name is the binder that introduced it,
+whether that binder is a declared parameter or a local. The natural names are
+back.
+
+The same ticket closed the complementary case, where the name resolves to
+nothing at all: an entity registers its field schema under its bare short name
+too, and that bare name is what the loader falls back to for a name nothing in
+scope answers — so an entity in a file you never imported could silently decide
+what your term means. A written functor that resolves to nothing is no longer
+read as an entity application.
 
 The `domain` relation used to be hand-written here too, in exactly the shape
 above; WI-743 derives it from the sort declarations and the explicit goal went
@@ -77,6 +91,6 @@ Prints `2`. The two models, as a query:
 ```bash
 ./rustland/target/debug/anthill query -p examples/classic-mini/tiny-sat \
   --max-results 0 'classic.sat.model(?vs)'
-#   ?vs = [no, no, yes]
-#   ?vs = [yes, yes, no]
+#   ?vs = [f, f, t]
+#   ?vs = [t, t, f]
 ```

@@ -365,6 +365,9 @@ mod wi_9wvt7_reify_typing_test;
 #[path = "include/wi_9wvt7_error_reify_test.rs"]
 mod wi_9wvt7_error_reify_test;
 
+#[path = "include/wi_0v0f7_bridged_raise_test.rs"]
+mod wi_0v0f7_bridged_raise_test;
+
 #[path = "include/wi642_rule_body_requires_test.rs"]
 mod wi642_rule_body_requires_test;
 
@@ -1710,3 +1713,6 @@ mod wi_5g28a_rule_head_type_variables_test;
 
 #[path = "include/nar1x_carrier_less_spec_op_test.rs"]
 mod nar1x_carrier_less_spec_op_test;
+
+#[path = "include/wi_073gh_applied_parameter_is_not_a_constructor_test.rs"]
+mod wi_073gh_applied_parameter_is_not_a_constructor_test;

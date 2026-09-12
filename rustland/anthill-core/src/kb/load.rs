@@ -5430,6 +5430,38 @@ fn register_entity_field_names_scan(
     // Sugar-generated facts reference the bare short name (`kb.intern("WorkItem")`,
     // an Unresolved symbol distinct from the resolved entity symbol), so register
     // under it too — unless it coincides with the resolved symbol.
+    //
+    // WHAT THE SECOND REGISTRATION COSTS, because it is not free and WI-20260911-073GH
+    // is what it cost. That bare symbol is the loader's LAST RUNG — the one
+    // `remap_name_str_inner` interns when a name resolves to nothing (WI-476) — and it
+    // is scope-less and global. So this line hands EVERY unresolved occurrence of the
+    // spelling `short`, anywhere in the load, this entity's field schema; a reader that
+    // asks `entity_field_names` to decide "is this an entity application" then answers
+    // YES for a name that is not this entity and may not be an entity at all. An
+    // `entity f` made `intern("f")` a 0-field constructor and the prelude's applied
+    // callback parameters `f` were read as over-arity constructor applications, until
+    // `emit_operation_equation` stopped resolving parameters at the last rung.
+    //
+    // SO THE WRITTEN-NAME WALKS DO NOT READ THIS TABLE DIRECTLY — they go through
+    // [`KnowledgeBase::written_entity_field_names`], which answers `None` for a name that
+    // resolved to nothing. Registering here is still right (the readers that WANT the
+    // bare spelling are the ones holding an already-built term), and the gate is what
+    // keeps the registration from deciding what a written term MEANS. It was not always
+    // there; before it, with two files and the second importing nothing from the first:
+    //
+    //   A: namespace p.bits { sort Bit { entity t; entity zz }
+    //                         sort Boxed { entity ff(a: Int64) } }
+    //   B: namespace p.u    { fact holdsF(ff(1))   fact holdsG(gg(1)) }
+    //
+    //   holdsF → ff(a: 1)   -- the POSITIONAL→NAMED desugar ran, under the field names of
+    //                          an entity `p.u` cannot see and did not name
+    //   holdsG → gg(1)      -- CONTROL: `gg` matches no entity anywhere, so it was left
+    //   fact holds(zz(1))   -- and the 0-field spelling was the LOUD form of the same
+    //                          thing: "constructor 'zz' given 1 positional argument(s)"
+    //
+    // Both rows now behave as their controls do. The rule, the full measurement and the
+    // reason only three walks take the gate are at that method; the rows are driven by
+    // `wi_073gh_applied_parameter_is_not_a_constructor_test`. Found by `/code-review`.
     let short_sym = kb.intern(short);
     if short_sym != entity_sym {
         kb.register_entity_fields(short_sym, field_names);
@@ -18239,20 +18271,35 @@ fn convert_query_term_expecting(
                 .iter()
                 .map(|&(sym, _)| kb.intern(parse_symbols.local_name(sym)))
                 .collect();
-            let pos_plan =
+            // WI-20260911-073GH — the QUERY walk's copy of the written-functor gate.
+            // A pattern is WRITTEN SOURCE like a fact head, so it takes the same rule: a
+            // name that resolved to nothing is not an entity application, whatever schema
+            // its bare intern carries (`KnowledgeBase::written_entity_field_names`).
+            //
+            // NEEDED IN ITS OWN RIGHT, not for symmetry — MEASURED: with the fact side
+            // gated and this side not, the fact `holdsF(ff(1))` stored POSITIONALLY while
+            // the query `holdsF(ff(1))` was still desugared to `ff(a: 1)`, so the pattern
+            // stopped matching the very fact it was written to find, and the control
+            // `holdsG(gg(1))` — whose functor matches no entity anywhere — went on
+            // matching. Two walks over one spelling must lower it the same way.
+            let written_entity_functor = kb.written_entity_field_names(kb_functor).is_some();
+            let pos_plan = if !written_entity_functor {
+                None
+            } else {
                 match kb.positional_to_named_plan(kb_functor, &named_kb_syms, pos_args.len()) {
                     PositionalPlan::Assign(fields) => Some(fields),
                     // No schema / reflect-form ctor, or an over-arity query. A transient
                     // query has no load-error channel, so both leave the args positional
                     // (the query simply finds no match) and untyped by rank.
                     _ => None,
-                };
+                }
+            };
             let pos_field_type = |kb: &KnowledgeBase, i: usize| {
                 pos_plan
                     .as_ref()
                     .map(|fields| fields[i])
                     .or_else(|| {
-                        kb.entity_field_names(kb_functor)
+                        kb.written_entity_field_names(kb_functor)
                             .and_then(|fields| fields.get(i).copied())
                     })
                     .and_then(|f| declared_field_type(kb, kb_functor, f))
@@ -18320,13 +18367,18 @@ fn convert_query_term_expecting(
             // other three onto; making the filler carrier-parametric is what let it
             // join them. Every fact/pattern of a functor must present the same named
             // slots in the same order or the discrimination tree cannot match them.
-            entity_slots::complete_named_slots::<entity_slots::Occurrence>(
-                kb,
-                kb_functor,
-                new_pos.len(),
-                false,
-                &mut new_named,
-            );
+            // WI-20260911-073GH: only for a functor that DENOTES one, the same gate the
+            // plan above takes — filling a pattern's omitted slots from a schema the
+            // written name does not have invents a pattern the author did not write.
+            if written_entity_functor {
+                entity_slots::complete_named_slots::<entity_slots::Occurrence>(
+                    kb,
+                    kb_functor,
+                    new_pos.len(),
+                    false,
+                    &mut new_named,
+                );
+            }
 
             nullary_query_canon(kb, kb_functor, new_pos, new_named.into_vec())
         }
@@ -20315,6 +20367,38 @@ impl<'a> Loader<'a> {
         let mut frame: HashMap<String, Symbol> = HashMap::new();
         self.collect_pattern_names_into(parse_id, &mut frame);
         frame
+    }
+
+    /// WI-20260911-073GH — [`Self::build_pattern_scope_frame`] FOR THE TERM WALK, where
+    /// a binder's identity is its NAME and not a per-site gensym.
+    ///
+    /// Same binders, different identity, and the difference is the whole point. The
+    /// occurrence walk alpha-renames each binding site through `binder_sym`
+    /// (`intern_unique`) so Γ's binder facts stay shadowing-correct (WI-550) — that is a
+    /// fact about an OCCURRENCE, which is a place. A TERM's spelling IS its identity
+    /// (WI-756): `convert_term_inner` has no `pattern_var` arm, so a binder's own name in
+    /// the pattern child lowers through `remap_symbol` to `intern(name)`, and two
+    /// textually identical lambdas must be ONE hash-consed term or a rule pattern stops
+    /// matching the fact it was written to find.
+    ///
+    /// MEASURED both ways, with the gensym frame: `eq(f(?p), let_expr(pattern_var(y),
+    /// add(?p, 1), mul(y, 2)))` printed identically but carried TWO symbols — the
+    /// pattern's `intern("y")` and the body's gensym — so the `let` no longer bound its
+    /// own use, and `fact lam1(lambda (v) -> v + 1)` / `fact lam2(...)` stored two terms
+    /// that could not unify. Found by `/code-review`.
+    ///
+    /// The FRAME is still what shadows; only what it resolves to changes. It reuses
+    /// `build_pattern_scope_frame`'s walk rather than re-deriving which names a pattern
+    /// binds — one owner of that question — and re-keys the result to name identity.
+    fn build_pattern_name_frame(&mut self, parse_id: TermId) -> HashMap<String, Symbol> {
+        let names: Vec<String> = self.build_pattern_scope_frame(parse_id).into_keys().collect();
+        names
+            .into_iter()
+            .map(|name| {
+                let sym = self.kb.intern(&name);
+                (name, sym)
+            })
+            .collect()
     }
 
     /// Walk a parse-time pattern term and add each bound variable's
@@ -22354,6 +22438,18 @@ impl<'a> Loader<'a> {
 
                 let new_functor = self.remap_functor(functor, parse_id);
 
+                // WI-20260911-073GH — DOES THIS WRITTEN FUNCTOR DENOTE AN ENTITY?
+                // Read ONCE here and used by every entity-shaped reading below (the
+                // per-argument type hints, the positional→named desugar, the unknown-label
+                // check, the optional fill, the slot-origin record), so no two of them can
+                // disagree about what the node is — the WI-927 rule for `is_type_app`, on
+                // the other axis. `written_entity_field_names` is what makes it different
+                // from the plain schema read: a name that resolved to NOTHING is not an
+                // entity application, whatever schema its bare intern carries. See there
+                // for the rule and the two-file measurement.
+                let written_entity_functor =
+                    self.kb.written_entity_field_names(new_functor).is_some();
+
                 // WI-007 context-aware ListLiteral desugaring: rewrite
                 // `ListLiteral → cons/nil` unless a DECLARED type says the position
                 // holds some other collection. A List-shaped declared type (recursing
@@ -22475,10 +22571,87 @@ impl<'a> Loader<'a> {
                 // over five surfaces. A test in each is now the reader.
                 let spec_instance_slot =
                     self.parsed.symbols.local_name(functor) == dt::FIND_DICTIONARY;
+
+                // WI-20260911-073GH — BINDER SCOPING, THE TWIN OF [`Self::visit_load`]'s.
+                //
+                // A `let` / `lambda` / `match` binder opens a local-name scope, and until
+                // this arm only the OCCURRENCE walk knew it: `visit_load` pushes
+                // `build_pattern_scope_frame` onto `local_names_stack` at its `LET_EXPR` /
+                // `LAMBDA_EXPR` / match-branch arms, and this walk pushed nothing. So the
+                // two lowerings of ONE body disagreed about which names are bound, and a
+                // binder reference here fell through `remap_name_str_inner`'s ladder to
+                // WI-476's scope-less bare `intern(name)` — which carries whatever field
+                // schema `register_entity_field_names_scan` registered under that short
+                // name. MEASURED, cross-file, with `entity f` in an unrelated namespace:
+                //
+                //   operation apply1(n: Int64) -> Int64 =
+                //     let f = lambda (v: Int64) -> v + 1
+                //     f(n)
+                //   → error: constructor 'f' given 1 positional argument(s) but has
+                //            0 unfilled field(s) (declares: none)
+                //
+                // — the SAME capture this ticket closed for declared PARAMETERS, one
+                // binder class over, and found by `/code-review` after the parameter half
+                // had landed. Delete the file declaring `entity f` and it loads clean.
+                //
+                // `binder_form_layout` owns WHICH children are scoped, so the `let`
+                // VALUE (which sees the OUTER scope) is not covered by its own binder;
+                // gated on `is_minted` like every other desugar-target reader, so a user
+                // who writes a call named `let_expr` gets an ordinary application.
+                // `build_pattern_scope_frame` mints through `binder_sym`, which caches per
+                // `pattern_var` parse node — the occurrence walk ran first over these very
+                // nodes, so both walks resolve a binder to ONE symbol rather than two.
+                //
+                // WHICH CHILDREN ARE IN THE SCOPE: the PATTERN itself, plus everything
+                // from `first_scoped` on. The pattern is in it — that is the correction
+                // `/code-review` found after the first cut put the frame only over
+                // `first_scoped..`. A binder's own name is a BINDING occurrence and must
+                // denote the binder, not whatever the enclosing scope calls it; with the
+                // pattern outside the frame and the equation now lowering in `op_scope`,
+                // `operation shadow(x: Int64) = let x = 100 <newline> x + 1` emitted
+                //
+                //   eq(shadow(?p), let_expr(pattern_var(?p), 100, add(x, 1)))
+                //
+                // — the binding occurrence substituted by `rewrite_param_refs` (it had
+                // resolved to the op's Param place) while its USE, inside the frame,
+                // stayed `intern("x")`. One binder, two symbols, and a `let` body with a
+                // free name in a rule SLD consults. It is `{pat_idx} ∪ [first_scoped..]`
+                // and not "everything", because a `let`'s VALUE is the one child that
+                // genuinely sees the outer scope — which is what `binder_form_layout`
+                // says, and why the set has a hole in it for `let_expr`.
+                let binder_layout: Option<(usize, usize)> = if self.parsed.terms.is_minted(parse_id)
+                {
+                    let fname = self.parsed.symbols.local_name(functor).to_owned();
+                    binder_form_layout(&fname)
+                } else {
+                    None
+                };
+                let mut binder_frame: Option<HashMap<String, Symbol>> =
+                    binder_layout.and_then(|(pat_idx, _)| {
+                        let pat = *pos_args.get(pat_idx)?;
+                        let frame = self.build_pattern_name_frame(pat);
+                        (!frame.is_empty()).then_some(frame)
+                    });
+                // The frame moves ONTO the stack and back off it, so there is exactly one
+                // of it and this flag is the record of where it currently is.
+                let mut binder_pushed = false;
+
                 let mut new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
                     .enumerate()
                     .map(|(i, &id)| {
+                        if let Some((pat_idx, first_scoped)) = binder_layout {
+                            let scoped = i == pat_idx || i >= first_scoped;
+                            if scoped && !binder_pushed {
+                                if let Some(frame) = binder_frame.take() {
+                                    self.local_names_stack.push(frame);
+                                    binder_pushed = true;
+                                }
+                            } else if !scoped && binder_pushed {
+                                binder_frame = self.local_names_stack.pop();
+                                binder_pushed = false;
+                            }
+                        }
                         if spec_instance_slot && i == 0 {
                             let occ = self.build_require_spec_occurrence(id);
                             return match node_occurrence::value_to_term(
@@ -22504,7 +22677,7 @@ impl<'a> Loader<'a> {
                         // conversion hint only wants a ground `TermId` (a
                         // denoted-bearing field is no literal-typing hint → None).
                         let exp = some_payload_hint.or_else(|| {
-                            self.kb.entity_field_types(new_functor).and_then(|ft| {
+                            self.kb.written_entity_field_types(new_functor).and_then(|ft| {
                                 ft.get(i).and_then(|(_, t)| match t {
                                     Value::Term { id: t, .. } => Some(*t),
                                     _ => None,
@@ -22555,7 +22728,7 @@ impl<'a> Loader<'a> {
                         // WI-408: `some(value: x)` payload takes the peeled hint
                         // (see `some_payload_hint` above the positional loop).
                         let exp = some_payload_hint.or_else(|| {
-                            self.kb.entity_field_types(new_functor).and_then(|ft| {
+                            self.kb.written_entity_field_types(new_functor).and_then(|ft| {
                                 ft.iter()
                                     .find(|(s, _)| *s == new_sym)
                                     .and_then(|(_, t)| match t {
@@ -22568,6 +22741,23 @@ impl<'a> Loader<'a> {
                         (new_sym, self.wrap_bare_option_value(converted, exp))
                     })
                     .collect();
+
+                // WI-20260911-073GH — the tail pop for the binder frame, if it is still
+                // on the stack. AFTER the named arguments, so a named child of a binder
+                // form is inside the scope its positional siblings are.
+                //
+                // THE FRAME MOVES ON AND OFF AS THE INDEX ENTERS AND LEAVES THE SCOPED
+                // SET, and is NOT pushed at most once — an earlier wording said so and
+                // `/code-review` caught it. For `let_expr` (`pat_idx` 0, `first_scoped`
+                // 2) the walk pushes at 0, pops at 1 so the VALUE sees the outer scope,
+                // and pushes again at 2. There is exactly ONE frame; `binder_pushed`
+                // records which side it is currently on, which is what makes this
+                // conditional pop the matching one.
+                if binder_pushed {
+                    self.local_names_stack
+                        .pop()
+                        .expect("binder scope frame pushed above");
+                }
 
                 // WI-408: canonicalize a source-written positional `some(x)` to
                 // the NAMED form `some(value: x)` — the one in-KB term shape for
@@ -22623,7 +22813,40 @@ impl<'a> Loader<'a> {
                 // declared fields), and the `anthill.reflect.*` Expr meta-ctors
                 // (`ho_apply` / `match_expr` / `if_expr` / …) whose positional shape
                 // is the reflect encoding, not user named-field application.
-                if !new_pos.is_empty() && !is_type_app {
+                //
+                // WI-20260911-073GH — AND A FUNCTOR THAT RESOLVED TO NOTHING. That is
+                // what `written_entity_functor` adds, and it is the same exclusion as
+                // "non-entity functor" one line up, for a case the plain schema read
+                // cannot see: the bare intern a failed resolution returns carries the
+                // schema of any entity sharing its short name. Before the gate,
+                // `fact holdsF(ff(1))` beside an entity `ff(a: Int64)` the citing file
+                // never imported was silently rewritten to `ff(a: 1)` — a DIFFERENT term
+                // from the one written, which is precisely the never-match this desugar
+                // exists to prevent. The rule and the measurement are at that method.
+                //
+                // WHAT IT COSTS, said plainly because it is a LOUD ERROR GOING QUIET and
+                // the class is wider than the row the tests drive. This check, and the
+                // unknown-label one below, were the only diagnostics a MISSING IMPORT
+                // produced in a term position: `fact h(Box(1, 2))` without importing
+                // `Box` used to fail with "constructor 'Box' given 2 positional
+                // argument(s)…" and now loads clean, carrying a term nothing matches.
+                // The message was never right — it named an over-arity CONSTRUCTOR
+                // application for a name that denotes nothing at that site, and the same
+                // program with the functor spelled `Qox` always loaded clean — so the
+                // gate makes the two agree rather than weakening a real check. What it
+                // does not do is answer whether an undeclared functor in a term position
+                // should be refused at all: WI-1058 refuses one in a rule BODY
+                // (`undefined_rule_body_term_message`, measured on both a colliding and a
+                // free spelling) and nothing refuses one in a fact-head ARGUMENT.
+                // WI-20260904-B8ESG OWNS THAT REFUSAL and predates this — it measured the
+                // same hole in the stdlib (`rule list_contains(?x, cons(head: ?x, …))`
+                // importing only the `List` sort answered nothing, on a file that loaded
+                // with an identical fact count). What this gate changes for it is that the
+                // position is now UNIFORMLY silent: a head argument that collided with
+                // some entity's short name used to be refused, loudly and about the wrong
+                // thing, and that accidental subset is gone. Recorded in its feedback.
+                // Flagged by `/code-review`.
+                if !new_pos.is_empty() && !is_type_app && written_entity_functor {
                     let named_syms: SmallVec<[Symbol; 2]> =
                         new_named.iter().map(|(s, _)| *s).collect();
                     match self
@@ -22663,10 +22886,15 @@ impl<'a> Loader<'a> {
                 // "enumerate the producers" is the WI-805 / WI-839 mistake. Placed AFTER
                 // the positional block so a label the desugar just assigned (always a
                 // declared field) is included and any bug there is caught too.
-                let unknown: SmallVec<[Symbol; 2]> = if is_type_app {
+                let unknown: SmallVec<[Symbol; 2]> = if is_type_app || !written_entity_functor
+                {
                     // WI-927: a bracket's labels are type-parameter names, checked by
                     // `check_sort_type_args` below against the DECLARED params — not
                     // field labels.
+                    //
+                    // WI-20260911-073GH: and a functor that resolved to nothing declares
+                    // no labels to be unknown OF — reporting `unknown field 'x'` against a
+                    // stranger's schema names a declaration the author never wrote.
                     SmallVec::new()
                 } else {
                     let named_syms: SmallVec<[Symbol; 2]> =
@@ -22681,7 +22909,7 @@ impl<'a> Loader<'a> {
                     // reading it — so a missing schema is a broken invariant, not a case
                     // to default away (a defaulting unwrap would print the bare
                     // `(declares: )` that reads as the bug it would be hiding).
-                    let declared = match self.kb.entity_field_names(new_functor) {
+                    let declared = match self.kb.written_entity_field_names(new_functor) {
                         Some(f) => self.kb.render_field_list(f),
                         None => unreachable!(
                             "unknown_named_labels reported a label for a functor with no \
@@ -22719,7 +22947,12 @@ impl<'a> Loader<'a> {
                 // field) the var-fill stays — "matches anything". A `none()` value
                 // still unifies a pattern's var (so `E(id: ?)` finds it) but
                 // correctly fails `field: some(?)`.
-                self.fill_entity_named_args(new_functor, new_pos.len(), &mut new_named);
+                // WI-20260911-073GH: only for a functor that DENOTES one — filling a
+                // written term's omitted "optionals" from a schema it does not have is
+                // the silent half of the same defect.
+                if written_entity_functor {
+                    self.fill_entity_named_args(new_functor, new_pos.len(), &mut new_named);
+                }
 
                 // WI-20260902-2SZ88 — HAND THE ORIGINS TO THE OCCURRENCE BUILDER. Keyed by
                 // the PARSE `TermId`, which is a PLACE key: `SimpleTermStore::alloc`
@@ -22741,7 +22974,7 @@ impl<'a> Loader<'a> {
                 // is the same functor after it. THAT COUPLING IS THE WHOLE REASON THE
                 // ASSERT IS SAFE, and it was written nowhere until `/code-review` traced
                 // it; a future entry in that table with a field schema breaks it.
-                if self.kb.entity_field_names(new_functor).is_some() {
+                if self.kb.written_entity_field_names(new_functor).is_some() {
                     self.entity_slot_origin.insert(parse_id.raw(), slot_origin);
                 }
 
@@ -26177,7 +26410,7 @@ impl<'a> Loader<'a> {
         sym: Symbol,
         parse_id: TermId,
     ) -> Option<Rc<NodeOccurrence>> {
-        self.kb.entity_field_names(sym)?;
+        self.kb.written_entity_field_names(sym)?;
         let bare = self.kb.alloc(Term::Ref(sym));
         let expanded = self.expand_bare_entity_subject(bare);
         if expanded == bare {
@@ -26430,7 +26663,7 @@ impl<'a> Loader<'a> {
                 // RE-DERIVED FROM ITS TERM. See [`Self::entity_ctor_expr`]. `None` means
                 // the lowering produced a shape that arm does not recognise, and the
                 // round-trip below still serves it.
-                let entity_native = if self.kb.entity_field_names(new_functor).is_some()
+                let entity_native = if self.kb.written_entity_field_names(new_functor).is_some()
                     && !node_occurrence::is_reflect_form_functor(self.kb, new_functor)
                 {
                     self.entity_ctor_expr(parse_id, new_functor)
@@ -26446,7 +26679,7 @@ impl<'a> Loader<'a> {
                     // `dotted_citation_name` — EXACTLY, of the parse node, with no table
                     // and no set difference. That is the ticket.
                     expr
-                } else if self.kb.entity_field_names(new_functor).is_some()
+                } else if self.kb.written_entity_field_names(new_functor).is_some()
                     || node_occurrence::is_reflect_form_functor(self.kb, new_functor)
                 {
                     let kb_term = self.convert_term(parse_id); // memoized hit
@@ -32455,9 +32688,30 @@ impl<'a> Loader<'a> {
         // (constraint guards, provider-operation coverage).
         if !body_poisoned {
             if let Some(body_parse_id) = o.body {
-                self.emit_operation_equation(o, functor, body_parse_id, domain);
+                self.emit_operation_equation(o, functor, op_scope, body_parse_id, domain);
             }
         }
+    }
+
+    /// The symbol an operation's parameter named `name` is DECLARED under: the
+    /// op-scoped `SymbolKind::Param` place `scan_operation_params` defines and
+    /// publishes on the op symbol (WI-352 `arg_places`). Matched by short name
+    /// WITHIN ONE OWNER'S OWN declared parameters, which is the only place a short
+    /// name identifies anything — the idiom `SymbolTable::type_param_sym` states for
+    /// the type-parameter half, and the reason this does not rebuild `<op qn>.<name>`
+    /// and re-resolve it globally.
+    ///
+    /// `None` for a parameter the scan did not register, which today is exactly a
+    /// parameter named `result`: [`Self::load_operation`] skips it in the scan and has
+    /// already reported the collision with the reserved return-value name, so the load
+    /// fails whatever this answers.
+    fn op_param_symbol(&self, op_functor: Symbol, name: &str) -> Option<Symbol> {
+        self.kb
+            .symbols
+            .arg_places(op_functor)
+            .iter()
+            .copied()
+            .find(|&s| self.kb.local_name_of(s) == name)
     }
 
     /// Build `eq(<op>(?p1, ?p2, ...), body[params -> ?p_i])` and
@@ -32467,15 +32721,95 @@ impl<'a> Loader<'a> {
         &mut self,
         o: &Operation,
         op_functor: Symbol,
+        op_scope: ScopeId,
         body_parse_id: TermId,
         domain: Symbol,
     ) {
+        // WI-20260911-073GH — LOWERED IN THE OPERATION'S OWN SCOPE, where its
+        // parameters are the names they are. This call sits after `load_operation`
+        // restored the enclosing scope, so the body used to be converted with its own
+        // parameters INVISIBLE: every parameter reference fell through the resolution
+        // ladder to the bare `intern(pname)` (WI-476's "resolves to nothing" symbol),
+        // and `rewrite_param_refs` below then recognised a parameter by that bare
+        // spelling. That is a scope-less global name, and
+        // `register_entity_field_names_scan` deliberately registers each entity's field
+        // schema under it too — so an entity named `f` ANYWHERE in the load gave
+        // `intern("f")` a 0-field schema, and this walk read every APPLIED parameter
+        // named `f` as an over-arity constructor application:
+        //
+        //   error: constructor 'f' given 1 positional argument(s) but has 0 unfilled
+        //          field(s) (declares: none)
+        //
+        // MEASURED: `sort Bit { entity t; entity f }` ALONE, in a file with no
+        // operation of its own, refused the load with five such errors (8 raises, after
+        // the CLI's dedup) and no location. They were raised from the PRELUDE — from the
+        // eight bodies that apply a parameter named `f`: `List.foldLeft` / `foldRight` /
+        // `mapElemsOnto`, `Option.optionMap` / `optionFlatMap`, `Result.resultMap` /
+        // `resultFlatMap`, `Delay.delayFlatMap`. The scan defines every name across
+        // every file before any load pass runs, so a user file's `entity f` was already
+        // in the KB when the prelude's bodies were converted. The whole language lost
+        // the identifier `f` — and `g`, and any short name an entity anywhere happened
+        // to take. Renaming the entity to `ff` loaded clean.
+        //
+        // Converting HERE, in `op_scope`, is what makes the parameter shadow: the
+        // scope's own locals short-circuit `resolve_in_scope`, so `f` is the declared
+        // `SymbolKind::Param` place and carries no field schema — at a functor position
+        // exactly as at a leaf. The shadowing is the SCOPE's, not a second table
+        // consulted ahead of it (`rule_param_vars`' shape), so no resolution position
+        // has to remember to ask.
+        //
+        // IT IS HALF THE ANSWER AND NOT THE WHOLE ONE. This scope, and the binder frames
+        // `convert_term_inner` pushes, answer for a name that RESOLVES — they shadow a
+        // constructor the citing scope can see, which for the prelude's `f` it cannot but
+        // for an `entity f` in the operation's OWN namespace it can (§8.6's
+        // variant-exposure edge). A name that resolves to NOTHING is the complementary
+        // case, and [`KnowledgeBase::written_entity_field_names`] is what answers it.
+        // MEASURED by backing each out: with only the gate, an `entity f` beside the
+        // operation still captures; with only the scope, a stranger in another file still
+        // reshapes a fact term. Neither subsumes the other.
+        //
+        // THE TWO LOWERINGS NOW AGREE ON SCOPE AND STILL DIFFER ON ONE THING, said here
+        // so this comment is not read as "they agree". `convert_expr_term` sets
+        // `in_op_body_value`, which `remap_name_str` reads to route `not` / `or` / `and`
+        // to the dispatched `Bool` VALUE ops (WI-529); this walk does not set it, so the
+        // equation keeps the resolver primitives for those three names. That predates
+        // this ticket and is untouched by it.
+        let prev_scope = std::mem::replace(&mut self.current_scope, op_scope);
         let body_kb = self.convert_term(body_parse_id);
+        self.current_scope = prev_scope;
 
         let mut param_vars: Vec<(Symbol, VarId)> = Vec::new();
         for p in &o.params {
             let pname = self.parsed.symbols.local_name(p.name).to_owned();
-            let kb_sym = self.kb.intern(&pname);
+            // …and the rewrite below reads a parameter by the symbol that conversion
+            // ACTUALLY produced, which is now the op-scoped place, not the bare intern.
+            // The fallback is unreachable for a well-formed operation (see
+            // [`Self::op_param_symbol`]) and keeps a `result`-named parameter — already
+            // a reported load error — lowering as it did.
+            let kb_sym = match self.op_param_symbol(op_functor, &pname) {
+                Some(sym) => sym,
+                None => {
+                    // NOT A SILENT SKIP, ASSERTED. `scan_operation_params` registers every
+                    // parameter but one — a parameter named `result`, which `load_operation`
+                    // has already reported as colliding with the reserved return-value name
+                    // — so this arm is reachable only on a load that has already failed. If
+                    // a future skip is added there, a parameter would instead go unrewritten
+                    // and be DROPPED from the equation with no diagnostic; the assert is on
+                    // the necessary condition rather than on the message, so rewording that
+                    // diagnostic cannot trip it. Found by `/code-review`.
+                    // The condition is LOCAL to this operation and not "some error was
+                    // recorded": the loader's error list is global, so any unrelated
+                    // earlier failure anywhere in the load would satisfy that and the
+                    // assert would never fire where it matters (`/code-review`).
+                    debug_assert!(
+                        pname == "result",
+                        "operation parameter `{pname}` has no registered arg place: \
+                         `scan_operation_params` skips only a parameter named `result`, \
+                         and that skip is what makes this fallback safe",
+                    );
+                    self.kb.intern(&pname)
+                }
+            };
             let var = self.kb.fresh_var(kb_sym);
             param_vars.push((kb_sym, var));
         }
@@ -32511,8 +32845,54 @@ impl<'a> Loader<'a> {
     }
 
     /// Replace `Ident(s)`/`Ref(s)` matching a parameter symbol with the
-    /// corresponding `Var::Global`. Doesn't alpha-rename inside lambda
-    /// or let bodies — shadowing param names is unsupported.
+    /// corresponding `Var::Global`.
+    ///
+    /// IT USED TO SAY "doesn't alpha-rename inside lambda or let bodies — shadowing
+    /// param names is unsupported", and WI-20260911-073GH's binder frames made that
+    /// false for the BODY: a binder that shadows a parameter resolves to its own
+    /// `binder_sym` gensym, which is not in `param_vars`, so this walk cannot reach it.
+    /// MEASURED on `operation shadow(x: Int64) = let x = 100 <newline> x + 1`:
+    ///
+    /// ```text
+    ///   eq(shadow(?#0), let_expr(pattern_var(?#0), 100, add(x, 1)))
+    /// ```
+    ///
+    /// — one symbol `x` in BOTH slots, as the source says. Before that ticket the body's
+    /// `x` was the same bare `intern("x")` the parameter was, so this walk substituted it
+    /// and the whole `let` came out `let_expr(pattern_var(?#0), 100, add(?#0, 1))` — the
+    /// binder erased by the parameter it shadows.
+    ///
+    /// THE PATTERN SLOT WAS BRIEFLY THE RESIDUE and is not any more. The first cut put the
+    /// binder frame over `[first_scoped..]` only, leaving the binding occurrence outside
+    /// it, so `pattern_var` resolved to the op's Param place and was substituted HERE
+    /// while its use — inside the frame — was not: `let_expr(pattern_var(?#0), 100,
+    /// add(x, 1))`, one binder with two symbols and a free name in the body.
+    /// `convert_term_inner` scopes `{pat_idx} ∪ [first_scoped..]` now, and
+    /// `a_shadowing_binder_binds_its_own_use_in_the_emitted_equation` is the reader.
+    /// Found by `/code-review`.
+    ///
+    /// `param_vars` carries the OP-SCOPED place symbols (WI-20260911-073GH), which is
+    /// what [`Self::emit_operation_equation`]'s conversion produces for a parameter
+    /// reference AT A LEAF now that it runs in the operation's own scope.
+    ///
+    /// AT A LEAF IS THE WHOLE REACH, and saying so is the point of this paragraph. The
+    /// `Term::Fn` arm rebuilds the arguments and passes `functor` THROUGH, so a parameter
+    /// at a FUNCTOR position is not rewritten and the equation drops it:
+    /// `operation twice(k: (v: Int64) -> Int64, n: Int64) = k(k(n))` emits
+    /// `eq(twice(?#1, ?#0), k(k(?#0)))` — the head variable minted for `k` occurs nowhere
+    /// in the body, and the functor denotes nothing. Every higher-order equation the
+    /// stdlib emits has that shape (`optionMap`, `optionFlatMap`, `foldLeft`,
+    /// `foldRight`, `mapElemsOnto`, `resultMap`, `resultFlatMap`, `delayFlatMap` — the
+    /// same eight bodies WI-20260911-073GH's headline measurement names, for the same
+    /// reason: they apply a callback parameter), and always has: before that ticket the
+    /// functor was the bare `intern(name)` and equally undenoting.
+    ///
+    /// So this is NOT a regression and it is NOT fixed here. What the ticket changed is
+    /// that the case where the parameter's name COLLIDED with an entity used to fail the
+    /// load loudly — about a constructor, which was the wrong diagnosis — and is now as
+    /// quiet as the non-colliding case has always been. Expressing such a body through an
+    /// apply form, or refusing to emit an equation for it, is a question about the
+    /// equation channel rather than about name capture. Found by `/code-review`.
     fn rewrite_param_refs(&mut self, term: TermId, param_vars: &[(Symbol, VarId)]) -> TermId {
         match self.kb.get_term(term).clone() {
             Term::Ident(s) | Term::Ref(s) => {

@@ -245,6 +245,6 @@ fn classic_mini_tiny_sat_finds_both_models() {
         sols.len(),
         2,
         "(p or not q) and (q or r) and (not p or not r) has exactly two models — \
-         p q r = yes yes no and no no yes — and exclusive `or2` cases count each once",
+         p q r = t t f and f f t — and exclusive `or2` cases count each once",
     );
 }

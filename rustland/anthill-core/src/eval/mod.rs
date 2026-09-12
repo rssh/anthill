@@ -25,7 +25,7 @@ use crate::intern::Symbol;
 use crate::kb::KnowledgeBase;
 use crate::parse::desugar_target as dt;
 
-pub use error::{macro_rejection_message, render_raised_payload, EvalError};
+pub use error::{macro_rejection_message, render_raised_payload, BridgeDisposition, EvalError};
 pub use eval::value_functor;
 pub use frame::{ActivationStack, Frame, FrameTypeArgs};
 pub use value::Value;

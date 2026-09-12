@@ -11,7 +11,7 @@
 
 use anthill_core::eval::value::Value;
 use anthill_core::kb::load::{self, LoadError, NullResolver};
-use anthill_core::kb::resolve::{ResolveConfig, TermUnification};
+use anthill_core::kb::resolve::{ReduceFaults, ResolveConfig, TermUnification};
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
 use anthill_core::kb::term_view::views_structurally_equal;
 use anthill_core::kb::ClauseKind;
@@ -307,7 +307,7 @@ fn unify_terms_data_face() {
     // deliberately not collapsible to one `is_none()` — conflating them is the wrong
     // answer that ticket removed, and a helper that restored the collapse would put it
     // straight back at every reader.
-    let TermUnification::Unifier(sigma) = kb.unify_terms(a, b) else {
+    let TermUnification::Unifier(sigma) = kb.unify_terms(a, b, &mut ReduceFaults::default()) else {
         panic!("f(?x,2) unifies with f(1,?y)")
     };
     let xb = kb.reify(x_term, &sigma).expect_term();
@@ -335,7 +335,7 @@ fn unify_terms_mismatch_has_no_unifier() {
         named_args: SmallVec::new(),
     });
     assert!(
-        matches!(kb.unify_terms(fa, gb), TermUnification::NoUnifier),
+        matches!(kb.unify_terms(fa, gb, &mut ReduceFaults::default()), TermUnification::NoUnifier),
         "f(1) and g(1) do not unify — a DEFINITE no, not `Undecided`"
     );
 }
@@ -352,7 +352,7 @@ fn unify_terms_occurs_check_has_no_unifier() {
         named_args: SmallVec::new(),
     });
     assert!(
-        matches!(kb.unify_terms(x_term, fx), TermUnification::NoUnifier),
+        matches!(kb.unify_terms(x_term, fx, &mut ReduceFaults::default()), TermUnification::NoUnifier),
         "?x and f(?x) fail occurs-check — a DEFINITE no, not `Undecided`"
     );
 }
@@ -369,7 +369,7 @@ fn unify_rigid_var_is_reflexive() {
     let r = kb.fresh_var(s);
     let rigid = kb.alloc(Term::Var(Var::Rigid(r)));
     assert!(
-        matches!(kb.unify_terms(rigid, rigid), TermUnification::Unifier(_)),
+        matches!(kb.unify_terms(rigid, rigid, &mut ReduceFaults::default()), TermUnification::Unifier(_)),
         "!k <=> !k must unify (reflexivity)"
     );
     let fr = kb.alloc(Term::Fn {
@@ -378,14 +378,14 @@ fn unify_rigid_var_is_reflexive() {
         named_args: SmallVec::new(),
     });
     assert!(
-        matches!(kb.unify_terms(fr, fr), TermUnification::Unifier(_)),
+        matches!(kb.unify_terms(fr, fr, &mut ReduceFaults::default()), TermUnification::Unifier(_)),
         "f(!k) <=> f(!k) must unify"
     );
 
     let r2 = kb.fresh_var(s);
     let other = kb.alloc(Term::Var(Var::Rigid(r2)));
     assert!(
-        matches!(kb.unify_terms(rigid, other), TermUnification::NoUnifier),
+        matches!(kb.unify_terms(rigid, other, &mut ReduceFaults::default()), TermUnification::NoUnifier),
         "distinct skolems !k <=> !j must NOT unify — a DEFINITE no"
     );
 }

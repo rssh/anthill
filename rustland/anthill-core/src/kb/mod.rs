@@ -10398,6 +10398,65 @@ impl KnowledgeBase {
         self.entity_fields.get(&functor).map(|v| v.as_slice())
     }
 
+    /// WI-20260911-073GH — [`Self::entity_field_names`] FOR A FUNCTOR AS WRITTEN IN
+    /// SOURCE. `None` when the written name RESOLVED TO NOTHING, whatever schema its
+    /// bare intern happens to carry.
+    ///
+    /// THE RULE, in one sentence: a name that denotes nothing is not an entity
+    /// application. The plain reader above cannot say that, because
+    /// `register_entity_field_names_scan` registers each entity's schema under its bare
+    /// interned SHORT NAME as well as its resolved symbol — and that bare symbol is the
+    /// loader's LAST RUNG, what `remap_name_str_inner` interns for a name nothing in
+    /// scope answers (WI-476). It is scope-less and global, so without this gate the
+    /// schema of an entity the citing file cannot see, did not import and did not name
+    /// decides what a written term MEANS. MEASURED on two files, the second importing
+    /// nothing from the first:
+    ///
+    /// ```text
+    ///   A: namespace p.bits { sort Bit { entity t; entity zz }
+    ///                         sort Boxed { entity ff(a: Int64) } }
+    ///   B: namespace p.u    { fact holdsF(ff(1))   fact holdsG(gg(1)) }
+    ///
+    ///   before: holdsF → ff(a: 1)   -- the positional→named desugar ran under A's fields
+    ///           holdsG → gg(1)      -- CONTROL: `gg` matches no entity anywhere
+    ///           fact holds(zz(1))   -- and the 0-FIELD spelling was the loud form:
+    ///                                  "constructor 'zz' given 1 positional argument(s)"
+    ///   after:  holdsF → ff(1)      -- left positional, like its control
+    /// ```
+    ///
+    /// The silent row is the worse one: `ff(1)` and `ff(a: 1)` are different terms, and a
+    /// rule pattern written one way stops matching a fact stored the other (WI-433's own
+    /// reason for existing). The loud row is where this ticket started — an applied
+    /// PARAMETER named `f` was read as an over-arity constructor, which the operation
+    /// scope and the binder frames fixed at the BINDER surface; this closes the class the
+    /// other way round, for every written name that resolves to nothing.
+    ///
+    /// ONLY THE THREE WRITTEN-NAME WALKS USE IT — `convert_term_inner`, the occurrence
+    /// walk, and `convert_query_term_expecting`. Everything else reading a schema reads
+    /// the functor of an ALREADY-BUILT term or value (runtime `alloc_from_value`, the
+    /// codegens, `term_ser`), where the symbol came from a resolved constructor rather
+    /// than from a name the loader just failed to resolve, and where the deliberate
+    /// bare-short-name registration is what those readers want.
+    pub(crate) fn written_entity_field_names(&self, functor: Symbol) -> Option<&[Symbol]> {
+        if !self.symbols.is_resolved(functor) {
+            return None;
+        }
+        self.entity_field_names(functor)
+    }
+
+    /// The field-TYPE twin of [`Self::written_entity_field_names`], under the same rule
+    /// and for the same reason: a hint taken from a stranger's schema types a written
+    /// argument against a declaration the author never named.
+    pub(crate) fn written_entity_field_types(
+        &self,
+        functor: Symbol,
+    ) -> Option<&[(Symbol, crate::eval::value::Value)]> {
+        if !self.symbols.is_resolved(functor) {
+            return None;
+        }
+        self.entity_field_types(functor)
+    }
+
     /// Register entity field types: functor → [(field_name, type)]. WI-342: the
     /// field type is carrier-agnostic — a `denoted`-bearing field type (a
     /// value-in-type / dependent field) rides as `Value::Node`, a ground field
