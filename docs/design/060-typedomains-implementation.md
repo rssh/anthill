@@ -272,6 +272,60 @@ List)`, the clause projects `sub(0)` for its element domain, and the generator y
 `[red]`, `[green]`, `[blue]`, `[red, red]`, … The parameter never had to be guessed, so it
 never had to be a rigid.
 
+## 4.2 Where the new logical variables come from
+
+§4's transform writes a variable the author did not — `?xd`, the fetched dictionary — into a
+clause that was already asserted. Nothing above says where that variable LIVES, and it is
+not a detail: a variable that is not in the rule's frame is a `Var::Global` shared by every
+firing of the rule.
+
+**THE FAILURE IS MEASURED, on this very feature.** 060-implementation §7.2: while a bound's
+type variable was outside the frame, `rule two(?a, ?b) :- my_rule([1, 2], ?a),
+my_rule(["s"], ?b)` answered NO SOLUTIONS — the first call's `?t := Int64` refuted the
+second call's `List[T = String]`, because both firings shared one variable. That is exactly
+what a mis-placed `?xd` would do to two `p` goals in one body.
+
+**THREE POPULATIONS, and only one of them is a question.**
+
+| variables | where they come from | new work |
+|---|---|---|
+| the ones a provider's clause WRITES — `?y`, `?z` in §4.1 | ordinary clause variables: collected at the assert (`assert_rule_debruijn_with_bound_vars`), De Bruijn-closed with the head and body, opened fresh per firing by `with_fresh_vars` | none |
+| the CALLEE's, when `apply_domain` runs the provider's `member` | `with_fresh_vars` again, at that clause's own activation | none — **provided** `apply_domain` reduces to an ordinary goal activation rather than inventing its own opening; see below |
+| `?xd`, which the TRANSFORM introduces | — | **this is the question** |
+
+**TWO PLACEMENTS FOR `?xd`, each with a precedent already in the tree.**
+
+1. **Mint it in the CONVERTER, before the rule is asserted.** This is what `require[X]`
+   already does: `rewrite_require_goal` lowers `require[Eq[T]]` to `find_dictionary(Eq, out:
+   ?<fresh>)` at parse time (convert.rs, §1). A variable minted there is in the parse tree,
+   so `assert_rule_debruijn_*` collects it like any other body variable and there is no frame
+   surgery at all. The catch is that the transform is not a converter rewrite: it keys on the
+   head's BOUND, which the converter has not resolved — at that point `?x: A` is still a
+   `typed_var` marker and `A` is a name.
+2. **Mint it in the TYPING sweep and GROW the frame.** The sweep may already rewrite a clause
+   body wholesale (`set_rule_body_nodes`, §1's first established property), and growing a
+   frame after the assert has one owner: `KnowledgeBase::extend_rule_frame_with_bounds`,
+   added by 5G28A for `expand_rule_head_bound_type_params` — the other pass that mints
+   variables post-assert. **It PREPENDS, and that is what makes it safe rather than a
+   renumbering**: a De Bruijn index is `globals.len() - 1 - position`, so inserting at the
+   FRONT moves every existing variable one position later and leaves its index exactly where
+   it was, while the new variables take the indices above the old top. `arity` moves with
+   `globals` because `with_fresh_vars` mints exactly `arity` fresh variables and indexes them
+   by De Bruijn index — a frame grown without it would leave the new slot unopened, which is
+   the sharing above.
+
+Placement 2 is the one the transform can actually reach, and it has the owner it needs. What
+is NOT worked out is whether one `?xd` per clause suffices or one per typed column is needed
+(`p(?x: A, ?y: B)` fetches two domains), and how that interacts with `set_rule_body_nodes`'
+one constraint — that fact-ness must not flip, so a body-less clause cannot be given a body
+this way (§1, §5's body-less boundary).
+
+**AND THE CALLEE MUST NOT BE SPECIAL.** The second row above holds only if `apply_domain`
+selects the provider's `member` clauses and lets the ORDINARY activation open them — the
+`with_fresh_vars` path `step_choice_point` already takes — rather than opening a clause
+itself. Stated as a constraint on §3's builtin because the alternative is a second clause
+opener, and two openers is how a frame invariant comes to be true in one of them.
+
 ## 5. What it depends on
 
 **The op→rule dictionary channel**, `channel §10 item 3`, owner **WI-20260909-NAR1X**,
