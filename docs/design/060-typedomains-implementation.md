@@ -296,21 +296,35 @@ Written as questions, because none of them was measured.
   every provider here is derived, so a hand-written wrong one is not on the path. It becomes
   a real question only if providers are ever written by hand. (§0 says why `member` cannot
   carry the type even if it wanted to.)
-- **Which pass DERIVES `provides SortDomain[T = Colour]`, and what it owes.** Not the
-  typer — a LOAD pass, beside `kb/eq_derive.rs`'s `run`, which is the one existing pass that
-  ASSERTS provisions (it files derived `NonEq` / `PartialEq` `SortProvidesInfo` facts for
-  Float-containing composites). Its population is `derive_domain_member_clauses`' — every
-  sort that derives a domain — and `<Sort>.domain`'s own derivation in §7.1 is the shape to
-  copy. Three obligations come with standing there, all documented at `eq_derive`'s call
-  site: drop `provides_index` to `None` FIRST so reads during the loop see the facts being
-  asserted, rebuild it after (`build_provides_index`) so the post-derivation checks and the
-  persisted runtime index read a complete one, and invalidate the requires-chain cache
+- **WHERE the derivation of `provides SortDomain[T = Colour]` stands — open, and the
+  deciding constraint is that it must NAVIGATE TYPES.** The conditional provision for a
+  parameterised sort (`provides SortDomain[T = List[T = T]] requires SortDomain[T]`) is not
+  a name-level fact: emitting it means reading the sort's parameters and its constructors'
+  field types, and deciding which of them recur. Several placements are possible and none
+  is settled:
+
+  | placement | what it buys / costs |
+  |---|---|
+  | a LOAD pass beside `kb/eq_derive.rs`'s `run` | the one existing pass that ASSERTS provisions (derived `NonEq` / `PartialEq` for Float composites), and `derive_domain_member_clauses` already has the constructor field types there. But it runs inside `type_check_sorts`, before the typer has said anything |
+  | AFTER the typer | types are fully navigable, which is what the emission needs; but every load check that READS provisions has already run by then |
+  | a NORMALIZATION pass after loading, derivations before typing | keeps the typer reading a KB that is already complete, at the cost of a new phase boundary |
+  | SPLIT — declaration early, body late | the precedent exists and was FORCED: §7.1 mints `<Sort>.domain`'s NAME in pass 1 and builds its CLAUSE at the drain, because a citation is lowered during the item walk while the clause needs every file's sorts loaded |
+
+  The split is the one with a worked precedent in this very feature, which is a reason to
+  look at it first rather than an argument that it wins.
+
+  **Three obligations follow the pass wherever it stands**, all documented at `eq_derive`'s
+  call site: drop `provides_index` to `None` FIRST so reads during the loop see the facts
+  being asserted, rebuild it after (`build_provides_index`) so the post-derivation checks and
+  the persisted runtime index read a complete one, and invalidate the requires-chain cache
   (WI-1110 — `direct_requires` now reads provisions, so every pass asserting a
-  `SortProvidesInfo` owes that call). MEASURED 2026-09-12: a `provides` block loads when
-  written inside the provider sort's own declaration and is refused at namespace level ("a
-  `provides` clause needs a type at its address"), so the derivation must emit it at the
-  sort. Mechanical, but it multiplies the provision facts by the number of domain-bearing
-  sorts, and the dispatch cost of that was not measured.
+  `SortProvidesInfo` owes that call).
+
+  MEASURED 2026-09-12: a `provides` block loads when written inside the provider sort's own
+  declaration and is refused at namespace level ("a `provides` clause needs a type at its
+  address"), so wherever the pass stands it must emit at the sort. And the derivation
+  multiplies the provision facts by the number of domain-bearing sorts; the dispatch cost of
+  that was not measured.
 - **Whether the bootstrap really is structural.** With `member` declared untyped it carries
   no bound, so the sweep generates nothing for it and §4's transform never reaches it; and a
   provider's hand-written `domain_member(?x, Colour)` is not a generated goal either, so it
