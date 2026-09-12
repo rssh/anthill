@@ -750,3 +750,70 @@ NOTHING IS COMMITTED. The L1 tree (head append, `hidden_slot_params_of*`, the
 working tree as the measurement that produced §1–§3, and is to be kept or discarded by the
 mechanism decision above.
 
+### 2026-09-12T07:18:53Z — feedback — claude
+
+DECISION C — THE TYPE RIDES BESIDE THE GOAL, NOT AS AN EXTRA HEAD ARGUMENT, AND IS RESOLVED
+FROM THE FRAME AT EVALUATION. Settled with the user 2026-09-12, replacing Decision B (the
+hidden head slot) of the 05:43 note. L1 is DISCARDED — reverted from the working tree, its
+measurement kept in the feedback above.
+
+THE ARGUMENT THAT DECIDED IT IS THE USER'S, and it is about WHEN the type is known, not about
+cost. With the type baked in as a head argument the TYPER is what fills it, so inside
+
+    operation g[T]() -> Int64 = List[T = T].domain.takeN(5).length()
+
+the argument is pinned to `g`'s RIGID `T` and the goal reaching the resolver carries a rigid. A
+rigid has no constructors, so the member goal cannot enumerate — it delays, and the program gets
+the RAISES column §1 measured, this time for a CORRECT program. The real type is known only at
+`g[Colour]()`, at RUN time, which is exactly where `Frame::type_args` holds it (WI-272,
+`(declared-param-name, resolved-type-term)`) and where `inherit_enclosing_sort_type_args` already
+carries a sort's parameters into a sibling's frame. Reading the frame at evaluation is native to
+the beside-the-goal shape and bolted onto the head-argument one. The 06:17 plan half-saw this:
+its E2 skips a rigid from the ENCLOSING SORT so "eval inherits the frame" — but an OPERATION's
+own `[T]` is the same question and the plan does not cover it.
+
+THE SHAPE, stated without the word "out-of-band" (my coinage, dropped):
+
+    goal reaching SLD          dom(?x)              -- UNCHANGED, the written shape
+    riding beside it           Wrap.T := <type>     -- resolved through Frame::type_args
+    what the resolver does     opens the clause, then binds the clause's own bound variable
+                               from it (`pin_type_vars`, gap 2, already built)
+
+Nothing counts it as an argument, so NO arity change, NO discrimination-index change, NO body-goal
+rewriting, NO `pos_arity` readers, NO printer round-trip, and NO spec-op dispatch-bridge cost —
+the 13 red tests of the L1 measurement do not arise. THE SLOT RULE AND THE FIXPOINT QUESTION
+DISSOLVE WITH IT: there is no head shape to be uniform about, so "which predicates get a slot" is
+no longer a question. A clause whose bound mentions the receiver's parameter is pinned; one whose
+bound does not has nothing to pin, and whether its bracket is meaningful is decided at the TYPER,
+where the column types are.
+
+SITES, in build order:
+  R0 RESOLVER, THE CHANNEL. `ResolverFrame` gains a type-argument channel inherited on push the
+     way `assumed_facts` is — which is the `Frame::child_context()` analogue and answers the
+     transitivity question (acceptance row (g)'s `rule again(?y) :- dom(?y)` cited as
+     `Wrap[T = Colour].again`): a body goal inherits its clause's channel, and a body goal that
+     writes its OWN bracket shadows it. Keyed by (sort, parameter symbol).
+  R1 RESOLVER, THE PIN. At the clause activation (`step_choice_point`, resolve.rs ~4400, where
+     `original_goal` is in scope and `with_fresh_vars` is called): open the clause's stored
+     bounds against the fresh frame — `term_from_debruijn(bound, fresh)`, which
+     `typed_pattern_bounds_hold` already does — and `pin_type_vars` the caller's type against
+     each, binding into the merged σ. VERIFY (v6): `with_fresh_vars` returns `(fresh_nodes,
+     answer_links)` and NOT the fresh frame, so the opened variable's `VarId` is not currently
+     reachable; a sibling that hands it back is needed.
+  E1 EVAL, THE SUPPLY. `build_relation_value` attaches the citation's types to the query, each
+     one walked through `Frame::type_args` FIRST so a rigid becomes the caller's real type.
+     VERIFY (v7): the citation's goal is a bare `Value::Entity` inside `pattern_query(term: …)`
+     and carries no occurrence, so it holds nothing today — decide between making it a
+     `Value::Node` of the citation occurrence (reusing `resolved_type_args`, the channel the
+     typer already writes) and a second field on `pattern_query`.
+  T1/T2 TYPER. As the 06:17 plan's T1/T2, with one change: a RIGID pin is left OFF the channel
+     deliberately, for E1 to resolve from the frame — the rule the plan stated for the enclosing
+     sort, now the rule for every rigid.
+  W1/D1 as before.
+
+STILL TO SETTLE, and not settled here: whether an inherited channel (R0) is the right semantics
+or whether a clause must write its own bound to be pinnable. R0 is the requires analogue and
+makes row (g) work as written; the alternative is lexical and would amend row (g) to
+`rule again(?y: Wrap[T = T]) :- dom(?y)`. Decide before building R0 — R1 and E1 do not depend
+on it.
+
