@@ -8009,12 +8009,14 @@ impl KnowledgeBase {
                 _ => None,
             }
         }
-        let spec_sort = match self
-            .walk_arg(goal.pos_arg(self, 0), subst)
-            .and_then(|v| head_symbol(self, &v))
-        {
-            Some(s) => s,
-            None => return BuiltinResult::Failure,
+        // WALKED ONCE. Slot 0 is read for two things — the spec BASE and, since
+        // WI-20260909-S8CBV gate (1), the projected MEMBER — and `walk_arg` is on the
+        // per-goal path, so the value is taken once and both readers share it.
+        let Some(spec_arg_val) = self.walk_arg(goal.pos_arg(self, 0), subst) else {
+            return BuiltinResult::Failure;
+        };
+        let Some(spec_sort) = head_symbol(self, &spec_arg_val) else {
+            return BuiltinResult::Failure;
         };
         let op_functor = match self
             .walk_arg(goal.pos_arg(self, 1), subst)
@@ -8023,6 +8025,11 @@ impl KnowledgeBase {
             Some(s) => s,
             None => return BuiltinResult::Failure,
         };
+        // WI-20260909-S8CBV gate (1) — the MEMBER a projected carrier names, read off the
+        // stored instance in slot 0. Slot 2 holds the projection's ROOT (the head
+        // variable), because that is the value whose type is about to be read; the member
+        // is what says which of that type's parameters the carrier actually is.
+        let project = super::typing::requirement_projection_member(self, &spec_arg_val);
         let mut arg_vals: Vec<Value> = Vec::with_capacity(pos_arity - 2);
         for i in 2..pos_arity {
             match self.walk_arg(goal.pos_arg(self, i), subst) {
@@ -8047,7 +8054,7 @@ impl KnowledgeBase {
             .find(|k| self.local_name_of(*k) == super::typing::REQUIREMENT_OUT_LABEL);
         let Some(out_sym) = out_sym else {
             return match super::typing::find_dictionary_guard(
-                self, subst, spec_sort, op_functor, &arg_vals,
+                self, subst, spec_sort, op_functor, &arg_vals, project,
             ) {
                 super::typing::FindDictOutcome::Fire => BuiltinResult::Success,
                 super::typing::FindDictOutcome::DontFire => BuiltinResult::Failure,
@@ -8064,9 +8071,9 @@ impl KnowledgeBase {
         // what makes it the σ-VALUE rather than the variable leaf.
         let out_slot = goal.named_arg(self, out_sym);
         match self.walk_arg(out_slot, subst) {
-            Some(out) => {
-                self.read_dictionary_into(subst, spec_sort, op_functor, &arg_vals, out, faults)
-            }
+            Some(out) => self.read_dictionary_into(
+                subst, spec_sort, op_functor, &arg_vals, out, project, faults,
+            ),
             None => unreachable!("`named_keys` listed `out` but `named_arg` has no child for it"),
         }
     }
@@ -8093,6 +8100,7 @@ impl KnowledgeBase {
     /// identity was `(arena, raw)`, so two scratch interpreters gave one dictionary
     /// two identities and this site had to WARN that `raw()` must not be read; the
     /// second identity is gone, not documented.
+    #[allow(clippy::too_many_arguments)]
     fn read_dictionary_into(
         &mut self,
         subst: &Substitution,
@@ -8100,51 +8108,55 @@ impl KnowledgeBase {
         op_functor: Symbol,
         arg_vals: &[Value],
         out: Value,
+        // WI-20260909-S8CBV gate (1): the projected member, passed through from the goal's
+        // slot 0 so the FETCH sees the same carrier type the GUARD did.
+        project: Option<Symbol>,
         faults: &mut ReduceFaults,
     ) -> BuiltinResult {
         use super::typing::{FindDictFetch, FindDictOutcome};
-        let dict =
-            match super::typing::fetch_dictionary(self, subst, spec_sort, op_functor, arg_vals) {
-                FindDictFetch::Fetched(dict) => dict,
-                FindDictFetch::Guard(FindDictOutcome::Fire) => {
-                    unreachable!("fetch_dictionary never reports Guard(Fire) — it fetches instead")
-                }
-                FindDictFetch::Guard(FindDictOutcome::DontFire) => return BuiltinResult::Failure,
-                // The carried type is not readable yet (the witness value is unbound).
-                // DELAY, and the wake condition needs no new machinery: the goal
-                // MENTIONS the witness value variables, so binding one re-fires it
-                // through ordinary rotation. This is what replaced WI-300's bespoke
-                // `FindDictOutcome::Suspend` reading with the general mechanism.
-                FindDictFetch::Guard(FindDictOutcome::Suspend) => return BuiltinResult::delay(),
-                FindDictFetch::Undecided { detail } => {
-                    // Undecided, not failed. `out` says the clause asked to be PASSED a
-                    // dictionary; answering "no solution" here would be the silent skip
-                    // a delay exists to refuse, and it is also the row where a SUPPLIED
-                    // `?d` is allowed to decide — which it cannot do if the goal has
-                    // already failed.
-                    //
-                    // `detail` IS DROPPED, and that is a known gap with an owner rather
-                    // than an oversight: a resolver builtin has no diagnostic channel
-                    // (`BuiltinResult` is Success / Bindings / Delay / Failure), so a
-                    // `require[X]` whose provider tree genuinely cannot be built delays
-                    // with nothing saying why. Routing it — a flounder report on the
-                    // WI-737 path is the obvious candidate — is WI-1040 residue, recorded
-                    // in that ticket's feedback. Built only on this failure edge, never
-                    // on the resolving path.
-                    let _ = detail;
-                    return BuiltinResult::delay();
-                }
-                // §4: a run-time tie is UNREACHABLE, not refused — overlap between
-                // provider heads is decided at typing/load. Reaching it means the
-                // coherence machinery let one through, so it is a defect: loud in
-                // debug/test (the repo's loud-over-silent rule, spelled the way
-                // `bridge_op_to_eval` spells the same class), and a delay in release
-                // rather than picking one of the two.
-                FindDictFetch::Defect { detail } => {
-                    debug_assert!(false, "find_dictionary: {detail}");
-                    return BuiltinResult::delay();
-                }
-            };
+        let dict = match super::typing::fetch_dictionary(
+            self, subst, spec_sort, op_functor, arg_vals, project,
+        ) {
+            FindDictFetch::Fetched(dict) => dict,
+            FindDictFetch::Guard(FindDictOutcome::Fire) => {
+                unreachable!("fetch_dictionary never reports Guard(Fire) — it fetches instead")
+            }
+            FindDictFetch::Guard(FindDictOutcome::DontFire) => return BuiltinResult::Failure,
+            // The carried type is not readable yet (the witness value is unbound).
+            // DELAY, and the wake condition needs no new machinery: the goal
+            // MENTIONS the witness value variables, so binding one re-fires it
+            // through ordinary rotation. This is what replaced WI-300's bespoke
+            // `FindDictOutcome::Suspend` reading with the general mechanism.
+            FindDictFetch::Guard(FindDictOutcome::Suspend) => return BuiltinResult::delay(),
+            FindDictFetch::Undecided { detail } => {
+                // Undecided, not failed. `out` says the clause asked to be PASSED a
+                // dictionary; answering "no solution" here would be the silent skip
+                // a delay exists to refuse, and it is also the row where a SUPPLIED
+                // `?d` is allowed to decide — which it cannot do if the goal has
+                // already failed.
+                //
+                // `detail` IS DROPPED, and that is a known gap with an owner rather
+                // than an oversight: a resolver builtin has no diagnostic channel
+                // (`BuiltinResult` is Success / Bindings / Delay / Failure), so a
+                // `require[X]` whose provider tree genuinely cannot be built delays
+                // with nothing saying why. Routing it — a flounder report on the
+                // WI-737 path is the obvious candidate — is WI-1040 residue, recorded
+                // in that ticket's feedback. Built only on this failure edge, never
+                // on the resolving path.
+                let _ = detail;
+                return BuiltinResult::delay();
+            }
+            // §4: a run-time tie is UNREACHABLE, not refused — overlap between
+            // provider heads is decided at typing/load. Reaching it means the
+            // coherence machinery let one through, so it is a defect: loud in
+            // debug/test (the repo's loud-over-silent rule, spelled the way
+            // `bridge_op_to_eval` spells the same class), and a delay in release
+            // rather than picking one of the two.
+            FindDictFetch::Defect { detail } => {
+                debug_assert!(false, "find_dictionary: {detail}");
+                return BuiltinResult::delay();
+            }
+        };
         // BIND (unbound `?d`) or CHECK (bound) — one operation, because unification
         // IS both: against an unbound variable it binds, against a supplied
         // dictionary it compares structurally through the WI-1019 view.

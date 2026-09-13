@@ -20,19 +20,21 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §2.2 / §8.1 rule-head type VARIABLES | a bound's variable is a clause variable | **WI-20260911-5G28A** | **delivered** except the citation bracket — §7.2 |
 | §2.2 / §8.1 the citation BRACKET | which instance a citation means | **WI-20260911-5G28A** | **design settled, not built** — §7.3 |
 | §3 anchor (requirement half) | covered body call grounds the spec | WI-1040 | delivered |
-| §3 anchor (typed-head half) | `?x: T` grounds the spec | **WI-20260908-VVM1R** | **design settled, not built** — §8, mechanism at §8.2–§8.6 |
-| channel §10 item 1 | retain the spec's type-args | **WI-20260908-VVM1R** | **settled, not built** — §8.6, taken inline |
+| §3 anchor (typed-head half) | `?x: T` grounds the spec | WI-20260909-QMFC5 | **delivered** — §8, mechanism at §8.2–§8.6 |
+| channel §10 item 1 | retain the spec's type-args | WI-20260909-51W18 | **delivered** — §8.6 |
 | §3 anchor, CHECK tier | `requires(X)` under an anchor | **WI-20260909-QMFC5** | **delivered** — emits the same goal as the bind tier, §8.8 |
-| channel §10 item 3 | op→rule dictionary channel (polytypes) | **WI-20260909-NAR1X** | **settled, not built** — §8.10 |
+| channel §10 item 3 | op→rule dictionary channel (polytypes) | WI-20260909-NAR1X | **delivered** — the ground edge; the GENERATIVE one is nobody's, §8.10 |
+| channel §10 item 4 | a requirement written at a path projection | WI-20260909-S8CBV | **delivered** for both surfaces — operation `requires` and the rule-body bracket, §8.5; the ATTRIBUTION by root is **not built** |
 | §4 determinism | fetch, never choose | WI-855/857/860 | delivered (058) |
 | C666A relaxation | admit the guarded non-enclosing join | WI-742 | **delivered** — §9 |
 | — (no proposal §) | the domain as a runtime value via the requirement channel | — | **exploratory**, no owner — [`060-typedomains-implementation.md`](./060-typedomains-implementation.md) |
 
 Everything delivered is driven and controlled in
-`anthill-core/tests/include/wi742_typed_relational_head_test.rs` and
-`anthill-core/tests/include/wi743_finite_domain_test.rs` and
-`anthill-core/tests/include/wi_wt8wg_domain_value_face_test.rs`, whose headers name which
-rows fail per back-out.
+`anthill-core/tests/include/wi742_typed_relational_head_test.rs`,
+`anthill-core/tests/include/wi743_finite_domain_test.rs`,
+`anthill-core/tests/include/wi_wt8wg_domain_value_face_test.rs` and
+`anthill-core/tests/include/wi_s8cbv_projection_requirement_test.rs`, whose headers name
+which rows fail per back-out.
 
 `domain` in §2.2 is the **member relation a sort defines**, not a second name for the
 §2 goal. The two are one NOTION and two FUNCTORS, and the split is not a naming
@@ -832,20 +834,88 @@ projection is the form signatures already take. (The parse error is on `?x.E`, t
 form.) **WI-20260909-S8CBV** owns it, and it REMOVES the selector above and lifts the
 anchored gate rather than adding to them.
 
-**S8CBV's OPERATION half is delivered; its RULE half is not.** The two gates it names are
+**S8CBV's TWO GATES ARE BOTH DELIVERED; its ATTRIBUTION is not.** The gates were
 independent and only the second was ever about this umbrella:
 
-  * the **operation** requirement channel now resolves and drives a projection —
+  * the **operation** requirement channel resolves and drives a projection —
     `operation pick(x: Box) requires Desc[T = x.E]` answers a different `Desc` instance
     per call site, measured `7` and `9` where a concrete bracket answers `7` and `7`.
     Design and the traps: `requirement-channel.md` §10 item 4; the surface rule:
     `kernel-language.md` §5.2 (*Operation-level `requires` over a spec*). Nothing in it touches this section's selector, because the
     operation channel never had one — a `requires` names one dictionary per clause;
-  * the **rule-body** `require[Desc[T = p.E]]` bracket is STILL REFUSED, by S1's drop rule
-    (`p.E` "names neither a sort nor one of `Desc`'s own type parameters"). That gate must
-    learn that a projection is a third kind, and it is the one that feeds the
-    attribution-by-root work this section describes — the selector above stands until it
-    lands.
+  * the **rule-body** `require[Desc[T = p.E]]` bracket now LOADS and THREADS — gate (1),
+    delivered 2026-09-13 after WI-20260909-C7ANM unblocked it. `rule anchored(p: Box, ?r)
+    :- ?d = require[Desc[T = p.E]], Desc.tag(?r)` answers `7` at a `Box` of `Red` and `9`
+    at a `Box` of `Blue`: one clause, two call sites, two instances.
+
+**THE TWO GATES ARE NOT ONE MECHANISM, and the difference is the receiver.** An
+operation's `x.E` carries `Ref(x)` — a parameter symbol — and is δ-eliminated against the
+argument at the CALL. A clause's `p.E` carries a logic VARIABLE, closed to a De Bruijn slot
+with the rest of the rule and opened fresh per firing, so the member is projected off the
+carrier's CARRIED TYPE at the RESOLVER (`requirement_projection_member` reads it off the
+retained instance in slot 0, `projected_arg_types` applies it for BOTH the guard and the
+fetch — one place, or a goal could be guarded on the receiver and fetched on its member).
+`path-dependent-types.md` §4 names the split: a flexible projection "arises only where a
+receiver is a logic variable, i.e. in rule bodies, never in operation signatures".
+
+**THE ROOT IS THE ANCHOR AND ITS BOUND IS NOT TESTED FOR `provides`** — the one rule that
+separates a projected carrier from a direct one, and what refused the shape before.
+`require[Desc[T = Box]]` says the carrier IS `Box`, so `Box` must provide `Desc`;
+`require[Desc[T = p.E]]` says it is `Box`'s ELEMENT, about which `Box` says nothing. The
+two carrier-parameter agreement checks below the selection are switched off explicitly for
+a projection, because both compare the written carrier to the bound AS SORTS and a
+projected carrier is neither. Driven as a pair: the same head, the same bound and the same
+spec, with the CONSTANT bracket refused one row above the projection being admitted.
+
+**Five axes, measured 2026-09-13** (each back-out applied by a script asserting its
+pattern matched exactly once, the tree restored by checksum between runs), and no two fail
+the same set:
+
+| backed out | rows | which |
+|---|---|---|
+| the loader rung (`try_require_spec_projection`) | 4 | all — nothing LOADS, with S1's drop-rule message verbatim, the pre-ticket verdict |
+| the anchor route (`written_projection_anchor`) | 3 | the `Box`-rooted clauses do not LOAD: "head bound(s) — Box — provide no `Desc`", the `provides` scan asking about the ROOT where the question is about its ELEMENT |
+| the runtime δ (`requirement_projection_member`) | 2 | both LOAD CLEAN and answer wrongly — the acceptance drops to no answer, the spec-bound row stops delaying |
+| the static member check | 1 | a member `Box` cannot declare goes back to loading clean and residualizing, with no diagnostic |
+| the suspend arm (`Suspend` → `DontFire`) | 2 | the two delay rows answer ZERO rows instead of one indefinite one — WI-067's silent drop |
+
+The δ axis is why the acceptance is two NUMBERS and not a clean load: with δ gone the
+carrier type read at the fetch is the RECEIVER's own type rather than its member, so
+`Box[E = Red]` matches no `Desc` provider and the clause silently has no answers.
+
+**THE STATIC-MEMBER AND SUSPEND AXES DRAW ONE LINE, and a first cut had it in the wrong
+place.** A member the bound sort STATICALLY cannot declare (`require[Desc[T = p.Zork]]`
+under `p: Box`) is a typo and refuses at LOAD; a member it declares that the carrier has
+not yet BOUND is a run-time condition and DELAYS. As first written every such member
+residualized, so an author's typo was indistinguishable from a clause waiting on a binding
+— and the sibling typo one character over (`require[Desc[T = Zork]]`, a bogus SORT) was
+already a load error. `/code-review` measured it. The refusal is gated on the bound being
+a DATA sort, which is §8.4's own rule rather than caution: a `provides` onto a
+constructor-declaring sort is refused, so no run-time carrier can be narrower than such a
+bound and its declared parameters are the whole truth. An INTRODUCER bound records the
+SPEC, admits every provider, and keeps the delay — which is the one shape that still
+reaches the runtime arm, and the row that drives it.
+
+
+**A MULTI-PARAMETER SPEC DOES NOT RESOLVE THROUGH THE ANCHOR AT ALL, and that is §8.4's
+path rather than this one.** Found while probing whether gate (1)'s resolver-side member
+reader could disagree with the anchor's: it can only disagree on a bracket with TWO
+projections, which needs two type parameters. (The two now derive the member by ONE rule
+— `/code-review` named the divergence and the reader was keyed on the carrier parameter,
+which is the question the anchor asks.) MEASURED 2026-09-13 on a two-parameter spec
+whose carrier is its SECOND-declared parameter — seven bracket spellings, every admissible
+one RESIDUALIZES, **including the two controls with a CONCRETE carrier and no projection
+anywhere** (`require[Two[A = Red]]` and `require[Two[A = Red, B = Blue]]` under `?x: Red`).
+So the disagreement is unreachable, and the reason is not the projection: the typed-head
+anchor serves only a spec whose carrier is pinned by one parameter. Recorded here and at
+`requirement_projection_member`; nothing owns it.
+
+**What gate (1) does NOT deliver: the ATTRIBUTION.** Keying which dictionary a `require`
+means on the projection ROOT — which REMOVES the sort-matching selector above, narrows the
+`>1`-anchor refusal, and lifts the anchored gate — is untouched. The one thing to measure
+before building it: `views_structurally_equal` over the δ-eliminated spec is what separates
+two receivers at the OPERATION level, and there the receivers are already caller-keyed by
+δ. Whether a rule head can rely on that is the first thing to measure, not to assume.
 
 One boundary the operation half found and did not close, recorded because it is the same
 question the root attribution asks: where a call cannot GROUND the projection (the caller
@@ -1088,7 +1158,7 @@ which is exactly where inheriting would decide.
 | S2 | WI-20260909-QMFC5 | the anchor, BOTH tiers — one goal, one consumer (§8.2–§8.4, §8.8) — **delivered** | S1 |
 | S4 | WI-20260909-96ZTM | two `require`s bind two dictionaries, attributed by the written bracket (§8.5) — **delivered**; the weave is NOT changed | S2 |
 | S5 | WI-20260909-NAR1X | the op→rule channel for polytypes, channel doc §10 item 3 (`ResolveConfig` field seeded from `frame.requirements`) | S4 |
-| S6 | WI-20260909-S8CBV | attribution by PROJECTION ROOT — the requirement channel learns to name `x.E`, and identity becomes δ/σ-conversion (`path-dependent-types.md` §4). REPLACES S4's sort-matching selector and lifts its anchored gate. **Gate (2), the OPERATION channel, is delivered** (§8.5's note); gate (1) — the rule-body bracket — and the attribution itself are not | S4 |
+| S6 | WI-20260909-S8CBV | attribution by PROJECTION ROOT — the requirement channel learns to name `x.E`, and identity becomes δ/σ-conversion (`path-dependent-types.md` §4). REPLACES S4's sort-matching selector and lifts its anchored gate. **Both surface gates are delivered** — (2) the OPERATION channel, and (1) the rule-body bracket (2026-09-13, §8.5); the ATTRIBUTION itself is not | S4, C7ANM |
 
 Tagged `vvm1r`. **S3 (the check tier) is FOLDED INTO S2** rather than filed, and was
 delivered with it — there is no S3 ticket. The fold was justified as "a load-time verdict

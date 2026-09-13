@@ -65632,8 +65632,14 @@ pub(crate) fn find_dictionary_guard(
     spec_sort: Symbol,
     op_functor: Symbol,
     arg_vals: &[Value],
+    // WI-20260909-S8CBV gate (1): the member a projected carrier names
+    // ([`requirement_projection_member`]), `None` for every direct bracket.
+    project: Option<Symbol>,
 ) -> FindDictOutcome {
-    let arg_types = witness_arg_types(kb, subst, arg_vals);
+    let arg_types = match projected_arg_types(kb, subst, arg_vals, project) {
+        Ok(t) => t,
+        Err(outcome) => return outcome,
+    };
     // THE ANCHOR FORM'S NO-`out` PATH — and it is the CHECK TIER's only consumer.
     //
     // `/code-review` found this branch unreachable and it was: the anchor emitted
@@ -65647,6 +65653,50 @@ pub(crate) fn find_dictionary_guard(
         return anchor_guard(kb, spec_sort, &arg_types);
     }
     guard_over_arg_types(kb, spec_sort, op_functor, &arg_types)
+}
+
+/// WI-20260909-S8CBV gate (1) — [`witness_arg_types`], with δ applied to the CARRIER
+/// when the bracket projected one. `Err` carries the three-valued verdict the caller must
+/// return unchanged.
+///
+/// ONE PLACE, because the guard and the fetch must see the SAME carrier type or a goal
+/// could be guarded on the receiver and fetched on its member. That pairing is the same
+/// one [`fetch_dictionary`] already states for `is_anchor_form`, one question over.
+///
+/// A CARRIER THAT DOES NOT YET BIND THE MEMBER SUSPENDS, never `DontFire`. The rule body
+/// may be entered before the head variable is bound, and deciding the guard false there
+/// would silently drop a clause that is merely not ready — WI-067's discipline, which
+/// [`anchor_guard`] applies to a headless carrier for the identical reason.
+fn projected_arg_types(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    arg_vals: &[Value],
+    project: Option<Symbol>,
+) -> Result<Vec<Value>, FindDictOutcome> {
+    let mut arg_types = witness_arg_types(kb, subst, arg_vals);
+    let Some(member) = project else {
+        return Ok(arg_types);
+    };
+    // NO CARRIER AT ALL, with a projection to apply — a shape nothing emits: the anchor
+    // is what produces a projected goal and it always writes exactly one carrier slot.
+    // Loud in debug and a DELAY in release, the repo's rule for an unreachable defect,
+    // and NOT the `DontFire` a first cut wrote here: deciding the guard false would drop
+    // the clause silently, which is the very thing this function's own rule forbids
+    // three lines down. `/code-review` found the contradiction.
+    let Some(first) = arg_types.first() else {
+        debug_assert!(
+            false,
+            "projected find_dictionary goal with no carrier argument"
+        );
+        return Err(FindDictOutcome::Suspend);
+    };
+    match project_carried_member(kb, first, member) {
+        Some(projected) => {
+            arg_types[0] = projected;
+            Ok(arg_types)
+        }
+        None => Err(FindDictOutcome::Suspend),
+    }
 }
 
 /// Each witness argument's CARRIED TYPE (`value_type_term`, WI-578) — the same
@@ -65682,6 +65732,83 @@ fn guard_over_arg_types(
     simp_guard_holds_core(kb, op_functor, spec_sort, |i| {
         arg_sorts.get(i).copied().flatten()
     })
+}
+
+/// WI-20260909-S8CBV gate (1) — the MEMBER a `require` bracket's carrier projects, read
+/// off the stored spec instance (`Desc[T = p.E]` ⟹ `E`), or `None` for every bracket
+/// that names a type directly.
+///
+/// READ AT THE RESOLVER, because that is where the instance is. The emitted goal carries
+/// the instance whole in slot 0 (WI-20260909-51W18's retention) and the carrier VARIABLE
+/// in slot 2; the member is the one piece of the projection that cannot ride slot 2,
+/// since that slot holds the value whose type is about to be read.
+///
+/// CARRIER-BLIND, through `extract_type`: the instance reaches here as a σ-walked
+/// `Value`, which may be a term or an occurrence depending on the path that stored it.
+///
+/// THE CARRIER PARAMETER'S BINDING, WHICH IS THE QUESTION THE ANCHOR ASKS. A first cut
+/// took the first projected binding it found anywhere in the instance, and
+/// `/code-review` named the defect: [`written_projection_anchor`] reads the binding AT
+/// [`spec_carrier_param_or_sole`], so two readers were deriving one fact by two rules and
+/// could disagree — `require[Two[A = Leaf, B = p.E]]` has the anchor select `A = Leaf` as
+/// an ordinary sort while this function projected `B`'s `E` off `Leaf`, which binds no
+/// `E`, suspending forever on a clause that should never have projected at all.
+///
+/// NO ROW MOVES, and that is stated rather than left to be assumed. The two rules can
+/// differ only on a bracket carrying TWO bindings, which needs a spec with two type
+/// parameters — and MEASURED 2026-09-13 on exactly that (a two-parameter spec whose
+/// carrier is its SECOND-declared parameter, seven bracket spellings), every admissible
+/// spelling RESIDUALIZES, **including the two CONTROLS with a CONCRETE carrier and no
+/// projection anywhere** (`require[Two[A = Red]]` and `require[Two[A = Red, B = Blue]]`
+/// under `?x: Red`). A multi-parameter spec does not resolve through the TYPED-HEAD
+/// ANCHOR at all — WI-20260909-QMFC5's path, which predates this one and owns that gap.
+/// So this is one derivation replacing two, not a behaviour change, and whoever closes
+/// that gap inherits a site that already asks the right question.
+///
+/// ONE LOOKUP, memoized. [`spec_carrier_param_or_sole`] caches on
+/// `kb.spec_carrier_param_cache`; the SELF-REPRESENTING pre-check the anchor applies
+/// beside it is deliberately NOT repeated here, because it scans a sort's operations and
+/// this runs per goal. The one shape that leaves is a self-representing spec whose
+/// bracket projects: the anchor has no carrier parameter for such a spec and never
+/// selects it, so a projection there can only have arrived by the WITNESS path — where
+/// this function has always projected, and still does.
+pub(crate) fn requirement_projection_member(
+    kb: &KnowledgeBase,
+    instance: &Value,
+) -> Option<Symbol> {
+    let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, instance) else {
+        return None;
+    };
+    let carrier = spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(base))?;
+    let (_, written) = bindings.iter().find(|(k, _)| same_label(kb, *k, carrier))?;
+    match extract_type(kb, written) {
+        TypeExtractor::ExprCarried { member, .. } => Some(member),
+        _ => None,
+    }
+}
+
+/// WI-20260909-S8CBV gate (1) — δ AT FIRE TIME: project `member` off the carrier's
+/// CARRIED TYPE (`Box[E = Red]` at `E` ⟹ `Red`).
+///
+/// THIS IS THE `fetch` ROW OF `requirement-channel.md` §2.1's table, not a typing
+/// operation — the invariant that "run time performs no typing operations" is about
+/// inference, unification and selection, and this is a member read off a type that has
+/// already been read. `x.E` names WHICH carried type the fetch should look at; the fetch
+/// itself is unchanged.
+///
+/// `None` when the type does not bind that member — an unbound or headless carrier, or a
+/// member the receiver's sort does not declare. The caller must SUSPEND on it rather than
+/// decide the guard false: at the moment a rule body is entered the head variable may
+/// simply not be bound yet, which is the same three-valued discipline
+/// [`anchor_guard`] already applies to a headless carrier (WI-067).
+fn project_carried_member(kb: &KnowledgeBase, ty: &Value, member: Symbol) -> Option<Value> {
+    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, ty) else {
+        return None;
+    };
+    bindings
+        .iter()
+        .find(|(k, _)| same_label(kb, *k, member))
+        .map(|(_, v)| v.clone())
 }
 
 /// WI-20260909-QMFC5 — is this rewritten goal the TYPED-HEAD ANCHOR form rather than the
@@ -65861,8 +65988,13 @@ pub(crate) fn fetch_dictionary(
     spec_sort: Symbol,
     op_functor: Symbol,
     arg_vals: &[Value],
+    // WI-20260909-S8CBV gate (1) — see [`find_dictionary_guard`].
+    project: Option<Symbol>,
 ) -> FindDictFetch {
-    let arg_types = witness_arg_types(kb, subst, arg_vals);
+    let arg_types = match projected_arg_types(kb, subst, arg_vals, project) {
+        Ok(t) => t,
+        Err(outcome) => return FindDictFetch::Guard(outcome),
+    };
     // WI-20260909-QMFC5 — one relation, two grounding paths. The guard and the goal are
     // chosen together from the same discriminant, so an anchored goal can never be
     // guarded one way and fetched the other.
@@ -73936,6 +74068,68 @@ fn rewrite_find_dictionary_goal(
     ))
 }
 
+/// WI-20260909-S8CBV gate (1) — the De Bruijn index of the head binding a `require`
+/// bracket's carrier PROJECTS OFF (`require[Desc[T = p.E]]` ⟹ `p`'s index), plus the
+/// member it projects. `None` when the bracket names no projection, which is every
+/// spelling that existed before this ticket.
+///
+/// THE ROOT IS THE ANCHOR, AND IT IS NOT TESTED FOR `provides`. That is the whole
+/// difference from the concrete path and it is forced by what the two brackets MEAN:
+/// `require[Desc[T = Box]]` says the carrier IS `Box`, so `Box` must provide `Desc`;
+/// `require[Desc[T = p.E]]` says the carrier is `p`'s ELEMENT, about which the bound
+/// `Box` says nothing at all. Asking `carrier_provides_spec(Box, Desc)` here is what
+/// refused the shape before this ticket, with a message naming the wrong sort.
+///
+/// THE INDEX IS READ OFF A CLOSED OCCURRENCE. The loader lowers the projection as an
+/// `Expr::Apply` over `ExprCarried` whose `value` child is an ordinary `Expr::Var`, so
+/// the rule's own De Bruijn closing rewrites it; the index it leaves is directly
+/// comparable with [`KnowledgeBase::rule_type_bounds`]' keys, which are produced by the
+/// same reversal. A receiver that is still `Var(Global)` means the closing did not see
+/// it — a loader bug, not a shape to tolerate — so it answers `None` and the clause
+/// falls to the ordinary refusal rather than grounding on a variable nothing binds.
+fn written_projection_anchor(
+    kb: &KnowledgeBase,
+    spec_arg: &Rc<NodeOccurrence>,
+    carrier_param: Symbol,
+) -> Option<(u32, Symbol)> {
+    let Some(Expr::Apply { named_args, .. }) = spec_arg.as_expr() else {
+        return None;
+    };
+    let binding = named_args
+        .iter()
+        .find(|(k, _)| same_label(kb, *k, carrier_param))
+        .map(|(_, v)| v)?;
+    let Some(Expr::Apply {
+        functor,
+        named_args: proj_args,
+        ..
+    }) = binding.as_expr()
+    else {
+        return None;
+    };
+    if kb.qualified_name_of(*functor) != "anthill.prelude.TypeExtractor.ExprCarried" {
+        return None;
+    }
+    let mut root = None;
+    let mut member = None;
+    for (k, v) in proj_args.iter() {
+        match kb.local_name_of(*k) {
+            "value" => {
+                if let Some(Expr::Var(Var::DeBruijn(i))) = v.as_expr() {
+                    root = Some(*i);
+                }
+            }
+            "member" => {
+                if let Some(Expr::Ref(m)) | Some(Expr::Ident(m)) = v.as_expr() {
+                    member = Some(*m);
+                }
+            }
+            _ => {}
+        }
+    }
+    Some((root?, member?))
+}
+
 /// WI-20260909-QMFC5 — proposal 060 §3's SECOND ANCHOR: ground a clause's requirement
 /// from a TYPED HEAD BINDING instead of from a covered body call.
 ///
@@ -74002,6 +74196,11 @@ fn anchor_grounding(
     } else {
         spec_carrier_param_or_sole(kb, spec_canon)
     };
+    // WI-20260909-S8CBV gate (1) — THE PROJECTION ROUTE, taken before the `provides`
+    // scan below because it asks a different question. See
+    // [`written_projection_anchor`]: a projected carrier anchors on its ROOT, and the
+    // root's own bound is not required to provide the spec.
+    let projection_anchor = carrier_param.and_then(|p| written_projection_anchor(kb, spec_arg, p));
     let mut anchors: Vec<(u32, Symbol)> = Vec::new();
     let mut seen_bounds: Vec<Symbol> = Vec::new();
     for &(db_index, bound_tid) in bounds {
@@ -74026,6 +74225,94 @@ fn anchor_grounding(
             .collect::<Vec<_>>()
             .join(", ")
     };
+    // THE PROJECTION'S ROOT REPLACES THE WHOLE SELECTION. Not merged into `anchors`:
+    // that list is "bounds that provide the spec", and a projection root belongs to it
+    // for no such reason — folding it in would make the >1 refusal below count it
+    // against bounds chosen by a different rule.
+    if let Some((root_index, _member)) = projection_anchor {
+        let Some(&(db_index, _)) = bounds.iter().find(|(i, _)| *i == root_index) else {
+            // The projection's receiver is a variable this clause's HEAD does not bind
+            // with a type — no type, so no member to read off it.
+            //
+            // NOT REACHABLE FROM ANY SURFACE TODAY, and that is recorded rather than
+            // trusted: `Loader::try_require_spec_projection` resolves its root in
+            // `rule_param_vars`, which holds ONLY annotated parameters and stages a bound
+            // for every one it mints, so an unannotated root never becomes a projection at
+            // all. MEASURED 2026-09-13 on `rule anchored(p: Box, q, ?r) :- ?d =
+            // require[Desc[T = q.E]], …`: it is refused one phase earlier, by
+            // WI-20260909-51W18's drop rule (`q.E` names neither a sort nor one of
+            // `Desc`'s own type parameters) — driven by
+            // [`a_projection_off_a_name_this_clause_does_not_bind_keeps_the_drop_rule_message`].
+            //
+            // KEPT AS A REFUSAL AND NOT AN `unreachable!` because what makes it
+            // unreachable is a property of ANOTHER function in another file: widen that
+            // lookup and this becomes the only thing between a projection and an anchor
+            // grounded on a variable nothing binds. A located error is the right failure
+            // for that; a panic in the loader is not.
+            return Some(Err(err(
+                format!(
+                    "the `{}` this `require` projects off to be a TYPED head binding of \
+                     this clause",
+                    kb.local_name_of(spec_base),
+                ),
+                "its projection root is a clause parameter with no type annotation, so \
+                 there is no type whose member could be read"
+                    .to_owned(),
+            )));
+        };
+        // The REAL bound is kept, not a sentinel: the two checks below that compare it
+        // against the spec are switched off by `projection_anchor` explicitly, so nothing
+        // depends on what this symbol happens to be.
+        let bound_head = bounds
+            .iter()
+            .find(|(i, _)| *i == root_index)
+            .and_then(|(_, t)| sort_functor_of_view(kb, &TermIdView(*t)))
+            .unwrap_or(spec_base);
+        // A MEMBER THE ROOT'S BOUND CANNOT HAVE IS A LOAD ERROR, not a run-time delay.
+        //
+        // MEASURED by `/code-review`: `require[Desc[T = p.Zork]]` under `p: Box` loaded
+        // CLEAN and residualized with no diagnostic anywhere, while the typo one
+        // character over — `require[Desc[T = Zork]]`, a bogus SORT — is a load error. The
+        // rung that admits the projection validates only that the last segment is
+        // Capitalized; the bound sort's declared parameters are right here in `bounds`
+        // and nothing was asking them.
+        //
+        // The SUSPEND discipline below does not cover this and its own justification says
+        // why: "the head variable may not be bound yet" is a RUN-TIME condition, and a
+        // member the bound sort statically cannot declare is not waiting for anything.
+        //
+        // ONLY WHERE THE BOUND IS A DATA SORT, and that gate is §8.4's measured rule
+        // rather than caution: a `provides` onto a constructor-declaring sort is refused
+        // ("nothing is-a a data sort"), so no run-time carrier can be NARROWER than such
+        // a bound and its declared parameters are the whole truth. A SPEC bound (the
+        // introducer form) admits every provider, and a provider may declare members the
+        // spec does not — so that shape keeps the delay.
+        if let Some((_, member)) = projection_anchor {
+            if kb.sort_has_constructors(bound_head) {
+                let declared = kb.type_params_of_sort(bound_head);
+                let member_name = kb.local_name_of(member).to_owned();
+                if !declared.iter().any(|d| *d == member_name) {
+                    return Some(Err(err(
+                        format!(
+                            "`{}` to name a type parameter of `{}`, which this `require`                              projects off",
+                            member_name,
+                            kb.local_name_of(bound_head),
+                        ),
+                        if declared.is_empty() {
+                            format!("`{}` declares none", kb.local_name_of(bound_head))
+                        } else {
+                            format!(
+                                "`{}` declares {}",
+                                kb.local_name_of(bound_head),
+                                declared.join(", "),
+                            )
+                        },
+                    )));
+                }
+            }
+        }
+        anchors = vec![(db_index, bound_head)];
+    }
     // ZERO. The clause annotated its head and the annotation does not reach this spec —
     // a fault in the BOUND, so say that rather than ask for a body call. Before this
     // existed the row was refused by the witness error, which is why the acceptance
@@ -74243,7 +74530,12 @@ fn anchor_grounding(
     // SKIPPED IN TWO SHAPES, both because there is no row to read: a SELF-REPRESENTING
     // spec pins no parameter at all, and an INTRODUCER bound IS the spec (`?x: A` under
     // `:- Desc[A]`), which no sort declares a provision for.
-    if let (Some(p), false) = (carrier_param, bound_is_the_spec) {
+    // THE CARRIER-PARAMETER AGREEMENT CHECKS BELOW DO NOT APPLY TO A PROJECTION, and
+    // switching them off explicitly is what keeps the anchor list honest. Both compare
+    // the WRITTEN carrier against the anchor's BOUND as sorts; a projected carrier is
+    // neither — it is a member of that bound, and the two are equal only by accident.
+    let sort_carrier_checks = projection_anchor.is_none();
+    if let (Some(p), false, true) = (carrier_param, bound_is_the_spec, sort_carrier_checks) {
         let row = provisions_of_spec(kb, spec_canon).find(|(provider, _, _)| {
             kb.canonical_sort_sym(*provider) == kb.canonical_sort_sym(anchor_bound)
         });
@@ -74295,7 +74587,7 @@ fn anchor_grounding(
     // already dropped upstream as a wildcard (S1's rule), so anything still standing here
     // names a real sort; and a binding that AGREES is the ordinary spelling
     // (`require[Desc[T = Leaf]]` under `?x: Leaf`), which every acceptance row uses.
-    if let (Some(p), false) = (carrier_param, bound_is_the_spec) {
+    if let (Some(p), false, true) = (carrier_param, bound_is_the_spec, sort_carrier_checks) {
         if let Some(Expr::Apply { named_args, .. }) = spec_arg.as_expr() {
             for (k, v) in named_args.iter() {
                 if !same_label(kb, *k, p) {

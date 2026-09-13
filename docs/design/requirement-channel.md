@@ -606,7 +606,8 @@ by WI-20260909-51W18); 3 and 4 are untouched — 3 is owned by WI-20260909-NAR1X
    closed ground test with no dictionary parameter; specify the channel (a
    signature extension vs a `ResolveConfig` overlay à la `assumed_facts`) and the
    caller-name → spec attribution at the boundary.
-4. **[PARTLY DELIVERED by WI-20260909-S8CBV] The bridge deviation** (§2.1).
+4. **[PARTLY DELIVERED by WI-20260909-S8CBV — both surface gates; the ATTRIBUTION is
+   not] The bridge deviation** (§2.1).
    `resolve_bridge_requirements` now δ-grounds a requirement written at a PATH
    PROJECTION before it substitutes: a `requires Desc[T = x.E]` reads the member off
    the type of the argument bound to `x` at this call, through
@@ -634,6 +635,28 @@ by WI-20260909-51W18); 3 and 4 are untouched — 3 is owned by WI-20260909-NAR1X
    TYPE, and rewriting its receiver to a `var_ref` left the eliminator — which keys on
    a `Ref` — unable to see it), and a COMPOUND receiver (`x.f.E`) needs a Node carrier
    a term slot cannot hold, so it is refused by name.
+
+   **THE RULE-BODY HALF IS DELIVERED TOO** (2026-09-13, gate (1) of the same ticket, once
+   WI-20260909-C7ANM made a sigil-free head parameter bind its own column). `?d =
+   require[Desc[T = p.E]]` in a clause body now loads and threads. It is a SECOND
+   mechanism, not the same one one position over, and the difference is the receiver: an
+   operation's `x.E` carries `Ref(x)` and is δ-eliminated against the argument at the
+   CALL, while a clause's `p.E` carries a logic VARIABLE closed to a De Bruijn slot, so
+   the member rides the goal's slot-0 instance and is projected off the carrier's CARRIED
+   TYPE at the RESOLVER. One place applies it — `projected_arg_types`, for BOTH the guard
+   and the fetch, or a goal could be guarded on the receiver and fetched on its member.
+   Three traps at their sites: the lowering must be an OCCURRENCE TREE and not an interned
+   term (`node_to_debruijn` does not descend into a `Spliced` value, so the receiver stayed
+   a stale `Var::Global` — a clean load and a requirement that can never ground); the
+   projection's ROOT is the anchor and its bound is NOT tested for `provides`; and a
+   carrier that does not bind the member SUSPENDS rather than deciding the guard false
+   (WI-067). Full write-up and the three back-outs: `060-implementation.md` §8.5.
+
+   WHAT IS STILL OPEN IS THE ATTRIBUTION — keying which dictionary a `require` means on
+   the projection ROOT rather than on the bound SORT. That is what would remove
+   WI-20260909-96ZTM's sort-matching selector, narrow its `>1`-anchor refusal and lift its
+   anchored gate; nothing above bears on it, because the operation channel never needed a
+   selector (a `requires` names one dictionary per clause).
 5. **[SETTLED — the witness IS the covered call] Attribution.** The item asked
    whether WI-613's σ-class matcher (`find_requires_slot` /
    `find_requires_location`) could be reused wholesale. It is not needed at this

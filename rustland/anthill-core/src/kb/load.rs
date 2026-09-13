@@ -21995,6 +21995,13 @@ impl<'a> Loader<'a> {
     /// and a nested head-introduced type variable was then reported `unresolved name`
     /// — two resolvers answering one question, found by `/code-review`.
     fn require_spec_binding_occurrence(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
+        // WI-20260909-S8CBV gate (1) — A PROJECTION IS A THIRD KIND. Asked FIRST, because
+        // the two rungs below are about NAMES (does this spell a sort? is it the spec's
+        // own parameter?) and `p.E` is neither, so the drop rule read it as a typo:
+        // "`p.E` names neither a sort nor one of `Desc`'s own type parameters".
+        if let Some(occ) = self.try_require_spec_projection(parse_id) {
+            return Some(occ);
+        }
         let sym = self.require_spec_binding_sort(parse_id)?;
         if self.parse_arg_type_is_applied(parse_id) {
             return Some(self.build_require_spec_occurrence(parse_id));
@@ -22066,6 +22073,120 @@ impl<'a> Loader<'a> {
             detail,
             span: Some(span),
         });
+    }
+
+    /// WI-20260909-S8CBV gate (1) — a `require` bracket binding written as a PATH
+    /// PROJECTION off one of this clause's own head parameters (`require[Desc[T = p.E]]`
+    /// under `rule r(p: Box, …)`), or `None` for everything else.
+    ///
+    /// THE RECEIVER IS A LOGIC VARIABLE, and that is what makes this a different lowering
+    /// from the operation-signature one. §2.1's sigil-free head parameter is bound to a
+    /// fresh `VarId` in [`Self::rule_param_vars`] and every body occurrence of the bare
+    /// name lowers to that variable; so the projection's receiver is `Var(vid)`, not the
+    /// `Ref(param)` an operation's `x.E` carries. `path-dependent-types.md` §4 names this
+    /// case directly — "a flexible projection … arises only where a receiver is a logic
+    /// variable, i.e. in rule bodies, never in operation signatures".
+    ///
+    /// THE ROOT MUST BE A HEAD PARAMETER OF THIS CLAUSE. That is the ticket's own rule
+    /// ("a projection whose root is not a head binding of this clause is REFUSED"), and
+    /// answering `None` for anything else is what keeps it: an unknown root falls to the
+    /// two name rungs and is reported by the drop rule exactly as it is today.
+    ///
+    /// A CAPITALIZED LAST SEGMENT, the same discriminator
+    /// [`Self::try_expr_carried_projection_segments`] applies — types are Capitalized and
+    /// value fields are not (`type-parameter-scoping.md` §1). Read here rather than
+    /// shared with that function because the two differ in the half that matters: this
+    /// one resolves its receiver in `rule_param_vars`, which the type ladder never
+    /// consults, and admits no other head at all.
+    fn try_require_spec_projection(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
+        let name = self.parse_arg_type_name(parse_id)?;
+        let (root, member) = name.rsplit_once('.')?;
+        // ONE segment before the dot: `p.E`. A compound receiver (`p.f.E`) would need the
+        // receiver to be a field-access occurrence over a variable, which nothing
+        // downstream reads — left to the drop rule, which reports it by name.
+        if root.contains('.') {
+            return None;
+        }
+        if !member.chars().next().is_some_and(|c| c.is_uppercase()) {
+            return None;
+        }
+        let vid = *self.rule_param_vars.get(root)?;
+        // THE DOTTED NAME MUST NOT ALSO BE A SORT. This rung is asked BEFORE
+        // [`Self::require_spec_binding_sort`], so a head parameter whose name happens to
+        // match a namespace would capture a qualified sort reference: under
+        // `namespace mylib`, `rule r(mylib: Foo, …) :- ?d = require[Desc[T = mylib.Thing]]`
+        // would read as a projection off `mylib` and never reach the sort resolver, with
+        // nothing said. §2.1's shadowing rule is about a BARE name; a dotted one is a
+        // qualified reference, and silently picking either reading is the capture the
+        // repo has been burned by before. Refused, naming both — found by `/code-review`.
+        if self.parse_arg_sort_symbol(&name).is_some() {
+            self.errors.push(LoadError::InvalidTypeArgument {
+                detail: format!(
+                    "`{name}` reads two ways here: as a path projection off this clause's                      head parameter `{root}`, and as a qualified sort. Rename the                      parameter, or write the sort under a different prefix"
+                ),
+                span: Some(self.parsed.terms.span(parse_id)),
+            });
+            return None;
+        }
+        let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
+        let member_sym = self.kb.intern(member);
+        // AN OCCURRENCE TREE, NOT AN INTERNED TERM, AND THE REASON IS DE BRUIJN.
+        //
+        // The obvious lowering — `make_expr_carried(Var(Global(vid)), M)` wrapped in an
+        // `Expr::Spliced` — loads and is WRONG. A rule's body occurrences are closed to
+        // De Bruijn at the assert (`node_to_debruijn`), and that walk does not descend
+        // into a `Spliced` `Value`: MEASURED, the receiver was still
+        // `Var(Global(VarId { id: 1386, name: p }))` when the typer read it, so at firing
+        // — where each De Bruijn index opens to a FRESH variable — the projection would
+        // have named a stale global that nothing binds. A clean load and a requirement
+        // that can never ground.
+        //
+        // Built as an `Expr::Apply` over the same functor and the same two keys
+        // `KnowledgeBase::make_expr_carried` uses, the receiver is an ordinary
+        // `Expr::Var` CHILD, which the closing walk sees and rewrites like any other. The
+        // two carriers read identically through `TermView` (`extract_type` keys on the
+        // functor and the `value` / `member` labels, never on the carrier), which is what
+        // lets the type readers take this shape unchanged.
+        //
+        // A `NodeKind::Type` occurrence was tried first and PANICS here — "type/effect
+        // occurrence in for_each_child var walk". This slot is an EXPRESSION position
+        // that happens to hold a type, exactly as the concrete binding `Desc[T = Leaf]`
+        // holds `Expr::Ref(Leaf)` rather than a type node.
+        // LOUD, NOT `?`. A first cut wrote `try_resolve_symbol(…)?`, which declines the
+        // whole rung on a KB where the prelude form is not registered — and declining
+        // here is not neutral: control falls to the two NAME rungs below and the author
+        // is told "`p.E` names neither a sort nor one of `Desc`'s own type parameters"
+        // for a program whose only fault is a missing prelude. `/code-review` found it.
+        // Every other reader of this symbol either panics or documents its `None` as
+        // "matches no functor, leaves the walk unchanged"; this one misdiagnoses, so it
+        // reports instead.
+        let Some(ec_sym) = self
+            .kb
+            .try_resolve_symbol("anthill.prelude.TypeExtractor.ExprCarried")
+        else {
+            self.errors.push(LoadError::InvalidTypeArgument {
+                detail: format!(
+                    "`{root}.{member}` is a path projection, which is lowered through                      `anthill.prelude.TypeExtractor.ExprCarried` — and that name is not                      registered in this knowledge base"
+                ),
+                span: Some(self.parsed.terms.span(parse_id)),
+            });
+            return None;
+        };
+        let value_key = self.kb.intern("value");
+        let member_key = self.kb.intern("member");
+        let recv = NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span, self.current_owner);
+        let member_occ = NodeOccurrence::new_expr(Expr::Ref(member_sym), span, self.current_owner);
+        Some(NodeOccurrence::new_expr(
+            Expr::Apply {
+                recv_type: None,
+                functor: ec_sym,
+                pos_args: Vec::new(),
+                named_args: vec![(value_key, recv), (member_key, member_occ)],
+                type_args: Vec::new(),
+            },
+            span,
+            self.current_owner,
+        ))
     }
 
     fn require_spec_binding_sort(&self, parse_id: TermId) -> Option<Symbol> {
