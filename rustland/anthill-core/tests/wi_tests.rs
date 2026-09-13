@@ -1716,3 +1716,6 @@ mod nar1x_carrier_less_spec_op_test;
 
 #[path = "include/wi_073gh_applied_parameter_is_not_a_constructor_test.rs"]
 mod wi_073gh_applied_parameter_is_not_a_constructor_test;
+
+#[path = "include/wi_b8esg_head_argument_names_nothing_test.rs"]
+mod wi_b8esg_head_argument_names_nothing_test;

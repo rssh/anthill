@@ -963,6 +963,10 @@ pub struct KnowledgeBase {
     // Set of functor symbols that are constructors (entities with a parent sort).
     // Populated by register_entity_of, used by is_constructor_symbol for O(1) lookup.
     constructor_symbols: HashSet<Symbol>,
+    /// WI-20260904-B8ESG — `(functor, where)` per head-ARGUMENT compound the loader met,
+    /// drained by the post-load undefined-name check. See
+    /// [`Self::record_head_argument_site`].
+    head_argument_sites: Vec<(Symbol, crate::span::SourceSpan)>,
 
     /// WI-865 — WHY each `NoProvider` marker symbol records an absence.
     ///
@@ -2179,6 +2183,7 @@ impl KnowledgeBase {
             builtins: HashMap::new(),
             entity_fields: HashMap::new(),
             constructor_symbols: HashSet::new(),
+            head_argument_sites: Vec::new(),
             absence_records: HashMap::new(),
             absence_marker_syms: HashMap::new(),
             next_var: 0,
@@ -5230,6 +5235,16 @@ impl KnowledgeBase {
         pos_arity == 2
             && (self.kernel_connective_is(functor, "anthill.kernel.or")
                 || self.kernel_connective_is(functor, "anthill.kernel.and"))
+    }
+
+    /// WI-20260904-B8ESG — is `functor` one of the THREE equality-family connectives a
+    /// clause head can be written with: `eq` (`=`), `unify` (`<=>`) or `struct_eq`
+    /// (`===`)? [`Self::is_equality_connective_functor`] is the `eq`/`unify` pair the simp
+    /// gate counts and has no `struct_eq`; a head's operands are a subject and a
+    /// replacement for all three, which is the question this answers.
+    pub(crate) fn is_equality_family_connective(&self, functor: Symbol) -> bool {
+        self.is_equality_connective_functor(functor)
+            || self.kernel_connective_is(functor, "anthill.kernel.struct_eq")
     }
 
     /// WI-1034 — the span a goal with no source location of its own is reported at,
@@ -10586,6 +10601,27 @@ impl KnowledgeBase {
             return;
         }
         self.parameterized_type_sites.push(site);
+    }
+
+    /// WI-20260904-B8ESG — record one head-ARGUMENT compound's `(functor, where)`, for
+    /// the post-load undefined-name check. The loader cannot take the verdict itself:
+    /// whether a name declares anything is only settled once every file has loaded, since
+    /// a predicate defined purely by FACTS keeps an `Unresolved` functor until its clauses
+    /// land. Same record-now-decide-later split, and the same draining ownership, as
+    /// [`Self::record_parameterized_type_site`] just above.
+    pub(crate) fn record_head_argument_site(
+        &mut self,
+        functor: Symbol,
+        span: crate::span::SourceSpan,
+    ) {
+        self.head_argument_sites.push((functor, span));
+    }
+
+    /// WI-20260904-B8ESG — take the recorded head-argument sites, leaving the registry
+    /// empty. DRAINING for the reason its WI-835 neighbour is: a later `load_all` into
+    /// this KB must judge only its own sites, not re-report every batch before it.
+    pub(crate) fn take_head_argument_sites(&mut self) -> Vec<(Symbol, crate::span::SourceSpan)> {
+        std::mem::take(&mut self.head_argument_sites)
     }
 
     /// WI-835 — take the recorded sites, leaving the registry empty. DRAINING, so

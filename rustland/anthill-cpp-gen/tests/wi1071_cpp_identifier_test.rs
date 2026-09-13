@@ -139,6 +139,7 @@ fn carrier_lookup_keeps_anthill_spelling_while_emission_normalizes() {
         r#"
         namespace test.hy-lookup
           import anthill.prelude.{Int64, Option, String}
+          import anthill.prelude.Option.{some, none}
           import anthill.realization.{Implementation, CarrierBinding}
 
           sort host-sort

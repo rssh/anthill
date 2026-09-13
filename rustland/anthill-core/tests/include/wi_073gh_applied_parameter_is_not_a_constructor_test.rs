@@ -66,8 +66,9 @@
 //! the schema of any entity, anywhere in the corpus, sharing its short name.
 //! `KnowledgeBase::written_entity_field_names` closes it: a written functor that
 //! resolved to nothing is not an entity application. Driven by
-//! `a_stranger_entity_does_not_rename_a_written_terms_arguments` and
-//! `a_zero_field_stranger_is_an_ordinary_undeclared_term`.
+//! `a_stranger_entity_decides_nothing_about_a_written_term`, whose doc records how
+//! WI-20260904-B8ESG later subsumed the LOADING half of it (such a head is now refused
+//! outright) and what part of the claim survives.
 //!
 //! NEITHER SUBSUMES THE OTHER, and it took backing each out to know it. With only the
 //! gate, this file's own fixture still fails: `entity f` sits in `sort Bit` in the SAME
@@ -110,8 +111,7 @@
 //!   a_callback_parameter_named_after_a_constructor_applies    fixture does not LOAD
 //!   a_let_bound_name_that_is_also_a_constructor_still_applies fixture does not LOAD
 //!   a_shadowing_binder_binds_its_own_use_in_the_emitted_equation
-//!   a_stranger_entity_does_not_rename_a_written_terms_arguments
-//!   a_zero_field_stranger_is_an_ordinary_undeclared_term      fixture does not LOAD
+//!   a_stranger_entity_decides_nothing_about_a_written_term
 //!   wi994 …one_variant_name_exposed_by_two_namespaces_is_ambiguous   2 errors, not 1
 //!   wi994 …two_distinct_references_…_still_report_twice              4 errors, not 2
 //! ```
@@ -327,15 +327,6 @@ fn find_leaf_named(
     }
 }
 
-/// Solutions for a query pattern written with `test.wi073gh.stranger` in scope — the
-/// in-process spelling of `anthill query -i`, because a fact head is not addressable by
-/// its qualified name from a query pattern.
-fn stranger_hits(kb: &mut KnowledgeBase, pattern: &str) -> usize {
-    use anthill_core::kb::resolve::ResolveConfig;
-    let goal = crate::common::query_pattern_term(kb, pattern);
-    kb.resolve(&[goal], &ResolveConfig::default()).len()
-}
-
 /// The sole definite answer of `<qn>(?r)` as an `i64`. A row that answers nothing, or
 /// answers something that is not a number, fails here rather than silently comparing
 /// empty to empty.
@@ -485,85 +476,95 @@ fn the_let_value_still_sees_the_enclosing_scope() {
     assert_eq!(kb.local_name_of(pattern_sym), "y");
 }
 
-/// THE TERM-POSITION HALF, AND THE SILENT ONE. A written functor that resolves to
-/// NOTHING must not take the field schema of an entity that happens to share its short
-/// name — and the harm is not the refusal, it is the quiet rewrite.
+/// THE SILENT RENAME, DRIVEN WHERE WI-20260904-B8ESG DOES NOT REACH: a QUERY pattern.
+/// B8ESG refuses the fact `holdsF(ff(1))` outright, which made the loader's copy of the
+/// rename unreachable and took this ticket's discriminator for it with it (found by
+/// `/code-review`). The query walk still desugars positional to named, and still carries
+/// its own copy of the `written_entity_field_names` gate — so the rename claim is
+/// asserted there, on the converted pattern itself.
 ///
-/// Before the gate, `fact holdsF(ff(1))` in a namespace that imports nothing was STORED
-/// as `ff(a: 1)`, desugared under the declared fields of `Boxed.ff` — a DIFFERENT term
-/// from the one written, which is exactly the never-match WI-433's desugar exists to
-/// prevent. Each colliding row is asserted against its own control, which is the only
-/// way to say "like any other undeclared name" rather than "loads":
-///
-/// ```text
-///                        before   after    control (no entity of that name)
-///   holdsF(ff(1))          0        1        holdsG(gg(1))      1
-///   holdsF(ff(a: 1))       1        0        holdsG(gg(a: 1))   0
-/// ```
-///
-/// The NAMED row is the discriminator: it matched only because the fact had been
-/// silently renamed. The positional row is the other half of the same claim — without
-/// it, "0 for the named spelling" is satisfied by the fact having vanished.
+/// FAILS WHEN BACKED OUT (the query-side gate): `ff(1)` converts as `ff(a: 1)`, under the
+/// field names of `Boxed.ff`, which the global scope never imported. CONTROL, passes
+/// either way: `gg` matches no entity anywhere and stays positional.
 #[test]
-fn a_stranger_entity_does_not_rename_a_written_terms_arguments() {
-    let mut kb = crate::common::load_kb_with(SRC_STRANGER);
-    crate::common::supply_invocation_imports(&mut kb, &["test.wi073gh.stranger.*"]);
-    assert_eq!(
-        stranger_hits(&mut kb, "holdsF(ff(1))"),
-        1,
-        "the fact was WRITTEN positionally and `ff` resolves to nothing here, so it is          stored positionally and the positional pattern finds it"
-    );
-    assert_eq!(
-        stranger_hits(&mut kb, "holdsF(ff(a: 1))"),
-        0,
-        "THE DISCRIMINATOR: 1 before the gate, because the fact had been rewritten to          `ff(a: 1)` under the fields of an entity this namespace never imported"
-    );
-    assert_eq!(
-        stranger_hits(&mut kb, "holdsG(gg(1))"),
-        1,
-        "CONTROL: `gg` matches no entity anywhere. Unmoved — and it is what makes the          two rows above a statement about the STRANGER rather than about `fact`"
-    );
-    assert_eq!(
-        stranger_hits(&mut kb, "holdsG(gg(a: 1))"),
-        0,
-        "CONTROL, the other polarity. Unmoved"
-    );
+fn a_stranger_entity_does_not_rename_a_query_patterns_arguments() {
+    use anthill_core::kb::node_occurrence::Expr;
+    let decl = SRC_STRANGER
+        .split("namespace test.wi073gh.stranger\n")
+        .next()
+        .expect("the declaring namespace comes first");
+    let mut kb = crate::common::load_kb_with(decl);
+    for (pattern, name) in [("holdsF(ff(1))", "ff"), ("holdsG(gg(1))", "gg")] {
+        let pat = crate::common::query_pattern_term(&mut kb, pattern);
+        let arg = match pat.as_expr() {
+            Some(Expr::Apply { pos_args, .. }) if pos_args.len() == 1 => pos_args[0].clone(),
+            _ => panic!("`{pattern}` converts to a one-argument application"),
+        };
+        match arg.as_expr() {
+            Some(Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            }) => {
+                assert_eq!(kb.local_name_of(*functor), name);
+                assert!(
+                    pos_args.len() == 1 && named_args.is_empty(),
+                    "`{name}(1)` resolves to nothing here, so it stays POSITIONAL; a named \
+                     argument means a stranger entity's schema renamed it"
+                );
+            }
+            _ => panic!("`{name}(1)` converts to an application"),
+        }
+    }
 }
 
-/// THE LOUD HALF OF THE SAME ROW, and the one place this ticket makes a message GO.
+/// THE TERM-POSITION HALF: a stranger entity decides NOTHING about a written term —
+/// including which diagnostic it gets.
 ///
-/// A 0-field stranger produced `constructor 'zz' given 1 positional argument(s) but has
-/// 0 unfilled field(s)` — the very message this ticket started from, about a name the
-/// citing namespace cannot resolve. It is the same defect as the silent rename above
-/// (the plan answers `OverArity` instead of `Assign` when the stranger declares no
-/// fields), so it goes the same way: `zz(1)` is now an ordinary undeclared term, exactly
-/// like its control `qq(1)`.
+/// Before this ticket's gate a functor that resolved to nothing picked up the field
+/// schema of any entity sharing its short name, and the four facts below reported THREE
+/// different ways: `ff` (a 1-field stranger) was silently rewritten to `ff(a: 1)`, `zz` (a
+/// 0-field one) was refused as `constructor 'zz' given 1 positional argument(s)`, and the
+/// controls `gg` / `qq` — matching no entity anywhere — were left alone. The rename's own
+/// measurement is in this ticket's commit: `holdsF(ff(a: 1))` matched 1 before and 0
+/// after, against a `holdsG` control unmoved.
 ///
-/// THAT IS A LOUD ERROR BECOMING SILENT, which the repo does not do lightly, so the
-/// reason is stated rather than assumed: the message was not about a real over-arity
-/// application — `zz` denotes nothing at that site — and the identical program with the
-/// functor spelled `qq` always loaded clean. The change makes the two agree; it does not
-/// decide whether an undeclared functor in a FACT-HEAD ARGUMENT should be refused at
-/// all. That is **WI-20260904-B8ESG**, which predates this ticket and owns the refusal:
-/// WI-1058 refuses one in a rule BODY (measured, on both a colliding and a free
-/// spelling) and nothing refuses one here. What this row changes for it is that `zz` and
-/// `qq` are now equally silent — the accidental refusal of the colliding subset, loud
-/// about the wrong thing, is gone — so its census runs over one population.
-///
-/// Backed out, `load_kb_with` panics on this fixture.
+/// **WI-20260904-B8ESG LANDED AFTER IT AND SUBSUMED THE LOADING HALF.** A head argument
+/// whose functor names nothing is now REFUSED, so this fixture does not load at all and
+/// the silent rename is unreachable by construction — a strictly better outcome than the
+/// one this row used to assert, and the reason the row was rewritten rather than deleted.
+/// What survives is the part that is still THIS ticket\'s: all four report the SAME way,
+/// once each. A stranger\'s schema no longer selects the message.
 #[test]
-fn a_zero_field_stranger_is_an_ordinary_undeclared_term() {
-    let mut kb = crate::common::load_kb_with(SRC_STRANGER);
-    crate::common::supply_invocation_imports(&mut kb, &["test.wi073gh.stranger.*"]);
+fn a_stranger_entity_decides_nothing_about_a_written_term() {
+    let errs = crate::common::try_load_kb_with(SRC_STRANGER)
+        .err()
+        .unwrap_or_default();
+    for name in ["ff", "gg", "zz", "qq"] {
+        assert!(
+            errs.iter()
+                .any(|e| e.contains(&format!("head argument term `{name}` names nothing"))),
+            "`{name}` must be refused for the one reason that is true of it — it denotes \
+             nothing. Got:\n{errs:#?}"
+        );
+    }
     assert_eq!(
-        stranger_hits(&mut kb, "holdsZ(zz(1))"),
-        1,
-        "`zz(1)` is stored as written. Before the gate this fixture did not LOAD: the          0-field stranger made it an over-arity constructor application"
+        errs.len(),
+        4,
+        "one refusal per fact, and no second diagnostic derived from a stranger schema. \
+         Got:\n{errs:#?}"
     );
-    assert_eq!(
-        stranger_hits(&mut kb, "holdsQ(qq(1))"),
-        1,
-        "CONTROL: `qq` matches no entity anywhere and always loaded clean. It is what          says the row above is now ORDINARY rather than merely tolerated"
+    // THE DISCRIMINATOR FOR THIS TICKET, as opposed to B8ESG\'s: without the
+    // `written_entity_field_names` gate, `zz`\'s 0-field stranger adds
+    // `constructor \'zz\' given 1 positional argument(s) but has 0 unfilled field(s)` — a
+    // message about an over-arity CONSTRUCTOR application, for a name that constructs
+    // nothing at that site. The two colliding names and their two controls must be
+    // indistinguishable here, and that is what this asserts.
+    assert!(
+        !errs.iter().any(|e| e.contains("positional argument(s)")),
+        "no refusal may describe these as constructor applications — none of the four \
+         names constructs anything here. Got:\n{errs:#?}"
     );
 }
 

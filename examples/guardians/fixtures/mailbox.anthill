@@ -53,6 +53,13 @@ namespace guardians
   import guardians.{MessageId, Address, Mailbox, Message, Text,
                     InMailbox, KnownContact, in_org}
   import guardians.TrustLevel.{Untrusted}
+  -- WI-20260904-B8ESG: `untrusted` is a MEMBER of `enum guardians.Text`, and importing
+  -- the SORT does not bring its members into scope (kernel-language.md §8.6). Without
+  -- this line every `untrusted(raw: …)` below named nothing — the fixture loaded with an
+  -- identical fact count and the term simply could not match one written with the
+  -- declared name. Latent here only because `lib/classify.anthill` matches `subject` and
+  -- `body` with wildcards; the head-argument name check is what surfaced it.
+  import guardians.Text.{untrusted}
 
   -- WHO IS OURS, AND ON WHAT GROUNDS — both stated, because they are different
   -- statements. `lib/email.anthill` DECLARES `in_org` and asserts no row, so an

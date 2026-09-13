@@ -5750,8 +5750,30 @@ fn parse_workitem_description_with_unicode_punctuation() {
     let parsed = parse::parse(source).expect("WorkItem fact with unicode punctuation must parse");
     assert_eq!(parsed.items.len(), 1);
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &[&parsed], &NullResolver)
-        .expect("load of unicode-description WorkItem must succeed");
+    // WI-20260904-B8ESG — THIS FIXTURE IS A BARE FACT WITH NO DOMAIN, so `ToolPasses`
+    // names nothing and the head-argument check refuses it. That is the check working:
+    // the very shape the ticket was filed on is an anthill-todo item document whose
+    // `acceptance:` carries a constructor the citing file never imported. The test's
+    // SUBJECT is the parse; the load is here to say nothing ELSE is wrong with the text,
+    // so the refusal is PINNED rather than expected away (the repo's "read the loader's
+    // verdict" rule — a discarded `Err` is no guard).
+    let load_errs: Vec<String> = load::load_all(&mut kb, &[&parsed], &NullResolver)
+        .err()
+        .unwrap_or_default()
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
+    // NON-EMPTY FIRST: `all` over no errors is vacuously true, and would pass with the
+    // check backed out (found by `/code-review`).
+    assert!(
+        !load_errs.is_empty()
+            && load_errs
+                .iter()
+                .all(|e| e.contains("head argument term `ToolPasses` names nothing")),
+        "the load must be refused, and only for the undeclared `ToolPasses`; anything \
+         else means the TEXT is wrong rather than the fixture's missing domain. Got:\n\
+         {load_errs:#?}"
+    );
 }
 
 #[test]
@@ -5775,7 +5797,30 @@ fn parse_description_containing_status_open_substring() {
     assert_eq!(parsed.items.len(), 1);
 
     let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load");
+    // WI-20260904-B8ESG — THIS FIXTURE IS A BARE FACT WITH NO DOMAIN, so `ToolPasses`
+    // names nothing and the head-argument check refuses it. That is the check working:
+    // the very shape the ticket was filed on is an anthill-todo item document whose
+    // `acceptance:` carries a constructor the citing file never imported. The test's
+    // SUBJECT is the parse; the load is here to say nothing ELSE is wrong with the text,
+    // so the refusal is PINNED rather than expected away (the repo's "read the loader's
+    // verdict" rule — a discarded `Err` is no guard).
+    let load_errs: Vec<String> = load::load_all(&mut kb, &[&parsed], &NullResolver)
+        .err()
+        .unwrap_or_default()
+        .iter()
+        .map(|e| e.to_string())
+        .collect();
+    // NON-EMPTY FIRST: `all` over no errors is vacuously true, and would pass with the
+    // check backed out (found by `/code-review`).
+    assert!(
+        !load_errs.is_empty()
+            && load_errs
+                .iter()
+                .all(|e| e.contains("head argument term `ToolPasses` names nothing")),
+        "the load must be refused, and only for the undeclared `ToolPasses`; anything \
+         else means the TEXT is wrong rather than the fixture's missing domain. Got:\n\
+         {load_errs:#?}"
+    );
 
     // Sanity: the description's String literal carries the embedded
     // `status: Open` verbatim; the *fact's* status field is just `Open`.
