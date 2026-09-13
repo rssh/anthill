@@ -2501,9 +2501,11 @@ fn a_refused_round_feeds_the_next_prompt() {
 /// fixes it, or moves it, is SEEN: this row reds either way, and whoever reds it should
 /// drive `attempt` there instead of the carriers.
 ///
-/// Measured cause not isolated. Every host binding on the path re-enters the interpreter
-/// from inside an anthill body (`generate` calls `Llm.complete`, `check` calls
-/// `KB.loaded` and `guardians.gate`), which is the first suspect.
+/// Owned by WI-20260913-2858G, which records the mechanism read from the code: every host
+/// binding on the path re-enters the interpreter from inside an anthill body (`generate`
+/// calls `Llm.complete`, `check` calls `KB.loaded` and `guardians.gate`), and a nested
+/// `Interpreter::call` on the live activation stack delivers past its own floor into the
+/// caller's frames.
 #[test]
 fn attempt_from_the_host_dies_inside_the_evaluator_today() {
     let mut p = Pipeline::new();
