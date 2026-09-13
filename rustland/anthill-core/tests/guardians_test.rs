@@ -24,8 +24,9 @@ fn guardians_dir() -> std::path::PathBuf {
     common::examples_dir().join("guardians")
 }
 
-/// Read every `.anthill` directly under `dir` (not recursive).
-fn sources_in(dir: &std::path::Path) -> Vec<String> {
+/// Every `.anthill` directly under `dir` (not recursive), as `(file name, source)`,
+/// sorted by name.
+fn named_sources_in(dir: &std::path::Path) -> Vec<(String, String)> {
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -34,13 +35,93 @@ fn sources_in(dir: &std::path::Path) -> Vec<String> {
     files.sort();
     files
         .iter()
-        .map(|p| std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display())))
+        .map(|p| {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let src = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            (name, src)
+        })
         .collect()
+}
+
+fn sources_in(dir: &std::path::Path) -> Vec<String> {
+    named_sources_in(dir).into_iter().map(|(_, src)| src).collect()
 }
 
 /// THE SOLUTION. Usable as-is: no message, no address book, no sample agent.
 fn lib_sources() -> Vec<String> {
     sources_in(&guardians_dir().join("lib"))
+}
+
+/// The program text of `render_task`'s `previous: Option[T = Source]` — `None` for
+/// `none`. LOUD on anything that is neither arm.
+fn previous_source(
+    kb: &KnowledgeBase,
+    v: &Value,
+) -> Result<Option<String>, anthill_core::eval::EvalError> {
+    match common::entity_functor(kb, v).map(|s| kb.qualified_name_of(s)) {
+        Some("anthill.prelude.Option.none") => Ok(None),
+        Some("anthill.prelude.Option.some") => {
+            // THE PAYLOAD'S FUNCTOR IS CHECKED, not only its shape. `source_text` reads
+            // any string-bearing value, and this is the one reader of a parameter whose
+            // whole point is that it holds a `Source` — so a `some(text(…))` a typer gap
+            // let through must be refused here rather than rendered as a program.
+            let payload = common::entity_field(kb, v, "value", 0);
+            match common::entity_functor(kb, &payload).map(|s| kb.qualified_name_of(s)) {
+                Some("guardians.Source.source") => source_text(kb, &payload).map(Some),
+                _ => Err(anthill_core::eval::EvalError::Internal(format!(
+                    "guardians: `previous` must hold a guardians.Source, got {payload:?}"
+                ))),
+            }
+        }
+        _ => Err(anthill_core::eval::EvalError::Internal(format!(
+            "guardians: `previous` must be an Option[T = Source], got {v:?}"
+        ))),
+    }
+}
+
+/// The generation prompt `guardians_render_task` vouches for: the language primer
+/// (`examples/guardians/prompt/primer.md`), the task, the tools the caller named, the
+/// library's declarations, and — last, so a model reads them after the context they
+/// refer to — the `previous` program and the `feedback` about it, verbatim. Every input
+/// reaches the text: an empty `tools` / `feedback` or a `none` `previous` omits its
+/// section, and nothing else does (`the_generation_prompt_depends_on_every_input`).
+fn render_task_text(
+    spec: &str,
+    tools: &[String],
+    feedback: &[String],
+    previous: Option<&str>,
+) -> Result<String, anthill_core::eval::EvalError> {
+    use std::fmt::Write as _;
+    let primer_path = guardians_dir().join("prompt").join("primer.md");
+    let mut out = std::fs::read_to_string(&primer_path).map_err(|e| {
+        anthill_core::eval::EvalError::Internal(format!("read {}: {e}", primer_path.display()))
+    })?;
+    let _ = write!(
+        out,
+        "\n## The task\n\nWrite a carrier under `guardians.agent.` that provides `{spec}`.\n"
+    );
+    if !tools.is_empty() {
+        out.push_str("\n## Operations the task expects you to use\n\n");
+        for t in tools {
+            let _ = writeln!(out, "- `{t}`");
+        }
+    }
+    out.push_str("\n## The library (loaded already; do not repeat it)\n");
+    for (name, src) in named_sources_in(&guardians_dir().join("lib")) {
+        let _ = write!(out, "\n### lib/{name}\n\n```anthill\n{src}```\n");
+    }
+    // FOUR-BACKTICK FENCES for the two sections holding text this file did not write: a
+    // model's program or a diagnostic quoting one may itself contain ```, which would
+    // close a three-backtick fence early and nest the prompt's sections wrongly.
+    if let Some(src) = previous {
+        let _ = write!(out, "\n## Your previous program\n\n````anthill\n{src}\n````\n");
+    }
+    if !feedback.is_empty() {
+        out.push_str("\n## The checker refused it\n\n````\n");
+        out.push_str(&feedback.join("\n"));
+        out.push_str("\n````\n\nWrite the whole program again, with the refusal fixed.\n");
+    }
+    Ok(out)
 }
 
 /// TEST DATA. The article's inbox, populating the two relations `lib` declares.
@@ -263,24 +344,194 @@ fn assert_refused(agent: &str, needle: &str) {
     );
 }
 
-// ── the fake oracle ──────────────────────────────────────────────
+// ── the model carriers ───────────────────────────────────────────
 
-/// The fake `Oracle` carrier. Deterministic by construction: it answers from a
-/// fixture rather than a network, so a test asserting a classification does not
-/// depend on what a live model happens to say today.
-///
-/// `guardians.FakeModel`'s `operation_map` names these keys. Swapping in the live
-/// carrier is choosing a different VALUE at the call site, not re-registering —
-/// that is the whole point of making the Oracle a spec with carriers, on the
-/// `anthill.persistence.Store` pattern.
-/// What the fake model returns, per test. Set before load; the fake `complete`
-/// hands it back verbatim as the candidate program.
-thread_local! {
-    static FAKE_REPLY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+/// A `String` field of a carrier value — by declared name, then by rank, through the
+/// carrier-neutral readers. LOUD both ways, and in two currencies: a MISSING field
+/// panics (`common::entity_field`), a field that is not a string is an `Err`. Defaulting
+/// either would send a request to an endpoint nobody chose.
+fn str_field(
+    kb: &KnowledgeBase,
+    v: &Value,
+    name: &str,
+    rank: usize,
+) -> Result<String, anthill_core::eval::EvalError> {
+    let field = common::entity_field(kb, v, name, rank);
+    common::scalar_str(kb, &field).ok_or_else(|| {
+        anthill_core::eval::EvalError::Internal(format!(
+            "guardians: field `{name}` is not a String: {field:?}"
+        ))
+    })
 }
 
-fn set_fake_reply(src: &str) {
-    FAKE_REPLY.with(|r| *r.borrow_mut() = src.to_string());
+/// The text a `guardians.Prompt` carries — `prompt(body: text(raw: …))`. Read by the
+/// HOST, which is the one party §8.6's `internal` projection does not gate; see
+/// `lib/harness.anthill`'s "THE SEAL IS AGAINST ANTHILL, NOT AGAINST THE HOST".
+fn prompt_text(kb: &KnowledgeBase, p: &Value) -> Result<String, anthill_core::eval::EvalError> {
+    let body = common::entity_field(kb, p, "body", 0);
+    str_field(kb, &body, "raw", 0)
+}
+
+/// Every element of a `List`, in order. LOUD on a cell that is neither `cons` nor `nil`.
+fn list_items(kb: &KnowledgeBase, v: &Value) -> Result<Vec<Value>, anthill_core::eval::EvalError> {
+    let mut out = Vec::new();
+    let mut cur = v.clone();
+    loop {
+        let functor = common::entity_functor(kb, &cur).map(|s| kb.qualified_name_of(s));
+        match functor {
+            Some("anthill.prelude.List.nil") => return Ok(out),
+            Some("anthill.prelude.List.cons") => {
+                out.push(common::entity_field(kb, &cur, "head", 0));
+                cur = common::entity_field(kb, &cur, "tail", 1);
+            }
+            _ => {
+                return Err(anthill_core::eval::EvalError::Internal(format!(
+                    "guardians: not a List cell: {cur:?}"
+                )))
+            }
+        }
+    }
+}
+
+/// Every `String` in a `List[T = String]`, in order. LOUD on a head that is not a string.
+fn list_strings(kb: &KnowledgeBase, v: &Value) -> Result<Vec<String>, anthill_core::eval::EvalError> {
+    list_items(kb, v)?
+        .iter()
+        .map(|s| {
+            common::scalar_str(kb, s).ok_or_else(|| {
+                anthill_core::eval::EvalError::Internal(format!("guardians: not a String: {s:?}"))
+            })
+        })
+        .collect()
+}
+
+/// The program inside a model's reply: every fenced block's body, in order, or the whole
+/// reply when it has none. ALL blocks, because a model may split one program across two
+/// (a helper namespace, then the carrier). An UNTERMINATED block runs to the end of the
+/// reply, and an opening fence with no line after it opens an empty block — so no text
+/// after a fence is dropped. Whatever is not a program still reaches the checker and
+/// comes back as that load's own diagnostics, which is what the next round reads.
+fn program_of_reply(reply: &str) -> String {
+    let mut blocks = Vec::new();
+    let mut rest = reply;
+    while let Some(open) = rest.find("```") {
+        let after_fence = &rest[open + 3..];
+        // Skip the info string (`anthill`); a fence closing the reply has none and no body.
+        let body = after_fence.find('\n').map_or("", |nl| &after_fence[nl + 1..]);
+        let close = body.find("```").unwrap_or(body.len());
+        blocks.push(&body[..close]);
+        rest = &body[(close + 3).min(body.len())..];
+    }
+    if blocks.is_empty() {
+        reply.to_string()
+    } else {
+        blocks.join("\n")
+    }
+}
+
+// ── the live model (opt-in) ──────────────────────────────────────
+//
+// THE DEFAULT RUN IS OFFLINE AND NEEDS NO CREDENTIALS (examples/guardians/README.md
+// §"Why almost none of the tests need a model"). The live rows are `#[ignore]`d, so no
+// environment turns a default run into a networked one; `-- --ignored live` runs them,
+// and then all three variables are required:
+//
+//   GUARDIANS_LLM_ENDPOINT   an OpenAI-compatible base URL (`…/v1`)
+//   GUARDIANS_LLM_MODEL      the model id the endpoint serves
+//   GUARDIANS_LLM_API_KEY    the bearer token — read at request time, never stored
+//
+// The endpoint and model reach the host THROUGH THE CARRIER VALUE (`live_llm(endpoint,
+// model)`), the key through the environment only, so no credential is ever a term.
+//
+// THE REQUEST GOES THROUGH `curl`, NOT AN HTTP CRATE: a TLS client is ~60 crates that
+// every `anthill-core` test build would compile for two opt-in rows.
+
+const API_KEY_ENV: &str = "GUARDIANS_LLM_API_KEY";
+
+thread_local! {
+    /// Entries into the LIVE binding on this thread — counted FIRST, before anything in
+    /// the binding can fail, so a call misrouted there counts even when it then dies.
+    /// Per THREAD because the test harness runs rows in parallel, and a process-wide
+    /// count would let one live row move another row's assertion.
+    static LIVE_REQUESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn live_requests() -> usize {
+    LIVE_REQUESTS.with(|c| c.get())
+}
+
+struct LiveConfig {
+    endpoint: String,
+    model: String,
+}
+
+/// The live configuration. PANICS on a missing variable: a live row runs only when asked
+/// for by `--ignored`, and a request for a live run that cannot make one is a failure.
+fn live_config() -> LiveConfig {
+    let var = |name: &str| {
+        std::env::var(name).unwrap_or_else(|_| panic!("a live row needs {name} (see \"the live model\")"))
+    };
+    var(API_KEY_ENV);
+    LiveConfig { endpoint: var("GUARDIANS_LLM_ENDPOINT"), model: var("GUARDIANS_LLM_MODEL") }
+}
+
+/// ONE chat-completion request. `Err` is the prose a raised `Error` carries.
+fn chat_completion(endpoint: &str, model: &str, prompt: &str) -> Result<String, String> {
+    use std::io::Write as _;
+    let key = std::env::var(API_KEY_ENV).map_err(|_| format!("{API_KEY_ENV} is not set"))?;
+    let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
+    let request = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": prompt }],
+    });
+    let mut body = tempfile::NamedTempFile::new().map_err(|e| format!("request file: {e}"))?;
+    body.write_all(request.to_string().as_bytes())
+        .map_err(|e| format!("request file: {e}"))?;
+    // A curl config value is a quoted string with backslash escapes, so a key holding
+    // `"` or `\` must be escaped or the line parses as a different header.
+    let quoted_key = key.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut child = std::process::Command::new("curl")
+        // The key arrives as a curl CONFIG LINE ON STDIN (`-K -`), never as an argument,
+        // where any process listing would show it.
+        .args(["-sS", "--max-time", "900", "-K", "-"])
+        .args(["-H", "Content-Type: application/json", "--data-binary"])
+        .arg(format!("@{}", body.path().display()))
+        // The status on its own last line, so a non-2xx body — the provider's
+        // explanation — is read rather than lost.
+        .args(["-w", "\n%{http_code}", &url])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn curl: {e}"))?;
+    // The write's result is read AFTER the child is reaped: returning on it first would
+    // leave `curl` running and lose its stderr, which is what says why stdin closed.
+    let wrote = child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(format!("header = \"Authorization: Bearer {quoted_key}\"\n").as_bytes());
+    let out = child.wait_with_output().map_err(|e| format!("curl: {e}"))?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    wrote.map_err(|e| format!("curl stdin: {e}: {stderr}"))?;
+    if !out.status.success() {
+        return Err(format!("POST {url}: curl {}: {stderr}", out.status));
+    }
+    let text = String::from_utf8(out.stdout).map_err(|e| format!("POST {url}: non-UTF-8 reply: {e}"))?;
+    let (body_text, status) = text
+        .rsplit_once('\n')
+        .ok_or_else(|| format!("POST {url}: no status line in {text:?}"))?;
+    // STATUS FIRST: a gateway's 502 page or a plain-text 401 is not JSON, and parsing
+    // before this check would replace the provider's explanation with a parse error.
+    if !status.starts_with('2') {
+        return Err(format!("POST {url}: HTTP {status}: {body_text}"));
+    }
+    let reply: serde_json::Value = serde_json::from_str(body_text)
+        .map_err(|e| format!("POST {url}: HTTP {status}: unreadable body ({e}): {body_text}"))?;
+    reply["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("POST {url}: no choices[0].message.content in {reply}"))
 }
 
 /// Build a `guardians.Text` value. `Text`'s only constructor is
@@ -366,38 +617,95 @@ fn source_text(kb: &KnowledgeBase, v: &Value) -> Result<String, anthill_core::ev
 
 /// Register the whole pipeline: one model primitive, the harness, the checker.
 fn register_pipeline(kb: &mut KnowledgeBase) {
-    // THE ONE MODEL BINDING. Text in, text out — everything else (prompt
-    // construction, the label join, the task operations) is checked anthill.
-    for key in ["guardians_fake_complete", "guardians_live_complete"] {
-        kb.register_host_fn(key, 2, |interp, _args| {
-            let reply = FAKE_REPLY.with(|r| r.borrow().clone());
-            text_value(interp.kb(), &reply)
-        })
-        .unwrap_or_else(|e| panic!("register {key}: {e:?}"));
-    }
+    // THE MODEL BINDINGS, ONE PER CARRIER (WI-20260830-7MK73). Each answers from ITS
+    // OWN VALUE: the fake from its `fixture` field, the live one from a request to the
+    // `endpoint`/`model` it was minted with. So choosing a model is choosing a value on
+    // the host side too — there is no shared reply cell for a test to set, and two fakes
+    // with different fixtures answer differently from one registration.
+    kb.register_host_fn("guardians_fake_complete", 2, |interp, args| {
+        let fixture = str_field(interp.kb(), &args[0], "fixture", 0)?;
+        text_value(interp.kb(), &fixture)
+    })
+    .expect("register guardians_fake_complete");
+
+    kb.register_host_fn("guardians_live_complete", 2, |interp, args| {
+        LIVE_REQUESTS.with(|c| c.set(c.get() + 1));
+        let endpoint = str_field(interp.kb(), &args[0], "endpoint", 0)?;
+        let model = str_field(interp.kb(), &args[0], "model", 1)?;
+        let prompt = prompt_text(interp.kb(), &args[1])?;
+        // A FAILED REQUEST IS THE DECLARED `Error`, raised — not a fault and not an
+        // empty reply. `complete`'s row carries `Error` for exactly this.
+        let reply = chat_completion(&endpoint, &model, &prompt)
+            .map_err(|msg| anthill_core::eval::EvalError::Raised { payload: Value::Str(msg) })?;
+        text_value(interp.kb(), &reply)
+    })
+    .expect("register guardians_live_complete");
+
+    // THE PROMPT PRIMITIVES `summarize` IS WRITTEN IN. Both are body-less for the reason
+    // `Text`'s projection is sealed: building a prompt means reading a text's bytes, and
+    // only the host may. Neither decides a label — the typer did that from their
+    // signatures — so all these do is concatenate.
+    kb.register_host_fn("guardians_join_texts", 1, |interp, args| {
+        let kb = interp.kb();
+        let parts = list_items(kb, &args[0])?
+            .iter()
+            .map(|t| str_field(kb, t, "raw", 0))
+            .collect::<Result<Vec<_>, _>>()?;
+        text_value(kb, &parts.join("\n\n---\n\n"))
+    })
+    .expect("register guardians_join_texts");
+
+    kb.register_host_fn("guardians_prompt_with", 2, |interp, args| {
+        let kb = interp.kb();
+        let instruction = str_field(kb, &args[0], "raw", 0)?;
+        let content = str_field(kb, &args[1], "raw", 0)?;
+        let body = text_value(kb, &format!("{instruction}\n\n{content}"))?;
+        entity0(kb, "guardians.Prompt.prompt", vec![body])
+    })
+    .expect("register guardians_prompt_with");
 
     // The harness. `render_task` would read the trusted declarations through
     // reflect; rendering a DECLARATION as anthill text is the one piece reflect
     // does not expose (TermPrinter prints terms, rules and facts, and is
-    // Rust-side), so this stands in with a fixed instruction and is the
-    // example's clearest remaining gap.
-    kb.register_host_fn("guardians_render_task", 4, |interp, args| {
+    // Rust-side), so this renders the library's SOURCE — the same declarations,
+    // as the organisation wrote them — beside a fixed primer on the language.
+    //
+    // TWO THINGS THE SIGNATURE DOES NOT SAY, both the host-stand-in boundary
+    // `lib/harness.anthill` already names ("THE SEAL IS AGAINST ANTHILL, NOT AGAINST THE
+    // HOST"): it READS FILES, which no `External` in `render_task`'s row admits, and
+    // what it renders is the files on disk, not the KB it runs in — a KB loaded with an
+    // extra source renders a prompt that does not mention it. Rendering from the KB is
+    // WI-20260908-H2GDZ (b).
+    kb.register_host_fn("guardians_render_task", 5, |interp, args| {
         // A REFERENCE, not a name: `spec` is `anthill.reflect.Symbol`, so the prompt
         // is rendered from a symbol that must resolve rather than from a string that
-        // need not. Rendering the DECLARATION is still the gap this comment records.
+        // need not.
         let spec = spec_name(interp.kb(), &args[1])?;
-        let body = format!("Write an anthill implementation of {spec}.");
+        let tools = list_strings(interp.kb(), &args[2])?;
+        let feedback = list_strings(interp.kb(), &args[3])?;
+        let previous = previous_source(interp.kb(), &args[4])?;
+        let body = render_task_text(&spec, &tools, &feedback, previous.as_deref())?;
         let t = text_value(interp.kb(), &body)?;
         entity0(interp.kb(), "guardians.Prompt.prompt", vec![t])
     })
     .expect("register guardians_render_task");
 
-    // Completes the prompt and takes the reply as a candidate program. The
-    // `Prompt[Trusted]` in its anthill signature is what makes "generation is
-    // blind to content" a check rather than a comment.
-    kb.register_host_fn("guardians_generate", 3, |interp, _args| {
-        let reply = FAKE_REPLY.with(|r| r.borrow().clone());
-        entity0(interp.kb(), "guardians.Source.source", vec![Value::Str(reply)])
+    // Completes the prompt ON THE MODEL IT WAS HANDED and takes the reply as a
+    // candidate program. The `Prompt[Trusted]` in its anthill signature is what makes
+    // "generation is blind to content" a check rather than a comment; routing through
+    // `llm` is what makes its `effects {llm.E, Error}` a claim about the call it makes.
+    //
+    // THE SPEC'S OPERATION, NOT A CARRIER'S: the evaluator dispatches `Llm.complete` at
+    // the carrier `args[1]` names, exactly as `summarize`'s `llm.complete(p)` does, so
+    // this binding holds no list of models.
+    kb.register_host_fn("guardians_generate", 3, |interp, args| {
+        let reply = interp.call("guardians.Llm.complete", &[args[1].clone(), args[2].clone()])?;
+        let text = str_field(interp.kb(), &reply, "raw", 0)?;
+        entity0(
+            interp.kb(),
+            "guardians.Source.source",
+            vec![Value::Str(program_of_reply(&text))],
+        )
     })
     .expect("register guardians_generate");
 
@@ -1190,6 +1498,25 @@ fn honest_checker_is_accepted() {
     assert!(errs.is_empty(), "agent/checker.anthill should load: {errs:#?}");
 }
 
+/// Every operation's DECLARED effect row, as display labels, keyed by qualified name.
+///
+/// ACCUMULATED PER NAME, NOT KEYED BY IT. `all_operation_effects` yields one entry PER
+/// FACT, and WI-1049 records that one operation symbol can carry several — a second
+/// `load_all` into a live KB banks another `OperationInfo` for a type-parameter-bearing
+/// op. Collecting into a map would silently keep the last, so a duplicate could decide a
+/// caller's negative assertion and the caller would go quiet exactly where it is meant to
+/// be loud.
+fn declared_rows(kb: &KnowledgeBase) -> std::collections::HashMap<String, Vec<String>> {
+    let mut rows: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for (op, effects) in anthill_core::kb::op_info::all_operation_effects(kb) {
+        let labels = effects
+            .iter()
+            .map(|e| anthill_core::kb::typing::type_display_name_value(kb, e));
+        rows.entry(kb.qualified_name_of(op).to_string()).or_default().extend(labels);
+    }
+    rows
+}
+
 #[test]
 fn the_legitimate_acquisition_path_is_accepted() {
     // THE POSITIVE CONTROL FOR THE THREE REFUSALS BELOW, and the reason it is a
@@ -1212,24 +1539,7 @@ fn the_legitimate_acquisition_path_is_accepted() {
     // entire claim: an assertion that `open_round` merely LOADS would keep passing
     // if someone moved `Permission[Model]` onto `attempt`, or onto `complete`, or
     // dropped it altogether.
-    //
-    // ACCUMULATED PER NAME, NOT KEYED BY IT. `all_operation_effects` yields one
-    // entry PER FACT, and WI-1049 records that one operation symbol can carry
-    // several — a second `load_all` into a live KB banks another `OperationInfo` for a
-    // type-parameter-bearing op. Collecting into a map would silently keep the
-    // last, so a duplicate could decide the negative assertions below and this
-    // test would go quiet exactly where it is meant to be loud.
-    let mut rows: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for (op, effects) in anthill_core::kb::op_info::all_operation_effects(&kb) {
-        let labels: Vec<String> = effects
-            .iter()
-            .map(|e| anthill_core::kb::typing::type_display_name_value(&kb, e))
-            .collect();
-        rows.entry(kb.qualified_name_of(op).to_string())
-            .or_default()
-            .extend(labels);
-    }
+    let rows = declared_rows(&kb);
     let row = |qn: &str| -> Vec<String> {
         rows.get(qn)
             .unwrap_or_else(|| panic!("{qn} has no OperationInfo row; have: {:?}", rows.keys()))
@@ -1597,7 +1907,7 @@ fn laundering_through_the_harness_is_refused_by_the_row() {
     // closing the others. `Text.trusted` is gated and `join_texts` was narrowed to
     // `Untrusted`; `render_task` still returned a `Prompt[Trusted]`, and
     // `entity prompt(body: Text[Trust])`'s projection is public, so
-    // `h.render_task(spec, nil, nil).body` was a trusted text with neither tier.
+    // `h.render_task(spec, nil, nil, none()).body` was a trusted text with neither tier.
     //
     // IT WAS A DECLARED `String -> Text[Trusted]` PATH, which is what the audit line
     // in lib/vocabulary.anthill forbids: `feedback: List[T = String]` in, and a
@@ -1885,19 +2195,7 @@ fn read_verdict(
         }
     };
     let strings = |v: &Value| -> Vec<String> {
-        let mut out = Vec::new();
-        let mut cur = v.clone();
-        while let Value::Entity { functor, .. } = &cur {
-            if !interp.kb().qualified_name_of(*functor).ends_with("List.cons") {
-                break;
-            }
-            match field(&cur, "head") {
-                Value::Str(s) => out.push(s),
-                other => panic!("a diagnostic must be a String, got {other:?}"),
-            }
-            cur = field(&cur, "tail");
-        }
-        out
+        list_strings(interp.kb(), v).unwrap_or_else(|e| panic!("a verdict's strings: {e:?}"))
     };
     let name = |v: &Value| -> String {
         let s = interp
@@ -1942,7 +2240,8 @@ fn read_verdict(
 /// WHAT FAILS WHEN IT IS BACKED OUT, and the back-out that ISOLATES is not the obvious
 /// one. MEASURED, both:
 ///
-///   * `FakeLlm` re-claiming the world (`provides Llm[E = {External}]`, `complete` back to
+///   * `FakeLlm` re-claiming the world (`provides Llm[C = FakeLlm, E = {External}]` — keep
+///     the `C`, whose loss is a different defect, see `lib/llm.anthill` — `complete` back to
 ///     `{External, Error}`) reds THIS TEST AND NOTHING ELSE — 37 pass, 1 fails. That is the
 ///     control, and the honest statement of what the row buys: a fixture that does not lie
 ///     about touching the world.
@@ -2144,53 +2443,424 @@ fn one_round_of_the_generation_loop_answers_the_same_verdict() {
     // one that exercises the `Prompt[Trusted]` staging together with the verdict.
     //
     // DRIVEN THROUGH THE CARRIERS, NOT THROUGH `guardians.attempt`, and the reason is
-    // measured rather than assumed: calling `attempt` from a host dies
-    // `OperationBodyMissing { name: "guardians.Harness.render_task" }`. Its parameters
-    // are SPEC-typed (`h: Harness`, `chk: Checker`), and a spec operation has no body —
-    // reaching the carrier's is what an anthill call site's dispatch does and what a
-    // bare `Interpreter::call` with hand-built values does not arrange. Naming the
-    // carriers here is the same choice `check_candidate` makes one level down.
+    // measured rather than assumed — TWICE, because the first reason turned out to be a
+    // different defect. Calling `attempt` from a host used to die `OperationBodyMissing
+    // { name: "guardians.Harness.render_task" }`, which this comment blamed on a host
+    // call with hand-built values. It was the provisions: `provides Harness` named no
+    // carrier (kernel-language.md §5.1 — see `lib/llm.anthill`'s `C = LiveLlm`), so
+    // nothing could dispatch at one. With `C = FileHarness` / `C = LoadChecker` bound,
+    // `attempt` gets past dispatch and now dies
+    // `Internal("deliver: parent frame had no awaiting state")` — measured, cause not
+    // isolated; every host binding on that path (`generate`, `check`) re-enters the
+    // interpreter from inside an anthill body, which is the first suspect.
     //
-    // The `Llm` is built here rather than through `FakeLlm.open` because `fake_llm` is
-    // `internal` (§8.6): the mint is reachable from anthill inside its own sort and not
-    // from a test, and supplying a carrier at the HOST boundary is what a real embedder
-    // does.
-    set_fake_reply(&agent_source("good"));
-    let mut interp = checker_interp();
-    let h = entity0(interp.kb(), "guardians.FileHarness.file_harness", vec![])
-        .expect("build a FileHarness");
-    let llm = entity0(
-        interp.kb(),
-        "guardians.FakeLlm.fake_llm",
-        vec![Value::Str("advice".into())],
-    )
-    .expect("build a FakeLlm");
-    let chk = entity0(interp.kb(), "guardians.LoadChecker.load_checker", vec![])
-        .expect("build a LoadChecker");
-    let spec_sym = interp.kb().try_resolve_symbol("guardians.Triage").unwrap();
-    let spec = Value::term(
-        interp
-            .kb_mut()
-            .alloc(anthill_core::kb::term::Term::Ref(spec_sym)),
-    );
-    let empty = interp.build_list_value(Vec::new(), &[]).expect("nil");
-
-    let prompt = interp
-        .call(
-            "guardians.FileHarness.render_task",
-            &[h.clone(), spec.clone(), empty.clone(), empty],
-        )
-        .unwrap_or_else(|e| panic!("render_task: {e:?}"));
-    let src = interp
-        .call("guardians.FileHarness.generate", &[h, llm, prompt])
-        .unwrap_or_else(|e| panic!("generate: {e:?}"));
-    let verdict = interp
-        .call("guardians.LoadChecker.check", &[chk, src, spec])
-        .unwrap_or_else(|e| panic!("check: {e:?}"));
-
-    let v = read_verdict(&interp, &verdict).unwrap_or_else(|e| panic!("must be accepted: {e:#?}"));
+    // The fake's FIXTURE is the good agent: `generate` completes on the carrier it was
+    // handed, so the reply is that value's own field and nothing a test set aside.
+    let mut p = Pipeline::new();
+    let llm = p.fake_llm(&agent_source("good"));
+    let prompt = p.render(&[], &[], None);
+    let src = p.generate(&llm, &prompt);
+    let v = p.check(&src).unwrap_or_else(|e| panic!("must be accepted: {e:#?}"));
     assert_eq!(v.carrier, "guardians.agent.GoodTriage");
     assert_eq!(v.budget, vec!["External", "llm.E", "Error"]);
+}
+
+/// WI-20260908-H2GDZ's OWN ACCEPTANCE — TWO ROUNDS, THE SECOND BUILT FROM A REAL REFUSAL.
+///
+/// `the_generation_prompt_depends_on_every_input` renders with hand-picked strings; this
+/// row closes the loop the way a caller does: generate a candidate (the article's leak,
+/// from a fake whose fixture it is), have the CHECKER refuse it, and render round two from
+/// that `Source` and those diagnostics. The second prompt must carry both.
+///
+/// THE CONTROL is the last assertion: a round with nothing refused renders round one again,
+/// so the difference is the refusal's and not the render's.
+#[test]
+fn a_refused_round_feeds_the_next_prompt() {
+    let mut p = Pipeline::new();
+    let leak = agent_source("leak");
+    let llm = p.fake_llm(&leak);
+    let first = p.render(&[], &[], None);
+    let src = p.generate(&llm, &first);
+    let diagnostics = p.check(&src).expect_err("the leak must be refused");
+    let second = p.render(&[], &diagnostics, Some(&src));
+
+    let kb = p.interp.kb();
+    let (round_one, round_two) = (prompt_text(kb, &first).unwrap(), prompt_text(kb, &second).unwrap());
+    assert_ne!(round_one, round_two);
+    assert!(round_two.contains(leak.trim()), "round two shows the refused program");
+    for d in &diagnostics {
+        assert!(round_two.contains(d.as_str()), "round two carries the diagnostic {d:?}");
+    }
+    let again = p.render(&[], &[], None);
+    assert_eq!(prompt_text(p.interp.kb(), &again).unwrap(), round_one, "the control");
+}
+
+/// A PINNED FAULT, NOT A PROPERTY: `guardians.attempt` — the example's own one-round
+/// operation — cannot be run from a host today. Recorded here rather than only in the
+/// comment on `one_round_of_the_generation_loop_answers_the_same_verdict` so a change that
+/// fixes it, or moves it, is SEEN: this row reds either way, and whoever reds it should
+/// drive `attempt` there instead of the carriers.
+///
+/// Measured cause not isolated. Every host binding on the path re-enters the interpreter
+/// from inside an anthill body (`generate` calls `Llm.complete`, `check` calls
+/// `KB.loaded` and `guardians.gate`), which is the first suspect.
+#[test]
+fn attempt_from_the_host_dies_inside_the_evaluator_today() {
+    let mut p = Pipeline::new();
+    let llm = p.fake_llm(&agent_source("good"));
+    let (tools, feedback) = (p.strings(&[]), p.strings(&[]));
+    let none = entity0(p.interp.kb(), "anthill.prelude.Option.none", vec![]).unwrap();
+    let args = [p.harness.clone(), llm, p.checker.clone(), p.spec.clone(), tools, feedback, none];
+    let err = p
+        .interp
+        .call("guardians.attempt", &args)
+        .expect_err("attempt from a host is expected to fault today — if it answers, this is fixed");
+    assert!(
+        format!("{err:?}").contains("parent frame had no awaiting state"),
+        "attempt faulted, but not with the pinned reentrancy error: {err:?}"
+    );
+}
+
+/// `examples/guardians/prompt/primer.md` TELLS EVERY LIVE ROUND ITS EXAMPLE "LOADS CLEAN",
+/// and a primer that has gone stale spends a model's rounds on diagnostics the primer
+/// caused. So the example block is loaded here, against the stdlib alone, exactly as
+/// written — and the carrier it teaches must be there afterwards.
+#[test]
+fn the_primers_example_loads() {
+    let path = guardians_dir().join("prompt").join("primer.md");
+    let primer = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let example = program_of_reply(
+        primer
+            .split("## The language, by example")
+            .nth(1)
+            .expect("the primer has its example section"),
+    );
+    assert!(example.contains("provides Greeter[C = PoliteGreeter]"), "extracted: {example}");
+    let kb = common::try_load_kb_prepared_files(&[example.as_str()], |_| {})
+        .unwrap_or_else(|e| panic!("the primer's example must load: {e:#?}"));
+    assert!(kb.try_resolve_symbol("demo.agent.PoliteGreeter.greet_all").is_some());
+}
+
+/// ONE INTERPRETER OVER THE TRUSTED BASE, WITH THE PIPELINE'S CARRIERS IN HAND — the
+/// harness, the checker and the `Triage` spec reference every round needs.
+///
+/// Model carriers are built here rather than through `FakeLlm.open` / `LiveLlm.open`
+/// because their constructors are `internal` (§8.6): the mint is reachable from anthill
+/// inside its own sort and not from a test, and supplying a carrier at the HOST boundary
+/// is what a real embedder does.
+struct Pipeline {
+    interp: anthill_core::eval::Interpreter,
+    harness: Value,
+    checker: Value,
+    spec: Value,
+}
+
+impl Pipeline {
+    fn new() -> Self {
+        let mut interp = checker_interp();
+        let harness = entity0(interp.kb(), "guardians.FileHarness.file_harness", vec![])
+            .expect("build a FileHarness");
+        let checker = entity0(interp.kb(), "guardians.LoadChecker.load_checker", vec![])
+            .expect("build a LoadChecker");
+        let spec_sym = interp.kb().try_resolve_symbol("guardians.Triage").expect("guardians.Triage");
+        let spec = Value::term(interp.kb_mut().alloc(anthill_core::kb::term::Term::Ref(spec_sym)));
+        Pipeline { interp, harness, checker, spec }
+    }
+
+    fn fake_llm(&self, fixture: &str) -> Value {
+        entity0(self.interp.kb(), "guardians.FakeLlm.fake_llm", vec![Value::Str(fixture.into())])
+            .expect("build a FakeLlm")
+    }
+
+    fn live_llm(&self, cfg: &LiveConfig) -> Value {
+        entity0(
+            self.interp.kb(),
+            "guardians.LiveLlm.live_llm",
+            vec![Value::Str(cfg.endpoint.clone()), Value::Str(cfg.model.clone())],
+        )
+        .expect("build a LiveLlm")
+    }
+
+    fn strings(&mut self, xs: &[String]) -> Value {
+        let elems = xs.iter().cloned().map(Value::Str).collect();
+        self.interp.build_list_value(elems, &[]).expect("build a List[String]")
+    }
+
+    fn render(&mut self, tools: &[String], feedback: &[String], previous: Option<&Value>) -> Value {
+        let (tools, feedback) = (self.strings(tools), self.strings(feedback));
+        let previous = match previous {
+            Some(src) => entity0(self.interp.kb(), "anthill.prelude.Option.some", vec![src.clone()]),
+            None => entity0(self.interp.kb(), "anthill.prelude.Option.none", vec![]),
+        }
+        .expect("build an Option[T = Source]");
+        let args = [self.harness.clone(), self.spec.clone(), tools, feedback, previous];
+        self.interp
+            .call("guardians.FileHarness.render_task", &args)
+            .unwrap_or_else(|e| panic!("render_task: {e:?}"))
+    }
+
+    fn generate(&mut self, llm: &Value, prompt: &Value) -> Value {
+        let args = [self.harness.clone(), llm.clone(), prompt.clone()];
+        self.interp
+            .call("guardians.FileHarness.generate", &args)
+            .unwrap_or_else(|e| panic!("generate: {e:?}"))
+    }
+
+    fn check(&mut self, src: &Value) -> Result<Verdict, Vec<String>> {
+        let args = [self.checker.clone(), src.clone(), self.spec.clone()];
+        let verdict = self
+            .interp
+            .call("guardians.LoadChecker.check", &args)
+            .unwrap_or_else(|e| panic!("check: {e:?}"));
+        read_verdict(&self.interp, &verdict)
+    }
+}
+
+/// WI-20260830-7MK73 — A FAKE MODEL ANSWERS FROM ITS OWN VALUE, AND SENDS NOTHING.
+///
+/// Three claims the example made that the host side used to contradict, one row each:
+///
+///   * CHOOSING A MODEL IS CHOOSING A VALUE. Two `FakeLlm`s with different fixtures, one
+///     registration, two different candidates out of `generate`. Under the old binding —
+///     one thread-local reply behind both carrier keys, `generate` never touching `llm` —
+///     the two answered identically, so THIS assertion is the one that reds when the
+///     change is backed out.
+///   * `generate` ROUTES THROUGH THE MODEL IT WAS HANDED: the candidate IS the fixture,
+///     which nothing but `FakeLlm.complete` on that value could have produced.
+///   * `Permission` AND `External` ARE ORTHOGONAL (proposal 064). The fake's mint carries
+///     `Permission[T = Llm]` exactly as the live one's does, its `complete` declares no
+///     `External` while the live one's does — and, driven, it never entered the live
+///     binding. MEASURED, pointing `FakeLlm`'s `operation_map` at
+///     `guardians_live_complete` reds this row — by the binding dying on a `fake_llm`
+///     that has no `model`, before any assertion. The entry count is the guard for the
+///     misroute that WOULD survive that read (a carrier shaped like `live_llm`); it is
+///     taken first thing in the binding so such a call counts. The row half passes with or
+///     without the change by design; it pins the declarations the driven half is evidence
+///     FOR.
+///
+/// `prompt_with`'s ORDER is asserted here too, because no model reply depends on it: the
+/// trusted instruction must come BEFORE the untrusted content, and a swap would keep every
+/// other row — the fake ignores its prompt, the live one only looks for a word — green.
+#[test]
+fn a_fake_model_answers_from_its_own_value_and_sends_nothing() {
+    let mut p = Pipeline::new();
+    let prompt = p.render(&[], &[], None);
+    let before = live_requests();
+
+    let good = agent_source("good");
+    let conceal = agent_source("conceal");
+    let (fake_good, fake_conceal) = (p.fake_llm(&good), p.fake_llm(&conceal));
+    let from_good = p.generate(&fake_good, &prompt);
+    let from_conceal = p.generate(&fake_conceal, &prompt);
+    let kb = p.interp.kb();
+    assert_eq!(source_text(kb, &from_good).unwrap(), good);
+    assert_eq!(source_text(kb, &from_conceal).unwrap(), conceal);
+
+    // `summarize` IS ANTHILL, and its `llm.complete(p)` is the evaluator's dispatch, not
+    // this file's: the same carrier value answers there too. It also drives the two prompt
+    // primitives it is written in, which had no binding until this row needed one — backed
+    // out, this call dies `OperationBodyMissing` on `join_texts`.
+    let summary_fake = p.fake_llm("a summary");
+    let kb = p.interp.kb();
+    let instruction = text_value(kb, "Summarize.").unwrap();
+    let msg = text_value(kb, "hello").unwrap();
+    let msgs = p.interp.build_list_value(vec![msg], &[]).unwrap();
+    let summary = p
+        .interp
+        .call("guardians.summarize", &[summary_fake, instruction, msgs])
+        .unwrap_or_else(|e| panic!("summarize over FakeLlm: {e:?}"));
+    let kb = p.interp.kb();
+    assert_eq!(str_field(kb, &summary, "raw", 0).unwrap(), "a summary");
+    assert_eq!(live_requests(), before, "a fake model must never enter the live binding");
+
+    let (instruction, content) = (text_value(kb, "Summarize.").unwrap(), text_value(kb, "hello").unwrap());
+    let joined = p
+        .interp
+        .call("guardians.prompt_with", &[instruction, content])
+        .unwrap_or_else(|e| panic!("prompt_with: {e:?}"));
+    let kb = p.interp.kb();
+    assert_eq!(prompt_text(kb, &joined).unwrap(), "Summarize.\n\nhello");
+
+    let rows = declared_rows(kb);
+    let row = |qn: &str| rows.get(qn).unwrap_or_else(|| panic!("{qn} has no OperationInfo row"));
+    for mint in ["guardians.FakeLlm.open", "guardians.LiveLlm.open"] {
+        assert!(
+            row(mint).iter().any(|e| e == "Permission[T = Llm]"),
+            "{mint} must consume `Permission[T = Llm]`; got {:?}",
+            row(mint)
+        );
+    }
+    assert!(!row("guardians.FakeLlm.complete").iter().any(|e| e == "External"));
+    assert!(row("guardians.LiveLlm.complete").iter().any(|e| e == "External"));
+}
+
+/// WI-20260908-H2GDZ (a) — THE GENERATION PROMPT DEPENDS ON EVERY INPUT.
+///
+/// `render_task` used to read `spec` alone and drop `tools` and `feedback`, so every
+/// round of the repair loop rendered the identical prompt and a refused candidate was
+/// regenerated from exactly the inputs that produced it. `previous` is the program that
+/// feedback is ABOUT; without it a model is told `12:7: syntax error` of a text it
+/// cannot see.
+///
+/// THE CONTROL IS THE FIRST ASSERTION: two renders with nothing to add are identical, so
+/// the differences below are the inputs' and not a timestamp's. Back the splice out and
+/// the `feedback`, `tools` and `previous` assertions red; the control passes either way
+/// by design.
+#[test]
+fn the_generation_prompt_depends_on_every_input() {
+    let mut p = Pipeline::new();
+    let text = |p: &mut Pipeline, tools: &[&str], feedback: &[&str], previous: Option<&Value>| {
+        let own = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let prompt = p.render(&own(tools), &own(feedback), previous);
+        prompt_text(p.interp.kb(), &prompt).expect("a prompt carries text")
+    };
+    let bare = text(&mut p, &[], &[], None);
+    assert_eq!(bare, text(&mut p, &[], &[], None), "the control: rendering is deterministic");
+
+    let marker = "sort guardians.agent.PreviousRoundMarker";
+    let src = entity0(p.interp.kb(), "guardians.Source.source", vec![Value::Str(marker.into())]).unwrap();
+    let with_previous = text(&mut p, &[], &[], Some(&src));
+    assert_ne!(with_previous, bare);
+    assert!(with_previous.contains(marker), "the previous program reaches the prompt");
+    // The TASK LINE, not the bare name: the pasted library mentions `guardians.Triage`
+    // whatever `spec` was, so only this spelling reds when the argument is lost.
+    assert!(
+        bare.contains("that provides `guardians.Triage`"),
+        "the task line names the spec it was handed"
+    );
+
+    let diag = "run.effects (op-effects): got undeclared effect: Filesystem";
+    let with_feedback = text(&mut p, &[], &[diag], None);
+    assert_ne!(with_feedback, bare);
+    assert!(with_feedback.contains(diag), "feedback reaches the prompt verbatim");
+
+    let with_tools = text(&mut p, &["guardians.Email.fetch"], &[], None);
+    assert_ne!(with_tools, bare);
+    assert!(with_tools.contains("guardians.Email.fetch"), "tools reach the prompt");
+}
+
+/// WI-20260830-7MK73 — A LIVE REPLY REACHES `summarize`. Ignored by default; run with
+/// `-- --ignored live` and the variables "the live model" above lists.
+///
+/// Driven through `guardians.summarize` — anthill code whose `llm.complete(p)` the
+/// evaluator dispatches to `LiveLlm.complete` — so the request, the prompt primitives and
+/// the carrier dispatch are all on the path. The reply is asked to repeat a word that
+/// appears ONLY in the message content, so an answer containing it could not have come
+/// from a prompt that dropped `content`.
+#[test]
+#[ignore = "live model: needs GUARDIANS_LLM_* and the network"]
+fn a_live_reply_reaches_summarize() {
+    let cfg = live_config();
+    let mut p = Pipeline::new();
+    let llm = p.live_llm(&cfg);
+    let kb = p.interp.kb();
+    let instruction = text_value(
+        kb,
+        "Reply with only the single word the following message asks you to repeat.",
+    )
+    .unwrap();
+    let msg = text_value(kb, "Please repeat this word back: marmalade").unwrap();
+    let msgs = p.interp.build_list_value(vec![msg], &[]).unwrap();
+    let before = live_requests();
+    let reply = p
+        .interp
+        .call("guardians.summarize", &[llm, instruction, msgs])
+        .unwrap_or_else(|e| panic!("summarize over LiveLlm({}): {e:?}", cfg.model));
+    let text = str_field(p.interp.kb(), &reply, "raw", 0).unwrap();
+    assert_eq!(live_requests(), before + 1, "exactly one request went out");
+    assert!(text.to_lowercase().contains("marmalade"), "{} replied {text:?}", cfg.model);
+}
+
+/// THE REPAIR LOOP AGAINST A REAL MODEL — an EXPERIMENT, not a property. Ignored like the
+/// row above; `GUARDIANS_LLM_ROUNDS` bounds it (default 5).
+///
+/// Each round renders the prompt, completes it on the live carrier, checks the candidate,
+/// and on a refusal feeds back the refused `Source` as `previous` and the checker's
+/// diagnostics as `feedback`. Every prompt, extracted candidate and verdict is written
+/// under `rustland/target/guardians-live/<model>-<unix time>/`, and the run prints where.
+///
+/// THE PREVIOUS PROGRAM RIDES AS THE `Source` VALUE `generate` RETURNED, never as a
+/// `String` in `feedback` — a string there is vouched for by whoever holds
+/// `Permission[Vouch]`, while a `Source` is admissible by its type alone
+/// (`lib/harness.anthill`, `render_task`'s `previous`). A first draft of this loop pasted
+/// the reply into `feedback` and was the counterexample to that file's claim.
+///
+/// WHAT IT ASSERTS is only that every round ANSWERED — a `CheckResult`, or the `Error` a
+/// failed request is declared to raise — never a fault. Whether a given model converges
+/// is the measurement, and it is not this suite's to pass or fail.
+#[test]
+#[ignore = "live model: needs GUARDIANS_LLM_* and the network"]
+fn a_live_model_generates_a_triage_through_the_repair_loop() {
+    let cfg = live_config();
+    let rounds: usize = std::env::var("GUARDIANS_LLM_ROUNDS")
+        .map(|r| r.parse().unwrap_or_else(|_| panic!("GUARDIANS_LLM_ROUNDS={r:?} is not a count")))
+        .unwrap_or(5);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_secs();
+    // SECONDS AND PID: two runs of one model started in the same second — the obvious
+    // way to sample a noisy model — would otherwise write into one directory.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/guardians-live")
+        .join(format!("{}-{stamp}-{}", cfg.model.replace(['/', ':'], "_"), std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("mkdir {}: {e}", dir.display()));
+    let write = |name: String, body: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    };
+
+    let mut p = Pipeline::new();
+    let llm = p.live_llm(&cfg);
+    let tools: Vec<String> = ["guardians.Email.fetch", "guardians.observe", "guardians.summarize"]
+        .map(String::from)
+        .to_vec();
+    let mut feedback: Vec<String> = Vec::new();
+    let mut previous: Option<Value> = None;
+    for round in 1..=rounds {
+        let prompt = p.render(&tools, &feedback, previous.as_ref());
+        write(format!("round-{round}.prompt.md"), &prompt_text(p.interp.kb(), &prompt).unwrap());
+        let started = std::time::Instant::now();
+        // A RAISED `Error` IS A ROUND, NOT THE END OF THE EXPERIMENT: `complete` declares
+        // it for a failed request (a 429, a 5xx, a reasoning model's null `content`), so
+        // it is recorded and the next round retries with the same inputs. Anything else
+        // is a fault in this harness and stays a panic.
+        let args = [p.harness.clone(), llm.clone(), prompt.clone()];
+        let src = match p.interp.call("guardians.FileHarness.generate", &args) {
+            Ok(src) => src,
+            Err(anthill_core::eval::EvalError::Raised { payload }) => {
+                let why = format!("RAISED by the model call: {payload:?}");
+                write(format!("round-{round}.verdict.txt"), &why);
+                eprintln!("[{}] round {round} ({:.0?}): {why}", cfg.model, started.elapsed());
+                continue;
+            }
+            Err(e) => panic!("generate: {e:?}"),
+        };
+        let program = source_text(p.interp.kb(), &src).unwrap();
+        write(format!("round-{round}.candidate.anthill"), &program);
+        match p.check(&src) {
+            Ok(v) => {
+                let summary = format!("ACCEPTED {} providing {} within {:?}", v.carrier, v.spec, v.budget);
+                write(format!("round-{round}.verdict.txt"), &summary);
+                eprintln!("[{}] round {round} ({:.0?}): {summary}", cfg.model, started.elapsed());
+                eprintln!("transcripts: {}", dir.display());
+                return;
+            }
+            Err(diagnostics) => {
+                write(format!("round-{round}.verdict.txt"), &diagnostics.join("\n"));
+                eprintln!(
+                    "[{}] round {round} ({:.0?}): REJECTED, {} diagnostic(s); first: {}",
+                    cfg.model,
+                    started.elapsed(),
+                    diagnostics.len(),
+                    diagnostics.first().map(String::as_str).unwrap_or("")
+                );
+                feedback = diagnostics;
+                previous = Some(src);
+            }
+        }
+    }
+    eprintln!("[{}] not accepted within {rounds} round(s); transcripts: {}", cfg.model, dir.display());
 }
 
 #[test]

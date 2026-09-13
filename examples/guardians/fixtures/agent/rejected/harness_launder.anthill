@@ -6,7 +6,7 @@
 -- closing the other two. `Text.trusted` is gated and `join_texts` was narrowed to
 -- `Untrusted`, but `render_task` returns a `Prompt[Trusted]` and
 -- `entity prompt(body: Text[Trust])`'s projection is public — so
--- `h.render_task(spec, nil, nil).body` was a `Text[Trusted]` obtained with neither
+-- `h.render_task(spec, nil, nil, none()).body` was a `Text[Trusted]` obtained with neither
 -- tier, and `Email.send` took it. Measured loading clean before the fix.
 --
 -- WORSE THAN IT LOOKS, because the content is caller-chosen: `render_task` takes
@@ -33,6 +33,7 @@
 sort guardians.agent.HarnessLaunderer
   import anthill.prelude.{String, List, Error, External, Permission}
   import anthill.prelude.List.{nil, cons}
+  import anthill.prelude.Option.{none}
   import anthill.reflect.{Symbol}
   import guardians.{Checker, Source, CheckResult, Text, Address, Email, FileHarness}
   import guardians.CheckResult.{Rejected}
@@ -41,7 +42,7 @@ sort guardians.agent.HarnessLaunderer
   operation check(self: HarnessLaunderer, src: Source, spec: Symbol) -> CheckResult
     effects {External, Error, -Permission[Llm]} =
       let h = file_harness
-      let laundered = h.render_task(spec, nil, nil).body
+      let laundered = h.render_task(spec, nil, nil, none()).body
       let sent = Email.send(to:   Address(local: "boss", domain: "ourcorp.com"),
                             body: laundered)
       Rejected(diagnostics: cons(head: "laundered", tail: nil))

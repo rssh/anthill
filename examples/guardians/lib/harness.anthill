@@ -90,7 +90,7 @@ enum guardians.CheckResult
 end
 
 sort guardians.Harness
-  import anthill.prelude.{String, List, Error}
+  import anthill.prelude.{String, List, Error, Option}
   import anthill.reflect.{Symbol}
   import anthill.prelude.{Permission}
   import guardians.{Prompt, Source, Llm, Vouch}
@@ -105,8 +105,27 @@ sort guardians.Harness
   -- Reading the KB rather than transcribing it is the point — a hand-written
   -- prompt goes stale against a changed signature SILENTLY, and the model then
   -- codes against an interface the checker will not accept.
+  --
+  -- `previous` IS THE PROGRAM THE `feedback` IS ABOUT, AND ITS TRUST POLICY IS ITS
+  -- TYPE. A diagnostic says `12:7: syntax error near …` of a text the model no longer
+  -- holds; a loop that could not show it that text regenerated from scratch every
+  -- round — measured on a live model (WI-20260830-7MK73).
+  --
+  -- IT IS NOT A `String` IN `feedback`, AND WHAT THE TYPE BUYS IS NARROWER THAN IT
+  -- LOOKS. It does NOT exempt `previous` from vouching: this operation carries
+  -- `Permission[Vouch]` and vouches for every input, and a caller who could inject
+  -- through `previous` could inject through `feedback` just as well. What it buys is
+  -- WHERE the text can have come from. `Source`'s constructor is `internal`, so its
+  -- only introduction is `generate` — a model's reply to a `Prompt[Trusted]`, never
+  -- bytes someone typed in (`rejected/forged_source.anthill`). The model is an input
+  -- too, though: a `FakeLlm` answers its fixture, a caller-chosen `String`, so
+  -- `FakeLlm.open(s)` then `generate` makes any `s` a `Source` (found by review). That
+  -- route costs `Permission[Llm]`, which no candidate's row grants — so both
+  -- authorities that can steer `previous` are the organisation's, the same boundary
+  -- `feedback` already sits on.
   operation render_task(self: C, spec: Symbol, tools: List[T = String],
-                        feedback: List[T = String]) -> Prompt[Trusted]
+                        feedback: List[T = String],
+                        previous: Option[T = Source]) -> Prompt[Trusted]
     effects {Error, Permission[Vouch]}
 
   -- CODE GENERATION MAY ONLY PROCEED FROM A CONTENT-FREE PROMPT, and this
@@ -135,7 +154,10 @@ sort guardians.Harness
   -- checker reading `text_of(...).raw` into `List[String]`. Sealing `Text`'s
   -- projection closed that (`rejected/reads_text.anthill`), so the only strings
   -- reaching a diagnostic now are the loader's own text and literals a checker
-  -- writes.
+  -- writes. (The loader's text may QUOTE the candidate — `syntax error near …`.)
+  -- The GENERATOR's own words do reach the next prompt, and on purpose: as
+  -- `previous`, typed `Source`, never as a string in `feedback` — see `previous`
+  -- above for what that typing does and does not guarantee.
   --
   -- WHAT `approved` DOES NOT COVER HERE is real but not a hole: `Text.trusted`
   -- checks the content whitelist and this does not, because a whitelist matches
@@ -190,7 +212,7 @@ sort guardians.Checker
 end
 
 namespace guardians
-  import anthill.prelude.{String, List, Error, External, Permission}
+  import anthill.prelude.{String, List, Error, External, Permission, Option}
   import anthill.reflect.{Symbol}
   import guardians.{Harness, Checker, Llm, LiveLlm, Source, CheckResult, Vouch}
 
@@ -199,11 +221,17 @@ namespace guardians
   -- round. It TAKES the `Llm` and acquires nothing, which is 064's shape: the
   -- check happened earlier and the `Llm` in the signature is the evidence, so
   -- this row carries no `Permission` at all.
+  --
+  -- `previous` PASSES THROUGH, AND A LOOP BUILT ON THIS ALONE CAN ONLY SAY `none()`:
+  -- the round returns the verdict, not the candidate it judged, so its caller never
+  -- holds the `Source` to hand back. Returning it is the single entry point's job
+  -- (WI-20260908-K5HVE); the test harness's loop drives the carriers for that reason.
   operation attempt(h: Harness, llm: Llm, chk: Checker,
                     spec: Symbol, tools: List[T = String],
-                    feedback: List[T = String]) -> CheckResult
+                    feedback: List[T = String],
+                    previous: Option[T = Source]) -> CheckResult
     effects {External, llm.E, Error, Permission[Vouch]} =
-      let p = h.render_task(spec, tools, feedback)
+      let p = h.render_task(spec, tools, feedback, previous)
       chk.check(h.generate(llm, p), spec)
 
   -- THE ACQUISITION, and the POSITIVE CONTROL for every `Permission` refusal in
@@ -222,26 +250,30 @@ namespace guardians
   operation open_round(h: Harness, chk: Checker,
                        endpoint: String, model: String,
                        spec: Symbol, tools: List[T = String],
-                       feedback: List[T = String]) -> CheckResult
+                       feedback: List[T = String],
+                       previous: Option[T = Source]) -> CheckResult
     effects {Permission[Llm], Permission[Vouch], External, Error} =
       let llm = LiveLlm.open(endpoint, model)
-      attempt(h, llm, chk, spec, tools, feedback)
+      attempt(h, llm, chk, spec, tools, feedback, previous)
 end
 
 -- Carriers.
 sort guardians.FileHarness
-  import anthill.prelude.{String, List, Error}
+  import anthill.prelude.{String, List, Error, Option}
   import anthill.reflect.{Symbol}
   import anthill.prelude.{Permission}
   import guardians.{Harness, Prompt, Source, Llm, Vouch}
   import guardians.TrustLevel.{Trusted}
   entity file_harness
   operation render_task(self: FileHarness, spec: Symbol, tools: List[T = String],
-                        feedback: List[T = String]) -> Prompt[Trusted]
+                        feedback: List[T = String],
+                        previous: Option[T = Source]) -> Prompt[Trusted]
     effects {Error, Permission[Vouch]}
   operation generate(self: FileHarness, llm: Llm, p: Prompt[Trusted]) -> Source
     effects {llm.E, Error}
-  provides Harness
+  -- `C = FileHarness`, and `C = LoadChecker` below, for the reason `LiveLlm` gives in
+  -- lib/llm.anthill: a bare `provides Harness` names no carrier to dispatch at.
+  provides Harness[C = FileHarness]
 end
 
 sort guardians.LoadChecker
@@ -251,7 +283,7 @@ sort guardians.LoadChecker
   entity load_checker
   operation check(self: LoadChecker, src: Source, spec: Symbol) -> CheckResult
     effects {External, Error, -Permission[Llm]}
-  provides Checker
+  provides Checker[C = LoadChecker]
 end
 
 namespace guardians

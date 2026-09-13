@@ -44,3 +44,9 @@ WHY IT IS ITS OWN TICKET. THZ8R is framed as "divergences between `examples/guar
 
 ACCEPTANCE: `render_task`'s output DEPENDS on `feedback` and on `tools`; a two-round row asserts the second prompt differs from the first, with a control pinning that an empty `feedback` leaves them identical; no parameter is accepted and dropped; the guardians suite green with every fixture still accepted or refused FOR ITS OWN REASON and diagnostic substrings unchanged.
 
+## Changes
+
+### 2026-09-13T18:32:05Z — feedback — user
+
+PART (a) DELIVERED INLINE under WI-20260830-7MK73. `guardians_render_task` now splices `tools` and `feedback` into the prompt, and gained a fifth input, `previous: Option[T = Source]` — the refused program the feedback is about, typed so it can only be a model's reply (see lib/harness.anthill for what that does and does not guarantee). This ticket's two-round acceptance is `a_refused_round_feeds_the_next_prompt` (a real `Rejected` from the leak fixture feeds round two; control: an unrefused round renders round one again); `the_generation_prompt_depends_on_every_input` pins each input. STILL OPEN: (b) rendering the spec's signatures FROM THE KB — the binding renders lib/*.anthill SOURCE FILES plus prompt/primer.md, so a KB loaded with an extra source renders a prompt that does not mention it; and the file reads are not covered by render_task's row.
+

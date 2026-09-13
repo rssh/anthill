@@ -125,7 +125,13 @@ sort guardians.LiveLlm
 
   operation complete(self: LiveLlm, p: Prompt) -> Text[Untrusted]
     effects {External, Error}
-  provides Llm[E = {External}]
+  -- `C = LiveLlm` IS NOT REDUNDANT, and it was missing (WI-20260830-7MK73). A
+  -- provision names its CARRIER by its bindings (kernel-language.md §5.1), so
+  -- `provides Llm[E = {External}]` loaded and named none: `summarize`'s
+  -- `llm.complete(p)` then had no carrier to dispatch at and died
+  -- `OperationBodyMissing` on the spec's body-less `complete` — at run time only,
+  -- since every caller in this example had merely been LOADED.
+  provides Llm[C = LiveLlm, E = {External}]
 end
 
 sort guardians.FakeLlm
@@ -144,7 +150,8 @@ sort guardians.FakeLlm
 
   operation complete(self: FakeLlm, p: Prompt) -> Text[Untrusted]
     effects {Error}
-  provides Llm[E = {}]
+  -- `C = FakeLlm` for the reason `LiveLlm` gives.
+  provides Llm[C = FakeLlm, E = {}]
 end
 
 namespace guardians
@@ -185,5 +192,16 @@ namespace guardians
   provides FakeLlm language rust
     artifact "rustland/anthill-core/tests/guardians_test.rs"
     operation_map { complete: "guardians_fake_complete" }
+  end
+
+  -- THE PROMPT PRIMITIVES `summarize` IS WRITTEN IN, bound at the namespace: neither
+  -- is a carrier's operation, and both need a text's bytes, which only the host may
+  -- read. Unbound, `summarize` loaded and could not run (WI-20260830-7MK73).
+  provides guardians language rust
+    artifact "rustland/anthill-core/tests/guardians_test.rs"
+    operation_map {
+      prompt_with: "guardians_prompt_with",
+      join_texts:  "guardians_join_texts"
+    }
   end
 end

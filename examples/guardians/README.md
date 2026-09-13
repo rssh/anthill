@@ -129,6 +129,30 @@ path as production and differs only in whether the call leaves the process
 **before** load (WI-1122 — after load is refused, because the failure would be
 silent in release).
 
+Each binding answers from its own value: the fake from its `fixture`, the live
+carrier with one OpenAI-compatible chat request to the `endpoint` and `model` it
+was minted with. The live rows in `guardians_test.rs` are `#[ignore]`d, so a
+default run stays offline whatever the environment holds; ask for them:
+
+```
+GUARDIANS_LLM_ENDPOINT=https://<openai-compatible-host>/v1 \
+GUARDIANS_LLM_MODEL=<model-id> \
+GUARDIANS_LLM_API_KEY=… \
+GUARDIANS_LLM_ROUNDS=5 \
+  rustland/scripts/test.sh -p anthill-core --test guardians_test -- --ignored live --nocapture
+```
+
+`a_live_model_generates_a_triage_through_the_repair_loop` runs the generation
+loop against that model: render the prompt (`prompt/primer.md`, the task, the
+library's source, the previous round's program and its diagnostics), generate,
+check, repeat. The previous program travels as `render_task`'s
+`previous: Option[T = Source]`, never as a string in `feedback`: a `Source` is
+always some model's reply to a `Prompt[Trusted]`, never bytes typed in. It is
+still vouched for like every other input — a caller holding `Permission[Llm]`
+can make a fake model answer anything — and `lib/harness.anthill` says exactly
+what the type does and does not guarantee. Every prompt, candidate and verdict lands under
+`rustland/target/guardians-live/<model>-<time>/`.
+
 ## Why almost none of the tests need a model
 
 Every **security** property here is a load-time refusal, decided with no oracle,
@@ -166,8 +190,11 @@ group E is the record, including the measurement that decided the shape.
 
 ## Honest state
 
-The checking half is real and measured. The generating half is not yet wired: the
-agents in `agent/` are hand-written stands-in for what a model would emit. The
+The checking half is real and measured. The generating half is wired to a real
+model but is an experiment, not a suite property: whether a model converges is
+measured per run, and the agents in `agent/` stay hand-written stand-ins so the
+checked properties never depend on one. An accepted candidate is still only
+LOADED, never run (WI-20260908-MRG99). The
 `Checked` relation in `safety.anthill` is declared and asserted nowhere — the
 typer already decides it on every load and currently discards the positive
 verdict, which is the seam that would fill it. `docs/design/measured.md`

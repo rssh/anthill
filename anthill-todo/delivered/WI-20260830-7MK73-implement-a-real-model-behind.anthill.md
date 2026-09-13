@@ -3,9 +3,9 @@
 - id: WI-20260830-7MK73-implement-a-real-model-behind
 - created: 2026-08-30T16:35:06Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-30T16:35:06Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-13T18:31:52Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
