@@ -826,3 +826,88 @@ end
         other => panic!("the anchor must survive a same-named namespace, got {other:?}"),
     }
 }
+
+/// A spec with a CARRIER parameter and a CONTENT parameter AT DIFFERENT TYPES, and a
+/// receiving operation on the carrier — so [`spec_carrier_param_or_sole`]'s rung 1 names
+/// `C`, the second gate agrees with the provision, and both refusals above are passed.
+/// `tag()` is NULLARY and BODY-LESS: only a dictionary can answer.
+fn two_param(spec_body: &str, tail: &str) -> String {
+    format!(
+        r#"namespace test.qmfc5.mp
+  import anthill.prelude.{{Int64, Bool}}
+
+  sort Sp
+    import anthill.prelude.Int64
+{spec_body}  end
+
+  sort Red
+    import anthill.prelude.Int64
+    entity red
+    provides Sp[C = Red, P = Int64]
+    operation tag() -> Int64 = 7
+  end
+
+{tail}  rule answer(?r) :- anchored(red(), ?r)
+end
+"#
+    )
+}
+
+const TWO_PARAM_SPEC: &str =
+    "    sort C = ?\n    sort P = ?\n    operation tag() -> Int64\n    operation crecv(x: C) -> Int64 = 0\n";
+
+#[test]
+fn a_multi_parameter_spec_delays_even_when_its_carrier_parameter_is_identifiable() {
+    // NOT DELIVERED, AND NOT SILENT — the same root cause as
+    // [`a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays`], at a
+    // MUCH wider scope than that row's shape suggests.
+    //
+    // `fetch_dictionary` takes `(spec_sort, op_functor, arg_vals)` and never sees slot 0,
+    // so the author's written `P = Int64` is replaced by WI-20260830-X9PB4's synthesized
+    // wildcard — and a wildcard is refused against `Red provides Sp[C = Red, P = Int64]`'s
+    // CONCRETE binding. No provider answers, the fetch reports `Undecided`, the goal
+    // delays. Closing it is the resolver signature change §8.6 records.
+    //
+    // THE SCOPE WAS UNDERSTATED and this row is what corrects it. §8.6 and the row above
+    // both describe this as "a self-representing spec whose provider pins a sibling
+    // concretely". MEASURED 2026-09-13: it is EVERY multi-parameter spec — this one is
+    // NOT self-representing, its carrier parameter IS identifiable (rung 1 names `C` from
+    // `crecv(x: C)`), the second gate AGREES with the provision, and it delays anyway.
+    // Declaration order does not matter and omitting the `P` binding does not either.
+    let got = crate::common::query_unary(
+        &mut crate::common::load_kb_with(&two_param(
+            TWO_PARAM_SPEC,
+            "  rule anchored(x: Red, ?r) :- ?d = require[Sp[C = Red, P = Int64]], Sp.tag(?r)\n",
+        )),
+        "test.qmfc5.mp.answer",
+    );
+    assert!(
+        matches!(got.as_slice(), [(_, false)]),
+        "expected ONE INDEFINITE row (the delay), got {got:?}",
+    );
+}
+
+#[test]
+fn the_control_the_same_shape_at_ONE_parameter_answers() {
+    // WHAT MAKES THE ROW ABOVE A PARAMETER-COUNT FINDING rather than a fixture artifact.
+    // Identical in every other respect — same nullary body-less `tag()`, same receiving
+    // op on the carrier, same concrete bracket, same carrier value — and it answers `7`.
+    //
+    // Without this row, "two parameters delay" is equally consistent with "this fixture
+    // shape delays", and an earlier attempt at the measurement had exactly that hole: it
+    // bound both parameters to the SAME sort, which cannot tell which one the dictionary
+    // keyed on either.
+    let src = two_param(
+        "    sort C = ?\n    operation tag() -> Int64\n    operation crecv(x: C) -> Int64 = 0\n",
+        "  rule anchored(x: Red, ?r) :- ?d = require[Sp[C = Red]], Sp.tag(?r)\n",
+    )
+    .replace("provides Sp[C = Red, P = Int64]", "provides Sp[C = Red]");
+    let got = crate::common::query_unary(
+        &mut crate::common::load_kb_with(&src),
+        "test.qmfc5.mp.answer",
+    );
+    assert!(
+        matches!(got.as_slice(), [(Value::Int(7), true)]),
+        "the one-parameter twin must answer 7, got {got:?}",
+    );
+}

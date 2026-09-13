@@ -1045,12 +1045,32 @@ answered `7`, `Leaf`'s dictionary, ignoring the author's explicit `T = Other` �
 located refusal naming both. Only a CONCRETE disagreement refuses; a binding naming a type
 variable was already dropped as a wildcard upstream.
 
-STILL UNDECIDED ON THE WITNESS PATH, and the reason is a signature rather than a rule:
-`fetch_dictionary` takes `(spec_sort, op_functor, arg_vals)` and never sees slot 0, so
-`witness_sort_goal` still replaces a written binding with a synthesized wildcard. That is
-what makes a self-representing spec whose provider pins a sibling concretely DELAY
-(`a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays`) — the author
-wrote `Cap[P = Int64]`, the provider binds `P = Int64`, and they never meet.
+STILL UNDECIDED, and the reason is a signature rather than a rule: `fetch_dictionary`
+takes `(spec_sort, op_functor, arg_vals)` and never sees slot 0, so `witness_sort_goal`
+still replaces a written binding with a synthesized wildcard — and a wildcard is REFUSED
+against a provider's concrete binding, so no provider answers, the fetch reports
+`Undecided`, and the goal delays. The author wrote `Cap[P = Int64]`, the provider binds
+`P = Int64`, and they never meet.
+
+**THE SCOPE OF THAT IS WIDER THAN THIS SECTION SAID, and MEASURED 2026-09-13 it is the
+whole of it: NO MULTI-PARAMETER SPEC GROUNDS THROUGH THE TYPED-HEAD ANCHOR.** This was
+written as a corner — "a self-representing spec whose provider pins a sibling concretely"
+— and pinned by one row in that shape
+(`a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays`). It is not a
+corner. A spec that is NOT self-representing, whose carrier parameter IS identifiable
+(rung 1 names it from a receiving operation), and whose second gate AGREES with the
+provision, delays exactly the same way — with the declaration order of its parameters
+making no difference and omitting the content binding making none either. Eight arms
+measured, and the **one-parameter twin of the identical fixture answers `7`**, which is
+what makes it a parameter-count finding rather than a fixture artifact. Pinned by
+`a_multi_parameter_spec_delays_even_when_its_carrier_parameter_is_identifiable` and its
+control.
+
+The two rungs §8.2 calls "genuinely absent" are NOT this: a spec with no receiving
+operation, and one receiving on a non-carrier parameter, are both refused with their own
+located messages (measured in the same run). The machinery that IDENTIFIES the carrier
+works; what fails is the FETCH, one question later, and it fails silently — a clean load
+and a residual, which is the outcome QMFC5's own acceptance forbids in as many words.
 
 `try_body_tvar_guard`'s two limits (drops the guard's parameter position; refuses
 `Sp[C = A]` — row m) become cosmetic once §8.2 supplies the attribution: they restrict
