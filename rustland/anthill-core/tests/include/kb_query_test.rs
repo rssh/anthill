@@ -35,6 +35,7 @@ namespace test.kb_query
   import anthill.reflect.{Term, Substitution, Solution, fresh_var, term_as_string, as_term}
   import anthill.reflect.Solution.{definite, undecided}
   import anthill.reflect.KB.{kb, execute}
+  import anthill.reflect.{ResolveStreamFailure}
   import anthill.reflect.LogicalQuery.{pattern_query}
   import anthill.reflect.Substitution.{lookup}
 
@@ -47,7 +48,7 @@ namespace test.kb_query
   -- Query the KB for the person whose role is "admin" and return their name.
   -- `role: "admin"` is the concrete discriminator (only the alice fact qualifies);
   -- `name` is the fresh-var hole whose binding we recover.
-  operation admin_name() -> String effects Error =
+  operation admin_name() -> String effects Error[ResolveStreamFailure] =
     let goal = Person(name: fresh_var[String]("n"), role: "admin")
     match splitFirst(execute(kb(), pattern_query(term: as_term(goal))))
       case none()   -> "no-admin"
@@ -57,7 +58,7 @@ namespace test.kb_query
   -- Substitution — so the consumer DECIDES. Here we just read the bindings
   -- from either arm (this admin query is definite; the undecided arm exercises
   -- the residual-carrying shape).
-  operation name_of(p: Pair[A = Solution, B = Stream[T = Solution, E = Error]]) -> String =
+  operation name_of(p: Pair[A = Solution, B = Stream[T = Solution, E = Error[ResolveStreamFailure]]]) -> String =
     match p
       case pair(sol, _) -> string_of(lookup(subst_of(sol), "n"))
 

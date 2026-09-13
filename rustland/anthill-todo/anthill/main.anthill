@@ -76,7 +76,7 @@ namespace anthill.todo
                           term_field, term_as_string, term_as_int,
                           term_as_entity,
                           fresh_var, make_fn, term_to_string,
-                          term_list_items}
+                          term_list_items, ResolveStreamFailure}
   import anthill.reflect.Solution.{definite, undecided}
   import anthill.stage0.WorkStatus.{Claimed, Delivered, Verified}
   import anthill.stage0.WorkStatus.{Rejected, ProposalRejected, Stale}
@@ -522,7 +522,7 @@ namespace anthill.todo
     operation main(args: List[String],
                    wis_cell: Cell[State], agent: String) -> Int64
       effects {ConsoleOutput, ConsoleError, Modify[wis_cell],
-               External, Error, Clock}
+               External, Error, Error[ResolveStreamFailure], Clock}
     =
       match parse_argv(specs(), args)
         case parse_err(no_subcommand()) ->
@@ -587,7 +587,7 @@ namespace anthill.todo
     -- together would make a tracker that needs `migrate` read as corrupt.
     operation undated_gate(name: String, args: List[Binding], agent: String,
                            s: Cell[State]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Modify[s], External, Error, Clock}
+      effects {ConsoleOutput, ConsoleError, Modify[s], External, Error, Error[ResolveStreamFailure], Clock}
     =
       match items_missing_created()
         case nil() -> dispatch(name, args, agent, s)
@@ -625,7 +625,7 @@ namespace anthill.todo
       -- ordinary reason a row propagates: an operation may not call one whose
       -- effects its own row does not admit.
       effects {ConsoleOutput, ConsoleError, Modify[s],
-               External, Error, Clock}
+               External, Error, Error[ResolveStreamFailure], Clock}
     =
       -- `skill` and `init` are intercepted host-side (static doc print /
       -- pre-KB scaffolding); their specs stay in the catalogue for --help.
@@ -2146,7 +2146,7 @@ namespace anthill.todo
     -- ── cmd_list itself ───────────────────────────────────────────
 
     operation cmd_list(args: List[Binding], s: Cell[State]) -> Int64
-      effects {ConsoleOutput, Error}
+      effects {ConsoleOutput, Error, Error[ResolveStreamFailure]}
     =
       let only_unblocked = match get_arg(args, "unblocked")
         case some(_) -> true
@@ -2164,7 +2164,7 @@ namespace anthill.todo
 
     operation cmd_list_plain(args: List[Binding], s: Cell[State],
                              only_unblocked: Bool, long: Bool) -> Int64
-      effects {ConsoleOutput, Error}
+      effects {ConsoleOutput, Error, Error[ResolveStreamFailure]}
     =
       let status_filter = get_arg(args, "status")
       let show_all = match get_arg(args, "all")
@@ -2213,7 +2213,7 @@ namespace anthill.todo
     operation cmd_list_tagged(s: Cell[State], tag_name: String,
                               status_filter: Option[String],
                               only_unblocked: Bool, long: Bool) -> Int64
-      effects {ConsoleOutput, Error}
+      effects {ConsoleOutput, Error, Error[ResolveStreamFailure]}
     =
       let ids = sort_strings_unique(WorkItemStore.items_with_tag(s, tag_name))
       match ids
@@ -3696,10 +3696,10 @@ namespace anthill.todo
     -- a repeated id for free. An `undecided` solution is skipped — the
     -- workflow predicates resolve over ground facts, so it is not expected,
     -- but skipping keeps the match total and honest if it ever fires.
-    operation collect_id_set(stream: Stream[T = Solution, E = Error],
+    operation collect_id_set(stream: Stream[T = Solution, E = Error[ResolveStreamFailure]],
                              acc: Map[String, Bool],
                              limit: Int64) -> Map[String, Bool]
-      effects {Error}
+      effects {Error[ResolveStreamFailure]}
     =
       if eq(limit, 0) then acc
       else
@@ -3725,7 +3725,7 @@ namespace anthill.todo
     -- cap is a runaway guard; the predicate yields one solution per matching
     -- WorkItem, far fewer.
     operation query_id_set(pred: String) -> Map[String, Bool]
-      effects {Error}
+      effects {Error[ResolveStreamFailure]}
     =
       let id_var = fresh_var[Term]("id")
       let goal = make_fn(pred, cons(id_var, nil()))
@@ -3738,7 +3738,8 @@ namespace anthill.todo
     -- branch, so the deepest stack is bounded by `limit` (1000). No
     -- intermediate list — `append_pair`-style quadratic build was the
     -- cause of the stack overflow on real workitem sets.
-    -- WI-385 / WI-531: `execute` returns the ABSTRACT `Stream[Solution, Error]`
+    -- WI-385 / WI-531: `execute` returns the ABSTRACT `Stream[Solution, E]`, its `E` the
+    -- declared `Error[ResolveStreamFailure]` (WI-20260911-8Y5BE)
     -- (each element a `definite`/`undecided` Solution — `next` extracts the
     -- substitution from either via `solution_subst`). This consumer only uses
     -- `splitFirst` (a Stream primitive), so it takes the producer's type. The
@@ -3746,12 +3747,12 @@ namespace anthill.todo
     -- `splitFirst` dispatches to it. Declaring the param as the concrete
     -- `LogicalStream` was a latent over-narrowing (a Stream-vs-LogicalStream
     -- downcast) the discarded arg-unify masked before arg validation.
-    operation walk_solutions(stream: Stream[T = Solution, E = Error],
+    operation walk_solutions(stream: Stream[T = Solution, E = Error[ResolveStreamFailure]],
                               show_all: Bool,
                               limit: Int64,
                               seen: List[String],
                               printed: Int64) -> Int64
-      effects {ConsoleOutput, Error}
+      effects {ConsoleOutput, Error[ResolveStreamFailure]}
     =
       if eq(limit, 0) then printed
       else
@@ -3798,7 +3799,7 @@ namespace anthill.todo
 
 
     operation cmd_next(args: List[Binding], s: Cell[State]) -> Int64
-      effects {ConsoleOutput, ConsoleError, Error}
+      effects {ConsoleOutput, ConsoleError, Error[ResolveStreamFailure]}
     =
       let show_all = match get_arg(args, "all")
         case some(_) -> true

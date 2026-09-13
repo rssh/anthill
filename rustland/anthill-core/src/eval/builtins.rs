@@ -2567,10 +2567,12 @@ fn relation_split_first(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
         Value::Relation { query, columns } => (query, columns),
         other => return Err(type_mismatch("Relation", &other, None)),
     };
-    let search = interp
-        .kb
-        .execute_logical_query(&query)
-        .map_err(|e| EvalError::Internal(format!("Relation.splitFirst execute: {}", e)))?;
+    // WI-20260911-8Y5BE — the same declared raise `KB.execute` makes for a query that
+    // does not lower, so the two faces of one query cannot disagree about it.
+    let search = match interp.kb.execute_logical_query(&query) {
+        Ok(search) => search,
+        Err(e) => return Err(interp.raise_query_lowering(e)),
+    };
     let handle = interp.alloc_stream(StreamSource::MaterializedResolver {
         search: Some(search),
         columns,
@@ -4272,7 +4274,9 @@ fn named_child(interp: &Interpreter, v: &Value, name: &str) -> Option<Value> {
 /// sentinel — `Value::Unit` or any placeholder — because the evaluator has no
 /// first-class KB values and always uses the interpreter's own KB. The query
 /// value is lowered via `KnowledgeBase::execute_logical_query` (proposal
-/// 026.1 Q3) and wrapped in `StreamSource::Resolver`.
+/// 026.1 Q3) and wrapped in `StreamSource::Resolver`. A query that does not lower
+/// RAISES the declared `Error[ResolveStreamFailure]` (WI-20260911-8Y5BE), and so does a
+/// pull whose search faulted (`Interpreter::stream_split_first`).
 fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb_arg, query] = expect_args::<2>("KB.execute", args)?;
     // WI-SPGBP — the KB argument is REAL now, and this is what it buys: the search this
@@ -4299,10 +4303,12 @@ fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     // above. Retaining the argument as well would be redundant, since the innermost
     // handle already pins everything below it.
     let layer = interp.layers.retain_innermost();
-    let search = interp
-        .kb
-        .execute_logical_query(&query)
-        .map_err(|e| EvalError::Internal(format!("execute_logical_query: {}", e)))?;
+    // WI-20260911-8Y5BE — a query that does not lower is the declared
+    // `Error[ResolveStreamFailure]`, not an internal fault, which a handler can catch.
+    let search = match interp.kb.execute_logical_query(&query) {
+        Ok(search) => search,
+        Err(e) => return Err(interp.raise_query_lowering(e)),
+    };
     let handle = interp.alloc_stream(StreamSource::Resolver {
         search: Some(search),
         layer,
@@ -5979,7 +5985,7 @@ fn reflect_unify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 
 /// Build an `Option[Term=V]` value with the given functor symbols. Helper for
 /// `get` to avoid repeating the some/none branch.
-fn option_some(
+pub(crate) fn option_some(
     some_sym: crate::intern::Symbol,
     value_key: crate::intern::Symbol,
     v: Value,
@@ -5990,7 +5996,7 @@ fn option_some(
         named: vec![(value_key, v)].into(),
     }
 }
-fn option_none(none_sym: crate::intern::Symbol) -> Value {
+pub(crate) fn option_none(none_sym: crate::intern::Symbol) -> Value {
     Value::Entity {
         functor: none_sym,
         pos: Vec::new().into(),

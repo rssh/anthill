@@ -459,6 +459,44 @@ namespace anthill.reflect
     entity load_failed(diagnostics: List[T = String])
   end
 
+  -- Payload for a `KB.execute` stream that could not be used or run (WI-20260911-8Y5BE).
+  -- Carried by `Error` on `execute` below; lives here for the reason `LoadFailed` does.
+  --
+  -- FOUR VARIANTS FROM A CENSUS of the host bridge's raise sites, not a guess. Three
+  -- carry `detail` as prose — the variant is what a handler branches on, the text is
+  -- for a human: `malformed_query` (a query that does not lower) and `stream_misused`
+  -- (a stream pulled after it was spent, or after it faulted) are CALLER bugs;
+  -- `unsupported_operation` is a GAP in the face — a well-formed query or stream
+  -- operation it has not implemented — which the caller cannot fix by rewriting. A
+  -- two-variant split was rejected because those three would need a string catch-all,
+  -- which puts back the stringly-typed payload this sort replaces.
+  --
+  -- BOTH FACES PRODUCE IT: the host bridge (`anthill-stl`) and the interpreter's own
+  -- `execute` stream. `evaluation_failure` is reported by the resolver itself
+  -- (`SearchStream::split_first`) on BOTH exits of a pull — winning over the answer it
+  -- would have yielded, and over the empty result at exhaustion — so a fault on a branch
+  -- that yielded nothing is not lost. A pull after a fault is `stream_misused`.
+  --
+  -- `evaluation_failure` is the one about the query's OWN execution: a goal the search
+  -- could not ASK (an ill-typed comparison, a bridged operation that raised). It is
+  -- NOT a `Solution` variant. `undecided` says a goal HAS no answer, a legitimate
+  -- outcome; this says it was never evaluated, and putting `faulted` beside
+  -- `definite`/`undecided` would claim a fault is a kind of answer.
+  --   * `reason` — the resolver's own words, for the search's FIRST fault.
+  --   * `at` — the goal being stepped when that fault was recorded, as an occurrence
+  --     (inspect it with `occurrence_span`). ABSENT, not zero-spanned, when that goal
+  --     carries no source position — a goal rebuilt by substitution has none.
+  --   * `goals` — the residual of the answer the fault displaced, which is not handed
+  --     out as a row. Usually it holds the faulted goal (a faulted goal residualizes);
+  --     EMPTY when the fault surfaced at exhaustion or displaced a definite answer.
+  enum ResolveStreamFailure
+    import anthill.prelude.{List, Option, String}
+    entity malformed_query(detail: String)
+    entity unsupported_operation(detail: String)
+    entity stream_misused(detail: String)
+    entity evaluation_failure(goals: List[T = Term], reason: String, at: Option[T = NodeOccurrence])
+  end
+
   sort KB
     -- Ambient-knowledge-base accessor — anthill code writes `kb()` to obtain
     -- the KB value passed to KB.execute / etc. It is a zero-argument OPERATION
@@ -543,13 +581,19 @@ namespace anthill.reflect
     -- Returns a stream of `Solution`s — each pull is either `definite(subst)`
     -- (a committed answer) or `undecided(subst, residual)` (a floundered
     -- branch carrying its undischarged goals as data). Undecidedness rides in
-    -- the stream as the `undecided` DATA case, NOT on `E = Error`; `E = Error`
-    -- is reserved for GENUINE errors — an invalid query, a depth limit, or an
-    -- `Error.raise` from an operation body evaluated during resolution. This
-    -- keeps `execute` a faithful description of the core `Solution` (WI-531).
+    -- the stream as the `undecided` DATA case, NOT on `E`; `E` is reserved for
+    -- GENUINE errors — an invalid query, a misused stream, or a goal the search
+    -- could not evaluate (`ResolveStreamFailure` above). This keeps `execute` a
+    -- faithful description of the core `Solution` (WI-531).
+    --
+    -- A DECLARED payload, not a bare `Error` (WI-20260911-8Y5BE): this was the one
+    -- type on the host face with no anthill declaration, so its Rust side had
+    -- degenerated to `Error(String)`, a payload a handler can only substring-match.
+    -- The row is also the host signature, as for `loaded` above: it generates
+    -- `Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure>`.
     operation execute(kb: KB, query: LogicalQuery)
-      -> Stream[T = Solution, E = Error]
-      effects Error
+      -> Stream[T = Solution, E = Error[ResolveStreamFailure]]
+      effects Error[ResolveStreamFailure]
 
     -- Direct enumeration of asserted facts whose head functor is the given
     -- entity. The entity is passed by reference (e.g. `facts_of(kb(),

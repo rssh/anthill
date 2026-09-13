@@ -94,6 +94,11 @@ impl ReflectNodeOccurrence {
 }
 
 // ── Error (Rust-only infra) ─────────────────────────────────────
+//
+// The payload of a BARE `effects Error` on a generated host trait — today only the
+// persistence `Store` face (`store.anthill`). NOT the reflect face's: `KB.execute`
+// declares `Error[ResolveStreamFailure]` and `KB.loaded` `Error[LoadFailed]`, both
+// generated below (WI-20260911-8Y5BE), so no reflect signature names this type.
 
 #[derive(Clone, Debug)]
 pub struct Error(pub String);

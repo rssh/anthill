@@ -1305,9 +1305,15 @@ fn kernel_not(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     };
     let stream = kb.resolve_lazy(&[not_goal], &config);
     match stream.split_first(kb) {
-        None => Ok(Value::Bool(false)),
-        Some((sol, _rest)) if sol.residual.is_empty() => Ok(Value::Bool(true)),
-        Some(_) => Err(EvalError::Internal(
+        // WI-20260911-8Y5BE — a sub-search that could not ASK part of the goal decides
+        // nothing either way; refused as loudly as a flounder, with the resolver's words.
+        Err(fault) => Err(EvalError::Internal(format!(
+            "kernel.not: the search faulted — {}",
+            fault.error.message
+        ))),
+        Ok(None) => Ok(Value::Bool(false)),
+        Ok(Some((sol, _rest))) if sol.residual.is_empty() => Ok(Value::Bool(true)),
+        Ok(Some(_)) => Err(EvalError::Internal(
             "kernel.not: floundering — query has unbound variables; bind them before calling"
                 .into(),
         )),

@@ -585,6 +585,9 @@ fn a_list_literal_written_by_name_with_named_args_is_not_lowered() {
 namespace wi1096.namedargs
   import anthill.prelude.{List, Int64}
   import anthill.prelude.List.{nil}
+  -- WI-20260904-B8ESG: the reflect ENTITY this row writes by name. Without the import
+  -- `ListLiteral` names nothing here, and a head argument that names nothing is refused.
+  import anthill.reflect.{ListLiteral}
   fact mark(1)
   fact named(ListLiteral(elements: 1))
   rule is_nil(?m) :- mark(?m), named(nil())

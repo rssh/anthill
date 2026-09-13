@@ -69,6 +69,7 @@ namespace test.wi182_query
   import anthill.reflect.{Term, Substitution, Solution, fresh_var, as_term}
   import anthill.reflect.Solution.{definite, undecided}
   import anthill.reflect.KB.{kb, execute}
+  import anthill.reflect.{ResolveStreamFailure}
   import anthill.reflect.LogicalQuery.{pattern_query}
   import anthill.reflect.Substitution.{lookup}
   import anthill.reflect.{term_as_string}
@@ -85,7 +86,7 @@ namespace test.wi182_query
   -- Drive the resolver via fresh_var → pattern_query → splitFirst →
   -- lookup. Each branch returns a distinctive String so the outer test
   -- can assert which path was reached.
-  operation first_parent_name() -> String effects Error =
+  operation first_parent_name() -> String effects Error[ResolveStreamFailure] =
     let id_var = fresh_var[String]("id")
     let name_var = fresh_var[String]("p")
     let goal = Item(id: id_var, name: name_var)

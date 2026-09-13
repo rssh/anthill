@@ -188,7 +188,7 @@ end
         .expect("execute lowered cleanly");
     let mut solutions = Vec::new();
     loop {
-        match stream.split_first(&mut kb) {
+        match stream.split_first(&mut kb).expect("the search records no fault") {
             Some((sol, rest)) => {
                 solutions.push(sol);
                 stream = rest;
@@ -342,7 +342,7 @@ end
     // And execute yields solutions for each facts's x = 1, x = 2.
     let mut stream = kb.execute_logical_query(&conj).expect("execute conj");
     let mut xs = Vec::new();
-    while let Some((sol, rest)) = stream.split_first(&mut kb) {
+    while let Some((sol, rest)) = stream.split_first(&mut kb).expect("the search records no fault") {
         match sol.subst.resolve_as_value(vid) {
             Some(Value::Term { id: t, .. }) => {
                 if let Term::Const(Literal::Int(n)) = kb.get_term(*t) {
@@ -468,7 +468,7 @@ end
     // The semantic contract checked here is: distinct ?v values come from
     // both branches.
     let mut seen = std::collections::HashSet::new();
-    while let Some((sol, rest)) = stream.split_first(&mut kb) {
+    while let Some((sol, rest)) = stream.split_first(&mut kb).expect("the search records no fault") {
         if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(vid) {
             if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
                 seen.insert(s.clone());
@@ -586,7 +586,7 @@ end
     // auto-stamping that used to inflate the raw count is gone.)
     let mut stream = kb.execute_logical_query(&query).expect("disj+conj lowers");
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-    while let Some((sol, rest)) = stream.split_first(&mut kb) {
+    while let Some((sol, rest)) = stream.split_first(&mut kb).expect("the search records no fault") {
         let v_val = sol.subst.resolve_as_value(vid);
         let m_val = sol.subst.resolve_as_value(mid);
         if let (Some(Value::Term { id: vt, .. }), Some(Value::Term { id: mt, .. })) = (v_val, m_val)
@@ -677,7 +677,7 @@ end
         .execute_logical_query(&outer)
         .expect("nested disjunction lowers");
     let mut seen = std::collections::HashSet::new();
-    while let Some((sol, rest)) = stream.split_first(&mut kb) {
+    while let Some((sol, rest)) = stream.split_first(&mut kb).expect("the search records no fault") {
         if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(vid) {
             if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
                 seen.insert(s.clone());
@@ -768,7 +768,7 @@ end
         .execute_logical_query(&query)
         .expect("multi-goal lifts cleanly");
     let mut seen = std::collections::HashSet::new();
-    while let Some((sol, rest)) = stream.split_first(&mut kb) {
+    while let Some((sol, rest)) = stream.split_first(&mut kb).expect("the search records no fault") {
         if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(vid) {
             if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
                 seen.insert(s.clone());
@@ -924,7 +924,7 @@ end
         .execute_logical_query(&outer)
         .expect("multi-goal negation lifts");
     let mut probe_seen = std::collections::HashSet::new();
-    while let Some((sol, rest)) = stream.split_first(&mut kb) {
+    while let Some((sol, rest)) = stream.split_first(&mut kb).expect("the search records no fault") {
         if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(pid) {
             if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
                 probe_seen.insert(s.clone());
@@ -1016,7 +1016,7 @@ end
             .execute_logical_query(&query)
             .expect("multi-goal lifts cleanly");
         let mut seen = std::collections::HashSet::new();
-        while let Some((sol, rest)) = stream.split_first(kb) {
+        while let Some((sol, rest)) = stream.split_first(kb).expect("the search records no fault") {
             if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(vid) {
                 if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
                     seen.insert(s.clone());
@@ -1132,7 +1132,7 @@ end
         );
         let mut stream = kb.execute_logical_query(&query).expect("lowers cleanly");
         let mut seen = std::collections::HashSet::new();
-        while let Some((sol, rest)) = stream.split_first(kb) {
+        while let Some((sol, rest)) = stream.split_first(kb).expect("the search records no fault") {
             if let Some(Value::Term { id: t, .. }) = sol.subst.resolve_as_value(aid) {
                 if let Term::Const(Literal::String(s)) = kb.get_term(*t) {
                     seen.insert(s.clone());

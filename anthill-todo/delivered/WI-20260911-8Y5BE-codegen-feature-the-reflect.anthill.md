@@ -3,9 +3,9 @@
 - id: WI-20260911-8Y5BE-codegen-feature-the-reflect
 - created: 2026-09-11T05:58:35Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-11T05:58:35Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-13T09:28:24Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -29,4 +29,28 @@ evaluation_failure(goals: List[T = Term], reason: String, at: Option[T = NodeOcc
 SCOPE NOTE: this changes `Stream<Solution, Error>` to `Stream<Solution, ResolveStreamFailure>` everywhere the reflect solution stream is threaded — the adapter, head_option, find, the test drain. Contained, not a one-line edit.
 
 ACCEPTANCE: reflect.anthill declares the enum and execute's row names it; 'ResolveStreamFailure' is in anthill-stl/build.rs emit_only; the generated trait reads Stream<Solution, ResolveStreamFailure> and split_first returns Result<Option<…>, ResolveStreamFailure>; all six bridge sites construct a variant, none a string; a faulted query yields evaluation_failure with a Some(at) whose span resolves to the fixture's line; a CONTROL asserts a σ-rebuilt goal yields None rather than a zero span; cargo-test green via scripts/test.sh.
+
+## Changes
+
+### 2026-09-13T09:27:57Z — feedback — claude
+
+DELIVERED against every acceptance row. Codegen: Error[P] in a type-argument slot strips to P in both mappers (an_error_label_in_a_type_argument_slot_strips_to_its_payload). reflect.anthill declares enum ResolveStreamFailure {malformed_query, unsupported_operation, stream_misused, evaluation_failure(goals, reason, at)}; execute's row and stream E name it; emit_only lists it; the generated trait reads Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure>. All six bridge sites build a variant. ResolveError gains at: Option<Rc<NodeOccurrence>>, filled by the step loop from the goal being stepped (Value::Node only). a_faulted_query_takes_the_error_arm slices the fixture to 'PartialOrd.gt(?x, 1)' on line 6; the control a_fault_on_a_rebuilt_goal_has_no_location uses a host conjunction unify(?x,'a'), gt(?x,1) whose goal was PROBED as Value::Entity -> at None.
+
+BEYOND THE TICKET, from /code-review: take_n and exists now report the fault too (they pumped the resolver without checking errors); fault dedup stays keyed on the MESSAGE alone, and a later located copy fills an unlocated entry (keying on location too printed duplicate warnings for mixed carriers); goals is documented as the reporting pull's residual, which can be empty when the fault came from an earlier branch that yielded nothing.
+
+THE RIPPLE, measured: a bare 'effects Error' row does NOT admit Error[ResolveStreamFailure], so every caller must name the payload. anthill-todo main.anthill needed it on ten operations, up to main (query_id_set, collect_id_set, walk_solutions, cmd_next, cmd_list, cmd_list_plain, cmd_list_tagged, undated_gate, dispatch, main) and three core fixtures (kb_query, wi182, wi531).
+
+LEFT OPEN, not fixed: the INTERPRETER face never produces this payload - kb_execute maps a lowering failure to EvalError::Internal and stream_split_first's PumpResolver ignores rest.errors(), so a faulted goal still arrives there as an undecided row. The declaration describes the host bridge exactly and the interpreter face as an upper bound. The codegen strip keys on the short name 'Error', like the file's List/Option mappings.
+
+### 2026-09-13T12:54:28Z — feedback — claude
+
+CLOSED THE 'LEFT OPEN' NOTE ABOVE - the interpreter face now produces the payload, and the fault check moved to the resolver's door.
+
+SearchStream::split_first returns Result<Option<(Solution, SearchStream)>, SearchFault>: a recorded FAULT wins at a yield and at EXHAUSTION, so a fault on a branch that yielded nothing is reported instead of an empty result (the bridge row that pinned Ok(None) now asserts the Err). The public errors() accessor is gone; every consumer gets the fault from the Err.
+
+FAULTS ARE NOT ALL ERRORS: SearchStream keeps faults (record_error, absorb_reduce_faults, and a NAF sub-search's faults when not(P) stays undecided) apart from diagnostics (step_naf's fold on the DEFINITE path). Reporting every error failed a decided negation, order-dependently - found by /code-review, driven by a_decided_negation_over_a_faulted_subsearch_is_not_a_fault.
+
+INTERPRETER: both resolver pumps (execute and the RELATION face) raise evaluation_failure through the Error effect and park the slot as StreamSource::Faulted, so a pull after a caught fault is stream_misused, not none(). The relation face used to raise relation_floundered for a faulted goal. KB.execute and Relation.splitFirst raise malformed_query / unsupported_operation (NotYetImplemented) for a query that does not lower, via one raise_query_lowering. The bridge adapter refuses take_n / exists / is_empty after a fault too.
+
+STILL OPEN, stated not fixed: a lazy search TRUNCATED at its depth cap with no fault ends Ok(None) - WI-628's incompleteness channel, which the lazy faces do not carry. Verified: full workspace 6066 passed / 0 failed, scaland 573+35+1.
 

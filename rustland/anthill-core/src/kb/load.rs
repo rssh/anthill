@@ -482,6 +482,20 @@ pub enum LoadError {
         /// Where the term is written.
         span: Span,
     },
+    /// WI-20260904-B8ESG — the HEAD-ARGUMENT twin of [`Self::UndefinedRuleBodyTerm`]: a
+    /// COMPOUND TERM in a rule- or fact-HEAD argument whose functor names nothing. WI-1034
+    /// refuses a rule-body GOAL and WI-1058 a rule-body DATA slot; a head argument had
+    /// neither, so a head pattern built on an unresolvable functor loaded clean and simply
+    /// stopped matching.
+    ///
+    /// The head's OWN functor is not judged — a head INTRODUCES its name (WI-896) — so
+    /// this is about the arguments and their compound subterms only.
+    UndefinedHeadArgument {
+        /// The term's functor, qualified.
+        functor: String,
+        /// Where the term is written.
+        span: Span,
+    },
     /// WI-343: a carrier provides a spec whose own `requires` is not
     /// satisfied by that carrier — e.g. `fact PersistentCollection[List]`
     /// where `PersistentCollection requires Iterable` but `List` provides
@@ -2252,6 +2266,7 @@ impl LoadError {
             | LoadError::UndefinedRuleBodyGoal { span, .. }
             | LoadError::UndefinedContractGoal { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
+            | LoadError::UndefinedHeadArgument { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
             | LoadError::EquationSubjectInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. }
@@ -2531,6 +2546,13 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     undefined_rule_body_term_message(functor)
+                )
+            }
+            LoadError::UndefinedHeadArgument { functor, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    undefined_head_argument_message(functor)
                 )
             }
             LoadError::UndefinedRuleBodyGoal { functor, span } => {
@@ -3739,6 +3761,15 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     undefined_rule_body_term_message(functor),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::UndefinedHeadArgument { functor, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    undefined_head_argument_message(functor),
                     span.start,
                     span.end
                 )
@@ -12121,6 +12152,25 @@ pub(crate) fn undefined_rule_body_term_message(functor: &str) -> String {
     )
 }
 
+/// WI-20260904-B8ESG — the ONE wording of [`LoadError::UndefinedHeadArgument`], the
+/// HEAD-ARGUMENT member of the family [`no_declaration_census`] and
+/// [`undefined_name_repair`] serve. Same census, same repair, DIFFERENT consequence, so a
+/// different sentence: a head is not proved and not rewritten — what it does is MATCH, and
+/// a pattern built on a name that denotes nothing matches only another undenoting term of
+/// the same spelling. That is the measured harm: `fact stored(cons(head: 1, tail: nil))`
+/// with only the `List` SORT imported (kernel-language.md §8.6 — importing a sort does not
+/// bring its members into scope) loads with an identical fact count and stops matching
+/// `[1]`.
+fn undefined_head_argument_message(functor: &str) -> String {
+    format!(
+        "head argument term `{functor}` names nothing: {}, so this clause's head can \
+         never match a term written with the declared one and the clause is unreachable. \
+         {}",
+        no_declaration_census(),
+        undefined_name_repair(functor),
+    )
+}
+
 /// WI-20260822-J38JE item 4 — the ONE wording of [`LoadError::ConstantInGoalPosition`],
 /// shared by the located `format_with_source` rendering, the span-less `Display`, and
 /// the `TypeError` face the typer raises it through.
@@ -12840,6 +12890,14 @@ fn load_phase_inner(
     // written. Load-blocking: the read it corrupts is order-dependent and silent.
     all_errors.extend(check_duplicate_operation_declarations(kb));
     mark!("check_duplicate_operation_declarations");
+    // WI-20260904-B8ESG — a head ARGUMENT whose functor names nothing. HERE, with the
+    // whole-KB checks, because the verdict needs every file loaded: `symbol_declares_nothing`
+    // reads `rules_by_functor`, and a predicate defined purely by FACTS has no clauses
+    // indexed until its own file lands. Load-blocking, like its two siblings: a head
+    // pattern built on a name that denotes nothing matches only another undenoting term of
+    // the same spelling, which is silence, not an error.
+    all_errors.extend(check_undefined_head_arguments(kb));
+    mark!("check_undefined_head_arguments");
     resolve_instantiations(kb);
     mark!("resolve_instantiations");
     register_requires_axiom_witnesses(kb);
@@ -16701,6 +16759,53 @@ pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::H
     out
 }
 
+/// WI-20260904-B8ESG — THE HEAD-ARGUMENT NAME CHECK, the third and last position in the
+/// family WI-1034 (rule-body GOAL) and WI-1058 (rule-body DATA slot) opened.
+///
+/// A head ARGUMENT had neither, so a head pattern built on an unresolvable functor loaded
+/// clean and simply stopped matching. DRIVEN: `fact stored(cons(head: 1, tail: nil))` with
+/// only the `List` SORT imported — §8.6, importing a sort does not bring its members into
+/// scope — loads with an IDENTICAL fact count (2883) and answers NOTHING for a body goal
+/// `stored([1])`, because the list literal lowers to the declared `cons` while the fact's
+/// own `cons` interned bare. The stdlib shipped exactly that shape through WI-909
+/// (`reflect/typing.anthill`'s `list_contains`), and three successive audits each looked
+/// complete and were not.
+///
+/// ASKS ONE AUTHORITY with the other two positions —
+/// [`KnowledgeBase::symbol_declares_nothing`] — so the three cannot disagree about which
+/// names exist. What differs is WHERE the candidates come from: the sites are recorded by
+/// the loader while it converts a head ([`KnowledgeBase::record_head_argument_site`]),
+/// because only the loader can answer the two questions that decide whether a term is
+/// judged at all, and the stored head term cannot answer either:
+///
+///   * WHICH POSITION. A head has no occurrence (only `body_nodes` are kept), so a walk
+///     over the stored head term is all the loader knew and none of what it knew.
+///   * WHETHER IT WAS WRITTEN. In term form a `match`/`lambda` and its patterns are
+///     MARKER-ENCODED (`pattern_constructor`, `match_branch`, `pattern_var`, …), and the
+///     KB declares nothing under those by construction. `is_minted` separates them by
+///     PROVENANCE (WI-1009's rule) where nothing in the term distinguishes them.
+///
+/// MEASURED, and this is the exemption census the ticket called the work: a
+/// spelling-blind walk over head TERMS reported 434 sites on
+/// `examples/classic-mini/ancestor`, of which 404 were those three markers. The
+/// provenance gate removes all of them, and the per-parse-node span removes the other
+/// defect that walk had — every one of its 434 reports rendered at `0..0`, because the
+/// term-span table is keyed on the hash-consed `TermId` and two identical subterms
+/// written in two files share one entry.
+fn check_undefined_head_arguments(kb: &mut KnowledgeBase) -> Vec<LoadError> {
+    kb.take_head_argument_sites()
+        .into_iter()
+        .filter(|(functor, _)| kb.symbol_declares_nothing(*functor))
+        .map(|(functor, at)| {
+            LoadError::UndefinedHeadArgument {
+                functor: kb.qualified_name_of(functor).to_string(),
+                span: at.span,
+            }
+            .located_in_kb_source(kb, at.source)
+        })
+        .collect()
+}
+
 /// WI-1049 — AN OPERATION NAME IS DECLARED AT MOST ONCE PER SCOPE
 /// (kernel-language.md §8.7). Load-blocking.
 ///
@@ -19567,6 +19672,57 @@ enum RuleTvar {
     Unbounded,
 }
 
+/// WI-20260904-B8ESG — the clause head being converted, and which of its parse nodes
+/// the head-argument name check does NOT judge.
+///
+/// A HEAD WRITTEN WITH AN EQUALITY-FAMILY CONNECTIVE (`lhs <=> rhs`, `lhs = rhs :- g`,
+/// `lhs === rhs`, or a written call resolving to one of those kernel symbols) is stored as
+/// `Fn{connective, [lhs, rhs]}`, and two of its nodes are not patterns:
+///
+///  * the SUBJECT node itself — what the rule defines (or, for `===`, tests), whose
+///    functor introduces a name the way a predicate head's does
+///    (`wi948_written_connective_head_test::an_argument_of_a_written_connective_head_is_not_the_subject`);
+///  * the whole REPLACEMENT. WHAT THIS DOES NOT CLAIM: that an RHS naming nothing is
+///    harmless. It produces an inert term — WI-1058's stated harm one position over — and
+///    answering it means deciding whether a law introduces its operands the way `<=>`
+///    introduces its subject, a question about equations that this ticket did not take.
+///    The test corpus writes placeholder laws (`rule my_def: foo(?a) <=> bar(?a) [simp]`)
+///    where `bar` denoting nothing is the fixture's point.
+///
+/// THE SUBJECT'S ARGUMENTS ARE JUDGED, because they MATCH: `rule length(cons(head: ?h,
+/// tail: ?t)) <=> …` with only the `List` sort imported is exactly the silent defect the
+/// check exists for — the rewrite never fires. Found by `/code-review`; the first cut
+/// exempted everything below the connective.
+#[derive(Clone, Copy)]
+struct ClauseHead {
+    /// The head's own node — never judged, a head INTRODUCES its functor (WI-896).
+    node: TermId,
+    /// For a connective head: its subject node, and the span its replacement covers.
+    /// Set when the head node itself converts and its RESOLVED functor is known.
+    connective: Option<(TermId, crate::span::SourceSpan)>,
+}
+
+impl ClauseHead {
+    fn new(node: TermId) -> Self {
+        Self {
+            node,
+            connective: None,
+        }
+    }
+
+    /// Is `parse_id`, written `at`, a connective's subject node or inside its replacement?
+    /// BY SPAN for the replacement, because its subtree is converted by the ordinary
+    /// recursion, which this does not bracket.
+    fn exempts(&self, parse_id: TermId, at: crate::span::SourceSpan) -> bool {
+        self.connective.is_some_and(|(subject, replacement)| {
+            parse_id == subject
+                || (at.source == replacement.source
+                    && replacement.start() <= at.start()
+                    && at.end() <= replacement.end())
+        })
+    }
+}
+
 struct Loader<'a> {
     kb: &'a mut KnowledgeBase,
     parsed: &'a ParsedFile,
@@ -19709,6 +19865,20 @@ struct Loader<'a> {
     // A `typed_var` reaching `convert_term` with this false is a misuse (a type
     // annotation on a variable outside a rule pattern) and is reported loudly.
     in_rule_head: bool,
+    // WI-20260904-B8ESG — the CLAUSE HEAD (a rule's or a fact's) being converted, so
+    // `convert_term`'s `Term::Fn` arm can record each head-ARGUMENT compound whose functor
+    // was WRITTEN, for the post-load undefined-name check.
+    //
+    // SEPARATE FROM `in_rule_head`, which means something narrower (WI-582's `typed_var`
+    // strip) and is not set for a FACT head at all — and a fact head is where the measured
+    // anthill-todo failures lived.
+    clause_head: Option<ClauseHead>,
+    // WI-20260904-B8ESG — active inside a reflect `Term`-typed field, whose content is a
+    // QUOTED PATTERN rather than a reference (§4.2). Names in there denote nothing by
+    // design, so the head-argument check does not judge them. Set by
+    // [`Self::convert_arg_value`], which is the one place the field's declared type is in
+    // hand.
+    in_quoted_term: bool,
     // WI-710: nesting depth inside `convert_term_with_expected` — 1 while converting a
     // TOP-LEVEL term (a `fact` head, a rule head / body goal), >1 for a term nested as
     // another term's argument. It tells the two readings of one syntax apart: a
@@ -20107,6 +20277,8 @@ impl<'a> Loader<'a> {
             source_id,
             current_owner: None,
             in_rule_head: false,
+            clause_head: None,
+            in_quoted_term: false,
             term_depth: 0,
             in_value_position: false,
             rule_head_type_bounds: Vec::new(),
@@ -22356,14 +22528,32 @@ impl<'a> Loader<'a> {
     fn convert_arg_value(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
         let quoted =
             expected.is_some_and(|e| super::typing::is_reflect_term_type(self.kb, &TermIdView(e)));
-        if quoted && self.in_value_position {
+        // WI-20260904-B8ESG — AND THE NAMES INSIDE IT DENOTE NOTHING BY DESIGN, which is
+        // why this flag is separate from the `in_value_position` clear below rather than
+        // folded into it: that one is conditional on already being in a value position,
+        // and a quoted field's interior is quoted wherever it is written. A reflect
+        // `Term`-typed field holds a QUOTED PATTERN (§4.2, and the spec's own "a field
+        // declared `anthill.reflect.Term` holds a quoted term"), so the head-argument name
+        // check must not judge what is inside one — the same class of exemption as
+        // WI-1058's "the interior of a type".
+        //
+        // MEASURED: this is what the 4 `Quoted("sql", "SELECT …")` reports in
+        // `examples/sql-store` were. `Quoted(language, source)` is a §4.2 kernel TERM FORM
+        // with no declaration anywhere in the implementation — and the example writes
+        // every one of them into a field declared `Term`, which is exactly the position
+        // that says "do not resolve this".
+        let prev_quoted = self.in_quoted_term;
+        self.in_quoted_term = prev_quoted || quoted;
+        let r = if quoted && self.in_value_position {
             self.in_value_position = false;
             let r = self.convert_term_with_expected(parse_id, expected);
             self.in_value_position = true;
             r
         } else {
             self.convert_term_with_expected(parse_id, expected)
-        }
+        };
+        self.in_quoted_term = prev_quoted;
+        r
     }
 
     /// Like `convert_term` but takes an optional expected-type hint that drives
@@ -22629,6 +22819,65 @@ impl<'a> Loader<'a> {
                 // for the rule and the two-file measurement.
                 let written_entity_functor =
                     self.kb.written_entity_field_names(new_functor).is_some();
+
+                // WI-20260904-B8ESG — RECORD THIS HEAD-ARGUMENT SITE, for the post-load
+                // undefined-name check. Each gate is an exemption the census named rather
+                // than a guess:
+                //
+                //  * `clause_head` — only inside a clause HEAD. The rule-body positions are
+                //    already covered (WI-1034 goal, WI-1058 data slot).
+                //  * NOT THE HEAD NODE — a head INTRODUCES its own functor (WI-896). By
+                //    parse id and not by `term_depth`: the sigil-free parameter head
+                //    (`convert_rule_head_with_params`) converts its arguments without
+                //    passing the head through `convert_term`, so an absolute depth was off
+                //    by one there and skipped every argument of such a head.
+                //  * NOT A CONNECTIVE'S SUBJECT OR REPLACEMENT — see `ClauseHead`.
+                //  * NOT `is_minted` — the node was WRITTEN. A minted node is a desugar
+                //    target (`pattern_constructor` / `match_branch` / `pattern_var` /
+                //    `lambda_expr` / …), and the KB declares nothing under those by
+                //    construction. Refused by PROVENANCE and not by spelling, which is
+                //    WI-1009's rule; MEASURED, they are 404 of the 434 reports a
+                //    spelling-blind walk over the head TERM produced on
+                //    `examples/classic-mini/ancestor` — 141 `pattern_constructor`, 132
+                //    `match_branch`, 131 `pattern_var`.
+                //  * NOT A LOCAL BINDER — a call through a `lambda`/`let`/`match`-bound
+                //    name (`fact twice(lambda f -> lambda x -> f(f(x)))`) remaps its functor
+                //    to the binder's own unique symbol, which declares nothing by
+                //    construction and denotes the binding all the same.
+                //
+                // The span is the PARSE node's, which is why this records here and not
+                // over the stored term: the hash-consed term table keys one span per
+                // TermId, so two identical subterms written in two files share one entry,
+                // and the same walk over terms reported every site at `0..0`.
+                if let Some(head) = self.clause_head {
+                    if parse_id == head.node && self.kb.is_equality_family_connective(new_functor) {
+                        if let Term::Fn { pos_args, .. } = self.parsed.terms.get(parse_id) {
+                            if let [subject, replacement] = pos_args.as_slice() {
+                                let (subject, replacement) = (*subject, *replacement);
+                                self.clause_head = Some(ClauseHead {
+                                    connective: Some((subject, self.source_span_of(replacement))),
+                                    ..head
+                                });
+                            }
+                        }
+                    }
+                }
+                if let Some(head) = self.clause_head {
+                    let at = self.source_span_of(parse_id);
+                    // By the RESOLVED symbol: the functor denotes a binder in scope.
+                    let written_local_call = self
+                        .local_names_stack
+                        .iter()
+                        .any(|frame| frame.values().any(|&bound| bound == new_functor));
+                    if parse_id != head.node
+                        && !head.exempts(parse_id, at)
+                        && !self.in_quoted_term
+                        && !self.parsed.terms.is_minted(parse_id)
+                        && !written_local_call
+                    {
+                        self.kb.record_head_argument_site(new_functor, at);
+                    }
+                }
 
                 // WI-007 context-aware ListLiteral desugaring: rewrite
                 // `ListLiteral → cons/nil` unless a DECLARED type says the position
@@ -30542,10 +30791,16 @@ impl<'a> Loader<'a> {
         // `none()` rather than an unbound var (which would unsoundly unify a
         // `some(?)` pattern; see `convert_term_with_expected`).
         self.in_value_position = true;
+        // WI-20260904-B8ESG — and it is a CLAUSE HEAD, so its arguments' functors are
+        // recorded for the post-load undefined-name check. Set here rather than reusing
+        // `in_rule_head`: that flag carries WI-582's narrower meaning and is not set for a
+        // fact at all, and a FACT head is where the measured anthill-todo failures lived.
+        let prev_clause_head = self.clause_head.replace(ClauseHead::new(f.term));
         // WI-20260901-719FJ: a fact head is a LOGICAL SUBJECT too — `fact nsx.tgt` is
         // the same reference `fact nsx.tgt()` is, and used to file its clause under
         // `field_access` (measured: 1 clause on `nsx.tgt` where the twin filed 2).
         let term = self.convert_subject_term(f.term);
+        self.clause_head = prev_clause_head;
         // WI-20260903-FCZ3N — A `fact lhs <=> rhs` IS A BODYLESS EQUATION, so it fires
         // like the `rule` spelling and needs its RHS occurrence for the same reason. The
         // item IS the empty body (the `NonDefiningConnectiveHead` refusal above relies on
@@ -31723,6 +31978,10 @@ impl<'a> Loader<'a> {
                     // able to read only the LAST head's names. `load_rule`'s wrapper
                     // owns the clear, once per rule.
                     self.in_rule_head = true;
+                    // WI-20260904-B8ESG — and it is a CLAUSE HEAD, the other half of the
+                    // pair `load_fact` sets. See that flag's field comment for why it is
+                    // not `in_rule_head` itself.
+                    self.clause_head = Some(ClauseHead::new(*tid));
                     // WI-716: a rule head is a VALUE the rule DERIVES — an
                     // entity-constructor head with an omitted optional field must
                     // store `none()`, not a `forall v` var (the same soundness
@@ -31787,6 +32046,7 @@ impl<'a> Loader<'a> {
                     };
                     self.in_value_position = false;
                     self.in_rule_head = false;
+                    self.clause_head = None;
                     positive_head_parse_ids.push(*tid);
                     head_type_bounds.push(std::mem::take(&mut self.rule_head_type_bounds));
                     positive_head_spans.push(self.source_span_of(*tid));
