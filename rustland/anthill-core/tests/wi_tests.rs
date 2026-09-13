@@ -1716,3 +1716,6 @@ mod nar1x_carrier_less_spec_op_test;
 
 #[path = "include/wi_073gh_applied_parameter_is_not_a_constructor_test.rs"]
 mod wi_073gh_applied_parameter_is_not_a_constructor_test;
+
+#[path = "include/wi_j38ve_written_bracket_fetch_test.rs"]
+mod wi_j38ve_written_bracket_fetch_test;

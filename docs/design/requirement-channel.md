@@ -284,6 +284,22 @@ binding with no new machinery. The encoding, settled (2026-08-07):
   an omitted row is already non-discriminating at the matcher
   (`sort_param_is_effect_row`, for WI-387/WI-714's reason — a row is the observation
   effect, not carrier identity), which is a different owner for the same question.
+- **But an element the AUTHOR named is pinned from the written bracket, not
+  wildcarded** (WI-20260913-J38VE). The wildcard's justification is that the element is
+  bound by *nothing*; where `require[Sp[C = Red, P = Int64]]` binds it, there is nothing
+  to stand in for — and minting anyway is not neutral, because a wildcard is refused
+  against a provider's CONCRETE binding, so the synthesis destroyed the one fact that
+  could select a row. That is the whole population of multi-parameter specs, since a spec
+  op names only its carrier. The bracket reaches the fetch on the goal's slot 0
+  (item 1's retention); `fetch_dictionary` reads it once, for both the projected member
+  (§10 item 4's δ) and the written bindings. An element the CARRIER already pinned is
+  untouched — a written binding that disagrees with a derived concrete type is the load
+  site's refusal, not a precedence question here. It is lowered through WI-390's
+  `value_to_term`, the faithful boundary — the bare-head reduction a first cut used
+  discarded a written `Box[E = Leaf]`'s arguments and so both lost the agreeing row and
+  selected a disagreeing one. A written element is not a carried type,
+  so it clears the same tie-verdict flag a minted wildcard clears: a resolution TIE stays
+  "cannot decide" rather than becoming a coherence defect. 060 §8.6 measures both halves.
 
 **The anchor rule.** The record is compiled from an **anchor** that grounds the
 spec's params: a covered body call (the witness — the guard tier's existing

@@ -2194,6 +2194,15 @@ Both forms lower before resolution to the existing `find_dictionary` relation
 with an output slot, and the dictionary is an ordinary structural value in the
 clause substitution.
 
+**Every element the bracket NAMES selects the instance** (WI-20260913-J38VE); an
+element it leaves unwritten is matched abstractly and does not discriminate. So
+`require[Sp[C = Red, P = Int64]]` resolves against a provider binding `P = Int64`
+where the bare `require[Sp[C = Red]]` delays — for a spec with more than one type
+parameter the written bracket is usually the only thing that can say which row is
+meant, since the grounding anchor (a covered call's argument, or the typed head)
+pins the CARRIER and nothing else. A named element that disagrees with the anchor's
+own type is a load error, not a second opinion.
+
 **The carrier binding may be a PATH PROJECTION off one of the clause's own typed
 head parameters** (WI-20260909-S8CBV): `rule anchored(p: Box, ?r) :- ?d =
 require[Desc[T = p.E]], Desc.tag(?r)` names the `Desc` instance of the ELEMENT of

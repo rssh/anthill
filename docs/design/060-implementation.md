@@ -25,7 +25,7 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §3 anchor, CHECK tier | `requires(X)` under an anchor | **WI-20260909-QMFC5** | **delivered** — emits the same goal as the bind tier, §8.8 |
 | channel §10 item 3 | op→rule dictionary channel (polytypes) | WI-20260909-NAR1X | **delivered** — the ground edge; the GENERATIVE one is nobody's, §8.10 |
 | channel §10 item 4 | a requirement written at a path projection | WI-20260909-S8CBV | **delivered** for both surfaces — operation `requires` and the rule-body bracket, §8.5; the ATTRIBUTION by root is **not built** |
-| §3 anchor, MULTI-PARAMETER specs | the fetch reads the written bracket | **WI-20260913-J38VE** | **not built** — measured to delay silently at every two-parameter spelling, §8.6 |
+| §3 anchor, MULTI-PARAMETER specs | the fetch reads the written bracket | **WI-20260913-J38VE** | **delivered** — §8.6; the bracket rides slot 0 to the fetch on BOTH producers |
 | §4 determinism | fetch, never choose | WI-855/857/860 | delivered (058) |
 | C666A relaxation | admit the guarded non-enclosing join | WI-742 | **delivered** — §9 |
 | — (no proposal §) | the domain as a runtime value via the requirement channel | — | **exploratory**, no owner — [`060-typedomains-implementation.md`](./060-typedomains-implementation.md) |
@@ -33,8 +33,9 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 Everything delivered is driven and controlled in
 `anthill-core/tests/include/wi742_typed_relational_head_test.rs`,
 `anthill-core/tests/include/wi743_finite_domain_test.rs`,
-`anthill-core/tests/include/wi_wt8wg_domain_value_face_test.rs` and
-`anthill-core/tests/include/wi_s8cbv_projection_requirement_test.rs`, whose headers name
+`anthill-core/tests/include/wi_wt8wg_domain_value_face_test.rs`,
+`anthill-core/tests/include/wi_s8cbv_projection_requirement_test.rs` and
+`anthill-core/tests/include/wi_j38ve_written_bracket_fetch_test.rs`, whose headers name
 which rows fail per back-out.
 
 `domain` in §2.2 is the **member relation a sort defines**, not a second name for the
@@ -1046,33 +1047,87 @@ answered `7`, `Leaf`'s dictionary, ignoring the author's explicit `T = Other` �
 located refusal naming both. Only a CONCRETE disagreement refuses; a binding naming a type
 variable was already dropped as a wildcard upstream.
 
-STILL UNDECIDED, and the reason is a signature rather than a rule: `fetch_dictionary`
-takes `(spec_sort, op_functor, arg_vals)` and never sees slot 0, so `witness_sort_goal`
-still replaces a written binding with a synthesized wildcard — and a wildcard is REFUSED
-against a provider's concrete binding, so no provider answers, the fetch reports
-`Undecided`, and the goal delays. The author wrote `Cap[P = Int64]`, the provider binds
-`P = Int64`, and they never meet.
+~~STILL UNDECIDED, and the reason is a signature rather than a rule~~ — **DELIVERED by
+WI-20260913-J38VE (S7)**, and the sentence it replaces is kept because the diagnosis was
+right and only the scope was wrong. `fetch_dictionary` took `(spec_sort, op_functor,
+arg_vals)` and never saw slot 0, so `witness_sort_goal` replaced a written binding with a
+synthesized wildcard — and a wildcard is REFUSED against a provider's concrete binding, so
+no provider answered, the fetch reported `Undecided`, and the goal delayed. The author
+wrote `Cap[P = Int64]`, the provider bound `P = Int64`, and they never met.
 
-**THE SCOPE OF THAT IS WIDER THAN THIS SECTION SAID, and MEASURED 2026-09-13 it is the
-whole of it: NO MULTI-PARAMETER SPEC GROUNDS THROUGH THE TYPED-HEAD ANCHOR.** Owned by
-**WI-20260913-J38VE** (S7), whose acceptance is the two pinned delay rows flipping. This was
-written as a corner — "a self-representing spec whose provider pins a sibling concretely"
-— and pinned by one row in that shape
-(`a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays`). It is not a
-corner. A spec that is NOT self-representing, whose carrier parameter IS identifiable
-(rung 1 names it from a receiving operation), and whose second gate AGREES with the
-provision, delays exactly the same way — with the declaration order of its parameters
-making no difference and omitting the content binding making none either. Eight arms
-measured, and the **one-parameter twin of the identical fixture answers `7`**, which is
-what makes it a parameter-count finding rather than a fixture artifact. Pinned by
-`a_multi_parameter_spec_delays_even_when_its_carrier_parameter_is_identifiable` and its
-control.
+**THE SCOPE WAS WIDER THAN THIS SECTION SAID, and MEASURED 2026-09-13 it was the whole of
+it: NO MULTI-PARAMETER SPEC GROUNDED THROUGH THE TYPED-HEAD ANCHOR.** This was written as
+a corner — "a self-representing spec whose provider pins a sibling concretely" — and
+pinned by one row in that shape. It is not a corner. A spec that is NOT self-representing,
+whose carrier parameter IS identifiable (rung 1 names it from a receiving operation), and
+whose second gate AGREES with the provision, delayed exactly the same way — with the
+declaration order of its parameters making no difference and omitting the content binding
+making none either. Eight arms measured, and the **one-parameter twin of the identical
+fixture answered `7`**, which is what made it a parameter-count finding rather than a
+fixture artifact.
 
-The two rungs §8.2 calls "genuinely absent" are NOT this: a spec with no receiving
+The two rungs §8.2 calls "genuinely absent" were NOT this: a spec with no receiving
 operation, and one receiving on a non-carrier parameter, are both refused with their own
 located messages (measured in the same run). The machinery that IDENTIFIES the carrier
-works; what fails is the FETCH, one question later, and it fails silently — a clean load
-and a residual, which is the outcome QMFC5's own acceptance forbids in as many words.
+worked; what failed was the FETCH, one question later, and it failed silently — a clean
+load and a residual, which is the outcome QMFC5's own acceptance forbids in as many words.
+
+**AS BUILT.** `builtin_find_dictionary` already walked slot 0 (for the spec base, and
+since S8CBV for the projected member); it now reads the instance ONCE into a
+`RequirementBracket` — the projected member and the written bindings from one
+`extract_type` — and hands it down both the guard path and the fetch path. The shared
+wildcard tail (`sort_goal_with_wildcards`, the one producer both `anchor_sort_goal` and
+`witness_sort_goal` end in) consults the bracket before minting: an element the author
+NAMED is pinned from what they wrote, and only an element nobody named becomes a wildcard.
+An element the CARRIER already pinned is untouched — a written binding that disagrees with
+a derived concrete type is the load site's question (`anchor_grounding`'s refusal, above),
+not one to re-answer here with the opposite precedence.
+
+**Only a NAMED TYPE pins**, as a positive test rather than a list of exclusions: a
+projection (`T = p.E`) names WHICH carried type to look at and S8CBV's δ has already
+applied it; a value naming a type PARAMETER is the wildcard spelled out. Neither exclusion
+could be driven to a different ANSWER — a projected element reaches the tail only where
+the producer did not already pin it, and every such spelling is refused at LOAD first
+(a projection needs a typed head root, and a typed head takes the anchor route); a written
+type-parameter name is dropped upstream by the un-strip's own rule, and a head-introduced
+type variable resolves to its guard-given BOUND. Both lines are written for the value they
+carry if those upstream rules move.
+
+**And it is LOWERED THROUGH `value_to_term`, which a first cut got wrong in the direction
+that answers rather than the one that delays.** `type_value_as_term` returns a term id
+only for a `Value::Term` and otherwise falls to `sort_functor_of_view(…)` — the bare SORT
+HEAD, arguments discarded — and MEASURED, a written binding ALWAYS arrives as a
+`Value::Node`, so every applied element took that path. `Box[E = Leaf]` became `Box`,
+which both failed to match a provider's applied binding (the agreeing spelling delayed, so
+the capability above did not hold for applied elements at all) and matched one it should
+not (`require[Sp[P = Box[E = Other]]]` selected the `Box[E = Leaf]` row — a WRONG ANSWER
+where the pre-ticket code delayed). WI-390's converter is the documented owner of exactly
+this case. Found by `/code-review` on this ticket's diff. The CARRIER sites
+(`anchor_sort_goal`, `witness_sort_goal`) still lower through `type_value_as_term` and are
+deliberately not moved: their value is a carried type read off a runtime value, not an
+author-written one, and changing it changes which rows every existing anchor selects.
+
+**AND THE TIE VERDICT HAD TO MOVE WITH IT — a regression this ticket introduced and
+closed.** `WitnessGoal::synthesized` (now `from_carried_types`, inverted) is what makes a
+resolution TIE read as "cannot decide" rather than as a coherence `Defect`, which is a
+`debug_assert!(false, …)`. A first cut let a WRITTEN element leave the flag intact, on the
+reading that an element the author named makes the goal fully determined. MEASURED on
+X9PB4's own tie fixture, `require[Spec[C = Carrier, Note = Int64]]` aborted every debug
+build — and the reading was wrong on its own terms, because the tie is on `C`, which both
+providers match through subtyping, and has nothing to do with `Note`. Pinning an element
+does not convert an unrelated tie into overlap. A written element therefore clears the
+flag exactly as a minted wildcard does: the flag asks the COARSE question "did anything but
+a carried type decide this goal", not "which element did they tie on".
+
+**Delivered controls**, each measured with a patch that asserts it applied, one restore
+between each: THE PREFERENCE **4 rows** (the two acceptance rows plus the witness and the
+projection-plus-written rows); the WITNESS call site **1**; the anchor's PARAMETER branch
+**2**; the anchor's SELF-REPRESENTING branch **1** — the two branches of one function are
+two call sites and move separately; the FLAG CLEARING **1**, which ABORTS rather than
+fails; the FAITHFUL LOWERING **1**, and both of that row's assertions. The in-fixture controls (every spelling that writes nothing for the element, and the
+one-parameter twin) pass under all five by design. Driven by
+`anthill-core/tests/include/wi_j38ve_written_bracket_fetch_test.rs` and the two flipped
+rows in `wi_qmfc5_typed_head_anchor_test.rs`.
 
 `try_body_tvar_guard`'s two limits (drops the guard's parameter position; refuses
 `Sp[C = A]` — row m) become cosmetic once §8.2 supplies the attribution: they restrict
@@ -1203,8 +1258,7 @@ which is exactly where inheriting would decide.
 | S4 | WI-20260909-96ZTM | two `require`s bind two dictionaries, attributed by the written bracket (§8.5) — **delivered**; the weave is NOT changed | S2 |
 | S5 | WI-20260909-NAR1X | the op→rule channel for polytypes, channel doc §10 item 3 (`ResolveConfig` field seeded from `frame.requirements`) | S4 |
 | S6 | WI-20260909-S8CBV | attribution by PROJECTION ROOT — the requirement channel learns to name `x.E`, and identity becomes δ/σ-conversion (`path-dependent-types.md` §4). REPLACES S4's sort-matching selector and lifts its anchored gate. **Both surface gates are delivered** — (2) the OPERATION channel, and (1) the rule-body bracket (2026-09-13, §8.5); the ATTRIBUTION itself is not | S4, C7ANM |
-
-| S7 | WI-20260913-J38VE | THE FETCH MUST SEE THE WRITTEN BRACKET — `fetch_dictionary` never sees slot 0, so no MULTI-PARAMETER spec grounds through the anchor (§8.6). 51W18's retention has a reader on the guard side and none on the fetch side | S2 |
+| S7 | WI-20260913-J38VE | THE FETCH SEES THE WRITTEN BRACKET — slot 0 now reaches `fetch_dictionary`, so a MULTI-PARAMETER spec grounds through both producers (§8.6) — **delivered**. 51W18's retention had a reader on the guard side and now has one on the fetch side | S2 |
 
 Tagged `vvm1r`. **S3 (the check tier) is FOLDED INTO S2** rather than filed, and was
 delivered with it — there is no S3 ticket. The fold was justified as "a load-time verdict

@@ -8025,11 +8025,12 @@ impl KnowledgeBase {
             Some(s) => s,
             None => return BuiltinResult::Failure,
         };
-        // WI-20260909-S8CBV gate (1) — the MEMBER a projected carrier names, read off the
-        // stored instance in slot 0. Slot 2 holds the projection's ROOT (the head
-        // variable), because that is the value whose type is about to be read; the member
-        // is what says which of that type's parameters the carrier actually is.
-        let project = super::typing::requirement_projection_member(self, &spec_arg_val);
+        // WI-20260913-J38VE — THE WRITTEN BRACKET, read off slot 0 ONCE for both of its
+        // consumers. Slot 2 holds the projection's ROOT (the head variable), because that
+        // is the value whose type is about to be read; the projected MEMBER and the
+        // written BINDINGS are the two things that cannot ride slot 2, and one walk of
+        // the instance yields both ([`super::typing::requirement_bracket`]).
+        let bracket = super::typing::requirement_bracket(self, &spec_arg_val);
         let mut arg_vals: Vec<Value> = Vec::with_capacity(pos_arity - 2);
         for i in 2..pos_arity {
             match self.walk_arg(goal.pos_arg(self, i), subst) {
@@ -8054,7 +8055,7 @@ impl KnowledgeBase {
             .find(|k| self.local_name_of(*k) == super::typing::REQUIREMENT_OUT_LABEL);
         let Some(out_sym) = out_sym else {
             return match super::typing::find_dictionary_guard(
-                self, subst, spec_sort, op_functor, &arg_vals, project,
+                self, subst, spec_sort, op_functor, &arg_vals, &bracket,
             ) {
                 super::typing::FindDictOutcome::Fire => BuiltinResult::Success,
                 super::typing::FindDictOutcome::DontFire => BuiltinResult::Failure,
@@ -8072,7 +8073,7 @@ impl KnowledgeBase {
         let out_slot = goal.named_arg(self, out_sym);
         match self.walk_arg(out_slot, subst) {
             Some(out) => self.read_dictionary_into(
-                subst, spec_sort, op_functor, &arg_vals, out, project, faults,
+                subst, spec_sort, op_functor, &arg_vals, out, &bracket, faults,
             ),
             None => unreachable!("`named_keys` listed `out` but `named_arg` has no child for it"),
         }
@@ -8108,14 +8109,15 @@ impl KnowledgeBase {
         op_functor: Symbol,
         arg_vals: &[Value],
         out: Value,
-        // WI-20260909-S8CBV gate (1): the projected member, passed through from the goal's
-        // slot 0 so the FETCH sees the same carrier type the GUARD did.
-        project: Option<Symbol>,
+        // WI-20260913-J38VE: the written bracket, passed through from the goal's slot 0 so
+        // the FETCH sees the same carrier type the GUARD did AND the elements the author
+        // named.
+        bracket: &super::typing::RequirementBracket,
         faults: &mut ReduceFaults,
     ) -> BuiltinResult {
         use super::typing::{FindDictFetch, FindDictOutcome};
         let dict = match super::typing::fetch_dictionary(
-            self, subst, spec_sort, op_functor, arg_vals, project,
+            self, subst, spec_sort, op_functor, arg_vals, bracket,
         ) {
             FindDictFetch::Fetched(dict) => dict,
             FindDictFetch::Guard(FindDictOutcome::Fire) => {

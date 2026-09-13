@@ -65637,11 +65637,12 @@ pub(crate) fn find_dictionary_guard(
     spec_sort: Symbol,
     op_functor: Symbol,
     arg_vals: &[Value],
-    // WI-20260909-S8CBV gate (1): the member a projected carrier names
-    // ([`requirement_projection_member`]), `None` for every direct bracket.
-    project: Option<Symbol>,
+    // WI-20260913-J38VE: the written bracket, read off slot 0 once by
+    // [`requirement_bracket`]. The GUARD uses only its projected member — it builds no
+    // [`SortGoal`], so there is no slot for a written binding to fill.
+    bracket: &RequirementBracket,
 ) -> FindDictOutcome {
-    let arg_types = match projected_arg_types(kb, subst, arg_vals, project) {
+    let arg_types = match projected_arg_types(kb, subst, arg_vals, bracket.project) {
         Ok(t) => t,
         Err(outcome) => return outcome,
     };
@@ -65743,13 +65744,9 @@ fn guard_over_arg_types(
 /// off the stored spec instance (`Desc[T = p.E]` ⟹ `E`), or `None` for every bracket
 /// that names a type directly.
 ///
-/// READ AT THE RESOLVER, because that is where the instance is. The emitted goal carries
-/// the instance whole in slot 0 (WI-20260909-51W18's retention) and the carrier VARIABLE
-/// in slot 2; the member is the one piece of the projection that cannot ride slot 2,
-/// since that slot holds the value whose type is about to be read.
-///
-/// CARRIER-BLIND, through `extract_type`: the instance reaches here as a σ-walked
-/// `Value`, which may be a term or an occurrence depending on the path that stored it.
+/// The bracket's already-extracted `base` and `bindings` are passed in rather than the
+/// instance: [`requirement_bracket`] is the one owner of that walk, and this is one of
+/// its two readers.
 ///
 /// THE CARRIER PARAMETER'S BINDING, WHICH IS THE QUESTION THE ANCHOR ASKS. A first cut
 /// took the first projected binding it found anywhere in the instance, and
@@ -65761,14 +65758,24 @@ fn guard_over_arg_types(
 ///
 /// NO ROW MOVES, and that is stated rather than left to be assumed. The two rules can
 /// differ only on a bracket carrying TWO bindings, which needs a spec with two type
-/// parameters — and MEASURED 2026-09-13 on exactly that (a two-parameter spec whose
-/// carrier is its SECOND-declared parameter, seven bracket spellings), every admissible
-/// spelling RESIDUALIZES, **including the two CONTROLS with a CONCRETE carrier and no
-/// projection anywhere** (`require[Two[A = Red]]` and `require[Two[A = Red, B = Blue]]`
-/// under `?x: Red`). A multi-parameter spec does not resolve through the TYPED-HEAD
-/// ANCHOR at all — WI-20260909-QMFC5's path, which predates this one and owns that gap.
-/// So this is one derivation replacing two, not a behaviour change, and whoever closes
-/// that gap inherits a site that already asks the right question.
+/// parameters.
+///
+/// THE ORIGINAL MEASUREMENT'S PREMISE HAS EXPIRED, and re-measuring beat inheriting it.
+/// It read: on a two-parameter spec every admissible spelling RESIDUALIZES, so the rules
+/// cannot be told apart. WI-20260913-J38VE closed exactly that — a multi-parameter spec
+/// now grounds through the typed-head anchor and ANSWERS — so the old sentence would have
+/// been a reason that had stopped being true while still reading as evidence.
+///
+/// RE-MEASURED 2026-09-13 AFTER J38VE, on the disagreeing shape built for it: a
+/// two-parameter spec with a CONCRETE carrier binding and a PROJECTED sibling
+/// (`require[Two[A = Red, B = p.E]]` under `?x: Red, p: Box`), at a provider binding the
+/// sibling abstractly AND at one binding it concretely. Both rules answer NOTHING on
+/// both, and the whole `wi_s8cbv` / `wi_qmfc5` / `wi_j38ve` set is green under the naive
+/// rule. The reason is now one step earlier and is structural rather than incidental: a
+/// projection at a NON-carrier element does not survive to a fetch at all — it needs a
+/// typed head root, a typed head takes the ANCHOR route, and the anchor pins the carrier
+/// from the head binding — so the binding this function would disagree about is one
+/// [`written_element`] declines anyway. So this is still one derivation replacing two.
 ///
 /// THE PROJECTION TEST RUNS FIRST, AND IT IS THE CHEAP ONE. This is called for EVERY
 /// `find_dictionary` goal, and the overwhelming majority of brackets project nothing —
@@ -65783,13 +65790,11 @@ fn guard_over_arg_types(
 /// per declared operation. For a self-representing spec, or a multi-parameter one with
 /// no receiving op, that was an uncached operation scan on the per-goal resolver path,
 /// where `builtin_find_dictionary` previously did no symbol lookup at all.
-pub(crate) fn requirement_projection_member(
+fn requirement_projection_member(
     kb: &KnowledgeBase,
-    instance: &Value,
+    base: Symbol,
+    bindings: &[(Symbol, Value)],
 ) -> Option<Symbol> {
-    let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, instance) else {
-        return None;
-    };
     if !bindings
         .iter()
         .any(|(_, v)| matches!(extract_type(kb, v), TypeExtractor::ExprCarried { .. }))
@@ -65801,6 +65806,55 @@ pub(crate) fn requirement_projection_member(
     match extract_type(kb, written) {
         TypeExtractor::ExprCarried { member, .. } => Some(member),
         _ => None,
+    }
+}
+
+/// WI-20260913-J38VE — WHAT THE AUTHOR WROTE, read off the emitted goal's slot 0 (the
+/// spec instance WI-20260909-51W18 retains there) ONCE, for the two readers that need it.
+///
+/// ONE READER OF SLOT 0, TWO FACTS. `extract_type` on that value is what yields both the
+/// projected member and the written bindings, and asking for them separately would walk
+/// the instance twice and — worse — put one bracket under two derivations, the defect
+/// `/code-review` already named inside [`requirement_projection_member`] itself. So the
+/// resolver reads the bracket once and hands this struct down both the guard path (which
+/// uses only [`Self::project`]) and the fetch path (which uses both).
+///
+/// EMPTY IS A REAL ANSWER, not an absence to be papered over: `require[Desc]` binds
+/// nothing, and every reader of [`Self::written`] must behave exactly as it did before
+/// this struct existed when the bracket names no element. That is what makes
+/// `require[Desc]` and `require[Desc[T = Leaf]]` distinguishable at the fetch — the
+/// distinction S1's retention created and nothing on this path could yet see.
+pub(crate) struct RequirementBracket {
+    /// The member a PROJECTED carrier names (`Desc[T = p.E]` ⟹ `E`), `None` for every
+    /// bracket that names a type directly — WI-20260909-S8CBV gate (1).
+    pub(crate) project: Option<Symbol>,
+    /// The bracket's bindings as written, `(param, value-type)`. Keys are matched by
+    /// LOCAL NAME downstream, as every other reader of a spec-parameter key is.
+    pub(crate) written: Vec<(Symbol, Value)>,
+}
+
+/// WI-20260913-J38VE — read the `require` bracket off the goal's slot 0.
+///
+/// READ AT THE RESOLVER, because that is where the instance is. The emitted goal carries
+/// the instance whole in slot 0 (WI-20260909-51W18's retention) and the carrier VARIABLE
+/// in slot 2; the projected member is the one piece that cannot ride slot 2, since that
+/// slot holds the value whose type is about to be read.
+///
+/// CARRIER-BLIND, through `extract_type`: the instance reaches here as a σ-walked
+/// `Value`, which may be a term or an occurrence depending on the path that stored it.
+///
+/// A NON-`Parameterized` INSTANCE IS THE BARE SPELLING, not a defect — `require[Desc]`
+/// stores `Ref(Desc)` — so it answers the empty bracket rather than declining.
+pub(crate) fn requirement_bracket(kb: &KnowledgeBase, instance: &Value) -> RequirementBracket {
+    let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, instance) else {
+        return RequirementBracket {
+            project: None,
+            written: Vec::new(),
+        };
+    };
+    RequirementBracket {
+        project: requirement_projection_member(kb, base, &bindings),
+        written: bindings,
     }
 }
 
@@ -65921,6 +65975,8 @@ fn anchor_sort_goal(
     kb: &mut KnowledgeBase,
     spec_sort: Symbol,
     arg_types: &[Value],
+    // WI-20260913-J38VE — the written bracket's bindings, for the shared tail.
+    written: &[(Symbol, Value)],
 ) -> Option<WitnessGoal> {
     let carrier_ty = arg_types.first()?.clone();
     if spec_is_self_representing(kb, kb.canonical_sort_sym(spec_sort)) {
@@ -65933,6 +65989,7 @@ fn anchor_sort_goal(
             spec_sort,
             SmallVec::new(),
             carrier,
+            written,
         ));
     }
     let param = spec_carrier_param_or_sole(kb, spec_sort)?;
@@ -65943,7 +66000,9 @@ fn anchor_sort_goal(
     let key = spec_param_key(kb, &spec_qn, &short, param);
     let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
     bindings.push((key, tid));
-    Some(sort_goal_with_wildcards(kb, spec_sort, bindings, None))
+    Some(sort_goal_with_wildcards(
+        kb, spec_sort, bindings, None, written,
+    ))
 }
 
 /// WI-1040 — the outcome of READING a rule-body requirement for its VALUE, the
@@ -66005,10 +66064,12 @@ pub(crate) fn fetch_dictionary(
     spec_sort: Symbol,
     op_functor: Symbol,
     arg_vals: &[Value],
-    // WI-20260909-S8CBV gate (1) — see [`find_dictionary_guard`].
-    project: Option<Symbol>,
+    // WI-20260913-J38VE — the written bracket; see [`find_dictionary_guard`]. Here BOTH
+    // halves are read: the projected member picks which carried type to look at, and the
+    // written bindings fill the spec elements the witness call does not name.
+    bracket: &RequirementBracket,
 ) -> FindDictFetch {
-    let arg_types = match projected_arg_types(kb, subst, arg_vals, project) {
+    let arg_types = match projected_arg_types(kb, subst, arg_vals, bracket.project) {
         Ok(t) => t,
         Err(outcome) => return FindDictFetch::Guard(outcome),
     };
@@ -66026,11 +66087,15 @@ pub(crate) fn fetch_dictionary(
         other => return FindDictFetch::Guard(other),
     }
     let built = if anchored {
-        anchor_sort_goal(kb, spec_sort, &arg_types)
+        anchor_sort_goal(kb, spec_sort, &arg_types, &bracket.written)
     } else {
-        witness_sort_goal(kb, spec_sort, op_functor, &arg_types)
+        witness_sort_goal(kb, spec_sort, op_functor, &arg_types, &bracket.written)
     };
-    let Some(WitnessGoal { goal, synthesized }) = built else {
+    let Some(WitnessGoal {
+        goal,
+        from_carried_types,
+    }) = built
+    else {
         // TWO PATHS, TWO SENTENCES. The witness form's failure IS a missing op signature;
         // the anchor form has no op at all, and on it `op_functor == spec_sort`, so the
         // shared message told the author that `Desc` "has no recorded signature" —
@@ -66078,18 +66143,19 @@ pub(crate) fn fetch_dictionary(
                     .collect::<Vec<_>>()
                     .join(", "),
             );
-            // WI-20260830-X9PB4 — A TIE IS ONLY A DEFECT WHEN THE GOAL WAS THE WITNESS'S
-            // OWN. `Defect`'s contract is "overlap is refused at typing/load, so reaching
-            // this means the coherence machinery let one through", and that reading needs
-            // the goal to be decided ENTIRELY by the carried types. Where an element was
-            // SYNTHESIZED because no witness parameter named it, two providers may tie on
-            // exactly that element — which is not overlap and not a defect — so the honest
-            // verdict is "cannot decide", and the caller delays as it did before the
-            // wildcard existed. See [`WitnessGoal`] for the measurement.
-            if synthesized {
-                FindDictFetch::Undecided { detail }
-            } else {
+            // WI-20260830-X9PB4 — A TIE IS ONLY A DEFECT WHEN THE CARRIED TYPES DECIDED
+            // THE WHOLE GOAL. `Defect`'s contract is "overlap is refused at typing/load,
+            // so reaching this means the coherence machinery let one through", and that
+            // reading needs the goal to be decided ENTIRELY by those types. Where an
+            // element came from anywhere else — WI-20260830-X9PB4's synthesized wildcard,
+            // or WI-20260913-J38VE's written bracket — two providers may tie for a reason
+            // the call never constrained, which is no overlap and no defect, so the honest
+            // verdict is "cannot decide" and the caller delays. Both sources are MEASURED
+            // as debug aborts on legal programs; see [`WitnessGoal`].
+            if from_carried_types {
                 FindDictFetch::Defect { detail }
+            } else {
+                FindDictFetch::Undecided { detail }
             }
         }
         // The guard said the carrier PROVIDES the spec and instance synthesis then
@@ -66164,6 +66230,12 @@ fn witness_sort_goal(
     spec_sort: Symbol,
     op_functor: Symbol,
     arg_types: &[Value],
+    // WI-20260913-J38VE — the written bracket's bindings, for the shared tail. The loop
+    // below is UNTOUCHED by them: an element a witness parameter names is pinned from the
+    // call's CARRIED TYPE, and a written binding that disagrees with a carried type is a
+    // question the load site owns ([`anchor_grounding`]'s refusal), not one to re-answer
+    // here with the opposite precedence.
+    written: &[(Symbol, Value)],
 ) -> Option<WitnessGoal> {
     let rec = super::op_info::lookup_operation_info(kb, op_functor)?;
     let type_params = kb.type_params_of_sort(spec_sort);
@@ -66171,10 +66243,10 @@ fn witness_sort_goal(
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
     let mut carrier: Option<GoalCarrier> = None;
-    // NO `synthesized` LOCAL: the flag is owned by [`sort_goal_with_wildcards`], which is
-    // the only thing that can set it (it is what mints the wildcards). One left behind
-    // here would tell a reader this function still tracks the value that decides
-    // Defect-vs-Undecided when the callee does.
+    // NO `from_carried_types` LOCAL: the flag is owned by [`sort_goal_with_wildcards`],
+    // which is the only thing that can CLEAR it (it is what mints the wildcards and what
+    // reads the written bracket). One left behind here would tell a reader this function
+    // still tracks the value that decides Defect-vs-Undecided when the callee does.
     for (i, (_pname, pty)) in rec.params.iter().enumerate() {
         if !param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, pty) {
             continue;
@@ -66235,19 +66307,19 @@ fn witness_sort_goal(
     // spells every element — and this producer, which rebuilds the goal from the WITNESS
     // CALL rather than from the written bracket, is the one that has to synthesize them.
     //
-    // THE OLD REASON IS GONE, AND SAYING SO MATTERS. This used to read "because
-    // `lower_require` STRIPS the bracket's type arguments" — WI-20260909-51W18 deleted
-    // that strip, and the bracket now rides whole on the goal's slot 0. The synthesis is
-    // still right HERE, because a witness-grounded goal is built from the call's argument
-    // types and the author may not have written a bracket at all. But a reader who
-    // trusted the old sentence would conclude the bracket is UNAVAILABLE at this site and
-    // stop looking — and it is exactly what
-    // `a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays` records
-    // as an open boundary: the author writes `Cap[P = Int64]`, the provider binds
-    // `P = Int64`, and the clause still delays because the written binding is replaced by
-    // a wildcard here. Closing that means READING slot 0, which is a `fetch_dictionary`
-    // signature change (it takes `spec_sort`, `op_functor`, `arg_vals`) and so is not
-    // this ticket's.
+    // AND THE WILDCARD IS THE LAST RESORT, NOT THE FIRST. The tail below mints one only
+    // for an element NOBODY NAMED — WI-20260913-J38VE gave it the written bracket, so an
+    // element the author spelled is pinned from what they wrote. The synthesis is still
+    // right for the rest, because a witness-grounded goal is built from the call's
+    // argument types and the author may have written no bracket at all.
+    //
+    // THE HISTORY, BECAUSE TWO REASONS EXPIRED HERE IN A ROW. This comment once read
+    // "because `lower_require` STRIPS the bracket's type arguments"; WI-20260909-51W18
+    // deleted that strip and the bracket rides whole on slot 0. It then read that closing
+    // the gap "means READING slot 0, which is a `fetch_dictionary` signature change" —
+    // and that is what J38VE did. The gap it named was the author writing
+    // `Cap[P = Int64]`, the provider binding `P = Int64`, and the clause delaying anyway
+    // because the written binding was replaced by a wildcard here.
     //
     // NOT A WEAKER MATCH: a wildcard is refused against a CONCRETE candidate binding
     // (`fact Eq[T = Int64]` at a wildcard `T` still fails `dispatch_values_match`), so
@@ -66271,7 +66343,9 @@ fn witness_sort_goal(
     // measurement rather than an un-drivable fixture.
     // `wi_x9pb4_require_dictionary_element_test::an_effect_row_element_is_left_to_its_
     // own_owner` drives both arms.
-    Some(sort_goal_with_wildcards(kb, spec_sort, bindings, carrier))
+    Some(sort_goal_with_wildcards(
+        kb, spec_sort, bindings, carrier, written,
+    ))
 }
 
 /// WI-20260909-QMFC5 — the SHARED tail of every [`SortGoal`] this tier builds: fill the
@@ -66287,9 +66361,12 @@ fn sort_goal_with_wildcards(
     spec_sort: Symbol,
     mut bindings: SmallVec<[(Symbol, TermId); 2]>,
     carrier: Option<GoalCarrier>,
+    // WI-20260913-J38VE — what the author WROTE, for the elements the carrier does not
+    // pin. See the loop body.
+    written: &[(Symbol, Value)],
 ) -> WitnessGoal {
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
-    let mut synthesized = false;
+    let mut from_carried_types = true;
     for short in kb.type_params_of_sort(spec_sort) {
         if sort_param_is_effect_row(kb, spec_sort, &short) {
             continue;
@@ -66313,12 +66390,29 @@ fn sort_goal_with_wildcards(
         // are keyed alike — [`spec_param_key`], reached with the qualified symbol this
         // arm has already proved resolves.
         let key = spec_param_key(kb, &spec_qn, &short, qualified);
+        // REACHING HERE IS ITSELF THE TIE VERDICT, so it is set ONCE rather than in each
+        // arm below. This tail fills an element the producer above did not pin — from the
+        // bracket or from a wildcard — and NEITHER is a carried type, which is the whole
+        // of what [`WitnessGoal::from_carried_types`] asks. Set after the three `continue`s
+        // above, which leave their elements ABSENT and are not this tail filling anything.
+        from_carried_types = false;
+        // WI-20260913-J38VE — THE AUTHOR'S OWN BINDING BEATS A MINTED WILDCARD, and the
+        // wildcard's justification is exactly why: it stands in for an element NOBODY
+        // NAMED. Where the bracket names one, there is nothing to stand in for — and
+        // minting anyway is not neutral, because a wildcard is REFUSED against a
+        // provider's concrete binding (`Red provides Sp[C = Red, P = Int64]`), so the
+        // synthesis actively DESTROYED the one fact that could have selected a row. That
+        // is not a corner: it is every spec with a second element, since a spec op names
+        // only the carrier and the shared tail therefore wildcards all the rest.
+        if let Some(tid) = written_element(kb, written, &short) {
+            bindings.push((key, tid));
+            continue;
+        }
         // The spec's OWN parameter symbol as the value — `is_type_param_value`'s
         // wildcard, the same term a written `requires Spec[Element = Element]` clause
         // carries for an element its author did not pin.
         let wildcard = kb.alloc(Term::Ref(qualified));
         bindings.push((key, wildcard));
-        synthesized = true;
     }
     WitnessGoal {
         goal: SortGoal {
@@ -66326,25 +66420,107 @@ fn sort_goal_with_wildcards(
             bindings,
             carrier,
         },
-        synthesized,
+        from_carried_types,
     }
 }
 
-/// WI-20260830-X9PB4 — [`witness_sort_goal`]'s answer, and WHETHER IT HAD TO INVENT
-/// PART OF IT.
+/// WI-20260913-J38VE — the written bracket's value for one spec element, as a goal term,
+/// or `None` when the bracket says nothing DISCRIMINATING about it and the caller must
+/// mint its wildcard instead.
+///
+/// BY LOCAL NAME, which is how every other reader of a spec-parameter key asks: the
+/// bracket's keys come off the stored instance and the caller's `short` off
+/// `type_params_of_sort`, and [`spec_param_key`] exists precisely because the two can be
+/// different `Symbol`s for one parameter.
+///
+/// A POSITIVE TEST, not a list of exclusions: only a NAMED TYPE — a sort, or a sort
+/// applied to arguments — can pin an element, and everything else takes the mint path.
+/// Written that way round because the values a bracket can carry are a growing set
+/// ([`TypeExtractor`] has nine variants) and a new one must default to the PRE-TICKET
+/// behaviour, not to being pinned as though it were a type.
+///
+/// LOWERED THROUGH [`value_to_term`], NOT [`type_value_as_term`], and the difference is a
+/// wrong answer rather than a missing one. `type_value_as_term` returns the term id only
+/// for a `Value::Term` and otherwise falls to `sort_functor_of_view(…)` — the bare SORT
+/// HEAD, arguments discarded — and MEASURED, a written binding always arrives as a
+/// `Value::Node`, so EVERY applied element took that path. `Box[E = Leaf]` became `Box`,
+/// which both failed to match a provider's applied binding AND matched one it should not:
+/// `require[Sp[P = Box[E = Other]]]` selected the `Box[E = Leaf]` row. WI-390's converter
+/// is the documented owner of exactly this ("the one converter to use where a
+/// value-in-type may ride — e.g. a `requires`/`provides` spec"), and it is total: `Err`
+/// only for the opaque runtime handles, which take the mint path here like anything else
+/// this function cannot name. Found by `/code-review` on this ticket's own diff; driven by
+/// `wi_j38ve…::an_applied_written_element_pins_what_the_author_actually_wrote`.
+///
+/// THE CARRIER SITE IS STILL LOSSY AND IS NOT TOUCHED HERE. [`anchor_sort_goal`] and
+/// [`witness_sort_goal`] lower their carrier through `type_value_as_term`, and that
+/// predates this ticket: their value is a CARRIED TYPE read off a runtime value, not an
+/// author-written one, and moving it is a change to which rows every existing anchor
+/// selects. Recorded rather than folded in.
+///
+/// The two shapes that would otherwise be silently wrong, named so the test is read as
+/// deliberate rather than incidental:
+///
+///  * A PROJECTION (`Desc[T = p.E]`) is not a type — it names WHICH carried type to look
+///    at, and WI-20260909-S8CBV gate (1) has already applied it to the carrier argument
+///    ([`projected_arg_types`]). Pinning `p.E` itself would put a projection in the goal
+///    where a sort belongs, and no provider head matches that.
+///  * A value naming a TYPE PARAMETER is the wildcard SPELLED OUT (`requires
+///    Spec[Element = Element]`, WI-507's leniency) — a `SortRef`, so the positive test
+///    admits it and [`is_type_param_value`] is what turns it away. Taking the mint path
+///    is not merely equivalent in the goal: it is what leaves
+///    [`WitnessGoal::from_carried_types`] cleared, and a pin that set it would turn a
+///    legal program's ambiguity into a debug abort.
+///
+/// NEITHER EXCLUSION IS DRIVEN TO A DIFFERENT ANSWER, and that is stated rather than
+/// implied by a test name. MEASURED 2026-09-13: a projected element reaches here only
+/// where the producer above did not already pin it, and every spelling of that — a
+/// projection at a NON-carrier element of a two-parameter spec, on both the anchor and
+/// the witness route — is REFUSED AT LOAD first ("head bound(s) — Box — provide no
+/// `Sp`"), because a projection needs a typed head root and a typed head takes the anchor
+/// route. A written type-parameter name is DROPPED upstream by WI-20260909-51W18's rule
+/// (`require[Cap[P = P]]` stores no binding at all), and a head-introduced type variable
+/// resolves to its GUARD-GIVEN BOUND (`T = Desc`, not a parameter reference —
+/// `wi_51w18…::a_head_introduced_type_variable_resolves_inside_the_bracket`). So both
+/// lines are written for the value they carry if those upstream rules move, and a
+/// back-out of either changes no row today.
+fn written_element(
+    kb: &mut KnowledgeBase,
+    written: &[(Symbol, Value)],
+    short: &str,
+) -> Option<TermId> {
+    let value = written
+        .iter()
+        .find(|(k, _)| kb.local_name_of(*k) == short)?
+        .1
+        .clone();
+    if !matches!(
+        extract_type(kb, &value),
+        TypeExtractor::SortRef(_) | TypeExtractor::Parameterized { .. }
+    ) {
+        return None;
+    }
+    let tid = super::node_occurrence::value_to_term(kb, &value).ok()?;
+    if is_type_param_value(kb, tid) {
+        return None;
+    }
+    Some(tid)
+}
+
+/// WI-20260830-X9PB4 — [`witness_sort_goal`]'s answer, and WHETHER EVERY ELEMENT OF IT
+/// CAME OFF A CARRIED TYPE.
 ///
 /// The flag exists because one downstream verdict turns on it and nothing else can
 /// recover it. `fetch_dictionary` maps a resolution TIE to
 /// [`FindDictFetch::Defect`] — "overlap was typing/load's to refuse, so reaching this
 /// means the coherence machinery let one through", loud in debug. That reading holds
-/// only while the goal is decided ENTIRELY by the witness call's carried types: a tie
-/// then really is two providers claiming one carried type. A goal carrying a
-/// SYNTHESIZED wildcard is not decided entirely by them — two providers may tie on
-/// precisely the element nobody named, which is no defect at all — so that tie is
-/// [`FindDictFetch::Undecided`] instead, and the call delays exactly as it did before
-/// the wildcard existed.
+/// only while the goal is decided ENTIRELY by the carried types the resolver read: a tie
+/// then really is two providers claiming one carried type. A goal carrying an element
+/// from any OTHER source is not decided entirely by them — two providers may tie for a
+/// reason the call never constrained, which is no defect at all — so that tie is
+/// [`FindDictFetch::Undecided`] instead, and the call delays.
 ///
-/// MEASURED, and it is a regression this ticket introduced and then closed rather
+/// MEASURED, and it is a regression X9PB4 introduced and then closed rather
 /// than a hypothetical: `Carrier provides MidA` + `Carrier provides MidB`, each
 /// `provides Spec[C = Mid?, Note = <its own N>]`, made
 /// `require[Spec[C]], Spec.probe(carrier(), ?r)` fire
@@ -66353,11 +66529,25 @@ fn sort_goal_with_wildcards(
 /// the same program answered ONE INDEFINITE solution. Driven by
 /// `wi_x9pb4_require_dictionary_element_test::a_tie_on_a_synthesized_element_delays_
 /// rather_than_reporting_a_defect`.
+///
+/// WI-20260913-J38VE — AND A WRITTEN ELEMENT CLEARS IT TOO, which is the same regression
+/// one source over and was MEASURED on the very fixture above. Spell the element the
+/// author had left to the wildcard — `require[Spec[C = Carrier, Note = Int64]]` — and a
+/// first cut that kept the flag SET aborted:
+/// `find_dictionary: two providers answer `Spec[C = Carrier, Note = Int64]` at run time:
+/// MidA, MidB`. Note that the tie is on `C` and has nothing to do with `Note`: pinning an
+/// element does not make an unrelated tie into overlap, and the flag is deliberately the
+/// COARSE question ("did anything but a carried type decide this goal") rather than an
+/// attribution of the tie. Driven by
+/// `wi_j38ve_written_bracket_fetch_test::a_tie_a_written_element_does_not_cause_stays_a_
+/// delay`, whose control is the same program at the bare spelling.
 struct WitnessGoal {
     goal: SortGoal,
-    /// True iff some spec element was minted as a wildcard because no witness
-    /// parameter named it.
-    synthesized: bool,
+    /// True iff EVERY element of this goal was read off a CARRIED TYPE — the witness
+    /// call's argument types, or the anchor's head binding. False as soon as one element
+    /// came from anywhere else: a minted wildcard, or (WI-20260913-J38VE) the author's
+    /// written bracket.
+    from_carried_types: bool,
 }
 
 /// WI-1040 — a resolved provider tree as the dictionary.
