@@ -471,3 +471,184 @@ fn the_bracket_decides_and_not_the_written_order() {
         "and a `Leaf` consumer must REFUSE it — the mirror of the acceptance, inverted",
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// TWO DIFFERENT SPECS — `p(x: Ord[A], y: Eq[B])`
+//
+// Everything above this line is about two `require`s on ONE spec base, which is what S4
+// was filed for: the duplicate pre-pass and the anchored gate both exist to tell two
+// dictionaries of the SAME spec apart. TWO DIFFERENT SPECS is a case neither gate has to
+// decide — `views_structurally_equal` separates the instances and the anchored gate's
+// `find(|(s, _)| *s == canon)` finds no prior entry — so the clause passes both without a
+// refusal and each `require` grounds on its own anchor.
+//
+// CENSUSED 2026-09-13 and that is why these rows exist: EVERY fixture in this file, in
+// `wi_qmfc5_typed_head_anchor_test.rs` and in `wi_s8cbv_projection_requirement_test.rs`
+// uses ONE spec base (`Desc`, or `PartialEq`; `Thing` / `Gadget` there are DATA sorts, not
+// specs). The umbrella drove two dictionaries of one spec exhaustively and never drove one
+// dictionary each of two specs, so this capability had no pin and a regression would have
+// shipped green.
+//
+// THESE ROWS PIN A CAPABILITY THAT ALREADY WORKS — no source change came with them — AND
+// THE BACK-OUT SAYS THEY ARE NOT REDUNDANT. MEASURED 2026-09-13, applying only the FIRST
+// weave (`for (call, call_fn, out) in weaves.into_iter().take(1)`): across ALL 4612
+// `wi_tests`, **exactly these two rows fail and nothing else does**. So the weave loop
+// running more than once — the whole point of "two dictionaries" — was UNDRIVEN before
+// them. The existing rows above assert the BOUND dictionaries by value across a rule
+// boundary (the file's own fixture discipline: "if a row asserts through a call, the spec
+// op must be NULLARY"), which needs no second weave at all; these are the first to make
+// TWO covered calls each dispatch through its OWN dictionary.
+//
+// A BACK-OUT THAT MEASURED NOTHING, recorded so it is not tried again: making the anchored
+// gate's lookup spec-BLIND (`find(|_s, _| true)`) fails ZERO rows. That gate only fires
+// when one side is NOT anchored (`!found.anchored || !*prev_anchored`), and both requires
+// here are anchored — so spec-keying is not what admits this shape, and an earlier draft
+// of this comment claimed it was, unmeasured.
+// ════════════════════════════════════════════════════════════════════════════════════
+
+/// Two specs, each with a NULLARY BODY-LESS operation, so neither number can be reached by
+/// value dispatch or by a default. `combo` is a FACT TABLE rather than arithmetic, so the
+/// pair that actually arrived is named: only `(7, 9)` answers `16`.
+fn two_specs(ns: &str, tail: &str) -> String {
+    format!(
+        r#"namespace {ns}
+  import anthill.prelude.Int64
+
+  sort Ord
+    import anthill.prelude.Int64
+    sort A = ?
+    operation otag() -> Int64
+    operation orecv(x: A) -> Int64 = 0
+  end
+
+  sort Eqq
+    import anthill.prelude.Int64
+    sort B = ?
+    operation etag() -> Int64
+    operation erecv(x: B) -> Int64 = 0
+  end
+
+  sort Red
+    import anthill.prelude.Int64
+    entity red
+    provides Ord[A = Red]
+    operation otag() -> Int64 = 7
+  end
+
+  sort Blue
+    import anthill.prelude.Int64
+    entity blue
+    provides Eqq[B = Blue]
+    operation etag() -> Int64 = 9
+  end
+
+  fact combo(7, 9, 16)
+  fact combo(7, 7, 101)
+  fact combo(9, 9, 202)
+  fact combo(9, 7, 303)
+
+{tail}end
+"#
+    )
+}
+
+/// The single definite `Int` of a solution list. A fact column arrives TERM-carried
+/// (`Value::Term`) rather than as a `Value::Int`, unlike an operation's return — so this
+/// reads through the term store and [`one_definite`] above cannot be reused.
+fn one_definite_term(kb: &anthill_core::kb::KnowledgeBase, got: &[(Value, bool)]) -> Option<i64> {
+    match got {
+        [(Value::Int(i), true)] => Some(*i),
+        [(Value::Term { id, .. }, true)] => match kb.get_term(*id) {
+            anthill_core::kb::term::Term::Const(anthill_core::kb::term::Literal::Int(i)) => {
+                Some(*i)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn two_spec_answer(ns: &str, tail: &str) -> Option<i64> {
+    let mut kb = crate::common::load_kb_with(&two_specs(ns, tail));
+    let got = crate::common::query_unary(&mut kb, &format!("{ns}.answer"));
+    one_definite_term(&kb, &got)
+}
+
+#[test]
+fn two_typed_head_parameters_bounded_by_DIFFERENT_specs_thread_both_dictionaries() {
+    // `16` IS THE WHOLE ASSERTION. It is the `(7, 9)` row of `combo`, and `(7,7)`, `(9,9)`
+    // and `(9,7)` are all distinct rows — so one dictionary serving both calls, or either
+    // call falling back to anything, answers a different number or none at all.
+    assert_eq!(
+        two_spec_answer(
+            "test.twospec.concrete",
+            "  rule p(x: Red, y: Blue, ?r) :- ?d1 = require[Ord[A = Red]], \
+             ?d2 = require[Eqq[B = Blue]], Ord.otag(?a), Eqq.etag(?b), combo(?a, ?b, ?r)\n  \
+             rule answer(?r) :- p(red(), blue(), ?r)\n",
+        ),
+        Some(16),
+        "both dictionaries must reach their own call",
+    );
+}
+
+#[test]
+fn the_control_one_require_of_the_pair_answers_its_own_number() {
+    // WHAT SAYS THE `7` ABOVE CAME FROM `Ord`'s DICTIONARY rather than from anywhere else:
+    // drop the `Eqq` require, pair `Ord`'s number with itself, and the table answers the
+    // `(7, 7)` row. If `otag()` were reaching some default this would not be `7`.
+    assert_eq!(
+        two_spec_answer(
+            "test.twospec.one",
+            "  rule p(x: Red, y: Blue, ?r) :- ?d1 = require[Ord[A = Red]], \
+             Ord.otag(?a), combo(?a, ?a, ?r)\n  \
+             rule answer(?r) :- p(red(), blue(), ?r)\n",
+        ),
+        Some(101),
+    );
+}
+
+#[test]
+fn the_control_without_either_require_neither_call_answers() {
+    // THE ROW THE NUMBERS ABOVE ARE READ AGAINST. Both spec ops are BODY-LESS, so with no
+    // `require` in the clause there is no instance and no default and the clause has NO
+    // solutions — which is what says every number above arrived through a dictionary.
+    //
+    // PASSES EITHER WAY BY DESIGN: it describes the fixture.
+    let mut kb = crate::common::load_kb_with(&two_specs(
+        "test.twospec.none",
+        "  rule p(x: Red, y: Blue, ?r) :- Ord.otag(?a), Eqq.etag(?b), combo(?a, ?b, ?r)\n  \
+         rule answer(?r) :- p(red(), blue(), ?r)\n",
+    ));
+    let got = crate::common::query_unary(&mut kb, "test.twospec.none.answer");
+    assert!(got.is_empty(), "expected no solutions, got {got:?}");
+}
+
+#[test]
+fn the_other_two_bound_spellings_thread_both_as_well() {
+    // THE SAME CAPABILITY AT THE OTHER TWO SPELLINGS a bound can take (§8.3), because
+    // which one an author writes must not decide whether two specs are served.
+    //
+    // INTRODUCER — `p[A, B](x: A, y: B) :- Ord[A], Eqq[B]`, where `rule_type_bounds`
+    // records THE SPEC for each parameter rather than a carrier sort.
+    assert_eq!(
+        two_spec_answer(
+            "test.twospec.introducer",
+            "  rule p[A, B](x: A, y: B, ?r) :- Ord[A], Eqq[B], ?d1 = require[Ord[A = A]], \
+             ?d2 = require[Eqq[B = B]], Ord.otag(?a), Eqq.etag(?b), combo(?a, ?b, ?r)\n  \
+             rule answer(?r) :- p(red(), blue(), ?r)\n",
+        ),
+        Some(16),
+        "the introducer spelling must thread both",
+    );
+    // SPEC-APPLICATION — the bound is written as the spec itself.
+    assert_eq!(
+        two_spec_answer(
+            "test.twospec.specbound",
+            "  rule p(x: Ord, y: Eqq, ?r) :- ?d1 = require[Ord[A = Red]], \
+             ?d2 = require[Eqq[B = Blue]], Ord.otag(?a), Eqq.etag(?b), combo(?a, ?b, ?r)\n  \
+             rule answer(?r) :- p(red(), blue(), ?r)\n",
+        ),
+        Some(16),
+        "a spec-application bound must thread both",
+    );
+}

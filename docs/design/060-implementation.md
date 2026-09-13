@@ -867,7 +867,7 @@ a projection, because both compare the written carrier to the bound AS SORTS and
 projected carrier is neither. Driven as a pair: the same head, the same bound and the same
 spec, with the CONSTANT bracket refused one row above the projection being admitted.
 
-**Five axes, measured 2026-09-13** (each back-out applied by a script asserting its
+**Seven axes, measured 2026-09-13** (each back-out applied by a script asserting its
 pattern matched exactly once, the tree restored by checksum between runs), and no two fail
 the same set:
 
@@ -878,6 +878,28 @@ the same set:
 | the runtime δ (`requirement_projection_member`) | 2 | both LOAD CLEAN and answer wrongly — the acceptance drops to no answer, the spec-bound row stops delaying |
 | the static member check | 1 | a member `Box` cannot declare goes back to loading clean and residualizing, with no diagnostic |
 | the suspend arm (`Suspend` → `DontFire`) | 2 | the two delay rows answer ZERO rows instead of one indefinite one — WI-067's silent drop |
+| the early routing (`spec_arg_has_projection`) | 2 | a projected bracket falls back to the witness scans — one row returns to an indefinite residual, the other to a clean load |
+| the tri-state (`Reported` → `Dropped`) | 1 | the author sees the rung's accurate error AND the misdiagnosis it replaces |
+
+**A PROJECTED BRACKET TAKES THE ANCHOR PATH, AND TAKES IT FIRST — repaired after the
+first commit, and it was one defect wearing two faces.** `anchor_grounding` is consulted
+LAST, after four witness scans, so any clause carrying BOTH a projected bracket and a
+covered spec-op call took the witness path. `/code-review` measured both consequences:
+`rule r(p: Box, ?q, ?res) :- ?d = require[Desc[T = p.E]], Desc.describe(?q, ?res)` LOADED
+CLEAN and residualized — the author's `p.E` silently ignored, the requirement grounded at
+the CALL's argument, and the resolver's δ then rewriting THAT argument as though it were
+the projection root — where the concrete-bracket twin answered a definite `90`; and
+`require[Desc[T = p.Zork]]` beside the same call escaped the member check entirely, loading
+clean where its witness-free twin is refused. A witness grounds from a covered call's
+arguments, which name a different value than the receiver the author wrote, so a projected
+bracket must take the anchor path or be refused — it can never silently ground elsewhere.
+Two more axes, and the concrete-bracket row passes under both by design.
+
+**ONE BINDING, ONE DIAGNOSTIC.** The projection rung reports its own located error, and a
+bare `Option` could not tell its caller that — so both callers also ran
+`report_dropped_spec_binding` and the author got the accurate message followed by the very
+misdiagnosis the rung exists to prevent. `SpecBindingLowering` makes the three outcomes
+distinct: `Lowered`, `Dropped` (the caller owns the diagnostic) and `Reported`.
 
 The δ axis is why the acceptance is two NUMBERS and not a clean load: with δ gone the
 carrier type read at the fetch is the RECEIVER's own type rather than its member, so

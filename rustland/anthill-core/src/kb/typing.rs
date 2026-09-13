@@ -65765,13 +65765,19 @@ fn guard_over_arg_types(
 /// So this is one derivation replacing two, not a behaviour change, and whoever closes
 /// that gap inherits a site that already asks the right question.
 ///
-/// ONE LOOKUP, memoized. [`spec_carrier_param_or_sole`] caches on
-/// `kb.spec_carrier_param_cache`; the SELF-REPRESENTING pre-check the anchor applies
-/// beside it is deliberately NOT repeated here, because it scans a sort's operations and
-/// this runs per goal. The one shape that leaves is a self-representing spec whose
-/// bracket projects: the anchor has no carrier parameter for such a spec and never
-/// selects it, so a projection there can only have arrived by the WITNESS path — where
-/// this function has always projected, and still does.
+/// THE PROJECTION TEST RUNS FIRST, AND IT IS THE CHEAP ONE. This is called for EVERY
+/// `find_dictionary` goal, and the overwhelming majority of brackets project nothing —
+/// so the binding scan (which the caller's `extract_type` already paid for) decides
+/// those, and [`spec_carrier_param_or_sole`] is asked only where a projection is
+/// actually present.
+///
+/// THAT ORDERING IS A CORRECTION, not a micro-optimization. An earlier draft called
+/// the predicate unconditionally and its own doc claimed the cost was one memoized
+/// lookup; `/code-review` measured otherwise — only `spec_carrier_param` is cached, and
+/// its MISS path calls `spec_is_self_representing`, which builds an `OperationInfoFull`
+/// per declared operation. For a self-representing spec, or a multi-parameter one with
+/// no receiving op, that was an uncached operation scan on the per-goal resolver path,
+/// where `builtin_find_dictionary` previously did no symbol lookup at all.
 pub(crate) fn requirement_projection_member(
     kb: &KnowledgeBase,
     instance: &Value,
@@ -65779,6 +65785,12 @@ pub(crate) fn requirement_projection_member(
     let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, instance) else {
         return None;
     };
+    if !bindings
+        .iter()
+        .any(|(_, v)| matches!(extract_type(kb, v), TypeExtractor::ExprCarried { .. }))
+    {
+        return None;
+    }
     let carrier = spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(base))?;
     let (_, written) = bindings.iter().find(|(k, _)| same_label(kb, *k, carrier))?;
     match extract_type(kb, written) {
@@ -73846,6 +73858,31 @@ fn rewrite_find_dictionary_goal(
     };
     let spec_canon = kb.canonical_sort_sym(spec_base);
 
+    // A PROJECTED BRACKET TAKES THE ANCHOR PATH, AND TAKES IT FIRST.
+    // See [`spec_arg_has_projection`] for the two defects this ordering closes. The
+    // witness scans below cannot honour a projection — they ground from a covered call's
+    // arguments, which name a different value entirely — so a bracket that writes one
+    // either anchors or is refused, and never silently grounds somewhere else.
+    if spec_arg_has_projection(kb, spec_arg) {
+        return match anchor_grounding(
+            kb, spec_arg, spec_base, spec_canon, bounds, span, owner, fd_sym, &out_arg, body_nodes,
+            &err,
+        ) {
+            Some(result) => result,
+            // No typed head binding at all: the projection's root cannot be a head
+            // parameter of this clause, so there is nothing for it to project off.
+            None => Err(err(
+                format!(
+                    "a TYPED head binding for the receiver this `{}` bracket projects off",
+                    kb.local_name_of(spec_base),
+                ),
+                "this clause annotates no head parameter, so the projection has \
+                 no receiver whose type could be read"
+                    .into(),
+            )),
+        };
+    }
+
     // Emit the rewritten guard `find_dictionary(spec_base, witness_op, arg…)` for a
     // chosen witness `functor` (`None` if the call is partial — some parameter
     // unprovided — so its arguments can't be positionalized the way the fire-time
@@ -74066,6 +74103,35 @@ fn rewrite_find_dictionary_goal(
         ),
         "no such call in the rule body".into(),
     ))
+}
+
+/// WI-20260909-S8CBV gate (1) — does this `require` bracket bind ANY of the spec's type
+/// parameters to a PATH PROJECTION (`Desc[T = p.E]`)?
+///
+/// ASKED BEFORE THE WITNESS SCANS, and that ordering is the whole point. A witness grounds
+/// the requirement from a COVERED CALL's arguments, which have nothing to do with the
+/// receiver the author named — so a clause carrying both took the witness path, the
+/// bracket was silently ignored, and the resolver's δ then rewrote the WITNESS's first
+/// argument as though it were the projection root. MEASURED by `/code-review`:
+/// `rule r(p: Box, ?q, ?res) :- ?d = require[Desc[T = p.E]], Desc.describe(?q, ?res)`
+/// loaded clean and residualized where the same clause with a CONCRETE bracket answered a
+/// definite `90`, and `require[Desc[T = p.Zork]]` beside a witness call escaped the
+/// member check entirely. Both are one defect: the projection is only READ on the anchor
+/// path, so a projected bracket must TAKE that path or be refused.
+///
+/// ANY binding, not the carrier parameter's: this asks "did the author write a projection
+/// here", which is a question about the source and not about which slot it fills.
+fn spec_arg_has_projection(kb: &KnowledgeBase, spec_arg: &Rc<NodeOccurrence>) -> bool {
+    let Some(Expr::Apply { named_args, .. }) = spec_arg.as_expr() else {
+        return false;
+    };
+    named_args.iter().any(|(_, v)| {
+        matches!(
+            v.as_expr(),
+            Some(Expr::Apply { functor, .. })
+                if kb.qualified_name_of(*functor) == "anthill.prelude.TypeExtractor.ExprCarried"
+        )
+    })
 }
 
 /// WI-20260909-S8CBV gate (1) — the De Bruijn index of the head binding a `require`
@@ -74294,7 +74360,8 @@ fn anchor_grounding(
                 if !declared.iter().any(|d| *d == member_name) {
                     return Some(Err(err(
                         format!(
-                            "`{}` to name a type parameter of `{}`, which this `require`                              projects off",
+                            "`{}` to name a type parameter of `{}`, which this \
+                             `require` projects off",
                             member_name,
                             kb.local_name_of(bound_head),
                         ),

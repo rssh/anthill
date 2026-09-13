@@ -20035,6 +20035,23 @@ struct RuleHeadParams {
     params: Vec<(Symbol, TermId)>,
 }
 
+/// How one `require` bracket binding lowered — THREE outcomes, not two.
+///
+/// `Dropped` and `Reported` are both 'no occurrence to store' and they are NOT the
+/// same thing, which a bare `Option` could not say. `/code-review` drove the cost: the
+/// projection rung reports its own located error and then answered `None`, so both
+/// callers ALSO ran `report_dropped_spec_binding` and the author got the accurate
+/// message followed by the very misdiagnosis — "`p.E` names neither a sort nor one of
+/// `Desc`'s own type parameters" — that the rung exists to prevent.
+enum SpecBindingLowering {
+    /// Lowered; this is the occurrence to store.
+    Lowered(Rc<NodeOccurrence>),
+    /// Not lowerable and NOT yet reported — the caller owns the drop diagnostic.
+    Dropped,
+    /// Not lowerable and ALREADY reported by the rung that recognized the shape.
+    Reported,
+}
+
 impl<'a> Loader<'a> {
     /// `source_id`: `Some` REUSES an already-registered source entry — the WI-936
     /// declaration pass builds a loader over the same file first, and registering it
@@ -21884,9 +21901,17 @@ impl<'a> Loader<'a> {
                 named.push((key, child));
                 continue;
             }
-            if let Some(o) = self.require_spec_binding_occurrence(v) {
-                named.push((key, o));
-                continue;
+            match self.require_spec_binding_occurrence(v) {
+                SpecBindingLowering::Lowered(o) => {
+                    named.push((key, o));
+                    continue;
+                }
+                // ALREADY REPORTED by the rung that recognized the shape — the
+                // slot stays claimed (above) so nothing re-indexes, and the drop
+                // rule below must NOT also fire, or the author gets the accurate
+                // error followed by the misdiagnosis it exists to replace.
+                SpecBindingLowering::Reported => continue,
+                SpecBindingLowering::Dropped => {}
             }
             // THE NAMED LOOP DROPS LOUDLY TOO. It used to drop with no diagnostic and
             // without recording the claim, so the skip loop below read the slot as free
@@ -21925,16 +21950,24 @@ impl<'a> Loader<'a> {
             // `requires(Walk[Src, {}])` dropped the row while `requires(Walk[C = Src, E =
             // {}])` kept it, and `sort_goal_with_wildcards` skips effect-row params so
             // nothing re-supplied it. The sibling occurrence walk has it on both.
-            let lowered = self
-                .lower_effect_row_aux_occ(v)
-                .or_else(|| self.require_spec_binding_occurrence(v));
-            let Some(child) = lowered else {
-                self.report_dropped_spec_binding(base, &declared, v, span.span);
-                match slot {
-                    Some(n) => claimed.push(self.kb.intern(&n)),
-                    None => overflow += 1,
+            let lowered = match self.lower_effect_row_aux_occ(v) {
+                Some(child) => SpecBindingLowering::Lowered(child),
+                None => self.require_spec_binding_occurrence(v),
+            };
+            let child = match lowered {
+                SpecBindingLowering::Lowered(child) => child,
+                // See the named loop: a REPORTED binding still claims its slot,
+                // and the drop rule must not speak over the rung's own error.
+                other => {
+                    if matches!(other, SpecBindingLowering::Dropped) {
+                        self.report_dropped_spec_binding(base, &declared, v, span.span);
+                    }
+                    match slot {
+                        Some(n) => claimed.push(self.kb.intern(&n)),
+                        None => overflow += 1,
+                    }
+                    continue;
                 }
-                continue;
             };
             match slot {
                 Some(n) => {
@@ -21994,20 +22027,23 @@ impl<'a> Loader<'a> {
     /// that true at every depth: an earlier version let it fall to `remap_symbol_strict`,
     /// and a nested head-introduced type variable was then reported `unresolved name`
     /// — two resolvers answering one question, found by `/code-review`.
-    fn require_spec_binding_occurrence(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
+    fn require_spec_binding_occurrence(&mut self, parse_id: TermId) -> SpecBindingLowering {
         // WI-20260909-S8CBV gate (1) — A PROJECTION IS A THIRD KIND. Asked FIRST, because
         // the two rungs below are about NAMES (does this spell a sort? is it the spec's
         // own parameter?) and `p.E` is neither, so the drop rule read it as a typo:
         // "`p.E` names neither a sort nor one of `Desc`'s own type parameters".
-        if let Some(occ) = self.try_require_spec_projection(parse_id) {
-            return Some(occ);
+        match self.try_require_spec_projection(parse_id) {
+            SpecBindingLowering::Dropped => {}
+            other => return other,
         }
-        let sym = self.require_spec_binding_sort(parse_id)?;
+        let Some(sym) = self.require_spec_binding_sort(parse_id) else {
+            return SpecBindingLowering::Dropped;
+        };
         if self.parse_arg_type_is_applied(parse_id) {
-            return Some(self.build_require_spec_occurrence(parse_id));
+            return SpecBindingLowering::Lowered(self.build_require_spec_occurrence(parse_id));
         }
         let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
-        Some(NodeOccurrence::new_expr(
+        SpecBindingLowering::Lowered(NodeOccurrence::new_expr(
             Expr::Ref(sym),
             span,
             self.current_owner,
@@ -22098,19 +22134,25 @@ impl<'a> Loader<'a> {
     /// shared with that function because the two differ in the half that matters: this
     /// one resolves its receiver in `rule_param_vars`, which the type ladder never
     /// consults, and admits no other head at all.
-    fn try_require_spec_projection(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
-        let name = self.parse_arg_type_name(parse_id)?;
-        let (root, member) = name.rsplit_once('.')?;
+    fn try_require_spec_projection(&mut self, parse_id: TermId) -> SpecBindingLowering {
+        let Some(name) = self.parse_arg_type_name(parse_id) else {
+            return SpecBindingLowering::Dropped;
+        };
+        let Some((root, member)) = name.rsplit_once('.') else {
+            return SpecBindingLowering::Dropped;
+        };
         // ONE segment before the dot: `p.E`. A compound receiver (`p.f.E`) would need the
         // receiver to be a field-access occurrence over a variable, which nothing
         // downstream reads — left to the drop rule, which reports it by name.
         if root.contains('.') {
-            return None;
+            return SpecBindingLowering::Dropped;
         }
         if !member.chars().next().is_some_and(|c| c.is_uppercase()) {
-            return None;
+            return SpecBindingLowering::Dropped;
         }
-        let vid = *self.rule_param_vars.get(root)?;
+        let Some(&vid) = self.rule_param_vars.get(root) else {
+            return SpecBindingLowering::Dropped;
+        };
         // THE DOTTED NAME MUST NOT ALSO BE A SORT. This rung is asked BEFORE
         // [`Self::require_spec_binding_sort`], so a head parameter whose name happens to
         // match a namespace would capture a qualified sort reference: under
@@ -22122,11 +22164,13 @@ impl<'a> Loader<'a> {
         if self.parse_arg_sort_symbol(&name).is_some() {
             self.errors.push(LoadError::InvalidTypeArgument {
                 detail: format!(
-                    "`{name}` reads two ways here: as a path projection off this clause's                      head parameter `{root}`, and as a qualified sort. Rename the                      parameter, or write the sort under a different prefix"
+                    "`{name}` reads two ways here: as a path projection off this \
+                     clause's head parameter `{root}`, and as a qualified sort. \
+                     Rename the parameter, or write the sort under a different prefix"
                 ),
                 span: Some(self.parsed.terms.span(parse_id)),
             });
-            return None;
+            return SpecBindingLowering::Reported;
         }
         let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
         let member_sym = self.kb.intern(member);
@@ -22166,17 +22210,19 @@ impl<'a> Loader<'a> {
         else {
             self.errors.push(LoadError::InvalidTypeArgument {
                 detail: format!(
-                    "`{root}.{member}` is a path projection, which is lowered through                      `anthill.prelude.TypeExtractor.ExprCarried` — and that name is not                      registered in this knowledge base"
+                    "`{root}.{member}` is a path projection, lowered through \
+                     `anthill.prelude.TypeExtractor.ExprCarried` — and that name is \
+                     not registered in this knowledge base"
                 ),
                 span: Some(self.parsed.terms.span(parse_id)),
             });
-            return None;
+            return SpecBindingLowering::Reported;
         };
         let value_key = self.kb.intern("value");
         let member_key = self.kb.intern("member");
         let recv = NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span, self.current_owner);
         let member_occ = NodeOccurrence::new_expr(Expr::Ref(member_sym), span, self.current_owner);
-        Some(NodeOccurrence::new_expr(
+        SpecBindingLowering::Lowered(NodeOccurrence::new_expr(
             Expr::Apply {
                 recv_type: None,
                 functor: ec_sym,

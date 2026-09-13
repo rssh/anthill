@@ -38,6 +38,16 @@ AXES = {
     "suspend": ("typing.rs",
                 "        None => Err(FindDictOutcome::Suspend),\n    }\n}",
                 "        None => Err(FindDictOutcome::DontFire),\n    }\n}"),
+    # 6. THE EARLY ROUTING — a projected bracket falls back to the WITNESS scans,
+    #    which ground somewhere the bracket never named.
+    "routing": ("typing.rs",
+                "    if spec_arg_has_projection(kb, spec_arg) {",
+                "    if spec_arg_has_projection(kb, spec_arg) && false {"),
+    # 7. THE TRI-STATE — a REPORTED binding falls through to the drop rule, so the
+    #    author gets the accurate error AND the misdiagnosis it replaces.
+    "reported": ("load.rs",
+                 "                SpecBindingLowering::Reported => continue,",
+                 "                SpecBindingLowering::Reported => {}"),
     # 3. THE RUNTIME δ — the member never reaches the guard/fetch, so the carrier
     #    type read is `Box[E = …]` itself rather than its `E`.
     "delta": ("resolve.rs",

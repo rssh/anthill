@@ -386,7 +386,14 @@ fn the_same_call_with_the_requirement_at_the_matching_receiver_answers() {
 // names the split: a flexible projection "arises only where a receiver is a logic
 // variable, i.e. in rule bodies, never in operation signatures".
 //
-// ## THE FIVE AXES AND WHAT EACH BACK-OUT COSTS
+// ## THE SEVEN AXES AND WHAT EACH BACK-OUT COSTS
+//
+// The last two are REPAIRS TO WHAT THIS TICKET SHIPPED, found by `/code-review` after
+// the first commit and measured before they were believed. Both were the same defect
+// seen twice: `anchor_grounding` is consulted LAST, after four witness scans, so every
+// clause carrying a projected bracket AND a covered spec-op call took the witness path
+// — the bracket silently ignored, the member check unreachable, the resolver's δ
+// rewriting the witness call's own argument as though it were the projection root.
 //
 // MEASURED 2026-09-13, each back-out applied by a script that ASSERTS its pattern matched
 // exactly once (`scratchpad/gate1-backout/backout.py`), the tree restored by checksum
@@ -399,6 +406,8 @@ fn the_same_call_with_the_requirement_at_the_matching_receiver_answers() {
 // | the RUNTIME δ (`requirement_projection_member`) | **2** | both LOAD CLEAN and answer WRONGLY — the acceptance drops to no answer, and the spec-bound row stops delaying |
 // | the STATIC MEMBER CHECK | **1** | [`a_member_the_roots_bound_cannot_declare_is_a_LOAD_ERROR`] — a member `Box` cannot declare goes back to loading clean and residualizing, with no diagnostic anywhere |
 // | the SUSPEND ARM (`Suspend` → `DontFire`) | **2** | the two delay rows answer ZERO rows instead of one indefinite one — WI-067's silent drop |
+// | the EARLY ROUTING (`spec_arg_has_projection`) | **2** | a projected bracket falls back to the WITNESS scans: [`a_projected_bracket_beside_a_witness_call_still_anchors`] returns to an INDEFINITE residual and [`a_bogus_member_beside_a_witness_call_is_still_refused`] to a CLEAN LOAD |
+// | the TRI-STATE (`Reported` → `Dropped`) | **1** | [`a_refused_projection_is_reported_once_and_not_twice`] sees the rung's accurate error AND the misdiagnosis it replaces |
 //
 // THE δ AXIS IS WHY THE ACCEPTANCE IS TWO NUMBERS RATHER THAN A CLEAN LOAD: with δ gone
 // the carrier type read at the fetch is the RECEIVER's own type rather than its member,
@@ -537,6 +546,20 @@ fn rows(ns: &str, decl: &str, query: &str) -> Vec<(Value, bool)> {
     crate::common::query_unary(&mut kb, &format!("{ns}.answer"))
 }
 
+/// The raw solution rows of `<ns>.answer` for a source built WHOLE, where [`rows`]
+/// composes the clause and the query itself.
+fn rows_src(src: &str) -> Vec<(Value, bool)> {
+    let ns = src
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix("namespace "))
+        .expect("source must open with a namespace line")
+        .trim()
+        .to_owned();
+    let mut kb = crate::common::load_kb_with(src);
+    crate::common::query_unary(&mut kb, &format!("{ns}.answer"))
+}
+
 fn is_one_residual(got: &[(Value, bool)]) -> bool {
     matches!(got, [(_, false)])
 }
@@ -625,5 +648,103 @@ fn a_spec_bound_keeps_the_runtime_delay() {
     assert!(
         is_one_residual(&got),
         "expected one INDEFINITE row (suspended), got {got:?}",
+    );
+}
+
+/// [`fixture`] with a WITNESS-capable operation added to the spec: `describe(x: T)` has a
+/// spec-carrier parameter, so a call to it grounds the requirement by the WITNESS path —
+/// the path that runs before the anchor one.
+fn fixture_with_witness(ns: &str, tail: &str) -> String {
+    fixture(ns, tail).replace(
+        "operation tag() -> Int64\n  end",
+        "operation tag() -> Int64\n    operation describe(x: T) -> Int64 = 90\n  end",
+    )
+}
+
+#[test]
+fn a_projected_bracket_beside_a_witness_call_still_anchors() {
+    // A PROJECTED BRACKET TAKES THE ANCHOR PATH, AND TAKES IT FIRST — the repair for a
+    // defect this ticket SHIPPED and `/code-review` measured.
+    //
+    // `anchor_grounding` is consulted LAST, after four witness scans, so a clause with
+    // both a projected bracket and a covered spec-op call took the witness path: the
+    // requirement was grounded at the CALL's argument, the author's `p.E` was silently
+    // ignored, and the resolver's δ then rewrote that argument as though it were the
+    // projection root. MEASURED before the repair — the clause below answered
+    // `[(Int(90), false)]`, INDEFINITE, suspending forever, where the concrete-bracket
+    // twin answered a definite `90`. It loaded clean either way.
+    //
+    // BACK-OUT of the early routing (`spec_arg_has_projection` never true): this row goes
+    // back to that indefinite residual, and
+    // [`a_bogus_member_beside_a_witness_call_is_still_refused`] goes back to loading clean.
+    let got = rows_src(&fixture_with_witness(
+        "test.s8cbv.witness.proj",
+        "  rule r(p: Box, ?q, ?res) :- ?d = require[Desc[T = p.E]], Desc.describe(?q, ?res)\n  \
+         rule answer(?r) :- r(box(v: red()), blue(), ?r)\n",
+    ));
+    assert!(
+        matches!(got.as_slice(), [(Value::Int(90), true)]),
+        "expected a DEFINITE answer, got {got:?}",
+    );
+}
+
+#[test]
+fn the_control_a_concrete_bracket_beside_a_witness_call_is_unchanged() {
+    // WHAT SAYS THE ROW ABOVE IS ABOUT THE PROJECTION and not about the witness path in
+    // general: the same clause with a CONCRETE bracket answered a definite `90` both
+    // before and after the repair. PASSES EITHER WAY BY DESIGN.
+    let got = rows_src(&fixture_with_witness(
+        "test.s8cbv.witness.concrete",
+        "  rule r(p: Box, ?q, ?res) :- ?d = require[Desc[T = Red]], Desc.describe(?q, ?res)\n  \
+         rule answer(?r) :- r(box(v: red()), blue(), ?r)\n",
+    ));
+    assert!(
+        matches!(got.as_slice(), [(Value::Int(90), true)]),
+        "expected a DEFINITE answer, got {got:?}",
+    );
+}
+
+#[test]
+fn a_bogus_member_beside_a_witness_call_is_still_refused() {
+    // THE STATIC MEMBER CHECK REACHES A CLAUSE THAT HAS A WITNESS. It lives inside
+    // `anchor_grounding`, so before the early routing above it was unreachable whenever
+    // any covered call existed — MEASURED: `require[Desc[T = p.Zork]]` beside
+    // `Desc.describe(...)` LOADED CLEAN and residualized, exactly the silent failure
+    // [`a_member_the_roots_bound_cannot_declare_is_a_LOAD_ERROR`] was added to remove,
+    // while its witness-free twin was refused. One check, two clauses, two verdicts.
+    let errs = refusal(&fixture_with_witness(
+        "test.s8cbv.witness.bogus",
+        "  rule r(p: Box, ?q, ?res) :- ?d = require[Desc[T = p.Zork]], Desc.describe(?q, ?res)\n  \
+         rule answer(?r) :- r(box(v: red()), blue(), ?r)\n",
+    ));
+    assert!(
+        errs.contains("Zork") && errs.contains("declares E"),
+        "got:\n{errs}",
+    );
+}
+
+#[test]
+fn a_refused_projection_is_reported_once_and_not_twice() {
+    // ONE BINDING, ONE DIAGNOSTIC. The projection rung reports its own located error and
+    // then has to tell its caller so — `SpecBindingLowering::Reported`, distinct from
+    // `Dropped`. With a bare `Option` both callers ALSO ran `report_dropped_spec_binding`
+    // and the author got the accurate message followed by the very misdiagnosis the rung
+    // exists to prevent (`/code-review`).
+    //
+    // Driven through the AMBIGUITY refusal, which is the reachable `Reported` arm: a head
+    // parameter named like a namespace makes `mylib.Thing` read two ways.
+    let errs = refusal(
+        "namespace mylib\n  import anthill.prelude.Int64\n  sort Thing\n    entity thing\n  end\n\
+         \n  sort Desc\n    sort T = ?\n    operation tag() -> Int64\n  end\n\
+         \n  sort Foo\n    entity foo\n  end\n\
+         \n  rule r(mylib: Foo, ?res) :- ?d = require[Desc[T = mylib.Thing]], Desc.tag(?res)\nend\n",
+    );
+    assert!(
+        errs.contains("reads two ways here"),
+        "expected the ambiguity refusal; got:\n{errs}",
+    );
+    assert!(
+        !errs.contains("names neither a sort nor"),
+        "the drop rule must NOT speak over the rung's own error; got:\n{errs}",
     );
 }
