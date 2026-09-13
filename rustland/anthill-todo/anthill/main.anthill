@@ -2535,10 +2535,27 @@ namespace anthill.todo
     -- legacy `print_tree` exactly: connector is "" at the root, "├─ "
     -- for non-last siblings, "└─ " for last; child_prefix continues
     -- with "│  " or "   " depending on whether `is_last` was true.
+    -- `seen` is the PATH from the root to this node, and re-entering a node
+    -- already on that path is where a corrupt cyclic store used to spin
+    -- forever. The two sibling walks over this same `dep_map` already guard
+    -- (`row_reaches`, `reaches_dep` -- "a corrupt cyclic store must not hang
+    -- the CLI"); this one did not, and `list` answering correctly on the same
+    -- data left nothing to hint the store was the problem.
+    --
+    -- PATH-LOCAL, NOT GLOBAL, and the golden transcript is why: a DAG diamond
+    -- must still render under BOTH parents (`WI-003` appears under `WI-002`
+    -- AND under `WI-004`). A global visited set would break the cycle just as
+    -- well and silently DELETE the second rendering -- a correct-looking tree
+    -- that is missing a branch.
+    --
+    -- A cycle is MARKED, NOT SKIPPED: the node prints with `(cycle)` and the
+    -- descent stops there. Truncating silently would render a corrupt store as
+    -- a well-formed tree.
     operation print_tree(id: String,
                          is_root: Bool,
                          is_last: Bool,
                          prefix: String,
+                         seen: List[String],
                          row_map: Map[String, Row],
                          dep_map: Map[String, List[String]])
       -> Unit
@@ -2549,19 +2566,25 @@ namespace anthill.todo
         else if is_last then "└─ "
         else "├─ "
       let status = status_or_unknown(row_map, id)
+      let cycle = list_contains_string(seen, id)
+      let marker = if cycle then " (cycle)" else ""
       let _ = println(console(),
                       concat(prefix,
                         concat(connector,
-                          concat(id, concat(" [", concat(status, "]"))))))
-      let child_prefix =
-        if is_root then "   "
-        else if is_last then concat(prefix, "   ")
-        else concat(prefix, "│  ")
-      let children = direct_dependents_m(dep_map, id)
-      print_children(children, child_prefix, row_map, dep_map)
+                          concat(id,
+                            concat(" [", concat(status, concat("]", marker)))))))
+      if cycle then ()
+      else
+        let child_prefix =
+          if is_root then "   "
+          else if is_last then concat(prefix, "   ")
+          else concat(prefix, "│  ")
+        let children = direct_dependents_m(dep_map, id)
+        print_children(children, child_prefix, cons(id, seen), row_map, dep_map)
 
     operation print_children(children: List[String],
                              prefix: String,
+                             seen: List[String],
                              row_map: Map[String, Row],
                              dep_map: Map[String, List[String]])
       -> Unit
@@ -2573,8 +2596,8 @@ namespace anthill.todo
           let last = match rest
             case nil() -> true
             case cons(_, _) -> false
-          let _ = print_tree(c, false, last, prefix, row_map, dep_map)
-          print_children(rest, prefix, row_map, dep_map)
+          let _ = print_tree(c, false, last, prefix, seen, row_map, dep_map)
+          print_children(rest, prefix, seen, row_map, dep_map)
 
     operation print_roots(roots: List[Row],
                           row_map: Map[String, Row],
@@ -2587,7 +2610,7 @@ namespace anthill.todo
         case cons(r, rest) ->
           match r
             case Row(rid, _, _, _, _, _, _) ->
-              let _ = print_tree(rid, true, true, "", row_map, dep_map)
+              let _ = print_tree(rid, true, true, "", nil(), row_map, dep_map)
               print_roots(rest, row_map, dep_map)
 
     operation cmd_graph(s: Cell[State]) -> Int64
