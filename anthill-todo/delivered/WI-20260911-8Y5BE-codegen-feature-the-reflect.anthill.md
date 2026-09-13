@@ -42,3 +42,15 @@ THE RIPPLE, measured: a bare 'effects Error' row does NOT admit Error[ResolveStr
 
 LEFT OPEN, not fixed: the INTERPRETER face never produces this payload - kb_execute maps a lowering failure to EvalError::Internal and stream_split_first's PumpResolver ignores rest.errors(), so a faulted goal still arrives there as an undecided row. The declaration describes the host bridge exactly and the interpreter face as an upper bound. The codegen strip keys on the short name 'Error', like the file's List/Option mappings.
 
+### 2026-09-13T12:54:28Z — feedback — claude
+
+CLOSED THE 'LEFT OPEN' NOTE ABOVE - the interpreter face now produces the payload, and the fault check moved to the resolver's door.
+
+SearchStream::split_first returns Result<Option<(Solution, SearchStream)>, SearchFault>: a recorded FAULT wins at a yield and at EXHAUSTION, so a fault on a branch that yielded nothing is reported instead of an empty result (the bridge row that pinned Ok(None) now asserts the Err). The public errors() accessor is gone; every consumer gets the fault from the Err.
+
+FAULTS ARE NOT ALL ERRORS: SearchStream keeps faults (record_error, absorb_reduce_faults, and a NAF sub-search's faults when not(P) stays undecided) apart from diagnostics (step_naf's fold on the DEFINITE path). Reporting every error failed a decided negation, order-dependently - found by /code-review, driven by a_decided_negation_over_a_faulted_subsearch_is_not_a_fault.
+
+INTERPRETER: both resolver pumps (execute and the RELATION face) raise evaluation_failure through the Error effect and park the slot as StreamSource::Faulted, so a pull after a caught fault is stream_misused, not none(). The relation face used to raise relation_floundered for a faulted goal. KB.execute and Relation.splitFirst raise malformed_query / unsupported_operation (NotYetImplemented) for a query that does not lower, via one raise_query_lowering. The bridge adapter refuses take_n / exists / is_empty after a fault too.
+
+STILL OPEN, stated not fixed: a lazy search TRUNCATED at its depth cap with no fault ends Ok(None) - WI-628's incompleteness channel, which the lazy faces do not carry. Verified: full workspace 6066 passed / 0 failed, scaland 573+35+1.
+

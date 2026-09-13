@@ -463,11 +463,19 @@ namespace anthill.reflect
   -- Carried by `Error` on `execute` below; lives here for the reason `LoadFailed` does.
   --
   -- FOUR VARIANTS FROM A CENSUS of the host bridge's raise sites, not a guess. Three
-  -- are CALLER bugs — a query this face cannot lower, an operation it does not
-  -- implement, a stream used after it was spent — and carry `detail` as prose: the
-  -- variant is what a handler branches on, the text is for a human. A two-variant
-  -- split was rejected because those three would need a string catch-all, which puts
-  -- back the stringly-typed payload this sort replaces.
+  -- carry `detail` as prose — the variant is what a handler branches on, the text is
+  -- for a human: `malformed_query` (a query that does not lower) and `stream_misused`
+  -- (a stream pulled after it was spent, or after it faulted) are CALLER bugs;
+  -- `unsupported_operation` is a GAP in the face — a well-formed query or stream
+  -- operation it has not implemented — which the caller cannot fix by rewriting. A
+  -- two-variant split was rejected because those three would need a string catch-all,
+  -- which puts back the stringly-typed payload this sort replaces.
+  --
+  -- BOTH FACES PRODUCE IT: the host bridge (`anthill-stl`) and the interpreter's own
+  -- `execute` stream. `evaluation_failure` is reported by the resolver itself
+  -- (`SearchStream::split_first`) on BOTH exits of a pull — winning over the answer it
+  -- would have yielded, and over the empty result at exhaustion — so a fault on a branch
+  -- that yielded nothing is not lost. A pull after a fault is `stream_misused`.
   --
   -- `evaluation_failure` is the one about the query's OWN execution: a goal the search
   -- could not ASK (an ill-typed comparison, a bridged operation that raised). It is
@@ -478,10 +486,9 @@ namespace anthill.reflect
   --   * `at` — the goal being stepped when that fault was recorded, as an occurrence
   --     (inspect it with `occurrence_span`). ABSENT, not zero-spanned, when that goal
   --     carries no source position — a goal rebuilt by substitution has none.
-  --   * `goals` — the residual of the pull that reported it, which is not handed out
-  --     as a row. Usually it holds the faulted goal (a faulted goal residualizes), but a
-  --     fault from an earlier branch that yielded nothing surfaces on the next pull that
-  --     yields at all, and that pull's residual may be empty.
+  --   * `goals` — the residual of the answer the fault displaced, which is not handed
+  --     out as a row. Usually it holds the faulted goal (a faulted goal residualizes);
+  --     EMPTY when the fault surfaced at exhaustion or displaced a definite answer.
   enum ResolveStreamFailure
     import anthill.prelude.{List, Option, String}
     entity malformed_query(detail: String)

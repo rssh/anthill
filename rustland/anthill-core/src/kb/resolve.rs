@@ -327,6 +327,20 @@ pub struct ResolveError {
     pub at: Option<Rc<NodeOccurrence>>,
 }
 
+/// WI-20260911-8Y5BE — what [`SearchStream::split_first`] returns in place of an
+/// answer when the search has recorded a FAULT: the search could not ask part of the
+/// query, so neither the answer it was about to yield nor an empty result is true.
+#[derive(Debug)]
+pub struct SearchFault {
+    /// The FIRST fault the search recorded. The list is cumulative across the search,
+    /// so this may come from an earlier branch than the answer it displaced.
+    pub error: ResolveError,
+    /// The residual of the answer the fault won over — usually holding the faulted
+    /// goal, since a faulted goal residualizes. EMPTY when the fault surfaced at
+    /// exhaustion, or displaced a definite answer.
+    pub residual: Vec<Value>,
+}
+
 impl ResolveError {
     /// A fault not yet located — see [`Self::at`].
     pub(crate) fn new(message: String) -> Self {
@@ -1115,8 +1129,9 @@ pub struct ResolveStats {
     /// stream-level [`SearchStream::truncated`] flag, snapshotted at drain time.
     pub truncated: bool,
     /// Faults the search detected ([`ResolveError`]) — empty for a healthy resolution.
-    /// Snapshotted from [`SearchStream::errors`] at drain, beside `truncated` and for
-    /// the same reason: `resolve` has no `Err` channel to return them on.
+    /// Snapshotted from the stream's own list at drain, beside `truncated` and for the
+    /// same reason: `resolve` has no `Err` channel to return them on. A lazy consumer
+    /// gets the faults from [`SearchStream::split_first`]'s `Err` instead.
     pub errors: Vec<ResolveError>,
 }
 
@@ -1190,6 +1205,18 @@ pub struct SearchStream {
     /// volume problem that motivated the process-wide set (31 lines for a four-fact
     /// self-join, O(N²) in the extent) is handled by deduping on push instead.
     errors: Vec<ResolveError>,
+    /// WI-20260911-8Y5BE — the subset of [`Self::errors`] that left this search unable
+    /// to ANSWER, which [`Self::split_first`] reports in place of an answer.
+    ///
+    /// A SEPARATE LIST, because `errors` also carries DIAGNOSTICS that decided nothing:
+    /// `step_naf` folds a sub-search's faults up on the DEFINITE path, where `not(P)`
+    /// failed because a later candidate PROVED `P` — a complete answer, which
+    /// [`Self::note_error`] records without a completeness claim. Reporting those as
+    /// faults failed a decided query, and only when the faulting clause happened to be
+    /// tried first (found by `/code-review`). What lands here is what also sets
+    /// `truncated`: [`Self::record_error`], [`Self::absorb_reduce_faults`], and a NAF
+    /// sub-search's faults when `not(P)` came out undecided.
+    faults: Vec<ResolveError>,
 }
 
 /// WI-628 — the three-way verdict of draining a CLOSED sub-resolution (see
@@ -1226,6 +1253,10 @@ struct DrainVerdict {
     /// reported `ensures not(gt(x, 1))` with the generic "left UNDISCHARGED / bind what
     /// it waits on" wording, naming a repair that does not exist.
     errors: Vec<ResolveError>,
+    /// WI-20260911-8Y5BE — the sub-search's [`SearchStream::faults`], the subset of
+    /// `errors` that stopped it answering. `step_naf` promotes these, not `errors`,
+    /// into the outer search's faults when `not(P)` comes out undecided.
+    faults: Vec<ResolveError>,
 }
 
 /// WI-1044 — what [`KnowledgeBase::classify_unstamped_spec_op_call`] did, as the
@@ -1286,6 +1317,7 @@ impl SearchStream {
     /// hold nothing, and one or two entries at worst.
     fn record_error(&mut self, err: ResolveError) {
         self.truncated = true;
+        ResolveError::push_deduped(&mut self.faults, err.clone());
         self.note_error(err);
     }
 
@@ -1328,6 +1360,7 @@ impl SearchStream {
     /// `goal` is the goal being stepped, which locates each fault (WI-20260911-8Y5BE).
     fn absorb_reduce_faults(
         errors: &mut Vec<ResolveError>,
+        stream_faults: &mut Vec<ResolveError>,
         truncated: &mut bool,
         faults: ReduceFaults,
         goal: &Value,
@@ -1336,22 +1369,63 @@ impl SearchStream {
         for err in faults.errors {
             // Deduped on push, exactly as `note_error` does and for the same reason: a
             // self-joined extent reaches one faulting operand once per candidate PAIR.
-            ResolveError::push_deduped(errors, err.located_at(goal));
+            let err = err.located_at(goal);
+            ResolveError::push_deduped(stream_faults, err.clone());
+            ResolveError::push_deduped(errors, err);
         }
     }
 
-    /// Yield the next solution, consuming self and returning the
-    /// continuation stream. Returns `None` when exhausted.
-    pub fn split_first(mut self, kb: &mut KnowledgeBase) -> Option<(Solution, SearchStream)> {
+    /// Yield the next solution, consuming self and returning the continuation stream.
+    /// `Ok(None)` when exhausted.
+    ///
+    /// WI-20260911-8Y5BE — `Err` WHEN THE SEARCH HAS RECORDED A FAULT ([`Self::faults`]),
+    /// on BOTH exits: at a yield the fault wins over the answer, and at exhaustion it is
+    /// reported instead of an empty result. Every consumer of a lazy search is a stream
+    /// face that must not hand a faulted search back as ordinary rows (`undecided` for a
+    /// goal that could not be ASKED) or as an empty result.
+    ///
+    /// WHAT IT DOES NOT REPORT: a search TRUNCATED at its depth cap with no fault still
+    /// ends `Ok(None)`. That is WI-628's incompleteness channel, which the lazy faces do
+    /// not yet carry; it is not a fault.
+    ///
+    /// AT THIS DOOR AND NOT PER CONSUMER, because per consumer is how it went wrong:
+    /// the host bridge checked in three places and the interpreter's relation pump in
+    /// none, and no consumer could see a fault recorded on a branch that yielded
+    /// nothing — this method consumed the stream on exhaustion and dropped `errors`
+    /// with it. The eager drains that want the rows and the faults side by side
+    /// (`drain_verdict`, `ResolveStats`) step the stream themselves.
+    pub fn split_first(
+        mut self,
+        kb: &mut KnowledgeBase,
+    ) -> Result<Option<(Solution, SearchStream)>, SearchFault> {
         loop {
             if self.stack.is_empty() {
-                return None;
+                return self.exhausted();
             }
             match self.step(kb) {
                 Some(StepResult::Continue) => continue,
-                Some(StepResult::YieldSolution(sol)) => return Some((sol, self)),
-                None => return None,
+                Some(StepResult::YieldSolution(sol)) => {
+                    return match self.faults.first() {
+                        Some(error) => Err(SearchFault {
+                            error: error.clone(),
+                            residual: sol.residual,
+                        }),
+                        None => Ok(Some((sol, self))),
+                    };
+                }
+                None => return self.exhausted(),
             }
+        }
+    }
+
+    /// The exhaustion exit of [`Self::split_first`]: the first recorded fault, or none.
+    fn exhausted(self) -> Result<Option<(Solution, SearchStream)>, SearchFault> {
+        match self.faults.into_iter().next() {
+            Some(error) => Err(SearchFault {
+                error,
+                residual: Vec::new(),
+            }),
+            None => Ok(None),
         }
     }
 
@@ -1396,6 +1470,7 @@ impl SearchStream {
             truncated: self.truncated,
             undecided,
             errors: self.errors.clone(),
+            faults: self.faults.clone(),
         }
     }
 
@@ -1438,17 +1513,6 @@ impl SearchStream {
         (solutions, stats)
     }
 
-    /// Faults this search has reported so far ([`ResolveError`]) — empty for a healthy
-    /// resolution.
-    ///
-    /// FOR THE LAZY CONSUMERS, which is the whole reason it is public. `ResolveStats`
-    /// carries the same list, but only `drain_all` produces stats, so a caller that
-    /// pulls with [`Self::split_first`] never sees one — the WI-628 note on `drain_all`
-    /// records the same property for `truncated`. A streaming face reads it here
-    /// instead, off the continuation it is handed.
-    pub fn errors(&self) -> &[ResolveError] {
-        &self.errors
-    }
 
     /// Check if the stream is obviously exhausted (empty stack).
     pub fn is_empty(&self) -> bool {
@@ -2034,6 +2098,7 @@ impl SearchStream {
             if !faults.is_empty() {
                 Self::absorb_reduce_faults(
                     &mut self.errors,
+                    &mut self.faults,
                     &mut self.truncated,
                     faults,
                     &goal_val,
@@ -2614,6 +2679,7 @@ impl SearchStream {
                                 if !faults.is_empty() {
                                     Self::absorb_reduce_faults(
                                         &mut self.errors,
+                                        &mut self.faults,
                                         &mut self.truncated,
                                         faults,
                                         &goal_val,
@@ -4111,6 +4177,13 @@ impl SearchStream {
                 // onto the returned stats. (Fold only `truncated`, not `residual`:
                 // a flounder is surfaced as its own residual `not(P)`, below.)
                 self.truncated |= v.truncated;
+                // WI-20260911-8Y5BE — and HERE the sub-search's faults are faults of this
+                // search too: `not(P)` is undecided, so the goal they stopped is one this
+                // search could not answer. (On the definite path above they stay
+                // diagnostics — see [`Self::faults`].)
+                for err in v.faults.iter().cloned() {
+                    ResolveError::push_deduped(&mut self.faults, err);
+                }
                 //
                 // WI-629: but the frame may still hold TAIL goals. Yielding a bare
                 // `residual:[not(P)]` here DROPS `goals[1..]` — the conjunction
@@ -5203,6 +5276,7 @@ impl KnowledgeBase {
             cut_cache: HashMap::new(),
             truncated: false,
             errors: Vec::new(),
+            faults: Vec::new(),
         }
     }
 
@@ -15603,17 +15677,17 @@ mod tests {
         assert!(!stream.is_empty());
 
         let (sol1, stream) = stream
-            .split_first(&mut kb)
+            .split_first(&mut kb).expect("the search records no fault")
             .expect("should have first solution");
         assert!(sol1.residual.is_empty());
 
         let (sol2, stream) = stream
-            .split_first(&mut kb)
+            .split_first(&mut kb).expect("the search records no fault")
             .expect("should have second solution");
         assert!(sol2.residual.is_empty());
 
         // Exhausted
-        assert!(stream.split_first(&mut kb).is_none());
+        assert!(stream.split_first(&mut kb).expect("the search records no fault").is_none());
     }
 
     #[test]
@@ -15646,8 +15720,8 @@ mod tests {
         let config = ResolveConfig::default();
         let stream = kb.resolve_lazy(&[goal], &config);
 
-        let (_, stream) = stream.split_first(&mut kb).expect("sol 1");
-        let (_, stream) = stream.split_first(&mut kb).expect("sol 2");
+        let (_, stream) = stream.split_first(&mut kb).expect("the search records no fault").expect("sol 1");
+        let (_, stream) = stream.split_first(&mut kb).expect("the search records no fault").expect("sol 2");
 
         // Stream should still have more solutions
         assert!(!stream.is_empty());
@@ -15667,7 +15741,7 @@ mod tests {
 
         let config = ResolveConfig::default();
         let stream = kb.resolve_lazy(&[goal], &config);
-        assert!(stream.split_first(&mut kb).is_none());
+        assert!(stream.split_first(&mut kb).expect("the search records no fault").is_none());
     }
 
     #[test]
@@ -15689,12 +15763,12 @@ mod tests {
         let config = ResolveConfig::default();
         let stream = kb.resolve_lazy(&[goal], &config);
 
-        let (sol, stream) = stream.split_first(&mut kb).expect("should residualize");
+        let (sol, stream) = stream.split_first(&mut kb).expect("the search records no fault").expect("should residualize");
         assert_eq!(sol.residual.len(), 1);
         assert_eq!(sol.residual[0].expect_term(), goal);
 
         // No more solutions
-        assert!(stream.split_first(&mut kb).is_none());
+        assert!(stream.split_first(&mut kb).expect("the search records no fault").is_none());
     }
 
     #[test]
@@ -15792,10 +15866,10 @@ mod tests {
         };
         let stream = kb.resolve_lazy(&[goal], &config);
 
-        let (sol1, stream) = stream.split_first(&mut kb).expect("first ancestor");
+        let (sol1, stream) = stream.split_first(&mut kb).expect("the search records no fault").expect("first ancestor");
         let r1 = kb.reify(var_w, &sol1.subst).expect_term();
 
-        let (sol2, stream) = stream.split_first(&mut kb).expect("second ancestor");
+        let (sol2, stream) = stream.split_first(&mut kb).expect("the search records no fault").expect("second ancestor");
         let r2 = kb.reify(var_w, &sol2.subst).expect_term();
 
         // Should find bob and charlie (in some order)
@@ -15805,7 +15879,7 @@ mod tests {
         assert!(results.contains(&charlie));
 
         // No more solutions
-        assert!(stream.split_first(&mut kb).is_none());
+        assert!(stream.split_first(&mut kb).expect("the search records no fault").is_none());
     }
 
     // ── Symbol builtin tests ──────────────────────────────────────

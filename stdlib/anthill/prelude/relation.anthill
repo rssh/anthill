@@ -35,6 +35,11 @@
 -- rules remain the SLD-world specification. `splitFirst` is still the one
 -- lazy primitive — the bodies above are single peels of it.)
 --
+-- A FAULTED search RAISES too, and not as a flounder (WI-20260911-8Y5BE): a goal the
+-- search could not ASK (an ill-typed comparison, a bridged operation that raised) is
+-- `Error[ResolveStreamFailure]`'s `evaluation_failure`, the same payload `KB.execute`
+-- raises — "never decided" would misreport a goal that was never evaluated.
+--
 -- A FLOUNDERED answer RAISES rather than yielding a row (WI-737): if the search
 -- delayed a goal on variables that never got bound, it never DECIDED, and there is
 -- no honest `T` for that answer — a materialized row would hold a logic variable in

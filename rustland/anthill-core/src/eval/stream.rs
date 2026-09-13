@@ -84,6 +84,10 @@ pub enum StreamSource {
     },
     /// No solutions.
     Empty,
+    /// WI-20260911-8Y5BE — a resolver search that reported a FAULT. Not `Empty`: a pull
+    /// is refused (`stream_misused`) rather than answered as the end of the stream,
+    /// because the rows already consumed are not a complete answer set.
+    Faulted,
     /// Exactly one solution — the contained `Value`.
     Pure(Option<Value>),
     /// Concatenation: drain `left` first, then `right`.

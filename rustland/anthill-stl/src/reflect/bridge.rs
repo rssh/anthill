@@ -552,6 +552,12 @@ impl KbBridge {
 struct SearchStreamAdapter {
     inner: RefCell<Option<SearchStream>>,
     kb: Rc<RefCell<KnowledgeBase>>,
+    /// WI-20260911-8Y5BE — a pull on this adapter reported a fault. `inner` is `None`
+    /// afterwards, which on its own reads as an ENDED stream to `take_n` / `exists` /
+    /// `is_empty` (`Ok([])`, `Ok(false)`, `Ok(true)`), an apparently complete answer set
+    /// after a caught fault. Found by `/code-review`; every direct reader refuses on it
+    /// with `stream_misused`, as the interpreter's `Faulted` slot does.
+    faulted: std::cell::Cell<bool>,
 }
 
 impl SearchStreamAdapter {
@@ -585,28 +591,36 @@ impl SearchStreamAdapter {
 }
 
 impl SearchStreamAdapter {
-    /// The pull's `evaluation_failure`, when the search has recorded a fault by the time
-    /// it yielded `sol` — the ONE check every consuming pull makes (`split_first`,
-    /// `take_n`, `exists`), so no drain can hand a faulted search back as ordinary rows.
+    /// The declared `evaluation_failure` for a search that reported a FAULT — what every
+    /// consuming pull (`split_first`, `take_n`, `exists`) maps the resolver's
+    /// [`SearchFault`](anthill_core::kb::resolve::SearchFault) to, so no drain can hand a
+    /// faulted search back as ordinary rows.
     ///
     /// `reason` and `at` are the search's FIRST recorded fault, and the fault list is
-    /// cumulative across the whole search; `goals` is THIS pull's residual. The two
-    /// usually describe one goal — a faulted goal residualizes, so the pull that reports
-    /// it holds it — but not always: a fault recorded on an earlier branch that yielded
-    /// nothing surfaces on the next pull that yields at all, whose residual may be empty.
-    fn fault_of(
-        sol: &anthill_core::kb::resolve::Solution,
-        rest: &SearchStream,
-    ) -> Option<ResolveStreamFailure> {
-        let err = rest.errors().first()?;
-        Some(ResolveStreamFailure::EvaluationFailure {
-            goals: sol.residual.iter().cloned().map(rterm).collect(),
-            reason: err.message.clone(),
-            at: err
+    /// cumulative across the whole search; `goals` is the residual of the answer the
+    /// fault displaced. The two usually describe one goal — a faulted goal residualizes —
+    /// but not always: a fault from an earlier branch that yielded nothing surfaces on the
+    /// next yield or at exhaustion, where `goals` may be empty.
+    fn failure(&self, fault: anthill_core::kb::resolve::SearchFault) -> ResolveStreamFailure {
+        self.faulted.set(true);
+        ResolveStreamFailure::EvaluationFailure {
+            goals: fault.residual.into_iter().map(rterm).collect(),
+            reason: fault.error.message,
+            at: fault
+                .error
                 .at
-                .as_ref()
-                .map(|occ| ReflectNodeOccurrence::new(Value::Node(Rc::clone(occ)))),
-        })
+                .map(|occ| ReflectNodeOccurrence::new(Value::Node(occ))),
+        }
+    }
+
+    /// `stream_misused` when a pull on this adapter already faulted — see `faulted`.
+    fn refuse_if_faulted(&self) -> Result<(), ResolveStreamFailure> {
+        if self.faulted.get() {
+            return Err(ResolveStreamFailure::StreamMisused {
+                detail: "a pull on a stream whose search already faulted".into(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -617,6 +631,7 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
         Option<(Solution, Box<dyn Stream<Solution, ResolveStreamFailure>>)>,
         ResolveStreamFailure,
     > {
+        self.refuse_if_faulted()?;
         let stream = self.inner.borrow_mut().take().ok_or_else(|| {
             ResolveStreamFailure::StreamMisused {
                 detail: "stream already consumed".into(),
@@ -627,58 +642,38 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
             stream.split_first(&mut kb)
         };
         match result {
-            Some((sol, rest)) => {
-                // A FAULT TAKES THE `Err` ARM — the `Error` effect `execute` declares
-                // (`E = Error[ResolveStreamFailure]`), which this `Result` IS. Checked
-                // BEFORE the row is built, and it wins over it.
-                //
-                // WHY IT WINS. A faulted goal residualizes, so this pull is holding an
-                // `undecided(subst, residual)` row. Handing that over while dropping the
-                // fault tells the consumer "this goal has no answer" — a legitimate third
-                // outcome — when the truth is the goal could not be ASKED. That is the
-                // conflation this whole channel exists to end, reappearing on the reflect
-                // face. `undecided` is for goals genuinely not decided; it is not for
-                // goals that were never evaluated.
-                //
-                // NOT A NEW `Solution` VARIANT, considered and rejected: putting
-                // `faulted` beside `definite`/`undecided` would claim a fault is a kind
-                // of ANSWER. WI-519 keeps undecidedness as data because a self-hosted
-                // resolver must inspect which goals stayed pending — that argument is
-                // about an answer-shaped outcome and does not reach an error.
-                //
-                // The row is not handed out, but its residual is not lost: it rides in
-                // the payload as `goals` (WI-20260911-8Y5BE, see `fault_of`). The
-                // continuation is deliberately not stored — the stream is in a faulted
-                // state, so a caller that catches and pulls again gets the "already
-                // consumed" refusal rather than more rows from a search whose premise
-                // failed.
-                if let Some(failure) = Self::fault_of(&sol, &rest) {
-                    return Err(failure);
-                }
+            // A FAULT TAKES THE `Err` ARM — the `Error` effect `execute` declares
+            // (`E = Error[ResolveStreamFailure]`), which this `Result` IS. The resolver
+            // reports it on BOTH exits (`SearchStream::split_first`): at a yield it wins
+            // over the row, and at exhaustion it wins over the empty result.
+            //
+            // WHY IT WINS. A faulted goal residualizes, so the pull it displaces holds an
+            // `undecided(subst, residual)` row. Handing that over while dropping the fault
+            // tells the consumer "this goal has no answer" — a legitimate third outcome —
+            // when the truth is the goal could not be ASKED; and an empty result would
+            // call a search with an un-evaluated branch complete.
+            //
+            // NOT A NEW `Solution` VARIANT, considered and rejected: putting `faulted`
+            // beside `definite`/`undecided` would claim a fault is a kind of ANSWER. WI-519
+            // keeps undecidedness as data because a self-hosted resolver must inspect which
+            // goals stayed pending — that argument is about an answer-shaped outcome and
+            // does not reach an error.
+            //
+            // The displaced row's residual rides in the payload as `goals`. No continuation
+            // is stored, so a caller that catches and pulls again gets the "already
+            // consumed" refusal rather than more rows from a search whose premise failed.
+            Err(fault) => Err(self.failure(fault)),
+            Ok(Some((sol, rest))) => {
                 let elem = self.make_solution(sol);
                 let cont: Box<dyn Stream<Solution, ResolveStreamFailure>> =
                     Box::new(SearchStreamAdapter {
                         inner: RefCell::new(Some(rest)),
                         kb: Rc::clone(&self.kb),
+                        faulted: std::cell::Cell::new(false),
                     });
                 Ok(Some((elem, cont)))
             }
-            // EXHAUSTION DROPS THE STREAM, so a fault recorded on a branch that yielded
-            // NOTHING is not visible here — `split_first` takes `self` by value and
-            // returns no continuation on this path.
-            //
-            // THIS USED TO SAY "reachable only under `definite_only`, … so every fault
-            // reaches the arm above", AND THAT IS FALSE (WI-20260911-0V0F7, measured).
-            // A branch can fault and still yield nothing with `definite_only` OFF: the
-            // WI-938 relational hook falls through to ordinary candidate selection when
-            // the reduction is undecided, so `rule bad :- rank(green(), 1)` over a
-            // raising `rank` FAILS the branch instead of residualizing. Since a bridged
-            // raise became a fault, that is an ordinary program rather than a corner.
-            // Closing it needs `SearchStream::split_first` to hand the exhausted stream
-            // back — a signature change on the resolver's public door, since `step` is
-            // private to that module. Pinned by
-            // `a_fault_on_a_branch_that_yielded_nothing_is_invisible_here`.
-            None => Ok(None),
+            Ok(None) => Ok(None),
         }
     }
 
@@ -710,11 +705,13 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
             None => Ok(Box::new(SearchStreamAdapter {
                 inner: RefCell::new(None),
                 kb: Rc::clone(&self.kb),
+                faulted: std::cell::Cell::new(false),
             })),
         }
     }
 
     fn take_n(&self, n: i64) -> Result<Vec<Solution>, ResolveStreamFailure> {
+        self.refuse_if_faulted()?;
         let mut results = Vec::new();
         let mut current = self.inner.borrow_mut().take();
         for _ in 0..n {
@@ -726,16 +723,14 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
                 None => break,
             };
             match next {
-                Some((sol, rest)) => {
-                    // A fault ends the drain loudly, as it does at `split_first`; the
-                    // continuation is not put back (`current` is `None` here).
-                    if let Some(failure) = Self::fault_of(&sol, &rest) {
-                        return Err(failure);
-                    }
+                // A fault ends the drain loudly, as it does at `split_first`; the
+                // continuation is not put back (`current` is `None` here).
+                Err(fault) => return Err(self.failure(fault)),
+                Ok(Some((sol, rest))) => {
                     results.push(self.make_solution(sol));
                     current = Some(rest);
                 }
-                None => break,
+                Ok(None) => break,
             }
         }
         *self.inner.borrow_mut() = current;
@@ -743,6 +738,7 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
     }
 
     fn is_empty(&self) -> Result<bool, ResolveStreamFailure> {
+        self.refuse_if_faulted()?;
         let inner = self.inner.borrow();
         match inner.as_ref() {
             Some(s) => Ok(s.is_empty()),
@@ -761,6 +757,7 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
         // `bool`, so consuming each element as it is tested costs nothing.
         //
         // Consumes the stream, like `take_n` above; short-circuits on the first hit.
+        self.refuse_if_faulted()?;
         let mut current = self.inner.borrow_mut().take();
         loop {
             let next = match current.take() {
@@ -771,16 +768,14 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
                 None => break,
             };
             match next {
-                Some((sol, rest)) => {
-                    if let Some(failure) = Self::fault_of(&sol, &rest) {
-                        return Err(failure);
-                    }
+                Err(fault) => return Err(self.failure(fault)),
+                Ok(Some((sol, rest))) => {
                     if pred(self.make_solution(sol)) {
                         return Ok(true);
                     }
                     current = Some(rest);
                 }
-                None => break,
+                Ok(None) => break,
             }
         }
         Ok(false)
@@ -807,6 +802,8 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
         Box::new(SearchStreamAdapter {
             inner: RefCell::new(self.inner.borrow_mut().take()),
             kb: Rc::clone(&self.kb),
+            // The fault travels with the state handed over.
+            faulted: std::cell::Cell::new(self.faulted.get()),
         })
     }
 }
@@ -1026,6 +1023,7 @@ impl KB for KbBridge {
         Ok(Box::new(SearchStreamAdapter {
             inner: RefCell::new(Some(stream)),
             kb: Rc::clone(&self.kb),
+            faulted: std::cell::Cell::new(false),
         }))
     }
 
@@ -1471,10 +1469,11 @@ end
     }
 
     /// The eager drains report the fault too. `take_n` and `exists` pump the resolver
-    /// themselves rather than through `split_first`, and before `fault_of` was shared
-    /// they handed the faulted pull back as an ordinary `undecided` row (`take_n`) or a
-    /// plain `false` (`exists`) — the conflation `split_first`'s arm exists to end, one
-    /// method over. Found by `/code-review`. FAILS WHEN BACKED OUT: both return `Ok`.
+    /// themselves rather than through this adapter's `split_first`, and when the check
+    /// lived in the adapter they skipped it — handing the faulted pull back as an
+    /// ordinary `undecided` row (`take_n`) or a plain `false` (`exists`). Found by
+    /// `/code-review`; the check now lives in `SearchStream::split_first`, which every
+    /// drain goes through. Passes by construction now, and is the row that says so.
     #[test]
     fn the_eager_drains_report_a_fault_too() {
         let bridge = load_source_bridge_with_stdlib(FAULTING_COMPARISON);
@@ -1495,6 +1494,34 @@ end
             matches!(exists, Err(ResolveStreamFailure::EvaluationFailure { .. })),
             "exists over a faulted search must fail, got {exists:?}"
         );
+    }
+
+    /// AFTER A CAUGHT FAULT every direct reader refuses, not only `split_first`. The pull
+    /// that faulted took `inner`, and `take_n` / `exists` / `is_empty` used to read that
+    /// as an ended stream — `Ok([])`, `Ok(false)`, `Ok(true)`: an empty, apparently
+    /// complete answer set. Found by `/code-review`. FAILS WHEN BACKED OUT (the
+    /// `faulted` flag): each returns `Ok`.
+    #[test]
+    fn a_stream_that_faulted_refuses_every_reader() {
+        let bridge = load_source_bridge_with_stdlib(FAULTING_COMPARISON);
+        let query = {
+            let mut kb = bridge.kb.borrow_mut();
+            LogicalQuery::PatternQuery {
+                term: ReflectTerm::new(Value::term(kb.resolve_qualified_name_term("rstl.fault.bad"))),
+            }
+        };
+        let stream = bridge.execute(query).expect("execute builds the stream");
+        assert!(matches!(
+            stream.split_first(),
+            Err(ResolveStreamFailure::EvaluationFailure { .. })
+        ));
+        let misused = |r: &Result<(), ResolveStreamFailure>| {
+            matches!(r, Err(ResolveStreamFailure::StreamMisused { .. }))
+        };
+        assert!(misused(&stream.take_n(10).map(|_| ())), "take_n after a fault");
+        assert!(misused(&stream.exists(|_| true).map(|_| ())), "exists after a fault");
+        assert!(misused(&stream.is_empty().map(|_| ())), "is_empty after a fault");
+        assert!(misused(&stream.iterator().take_n(1).map(|_| ())), "the fault travels with iterator()");
     }
 
     /// CONTROL for `at`, and the reason it is an `Option`: a goal REBUILT by the
@@ -1612,10 +1639,9 @@ end
     /// streams its rows.
     #[test]
     fn a_bridged_raise_takes_the_error_arm() {
-        // `both`, not `bad`: this arm can only report a fault on a pull that also YIELDS
-        // — see `a_fault_on_a_branch_that_yielded_nothing_is_invisible_here` below, which
-        // pins the other half. `both`'s second clause proves, so there is a row for the
-        // fault to win over.
+        // `both`, not `bad`: this row is the fault winning over a YIELDED row — `both`'s
+        // second clause proves. The exhaustion half is
+        // `a_fault_on_a_branch_that_yielded_nothing_is_reported_at_exhaustion` below.
         let bridge = load_source_bridge_with_stdlib(RAISING_MATCH);
         let goal = {
             let mut kb = bridge.kb.borrow_mut();
@@ -1639,23 +1665,19 @@ end
         );
     }
 
-    /// THE OTHER HALF, AND IT CORRECTS A CLAIM AT THE ARM'S OWN SITE. That comment said
-    /// a fault invisible here is "reachable only under `definite_only`, which suppresses
-    /// the residual a faulted goal would otherwise yield; this face resolves with it
-    /// off, so every fault reaches the arm above". MEASURED FALSE: `rule bad :-
-    /// rank(green(), 1)` faults and yields NOTHING with `definite_only` off, because the
-    /// WI-938 relational hook falls through to ordinary candidate selection when the
-    /// reduction is undecided, and `rank` heads no clauses — so the branch FAILS rather
-    /// than residualizing, `split_first` takes `self` by value on that path, and the
-    /// recorded fault dies with the stream.
+    /// THE OTHER HALF: a fault on a branch that yielded NOTHING, followed by exhaustion.
+    /// `rule bad :- rank(green(), 1)` faults and yields nothing with `definite_only` off,
+    /// because the WI-938 relational hook falls through to ordinary candidate selection
+    /// when the reduction is undecided, and `rank` heads no clauses — so the branch FAILS
+    /// rather than residualizing.
     ///
-    /// NOT FIXED HERE, and the reason is the shape of the repair rather than its size:
-    /// `SearchStream::split_first` would have to hand the exhausted stream back, which
-    /// is a signature change on the resolver's public door, and `step` — the loop that
-    /// would let this adapter keep ownership — is private to that module. PINNED so the
-    /// gap is a measured fact with a site rather than a stale sentence.
+    /// This row used to PIN `Ok(None)`: `SearchStream::split_first` consumed the stream on
+    /// exhaustion and dropped the recorded fault with it, and no consumer could close
+    /// that. WI-20260911-8Y5BE moved the fault check to that door, which reports it on
+    /// the exhaustion exit too. FAILS WHEN BACKED OUT (the `exhausted` fault check): the
+    /// face reports an ordinary empty result for a goal that was never evaluated.
     #[test]
-    fn a_fault_on_a_branch_that_yielded_nothing_is_invisible_here() {
+    fn a_fault_on_a_branch_that_yielded_nothing_is_reported_at_exhaustion() {
         let bridge = load_source_bridge_with_stdlib(RAISING_MATCH);
         let goal = {
             let mut kb = bridge.kb.borrow_mut();
@@ -1665,13 +1687,23 @@ end
             term: ReflectTerm::new(Value::term(goal)),
         };
         let stream = bridge.execute(query).expect("execute builds the stream");
-        assert!(
-            matches!(stream.split_first(), Ok(None)),
-            "TODAY's behaviour, pinned rather than endorsed: the raise was recorded on \
-             the stream and the stream was dropped, so this face reports an ordinary \
-             empty result. When the resolver's door can hand back an exhausted stream, \
-             this row is where the change announces itself"
-        );
+        match stream.split_first() {
+            Err(ResolveStreamFailure::EvaluationFailure { goals, reason, .. }) => {
+                assert!(
+                    reason.contains("match_failed"),
+                    "the Err carries the raised payload; got: {reason}"
+                );
+                assert!(
+                    goals.is_empty(),
+                    "reported at exhaustion, so no answer was displaced"
+                );
+            }
+            other => panic!(
+                "a search one of whose branches could not be evaluated is not an empty \
+                 result; got {:?}",
+                other.map(|o| o.is_some())
+            ),
+        }
     }
 
     /// THE COST OF THE ARM ABOVE, PINNED RATHER THAN DISCOVERED. A fault is checked

@@ -774,6 +774,75 @@ impl Interpreter {
         )
     }
 
+    /// WI-20260911-8Y5BE — raise a query that could not be LOWERED as the declared
+    /// `Error[ResolveStreamFailure]`, the interpreter-face twin of the host bridge's
+    /// refusal. The one door `KB.execute` and `Relation.splitFirst` both lower through.
+    ///
+    /// `NotYetImplemented` is `unsupported_operation`, for the reason `LowerError` keeps
+    /// it apart: a well-formed query this face has not wired is a gap in the face, not
+    /// the caller's mistake. Everything else is `malformed_query`.
+    pub fn raise_query_lowering(&mut self, e: crate::kb::execute::LowerError) -> EvalError {
+        let ctor = match e {
+            crate::kb::execute::LowerError::NotYetImplemented(_) => "unsupported_operation",
+            _ => "malformed_query",
+        };
+        self.raise_resolve_stream_failure(ctor, e.to_string())
+    }
+
+    /// WI-20260911-8Y5BE — raise a pull on a stream that can no longer answer as the
+    /// declared `Error[ResolveStreamFailure]`: payload `stream_misused(detail)`.
+    pub fn raise_stream_misused(&mut self, detail: String) -> EvalError {
+        self.raise_resolve_stream_failure("stream_misused", detail)
+    }
+
+    /// A `ResolveStreamFailure` variant that carries only prose `detail`.
+    fn raise_resolve_stream_failure(&mut self, ctor: &str, detail: String) -> EvalError {
+        self.raise_error_payload(
+            &format!("anthill.reflect.ResolveStreamFailure.{ctor}"),
+            ctor,
+            vec![("detail", Value::Str(detail))],
+        )
+    }
+
+    /// WI-20260911-8Y5BE — raise a `KB.execute` stream whose search recorded a FAULT as
+    /// the declared `Error[ResolveStreamFailure]`: payload
+    /// `evaluation_failure(goals, reason, at)`, the interpreter-face twin of the host
+    /// bridge's `EvaluationFailure` (see `ResolveStreamFailure` in `reflect.anthill`).
+    ///
+    /// `goals` rides carrier-faithfully, as [`Self::raise_relation_floundered`]'s does.
+    /// `at` is `some(occurrence)` for a positioned goal and `none()` otherwise — never an
+    /// occurrence with a fabricated span.
+    pub fn raise_evaluation_failure(
+        &mut self,
+        goals: Vec<Value>,
+        reason: String,
+        at: Option<Rc<NodeOccurrence>>,
+    ) -> EvalError {
+        let goals = match self.build_list_value(goals, &[]) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+        use crate::eval::builtins::{option_none, option_some, require_symbol};
+        let at = match at {
+            Some(occ) => match require_symbol(self, "anthill.prelude.Option.some", "some") {
+                Ok(some) => {
+                    let value_key = self.kb_mut().intern("value");
+                    option_some(some, value_key, Value::Node(occ))
+                }
+                Err(e) => return e,
+            },
+            None => match require_symbol(self, "anthill.prelude.Option.none", "none") {
+                Ok(none) => option_none(none),
+                Err(e) => return e,
+            },
+        };
+        self.raise_error_payload(
+            "anthill.reflect.ResolveStreamFailure.evaluation_failure",
+            "evaluation_failure",
+            vec![("goals", goals), ("reason", Value::Str(reason)), ("at", at)],
+        )
+    }
+
     /// Register the standard effect handlers. Includes real-stdio
     /// Console handlers (call explicitly for programs that need terminal
     /// access; tests usually skip this and inject buffered handlers) and

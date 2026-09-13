@@ -1750,11 +1750,14 @@ impl Interpreter {
                 left: value::StreamHandle,
                 right: value::StreamHandle,
             },
+            // WI-20260911-8Y5BE — a pull on a stream whose search faulted.
+            Faulted,
         }
 
         let arena = self.streams.clone();
         let action = arena.with_source_mut(handle, |src| match src {
             StreamSource::Empty => (StreamSource::Empty, Action::Done),
+            StreamSource::Faulted => (StreamSource::Faulted, Action::Faulted),
             StreamSource::Resolver {
                 search: None,
                 layer,
@@ -1828,12 +1831,16 @@ impl Interpreter {
 
         match action {
             Action::Done => Ok(None),
+            Action::Faulted => Err(self.raise_stream_misused(
+                "a pull on a stream whose search already faulted".to_string(),
+            )),
             Action::YieldSelf(v) => Ok(Some((v, handle.clone()))),
             Action::PumpResolver(stream) => {
                 let result = stream.split_first(&mut self.kb);
                 let stream_arena = self.streams.clone();
                 match result {
-                    Some((sol, rest)) => {
+                    Err(fault) => Err(self.fault_stream(handle, fault)),
+                    Ok(Some((sol, rest))) => {
                         stream_arena.with_source_mut(handle, |prev| {
                             // Carry the layer forward onto the continuation — the
                             // rest of the search reads the same scoped KB.
@@ -1854,7 +1861,7 @@ impl Interpreter {
                         let solution = self.make_solution_value(sol)?;
                         Ok(Some((solution, handle.clone())))
                     }
-                    None => {
+                    Ok(None) => {
                         stream_arena.with_source_mut(handle, |_| (StreamSource::Empty, ()));
                         Ok(None)
                     }
@@ -1867,7 +1874,13 @@ impl Interpreter {
                 let result = search.split_first(&mut self.kb);
                 let stream_arena = self.streams.clone();
                 match result {
-                    Some((sol, rest)) => {
+                    // WI-20260911-8Y5BE — the RELATION face takes the same fault arm. It
+                    // used to raise `relation_floundered` for a faulted goal (which
+                    // residualizes) — "never decided" for a goal that could not be asked,
+                    // and a payload the SLD bridge SCHEDULES rather than reports — or,
+                    // for a faulted branch that yielded nothing, to drop the fault.
+                    Err(fault) => Err(self.fault_stream(handle, fault)),
+                    Ok(Some((sol, rest))) => {
                         let cols = columns.clone();
                         stream_arena.with_source_mut(handle, move |_| {
                             (
@@ -1881,7 +1894,7 @@ impl Interpreter {
                         let row = self.materialize_solution(sol, &columns)?;
                         Ok(Some((row, handle.clone())))
                     }
-                    None => {
+                    Ok(None) => {
                         stream_arena.with_source_mut(handle, |_| (StreamSource::Empty, ()));
                         Ok(None)
                     }
@@ -1904,6 +1917,27 @@ impl Interpreter {
                 None => self.stream_split_first(&right),
             },
         }
+    }
+
+    /// WI-20260911-8Y5BE — a resolver search behind `handle` reported a FAULT: park the
+    /// slot as [`stream::StreamSource::Faulted`] and raise the declared
+    /// `evaluation_failure`. The one arm both resolver pumps take, so the execute face
+    /// and the relation face cannot disagree about a faulted search.
+    ///
+    /// THE CONTINUATION IS NOT KEPT, and the slot is not `Empty` either: a caller that
+    /// catches the raise and pulls again is refused with `stream_misused` (as on the host
+    /// bridge) rather than told the stream ended, which would read the rows it already
+    /// has as a complete answer set — and an `mplus` over it would move silently on to
+    /// its right half.
+    fn fault_stream(
+        &mut self,
+        handle: &value::StreamHandle,
+        fault: crate::kb::resolve::SearchFault,
+    ) -> EvalError {
+        self.streams
+            .clone()
+            .with_source_mut(handle, |_| (stream::StreamSource::Faulted, ()));
+        self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at)
     }
 
     /// WI-531: wrap a resolver [`Solution`](crate::kb::resolve::Solution) as a
