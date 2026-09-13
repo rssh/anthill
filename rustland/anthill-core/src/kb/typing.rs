@@ -2190,6 +2190,30 @@ pub struct TypingEnv {
     /// (`let y = z ⟹ y.M ≡ z.M`, the Scala divergence). Heads are stored already
     /// de-aliased (transitive `let y = z; let w = y` ⟹ `w → [z]`).
     receiver_aliases: HashMap<Symbol, Vec<Symbol>>,
+    /// WI-20260824-PAPX0 (proposal 055 umbrella A step 4, design §4) — the
+    /// `Expr::TypeValue` occurrence a let-bound name DENOTES: `let t = Box[V =
+    /// Int64]` records `t → that node`. Read at the `DotApply` frame, where
+    /// option B says a dot on a type value resolves its member in the DENOTED
+    /// sort's scope rather than among `Type`'s own members.
+    ///
+    /// A SECOND CHANNEL BESIDE `receiver_aliases`, NOT A WIDENING OF IT, and the
+    /// reason is that they answer different questions. `receiver_aliases` maps a
+    /// binder to another VALUE PATH so a type projection off it canonicalizes to
+    /// the same receiver (`let y = z ⟹ y.M ≡ z.M`); this maps a binder to a
+    /// DENOTED SORT. A `let t = Box[V = Int64]` has no aliased receiver path at
+    /// all — `stable_receiver_path` answers `None` for a `TypeValue` — so
+    /// overloading the alias map would have to invent a path that means "not a
+    /// path, a denotation", which is the one-name-two-questions defect this
+    /// repo has paid for repeatedly (WAHB6 states the same rule for
+    /// `NodeKind::Expr.classification`).
+    ///
+    /// The NODE, not just its `head`: the type ARGUMENTS are part of the
+    /// denotation (`Box[V = Int64]` and `Box[V = String]` denote different
+    /// instantiations), and the companion call the frame synthesizes carries
+    /// them as its `recv_type` exactly as the written form `Box[V =
+    /// Int64].tag()` does. Storing only the head would silently drop the
+    /// bindings and type the result at the wrong instantiation.
+    type_denotations: HashMap<Symbol, Rc<NodeOccurrence>>,
     /// WI-424/WI-942 — every type-param canonical var IN SCOPE for this body,
     /// mapped to the per-body `Var::Rigid` term `check_operation_bodies` minted
     /// for it (the WI-392 skolemization, extended to the enclosing SORT's params
@@ -2371,6 +2395,7 @@ impl TypingEnv {
         Self {
             var_bindings: HashMap::new(),
             receiver_aliases: HashMap::new(),
+            type_denotations: HashMap::new(),
             param_rigids: Rc::new(Vec::new()),
             sort_rigid_len: 0,
             local_resources: Vec::new(),
@@ -2728,6 +2753,26 @@ impl TypingEnv {
 
     fn receiver_aliases(&self) -> &HashMap<Symbol, Vec<Symbol>> {
         &self.receiver_aliases
+    }
+
+    /// WI-20260824-PAPX0: record that `name` denotes the type `node` names.
+    fn bind_type_denotation(&mut self, name: Symbol, node: Rc<NodeOccurrence>) {
+        self.type_denotations.insert(name, node);
+    }
+
+    /// WI-20260824-PAPX0: drop any denotation under `name`. Called when `name` is
+    /// re-bound to anything that is NOT a written type, for the same soundness
+    /// reason [`Self::clear_receiver_alias`] states: a shadowing `let t = …`
+    /// rebinds `t`'s identity, and keeping the outer denotation would resolve
+    /// `t.m` in a sort the inner `t` has nothing to do with — a false accept,
+    /// not a missed one.
+    fn clear_type_denotation(&mut self, name: Symbol) {
+        self.type_denotations.remove(&name);
+    }
+
+    /// WI-20260824-PAPX0: the `Expr::TypeValue` occurrence `name` denotes, if any.
+    fn type_denotation(&self, name: Symbol) -> Option<&Rc<NodeOccurrence>> {
+        self.type_denotations.get(&name)
     }
 
     pub fn declare_local_resource(&mut self, name: Symbol) {
@@ -14388,6 +14433,204 @@ fn build_type(
             // in place — a `Value::Node` receiver type need not be re-grounded.
             let recv_sort = sort_functor_of_view(kb, &recv.ty);
             let dot_span = Some(occ.span.span);
+
+            // WI-20260824-PAPX0 (proposal 055 umbrella A step 4; design
+            // 055-implementation.md §4) — THE DOT-RECEIVER SPLIT, option B: THE
+            // DENOTATION DECIDES.
+            //
+            // A receiver whose type is `Type` and whose denotation is a known sort
+            // resolves `.m` in THAT SORT's scope, not among `Type`'s members. The
+            // rungs below all key on `recv_sort`, which for such a receiver is
+            // `anthill.prelude.Type` — an OPAQUE handle (`sort Type = ?`) that
+            // declares no members — so every one of them answered "no such member
+            // (dot dispatch)" while the two NAME-route spellings of the same value
+            // (`Box.tag()`, `Box[V = Int64].tag()`) resolved and returned 7. One
+            // value, three spellings, two answers, decided by whether the receiver's
+            // root happened to be let-bound.
+            //
+            // WHY THIS IS NOT JUST A SUBSTITUTED `recv_sort`. A COMPANION member takes
+            // NO receiver argument: `operation tag() -> Int64` is called `tag()`, and
+            // the default fallback below synthesizes `m(receiver, …args)`. Handing it
+            // the denoted sort would build `tag(t)` — an arity error — so this arm
+            // synthesizes the companion shape itself: the member resolved in the
+            // denoted sort's scope, the args UNSHIFTED, and the receiver carried as
+            // `recv_type` exactly as the loader does for the written `Box[V =
+            // Int64].tag()`. That is the `ResolvedReceiver::SortCompanion` case of
+            // design §4, and it is why §4 asks for three variants rather than a wider
+            // value dispatch.
+            //
+            // PLACED BEFORE the `[simp]` dot-rule rung and the default fallback
+            // because it decides WHICH SORT the member is looked up in; running after
+            // them would let a rule or member keyed on `Type` win by position, which
+            // is the lookup-order settlement §4 forbids.
+            // WI-20260824-PAPX0: what the receiver DENOTES, carried to the terminal
+            // refusal below. The rung itself must FALL THROUGH when it finds nothing
+            // (returning early made every later rung unreachable — a measured
+            // regression), so the denoted sort cannot be named at the point of the
+            // miss; it has to reach the one refusal that actually fires.
+            let mut denoted_head_for_diag: Option<Symbol> = None;
+            if let Some(type_sym) = kb.try_resolve_symbol("anthill.prelude.Type") {
+                if recv_sort == Some(type_sym) {
+                    // The denotation, from the receiver itself or from the binder that
+                    // holds it. `recv.node` covers a receiver that IS a written type;
+                    // the env covers `let t = Box[V = Int64]`, which is the reachable
+                    // half (see the binding site's note).
+                    let denot: Option<Rc<NodeOccurrence>> = match recv.node.as_expr() {
+                        Some(Expr::TypeValue { .. }) => Some(Rc::clone(&recv.node)),
+                        // DE-ALIASED FIRST. `let u = t` records `u -> [t]` in
+                        // `receiver_aliases` (already transitively canonical), and
+                        // `canonicalize_receiver_path` exists for exactly this read.
+                        // Without it one hop lost the denotation and restored the
+                        // VERBATIM pre-fix diagnostic — `let t = Box[V = Int64]; let u =
+                        // t; u.tag()` reported "no such member of anthill.prelude.Type",
+                        // the message this ticket exists to abolish, one `let` later.
+                        _ => stable_receiver_path(kb, &recv.node)
+                            .map(|p| env.canonicalize_receiver_path(p))
+                            .filter(|p| p.len() == 1)
+                            .and_then(|p| env.type_denotation(p[0]).cloned()),
+                    };
+                    if let Some(denot) = denot {
+                        denoted_head_for_diag = denot
+                            .as_expr()
+                            .and_then(|e| match e {
+                                Expr::TypeValue { head, .. } => Some(*head),
+                                _ => None,
+                            })
+                            // NOT when the member names a CONSTRUCTOR of that sort.
+                            // `find_operation_in_scope` scans `OperationInfo` facts only,
+                            // so an entity constructor is invisible to every rung here —
+                            // and naming the denoted sort then turns "no such member of
+                            // `Type`" (a true sentence about the wrong sort) into "no such
+                            // member of `Box`" (a FALSE sentence about the right one) for
+                            // `t.mk(5)`, where `mk` is right there. Until the constructor
+                            // route is admitted, say the less wrong thing.
+                            .filter(|head| {
+                                let short = short_name_of(kb.local_name_of(member));
+                                !kb.constructors_of_sort(*head).iter().any(|c| {
+                                    short_name_of(kb.local_name_of(*c)) == short
+                                })
+                            });
+                        let Some(Expr::TypeValue { head, .. }) = denot.as_expr() else {
+                            unreachable!("PAPX0: type_denotations holds only TypeValue nodes")
+                        };
+                        let head = *head;
+                        // POSITIONAL BRACKETS ARE NOT ADMITTED HERE, and this is a
+                        // refusal to guess rather than a gap. `recv_type` is read
+                        // downstream by `term_backed_bindings`, which consults
+                        // `named_keys` ONLY — so a denotation written `Box[Int64]`
+                        // arrived with NO bindings, `V` went free, and
+                        // `let t = Box[Int64]; t.wrap("s")` LOADED where the written
+                        // `Box[Int64].wrap("s")` correctly refuses. A silent false accept
+                        // is strictly worse than the miss it replaced, so this arm stands
+                        // down and the ladder below answers exactly as it did before.
+                        // Admitting them means naming the positionals against
+                        // `type_params_of_sort` when the term is built; that is a real
+                        // change to the denotation's lowering, not a condition here.
+                        let positional_bracket = matches!(
+                            denot.as_expr(),
+                            Some(Expr::TypeValue { pos_args, .. }) if !pos_args.is_empty()
+                        );
+                        let short = short_name_of(kb.local_name_of(member)).to_string();
+                        // `find_term`, NOT `alloc`: this only wants to NAME a term the
+                        // KB already holds. `TermStore::alloc` bumps the refcount even on
+                        // a hash-cons HIT, and `TermStore::find`'s own doc warns that such
+                        // a caller "would inflate the count monotonically and keep the
+                        // slot from ever being released" — once per qualifying dot frame.
+                        // A sort never mentioned as a term declares no member reachable
+                        // here; `None` simply falls through to the ladder below.
+                        let head_term = kb.find_term(&Term::Ref(head));
+                        let denoted_route = head_term
+                            .filter(|_| !positional_bracket)
+                            .and_then(|ht| super::load::find_operation_in_scope(kb, ht, &short));
+                        // ONLY A COMPANION MEMBER IS THIS ARM'S BUSINESS, and the
+                        // check is `self_receiver_param_index` — the repo's existing
+                        // answer to "does this operation take the receiver?" — not a
+                        // comment. An INSTANCE member (`combine(a: Box[V], b: Box[V])`)
+                        // resolved here and synthesized with args UNSHIFTED silently
+                        // DROPPED the receiver: `t.combine(p, q)` became
+                        // `combine(p, q)` and LOADED. Measured, and it is worse than a
+                        // miss — the same member then behaved oppositely depending only
+                        // on whether the binder held a type or a value.
+                        let denoted_route = denoted_route.filter(|op| {
+                            lookup_operation_info_full(kb, *op).is_some_and(|info| {
+                                self_receiver_param_index(kb, &info.params, head).is_none()
+                            })
+                        });
+                        // THE AMBIGUITY (design §4 close, §8 "ambiguous companion versus
+                        // `Type` member: name both lookup routes"). `Type` declares no
+                        // members in today's stdlib, but it is an ordinary `sort Type = ?`
+                        // a program CAN reopen — measured, a fixture doing so loads clean.
+                        // With `tag` on BOTH routes this arm answered 7 and never said the
+                        // other existed: the lookup-order settlement §4 forbids.
+                        //
+                        // `head != type_sym` because a receiver that denotes `Type` ITSELF
+                        // makes both lookups return the SAME symbol, and the refusal then
+                        // reported one route as two ("`tag` names BOTH `Type.tag` AND
+                        // `Type.tag`").
+                        let type_route = if head == type_sym {
+                            None
+                        } else {
+                            let type_term = kb.find_term(&Term::Ref(type_sym));
+                            type_term.and_then(|t| {
+                                super::load::find_operation_in_scope(kb, t, &short)
+                            })
+                        };
+                        if denoted_route.is_some() && type_route.is_some() {
+                            results.push(Err(TypeError::Other {
+                                site: TypeError::here(),
+                                span: dot_span,
+                                context: TypeErrorContext::DotProjection { member },
+                                expected: "a member reachable by exactly one route"
+                                    .to_string(),
+                                actual: {
+                                    let denoted = kb.local_name_of(head).to_string();
+                                    let ty = kb.local_name_of(type_sym).to_string();
+                                    format!(
+                                        "`{short}` names BOTH the companion member `{denoted}.{short}` of the sort this receiver denotes AND the member `{ty}.{short}` of `Type` itself, and no rule orders them; spell the one you mean"
+                                    )
+                                },
+                            }));
+                            return;
+                        }
+                        // TAKEN ONLY WHEN A COMPANION WAS FOUND. OTHERWISE FALL THROUGH —
+                        // NO `return` — and that is the whole shape of this arm, learned
+                        // the hard way: the first cut returned unconditionally, which made
+                        // `try_fire_dot_rule`, `find_spec_op_for_provided_sort`, the
+                        // JSFHG parent rung, field access and relation projection all
+                        // UNREACHABLE for a `Type`-typed receiver. `sort.anthill` declares
+                        // `fact Eq[T = Type]` / `PartialEq` / `Lattice`, so `t.eq(u)` had
+                        // WORKED through the spec route and stopped loading — a measured
+                        // regression, with the non-denoted spelling of the same call still
+                        // loading beside it. A new admission is a RUNG, never a gate in
+                        // front of the ladder.
+                        if let Some(op_sym) = denoted_route {
+                            let recv_type =
+                                super::node_occurrence::try_occurrence_to_term(kb, &denot)
+                                    .map(|id| Value::Term { id });
+                            let pass = super::simp_rewrite::simp_pass(kb);
+                            let synth = NodeOccurrence::synthesized_expr(
+                                Expr::Apply {
+                                    // The receiver's own instantiation, so the callee
+                                    // types at `V = Int64` rather than at an unbound `V`
+                                    // — the same channel the written companion form fills.
+                                    recv_type,
+                                    functor: op_sym,
+                                    // NOT shifted: a companion member has no receiver
+                                    // parameter (enforced by the filter above).
+                                    pos_args: pos_nodes,
+                                    named_args: named_nodes,
+                                    type_args: Vec::new(),
+                                },
+                                Rc::clone(&occ),
+                                pass,
+                                occ.owner,
+                            );
+                            push_visit_at(work, synth, env, expected, fuel.saturating_sub(1), pos);
+                            return;
+                        }
+                    }
+                }
+            }
             // `pos_nodes` / `named_nodes` are the RAW arg occurrences — used
             // by both the dot-rule override and the default method fallback,
             // and typed once inside the synthesized call (with the callee's
@@ -14718,7 +14961,11 @@ fn build_type(
             results.push(Err(TypeError::DotDispatchNoMatch {
                 span: dot_span,
                 member,
-                receiver_sort: recv_sort,
+                // THE DENOTED SORT WHEN THERE IS ONE. `recv_sort` for a type value is
+                // `anthill.prelude.Type`, an opaque handle that declares no members —
+                // a true sentence about the wrong sort, which sent authors looking for
+                // a member of `Type` instead of the sort they actually named.
+                receiver_sort: denoted_head_for_diag.or(recv_sort),
                 receiver_param,
             }));
         }
@@ -14882,6 +15129,48 @@ fn build_type(
                     // outer `let` of the same name — else `let y = p; let y = f(); … : y.M`
                     // would wrongly canonicalize `y.M` to `p.M` (a false accept).
                     None => ext_env.clear_receiver_alias(var_name),
+                }
+                // WI-20260824-PAPX0 (design 055 §4, option B): if the value is a
+                // WRITTEN TYPE, record what `var_name` DENOTES, so a later `t.m(…)`
+                // resolves `m` in that sort's scope instead of among `Type`'s members.
+                //
+                // THIS IS THE WHOLE ROUTE, not a convenience. Measured: a receiver
+                // that is syntactically a type never reaches the `DotApply` frame at
+                // all — `Box[V = Int64].tag()` is a `field_access` whose object is an
+                // `application`, which `is_value_receiver` classifies as a NAME, and
+                // `Box.tag()` is one `name` node the loader's
+                // `dot_call_receiver_chain` resolves whole at its first rung. Both
+                // bypass the typer's dot frame. So the only way a `Type`-typed
+                // receiver arrives at a dot is through a BINDER or an operation
+                // RESULT, and this is the binder half.
+                //
+                // The operation-result half (`let t = id_ty(Box[V = Int64]); t.tag()`)
+                // is deliberately OUT OF SCOPE and still refuses: the denotation is
+                // lost through the call, and recovering it needs a `Type` that CARRIES
+                // its head rather than a per-binder record. Stated on the ticket as a
+                // scope boundary, not left to be discovered.
+                //
+                // THE CLEAR ARM IS NOT DRIVEN BY ANY TEST, and that is measured, not
+                // assumed: removing it leaves every row of
+                // `wi_papx0_dot_receiver_split_test` green. `let t = 1` mints a FRESH
+                // binder symbol (WI-550's shadowing-correct identities), so this map —
+                // keyed by `Symbol` — cannot collide, and a lambda binder shadowing a
+                // let does not inherit the denotation either (its receiver types as
+                // `<unresolved receiver>`, so the branch above never runs). The
+                // hazard `clear_receiver_alias` documents for its own channel is
+                // therefore not reachable here today.
+                //
+                // KEPT ANYWAY, as the pairing that channel already has: the map is
+                // keyed by a symbol whose freshness is someone else's invariant, and
+                // if that ever changes this arm is what keeps a stale denotation from
+                // becoming a FALSE ACCEPT — resolving `t.m` in a sort the current `t`
+                // has nothing to do with. Said plainly rather than left to read as a
+                // guard with a control behind it.
+                match value_node.as_expr() {
+                    Some(Expr::TypeValue { .. }) => {
+                        ext_env.bind_type_denotation(var_name, Rc::clone(&value_node))
+                    }
+                    _ => ext_env.clear_type_denotation(var_name),
                 }
             }
             // WI-550 / proposal 050: the binding rule `let x = e ⟹ Γ ∪ { x ≡ e }`,
