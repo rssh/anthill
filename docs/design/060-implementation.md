@@ -25,6 +25,7 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §3 anchor, CHECK tier | `requires(X)` under an anchor | **WI-20260909-QMFC5** | **delivered** — emits the same goal as the bind tier, §8.8 |
 | channel §10 item 3 | op→rule dictionary channel (polytypes) | WI-20260909-NAR1X | **delivered** — the ground edge; the GENERATIVE one is nobody's, §8.10 |
 | channel §10 item 4 | a requirement written at a path projection | WI-20260909-S8CBV | **delivered** for both surfaces — operation `requires` and the rule-body bracket, §8.5; the ATTRIBUTION by root is **not built** |
+| §3 anchor, MULTI-PARAMETER specs | the fetch reads the written bracket | **WI-20260913-J38VE** | **not built** — measured to delay silently at every two-parameter spelling, §8.6 |
 | §4 determinism | fetch, never choose | WI-855/857/860 | delivered (058) |
 | C666A relaxation | admit the guarded non-enclosing join | WI-742 | **delivered** — §9 |
 | — (no proposal §) | the domain as a runtime value via the requirement channel | — | **exploratory**, no owner — [`060-typedomains-implementation.md`](./060-typedomains-implementation.md) |
@@ -1053,7 +1054,8 @@ against a provider's concrete binding, so no provider answers, the fetch reports
 `P = Int64`, and they never meet.
 
 **THE SCOPE OF THAT IS WIDER THAN THIS SECTION SAID, and MEASURED 2026-09-13 it is the
-whole of it: NO MULTI-PARAMETER SPEC GROUNDS THROUGH THE TYPED-HEAD ANCHOR.** This was
+whole of it: NO MULTI-PARAMETER SPEC GROUNDS THROUGH THE TYPED-HEAD ANCHOR.** Owned by
+**WI-20260913-J38VE** (S7), whose acceptance is the two pinned delay rows flipping. This was
 written as a corner — "a self-representing spec whose provider pins a sibling concretely"
 — and pinned by one row in that shape
 (`a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays`). It is not a
@@ -1201,6 +1203,8 @@ which is exactly where inheriting would decide.
 | S4 | WI-20260909-96ZTM | two `require`s bind two dictionaries, attributed by the written bracket (§8.5) — **delivered**; the weave is NOT changed | S2 |
 | S5 | WI-20260909-NAR1X | the op→rule channel for polytypes, channel doc §10 item 3 (`ResolveConfig` field seeded from `frame.requirements`) | S4 |
 | S6 | WI-20260909-S8CBV | attribution by PROJECTION ROOT — the requirement channel learns to name `x.E`, and identity becomes δ/σ-conversion (`path-dependent-types.md` §4). REPLACES S4's sort-matching selector and lifts its anchored gate. **Both surface gates are delivered** — (2) the OPERATION channel, and (1) the rule-body bracket (2026-09-13, §8.5); the ATTRIBUTION itself is not | S4, C7ANM |
+
+| S7 | WI-20260913-J38VE | THE FETCH MUST SEE THE WRITTEN BRACKET — `fetch_dictionary` never sees slot 0, so no MULTI-PARAMETER spec grounds through the anchor (§8.6). 51W18's retention has a reader on the guard side and none on the fetch side | S2 |
 
 Tagged `vvm1r`. **S3 (the check tier) is FOLDED INTO S2** rather than filed, and was
 delivered with it — there is no S3 ticket. The fold was justified as "a load-time verdict

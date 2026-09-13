@@ -38662,7 +38662,12 @@ pub fn check_effect_registration(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     else {
         return vec![super::load::LoadError::Other {
             message: format!(
-                "`{}` declares no type parameter, so no `fact Effect[T = Kind]` can bind                  one and no effect kind can be registered — the effect-registration check                  cannot run. The prelude declares `sort Effect {{ sort T = ? }}`                  (`stdlib/anthill/prelude/effects.anthill`); this KB's `Effect` is not that                  sort.",
+                "`{}` declares no type parameter, so no `fact Effect[T = Kind]` can \
+                 bind one and no effect kind can be registered — the \
+                 effect-registration check cannot run. The prelude declares \
+                 `sort Effect {{ sort T = ? }}` \
+                 (`stdlib/anthill/prelude/effects.anthill`); this KB's `Effect` is \
+                 not that sort.",
                 kb.qualified_name_of(effect_sym),
             ),
         }];
