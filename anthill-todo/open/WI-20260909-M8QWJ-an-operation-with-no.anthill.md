@@ -38,3 +38,9 @@ ACCEPTANCE: the four shapes above answer per the decision, with a control that a
 
 REFERENCE: WI-9WVT7 (where this was measured and why its fix is not the cause), WI-325 (the check whose message was standing in for this), WI-818 (`unrunnable_target_error`, the runtime classifier).
 
+## Changes
+
+### 2026-09-13T18:35:08Z — feedback — user
+
+ADJACENT: WI-20260913-KXNEX. A provision that leaves its spec's carrier parameter unbound (`provides Llm[E = …]`, bare `provides Harness`) loads clean and dies `OperationBodyMissing` at dispatch against a provider that DOES implement the operation — measured in WI-20260830-7MK73. This ticket's check would not see it (question 3 defers the abstract-carrier call, which is where it lives); KXNEX refuses it at the declaration instead, and once it lands every written provision names its carrier, so question 2's 'a provider's implementation' route reads off provisions with no silent None arm. Cross-reference, not a dependency.
+
