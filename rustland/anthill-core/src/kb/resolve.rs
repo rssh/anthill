@@ -311,10 +311,58 @@ pub enum BuiltinTag {
 /// WRONG in a release one — a refutation reported for a goal nobody evaluated. That is
 /// the "loud error over silent skip" rule broken in exactly the way the rule names, and
 /// it survived because there was nowhere for the loudness to go.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ResolveError {
     /// What went wrong, already phrased for a reader.
     pub message: String,
+    /// WI-20260911-8Y5BE — WHERE: the goal the search was stepping when the fault was
+    /// recorded, when that goal is a positioned occurrence. `None` is honest rather than
+    /// missing — a goal rebuilt by substitution rides as a `Value::Entity`, which has no
+    /// span, and a zero span would be a fabricated location.
+    ///
+    /// SET BY THE STEP LOOP, not by the producer: the builtin or bridge that detects a
+    /// fault is handed operands, not the goal, so the one site that knows the goal
+    /// ([`Self::located_at`]) fills it. An error already located by a sub-search keeps
+    /// its own, INNER site.
+    pub at: Option<Rc<NodeOccurrence>>,
+}
+
+impl ResolveError {
+    /// A fault not yet located — see [`Self::at`].
+    pub(crate) fn new(message: String) -> Self {
+        Self { message, at: None }
+    }
+
+    /// Locate at `goal` unless already located, and only when `goal` carries a
+    /// position of its own.
+    fn located_at(mut self, goal: &Value) -> Self {
+        if self.at.is_none() {
+            if let Value::Node(occ) = goal {
+                self.at = Some(Rc::clone(occ));
+            }
+        }
+        self
+    }
+}
+
+impl ResolveError {
+    /// Append `err` unless an entry with its MESSAGE is already there — the one dedup
+    /// both stream sinks ([`SearchStream::note_error`], [`SearchStream::absorb_reduce_faults`])
+    /// use. The key is the message ALONE, as it was before `at` existed: one written goal
+    /// is stepped once per candidate pair of a self-joined extent, sometimes as a
+    /// positioned `Node` and sometimes as a rebuilt `Entity`, and keying on the location
+    /// too printed the same warning twice. A later located copy FILLS an unlocated entry,
+    /// so which carrier arrived first does not decide whether the fault has a location.
+    fn push_deduped(errors: &mut Vec<ResolveError>, err: ResolveError) {
+        match errors.iter_mut().find(|e| e.message == err.message) {
+            Some(existing) => {
+                if existing.at.is_none() {
+                    existing.at = err.at;
+                }
+            }
+            None => errors.push(err),
+        }
+    }
 }
 
 /// WI-20260911-0V0F7 — the OUT-CHANNEL of the operand reduction
@@ -347,7 +395,7 @@ impl ReduceFaults {
     /// reduction faulted was never decided, so emptiness is not refutation — the two
     /// always travel together here, exactly as they do at [`SearchStream::record_error`].
     pub(crate) fn fault(&mut self, message: String) {
-        self.errors.push(ResolveError { message });
+        self.errors.push(ResolveError::new(message));
         self.truncated = true;
     }
 
@@ -1258,9 +1306,7 @@ impl SearchStream {
     /// `self.truncated |= v.truncated` stays exactly where it was, inside the
     /// residual-or-truncated arm.
     fn note_error(&mut self, err: ResolveError) {
-        if !self.errors.contains(&err) {
-            self.errors.push(err);
-        }
+        ResolveError::push_deduped(&mut self.errors, err);
     }
 
     /// WI-20260911-0V0F7 — fold what the operand reduction learned
@@ -1278,18 +1324,19 @@ impl SearchStream {
     /// THE `truncated` DECISION IS NOT MADE HERE. [`ReduceFaults::fault`] sets it when
     /// it records, so a fault is incomplete-by-construction and this drain has one
     /// behaviour rather than two; see that method for the argument.
+    ///
+    /// `goal` is the goal being stepped, which locates each fault (WI-20260911-8Y5BE).
     fn absorb_reduce_faults(
         errors: &mut Vec<ResolveError>,
         truncated: &mut bool,
         faults: ReduceFaults,
+        goal: &Value,
     ) {
         *truncated |= faults.truncated;
         for err in faults.errors {
             // Deduped on push, exactly as `note_error` does and for the same reason: a
             // self-joined extent reaches one faulting operand once per candidate PAIR.
-            if !errors.contains(&err) {
-                errors.push(err);
-            }
+            ResolveError::push_deduped(errors, err.located_at(goal));
         }
     }
 
@@ -1985,7 +2032,12 @@ impl SearchStream {
                 )
             };
             if !faults.is_empty() {
-                Self::absorb_reduce_faults(&mut self.errors, &mut self.truncated, faults);
+                Self::absorb_reduce_faults(
+                    &mut self.errors,
+                    &mut self.truncated,
+                    faults,
+                    &goal_val,
+                );
             }
             match builtin_result {
                 BuiltinResult::Success => {
@@ -2125,7 +2177,7 @@ impl SearchStream {
                     // borrow of `self.stack`.
                     let goals_len = frame.goals.len();
                     let subst = frame.subst.clone();
-                    self.record_error(err);
+                    self.record_error(err.located_at(&goal_val));
                     return self.schedule_unanswerable_goal(
                         &goal_val, goals_len, subst, depth, delay_mode, None,
                     );
@@ -2564,6 +2616,7 @@ impl SearchStream {
                                         &mut self.errors,
                                         &mut self.truncated,
                                         faults,
+                                        &goal_val,
                                     );
                                 }
                                 // ONLY route once the body actually reduced. `unify` is
@@ -6281,12 +6334,12 @@ impl KnowledgeBase {
             // success in release" is what the old comment said, and a silent FAILURE is
             // no better than a silent success when the reader is `not(…)` or a guard.
             debug_assert!(false, "domain(?x, T): generated goal is missing an operand");
-            return BuiltinResult::Error(ResolveError {
-                message: "domain(?x, T): the generated type-bound guard is missing an \
-                          operand — the loader's generator and the resolver's reader \
-                          disagree about its shape, so no type bound was checked here"
+            return BuiltinResult::Error(ResolveError::new(
+                "domain(?x, T): the generated type-bound guard is missing an \
+                 operand — the loader's generator and the resolver's reader \
+                 disagree about its shape, so no type bound was checked here"
                     .to_string(),
-            });
+            ));
         };
         if self.value_is_unbound_var(&value) {
             return BuiltinResult::delay();
@@ -6468,11 +6521,11 @@ impl KnowledgeBase {
                 false,
                 "domain_leaf(?x, ?T): the derived catch-all is missing an operand",
             );
-            return BuiltinResult::Error(ResolveError {
-                message: "domain_leaf(?x, ?T): the derived catch-all clause and this \
-                          reader disagree about its shape, so no domain was read here"
+            return BuiltinResult::Error(ResolveError::new(
+                "domain_leaf(?x, ?T): the derived catch-all clause and this \
+                 reader disagree about its shape, so no domain was read here"
                     .to_string(),
-            });
+            ));
         };
         // WI-20260911-5G28A — `?T` IS READ OFF `?x` BEFORE THE THREE ROWS ARE ASKED, when
         // `?x` is the one that is bound. Mode (in, out): a value's type is functionally
@@ -7574,9 +7627,9 @@ impl KnowledgeBase {
                     }
                     // `record_error` marks the stream incomplete itself, so the fault
                     // carries both halves — exactly as it does at the other bridge.
-                    crate::eval::BridgeDisposition::Fault => BuiltinResult::Error(ResolveError {
-                        message: self.bridge_fault_message(target, &e),
-                    }),
+                    crate::eval::BridgeDisposition::Fault => BuiltinResult::Error(
+                        ResolveError::new(self.bridge_fault_message(target, &e)),
+                    ),
                 },
             };
         }
@@ -8634,9 +8687,9 @@ impl KnowledgeBase {
                 //     result as a verdict unless the flag is set. Without it a
                 //     `constraint c :- negation(query(… gt(?a, ?b) …))` over a
                 //     non-literal carrier reported HOLDS.
-                return BuiltinResult::Error(ResolveError {
-                    message: self.no_order_message(no_order, functor, &a, &b),
-                });
+                return BuiltinResult::Error(ResolveError::new(
+                    self.no_order_message(no_order, functor, &a, &b),
+                ));
             }
         };
         // WI-879 — THE RESULT COLUMN IS READ, at 3 positional args, exactly as

@@ -3,9 +3,9 @@
 - id: WI-20260911-8Y5BE-codegen-feature-the-reflect
 - created: 2026-09-11T05:58:35Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-11T05:58:35Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-13T09:28:24Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -29,4 +29,16 @@ evaluation_failure(goals: List[T = Term], reason: String, at: Option[T = NodeOcc
 SCOPE NOTE: this changes `Stream<Solution, Error>` to `Stream<Solution, ResolveStreamFailure>` everywhere the reflect solution stream is threaded — the adapter, head_option, find, the test drain. Contained, not a one-line edit.
 
 ACCEPTANCE: reflect.anthill declares the enum and execute's row names it; 'ResolveStreamFailure' is in anthill-stl/build.rs emit_only; the generated trait reads Stream<Solution, ResolveStreamFailure> and split_first returns Result<Option<…>, ResolveStreamFailure>; all six bridge sites construct a variant, none a string; a faulted query yields evaluation_failure with a Some(at) whose span resolves to the fixture's line; a CONTROL asserts a σ-rebuilt goal yields None rather than a zero span; cargo-test green via scripts/test.sh.
+
+## Changes
+
+### 2026-09-13T09:27:57Z — feedback — claude
+
+DELIVERED against every acceptance row. Codegen: Error[P] in a type-argument slot strips to P in both mappers (an_error_label_in_a_type_argument_slot_strips_to_its_payload). reflect.anthill declares enum ResolveStreamFailure {malformed_query, unsupported_operation, stream_misused, evaluation_failure(goals, reason, at)}; execute's row and stream E name it; emit_only lists it; the generated trait reads Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure>. All six bridge sites build a variant. ResolveError gains at: Option<Rc<NodeOccurrence>>, filled by the step loop from the goal being stepped (Value::Node only). a_faulted_query_takes_the_error_arm slices the fixture to 'PartialOrd.gt(?x, 1)' on line 6; the control a_fault_on_a_rebuilt_goal_has_no_location uses a host conjunction unify(?x,'a'), gt(?x,1) whose goal was PROBED as Value::Entity -> at None.
+
+BEYOND THE TICKET, from /code-review: take_n and exists now report the fault too (they pumped the resolver without checking errors); fault dedup stays keyed on the MESSAGE alone, and a later located copy fills an unlocated entry (keying on location too printed duplicate warnings for mixed carriers); goals is documented as the reporting pull's residual, which can be empty when the fault came from an earlier branch that yielded nothing.
+
+THE RIPPLE, measured: a bare 'effects Error' row does NOT admit Error[ResolveStreamFailure], so every caller must name the payload. anthill-todo main.anthill needed it on ten operations, up to main (query_id_set, collect_id_set, walk_solutions, cmd_next, cmd_list, cmd_list_plain, cmd_list_tagged, undated_gate, dispatch, main) and three core fixtures (kb_query, wi182, wi531).
+
+LEFT OPEN, not fixed: the INTERPRETER face never produces this payload - kb_execute maps a lowering failure to EvalError::Internal and stream_split_first's PumpResolver ignores rest.errors(), so a faulted goal still arrives there as an undecided row. The declaration describes the host bridge exactly and the interpreter face as an upper bound. The codegen strip keys on the short name 'Error', like the file's List/Option mappings.
 

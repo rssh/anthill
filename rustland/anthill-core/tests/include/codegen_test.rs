@@ -956,3 +956,47 @@ end
     assert_eq!(n, 1, "a repeated plain import is emitted once, got {n}:
 {out}");
 }
+
+// ── WI-20260911-8Y5BE: `Error[P]` in a type-argument slot strips to `P` ──
+
+/// One channel, one Rust type. `effects Error[P]` already maps to `Result<_, P>`; a
+/// stream whose `E` names the SAME label must carry `P` too, or `execute`'s own `Err`
+/// (`P`) and its stream's `E` (`Error<P>`) disagree — and the host `Error` takes no
+/// generics, so the reflect bridge stopped compiling when its row was retyped.
+///
+/// Both mappers are driven: the trait-method signature (`type_to_rust_in_sort`) and an
+/// entity field (`type_to_rust`).
+///
+/// FAILS WHEN BACKED OUT: without the `"Error"` arm each mapper renders
+/// `Stream<i64, Error<Boom>>`, and the `!contains("Error<")` assertion trips.
+/// CONTROL (passes either way by design): the `Err` position of the signature was
+/// already `Boom`.
+#[test]
+fn an_error_label_in_a_type_argument_slot_strips_to_its_payload() {
+    let out = gen(r#"namespace demo
+  sort Boom
+    entity boom
+  end
+
+  sort Runner
+    import anthill.prelude.{Stream, Int64}
+    operation run(r: Runner) -> Stream[T = Int64, E = Error[Boom]]
+      effects Error[Boom]
+  end
+
+  entity Holder(s: Stream[T = Int64, E = Error[Boom]])
+end
+"#);
+    assert!(
+        out.contains("fn run(&self) -> Result<Stream<i64, Boom>, Boom>"),
+        "the stream's E must be the payload, matching the Err position:\n{out}"
+    );
+    assert!(
+        out.contains("pub s: Stream<i64, Boom>"),
+        "an entity field takes the same strip:\n{out}"
+    );
+    assert!(
+        !out.contains("Error<"),
+        "no `Error<…>` may survive in a type-argument slot:\n{out}"
+    );
+}

@@ -33,6 +33,7 @@ namespace test.wi531_residual
   import anthill.reflect.{Term, Substitution, Solution, fresh_var, as_term}
   import anthill.reflect.Solution.{definite, undecided}
   import anthill.reflect.KB.{kb, execute}
+  import anthill.reflect.{ResolveStreamFailure}
   import anthill.reflect.LogicalQuery.{pattern_query}
   import anthill.prelude.PartialEq.{eq}
 
@@ -50,13 +51,13 @@ namespace test.wi531_residual
   -- `execute` delivered an `undecided` Solution whose pending goals survived as
   -- DATA. Negative sentinels flag the wrong shape (no solution / masqueraded as
   -- definite), so the test distinguishes "residual carried" from every failure.
-  operation ghost_residual() -> Int64 effects Error =
+  operation ghost_residual() -> Int64 effects Error[ResolveStreamFailure] =
     let g = Person(name: fresh_var[String]("n"), role: "ghost")
     match splitFirst(execute(kb(), pattern_query(term: as_term(g))))
       case none()  -> 0 - 1
       case some(p) -> outcome_of(p)
 
-  operation outcome_of(p: Pair[A = Solution, B = Stream[T = Solution, E = Error]]) -> Int64 =
+  operation outcome_of(p: Pair[A = Solution, B = Stream[T = Solution, E = Error[ResolveStreamFailure]]]) -> Int64 =
     match p
       case pair(definite(_), _)     -> 0 - 2
       case pair(undecided(_, r), _) -> len(r)

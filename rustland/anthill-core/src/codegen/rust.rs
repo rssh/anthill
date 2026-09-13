@@ -648,6 +648,13 @@ impl<'a> RustCodegen<'a> {
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Option<{inner}>")
                     }
+                    // WI-20260911-8Y5BE — an `Error[P]` label in a TYPE-ARGUMENT slot
+                    // (`Stream[T = …, E = Error[P]]`) strips to `P`, the rule the effects
+                    // clause already follows (`analyze_effects`: `effects Error[P]` is
+                    // `Result<_, P>`). Keeping the wrapper here gave one channel two Rust
+                    // types — `execute`'s own `Err` was `P`, its stream's `E` was
+                    // `Error<P>` — and the host `Error` takes no generics.
+                    "Error" if bindings.len() == 1 => self.type_to_rust(&bindings[0].bound),
                     _ => {
                         let args: Vec<String> = bindings
                             .iter()
@@ -756,6 +763,13 @@ impl<'a> RustCodegen<'a> {
                             .unwrap_or_else(|| "T".to_owned());
                         format!("Option<{inner}>")
                     }
+                    // WI-20260911-8Y5BE — same strip as `type_to_rust`, see there.
+                    "Error" if bindings.len() == 1 => self.type_to_rust_in_sort(
+                        &bindings[0].bound,
+                        sort_name,
+                        type_params,
+                        collapse_type_params,
+                    ),
                     _ => {
                         let args: Vec<String> = bindings
                             .iter()

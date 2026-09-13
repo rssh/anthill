@@ -288,7 +288,7 @@ impl KbBridge {
     fn query_to_goals_and_config(
         &self,
         query: &LogicalQuery,
-    ) -> Result<(Vec<Value>, ResolveConfig), Error> {
+    ) -> Result<(Vec<Value>, ResolveConfig), ResolveStreamFailure> {
         let mut config = ResolveConfig {
             dedup_answers: false,
             ..ResolveConfig::default()
@@ -304,7 +304,7 @@ impl KbBridge {
         &self,
         query: &LogicalQuery,
         config: &mut ResolveConfig,
-    ) -> Result<Vec<Value>, Error> {
+    ) -> Result<Vec<Value>, ResolveStreamFailure> {
         match query {
             LogicalQuery::EmptyQuery => Ok(vec![]),
             LogicalQuery::PatternQuery { term } => Ok(vec![term.value().clone()]),
@@ -313,12 +313,10 @@ impl KbBridge {
                 // caller's write site); extract its already-qualified functor via
                 // the shared `value_functor` — no name-string resolution.
                 let functor = anthill_core::eval::value_functor(&self.kb.borrow(), sort.value())
-                    .ok_or_else(|| {
-                        Error(
-                            "KB.sort_query: `sort` is not a sort reference (expected a \
-                         Ref / Fn / Entity carrier that names a functor)"
-                                .to_string(),
-                        )
+                    .ok_or_else(|| ResolveStreamFailure::MalformedQuery {
+                        detail: "KB.sort_query: `sort` is not a sort reference (expected a \
+                                 Ref / Fn / Entity carrier that names a functor)"
+                            .to_string(),
                     })?;
                 let field_syms = self.find_entity_schema(functor);
 
@@ -365,7 +363,9 @@ impl KbBridge {
                 config.max_solutions = *count as usize;
                 self.query_to_goals(query, config)
             }
-            _ => Err(Error(format!("unsupported query variant: {:?}", query))),
+            _ => Err(ResolveStreamFailure::MalformedQuery {
+                detail: format!("unsupported query variant: {:?}", query),
+            }),
         }
     }
 
@@ -544,7 +544,7 @@ impl KbBridge {
 // ── SearchStreamAdapter ─────────────────────────────────────────
 
 /// Adapts a resolver `SearchStream` (consuming `split_first` + `&mut KB`) to the
-/// `Stream<Solution, Error>` trait. Each pull yields a reflect `Solution`:
+/// `Stream<Solution, ResolveStreamFailure>` trait. Each pull yields a reflect `Solution`:
 /// `definite(subst)` (empty residual) or `undecided(subst, residual)` — mirroring
 /// the interpreter's `make_solution_value`, so the host `execute` is verdict- and
 /// residual-honest (WI-534, absorbed by WI-540). `subst`/`residual` carry the
@@ -584,13 +584,44 @@ impl SearchStreamAdapter {
     }
 }
 
-impl Stream<Solution, Error> for SearchStreamAdapter {
-    fn split_first(&self) -> Result<Option<(Solution, Box<dyn Stream<Solution, Error>>)>, Error> {
-        let stream = self
-            .inner
-            .borrow_mut()
-            .take()
-            .ok_or_else(|| Error("stream already consumed".into()))?;
+impl SearchStreamAdapter {
+    /// The pull's `evaluation_failure`, when the search has recorded a fault by the time
+    /// it yielded `sol` — the ONE check every consuming pull makes (`split_first`,
+    /// `take_n`, `exists`), so no drain can hand a faulted search back as ordinary rows.
+    ///
+    /// `reason` and `at` are the search's FIRST recorded fault, and the fault list is
+    /// cumulative across the whole search; `goals` is THIS pull's residual. The two
+    /// usually describe one goal — a faulted goal residualizes, so the pull that reports
+    /// it holds it — but not always: a fault recorded on an earlier branch that yielded
+    /// nothing surfaces on the next pull that yields at all, whose residual may be empty.
+    fn fault_of(
+        sol: &anthill_core::kb::resolve::Solution,
+        rest: &SearchStream,
+    ) -> Option<ResolveStreamFailure> {
+        let err = rest.errors().first()?;
+        Some(ResolveStreamFailure::EvaluationFailure {
+            goals: sol.residual.iter().cloned().map(rterm).collect(),
+            reason: err.message.clone(),
+            at: err
+                .at
+                .as_ref()
+                .map(|occ| ReflectNodeOccurrence::new(Value::Node(Rc::clone(occ)))),
+        })
+    }
+}
+
+impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
+    fn split_first(
+        &self,
+    ) -> Result<
+        Option<(Solution, Box<dyn Stream<Solution, ResolveStreamFailure>>)>,
+        ResolveStreamFailure,
+    > {
+        let stream = self.inner.borrow_mut().take().ok_or_else(|| {
+            ResolveStreamFailure::StreamMisused {
+                detail: "stream already consumed".into(),
+            }
+        })?;
         let result = {
             let mut kb = self.kb.borrow_mut();
             stream.split_first(&mut kb)
@@ -598,8 +629,8 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         match result {
             Some((sol, rest)) => {
                 // A FAULT TAKES THE `Err` ARM — the `Error` effect `execute` declares
-                // (`E = Error`), which this `Result` IS. Checked BEFORE the row is
-                // built, and it wins over it.
+                // (`E = Error[ResolveStreamFailure]`), which this `Result` IS. Checked
+                // BEFORE the row is built, and it wins over it.
                 //
                 // WHY IT WINS. A faulted goal residualizes, so this pull is holding an
                 // `undecided(subst, residual)` row. Handing that over while dropping the
@@ -615,19 +646,21 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
                 // resolver must inspect which goals stayed pending — that argument is
                 // about an answer-shaped outcome and does not reach an error.
                 //
-                // The residual is not visible to this consumer as a result. That is the
-                // intended trade: the stream is in a faulted state, and the continuation
-                // is deliberately not stored, so a caller that catches and pulls again
-                // gets the "already consumed" refusal rather than more rows from a search
-                // whose premise failed.
-                if let Some(err) = rest.errors().first() {
-                    return Err(Error(err.message.clone()));
+                // The row is not handed out, but its residual is not lost: it rides in
+                // the payload as `goals` (WI-20260911-8Y5BE, see `fault_of`). The
+                // continuation is deliberately not stored — the stream is in a faulted
+                // state, so a caller that catches and pulls again gets the "already
+                // consumed" refusal rather than more rows from a search whose premise
+                // failed.
+                if let Some(failure) = Self::fault_of(&sol, &rest) {
+                    return Err(failure);
                 }
                 let elem = self.make_solution(sol);
-                let cont: Box<dyn Stream<Solution, Error>> = Box::new(SearchStreamAdapter {
-                    inner: RefCell::new(Some(rest)),
-                    kb: Rc::clone(&self.kb),
-                });
+                let cont: Box<dyn Stream<Solution, ResolveStreamFailure>> =
+                    Box::new(SearchStreamAdapter {
+                        inner: RefCell::new(Some(rest)),
+                        kb: Rc::clone(&self.kb),
+                    });
                 Ok(Some((elem, cont)))
             }
             // EXHAUSTION DROPS THE STREAM, so a fault recorded on a branch that yielded
@@ -649,23 +682,29 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         }
     }
 
-    fn head_option(&self) -> Result<Option<Solution>, Error> {
+    fn head_option(&self) -> Result<Option<Solution>, ResolveStreamFailure> {
         match self.split_first()? {
             Some((h, _)) => Ok(Some(h)),
             None => Ok(None),
         }
     }
 
-    fn head(&self) -> Result<Solution, Error> {
+    fn head(&self) -> Result<Solution, ResolveStreamFailure> {
         // WI-567 ergonomic form: the element directly. An empty stream is the
-        // declared `Error[EmptyStream]` — surfaced here as a loud `Err`.
+        // declared `Error[EmptyStream]` — surfaced here as a loud `Err`, in the one
+        // payload this stream's `E` admits: asking an empty stream for its head is a
+        // misuse the caller could have checked for (`isEmpty`).
         match self.split_first()? {
             Some((h, _)) => Ok(h),
-            None => Err(Error("Stream::head on an empty solution stream".into())),
+            None => Err(ResolveStreamFailure::StreamMisused {
+                detail: "Stream::head on an empty solution stream".into(),
+            }),
         }
     }
 
-    fn tail(&self) -> Result<Box<dyn Stream<Solution, Error>>, Error> {
+    fn tail(
+        &self,
+    ) -> Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure> {
         match self.split_first()? {
             Some((_, t)) => Ok(t),
             None => Ok(Box::new(SearchStreamAdapter {
@@ -675,7 +714,7 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         }
     }
 
-    fn take_n(&self, n: i64) -> Result<Vec<Solution>, Error> {
+    fn take_n(&self, n: i64) -> Result<Vec<Solution>, ResolveStreamFailure> {
         let mut results = Vec::new();
         let mut current = self.inner.borrow_mut().take();
         for _ in 0..n {
@@ -688,6 +727,11 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
             };
             match next {
                 Some((sol, rest)) => {
+                    // A fault ends the drain loudly, as it does at `split_first`; the
+                    // continuation is not put back (`current` is `None` here).
+                    if let Some(failure) = Self::fault_of(&sol, &rest) {
+                        return Err(failure);
+                    }
                     results.push(self.make_solution(sol));
                     current = Some(rest);
                 }
@@ -698,7 +742,7 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         Ok(results)
     }
 
-    fn is_empty(&self) -> Result<bool, Error> {
+    fn is_empty(&self) -> Result<bool, ResolveStreamFailure> {
         let inner = self.inner.borrow();
         match inner.as_ref() {
             Some(s) => Ok(s.is_empty()),
@@ -706,11 +750,11 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         }
     }
 
-    fn non_empty(&self) -> Result<bool, Error> {
+    fn non_empty(&self) -> Result<bool, ResolveStreamFailure> {
         Ok(!self.is_empty()?)
     }
 
-    fn exists(&self, pred: fn(Solution) -> bool) -> Result<bool, Error> {
+    fn exists(&self, pred: fn(Solution) -> bool) -> Result<bool, ResolveStreamFailure> {
         // IMPLEMENTABLE WHERE `find` IS NOT, and the difference is the return type:
         // `find` must hand back the element it tested, but the predicate takes a
         // `Solution` by value and `Solution` is not `Clone`. `exists` answers a
@@ -728,6 +772,9 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
             };
             match next {
                 Some((sol, rest)) => {
+                    if let Some(failure) = Self::fault_of(&sol, &rest) {
+                        return Err(failure);
+                    }
                     if pred(self.make_solution(sol)) {
                         return Ok(true);
                     }
@@ -739,19 +786,23 @@ impl Stream<Solution, Error> for SearchStreamAdapter {
         Ok(false)
     }
 
-    fn find(&self, _pred: fn(Solution) -> bool) -> Result<Option<Solution>, Error> {
+    fn find(
+        &self,
+        _pred: fn(Solution) -> bool,
+    ) -> Result<Option<Solution>, ResolveStreamFailure> {
         // `find` returns the matching element, but its predicate consumes the
         // element by value and the reflect `Solution` is not `Clone` (it carries
         // a `Box<dyn Substitution>`), so a tested element cannot also be returned.
         // The host bridge has no `find` caller; surface a loud `Err` rather than a
         // silently wrong answer if one ever appears.
-        Err(Error(
-            "Stream::find is unsupported on the reflect Solution stream (Solution is not Clone)"
+        Err(ResolveStreamFailure::UnsupportedOperation {
+            detail: "Stream::find is unsupported on the reflect Solution stream (Solution is \
+                     not Clone)"
                 .into(),
-        ))
+        })
     }
 
-    fn iterator(&self) -> Box<dyn Stream<Solution, Error>> {
+    fn iterator(&self) -> Box<dyn Stream<Solution, ResolveStreamFailure>> {
         // `iterator(s) = s`: hand this stream's remaining state to the iterator.
         Box::new(SearchStreamAdapter {
             inner: RefCell::new(self.inner.borrow_mut().take()),
@@ -966,7 +1017,10 @@ impl KB for KbBridge {
             .collect()
     }
 
-    fn execute(&self, query: LogicalQuery) -> Result<Box<dyn Stream<Solution, Error>>, Error> {
+    fn execute(
+        &self,
+        query: LogicalQuery,
+    ) -> Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure> {
         let (goals, config) = self.query_to_goals_and_config(&query)?;
         let stream = self.kb.borrow().resolve_lazy_goals(goals, &config);
         Ok(Box::new(SearchStreamAdapter {
@@ -1255,11 +1309,11 @@ mod tests {
         KbBridge::new(kb)
     }
 
-    /// Drain a `Box<dyn Stream<Solution, Error>>` to a `Vec` by pulling
+    /// Drain a `Box<dyn Stream<Solution, ResolveStreamFailure>>` to a `Vec` by pulling
     /// `split_first` to exhaustion. The host `Stream` trait no longer carries an
     /// eager `collect` (proposal library/003, Phase C / WI-589 moved the eager
     /// drains to `FiniteCollection`), so a bounded test drain is spelled out here.
-    fn drain(stream: Box<dyn Stream<Solution, Error>>) -> Vec<Solution> {
+    fn drain(stream: Box<dyn Stream<Solution, ResolveStreamFailure>>) -> Vec<Solution> {
         let mut out = Vec::new();
         let mut next = stream.split_first().expect("split_first failed");
         while let Some((h, rest)) = next {
@@ -1344,32 +1398,36 @@ sort Store {
         assert!(matches!(results[0], Solution::Definite { .. }));
     }
 
-    /// A search that could not EVALUATE part of the query takes the `Err` arm — the
-    /// `Error` effect `execute` declares (`-> Stream[T = Solution, E = Error]`), which
-    /// this `Result` is the Rust mapping of.
-    ///
-    /// BEFORE: the faulted goal residualizes, so the pull handed back
-    /// `Ok(Some(undecided(subst, residual)))` and the reason went nowhere — this face
-    /// drains with `split_first`, which never produces a `ResolveStats`. The consumer
-    /// was told "this goal has no answer", a legitimate third outcome, when the goal
-    /// could not be asked at all.
-    ///
-    /// CONTROL: `execute_pattern_query` above passes either way — a healthy query still
-    /// streams its rows, so the `Err` arm has not swallowed the ordinary path.
-    #[test]
-    fn a_faulted_query_takes_the_error_arm() {
-        let bridge = load_source_bridge_with_stdlib(
-            r#"
+    /// An ill-typed comparison the resolver cannot ASK. `tag` declares no types, so the
+    /// typer cannot see the operand sorts and `gt(?x, 1)` reaches the resolver as a
+    /// String/Int64 pair.
+    const FAULTING_COMPARISON: &str = r#"
 namespace rstl.fault
   import anthill.prelude.{Int64, String, Bool, PartialOrd}
 
-  -- `tag` declares no types, so the typer cannot see the operand sorts and
-  -- `gt(?x, 1)` reaches the resolver as a String/Int64 pair.
   fact tag("a")
   rule bad :- tag(?x), PartialOrd.gt(?x, 1)
 end
-"#,
-        );
+"#;
+
+    /// A search that could not EVALUATE part of the query takes the `Err` arm — the
+    /// `Error[ResolveStreamFailure]` effect `execute` declares, which this `Result` is
+    /// the Rust mapping of — as a DECLARED variant a handler can destructure.
+    ///
+    /// BEFORE 0V0F7: the faulted goal residualized, so the pull handed back
+    /// `Ok(Some(undecided(subst, residual)))` and the reason went nowhere. BEFORE
+    /// 8Y5BE: it took the `Err` arm as `Error(String)`, which a handler could only
+    /// substring-match, with no location and the residual dropped.
+    ///
+    /// `at` is the WRITTEN comparison: its span slices the fixture's own text, on the
+    /// rule's line. FAILS WHEN BACKED OUT: without `ResolveError::located_at` at the
+    /// step loop, `at` is `None`.
+    ///
+    /// CONTROL: `execute_pattern_query` passes either way — a healthy query still
+    /// streams its rows, so the `Err` arm has not swallowed the ordinary path.
+    #[test]
+    fn a_faulted_query_takes_the_error_arm() {
+        let bridge = load_source_bridge_with_stdlib(FAULTING_COMPARISON);
         let goal = {
             let mut kb = bridge.kb.borrow_mut();
             kb.resolve_qualified_name_term("rstl.fault.bad")
@@ -1378,18 +1436,129 @@ end
             term: ReflectTerm::new(Value::term(goal)),
         };
         let stream = bridge.execute(query).expect("execute builds the stream");
-        let text = match stream.split_first() {
-            Err(e) => format!("{e:?}"),
+        let (goals, reason, at) = match stream.split_first() {
+            Err(ResolveStreamFailure::EvaluationFailure { goals, reason, at }) => {
+                (goals, reason, at)
+            }
+            Err(other) => panic!("a goal that could not be asked is an evaluation_failure, got {other:?}"),
             Ok(_) => panic!(
                 "a search that could not be evaluated must take the Err arm, not hand \
                  back an `undecided` row as though the goal merely had no answer"
             ),
         };
         assert!(
-            text.contains("two DIFFERENT literal sorts"),
-            "the Err must carry the resolver's own words, naming the operand sorts; \
-             got: {text}"
+            reason.contains("two DIFFERENT literal sorts"),
+            "`reason` must carry the resolver's own words, naming the operand sorts; \
+             got: {reason}"
         );
+        assert!(
+            !goals.is_empty(),
+            "the faulted pull's residual rides in `goals` rather than being dropped"
+        );
+        let at = at.expect("the written comparison is a positioned occurrence, so `at` is Some");
+        let span = match at.value() {
+            Value::Node(occ) => occ.span,
+            other => panic!("`at` carries the occurrence itself, got {other:?}"),
+        };
+        let (start, end) = (span.start() as usize, span.end() as usize);
+        assert_eq!(
+            FAULTING_COMPARISON.get(start..end),
+            Some("PartialOrd.gt(?x, 1)"),
+            "`at` must locate the WRITTEN comparison in the fixture, got {start}..{end}"
+        );
+        let (line, _) = anthill_core::span::LineIndex::new(FAULTING_COMPARISON).line_col(span.start());
+        assert_eq!(line, 6, "the comparison is on the fixture's `rule bad` line");
+    }
+
+    /// The eager drains report the fault too. `take_n` and `exists` pump the resolver
+    /// themselves rather than through `split_first`, and before `fault_of` was shared
+    /// they handed the faulted pull back as an ordinary `undecided` row (`take_n`) or a
+    /// plain `false` (`exists`) — the conflation `split_first`'s arm exists to end, one
+    /// method over. Found by `/code-review`. FAILS WHEN BACKED OUT: both return `Ok`.
+    #[test]
+    fn the_eager_drains_report_a_fault_too() {
+        let bridge = load_source_bridge_with_stdlib(FAULTING_COMPARISON);
+        let query = || {
+            let mut kb = bridge.kb.borrow_mut();
+            LogicalQuery::PatternQuery {
+                term: ReflectTerm::new(Value::term(kb.resolve_qualified_name_term("rstl.fault.bad"))),
+            }
+        };
+        let taken = bridge.execute(query()).expect("execute builds the stream").take_n(10);
+        assert!(
+            matches!(taken, Err(ResolveStreamFailure::EvaluationFailure { .. })),
+            "take_n over a faulted search must fail, got {:?}",
+            taken.map(|rows| rows.len())
+        );
+        let exists = bridge.execute(query()).expect("execute builds the stream").exists(|_| false);
+        assert!(
+            matches!(exists, Err(ResolveStreamFailure::EvaluationFailure { .. })),
+            "exists over a faulted search must fail, got {exists:?}"
+        );
+    }
+
+    /// CONTROL for `at`, and the reason it is an `Option`: a goal REBUILT by the
+    /// substitution rides as a `Value::Entity`, which has no span. The same fault, asked
+    /// as the host-built conjunction `unify(?x, "a"), gt(?x, 1)`, so `?x` reaches the
+    /// comparison through the frame's substitution — `at` is `None`, NOT an occurrence
+    /// with a fabricated `0..0` span. The carrier was PROBED at `located_at`: `Entity`
+    /// here, `Node` for the written rule above (whose `?x` is bound the same way).
+    ///
+    /// Passes with `located_at` backed out (it pins the absence); FAILS if the step loop
+    /// ever materializes an occurrence for a span-less goal.
+    #[test]
+    fn a_fault_on_a_rebuilt_goal_has_no_location() {
+        let bridge = load_source_bridge_with_stdlib(FAULTING_COMPARISON);
+        let (bind_goal, gt_goal) = {
+            let mut kb = bridge.kb.borrow_mut();
+            let functor_of = |kb: &mut KnowledgeBase, qname: &str| {
+                let t = kb.resolve_qualified_name_term(qname);
+                anthill_core::eval::value_functor(kb, &Value::term(t))
+                    .unwrap_or_else(|| panic!("`{qname}` names a functor"))
+            };
+            let unify = functor_of(&mut kb, "anthill.kernel.unify");
+            let gt = functor_of(&mut kb, "anthill.prelude.PartialOrd.gt");
+            let sx = kb.intern("?x");
+            let vx = kb.fresh_var(sx);
+            let var_x = kb.alloc(CoreTerm::Var(Var::Global(vx)));
+            let a = kb.alloc(CoreTerm::Const(Literal::String("a".into())));
+            let one = kb.alloc(CoreTerm::Const(Literal::Int(1)));
+            let bind_goal = kb.alloc(CoreTerm::Fn {
+                functor: unify,
+                pos_args: vec![var_x, a].into(),
+                named_args: Default::default(),
+            });
+            let gt_goal = kb.alloc(CoreTerm::Fn {
+                functor: gt,
+                pos_args: vec![var_x, one].into(),
+                named_args: Default::default(),
+            });
+            (bind_goal, gt_goal)
+        };
+        let query = LogicalQuery::Conjunction {
+            left: Box::new(LogicalQuery::PatternQuery {
+                term: ReflectTerm::new(Value::term(bind_goal)),
+            }),
+            right: Box::new(LogicalQuery::PatternQuery {
+                term: ReflectTerm::new(Value::term(gt_goal)),
+            }),
+        };
+        let stream = bridge.execute(query).expect("execute builds the stream");
+        match stream.split_first() {
+            Err(ResolveStreamFailure::EvaluationFailure { reason, at, .. }) => {
+                assert!(
+                    reason.contains("two DIFFERENT literal sorts"),
+                    "the same fault as the written rule's, got: {reason}"
+                );
+                assert!(
+                    at.is_none(),
+                    "a rebuilt goal has no position; `at` must be absent, got {:?}",
+                    at.map(|o| o.value().clone())
+                );
+            }
+            Err(other) => panic!("expected evaluation_failure, got {other:?}"),
+            Ok(_) => panic!("the conjunction faults exactly as the rule does"),
+        }
     }
 
     /// WI-20260911-0V0F7 — one program for the three rows below: a raise the resolver
@@ -1456,16 +1625,17 @@ end
             term: ReflectTerm::new(Value::term(goal)),
         };
         let stream = bridge.execute(query).expect("execute builds the stream");
-        let text = match stream.split_first() {
-            Err(e) => format!("{e:?}"),
+        let reason = match stream.split_first() {
+            Err(ResolveStreamFailure::EvaluationFailure { reason, .. }) => reason,
+            Err(other) => panic!("a bridged raise is an evaluation_failure, got {other:?}"),
             Ok(_) => panic!(
                 "an operation that RAN AND RAISED must take the Err arm, not hand back \
                  an `undecided` row as though the goal merely had no answer"
             ),
         };
         assert!(
-            text.contains("match_failed"),
-            "the Err must carry the raised PAYLOAD; got: {text}"
+            reason.contains("match_failed"),
+            "the Err must carry the raised PAYLOAD; got: {reason}"
         );
     }
 
@@ -2271,14 +2441,14 @@ end
     /// `prelude/stream.anthill` (single source of truth) and `include!`d via
     /// `prelude::stream`. This statically asserts (a) the host
     /// `SearchStreamAdapter` implements that generated trait, and (b) the trait
-    /// is object-safe — `KB.execute` returns `Box<dyn Stream<Solution, Error>>`,
+    /// is object-safe — `KB.execute` returns `Box<dyn Stream<Solution, ResolveStreamFailure>>`,
     /// so a codegen change that breaks dyn-compatibility, or a spec edit that
     /// changes the interface, is a compile error here.
     #[test]
     fn adapter_implements_generated_stream_interface() {
-        fn assert_stream<T: Stream<Solution, Error>>() {}
+        fn assert_stream<T: Stream<Solution, ResolveStreamFailure>>() {}
         assert_stream::<SearchStreamAdapter>();
         // Fails to compile if `Stream` is not object-safe.
-        let _obj_safe: Option<Box<dyn Stream<Solution, Error>>> = None;
+        let _obj_safe: Option<Box<dyn Stream<Solution, ResolveStreamFailure>>> = None;
     }
 }

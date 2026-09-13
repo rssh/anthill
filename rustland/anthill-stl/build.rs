@@ -82,6 +82,9 @@ fn main() {
             // naming the payload here generates `Result<Box<dyn KB>, LoadFailed>`
             // over a type the module does not contain.
             "LoadFailed".into(),
+            // WI-20260911-8Y5BE — the payload `KB.execute` and its stream raise
+            // (`E = Error[ResolveStreamFailure]`). Same closure reason as `LoadFailed`.
+            "ResolveStreamFailure".into(),
             // proposal 053: the write-policy enum the persistence `Store`
             // algebra's `monotonicity` op returns (store.anthill imports it).
             "Monotonicity".into(),
@@ -91,7 +94,7 @@ fn main() {
 
     // WI-553: `stream.rs` is GENERATED-AND-USED (like reflect). The `Stream`
     // trait must be object-safe — the host `KB.execute` returns `Box<dyn
-    // Stream<Solution, Error>>` and `split_first` carries a `Box<dyn Stream>`
+    // Stream<Solution, ResolveStreamFailure>>` and `split_first` carries a `Box<dyn Stream>`
     // tail — so `boxed_trait_objects` boxes self-returns and `Self: Sized`-bounds
     // the generic fold methods. `suppress_imports` drops the spec's body/rule
     // imports (value ctors, `Numeric`, `Iterable`/`Modify`), which the
