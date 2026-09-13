@@ -95,6 +95,9 @@ mod cmd_version_stamp_test;
 #[path = "include/cmd_version_test.rs"]
 mod cmd_version_test;
 
+#[path = "include/unblocks_diamond_count_test.rs"]
+mod unblocks_diamond_count_test;
+
 #[path = "include/store_duplicate_id_test.rs"]
 mod store_duplicate_id_test;
 

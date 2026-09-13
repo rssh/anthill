@@ -19,7 +19,7 @@ $ anthill-todo status
 [exit=0]
 $ anthill-todo list
 Open:
-  WI-001 [Open] base work [unblocks 4]
+  WI-001 [Open] base work [unblocks 3]
 
   -- blocked --
   WI-002 [Open] second work (depends: WI-001)
@@ -29,7 +29,7 @@ Open:
 [exit=0]
 $ anthill-todo list --all
 Open:
-  WI-001 [Open] base work [unblocks 4]
+  WI-001 [Open] base work [unblocks 3]
 
   -- blocked --
   WI-002 [Open] second work (depends: WI-001)
@@ -39,7 +39,7 @@ Open:
 [exit=0]
 $ anthill-todo list --status open
 Open:
-  WI-001 [Open] base work [unblocks 4]
+  WI-001 [Open] base work [unblocks 3]
 
   -- blocked --
   WI-002 [Open] second work (depends: WI-001)
