@@ -49221,7 +49221,9 @@ fn denoted_type_value(kb: &KnowledgeBase, node: Option<&Rc<NodeOccurrence>>) -> 
 ///  * a RELATION-VALUED condition or guard — `if warm(c) then …` over `rule warm(?c) :- …`
 ///    — is refused at load. With the check backed out it loads and then fails at EVAL:
 ///    `EvalError::TypeMismatch { expected: "Bool", got: "Relation" }` for the `if`, and
-///    `Internal("deliver: parent frame had no awaiting state")` for the guard. So this is
+///    `Internal("deliver: parent frame had no awaiting state")` for the guard (measured
+///    before WI-20260913-2858G changed where a nested run stops, so the guard's run-time
+///    failure may read differently now; the load-time refusal is unaffected). So this is
 ///    the runtime's own rule, moved one phase earlier and given a span, not a spelling
 ///    taken away — which is what CLAUDE.md's "know about errors early" asks for.
 ///  * a reflect-`Term` condition (`operation f(t: Term) = if t then …`). The `Term`

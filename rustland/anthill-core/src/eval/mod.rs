@@ -1137,8 +1137,18 @@ impl Interpreter {
         for (i, (pname, _)) in params.iter().enumerate() {
             locals.push((*pname, args[i].clone()));
         }
-        self.step_count = 0;
-        self.recent_dispatches.clear();
+        // WI-20260913-2858G — ONLY A TOP-LEVEL ENTRY STARTS A NEW BUDGET. A host function
+        // calling back in from inside a body lands here with the caller's frames still on
+        // the stack, and its work is the OUTER run's work: resetting `step_count` there
+        // let a loop whose every pass makes such a call run for ever under `step_cap`, and
+        // clearing the dispatch ring or dumping the profile would split the one run's
+        // record at each nested call. Before 2858G that path could not complete at all,
+        // so nothing relied on the reset.
+        let top_level = self.stack.depth() == 0;
+        if top_level {
+            self.step_count = 0;
+            self.recent_dispatches.clear();
+        }
         self.stack.push(Frame {
             op: sym,
             expr: body_term,
@@ -1148,7 +1158,7 @@ impl Interpreter {
             awaiting: None,
         })?;
         let result = self.run();
-        if self.profiling {
+        if self.profiling && top_level {
             self.dump_profile(sym);
         }
         result
@@ -1729,6 +1739,14 @@ impl Interpreter {
     /// WI-SPGBP — how many scoped-KB layers are currently applied.
     pub fn layer_depth(&self) -> usize {
         self.layers.depth()
+    }
+
+    /// WI-20260913-2858G — how many activation frames are live. `0` between top-level
+    /// calls. A run ends at its own FLOOR rather than at an empty stack, so a frame a run
+    /// leaves behind no longer makes the next call fault — it is silent, and this is what
+    /// makes it observable.
+    pub fn activation_depth(&self) -> usize {
+        self.stack.depth()
     }
 
     pub fn stream_split_first(

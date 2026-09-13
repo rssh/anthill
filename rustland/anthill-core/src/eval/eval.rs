@@ -26,7 +26,9 @@ use super::value::Value;
 use super::Interpreter;
 
 pub enum StepOutcome {
-    /// The stack emptied and the top-level computation produced a value.
+    /// The run's base frame completed — the stack is back at the run's floor — and the
+    /// run's computation produced a value. For a top-level run the floor is the empty
+    /// stack; for a run a builtin started, it is the caller's frames (WI-20260913-2858G).
     Done(Value),
     /// Advance the driver: `step()` either pushed a child, transitioned a
     /// wait-state, or rewrote the top frame's expr in place.
@@ -63,7 +65,9 @@ thread_local! {
 pub(crate) type OpBody = (Rc<NodeOccurrence>, Rc<[(Symbol, Value)]>);
 
 impl Interpreter {
-    /// Drive the activation stack until it empties. Single loop, no native
+    /// Drive the activation stack until THIS RUN's base frame completes — back to the
+    /// run's floor, which is the empty stack for a top-level run and the caller's frames
+    /// for a run a builtin started (WI-20260913-2858G). Single loop, no native
     /// recursion. Enforces `EvalConfig::step_cap` per iteration so
     /// TCO'd infinite tail loops surface as `StepsExhausted` rather than
     /// hanging the host.
@@ -72,11 +76,13 @@ impl Interpreter {
     /// `run_inner` drains its own frames on the success path, but an `Err` return abandons
     /// whatever was live — and until proposal 027.4 nothing could error with a SUSPENDED
     /// frame installed, because any boundary beneath a raise absorbed it. A DECLINED raise
-    /// is an ordinary outcome now, so the leftovers became reachable: `deliver` answers
+    /// is an ordinary outcome now, so the leftovers became reachable: `deliver` then answered
     /// `Done` only on an empty stack, so the next call on the same interpreter popped past
     /// its own base into the stale frame and died `Internal("deliver: parent frame had no
     /// awaiting state")`. Measured on one interpreter, for a call that answered `ok(42)`
-    /// when it was fresh.
+    /// when it was fresh. Since WI-20260913-2858G a run ends at its FLOOR, so a leftover
+    /// frame no longer faults the next call — it is SILENT, and this truncate is the only
+    /// thing keeping leftovers from accumulating (`Interpreter::activation_depth` sees one).
     ///
     /// HERE AND NOT AT THE DRIVER, because there are three drivers
     /// (`invoke_op_with_requirements`, `run_with_requirements`, `eval_node_isolated`) and
@@ -90,8 +96,12 @@ impl Interpreter {
     /// host is handed a KB that is still layered with `TermStore::pinned` non-zero — and
     /// `run_inner`'s own per-iteration sweep has stopped running by then.
     pub fn run(&mut self) -> Result<Value, EvalError> {
+        // Proposal 027.4 — THE FLOOR of this run: the index of the bottom frame it owns,
+        // every driver having pushed exactly ONE frame before calling here. Computed ONCE:
+        // the success-path `Done`, the reify-boundary scan and this error truncate all read
+        // it, and two copies of the expression could disagree.
         let floor = self.stack.depth().saturating_sub(1);
-        let result = self.run_inner();
+        let result = self.run_inner(floor);
         if result.is_err() {
             self.stack.truncate_to(floor);
             self.sweep_layers();
@@ -99,7 +109,7 @@ impl Interpreter {
         result
     }
 
-    fn run_inner(&mut self) -> Result<Value, EvalError> {
+    fn run_inner(&mut self, floor: usize) -> Result<Value, EvalError> {
         let prof = self.profiling;
         // `pending` carries a produced value awaiting delivery to its parent
         // frame. The trampoline alternates between reducing the top frame
@@ -110,12 +120,10 @@ impl Interpreter {
         // tick, so a no-reduction dispatch/deliver cascade (a self-redispatching
         // spec op) is bounded too, not just `step()`-driven loops.
         let mut pending: Option<Value> = None;
-        // Proposal 027.4 — THE FLOOR of this run: the index of the bottom frame
-        // it owns. A `reify` boundary below it belongs to an outer `run()` (a
-        // builtin's `interp.call` pushes onto the live stack), and answering that
-        // one from here would hand an outer frame's `Result` back as this call's
-        // value. See `ActivationStack::reify_boundaries`.
-        let floor = self.stack.depth().saturating_sub(1);
+        // `floor` (from `run`): a `reify` boundary below it belongs to an outer
+        // `run()` (a builtin's `interp.call` pushes onto the live stack), and
+        // answering that one from here would hand an outer frame's `Result` back as
+        // this call's value. See `ActivationStack::reify_boundaries`.
         loop {
             if let Some(cap) = self.config.step_cap {
                 if self.step_count >= cap {
@@ -129,7 +137,7 @@ impl Interpreter {
             // WI-SPGBP — discard any scoped-KB layer whose last holder has gone.
             self.sweep_layers();
             let stepped = match pending.take() {
-                Some(v) => self.deliver(v),
+                Some(v) => self.deliver(v, floor),
                 None => {
                     // Profiling attributes a reduction to the executing op —
                     // only `step()` iterations are reductions, deliveries aren't.
@@ -912,9 +920,10 @@ impl Interpreter {
 
     /// Proposal 039 / WI-084 — evaluate a node to a value on a FRESH activation
     /// stack, leaving the in-flight stack untouched. A const reference is reduced
-    /// mid-evaluation (the parent's frames are live), so a nested `run()` on the
-    /// shared stack would wrongly drain those parents; swapping in a fresh stack
-    /// confines `run()` to just this body. The shared `step_count` / `step_cap`
+    /// mid-evaluation (the parent's frames are live). A nested `run()` on the shared
+    /// stack USED to drain those parents; since WI-20260913-2858G it stops at its own
+    /// floor, so that reason is gone. The fresh stack still confines this body — its
+    /// frames, its reify-boundary scan and its depth cap never see the parent's. The shared `step_count` / `step_cap`
     /// still bound the work, so a non-terminating const body surfaces as
     /// `StepsExhausted`. The depth cap is carried over from the live config.
     fn eval_node_isolated(
@@ -2504,8 +2513,9 @@ impl Interpreter {
         // declares it and stops) and it cannot be a builtin, `BuiltinFn` being
         // `Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>` — it
         // returns a VALUE and has no way to enter a closure. Re-entering `run()`
-        // from a builtin is what 047 §4 rejects, and is unsafe here besides
-        // (`deliver` pops until the stack is EMPTY, with no per-run base).
+        // from a builtin is what 047 §4 rejects for a HANDLER. (It is no longer
+        // UNSAFE: since WI-20260913-2858G `deliver` stops at the run's floor, which is
+        // what lets a host function call back into anthill at all.)
         //
         // Keyed by SYMBOL, resolved once at construction (WI-897: an operation's
         // meaning is its symbol, never its name), so this costs one
@@ -3762,15 +3772,33 @@ impl Interpreter {
     }
 
     /// Deliver a computed value to the frame beneath `top` (or finish the
-    /// computation if the stack empties). Loops internally to cascade
-    /// through `OperationResult` pass-throughs and through builtin
+    /// computation when the pop reaches this run's `floor`). Loops internally to
+    /// cascade through `OperationResult` pass-throughs and through builtin
     /// dispatches that themselves produce values.
-    fn deliver(&mut self, mut v: Value) -> Result<StepOutcome, EvalError> {
+    ///
+    /// WI-20260913-2858G — THE RUN ENDS AT ITS OWN FLOOR, NOT AT AN EMPTY STACK. A
+    /// builtin's `interp.call` pushes onto the LIVE stack (027.4's `floor` note), so
+    /// the frames beneath its base belong to the run that invoked the builtin — a
+    /// caller mid-`step`, awaiting nothing. Ending only on an empty stack popped past
+    /// the nested run's base and delivered into that caller: `Internal("deliver:
+    /// parent frame had no awaiting state")` for every host function that calls back
+    /// into anthill from inside a body. For a top-level run the floor is 0, and
+    /// reaching it IS the empty stack, so nothing changes there.
+    fn deliver(&mut self, mut v: Value, floor: usize) -> Result<StepOutcome, EvalError> {
         loop {
+            // LOUD, NOT SILENT, when there is nothing of this run left to pop: popping
+            // anyway would discard a frame that belongs to the CALLER and still answer
+            // `Done`, and the lost frame would surface somewhere unrelated.
+            if self.stack.depth() <= floor {
+                return Err(EvalError::Internal(
+                    "deliver: no frame of this run is left to deliver from".into(),
+                ));
+            }
             self.stack.pop();
-            let Some(top) = self.stack.top_mut() else {
+            if self.stack.depth() == floor {
                 return Ok(StepOutcome::Done(v));
-            };
+            }
+            let top = self.stack.top_mut().expect("a stack above its floor has a top frame");
             let state = top.awaiting.take().ok_or_else(|| {
                 EvalError::Internal("deliver: parent frame had no awaiting state".into())
             })?;

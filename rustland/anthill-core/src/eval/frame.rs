@@ -371,12 +371,12 @@ impl ActivationStack {
     /// decides acceptance (it needs the KB, which this type does not hold), so the
     /// candidates are collected here and judged there.
     ///
-    /// `floor` is NOT decoration. `run()` drains until the stack is EMPTY and has
-    /// no per-run base, so a builtin's `interp.call` pushes its frames on top of
-    /// its caller's; a boundary BELOW the floor belongs to an outer `run()`, and
-    /// answering it from an inner one would hand that outer frame's `Result` back
-    /// as the inner call's value. (The wider defect — `deliver` popping past the
-    /// base — is pre-existing; bounding this scan is what 027.4 owes.)
+    /// `floor` is NOT decoration. A builtin's `interp.call` pushes its frames on top
+    /// of its caller's, on the one live stack; a boundary BELOW the floor belongs to an
+    /// outer `run()`, and answering it from an inner one would hand that outer frame's
+    /// `Result` back as the inner call's value. (`deliver` popping past the base was the
+    /// wider defect of the same shape; WI-20260913-2858G made the success path stop at
+    /// the floor too.)
     pub fn reify_boundaries(&self, floor: usize) -> SmallVec<[(usize, Option<Symbol>); 2]> {
         self.frames
             .iter()
@@ -519,18 +519,16 @@ mod tests {
         }
     }
 
-    /// Proposal 027.4 — THE FLOOR, driven directly. `run()` has no per-run base, so a
-    /// nested `run()` (a builtin's `interp.call`, the SLD bridge's `bridge_op_to_eval`)
-    /// pushes its frames on top of its caller's; the scan must stop at the frames THIS
-    /// run owns, or an inner run answers an outer run's boundary and truncates frames
-    /// the host still holds.
+    /// Proposal 027.4 — THE FLOOR, driven directly. A nested `run()` (a builtin's
+    /// `interp.call`, the SLD bridge's `bridge_op_to_eval`) pushes its frames on top of
+    /// its caller's; the scan must stop at the frames THIS run owns, or an inner run
+    /// answers an outer run's boundary and truncates frames the host still holds.
     ///
-    /// Driven here rather than through a program because no anthill spelling reaches
-    /// that shape yet: the operation that re-enters `run()` on a live stack is reached
-    /// from the RESOLVER, and a rule body's raise appears in no caller's effect row, so
-    /// a typed `reify` cannot be wrapped around it. So this test is the ONLY thing in
-    /// the tree that pins the bound: delete `floor` and nothing else goes red, which is
-    /// precisely why it is written.
+    /// Written when no anthill spelling reached that shape. One does since
+    /// WI-20260913-2858G — a host function calling back into anthill under an outer
+    /// `Error.reify` (`wi_2858g_reentrant_host_call_test`'s `caughtAcross`) — and that
+    /// row drives the same bound through a program; this one keeps the bound pinned
+    /// without an interpreter.
     #[test]
     fn the_boundary_scan_stops_at_the_floor() {
         let boundary = || {

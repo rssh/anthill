@@ -58,3 +58,7 @@ ALSO CARRIED: the article (ICTERI-2026, Listing 7) already uses the new name, so
 
 ADDED TO ACCEPTANCE: no live occurrence of `Harness` outside a comment recording the old name, and every fixture still accepted or refused FOR ITS OWN REASON with diagnostic substrings unchanged.
 
+### 2026-09-13T22:56:16Z — feedback — user
+
+MEASURED PREMISE CHANGED (2026-09-14): `guardians.attempt` NOW RUNS FROM A HOST. The shape section's '(calling `attempt` from a host dies `OperationBodyMissing`, so the suite drives carriers)' had two causes, both fixed: the unbound carrier parameter on `provides Harness` / `provides Checker` (bound in ad00948e; the load error is WI-20260913-KXNEX), and a re-entrant host call delivering past its run's floor (WI-20260913-2858G). `one_round_of_the_generation_loop_answers_the_same_verdict` now drives `guardians.attempt` and answers Accepted. `attempt` also gained `previous: Option[T = Source]` and still returns only the verdict, so a loop built on it cannot hand the candidate back — the single entry point this ticket asks for should return it.
+

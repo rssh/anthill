@@ -3,9 +3,9 @@
 - id: WI-20260913-2858G-a-host-function-that-calls
 - created: 2026-09-13T19:40:02Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-13T19:40:02Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-13T22:56:04Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

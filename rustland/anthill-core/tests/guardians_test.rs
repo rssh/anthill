@@ -2437,30 +2437,33 @@ fn harness_accepts_a_well_formed_generated_agent_and_names_what_it_accepted() {
 
 #[test]
 fn one_round_of_the_generation_loop_answers_the_same_verdict() {
-    // THE WHOLE ROUND: `render_task` → `generate` → `check`. Everything else in this
-    // file calls the checker directly; this is the one row where the MODEL REPLY becomes
-    // the candidate, so it is what makes the fake oracle earn its place, and the only
-    // one that exercises the `Prompt[Trusted]` staging together with the verdict.
+    // THE WHOLE ROUND, AS THE EXAMPLE WRITES IT: `guardians.attempt` — `render_task` →
+    // `generate` → `check` in anthill — called with the carriers. This is the one row where
+    // the MODEL REPLY becomes the candidate through the example's own operation, so it is
+    // what makes the fake oracle earn its place, and the only one that exercises the
+    // `Prompt[Trusted]` staging together with the verdict.
     //
-    // DRIVEN THROUGH THE CARRIERS, NOT THROUGH `guardians.attempt`, and the reason is
-    // measured rather than assumed — TWICE, because the first reason turned out to be a
-    // different defect. Calling `attempt` from a host used to die `OperationBodyMissing
-    // { name: "guardians.Harness.render_task" }`, which this comment blamed on a host
-    // call with hand-built values. It was the provisions: `provides Harness` named no
-    // carrier (kernel-language.md §5.1 — see `lib/llm.anthill`'s `C = LiveLlm`), so
-    // nothing could dispatch at one. With `C = FileHarness` / `C = LoadChecker` bound,
-    // `attempt` gets past dispatch and now dies
-    // `Internal("deliver: parent frame had no awaiting state")` — measured, cause not
-    // isolated; every host binding on that path (`generate`, `check`) re-enters the
-    // interpreter from inside an anthill body, which is the first suspect.
+    // IT USED TO DRIVE THE CARRIERS ONE CALL AT A TIME, and the reason changed twice.
+    // `attempt` from a host first died `OperationBodyMissing { name:
+    // "guardians.Harness.render_task" }` — `provides Harness` named no carrier
+    // (kernel-language.md §5.1; `lib/llm.anthill`'s `C = LiveLlm` note, WI-20260913-KXNEX).
+    // With the carriers bound it died `Internal("deliver: parent frame had no awaiting
+    // state")`: `generate` and `check` call back into the interpreter from inside
+    // `attempt`'s body, and the nested run delivered past its own floor
+    // (WI-20260913-2858G). Backing that fix out reds THIS row with that message.
     //
     // The fake's FIXTURE is the good agent: `generate` completes on the carrier it was
     // handed, so the reply is that value's own field and nothing a test set aside.
     let mut p = Pipeline::new();
     let llm = p.fake_llm(&agent_source("good"));
-    let prompt = p.render(&[], &[], None);
-    let src = p.generate(&llm, &prompt);
-    let v = p.check(&src).unwrap_or_else(|e| panic!("must be accepted: {e:#?}"));
+    let (tools, feedback) = (p.strings(&[]), p.strings(&[]));
+    let none = entity0(p.interp.kb(), "anthill.prelude.Option.none", vec![]).expect("none()");
+    let args = [p.harness.clone(), llm, p.checker.clone(), p.spec.clone(), tools, feedback, none];
+    let verdict = p
+        .interp
+        .call("guardians.attempt", &args)
+        .unwrap_or_else(|e| panic!("attempt: {e:?}"));
+    let v = read_verdict(&p.interp, &verdict).unwrap_or_else(|e| panic!("must be accepted: {e:#?}"));
     assert_eq!(v.carrier, "guardians.agent.GoodTriage");
     assert_eq!(v.budget, vec!["External", "llm.E", "Error"]);
 }
@@ -2493,34 +2496,6 @@ fn a_refused_round_feeds_the_next_prompt() {
     }
     let again = p.render(&[], &[], None);
     assert_eq!(prompt_text(p.interp.kb(), &again).unwrap(), round_one, "the control");
-}
-
-/// A PINNED FAULT, NOT A PROPERTY: `guardians.attempt` — the example's own one-round
-/// operation — cannot be run from a host today. Recorded here rather than only in the
-/// comment on `one_round_of_the_generation_loop_answers_the_same_verdict` so a change that
-/// fixes it, or moves it, is SEEN: this row reds either way, and whoever reds it should
-/// drive `attempt` there instead of the carriers.
-///
-/// Owned by WI-20260913-2858G, which records the mechanism read from the code: every host
-/// binding on the path re-enters the interpreter from inside an anthill body (`generate`
-/// calls `Llm.complete`, `check` calls `KB.loaded` and `guardians.gate`), and a nested
-/// `Interpreter::call` on the live activation stack delivers past its own floor into the
-/// caller's frames.
-#[test]
-fn attempt_from_the_host_dies_inside_the_evaluator_today() {
-    let mut p = Pipeline::new();
-    let llm = p.fake_llm(&agent_source("good"));
-    let (tools, feedback) = (p.strings(&[]), p.strings(&[]));
-    let none = entity0(p.interp.kb(), "anthill.prelude.Option.none", vec![]).unwrap();
-    let args = [p.harness.clone(), llm, p.checker.clone(), p.spec.clone(), tools, feedback, none];
-    let err = p
-        .interp
-        .call("guardians.attempt", &args)
-        .expect_err("attempt from a host is expected to fault today — if it answers, this is fixed");
-    assert!(
-        format!("{err:?}").contains("parent frame had no awaiting state"),
-        "attempt faulted, but not with the pinned reentrancy error: {err:?}"
-    );
 }
 
 /// `examples/guardians/prompt/primer.md` TELLS EVERY LIVE ROUND ITS EXAMPLE "LOADS CLEAN",
