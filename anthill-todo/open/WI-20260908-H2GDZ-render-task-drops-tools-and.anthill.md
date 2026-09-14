@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test
 
+- depends_on: WI-20260914-Z73FX-reflect-cannot-say-what-a
+
 - tags: guardians
 
 ## Description
