@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20260914-DV7DP-a-meta-block-on-a-sort-entity
+
 - tags: reflect
 
 ## Description
