@@ -1404,17 +1404,54 @@ namespace anthill.todo
     -- repetition further, but needs set-union arithmetic; left as a
     -- follow-up.)
 
+    -- Count of DISTINCT ids reachable from `id` along dependent edges,
+    -- EXCLUDING `id` itself. `id` is marked before the walk, so a cycle
+    -- back to it contributes nothing.
+    --
+    -- THE RETURNED `visited` IS NOT "THE SET COUNTED". It holds two kinds
+    -- of mark in one map: every id that WAS counted, plus every ROOT, which
+    -- is marked precisely so it is NOT counted. Today that is harmless --
+    -- `fill_unblocks` hands each row a fresh `empty()`, so no root is ever
+    -- another root's walk. The follow-up invited three lines above
+    -- (union-of-children's-reachable-sets, threading ONE map across rows)
+    -- must not read this map as the counted set: it would see the previous
+    -- root as already counted and report low, with no error anywhere.
+    --
+    -- THE `1 +` LIVES AT THE NODE, NEVER AT THE EDGE -- see
+    -- [count_closure]. It used to sit in `count_transitive_walk`
+    -- (`pair(1 + sub + more, v3)`), which added one per INCOMING EDGE
+    -- while `visited` deduplicated per NODE. Those are two different
+    -- questions and the diamond above is exactly where they disagree:
+    -- with the `1 +` at the edge, `X -> A -> D` and `X -> B -> D`
+    -- counted {A, B, D} as 4, and the shallower diamond `X -> A -> D`
+    -- with `X -> D` counted {A, D} as 3. Dedup and increment must be
+    -- asked at the same place.
     operation count_transitive(id: String,
                                dep_map: Map[String, List[String]],
                                visited: Map[String, Bool])
       -> Pair[Int64, Map[String, Bool]]
     =
+      count_transitive_walk(direct_dependents_m(dep_map, id),
+                            dep_map,
+                            put(visited, id, true))
+
+    -- One node's INCLUSIVE contribution: 0 if some earlier path already
+    -- counted it, else itself plus its own closure. This is the only
+    -- `1 +` in the family, and it sits behind the same `contains` test
+    -- that decides whether to descend -- so a node cannot be counted by
+    -- a path that does not also walk it.
+    operation count_closure(id: String,
+                            dep_map: Map[String, List[String]],
+                            visited: Map[String, Bool])
+      -> Pair[Int64, Map[String, Bool]]
+    =
       if contains(visited, id) then pair(0, visited)
       else
-        let visited2 = put(visited, id, true)
-        let direct = direct_dependents_m(dep_map, id)
-        count_transitive_walk(direct, dep_map, visited2)
+        match count_transitive(id, dep_map, visited)
+          case pair(n, v) -> pair(1 + n, v)
 
+    -- Sum the closures of a dependent list, threading `visited`. Adds
+    -- nothing of its own: every increment is [count_closure]'s.
     operation count_transitive_walk(deps: List[String],
                                     dep_map: Map[String, List[String]],
                                     visited: Map[String, Bool])
@@ -1423,10 +1460,10 @@ namespace anthill.todo
       match deps
         case nil() -> pair(0, visited)
         case cons(d, rest) ->
-          match count_transitive(d, dep_map, visited)
+          match count_closure(d, dep_map, visited)
             case pair(sub, v2) ->
               match count_transitive_walk(rest, dep_map, v2)
-                case pair(more, v3) -> pair(1 + sub + more, v3)
+                case pair(more, v3) -> pair(sub + more, v3)
 
     -- ── Feedback set ──────────────────────────────────────────────
 
@@ -2498,10 +2535,27 @@ namespace anthill.todo
     -- legacy `print_tree` exactly: connector is "" at the root, "├─ "
     -- for non-last siblings, "└─ " for last; child_prefix continues
     -- with "│  " or "   " depending on whether `is_last` was true.
+    -- `seen` is the PATH from the root to this node, and re-entering a node
+    -- already on that path is where a corrupt cyclic store used to spin
+    -- forever. The two sibling walks over this same `dep_map` already guard
+    -- (`row_reaches`, `reaches_dep` -- "a corrupt cyclic store must not hang
+    -- the CLI"); this one did not, and `list` answering correctly on the same
+    -- data left nothing to hint the store was the problem.
+    --
+    -- PATH-LOCAL, NOT GLOBAL, and the golden transcript is why: a DAG diamond
+    -- must still render under BOTH parents (`WI-003` appears under `WI-002`
+    -- AND under `WI-004`). A global visited set would break the cycle just as
+    -- well and silently DELETE the second rendering -- a correct-looking tree
+    -- that is missing a branch.
+    --
+    -- A cycle is MARKED, NOT SKIPPED: the node prints with `(cycle)` and the
+    -- descent stops there. Truncating silently would render a corrupt store as
+    -- a well-formed tree.
     operation print_tree(id: String,
                          is_root: Bool,
                          is_last: Bool,
                          prefix: String,
+                         seen: List[String],
                          row_map: Map[String, Row],
                          dep_map: Map[String, List[String]])
       -> Unit
@@ -2512,19 +2566,25 @@ namespace anthill.todo
         else if is_last then "└─ "
         else "├─ "
       let status = status_or_unknown(row_map, id)
+      let cycle = list_contains_string(seen, id)
+      let marker = if cycle then " (cycle)" else ""
       let _ = println(console(),
                       concat(prefix,
                         concat(connector,
-                          concat(id, concat(" [", concat(status, "]"))))))
-      let child_prefix =
-        if is_root then "   "
-        else if is_last then concat(prefix, "   ")
-        else concat(prefix, "│  ")
-      let children = direct_dependents_m(dep_map, id)
-      print_children(children, child_prefix, row_map, dep_map)
+                          concat(id,
+                            concat(" [", concat(status, concat("]", marker)))))))
+      if cycle then ()
+      else
+        let child_prefix =
+          if is_root then "   "
+          else if is_last then concat(prefix, "   ")
+          else concat(prefix, "│  ")
+        let children = direct_dependents_m(dep_map, id)
+        print_children(children, child_prefix, cons(id, seen), row_map, dep_map)
 
     operation print_children(children: List[String],
                              prefix: String,
+                             seen: List[String],
                              row_map: Map[String, Row],
                              dep_map: Map[String, List[String]])
       -> Unit
@@ -2536,8 +2596,8 @@ namespace anthill.todo
           let last = match rest
             case nil() -> true
             case cons(_, _) -> false
-          let _ = print_tree(c, false, last, prefix, row_map, dep_map)
-          print_children(rest, prefix, row_map, dep_map)
+          let _ = print_tree(c, false, last, prefix, seen, row_map, dep_map)
+          print_children(rest, prefix, seen, row_map, dep_map)
 
     operation print_roots(roots: List[Row],
                           row_map: Map[String, Row],
@@ -2550,7 +2610,7 @@ namespace anthill.todo
         case cons(r, rest) ->
           match r
             case Row(rid, _, _, _, _, _, _) ->
-              let _ = print_tree(rid, true, true, "", row_map, dep_map)
+              let _ = print_tree(rid, true, true, "", nil(), row_map, dep_map)
               print_roots(rest, row_map, dep_map)
 
     operation cmd_graph(s: Cell[State]) -> Int64

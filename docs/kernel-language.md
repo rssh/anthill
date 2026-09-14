@@ -2194,11 +2194,43 @@ Both forms lower before resolution to the existing `find_dictionary` relation
 with an output slot, and the dictionary is an ordinary structural value in the
 clause substitution.
 
+**Every element the bracket NAMES selects the instance** (WI-20260913-J38VE); an
+element it leaves unwritten is matched abstractly and does not discriminate. So
+`require[Sp[C = Red, P = Int64]]` resolves against a provider binding `P = Int64`
+where the bare `require[Sp[C = Red]]` delays — for a spec with more than one type
+parameter the written bracket is usually the only thing that can say which row is
+meant, since the grounding anchor (a covered call's argument, or the typed head)
+pins the CARRIER and nothing else. A named element that disagrees with the anchor's
+own type is a load error, not a second opinion.
+
+**The carrier binding may be a PATH PROJECTION off one of the clause's own typed
+head parameters** (WI-20260909-S8CBV): `rule anchored(p: Box, ?r) :- ?d =
+require[Desc[T = p.E]], Desc.tag(?r)` names the `Desc` instance of the ELEMENT of
+whatever `Box` the clause was handed, so one clause answers a different instance
+per call. It is the §5.2 operation form one position over, and it is a different
+mechanism for a reason an author can see: an operation's `x.E` is resolved
+against the ARGUMENT at the call, while a clause's `p.E` receiver is a logic
+variable, so the member is read off the carrier's CARRIED TYPE during resolution.
+Four consequences follow. The receiver must be a §2.1 sigil-free head parameter
+— the sigil spelling `?p.E` does not parse, and a dotted name this clause does
+not bind keeps the ordinary unresolved-binding refusal. The projection's ROOT is
+what anchors the requirement, and its bound is NOT required to provide the spec:
+`require[Desc[T = Box]]` says the carrier IS `Box` and is refused where `Box`
+provides no `Desc`, while `require[Desc[T = p.E]]` says nothing about `Box` at
+all. A member the root's bound **cannot declare** is a load error naming both,
+where the bound is a data sort — nothing can be narrower than such a bound, so
+its declared parameters are the whole truth, and a typo there would otherwise be
+indistinguishable from a clause waiting on a binding. And a member it *does*
+declare that the carrier has not yet **bound** SUSPENDS — it delays and rotates
+like any goal, and is loud at the drain — rather than deciding the clause false;
+an introducer bound, which records the spec and admits every provider, keeps
+that reading for every member.
+
 This is the requirement-binding half of proposal 060. Its typed-head half is
-delivered separately, below. What remains unimplemented there is the ANCHOR
-combination: a `require[X]` in a clause whose only grounding is a typed head
-binding is still refused for want of a covered body call. WI-20260908-VVM1R
-owns that residue. §2.2's domain generation is delivered (WI-743), and its VALUE
+delivered separately, below, and so is the ANCHOR combination joining them: a
+`require[X]` in a clause whose only grounding is a typed head binding resolves
+through that binding, with no covered body call needed (WI-20260909-QMFC5, over
+WI-20260908-VVM1R). §2.2's domain generation is delivered (WI-743), and its VALUE
 face for a non-parameterized sort with it (WI-20260911-WT8WG); see the entry
 after the typed-head one below. Do not confuse proposal 060 with the unrelated
 work item WI-060.

@@ -20,19 +20,23 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §2.2 / §8.1 rule-head type VARIABLES | a bound's variable is a clause variable | **WI-20260911-5G28A** | **delivered** except the citation bracket — §7.2 |
 | §2.2 / §8.1 the citation BRACKET | which instance a citation means | **WI-20260911-5G28A** | **design settled, not built** — §7.3 |
 | §3 anchor (requirement half) | covered body call grounds the spec | WI-1040 | delivered |
-| §3 anchor (typed-head half) | `?x: T` grounds the spec | **WI-20260908-VVM1R** | **design settled, not built** — §8, mechanism at §8.2–§8.6 |
-| channel §10 item 1 | retain the spec's type-args | **WI-20260908-VVM1R** | **settled, not built** — §8.6, taken inline |
+| §3 anchor (typed-head half) | `?x: T` grounds the spec | WI-20260909-QMFC5 | **delivered** — §8, mechanism at §8.2–§8.6 |
+| channel §10 item 1 | retain the spec's type-args | WI-20260909-51W18 | **delivered** — §8.6 |
 | §3 anchor, CHECK tier | `requires(X)` under an anchor | **WI-20260909-QMFC5** | **delivered** — emits the same goal as the bind tier, §8.8 |
-| channel §10 item 3 | op→rule dictionary channel (polytypes) | **WI-20260909-NAR1X** | **settled, not built** — §8.10 |
+| channel §10 item 3 | op→rule dictionary channel (polytypes) | WI-20260909-NAR1X | **delivered** — the ground edge; the GENERATIVE one is nobody's, §8.10 |
+| channel §10 item 4 | a requirement written at a path projection | WI-20260909-S8CBV | **delivered** for both surfaces — operation `requires` and the rule-body bracket, §8.5; the ATTRIBUTION by root is **not built** |
+| §3 anchor, MULTI-PARAMETER specs | the fetch reads the written bracket | **WI-20260913-J38VE** | **delivered** — §8.6; the bracket rides slot 0 to the fetch on BOTH producers |
 | §4 determinism | fetch, never choose | WI-855/857/860 | delivered (058) |
 | C666A relaxation | admit the guarded non-enclosing join | WI-742 | **delivered** — §9 |
 | — (no proposal §) | the domain as a runtime value via the requirement channel | — | **exploratory**, no owner — [`060-typedomains-implementation.md`](./060-typedomains-implementation.md) |
 
 Everything delivered is driven and controlled in
-`anthill-core/tests/include/wi742_typed_relational_head_test.rs` and
-`anthill-core/tests/include/wi743_finite_domain_test.rs` and
-`anthill-core/tests/include/wi_wt8wg_domain_value_face_test.rs`, whose headers name which
-rows fail per back-out.
+`anthill-core/tests/include/wi742_typed_relational_head_test.rs`,
+`anthill-core/tests/include/wi743_finite_domain_test.rs`,
+`anthill-core/tests/include/wi_wt8wg_domain_value_face_test.rs`,
+`anthill-core/tests/include/wi_s8cbv_projection_requirement_test.rs` and
+`anthill-core/tests/include/wi_j38ve_written_bracket_fetch_test.rs`, whose headers name
+which rows fail per back-out.
 
 `domain` in §2.2 is the **member relation a sort defines**, not a second name for the
 §2 goal. The two are one NOTION and two FUNCTORS, and the split is not a naming
@@ -832,20 +836,110 @@ projection is the form signatures already take. (The parse error is on `?x.E`, t
 form.) **WI-20260909-S8CBV** owns it, and it REMOVES the selector above and lifts the
 anchored gate rather than adding to them.
 
-**S8CBV's OPERATION half is delivered; its RULE half is not.** The two gates it names are
+**S8CBV's TWO GATES ARE BOTH DELIVERED; its ATTRIBUTION is not.** The gates were
 independent and only the second was ever about this umbrella:
 
-  * the **operation** requirement channel now resolves and drives a projection —
+  * the **operation** requirement channel resolves and drives a projection —
     `operation pick(x: Box) requires Desc[T = x.E]` answers a different `Desc` instance
     per call site, measured `7` and `9` where a concrete bracket answers `7` and `7`.
     Design and the traps: `requirement-channel.md` §10 item 4; the surface rule:
     `kernel-language.md` §5.2 (*Operation-level `requires` over a spec*). Nothing in it touches this section's selector, because the
     operation channel never had one — a `requires` names one dictionary per clause;
-  * the **rule-body** `require[Desc[T = p.E]]` bracket is STILL REFUSED, by S1's drop rule
-    (`p.E` "names neither a sort nor one of `Desc`'s own type parameters"). That gate must
-    learn that a projection is a third kind, and it is the one that feeds the
-    attribution-by-root work this section describes — the selector above stands until it
-    lands.
+  * the **rule-body** `require[Desc[T = p.E]]` bracket now LOADS and THREADS — gate (1),
+    delivered 2026-09-13 after WI-20260909-C7ANM unblocked it. `rule anchored(p: Box, ?r)
+    :- ?d = require[Desc[T = p.E]], Desc.tag(?r)` answers `7` at a `Box` of `Red` and `9`
+    at a `Box` of `Blue`: one clause, two call sites, two instances.
+
+**THE TWO GATES ARE NOT ONE MECHANISM, and the difference is the receiver.** An
+operation's `x.E` carries `Ref(x)` — a parameter symbol — and is δ-eliminated against the
+argument at the CALL. A clause's `p.E` carries a logic VARIABLE, closed to a De Bruijn slot
+with the rest of the rule and opened fresh per firing, so the member is projected off the
+carrier's CARRIED TYPE at the RESOLVER (`requirement_projection_member` reads it off the
+retained instance in slot 0, `projected_arg_types` applies it for BOTH the guard and the
+fetch — one place, or a goal could be guarded on the receiver and fetched on its member).
+`path-dependent-types.md` §4 names the split: a flexible projection "arises only where a
+receiver is a logic variable, i.e. in rule bodies, never in operation signatures".
+
+**THE ROOT IS THE ANCHOR AND ITS BOUND IS NOT TESTED FOR `provides`** — the one rule that
+separates a projected carrier from a direct one, and what refused the shape before.
+`require[Desc[T = Box]]` says the carrier IS `Box`, so `Box` must provide `Desc`;
+`require[Desc[T = p.E]]` says it is `Box`'s ELEMENT, about which `Box` says nothing. The
+two carrier-parameter agreement checks below the selection are switched off explicitly for
+a projection, because both compare the written carrier to the bound AS SORTS and a
+projected carrier is neither. Driven as a pair: the same head, the same bound and the same
+spec, with the CONSTANT bracket refused one row above the projection being admitted.
+
+**Seven axes, measured 2026-09-13** (each back-out applied by a script asserting its
+pattern matched exactly once, the tree restored by checksum between runs), and no two fail
+the same set:
+
+| backed out | rows | which |
+|---|---|---|
+| the loader rung (`try_require_spec_projection`) | 4 | all — nothing LOADS, with S1's drop-rule message verbatim, the pre-ticket verdict |
+| the anchor route (`written_projection_anchor`) | 3 | the `Box`-rooted clauses do not LOAD: "head bound(s) — Box — provide no `Desc`", the `provides` scan asking about the ROOT where the question is about its ELEMENT |
+| the runtime δ (`requirement_projection_member`) | 2 | both LOAD CLEAN and answer wrongly — the acceptance drops to no answer, the spec-bound row stops delaying |
+| the static member check | 1 | a member `Box` cannot declare goes back to loading clean and residualizing, with no diagnostic |
+| the suspend arm (`Suspend` → `DontFire`) | 2 | the two delay rows answer ZERO rows instead of one indefinite one — WI-067's silent drop |
+| the early routing (`spec_arg_has_projection`) | 2 | a projected bracket falls back to the witness scans — one row returns to an indefinite residual, the other to a clean load |
+| the tri-state (`Reported` → `Dropped`) | 1 | the author sees the rung's accurate error AND the misdiagnosis it replaces |
+
+**A PROJECTED BRACKET TAKES THE ANCHOR PATH, AND TAKES IT FIRST — repaired after the
+first commit, and it was one defect wearing two faces.** `anchor_grounding` is consulted
+LAST, after four witness scans, so any clause carrying BOTH a projected bracket and a
+covered spec-op call took the witness path. `/code-review` measured both consequences:
+`rule r(p: Box, ?q, ?res) :- ?d = require[Desc[T = p.E]], Desc.describe(?q, ?res)` LOADED
+CLEAN and residualized — the author's `p.E` silently ignored, the requirement grounded at
+the CALL's argument, and the resolver's δ then rewriting THAT argument as though it were
+the projection root — where the concrete-bracket twin answered a definite `90`; and
+`require[Desc[T = p.Zork]]` beside the same call escaped the member check entirely, loading
+clean where its witness-free twin is refused. A witness grounds from a covered call's
+arguments, which name a different value than the receiver the author wrote, so a projected
+bracket must take the anchor path or be refused — it can never silently ground elsewhere.
+Two more axes, and the concrete-bracket row passes under both by design.
+
+**ONE BINDING, ONE DIAGNOSTIC.** The projection rung reports its own located error, and a
+bare `Option` could not tell its caller that — so both callers also ran
+`report_dropped_spec_binding` and the author got the accurate message followed by the very
+misdiagnosis the rung exists to prevent. `SpecBindingLowering` makes the three outcomes
+distinct: `Lowered`, `Dropped` (the caller owns the diagnostic) and `Reported`.
+
+The δ axis is why the acceptance is two NUMBERS and not a clean load: with δ gone the
+carrier type read at the fetch is the RECEIVER's own type rather than its member, so
+`Box[E = Red]` matches no `Desc` provider and the clause silently has no answers.
+
+**THE STATIC-MEMBER AND SUSPEND AXES DRAW ONE LINE, and a first cut had it in the wrong
+place.** A member the bound sort STATICALLY cannot declare (`require[Desc[T = p.Zork]]`
+under `p: Box`) is a typo and refuses at LOAD; a member it declares that the carrier has
+not yet BOUND is a run-time condition and DELAYS. As first written every such member
+residualized, so an author's typo was indistinguishable from a clause waiting on a binding
+— and the sibling typo one character over (`require[Desc[T = Zork]]`, a bogus SORT) was
+already a load error. `/code-review` measured it. The refusal is gated on the bound being
+a DATA sort, which is §8.4's own rule rather than caution: a `provides` onto a
+constructor-declaring sort is refused, so no run-time carrier can be narrower than such a
+bound and its declared parameters are the whole truth. An INTRODUCER bound records the
+SPEC, admits every provider, and keeps the delay — which is the one shape that still
+reaches the runtime arm, and the row that drives it.
+
+
+**A MULTI-PARAMETER SPEC DOES NOT RESOLVE THROUGH THE ANCHOR AT ALL, and that is §8.4's
+path rather than this one.** Found while probing whether gate (1)'s resolver-side member
+reader could disagree with the anchor's: it can only disagree on a bracket with TWO
+projections, which needs two type parameters. (The two now derive the member by ONE rule
+— `/code-review` named the divergence and the reader was keyed on the carrier parameter,
+which is the question the anchor asks.) MEASURED 2026-09-13 on a two-parameter spec
+whose carrier is its SECOND-declared parameter — seven bracket spellings, every admissible
+one RESIDUALIZES, **including the two controls with a CONCRETE carrier and no projection
+anywhere** (`require[Two[A = Red]]` and `require[Two[A = Red, B = Blue]]` under `?x: Red`).
+So the disagreement is unreachable, and the reason is not the projection: the typed-head
+anchor serves only a spec whose carrier is pinned by one parameter. Recorded here and at
+`requirement_projection_member`; nothing owns it.
+
+**What gate (1) does NOT deliver: the ATTRIBUTION.** Keying which dictionary a `require`
+means on the projection ROOT — which REMOVES the sort-matching selector above, narrows the
+`>1`-anchor refusal, and lifts the anchored gate — is untouched. The one thing to measure
+before building it: `views_structurally_equal` over the δ-eliminated spec is what separates
+two receivers at the OPERATION level, and there the receivers are already caller-keyed by
+δ. Whether a rule head can rely on that is the first thing to measure, not to assume.
 
 One boundary the operation half found and did not close, recorded because it is the same
 question the root attribution asks: where a call cannot GROUND the projection (the caller
@@ -953,12 +1047,87 @@ answered `7`, `Leaf`'s dictionary, ignoring the author's explicit `T = Other` �
 located refusal naming both. Only a CONCRETE disagreement refuses; a binding naming a type
 variable was already dropped as a wildcard upstream.
 
-STILL UNDECIDED ON THE WITNESS PATH, and the reason is a signature rather than a rule:
-`fetch_dictionary` takes `(spec_sort, op_functor, arg_vals)` and never sees slot 0, so
-`witness_sort_goal` still replaces a written binding with a synthesized wildcard. That is
-what makes a self-representing spec whose provider pins a sibling concretely DELAY
-(`a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays`) — the author
-wrote `Cap[P = Int64]`, the provider binds `P = Int64`, and they never meet.
+~~STILL UNDECIDED, and the reason is a signature rather than a rule~~ — **DELIVERED by
+WI-20260913-J38VE (S7)**, and the sentence it replaces is kept because the diagnosis was
+right and only the scope was wrong. `fetch_dictionary` took `(spec_sort, op_functor,
+arg_vals)` and never saw slot 0, so `witness_sort_goal` replaced a written binding with a
+synthesized wildcard — and a wildcard is REFUSED against a provider's concrete binding, so
+no provider answered, the fetch reported `Undecided`, and the goal delayed. The author
+wrote `Cap[P = Int64]`, the provider bound `P = Int64`, and they never met.
+
+**THE SCOPE WAS WIDER THAN THIS SECTION SAID, and MEASURED 2026-09-13 it was the whole of
+it: NO MULTI-PARAMETER SPEC GROUNDED THROUGH THE TYPED-HEAD ANCHOR.** This was written as
+a corner — "a self-representing spec whose provider pins a sibling concretely" — and
+pinned by one row in that shape. It is not a corner. A spec that is NOT self-representing,
+whose carrier parameter IS identifiable (rung 1 names it from a receiving operation), and
+whose second gate AGREES with the provision, delayed exactly the same way — with the
+declaration order of its parameters making no difference and omitting the content binding
+making none either. Eight arms measured, and the **one-parameter twin of the identical
+fixture answered `7`**, which is what made it a parameter-count finding rather than a
+fixture artifact.
+
+The two rungs §8.2 calls "genuinely absent" were NOT this: a spec with no receiving
+operation, and one receiving on a non-carrier parameter, are both refused with their own
+located messages (measured in the same run). The machinery that IDENTIFIES the carrier
+worked; what failed was the FETCH, one question later, and it failed silently — a clean
+load and a residual, which is the outcome QMFC5's own acceptance forbids in as many words.
+
+**AS BUILT.** `builtin_find_dictionary` already walked slot 0 (for the spec base, and
+since S8CBV for the projected member); it now reads the instance ONCE into a
+`RequirementBracket` — the projected member and the written bindings from one
+`extract_type` — and hands it down both the guard path and the fetch path. The shared
+wildcard tail (`sort_goal_with_wildcards`, the one producer both `anchor_sort_goal` and
+`witness_sort_goal` end in) consults the bracket before minting: an element the author
+NAMED is pinned from what they wrote, and only an element nobody named becomes a wildcard.
+An element the CARRIER already pinned is untouched — a written binding that disagrees with
+a derived concrete type is the load site's question (`anchor_grounding`'s refusal, above),
+not one to re-answer here with the opposite precedence.
+
+**Only a NAMED TYPE pins**, as a positive test rather than a list of exclusions: a
+projection (`T = p.E`) names WHICH carried type to look at and S8CBV's δ has already
+applied it; a value naming a type PARAMETER is the wildcard spelled out. Neither exclusion
+could be driven to a different ANSWER — a projected element reaches the tail only where
+the producer did not already pin it, and every such spelling is refused at LOAD first
+(a projection needs a typed head root, and a typed head takes the anchor route); a written
+type-parameter name is dropped upstream by the un-strip's own rule, and a head-introduced
+type variable resolves to its guard-given BOUND. Both lines are written for the value they
+carry if those upstream rules move.
+
+**And it is LOWERED THROUGH `value_to_term`, which a first cut got wrong in the direction
+that answers rather than the one that delays.** `type_value_as_term` returns a term id
+only for a `Value::Term` and otherwise falls to `sort_functor_of_view(…)` — the bare SORT
+HEAD, arguments discarded — and MEASURED, a written binding ALWAYS arrives as a
+`Value::Node`, so every applied element took that path. `Box[E = Leaf]` became `Box`,
+which both failed to match a provider's applied binding (the agreeing spelling delayed, so
+the capability above did not hold for applied elements at all) and matched one it should
+not (`require[Sp[P = Box[E = Other]]]` selected the `Box[E = Leaf]` row — a WRONG ANSWER
+where the pre-ticket code delayed). WI-390's converter is the documented owner of exactly
+this case. Found by `/code-review` on this ticket's diff. The CARRIER sites
+(`anchor_sort_goal`, `witness_sort_goal`) still lower through `type_value_as_term` and are
+deliberately not moved: their value is a carried type read off a runtime value, not an
+author-written one, and changing it changes which rows every existing anchor selects.
+
+**AND THE TIE VERDICT HAD TO MOVE WITH IT — a regression this ticket introduced and
+closed.** `WitnessGoal::synthesized` (now `from_carried_types`, inverted) is what makes a
+resolution TIE read as "cannot decide" rather than as a coherence `Defect`, which is a
+`debug_assert!(false, …)`. A first cut let a WRITTEN element leave the flag intact, on the
+reading that an element the author named makes the goal fully determined. MEASURED on
+X9PB4's own tie fixture, `require[Spec[C = Carrier, Note = Int64]]` aborted every debug
+build — and the reading was wrong on its own terms, because the tie is on `C`, which both
+providers match through subtyping, and has nothing to do with `Note`. Pinning an element
+does not convert an unrelated tie into overlap. A written element therefore clears the
+flag exactly as a minted wildcard does: the flag asks the COARSE question "did anything but
+a carried type decide this goal", not "which element did they tie on".
+
+**Delivered controls**, each measured with a patch that asserts it applied, one restore
+between each: THE PREFERENCE **4 rows** (the two acceptance rows plus the witness and the
+projection-plus-written rows); the WITNESS call site **1**; the anchor's PARAMETER branch
+**2**; the anchor's SELF-REPRESENTING branch **1** — the two branches of one function are
+two call sites and move separately; the FLAG CLEARING **1**, which ABORTS rather than
+fails; the FAITHFUL LOWERING **1**, and both of that row's assertions. The in-fixture controls (every spelling that writes nothing for the element, and the
+one-parameter twin) pass under all five by design. Driven by
+`anthill-core/tests/include/wi_j38ve_written_bracket_fetch_test.rs` and the two flipped
+rows in `wi_qmfc5_typed_head_anchor_test.rs`.
 
 `try_body_tvar_guard`'s two limits (drops the guard's parameter position; refuses
 `Sp[C = A]` — row m) become cosmetic once §8.2 supplies the attribution: they restrict
@@ -1088,7 +1257,8 @@ which is exactly where inheriting would decide.
 | S2 | WI-20260909-QMFC5 | the anchor, BOTH tiers — one goal, one consumer (§8.2–§8.4, §8.8) — **delivered** | S1 |
 | S4 | WI-20260909-96ZTM | two `require`s bind two dictionaries, attributed by the written bracket (§8.5) — **delivered**; the weave is NOT changed | S2 |
 | S5 | WI-20260909-NAR1X | the op→rule channel for polytypes, channel doc §10 item 3 (`ResolveConfig` field seeded from `frame.requirements`) | S4 |
-| S6 | WI-20260909-S8CBV | attribution by PROJECTION ROOT — the requirement channel learns to name `x.E`, and identity becomes δ/σ-conversion (`path-dependent-types.md` §4). REPLACES S4's sort-matching selector and lifts its anchored gate. **Gate (2), the OPERATION channel, is delivered** (§8.5's note); gate (1) — the rule-body bracket — and the attribution itself are not | S4 |
+| S6 | WI-20260909-S8CBV | attribution by PROJECTION ROOT — the requirement channel learns to name `x.E`, and identity becomes δ/σ-conversion (`path-dependent-types.md` §4). REPLACES S4's sort-matching selector and lifts its anchored gate. **Both surface gates are delivered** — (2) the OPERATION channel, and (1) the rule-body bracket (2026-09-13, §8.5); the ATTRIBUTION itself is not | S4, C7ANM |
+| S7 | WI-20260913-J38VE | THE FETCH SEES THE WRITTEN BRACKET — slot 0 now reaches `fetch_dictionary`, so a MULTI-PARAMETER spec grounds through both producers (§8.6) — **delivered**. 51W18's retention had a reader on the guard side and now has one on the fetch side | S2 |
 
 Tagged `vvm1r`. **S3 (the check tier) is FOLDED INTO S2** rather than filed, and was
 delivered with it — there is no S3 ticket. The fold was justified as "a load-time verdict

@@ -36,6 +36,17 @@
 //!      `(depends: WI-002, WI-004)`, an edge to an item that no longer
 //!      exists. A dep naming no work item counts as unmet, so WI-003 is
 //!      unclaimable from here on and nothing used to say so.
+//!   8. `WI-001` reads `[unblocks 3]`, where this golden was captured with
+//!      `[unblocks 4]`. THE OLD NUMBER WAS THE DEFECT, not a behavior change:
+//!      this scenario builds the exact diamond `count_transitive`'s own doc
+//!      comment promises to handle — `WI-001 <- {WI-002, WI-004}` and both
+//!      `-> WI-003` — and `count_transitive_walk` added its `1 +` per
+//!      INCOMING EDGE while `visited` deduplicated per NODE, so WI-003 was
+//!      counted by both of its parents. The closure is {WI-002, WI-003,
+//!      WI-004} = 3. Nothing else in the transcript moved, and that is the
+//!      control: WI-001's POST-DELETE count (line 134, `[unblocks 2]`) is a
+//!      chain once WI-004 is gone, where per-edge and per-node counting
+//!      agree, and it is byte-identical across the fix.
 //! Everything else — every message, marker, ordering, and exit code — is
 //! the legacy behavior.
 

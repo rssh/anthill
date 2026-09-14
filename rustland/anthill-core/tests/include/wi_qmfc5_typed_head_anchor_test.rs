@@ -60,12 +60,16 @@
 //! the second is grounded by its witness before the anchor is ever reached. They are the
 //! yardsticks the rows above are read against.
 //!
-//! ## Two boundaries, stated rather than discovered
+//! ## Two boundaries, stated rather than discovered — the first one CLOSED
 //!
-//!  * A SELF-REPRESENTING spec whose provider pins a sibling CONCRETELY still delays —
-//!    [`a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays`]. The
-//!    written bracket would decide it and S1 retains it, but slot 0 does not reach
-//!    `fetch_dictionary`, so closing it is a resolver signature change.
+//!  * A SELF-REPRESENTING spec whose provider pins a sibling CONCRETELY used to delay, and
+//!    so did every other MULTI-PARAMETER spec. **Closed by WI-20260913-J38VE**, which gave
+//!    `fetch_dictionary` the slot-0 bracket S1 retains:
+//!    [`a_self_representing_spec_whose_provider_pins_a_sibling_concretely_answers`] and
+//!    [`a_multi_parameter_spec_answers_when_its_carrier_parameter_is_identifiable`] are
+//!    those two rows, now asserted by VALUE, and they are that ticket's acceptance. Its
+//!    own file (`wi_j38ve_written_bracket_fetch_test`) carries the back-out table; the two
+//!    rows here fail under the anchor's two branches, separately.
 //!  * TWO anchors are no longer refused outright — WI-20260909-96ZTM delivered the lift,
 //!    and [`the_written_bracket_chooses_between_two_anchors`] is it. What is still
 //!    refused is a pair the written bracket cannot separate: a bare `require[Spec]`, two
@@ -629,21 +633,24 @@ fn the_check_tier_still_refuses_a_bound_that_does_not_provide() {
 // ── a boundary, measured and pinned rather than left to be discovered ────────
 
 #[test]
-fn a_self_representing_spec_whose_provider_pins_a_sibling_concretely_delays() {
-    // NOT DELIVERED, AND NOT SILENT. `Cap` is SELF-REPRESENTING (`touch(c: Cap, …)`), so
-    // the anchor takes the carrier-by-sort branch and pins no parameter; the sibling `P`
-    // then rides as WI-20260830-X9PB4's wildcard, and a wildcard is REFUSED against a
-    // provider's CONCRETE binding (`Box provides Cap[P = Int64]`). No provider answers,
-    // so the fetch reports `Undecided` and the call delays.
+fn a_self_representing_spec_whose_provider_pins_a_sibling_concretely_answers() {
+    // DELIVERED BY WI-20260913-J38VE, and this row is what it had to change. `Cap` is
+    // SELF-REPRESENTING (`touch(c: Cap, …)`), so the anchor takes the carrier-by-sort
+    // branch and pins NO parameter; the sibling `P` used to ride as WI-20260830-X9PB4's
+    // wildcard, and a wildcard is REFUSED against a provider's CONCRETE binding
+    // (`Box provides Cap[P = Int64]`) — no provider answered, the fetch reported
+    // `Undecided`, and the call delayed on a clean load.
     //
-    // THE FIX IS ALREADY HALF-BUILT AND NAMED: the author WROTE `Cap[P = Int64]`, and
-    // WI-20260909-51W18 retains that bracket on the goal's slot 0. Reading it is the
-    // retained bracket's real first consumer — but slot 0 never reaches `fetch_dictionary`
-    // (it takes `spec_sort`, `op_functor`, `arg_vals`), so closing this is a resolver
-    // signature change, which is why it is recorded here instead of grown into this
-    // ticket.
+    // The author WROTE `Cap[P = Int64]` all along and WI-20260909-51W18 retained that
+    // bracket on the goal's slot 0; what was missing was a reader. `fetch_dictionary` now
+    // takes it, and the written element fills what the carrier-by-sort branch cannot.
     //
-    // ASSERTED AS THE DELAY IT IS, so closing it has to come here and change this row.
+    // ASSERTED BY VALUE, as the delay it replaces was: `7` is `Box`'s `tag()`, reachable
+    // only through the dictionary.
+    //
+    // FAILS UNDER the ANCHOR's SELF-REPRESENTING back-out, alone — that branch and the
+    // parameter branch below it are two call sites and move separately
+    // (`wi_j38ve_written_bracket_fetch_test`'s header table).
     let src = r#"namespace test.qmfc5.xz
   import anthill.prelude.Int64
   sort Cap
@@ -665,11 +672,10 @@ end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     let got = crate::common::query_unary(&mut kb, "test.qmfc5.xz.answer");
-    assert_eq!(got.len(), 1, "one solution, got {got:?}");
     assert!(
-        !got[0].1,
-        "it must be INDEFINITE — the requirement delayed. A definite answer here means \
-         the boundary closed and this row is what has to change: {got:?}",
+        matches!(got.as_slice(), [(Value::Int(7), true)]),
+        "the written `P = Int64` must select `Box`'s row and the answer must be DEFINITE \
+         — an indefinite one is the requirement delaying again: {got:?}",
     );
 }
 
@@ -756,6 +762,14 @@ fn a_written_binding_that_disagrees_with_the_bound_is_refused() {
     //
     // THE CONTROL IS THE AGREEING SPELLING, which every acceptance row in this file uses
     // and which must keep loading: `require[Desc[T = Leaf]]` under `?x: Leaf`.
+    //
+    // AND SINCE WI-20260913-J38VE THIS REFUSAL AND THE FETCH ARE TWO READERS OF ONE
+    // BRACKET, which is why the row matters more than it did. `fetch_dictionary` now reads
+    // the written bindings too — but only for elements the CARRIER did not pin, so the
+    // carrier element has exactly one reader and it is this one. A fetch that also took
+    // the written carrier would answer `Other`'s dictionary where this site refuses the
+    // program outright: one bracket, two verdicts. The precedence is stated at
+    // `witness_sort_goal`'s `written` parameter.
     let errs = refusal(&program(
         "  rule answer(?r) :- anchored(?x, ?r)\n  \
          rule anchored(?x: Leaf, ?r) :- ?d = require[Desc[T = Other]], seed(?x), Desc.tag(?r)\n",
@@ -825,4 +839,98 @@ end
         [(Value::Int(7), true)] => {}
         other => panic!("the anchor must survive a same-named namespace, got {other:?}"),
     }
+}
+
+/// A spec with a CARRIER parameter and a CONTENT parameter AT DIFFERENT TYPES, and a
+/// receiving operation on the carrier — so [`spec_carrier_param_or_sole`]'s rung 1 names
+/// `C`, the second gate agrees with the provision, and both refusals above are passed.
+/// `tag()` is NULLARY and BODY-LESS: only a dictionary can answer.
+fn two_param(spec_body: &str, tail: &str) -> String {
+    format!(
+        r#"namespace test.qmfc5.mp
+  import anthill.prelude.{{Int64, Bool}}
+
+  sort Sp
+    import anthill.prelude.Int64
+{spec_body}  end
+
+  sort Red
+    import anthill.prelude.Int64
+    entity red
+    provides Sp[C = Red, P = Int64]
+    operation tag() -> Int64 = 7
+  end
+
+{tail}  rule answer(?r) :- anchored(red(), ?r)
+end
+"#
+    )
+}
+
+const TWO_PARAM_SPEC: &str =
+    "    sort C = ?\n    sort P = ?\n    operation tag() -> Int64\n    operation crecv(x: C) -> Int64 = 0\n";
+
+#[test]
+fn a_multi_parameter_spec_answers_when_its_carrier_parameter_is_identifiable() {
+    // DELIVERED BY WI-20260913-J38VE, and this row is the wider half of what it closed.
+    //
+    // `fetch_dictionary` used to take `(spec_sort, op_functor, arg_vals)` and never see
+    // slot 0, so the author's written `P = Int64` was replaced by WI-20260830-X9PB4's
+    // synthesized wildcard — and a wildcard is refused against
+    // `Red provides Sp[C = Red, P = Int64]`'s CONCRETE binding. No provider answered, the
+    // fetch reported `Undecided`, the goal delayed. The bracket now reaches the fetch.
+    //
+    // THE SCOPE WAS UNDERSTATED BEFORE THE FIX and this row is what corrected it. §8.6 and
+    // the row above both described the gap as "a self-representing spec whose provider
+    // pins a sibling concretely". MEASURED 2026-09-13: it was EVERY multi-parameter spec —
+    // this one is NOT self-representing, its carrier parameter IS identifiable (rung 1
+    // names `C` from `crecv(x: C)`), the second gate AGREES with the provision, and it
+    // delayed anyway. Declaration order made no difference and omitting the `P` binding
+    // made none either.
+    //
+    // FAILS UNDER the ANCHOR's PARAMETER-branch back-out, and under the whole preference.
+    let got = crate::common::query_unary(
+        &mut crate::common::load_kb_with(&two_param(
+            TWO_PARAM_SPEC,
+            "  rule anchored(x: Red, ?r) :- ?d = require[Sp[C = Red, P = Int64]], Sp.tag(?r)\n",
+        )),
+        "test.qmfc5.mp.answer",
+    );
+    assert!(
+        matches!(got.as_slice(), [(Value::Int(7), true)]),
+        "the written `P = Int64` must select `Red`'s row; an indefinite row is the delay \
+         this ticket removed, got {got:?}",
+    );
+}
+
+#[test]
+fn the_control_the_same_shape_at_ONE_parameter_answers() {
+    // WHAT MADE THE ROW ABOVE A PARAMETER-COUNT FINDING rather than a fixture artifact.
+    // Identical in every other respect — same nullary body-less `tag()`, same receiving
+    // op on the carrier, same concrete bracket, same carrier value — and it answered `7`
+    // while the two-parameter twin delayed.
+    //
+    // Without this row, "two parameters delay" was equally consistent with "this fixture
+    // shape delays", and an earlier attempt at the measurement had exactly that hole: it
+    // bound both parameters to the SAME sort, which cannot tell which one the dictionary
+    // keyed on either.
+    //
+    // PASSES EITHER WAY BY DESIGN, and now that the row above answers too it is a
+    // yardstick rather than a contrast: its sole parameter IS the carrier, so
+    // `anchor_sort_goal` pins it and the shared wildcard tail — the only thing
+    // WI-20260913-J38VE changed — has no element left to fill. It is green under every
+    // back-out in `wi_j38ve_written_bracket_fetch_test`'s header table.
+    let src = two_param(
+        "    sort C = ?\n    operation tag() -> Int64\n    operation crecv(x: C) -> Int64 = 0\n",
+        "  rule anchored(x: Red, ?r) :- ?d = require[Sp[C = Red]], Sp.tag(?r)\n",
+    )
+    .replace("provides Sp[C = Red, P = Int64]", "provides Sp[C = Red]");
+    let got = crate::common::query_unary(
+        &mut crate::common::load_kb_with(&src),
+        "test.qmfc5.mp.answer",
+    );
+    assert!(
+        matches!(got.as_slice(), [(Value::Int(7), true)]),
+        "the one-parameter twin must answer 7, got {got:?}",
+    );
 }

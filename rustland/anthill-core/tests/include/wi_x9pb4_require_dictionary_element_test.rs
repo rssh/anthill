@@ -78,7 +78,10 @@
 //! `a_tie_on_a_synthesized_element_delays_rather_than_reporting_a_defect` is the odd
 //! one out and belongs to the SECOND half of the change: it passes with the whole
 //! ticket backed out and with the whole ticket in, and ABORTS in between — with the
-//! wildcard loop present and its `synthesized` tie-routing removed. See its site.
+//! wildcard loop present and its tie-routing removed. See its site. (That flag was
+//! `synthesized`; WI-20260913-J38VE renamed it `WitnessGoal::from_carried_types` and
+//! inverted it, because a WRITTEN element clears it for the same reason a minted wildcard
+//! does — the routing and this row are unchanged.)
 //!
 //! And what does NOT move, each here because the widening could plausibly have
 //! reached it:
@@ -467,16 +470,21 @@ end
 /// MEASURED, THREE WAYS:
 ///  * with the whole ticket backed out — ONE INDEFINITE solution (zero candidates,
 ///    `NoMatch`, delay). This is the behaviour that must be preserved.
-///  * with the wildcard loop in and the `synthesized` routing OUT — `panicked at
+///  * with the wildcard loop in and the tie-routing OUT (`WitnessGoal::from_carried_
+///    types`, called `synthesized` when this row was written) — `panicked at
 ///    resolve.rs: find_dictionary: two providers answer
 ///    `x9pb4_tie.Spec[C = x9pb4_tie.Carrier, Note = x9pb4_tie.Spec.Note]` at run time:
 ///    x9pb4_tie.MidA, x9pb4_tie.MidB`. An abort on a program with no defect in it.
 ///  * as shipped — ONE INDEFINITE solution again.
 ///
 /// WHAT IS NOT DRIVEN, and is written down rather than credited: the OTHER arm — a
-/// tie on a goal with NO synthesized element still reporting `Defect`. Nothing drives
-/// it because nothing ever did: that arm's own doc calls a run-time tie UNREACHABLE,
-/// and this ticket's job was to keep it that way, not to reach it.
+/// tie on a goal every element of which came off a CARRIED TYPE still reporting
+/// `Defect`. Nothing drives it because nothing ever did: that arm's own doc calls a
+/// run-time tie UNREACHABLE, and this ticket's job was to keep it that way, not to reach
+/// it. WI-20260913-J38VE made the same call from the other side — spelling the element
+/// out does NOT reach that arm either
+/// (`wi_j38ve_written_bracket_fetch_test::a_tie_a_written_element_does_not_cause_stays_
+/// a_delay`).
 #[test]
 fn a_tie_on_a_synthesized_element_delays_rather_than_reporting_a_defect() {
     let src = r#"

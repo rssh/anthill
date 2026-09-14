@@ -82,9 +82,10 @@
 //! requirement at the same receiver; one that declares nothing, or declares it at a
 //! DIFFERENT receiver, is refused at load. Both are rows below.
 //!
-//! THE RULE-BODY `require[Desc[T = p.E]]` BRACKET. Still refused, by WI-20260909-51W18's
-//! drop rule (`p.E` "names neither a sort nor one of `Desc`'s own type parameters") —
-//! that is S8CBV's gate (1), and the attribution-by-projection-root work it feeds.
+//! THE ATTRIBUTION BY PROJECTION ROOT — keying WHICH dictionary a `require` means on the
+//! projection's root rather than on the bound SORT. That is the ticket's own acceptance
+//! and it is untouched; gate (1), the rule-body `require[Desc[T = p.E]]` bracket, IS
+//! delivered and has its own section at the foot of this file.
 
 use anthill_core::eval::Value;
 
@@ -361,5 +362,389 @@ fn the_same_call_with_the_requirement_at_the_matching_receiver_answers() {
         ),
         Some(7),
         "`b` is a `Box` of `Red`; `c`'s `Blue` must not be what answers",
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// GATE (1) — THE RULE-BODY BRACKET
+//
+// Everything above is the OPERATION channel (`operation f(x: Box) requires Desc[T = x.E]`).
+// This half is the RULE one: `?d = require[Desc[T = p.E]]` in a clause body, projecting
+// off the clause's own §2.1 sigil-free typed head parameter.
+//
+// It was refused until now by WI-20260909-51W18's drop rule, whose two rungs are both
+// about NAMES — "does this spell a sort?", "is it the spec's own type parameter?" — so a
+// projection read as neither and was reported as a typo. `Loader::try_require_spec_
+// projection` is the third rung, asked FIRST for that reason.
+//
+// THE TWO HALVES ARE NOT ONE MECHANISM, and the difference is the receiver. An
+// operation's `x.E` carries `Ref(x)` — a parameter symbol — and is δ-eliminated against
+// the argument at the CALL. A clause's `p.E` carries a logic VARIABLE, closed to a De
+// Bruijn slot with the rest of the rule and opened fresh per firing, so the member is
+// projected off the carrier's CARRIED TYPE at the RESOLVER
+// (`requirement_projection_member` + `projected_arg_types`). `path-dependent-types.md` §4
+// names the split: a flexible projection "arises only where a receiver is a logic
+// variable, i.e. in rule bodies, never in operation signatures".
+//
+// ## THE SEVEN AXES AND WHAT EACH BACK-OUT COSTS
+//
+// The last two are REPAIRS TO WHAT THIS TICKET SHIPPED, found by `/code-review` after
+// the first commit and measured before they were believed. Both were the same defect
+// seen twice: `anchor_grounding` is consulted LAST, after four witness scans, so every
+// clause carrying a projected bracket AND a covered spec-op call took the witness path
+// — the bracket silently ignored, the member check unreachable, the resolver's δ
+// rewriting the witness call's own argument as though it were the projection root.
+//
+// MEASURED 2026-09-13, each back-out applied by a script that ASSERTS its pattern matched
+// exactly once (`scratchpad/gate1-backout/backout.py`), the tree restored by checksum
+// between runs. No two axes fail the same set:
+//
+// | backed out | rows | which |
+// |---|---|---|
+// | the LOADER RUNG (`try_require_spec_projection`) | **4** | all of them — nothing LOADS, with WI-20260909-51W18's drop-rule message verbatim, the pre-ticket verdict |
+// | the ANCHOR ROUTE (`written_projection_anchor`) | **3** | the `Box`-rooted clauses do not LOAD: "head bound(s) — Box — provide no `Desc`", the `provides` scan asking about the ROOT where the question is about its ELEMENT |
+// | the RUNTIME δ (`requirement_projection_member`) | **2** | both LOAD CLEAN and answer WRONGLY — the acceptance drops to no answer, and the spec-bound row stops delaying |
+// | the STATIC MEMBER CHECK | **1** | [`a_member_the_roots_bound_cannot_declare_is_a_LOAD_ERROR`] — a member `Box` cannot declare goes back to loading clean and residualizing, with no diagnostic anywhere |
+// | the SUSPEND ARM (`Suspend` → `DontFire`) | **2** | the two delay rows answer ZERO rows instead of one indefinite one — WI-067's silent drop |
+// | the EARLY ROUTING (`spec_arg_has_projection`) | **2** | a projected bracket falls back to the WITNESS scans: [`a_projected_bracket_beside_a_witness_call_still_anchors`] returns to an INDEFINITE residual and [`a_bogus_member_beside_a_witness_call_is_still_refused`] to a CLEAN LOAD |
+// | the TRI-STATE (`Reported` → `Dropped`) | **1** | [`a_refused_projection_is_reported_once_and_not_twice`] sees the rung's accurate error AND the misdiagnosis it replaces |
+//
+// THE δ AXIS IS WHY THE ACCEPTANCE IS TWO NUMBERS RATHER THAN A CLEAN LOAD: with δ gone
+// the carrier type read at the fetch is the RECEIVER's own type rather than its member,
+// `Box[E = Red]` matches no `Desc` provider, and the clause silently has no answers.
+//
+// THE STATIC-MEMBER AND SUSPEND AXES DRAW ONE LINE BETWEEN THEM, and it is the line
+// `/code-review` found this file on the wrong side of. A member the bound sort STATICALLY
+// cannot declare is a typo and refuses at LOAD; a member it declares that the carrier has
+// not yet BOUND is a run-time condition and DELAYS. The first was residualizing silently
+// (indistinguishable from the second), and the row that used to measure "suspends" was
+// really measuring a typo — see [`a_member_the_roots_bound_cannot_declare_is_a_LOAD_ERROR`].
+// ════════════════════════════════════════════════════════════════════════════════════
+
+/// The rule-body twin of [`PROJ`]. `Desc.tag(?r)` is the covered call the weave threads
+/// the fetched dictionary into; it is NULLARY, so nothing in it can value-dispatch, and
+/// BODY-LESS, so no default can stand in for the dictionary (file header).
+const PROJ_RULE: &str =
+    "  rule anchored(p: Box, ?r) :- ?d = require[Desc[T = p.E]], Desc.tag(?r)\n";
+
+#[test]
+fn a_rule_body_require_may_project_off_a_typed_head_parameter() {
+    // THE ACCEPTANCE FOR GATE (1), and the link the parked attempt could never observe:
+    // that `?d` actually RECEIVES the fetched dictionary. The previous attempt verified
+    // only that `fetch_dictionary` produced one — the `out` slot was a casualty of
+    // WI-20260909-C7ANM (it walked to the carrier's value, `Ref(red)`, instead of the
+    // clause variable), so nothing downstream of the fetch was measurable until C7ANM
+    // landed. These two numbers are that link: `7` and `9` reach `?r` only by dispatching
+    // `Desc.tag()` through the dictionary bound to `?d`.
+    //
+    // ONE CLAUSE, TWO CALL SITES, TWO INSTANCES — the same thing
+    // [`a_projection_requirement_tracks_its_own_argument`] says one level up.
+    //
+    // FAILS UNDER THREE OF GATE (1)'s FIVE BACK-OUTS — the rung, the anchor route and the
+    // runtime δ — each in a different way; the file header's table says which.
+    assert_eq!(
+        answer(
+            "test.s8cbv.rule.r",
+            PROJ_RULE,
+            "anchored(box(v: red()), ?r)"
+        ),
+        Some(7),
+        "`p.E` is `Red` at this call, so `Desc`'s `Red` instance answers",
+    );
+    assert_eq!(
+        answer(
+            "test.s8cbv.rule.b",
+            PROJ_RULE,
+            "anchored(box(v: blue()), ?r)"
+        ),
+        Some(9),
+        "`p.E` is `Blue` at THIS call — same clause, different instance",
+    );
+}
+
+#[test]
+fn a_rule_with_no_require_has_no_dictionary_at_all() {
+    // THE CONTROL THE NUMBERS ABOVE ARE READ AGAINST, and the rule-body twin of
+    // [`without_the_requirement_the_body_has_no_dictionary_at_all`]. `Desc.tag()` is
+    // body-less, so with no `require` in the clause there is no instance and no default:
+    // the call answers NOTHING. Every `7` / `9` above therefore arrived through the
+    // dictionary rather than through the spec.
+    //
+    // ZERO ROWS, not "no definite row", and the distinction is load-bearing twice over:
+    // it is what says the clause FAILED rather than residualized, and it is the control
+    // the two DELAY rows — [`an_unbound_carrier_suspends_too`] and
+    // [`a_spec_bound_keeps_the_runtime_delay`] — read their single INDEFINITE row against.
+    // Asserted on the raw rows for that reason: [`one_definite`] maps both shapes to
+    // `None`, so it cannot tell a failed clause from a delayed one.
+    //
+    // PASSES EITHER WAY BY DESIGN — it describes the fixture, not gate (1).
+    const NO_REQ: &str = "  rule anchored(p: Box, ?r) :- Desc.tag(?r)\n";
+    assert!(
+        rows("test.s8cbv.rule.none.r", NO_REQ, "anchored(box(v: red()), ?r)").is_empty(),
+    );
+    assert!(
+        rows("test.s8cbv.rule.none.b", NO_REQ, "anchored(box(v: blue()), ?r)").is_empty(),
+    );
+}
+
+#[test]
+fn a_constant_bracket_under_the_same_head_is_refused_where_the_projection_is_admitted() {
+    // THE ROOT IS THE ANCHOR AND ITS BOUND IS NOT TESTED FOR `provides` — the one rule
+    // that separates a projected carrier from a direct one, driven by the pair.
+    //
+    // `require[Desc[T = Box]]` SAYS the carrier is `Box`, so `Box` must provide `Desc`,
+    // and it does not: refused, naming `Box`. `require[Desc[T = p.E]]` says the carrier
+    // is `Box`'s ELEMENT, about which `Box` says nothing at all — so the same head, the
+    // same bound and the same spec are ADMITTED one row up.
+    //
+    // This is the control that makes the acceptance's admission mean something: without
+    // the projection route, `anchor_grounding`'s `provides` scan is what the clause meets,
+    // and it answers `Box` to a question about `Box`'s element.
+    //
+    // PASSES UNDER ALL FIVE BACK-OUTS BY DESIGN — it is a refusal that stands either way
+    // (measured).
+    // MEASURED: backing out the anchor route makes the acceptance row join this one,
+    // refused with this very message, which is what says the two rows differ by the
+    // PROJECTION and by nothing else.
+    let errs = refusal(&fixture(
+        "test.s8cbv.rule.constbound",
+        "  rule anchored(p: Box, ?r) :- ?d = require[Desc[T = Box]], Desc.tag(?r)\n",
+    ));
+    assert!(
+        errs.contains("provide no `Desc`"),
+        "a bracket naming the BOUND must still be refused; got:\n{errs}",
+    );
+}
+
+#[test]
+fn a_projection_off_a_name_this_clause_does_not_bind_keeps_the_drop_rule_message() {
+    // THE RUNG IS NOT A BLANKET ADMISSION — the rule-body twin of
+    // [`a_dotted_name_whose_head_is_no_value_place_is_still_unresolved`].
+    // `try_require_spec_projection` resolves its root in `rule_param_vars`, the §2.1
+    // parameter map, and answers `None` for anything else — so a dotted name whose head
+    // this clause does not bind falls to the two NAME rungs below it and keeps
+    // WI-20260909-51W18's diagnostic, which is the one that names the author's typo.
+    //
+    // PASSES EITHER WAY BY DESIGN: this is the arm the rung declines. It is here so that
+    // widening the rung (admitting any dotted name) is caught.
+    let errs = refusal(&fixture(
+        "test.s8cbv.rule.unbound",
+        "  rule anchored(p: Box, ?r) :- ?d = require[Desc[T = q.E]], Desc.tag(?r)\n",
+    ));
+    assert!(
+        errs.contains("names neither a sort nor"),
+        "got:\n{errs}",
+    );
+}
+
+/// The raw solution rows of `{ns}.answer`, for the three-valued distinctions
+/// [`one_definite`] flattens: `[]` is a goal that FAILED, one INDEFINITE row is a goal
+/// that SUSPENDED and residualized.
+fn rows(ns: &str, decl: &str, query: &str) -> Vec<(Value, bool)> {
+    let src = fixture(ns, &format!("{decl}  rule answer(?r) :- {query}\n"));
+    let mut kb = crate::common::load_kb_with(&src);
+    crate::common::query_unary(&mut kb, &format!("{ns}.answer"))
+}
+
+/// The raw solution rows of `<ns>.answer` for a source built WHOLE, where [`rows`]
+/// composes the clause and the query itself.
+fn rows_src(src: &str) -> Vec<(Value, bool)> {
+    let ns = src
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix("namespace "))
+        .expect("source must open with a namespace line")
+        .trim()
+        .to_owned();
+    let mut kb = crate::common::load_kb_with(src);
+    crate::common::query_unary(&mut kb, &format!("{ns}.answer"))
+}
+
+fn is_one_residual(got: &[(Value, bool)]) -> bool {
+    matches!(got, [(_, false)])
+}
+
+#[test]
+fn a_member_the_roots_bound_cannot_declare_is_a_LOAD_ERROR() {
+    // LOUD OVER SILENT, and this row exists because the first cut was silent. MEASURED by
+    // `/code-review`: `require[Desc[T = p.Zork]]` under `p: Box` LOADED CLEAN and
+    // residualized with no diagnostic — while the typo one character over,
+    // `require[Desc[T = Zork]]` (a bogus SORT), is a load error. The rung that admits a
+    // projection checks only that the last segment is Capitalized; the bound sort's
+    // declared parameters were never asked.
+    //
+    // NOT COVERED BY THE SUSPEND RULE, and that is the distinction the pair below draws.
+    // Suspending is justified by "the head variable may not be bound yet", which is a
+    // RUN-TIME condition; a member `Box` statically cannot declare is not waiting for
+    // anything, and delaying on it converts an author's typo into a residual nobody reads.
+    let errs = refusal(&fixture(
+        "test.s8cbv.rule.nomember",
+        "  rule anchored(p: Box, ?r) :- ?d = require[Desc[T = p.Zork]], Desc.tag(?r)\n",
+    ));
+    assert!(
+        errs.contains("Zork") && errs.contains("declares E"),
+        "expected a refusal naming the member and what `Box` does declare; got:\n{errs}",
+    );
+
+    // THE OTHER HALF OF THE SAME RULE: a bound that declares NO parameters at all. `Red`
+    // is a data sort with a bare `entity red`, so `p.E` can never resolve. Before this
+    // check the row answered ONE INDEFINITE row (suspended) and was written up as WI-067
+    // discipline — which it is not: [`an_unbound_carrier_suspends_too`] is the runtime
+    // case, and this one is a static impossibility wearing its clothes.
+    let errs = refusal(&fixture(
+        "test.s8cbv.rule.noparams",
+        "  rule anchored(p: Red, ?r) :- ?d = require[Desc[T = p.E]], Desc.tag(?r)\n",
+    ));
+    assert!(
+        errs.contains("declares none"),
+        "expected a refusal saying `Red` declares no type parameters; got:\n{errs}",
+    );
+}
+
+#[test]
+fn an_unbound_carrier_suspends_too() {
+    // THE OTHER HALF OF THE SAME RULE, and the one the discipline exists for: at the
+    // moment the body is entered `p` may simply not be bound yet. The goal delays and
+    // rotates; nothing here ever binds it, so it residualizes and is loud at the drain
+    // (WI-737's route) rather than quietly deciding the clause false.
+    //
+    // FAILS under the LOADER RUNG, the ANCHOR route and the SUSPEND arm. Under the first
+    // two the clause does not load at all, so it is `load_kb_with` that panics rather than
+    // this assertion; under the third it answers ZERO rows, the silent drop. It PASSES
+    // under the δ back-out by design — with `p` unbound there is no carried type to
+    // project from, so the goal suspends whether or not the member ever reaches it.
+    let got = rows(
+        "test.s8cbv.rule.unbound",
+        "  rule anchored(p: Box, ?r) :- ?d = require[Desc[T = p.E]], Desc.tag(?r)\n",
+        "anchored(?any, ?r)",
+    );
+    assert!(
+        is_one_residual(&got),
+        "expected one INDEFINITE row (suspended), got {got:?}",
+    );
+}
+
+#[test]
+fn a_spec_bound_keeps_the_runtime_delay() {
+    // THE ONE SHAPE THAT STILL REACHES `projected_arg_types`' OWN `Suspend` ARM, and it
+    // is here because adding the static check above took the other one away.
+    //
+    // [`a_member_the_roots_bound_cannot_declare_is_a_LOAD_ERROR`] is gated on the bound
+    // being a DATA sort, because only there are the declared parameters the whole truth
+    // (§8.4: nothing can be narrower than a data-sort bound). An INTRODUCER bound records
+    // THE SPEC, which admits every provider — and a provider may declare members the spec
+    // does not — so the check is skipped and the member is read at run time, off the
+    // carrier's carried type. `Leaf` binds no `E`, so the goal SUSPENDS and the clause
+    // residualizes; it does not decide false and drop the clause.
+    //
+    // BACK-OUT of that arm (`Suspend` → `DontFire`): this row goes from one INDEFINITE
+    // row to ZERO rows — the silent drop WI-067 forbids. It is the only row that moves,
+    // and without it the arm has no driver at all.
+    let got = rows(
+        "test.s8cbv.rule.specbound",
+        "  rule anchored[A](p: A, ?r) :- Desc[A], ?d = require[Desc[T = p.E]], Desc.tag(?r)\n",
+        "anchored(red(), ?r)",
+    );
+    assert!(
+        is_one_residual(&got),
+        "expected one INDEFINITE row (suspended), got {got:?}",
+    );
+}
+
+/// [`fixture`] with a WITNESS-capable operation added to the spec: `describe(x: T)` has a
+/// spec-carrier parameter, so a call to it grounds the requirement by the WITNESS path —
+/// the path that runs before the anchor one.
+fn fixture_with_witness(ns: &str, tail: &str) -> String {
+    fixture(ns, tail).replace(
+        "operation tag() -> Int64\n  end",
+        "operation tag() -> Int64\n    operation describe(x: T) -> Int64 = 90\n  end",
+    )
+}
+
+#[test]
+fn a_projected_bracket_beside_a_witness_call_still_anchors() {
+    // A PROJECTED BRACKET TAKES THE ANCHOR PATH, AND TAKES IT FIRST — the repair for a
+    // defect this ticket SHIPPED and `/code-review` measured.
+    //
+    // `anchor_grounding` is consulted LAST, after four witness scans, so a clause with
+    // both a projected bracket and a covered spec-op call took the witness path: the
+    // requirement was grounded at the CALL's argument, the author's `p.E` was silently
+    // ignored, and the resolver's δ then rewrote that argument as though it were the
+    // projection root. MEASURED before the repair — the clause below answered
+    // `[(Int(90), false)]`, INDEFINITE, suspending forever, where the concrete-bracket
+    // twin answered a definite `90`. It loaded clean either way.
+    //
+    // BACK-OUT of the early routing (`spec_arg_has_projection` never true): this row goes
+    // back to that indefinite residual, and
+    // [`a_bogus_member_beside_a_witness_call_is_still_refused`] goes back to loading clean.
+    let got = rows_src(&fixture_with_witness(
+        "test.s8cbv.witness.proj",
+        "  rule r(p: Box, ?q, ?res) :- ?d = require[Desc[T = p.E]], Desc.describe(?q, ?res)\n  \
+         rule answer(?r) :- r(box(v: red()), blue(), ?r)\n",
+    ));
+    assert!(
+        matches!(got.as_slice(), [(Value::Int(90), true)]),
+        "expected a DEFINITE answer, got {got:?}",
+    );
+}
+
+#[test]
+fn the_control_a_concrete_bracket_beside_a_witness_call_is_unchanged() {
+    // WHAT SAYS THE ROW ABOVE IS ABOUT THE PROJECTION and not about the witness path in
+    // general: the same clause with a CONCRETE bracket answered a definite `90` both
+    // before and after the repair. PASSES EITHER WAY BY DESIGN.
+    let got = rows_src(&fixture_with_witness(
+        "test.s8cbv.witness.concrete",
+        "  rule r(p: Box, ?q, ?res) :- ?d = require[Desc[T = Red]], Desc.describe(?q, ?res)\n  \
+         rule answer(?r) :- r(box(v: red()), blue(), ?r)\n",
+    ));
+    assert!(
+        matches!(got.as_slice(), [(Value::Int(90), true)]),
+        "expected a DEFINITE answer, got {got:?}",
+    );
+}
+
+#[test]
+fn a_bogus_member_beside_a_witness_call_is_still_refused() {
+    // THE STATIC MEMBER CHECK REACHES A CLAUSE THAT HAS A WITNESS. It lives inside
+    // `anchor_grounding`, so before the early routing above it was unreachable whenever
+    // any covered call existed — MEASURED: `require[Desc[T = p.Zork]]` beside
+    // `Desc.describe(...)` LOADED CLEAN and residualized, exactly the silent failure
+    // [`a_member_the_roots_bound_cannot_declare_is_a_LOAD_ERROR`] was added to remove,
+    // while its witness-free twin was refused. One check, two clauses, two verdicts.
+    let errs = refusal(&fixture_with_witness(
+        "test.s8cbv.witness.bogus",
+        "  rule r(p: Box, ?q, ?res) :- ?d = require[Desc[T = p.Zork]], Desc.describe(?q, ?res)\n  \
+         rule answer(?r) :- r(box(v: red()), blue(), ?r)\n",
+    ));
+    assert!(
+        errs.contains("Zork") && errs.contains("declares E"),
+        "got:\n{errs}",
+    );
+}
+
+#[test]
+fn a_refused_projection_is_reported_once_and_not_twice() {
+    // ONE BINDING, ONE DIAGNOSTIC. The projection rung reports its own located error and
+    // then has to tell its caller so — `SpecBindingLowering::Reported`, distinct from
+    // `Dropped`. With a bare `Option` both callers ALSO ran `report_dropped_spec_binding`
+    // and the author got the accurate message followed by the very misdiagnosis the rung
+    // exists to prevent (`/code-review`).
+    //
+    // Driven through the AMBIGUITY refusal, which is the reachable `Reported` arm: a head
+    // parameter named like a namespace makes `mylib.Thing` read two ways.
+    let errs = refusal(
+        "namespace mylib\n  import anthill.prelude.Int64\n  sort Thing\n    entity thing\n  end\n\
+         \n  sort Desc\n    sort T = ?\n    operation tag() -> Int64\n  end\n\
+         \n  sort Foo\n    entity foo\n  end\n\
+         \n  rule r(mylib: Foo, ?res) :- ?d = require[Desc[T = mylib.Thing]], Desc.tag(?res)\nend\n",
+    );
+    assert!(
+        errs.contains("reads two ways here"),
+        "expected the ambiguity refusal; got:\n{errs}",
+    );
+    assert!(
+        !errs.contains("names neither a sort nor"),
+        "the drop rule must NOT speak over the rung's own error; got:\n{errs}",
     );
 }
