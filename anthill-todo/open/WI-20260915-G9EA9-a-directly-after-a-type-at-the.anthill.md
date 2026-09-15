@@ -1,0 +1,33 @@
+## Attributes
+
+- id: WI-20260915-G9EA9-a-directly-after-a-type-at-the
+- created: 2026-09-15T12:37:14Z
+
+- status: Open
+- status_agent: user
+- status_at: 2026-09-15T12:37:14Z
+
+- acceptance: cargo-test, scaland-sbt-test
+
+- depends_on: WI-20260914-DV7DP-a-meta-block-on-a-sort-entity
+
+## Description
+
+META BLOCKS ARE WRITTEN `@[…]` — ONE TOKEN, IN EVERY POSITION (declarations, rules, facts), replacing the bare `[…]` and the operation `meta [..]` clause. A bare `[` competes with type arguments and with collection literals, and those competitions have lost blocks silently.
+
+THE PROBLEM, first measured at declaration ends. Four productions in tree-sitter-anthill/grammar.js end `field(_type) optional(meta_block)` with nothing between them: `abstract_sort` (`sort X = T [..]`), `effects_sort_item` (`effects E = T [..]`), a body-less, clause-less `operation_declaration` (`-> T [..]`) and a body-less `const_declaration` (`const K: T [..]`). After a type NAME, `Name [e1, …]` is either `application` (`Name[sort_binding, …]`, whitespace-insensitive) or `simple_type(Name)` followed by `meta_block`; the entry grammars overlap on a bare name, and `application`'s prec(1) always picks the type. MEASURED 2026-09-15 (during WI-20260914-DV7DP; sort and const driven, effects and operation read from the grammar): `sort Ids = List [Int64]` and `const Xs: List [Int64]` LOAD as `List[Int64]`; `sort Id = Int64 [Marker]` is refused as over-application, `List [Marker]` as an unresolved name, `const K: Int64 [Marker, Key: 7]` as a syntax error. The refusals are accidents of the entries failing to type — an attribute spelled like a sort in scope (`[Serializable]`) is lost with nothing said.
+
+THE SAME BRACKET ELSEWHERE. (1) WI-893: after a rule entry's heads, `[` is this entry's `meta_block` or the NEXT entry's collection-literal head; a preceding comment once tipped it, `[simp]` became a junk rule and the equation went inert with no diagnostic — held today by `prec.dynamic(1, $.meta_block)` and the `[$.rule_entry]` conflict. (2) WI-20260829-BAD3V: `?x.m [simp]` is the meta block or a dot-callee bracket, kept apart only because GLR lets the second reading die at the missing `(`. (3) An operation with a `meta [A]` clause AND a trailing `[B]` keeps only `A`: `convert.rs`'s operation conversion prefers the accumulated clauses and reads the trailing block only when there are none (read from the code, not driven).
+
+DECIDED with the user (2026-09-15):
+- `@[` is a single lexical token (tree-sitter `token('@[')`, a literal in scaland's fastparse). `@ [` with a space is a syntax error. `@` keeps its effect meaning: `-> B @ E` / `-> B @ {E1, E2}`. CHECKED FREE: no effect form begins with `[` (`_effect_set` / `_effect_type`: a spec instantiation, `+E`, `-E`, `merge(…)`, guarded forms, `{…}`), and the term-level infix `@` followed by a collection literal has zero uses — grep over `.anthill`, `.rs`, `.scala` on 2026-09-15 found only three Rust comments in an old effect notation.
+- EVERY meta block moves in this one change — sort / enum / abstract sort / effects / entity / const / constraint / operation / operation entry, rule / rule entry, fact, proof step. The operation `meta [..]` clause is removed.
+- A bare `[…]` in those positions is no longer a block. Where it still parses as something else, the author must hear that they wrote a block the old way (see acceptance 3), not get a junk rule or a silent type application.
+- Placement: TRAILING, where the block sits today (`entity Point(x: Int64) @[M]`, `end @[M]`, `rule r(?x) :- body @[simp]`). This was the recommendation; prefix placement (Lean's `@[simp] theorem …`) was discussed but not separately confirmed — settle it before starting.
+
+GRAMMAR TO RE-EXAMINE once the bare block is gone: `application`'s prec(1) meta-block rationale, the `[$.rule_entry]` conflict and its `prec.dynamic`, and the meta-block half of the `[$._non_name_atom_term, $.dot_application]` conflict (its collection-literal half may remain).
+
+MIGRATION SIZE (measured 2026-09-15): `.anthill` files — 27 blocks, all `[simp]` on rules (tree-sitter query over all 246 files; exact, so rewritable from capture positions). Inline Anthill in Rust sources (grep, approximate) — ~1020 `[simp]` / `[unfold]` / `[hint]` tags, ~12 `meta [..]` clauses, ~8 `end [..]` sort blocks, 2 entity blocks, 3 fact `[trust: …]` blocks. docs/kernel-language.md — 32 `[simp]`, plus §5.3 / §5.8 / the 'Declaration metadata' paragraph (whose bracket sentence describes the behavior this ticket removes); the root CLAUDE.md `[simp]` bullet; scaland's parser and tests; the tree-sitter corpus; `testdata/parser-parity`.
+
+ACCEPTANCE: (1) `@[Marker, Key: 7]` is recorded at every position listed above, each driven by its own test: a declaration's block read back from `anthill.reflect.DeclarationMeta` (WI-20260914-DV7DP), an operation's from `OperationInfo.meta`, a rule's `@[simp]` FIRING (an equation rewrites), a fact's clause metadata read back; (2) `sort Ids = List @[Serializable]` records `Serializable`, and `sort Ids = List [Int64]` is `List[Int64]` by design — likewise at the other three type-ending productions; (3) a bare `[simp]` after a rule or fact head, and `@ [simp]` with a space, are refused with a message naming `@[…]` — CONTROL: before the change the first loads (as a tag), so the test fails on the old grammar; (4) the operation `meta [..]` clause is refused, naming `@[…]`; (5) no bare meta block remains in the repo (the tree-sitter query that measured the 27 returns none, and the inline-Rust grep is reviewed to zero); (6) the spec and CLAUDE.md speak only `@[…]`; tree-sitter corpus, `testdata/parser-parity`, scaland sbt and the full workspace via rustland/scripts/test.sh green.
+
