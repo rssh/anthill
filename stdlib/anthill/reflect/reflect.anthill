@@ -852,6 +852,20 @@ namespace anthill.reflect
   -- Sort introspection
   -- ================================================================
 
+  -- DV7DP: one ordinary relation row per declaration and its attribute block.
+  -- Join it by name: SortInfo(name: ?s), DeclarationMeta(name: ?s, kind: ?, meta: ?m).
+  -- No block means meta(). Rule/fact tags remain clause metadata; OperationInfo.meta
+  -- is unchanged.
+  -- `name` is the declaration's symbol reference, the shape SortInfo.name has. It is
+  -- typed Term because one field holds every kind — a Symbol field refuses a
+  -- constructor — and, like SortInfo.name, a rule body cannot spell a sort or an
+  -- operation in it: bind it by a join, or pass the name in through a fact.
+  -- `kind` is which declaration the row is for, in MemberInfo's vocabulary, so an
+  -- eponymous sort and its constructor keep two rows (Sort, Constructor) even when
+  -- their blocks are equal, and `MemberInfo(name: ?s, kind: ?k)` joins to the
+  -- member's own row. A rule can name the kind: `kind: Sort`.
+  entity DeclarationMeta(name: Term, kind: MemberKind, meta: Term)
+
   entity SortInfo(
     name         : Symbol,                          -- qualified name (symbol reference)
     kind         : Symbol,                          -- the keyword that declared it:
@@ -995,6 +1009,7 @@ namespace anthill.reflect
     entity Enum
     entity Namespace
     entity Const
+    entity Constraint   -- a labeled constraint; DeclarationMeta only (MemberInfo lists none)
   end
 
   entity MemberInfo(

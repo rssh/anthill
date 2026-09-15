@@ -4481,6 +4481,55 @@ rule parent("alice", "bob")
   meta: Meta(trust: axiom, agent: "author")
 ```
 
+**Declaration metadata** (WI-20260914-DV7DP). A sort, enum, abstract sort,
+entity constructor, `const`, labeled `constraint`, or operation publishes an ordinary
+`anthill.reflect.DeclarationMeta(name: Term, kind: MemberKind, meta: Term)` fact. Its
+`meta` field holds the lowered `meta(key: value, …)` block, or empty `meta()` when no
+block was written. These facts use the standard KB store and resolver; there is no
+parallel symbol-to-metadata table. `name` is the declaration's symbol reference, the
+shape `SortInfo.name` has, so the two join:
+
+```anthill
+rule sort_attributes(?s, ?m) :- SortInfo(name: ?s), DeclarationMeta(name: ?s, kind: Sort, meta: ?m)
+rule member_attributes(?s, ?m) :- MemberInfo(name: ?s, kind: ?k), DeclarationMeta(name: ?s, kind: ?k, meta: ?m)
+```
+
+`kind` says which declaration the row is for, in `MemberInfo`'s vocabulary: `Sort` for
+a `sort … end` or a `sort T = …`, `Enum`, `Constructor` for an entity (free-standing
+or in a body), `Const`, `Operation`, and `Constraint` for a labeled constraint. A rule
+names it directly (`kind: Sort`, with `MemberKind`'s variants imported from
+`anthill.reflect.MemberKind`). So `sort_attributes` answers a `sort … end`'s block
+only — not an enum's (`Enum`), nor a free-standing `entity Free [M]`'s, which is its
+sort but declared as a `Constructor`; `member_attributes` joins each member to its own
+row, whatever its kind.
+
+A rule body cannot write a sort, operation or constraint label in the `name` slot — the
+name has no value reading there, as in `SortInfo(name: …)` — so a reader binds it by a
+join, or passes a particular name in through a fact: `entity Subject(name: Term)`,
+`fact Subject(name: MySort)`, `Subject(name: ?s), DeclarationMeta(name: ?s, kind: ?, meta: ?m)`.
+
+Import `DeclarationMeta` from `anthill.reflect` to use it in a rule. A sort's or enum's
+block is lowered in its own scope, so `sort Box … end [Elem: T]` names `Box.T`.
+An operation's row contains the same term as `OperationInfo.meta` (§5.8).
+
+Each declaration contributes its own row, keyed by name AND kind. An eponymous
+constructor and its sort share one symbol (§6.3) and keep two rows, `Sort` and
+`Constructor`, even when their blocks are equal; a constraint label that shares an
+entity's name likewise. Neither overwrites nor conflicts with the other. The empty
+`meta()` row stands for "no declaration of this name and kind wrote a block": a type
+parameter declared in `sort Box[T]` and again as `sort T = ? [M]` (or an HK
+`sort Spec[F[E]]` with a written `sort F … end [M]`) is one parameter with the one row
+`meta(M)`, not `meta()` beside it. A rule's or fact's tags remain clause metadata. An
+unlabeled constraint with a block is refused, because it declares no name for the
+relation's `name` field.
+
+Where the `[` directly follows a type, it is not a block at all: `sort Id = Int64 [M]` and
+a body-less `const K: Int64 [M]` read the bracket as type arguments, as an operation's
+return type would. That is refused only when the reading fails — `Int64 [M]`
+over-applies, and an entry naming no sort is unresolved — and otherwise it LOADS as the
+application: `sort Ids = List [Int64]` is `List[Int64]`, with no block. `sort Id = ? [M]`
+and a `const` with a body take the block.
+
 The `tested-N` surface syntax (e.g., `tested-47`) is sugar for the `tested(N)` constructor:
 
 ```

@@ -4847,6 +4847,15 @@ impl<'a> Converter<'a> {
             }
         };
         let meta = self.convert_meta_block(node);
+        // WI-20260914-DV7DP (§7): a declaration's block is keyed by the name it declares,
+        // and an unlabeled constraint declares none — refused here for the reason its
+        // description block is, rather than loaded and dropped.
+        if label.is_none() && meta.is_some() {
+            let at = self
+                .child_by_kind(node, "meta_block")
+                .expect("a converted meta block has its node");
+            self.err(super::error::meta_block_without_target("unlabeled constraint"), at);
+        }
         Some(Constraint {
             label,
             descriptions,

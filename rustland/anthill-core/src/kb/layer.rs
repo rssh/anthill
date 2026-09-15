@@ -879,4 +879,39 @@ end
             "a TermId minted inside the layer must still resolve to its own term"
         );
     }
+
+    /// DV7DP: query the same DeclarationMeta goal before and after discard.
+    /// Removing metadata emission fails the live-layer assertion; ordinary rule
+    /// rollback must then remove the row without any metadata-specific snapshot.
+    #[test]
+    fn dv7dp_declaration_relation_rolls_back_with_ordinary_facts() {
+        use crate::kb::resolve::ResolveConfig;
+        let mut kb = crate::kb::test_support::load_stdlib(None);
+        let snap = kb.snapshot_scoped();
+        let parsed = parse::parse("namespace dv7dp.layer\n entity Tagged [Marker]\nend\n").unwrap();
+        if let Err(errs) = load::load_all(&mut kb, &[&parsed], &NullResolver) {
+            panic!("layer load errors: {errs:?}");
+        }
+        let functor = kb.resolve_symbol("anthill.reflect.DeclarationMeta");
+        let sym = kb.resolve_symbol("dv7dp.layer.Tagged");
+        let name = kb.alloc(Term::Ref(sym));
+        let name_field = kb.intern("name");
+        let kind_field = kb.intern("kind");
+        let meta_field = kb.intern("meta");
+        let kind_vid = kb.fresh_var(kind_field);
+        let kind = kb.alloc(Term::Var(Var::Global(kind_vid)));
+        let var_name = kb.intern("attributes");
+        let vid = kb.fresh_var(var_name);
+        let meta = kb.alloc(Term::Var(Var::Global(vid)));
+        let goal = kb.make_entity_term(
+            functor,
+            SmallVec::new(),
+            SmallVec::from_slice(&[(name_field, name), (kind_field, kind), (meta_field, meta)]),
+        );
+        let rows = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].is_definite());
+        kb.restore_scoped(snap);
+        assert!(kb.resolve(&[goal], &ResolveConfig::default()).is_empty());
+    }
 }

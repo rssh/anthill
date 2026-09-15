@@ -5277,6 +5277,56 @@ fn eponymous_sort_symbol(
 /// The two spellings a `sort` / `enum` declaration needs: the [`SortKind`] it
 /// registers under and the keyword its `SortInfo` reports. Read by both halves of
 /// the sort load, which is why it is derived once here rather than twice there.
+/// `anthill.reflect.MemberKind`'s variants (reflect.anthill) — the loader's ONE spelling
+/// of a member kind. `register_stdlib_scopes` defines the symbols from [`Self::ALL`];
+/// `MemberInfo` and `DeclarationMeta` (WI-20260914-DV7DP) name them through
+/// [`Self::as_str`], so a kind the stdlib enum does not declare cannot be written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum MemberKind {
+    Constructor,
+    Operation,
+    Rule,
+    Sort,
+    Enum,
+    Namespace,
+    Const,
+    Constraint,
+}
+
+impl MemberKind {
+    const ALL: [MemberKind; 8] = [
+        MemberKind::Constructor,
+        MemberKind::Operation,
+        MemberKind::Rule,
+        MemberKind::Sort,
+        MemberKind::Enum,
+        MemberKind::Namespace,
+        MemberKind::Const,
+        MemberKind::Constraint,
+    ];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            MemberKind::Constructor => "Constructor",
+            MemberKind::Operation => "Operation",
+            MemberKind::Rule => "Rule",
+            MemberKind::Sort => "Sort",
+            MemberKind::Enum => "Enum",
+            MemberKind::Namespace => "Namespace",
+            MemberKind::Const => "Const",
+            MemberKind::Constraint => "Constraint",
+        }
+    }
+
+    /// A `sort … end` / `enum … end` declaration's member kind.
+    fn of_sort_decl(kind: SortDeclKind) -> Self {
+        match kind {
+            SortDeclKind::Enum => MemberKind::Enum,
+            SortDeclKind::Sort => MemberKind::Sort,
+        }
+    }
+}
+
 fn sort_decl_kinds(kind: SortDeclKind) -> (SortKind, &'static str) {
     match kind {
         SortDeclKind::Enum => (SortKind::Enum, "enum"),
@@ -11555,6 +11605,14 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         SymbolKind::Entity,
         reflect_scope,
     );
+    let declaration_meta = kb.symbols.define(
+        "DeclarationMeta",
+        "anthill.reflect.DeclarationMeta",
+        SymbolKind::Entity,
+        reflect_scope,
+    );
+    let declaration_meta_fields = vec![kb.intern("name"), kb.intern("kind"), kb.intern("meta")];
+    kb.register_entity_fields(declaration_meta, declaration_meta_fields);
     let member_info_fields = vec![kb.intern("name"), kb.intern("kind"), kb.intern("parent")];
     kb.register_entity_fields(member_info, member_info_fields);
     let description_info_fields = vec![
@@ -11582,15 +11640,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
             is_enclosing: true,
         },
     );
-    for variant in [
-        "Constructor",
-        "Operation",
-        "Rule",
-        "Sort",
-        "Enum",
-        "Namespace",
-        "Const",
-    ] {
+    for variant in MemberKind::ALL.map(MemberKind::as_str) {
         let qualified = format!("anthill.reflect.MemberKind.{variant}");
         kb.symbols
             .define(variant, &qualified, SymbolKind::Entity, member_kind_scope);
@@ -13391,6 +13441,12 @@ fn declare_file_field_types(
     let global = kb.global_scope();
     let mut loader = Loader::new(kb, parsed, resolver, loaded_paths, global, Some(source_id));
     loader.declare_field_types(&parsed.items);
+    // DV7DP — only `load_items` emits the queued empty `DeclarationMeta` rows; the
+    // declaration pass records none, and a row queued here would be lost unsaid.
+    debug_assert!(
+        loader.pending_empty_blocks.is_empty(),
+        "the declaration pass queued DeclarationMeta rows it never emits"
+    );
     stamped_file_errors(loader.errors, parsed)
 }
 
@@ -19947,6 +20003,11 @@ struct Loader<'a> {
     in_op_contract_clause: bool,
     // Description index counter per target (keyed by TermId raw)
     desc_index: HashMap<u32, i64>,
+    // WI-20260914-DV7DP — declarations with no block, whose empty `DeclarationMeta` row
+    // waits for the end of the file, and the (name, kind)s some declaration gave a
+    // block. See `record_declaration_block`.
+    pending_empty_blocks: Vec<(Symbol, MemberKind, Symbol)>,
+    written_declaration_blocks: HashSet<(Symbol, MemberKind)>,
     // ── Occurrence tracking ─────────────────────────────────────
     // Source file id for this file's occurrences
     source_id: SourceId,
@@ -20264,6 +20325,8 @@ impl<'a> Loader<'a> {
             warnings: Vec::new(),
             current_scope: global_scope,
             desc_index: HashMap::new(),
+            pending_empty_blocks: Vec::new(),
+            written_declaration_blocks: HashSet::new(),
             type_param_vars: HashMap::new(),
             arrow_binder_scope: HashMap::new(),
             in_effect_absence: false,
@@ -29652,6 +29715,9 @@ impl<'a> Loader<'a> {
             carrier_stack: Vec::new(),
         };
         walk_scopes(&mut pass, items, root);
+        // DV7DP — every declaration of the file has been read, so a (name, kind) with no
+        // written block anywhere is now known.
+        self.emit_pending_empty_blocks();
     }
 
     /// The scope a namespace / sort declaration opens, as THIS phase names it:
@@ -29914,6 +29980,17 @@ impl<'a> Loader<'a> {
         // enclosing sort's own domain) so the SortAlias fact lives in the same domain
         // the second pass would have used.
         self.preload_type_param_aliases(&s.items, sort_domain);
+
+        // WI-20260914-DV7DP — the sort's own block, lowered in the sort's OWN scope (as an
+        // operation's is in its own), so a key can name what the sort declares:
+        // `sort Box … end [Elem: T]` names `Box.T` (the value is the name, `Ref(Box.T)`).
+        // Filed under `parent_domain`, as the sort's descriptions above are.
+        self.record_declaration_block(
+            sort_domain,
+            MemberKind::of_sort_decl(s.kind),
+            s.meta.as_ref(),
+            parent_domain,
+        );
 
         // Register direct entity children (entity → parent sort) and emit each
         // one's `EntityInfo`/`FieldInfo` metadata fact. The sort-parent link is
@@ -30609,6 +30686,11 @@ impl<'a> Loader<'a> {
     fn load_entity(&mut self, e: &Entity, domain: Symbol) {
         let functor = self.remap_name(&e.name);
         self.emit_own_descriptions(functor, &e.descriptions, domain);
+
+        // WI-20260914-DV7DP — the constructor's block, recorded HERE because every entity
+        // reaches this function, a sort body's included. An EPONYMOUS constructor is its
+        // sort (§6.3, one symbol); blocks on both declarations are separate rows.
+        self.record_declaration_block(functor, MemberKind::Constructor, e.meta.as_ref(), domain);
 
         // The field TYPES (the carrier-agnostic literal-typing hints) are lowered and
         // registered by the WI-936 declaration pass, before ANY file's terms are
@@ -32610,6 +32692,9 @@ impl<'a> Loader<'a> {
         // Own type/body occurrences by the const symbol (mirrors load_operation).
         let prev_owner = self.current_owner;
         self.current_owner = Some(const_sym);
+        // DV7DP — lowered under the const's ownership, as an operation's block is under
+        // the operation's.
+        self.record_declaration_block(const_sym, MemberKind::Const, c.meta.as_ref(), domain);
 
         // Declared type — always present (grammar-mandatory); store it for the typer.
         let declared_type = self.type_expr_to_value(&c.ty);
@@ -32996,17 +33081,10 @@ impl<'a> Loader<'a> {
         // rule/fact meta. An absent meta_block yields an empty `meta()`, so the
         // OperationInfo `meta` field is always present. Built while still in the
         // operation scope so a term-valued attribute resolves against op names.
-        let meta_term = match &o.meta {
-            Some(mb) => self.load_meta_block(mb),
-            None => {
-                let meta_functor = self.kb.resolve_symbol("meta");
-                self.kb.alloc(Term::Fn {
-                    functor: meta_functor,
-                    pos_args: SmallVec::new(),
-                    named_args: SmallVec::new(),
-                })
-            }
-        };
+        let meta_term = self.lower_declaration_block(o.meta.as_ref());
+        // Emitted eagerly, empty block included: `OperationInfo.meta` holds this same term,
+        // and a second declaration of the operation is refused (WI-1049).
+        self.emit_declaration_meta(functor, MemberKind::Operation, meta_term, domain);
 
         self.current_scope = prev_scope;
         self.current_owner = prev_owner;
@@ -33366,8 +33444,11 @@ impl<'a> Loader<'a> {
     }
 
     fn load_constraint(&mut self, c: &Constraint, domain: Symbol) {
+        // An unlabeled constraint names nothing to key a block by; the converter refuses
+        // a block on one (WI-20260914-DV7DP), as it refuses a description block.
         if let Some(label) = c.label.as_ref().map(|n| self.remap_name(n)) {
             self.emit_own_descriptions(label, &c.descriptions, domain);
+            self.record_declaration_block(label, MemberKind::Constraint, c.meta.as_ref(), domain);
         }
         let label = c
             .label
@@ -35296,17 +35377,14 @@ impl<'a> Loader<'a> {
     /// an operation count. (It also has to go somewhere: per SCOPE costs 7 kind
     /// resolutions × ~147 scopes = MORE calls than it saves, so a real one would have
     /// to cache per Loader.)
-    fn emit_member_fact(&mut self, name_sym: Symbol, kind_name: &str, parent: TermId) {
+    fn emit_member_fact(&mut self, name_sym: Symbol, kind: MemberKind, parent: TermId) {
         let member_sym = self.kb.resolve_symbol("anthill.reflect.MemberInfo");
         let member_sort = ClauseKind::Member;
         let name_field = self.kb.intern("name");
         let kind_field = self.kb.intern("kind");
         let parent_field = self.kb.intern("parent");
         let name_term = self.kb.make_name_term_from_sym(name_sym);
-        let kind_sym = self
-            .kb
-            .resolve_symbol(&format!("anthill.reflect.MemberKind.{kind_name}"));
-        let kind_term = self.kb.make_name_term_from_sym(kind_sym);
+        let kind_term = self.member_kind_term(kind);
         let member_term = self.kb.alloc(Term::Fn {
             functor: member_sym,
             pos_args: SmallVec::new(),
@@ -35341,57 +35419,138 @@ impl<'a> Loader<'a> {
                     // (`kind: Sort`, parent: the namespace) and by its own
                     // `SortInfo.constructors`.
                     if sym != parent_sym {
-                        self.emit_member_fact(sym, "Constructor", parent);
+                        self.emit_member_fact(sym, MemberKind::Constructor, parent);
                     }
                 }
                 Item::AbstractSort(s) => {
                     let sym = self.remap_name(&s.name);
-                    self.emit_member_fact(sym, "Sort", parent);
+                    self.emit_member_fact(sym, MemberKind::Sort, parent);
                 }
                 Item::SortWithBody(s) => {
                     let sym = self.remap_name(&s.name);
-                    let kind = if s.kind == SortDeclKind::Enum {
-                        "Enum"
-                    } else {
-                        "Sort"
-                    };
-                    self.emit_member_fact(sym, kind, parent);
+                    self.emit_member_fact(sym, MemberKind::of_sort_decl(s.kind), parent);
                 }
                 Item::Operation(o) => {
                     let sym = self.remap_name(&o.name);
-                    self.emit_member_fact(sym, "Operation", parent);
+                    self.emit_member_fact(sym, MemberKind::Operation, parent);
                 }
                 Item::OperationBlock(ob) => {
                     for op in &ob.entries {
                         let sym = self.remap_name(&op.name);
-                        self.emit_member_fact(sym, "Operation", parent);
+                        self.emit_member_fact(sym, MemberKind::Operation, parent);
                     }
                 }
                 Item::Rule(r) => {
                     if let Some(ref label) = r.label {
                         let sym = self.remap_name(label);
-                        self.emit_member_fact(sym, "Rule", parent);
+                        self.emit_member_fact(sym, MemberKind::Rule, parent);
                     }
                 }
                 Item::RuleBlock(rb) => {
                     for rule in &rb.entries {
                         if let Some(ref label) = rule.label {
                             let sym = self.remap_name(label);
-                            self.emit_member_fact(sym, "Rule", parent);
+                            self.emit_member_fact(sym, MemberKind::Rule, parent);
                         }
                     }
                 }
                 Item::Namespace(n) => {
                     let sym = self.remap_name(&n.name);
-                    self.emit_member_fact(sym, "Namespace", parent);
+                    self.emit_member_fact(sym, MemberKind::Namespace, parent);
                 }
                 Item::Const(c) => {
                     let sym = self.remap_name(&c.name);
-                    self.emit_member_fact(sym, "Const", parent);
+                    self.emit_member_fact(sym, MemberKind::Const, parent);
                 }
                 _ => {}
             }
         }
+    }
+
+    /// A declaration's block lowered in the CURRENT scope — the empty `meta()` when none
+    /// was written, so "no attributes" is a value rather than a missing one (§5.8, §7).
+    fn lower_declaration_block(&mut self, meta: Option<&MetaBlock>) -> TermId {
+        if let Some(mb) = meta {
+            return self.load_meta_block(mb);
+        }
+        let meta_functor = self.kb.resolve_symbol("meta");
+        self.kb.alloc(Term::Fn {
+            functor: meta_functor,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        })
+    }
+
+    /// §7 / DV7DP: declarations publish ordinary reflection facts, so Anthill
+    /// rules can query and join their attributes using the standard resolver.
+    /// Emit even the empty block. There is no symbol-keyed side table.
+    ///
+    /// `kind` names WHICH declaration the row is for: without it an eponymous sort and
+    /// its constructor with equal blocks were one fact or two depending on the domain
+    /// each is filed under. `domain` is the ENCLOSING one, the domain the declaration's
+    /// `DescriptionInfo` is filed under — not `current_domain()`, which inside a sort
+    /// body or an operation scope is the declaration itself.
+    ///
+    /// A WRITTEN block is emitted here, lowered in the current scope. An ABSENT one is
+    /// only queued: [`Self::emit_pending_empty_blocks`] emits `meta()` at the end of the
+    /// file for a (name, kind) that no declaration gave a block. One parameter reaches
+    /// here twice — `sort Box[T]`'s desugared `T` and a written `sort T = ? [M]` (an HK
+    /// `sort Spec[F[T]]` and a written `sort F … end [M]` alike) — and emitting eagerly
+    /// answered both `meta()` and `meta(M)` for it.
+    fn record_declaration_block(
+        &mut self,
+        sym: Symbol,
+        kind: MemberKind,
+        meta: Option<&MetaBlock>,
+        domain: Symbol,
+    ) {
+        match meta {
+            Some(mb) => {
+                let term = self.load_meta_block(mb);
+                self.emit_declaration_meta(sym, kind, term, domain);
+                self.written_declaration_blocks.insert((sym, kind));
+            }
+            None => self.pending_empty_blocks.push((sym, kind, domain)),
+        }
+    }
+
+    /// The end-of-file half of [`Self::record_declaration_block`].
+    fn emit_pending_empty_blocks(&mut self) {
+        for (sym, kind, domain) in std::mem::take(&mut self.pending_empty_blocks) {
+            if !self.written_declaration_blocks.contains(&(sym, kind)) {
+                let empty = self.lower_declaration_block(None);
+                self.emit_declaration_meta(sym, kind, empty, domain);
+            }
+        }
+    }
+
+    /// `anthill.reflect.MemberKind.<kind>` as the term `MemberInfo` and `DeclarationMeta`
+    /// store.
+    fn member_kind_term(&mut self, kind: MemberKind) -> TermId {
+        let kind_sym = self
+            .kb
+            .resolve_symbol(&format!("anthill.reflect.MemberKind.{}", kind.as_str()));
+        self.kb.make_name_term_from_sym(kind_sym)
+    }
+
+    fn emit_declaration_meta(&mut self, sym: Symbol, kind: MemberKind, meta: TermId, domain: Symbol) {
+        let functor = self.kb.resolve_symbol("anthill.reflect.DeclarationMeta");
+        let name_field = self.kb.intern("name");
+        let kind_field = self.kb.intern("kind");
+        let meta_field = self.kb.intern("meta");
+        let name = self.kb.alloc(Term::Ref(sym));
+        let kind_term = self.member_kind_term(kind);
+        let head = self.kb.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (name_field, name),
+                (kind_field, kind_term),
+                (meta_field, meta),
+            ]),
+        });
+        self.kb
+            .assert_metadata_fact(head, ClauseKind::Fact, domain, None);
     }
 
     fn load_meta_block(&mut self, mb: &MetaBlock) -> TermId {
@@ -35538,6 +35697,15 @@ impl ScopePass for LoadPass<'_, '_> {
         let kind = match item {
             Item::AbstractSort(s) => {
                 self.loader.load_abstract_sort(s, domain);
+                // WI-20260914-DV7DP — the block is recorded HERE, not in
+                // `load_abstract_sort`: that one also runs from the alias pre-load, which
+                // the WI-936 declaration pass drives before entity field types are
+                // registered (a literal key would lower without its typing hint), and its
+                // idempotence guard returns before a second `sort T = ?` of one name —
+                // `sort Box[T]`'s desugared `T` and a written `sort T = ? [M]` — is read.
+                let sym = self.loader.remap_name(&s.name);
+                self.loader
+                    .record_declaration_block(sym, MemberKind::Sort, s.meta.as_ref(), domain);
                 "AbstractSort"
             }
             Item::Rule(r) => {

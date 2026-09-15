@@ -370,6 +370,8 @@ mod wi_9wvt7_error_reify_test;
 
 #[path = "include/wi_2858g_reentrant_host_call_test.rs"]
 mod wi_2858g_reentrant_host_call_test;
+#[path = "include/wi_dv7dp_declaration_meta_test.rs"]
+mod wi_dv7dp_declaration_meta_test;
 
 #[path = "include/wi_0v0f7_bridged_raise_test.rs"]
 mod wi_0v0f7_bridged_raise_test;

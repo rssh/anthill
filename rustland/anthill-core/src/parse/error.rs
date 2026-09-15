@@ -106,3 +106,14 @@ pub(crate) fn description_without_target(kind: &str) -> String {
          permits one, or move the text to a named declaration"
     )
 }
+
+/// §7's twin of [`description_without_target`] for a `[…]` block (WI-20260914-DV7DP): a
+/// declaration's block is recorded under the name it declares, and this construct
+/// declares none. One raise site today — an unlabeled `constraint`, in `parse::convert`.
+pub(crate) fn meta_block_without_target(kind: &str) -> String {
+    format!(
+        "meta block on {kind} has no stable target: a declaration's `[…]` block is \
+         recorded under the name it declares. Add a label where this construct permits \
+         one, or move the block to a named declaration"
+    )
+}
