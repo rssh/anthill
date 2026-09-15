@@ -431,7 +431,7 @@ enum anthill.prelude.TypeExtractor
      path unifies the derived type against a declared param type (`unify_types`), where
      compatible-with-anything leaves the slot UNDER-DETERMINED instead of binding wrongly
      — WI-20260830-NX4FD's "a recorded absence". That is the M6 flounder posture doing
-     real work. The other two readers ([simp] redex arg sorts; the WI-067 bound check)
+     real work. The other two readers (@[simp] redex arg sorts; the WI-067 bound check)
      convert it to `None` via `sort_functor_of_view` before any comparison, so there it is
      a totality SENTINEL and an `Option` would say it directly. Two questions, one form,
      one layer below the one named next.

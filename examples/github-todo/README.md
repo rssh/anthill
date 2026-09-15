@@ -81,11 +81,11 @@ workitem WI-AUTH-001 { status: Open }
 
 -- Agent claims it:
 workitem WI-AUTH-001 { status: Claimed("agent-1", "2027-03-15") }
-  [supersedes: WI-AUTH-001-v1]
+  @[supersedes: WI-AUTH-001-v1]
 
 -- Agent delivers:
 workitem WI-AUTH-001 { status: Delivered("agent-1", "2027-03-16") }
-  [supersedes: WI-AUTH-001-v2]
+  @[supersedes: WI-AUTH-001-v2]
 ```
 
 The current status is always the most recent (non-superseded) fact.

@@ -31,7 +31,7 @@ impl PassId {
 /// The `PassId` tagging a MACRO-BUILT occurrence — the sibling of
 /// [`simp_pass`](crate::kb::simp_rewrite::simp_pass), which tags a template-SUBSTITUTED
 /// one. `make_apply`'s doc has named the split since WI-722: it is what distinguishes a
-/// node a macro constructed from one the `[simp]` engine substituted.
+/// node a macro constructed from one the `@[simp]` engine substituted.
 ///
 /// WI-20260820-5R2XT gave that distinction its first READER
 /// ([`NodeOccurrence::surface_call_name`](crate::kb::node_occurrence::NodeOccurrence::surface_call_name)),

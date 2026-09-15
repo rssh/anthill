@@ -320,7 +320,7 @@ Two pre-existing grammar edges, documented rather than changed here:
   clause. The one syntactic fix that would make the postfix position
   itself work — `token.immediate('[')` on `application`, so tight brackets
   mean application and spaced brackets mean a meta block — would also
-  retire the rule-tag parens workaround (`= constant() [simp]`), at the
+  retire the rule-tag parens workaround (`= constant() @[simp]`), at the
   price of whitespace-significance plus a corpus + scaland resync; noted
   as an option, not proposed.
 - **Call expressions in bracket values do not parse** (`Cell[V = sz()]` is

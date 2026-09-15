@@ -305,25 +305,25 @@ Sorts and operations declare their operator binding via meta annotations:
 sort Union {
     sort A = ?
     sort B = ?
-} [infix: "|"]
+} @[infix: "|"]
 
 -- Operation-level: declares that `|` in term position maps to this operation
 sort Bool
-    operation or(a: Bool, b: Bool) -> Bool [infix: "|"]
-    operation and(a: Bool, b: Bool) -> Bool [infix: "&"]
+    operation or(a: Bool, b: Bool) -> Bool @[infix: "|"]
+    operation and(a: Bool, b: Bool) -> Bool @[infix: "&"]
 end
 
 sort Numeric
     sort T = ?
-    operation add(a: T, b: T) -> T [infix: "+"]
-    operation sub(a: T, b: T) -> T [infix: "-"]
-    operation mul(a: T, b: T) -> T [infix: "*"]
+    operation add(a: T, b: T) -> T @[infix: "+"]
+    operation sub(a: T, b: T) -> T @[infix: "-"]
+    operation mul(a: T, b: T) -> T @[infix: "*"]
 end
 ```
 
-The `[infix: "|"]` annotation declares the binding. It does NOT set precedence — precedence comes from the dictionary. If two operations declare `[infix: "+"]` in different sorts, that's fine (overloading via sort context).
+The `@[infix: "|"]` annotation declares the binding. It does NOT set precedence — precedence comes from the dictionary. If two operations declare `@[infix: "+"]` in different sorts, that's fine (overloading via sort context).
 
-The system validates that the meta-declared operator symbol exists in the dictionary. Declaring `[infix: "|||"]` would be a load-time warning.
+The system validates that the meta-declared operator symbol exists in the dictionary. Declaring `@[infix: "|||"]` would be a load-time warning.
 
 ### Ternary Operators
 
@@ -388,8 +388,8 @@ rule distance(?a, ?b) = abs(?a - ?b)
 ```anthill
 sort Lattice {
     sort T = ?
-    operation join(a: T, b: T) -> T [infix: "|"]
-    operation meet(a: T, b: T) -> T [infix: "&"]
+    operation join(a: T, b: T) -> T @[infix: "|"]
+    operation meet(a: T, b: T) -> T @[infix: "&"]
 }
 ```
 
@@ -397,7 +397,7 @@ sort Lattice {
 
 ```anthill
 sort Bool
-    operation not(a: Bool) -> Bool [prefix: "!"]
+    operation not(a: Bool) -> Bool @[prefix: "!"]
 end
 
 -- Usage:
@@ -410,8 +410,8 @@ rule mixed(?x) = !?x | ?x = unknown -- not(?x) | eq(?x, unknown)
 
 ```anthill
 sort Int64
-    operation mod(a: Int64, b: Int64) -> Int64 [infix: "mod"]
-    operation div(a: Int64, b: Int64) -> Int64 [infix: "div"]
+    operation mod(a: Int64, b: Int64) -> Int64 @[infix: "mod"]
+    operation div(a: Int64, b: Int64) -> Int64 @[infix: "div"]
 end
 
 -- Usage: same precedence as * and /
@@ -427,7 +427,7 @@ The existing 8 operators (`=`, `>`, `>=`, `<`, `<=`, `+`, `-`, `*`) continue to 
 2. Adds new operator tokens (`|`, `&`, `!=`, `/`, `%`, `^`, `->`, word operators)
 3. Extends infix to type positions
 
-The meta annotations are optional — existing stdlib operations work without them. Adding `[infix: "+"]` to `Numeric.add` is purely declarative.
+The meta annotations are optional — existing stdlib operations work without them. Adding `@[infix: "+"]` to `Numeric.add` is purely declarative.
 
 ## Implementation Plan
 
@@ -441,11 +441,11 @@ Add `|`, `&`, `!=`, `/`, `%`, `^` to the flat operator token set. Add `infix_typ
 
 ### Phase 3: Meta annotations
 
-Add `[infix: "..."]` as a recognized meta key. Store in KB as metadata on sorts/operations. Validate that the declared symbol exists in the dictionary.
+Add `@[infix: "..."]` as a recognized meta key. Store in KB as metadata on sorts/operations. Validate that the declared symbol exists in the dictionary.
 
 ### Phase 4: Stdlib annotations
 
-Add `[infix: ...]` annotations to existing prelude sorts (`Eq`, `Ord`, `Numeric`) for documentation and tooling.
+Add `@[infix: ...]` annotations to existing prelude sorts (`Eq`, `Ord`, `Numeric`) for documentation and tooling.
 
 ## Design Rationale: Why Flat Parse + Dictionary
 

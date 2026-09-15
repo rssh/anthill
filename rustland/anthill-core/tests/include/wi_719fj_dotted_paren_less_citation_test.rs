@@ -927,7 +927,7 @@ fn a_dotted_paren_less_fact_head_in_a_sort_body_is_reported_once() {
     }
 }
 
-/// THE EQUATION SIDE, WHICH MUST NOT MOVE. §5.3: a `[simp]` head is an APPLICATION, so a
+/// THE EQUATION SIDE, WHICH MUST NOT MOVE. §5.3: a `@[simp]` head is an APPLICATION, so a
 /// paren-less subject matches no redex and fires nothing — dotted or not.
 ///
 /// It is here because `head_subject_name`'s chain arm is NOT gated on the predicate path
@@ -938,7 +938,7 @@ fn a_dotted_paren_less_fact_head_in_a_sort_body_is_reported_once() {
 /// `RuleIntroduction::Predicate` itself.
 ///
 /// GREEN BEFORE AND AFTER, and under every back-out: it is a PIN, not a separator. What
-/// it pins is that the `[simp]` reach did not widen when the head walk learned to read a
+/// it pins is that the `@[simp]` reach did not widen when the head walk learned to read a
 /// chain.
 #[test]
 fn a_dotted_equation_subject_still_fires_nothing() {
@@ -948,7 +948,7 @@ namespace zz719.eqn
     import anthill.prelude.Int64
     operation tau() -> Int64 = 1
     -- the DOTTED bare subject: a law about a redex that does not exist
-    rule Bare.tau <=> 7 [simp]
+    rule Bare.tau <=> 7 @[simp]
     operation drive() -> Int64 = tau()
   end
 
@@ -956,7 +956,7 @@ namespace zz719.eqn
     import anthill.prelude.Int64
     operation tau() -> Int64 = 1
     -- the APPLICATION, dotted: the spelling that defines
-    rule Paren.tau() <=> 7 [simp]
+    rule Paren.tau() <=> 7 @[simp]
     operation drive() -> Int64 = tau()
   end
 end
@@ -972,7 +972,7 @@ end
         (
             "zz719.eqn.Paren.drive",
             7,
-            "the parenthesised law IS a redex, and `[simp]` inlines it before dispatch",
+            "the parenthesised law IS a redex, and `@[simp]` inlines it before dispatch",
         ),
     ] {
         match interp.call(path, &[]) {

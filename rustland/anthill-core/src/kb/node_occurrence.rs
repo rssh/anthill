@@ -537,7 +537,7 @@ impl NodeOccurrence {
     ///
     /// The carry is VERBATIM (σ is NOT applied to the type). That is sound for the
     /// occurrence sort-head read (`sort_functor_of_view` over `inferred_type`, e.g.
-    /// the typer's `[simp]` firing guard), which returns the type's SORT HEAD —
+    /// the typer's `@[simp]` firing guard), which returns the type's SORT HEAD —
     /// invariant under the type-parameter refinement a child substitution performs
     /// (`cons(?h,?t): List[?T]` keeps head `List`). A node whose head is itself a
     /// type-var widens to `None`, never a stale concrete sort — so there is no
@@ -554,7 +554,7 @@ impl NodeOccurrence {
     /// constructor for which they differ — it changes what a node is an expansion OF
     /// without moving where it is — so a rebuild through `from` would have silently
     /// carried the re-parented node's location back onto its template, undoing
-    /// WI-20260819-33H3P's answer at the next `[simp]` reassembly / De Bruijn open. A
+    /// WI-20260819-33H3P's answer at the next `@[simp]` reassembly / De Bruijn open. A
     /// rebuild of THIS occurrence keeps THIS occurrence's location, which is also what
     /// this method's name and its non-synthesized arm already said.
     pub fn rebuilt_expr(&self, expr: Expr) -> Rc<Self> {
@@ -570,7 +570,7 @@ impl NodeOccurrence {
                         by: *by,
                     },
                     // WI-20260902-4NEKZ: CARRIED, like the origin beside it. A rebuild
-                    // (De Bruijn open/close, substitution, `[simp]` reassembly) is the
+                    // (De Bruijn open/close, substitution, `@[simp]` reassembly) is the
                     // same node with new children; dropping the bit here would make a
                     // rule body's dot chain stop reading as one the first time the
                     // resolver opened it — the silent-loss shape `inferred_type` was
@@ -667,7 +667,7 @@ impl NodeOccurrence {
     /// WI-20260903-FCZ3N — `owner` IS THE CALLER'S TO STATE, and it is the one field the
     /// two callers disagree about. The macro expander re-parents a node the macro BUILT,
     /// which already knows the declaration it belongs to, and passes `result.owner`; the
-    /// `[simp]` splice re-parents a node the author wrote INSIDE A RULE onto a redex in
+    /// `@[simp]` splice re-parents a node the author wrote INSIDE A RULE onto a redex in
     /// some OTHER declaration's body, and passes `from.owner` — the tree the node is
     /// landing in, which is what `synthesized_expr` supplied for every node the term path
     /// minted. A silent `self.owner` default would have moved every spliced node's owner
@@ -694,7 +694,7 @@ impl NodeOccurrence {
     ///
     /// That divergence is only as durable as every REBUILD of this node, which is why
     /// [`Self::rebuilt_expr`] had to stop reading the span off `from` too. Found by
-    /// review, not by the arms: the drift needs a `[simp]` reassembly or a De Bruijn open
+    /// review, not by the arms: the drift needs a `@[simp]` reassembly or a De Bruijn open
     /// AFTER the splice, which no fixture here reaches.
     ///
     /// The caller gates on `self` being an `Expr` (only that kind carries an origin);
@@ -764,7 +764,7 @@ impl NodeOccurrence {
     ///     pinned at all (`statically_pinned_carrier` answers `None`), so there is
     ///     no stale pin to carry.
     ///   * `simp_rewrite::reassemble` — NOT a refinement, and it needs its own leg.
-    ///     A `[simp]` fire replaces a child with an arbitrary equational RHS, so a
+    ///     A `@[simp]` fire replaces a child with an arbitrary equational RHS, so a
     ///     rewritten receiver can name a different carrier than the pin was derived
     ///     from. Both drivers that reach it are nonetheless safe, for two different
     ///     reasons, and BOTH were checked rather than assumed: `simp_rewrite::run`
@@ -1197,7 +1197,7 @@ pub enum NodeKind {
         /// the `TypeResult.ty` the typer computes but historically
         /// discarded. Kept here — a third per-node annotation alongside
         /// `classification` / `resolved_type_args` — so the type-directed
-        /// `[simp]` engine can read each occurrence's least declared sort
+        /// `@[simp]` engine can read each occurrence's least declared sort
         /// (`sort_functor_of_view` over `inferred_type`) without recomputing. Written
         /// by the typer's `Stamp` work-frame once a node's `TypeResult`
         /// is finalized; `None` until typed, or when the node is ill-typed.
@@ -2340,7 +2340,7 @@ pub fn reassemble_pattern(
 ///
 /// The pattern twin of [`NodeOccurrence::reparented_from`]'s `owner` argument, and it
 /// exists for that method's reason: `owner` says which declaration a node SITS IN, and a
-/// walk that relocates a subtree has to state it rather than inherit it. `[simp]`'s
+/// walk that relocates a subtree has to state it rather than inherit it. `@[simp]`'s
 /// splice ([`crate::kb::simp_rewrite`]) is the caller — it re-parents every `Expr` node of
 /// a fired RHS onto the redex, and a `NodeKind::Pattern` beside them (a lambda's binder, a
 /// `match` arm's pattern) went through the plain `reassemble_pattern` and kept the RULE's
@@ -3376,8 +3376,8 @@ impl TypeChildRewrite for OpenTypeRewrite<'_> {
 /// `Value::Node`) can't be a `Term` child, so a var bound to one stays the var". In a type
 /// position that is a SILENT DROP, not a conservative no-op — the leaf it keeps is the
 /// throwaway `fresh` global the equation was opened against, and A FREE VARIABLE UNIFIES
-/// WITH ANYTHING. The typer's `[simp]` fire binds EVERY rule variable to a `Value::Node` (a
-/// redex's children ARE occurrences, WI-246), so a `[simp]` RHS writing `Map[K = ?k, V =
+/// WITH ANYTHING. The typer's `@[simp]` fire binds EVERY rule variable to a `Value::Node` (a
+/// redex's children ARE occurrences, WI-246), so a `@[simp]` RHS writing `Map[K = ?k, V =
 /// Int64].empty()` typed a wrong program clean while its ground twin `Map[K = Bool, …]`
 /// reported the mismatch.
 ///
@@ -3526,7 +3526,7 @@ fn type_denoted_by_occurrence(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // [`Expr::TupleLit`] on the materialize-from-term path. Both carriers must key alike
         // (WI-1016) or one written type decides two ways depending on which producer built
         // the node — so they share `tuple_type_denoted` rather than each restating it. The
-        // `[simp]` redex supplies the CONSTRUCTOR spelling; that is the one measured.
+        // `@[simp]` redex supplies the CONSTRUCTOR spelling; that is the one measured.
         //
         // The `named` list is read as-is: the loader has already put the `_N` labels on the
         // positionals, which is exactly the keying `tuple_type_denoted` would mint. A
@@ -5304,7 +5304,7 @@ pub fn value_as_occurrence(kb: &mut KnowledgeBase, v: &Value) -> Rc<NodeOccurren
 /// structure, including any typer dot-rewrites) and replaces each **bound**
 /// `Expr::Var(Var::Global)` leaf with its σ value; **unbound** var leaves are
 /// kept verbatim, since the resolver binds them later (the opposite of the
-/// `[simp]` RHS builder `substitute_to_occurrence`, which collapses unbound
+/// `@[simp]` RHS builder `substitute_to_occurrence`, which collapses unbound
 /// vars to `⊥` under its all-vars-bound invariant). Unchanged subtrees keep
 /// their `Rc` (only the ancestor chain to a substituted leaf is rebuilt).
 ///
@@ -5935,7 +5935,7 @@ pub fn substitute_occurrence(
         // (WI-20260829-W6JH0) the form-(3) `recv_type` — so a Global appearing in one
         // gets the same rewrite as elsewhere, mirroring the opener's `open_type_args`
         // arm. Both go through [`SubstTypeRewrite`], whose leaf reads σ carrier-neutrally
-        // (WI-20260903-H054K): a type-position variable the typer's `[simp]` fire bound
+        // (WI-20260903-H054K): a type-position variable the typer's `@[simp]` fire bound
         // to a `Value::Node` is instantiated here, not silently kept.
         Expr::Apply {
             functor,
@@ -6282,7 +6282,7 @@ fn rewrite_ref_expr(
 /// ONE OF THE TWO CHANNELS a type position rides on, the other being the sibling
 /// `recv_type` arm in [`substitute_occurrence`]; both reach the same [`SubstTypeRewrite`]
 /// leaf, so a claim about "the type position" is a claim about both. NO FIXTURE DRIVES
-/// THIS ONE: a `[simp]` RHS cannot carry a call-site bracket at all (refused at load,
+/// THIS ONE: a `@[simp]` RHS cannot carry a call-site bracket at all (refused at load,
 /// WI-20260829-BAD3V), so WI-20260903-H054K's rows all ride `recv_type` and pin that
 /// refusal instead — see `wi_h054k_type_position_subst_test`'s channel census.
 fn subst_type_args(
@@ -8966,7 +8966,7 @@ mod tests {
     fn substitute_occurrence_materializes_bound_term_preserving_nested_var() {
         // A var bound to a compound term materializes to an occurrence, and a
         // nested *unbound* var inside that term survives as `Expr::Var` — the
-        // var-preservation invariant the `[simp]` RHS builder lacks.
+        // var-preservation invariant the `@[simp]` RHS builder lacks.
         use smallvec::SmallVec;
         let mut kb = KnowledgeBase::new();
         let (atom, v0, _gt, _three) = gt_atom(&mut kb);
@@ -9361,7 +9361,7 @@ mod tests {
     /// WI-20260820-5R2XT — a REBUILD keeps the rebuilt node's OWN span, not its `from`'s.
     ///
     /// Driven at the unit level because nothing in the fixture corpus reaches it: the drift
-    /// needs a `[simp]` reassembly or a De Bruijn open of a node whose span and `from`'s
+    /// needs a `@[simp]` reassembly or a De Bruijn open of a node whose span and `from`'s
     /// have been made to differ, and `reparented_from` is the only constructor that can
     /// make them differ. Found by review. The CONTROL is `synthesized_inherits_span`
     /// below: `synthesized_expr` still copies `from`'s span, which is what every other

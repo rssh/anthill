@@ -7,14 +7,14 @@
 //!
 //! ── WHY IT SURFACED NOW ──────────────────────────────────────────────────────
 //!
-//! WI-20260903-FCZ3N made a fired `[simp]` rule's RHS keep the span its AUTHOR wrote.
+//! WI-20260903-FCZ3N made a fired `@[simp]` rule's RHS keep the span its AUTHOR wrote.
 //! That is the whole point of that ticket — before it, N firings of one rule carried
 //! their N REDEXES' distinct spans, so the copies were distinguishable and every one of
 //! them pointed at a line where the mistake is not written. Moving the location to the
 //! right place left the COUNT as the residue:
 //!
 //! ```text
-//!   rule bad(?x) <=> sink("nope") [simp]
+//!   rule bad(?x) <=> sink("nope") @[simp]
 //!   operation c(n: Int64) -> Int64 = bad(n) + bad(n)
 //!
 //!   4:20: type mismatch in sink.r (op-arg): expected Int64, got String
@@ -168,13 +168,13 @@ fn errs(src: &str) -> Vec<String> {
     try_load_kb_with(src).err().unwrap_or_default()
 }
 
-/// The ticket's program: ONE written `sink("nope")`, reached through a `[simp]` rule that
+/// The ticket's program: ONE written `sink("nope")`, reached through a `@[simp]` rule that
 /// the consumer fires N times.
 fn fired_n_times(calls: &str) -> String {
     format!(
         "namespace zzw9\n  import anthill.prelude.Int64\n  \
          operation sink(r: Int64) -> Int64 = r\n  \
-         rule bad(?x) <=> sink(\"nope\") [simp]\n  \
+         rule bad(?x) <=> sink(\"nope\") @[simp]\n  \
          operation c(n: Int64) -> Int64 = {calls}\nend\n"
     )
 }

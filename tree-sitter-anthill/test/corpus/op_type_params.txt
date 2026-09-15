@@ -361,7 +361,7 @@ operation fix[R](p: Relation, ...args: R) -> Relation
 Rule-head rest pattern (...?args) — WI-1129
 ==================================
 
-rule fix(?r, ...?args) <=> fix_of(?r, ?args) [simp]
+rule fix(?r, ...?args) <=> fix_of(?r, ?args) @[simp]
 
 ---
 

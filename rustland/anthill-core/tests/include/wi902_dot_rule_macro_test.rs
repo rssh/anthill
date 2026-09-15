@@ -1,11 +1,11 @@
 //! WI-902 — a compile-time MACRO expands at the DOT-RULE firing site too.
 //!
-//! There are two typer-side `[simp]` firing sites. `simp_rewrite::try_fire`
+//! There are two typer-side `@[simp]` firing sites. `simp_rewrite::try_fire`
 //! (the Apply/Constructor redex) builds the RHS template and then macro-expands
-//! it, so `rule trigger(?x) <=> wrap(?x) [simp]` runs `wrap` at compile time
+//! it, so `rule trigger(?x) <=> wrap(?x) @[simp]` runs `wrap` at compile time
 //! (WI-722) and a `wrap` that rejects reports through the WI-757 channel.
 //! `typing::try_fire_dot_rule` — the WI-279 INC2 sort-scoped path, `rule dr:
-//! dot_apply(?e, m, ?x) = wrap(?e, ?x) [simp]` — ended at the template and never
+//! dot_apply(?e, m, ?x) = wrap(?e, ?x) @[simp]` — ended at the template and never
 //! expanded, so a macro-headed dot rule silently declined: the pattern vars
 //! arrived at `wrap` as their VALUE types and the author read the residual
 //! template's `op-arg` mismatch — exactly the message WI-757 exists to replace.
@@ -43,7 +43,7 @@ namespace test.wi902
 
     -- No `bump` operation exists: the body below type-checks only if this rule
     -- fires AND its macro RHS is expanded away.
-    rule dr: dot_apply(?e, bump, ?x) <=> wrap(?e, ?x) [simp]
+    rule dr: dot_apply(?e, bump, ?x) <=> wrap(?e, ?x) @[simp]
 
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
 
@@ -111,7 +111,7 @@ namespace test.wi902reject
     operation wrap(r: NodeOccurrence, x: NodeOccurrence) -> NodeOccurrence effects Error[Boom] =
       Error.raise(boom(why: "bump is not translatable here"))
 
-    rule dr: dot_apply(?e, bump, ?x) <=> wrap(?e, ?x) [simp]
+    rule dr: dot_apply(?e, bump, ?x) <=> wrap(?e, ?x) @[simp]
 
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
   end
@@ -169,7 +169,7 @@ namespace test.wi902decline
     operation wrap(r: NodeOccurrence, x: NodeOccurrence) -> NodeOccurrence =
       make_apply("test.wi902decline.Holder.wrapped", cons(r, cons(x, nil())), r)
 
-    rule dr: dot_apply(?e, bump, ?x) <=> wrap(r: ?e, x: ?x) [simp]
+    rule dr: dot_apply(?e, bump, ?x) <=> wrap(r: ?e, x: ?x) @[simp]
 
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
   end
@@ -196,7 +196,7 @@ end
 /// candidate and silently did not fire — while `is_equation`, `stored_lhs_functor`,
 /// `open_equation` and `rule_domain`, everything downstream of selection, are all
 /// connective-agnostic. It matters for WI-902 in particular because 043.1 writes its
-/// macro rules `<=>` (`rule where(?r, ?c) <=> guarded_of(?r, ?c) [simp]`), so the
+/// macro rules `<=>` (`rule where(?r, ?c) <=> guarded_of(?r, ?c) @[simp]`), so the
 /// dot-rule macro expansion above would have been dead for the idiomatic spelling.
 ///
 /// WI-888 REPLACED THIS TEST'S CONTROL, and the replacement is stated rather than
@@ -221,7 +221,7 @@ namespace test.wi902conn{ns}
     entity holder(value: Int64)
     operation regular(h: Holder, v: Int64) -> Int64 = v
     -- No `bump` operation exists, so this body type-checks only if the rule fired.
-    rule dr: dot_apply(?e, bump, ?x) {conn} regular(?e, ?x) [simp]
+    rule dr: dot_apply(?e, bump, ?x) {conn} regular(?e, ?x) @[simp]
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
   end
 end
@@ -230,7 +230,7 @@ end
     };
     assert!(
         try_load_kb_with(&src("unify", "<=>")).is_ok(),
-        "a `<=>`-spelled [simp] dot rule must fire: {:?}",
+        "a `<=>`-spelled @[simp] dot rule must fire: {:?}",
         try_load_kb_with(&src("unify", "<=>")).err(),
     );
     // The `=` arm: refused at the HEAD, before selection is ever reached. The subject is

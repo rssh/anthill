@@ -71,7 +71,7 @@
 //!
 //! So the collection literals may be the whole REACHABLE residue of finding (1), and the
 //! table census below is consistent with that — but "may be" is the claim, not "is".
-//! WI-20260902-2NXAC keeps findings (2) and (3) and the `[simp]`-RHS relative.
+//! WI-20260902-2NXAC keeps findings (2) and (3) and the `@[simp]`-RHS relative.
 
 use anthill_core::kb::resolve::ResolveConfig;
 

@@ -181,11 +181,12 @@ fn the_bracket_less_spellings_are_unchanged() {
     }
 }
 
-/// THE DESIGN CONTROL. A `[` after a dot head is ALSO how a `meta_block` opens, and
-/// nothing local separates the two — the separator is the `(` two reductions later. The
-/// shipped production lives only in `fn_term`'s callee slot and a declared GLR conflict
-/// lets the continuation decide, so `[simp]` with no call after it can only be the meta
-/// block.
+/// A dot head keeps its block. While a block was a bare `[simp]`, a `[` after a dot head
+/// was ALSO how a `meta_block` opened, and nothing local separated the two — the separator
+/// was the `(` two reductions later. Since WI-20260915-G9EA9 the block opens with `@[`,
+/// which no dot-callee bracket begins, so this test no longer separates the designs below:
+/// it passes under either. It stays as a pin on the block reading; the measurement is
+/// kept as the record of why the shipped production was chosen.
 ///
 /// GREEN against the backed-out grammar. THE MEASUREMENT THAT MAKES IT A CONTROL is
 /// against the design this one was chosen over — widening `application`'s own `name`
@@ -197,12 +198,11 @@ fn the_bracket_less_spellings_are_unchanged() {
 ///     declared before `tree-sitter generate` succeeded, two of them nothing to do with
 ///     dots (`_non_name_atom_term`/`_spec_instantiation` at `requires (?x, …)`,
 ///     `_type_literal`/`_non_name_atom_term` at `requires (k: "s", …)`).
-///   * With those added, `rule dr: ?x.m [simp]` parses as
+///   * With those added, `rule dr: ?x.m [simp]` — the block's spelling then — parsed as
 ///     `application(field_access(?x, m), sort_binding(simple_type(simp)))` and the rule's
-///     `meta` is NONE — the attribute is silently eaten and the equation goes INERT. Same
-///     for `fact ?x.m [simp]`. That is the WI-881 trap, extended from nullary NAME heads
-///     to every dot head. THIS TEST FAILS THERE.
-///   * So do three of its neighbours, for a different reason worth recording: the
+///     `meta` was NONE: the attribute silently eaten and the equation INERT. This test
+///     failed there THEN; with `@[` it cannot.
+///   * Three of its neighbours fail there still, and they are now the design's controls: the
 ///     bracketed value-receiver dot becomes a bare `application` TERM rather than a
 ///     `fn_term` callee, so `push_fn_term`'s refusal never runs and the shape loads as
 ///     something else entirely. (`every_value_receiver_dot_shape_reaches_the_converters_refusal`,
@@ -211,9 +211,9 @@ fn the_bracket_less_spellings_are_unchanged() {
 #[test]
 fn a_meta_block_after_a_dot_head_is_still_a_meta_block() {
     for src in [
-        "rule dr: ?x.m [simp]\n",
-        "fact ?x.m [simp]\n",
-        "rule dr2: ?x.m(?y) [simp]\n",
+        "rule dr: ?x.m @[simp]\n",
+        "fact ?x.m @[simp]\n",
+        "rule dr2: ?x.m(?y) @[simp]\n",
     ] {
         let parsed = parse::parse(src).unwrap_or_else(|e| panic!("{src:?}: {e:?}"));
         let meta = match &parsed.items[0] {
@@ -223,7 +223,7 @@ fn a_meta_block_after_a_dot_head_is_still_a_meta_block() {
         };
         let meta = meta
             .as_ref()
-            .unwrap_or_else(|| panic!("{src:?}: the `[simp]` must still be the META BLOCK"));
+            .unwrap_or_else(|| panic!("{src:?}: the `@[simp]` must still be the META BLOCK"));
         let keys: Vec<String> = meta
             .entries
             .iter()
@@ -322,7 +322,7 @@ end
 #[test]
 fn the_refusal_prescribes_no_position() {
     for src in [
-        "rule dr: ?x.m[T = Int64](?y) <=> ?y [simp]
+        "rule dr: ?x.m[T = Int64](?y) <=> ?y @[simp]
 ",
         "fact ?x.m[T = Int64](?y)
 ",

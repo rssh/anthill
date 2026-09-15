@@ -1,9 +1,9 @@
-//! WI-277 — typer-phase `[simp]` rewriting engine.
+//! WI-277 — typer-phase `@[simp]` rewriting engine.
 //!
-//! The second firing site for `[simp]` equational rules (proposal 043 /
+//! The second firing site for `@[simp]` equational rules (proposal 043 /
 //! `docs/design/simp-rewrite-design.md`). As a separate pass over operation
 //! bodies (before `type_check_sorts`/`req_insertion`), it fires matching
-//! `[simp]` equations LHS→RHS bottom-up over the `NodeOccurrence` tree and
+//! `@[simp]` equations LHS→RHS bottom-up over the `NodeOccurrence` tree and
 //! writes the rewritten, redex-free tree back via `set_op_body_node`. This
 //! is the resolver's `apply_eq_rules` (`resolve.rs`) counterpart for the
 //! occurrence representation — "one rewriter, two phases."
@@ -21,7 +21,7 @@
 //! which walks the head TERM and mints a `Synthesized` node per level on top
 //! of the shared `walk_view`.
 //!
-//! Firing (WI-283) matches an `is_equation` + `[simp]` rule's LHS via
+//! Firing (WI-283) matches an `is_equation` + `@[simp]` rule's LHS via
 //! `match_view`, then applies the type-directed guard
 //! ([`super::typing::simp_fire_guard_holds`]): a rule scoped to a
 //! parametric sort (its functor is a *spec op*, e.g. `Numeric.add`) fires
@@ -35,7 +35,7 @@
 //! that body is now PROVED POST-MATCH by [`guard_verdict`] rather than
 //! disqualifying the rule. Selection moved off `is_equation` (which demands an
 //! empty body, and still does — it is the SLD triage's predicate) onto
-//! [`KnowledgeBase::has_equational_head`]; `[simp]` remains the enablement, so an
+//! [`KnowledgeBase::has_equational_head`]; `@[simp]` remains the enablement, so an
 //! untagged guarded equation is as inert as an untagged bodyless one.
 //!
 //! THREE SELECTION SITES, ONE EVALUATOR: [`rewrite`]'s resolver firer
@@ -53,7 +53,7 @@
 //! mirroring the sibling `NodeOccurrence::Drop`, `materialize_from_handle`,
 //! and the typing pass, which were made iterative to survive deeply-nested
 //! bodies (the 624-line typing_pass_spec.anthill). This was a prerequisite for
-//! shipping `[simp]`/dot rules that fire on real (possibly deeply-nested)
+//! shipping `@[simp]`/dot rules that fire on real (possibly deeply-nested)
 //! operation bodies: the engine can no longer overflow the host stack on
 //! source nesting depth.
 //!
@@ -95,7 +95,7 @@ const PASS_NAME: &str = "anthill.kb.passes.simp_rewrite";
 ///
 /// The macro seam has TWO negative outcomes and this type is the one that
 /// distinguishes them. A **decline** (`Ok(None)`) says "not me / not yet": the
-/// `[simp]` template call is kept and whatever downstream check the residual
+/// `@[simp]` template call is kept and whatever downstream check the residual
 /// fails is the diagnostic — the WI-722 contract, unchanged. A **rejection** says
 /// the macro IS the right one and the input is definitively wrong; the reason is
 /// known here and nowhere downstream, so it must be carried out rather than
@@ -113,7 +113,7 @@ const PASS_NAME: &str = "anthill.kb.passes.simp_rewrite";
 /// only the FIRST and hands it straight back rather than accumulating.
 #[derive(Debug)]
 pub struct MacroRejection {
-    /// The macro that rejected — the symbol at the head of the `[simp]` RHS.
+    /// The macro that rejected — the symbol at the head of the `@[simp]` RHS.
     pub macro_name: Symbol,
     /// The macro's own words, already rendered, quoted verbatim into the load
     /// error. One string rather than a structured pair because the channel has TWO
@@ -127,7 +127,7 @@ pub struct MacroRejection {
     pub span: Option<crate::span::SourceSpan>,
 }
 
-/// Whether any indexed `[simp]` equation exists — the gate the typer's firing
+/// Whether any indexed `@[simp]` equation exists — the gate the typer's firing
 /// sites (`typing::type_check_node`'s `simp_enabled`, and [`run`]) use to skip
 /// all firing work in the common no-rule case. Read once per typer walk (WI-283)
 /// and once per [`run`]. Not cached (the typer runs at load, not the SLD hot
@@ -135,29 +135,29 @@ pub struct MacroRejection {
 ///
 /// WI-646: selects over BOTH the `eq` (`=`) AND `unify` (`<=>`) functor buckets
 /// via the shared [`KnowledgeBase::simp_equation_rids`] — fixing the former
-/// `eq`-only narrowness that left the typer UNDER-firing for a KB whose `[simp]`
+/// `eq`-only narrowness that left the typer UNDER-firing for a KB whose `@[simp]`
 /// laws are all `<=>`-headed (the stdlib case: 14/14) and which has no
-/// dot-applies. The `[simp]`-only per-rule filter is kept deliberately: it
-/// matches the typer's `try_fire`, which fires `[simp]` (never `[unfold]`), so
-/// gating on `[simp]` OR `[unfold]` would enable a wasted (always-declining) walk
+/// dot-applies. The `@[simp]`-only per-rule filter is kept deliberately: it
+/// matches the typer's `try_fire`, which fires `@[simp]` (never `@[unfold]`), so
+/// gating on `@[simp]` OR `@[unfold]` would enable a wasted (always-declining) walk
 /// on an unfold-only KB. (The resolver's `has_directional_rewrite` gate, by
-/// contrast, IS `[simp]` OR `[unfold]` — it fronts a firer that fires both.)
+/// contrast, IS `@[simp]` OR `@[unfold]` — it fronts a firer that fires both.)
 pub(super) fn has_simp_equations(kb: &mut KnowledgeBase) -> bool {
     kb.simp_equation_rids()
         .into_iter()
         .any(|rid| is_simp_equation(kb, rid))
 }
 
-/// WI-646: the typer's per-rule fire predicate — `rid` is a `[simp]`-tagged
+/// WI-646: the typer's per-rule fire predicate — `rid` is a `@[simp]`-tagged
 /// EQUATION. Shared by `try_fire` AND the `has_simp_equations` gate so the two
 /// can't drift (the typer's peer of the resolver's `is_directional_equation`).
-/// `[simp]`-only, not `[simp]`/`[unfold]`: the typer fires only `[simp]` (never
-/// `[unfold]`), so gating on both would enable an always-declining walk.
+/// `@[simp]`-only, not `@[simp]`/`@[unfold]`: the typer fires only `@[simp]` (never
+/// `@[unfold]`), so gating on both would enable an always-declining walk.
 ///
 /// WI-902 raised it to `pub(super)`: `typing::try_fire_dot_rule` had inlined a
 /// third copy of the predicate, which is how it came to select on the `eq` bucket
 /// alone and never fire a `<=>`-spelled dot rule. Both properties this test names —
-/// equation-hood (connective-agnostic, `is_equation`) and the `[simp]` tag — are
+/// equation-hood (connective-agnostic, `is_equation`) and the `@[simp]` tag — are
 /// exactly the ones a firing site must not re-derive.
 ///
 /// WI-20260820-8RJK8 raised the equation-hood half from `is_equation` (which demands
@@ -187,7 +187,7 @@ pub(super) const SIMP_GUARD_MAX_DEPTH: usize = 1;
 pub(super) enum GuardVerdict {
     /// No guard at all, or a guard that bound nothing the right-hand side needs —
     /// build the RHS with the head match alone. The unconditional-rewrite case, and it
-    /// deliberately carries NO substitution so that every `[simp]` fire in the corpus
+    /// deliberately carries NO substitution so that every `@[simp]` fire in the corpus
     /// keeps paying exactly what it paid before this ticket.
     HoldsUnchanged,
     /// Proved, and the witness bound rule variables the RHS mentions — build the RHS
@@ -216,7 +216,7 @@ pub(super) enum GuardVerdict {
 /// guard sees what the RHS builder sees.
 ///
 /// THE WITNESS IS PART OF THE ANSWER, not a by-product (found by `/code-review`, and
-/// MEASURED before the fix: `rule h: pick(?a) <=> wrap(v: ?p) :- src(?a, ?p) [simp]`
+/// MEASURED before the fix: `rule h: pick(?a) <=> wrap(v: ?p) :- src(?a, ?p) @[simp]`
 /// over `fact src(1, 42)` fired to `wrap(v: <unbound Global>)` — a WRONG value, not an
 /// absent rewrite). A variable bound only by the guard and used in the right-hand side
 /// is the standard conditional-rewrite idiom — `stream.anthill` writes six of them
@@ -248,7 +248,7 @@ pub(super) enum GuardVerdict {
 /// which a guard search does not have, so the test is made here instead, on the goals
 /// themselves. Declining is the conservative answer an undetermined guard already gets.
 /// MEASURED, in both directions: with this test removed, `pick(?a, ?b) <=> ?a :-
-/// neq(?a, ?b) [simp]` rewrites an operation body `pick(p, q)` over two `Int64`
+/// neq(?a, ?b) @[simp]` rewrites an operation body `pick(p, q)` over two `Int64`
 /// PARAMETERS to `var_ref(p)` at compile time, while the ground `pick(1, 2)` beside it
 /// folds to `1` either way — `wi_8rjk8_guarded_equation_fires_test::
 /// a_guard_over_symbolic_parameters_declines_at_the_typer`.
@@ -277,7 +277,7 @@ pub(super) fn guard_verdict(
     fresh: &[VarId],
     msubst: &Substitution,
 ) -> GuardVerdict {
-    // Emptiness FIRST, off the borrowed slice: every unconditional `[simp]` fire in the
+    // Emptiness FIRST, off the borrowed slice: every unconditional `@[simp]` fire in the
     // KB reaches this line, and the overwhelming majority of them leave here — so the
     // owned clone below is paid only by a rule that actually has a guard.
     if kb.rule_body_nodes(rid).is_empty() {
@@ -343,7 +343,7 @@ pub(super) fn guard_verdict(
 /// fire. The census a diagnostic needs when a call to an equation-introduced
 /// functor ([`crate::intern::SymbolKind::EquationFunctor`]) reaches the typer
 /// unreduced, because the two counts are two different bugs with two different
-/// repairs: `simp == 0` means the equations are INERT and want the tag (`[simp]`
+/// repairs: `simp == 0` means the equations are INERT and want the tag (`@[simp]`
 /// is the enablement, §5.3); `simp > 0` means they fire but none MATCHED these
 /// arguments, and the author has to look at the patterns.
 ///
@@ -391,7 +391,7 @@ pub(super) fn equation_clause_census(kb: &KnowledgeBase, functor: Symbol) -> Cla
 /// WI-1058 — the LHS SHAPE (positional arity + named-argument labels) of every live
 /// equation defining `functor`, or `None` if any of them has a shape this cannot read.
 ///
-/// The equation half of "could any clause of this name ever match this term". A `[simp]`
+/// The equation half of "could any clause of this name ever match this term". A `@[simp]`
 /// redex fires by MATCHING the stored LHS, so a call at an arity no LHS has can never
 /// fire — the silent inertness [`ClauseCensus`] can only describe after the fact. The
 /// `None` is the same honesty [`crate::kb::typing`]'s clause-head reader keeps: the
@@ -448,11 +448,11 @@ pub struct ClauseCensus {
     /// LIVE bodyless equations whose LHS functor is the subject — tagged or not,
     /// indexed or not (see the census's own note on why the tagless ones must count).
     pub defining: usize,
-    /// …of which, those tagged `[simp]` — the ones the typer can fire.
+    /// …of which, those tagged `@[simp]` — the ones the typer can fire.
     pub simp_tagged: usize,
 }
 
-/// The `PassId` tagging `[simp]`-synthesized occurrences. Idempotent
+/// The `PassId` tagging `@[simp]`-synthesized occurrences. Idempotent
 /// (`register_pass` interns the name), so the typer firing site can fetch
 /// it per fire without threading it through the work-stack.
 pub(super) fn simp_pass(kb: &mut KnowledgeBase) -> PassId {
@@ -462,7 +462,7 @@ pub(super) fn simp_pass(kb: &mut KnowledgeBase) -> PassId {
 /// The firing strategy for the shared iterative driver [`rewrite`] (WI-641
 /// Phase 2, generalized to both carriers in WI-643). Both simp phases descend
 /// the SAME `Visit`/`Build` work-stack over the carrier-neutral [`Value`]; they
-/// differ ONLY in what "fire a `[simp]` equation at this node" means — the typer
+/// differ ONLY in what "fire a `@[simp]` equation at this node" means — the typer
 /// fires type-directed via [`try_fire`] ([`TyperFirer`]), the resolver fires
 /// carrier-neutrally via `fire_simp_equation` (recording `EqChange`s;
 /// `ResolverSimpFirer` in `resolve.rs`). Factored as a trait — not a closure —
@@ -472,7 +472,7 @@ pub(super) fn simp_pass(kb: &mut KnowledgeBase) -> PassId {
 /// walk (WI-641) AND its recursive TERM walk (WI-643), so a deeply-nested redex
 /// — Node OR term — rewrites on the heap instead of overflowing the host stack.
 pub(super) trait SimpFirer {
-    /// Try to fire a `[simp]` equation at `redex` (a term or `Value::Node`
+    /// Try to fire a `@[simp]` equation at `redex` (a term or `Value::Node`
     /// occurrence); return the rewritten carrier-neutral `Value`, or `None`
     /// when nothing fires. `rids` are the candidate equation ids
     /// ([`KnowledgeBase::simp_equation_rids`]) gathered ONCE per [`rewrite`] walk
@@ -516,7 +516,7 @@ impl SimpFirer for TyperFirer {
     }
 }
 
-/// Entry point: rewrite every operation body by firing `[simp]` equations,
+/// Entry point: rewrite every operation body by firing `@[simp]` equations,
 /// writing each rewritten (redex-free) tree back into `kb.op_bodies`.
 ///
 /// Retired from the load pipeline in WI-283 — firing now runs *in the
@@ -558,7 +558,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Option<MacroRejection> {
     firer.rejected
 }
 
-/// Bottom-up rewrite: rewrite children first, then try firing a `[simp]`
+/// Bottom-up rewrite: rewrite children first, then try firing a `@[simp]`
 /// equation at this node; on a firing, re-rewrite the result to fixpoint
 /// (fuel-bounded). Leftmost-innermost, matching the typer's walk order and
 /// `apply_eq_rules`.
@@ -582,7 +582,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Option<MacroRejection> {
 /// compound form with children, a `Visit` per child (reversed, so children pop in
 /// source order); a fuel-exhausted node passes straight through. `Build` pops the
 /// rewritten children, reassembles the node (preserving identity + provenance
-/// when nothing changed), then fires a `[simp]` equation at it via the
+/// when nothing changed), then fires a `@[simp]` equation at it via the
 /// [`SimpFirer`] — INCLUDING at a leaf (`child_count == 0`), so a functor-less
 /// leaf redex still gets a fire attempt (WI-641). A firing re-enters the loop via
 /// `Visit { fuel - 1 }` so the fixpoint is driven on the stack rather than the
@@ -662,7 +662,7 @@ enum RewriteOp {
 /// FIRING and DESCENT are gated separately (WI-641 Phase 2): a fire is attempted
 /// at EVERY node — including a leaf redex, which the resolver's
 /// `fire_simp_equation` still supports (a functor-less `Const`/`Ident`-LHS
-/// rewrite like `[simp] unify(1, 2)`; the typer's `try_fire` cheaply declines a
+/// rewrite like `@[simp] unify(1, 2)`; the typer's `try_fire` cheaply declines a
 /// non-`Apply`/`Constructor` node, so leaf-firing is a no-op there). DESCENT, by
 /// contrast, is gated per carrier by [`children_of`]: a compound occurrence form
 /// ([`is_rewritable`]) or a `Term::Fn` yields children; a leaf yields none, so
@@ -719,7 +719,7 @@ fn is_rewritable(expr: Option<&Expr>) -> bool {
 }
 
 /// Reassemble a node from its rewritten children (popped off `results`), then
-/// fire a `[simp]` equation at it via the caller's [`SimpFirer`]. A firing
+/// fire a `@[simp]` equation at it via the caller's [`SimpFirer`]. A firing
 /// re-enters the loop via `Visit { fuel - 1 }` so the fixpoint runs on the
 /// work-stack; otherwise the reassembled node is pushed to `results`.
 fn build_node<F: SimpFirer>(
@@ -906,7 +906,7 @@ fn rebuild_named(named: &[(Symbol, Value)], new_named: &[Value]) -> Rc<[(Symbol,
         .collect()
 }
 
-/// Try to fire a `[simp]` equation at this node. Returns the rewritten
+/// Try to fire a `@[simp]` equation at this node. Returns the rewritten
 /// occurrence, or `Ok(None)` if no equation matches (or its type-directed
 /// guard fails).
 ///
@@ -934,7 +934,7 @@ pub(super) fn try_fire(
     };
     // WI-655: the type-directed guard (`simp_fire_guard_holds`) is deferred to the
     // FIRST rid whose LHS functor matches this node (checked once, below, before any
-    // `match_view`). A node whose functor matches no `[simp]` rule can never fire — the
+    // `match_view`). A node whose functor matches no `@[simp]` rule can never fire — the
     // `stored_lhs_functor` filter rejects every candidate — so it now skips the guard
     // entirely: the guard was ~78% of per-node simp cost (and fires 0 rewrites over the
     // whole stdlib), pure waste on a non-matching node. Sound: the guard verdict is
@@ -946,8 +946,8 @@ pub(super) fn try_fire(
     // WI-646: `rids` are the eq+unify candidates gathered ONCE by the caller
     // (`KnowledgeBase::simp_equation_rids` — `eq` for a legacy `=` equation,
     // `unify` for the `<=>` head, proposal 049; WI-139 keeps only
-    // `[simp]`/`[unfold]`-tagged equations there). Scanning both functors makes
-    // an `<=>`-spelled `[simp]` rule fire identically to an `=` one. (Moving
+    // `@[simp]`/`@[unfold]`-tagged equations there). Scanning both functors makes
+    // an `<=>`-spelled `@[simp]` rule fire identically to an `=` one. (Moving
     // selection onto most-specific-first `query()` is proposal 043 §4.6, deferred
     // — type-independent recognition needs only that both functors are covered.)
     for &rid in rids {
@@ -1017,9 +1017,9 @@ pub(super) fn try_fire(
             }
             // WI-20260820-8RJK8 — the equation's own `:- guard`, post-match. The TYPER
             // fires guarded equations too, and that is a decision rather than a
-            // consequence: `[simp]` is one enablement (WI-881), so a tagged rule must
+            // consequence: `@[simp]` is one enablement (WI-881), so a tagged rule must
             // mean the same thing at both firing sites, and this is the site where a
-            // `[simp]` equation gives a body-less operation a meaning (§5.3) — leaving
+            // `@[simp]` equation gives a body-less operation a meaning (§5.3) — leaving
             // it out would make a guarded law fire for a resolver GOAL and not for the
             // OPERATION BODY that spells the same call.
             //
@@ -1219,7 +1219,7 @@ fn fold_capture_redex(
     ))
 }
 
-/// WI-902 — INSTANTIATE a fired `[simp]` rule's RHS: build the template from the
+/// WI-902 — INSTANTIATE a fired `@[simp]` rule's RHS: build the template from the
 /// match substitution, then macro-expand it if it is headed by a macro. The whole
 /// of "what a fire produces", owned once. The expansion itself is
 /// [`try_expand_macro`]'s (WI-722); the typer's `push_visit` continuation re-types
@@ -1229,7 +1229,7 @@ fn fold_capture_redex(
 /// Constructor redex) and `typing::try_fire_dot_rule` (the WI-279 INC2 sort-scoped
 /// dot rule). They were split before WI-902: the dot site stopped at
 /// [`substitute_to_occurrence`]. Keeping the two steps welded together is what
-/// makes "a fired `[simp]` RHS is macro-expanded" a property of the ENGINE rather
+/// makes "a fired `@[simp]` RHS is macro-expanded" a property of the ENGINE rather
 /// than of each caller remembering. `Err` is the rejection, for the caller to
 /// report at its redex.
 ///
@@ -1305,7 +1305,7 @@ pub(super) fn instantiate_rhs_verbatim(
 /// what it measured as insufficient. With `import anthill.prelude.Map.{empty, put, size}`,
 /// driven by `size(put(mk(…), "a", 1))` — the mismatch is `"a"` against the receiver's `K`:
 ///
-/// | `[simp]` RHS                                 | before FCZ3N | FCZ3N | + H054K |
+/// | `@[simp]` RHS                                 | before FCZ3N | FCZ3N | + H054K |
 /// |---|---|---|---|
 /// | `Map[K = Bool, V = Int64].empty()` (GROUND)  | 0 errors | **1** | 1 |
 /// | `Map[K = ?k,   V = Int64].empty()` (VARIABLE)| 0 errors | 0 | **1** |
@@ -1325,7 +1325,7 @@ pub(super) fn instantiate_rhs_verbatim(
 /// unchanged by it — which is the point, σ over an occurrence having ONE owner.
 ///
 /// THE BOUND ON EITHER TICKET'S BLAST RADIUS, censused and kept here because it is the only
-/// place it sits beside the code: **0** of the 21 `[simp]`/`[unfold]` equations in a stdlib
+/// place it sits beside the code: **0** of the 21 `@[simp]`/`@[unfold]` equations in a stdlib
 /// load carry a type position (`recv_type` or `type_args`) in their RHS at all, let alone a
 /// variable in one. So nothing shipped depended on the old answer, and nothing shipped
 /// depends on the new one; the rows that do are H054K's own.
@@ -1334,12 +1334,12 @@ pub(super) fn instantiate_rhs_verbatim(
 ///
 /// [`node_occurrence::substitute_occurrence`] is the RESOLVER's σ, and there a surviving
 /// `Expr::Var` is ORDINARY — a goal has free variables and `subst_var_leaf` keeps the
-/// leaf by design. Instantiating a `[simp]` RHS is the opposite question: the LHS match
+/// leaf by design. Instantiating a `@[simp]` RHS is the opposite question: the LHS match
 /// binds every variable the rule can bind, so one left over is a rule whose RHS names
 /// something nothing supplies, and [`substitute_to_occurrence`] said so by writing `⊥`
-/// ("a well-formed `[simp]` rule binds every RHS var", its own doc).
+/// ("a well-formed `@[simp]` rule binds every RHS var", its own doc).
 ///
-/// MEASURED — `rule f(?x) <=> g(?y) [simp]` with a consumer that fires it: the term path
+/// MEASURED — `rule f(?x) <=> g(?y) @[simp]` with a consumer that fires it: the term path
 /// answers **1** error, and routing σ through the shared owner alone answered **0**, i.e.
 /// a malformed rule loading clean. So the reuse is kept (σ over an occurrence must have
 /// ONE owner) and the verdict is restored beside it, rather than the walk being forked.
@@ -1388,7 +1388,7 @@ fn build_rhs_template(
 /// and its `owner`.
 ///
 /// WHAT THE SPAN AND THE BIT REPAIR, measured — `rule trig(?x) <=> sink(ns.inner.rel)
-/// [simp]` with a consumer that fires it: THREE "expected resolved name, got unresolved"
+/// @[simp]` with a consumer that fires it: THREE "expected resolved name, got unresolved"
 /// errors at the REDEX became ONE, at the citation, naming the relation. The three were
 /// WI-20260902-4NEKZ's per-leaf cascade, back because the spliced chain arrived with
 /// `dot_chain` clear and `loader_chain_dotted_name`'s provenance gate could not read it.
@@ -1403,13 +1403,13 @@ fn build_rhs_template(
 ///  * **NO SHARING WITH THE STORED RULE.** A `NodeKind::Expr` carries the typer's
 ///    `RefCell` stamps (`inferred_type`, the `CallClass`, `resolved_type_args`,
 ///    `lowered_receiver`). Splicing the rule's own `Rc` into an operation body would make
-///    two call sites of one `[simp]` rule write those cells over each other.
+///    two call sites of one `@[simp]` rule write those cells over each other.
 ///    `reparented_from` allocates, so every fire gets its own nodes.
 ///
-/// ITERATIVE, for [`substitute_to_occurrence`]'s reason (WI-278): a `[simp]` RHS is
+/// ITERATIVE, for [`substitute_to_occurrence`]'s reason (WI-278): a `@[simp]` RHS is
 /// author-written and can nest as deeply as the source does.
 ///
-/// A `Pattern` node (a `[simp]` RHS may write a lambda or a `match`) is descended and
+/// A `Pattern` node (a `@[simp]` RHS may write a lambda or a `match`) is descended and
 /// rebuilt through the pattern pair `for_each_pattern_child` / `reassemble_pattern`, the
 /// same one `open_debruijn_node` uses — the node itself holds no `RefCell` state, but its
 /// `type_ann` is an `Expr` and would otherwise be the shared cell above. A `Type` /
@@ -1482,7 +1482,7 @@ fn reparent_spliced(
 ///
 /// `fresh` is the rule's OWN frame ([`open_equation`]'s opened globals), so a
 /// `Expr::Var(Var::Global(v))` with `v ∈ fresh` surviving the substitution is a variable
-/// the LHS match had no value for — a malformed `[simp]` rule, and the verdict
+/// the LHS match had no value for — a malformed `@[simp]` rule, and the verdict
 /// [`substitute_to_occurrence`] has always given it. See [`build_rhs_template`] for why
 /// the shared σ owner cannot give it (there, a free variable is an ordinary goal
 /// variable) and why this is not a load refusal.
@@ -1577,16 +1577,16 @@ fn stored_rhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
 /// rule the typer leaves alone, where the RHS call really does survive the rewrite
 /// into the program and must stay gated:
 ///
-/// - `[simp]` ONLY. `[unfold]` is fired by the RESOLVER (`fire_simp_equation`),
+/// - `@[simp]` ONLY. `@[unfold]` is fired by the RESOLVER (`fire_simp_equation`),
 ///   which substitutes the RHS template verbatim and never macro-expands — so an
-///   `[unfold]` rule's effectful RHS is exactly the hazard WI-702 exists for.
+///   `@[unfold]` rule's effectful RHS is exactly the hazard WI-702 exists for.
 ///   MEASURED: with the exemption keyed on `is_macro` alone, an effectful macro
-///   under `[unfold]` loaded clean.
+///   under `@[unfold]` loaded clean.
 /// - NO typed-pattern bounds. WI-582: [`try_fire`] skips a rule carrying `?x: T`
 ///   bounds outright, leaving it to the resolver's `apply_eq_rules` — which, again,
 ///   does not expand macros. WI-903 made this condition EXACT rather than merely
 ///   sufficient: the loader now REFUSES a typed bound on the one rule shape the
-///   typer expands without passing through [`try_fire`] — a `[simp]` DOT rule
+///   typer expands without passing through [`try_fire`] — a `@[simp]` DOT rule
 ///   ([`super::load::TypedPatternRefusal::DotRule`], keyed on
 ///   [`is_typer_fired_dot_rule`], since `try_fire_dot_rule` does not consult the
 ///   bounds either). So every bound-carrying rule that can exist is one the typer
@@ -1611,9 +1611,9 @@ pub(super) fn macro_expanded_rhs_head(kb: &KnowledgeBase, rid: RuleId) -> Option
             named_args,
             ..
         } if named_args.is_empty() => Some(*functor).filter(|f| super::typing::is_macro(kb, *f)),
-        // WI-20260902-CZJ2N: a NULLARY macro RHS (`rule f(?x) <=> m() [simp]`) is
+        // WI-20260902-CZJ2N: a NULLARY macro RHS (`rule f(?x) <=> m() @[simp]`) is
         // stored bare. Without this arm the WI-757 exemption never fired and an
-        // effectful nullary macro in a `[simp]` RHS was REFUSED at load with the wrong
+        // effectful nullary macro in a `@[simp]` RHS was REFUSED at load with the wrong
         // error — while `subst_visit`'s sibling arm is what makes it expand at all.
         Term::Ref(s) | Term::Ident(s) => Some(*s).filter(|f| super::typing::is_macro(kb, *f)),
         _ => None,
@@ -1634,19 +1634,19 @@ fn stored_eq_operand_functor(kb: &KnowledgeBase, rid: RuleId, idx: usize) -> Opt
     };
     match kb.get_term(operand) {
         Term::Fn { functor, .. } => Some(*functor),
-        // WI-20260902-CZJ2N — A NULLARY LHS IS STORED BARE, so `rule tau() <=> 7 [simp]`
+        // WI-20260902-CZJ2N — A NULLARY LHS IS STORED BARE, so `rule tau() <=> 7 @[simp]`
         // has a `Term::Ref` operand, not a `Term::Fn`. Without this arm the pre-filter
         // in `fire_simp_equation` compared `Some(tau)` against `None` and skipped every
         // nullary law: MEASURED, `operation drive(n) = tau()` under `rule tau() <=> 7
-        // [simp]` went from 7 to an undischarged residual. It is also what makes the
-        // BARE head `rule tau <=> 7 [simp]` fire, which is this ticket's D row — the two
+        // @[simp]` went from 7 to an undischarged residual. It is also what makes the
+        // BARE head `rule tau <=> 7 @[simp]` fire, which is this ticket's D row — the two
         // spellings are one term, so one arm serves both.
         Term::Ref(s) => Some(*s),
         _ => None,
     }
 }
 
-/// WI-722 (proposal 043.1) — if `template` (the just-substituted `[simp]` RHS) is
+/// WI-722 (proposal 043.1) — if `template` (the just-substituted `@[simp]` RHS) is
 /// headed by a compile-time MACRO, evaluate it and return the occurrence it
 /// produces; else `None` (the caller keeps the template unchanged).
 ///
@@ -1677,7 +1677,7 @@ fn try_expand_macro(
     template: &Rc<NodeOccurrence>,
 ) -> Result<Option<Rc<NodeOccurrence>>, MacroRejection> {
     // Read the head and gate on `is_macro` BEFORE building the argument vector:
-    // `try_expand_macro` runs on EVERY fired `[simp]` rewrite, and the gate is false
+    // `try_expand_macro` runs on EVERY fired `@[simp]` rewrite, and the gate is false
     // for all but a macro head. The structural conjuncts here are free; `is_macro`
     // itself is NOT — it materializes an `OpInfoRecord` (WI-904 makes it zero-alloc,
     // which is what would make this ordering pay off fully). The
@@ -1734,7 +1734,7 @@ fn try_expand_macro(
         // The gate is NOT merely "is it `Synthesized`" (the first cut, corrected in
         // review). A macro that hands an argument straight back is returning an occurrence
         // it did not build — and that argument is very often ALREADY `Synthesized`, since
-        // the `[simp]` engine rewrites children before parents. Re-parenting it would copy
+        // the `@[simp]` engine rewrites children before parents. Re-parenting it would copy
         // it into a fresh `Rc` that claims to be an expansion of the template CONTAINING
         // it, and would drop `resolved_type_args` / `lowered_receiver` — and `None` there
         // is not "unknown" but "no dot was ever typed here", a distinction those writes are
@@ -1776,7 +1776,7 @@ fn try_expand_macro(
         // RAISING (proposal 043.1 §3.6). A macro's declared row is capped at `Error`
         // (`check_macro_purity`) and its call is evaluated away at compile time, so
         // this `Error` is a compile-time DIAGNOSTIC and never a runtime effect —
-        // which is why the WI-702 rewrite gate exempts a macro at the `[simp]` RHS
+        // which is why the WI-702 rewrite gate exempts a macro at the `@[simp]` RHS
         // head. `raise` carries a payload and no occurrence, so the span is the
         // reporter's redex; a narrower one needs a `reject(…, at:)` op (043.1 §7).
         Err(crate::eval::EvalError::Raised { payload }) => Err(MacroRejection {
@@ -1802,7 +1802,7 @@ fn try_expand_macro(
 /// The functor of an equation's LHS, read from the *stored* head (no
 /// DeBruijn opening). Used to skip non-matching rules before the
 /// allocate-heavy `open_equation`. `pub(super)`: the typer's dot-rule
-/// firing (WI-279 INC2) pre-filters `[simp]` equations by LHS functor.
+/// firing (WI-279 INC2) pre-filters `@[simp]` equations by LHS functor.
 ///
 /// WI-663: reads the head carrier-agnostically via `fact_head_term` (not the
 /// panicking term-only `rule_head`) — a value-fact head (`Value::Node`/`Entity`)
@@ -1814,7 +1814,7 @@ pub(super) fn stored_lhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symb
 }
 
 /// The reflect `Expr.dot_apply` ENTITY symbol — the LHS head a WI-279 INC2 DOT
-/// rule (`rule dr: dot_apply(?e, m, ?x) <=> rhs [simp]`) loads as. The one owner of
+/// rule (`rule dr: dot_apply(?e, m, ?x) <=> rhs @[simp]`) loads as. The one owner of
 /// the qualified name *for rule-shape tests*, so the site that FIRES dot rules
 /// (`typing::try_fire_dot_rule`) and the site that REFUSES a typed pattern bound on
 /// one (WI-903, `load::load_rule`) cannot drift apart on what a dot rule IS. S66VH
@@ -1834,7 +1834,7 @@ pub(super) fn dot_apply_head_sym(kb: &KnowledgeBase) -> Option<Symbol> {
 }
 
 /// WI-903 — would the TYPER's dot-rule site FIRE `rid`? Exactly the two conditions
-/// `typing::try_fire_dot_rule` applies before it matches: the rule is a `[simp]`
+/// `typing::try_fire_dot_rule` applies before it matches: the rule is a `@[simp]`
 /// EQUATION ([`is_simp_equation`]) and its LHS is the reflect `Expr.dot_apply`
 /// entity. That site never consults `rule_type_bounds`, so the loader refuses a
 /// typed pattern bound (`?x: T`) on any rule this accepts — read it as "fired where
@@ -1859,19 +1859,19 @@ pub(super) fn fires_as_dot_rule(kb: &KnowledgeBase, rid: RuleId, dot_apply: Symb
 /// [`fires_as_dot_rule`] resolving the symbol itself — for a caller that tests one
 /// rule rather than looping (the loader's WI-903 refusal).
 ///
-/// `[simp]`-only, exactly as [`is_simp_equation`] is — but read the reason
-/// precisely, because the obvious one is WRONG: the resolver fires `[simp]`
+/// `@[simp]`-only, exactly as [`is_simp_equation`] is — but read the reason
+/// precisely, because the obvious one is WRONG: the resolver fires `@[simp]`
 /// equations TOO (`fire_simp_equation` gates on `is_directional_equation`, which
-/// accepts `[simp]` OR `[unfold]`) and enforces the bound there. What singles
-/// `[simp]` out is that it ALSO has a firing site that IGNORES the bound, so the
-/// bound cannot be relied on; nothing in the typer selects `[unfold]`, so refusing
+/// accepts `@[simp]` OR `@[unfold]`) and enforces the bound there. What singles
+/// `@[simp]` out is that it ALSO has a firing site that IGNORES the bound, so the
+/// bound cannot be relied on; nothing in the typer selects `@[unfold]`, so refusing
 /// that would refuse a shape this refusal has no evidence against.
 ///
 /// Two residuals, both WI-906, both code-read rather than driven: whether a
 /// `dot_apply` TERM redex ever reaches the resolver at all is UNMEASURED (if it
-/// does not, the `[unfold]` carve-out is unjustified and both should be refused);
+/// does not, the `@[unfold]` carve-out is unjustified and both should be refused);
 /// and this is NOT narrowed by the typer's per-receiver enclosing-SORT guard, which
-/// a rule alone cannot decide — so a `dot_apply` `[simp]` rule whose `rule_domain`
+/// a rule alone cannot decide — so a `dot_apply` `@[simp]` rule whose `rule_domain`
 /// no receiver can conform to is refused although only the resolver could fire it.
 pub(super) fn is_typer_fired_dot_rule(kb: &KnowledgeBase, rid: RuleId) -> bool {
     dot_apply_head_sym(kb).is_some_and(|dot| fires_as_dot_rule(kb, rid, dot))
@@ -1889,7 +1889,7 @@ pub(super) fn is_typer_fired_dot_rule(kb: &KnowledgeBase, rid: RuleId) -> bool {
 /// set lets the resolver's `fire_simp_equation` (WI-641 Phase 2) key typed-
 /// pattern bounds by the opened globals and share this ONE opener rather than
 /// re-inlining it. `pub(super)`: the typer's dot-rule firing (WI-279 INC2) opens a
-/// matched `[simp]` dot rule and ignores `fresh` — soundly, since WI-903: a dot
+/// matched `@[simp]` dot rule and ignores `fresh` — soundly, since WI-903: a dot
 /// rule THAT SITE fires can carry no typed-pattern bounds (the loader refuses
 /// them, [`is_typer_fired_dot_rule`]), so there is nothing for the opened globals
 /// to key.
@@ -1918,7 +1918,7 @@ pub(super) fn open_equation(
         // ("the opened `fresh` globals for a DeBruijn rule, or the head's own `Global`
         // vars for a legacy arity-0 head" — `resolve.rs`); returning it here makes the
         // two agree by construction instead of by convention, which they did not:
-        // `fact fu(?x) <=> sink(?y) [simp]` loaded clean while the `rule` spelling of
+        // `fact fu(?x) <=> sink(?y) @[simp]` loaded clean while the `rule` spelling of
         // the same equation was refused.
         // NOT A SLOT VECTOR — and the readers that INDEX `fresh` positionally must
         // therefore never see this one. `open_debruijn_node` does `fresh.get(idx)` for a
@@ -2065,7 +2065,7 @@ fn subst_visit(
             // this arm has to say so because the shape no longer can: a nullary call
             // used to arrive as `Fn{f, [], []}` and take the `Apply` arm above, and it
             // is a `Term::Ref` now. Left as a plain `Expr::Ref`, a nullary macro in a
-            // `[simp]` RHS stopped expanding (`try_expand_macro` matches `Expr::Apply`)
+            // `@[simp]` RHS stopped expanding (`try_expand_macro` matches `Expr::Apply`)
             // and a nullary op call in one stopped being a redex.
             //
             // A bare CONSTRUCTOR or SORT keeps `Expr::Ref` — `is_nullary_operation`
@@ -2080,7 +2080,7 @@ fn subst_visit(
             }
             Term::Ref(s) => results.push(synth(Expr::Ref(*s))),
             Term::Ident(s) => results.push(synth(Expr::Ident(*s))),
-            // An unbound RHS var or `⊥` yields `⊥`; a well-formed `[simp]`
+            // An unbound RHS var or `⊥` yields `⊥`; a well-formed `@[simp]`
             // rule binds every RHS var, so the post-rewrite type-check
             // surfaces any genuinely unbound case as an error.
             _ => results.push(synth(Expr::Bottom)),
@@ -2318,7 +2318,7 @@ pub(super) fn reassemble(
             subs: cur.take_vec(subs),
         },
         // WI-538: an in-body proof — consume children in `for_each_child`
-        // order [conclude?, body] so a `[simp]` rewrite (or a WI-408
+        // order [conclude?, body] so a `@[simp]` rewrite (or a WI-408
         // `some(…)` coercion) inside the goal or continuation propagates
         // up instead of being silently dropped.
         Expr::Proof {
@@ -2381,7 +2381,7 @@ mod tests {
         kb
     }
 
-    /// Build the `[simp]` equation `eq(add(?x, 0), ?x)` head + `[simp]` meta,
+    /// Build the `@[simp]` equation `eq(add(?x, 0), ?x)` head + `@[simp]` meta,
     /// returning `(eq_head, meta, add_sym)` without asserting.
     fn build_add_zero(kb: &mut KnowledgeBase) -> (TermId, TermId, Symbol) {
         let eq_sym = kb.eq_functor();
@@ -2422,7 +2422,7 @@ mod tests {
     }
 
     /// Assert `add_zero` via the DeBruijn path
-    /// (`assert_rule_debruijn_with_nodes`, arity > 0) — the shape real `[simp]`
+    /// (`assert_rule_debruijn_with_nodes`, arity > 0) — the shape real `@[simp]`
     /// rules take after loading. Exercises `open_equation`'s
     /// `term_from_debruijn` branch.
     fn assert_add_zero_db(kb: &mut KnowledgeBase) -> Symbol {
@@ -2438,7 +2438,7 @@ mod tests {
     }
 
     /// WI-663: a value-fact head (`Value::Entity` — e.g. a reflect fact carrying
-    /// a denoted value) must not abort the term-only `[simp]`-equation head
+    /// a denoted value) must not abort the term-only `@[simp]`-equation head
     /// readers. Before the migration `stored_lhs_functor` / `open_equation` read
     /// the head through the panicking term-only `rule_head`; now they read
     /// `fact_head_term`, so a value head — which is never an equation — reads
@@ -2487,7 +2487,7 @@ mod tests {
     #[test]
     fn has_simp_equations_counts_unify_headed_simp_rule() {
         // WI-646: `has_simp_equations` selects over BOTH `eq` and `unify` buckets
-        // (via `simp_equation_rids`). A `[simp]` law spelled `<=>` (the `unify`
+        // (via `simp_equation_rids`). A `@[simp]` law spelled `<=>` (the `unify`
         // head — the stdlib's form, 14/14) must be counted, so the typer's
         // `simp_enabled` fires it even in a KB with no `eq`-headed simp law and no
         // dot-applies. The former `eq`-only spelling returned `false` here — the
@@ -2524,7 +2524,7 @@ mod tests {
 
         assert!(
             has_simp_equations(&mut kb),
-            "a <=>-headed [simp] rule must be counted (eq+unify selection)"
+            "a <=>-headed @[simp] rule must be counted (eq+unify selection)"
         );
     }
 
@@ -2621,7 +2621,7 @@ mod tests {
 
     #[test]
     fn typer_and_resolver_phases_agree() {
-        // The same `[simp]` rule reduces add(7, 0) → 7 in BOTH the resolver
+        // The same `@[simp]` rule reduces add(7, 0) → 7 in BOTH the resolver
         // (term, via simplify/apply_eq_rules) and the typer phase (occurrence,
         // via run) — the phase-agreement invariant (proposal 043 §4.7).
         let mut kb = kb_with_prelude();
@@ -2665,7 +2665,7 @@ mod tests {
 
     #[test]
     fn debruijn_simp_rule_rewrites_op_body() {
-        // Real-world shape: a `[simp]` rule stored with DeBruijn vars
+        // Real-world shape: a `@[simp]` rule stored with DeBruijn vars
         // (`assert_rule_debruijn_with_nodes`, as the loader produces) still
         // fires — `open_equation` opens it via `term_from_debruijn`.
         let mut kb = kb_with_prelude();
@@ -2692,7 +2692,7 @@ mod tests {
         let rewritten = kb.op_body_node(foo).expect("op body present");
         assert!(
             matches!(rewritten.as_expr(), Some(Expr::Const(Literal::Int(7)))),
-            "DeBruijn [simp] rule: add(7,0) → 7, got {:?}",
+            "DeBruijn @[simp] rule: add(7,0) → 7, got {:?}",
             rewritten.as_expr()
         );
         assert!(Rc::ptr_eq(rewritten, &seven));
@@ -2866,7 +2866,7 @@ mod tests {
     /// DRIVEN HERE AND NOT THROUGH A PROGRAM, and the reason is a measurement rather than
     /// convenience: `from.owner` is `None` at EVERY splice in the corpus. Instrumented at
     /// this function over the whole `wi_tests` binary — **542 fires, `owner_is_some=false`
-    /// on all 542**, and exactly ONE reach of the pattern branch (a `[simp]` RHS carrying
+    /// on all 542**, and exactly ONE reach of the pattern branch (a `@[simp]` RHS carrying
     /// a lambda, which is what this ticket makes buildable at all) with `from.owner` and
     /// the node's owner both `None`. Every `Expr` / `Pattern` occurrence the loader builds
     /// takes `owner: None` (`node_occurrence::build_frame`,

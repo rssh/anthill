@@ -631,8 +631,8 @@ fn an_equation_subject_is_a_party_to_the_collision_too() {
     // BACKED OUT (`head.introduced_by != RuleIntroduction::Predicate` back in the
     // candidate filter of `head_name_collisions`): this row's first arm fails — the
     // program loads and `zeq.Rec.f` exists.
-    const SPLIT: &str = "namespace zeq\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
-                         entity r(n: Int64)\n    rule f(false) <=> 2 [simp]\n  end\nend\n";
+    const SPLIT: &str = "namespace zeq\n  rule f(true) <=> 1 @[simp]\n  sort Rec\n    \
+                         entity r(n: Int64)\n    rule f(false) <=> 2 @[simp]\n  end\nend\n";
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with(SPLIT),
         &["the rule head `f` introduces that name at 2 scopes, each of which reaches or is reached by another of them — zeq, zeq.Rec"],
@@ -653,8 +653,8 @@ fn an_equation_subject_is_a_party_to_the_collision_too() {
     // `zeq6` the per-scope half; each must ANSWER through the citation the split arm
     // could not reach.
     let mut owned = crate::common::interp_for(
-        "namespace zeq5\n  operation f(b: Bool) -> Int64\n  rule f(true) <=> 1 [simp]\n  \
-         sort Rec\n    entity r(n: Int64)\n    rule f(false) <=> 2 [simp]\n  end\nend\n\
+        "namespace zeq5\n  operation f(b: Bool) -> Int64\n  rule f(true) <=> 1 @[simp]\n  \
+         sort Rec\n    entity r(n: Int64)\n    rule f(false) <=> 2 @[simp]\n  end\nend\n\
          namespace zeq5c\n  import zeq5.{f}\n  operation g() -> Int64 = f(false)\nend\n",
     );
     assert_eq!(
@@ -663,8 +663,8 @@ fn an_equation_subject_is_a_party_to_the_collision_too() {
         "the `operation` owner collects the SORT's equation"
     );
     let mut split = crate::common::interp_for(
-        "namespace zeq6\n  rule f(?x)\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
-         entity r(n: Int64)\n    rule f(?y)\n    rule f(false) <=> 2 [simp]\n  end\nend\n\
+        "namespace zeq6\n  rule f(?x)\n  rule f(true) <=> 1 @[simp]\n  sort Rec\n    \
+         entity r(n: Int64)\n    rule f(?y)\n    rule f(false) <=> 2 @[simp]\n  end\nend\n\
          namespace zeq6c\n  import zeq6.{Rec}\n  operation g() -> Int64 = Rec.f(false)\nend\n",
     );
     assert_eq!(
@@ -676,8 +676,8 @@ fn an_equation_subject_is_a_party_to_the_collision_too() {
     // sentence changed. Without it the two arms above would pass with the old text.
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with(
-            "namespace zeq2\n  rule f(?x)\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
-             entity r(n: Int64)\n    rule f(false) <=> 2 [simp]\n  end\nend\n",
+            "namespace zeq2\n  rule f(?x)\n  rule f(true) <=> 1 @[simp]\n  sort Rec\n    \
+             entity r(n: Int64)\n    rule f(false) <=> 2 @[simp]\n  end\nend\n",
         ),
         &["the equation subject `f` names the RELATION `f` declared in 'zeq2'"],
     );
@@ -685,8 +685,8 @@ fn an_equation_subject_is_a_party_to_the_collision_too() {
     // it "equations are refused" would be indistinguishable from "equations are refused
     // whenever a sort has one".
     let kb = crate::common::load_kb_with(
-        "namespace zeq4\n  rule f(true) <=> 1 [simp]\n  sort Rec\n    \
-         entity r(n: Int64)\n    rule g(false) <=> 2 [simp]\n  end\nend\n",
+        "namespace zeq4\n  rule f(true) <=> 1 @[simp]\n  sort Rec\n    \
+         entity r(n: Int64)\n    rule g(false) <=> 2 @[simp]\n  end\nend\n",
     );
     assert!(kb.try_resolve_symbol("zeq4.Rec.g").is_some(), "CONTROL: the fresh subject exists");
 }

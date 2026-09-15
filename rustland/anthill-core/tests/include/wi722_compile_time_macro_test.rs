@@ -1,13 +1,13 @@
-//! WI-722 (proposal 043.1) — compile-time MACROS in the `[simp]` engine.
+//! WI-722 (proposal 043.1) — compile-time MACROS in the `@[simp]` engine.
 //!
 //! A macro is an occurrence→occurrence operation (every parameter AND the result
 //! is a `NodeOccurrence` / reflect `Expr`, so the signature classifies it — no
-//! marker). When it heads a fired `[simp]` rule's RHS, the engine EVALUATES it at
+//! marker). When it heads a fired `@[simp]` rule's RHS, the engine EVALUATES it at
 //! compile time over its argument occurrences and splices the occurrence it
 //! returns, instead of leaving the template call.
 //!
 //! This is the inverse of the verified-absent baseline: before WI-722, an
-//! occurrence-returning op placed in a `[simp]` RHS was NOT run — its argument
+//! occurrence-returning op placed in a `@[simp]` RHS was NOT run — its argument
 //! arrived as its evaluated *value* type (`Int64`), not the occurrence, so the
 //! program failed to type-check. Here the macro `wrap` runs, rewriting
 //! `trigger(5)` to `wrapped(5)` at compile time (via the occurrence BUILD builtin
@@ -30,18 +30,18 @@ namespace test.wi722
   operation wrapped(v: Int64) -> Int64 = add(v, 100)
 
   -- The MACRO: every parameter and the result is a NodeOccurrence, so the
-  -- [simp] engine evaluates it at compile time. Its body BUILDS `wrapped(x)` as
+  -- @[simp] engine evaluates it at compile time. Its body BUILDS `wrapped(x)` as
   -- an occurrence, reusing the argument occurrence `x` in place (a `Term`-level
   -- `make_fn` could not carry a child occurrence — this is why `make_apply`
   -- returns a `NodeOccurrence`).
   operation wrap(x: NodeOccurrence) -> NodeOccurrence =
     make_apply("test.wi722.wrapped", cons(x, nil()), x)
 
-  -- The [simp] LHS functor. Its own body is never evaluated — the call is
+  -- The @[simp] LHS functor. Its own body is never evaluated — the call is
   -- rewritten away at compile time before it would be run.
   operation trigger(x: Int64) -> Int64 = x
 
-  rule trigger(?x) <=> wrap(?x) [simp]
+  rule trigger(?x) <=> wrap(?x) @[simp]
 
   -- The consumer holding the redex. After type-checking, its STORED body is
   -- `wrapped(5)` (the macro ran), not `trigger(5)` / `wrap(5)`.

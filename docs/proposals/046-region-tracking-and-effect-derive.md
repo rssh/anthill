@@ -169,16 +169,16 @@ region-abstraction is the deferred body.
 operation** — a primitive, an FFI binding, a body written in another language —
 has **no anthill body to read**, but it can still **declare the feed-relationship
 as metadata**, using anthill's **existing `[key: value]` metadata syntax** (the
-`meta_entry` form — same as `[simp]`, `[trust: …]`; open-keyed, value a `Term`).
+`meta_entry` form — same as `@[simp]`, `@[trust: …]`; open-keyed, value a `Term`).
 The key is `feeds`; the value is a term saying how each higher-order parameter is
 **applied** — `f(<descriptor per parameter>)`:
 
 ```
 operation foreach[A, E](xs: List[A], f: (A) -> Unit @ E) -> Unit effects E
-   [feeds: f(element_of(xs))]
+   @[feeds: f(element_of(xs))]
 
 operation foldLeft[A, B, E](xs: List[A], z: B, f: (B, A) -> B @ E) -> B effects E
-   [feeds: f(threaded(z, f), element_of(xs))]
+   @[feeds: f(threaded(z, f), element_of(xs))]
 ```
 
 > **Surface-syntax note.** Effects on a *function/arrow type* use `@`
@@ -188,7 +188,7 @@ operation foldLeft[A, B, E](xs: List[A], z: B, f: (B, A) -> B @ E) -> B effects 
 > `[…, effects E]` / unparenthesized-arrow forms used in the schematic blocks of
 > §2 and §4.1 are informal exposition, not grammar.
 >
-> **`feeds` need not be a meta-entry — it can be a plain `rule`.** `[feeds: …]`
+> **`feeds` need not be a meta-entry — it can be a plain `rule`.** `@[feeds: …]`
 > is an open-keyed `meta_entry` (no new keyword), but its value is one inert
 > `Term`. The feed-relationship is better written as ordinary KB rules over a
 > `fed` relation, with parameters referenced by qualified name (`op.param`,
@@ -205,7 +205,7 @@ operation foldLeft[A, B, E](xs: List[A], z: B, f: (B, A) -> B @ E) -> B effects 
 > `OperationInfo` itself, WI-348) rather than parsing an inert descriptor. See
 > `docs/design/modify-effect-derive.md` §3.
 
-`[feeds: f(…)]` is an ordinary `meta_entry`: key `feeds`, value the term `f(…)`
+`@[feeds: f(…)]` is an ordinary `meta_entry`: key `feeds`, value the term `f(…)`
 whose argument positions hold a **descriptor** per callback parameter
 (`element_of(xs)`, `threaded(z, f)`). Those descriptors are exactly the
 substitutions `effect_derive` applies to the callback's parameters — the same
@@ -247,7 +247,7 @@ This:
 > *already accept* (grammar `operation_declaration`, and the IR `Operation.meta`)
 > — but the **loader silently drops it** (`load.rs` never reads `op.meta`) and
 > `OperationInfo` has no field to expose it. So loading + surfacing operation
-> metadata is a **prerequisite** (WI-309), on top of which `[feeds: …]` and its
+> metadata is a **prerequisite** (WI-309), on top of which `@[feeds: …]` and its
 > descriptor language are this proposal's work. This section specifies the
 > *form*, not existing behavior.
 
@@ -259,7 +259,7 @@ present) → else read `callee_body` (if the op is anthill-defined) → else opa
 
 > **Supersedes the descriptor-language framing of §4.2.** §4.2 sketched the
 > feed-relationship as a bespoke descriptor language (`element_of(xs)`,
-> `threaded(z, f)`) carried in `[feeds: …]` metadata. That is **rejected**: a
+> `threaded(z, f)`) carried in `@[feeds: …]` metadata. That is **rejected**: a
 > reader cannot tell what `element_of(xs)` means, and anthill is *already* a
 > relational KB. The feed-relationship is instead a **set of ordinary relations**
 > over places — defined in the stdlib, derived (not hand-written) for native ops,

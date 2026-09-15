@@ -24,7 +24,7 @@
 //! `register_operation_mappings` runs for EVERY interpreter built over the program,
 //! and the embedder builds only one of them. `KnowledgeBase::run_in_bridge_interp`
 //! (`kb/resolve.rs`) `mem::take`s the KB and constructs a FRESH `Interpreter` per
-//! bridged evaluation — one per `[simp]` fire, per bridged `eq` dispatch — then runs
+//! bridged evaluation — one per `@[simp]` fire, per bridged `eq` dispatch — then runs
 //! `register_standard_builtins` on it. An embedder table held by the embedder's own
 //! interpreter is simply absent there, and because an unknown key is FATAL the
 //! scratch interpreter would fail to build at all: writing one `operation_map` entry
@@ -45,7 +45,7 @@
 //! ## Ordering: register BEFORE load
 //!
 //! Not merely before the embedder's own interpreter. LOAD ITSELF builds interpreters
-//! — `build_host_op_mappings`' doc lists the crossings, and a `[simp]` macro fire
+//! — `build_host_op_mappings`' doc lists the crossings, and a `@[simp]` macro fire
 //! during load is one of them — so a table registered after `load_all` can already be
 //! too late, and the failure is the fatal unknown-key one rather than a missing
 //! implementation at the call.

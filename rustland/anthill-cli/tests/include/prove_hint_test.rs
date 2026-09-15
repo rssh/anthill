@@ -1,4 +1,4 @@
-//! WI-139 [hint] semantics: rules tagged `[hint]` are auto-included
+//! WI-139 @[hint] semantics: rules tagged `@[hint]` are auto-included
 //! in the SMT preamble of any proof in the same enclosing scope
 //! chain. The user does NOT need to write `using <rule>` explicitly.
 
@@ -29,7 +29,7 @@ fn hint_attributed_rule_auto_included_in_proof() {
     if !z3_available() {
         return;
     }
-    // `bound_d` is tagged `[hint]` — every proof in the same
+    // `bound_d` is tagged `@[hint]` — every proof in the same
     // scope auto-cites it. `target` doesn't write `using bound_d`
     // explicitly, but Z3 still sees the lifted forall of bound_d's
     // conclusion, which lets target discharge.
@@ -45,7 +45,7 @@ fn hint_attributed_rule_auto_included_in_proof() {
         namespace test.hint.basic
           import anthill.prelude.PartialOrd.{gte}
 
-          rule bound_d: gte(?x, 3.0) :- gte(?x, 5.0) [hint]
+          rule bound_d: gte(?x, 3.0) :- gte(?x, 5.0) @[hint]
           rule target:  gte(?x, 3.0) :- gte(?x, 5.0)
 
           proof bound_d

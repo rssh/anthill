@@ -113,7 +113,7 @@ sort anthill.prelude.WeakOrd
   import anthill.prelude.Int64.{neg}
   -- WI-894: `ite` is a RULE-INTRODUCED functor on `Bool`, and a rule does not
   -- travel to the global namespace from its place — so the `max`/`min` laws
-  -- below reach `bool.anthill`'s `[simp]` rules by THIS import, not by the name
+  -- below reach `bool.anthill`'s `@[simp]` rules by THIS import, not by the name
   -- being global. Resolves through the deferred-import retry (WI-295): a rule
   -- head's symbol is registered in scan pass 3, after imports are processed.
   import anthill.prelude.Bool.{ite}
@@ -161,7 +161,7 @@ sort anthill.prelude.WeakOrd
   -- WI-876: since those six gained real default BODIES, each law now has an
   -- executable twin. The BODY is what runs — a rule is not backing (WI-818) — and
   -- these stay as the SPECIFICATION the bodies are proved against, which is also
-  -- what the equational/`[simp]`/proof layers rewrite with. Two spellings of one
+  -- what the equational/`@[simp]`/proof layers rewrite with. Two spellings of one
   -- definition, deliberately, and they are allowed to differ where the surfaces do:
   -- `max` is stated here with `ite` and written as `if`/`then`/`else` there, because
   -- `ite` is a rule-level functor and `if` is the operation-body form (WI-887).
@@ -190,7 +190,7 @@ sort anthill.prelude.WeakOrd
   --
   -- Written as a `constraint` (the `Int64.div_nonzero` idiom: head must hold wherever
   -- the body does) and NOT as an equation, deliberately. An `<=>` is available to the
-  -- equational / `[simp]` / proof layers as a REWRITE, and rewriting `eq(a, b)` to
+  -- equational / `@[simp]` / proof layers as a REWRITE, and rewriting `eq(a, b)` to
   -- `eq(compare(a, b), 0)` is exactly the unsound step at a coarse kernel. An
   -- implication states the obligation without minting the rewrite.
   constraint compare_congruent: eq(compare(?a, ?b), 0) :- eq(?a, ?b)
@@ -229,7 +229,7 @@ sort anthill.prelude.Ord
   -- this floor a set of ELEMENTS rather than of classes.
   --
   -- AN EQUATION HERE, A `constraint` ON `WeakOrd`, and the difference is soundness rather
-  -- than style. An `<=>` is what the equational / `[simp]` / proof layers REWRITE with,
+  -- than style. An `<=>` is what the equational / `@[simp]` / proof layers REWRITE with,
   -- and rewriting `eq(a, b)` to `eq(compare(a, b), 0)` is valid exactly where the kernel
   -- IS `Eq` — here, and not one floor down, where a coarse comparator makes it false.
   -- So `WeakOrd` states only the implication it can defend and mints no rewrite, while
@@ -240,7 +240,7 @@ sort anthill.prelude.Ord
   -- `Int64`/`String`/`BigInt` silently lost a law they had had all along and nothing
   -- recorded the loss. Restored, in the spelling the file's other laws use.
   --
-  -- Untagged, so it is INERT as a rewrite until a `[simp]` tag enables it (WI-881/884) —
+  -- Untagged, so it is INERT as a rewrite until a `@[simp]` tag enables it (WI-881/884) —
   -- the status `compare_antisym`, `compare_refl` and `eq_refl` all have. What it is FOR
   -- is being the specification those layers prove against.
   rule compare_eq: eq(?a, ?b) <=> eq(WeakOrd.compare(?a, ?b), 0)

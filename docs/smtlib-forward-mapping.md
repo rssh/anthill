@@ -487,8 +487,8 @@ Rule: neq(?a, ?b) = not(eq(?a, ?b))
 When the solver returns `unsat` for a negated property, the fact's trust can be elevated to `verified`:
 
 ```
-; Before: fact Eq[T = Color] [trust: proposed]
-; After:  fact Eq[T = Color] [trust: verified, solver: "z3"]
+; Before: fact Eq[T = Color] @[trust: proposed]
+; After:  fact Eq[T = Color] @[trust: verified, solver: "z3"]
 ```
 
 This produces a `ProofResult.Proved` fact:

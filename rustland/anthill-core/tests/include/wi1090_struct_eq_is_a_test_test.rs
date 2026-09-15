@@ -14,7 +14,7 @@
 //!
 //! WHAT WAS SILENT, measured on the pre-fix loader and each pinned below:
 //!
-//!   1. `[simp]` could never fire. `simp_equation_rids` collects the `eq` and `unify`
+//!   1. `@[simp]` could never fire. `simp_equation_rids` collects the `eq` and `unify`
 //!      buckets; a `===` clause is in neither, so the rewriter never saw it.
 //!   2. The subject was stamped `SymbolKind::EquationFunctor` with ZERO clauses under
 //!      it, so the only diagnostic the author ever saw came from a CITATION and said
@@ -77,7 +77,7 @@ fn clauses_under(kb: &mut KnowledgeBase, qn: &str) -> usize {
     kb.rules_by_functor(sym).len()
 }
 
-/// THE REFUSAL, and what it has to say. A `[simp]`-tagged `===` "definition" is the
+/// THE REFUSAL, and what it has to say. A `@[simp]`-tagged `===` "definition" is the
 /// exact source the three silences came from, so it is the source the message must
 /// answer: it names the subject the author was defining, says `===` compares rather
 /// than defines, and gives the substitute. Asserting the CONTENT because the whole
@@ -89,7 +89,7 @@ fn a_bodyless_struct_eq_head_is_refused_and_names_the_substitute() {
 namespace wi1090.refused
   sort S
     import anthill.prelude.{Int64}
-    rule { g1090(?x) === ?x [simp] }
+    rule { g1090(?x) === ?x @[simp] }
     operation drive(n: Int64) -> Int64 = g1090(n)
   end
 end
@@ -173,7 +173,7 @@ fn the_same_definition_spelled_with_the_connective_works() {
 namespace wi1090.works
   sort S
     import anthill.prelude.{Int64}
-    rule { g1090(?x) <=> ?x [simp] }
+    rule { g1090(?x) <=> ?x @[simp] }
     operation drive(n: Int64) -> Int64 = g1090(n)
     rule out1090(?v) :- ?v <=> drive(7)
   end
@@ -186,7 +186,7 @@ end
     let values: Vec<ViewHead> = answers.iter().map(|(v, _)| v.head(&kb)).collect();
     assert!(
         matches!(values.as_slice(), [ViewHead::Const(Literal::Int(7))]),
-        "the `[simp]` equation rewrites `g1090(7)` to `7` before dispatch, so the \
+        "the `@[simp]` equation rewrites `g1090(7)` to `7` before dispatch, so the \
          operation computes; got {values:?}",
     );
 }

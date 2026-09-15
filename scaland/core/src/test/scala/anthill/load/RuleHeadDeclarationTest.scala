@@ -350,14 +350,29 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
     loaded("c1.anthill" -> "namespace sbz.c1\n  rule lawq: aq(1), bq(2) :- true\nend")
   }
 
+  test("WI-20260915-G9EA9: a bare-literal conclusion is refused, naming a retired block") {
+    // Rustland's WI-893 refusal, which scaland lacked: a retired `[simp]` inside
+    // `rule { … }` becomes the next entry's LIST head and used to load silently — an
+    // untagged law beside a junk rule. CONTROL: before the refusal every fixture here
+    // loaded clean.
+    refusedAll(Seq("must be an atom, not a bare literal",
+        "`[simp]` is a meta block in the retired spelling: write `@[simp]`"),
+      "retired.anthill" -> "namespace g9.retired\n  rule {\n    f(?x) <=> 1 [simp]\n  }\nend")
+    refused("a fact must be an atom, not a bare literal",
+      "tuple.anthill" -> "namespace g9.tuple\n  fact (a, b)\nend")
+    refused("a rule head must be an atom, not a bare literal",
+      "const.anthill" -> "namespace g9.const\n  rule 42\nend")
+    loaded("atom.anthill" -> "namespace g9.atom\n  rule f(?x) <=> 1 @[simp]\nend")
+  }
+
   test("061: a declaration carries no clause text") {
     // A declaration stores no clause, so a citation LABEL has nothing to cite and a
-    // `[…]` tag has no clause to govern. Refused rather than dropped: both carriers were
+    // `@[…]` tag has no clause to govern. Refused rather than dropped: both carriers were
     // silently lost the moment this reading stopped asserting.
     refused("A citation label on it has nothing to cite",
       "lbl.anthill" -> "namespace sbz.lbl\n  rule mylaw: p(?x)\nend")
-    refused("A `[…]` tag on it has no clause to govern",
-      "tag.anthill" -> "namespace sbz.tag\n  rule p(?x) [simp]\nend")
+    refused("A `@[…]` tag on it has no clause to govern",
+      "tag.anthill" -> "namespace sbz.tag\n  rule p(?x) @[simp]\nend")
     // THE CONTROLS — the same carriers on a rule that DOES store a clause.
     loaded("lblc.anthill" -> "namespace sbz.lblc\n  rule mylaw: p(?x) :- true\nend")
     loaded("tagc.anthill" -> "namespace sbz.tagc\n  rule p(?x) :- true\nend")

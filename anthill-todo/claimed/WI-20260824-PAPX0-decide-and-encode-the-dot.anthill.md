@@ -304,7 +304,7 @@ WHAT SHIPPED, three pieces plus a guard:
   2. Bound at the let site, storing the NODE rather than the head alone — the
      type ARGUMENTS are part of the denotation, and the synthesized call carries
      them as `recv_type` exactly as the written `Box[V = Int64].tag()` does.
-  3. A branch at the `DotApply` build frame (typing.rs), BEFORE the `[simp]` rung
+  3. A branch at the `DotApply` build frame (typing.rs), BEFORE the `@[simp]` rung
      and the default fallback, because it decides WHICH SORT the member is looked
      up in; running it after would let a member keyed on `Type` win by position.
      It synthesizes the COMPANION shape -- args UNSHIFTED -- because a companion

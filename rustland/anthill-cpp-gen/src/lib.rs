@@ -3446,11 +3446,11 @@ fn lower_node(
             "cannot lower Bottom (⊥) to a C++ expression",
         )),
         // WI-278: a pre-dispatch `dot_apply` is rewritten to an `Apply` /
-        // field access by the `[simp]` dot rules before codegen; one reaching
+        // field access by the `@[simp]` dot rules before codegen; one reaching
         // cpp-gen is an unresolved method call.
         Expr::DotApply { name, .. } => Err(CppCodegenError {
             message: format!(
-                "unresolved method call '.{}' reached cpp-gen — the [simp] dot \
+                "unresolved method call '.{}' reached cpp-gen — the @[simp] dot \
                  rules should have rewritten it",
                 kb.local_name_of(*name),
             ),

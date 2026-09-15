@@ -25,7 +25,7 @@
 //! (`/code-review` measured +2 per call). Whether any path a PROGRAM takes reaches it
 //! repeatedly was then measured end-to-end, and it does not: five shapes — a
 //! `Modifiable[T = ?t]` goal, `is_modifiable(List[T = ?t])` under `eq` with `?t` bound
-//! and free, `Modifiable[?t]`, and `wi_h054k`'s `[simp]` equation `mkr(?k) <=> Map[K =
+//! and free, `Modifiable[?t]`, and `wi_h054k`'s `@[simp]` equation `mkr(?k) <=> Map[K =
 //! ?k, V = Int64].empty()` fired through three evaluations of `dr()` — all grow the
 //! store by 0 after the first run (goal type positions ride occurrence children; a
 //! fired equation's rewrite is cached). So no row pins that channel.
@@ -407,18 +407,18 @@ fn compound_links_still_answer_their_matched_subterm() {
 // ── The compound-carrier descent must also REASSEMBLE ────────────────────────
 //
 // `children_of` descends a `Value::Entity` / `Value::Tuple` because a goal whose var
-// is linked to a compound head subterm now walks into one, so a `[simp]` redex nested
+// is linked to a compound head subterm now walks into one, so a `@[simp]` redex nested
 // inside is as reachable as one inside a `Term::Fn`. Descent alone is not enough:
 // `build_node` pops the rewritten children and hands them to `reassemble_value`, which
 // had no arm for either carrier and fell through to `node.clone()` — so the nested
 // redex was visited, matched, FIRED, and its result silently DISCARDED (found by
 // /code-review, after the descent had already landed).
 
-/// A `[simp]` equation plus a compound to nest its redex inside.
+/// A `@[simp]` equation plus a compound to nest its redex inside.
 const SIMP_SRC: &str = r#"
 namespace n20ez_s
   entity Box(v: Int64)
-  rule twice(?n) <=> dbl(?n) [simp]
+  rule twice(?n) <=> dbl(?n) @[simp]
 end
 "#;
 
@@ -458,7 +458,7 @@ fn a_top_level_redex_fires() {
     let mut kb = load_kb_bare(&[SIMP_SRC]);
     let redex = twice_redex(&mut kb);
     let (out, changes) = kb.apply_eq_rules(&redex, 8, &Default::default());
-    assert!(!changes.is_empty(), "the `[simp]` equation must fire at all");
+    assert!(!changes.is_empty(), "the `@[simp]` equation must fire at all");
     assert_eq!(
         head_functor(&kb, &out).as_deref(),
         Some("dbl"),

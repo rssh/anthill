@@ -145,7 +145,7 @@ sort WorkStatus {
 Fact with metadata
 =====================================
 
-fact parent("alice", "bob") [trust: axiom, agent: "author"]
+fact parent("alice", "bob") @[trust: axiom, agent: "author"]
 
 ---
 

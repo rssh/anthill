@@ -191,7 +191,7 @@ fn a_genuine_typed_column_still_declares_nothing_to_attach_to() {
 }
 
 /// AND THE GENUINE COLUMN STILL GATES A REWRITE — the enforcement WI-903's message names,
-/// driven rather than asserted: `keep(?x: Summable, ?y) <=> ?x [simp]` fires where the
+/// driven rather than asserted: `keep(?x: Summable, ?y) <=> ?x @[simp]` fires where the
 /// matched value's carried type provides `Summable` and suspends where it does not.
 ///
 /// This is the row that says the mint reached the marker path. It is `wi582`'s fixture in
@@ -217,7 +217,7 @@ namespace ak2aj.gate
       keep(x: A, y: A) -> A
     }
     rule {
-      keep_id: keep(?x: Summable, ?y) <=> ?x [simp]
+      keep_id: keep(?x: Summable, ?y) <=> ?x @[simp]
     }
   end
 end

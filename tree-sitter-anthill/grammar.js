@@ -45,20 +45,18 @@ module.exports = grammar({
     // there (it subsumes the former `[$._atom_term, $.fn_term]` declaration).
     [$._non_name_atom_term, $.fn_term],
     // WI-20260829-BAD3V: a `[` after a `field_access` is either this term's end
-    // (the `[` opening a `meta_block` / a `collection_literal`) or the opening of a
-    // `dot_application` bracket on a dot CALLEE (`?x.m[T = Int](y)`). Nothing local
-    // decides it — the separator is the `(` after the `]`, which is two reductions
-    // away — so GLR explores both and keeps whichever continuation parses. That is
-    // what leaves `rule ?x.m [simp]` and `fact ?x.m [simp]` reading their `[simp]` as
-    // the META BLOCK: the `dot_application` branch dies at the missing `(`.
+    // (the `[` opening the next rule entry's `collection_literal`, in a `rule { … }`
+    // block) or the opening of a `dot_application` bracket on a dot CALLEE
+    // (`?x.m[T = Int](y)`). Nothing local decides it — the separator is the `(`
+    // after the `]`, which is two reductions away — so GLR explores both and keeps
+    // whichever continuation parses. Measured still required after
+    // WI-20260915-G9EA9 took the `meta_block` out of this competition (`@[`).
     [$._non_name_atom_term, $.dot_application],
     // `!` in goal position is either a standalone `cut` goal or the leading
     // operator of a `prefix_term` (`! <atom>`, prefix negation) via `_prefix_op`.
     // They share the `!` token; GLR explores both and keeps whichever
     // continuation parses (WI-568).
     [$.cut, $._prefix_op],
-    // [ after rule head could be meta_block or start of next rule_entry with collection_literal
-    [$.rule_entry],
     // WI-1131: inside a tuple literal, a `,` after the leading element can either
     // close a ONE-element form (`(a: 1,)`, `(1,)`) or continue into the 2+ form
     // (`(a: 1, b: 2)`) — shift the `,` as part of a 1-element production, or reduce
@@ -559,17 +557,13 @@ module.exports = grammar({
       $.requires_clause,
       $.ensures_clause,
       $.effects_clause,
-      $.meta_clause,
     ),
 
-    // WI-087: operation attributes / metadata. A keyword-introduced clause
-    // carrying the existing `meta_block` (`[Marker, Key: value, ...]`). The
-    // `meta` keyword is the disambiguating vehicle: a bare `[...]` placed right
-    // after the return type is otherwise grabbed as return-type application args
-    // (`-> Vec3[...]`), which fails for clauseless ops (pure getter bindings —
-    // exactly the ones that carry codegen markers). As a clause it composes with
-    // effects / requires / ensures and works with no other clause present.
-    meta_clause: $ => seq('meta', $.meta_block),
+    // WI-20260915-G9EA9 retired WI-087's `meta [..]` operation clause. The keyword
+    // existed only because a bare `[...]` after the return type was grabbed as
+    // return-type application args (`-> Vec3[...]`); the `@[` token that opens every
+    // `meta_block` cannot continue a type, so an operation's block trails the
+    // declaration like every other declaration's.
 
     // =========================================================
     // Const (proposal 039 — term-level named constants, WI-084)
@@ -999,7 +993,7 @@ module.exports = grammar({
     //
     // LEADING, and a keyword rather than an annotation, for two measured reasons.
     // A trailing `[default]` puts a bracket list immediately after a BRACKETED
-    // type, which is a GLR tie against the spec's own type arguments; and `[simp]`
+    // type, which is a GLR tie against the spec's own type arguments; and `@[simp]`
     // — the annotation precedent — follows a rule BODY, never a type.
     //
     // THE MODIFIER SET IS `default` ALONE, and `coherent` is deliberately NOT in
@@ -1104,15 +1098,12 @@ module.exports = grammar({
       '{', repeat($.rule_entry), '}',
     ),
 
-    // WI-893: the same comment-tips-the-tie hazard as `requires_clause` above, in
-    // the `[$.rule_entry]` production pair — entries are juxtaposed, so a `[` after
-    // an entry's heads reads either as this entry's `meta_block` or as the NEXT
-    // entry's `collection_literal` head. Untreated, a preceding comment picked the
-    // second: the `[simp]` became a junk rule and the equation went INERT with no
-    // diagnostic (WI-881 — `[simp]` is the enablement).
-    // The bias is EXACT, not just deterministic: a bare-literal conclusion is
-    // refused outright (`convert_rule_heads`, spec §"A head is an atom"), so the
-    // reading it discards is one nothing may write.
+    // WI-893 needed a declared conflict and `prec.dynamic` here: entries are
+    // juxtaposed, so a bare `[` after an entry's heads read either as this entry's
+    // block or as the NEXT entry's `collection_literal` head, and a preceding comment
+    // once tipped it into a junk rule with the `@[simp]` equation INERT. Since
+    // WI-20260915-G9EA9 a block opens with the `@[` token, which no term begins with,
+    // so the two readings no longer share a first token.
     rule_entry: $ => seq(
       optional(seq(field('label', $.name), ':')),
       choice(
@@ -1120,7 +1111,7 @@ module.exports = grammar({
         seq(field('body', $.rule_body), '-:', field('heads', $.rule_heads)),
         field('heads', $.rule_heads),
       ),
-      optional(prec.dynamic(1, $.meta_block)),
+      optional($.meta_block),
     ),
 
     // =========================================================
@@ -1131,8 +1122,14 @@ module.exports = grammar({
     // Metadata
     // =========================================================
 
+    // WI-20260915-G9EA9: `@[` is ONE token. A bare `[` competed with type arguments
+    // (`sort Ids = List [M]` loaded as `List[M]`), with the next rule entry's
+    // collection-literal head (WI-893) and with a dot-callee bracket (BAD3V), and
+    // each competition lost a block silently. No effect form after an arrow's `@`
+    // begins with `[`, so `@[` never continues an effect; `@ [` with a space is a
+    // syntax error rather than a second spelling.
     meta_block: $ => seq(
-      '[',
+      '@[',
       commaSep1($.meta_entry),
       ']',
     ),
@@ -1142,7 +1139,7 @@ module.exports = grammar({
     // and the WI-139 rule-attribute flags simp/unfold/hint) have
     // kernel semantics; additional keys are project-defined.
     //
-    // Flag form: `[simp]` is shorthand for `[simp: true]` — the
+    // Flag form: `@[simp]` is shorthand for `@[simp: true]` — the
     // converter sees a missing value and defaults to Term::Bottom,
     // and `meta_has_flag` only checks key presence regardless of
     // value, so the two forms are interchangeable for predicate
@@ -1359,11 +1356,11 @@ module.exports = grammar({
     ),
 
     // WI-1129 (proposal 056 §2.3) — the RULE-HEAD REST PATTERN: `rule fix(?r,
-    // ...?args) <=> fix_of(?r, ?args) [simp]`. The variadic-capture peer of the
+    // ...?args) <=> fix_of(?r, ?args) @[simp]`. The variadic-capture peer of the
     // `param` rule's `...args: R` marker, on the OTHER dispatch face — where the
     // operation face hands the callee a record VALUE (whose component types erase
     // the arguments, kernel spec §4.5 "no singleton types"), this binds the
-    // leftover named arguments as one record OCCURRENCE a `[simp]` macro reads as
+    // leftover named arguments as one record OCCURRENCE a `@[simp]` macro reads as
     // SYNTAX, labels and all.
     //
     // The SAME fused `token('...')` the `param` rule carries, so it diverges at the
@@ -1817,16 +1814,16 @@ module.exports = grammar({
     // position) into one node; the converter classifies type-vs-term by
     // position, the loader by SymbolKind. The base is the dotted `$.name` so
     // fully-qualified parameterized types parse (`scala.prelude.List[Int]`).
-    // prec(1): when a name is followed by `[`, prefer shifting into the
-    // application bracket over reducing the name to `simple_type` and treating
-    // `[…]` as a trailing `meta_block` (abstract-sort / operation-return have an
-    // optional meta_block); `name`'s prec.left otherwise wins that shift-reduce.
-    application: $ => prec(1, seq(
+    // No precedence: it carried a prec(1) to shift into this bracket rather than
+    // reduce the name and read `[…]` as a trailing `meta_block`. Since
+    // WI-20260915-G9EA9 a block opens with `@[`, and generation reports no conflict
+    // without it.
+    application: $ => seq(
       field('name', choice($.name, $.absolute_name)),
       '[',
       commaSep1($.sort_binding),
       ']',
-    )),
+    ),
 
     // WI-20260829-BAD3V — the SAME bracket on a DOT callee, `recv.m[T = X](args)`.
     // `application`'s base is a `name`, so before this the bracket was admitted
@@ -1845,39 +1842,23 @@ module.exports = grammar({
     //     had to be declared before `tree-sitter generate` succeeded, two with nothing
     //     to do with dots (`_spec_instantiation` at `requires (?x, …)`, `_type_literal`
     //     at `requires (k: "s", …)`).
-    //   * With those added, `?x.m [simp]` reads as
-    //     `application(field_access(?x, m), sort_binding(simple_type(simp)))` — the
-    //     attribute EATEN as a positional binding and the equation INERT, which is the
-    //     WI-881 trap that already costs a nullary `[simp]` head its parentheses
-    //     (`tau()`, not `tau`), extended to every dot-headed rule.
-    // Here the bracket must be followed by the call's `(`, which is what kills the meta
-    // reading: `?x.m [simp]` has no `(`, so only the `meta_block` branch survives and
-    // that spelling is UNCHANGED. Corpus rows "Dot rule head keeps its meta block" and
-    // "Dot fact head keeps its meta block".
-    //
-    // "HAS NO `(`" IS ABOUT THE WHOLE FILE, NOT THE LINE, and the WI-893 shape is where
-    // that bites: rule entries are JUXTAPOSED, so a FOLLOWING entry can supply the `(`
-    // across a newline. Both readings are then live and the tie is broken by the bracket
-    // CONTENT, which is why two corpus rows pin it and not one (found by /code-review —
-    // the first cut pinned only `[simp]`, which is one side of the split):
-    //   * `?x.m [simp]` then `(a, b)` — "Juxtaposed rule entries keep the meta-block
-    //     bias": THREE entries, the `[simp]` still this entry's meta block.
-    //   * `?x.m [T = Int64]` then `(a, b)` — "…a NON-meta bracket takes the following
-    //     call": ONE entry, `(a, b)` becoming the call's arguments.
-    // The second is a CHANGE (the old grammar read three entries there), and it is
-    // admitted rather than fought: both readings refuse the program — the old one at
-    // `convert_rule_heads`, since a bare-literal conclusion is not an atom, and the new
-    // one with this ticket's located dot refusal — so nothing that used to load stops
-    // loading, and the surviving diagnostic is the better of the two. `[T = Int64]` is
-    // not a `meta_entry` (that takes `:`, not `=`), so no attribute can be eaten this
-    // way; only a bracket that could be BOTH is at stake, and that is the `[simp]` row.
+    //   * With those added, `?x.m [simp]` — the block's spelling at the time — read as
+    //     `application(field_access(?x, m), sort_binding(simple_type(simp)))`: the
+    //     attribute EATEN as a positional binding and the equation INERT.
+    // Here the bracket must be followed by the call's `(`. That requirement is what kept
+    // the block out while a block was a bare `[…]`; since WI-20260915-G9EA9 it opens with
+    // `@[`, which this bracket cannot begin, so `?x.m @[simp]` is a block on every
+    // continuation. Corpus rows "Dot rule head keeps its meta block" and "Dot fact head
+    // keeps its meta block". What the `(` still decides is the JUXTAPOSED case, where a
+    // FOLLOWING rule entry supplies it across a newline: `?x.m [T = Int64]` then `(a, b)`
+    // is ONE entry, `(a, b)` becoming the call's arguments, and both that reading and the
+    // three-entry one refuse the program — so nothing that loads depends on the choice.
     //
     // NOTE the corpus alone cannot separate the two DESIGNS: it stayed 214/214 green
     // under the widened one. `wi_bad3v_dot_type_arg_bracket_test` is what fails.
     //
     // NOT admitted OUTSIDE a call (`?x.field[T = Int]` stays a syntax error): a bare
-    // bracket on a field projection has no reading, and admitting it is what would
-    // reopen the `meta_block` competition this production is shaped to avoid.
+    // bracket on a field projection has no reading.
     //
     // The CONVERTER, not the grammar, decides what the bracket means — see
     // `push_fn_term`: on a QUALIFIED callee (`Map[K = String].empty[T = Int]()`) it is

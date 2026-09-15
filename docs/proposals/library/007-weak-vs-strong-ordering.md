@@ -71,7 +71,7 @@ Ord[T]         requires WeakOrd[T]           -- + the converse:
 
 `eq(x, y) → compare(x, y) = 0` says **`compare` is well-defined on `Eq`-classes**: the kernel of `compare` is a union of `Eq`-classes, never a splitting of one. That is exactly what keeps a sorted structure well-formed — no `Eq`-class can land in two positions — and it is the weakest law that does. Every comparator satisfies it, `ByLength` included.
 
-It is written as a **`constraint`**, not an equation, and the reason is soundness rather than style: an `<=>` is what the equational / `[simp]` / proof layers *rewrite* with, and rewriting `eq(a, b)` to `eq(compare(a, b), 0)` is exactly the unsound step at a coarse kernel. `Ord` — whose whole content is that the two coincide — carries the biconditional `compare_eq`, where the rewrite **is** valid.
+It is written as a **`constraint`**, not an equation, and the reason is soundness rather than style: an `<=>` is what the equational / `@[simp]` / proof layers *rewrite* with, and rewriting `eq(a, b)` to `eq(compare(a, b), 0)` is exactly the unsound step at a coarse kernel. `Ord` — whose whole content is that the two coincide — carries the biconditional `compare_eq`, where the rewrite **is** valid.
 
 ### Why `Eq` is required, never provided
 

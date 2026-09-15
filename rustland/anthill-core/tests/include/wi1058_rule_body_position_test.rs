@@ -384,7 +384,7 @@ fn a_type_application_in_a_rule_body_is_not_a_call() {
 /// INCLUDED — `rule r(?x, ?r) :- ?r = ite(?x)` loads clean against a three-argument
 /// functor"*, handing the gap to this ticket by name.
 ///
-/// A `[simp]` rewrite fires by MATCHING a stored LHS, so a redex at an arity no LHS has
+/// A `@[simp]` rewrite fires by MATCHING a stored LHS, so a redex at an arity no LHS has
 /// can never fire whatever the tag says — the same proof-of-impossibility the subgoal
 /// check makes, one clause source over, and `unmatchable_shape_error` is literally the
 /// same function.

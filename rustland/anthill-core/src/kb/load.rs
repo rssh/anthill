@@ -363,7 +363,7 @@ pub enum LoadError {
         /// [`super::typing::TypeError::BareMemberCall`].
         dot_dispatchable: bool,
     },
-    /// WI-898: a citation of an EQUATION-INTRODUCED functor that the `[simp]`
+    /// WI-898: a citation of an EQUATION-INTRODUCED functor that the `@[simp]`
     /// rewriter left standing — see [`super::typing::TypeError::UnreducedEquationFunctor`],
     /// whose `census` this carries flattened. Its OWN variant rather than a
     /// `TypeMismatch` for the same reason [`Self::BareMemberCall`] is: nothing here
@@ -390,14 +390,14 @@ pub enum LoadError {
     /// `===` (WI-1090) was load-blocking because every later site was SILENT.
     /// MEASURED before the refusal: the rule loaded, its subject was stamped
     /// `EquationFunctor` with zero clauses under it, `simp_equation_rids` could never
-    /// reach it so a `[simp]` tag did nothing, its clause went to the kernel builtin's
+    /// reach it so a `@[simp]` tag did nothing, its clause went to the kernel builtin's
     /// bucket where the builtin answers first (0 solutions with the law and without
     /// it, on a goal the law makes true), and the only diagnostic the author ever saw
     /// was at a CITATION, blaming a missing equation that was written three lines up.
     ///
     /// `=` (WI-888) is the opposite case: it WORKED. Measured across all four
     /// (connective × attribute) combinations on one shape (WI-884), the answer tracks
-    /// the `[simp]` attribute alone — `=` fires and an untagged `<=>` is dead. So this
+    /// the `@[simp]` attribute alone — `=` fires and an untagged `<=>` is dead. So this
     /// refusal is not repairing a silence; it is finishing proposal 049's migration
     /// (build step 6, WI-526), whose first pass relabelled 40 heads and left 44 in the
     /// stdlib, and retiring the affordance the KB owner carried "while the relabel is
@@ -539,7 +539,7 @@ pub enum LoadError {
         span: Span,
     },
     /// WI-20260902-8K4RB: the subject of a bodyless EQUATION written in a rule-body
-    /// GOAL position — `rule reader(1) :- tauX` beside `rule tauX <=> 7 [simp]`.
+    /// GOAL position — `rule reader(1) :- tauX` beside `rule tauX <=> 7 @[simp]`.
     ///
     /// The third member of this goal-position family, beside `ConstantInGoalPosition`
     /// above and the `NonBoolOpInGoalPosition` the typer routes through `TypeMismatch`,
@@ -1284,7 +1284,7 @@ pub enum LoadError {
     /// WI-582 / WI-903 — a typed rule pattern (`?x: T`) written on a rule shape
     /// whose firing site never consults it. The bound has exactly ONE enforcer:
     /// the resolver's `apply_eq_rules`, via [`super::typing::typed_pattern_bounds_hold`],
-    /// over a `[simp]`/`[unfold]` directional rewrite. Carried on any other shape
+    /// over a `@[simp]`/`@[unfold]` directional rewrite. Carried on any other shape
     /// the annotation would load and do nothing — so it is refused here rather
     /// than installed (loud-over-silent). See [`TypedPatternRefusal`] for the two
     /// shapes and why each cannot enforce it.
@@ -1421,7 +1421,7 @@ pub enum LoadError {
     /// ```text
     ///   namespace qlib
     ///     rule f(2)                       -- 061: a body-less rule DECLARES a predicate
-    ///     sort Rec { entity r(n: Int64)   rule f() <=> 1 [simp] }
+    ///     sort Rec { entity r(n: Int64)   rule f() <=> 1 @[simp] }
     ///   end
     ///     -> qlib.Rec.f ABSENT.  `Rec.f()` = "unknown functor"; `f()` under
     ///        `import qlib.*` = Int(1) -- the sort's operation MOVED to the namespace.
@@ -1433,7 +1433,7 @@ pub enum LoadError {
     ///
     /// REFUSED RATHER THAN SPLIT, and the language's own answer for the SAME PAIR is why.
     /// Where neither side is minted before phase 2 the two are already refused: measured,
-    /// `zi { rule f(true) <=> 7 [simp] }` beside `zj { import zi.*  rule f(1) :- true }`
+    /// `zi { rule f(true) <=> 7 @[simp] }` beside `zj { import zi.*  rule f(1) :- true }`
     /// is [`NameIntroducedAtTwoVisibleScopes`], because both heads introduce and phase 2
     /// reads a pre-mint table. A 061 DECLARATION is minted in pass 1, so it is the one
     /// shape that reaches phase 2 already denoting — a HOLE in that refusal rather than a
@@ -1442,7 +1442,7 @@ pub enum LoadError {
     /// shadowing hazard that refusal exists for.
     ///
     /// SCOPED TO ANOTHER SCOPE'S PREDICATE, on 845G7's own principle: the shadow itself
-    /// is not the defect, INVENTING it is. `sort Rec { rule f(?y)  rule f() <=> 1 [simp] }`
+    /// is not the defect, INVENTING it is. `sort Rec { rule f(?y)  rule f() <=> 1 @[simp] }`
     /// is one author writing both in one place, the name carries both roles, and it
     /// WORKS — driven, `Rec.f(false)` = Int(2). Nothing was captured, so nothing is
     /// refused.
@@ -1584,7 +1584,7 @@ pub enum LoadError {
         span: Span,
     },
     /// PROPOSAL 061 — a DECLARATION stores no clause, so a citation label, a
-    /// description block, a `[…]` tag, a `[t]` type-variable introducer or a typed
+    /// description block, a `@[…]` tag, a `[t]` type-variable introducer or a typed
     /// column `?x: T` on it has nothing to attach to. Refused rather than dropped: a
     /// label would define a `Rule` symbol that `using` finds nothing under, and each of
     /// the others has exactly one reader that a body-less rule never reaches. The full
@@ -1644,7 +1644,7 @@ pub enum LoadError {
         span: Span,
     },
     /// WI-757 (the WI-722 macro contract's diagnostic channel): a compile-time
-    /// MACRO — the head of a `[simp]` lowering's RHS, e.g. `Relation.guarded_of`
+    /// MACRO — the head of a `@[simp]` lowering's RHS, e.g. `Relation.guarded_of`
     /// behind `where` — read the occurrences it was handed and REJECTED them,
     /// saying why. Reported at the sub-expression the macro named.
     ///
@@ -2120,13 +2120,13 @@ pub enum TypedPatternRefusal {
     /// (WI-20260820-8RJK8). WI-903 added the guarded case because
     /// `f(?x: T) = g(?x) :- p(?x)` had a body, so `is_equation` rejected it and no
     /// site could read the bound — MEASURED then. `is_directional_equation` now
-    /// answers `true` for a `[simp]`/`[unfold]`-tagged guarded equation, and
+    /// answers `true` for a `@[simp]`/`@[unfold]`-tagged guarded equation, and
     /// `fire_simp_equation` runs `typed_pattern_bounds_hold` on it like any other,
     /// so the bound HAS its reader and the refusal lifts by itself. An UNTAGGED
     /// guarded equation is still refused, for the reason it always was: nothing
-    /// fires it, `[simp]` being the enablement (WI-881).
+    /// fires it, `@[simp]` being the enablement (WI-881).
     NotARewrite,
-    /// WI-903: an equational `[simp]` rewrite whose LHS is the reflect
+    /// WI-903: an equational `@[simp]` rewrite whose LHS is the reflect
     /// `Expr.dot_apply` ENTITY — a WI-279 INC2 DOT rule, which clears
     /// [`Self::NotARewrite`]'s test and still cannot enforce the bound. It is
     /// fired by `typing::try_fire_dot_rule`, against a surface `Expr::DotApply`
@@ -2137,7 +2137,7 @@ pub enum TypedPatternRefusal {
     /// and fired.
     ///
     /// Keyed on `simp_rewrite::is_typer_fired_dot_rule` — the firing site's OWN
-    /// conditions — so it stays exactly as wide as that site: an `[unfold]` dot
+    /// conditions — so it stays exactly as wide as that site: an `@[unfold]` dot
     /// rule, fired by the RESOLVER (which does enforce the bound), keeps its
     /// annotation.
     DotRule,
@@ -2158,19 +2158,19 @@ fn typed_pattern_refusal_detail(rule: Option<&str>, reason: TypedPatternRefusal)
         TypedPatternRefusal::NotARewrite => format!(
             "WI-582: a typed rule pattern (`?x: T`) is enforced only where the \
              resolver fires a directional rewrite — an EQUATION tagged \
-             `[simp]`/`[unfold]` (§8.3). {rule} is not one, so it would silently \
+             `@[simp]`/`@[unfold]` (§8.3). {rule} is not one, so it would silently \
              ignore the bound. Tag it or drop the annotation. (A GUARD is not what \
              disqualifies a rule: since WI-20260820-8RJK8 a tagged \
              `f(?x: T) = g(?x) :- p(?x)` is a conditional rewrite and enforces the \
              bound at the match. What disqualifies this one is that nothing fires \
-             it — `[simp]` is the enablement, WI-881.)"
+             it — `@[simp]` is the enablement, WI-881.)"
         ),
         TypedPatternRefusal::DotRule => format!(
             "WI-903: {rule} is a DOT rule (`dot_apply(?receiver, member, …)`), \
              fired by the typer's sort-scoped dot path. A typed rule pattern \
              (`?x: T`) is enforced only by the RESOLVER, which never sees a \
              `dot_apply` head, so the bound would be silently ignored. Drop the \
-             annotation, or write the law as an operation-headed `[simp]` equation"
+             annotation, or write the law as an operation-headed `@[simp]` equation"
         ),
     }
 }
@@ -4799,7 +4799,7 @@ pub fn scan_definitions_with_sources(
     // ONE SUBJECT IS ONE MESSAGE, however many equations are written about it — the rule
     // is about the NAME, and every clause about it has the same cause and the same
     // repair. Reporting per clause printed one fault twice for
-    // `sort Rec { rule f(true) <=> 1 [simp]  rule f(false) <=> 2 [simp] }` (found by
+    // `sort Rec { rule f(true) <=> 1 @[simp]  rule f(false) <=> 2 @[simp] }` (found by
     // `/code-review`), which is what this pass's sibling refusal already avoids
     // ("ONE MISSING DECLARATION IS ONE MESSAGE"). Reported at the FIRST clause, by file
     // and offset, so the group's line does not depend on the walk order.
@@ -6581,7 +6581,7 @@ fn head_subject_name<'a>(
     // clause census, which [`RuleHeadCollectPass::collect`] already filters on
     // `Predicate` — an equation's clauses index under the connective (WI-898). What IS
     // driven is the consequence: `a_dotted_equation_subject_still_fires_nothing` shows a
-    // dotted `[simp]` subject matching no redex, so the equation reading did not widen
+    // dotted `@[simp]` subject matching no redex, so the equation reading did not widen
     // when this walk learned to read a chain.
     if let Some(name) = dotted_citation_name(parse_sym, parse_terms, subject) {
         return Some((Cow::Owned(name), introduced_by));
@@ -6608,7 +6608,7 @@ fn head_subject_name<'a>(
         //
         // BOTH PATHS SINCE WI-20260902-CZJ2N, and the guard that stood here is what it
         // deleted. P85Z7 admitted only `RuleIntroduction::Predicate`, on the reading
-        // that §5.3 makes a `[simp]` head an APPLICATION which a bare name is not — so
+        // that §5.3 makes a `@[simp]` head an APPLICATION which a bare name is not — so
         // `rule tau <=> …` matched no redex, and minting `tau` would have stamped it
         // `EquationFunctor`: a name that RESOLVES and owns no clause, which SUPPRESSES
         // WI-1034's body-goal refusal and leaves a citation of it silently answering
@@ -6744,7 +6744,7 @@ fn duplicate_type_message(
 /// IT BRANCHES ON THE CONNECTIVE, because the two refusals replace different beliefs
 /// and a shared sentence would have to lie to one of them.
 ///
-/// * `===` — the three silences it stands in for (a `[simp]` that cannot fire, a
+/// * `===` — the three silences it stands in for (a `@[simp]` that cannot fire, a
 ///   subject stamped as an equation functor owning no equations, and a clause filed
 ///   behind a resolver builtin) are all invisible from the source, which is why this
 ///   fires at the rule rather than waiting for a citation to mis-report it. The author
@@ -6806,7 +6806,7 @@ fn non_defining_connective_head_message(connective: &str, subject: Option<&str>)
     format!(
         "`{op}` is the structural identity TEST, not a defining connective, so {what}: \
          `{op}` is a resolver builtin that answers every goal itself, so no clause of it \
-         is ever consulted, and a `[simp]` tag on it never fires (the normalizer reads \
+         is ever consulted, and a `@[simp]` tag on it never fires (the normalizer reads \
          only the `<=>` equations). {remedy}, or give the rule a BODY GOAL to \
          state it as an ordinary law about `{op}` — a folded `Spec[T]` bound is not one, \
          so a rule whose only goal was that guard is still a definition here."
@@ -6857,7 +6857,7 @@ fn duplicate_operation_message(op: &str, sites: &[String], facts: usize) -> Stri
 /// and naming it here is what keeps this refusal from reading as "clauses are wrong".
 ///
 /// AND NAMES THE EXEMPTION, since the neighbouring spelling is common: an equation
-/// (`<=>` / `=` with a `[simp]` tag or without) is a LAW about the operation and
+/// (`<=>` / `=` with a `@[simp]` tag or without) is a LAW about the operation and
 /// loads under the connective's functor, not the operation's, so it never reaches
 /// this check. Measured — `List.nth`, `insert`, `empty`, `split`, `Relation.where`
 /// and three `Stream` ops all carry equations beside a body, and the census of this
@@ -6881,7 +6881,7 @@ fn body_and_clauses_message(op: &str, decl_site: &str, clause_sites: &[String]) 
          view serve the relational goal (WI-938), or drop the `=` body and let the \
          clauses BE the definition — a body-less operation defined by its clauses is \
          legal and is how a predicate is written relationally \
-         (`anthill.prelude.Set.contains`). An equation (`<=>`, or `=` with a `[simp]` \
+         (`anthill.prelude.Set.contains`). An equation (`<=>`, or `=` with a `@[simp]` \
          tag) is a LAW about this operation rather than a clause of it, and is not \
          what this refusal is about.",
         clause_sites.len(),
@@ -8518,8 +8518,8 @@ impl SecondaryEntryPass<'_> {
     /// does not consult `OperationMapping` facts or builtin registries, because those
     /// are backing for one declaration and do not decide who owns its name (059).
     ///
-    /// A `[simp]` equation does not satisfy this: an equation is an `Item::Rule`,
-    /// refused here outright, and `[simp]` is inlining rather than backing anyway
+    /// A `@[simp]` equation does not satisfy this: an equation is an `Item::Rule`,
+    /// refused here outright, and `@[simp]` is inlining rather than backing anyway
     /// (WI-818/881/885).
     ///
     /// FRESHNESS is NOT checked here. R4 clause 1 — one operation declaration per
@@ -8806,7 +8806,7 @@ fn predicate_spans_entries_reason(name: &str, elsewhere: &str) -> String {
 /// QUALIFIED head (which references rather than introduces), or several heads at once.
 ///
 /// Excluded by condition (1) rather than by a clause of their own, which 059 calls the
-/// sign the condition is the right one — and it is what keeps the `[simp]`-fires-in-
+/// sign the condition is the right one — and it is what keeps the `@[simp]`-fires-in-
 /// the-typer hazard out: a desugared conclusion introduces nothing, so it can only ever
 /// be a clause of a predicate someone else owns.
 const HEAD_INTRODUCES_NOTHING_REASON: &str = "this head introduces no name at all — a \
@@ -9811,7 +9811,7 @@ fn head_name_collisions<'f>(
     // 061 puts equations outside the DECLARATION rule (their clauses index under the
     // connective, so the subject owns none), and an earlier cut of this function took
     // that to mean they are outside this one too. Measured, that was a silent behaviour
-    // change: `zeq { rule f(true) <=> 1 [simp]; sort Rec { rule f(false) <=> 2 [simp] } }`
+    // change: `zeq { rule f(true) <=> 1 @[simp]; sort Rec { rule f(false) <=> 2 @[simp] } }`
     // minted no `zeq.Rec.f` before and does now, splitting one name into two symbols with
     // nothing said — the exact hazard this refusal exists for, permitted for half the
     // head shapes. Found by `/code-review`. Both remedies are driven and both load for an
@@ -10749,7 +10749,7 @@ const KERNEL_FUNCTORS: &[(&str, &str)] = &[("SortAlias", "SortAlias"), ("meta", 
 /// paper over. WI-969 deleted the fallback that papered over it:
 /// [`KnowledgeBase::eq_functor`] / [`KnowledgeBase::unify_functor`] used to mint a
 /// bare `intern("eq")` / `intern("unify")` — a SECOND spelling of the canonical
-/// equation head that no loaded KB can produce, whose failure mode was a `[simp]`
+/// equation head that no loaded KB can produce, whose failure mode was a `@[simp]`
 /// rule that silently never matched (WI-283). They now panic naming this function.
 /// The 26 unit tests that had been built on that fallback call `register_prelude`
 /// and the real accessors, so they drive the head production actually uses;
@@ -12190,14 +12190,14 @@ fn undefined_contract_goal_message(functor: &str, op: &str, clause: &str) -> Str
 /// twin of [`undefined_rule_body_goal_message`] (WI-895's remaining half). Same head test
 /// ([`KnowledgeBase::undefined_functor`]), different CONSEQUENCE, so a different sentence:
 /// a data slot is not proved, so nothing "can never match" about it as a goal — what it
-/// can never do is unify with a declared constructor's term, or fire as a `[simp]` redex.
+/// can never do is unify with a declared constructor's term, or fire as a `@[simp]` redex.
 /// That second clause is the measured harm: `holds894(ite(true, 10, 20))` with `ite`
 /// un-imported interns bare and is silently inert (WI-894).
 pub(crate) fn undefined_rule_body_term_message(functor: &str) -> String {
     format!(
         "rule-body term `{functor}` names nothing: no rule, fact, operation, entity, \
          const or builtin is declared under that name, so nothing can ever unify with it \
-         and no `[simp]` rule can ever rewrite it. Fix the spelling, or import the \
+         and no `@[simp]` rule can ever rewrite it. Fix the spelling, or import the \
          namespace that declares `{functor}`."
     )
 }
@@ -12249,14 +12249,14 @@ pub(crate) fn constant_in_goal_position_message(literal: &str) -> String {
 ///
 /// NOT [`super::typing::unreduced_equation_functor_message`], and the difference is the
 /// REPAIR rather than the subject. That one is a VALUE-position citation the rewriter
-/// left standing, so its census branches send the author to tag the equation `[simp]` or
+/// left standing, so its census branches send the author to tag the equation `@[simp]` or
 /// to inspect the left-hand patterns; here the equation may be tagged AND firing and the
-/// goal still cannot answer. On the ticket's own `[simp]`-tagged fixture that census
-/// reaches "none of its 1 `[simp]` clause(s) fired here" — a sentence that sends the
+/// goal still cannot answer. On the ticket's own `@[simp]`-tagged fixture that census
+/// reaches "none of its 1 `@[simp]` clause(s) fired here" — a sentence that sends the
 /// author to inspect a clause that is fine.
 ///
 /// "A GOAL IS MATCHED RATHER THAN REWRITTEN", not "a rule body is not a rewrite site",
-/// and the difference is measured: `[simp]` DOES fire inside a rule body, in a VALUE
+/// and the difference is measured: `@[simp]` DOES fire inside a rule body, in a VALUE
 /// slot — `rule r(?v) :- ?v = tauX()` stores `eq(?_, 7)`, the law already inlined. It is
 /// the GOAL position that admits no rewrite, and the first wording would have told the
 /// author something false about the line above.
@@ -12284,7 +12284,7 @@ pub(crate) fn equation_subject_in_goal_position_message(functor: &str) -> String
         "`{functor}` is defined by EQUATIONS and is written here as a GOAL. An equation's \
          clauses are indexed under the `eq`/`unify` CONNECTIVE, never under its subject \
          (kernel-language.md §5.3), so `{functor}` owns no clause and this goal can NEVER \
-         match — however its equations are written or tagged: `[simp]` rewrites a VALUE, \
+         match — however its equations are written or tagged: `@[simp]` rewrites a VALUE, \
          and a goal is MATCHED rather than rewritten, so tagging cannot make this \
          position answer. If the VALUE is wanted, cite `{functor}` from an OPERATION \
          body and WRITE THE PARENTHESES (`{functor}()` at arity 0), where the equation \
@@ -12383,7 +12383,7 @@ fn check_rule_body_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
 /// (WI-20260902-7XFYQ). The whole goal-READING family — WI-20260902-8K4RB's equation
 /// subject, `ConstantInGoalPosition`, `NonBoolOpInGoalPosition` — is raised by
 /// [`super::typing::check_goal_atom_reading`], which walks `rule_body_nodes` and reaches
-/// no contract clause. MEASURED: `requires tauX` beside `rule tauX <=> 7 [simp]` loads
+/// no contract clause. MEASURED: `requires tauX` beside `rule tauX <=> 7 @[simp]` loads
 /// clean here, and only a CALL is refused — with a message that sends the author to the
 /// call site for a precondition no caller can establish. Widening
 /// [`KnowledgeBase::undefined_query_goal_functors`] is NOT the fix: its other caller is
@@ -12517,7 +12517,7 @@ fn check_const_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
 
 /// WI-722 (proposal 043.1 §6) — the macro purity gate. A macro (an
 /// occurrence→occurrence operation, [`super::typing::is_macro`]) is EVALUATED at
-/// compile time by the `[simp]` engine, so its declared effect row must be PURE:
+/// compile time by the `@[simp]` engine, so its declared effect row must be PURE:
 /// at most `Error` (a compile-time diagnostic at the redex), never
 /// `Modify`/`Console`/`Branch`/etc. Checked statically at load — by now every
 /// operation's `OperationInfo` effect row is present. An impure macro would
@@ -12528,7 +12528,7 @@ fn check_const_purity(kb: &KnowledgeBase) -> Vec<LoadError> {
 /// WI-757 — `Error` is admitted here because a macro's raise IS its rejection
 /// channel (043.1 §3.6): the payload becomes the load error's text. That is also
 /// why the WI-702 effectful-rewrite gate (`typing::check_simp_effectful_ops`)
-/// exempts a macro at the `[simp]` RHS head — without the exemption this "at most
+/// exempts a macro at the `@[simp]` RHS head — without the exemption this "at most
 /// `Error`" allowance would be dead, every macro declaring it refused at the rule
 /// that names it. The two gates are complementary and must stay so: this one caps
 /// WHICH label a macro may carry, that one keeps the exemption to the ONE position
@@ -12573,7 +12573,7 @@ fn check_macro_purity(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             errors.push(LoadError::Other {
                 message: format!(
                     "macro `{}` (an occurrence→occurrence operation, evaluated at compile time by \
-                     the [simp] engine) declares an impure effect row — a macro must be pure (at \
+                     the @[simp] engine) declares an impure effect row — a macro must be pure (at \
                      most `Error`), since it runs during type-checking with no effect handlers. \
                      `Error` alone is admitted because a macro's raise is its REJECTION channel: \
                      the payload becomes a load error at the redex. Drop the other effects, or \
@@ -13098,13 +13098,13 @@ fn load_phase_inner(
     // `keep_modify` to re-key a callback parameter's `Modify` to the op's data —
     // so the facts must be asserted before the typer runs. The pass walks body
     // STRUCTURE only (apply/match occurrences + `arg_places`), needs no types,
-    // and runs on the pre-`[simp]` bodies; feeds key on argument positions, which
-    // dispatch / `[simp]` rewrites preserve, so the derived facts are stable
+    // and runs on the pre-`@[simp]` bodies; feeds key on argument positions, which
+    // dispatch / `@[simp]` rewrites preserve, so the derived facts are stable
     // across the rewrite. The facts are auxiliary (own namespace/functor) and do
     // not perturb resolution.
     super::flow_derive::run(kb);
     mark!("flow_derive::run");
-    // WI-283: `[simp]` firing over operation bodies now runs *inside* the
+    // WI-283: `@[simp]` firing over operation bodies now runs *inside* the
     // typer (`typing::build_type`), where it is type-directed — children
     // are typed first, so `min_sort`/`requires` guards have the operand's
     // type in hand. The typer is tree-producing: it writes each rewritten
@@ -13328,7 +13328,7 @@ fn load_phase_inner(
     all_errors.extend(check_const_purity(kb));
     mark!("check_const_purity");
     // WI-722 (043.1 §6): the macro purity gate. An occurrence→occurrence op is
-    // evaluated at compile time by the [simp] engine, so it must have a pure (at
+    // evaluated at compile time by the @[simp] engine, so it must have a pure (at
     // most `Error`) effect row. Runs after all operations load, so every effect
     // row is queryable.
     all_errors.extend(check_macro_purity(kb));
@@ -13336,7 +13336,7 @@ fn load_phase_inner(
     // WI-1034: a rule-body goal whose functor names nothing can never match, so the
     // rule silently answers the empty set. Load-blocking — nothing fails at run time,
     // which is precisely why there is no later site to be loud at. LAST of the
-    // whole-KB checks: it reads the FINAL rule bodies (post-typer, post-`[simp]`,
+    // whole-KB checks: it reads the FINAL rule bodies (post-typer, post-`@[simp]`,
     // post-`req_insertion`) and the FINAL clause set, so a name that any earlier pass
     // was still going to declare or index is already there.
     all_errors.extend(check_rule_body_goals(kb));
@@ -13528,7 +13528,7 @@ fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
 ///
 /// THE CLAIM IS INDISTINGUISHABILITY, NOT IMPOSSIBILITY. Two errors that render
 /// byte-identically at the same location in the same file may well be two separate
-/// findings — one `[simp]` rule fired at two redexes is exactly that, and it is why this
+/// findings — one `@[simp]` rule fired at two redexes is exactly that, and it is why this
 /// exists. Printing the second one tells the reader nothing the first did not: same
 /// sentence, same `path:line:col`, nothing to tell the copies apart. What is REFUSED is
 /// collapsing two errors the reader COULD separate, which is why the key carries file
@@ -14985,7 +14985,7 @@ pub const INTERPRETER_LANG: &str = "rust";
 /// than once: `eval::builtins::register_standard_builtins` is re-run for every
 /// FRESH interpreter, and `resolve.rs`'s `run_in_bridge_interp` builds one per
 /// bridged evaluation — per operand the structural fold cannot collapse, per
-/// instance-fact `eq` dispatch, per `[simp]` macro fire. A fact walk there would
+/// instance-fact `eq` dispatch, per `@[simp]` macro fire. A fact walk there would
 /// cost a
 /// `fact_head_named_args` clone and four linear named-arg scans per mapping, per
 /// crossing.
@@ -16908,7 +16908,7 @@ fn check_undefined_head_arguments(kb: &mut KnowledgeBase) -> Vec<LoadError> {
 ///
 /// WHAT IS DELIBERATELY NOT REFUSED, so the boundary is stated rather than silent:
 ///   * a `rule` whose head names an operation — a law about it (WI-818), or the
-///     `[simp]` defining equation that gives a body-less operation its meaning
+///     `@[simp]` defining equation that gives a body-less operation its meaning
 ///     (WI-881). It is not an `Item::Operation`, so it logs no declaration, and
 ///     that is the design: measured, all 345 stdlib operation symbols carry kind
 ///     `Operation` alone.
@@ -17134,7 +17134,7 @@ fn check_operation_body_and_clauses(kb: &KnowledgeBase) -> Vec<LoadError> {
 /// the failure mode this message exists to avoid.
 ///
 /// THE LEDGER WINS WHERE IT ANSWERS, AND IT ANSWERS ONLY FOR THIS PHASE. A declared
-/// name may also carry clauses — a `[simp]` equation loads under its operation's own
+/// name may also carry clauses — a `@[simp]` equation loads under its operation's own
 /// functor — and within one phase the declaration is the site the author wants, so
 /// the fallback is not reached for it. Across phases it can be: `decl_sites` is
 /// cleared at the top of every `load_phase_inner`, so under `load_all` into a live KB a
@@ -17762,7 +17762,7 @@ pub fn meta_has_flag(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> boo
 }
 
 /// WI-087: the value bound to `key` in a `meta(key: value, ...)` term, when the
-/// key is present with a value. A flag-form key (`[Marker]`, value `Term::Bottom`)
+/// key is present with a value. A flag-form key (`@[Marker]`, value `Term::Bottom`)
 /// returns `Some(Bottom-tid)` — presence is via [`meta_has_flag`]; this is for
 /// valued attributes (`Profile: "cpp20-stl"`, `CppBody: "..."`, `CppName: "..."`).
 pub fn meta_value(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> Option<TermId> {
@@ -18746,7 +18746,7 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
 /// one name, 12 sites; or nothing, in which case it mints its own. A `Goal` is none of
 /// them, and one in the subject's OWN scope is not refused because one author wrote both
 /// there and the name simply carries both roles — driven on
-/// `sort Rec { rule f(?x)  rule f(false) <=> 2 [simp] }`, whose citation answers Int(2).
+/// `sort Rec { rule f(?x)  rule f(false) <=> 2 @[simp] }`, whose citation answers Int(2).
 ///
 /// THE KIND IS ASKED AS A SET, never as `kind_of`. A name that plays BOTH `Goal` and
 /// `Operation` — a rule head merged onto an operation's own symbol, which 061 §"a
@@ -18770,7 +18770,7 @@ fn equation_subject_lands_on_predicate(
     // DIRECTIONAL and the first cut of this guard took it both ways, which left the very
     // defect it closes live in the half where the opting-in did happen — driven by
     // `/code-review`: a namespace-less file writing `import pgz.*` and
-    // `rule f(true) <=> 7 [simp]` loaded clean with `<global>.f` ABSENT, the equation
+    // `rule f(true) <=> 7 @[simp]` loaded clean with `<global>.f` ABSENT, the equation
     // defining `pgz`'s predicate, and a THIRD namespace that never saw that file reading
     // `Int(7)` out of it. A `<global>` head reaches a namespace's name only through an
     // import it wrote, so it opted in exactly as any namespace does.
@@ -18851,7 +18851,7 @@ fn subject_may_not_name(kb: &KnowledgeBase, sym: Symbol) -> bool {
     // `Goal` + `EquationFunctor` could not be constructed. It can: the visibility refusal
     // needs TWO scopes, so two heads minting one name at ONE scope is ordinary
     // auto-declaration — driven, `namespace pza9 { rule f(1) :- true  rule f(true) <=> 7
-    // [simp] }` loads clean carrying both roles, and a later BATCH's equation about it
+    // @[simp] }` loads clean carrying both roles, and a later BATCH's equation about it
     // was then absorbed in silence while the `Goal`-only control was refused. Found by
     // `/code-review`. A name that is a relation is a relation however many equations
     // already live on it; only a BARE subject is a join target, and the filter says
@@ -18863,7 +18863,7 @@ fn subject_may_not_name(kb: &KnowledgeBase, sym: Symbol) -> bool {
     // named `Goal` alone and missed `Rule`, a labelled rule's own name, which reproduces
     // this defect verbatim (driven by `/code-review`:
     // `lc1 { rule f: p(?x) :- q(?x) … }` beside `lc2 { import lc1.*  rule f(true) <=> 7
-    // [simp] }` loaded clean with `lc2.f` ABSENT and `lc2.g()` = `Int(7)`). A rule's
+    // @[simp] }` loaded clean with `lc2.f` ABSENT and `lc2.g()` = `Int(7)`). A rule's
     // operation name is its LABEL else its head functor ([052] §"Naming the relation"),
     // so both spellings name a relation and neither is a thing equations define.
     DECLARABLE_BY_A_RULE
@@ -19742,7 +19742,7 @@ enum RuleTvar {
 ///    harmless. It produces an inert term — WI-1058's stated harm one position over — and
 ///    answering it means deciding whether a law introduces its operands the way `<=>`
 ///    introduces its subject, a question about equations that this ticket did not take.
-///    The test corpus writes placeholder laws (`rule my_def: foo(?a) <=> bar(?a) [simp]`)
+///    The test corpus writes placeholder laws (`rule my_def: foo(?a) <=> bar(?a) @[simp]`)
 ///    where `bar` denoting nothing is the fixture's point.
 ///
 /// THE SUBJECT'S ARGUMENTS ARE JUDGED, because they MATCH: `rule length(cons(head: ?h,
@@ -19805,7 +19805,7 @@ struct Loader<'a> {
     lowering_rule_compound_expr: bool,
     /// WI-20260903-FC2X4 — the occurrence [`Loader::compound_expression_occurrence`] built
     /// for a compound-expression marker parse node, so the two walks that can reach one
-    /// such node (a `[simp]` head's term conversion and its RHS occurrence) delegate to
+    /// such node (a `@[simp]` head's term conversion and its RHS occurrence) delegate to
     /// `convert_expr_term` ONCE. Keyed by PARSE node, like `entity_slot_origin` and for
     /// its reason: the question is about a place, not about a structure.
     compound_expr_occ: HashMap<u32, Rc<NodeOccurrence>>,
@@ -22794,7 +22794,7 @@ impl<'a> Loader<'a> {
                 // top-level wrapper matches the occurrence path (convert_expr's
                 // LoadBuildFrame::DotApply); the children differ on purpose —
                 // here they stay bare terms (convert_term-recursed: Const / Var
-                // / Fn), since term consumers (smt-gen, the [simp] engine) read
+                // / Fn), since term consumers (smt-gen, the @[simp] engine) read
                 // raw terms, whereas convert_expr wraps them as reflect Expr
                 // nodes. Do NOT "unify" the two paths. Without this, the generic
                 // Fn conversion below leaves receiver/name *positional* and
@@ -22815,8 +22815,8 @@ impl<'a> Loader<'a> {
                 // `visit_load`'s marker gate and with `typed_var`'s strip below. In a
                 // TERM position `dot_apply(?receiver, member, ?x)` is a SPELLED KERNEL
                 // FORM, not a converter marker: it is the surface the spec gives for a
-                // sort-scoped dot rule (§"a `[simp]` **dot rule** … `rule dr:
-                // dot_apply(?receiver, member, ?x) = … [simp]`"), and the whole point
+                // sort-scoped dot rule (§"a `@[simp]` **dot rule** … `rule dr:
+                // dot_apply(?receiver, member, ?x) = … @[simp]`"), and the whole point
                 // of writing it is that it re-encodes to the same canonical shape the
                 // desugared `?b.special(7)` does, so the two MATCH. MEASURED by adding
                 // the pairing anyway: 8 tests fell — `wi279_dot_dispatch`,
@@ -24000,8 +24000,8 @@ impl<'a> Loader<'a> {
                     // WI-20260822-AKKWF — THE ONE ARM THAT IS *NOT* PROVENANCE-GATED,
                     // because `dot_apply` is not a converter-only marker: in a term
                     // position it is a SPELLED KERNEL FORM the spec gives the author,
-                    // the surface of a sort-scoped dot rule (§"a `[simp]` **dot rule**
-                    // … `rule dr: dot_apply(?receiver, member, ?x) = … [simp]`"), and
+                    // the surface of a sort-scoped dot rule (§"a `@[simp]` **dot rule**
+                    // … `rule dr: dot_apply(?receiver, member, ?x) = … @[simp]`"), and
                     // the applicative spelling works in an operation BODY as well as in
                     // the rule head. MEASURED both ways with this arm's guard mutated:
                     // under `Some("dot_apply")` the body `dot_apply(?b, special, 7)`
@@ -24218,7 +24218,7 @@ impl<'a> Loader<'a> {
                         // ALONE, which is the half 92VA4's own text got wrong. §5.3 gives
                         // the author that spelling — "a sort-scoped law written against the
                         // method-call form, `rule dr: dot_apply(?receiver, member, ?x) = …
-                        // [simp]`" — so its two arms in this file take a SHAPE guard, not a
+                        // @[simp]`" — so its two arms in this file take a SHAPE guard, not a
                         // mint gate, and their comments record the 8 tests that fall if one
                         // is added. §6.7 gives `field_access` no written form at all: it is
                         // "a call to whatever `field_access` denotes at that scope".
@@ -25428,7 +25428,7 @@ impl<'a> Loader<'a> {
                 // args: List[ApplyArg])` — the same ApplyArg encoding the
                 // apply path uses, so `materialize_from_handle` round-trips it.
                 // WI-443: flag the KB — the typer must reassemble ancestor
-                // trees for the dot rewrite to persist, even with no [simp].
+                // trees for the dot rewrite to persist, even with no @[simp].
                 self.kb.has_dot_applies = true;
                 let total = 1 + pos_count + named_keys.len();
                 let drain_start = results.len() - total;
@@ -25588,7 +25588,7 @@ impl<'a> Loader<'a> {
     /// every other position drops it. MEASURED before this existed, all loading clean
     /// where the `type_args` twin is a loud refusal: `Option[Bogus = Int64].some(1)` (an
     /// ENTITY-constructor callee, which builds an `Expr::Constructor` with no channel to
-    /// put it in), a bracket inside a FACT HEAD, and one inside a `[simp]` rule head.
+    /// put it in), a bracket inside a FACT HEAD, and one inside a `@[simp]` rule head.
     ///
     /// So the gate on the entity arm is a real gate, not the dead one its first comment
     /// claimed — and leaving the bracket UNREAD there is what routes it here, exactly as
@@ -26071,7 +26071,7 @@ impl<'a> Loader<'a> {
     /// `desugar_target`'s "Reading one back").
     ///
     /// MEMOIZED per parse node. Two walks reach one node — [`Self::convert_subject_term`]
-    /// builds a `[simp]` head's term and [`Self::equation_rhs_occurrence`] then asks for
+    /// builds a `@[simp]` head's term and [`Self::equation_rhs_occurrence`] then asks for
     /// the RHS occurrence over the same parse subtree — and `convert_expr_term` is not
     /// free of side effects (it emits inline-description facts and mints occurrences), so
     /// running it twice for one node would double them.
@@ -26321,7 +26321,7 @@ impl<'a> Loader<'a> {
     /// `parse_head` is the head as the infix desugar wrote it (`<=>`/`=` over two
     /// operands) and `kb_head` the term [`Self::convert_subject_term`] just produced from
     /// it. `None` when this head is not a DEFINING equation — a predicate head, a `===`
-    /// comparison, a `⊥` denial — none of which has an RHS a `[simp]` fire can splice.
+    /// comparison, a `⊥` denial — none of which has an RHS a `@[simp]` fire can splice.
     ///
     /// THE CHILD RULE IS [`Self::lowered_child_occurrence`]'s, unchanged and for its
     /// reasons: the RHS is built from its own parse node when the conversion passed it
@@ -26833,7 +26833,7 @@ impl<'a> Loader<'a> {
     /// IN A RULE BODY. `rule r(1) :- flag` builds the same `Expr::Apply { flag }` node
     /// `:- flag()` builds, so the two spellings are ONE occurrence and every consumer
     /// downstream — the WI-580 relational hook, `reduce_op_value`, the typer's
-    /// `check_goal_atom_reading` twin, `[simp]`, eval — sees one shape.
+    /// `check_goal_atom_reading` twin, `@[simp]`, eval — sees one shape.
     ///
     /// WHY THE NODE AND NOT JUST THE TERM. The storage canon
     /// ([`KnowledgeBase::nullary_canon`]) already makes `Ref(flag)` and `Fn{flag}` one
@@ -29983,7 +29983,7 @@ impl<'a> Loader<'a> {
 
         // WI-20260914-DV7DP — the sort's own block, lowered in the sort's OWN scope (as an
         // operation's is in its own), so a key can name what the sort declares:
-        // `sort Box … end [Elem: T]` names `Box.T` (the value is the name, `Ref(Box.T)`).
+        // `sort Box … end @[Elem: T]` names `Box.T` (the value is the name, `Ref(Box.T)`).
         // Filed under `parent_domain`, as the sort's descriptions above are.
         self.record_declaration_block(
             sort_domain,
@@ -30887,7 +30887,7 @@ impl<'a> Loader<'a> {
         // like the `rule` spelling and needs its RHS occurrence for the same reason. The
         // item IS the empty body (the `NonDefiningConnectiveHead` refusal above relies on
         // exactly that), so there is no emptiness test to make here — unlike `load_rule`,
-        // which must ask. MEASURED: `fact tau() <=> 7 [simp]` loads clean today, so the
+        // which must ask. MEASURED: `fact tau() <=> 7 @[simp]` loads clean today, so the
         // spelling is reachable and would otherwise have kept the term path in silence.
         //
         // Built HERE, inside `in_value_position`, as the rule site is and for its reason:
@@ -30909,7 +30909,7 @@ impl<'a> Loader<'a> {
         let rule_id = self.kb.assert_fact(term, fact_kind, domain, meta);
         // WI-20260903-FCZ3N — LAST WRITE WINS ON A DEDUP, DELIBERATELY. `assert_fact`
         // returns an EXISTING `RuleId` when `(term, clause_kind, domain)` all match, so
-        // two byte-identical `fact tau() <=> 7 [simp]` clauses in one domain become ONE
+        // two byte-identical `fact tau() <=> 7 @[simp]` clauses in one domain become ONE
         // clause and this runs twice on it — MEASURED, across two files. The surviving
         // clause then carries the SECOND file's RHS occurrence, and it must: the
         // `set_rule_head_span` three lines down has the same shape and the same
@@ -31619,7 +31619,7 @@ impl<'a> Loader<'a> {
         // LABEL instead; the row still measures the label, and now that is the whole
         // population.
         if r.meta.is_some() {
-            return Some("A `[…]` tag on it has no clause to govern.");
+            return Some("A `@[…]` tag on it has no clause to govern.");
         }
         let RuleHead::Term(head) = r.heads.first()? else {
             return None;
@@ -31734,7 +31734,7 @@ impl<'a> Loader<'a> {
             }
             RuleReading::Declaration => {
                 // A declaration stores no clause, so there is nothing for a citation
-                // handle or a `[…]` tag to attach to. Refused rather than dropped: a
+                // handle or a `@[…]` tag to attach to. Refused rather than dropped: a
                 // label on a declaration defines a `Rule` symbol that `using` then
                 // finds nothing under, and both carriers were silently lost the moment
                 // this arm stopped asserting.
@@ -32085,7 +32085,7 @@ impl<'a> Loader<'a> {
                     // WI-20260910-7NBZX — AN EQUATION'S HEAD IS THE CONNECTIVE, so the
                     // reclassifier declines at it (`Fn{<=>, [lhs, rhs]}` carries no named
                     // args) and the LHS — the thing that actually matches — was never
-                    // reclassified. MEASURED: `rule pk: pick(a: Red, ?b) <=> 7 [simp]`
+                    // reclassified. MEASURED: `rule pk: pick(a: Red, ?b) <=> 7 @[simp]`
                     // loaded clean and was INERT (`pick(red(), 1)` stood) where its sigil
                     // twin rewrote it to `7`, and the UNTAGGED spelling of it escaped the
                     // WI-903 refusal its twin gets. A dead rule and a missing refusal,
@@ -32112,7 +32112,7 @@ impl<'a> Loader<'a> {
                     // left a GUARDED `=` (a firing rewrite since WI-20260820-8RJK8, and
                     // three of them ship in `map.anthill` / `indexed_seq.anthill`) still
                     // dead in the sigil-free spelling: `idr(?a: Red) = wrap(?a) :- g
-                    // [simp]` rewrote and `idr(a: Red) = wrap(a) :- g [simp]` did not.
+                    // @[simp]` rewrote and `idr(a: Red) = wrap(a) :- g @[simp]` did not.
                     // Found by /code-review. `===` is in this family too and needs no
                     // carve-out: it is a TEST that fires in NEITHER spelling, so
                     // reclassifying its LHS puts it on the same path its sigil twin
@@ -32324,7 +32324,7 @@ impl<'a> Loader<'a> {
                 self.kb.record_rule_head_capture(rid, arg_index);
             }
             // WI-20260903-FCZ3N — build and install this head's WRITTEN RHS OCCURRENCE,
-            // so a `[simp]` fire splices the nodes the author wrote (their spans, their
+            // so a `@[simp]` fire splices the nodes the author wrote (their spans, their
             // `dot_chain` provenance) instead of re-deriving them from the head term.
             //
             // EVERY EQUATIONAL HEAD, guarded or not (WI-20260820-8RJK8). This used to
@@ -33076,7 +33076,7 @@ impl<'a> Loader<'a> {
         let body_poisoned = self.expr_body_bottom_recovery;
 
         // WI-087: operation attributes. Lower the operation's `meta_block`
-        // (`[Marker, Key: value, ...]`) into a `meta(key: value, ...)` term —
+        // (`@[Marker, Key: value, ...]`) into a `meta(key: value, ...)` term —
         // the same shape and reader idiom (`meta_has_flag` / `meta_value`) as
         // rule/fact meta. An absent meta_block yields an empty `meta()`, so the
         // OperationInfo `meta` field is always present. Built while still in the
@@ -33346,7 +33346,7 @@ impl<'a> Loader<'a> {
 
         // WI-644: head this operation-definition equation with the CANONICAL equation
         // functor (`eq_functor` = `anthill.prelude.PartialEq.eq` since the ops moved off
-        // `Eq`), so SLD / `[simp]` (`rules_by_functor(eq_functor())`) find it — a bare
+        // `Eq`), so SLD / `@[simp]` (`rules_by_functor(eq_functor())`) find it — a bare
         // `intern("eq")` would head a symbol nothing looks up (WI-283).
         let eq_sym = self.kb.eq_functor();
         let head = self.kb.alloc(Term::Fn {
@@ -35494,8 +35494,8 @@ impl<'a> Loader<'a> {
     /// A WRITTEN block is emitted here, lowered in the current scope. An ABSENT one is
     /// only queued: [`Self::emit_pending_empty_blocks`] emits `meta()` at the end of the
     /// file for a (name, kind) that no declaration gave a block. One parameter reaches
-    /// here twice — `sort Box[T]`'s desugared `T` and a written `sort T = ? [M]` (an HK
-    /// `sort Spec[F[T]]` and a written `sort F … end [M]` alike) — and emitting eagerly
+    /// here twice — `sort Box[T]`'s desugared `T` and a written `sort T = ? @[M]` (an HK
+    /// `sort Spec[F[T]]` and a written `sort F … end @[M]` alike) — and emitting eagerly
     /// answered both `meta()` and `meta(M)` for it.
     fn record_declaration_block(
         &mut self,
@@ -35702,7 +35702,7 @@ impl ScopePass for LoadPass<'_, '_> {
                 // the WI-936 declaration pass drives before entity field types are
                 // registered (a literal key would lower without its typing hint), and its
                 // idempotence guard returns before a second `sort T = ?` of one name —
-                // `sort Box[T]`'s desugared `T` and a written `sort T = ? [M]` — is read.
+                // `sort Box[T]`'s desugared `T` and a written `sort T = ? @[M]` — is read.
                 let sym = self.loader.remap_name(&s.name);
                 self.loader
                     .record_declaration_block(sym, MemberKind::Sort, s.meta.as_ref(), domain);
@@ -36575,7 +36575,7 @@ mod wi888_connective_agreement_tests {
 
     /// BACKWARD, and the row the ticket is about: `===` resolves, is reserved kernel
     /// vocabulary, and is NOT an equation connective on either side. Before WI-1090 the
-    /// parse side said yes and the KB said no — so a `[simp]`-tagged `g(?x) === ?x`
+    /// parse side said yes and the KB said no — so a `@[simp]`-tagged `g(?x) === ?x`
     /// stamped its subject `EquationFunctor` and could never fire.
     #[test]
     fn struct_eq_is_a_test_on_both_sides() {

@@ -401,7 +401,7 @@ fn a_contradicting_partial_receiver_bracket_is_refused() {
 /// FINDINGS 3 AND 4 — ONE MECHANISM. The channel had no "read or reported" sweep, so every
 /// position that does not read it dropped the bracket in silence: an ENTITY-CONSTRUCTOR
 /// callee (which builds an `Expr::Constructor`, with nowhere to put it), a fact head, and a
-/// `[simp]` rule head. The `type_args` twin is a loud refusal in all three. The gate on the
+/// `@[simp]` rule head. The `type_args` twin is a loud refusal in all three. The gate on the
 /// entity arm is therefore a REAL gate, not the dead one its first comment claimed.
 ///
 /// Every form-(3) call in the corpus is on an operation (`Map[…].empty()`), so nothing

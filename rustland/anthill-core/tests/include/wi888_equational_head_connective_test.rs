@@ -4,7 +4,7 @@
 //! `<=>` and **not** `=`, and the loader accepted both: `is_equational_head` classifies
 //! through `is_equality_connective_functor`, which matches the `eq` symbol OR the
 //! `unify` one. Driven across all four (connective × attribute) combinations on one
-//! shape (WI-884), the answer tracked the `[simp]` ATTRIBUTE alone — `=` fired, and
+//! shape (WI-884), the answer tracked the `@[simp]` ATTRIBUTE alone — `=` fired, and
 //! `<=>` without the tag was dead. The cost was not hypothetical: WI-884 read §5.3,
 //! concluded `Bool.ite`'s dead reduction was CAUSED by `bool.anthill` spelling its case
 //! laws with `=`, and wrote that into two files before driving refuted it.
@@ -134,16 +134,16 @@ fn a_bodyless_eq_head_is_refused_and_names_the_substitute() {
     );
 }
 
-/// The `[simp]` tag has NO bearing on the refusal, which is the half a reader of the
+/// The `@[simp]` tag has NO bearing on the refusal, which is the half a reader of the
 /// pre-WI-888 matrix would get backwards: the attribute decided everything there, and
 /// it decides nothing here. `reflect.anthill` and `bool.anthill` both shipped this exact
-/// combination — `[simp]` on an `=` head — which §5.3 said could not exist.
+/// combination — `@[simp]` on an `=` head — which §5.3 said could not exist.
 #[test]
 fn a_tagged_eq_head_is_refused_for_the_same_reason() {
-    let msg = refusal_of(&pick_source("tagged", "=", " [simp]"));
+    let msg = refusal_of(&pick_source("tagged", "=", " @[simp]"));
     assert!(
         msg.contains("`pick(…) <=> …`"),
-        "a `[simp]` tag does not admit the spelling: {msg}",
+        "a `@[simp]` tag does not admit the spelling: {msg}",
     );
 }
 
@@ -192,7 +192,7 @@ namespace test.wi888.folded
   sort Lib
     sort A = ?
     operation keep(x: A, y: A) -> A
-    rule keep_id: keep[T](?x: T, ?y) = ?x :- Summable[T] [simp]
+    rule keep_id: keep[T](?x: T, ?y) = ?x :- Summable[T] @[simp]
   end
 end
 "#,
@@ -264,7 +264,7 @@ end
 /// DEFINE" made it answer for two questions at once, and narrowing
 /// `EQUATION_FUNCTORS` took the `...?args` claim away from every `=` head. The marker
 /// then reached `refuse_stray_rest_args`, whose message says a capture "may appear only
-/// as the LAST positional argument of a `[simp]` rule head's left-hand side" — which is
+/// as the LAST positional argument of a `@[simp]` rule head's left-hand side" — which is
 /// exactly where it was. Worse, that error is at PARSE stage, so the load never ran and
 /// WI-888's substitute-naming refusal was never reached.
 ///
@@ -289,7 +289,7 @@ namespace test.wi888.capture
     import anthill.prelude.Int64
     operation fixup[R](r: Int64, ...args: R) -> Int64 = r
     operation target(r: Int64, n: Int64) -> Int64 = r
-    rule fixup(?r, ...?args) = target(?r, 1) [simp]
+    rule fixup(?r, ...?args) = target(?r, 1) @[simp]
   end
 end
 "#;
@@ -309,7 +309,7 @@ namespace test.wi888.captureguarded
     import anthill.prelude.{Int64, Bool}
     operation fixup[R](r: Int64, ...args: R) -> Int64 = r
     operation target(r: Int64, n: Int64) -> Int64 = r
-    rule fixup(?r, ...?args) = target(?r, 1) :- Int64.gt(?r, 0) [simp]
+    rule fixup(?r, ...?args) = target(?r, 1) :- Int64.gt(?r, 0) @[simp]
   end
 end
 "#;
@@ -326,7 +326,7 @@ end
 /// override.
 ///
 /// This is `reflect.anthill`'s shape reduced to one file: a local
-/// `unify(a: Int64, b: Int64, c: Int64)` beside a `[simp]` equation, and the equation
+/// `unify(a: Int64, b: Int64, c: Int64)` beside a `@[simp]` equation, and the equation
 /// must still FIRE. Backing out the override (`remap_functor` → `remap_symbol`) makes
 /// this fail the way the stdlib did — the load stays clean and `drive` traps with
 /// `OperationBodyMissing`, because the clause went to the 3-ary local operation.
@@ -344,7 +344,7 @@ namespace test.wi888.localunify
     import anthill.prelude.{Int64, Bool}
     operation unify(a: Int64, b: Int64, c: Int64) -> Int64 = a
     operation pick(cond: Bool, then: Int64, else: Int64) -> Int64
-    rule pick(true, ?t, ?_) <=> ?t [simp]
+    rule pick(true, ?t, ?_) <=> ?t @[simp]
     operation drive(n: Int64) -> Int64 = pick(true, 10, 20)
     operation callLocal(n: Int64) -> Int64 = unify(7, 8, 9)
   end

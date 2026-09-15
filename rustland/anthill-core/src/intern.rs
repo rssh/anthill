@@ -167,7 +167,7 @@ pub enum SymbolKind {
     /// this one owns clauses.
     Goal,
     /// WI-898 — the subject of a bodyless EQUATION (`ite(true, ?t, ?_) = ?t`):
-    /// a function DEFINED BY REWRITING, whose call sites reduce (`[simp]`) rather
+    /// a function DEFINED BY REWRITING, whose call sites reduce (`@[simp]`) rather
     /// than dispatch. Minted by `load::scan_rule_goal` alongside [`SymbolKind::Goal`],
     /// from the same head walk, because both are names a rule introduces.
     ///

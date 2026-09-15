@@ -179,7 +179,7 @@ end
 /// The fixture is the one from WI-1092's filing, and its rules are the reason: an
 /// untagged `<=>` equation is inert (spec §5.3, WI-881), and its clause is indexed
 /// under the connective, so `ceq` ends up with a signature and no definition of any
-/// kind — no clause, no body, no host mapping. `[simp]` does not change that here
+/// kind — no clause, no body, no host mapping. `@[simp]` does not change that here
 /// (WI-885: no dictionary entry can be built from a rewrite, and a spelled
 /// `PartialEq.eq` call is not a redex of `ceq`), which is why the tagged spelling is
 /// driven too.
@@ -187,10 +187,10 @@ end
 fn a_declared_but_undefined_eq_is_loud_on_every_route() {
     let untagged = "    rule ceq(red, red) <=> true\n    rule ceq(blue, blue) <=> true\n    \
                     rule ceq(red, blue) <=> false\n    rule ceq(blue, red) <=> false";
-    let tagged = "    rule ceq(red, red) <=> true [simp]\n    \
-                  rule ceq(red, blue) <=> false [simp]";
+    let tagged = "    rule ceq(red, red) <=> true @[simp]\n    \
+                  rule ceq(red, blue) <=> false @[simp]";
 
-    for (spelling, rules) in [("untagged", untagged), ("[simp]-tagged", tagged)] {
+    for (spelling, rules) in [("untagged", untagged), ("@[simp]-tagged", tagged)] {
         // The DICTIONARY route: `Holder.same` resolves `eq` to `Color.ceq` correctly,
         // and then there is nothing to run.
         for call in ["Holder.same(red(), red())", "Holder.same(red(), blue())"] {

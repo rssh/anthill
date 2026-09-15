@@ -1518,7 +1518,7 @@ impl<'kb> Emitter<'kb> {
             // Proposal 055 — a nominal type value closes like the two shapes it
             // replaced: the BARE face was an `Expr::Ref` and passed through as a leaf,
             // the APPLIED face was an `Expr::Apply` and closed its children. Both are
-            // this one arm (a bare one simply has no children). Without it a `[simp]`
+            // this one arm (a bare one simply has no children). Without it a `@[simp]`
             // body that merely MENTIONS a type would reach the loud `other =>` arm
             // below and fail SMT lowering, where it lowered fine before.
             Expr::TypeValue {

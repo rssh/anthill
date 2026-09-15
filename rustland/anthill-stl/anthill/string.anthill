@@ -19,7 +19,7 @@ namespace anthill.prelude
       -- argued on the declarations in `stdlib/anthill/prelude/string.anthill`, which
       -- is where a reader of the spec will look.
       --
-      -- `isEmpty` joined them: WI-884 shipped it defined by its own `[simp]` equation
+      -- `isEmpty` joined them: WI-884 shipped it defined by its own `@[simp]` equation
       -- over `length`, and that is the one thing about it that is HOST-SPECIFIC and so
       -- belongs here. `length` counts UNICODE SCALARS, which is O(n) — `str::len` is
       -- O(1) but counts BYTES, and no host anthill is likely to target has an O(1)

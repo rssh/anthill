@@ -34,8 +34,8 @@
 //! # ONE NAME IS DELIBERATELY NOT GATED, AND THAT IS THE FINDING THIS FILE PINS
 //!
 //! `dot_apply` is minted (WI-618) but is ALSO a spelling the author may write: it is
-//! the surface of a sort-scoped dot rule (kernel-language.md §"a `[simp]` **dot rule**
-//! … `rule dr: dot_apply(?receiver, member, ?x) = … [simp]`"). Gating it on provenance
+//! the surface of a sort-scoped dot rule (kernel-language.md §"a `@[simp]` **dot rule**
+//! … `rule dr: dot_apply(?receiver, member, ?x) = … @[simp]`"). Gating it on provenance
 //! does not close a trap, it DELETES THE SPELLING — measured both ways, and
 //! [`the_spelled_dot_form_is_not_provenance_gated`] is this file's guard for it. Both
 //! of its readers take a SHAPE guard instead (arity ≥ 2 with an `Ident` at the name
@@ -389,7 +389,7 @@ namespace akkwf.dotrule
   sort Box
     entity box(value: Int64)
     operation regular(b: Box, x: Int64) -> Int64 = x
-    rule dr: dot_apply(?e, special, ?x) <=> regular(?e, ?x) [simp]
+    rule dr: dot_apply(?e, special, ?x) <=> regular(?e, ?x) @[simp]
     operation use_spelled(b: Box) -> Int64 = dot_apply(?b, special, 7)
     operation main() -> Int64 = use_spelled(box(value: 4))
   end

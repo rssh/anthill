@@ -31,7 +31,7 @@
 //! calls and separates nothing. `dispatch_calls_in_occ` is the one thing in the language
 //! that knows the answer (it owns goal descent), so it tells `type_check_node_at`; from
 //! there `NodePos::Value` is the default every CHILD visit takes, and only a re-Visit that
-//! REPLACES a node (a `[simp]` fire's RHS, the call a dot lowers to, a WI-411 spec-op
+//! REPLACES a node (a `@[simp]` fire's RHS, the call a dot lowers to, a WI-411 spec-op
 //! redirect) inherits the goal position — a rewrite of the goal is still the goal.
 //!
 //! **THE SECOND HALF, same site and same cause.** The extra column was admitted but never

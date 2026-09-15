@@ -2,7 +2,7 @@
 
 ## Status: Proposed — design settled in the WI-437 backend design sessions (2026-07-12); implementation tracked by WI-698.
 
-## Tracks: WI-698, the **umbrella** — split 2026-07-12 into: **WI-699** = §"Declaration" + row surface (scope (a)+(b); the whole critical path to the first consumer); **WI-700** = effect-row conformance and lacks enforcement at explicit row-instantiation shapes (a *general* soundness hole, not `External`-specific — the check the §"Mechanism" gate rests on); **WI-701** = the §"`Branch` and `External`" co-occurrence gate; **WI-702** = the §"Consumers" purity gates (loudness + the `[simp]`-tag formation hole); **WI-703** = the `EffectsRuntime`-import wart (a sibling defect in the WI-320 anchor, not a prerequisite). Where the text below says "WI-698 scope item (c)", read WI-700/701/702. Scope item (d) is this proposal; (e) is a no-op by decision.
+## Tracks: WI-698, the **umbrella** — split 2026-07-12 into: **WI-699** = §"Declaration" + row surface (scope (a)+(b); the whole critical path to the first consumer); **WI-700** = effect-row conformance and lacks enforcement at explicit row-instantiation shapes (a *general* soundness hole, not `External`-specific — the check the §"Mechanism" gate rests on); **WI-701** = the §"`Branch` and `External`" co-occurrence gate; **WI-702** = the §"Consumers" purity gates (loudness + the `@[simp]`-tag formation hole); **WI-703** = the `EffectsRuntime`-import wart (a sibling defect in the WI-320 anchor, not a prerequisite). Where the text below says "WI-698 scope item (c)", read WI-700/701/702. Scope item (d) is this proposal; (e) is a no-op by decision.
 
 ## First consumer: WI-437 increment 3 (the `Mirror` carrier of `rustland/anthill-todo/docs/design/backend-github-coordination.md` §8.3) — which depends on **WI-699 alone**, not on the umbrella: the hardening gates are not on its path.
 
@@ -167,7 +167,7 @@ formation hole**, not soundness:
 * the simp rewriter (`fire_simp`) checks no effect rows at the firing site —
   sound today only because effectful ops never *become* simp equations
   (formation is gated as above). The one real hole is a **user-written**
-  `[simp]`-tagged equation rule whose sides mention an `External`-rowed
+  `@[simp]`-tagged equation rule whose sides mention an `External`-rowed
   operation symbol: firing it would duplicate, reorder, or drop the call by
   rewriting. The gate for that belongs at load-time tag validation, not the
   firing site;

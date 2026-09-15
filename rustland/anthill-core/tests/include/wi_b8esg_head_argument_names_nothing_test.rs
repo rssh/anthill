@@ -204,7 +204,7 @@ fn a_connective_subjects_arguments_are_judged() {
 namespace test.b8esg.equation
   import anthill.prelude.{Int64, List}
   operation len(xs: List[T = Int64]) -> Int64
-  rule len(cons(head: ?h, tail: ?t)) <=> 1 [simp]
+  rule len(cons(head: ?h, tail: ?t)) <=> 1 @[simp]
 end
 "#,
     )

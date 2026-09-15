@@ -1,4 +1,4 @@
-# Finding: the `[simp]` rewriting engine is type-directed; dot dispatch is one of its clients
+# Finding: the `@[simp]` rewriting engine is type-directed; dot dispatch is one of its clients
 
 Status: **settled 2026-05-22** (with user). Corrects proposal
 `docs/proposals/043-simp-rewrite.md` §4/§5/§6 and
@@ -6,7 +6,7 @@ Status: **settled 2026-05-22** (with user). Corrects proposal
 
 ## The error
 
-Proposal 043 §5 frames the `[simp]` engine as *independent of the typer* — "the
+Proposal 043 §5 frames the `@[simp]` engine as *independent of the typer* — "the
 type-checker rewrites matching expressions … **no `typeof`** — just structural
 rewriting of the user's own functors." **Independence from the typer is the
 error.** The engine is **type-directed** and must run **with the typer**.
@@ -45,7 +45,7 @@ typer. Type-independent firing covers only trivial monomorphic identities.
    typer.
 2. **Dot dispatch is one of its clients**, the same shape as a spec/sort rule: a
    sort-scoped, `requires`-guarded rule (e.g. a custom `Either.map`). 043's "dot
-   is a `[simp]` client" thesis is right.
+   is a `@[simp]` client" thesis is right.
 3. **`typeof` is not a goal.** It is **`min_sort`** — widen a term to its least
    declared sort (`= sort_head(TypeResult.ty)`; `sort_functor_of` already
    extracts it). A compile-time typer notion the engine uses to *select and

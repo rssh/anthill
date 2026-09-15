@@ -305,7 +305,7 @@ double-count 9 and 79 tickets respectively; see §3.3.
 
 Carrier, scope, dispatch and requirement are **flat within a few points** — four weeks and 413
 closures did not measurably shrink their share of new work, and `resolve` actually rose. What fell is
-`simp`, by two thirds once WI-881/884/888 settled what `[simp]` admits and what makes a defining
+`simp`, by two thirds once WI-881/884/888 settled what `@[simp]` admits and what makes a defining
 equation fire, and `host`, by a third. Against them a new front — effect rows, the typer, proof
 passes, and the label/arrow/tuple group — rose by more than the two gave up.
 
@@ -545,7 +545,7 @@ clean exponential fit and no sign of bending.
    weeks after the pass") is the cheapest test.
 
    **PARTLY ANSWERED 2026-09-02 (§3.5).** Actionable per cluster, invisible globally. `simp` fell from
-   16.3% to 6.1% of new ticket descriptions after WI-881/884/888 settled what `[simp]` admits — no
+   16.3% to 6.1% of new ticket descriptions after WI-881/884/888 settled what `@[simp]` admits — no
    delivery campaign, the answer retired the tickets — while the global b did not respond, because the
    freed capacity moved into effects/typer/proofs. The rival hypothesis is not excluded: this is one
    uncontrolled observation and `simp` work may simply have run out. **The pre-registered prediction is

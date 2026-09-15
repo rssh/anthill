@@ -245,7 +245,7 @@ end
     // answers for), so this head RESOLVES to `anthill.kernel.unify` (WI-896) —
     // and an untagged bodyless head on a connective is a WI-139 cite-required law, so
     // `unindex_functor` drops it. The rule reaches no goal, with the guard or without.
-    // A DELTA against the same program minus the rule, because the stdlib's own `[simp]`
+    // A DELTA against the same program minus the rule, because the stdlib's own `@[simp]`
     // equations live in that bucket and an absolute count would be a census of them.
     const WITHOUT_THE_CONNECTIVE_HEAD: &str = r#"
 namespace wi948.subject
@@ -282,7 +282,7 @@ end
 /// equation refusal — MEASURED, today, verbatim: "`wi948.cite.S.f948` is defined by
 /// equations, not declared as an operation … no defining equation for it can be found".
 /// The file contains no equation, so that message sends the author looking for a
-/// missing `[simp]` rule that was never meant to exist.
+/// missing `@[simp]` rule that was never meant to exist.
 ///
 /// NO `import anthill.kernel.{unify}` HERE, unlike the fixture above, and the asymmetry
 /// is deliberate rather than an omission (WI-909). That one's `clauses_under` delta

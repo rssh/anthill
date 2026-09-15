@@ -1,7 +1,7 @@
 //! WI-757 (the WI-722 macro contract) — a compile-time MACRO's DIAGNOSTIC channel.
 //!
 //! A macro that cannot expand had exactly one outcome before this: it DECLINED.
-//! `try_expand_macro` mapped its `Err` to `None`, the `[simp]` template call was
+//! `try_expand_macro` mapped its `Err` to `None`, the `@[simp]` template call was
 //! kept, and the author read whatever downstream type error the residual produced.
 //! That is the right contract for a macro that is merely not applicable — but
 //! WI-730 made "this row lambda is not goal-expressible" a DEFINITIVE, user-caused
@@ -74,7 +74,7 @@ fn rejection_carries_the_macros_own_words() {
         panic!("expected exactly one macro rejection, got: {errs:?}");
     };
     for fragment in [
-        // WHICH macro refused — the `[simp]` RHS head behind `where`.
+        // WHICH macro refused — the `@[simp]` RHS head behind `where`.
         "compile-time macro `anthill.prelude.Relation.guarded_of`",
         // WHAT it needed.
         "a goal-expressible predicate",
@@ -125,7 +125,7 @@ fn rejection_is_located_at_the_offending_condition() {
 }
 
 /// One genuine failure, one error. A macro can be ATTEMPTED more than once (the
-/// `[simp]` engine fires bottom-up and re-visits a rewritten node, and a
+/// `@[simp]` engine fires bottom-up and re-visits a rewritten node, and a
 /// re-entrant expansion is capped, not forbidden), so a rejection reported by a
 /// buffer would need a dedup key. It is instead reported by the FIRE's caller and
 /// aborts that node's typing, which makes the count structural.
@@ -246,7 +246,7 @@ end
 /// top-level raise.
 ///
 /// This is only reachable because the WI-702 / proposal 054 rewrite gate exempts a
-/// MACRO at the `[simp]` RHS head (see the two narrowness tests below). Without
+/// MACRO at the `@[simp]` RHS head (see the two narrowness tests below). Without
 /// that exemption `wrap`'s `effects Error[…]` was refused at the rule naming it, so
 /// 043.1 §6's "a macro that raises `Error` becomes a compile-time diagnostic" could
 /// never fire and the channel was host-only.
@@ -266,7 +266,7 @@ namespace test.wi757raise
     Error.raise(not_allowed(why: "trigger takes a column, not a literal"))
 
   operation trigger(x: Int64) -> Int64 = x
-  rule trigger(?x) <=> wrap(?x) [simp]
+  rule trigger(?x) <=> wrap(?x) @[simp]
 
   operation consumer() -> Int64 = add(trigger(5), 1)
 end
@@ -295,7 +295,7 @@ end
     );
 }
 
-/// The exemption is for the MACRO, not for `[simp]` rules in general. An ORDINARY
+/// The exemption is for the MACRO, not for `@[simp]` rules in general. An ORDINARY
 /// effectful operation at the RHS head is still refused by WI-702 / 054 — its call
 /// SURVIVES the rewrite into the program, so firing really can duplicate, reorder
 /// or drop it.
@@ -310,7 +310,7 @@ namespace test.wi757ordinary
   end
   operation risky(x: Int64) -> Int64 effects Error[Boom] = Error.raise(boom(why: "no"))
   operation trigger(x: Int64) -> Int64 = x
-  rule trigger(?x) <=> risky(?x) [simp]
+  rule trigger(?x) <=> risky(?x) @[simp]
   operation consumer() -> Int64 = add(trigger(5), 1)
 end
 "#;
@@ -322,7 +322,7 @@ end
     );
 }
 
-/// …and not for a macro the typer's expander does NOT fire. `[unfold]` is fired by
+/// …and not for a macro the typer's expander does NOT fire. `@[unfold]` is fired by
 /// the RESOLVER (`fire_simp_equation`), which substitutes the RHS template verbatim
 /// and never macro-expands — so the effectful call really is rewritten into the
 /// program, exactly the hazard WI-702 exists for.
@@ -343,7 +343,7 @@ namespace test.wi757unfold
   operation m(x: NodeOccurrence) -> NodeOccurrence effects Error[Boom] =
     Error.raise(boom(why: "nope"))
   operation trigger(x: Int64) -> Int64 = x
-  rule trigger(?x) <=> m(?x) [unfold]
+  rule trigger(?x) <=> m(?x) @[unfold]
   operation consumer() -> Int64 = add(trigger(5), 1)
 end
 "#;
@@ -351,7 +351,7 @@ end
     assert!(
         errs.iter()
             .any(|e| e.contains("test.wi757unfold.m") && e.contains(EFFECTFUL_REWRITE_MARKER)),
-        "an effectful macro under `[unfold]` is never expanded, so it must stay \
+        "an effectful macro under `@[unfold]` is never expanded, so it must stay \
          refused, got: {errs:?}",
     );
 }
@@ -375,7 +375,7 @@ namespace test.wi757bodygoal
   operation m(x: NodeOccurrence) -> NodeOccurrence effects Error[Boom] =
     Error.raise(boom(why: "nope"))
   operation trigger(x: Int64) -> Int64 = x
-  rule trigger(?x) <=> m(?x) :- m(?x) [simp]
+  rule trigger(?x) <=> m(?x) :- m(?x) @[simp]
   operation consumer() -> Int64 = add(trigger(5), 1)
 end
 "#;
@@ -407,7 +407,7 @@ namespace test.wi757nested
   operation wrap(x: NodeOccurrence) -> NodeOccurrence =
     make_apply("test.wi757nested.wrapped", cons(x, nil()), x)
   operation trigger(x: Int64) -> Int64 = x
-  rule trigger(?x) <=> wrap(risky(?x)) [simp]
+  rule trigger(?x) <=> wrap(risky(?x)) @[simp]
   operation consumer() -> Int64 = add(trigger(5), 1)
 end
 "#;
@@ -421,7 +421,7 @@ end
 
 // ── DECLINE: the WI-722 contract, unchanged ────────────────────────────────
 
-/// A macro that is NOT APPLICABLE still DECLINES quietly: its `[simp]` template
+/// A macro that is NOT APPLICABLE still DECLINES quietly: its `@[simp]` template
 /// call is kept and the residual's own type-check is what the author reads. This
 /// is the WI-722 contract, and WI-757 must not have collapsed the two negative
 /// outcomes into one.
@@ -451,7 +451,7 @@ namespace test.wi757decline
     make_apply("test.wi757decline.wrapped", cons(x, nil()), x)
 
   operation trigger(x: Int64) -> Int64 = x
-  rule trigger(?x) <=> wrap(x: ?x) [simp]
+  rule trigger(?x) <=> wrap(x: ?x) @[simp]
 
   operation consumer() -> Int64 = add(trigger(5), 1)
 end

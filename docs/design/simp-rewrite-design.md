@@ -1,24 +1,24 @@
-# The `[simp]` rewriting engine — implementation design (rustland)
+# The `@[simp]` rewriting engine — implementation design (rustland)
 
 ## Status: Implementation design — for review (2026-05-21)
 
 ## Relates to
 
-- `docs/design/simp-rewrite-brainstorm.md` — **rationale**: why method dispatch (and folding, and AD) are `[simp]` rules; the tooling/delegation/DSL story; the worked examples. Read it for *why*.
-- `docs/proposals/043-simp-rewrite.md` — the proposal (semantics) this doc implements: the `[simp]` rewriting engine, with dot dispatch as its first client. Read it for *what the feature is*.
+- `docs/design/simp-rewrite-brainstorm.md` — **rationale**: why method dispatch (and folding, and AD) are `@[simp]` rules; the tooling/delegation/DSL story; the worked examples. Read it for *why*.
+- `docs/proposals/043-simp-rewrite.md` — the proposal (semantics) this doc implements: the `@[simp]` rewriting engine, with dot dispatch as its first client. Read it for *what the feature is*.
 - **This doc** — **how the engine is built** in rustland. The engine is the subject; dot dispatch, `min`-folding, and AD are *clients*. It corrects two substrate claims the brainstorm/proposal got wrong.
 - Substrate: `docs/design/occurrence-as-value-type.md` (`NodeOccurrence`, `Value::Node`), `docs/design/operation-call-model.md` (typer-then-`req_insertion` split), `docs/design/interpreter-ir.md` (downstream consumer; equation-defined ops).
-- WI-139 (delivered) — `[simp]`/`[unfold]`/`[hint]` attributes (`anthill-core/tests/include/equational_attr_test.rs`).
+- WI-139 (delivered) — `@[simp]`/`@[unfold]`/`@[hint]` attributes (`anthill-core/tests/include/equational_attr_test.rs`).
 - Proposal 026.1 Q2 — `TermView` (unification over `TermId` *or* `Value`).
 
 ## What this document is / isn't
 
-**Is:** the rustland plan for a general engine that fires `[simp]` equational rules over expression content. Dot dispatch is its first and simplest client; `min`-folding and AD are later clients on the same engine. Concrete: substrate anchors, the data-flow change, the build order.
+**Is:** the rustland plan for a general engine that fires `@[simp]` equational rules over expression content. Dot dispatch is its first and simplest client; `min`-folding and AD are later clients on the same engine. Concrete: substrate anchors, the data-flow change, the build order.
 
 **Isn't:** the language design of dot syntax (→ proposal 043) or the rationale (→ brainstorm). One thing this doc *does* surface that the others under-state: the engine's **reduction strategy, termination policy, and firing specificity are semantics**, not mere implementation detail (§6) — they may warrant their own proposal.
 
 **The framing correction this doc exists to make:** the general
-`[simp]`-rule-firing engine is the **foundation** — dot is one client. And the
+`@[simp]`-rule-firing engine is the **foundation** — dot is one client. And the
 engine is **type-directed**, integrated with the typer: rules are defined over
 expressions (so firing is compile-time), and matching/guards consult the
 operand's sort (`min_sort`, `requires`). The earlier "type-independent engine,
@@ -30,7 +30,7 @@ is what this doc now does.
 
 ## 1. The engine, in one paragraph
 
-A `[simp]` rule is an equation `lhs = rhs` (head `eq(LHS, RHS)`) tagged
+A `@[simp]` rule is an equation `lhs = rhs` (head `eq(LHS, RHS)`) tagged
 **directionally rewritable** (`meta_has_flag(.., "simp")`, `load.rs:2682`). Its
 guard is its explicit `:- …` **plus the `requires` of its enclosing sort** (a
 rule in a sort inherits that sort's `requires` implicitly) — so it is generally
@@ -68,7 +68,7 @@ type-checking.)
 | **Unified read-side view** over `TermId` *and* `Value` | `TermView` trait, `term_view.rs:55`; `impl … for TermIdView` (80), `for Value` (134) | The matcher is **not** term-only |
 | Structural matching generic over the view | `match_view<V: TermView>` (`mod.rs:1379`); discrim `query_*<V: TermView>` (`discrim.rs:427/437/455`) | Works against a `Value` target today |
 | **Logical-engine rewriter (Term)** | `apply_eq_rules` (`resolve.rs:1266`): innermost, LHS→RHS, to-fixpoint, fuel-bounded (100, `simplify` 1258) | This *is* a general simp engine — at term level (the logical engine, used over expressions when resolving rules) |
-| `[simp]`/`[unfold]` gate `by_functor` | `meta_has_flag` (`load.rs:2682`); `unindex_functor` for untagged equations (~1250) | Rules reachable as data |
+| `@[simp]`/`@[unfold]` gate `by_functor` | `meta_has_flag` (`load.rs:2682`); `unindex_functor` for untagged equations (~1250) | Rules reachable as data |
 | Synthesized-occurrence substrate | `synthesized_expr` (`node_occurrence.rs:184`): `origin: Synthesized{from,by}`, span inherited, `classification: None` | RHS provenance channel |
 | `PassId` (symbol-backed) | `occurrence.rs:19` | Pass tag — no enum edit |
 | Field registry + `field_access` builtin | `entity_fields`/`entity_field_types` (`mod.rs:208/254`), `is_free_standing_entity` (2259); builtin `resolve.rs:1975`, reg `mod.rs:2308` | Backs the `dot_field` client guards |
@@ -126,7 +126,7 @@ guard-aware + subsort-aware firing (WI-283) and the `DotApply` matcher arm
 
 ## 4. Architecture: one rewriter over expressions
 
-One rewrite relation — *find a subexpression matching a `[simp]` rule's LHS,
+One rewrite relation — *find a subexpression matching a `@[simp]` rule's LHS,
 check the (type-directed) guard, replace with the RHS instance* — run at two
 **call sites** that differ in **one** thing: the representation each holds. Not
 "two phases": both rewrite **expressions** (the only boundary is
@@ -157,7 +157,7 @@ else (rule lookup, subsort-aware matching, guards, strategy) is shared.
 
 `TermView` (`term_view.rs:55`) matches a rule-LHS pattern (a `TermId`) against a target that is **either** a `Term` **or** a `Value` — it is not term-specific. `Value::Node` is already structural for `Apply`/`Constructor`/leaves (WI-276/277): `head` → the inner `Expr`'s functor, `pos_arg`/`named_arg` → child occurrences via `ViewItem::Node`, so `match_view(rule_lhs, &Value::Node(occ))` binds pattern vars to child occurrences with **no second matcher**. The remaining arm is **`Expr::DotApply`** (head = the `dot_apply` functor; children = receiver / name / args) — dot-client substrate, WI-279.
 
-**Matcher ≠ typer.** `occ_head → Opaque` only means *no rule LHS structurally matches that node*; it says nothing about typability. The forms that stay `Opaque` — control-flow (`If`/`Match`/`Let`/`Lambda`/collection literals) and post-elaboration `*Within` — are still **typed** by the typer and the rewrite **walk still descends into their children** (a redex inside an `if`-branch is rewritten). They're opaque because a `[simp]` rule LHS is a *functor-application* pattern, so nothing would match an `if`/`match` node directly — a scoping choice, liftable later (e.g. `if true then ?a else ?b = ?a`) by making them structural too.
+**Matcher ≠ typer.** `occ_head → Opaque` only means *no rule LHS structurally matches that node*; it says nothing about typability. The forms that stay `Opaque` — control-flow (`If`/`Match`/`Let`/`Lambda`/collection literals) and post-elaboration `*Within` — are still **typed** by the typer and the rewrite **walk still descends into their children** (a redex inside an `if`-branch is rewritten). They're opaque because a `@[simp]` rule LHS is a *functor-application* pattern, so nothing would match an `if`/`match` node directly — a scoping choice, liftable later (e.g. `if true then ?a else ?b = ?a`) by making them structural too.
 
 ### 4.2 The logical-engine call site (exists)
 
@@ -168,7 +168,7 @@ else (rule lookup, subsort-aware matching, guards, strategy) is shared.
 A bottom-up walk over op-body `NodeOccurrence` trees that reuses the matcher (§4.1) + rule lookup + strategy, builds `synthesized_expr` RHSs, and writes the result back via `set_op_body_node` (§5). Even a "simple" identity is type-directed once its functor is a sort op:
 
 ```
-rule add_zero: add(?x, 0) = ?x   [simp]      -- add is Numeric.add → carries
+rule add_zero: add(?x, 0) = ?x   @[simp]      -- add is Numeric.add → carries
 operation residual(v: Vec, k: Int64) -> Vec    -- `requires Numeric[T]` implicitly;
   add(mul(v, k), mul(v, 0))                   -- fires by sort conformance →  mul(v,k)
 ```
@@ -189,7 +189,7 @@ Per §2.2(3), getting `dot_apply` (and any rewritten redex) out of the stored bo
 
 ### 5.2 Placement in the load pipeline
 
-`load_all` (`load.rs:1366`) → `type_check_sorts` (`1485`) → `req_insertion::run` (`1492`). Front-end B runs **per op body, interleaved with / just before** the op-body type-check (`typing.rs:5902`), writing the rewritten (redex-free) tree back **before** `req_insertion`. Everything downstream — the final type-check, `req_insertion`, eval, IR — then sees a tree with no `dot_apply` and no un-fired `[simp]` redexes, and is unchanged.
+`load_all` (`load.rs:1366`) → `type_check_sorts` (`1485`) → `req_insertion::run` (`1492`). Front-end B runs **per op body, interleaved with / just before** the op-body type-check (`typing.rs:5902`), writing the rewritten (redex-free) tree back **before** `req_insertion`. Everything downstream — the final type-check, `req_insertion`, eval, IR — then sees a tree with no `dot_apply` and no un-fired `@[simp]` redexes, and is unchanged.
 
 ### 5.3 The driver
 
@@ -199,7 +199,7 @@ Per op body, with the **same `TypingEnv`** the op-body driver builds (params bou
 fn rewrite(kb, env, occ) -> Rc<NodeOccurrence>:
   1. Rewrite children bottom-up → possibly-new child Rcs (map_children).
   2. Rebuild this node if any child changed.
-  3. Query the rule index for [simp] rules whose LHS functor matches this node
+  3. Query the rule index for @[simp] rules whose LHS functor matches this node
      (incl. guarded rules — the empty-body gate must be relaxed); the general
      step, not dot-specific.
   4. For each candidate (firing order per §6): match LHS via match_view (§4.1),
@@ -248,7 +248,7 @@ goal. With typed occurrences, neither is needed.
 These belong to the **shared core** (so both call sites stay consistent, §4.4), and they are semantics:
 
 - **Reduction strategy: leftmost-innermost / bottom-up.** Forced by type-directed dispatch (an outer rule needs `min_sort` of the reduced inner term) and matches both the typer's walk and `apply_eq_rules`'s innermost order. Consequence: strict, no lazy discard (brainstorm Q20).
-- **Termination.** Structural where the RHS is no larger than the LHS (no fuel). Value/AD clients: fuel (port `apply_eq_rules`'s bound) + a `Synthesized.from` ancestor-loop check. Commutative/AC laws (`add_comm`) must stay **bare** (non-`[simp]`) or it loops. Open: should the loader *reject* a `[simp]` tag on a detectably-non-terminating rule (LHS≡RHS permuted)?
+- **Termination.** Structural where the RHS is no larger than the LHS (no fuel). Value/AD clients: fuel (port `apply_eq_rules`'s bound) + a `Synthesized.from` ancestor-loop check. Commutative/AC laws (`add_comm`) must stay **bare** (non-`@[simp]`) or it loops. Open: should the loader *reject* a `@[simp]` tag on a detectably-non-terminating rule (LHS≡RHS permuted)?
 - **Firing specificity — three steps, two dimensions** (matches proposal §4.6). When several rules could rewrite one redex, selection is: **(1) structural narrowing** (discrim tree — functor/name/arg shape, concrete edges before variable edges); **(2) subsort-aware sort-directed matching** — a rule on sort `S` applies iff `min_sort(receiver) <: S` (conformance, transitive: a rule on `C` fires on `A <: B <: C` too), which the structural tree does **not** capture; **(3) the `requires`-guard**. Ordering combines both dimensions: most-specific **sort** first (`A` over `B` over `C`), structural specificity as tiebreak; a scope-less all-variable LHS (`default_dot`) is the top, tried last. Pure structural discrim is *insufficient* — it can't distinguish two rules differing only by receiver sort (`List.map` vs `Either.map`).
   - **Export consequence.** Most-specific-first is an engine *ordering*; exporting to a flat, unordered logical-rule set requires **synthesizing exclusion guards** so the less-specific rules don't also handle the more-specific case: rule on `B` gets `:- not (min_sort(recv) <: A)`, rule on `C` gets `:- not (min_sort(recv) <: B)`, per goal. That turns the ordered override into an equivalent unordered set.
 
@@ -272,8 +272,8 @@ the typer where `min_sort` is in hand. The guard uses `min_sort`, never a
   - **Tier 1b** — ops of specs the sort *satisfies* (`Int64.min` → `Ord.min` via `fact Ord[Int64]`); the headline `requires`-typeclass case. The WI-240 `sort_ops` table covers user `fact Spec[ImplSort]` but **not** builtin satisfaction (`Int64 → Ord`) — gap to close (WI-281).
   - **Tier 2** — import-scoped extension ops (no first-param index yet).
 - **Dispatch rules** — guards use `min_sort` + the expression-accepting `is_entity`/`has_field`/`find_operation_on_sort` builtins (not a `typeof` goal):
-  - `dot_field: dot_apply(?x, ?name, []) = field_access(?x, ?name) :- is_entity(min_sort(?x)), has_field(min_sort(?x), ?name) [simp]` — writable; reaches the existing `field_access` builtin.
-  - **sort-specific rules** (the extensible case) are writable with a **concrete** RHS, declared on the sort: e.g. `either_map: dot_apply(?e, map, [?f]) = either_map(?e, ?f) [simp]` in `Either`. Conformance (§6 step 2) makes it apply; sort-specificity makes it outrank the default.
+  - `dot_field: dot_apply(?x, ?name, []) = field_access(?x, ?name) :- is_entity(min_sort(?x)), has_field(min_sort(?x), ?name) @[simp]` — writable; reaches the existing `field_access` builtin.
+  - **sort-specific rules** (the extensible case) are writable with a **concrete** RHS, declared on the sort: e.g. `either_map: dot_apply(?e, map, [?f]) = either_map(?e, ?f) @[simp]` in `Either`. Conformance (§6 step 2) makes it apply; sort-specificity makes it outrank the default.
   - the **global default** ("resolve `name` to an op on `min_sort(?x)`") has a *dynamically-resolved* functor, so a literal `?op(?x,?args)` RHS is a **variable-functor** non-term. Express it either as **engine fallback logic**, or via an **`apply_op(?op, [?x|?args])` builtin** that makes even the default a writable rule (open: D6).
 - **Errors**: neither fires → "no field or method `name` on sort `S`" at `occ.span`, via the `Synthesized` chain.
 - **Type params & `requires` ride existing machinery — no dot-specific path.** The rewrite emits a plain `apply(op, [receiver, …args])` with empty `type_args`; by the time anything downstream sees it, it is indistinguishable from a written call. Type parameters are inferred by the normal op-body type-check (WI-270 expected-type threading; WI-272 `resolved_type_args`) — `?xs.map(?f)` pins `map`'s `T` through the *receiver* (first arg: `xs: List[Int64]` ⇒ `T=Int64`), `?f` pins `U`. `requires` clauses are elaborated by `req_insertion::run`, which runs **after** the rewrite (§5.2) and reads `CallClass` off the now-classified synthesized apply — so `?a.min(?b)` (`Ord[T]`) and `?l.contains(?e)` (`Eq[T]`) dispatch through the existing PinNow / ConcreteApplyWithin / DeferToRequirement path (`typing.rs:2403`), and an unsatisfied `requires` is a genuine "sort `S` lacks `Ord`/`Eq`" error at the dot-call span. **Ordering requirement:** the rewrite must complete before the final op-body type-check + `req_insertion` — it does (§5.2). **Open decision (D6):** requirement-aware `find_operation_on_sort` (early/precise rejection, overload disambiguation) vs name+sort resolution with `requires` checked on the produced apply (lean: the latter).
@@ -284,7 +284,7 @@ Adds the `constant_fold(?const, ?source)` builtin (the only occurrence-aware val
 
 ### 7.3 Client C — automatic differentiation (`diff`) [sketch]
 
-`diff` is a plain operation over `Expr`, defined by `[simp]` *rules* (the rules carry the tag, the op doesn't). Recursive rewriting to fixpoint; needs `[unfold]` in the typer to inline bodies before pattern-matching (brainstorm Q15) and a firing-specificity policy (§6). Pure structural rewriting — never STUCKs.
+`diff` is a plain operation over `Expr`, defined by `@[simp]` *rules* (the rules carry the tag, the op doesn't). Recursive rewriting to fixpoint; needs `@[unfold]` in the typer to inline bodies before pattern-matching (brainstorm Q15) and a firing-specificity policy (§6). Pure structural rewriting — never STUCKs.
 
 ---
 
@@ -309,7 +309,7 @@ Because the typer-side rewrite writes the redex-free tree back **before** them: 
 - **D4 — `ViewItem::Node` representation** §2.2(1): new `ViewItem` variant vs alternative occurrence-matcher.
 - **D5 — tier-2 import semantics/timing** (043 open-Q10a). Plus **Tier-1b spec-satisfaction** (`Int64.min`→`Ord.min`) — currently a `sort_ops`-table gap (WI-281).
 - **D6 — requirement-aware dispatch + the global default.** Should `find_operation_on_sort` be requirement-aware at *selection* (early/precise errors), or name+sort with `requires` checked *downstream* on the produced apply (lean: downstream)? And is the global default **engine fallback logic** or an **`apply_op` builtin** (making the whole dispatch writable data)?
-- **D7 — guarded-rule indexing.** Relax `is_equation`'s empty-body gate so guarded `[simp]` rules (incl. implicit enclosing-sort `requires`) are indexed and fired.
+- **D7 — guarded-rule indexing.** Relax `is_equation`'s empty-body gate so guarded `@[simp]` rules (incl. implicit enclosing-sort `requires`) are indexed and fired.
 
 ## 11. Build order
 

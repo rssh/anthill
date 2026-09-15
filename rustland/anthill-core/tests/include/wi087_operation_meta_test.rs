@@ -1,13 +1,12 @@
 //! WI-087 — operation attributes / metadata, the kernel mechanism.
 //!
-//! The surface vehicle is a keyword-introduced `meta [...]` clause (WI shape A)
-//! carrying the existing `meta_block` payload (`[Marker, Key: value]`). The
-//! `meta` keyword is needed because a bare `[...]` right after the return type
-//! is grabbed as return-type application args (`-> Vec3[...]`) — which fails for
-//! the clauseless getter bindings that actually carry codegen markers. The
-//! loader lowers the block into a `meta(key: value, ...)` term — the same shape
-//! and reader idiom rule/fact meta already use — and rides it as the
-//! `OperationInfo.meta` field (the chosen representation: one record per op).
+//! The surface is the operation's trailing block, `@[Marker, Key: value]`
+//! (WI-20260915-G9EA9). WI-087 introduced a keyword clause, `meta [...]`, because a
+//! bare `[...]` right after the return type was grabbed as return-type application
+//! args (`-> Vec3[...]`); the `@[` token cannot continue a type, so the clause is
+//! retired and refused. The loader lowers the block into a `meta(key: value, ...)`
+//! term — the same shape and reader idiom rule/fact meta already use — and rides it
+//! as the `OperationInfo.meta` field (the chosen representation: one record per op).
 //!
 //! Three driving use cases, all on the one mechanism:
 //!   1. a named marker flag for a lowering pattern (`Vec3FromConstDoublePtr3`),
@@ -44,18 +43,14 @@ namespace test.wi087_meta
 
   sort GPS
     operation get_values(self: GPS) -> Vec3
-      meta [Vec3FromConstDoublePtr3, Profile: "cpp20-stl", CppBody: "return readVec3(self->getValues());"]
+      @[Vec3FromConstDoublePtr3, Profile: "cpp20-stl", CppBody: "return readVec3(self->getValues());"]
     operation plain(self: GPS) -> Int64
-    operation merged(self: GPS) -> Int64
-      meta [MarkerA]
-      meta [MarkerB, Profile: "p2"]
   end
 end
 "#;
 
 const GET_VALUES_QN: &str = "test.wi087_meta.GPS.get_values";
 const PLAIN_QN: &str = "test.wi087_meta.GPS.plain";
-const MERGED_QN: &str = "test.wi087_meta.GPS.merged";
 
 fn op_sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
     kb.try_resolve_symbol(qn)
@@ -124,27 +119,38 @@ fn operation_without_meta_block_reports_none() {
     assert!(!meta_has_flag(&kb, rec.meta, "Vec3FromConstDoublePtr3"));
 }
 
-/// Repeated `meta [...]` clauses on one operation accumulate (merge) — they are
-/// not silently overwritten by the last, matching how effects / requires /
-/// ensures accumulate across clauses.
+/// An operation has ONE block. WI-087's clauses merged when repeated, and a clause
+/// beside a trailing block silently shadowed it; with one trailing `@[...]` a second
+/// block is not a second spelling to reconcile but a syntax error.
 #[test]
-fn multiple_meta_clauses_merge() {
-    let kb = load_kb_with(SRC);
-    let op = op_sym(&kb, MERGED_QN);
+fn a_second_block_is_refused() {
+    let errs = crate::common::parse_errs(
+        "namespace test.wi087_two
+  import anthill.prelude.{Int64}
+  operation merged() -> Int64 @[MarkerA] @[MarkerB]
+end
+",
+    );
+    crate::common::assert_refused_naming(&errs, &["syntax error"], "second block");
+}
 
-    let rec = op_info::lookup_operation_info(&kb, op).expect("lookup_operation_info for merged");
-    assert!(
-        meta_has_flag(&kb, rec.meta, "MarkerA"),
-        "the first `meta` clause's marker must survive a second `meta` clause",
+/// WI-20260915-G9EA9 acceptance (4): the retired `meta [...]` clause is refused, and
+/// the refusal says what to write. CONTROL: on the pre-G9EA9 grammar this source
+/// parsed clean (it was the only operation block spelling), so the test fails there.
+#[test]
+fn the_retired_meta_clause_is_refused_naming_the_block() {
+    let errs = crate::common::parse_errs(
+        "namespace test.wi087_clause
+  import anthill.prelude.{Int64}
+  operation get() -> Int64
+    meta [MarkerA]
+end
+",
     );
-    assert!(
-        meta_has_flag(&kb, rec.meta, "MarkerB"),
-        "the second `meta` clause's marker must be present",
-    );
-    assert_eq!(
-        meta_string(&kb, rec.meta, "Profile").as_deref(),
-        Some("p2"),
-        "a valued attribute in a later `meta` clause must be readable",
+    crate::common::assert_refused_naming(
+        &errs,
+        &["`meta [MarkerA]` clause was removed", "`@[MarkerA]`"],
+        "retired meta clause",
     );
 }
 

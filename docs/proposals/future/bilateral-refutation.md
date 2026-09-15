@@ -58,7 +58,7 @@ exclusion, not a use-site mechanism.
 `NonEq` even has the Skolemised shape the Dual Existence Property predicts —
 `eq.anthill` calls its witness operation "the constructive form of
 `∃x. eq(x, x) = false`". *Caveat, measured:* the witness is
-`rule nonEqRefl() <=> nan` with no `[simp]`, and an untagged equational rule is
+`rule nonEqRefl() <=> nan` with no `@[simp]`, and an untagged equational rule is
 **inert** (kernel-language.md §5.3), with no host `operation_map` entry. So the
 witness is not executable today; what blocks `provides Eq[Float]` is the
 declaration plus the load check, not a computation.

@@ -454,7 +454,7 @@ impl Interpreter {
                 self.reduce_requirement_at_sort_node(chain, *slot)
             }
             Expr::Dictionary { impl_sort, subs } => self.reduce_dictionary_node(*impl_sort, subs),
-            // `DotApply` is a pre-dispatch form: the `[simp]` dot rules must
+            // `DotApply` is a pre-dispatch form: the `@[simp]` dot rules must
             // have rewritten it to `Apply`/field-access before eval (WI-278).
             // Reaching here means it survived unresolved.
             Expr::HoApply { .. }
@@ -3377,7 +3377,7 @@ impl Interpreter {
     /// the callee's declared parameter type; two things went wrong with that and both are
     /// closed by moving the conversion here:
     ///
-    ///  * A `[simp]` MACRO reaches that same entry and reads its lambda argument as
+    ///  * A `@[simp]` MACRO reaches that same entry and reads its lambda argument as
     ///    SYNTAX — `guarded_of(r: NodeOccurrence, cond: NodeOccurrence)` compiles the row
     ///    lambda into a query. Converting on the way in felled 85 rows across the whole
     ///    relation algebra. A macro never APPLIES its argument, so it never reaches here.

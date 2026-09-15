@@ -815,7 +815,7 @@ related(?x, ?y) :- requires(Eq[T]), eq(?x, ?y)
 
 ### 3.7 Relationship to WI-292
 
-WI-292 (delivered) honors **sort-level** `requires` on equational `[simp]` rules by
+WI-292 (delivered) honors **sort-level** `requires` on equational `@[simp]` rules by
 reading the carried type and **checking** `provides` — the resolve-or-suspend
 engine. WI-300 reuses that `provides` query as the front half of `findDictionary`,
 but goes further: it **produces** the dictionary value (WI-577) into the Γ slot and

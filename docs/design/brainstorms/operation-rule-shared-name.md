@@ -222,12 +222,12 @@ that denotes the existing relation. A call `relation(f(a))`, a lambda, a local f
 other expression shape are rejected at the argument's span.
 
 In 043.1's current two-stage macro mechanism, an occurrence macro runs as the RHS head of a fired
-`[simp]` lowering, as `where -> guarded_of` already does. The implementable shape is therefore
+`@[simp]` lowering, as `where -> guarded_of` already does. The implementable shape is therefore
 schematically:
 
 ```anthill
 operation relation(target) -> Relation                   -- surface redex; target intentionally untyped
-rule relation(?name) <=> relation_of(?name) [simp]       -- compile-time lowering
+rule relation(?name) <=> relation_of(?name) @[simp]       -- compile-time lowering
 operation relation_of(name: NodeOccurrence) -> NodeOccurrence
 ```
 
@@ -336,7 +336,7 @@ outside the form's domain by statement, not left as an apparent counter-example 
 A concrete proposal must settle all of the following, with grammar, typing and evaluation rules rather
 than schematic helper names:
 
-1. **Surface syntax — candidate selected:** `relation(f)` / `relation(S.f)`, lowered through a `[simp]`
+1. **Surface syntax — candidate selected:** `relation(f)` / `relation(S.f)`, lowered through a `@[simp]`
    rule to an occurrence macro that accepts only a bare/qualified name `NodeOccurrence`. The surface is
    `operation relation(target) -> Relation`: an untyped syntax-bearing slot and a transient bare
    `Relation`, replaced and concretely re-typed by the macro. **A resolved name with no written predicate

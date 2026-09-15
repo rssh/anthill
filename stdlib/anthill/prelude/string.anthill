@@ -120,7 +120,7 @@ sort anthill.prelude.String
     let d = sub(width, length(s))
     if Int64.gt(d, 0) then concat(s, repeat(" ", d)) else s
 
-  -- Laws. ALL SIX ARE SPECIFICATION and none is tagged: a `[simp]` equation is
+  -- Laws. ALL SIX ARE SPECIFICATION and none is tagged: a `@[simp]` equation is
   -- EXECUTABLE (it inlines LHS→RHS, so a body-less operation runs) while an untagged
   -- one only states what is true — WI-881 settled that on `float.anthill`.
 
@@ -128,7 +128,7 @@ sort anthill.prelude.String
   -- it is empty — so it COULD be the implementation, and WI-884 tagged it. Reverted
   -- (WI-885) on two grounds. CHANNEL: a definition anthill can express belongs in a
   -- BODY, from which the equational, relational and proof views are DERIVED (WI-580,
-  -- WI-669) — `[simp]` is 043's directional-rewrite attribute, and it cannot back a
+  -- WI-669) — `@[simp]` is 043's directional-rewrite attribute, and it cannot back a
   -- DISPATCHED call at all, since no requirement dictionary can hold a rewrite rule.
   -- COST: this one wants no body either, because routing through `length` is O(n)
   -- where the host answers emptiness in O(1) — the argument is host-specific and

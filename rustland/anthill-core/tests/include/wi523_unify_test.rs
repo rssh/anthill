@@ -242,7 +242,7 @@ fn unify_headed_equation_fires_in_apply_eq_rules() {
     // `unify(1, 2)` makes `simplify(1)` rewrite to `2`. (A ground equation
     // isolates selection-under-`unify`; the resolver path does not open a rule's
     // De Bruijn vars — a pre-existing trait shared with `=`.) The equation is
-    // tagged `[simp]`: WI-292 fires only directional `[simp]`/`[unfold]` rewrites
+    // tagged `@[simp]`: WI-292 fires only directional `@[simp]`/`@[unfold]` rewrites
     // (a bare `<=>` law is not a rewrite).
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb); // WI-969: `unify_functor` needs the kernel vocabulary

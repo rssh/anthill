@@ -1,12 +1,12 @@
-//! WI-20260903-2M5XR — A `[simp]` EQUATION'S OWN FRAME, IN BOTH ITS SPELLINGS.
+//! WI-20260903-2M5XR — A `@[simp]` EQUATION'S OWN FRAME, IN BOTH ITS SPELLINGS.
 //!
-//! `rule lhs <=> rhs [simp]` and `fact lhs <=> rhs [simp]` are the same thing — a
+//! `rule lhs <=> rhs @[simp]` and `fact lhs <=> rhs @[simp]` are the same thing — a
 //! bodyless, tagged, directional equation — and both FIRE. They did not agree about
 //! whether the rule is well-formed:
 //!
 //! ```text
-//!   rule fu(?x) <=> sink(?y) [simp]  + a consumer  ->  1 error (refused)
-//!   fact fu(?x) <=> sink(?y) [simp]  + a consumer  ->  0 errors (loaded clean)
+//!   rule fu(?x) <=> sink(?y) @[simp]  + a consumer  ->  1 error (refused)
+//!   fact fu(?x) <=> sink(?y) @[simp]  + a consumer  ->  0 errors (loaded clean)
 //! ```
 //!
 //! `?y` is named by the RHS and bound by nothing, so instantiating the equation
@@ -107,7 +107,7 @@ fn a_malformed_equation_is_refused_in_both_spellings() {
         format!(
             "namespace zz2ma\n  import anthill.prelude.Int64\n  \
              operation sink(r: Int64) -> Int64 = r\n  \
-             {kw} fu(?x) <=> sink(?y) [simp]\n  \
+             {kw} fu(?x) <=> sink(?y) @[simp]\n  \
              operation c(n: Int64) -> Int64 = fu(n)\nend\n"
         )
     };
@@ -153,7 +153,7 @@ fn a_well_formed_equation_still_fires() {
     for kw in ["rule", "fact"] {
         let src = format!(
             "namespace zz2mc\n  import anthill.prelude.Int64\n  \
-             {kw} dbl(?x) <=> ?x + ?x [simp]\n  \
+             {kw} dbl(?x) <=> ?x + ?x @[simp]\n  \
              operation drive(n: Int64) -> Int64 = dbl(n)\nend\n"
         );
         assert!(
@@ -164,7 +164,7 @@ fn a_well_formed_equation_still_fires() {
         let got = drive(&src, "zz2mc.drive", 5);
         assert!(
             matches!(got, Value::Int(10)),
-            "`{kw} dbl(?x) <=> ?x + ?x [simp]` must still FIRE and compute — `?x` is \
+            "`{kw} dbl(?x) <=> ?x + ?x @[simp]` must still FIRE and compute — `?x` is \
              bound by the LHS, so no `⊥` may reach it; got {got:?}"
         );
     }
@@ -181,7 +181,7 @@ fn a_projecting_equation_still_rewrites() {
     for kw in ["rule", "fact"] {
         let src = format!(
             "namespace zz2md\n  import anthill.prelude.Int64\n  \
-             {kw} pk(?q) <=> ?q [simp]\n  \
+             {kw} pk(?q) <=> ?q @[simp]\n  \
              operation drive(n: Int64) -> Int64 = pk(n)\nend\n"
         );
         assert!(
@@ -192,7 +192,7 @@ fn a_projecting_equation_still_rewrites() {
         let got = drive(&src, "zz2md.drive", 7);
         assert!(
             matches!(got, Value::Int(7)),
-            "`{kw} pk(?q) <=> ?q [simp]` projects its argument — the rewrite must \
+            "`{kw} pk(?q) <=> ?q @[simp]` projects its argument — the rewrite must \
              survive; got {got:?}"
         );
     }

@@ -664,7 +664,7 @@ pub struct Rule {
     pub heads: Vec<RuleHead>,
     /// WI-1129 (proposal 056 §2.3) — per head, PARALLEL to [`Self::heads`]: the index
     /// among that head's equation-LHS POSITIONAL arguments of a variadic capture
-    /// (`rule fix(?r, ...?args) <=> fix_of(?r, ?args) [simp]` → `Some(1)`), or `None`
+    /// (`rule fix(?r, ...?args) <=> fix_of(?r, ?args) @[simp]` → `Some(1)`), or `None`
     /// for the ordinary head.
     ///
     /// Decided ONCE, by the converter (`claim_rule_head_captures`), which is the only

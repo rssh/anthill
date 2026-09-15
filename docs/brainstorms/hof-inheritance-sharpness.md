@@ -17,7 +17,7 @@ Against this plan's three candidate annotation families, the answer is:
 
 | Family | Outcome |
 |---|---|
-| Result-aliasing markers | **Not adopted.** The feed-relationship is derived from the operation's *body* (WI-352), so the common case carries no annotation at all; a body-less operation declares it as `[feeds: …]` metadata (046 §4.2), whose carrier landed with WI-087/WI-309. |
+| Result-aliasing markers | **Not adopted.** The feed-relationship is derived from the operation's *body* (WI-352), so the common case carries no annotation at all; a body-less operation declares it as `@[feeds: …]` metadata (046 §4.2), whose carrier landed with WI-087/WI-309. |
 | Closure-disposition markers | **Adopted, in effect-row currency.** The 045 `lacks` constraint on a callback binder — `-Modify[x]` — with call-site checking (WI-440) and stdlib consumers in `filter` / `find` / `map` (WI-441). Not an anthill `Fn` / `FnMut` / `FnOnce`. |
 | Region polymorphism | **Not adopted.** Tofte–Talpin *substitution* is what the boundary classifier performs (WI-353), but signatures stayed region-monomorphic — the months of typer work this plan priced were not spent. |
 

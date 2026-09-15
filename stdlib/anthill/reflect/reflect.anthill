@@ -64,9 +64,8 @@ namespace anthill.reflect
 
   -- The monotonicity of `functor`'s facts, keyed by the functor's Symbol.
   -- A project marks its retractable functors by rule, e.g.
-  --   rule fact_monotonicity(WorkItem) <=> non_monotone() [simp]
-  -- (the `[simp]` tag is required — an untagged equational rule loads inert;
-  -- the nullary RHS needs parens so `[simp]` is not misparsed into it).
+  --   rule fact_monotonicity(WorkItem) <=> non_monotone() @[simp]
+  -- (the `@[simp]` tag is required — an untagged equational rule loads inert).
   --
   -- There is deliberately NO catch-all `fact_monotonicity(?) <=> monotone()`
   -- default rule: under the current load-order simp firing (most-specific-
@@ -102,9 +101,9 @@ namespace anthill.reflect
   -- is the window AFTER load, where the index is live and nothing would invalidate it:
   -- a missed requirement is not a slow answer but a dictionary slot that silently stops
   -- existing, so the program loads clean and dies at eval.
-  rule fact_monotonicity(OperationInfo) <=> constant() [simp]
-  rule fact_monotonicity(SortProvidesInfo) <=> constant() [simp]
-  rule fact_monotonicity(SortRequiresInfo) <=> constant() [simp]
+  rule fact_monotonicity(OperationInfo) <=> constant() @[simp]
+  rule fact_monotonicity(SortProvidesInfo) <=> constant() @[simp]
+  rule fact_monotonicity(SortRequiresInfo) <=> constant() @[simp]
 
   -- ================================================================
   -- Source positions and occurrences (Proposal 022)
@@ -351,7 +350,7 @@ namespace anthill.reflect
   -- the functor is resolved from `name`, the positional argument occurrences are
   -- reused in place (so each keeps its identity + span), and `from` is the source
   -- occurrence the built node points at for diagnostics (`Synthesized.from`). A
-  -- macro (an occurrence-returning op in a `[simp]` RHS) constructs its result
+  -- macro (an occurrence-returning op in a `@[simp]` RHS) constructs its result
   -- through this rather than `make_fn`, because a result that carries child
   -- occurrences — a reused argument, a lambda body — cannot be a `Term`.
   operation make_apply(name: String, args: List[NodeOccurrence], from: NodeOccurrence) -> NodeOccurrence
@@ -403,7 +402,7 @@ namespace anthill.reflect
   -- registrations and onto `rustland/anthill-stl/anthill/reflect.anthill`'s
   -- `operation_map`. These three were NOT part of that, and the difference is worth
   -- stating rather than leaving to be rediscovered: there was no registration to move.
-  -- They have no host function in any registry, no body, and no `[simp]` equation, so
+  -- They have no host function in any registry, no body, and no `@[simp]` equation, so
   -- they run NOWHERE — not from a rule and not from an operation body either, where the
   -- other 26 always did work. A call dies `OperationBodyMissing`.
   --
@@ -710,7 +709,7 @@ namespace anthill.reflect
     -- WI-278: method-call (dot) syntax — `receiver.name(args)` or
     -- `receiver.name`. A pre-dispatch form emitted by the converter for
     -- value-receiver dot forms; the callee operation is not resolved yet,
-    -- only the member `name` and the `receiver` expression. The `[simp]`
+    -- only the member `name` and the `receiver` expression. The `@[simp]`
     -- dot rules (proposal 043 §6) rewrite it to `apply` (method) or a field
     -- access (field) once the receiver's type is known. Field access has an
     -- empty `args` list; a method call carries its arguments.
@@ -907,7 +906,7 @@ namespace anthill.reflect
     -- "no type parameters" (see `op_info::type_param_entries`).
     type_params  : List[Term],
     -- WI-087: operation attributes / metadata. A `meta(key: value, ...)` term
-    -- (same shape as rule/fact meta) carrying the operation's `[Marker, Key: v]`
+    -- (same shape as rule/fact meta) carrying the operation's `@[Marker, Key: v]`
     -- meta_block. Empty `meta()` when the operation has no meta_block. Downstream
     -- tools (codegen markers, Profile / CppBody / CppName hints) read it via
     -- `meta_has_flag` / `meta_value`.

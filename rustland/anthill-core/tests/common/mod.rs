@@ -249,7 +249,7 @@ pub fn try_load_kb_untyped_with(source: &str) -> Result<KnowledgeBase, Vec<Strin
 /// WI-1122 — [`try_load_kb_with`] with a hook that runs on the FRESH KB before
 /// `load_all`, for the embedder seams that must be mounted before load
 /// (`register_host_fn`, `register_extent_owner`). Registering after the load would not
-/// exercise the documented ordering: load itself builds interpreters (a `[simp]` macro
+/// exercise the documented ordering: load itself builds interpreters (a `@[simp]` macro
 /// fire crosses `run_in_bridge_interp`), and `register_host_fn` now REFUSES a late
 /// entry, so a test that registered afterwards would not load at all.
 #[allow(dead_code)]
@@ -1317,7 +1317,7 @@ pub fn defer_dict_param_name(
 }
 
 /// The short name of an occurrence's head functor (`test.ns.wrapped(…)` →
-/// `"wrapped"`) — the assertion every `[simp]`/macro suite makes about a rewritten
+/// `"wrapped"`) — the assertion every `@[simp]`/macro suite makes about a rewritten
 /// operation body: *which* functor the rewrite produced.
 ///
 /// WI-902: byte-identical copies had accumulated in `wi669_defining_equations_test`,

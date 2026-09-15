@@ -158,19 +158,19 @@ class ParseTest extends munit.FunSuite:
       case Term.Bottom => ()
       case other => fail(s"$label should store Term.Bottom, got $other")
 
-  test("WI-154: bare `[simp]` parses identically to `[simp: true]` for key presence") {
-    val (pfBare, bare) = ruleMeta("rule ?a + zero = ?a [simp]")
-    val (pfFull, full) = ruleMeta("rule ?a + zero = ?a [simp: true]")
+  test("WI-154: bare `@[simp]` parses identically to `@[simp: true]` for key presence") {
+    val (pfBare, bare) = ruleMeta("rule ?a + zero = ?a @[simp]")
+    val (pfFull, full) = ruleMeta("rule ?a + zero = ?a @[simp: true]")
 
     assertEquals(bare.length, 1)
     assertEquals(full.length, 1)
     assertEquals(pfBare.symbols.name(bare.head.key.last), "simp")
     assertEquals(pfFull.symbols.name(full.head.key.last), "simp")
-    assertBottom(pfBare, bare.head.value, "bare [simp]")
+    assertBottom(pfBare, bare.head.value, "bare @[simp]")
   }
 
-  test("WI-154: multiple flags `[simp, unfold, hint]` all parse as bare entries") {
-    val (pf, entries) = ruleMeta("rule ?a + zero = ?a [simp, unfold, hint]")
+  test("WI-154: multiple flags `@[simp, unfold, hint]` all parse as bare entries") {
+    val (pf, entries) = ruleMeta("rule ?a + zero = ?a @[simp, unfold, hint]")
     assertEquals(entries.length, 3)
     val keys = entries.map(e => pf.symbols.name(e.key.last)).toSet
     assertEquals(keys, Set("simp", "unfold", "hint"))
@@ -179,7 +179,7 @@ class ParseTest extends munit.FunSuite:
   }
 
   test("WI-154: mixed bare and keyed entries `[simp, agent: \"x\"]`") {
-    val (pf, entries) = ruleMeta("""rule ?a + zero = ?a [simp, agent: "x"]""")
+    val (pf, entries) = ruleMeta("""rule ?a + zero = ?a @[simp, agent: "x"]""")
     assertEquals(entries.length, 2)
     val keys = entries.map(e => pf.symbols.name(e.key.last))
     assertEquals(keys, IndexedSeq("simp", "agent"))
@@ -454,22 +454,23 @@ class ParseTest extends munit.FunSuite:
       .head.items.collect { case Item.OperationItem(o) => o }.head
     (pf, op)
 
-  // WI-087: operation attributes via a `meta [...]` clause (re-ported from the
-  // retired wi068 branch — unblocks the C++ mapping codegen, which reads op meta).
-  test("WI-087: operation `meta [...]` clause is captured in Operation.meta") {
-    val (pf, op) = parseDemoOp("""  operation get() -> T meta [inline, CppName: "get_t"]""")
+  // WI-087: operation attributes (re-ported from the retired wi068 branch — unblocks
+  // the C++ mapping codegen, which reads op meta). Since WI-20260915-G9EA9 the block
+  // trails the operation as `@[...]`; the `meta [...]` clause is retired.
+  test("WI-087 / G9EA9: an operation's trailing `@[...]` block is captured in Operation.meta") {
+    val (pf, op) = parseDemoOp("""  operation get() -> T @[inline, CppName: "get_t"]""")
     val keys = op.meta.map(_.entries).getOrElse(IndexedSeq.empty)
       .map(e => pf.symbols.name(e.key.last)).toSet
     assertEquals(keys, Set("inline", "CppName"))
   }
 
-  test("WI-087: `meta [...]` composes with an effects clause") {
+  test("WI-087 / G9EA9: a trailing `@[...]` block follows an effects clause") {
     probeOk("op-meta-effects",
       """sort Demo
         |  sort Modifies = ?
         |  operation put(x: T) -> T
         |    effects Modifies
-        |    meta [host: "rust"]
+        |    @[host: "rust"]
         |end""".stripMargin)
   }
 
@@ -1755,7 +1756,8 @@ end
   //     back to `parse error: found …`.
   //   * `a dot head keeps its meta block` and `a bracket off a call does not parse` —
   //     GREEN EITHER WAY, by design. They are the narrowness controls: the bracket is
-  //     admitted only when a `(` follows, which is what leaves `?x.m [simp]` alone.
+  //     admitted only when a `(` follows. That is what left `?x.m [simp]` alone while a
+  //     block was a bare bracket; since WI-20260915-G9EA9 its `@[` cannot be one.
 
   private def dotBracketErrors(src: String): IndexedSeq[String] =
     Parser.parse(src, "<bad3v>") match
@@ -1791,43 +1793,43 @@ end
   }
 
   test("WI-20260829-BAD3V: a dot head keeps its meta block") {
-    // The narrowness control. A `[` after a dotted member is also how a `meta_block`
-    // opens; the bracket arm requires the call's `(`, so `[simp]` with nothing after it
-    // can only be the meta block. Green against the backed-out parser — it measures the
-    // DESIGN, not the feature. MEASURED against the wider arm `instArgsList ~
-    // fnArgsList.?` (the shape that does not require the call): this test and its
-    // neighbour both fail, `fact ?x.m [simp]` and `fact ?x.field[T = Int]` each drawing
-    // the dot refusal. Note the failure mode differs from rustland's, where the same
-    // widening EATS the attribute silently into a `sort_binding`: here the refusal fires
-    // on `typeArgs.nonEmpty` whatever follows, so a `[simp]` after a dot head would be
-    // loudly rejected instead. Loud, but wrong — the attribute is not a type argument.
-    for src <- Seq("fact ?x.m [simp]", "rule dr: ?x.m [simp]", "rule dr2: ?x.m(?y) [simp]") do
+    // A dot head keeps its block. MEASURED while a block was a bare `[simp]`, against the
+    // wider arm `instArgsList ~ fnArgsList.?` (the shape that does not require the call):
+    // this test and its neighbour both failed, `fact ?x.m [simp]` and
+    // `fact ?x.field[T = Int]` each drawing the dot refusal. Since WI-20260915-G9EA9 the
+    // block opens with `@[`, which the bracket arm cannot begin, so this row passes under
+    // either arm and pins only the block reading; the neighbour
+    // (`a bracket off a call does not parse`) still separates the designs.
+    for src <- Seq("fact ?x.m @[simp]", "rule dr: ?x.m @[simp]", "rule dr2: ?x.m(?y) @[simp]") do
       val pf = Parser.parse(src, "<bad3v-meta>") match
         case Right(p) => p
         case Left(errs) => fail(s"$src: ${errs.map(_.message).mkString("; ")}")
       val meta = pf.items.collectFirst {
         case Item.FactItem(f) => f.meta
         case Item.RuleItem(r) => r.meta
-      }.flatten.getOrElse(fail(s"$src: the `[simp]` must still be the META BLOCK"))
+      }.flatten.getOrElse(fail(s"$src: the `@[simp]` must still be the META BLOCK"))
       assertEquals(
         meta.entries.map(e => e.key.segments.map(pf.symbols.name).mkString(".")).toList,
         List("simp"), src)
   }
 
-  test("WI-20260829-BAD3V: a juxtaposed entry's `(` reaches the bracket (divergence, pinned)") {
-    // NOT parity with rustland, and pinned so the difference is a decision rather than a
-    // surprise (found by /code-review). Rustland declares a GLR conflict biased toward the
-    // META reading, so it reads THREE entries here; fastparse is ordered, so the bracket
-    // alternative wins and this parses as one bracketed dot call, which is then refused.
-    //
-    // BOTH IMPLEMENTATIONS REFUSE THIS FILE — rustland at conversion ("a rule head must be
-    // an atom, not a bare literal") — so what diverges is which error an already-invalid
-    // program draws, and no VALID program is known to reach it (see `refuseDotTypeArgs`).
-    // If one is ever found, this row is the one that has to move.
-    val src = "sort S\n  rule {\n    ?x.m [simp]\n    (a, b)\n  }\nend\n"
-    val msgs = dotBracketErrors(src)
-    assert(msgs.head.contains("call-site type arguments are not supported on a dot call"),
-      s"expected the dot refusal; got: ${msgs.mkString("; ")}")
+  test("WI-20260915-G9EA9: a juxtaposed entry's `(` no longer reaches a block") {
+    // This row used to pin a DIVERGENCE: with a bare `[simp]` block, fastparse's ordered
+    // bracket alternative took `?x.m [simp]` plus the next entry's `(a, b)` as one
+    // bracketed dot call, while rustland's GLR tie kept the block. A block now opens with
+    // `@[`, which the dot-call bracket cannot begin, so both parsers read the entry's
+    // block and a separate `(a, b)` entry — which the loader then refuses as a bare
+    // literal conclusion (`RuleHeadDeclarationTest`). What this row pins is the reading.
+    val src = "sort S\n  rule {\n    ?x.m @[simp]\n    (a, b)\n  }\nend\n"
+    val pf = Parser.parse(src, "<g9ea9-juxtaposed>") match
+      case Right(p) => p
+      case Left(errs) => fail(s"expected the block reading; got: ${errs.map(_.message).mkString("; ")}")
+    val entries = pf.items.collect { case Item.SortWithBodyItem(s) => s.items }.flatten.collect {
+      case Item.RuleBlockItem(b) => b.entries
+    }.flatten
+    assertEquals(entries.length, 2, "the dot entry and the `(a, b)` entry")
+    val keys = entries.head.meta.map(_.entries.map(e => e.key.segments.map(pf.symbols.name).mkString("."))).getOrElse(IndexedSeq.empty)
+    assertEquals(keys.toList, List("simp"))
   }
 
   test("WI-20260829-BAD3V: a bracket off a call does not parse") {

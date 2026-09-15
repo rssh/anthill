@@ -176,7 +176,7 @@ fn a_minted_unify_carries_its_address() {
     let spellings = minted_spellings(
         "namespace test.w909.eqn\n  \
          operation tau909() -> Int64\n  \
-         rule tau909() <=> 7 [simp]\n\
+         rule tau909() <=> 7 @[simp]\n\
          end\n",
         "unify",
         pratt::UNIFY_FUNCTOR,
@@ -321,7 +321,7 @@ fn a_rule_head_named_cut_introduces_a_local_name() {
     );
 }
 
-/// The equation fixture: a `[simp]` definition plus a probe that forces the rewrite.
+/// The equation fixture: a `@[simp]` definition plus a probe that forces the rewrite.
 /// `rival` is spliced in as an extra namespace-level line.
 ///
 /// THE RIVAL IS A REAL ONE. `anthill.reflect.unify(a: Term, b: Term, kb: KB)` is a
@@ -338,7 +338,7 @@ fn eqn_src(rival: &str) -> String {
 {rival}
       operation tau909() -> Int64
 
-      rule tau909() <=> 7 [simp]
+      rule tau909() <=> 7 @[simp]
 
       rule probe909(1) :- eq(7, tau909())
     end
@@ -380,7 +380,7 @@ fn a_rival_unify_in_scope_does_not_capture_the_equation() {
     assert_eq!(
         definite_unary(&mut control, "test.w909.eqn.probe909").len(),
         1,
-        "control: with no rival the `[simp]` equation rewrites `tau909()` to `7` and the \
+        "control: with no rival the `@[simp]` equation rewrites `tau909()` to `7` and the \
          probe decides. If THIS fails the fixture is broken, not the address"
     );
     let mut rivalled = load_kb_with(&eqn_src("      import anthill.reflect.{unify}\n"));

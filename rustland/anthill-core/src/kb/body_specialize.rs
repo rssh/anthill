@@ -19,7 +19,7 @@
 //! reduces deterministically instead (the caller's direct call handles that
 //! ground case); an unknown scrutinee that is not a flex var is left opaque.
 //!
-//! (An earlier increment wired the reducer to the typer's `[simp]` hook (§3.2);
+//! (An earlier increment wired the reducer to the typer's `@[simp]` hook (§3.2);
 //! that proved type-unsound — rewriting a call before `check_apply_iter` bypasses
 //! signature-level checks — and was the wrong consumer for the untagged `<=>`
 //! twins, so WI-580 targets this SLD site. See `wi580-body-derived-rules` memo.)
@@ -1260,7 +1260,7 @@ fn goal_value_args(
 /// exist.
 ///
 /// The future this leaves open (post-release, not before — see WI-1050) is a mode
-/// that applies `[simp]` AFTER typing, where effects are eliminated and the row
+/// that applies `@[simp]` AFTER typing, where effects are eliminated and the row
 /// is ground. That is the only shape in which the polymorphic arm could earn a
 /// different verdict.
 #[derive(Debug, Clone)]
@@ -1315,7 +1315,7 @@ impl KnowledgeBase {
     /// §"Consumers"). Two consumers name this row in a LOUD decline rather than a
     /// silent absence: the proof-time goal-closure sweep
     /// ([`Self::synthesize_body_derived_defrules`], deduped once per op) and the
-    /// load-time `[simp]`/`[unfold]` formation gate (`check_simp_effectful_ops`,
+    /// load-time `@[simp]`/`@[unfold]` formation gate (`check_simp_effectful_ops`,
     /// as a `TypeError`). A test asserts this predicate directly so the mechanism
     /// is non-vacuous.
     ///

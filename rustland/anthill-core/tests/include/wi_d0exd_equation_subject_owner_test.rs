@@ -13,7 +13,7 @@
 //! ```text
 //!   namespace qlib
 //!     rule f(2)                        -- 061: a body-less rule DECLARES a predicate
-//!     sort Rec { entity r(n: Int64)    rule f() <=> 1 [simp] }
+//!     sort Rec { entity r(n: Int64)    rule f() <=> 1 @[simp] }
 //!   end
 //!     -> qlib.Rec.f ABSENT. `Rec.f()` = "unknown functor"; `f()` under `import qlib.*`
 //!        = Int(1) — the sort's operation MOVED to the namespace.
@@ -27,7 +27,7 @@
 //! ── WHY REFUSED RATHER THAN SPLIT ───────────────────────────────────────────
 //!
 //! The language already refuses this pair wherever neither side is minted before phase 2:
-//! `zi { rule f(true) <=> 7 [simp] }` beside `zj { import zi.*  rule f(1) :- true }` is
+//! `zi { rule f(true) <=> 7 @[simp] }` beside `zj { import zi.*  rule f(1) :- true }` is
 //! `NameIntroducedAtTwoVisibleScopes`, because both heads introduce and phase 2 reads a
 //! pre-mint table. A 061 DECLARATION is minted in pass 1, so it is the ONE shape reaching
 //! phase 2 already denoting — a hole in that refusal rather than a different question.
@@ -173,7 +173,7 @@ fn present(kb: &KnowledgeBase, qn: &str) -> bool {
 
 /// The sort body both arms share, verbatim. The only difference between the arms is the
 /// namespace-level line, which is not about the sort at all.
-const REC: &str = "  sort Rec\n    entity r(n: Int64)\n    rule f() <=> 1 [simp]\n  end\nend\n";
+const REC: &str = "  sort Rec\n    entity r(n: Int64)\n    rule f() <=> 1 @[simp]\n  end\nend\n";
 
 /// The citation that makes the sort's operation observable — driven, so an arm cannot
 /// pass by the name merely existing.
@@ -236,7 +236,7 @@ fn the_two_prescribed_repairs_both_answer() {
     // program the loader rejects while this row quietly measured a different one.
     let mut owner = crate::common::interp_for(
         "namespace qlib\n  operation f() -> Int64\n  sort Rec\n    entity r(n: Int64)\n    \
-         rule f() <=> 1 [simp]\n  end\nend\n\
+         rule f() <=> 1 @[simp]\n  end\nend\n\
          namespace qcall\n  import qlib.{f}\n  operation g() -> Int64 = f()\nend\n",
     );
     assert_eq!(
@@ -248,7 +248,7 @@ fn the_two_prescribed_repairs_both_answer() {
     // gives the subject something local to land on, and the sort keeps its operation.
     let mut per_scope = crate::common::interp_for(
         "namespace qlib\n  rule f(2)\n  sort Rec\n    entity r(n: Int64)\n    rule f()\n    \
-         rule f() <=> 1 [simp]\n  end\nend\n\
+         rule f() <=> 1 @[simp]\n  end\nend\n\
          namespace qcall\n  import qlib.{Rec}\n  operation g() -> Int64 = Rec.f()\nend\n",
     );
     assert_eq!(
@@ -267,7 +267,7 @@ fn an_imported_predicate_declaration_does_not_take_the_equation_either() {
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with_files(&[
             "namespace za\n  rule f(?x)\n  rule f(1) :- true\nend\n",
-            "namespace zb\n  import za.*\n  rule f(true) <=> 7 [simp]\nend\n",
+            "namespace zb\n  import za.*\n  rule f(true) <=> 7 @[simp]\nend\n",
         ]),
         &["the equation subject `f` names the RELATION `f` declared in 'za'"],
     );
@@ -276,7 +276,7 @@ fn an_imported_predicate_declaration_does_not_take_the_equation_either() {
     // any equation in a scope that imports anything.
     let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[
         "namespace za2\n  rule other(?x)\n  rule other(1) :- true\nend\n",
-        "namespace zb2\n  import za2.*\n  rule f(true) <=> 7 [simp]\nend\n",
+        "namespace zb2\n  import za2.*\n  rule f(true) <=> 7 @[simp]\nend\n",
     ]));
     assert!(present(&kb, "zb2.f"), "CONTROL: the subject is minted where it is written");
 }
@@ -291,19 +291,19 @@ fn a_predicate_declared_where_the_equation_is_written_is_not_refused() {
     // second is the row that says the guard asks about the SCOPE and not about adjacency
     // in the text.
     let one_file = crate::common::load_kb_with(
-        "namespace zc\n  rule f(?x)\n  rule f(true) <=> 7 [simp]\nend\n",
+        "namespace zc\n  rule f(?x)\n  rule f(true) <=> 7 @[simp]\nend\n",
     );
     assert!(present(&one_file, "zc.f"), "one scope, one file");
     let two_files = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[
         "namespace zd\n  rule f(?x)\nend\n",
-        "namespace zd\n  rule f(true) <=> 7 [simp]\nend\n",
+        "namespace zd\n  rule f(true) <=> 7 @[simp]\nend\n",
     ]));
     assert!(present(&two_files, "zd.f"), "one scope, two files");
     // AND IT ANSWERS. `present` alone would pass for a name that exists and rewrites
     // nothing, which is exactly what the defect produced at the other scope.
     let mut interp = crate::common::interp_for(
         "namespace ze\n  sort Rec\n    entity r(n: Int64)\n    rule f(?x)\n    \
-         rule f(false) <=> 2 [simp]\n  end\nend\n\
+         rule f(false) <=> 2 @[simp]\n  end\nend\n\
          namespace zec\n  import ze.{Rec}\n  operation g() -> Int64 = Rec.f(false)\nend\n",
     );
     assert_eq!(
@@ -320,8 +320,8 @@ fn an_operation_is_still_what_an_equation_defines() {
     // becomes the namespace operation's defining equation. Same shape as the refused
     // fixture in every respect but the declaration's keyword.
     let mut interp = crate::common::interp_for(
-        "namespace zf\n  operation f(b: Bool) -> Int64\n  rule f(true) <=> 1 [simp]\n  \
-         sort Rec\n    entity r(n: Int64)\n    rule f(false) <=> 2 [simp]\n  end\nend\n\
+        "namespace zf\n  operation f(b: Bool) -> Int64\n  rule f(true) <=> 1 @[simp]\n  \
+         sort Rec\n    entity r(n: Int64)\n    rule f(false) <=> 2 @[simp]\n  end\nend\n\
          namespace zfc\n  import zf.{f}\n  operation g() -> Int64 = f(false)\nend\n",
     );
     assert_eq!(
@@ -330,8 +330,8 @@ fn an_operation_is_still_what_an_equation_defines() {
         "the SORT's equation defines the NAMESPACE's operation"
     );
     let kb = crate::common::load_kb_with(
-        "namespace zg\n  operation f(b: Bool) -> Int64\n  rule f(true) <=> 1 [simp]\n  \
-         sort Rec\n    entity r(n: Int64)\n    rule f(false) <=> 2 [simp]\n  end\nend\n",
+        "namespace zg\n  operation f(b: Bool) -> Int64\n  rule f(true) <=> 1 @[simp]\n  \
+         sort Rec\n    entity r(n: Int64)\n    rule f(false) <=> 2 @[simp]\n  end\nend\n",
     );
     assert!(
         !present(&kb, "zg.Rec.f"),
@@ -347,7 +347,7 @@ fn a_predicate_head_and_an_equation_subject_are_refused_when_neither_denotes() {
     // silently would be one hole in one rule, not a second rule.
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with_files(&[
-            "namespace zi\n  rule f(true) <=> 7 [simp]\nend\n",
+            "namespace zi\n  rule f(true) <=> 7 @[simp]\nend\n",
             "namespace zj\n  import zi.*\n  rule f(1) :- true\nend\n",
         ]),
         &["the rule head `f` introduces that name at 2 scopes"],
@@ -392,7 +392,7 @@ fn an_ambiguous_name_is_refused_only_when_every_candidate_is_a_predicate() {
         crate::common::try_load_kb_with_files(&[
             "namespace am1\n  rule f(?x)\nend\n",
             "namespace am2\n  rule f(?y)\nend\n",
-            "namespace am3\n  import am1.*\n  import am2.*\n  rule f(true) <=> 7 [simp]\nend\n",
+            "namespace am3\n  import am1.*\n  import am2.*\n  rule f(true) <=> 7 @[simp]\nend\n",
         ]),
         &[
             // BOTH candidates, not whichever the resolver sorted first — naming one sent
@@ -409,7 +409,7 @@ fn an_ambiguous_name_is_refused_only_when_every_candidate_is_a_predicate() {
         crate::common::try_load_kb_with_files(&[
             "namespace an1\n  rule f(?x)\nend\n",
             "namespace an2\n  operation f(b: Bool) -> Int64\nend\n",
-            "namespace an3\n  import an1.*\n  import an2.*\n  rule f(true) <=> 7 [simp]\nend\n",
+            "namespace an3\n  import an1.*\n  import an2.*\n  rule f(true) <=> 7 @[simp]\nend\n",
         ]),
         &["ambiguous symbol 'f' in scope 'an3'"],
     );
@@ -421,7 +421,7 @@ fn an_ambiguous_name_is_refused_only_when_every_candidate_is_a_predicate() {
         crate::common::try_load_kb_with_files(&[
             "namespace am1\n  rule f(?x)\nend\n",
             "namespace am2\n  rule f(?y)\nend\n",
-            "namespace am3\n  import am1.*\n  import am2.*\n  rule f(true) <=> 7 [simp]\nend\n",
+            "namespace am3\n  import am1.*\n  import am2.*\n  rule f(true) <=> 7 @[simp]\nend\n",
         ]),
         &[
             "Declare a body-less `rule f(…)` in 'am3' to keep this equation here",
@@ -435,7 +435,7 @@ fn an_ambiguous_name_is_refused_only_when_every_candidate_is_a_predicate() {
         "namespace bm1\n  rule f(?x)\nend\n",
         "namespace bm2\n  rule f(?y)\nend\n",
         "namespace bm3\n  import bm1.*\n  import bm2.*\n  rule f(?z)\n  \
-         rule f(true) <=> 7 [simp]\n  operation g() -> Int64 = f(true)\nend\n",
+         rule f(true) <=> 7 @[simp]\n  operation g() -> Int64 = f(true)\nend\n",
     ]);
     assert_eq!(
         int_value(interp.call("bm3.g", &[]).expect("the prescribed declaration answers")),
@@ -459,7 +459,7 @@ fn a_name_that_is_also_an_operation_is_not_this_refusal() {
     // THIS ROW IS THAT BACK-OUT'S MISSING WITNESS: restore the deletion and it fails.
     let errs = crate::common::try_load_kb_with(
         "namespace ql9\n  rule f(2)\n  operation f() -> Int64\n  sort Rec\n    \
-         entity r(n: Int64)\n    rule f() <=> 1 [simp]\n  end\nend\n",
+         entity r(n: Int64)\n    rule f() <=> 1 @[simp]\n  end\nend\n",
     )
     .err()
     .expect("061 refuses the body-less rule beside the operation");
@@ -484,7 +484,7 @@ fn a_global_predicate_is_not_a_party_to_this_refusal() {
     // error naming `'<global>'`.
     let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[
         "rule f(?x)\n",
-        "namespace pg\n  rule f(true) <=> 7 [simp]\nend\n",
+        "namespace pg\n  rule f(true) <=> 7 @[simp]\nend\n",
     ]));
     // AND THE ROW ASSERTS WHAT IT COSTS, not that it loaded — "it loads" is what this
     // file's header rules out, and `/code-review` caught this arm doing exactly that.
@@ -518,7 +518,7 @@ fn a_global_head_that_imported_the_namespace_is_refused() {
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with_files(&[
             "namespace pgz\n  rule f(?x)\n  rule f(1) :- true\nend\n",
-            "import pgz.*\nrule f(true) <=> 7 [simp]\n",
+            "import pgz.*\nrule f(true) <=> 7 @[simp]\n",
         ]),
         &["the equation subject `f` names the RELATION `f` declared in 'pgz'"],
     );
@@ -527,7 +527,7 @@ fn a_global_head_that_imported_the_namespace_is_refused() {
     // any equation written outside a namespace.
     let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[
         "namespace pgz2\n  rule f(?x)\n  rule f(1) :- true\nend\n",
-        "rule f(true) <=> 7 [simp]\n",
+        "rule f(true) <=> 7 @[simp]\n",
     ]));
     assert!(present(&kb, "pgz2.f"), "CONTROL: the namespace keeps its predicate");
 }
@@ -548,14 +548,14 @@ fn a_labelled_rules_own_name_is_a_relation_too() {
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with_files(&[
             "namespace lc1\n  rule f: p(?x) :- q(?x)\n  rule q(1) :- true\n  rule p(?y)\nend\n",
-            "namespace lc2\n  import lc1.*\n  rule f(true) <=> 7 [simp]\nend\n",
+            "namespace lc2\n  import lc1.*\n  rule f(true) <=> 7 @[simp]\nend\n",
         ]),
         &["the equation subject `f` names the RELATION `f` declared in 'lc1'"],
     );
     // THE CONTROL — the same label under another spelling, so nothing is reached.
     let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_files(&[
         "namespace lc3\n  rule other: p(?x) :- q(?x)\n  rule q(1) :- true\n  rule p(?y)\nend\n",
-        "namespace lc4\n  import lc3.*\n  rule f(true) <=> 7 [simp]\nend\n",
+        "namespace lc4\n  import lc3.*\n  rule f(true) <=> 7 @[simp]\nend\n",
     ]));
     assert!(present(&kb, "lc4.f"), "CONTROL: the subject is minted where it is written");
 }
@@ -574,8 +574,8 @@ fn a_relation_that_also_carries_equations_is_still_a_relation() {
     // was correctly refused. It takes a STAGED load to reach: within one scan neither head
     // denotes at phase 2, so the pair is the visibility refusal instead.
     let errs = staged_load_errors(&[
-        "namespace pzb9\n  rule f(1) :- true\n  rule f(true) <=> 7 [simp]\nend\n",
-        "namespace pzc9\n  import pzb9.*\n  rule f(false) <=> 8 [simp]\nend\n",
+        "namespace pzb9\n  rule f(1) :- true\n  rule f(true) <=> 7 @[simp]\nend\n",
+        "namespace pzc9\n  import pzb9.*\n  rule f(false) <=> 8 @[simp]\nend\n",
     ]);
     assert!(
         errs.iter().any(|e| e.contains("names the RELATION `f` declared in 'pzb9'")),
@@ -585,8 +585,8 @@ fn a_relation_that_also_carries_equations_is_still_a_relation() {
     // `Float.nonEqRefl` are the corpus's 12 such sites; without this arm "refuse when the
     // target carries `EquationFunctor`" would be indistinguishable from the rule above.
     let ok = staged_load_errors(&[
-        "namespace pzf9\n  rule f(true) <=> 7 [simp]\nend\n",
-        "namespace pzg9\n  import pzf9.*\n  rule f(false) <=> 8 [simp]\nend\n",
+        "namespace pzf9\n  rule f(true) <=> 7 @[simp]\nend\n",
+        "namespace pzg9\n  import pzf9.*\n  rule f(false) <=> 8 @[simp]\nend\n",
     ]);
     assert!(ok.is_empty(), "CONTROL: several laws about one bare subject: {ok:#?}");
 }
@@ -602,7 +602,7 @@ fn a_mixed_collision_groups_prescribed_owner_answers() {
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with(
             "namespace mx\n  rule f(false) :- true\n  sort A\n    entity a(n: Int64)\n    \
-             rule f(true) <=> 1 [simp]\n  end\nend\n",
+             rule f(true) <=> 1 @[simp]\n  end\nend\n",
         ),
         &["an `operation f(…) -> R` in 'mx' makes every one of those heads its own"],
     );
@@ -611,7 +611,7 @@ fn a_mixed_collision_groups_prescribed_owner_answers() {
     // pure-equation fixture could not have measured.
     const REPAIRED: &str = "namespace mx2\n  operation f(b: Bool) -> Int64\n  \
                             rule f(false) :- true\n  sort A\n    entity a(n: Int64)\n    \
-                            rule f(true) <=> 1 [simp]\n  end\nend\n";
+                            rule f(true) <=> 1 @[simp]\n  end\nend\n";
     let mut kb = crate::common::load_kb_with(REPAIRED);
     let sym = kb.try_resolve_symbol("mx2.f").expect("the operation owner");
     assert_eq!(
@@ -648,8 +648,8 @@ fn two_files_reaching_two_relations_is_not_an_ambiguity() {
     let errs = crate::common::try_load_kb_with_files(&[
         "namespace pza\n  rule f(?x)\n  rule f(1) :- true\nend\n",
         "namespace pzb\n  rule f(?y)\n  rule f(2) :- true\nend\n",
-        "namespace pzz\n  import pza.*\n  rule f(true) <=> 7 [simp]\nend\n",
-        "namespace pzz\n  import pzb.*\n  rule f(false) <=> 8 [simp]\nend\n",
+        "namespace pzz\n  import pza.*\n  rule f(true) <=> 7 @[simp]\nend\n",
+        "namespace pzz\n  import pzb.*\n  rule f(false) <=> 8 @[simp]\nend\n",
     ])
     .err()
     .expect("the subject is absorbed twice over");
@@ -667,9 +667,9 @@ fn two_files_reaching_two_relations_is_not_an_ambiguity() {
     let mut interp = crate::common::interp_for_files(&[
         "namespace pza\n  rule f(?x)\n  rule f(1) :- true\nend\n",
         "namespace pzb\n  rule f(?y)\n  rule f(2) :- true\nend\n",
-        "namespace pzz\n  rule f(?z)\n  import pza.*\n  rule f(true) <=> 7 [simp]\n  \
+        "namespace pzz\n  rule f(?z)\n  import pza.*\n  rule f(true) <=> 7 @[simp]\n  \
          operation g() -> Int64 = f(true)\nend\n",
-        "namespace pzz\n  import pzb.*\n  rule f(false) <=> 8 [simp]\n  \
+        "namespace pzz\n  import pzb.*\n  rule f(false) <=> 8 @[simp]\n  \
          operation h() -> Int64 = f(false)\nend\n",
     ]);
     assert_eq!(int_value(interp.call("pzz.g", &[]).expect("first clause")), 7);
@@ -686,7 +686,7 @@ fn one_absorbed_subject_is_one_message() {
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with(
             "namespace dupq\n  rule f(2)\n  sort Rec\n    entity r(n: Int64)\n    \
-             rule f(true) <=> 1 [simp]\n    rule f(false) <=> 2 [simp]\n  end\nend\n",
+             rule f(true) <=> 1 @[simp]\n    rule f(false) <=> 2 @[simp]\n  end\nend\n",
         ),
         // EXACTLY ONE — `expect_load_errors` asserts the count, which is the whole row.
         &["the equation subject `f` names the RELATION `f` declared in 'dupq'"],
@@ -696,8 +696,8 @@ fn one_absorbed_subject_is_one_message() {
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with(
             "namespace dupr\n  rule f(2)\n  rule h(3)\n  sort Rec\n    \
-             entity r(n: Int64)\n    rule f(true) <=> 1 [simp]\n    \
-             rule h(true) <=> 2 [simp]\n  end\nend\n",
+             entity r(n: Int64)\n    rule f(true) <=> 1 @[simp]\n    \
+             rule h(true) <=> 2 @[simp]\n  end\nend\n",
         ),
         &[
             "the equation subject `f` names the RELATION `f` declared in 'dupr'",

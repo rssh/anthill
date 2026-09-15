@@ -80,7 +80,7 @@ namespace wi881.float
     operation dMaxNaNRight(n: Int64) -> Float = Float.max(1.0, nan)
     operation dMinNaNLeft(n: Int64) -> Float = Float.min(nan, 1.0)
 
-    -- the `[simp]`-defined pair
+    -- the `@[simp]`-defined pair
     operation dRecip(n: Int64) -> Float = Float.recip(4.0)
 
     -- IEEE partiality is a VALUE (NaN / infinity), not an error
@@ -97,7 +97,7 @@ namespace wi881.float
     operation dIteAbsNegZeroRecip(n: Int64) -> Float = Float.recip(iteAbs(Float.neg(0.0)))
   end
 
-  -- A SECOND sort, so the `[simp]` definition is driven from somewhere that is not the
+  -- A SECOND sort, so the `@[simp]` definition is driven from somewhere that is not the
   -- declaring sort — an inlining backing must reach every call site, which is the
   -- property a host mapping gets for free and this one does not.
   sort Elsewhere
@@ -254,7 +254,7 @@ fn max_min_are_ieee_and_absorb_nan() {
 /// THE `neg` LAW, settled. `rule neg(?a) <=> sub(0.0, ?a)` is FALSE, and `recip` is
 /// the observation that shows it: `neg(0.0)` is `-0.0` (`recip` → `-inf`) while
 /// `0.0 - 0.0` is `+0.0` (`recip` → `+inf`). So the equation is not the definition and
-/// tagging it `[simp]` would have made `neg` compute the wrong sign at zero. It is
+/// tagging it `@[simp]` would have made `neg` compute the wrong sign at zero. It is
 /// restated over `mul(-1.0, ?a)`, which flips the sign bit exactly, and `neg` itself
 /// is backed by the host intrinsic.
 #[test]
@@ -280,7 +280,7 @@ namespace wi881.negLaw
     import anthill.prelude.{Float, Int64}
     import anthill.prelude.Numeric.{mul}
     operation lawNeg(a: Float) -> Float
-    rule lawNeg(?a) <=> mul(-1.0, ?a) [simp]
+    rule lawNeg(?a) <=> mul(-1.0, ?a) @[simp]
 
     operation drive(n: Int64) -> Float = lawNeg(2.5)
     operation driveZeroRecip(n: Int64) -> Float = Float.recip(lawNeg(0.0))
@@ -315,7 +315,7 @@ fn abs_is_not_definable_by_comparison() {
     ]);
 }
 
-/// THE `[simp]` DEFINITION reaches a call site OUTSIDE the declaring sort, and a
+/// THE `@[simp]` DEFINITION reaches a call site OUTSIDE the declaring sort, and a
 /// nested one. `recip` has no host mapping at all — `div` backs it through the
 /// equation — so if the inlining did not fire everywhere, this is where it would die
 /// `OperationBodyMissing`, which is the very failure the ticket exists to remove.
@@ -328,9 +328,9 @@ fn the_simp_definition_fires_away_from_its_sort() {
 }
 
 /// INLINING IS NOT DISPATCH, and here is where the difference is observable: it is why
-/// `tau` is host-backed and `recip` is not, though both equations are exact. A `[simp]`
+/// `tau` is host-backed and `recip` is not, though both equations are exact. A `@[simp]`
 /// head is an APPLICATION, so it matches `tau()` and NOT the BARE `tau` this sort's own
-/// comment advertises as a call form. With `[simp]` alone, `pi` and `e` answered bare
+/// comment advertises as a call form. With `@[simp]` alone, `pi` and `e` answered bare
 /// and `tau` died `OperationBodyMissing`; three constants of one family must behave
 /// alike, so all six of these run.
 /// [`a_bare_nullary_simp_head_fires_exactly_like_its_parenthesised_twin`] isolates the
@@ -347,14 +347,14 @@ fn the_constants_answer_in_both_nullary_call_forms() {
     ]);
 }
 
-/// THE HEAD SIDE, AND WI-20260902-CZJ2N FLIPPED IT: a `[simp]` equation whose head is
+/// THE HEAD SIDE, AND WI-20260902-CZJ2N FLIPPED IT: a `@[simp]` equation whose head is
 /// a BARE nullary name FIRES, exactly as its parenthesised twin does. The two heads are
-/// ONE TERM now (`KnowledgeBase::nullary_canon`), so `rule bare <=> add(25, 25) [simp]`
+/// ONE TERM now (`KnowledgeBase::nullary_canon`), so `rule bare <=> add(25, 25) @[simp]`
 /// defines `bare` and `driveBare` answers 50.
 ///
 /// WHAT IT USED TO ASSERT, kept because it is the defect this row now measures the
 /// absence of: `driveBare` died `OperationBodyMissing { wi881.nullary.C.bare }` with
-/// the `[simp]` tag PRESENT, on a program that loaded clean. That is why all four of
+/// the `@[simp]` tag PRESENT, on a program that loaded clean. That is why all four of
 /// `float.anthill`'s equations were inert. §5.3's trap "a nullary head must carry its
 /// parentheses" is deleted with this row's old verdict.
 ///
@@ -363,7 +363,7 @@ fn the_constants_answer_in_both_nullary_call_forms() {
 /// `nullary_canon`, or drop `simp_rewrite::stored_eq_operand_functor`'s `Term::Ref`
 /// arm), the `bare` arm reverts to `OperationBodyMissing` while the `parenthesized`
 /// arm keeps answering 40 — which is what says the axis is the head SPELLING and not
-/// the `[simp]` machinery.
+/// the `@[simp]` machinery.
 #[test]
 fn a_bare_nullary_simp_head_fires_exactly_like_its_parenthesised_twin() {
     const CONTROL: &str = r#"
@@ -375,10 +375,10 @@ namespace wi881.nullary
     import anthill.prelude.Numeric.{add}
 
     operation parenthesized() -> Int64
-    rule parenthesized() <=> add(20, 20) [simp]
+    rule parenthesized() <=> add(20, 20) @[simp]
 
     operation bare() -> Int64
-    rule bare <=> add(25, 25) [simp]
+    rule bare <=> add(25, 25) @[simp]
 
     operation driveParenthesized(n: Int64) -> Int64 = parenthesized()
     operation driveBare(n: Int64) -> Int64 = bare()
@@ -388,11 +388,11 @@ end
     let mut interp = crate::common::interp_for(CONTROL);
     match interp.call("wi881.nullary.C.driveParenthesized", &[Value::Int(0)]) {
         Ok(Value::Int(40)) => {}
-        other => panic!("a parenthesized nullary [simp] head must fire; got {other:?}"),
+        other => panic!("a parenthesized nullary @[simp] head must fire; got {other:?}"),
     }
     let mut interp = crate::common::interp_for(CONTROL);
     match interp.call("wi881.nullary.C.driveBare", &[Value::Int(0)]) {
         Ok(Value::Int(50)) => {}
-        other => panic!("a bare nullary [simp] head must fire too; got {other:?}"),
+        other => panic!("a bare nullary @[simp] head must fire too; got {other:?}"),
     }
 }

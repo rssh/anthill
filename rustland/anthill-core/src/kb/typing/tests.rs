@@ -2822,7 +2822,7 @@ end
         assert!(
             sort_provides(&kb, leaf, desc),
             "two providers satisfy `provides Desc` as well as one — an existence read \
-             (the WI-300 `find_dictionary` / `[simp]` guards) must stay TRUE and hand \
+             (the WI-300 `find_dictionary` / `@[simp]` guards) must stay TRUE and hand \
              the real choice to a selecting read (§4.9)"
         );
         assert!(

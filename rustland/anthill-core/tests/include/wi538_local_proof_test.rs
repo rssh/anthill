@@ -171,14 +171,14 @@ fn in_body_proofs_compose_in_sequence() {
 
 #[test]
 fn proof_is_transparent_to_simp_rewriting() {
-    // Regression (code-review, confirmed): a `[simp]` rewrite that fires
+    // Regression (code-review, confirmed): a `@[simp]` rewrite that fires
     // inside the proof's body must propagate through the typer's ProofStmt
     // reassembly. `simp_rewrite::reassemble` previously dropped it
     // (`Expr::Proof` fell into the leaf catch-all `_ => Rc::clone(occ)`),
     // so the stored tree kept the UN-rewritten body — green typing but a
     // broken downstream tree.
     //
-    // The `[simp]` dot rule rewrites `?b.special(7)` → `regular(b, 7)`
+    // The `@[simp]` dot rule rewrites `?b.special(7)` → `regular(b, 7)`
     // during typing (no `special` op exists). Wrapped in a proof, the
     // STORED continuation must be the rewritten `regular(...)`, not the
     // original `dot_apply(...)`.
@@ -189,7 +189,7 @@ fn proof_is_transparent_to_simp_rewriting() {
           sort Box
             entity box(value: Int64)
             operation regular(b: Box, x: Int64) -> Int64 = x
-            rule dr: dot_apply(?e, special, ?x) <=> regular(?e, ?x) [simp]
+            rule dr: dot_apply(?e, special, ?x) <=> regular(?e, ?x) @[simp]
             operation wrapped(b: Box) -> Int64 =
               proof p by derivation conclude eq(0, 0) end
               ?b.special(7)
@@ -204,18 +204,18 @@ fn proof_is_transparent_to_simp_rewriting() {
     let Some(Expr::Proof { body: cont, .. }) = body.as_expr() else {
         panic!("wrapped op body is not Expr::Proof");
     };
-    // The [simp] dot rule fired during typing; the proof must have
+    // The @[simp] dot rule fired during typing; the proof must have
     // propagated the rewrite into the stored tree.
     match cont.as_expr() {
         Some(Expr::Apply { functor, .. }) => assert_eq!(
             kb.local_name_of(*functor),
             "regular",
-            "the [simp] rewrite must propagate through the proof — continuation \
+            "the @[simp] rewrite must propagate through the proof — continuation \
              should be `regular`, got apply:{}",
             kb.local_name_of(*functor)
         ),
         Some(Expr::DotApply { .. }) => panic!(
-            "the [simp] rewrite was DROPPED: the proof continuation is still \
+            "the @[simp] rewrite was DROPPED: the proof continuation is still \
              dot_apply (simp_rewrite::reassemble missing the Expr::Proof arm)"
         ),
         other => panic!("unexpected proof continuation form: {other:?}"),

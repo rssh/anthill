@@ -48,7 +48,7 @@ namespace anthill.prelude
     -- diverge until then.)
     --
     -- `recip` is DELIBERATELY ABSENT, as it is from the rust binding: its equation in
-    -- `stdlib/anthill/prelude/float.anthill` carries `[simp]`, so `recip(a)` is
+    -- `stdlib/anthill/prelude/float.anthill` carries `@[simp]`, so `recip(a)` is
     -- inlined to `div(1.0, a)` at LOAD and never reaches any backend. Every other
     -- declared operation of the sort is here.
     operation_map {

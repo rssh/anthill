@@ -1671,20 +1671,20 @@ fn witness_tid_named<'a>(
 /// implicit citation. For rule `a.b.c.rule_name`, the parent scopes
 /// `a.b.c`, `a.b`, `a` are each scanned. Records are returned in
 /// outer-to-inner order (innermost scope's requires last).
-/// WI-139 [hint] semantics: walk the KB for rules whose meta carries
+/// WI-139 @[hint] semantics: walk the KB for rules whose meta carries
 /// the `hint` flag and whose head-functor QN sits in `rule_qn`'s
 /// enclosing scope chain. Each such rule is implicitly cited so its
 /// `-:` conclusion lifts as a forall hypothesis in the consumer's
-/// preamble — the SMT-side analogue of `[simp]`'s SLD-side
+/// preamble — the SMT-side analogue of `@[simp]`'s SLD-side
 /// auto-application.
 ///
 /// v0 limitation: the rule's identity for cite purposes is its
 /// head-functor QN (what `lift_rule_to_implication_clause` accepts).
 /// For rules whose head-functor uniquely identifies them
 /// (definitional unfolds with a unique top symbol, top-level rules
-/// where label==head-functor), [hint] works directly. For
+/// where label==head-functor), @[hint] works directly. For
 /// equational rules under shared `eq` functor, the lift picks the
-/// first rule under the symbol — multiple equational [hint]s with
+/// first rule under the symbol — multiple equational @[hint]s with
 /// the same scope risk lifting the wrong one. Document; revisit
 /// when a per-RuleId lift helper lands.
 fn hint_cites_for(rule_qn: &str, kb: &mut KnowledgeBase) -> Vec<String> {
@@ -1713,7 +1713,7 @@ fn hint_cites_for(rule_qn: &str, kb: &mut KnowledgeBase) -> Vec<String> {
         let functor = match kb.get_term(head) {
             Term::Fn { functor, .. } => *functor,
             // WI-20260902-CZJ2N: a NULLARY hint head is stored bare. Without this arm
-            // `rule p [hint] :- …` (and its parenthesised twin, which is now the same
+            // `rule p @[hint] :- …` (and its parenthesised twin, which is now the same
             // term) was silently dropped from the implicit-cite list, so its `-:`
             // conclusion never reached the SMT preamble and `by z3` reported `Unknown`
             // with no diagnostic.

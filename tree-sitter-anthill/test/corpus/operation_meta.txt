@@ -1,9 +1,8 @@
 ==================================
-Operation with meta clause (clauseless) — WI-087
+Operation block, clauseless — WI-087 / WI-20260915-G9EA9
 ==================================
 
-operation get_values(self: GPS) -> Vec3
-  meta [Vec3FromConstDoublePtr3, Profile: "cpp20-stl"]
+operation get_values(self: GPS) -> Vec3 @[Vec3FromConstDoublePtr3, Profile: "cpp20-stl"]
 
 ---
 
@@ -19,24 +18,22 @@ operation get_values(self: GPS) -> Vec3
     return_type: (simple_type
       (name
         (identifier)))
-    (operation_clause
-      (meta_clause
-        (meta_block
-          (meta_entry
-            key: (name
-              (identifier)))
-          (meta_entry
-            key: (name
-              (identifier))
-            value: (string_literal)))))))
+    (meta_block
+      (meta_entry
+        key: (name
+          (identifier)))
+      (meta_entry
+        key: (name
+          (identifier))
+        value: (string_literal)))))
 
 ==================================
-Operation with effects then meta clause — WI-087
+Operation block after an effects clause — WI-087 / WI-20260915-G9EA9
 ==================================
 
 operation step(self: Robot) -> Unit
   effects Modify[self]
-  meta [CppName: "step"]
+  @[CppName: "step"]
 
 ---
 
@@ -61,10 +58,93 @@ operation step(self: Robot) -> Unit
             type: (simple_type
               (name
                 (identifier)))))))
-    (operation_clause
-      (meta_clause
-        (meta_block
-          (meta_entry
-            key: (name
-              (identifier))
-            value: (string_literal)))))))
+    (meta_block
+      (meta_entry
+        key: (name
+          (identifier))
+        value: (string_literal)))))
+
+==================================
+Operation block after an expression body — WI-20260915-G9EA9
+==================================
+
+operation twice(n: Int64) -> Int64 = n + n @[Marker, Key: 7]
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name
+      (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type
+        (name
+          (identifier))))
+    return_type: (simple_type
+      (name
+        (identifier)))
+    body: (infix_term
+      (name
+        (identifier))
+      (operator_symbol)
+      (name
+        (identifier)))
+    (meta_block
+      (meta_entry
+        key: (name
+          (identifier)))
+      (meta_entry
+        key: (name
+          (identifier))
+        value: (integer_literal)))))
+
+==================================
+A block after a type is not its arguments, and a bracket is — WI-20260915-G9EA9
+==================================
+
+sort Ids = List @[Serializable]
+sort Xs = List [Int64]
+sort F = (A) -> B @ E @[M]
+
+---
+
+(source_file
+  (abstract_sort
+    name: (name
+      (identifier))
+    definition: (simple_type
+      (name
+        (identifier)))
+    (meta_block
+      (meta_entry
+        key: (name
+          (identifier)))))
+  (abstract_sort
+    name: (name
+      (identifier))
+    definition: (application
+      name: (name
+        (identifier))
+      (sort_binding
+        type: (simple_type
+          (name
+            (identifier))))))
+  (abstract_sort
+    name: (name
+      (identifier))
+    definition: (arrow_type
+      params: (tuple_type
+        (simple_type
+          (name
+            (identifier))))
+      return_type: (simple_type
+        (name
+          (identifier)))
+      effect: (simple_type
+        (name
+          (identifier))))
+    (meta_block
+      (meta_entry
+        key: (name
+          (identifier))))))

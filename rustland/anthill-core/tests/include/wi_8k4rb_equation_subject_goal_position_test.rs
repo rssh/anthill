@@ -1,6 +1,6 @@
 //! WI-20260902-8K4RB — AN EQUATION SUBJECT WRITTEN AS A RULE-BODY GOAL IS REFUSED.
 //!
-//! `rule reader(1) :- tauX` beside `rule tauX <=> 7 [simp]` used to LOAD CLEAN and
+//! `rule reader(1) :- tauX` beside `rule tauX <=> 7 @[simp]` used to LOAD CLEAN and
 //! answer nothing, at every arity and in both nullary spellings. The name RESOLVES —
 //! the mint stamps it `SymbolKind::EquationFunctor` — so WI-1034's "names nothing …
 //! can NEVER match" declined it, and the goal-reading pass fell through its `op_record`
@@ -116,7 +116,7 @@ fn every_spelling_of_an_equation_subject_cited_as_a_goal_is_refused() {
         for (cl, cite) in [("bare", "tauX"), ("paren", "tauX()")] {
             let src = format!(
                 "namespace zz8K4RB.h{hl}c{cl}\n  import anthill.prelude.Int64\n  \
-                 rule {head} <=> 7 [simp]\n  rule reader(1) :- {cite}\nend\n"
+                 rule {head} <=> 7 @[simp]\n  rule reader(1) :- {cite}\nend\n"
             );
             let errs = crate::common::try_load_kb_with(&src)
                 .err()
@@ -161,9 +161,9 @@ fn every_spelling_of_an_equation_subject_cited_as_a_goal_is_refused() {
 ///
 /// TWO AXES THE HEADLINE HOLDS FIXED, each of which a narrower fix would have got wrong.
 /// **Arity**: the headline is nullary throughout, because that is the spelling CZJ2N
-/// merged; an `n`-ary subject (`rule tauN(1) <=> 7 [simp]`) is the same defect and the
+/// merged; an `n`-ary subject (`rule tauN(1) <=> 7 @[simp]`) is the same defect and the
 /// ticket says "at every arity", so it is driven rather than argued. **The right-hand
-/// side's type**: `rule tauZ <=> true [simp]` is the shape an author most plausibly
+/// side's type**: `rule tauZ <=> true @[simp]` is the shape an author most plausibly
 /// writes on purpose — a boolean law meant as a condition — and it is exactly as
 /// unmatchable, because the clause still indexes under the connective. A gate written on
 /// the RETURN type (`Bool` reads as a goal, anything else does not — WI-583's rule for
@@ -171,8 +171,8 @@ fn every_spelling_of_an_equation_subject_cited_as_a_goal_is_refused() {
 #[test]
 fn neither_the_arity_nor_a_boolean_right_hand_side_makes_it_a_goal() {
     for (label, eqn, cite) in [
-        ("arity1", "rule tauN(1) <=> 7 [simp]", "tauN(1)"),
-        ("boolrhs", "rule tauZ <=> true [simp]", "tauZ"),
+        ("arity1", "rule tauN(1) <=> 7 @[simp]", "tauN(1)"),
+        ("boolrhs", "rule tauZ <=> true @[simp]", "tauZ"),
     ] {
         let errs = crate::common::try_load_kb_with(&format!(
             "namespace zz8K4RB.{label}\n  import anthill.prelude.{{Int64, Bool}}\n  \
@@ -198,7 +198,7 @@ fn neither_the_arity_nor_a_boolean_right_hand_side_makes_it_a_goal() {
 fn a_negated_citation_is_refused() {
     let errs = crate::common::try_load_kb_with(
         "namespace zz8K4RB.neg\n  import anthill.prelude.Int64\n  \
-         rule tauX <=> 7 [simp]\n  rule reader(1) :- not(tauX)\nend\n",
+         rule tauX <=> 7 @[simp]\n  rule reader(1) :- not(tauX)\nend\n",
     )
     .err()
     .expect("a negated equation-subject citation must be refused, not answered `true`");
@@ -230,7 +230,7 @@ fn a_negated_citation_is_refused() {
 fn a_citation_in_a_bare_or_branch_is_refused_too() {
     let errs = crate::common::try_load_kb_with(
         "namespace zz8K4RB.disj\n  import anthill.prelude.Int64\n  \
-         fact base(1)\n  rule tauD <=> 7 [simp]\n  \
+         fact base(1)\n  rule tauD <=> 7 @[simp]\n  \
          rule reader(1) :- base(1) | tauD\nend\n",
     )
     .err()
@@ -261,7 +261,7 @@ fn a_citation_in_a_bare_or_branch_is_refused_too() {
 fn a_declared_operation_carrying_equations_keeps_the_operation_diagnosis() {
     let errs = crate::common::try_load_kb_with(
         "namespace zz8K4RB.op\n  import anthill.prelude.Int64\n  \
-         operation tauO() -> Int64\n  rule tauO() <=> 7 [simp]\n  \
+         operation tauO() -> Int64\n  rule tauO() <=> 7 @[simp]\n  \
          rule reader(1) :- tauO()\nend\n",
     )
     .err()
@@ -298,7 +298,7 @@ fn a_multi_head_rule_reports_one_goal_once() {
     for (label, decl, goal, marker) in [
         (
             "equation",
-            "rule tauH <=> 7 [simp]",
+            "rule tauH <=> 7 @[simp]",
             "tauH",
             "is defined by EQUATIONS",
         ),
@@ -337,7 +337,7 @@ fn an_operation_body_citation_still_inlines_and_answers() {
     for (label, head) in [("bare", "tauV"), ("paren", "tauV()")] {
         let src = format!(
             "namespace zz8K4RB.val{label}\n  import anthill.prelude.Int64\n  \
-             rule {head} <=> 7 [simp]\n  \
+             rule {head} <=> 7 @[simp]\n  \
              operation drive(n: Int64) -> Int64 = tauV()\nend\n"
         );
         let mut interp = crate::common::interp_for(&src);
@@ -358,7 +358,7 @@ fn an_operation_body_citation_still_inlines_and_answers() {
     // second silent nothing.
     let mut interp = crate::common::interp_for(
         "namespace zz8K4RB.xinner\n  import anthill.prelude.Int64\n  \
-         rule tauX <=> 7 [simp]\nend\n\
+         rule tauX <=> 7 @[simp]\nend\n\
          namespace zz8K4RB.xouter\n  import anthill.prelude.Int64\n  \
          operation drive(n: Int64) -> Int64 = zz8K4RB.xinner.tauX()\nend\n",
     );
@@ -387,7 +387,7 @@ fn an_operation_body_citation_still_inlines_and_answers() {
 fn a_predicate_clause_on_the_same_name_keeps_the_goal_legal() {
     let mut kb = crate::common::load_kb_with(
         "namespace zz8K4RB.both\n  import anthill.prelude.Int64\n  \
-         rule tauB :- true\n  rule tauB <=> 7 [simp]\n  \
+         rule tauB :- true\n  rule tauB <=> 7 @[simp]\n  \
          rule reader(1) :- tauB\nend\n",
     );
     assert_eq!(
@@ -402,9 +402,9 @@ fn a_predicate_clause_on_the_same_name_keeps_the_goal_legal() {
 /// `UnreducedEquationFunctor`, not that error.
 ///
 /// That one is the VALUE-position citation the rewriter left standing, and its census
-/// branches send the author to tag the equation `[simp]` or to inspect the left-hand
-/// patterns. The fixture here is `[simp]`-TAGGED with one defining clause, so that
-/// census would reach its third branch — *"none of its 1 `[simp]` clause(s) fired here.
+/// branches send the author to tag the equation `@[simp]` or to inspect the left-hand
+/// patterns. The fixture here is `@[simp]`-TAGGED with one defining clause, so that
+/// census would reach its third branch — *"none of its 1 `@[simp]` clause(s) fired here.
 /// A clause fires only where its left-hand pattern matches STRUCTURALLY …"* — sending
 /// the author to inspect a clause that is fine. The position admits no rewrite at all,
 /// and the message has to say so.
@@ -412,7 +412,7 @@ fn a_predicate_clause_on_the_same_name_keeps_the_goal_legal() {
 fn the_refusal_names_the_goal_position_not_a_failed_rewrite() {
     let errs = crate::common::try_load_kb_with(
         "namespace zz8K4RB.msg\n  import anthill.prelude.Int64\n  \
-         rule tauM <=> 7 [simp]\n  rule reader(1) :- tauM\nend\n",
+         rule tauM <=> 7 @[simp]\n  rule reader(1) :- tauM\nend\n",
     )
     .err()
     .expect("must be refused");
@@ -420,12 +420,12 @@ fn the_refusal_names_the_goal_position_not_a_failed_rewrite() {
     assert!(
         joined.contains("a goal is MATCHED rather than rewritten"),
         "the message must say the POSITION admits no rewrite — and say it that way: \
-         `[simp]` DOES fire in a rule body's VALUE slot, so \"a rule body is not a \
+         `@[simp]` DOES fire in a rule body's VALUE slot, so \"a rule body is not a \
          rewrite site\" would be a false sentence about the line above; got:\n{joined}"
     );
     assert!(
         !joined.contains("clause(s) fired here"),
         "the `UnreducedEquationFunctor` wording would send the author to inspect a \
-         `[simp]` clause that is fine; got:\n{joined}"
+         `@[simp]` clause that is fine; got:\n{joined}"
     );
 }

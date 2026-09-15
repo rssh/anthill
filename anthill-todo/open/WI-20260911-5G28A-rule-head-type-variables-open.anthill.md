@@ -408,7 +408,7 @@ deleted). Nothing was built.
   * WHICH CLAUSES: every RELATIONAL clause whose declaring scope is a sort with type
     parameters, and the derived `<Sort>.domain` of a parameterised sort. An EQUATION — a
     rule whose head is an equality connective, `flatMap(pure(?x), ?f) <=> ?f(?x)` or
-    `keep[T](?x: T, ?y) <=> ?y :- F[T] [simp]`, as opposed to a predicate head — is
+    `keep[T](?x: T, ?y) <=> ?y :- F[T] @[simp]`, as opposed to a predicate head — is
     EXCLUDED (`is_equational_head`): its clauses index under the connective, it fires as a
     REWRITE in `apply_eq_rules` by matching a call at the arity the author wrote, and it
     cannot be cited as a `Relation`, so a slot would change the redex and nothing could

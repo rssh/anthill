@@ -202,7 +202,7 @@ project cps2 {
 ```
 fact Project("cps2", language: "scala", build: "sbt",
              tools: ["sbt-compile", "sbt-test", "scalafmt-check"])
-  [trust: axiom, agent: "author"]
+  @[trust: axiom, agent: "author"]
 ```
 
 Plus the tool import triggers: all `ToolDef` facts from `std.sbt` and `std.scalafmt` are loaded into the project's KB.
@@ -233,13 +233,13 @@ project domains-gradsoft {
 fact Project("domains-gradsoft",
              modules: ["backend", "frontend"],
              tools: ["sbt-compile", "sbt-test", "npm-build", "npm-test", "flyway-migrate"])
-  [trust: axiom, agent: "author"]
+  @[trust: axiom, agent: "author"]
 
 fact Module("backend", root: "backend", language: "scala", build: "sbt")
-  [trust: axiom, agent: "author"]
+  @[trust: axiom, agent: "author"]
 
 fact Module("frontend", root: "frontend", language: "typescript", build: "npm")
-  [trust: axiom, agent: "author"]
+  @[trust: axiom, agent: "author"]
 ```
 
 Plus auto-imports of `std.sbt`, `std.npm`, and `std.flyway` tool packs.
@@ -261,7 +261,7 @@ tool sbt-test-only {
 fact ToolDef("sbt-test-only", command: "sbt",
              args: ["cps2/testOnly", "$testClass"],
              timeout: 10m, success: ExitZero)
-  [trust: axiom, agent: "author"]
+  @[trust: axiom, agent: "author"]
 ```
 
 #### Standard packs and auto-import
@@ -295,7 +295,7 @@ workitem WI-CPS2-MATCH-002 {
     ToolPasses(sbt-test-only, { testClass: "cps.plugin.MatchSimpleTest" })
   depends_on: [WI-CPS2-MATCH-001]
   status: Open
-  [trust: proposed, agent: "architect"]
+  @[trust: proposed, agent: "architect"]
 }
 ```
 
@@ -310,7 +310,7 @@ fact WorkItem("WI-CPS2-MATCH-002",
                ToolPasses("sbt-test-only", { testClass: "cps.plugin.MatchSimpleTest" })],
   depends_on: ["WI-CPS2-MATCH-001"],
   status: Open)
-  [trust: proposed, agent: "architect"]
+  @[trust: proposed, agent: "architect"]
 ```
 
 ### 3.6 Feedback Sugar
@@ -331,7 +331,7 @@ fact Feedback("WI-CPS2-MATCH-003",
   author: "rssh",
   content: "merge with WI-MATCH-004, they touch the same file",
   at: "2027-03-15T10:30:00Z")
-  [trust: axiom, agent: "rssh"]
+  @[trust: axiom, agent: "rssh"]
 ```
 
 Feedback can reference a file for longer reviews:
@@ -349,13 +349,12 @@ Feedback facts accumulate — they are not superseded. The WorkItem itself is re
 
 ### 3.7 Metadata
 
-Metadata blocks `[trust: ..., agent: ..., iteration: ...]` are sugar for `Meta(...)` Fn terms (see [kernel-language.md §7](../../docs/kernel-language.md#7-metadata)). `Meta` is an entity in `anthill.prelude.Meta` with **open keys** — any `Name : Term` pair is accepted. Well-known keys (`trust`, `agent`, `timestamp`, `iteration`, `source`, `supersedes`) have semantic meaning to the kernel; additional keys are project-defined and pass through.
+Metadata blocks `@[trust: ..., agent: ..., iteration: ...]` are sugar for `Meta(...)` Fn terms (see [kernel-language.md §7](../../docs/kernel-language.md#7-metadata)). `Meta` is an entity in `anthill.prelude.Meta` with **open keys** — any `Name : Term` pair is accepted. Well-known keys (`trust`, `agent`, `timestamp`, `iteration`, `source`, `supersedes`) have semantic meaning to the kernel; additional keys are project-defined and pass through.
 
 ```
--- Sugar:
-fact X [trust: axiom, agent: "author"]
--- Desugars to:
-rule X  meta: Meta(trust: axiom, agent: "author")
+-- A clause's block is its metadata — conceptually the Meta(...) term it carries
+-- (there is no `meta:` surface form):
+fact X @[trust: axiom, agent: "author"]
 
 -- Trust constructors:
 --   proved | verified | tested(N) | empirical | proposed | stale | axiom | decision
@@ -454,7 +453,7 @@ project cps-async-connect {
 
 -- All of the above is sugar for:
 --   fact Project("cps-async-connect", language: "scala", build: "sbt",
---                tools: ["sbt-compile", "sbt-test"]) [trust: axiom]
+--                tools: ["sbt-compile", "sbt-test"]) @[trust: axiom]
 -- Plus ToolDef facts loaded from std.sbt pack.
 ```
 
@@ -469,7 +468,7 @@ workitem WI-POOL-001 {
     Compiles({ path: "src/main/scala", scope: Main })
   depends_on: []
   status: Open
-  [trust: proposed, agent: "architect"]
+  @[trust: proposed, agent: "architect"]
 }
 
 workitem WI-POOL-002 {
@@ -482,7 +481,7 @@ workitem WI-POOL-002 {
     ToolPasses(sbt-test)
   depends_on: [WI-POOL-001]
   status: Open
-  [trust: proposed, agent: "architect"]
+  @[trust: proposed, agent: "architect"]
 }
 
 workitem WI-POOL-003 {
@@ -493,7 +492,7 @@ workitem WI-POOL-003 {
   generates:
     [fact("cps-async-connect.pool", "connection-pooling-works")]
   status: Open
-  [trust: proposed, agent: "architect"]
+  @[trust: proposed, agent: "architect"]
 }
 ```
 
@@ -543,7 +542,7 @@ workitem WI-BATCH-001
     ToolPasses(flyway-migrate, { dbUrl: "jdbc:postgresql://localhost:5432/inventory_test" })
   depends_on: []
   status: Open
-  [trust: proposed, agent: "product-owner"]
+  @[trust: proposed, agent: "product-owner"]
 end
 
 workitem WI-BATCH-002
@@ -553,7 +552,7 @@ workitem WI-BATCH-002
     ToolPasses(mypy-check)
   depends_on: []
   status: Open
-  [trust: proposed, agent: "product-owner"]
+  @[trust: proposed, agent: "product-owner"]
 end
 
 workitem WI-BATCH-003
@@ -566,7 +565,7 @@ workitem WI-BATCH-003
     ToolPasses(mypy-check)
   depends_on: [WI-BATCH-001, WI-BATCH-002]
   status: Open
-  [trust: proposed, agent: "product-owner"]
+  @[trust: proposed, agent: "product-owner"]
 end
 
 workitem WI-BATCH-004
@@ -576,7 +575,7 @@ workitem WI-BATCH-004
     ToolPasses(npm-test)
   depends_on: []
   status: Open
-  [trust: proposed, agent: "product-owner"]
+  @[trust: proposed, agent: "product-owner"]
 end
 
 workitem WI-BATCH-005
@@ -592,7 +591,7 @@ workitem WI-BATCH-005
   generates:
     [fact("inventory-app.features", "batch-import-operational")]
   status: Open
-  [trust: proposed, agent: "product-owner"]
+  @[trust: proposed, agent: "product-owner"]
 end
 ```
 
@@ -605,19 +604,19 @@ Each status change produces a new fact that supersedes the previous one:
 fact WorkItem("WI-POOL-002", description: "Implement bounded connection pool",
   acceptance: [Compiles(...), ToolPasses(sbt-test)],
   depends_on: ["WI-POOL-001"], status: Open)
-  [trust: proposed, agent: "architect", iteration: 1]
+  @[trust: proposed, agent: "architect", iteration: 1]
 
 -- Iteration 2: claimed
 fact WorkItem("WI-POOL-002", ..., status: Claimed("llm-coder-v3", "2027-03-15T10:30:00Z"))
-  [trust: proposed, agent: "architect", iteration: 2, supersedes: WI-POOL-002-v1]
+  @[trust: proposed, agent: "architect", iteration: 2, supersedes: WI-POOL-002-v1]
 
 -- Iteration 3: delivered
 fact WorkItem("WI-POOL-002", ..., status: Delivered("llm-coder-v3", "2027-03-15T11:15:00Z"))
-  [trust: proposed, agent: "architect", iteration: 3, supersedes: WI-POOL-002-v2]
+  @[trust: proposed, agent: "architect", iteration: 3, supersedes: WI-POOL-002-v2]
 
 -- Iteration 4: verified (all acceptance criteria passed)
 fact WorkItem("WI-POOL-002", ..., status: Verified("2027-03-15T11:20:00Z"))
-  [trust: tested-47, agent: "architect", iteration: 4, supersedes: WI-POOL-002-v3]
+  @[trust: tested-47, agent: "architect", iteration: 4, supersedes: WI-POOL-002-v3]
 ```
 
 ### 5.4 File-Referenced Descriptions
@@ -632,7 +631,7 @@ workitem WI-CPS2-MATCH-001 {
   acceptance:
     Compiles({ path: "compiler-plugin/src/main/scala", scope: Main })
   status: Open
-  [trust: proposed, agent: "architect"]
+  @[trust: proposed, agent: "architect"]
 }
 ```
 
@@ -646,7 +645,7 @@ workitem WI-PERF-001 {
   description: <"Improve API response time for /search">
   acceptance: ToolPasses(pytest)
   status: Open
-  [trust: proposed, agent: "tech-lead"]
+  @[trust: proposed, agent: "tech-lead"]
 }
 
 -- Refined after investigation (new fact supersedes)
@@ -660,7 +659,7 @@ workitem WI-PERF-001 {
     ToolPasses(flyway-migrate, { dbUrl: "jdbc:postgresql://localhost:5432/inventory_test" })
     ToolPasses(pytest-module, { module: "tests/test_search_perf.py" })
   status: Open
-  [trust: proposed, agent: "tech-lead", supersedes: WI-PERF-001-v1]
+  @[trust: proposed, agent: "tech-lead", supersedes: WI-PERF-001-v1]
 }
 ```
 
@@ -679,7 +678,7 @@ workitem WI-DEPLOY-001 {
   acceptance:
     ToolPasses(api-health)
   status: Open
-  [trust: proposed, agent: "ops"]
+  @[trust: proposed, agent: "ops"]
 }
 ```
 

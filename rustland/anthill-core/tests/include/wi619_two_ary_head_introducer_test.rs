@@ -95,7 +95,7 @@ end
 /// equational 2-ary head `keep[T](…) = rhs` reads its `[T]` introducer off the
 /// LHS operand (`pos_args[0]` of the `eq` node), not the whole `eq(lhs, rhs)`.
 /// The functor-based recognition must keep this working — the `[T]` folds via
-/// `:- Summable[T]` and installs as the `?x: T` bound on the `[simp]` rule.
+/// `:- Summable[T]` and installs as the `?x: T` bound on the `@[simp]` rule.
 #[test]
 fn equational_two_ary_head_reads_introducer_off_lhs() {
     let kb = crate::common::load_kb_with(
@@ -117,7 +117,7 @@ namespace test.wi619.eqhead
       keep(x: A, y: A) -> A
     }
     rule {
-      keep_id: keep[T](?x: T, ?y) <=> ?x :- Summable[T] [simp]
+      keep_id: keep[T](?x: T, ?y) <=> ?x :- Summable[T] @[simp]
     }
   end
 end

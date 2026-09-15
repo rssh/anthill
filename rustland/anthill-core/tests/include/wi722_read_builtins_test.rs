@@ -64,9 +64,9 @@ namespace test.wi722read
   operation trig_a(x: Int64) -> Int64 = x
   operation trig_b(x: Int64) -> Int64 = x
   operation trig_c(x: Int64) -> Int64 = x
-  rule trig_a(?x) <=> via_subs(orig(?x))  [simp]
-  rule trig_b(?x) <=> via_type(?x)        [simp]
-  rule trig_c(?x) <=> via_term(orig(?x))  [simp]
+  rule trig_a(?x) <=> via_subs(orig(?x))  @[simp]
+  rule trig_b(?x) <=> via_type(?x)        @[simp]
+  rule trig_c(?x) <=> via_term(orig(?x))  @[simp]
 
   operation consumer_a() -> Int64 = trig_a(5)
   operation consumer_b() -> Int64 = trig_b(5)
@@ -166,7 +166,7 @@ namespace test.wi722labels
       case _ -> x
 
   operation trig_d(x: Int64) -> Int64 = x
-  rule trig_d(?x) <=> via_labels(orig2(?x, b: 2)) [simp]
+  rule trig_d(?x) <=> via_labels(orig2(?x, b: 2)) @[simp]
 
   operation consumer_d() -> Int64 = trig_d(5)
 end

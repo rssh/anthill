@@ -1462,7 +1462,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     * instead of storing a clause nothing will ever consult.
     *
     * Ported with rustland's half (WI-1090), which measured what the silence cost: the
-    * subject was stamped an equation-functor owning zero clauses, `[simp]` could never
+    * subject was stamped an equation-functor owning zero clauses, `@[simp]` could never
     * fire it, and the only diagnostic reached the author at a CITATION, blaming a
     * missing equation that was written three lines up. */
   test("WI-1090: a bodyless `===` head is refused and names `<=>` as the substitute") {
@@ -1522,7 +1522,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     * IT WAS NOT THE SAME DEFECT, which is why the message differs and this test asserts
     * on the `=` wording rather than reusing the `===` needle. A `===` head was silently
     * useless; an `=` head FIRED (rustland's WI-884 drove all four connective ×
-    * attribute combinations, and the answer tracked the `[simp]` tag alone). So this
+    * attribute combinations, and the answer tracked the `@[simp]` tag alone). So this
     * refusal finishes proposal 049's migration — build step 6, WI-526, which relabelled
     * 40 heads and left 44 in the stdlib — rather than repairing a silence, and the
     * message owes the author the substitute spelling instead of a diagnosis. */
@@ -1541,18 +1541,18 @@ class ParserIntegrationTest extends munit.FunSuite:
       "and nothing is introduced under it \u2014 `=` has no subject to introduce")
   }
 
-  /** The `[simp]` tag has NO bearing on it, which is the half a reader of the pre-WI-888
+  /** The `@[simp]` tag has NO bearing on it, which is the half a reader of the pre-WI-888
     * behaviour would get backwards: the tag decided everything there and decides nothing
     * here. `reflect.anthill` and `bool.anthill` both shipped this exact combination. */
-  test("WI-888: a `[simp]` tag does not admit the `=` spelling") {
+  test("WI-888: a `@[simp]` tag does not admit the `=` spelling") {
     val (_, errs) = loadFixture(
       """namespace p888b
         |  sort S
-        |    rule g888(?x) = ?x [simp]
+        |    rule g888(?x) = ?x @[simp]
         |  end
         |end""".stripMargin)
     assert(errs.exists(e => e.toString.contains("`=` is the semantic equality TEST")),
-      s"`[simp]` does not admit a bodyless `=` head; got $errs")
+      s"`@[simp]` does not admit a bodyless `=` head; got $errs")
   }
 
   /** THE BOUNDARY WI-888 DID NOT MOVE, and the row that stops the refusal being widened
@@ -1577,7 +1577,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     *
     * This is `reflect.anthill`'s shape reduced to one file — that file declares
     * `unify(a: Term, b: Term, kb: KB)` for proposal 049's term-level face, and the three
-    * `rule fact_monotonicity(…) <=> constant() [simp]` rules WI-888 rewrote in that same
+    * `rule fact_monotonicity(…) <=> constant() @[simp]` rules WI-888 rewrote in that same
     * namespace resolved their connective onto it, filing three clauses under a 3-ary
     * reflect operation. They loaded clean and fired nothing. scaland loads
     * `reflect.anthill`, so it had the identical defect; found by review after the
@@ -1600,7 +1600,7 @@ class ParserIntegrationTest extends munit.FunSuite:
         |namespace p888d
         |  sort S
         |    operation unify(a: Int64, b: Int64, c: Int64) -> Int64 = a
-        |    rule g888d(?x) <=> ?x [simp]
+        |    rule g888d(?x) <=> ?x @[simp]
         |  end
         |end""".stripMargin)
     assert(errs.isEmpty, s"the fixture must load; got $errs")

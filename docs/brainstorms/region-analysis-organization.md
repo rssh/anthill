@@ -47,7 +47,7 @@ Typing is one plugin; region analysis another; future analyses are more plugins.
 - **−** A substantial refactor: invert the typer's control into engine + hooks;
   define shared vs per-plugin state. **Intra-node ordering** becomes a design
   problem — region needs *this node's* type/effects, so typing-up must precede
-  region-up at each ascend (attribute-grammar dependency ordering). And `[simp]`
+  region-up at each ascend (attribute-grammar dependency ordering). And `@[simp]`
   **rewrites the tree during typing**, so the region plugin must run on the
   *post-rewrite* node (strictly after typing's up-step). Fusing couples phase
   lifecycles — the cost side of the fused-vs-separate (nanopass) tradeoff.
@@ -101,7 +101,7 @@ analysis *inside the typer's single walk* (the point of (1)) without the upfront
 engine refactor, and it promotes cleanly: when a *second* mini-phase appears,
 extract the engine and register both — designing the plugin/hook interface against
 ≥2 real clients instead of guessing from one. The intra-node ordering and the
-`[simp]`-rewrites-during-typing constraint are faced either way; (3′) faces them at
+`@[simp]`-rewrites-during-typing constraint are faced either way; (3′) faces them at
 one concrete call site first, which is the cheapest place to get them right.
 
 **Go straight to (1) instead if** the roadmap already has several fused mini-phases
@@ -117,7 +117,7 @@ type/effect data.
 
 WI-314 is the narrow **result-reachability** slice; 046 is the **superset**
 (input / fresh-output / local provenance, aliasing, HOF feed-relationships via
-`[feeds:]` / `callee_body`). (3′)'s module is the shared home: WI-314 lands the
+`@[feeds:]` / `callee_body`). (3′)'s module is the shared home: WI-314 lands the
 reachability + escape-aware masking; 046 grows the *same* module with provenance and
 the HOF cases. (1) or (2) would force re-architecting at that growth point; (3′)
 does not.

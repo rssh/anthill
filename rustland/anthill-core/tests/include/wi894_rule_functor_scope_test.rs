@@ -7,7 +7,7 @@
 //! goes red: scoping is only safe because an un-imported use is refused rather than
 //! silently inert. WI-1034 extended that refusal to a rule body's GOAL position, and
 //! [`a_rule_body_does_not_yet_refuse_an_unimported_functor`] pins the one position
-//! where it still does not exist: a goal's ARGUMENT, i.e. a `[simp]` redex that can
+//! where it still does not exist: a goal's ARGUMENT, i.e. a `@[simp]` redex that can
 //! never fire (WI-895's remaining half).
 //!
 //! STDLIB LOADS: FIVE, one per `#[test]` — `crate::common::interp_for` /
@@ -28,8 +28,8 @@ namespace wi894.inverted
   sort A
     import anthill.prelude.{Int64, Bool}
     rule {
-      pickTrue:  pick894(true, ?t, ?_) <=> ?t [simp]
-      pickFalse: pick894(false, ?_, ?e) <=> ?e [simp]
+      pickTrue:  pick894(true, ?t, ?_) <=> ?t @[simp]
+      pickFalse: pick894(false, ?_, ?e) <=> ?e @[simp]
     }
     operation driveA(n: Int64) -> Int64 = pick894(true, 10, 20)
   end
@@ -37,8 +37,8 @@ namespace wi894.inverted
   sort B
     import anthill.prelude.{Int64, Bool}
     rule {
-      pickTrue:  pick894(true, ?_, ?e) <=> ?e [simp]
-      pickFalse: pick894(false, ?t, ?_) <=> ?t [simp]
+      pickTrue:  pick894(true, ?_, ?e) <=> ?e @[simp]
+      pickFalse: pick894(false, ?t, ?_) <=> ?t @[simp]
     }
     operation driveB(n: Int64) -> Int64 = pick894(true, 10, 20)
   end
@@ -97,8 +97,8 @@ namespace wi894.labels
       -- here", which the refusal makes false. The `=` spelling that still reaches this
       -- path is the GUARDED head below (`lblBodied894`), and it is a different cell
       -- entirely: not an equation, so it takes the predicate path.
-      lblEq894: labeledEq894(?x) <=> ?x [simp]
-      bareEq894(?x) <=> ?x [simp]
+      lblEq894: labeledEq894(?x) <=> ?x @[simp]
+      bareEq894(?x) <=> ?x @[simp]
       lblPred894: labeledPred894(?x) :- Int64.gt(?x, 0)
       barePred894(?x) :- Int64.gt(?x, 0)
       -- a BODIED `=` head is not an equation (§8.3: an equation is bodyless), so it
@@ -111,7 +111,7 @@ namespace wi894.labels
   end
 
   -- The converter's own functors sit at the subject position for the accessor forms;
-  -- they are the desugar's, not the rule's. Deliberately UNTAGGED: a `[simp]` here
+  -- they are the desugar's, not the rule's. Deliberately UNTAGGED: a `@[simp]` here
   -- would be indexed under the GLOBAL kernel `field_access` / `dot_apply` functor and
   -- so would rewrite `?x.f` for ANY receiver in the whole loaded stdlib during this
   -- test's typing pass. The claim under test is which SYMBOL is minted, which the tag
@@ -152,7 +152,7 @@ end
 /// TWO ROWS ARE REGRESSION GUARDS FOR DEFECTS THIS FIX ITSELF INTRODUCED, both caught in
 /// review and both MEASURED. (1) Descending into an equation's LHS re-opened WI-530's
 /// hole one level down, since `resolve_in_scope` answers `NotFound` for every
-/// implicit-prelude name: `rule cons(?h, ?t) <=> ?h [simp]` loaded CLEAN, minted a
+/// implicit-prelude name: `rule cons(?h, ?t) <=> ?h @[simp]` loaded CLEAN, minted a
 /// sort-local `cons`, and silently re-pointed every bare `cons` in the sort so that
 /// `cons(1, nil())` answered `1` — a law written about `List.cons` quietly became a law
 /// about a different function, this ticket's own defect class. (2) Without the
@@ -283,7 +283,7 @@ end
     );
 }
 
-/// THE IMPORTED SPELLING IS ALSO REFUSED where there is no `[simp]` redex — a computed
+/// THE IMPORTED SPELLING IS ALSO REFUSED where there is no `@[simp]` redex — a computed
 /// condition has nothing to inline (WI-884), and `ite` is not an operation to dispatch
 /// to (WI-887), so `ite(gte(a, b), a, b)` in an operation body cannot load either way.
 /// Driven so the pair is a matched set: the naming path WI-894 adds does NOT make this
@@ -316,7 +316,7 @@ end
 
 /// …AND THE GAP, now CLOSED — this was a pinned assertion that the shape below still
 /// loaded clean, and WI-1058 is what made it fail. An un-imported functor interns bare,
-/// so the term never matched the scoped `[simp]` rules: silent inertness, the failure
+/// so the term never matched the scoped `@[simp]` rules: silent inertness, the failure
 /// mode the test above rules out for operation bodies, and how this very change first
 /// showed up (`wi884`'s `ite_reduces` went from 1 solution to 0 with no diagnostic until
 /// its `import` was added).

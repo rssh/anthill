@@ -1,7 +1,7 @@
 //! WI-1129 (proposal 056 §2.3) — the RULE-HEAD REST PATTERN, the second face of
 //! variadic capture.
 //!
-//! `rule trigger(?x, ...?args) <=> pick(?x, ?args) [simp]` fires on a redex whose
+//! `rule trigger(?x, ...?args) <=> pick(?x, ?args) @[simp]` fires on a redex whose
 //! named arguments the head does not name, binding `?args` to a record OCCURRENCE
 //! of the leftovers. The macro on the right-hand side reads that record as SYNTAX
 //! — its component LABELS through `sub_occurrence_labels`, its children through
@@ -25,7 +25,7 @@
 //!
 //! CONTROLS, green under that same back-out and BY DESIGN — they live in their own
 //! fixtures, so the back-out cannot take them down with it and their greenness
-//! says something: `wi722_compile_time_macro_test` (a `[simp]` macro rule with NO
+//! says something: `wi722_compile_time_macro_test` (a `@[simp]` macro rule with NO
 //! capture, 7 passed), `wi727_fix_test` (the OPERATION face this must leave
 //! untouched, 17 passed) and `wi1127_condition_param_test` (`where_run` /
 //! `join_run`'s reuse of that face, 12 passed).
@@ -35,7 +35,7 @@ use anthill_core::parse::desugar_target as dt;
 
 /// `trigger` declares BOTH faces, as a real client does: the `...args: R`
 /// parameter is what makes `trigger(5, a: 7)` a well-formed call at all (WI-727),
-/// and the `[simp]` rule captures the same residue as syntax. So the arms differ
+/// and the `@[simp]` rule captures the same residue as syntax. So the arms differ
 /// only in whether the rule-head capture works — with it, the macro's splice;
 /// without it, `trigger`'s own body, which returns `x`.
 const SRC: &str = r#"
@@ -53,7 +53,7 @@ namespace test.wi1129
   operation kept_b(v: Int64, w: Int64) -> Int64 = add(add(v, w), 200)
   operation kept_none(v: Int64) -> Int64 = add(v, 300)
 
-  -- The MACRO (occurrence -> occurrence, so the `[simp]` engine evaluates it at
+  -- The MACRO (occurrence -> occurrence, so the `@[simp]` engine evaluates it at
   -- compile time). `args` is the captured record.
   operation pick(x: NodeOccurrence, args: NodeOccurrence) -> NodeOccurrence =
     match sub_occurrence_labels(args)
@@ -63,7 +63,7 @@ namespace test.wi1129
 
   operation trigger[R](x: Int64, ...args: R) -> Int64 = x
 
-  rule trigger(?x, ...?args) <=> pick(?x, ?args) [simp]
+  rule trigger(?x, ...?args) <=> pick(?x, ?args) @[simp]
 
   operation drive_a() -> Int64 = trigger(5, a: 7)
   operation drive_b() -> Int64 = trigger(5, b: 7)
@@ -86,7 +86,7 @@ namespace test.wi1129
 
   operation trigger_kept[R](x: Int64, k: Int64, ...args: R) -> Int64 = x
 
-  rule trigger_kept(?x, k: ?k, ...?args) <=> pick_kept(?x, ?k, ?args) [simp]
+  rule trigger_kept(?x, k: ?k, ...?args) <=> pick_kept(?x, ?k, ?args) @[simp]
 
   operation drive_kept() -> Int64 = trigger_kept(5, k: 1, a: 7)
   -- The SAME call with its named arguments written in the other order. A named
@@ -196,7 +196,7 @@ fn refusal(tail: &str) -> String {
 fn a_capture_head_without_simp_is_refused() {
     let msg = refusal("  rule trigger(?x, ...?args) <=> pick(?x, ?args)\nend\n");
     assert!(
-        msg.contains("needs the `[simp]` tag"),
+        msg.contains("needs the `@[simp]` tag"),
         "expected the missing-tag refusal, got: {msg}",
     );
 }
@@ -206,7 +206,7 @@ fn a_second_capture_is_refused() {
     // MEASURED before the converter kept a LIST of rest slots: this loaded clean,
     // the second `...` overwriting the first, so `?a` became an ordinary argument
     // in silence.
-    let msg = refusal("  rule trigger(?x, ...?a, ...?b) <=> pick(?x, ?a) [simp]\nend\n");
+    let msg = refusal("  rule trigger(?x, ...?a, ...?b) <=> pick(?x, ?a) @[simp]\nend\n");
     assert!(
         msg.contains("at most one variadic capture"),
         "expected the at-most-one refusal, got: {msg}",
@@ -215,7 +215,7 @@ fn a_second_capture_is_refused() {
 
 #[test]
 fn a_non_trailing_capture_is_refused() {
-    let msg = refusal("  rule trigger(...?args, ?x) <=> pick(?x, ?args) [simp]\nend\n");
+    let msg = refusal("  rule trigger(...?args, ?x) <=> pick(?x, ?args) @[simp]\nend\n");
     assert!(
         msg.contains("must be the LAST positional argument"),
         "expected the trailing refusal, got: {msg}",
@@ -228,15 +228,15 @@ fn a_capture_outside_a_simp_head_lhs_is_refused() {
     // BODY goal, an operation BODY call, and a head that is not an equation at all
     // — all reported by the one stray sweep that runs after the file converts.
     for tail in [
-        "  rule trigger(?x, ?args) <=> pick(?x, ...?args) [simp]\nend\n",
+        "  rule trigger(?x, ?args) <=> pick(?x, ...?args) @[simp]\nend\n",
         "  rule trigger(?x, ?y) <=> pick(?x, ?y) :- wrapped(...?z)\nend\n",
         "  operation bad(v: Int64) -> Int64 = wrapped(...?z)\nend\n",
         "  rule trigger(?x, ...?args) :- true\nend\n",
-        "  rule trigger(?x, ?y) <=> pick(?x, wrapped(...?y)) [simp]\nend\n",
+        "  rule trigger(?x, ?y) <=> pick(?x, wrapped(...?y)) @[simp]\nend\n",
     ] {
         let msg = refusal(tail);
         assert!(
-            msg.contains("may appear only as the LAST positional argument of a `[simp]` rule head"),
+            msg.contains("may appear only as the LAST positional argument of a `@[simp]` rule head"),
             "expected the stray-capture refusal for `{tail}`, got: {msg}",
         );
     }
@@ -248,29 +248,29 @@ fn a_capture_in_a_proof_step_head_is_refused() {
     // heads and encodes a `ProofStep` term — so a capture recorded on one would have
     // NO reader. The converter therefore leaves the marker unclaimed and the stray
     // sweep reports it. MEASURED before that: with `convert_proof_step` calling
-    // `claim_rule_head_captures`, a `[simp]`-tagged step CLAIMED the marker with no
+    // `claim_rule_head_captures`, a `@[simp]`-tagged step CLAIMED the marker with no
     // diagnostic, and the rest pattern degraded to an ordinary positional argument in
-    // silence. Written `[simp]` deliberately — the untagged spelling is refused by a
+    // silence. Written `@[simp]` deliberately — the untagged spelling is refused by a
     // different branch and would not have measured this.
     let msg = refusal(
         "  rule lem: trigger(?x, ?y) <=> pick(?x, ?y)\n  proof lem\n    \
-         rule s: trigger(?x, ...?args) <=> pick(?x, ?args) [simp] by derivation\n  \
+         rule s: trigger(?x, ...?args) <=> pick(?x, ?args) @[simp] by derivation\n  \
          end\nend\n",
     );
     assert!(
-        msg.contains("may appear only as the LAST positional argument of a `[simp]` rule head"),
+        msg.contains("may appear only as the LAST positional argument of a `@[simp]` rule head"),
         "expected the stray-capture refusal for a proof step, got: {msg}",
     );
 }
 
 #[test]
 fn a_capture_on_a_dot_form_is_refused() {
-    // The dot-headed `[simp]` rule is fired by `typing::try_fire_dot_rule`, whose
+    // The dot-headed `@[simp]` rule is fired by `typing::try_fire_dot_rule`, whose
     // matcher has no fold step, so a `...` there would bind nothing. MEASURED
     // before `push_dot_method_call` grew its own arm: the whole `rest_arg` node
     // fell through that loop's `_ => {}` and the capture variable left the head in
     // silence.
-    let msg = refusal("  rule ?r.trigger(...?args) <=> pick(?r, ?args) [simp]\nend\n");
+    let msg = refusal("  rule ?r.trigger(...?args) <=> pick(?r, ?args) @[simp]\nend\n");
     assert!(
         msg.contains("not supported on a dot-form call"),
         "expected the dot-form refusal, got: {msg}",
@@ -282,7 +282,7 @@ fn a_capture_in_a_tuple_literal_is_a_syntax_error() {
     // `rest_arg` is admitted by the `fn_term` argument list alone, not by the
     // shared `_fn_arg` a tuple literal uses — so this one is refused by the
     // GRAMMAR, one step earlier than the rest.
-    let msg = refusal("  rule trigger(?x, ...?args) <=> pick(?x, (1, ...?args)) [simp]\nend\n");
+    let msg = refusal("  rule trigger(?x, ...?args) <=> pick(?x, (1, ...?args)) @[simp]\nend\n");
     assert!(
         msg.contains("syntax error"),
         "expected a syntax error, got: {msg}",
@@ -295,7 +295,7 @@ fn a_capture_in_a_tuple_literal_is_a_syntax_error() {
 /// asks — does `r.rename(who: r.name)` work — is whether the dot form reaches one.
 /// It does, and by a route this ticket did not have to touch: the DotApply method
 /// fallback synthesizes `trigger(receiver, a: 7)` and re-visits it, and the Apply
-/// frame fires `[simp]` BEFORE `check_apply_iter` (so before the OPERATION face's
+/// frame fires `@[simp]` BEFORE `check_apply_iter` (so before the OPERATION face's
 /// `normalize_variadic_capture` would fold the same leftovers into a `args:` named
 /// argument — the two faces cannot double-capture).
 ///
@@ -313,7 +313,7 @@ namespace test.wi1129dot
   sort Box
     entity box(v: Int64)
     operation trigger[R](b: Box, ...args: R) -> Int64 = b.v
-    rule trigger(?b, ...?args) <=> test.wi1129dot.pick(?b, ?args) [simp]
+    rule trigger(?b, ...?args) <=> test.wi1129dot.pick(?b, ?args) @[simp]
   end
 
   operation kept_a(b: Box, w: Int64) -> Int64 = add(add(b.v, w), 100)

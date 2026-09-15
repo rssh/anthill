@@ -25,7 +25,7 @@
 //! the complement is the binary's size and adds nothing.
 //!
 //! **AXIS C IS GONE, AND TWO ROWS HERE FLIPPED — WI-20260902-CZJ2N.** The two nullary
-//! head spellings are ONE TERM now, so a bare `[simp]` head DEFINES and its subject
+//! head spellings are ONE TERM now, so a bare `@[simp]` head DEFINES and its subject
 //! MINTS. The counts below are as measured when this ticket shipped; the rows they name
 //! are unchanged except where said. See
 //! [`a_bare_equation_subject_defines_exactly_like_its_parenthesised_twin`] and
@@ -263,7 +263,7 @@ fn a_bare_nullary_clause_is_indexed_under_the_scoped_symbol() {
 }
 
 /// THE EQUATION SIDE, AND WI-20260902-CZJ2N MOVED IT. This row asserted the opposite
-/// when P85Z7 shipped: §5.3 read a `[simp]` head as an APPLICATION that a bare name
+/// when P85Z7 shipped: §5.3 read a `@[simp]` head as an APPLICATION that a bare name
 /// could not be, so `rule tau <=> …` fired NOTHING and `Bare.drive` answered the
 /// operation's own body, `1`. CZJ2N makes the two spellings ONE TERM
 /// (`KnowledgeBase::nullary_canon`), so the bare law defines exactly as the
@@ -276,7 +276,7 @@ fn a_bare_nullary_clause_is_indexed_under_the_scoped_symbol() {
 /// to 1 while `Paren.drive` stays 7 — which is what says the axis is the head SPELLING.
 ///
 /// WI-881 measured the CALL-SITE twin of this on `Float.tau` (see
-/// `wi884_sibling_backing_test`): a `[simp]` law matched `minValue()` and not the
+/// `wi884_sibling_backing_test`): a `@[simp]` law matched `minValue()` and not the
 /// `var_ref` a bare name lowers to. That half is NOT closed here — see
 /// `wi881_float_arithmetic_test::the_constants_answer_in_both_nullary_call_forms` for
 /// where the call-site reading lives.
@@ -288,7 +288,7 @@ namespace zzP85Z7.eqn
     import anthill.prelude.Int64
     operation tau() -> Int64 = 1
     -- the BARE subject: since WI-20260902-CZJ2N, the same redex the parens spell
-    rule tau <=> 7 [simp]
+    rule tau <=> 7 @[simp]
     operation drive(n: Int64) -> Int64 = tau()
   end
 
@@ -296,7 +296,7 @@ namespace zzP85Z7.eqn
     import anthill.prelude.Int64
     operation tau() -> Int64 = 1
     -- the APPLICATION: the spelling that defines
-    rule tau() <=> 7 [simp]
+    rule tau() <=> 7 @[simp]
     operation drive(n: Int64) -> Int64 = tau()
   end
 end
@@ -311,7 +311,7 @@ end
         (
             "zzP85Z7.eqn.Paren.drive",
             7,
-            "the parenthesised law IS a redex, and `[simp]` inlines it before dispatch",
+            "the parenthesised law IS a redex, and `@[simp]` inlines it before dispatch",
         ),
     ] {
         match interp.call(path, &[Value::Int(0)]) {
@@ -325,7 +325,7 @@ end
 /// the parenthesised one does, and this row now measures that they AGREE.
 ///
 /// WHAT IT ASSERTED, and why it was right at the time: P85Z7 gated the mint on
-/// `RuleIntroduction::Predicate`, so `rule tauFresh <=> 7 [simp]` left its subject
+/// `RuleIntroduction::Predicate`, so `rule tauFresh <=> 7 @[simp]` left its subject
 /// outside the symbol table and `rule reader(1) :- tauFresh` was REFUSED ("`tauFresh`
 /// names nothing … can NEVER match", WI-1034's body-goal refusal). Minting it instead
 /// made the citation resolve — to an `EquationFunctor` with no clauses — and the
@@ -377,7 +377,7 @@ fn a_bare_equation_subject_mints_exactly_like_its_parenthesised_twin() {
         // carrying both would fail to load and the `7` would never be measured.
         let mut interp = crate::common::interp_for(&format!(
             "namespace zzP85Z7.eqmint{label}\n  import anthill.prelude.Int64\n  \
-             rule {head} <=> 7 [simp]\n  \
+             rule {head} <=> 7 @[simp]\n  \
              operation drive(n: Int64) -> Int64 = tauFresh()\nend\n"
         ));
         match interp.call(&format!("zzP85Z7.eqmint{label}.drive"), &[Value::Int(0)]) {
@@ -392,7 +392,7 @@ fn a_bare_equation_subject_mints_exactly_like_its_parenthesised_twin() {
         // can be reported by its qualified spelling.
         let errs = crate::common::try_load_kb_with(&format!(
             "namespace zzP85Z7.eqcite{label}\n  import anthill.prelude.Int64\n  \
-             rule {head} <=> 7 [simp]\n  rule reader(1) :- tauFresh\nend\n"
+             rule {head} <=> 7 @[simp]\n  rule reader(1) :- tauFresh\nend\n"
         ))
         .err()
         .unwrap_or_else(|| {

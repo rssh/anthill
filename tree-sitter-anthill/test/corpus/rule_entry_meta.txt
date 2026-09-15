@@ -4,8 +4,8 @@ WI-893 control — tagged entries with no preceding comment
 
 rule {
   p(?x)
-  q(?a) [simp]
-  r(?b) [simp]
+  q(?a) @[simp]
+  r(?b) @[simp]
 }
 
 ---
@@ -49,8 +49,8 @@ WI-893 line comment before the first tagged entry keeps its meta_block
 rule {
   p(?x)
   -- tagged below
-  q(?a) [simp]
-  r(?b) [simp]
+  q(?a) @[simp]
+  r(?b) @[simp]
 }
 
 ---
@@ -94,9 +94,9 @@ WI-893 line comment before the second tagged entry keeps its meta_block
 
 rule {
   p(?x)
-  q(?a) [simp]
+  q(?a) @[simp]
   -- tagged below
-  r(?b) [simp]
+  r(?b) @[simp]
 }
 
 ---
@@ -141,8 +141,8 @@ WI-893 block comment before a tagged entry keeps its meta_block
 rule {
   p(?x)
   {- tagged below -}
-  q(?a) [simp]
-  r(?b) [simp]
+  q(?a) @[simp]
+  r(?b) @[simp]
 }
 
 ---

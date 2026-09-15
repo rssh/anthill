@@ -204,7 +204,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
 /// narrower key. See [`CallSite::nth_at_span`] for the driven fixture.
 ///
 /// WHICH CALLS COLLIDE MOVED AT WI-20260903-FCZ3N, and this note used to describe only
-/// the old shape (two calls in ONE `[simp]` RHS, sharing the redex's span, because
+/// the old shape (two calls in ONE `@[simp]` RHS, sharing the redex's span, because
 /// `substitute_to_occurrence` built every node from the redex occurrence). A fired RHS
 /// now keeps the span its AUTHOR wrote, so those two calls have two spans and no longer
 /// collide — what collides instead is ONE written call spliced at N REDEXES, which

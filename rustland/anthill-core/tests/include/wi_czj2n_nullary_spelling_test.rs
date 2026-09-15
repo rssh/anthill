@@ -15,7 +15,7 @@
 //! | nullary PREDICATE | `aa` 1, `ab` 0, `ba` 0, `bb` 1 — each spelling answers its own | all four answer |
 //! | nullary Bool OP as a goal | `:- flag` fails SILENTLY, and `not(flag)` **SUCCEEDS** | `:- flag` runs; `not(flag)` fails |
 //! | nullary OP in a rule-body data slot | `?v <=> seven` binds the SYMBOL | binds 7, like `seven()` |
-//! | `[simp]` HEAD | `rule tau <=> 7 [simp]` fires nothing | defines, like `tau()` |
+//! | `@[simp]` HEAD | `rule tau <=> 7 @[simp]` fires nothing | defines, like `tau()` |
 //! | an UNDECLARED equation subject | bare: refused "names nothing"; paren: mints | both mint |
 //!
 //! Two of those five are WRONG ANSWERS rather than missing ones — `not(flag)` proving a
@@ -66,11 +66,11 @@
 //! and `r3` rows) and [`a_bare_nullary_op_in_a_data_slot_is_a_call`] (its `c1` row).
 //! The 2x2 passes either way — it is a PREDICATE, answered by matching.
 //!
-//! **3 — THE `[simp]` LHS READ.** Drop `simp_rewrite::stored_eq_operand_functor`'s
+//! **3 — THE `@[simp]` LHS READ.** Drop `simp_rewrite::stored_eq_operand_functor`'s
 //! `Term::Ref` arm. Fells [`a_nullary_simp_head_defines_in_both_spellings`] on BOTH
 //! arms — including the PARENTHESISED one, which is what makes it a regression guard
 //! and not a second reading of axis 1: with the canon in and this arm out, `rule tau()
-//! <=> 7 [simp]` stopped firing too.
+//! <=> 7 @[simp]` stopped firing too.
 //!
 //! **4 — THE MINT.** Restore `if introduced_by == RuleIntroduction::Predicate` on
 //! `load::head_subject_name`'s `Term::Ident` arm. Fells
@@ -213,10 +213,10 @@ end
     }
 }
 
-/// **D — A `[simp]` HEAD IN BOTH SPELLINGS.** §5.3 called a bare one a TRAP ("a nullary
+/// **D — A `@[simp]` HEAD IN BOTH SPELLINGS.** §5.3 called a bare one a TRAP ("a nullary
 /// head must carry its parentheses"); that sentence is deleted with this row.
 ///
-/// Driven through EVAL, because a `[simp]` law's whole observable is the inlining: the
+/// Driven through EVAL, because a `@[simp]` law's whole observable is the inlining: the
 /// operation is body-LESS, so an un-fired law leaves `drive` with nothing to run and
 /// the call answers `OperationBodyMissing` rather than a wrong number.
 #[test]
@@ -224,7 +224,7 @@ fn a_nullary_simp_head_defines_in_both_spellings() {
     for (label, head) in [("bare", "tau"), ("parens", "tau()")] {
         let src = format!(
             "namespace zzczj.d{label}\n  import anthill.prelude.Int64\n  \
-             operation tau() -> Int64\n  rule {head} <=> 7 [simp]\n  \
+             operation tau() -> Int64\n  rule {head} <=> 7 @[simp]\n  \
              operation drive(n: Int64) -> Int64 = tau()\nend\n"
         );
         let mut interp = crate::common::interp_for(&src);

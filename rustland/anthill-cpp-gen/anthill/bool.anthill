@@ -12,7 +12,7 @@
 -- ahead of that query and would silently disable the overlay).
 --
 -- `ite` HAS NO MAPPING AND CANNOT HAVE ONE: since WI-887 it is not an operation but a
--- functor defined by two `[simp]` rules, and `operation_map` keys on a declared
+-- functor defined by two `@[simp]` rules, and `operation_map` keys on a declared
 -- operation. C++'s `?:` is lazy and would tempt a mapping — but the reason `ite` is
 -- not an operation is that its branches are VALUES, so any function realizing it
 -- evaluates both; a lazy C++ spelling would make cpp the one host with a semantics

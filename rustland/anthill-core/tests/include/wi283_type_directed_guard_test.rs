@@ -1,6 +1,6 @@
-//! WI-283 — type-directed, guard-aware `[simp]` firing in the typer.
+//! WI-283 — type-directed, guard-aware `@[simp]` firing in the typer.
 //!
-//! A `[simp]` rule scoped to a parametric (spec) sort — e.g.
+//! A `@[simp]` rule scoped to a parametric (spec) sort — e.g.
 //! `Magma.op2(?a, ?b) = ?a` on `sort Magma[T] requires Eq[T]` — carries
 //! that sort's `requires` implicitly. Its law holds only for carriers that
 //! *satisfy* the sort, so the engine fires it only where the receiver's
@@ -11,7 +11,7 @@
 //!   - it does **not** fire on a receiver whose type does not (`Bool`) —
 //!     guard-free firing there would erase an unsatisfied call (unsound).
 //!
-//! Loading a `[simp]` rule from source also exercises the canonical-`eq`
+//! Loading a `@[simp]` rule from source also exercises the canonical-`eq`
 //! lookup (`KnowledgeBase::eq_functor`): loaded equations are headed by
 //! `anthill.prelude.Eq.eq`, not a bare `eq`, so the firing index must key
 //! on the former — the synthetic `wi283_typer_firing_test` rules can't
@@ -21,7 +21,7 @@ use anthill_core::kb::node_occurrence::Expr;
 use anthill_core::kb::term::{Literal, Term};
 use smallvec::SmallVec;
 
-/// A parametric spec sort `Magma[T] requires Eq[T]` with a `[simp]`
+/// A parametric spec sort `Magma[T] requires Eq[T]` with a `@[simp]`
 /// identity, `fact Magma[T = Int64]`, and two call sites: one over `Int64`
 /// (provides Magma) and one over `Bool` (does not).
 const SRC: &str = r#"
@@ -36,7 +36,7 @@ namespace test.wi283guard
       op2(a: T, b: T) -> T
     }
     rule {
-      op2_id: op2(?a, ?b) <=> ?a [simp]
+      op2_id: op2(?a, ?b) <=> ?a @[simp]
     }
   end
 
@@ -111,7 +111,7 @@ namespace test.wi283carrier
       wrap(tag: Int64, x: T) -> T
     }
     rule {
-      wrap_id: wrap(?tag, ?x) <=> ?x [simp]
+      wrap_id: wrap(?tag, ?x) <=> ?x @[simp]
     }
   end
 
@@ -230,11 +230,11 @@ fn resolver_does_not_fire_requires_guarded_equation_when_carrier_lacks_spec() {
     );
 }
 
-// ── resolver side: a NON-[simp] requires-guarded law must NOT fire ────
+// ── resolver side: a NON-@[simp] requires-guarded law must NOT fire ────
 //
 // WI-292 termination guard. `apply_eq_rules` fires via the discrimination tree,
 // which RETAINS equational rules that load `unindex_functor`s for lacking a
-// `[simp]`/`[unfold]` tag (the tag is cleared only from `rules_by_functor`). A
+// `@[simp]`/`@[unfold]` tag (the tag is cleared only from `rules_by_functor`). A
 // plain LAW in a requires-bearing spec sort — here commutativity
 // `flip(?a, ?b) = flip(?b, ?a)` — is a candidate AND its carrier (Int64) provides
 // the spec, so the type guard alone would fire it; firing a non-reducing law
@@ -275,7 +275,7 @@ fn resolver_does_not_fire_non_simp_requires_guarded_law() {
         named_args: SmallVec::new(),
     });
     // flip_comm is requires-guarded (Flippy requires Eq) and Int64 provides Flippy,
-    // so the type guard would pass — but it is NOT [simp]-tagged, so it is a
+    // so the type guard would pass — but it is NOT @[simp]-tagged, so it is a
     // non-directional law that must not fire. `apply_eq_rules` must report NO
     // changes (firing commutativity would ping-pong to the 100-fuel cap).
     let (result, changes) = kb.apply_eq_rules(
@@ -285,7 +285,7 @@ fn resolver_does_not_fire_non_simp_requires_guarded_law() {
     );
     assert!(
         changes.is_empty(),
-        "non-[simp] requires-guarded flip_comm must NOT fire (firing it would loop); \
+        "non-@[simp] requires-guarded flip_comm must NOT fire (firing it would loop); \
          got {} change(s)",
         changes.len(),
     );

@@ -402,7 +402,7 @@ effect_derive(callee_sig, callee_body, args, ctx)  →  output_row
 
 - **`callee_sig`** — *what is called*, resolved to its **signature**. For a
   **named operation** this is its `OperationInfo` — carrying the arrow type, the
-  `effects` row, *and* any `[feeds: …]` **metadata** (046 §4.2, gated on WI-309).
+  `effects` row, *and* any `@[feeds: …]` **metadata** (046 §4.2, gated on WI-309).
   For a **higher-order parameter `f`** it is just the parameter's arrow type
   (`f : … ! Eᶠ`), no metadata. **The metadata lives on `OperationInfo`, not on
   the `Type`** — the arrow `Type` (`sort.anthill`) is hash-consed and shared
@@ -416,7 +416,7 @@ effect_derive(callee_sig, callee_body, args, ctx)  →  output_row
 - **`callee_body`** — the callee's **body occurrence** (`operation_body`), or
   `none` for opaque/foreign callees. The *implementation* source of the
   **feed-relationship**, read only when needed (the HOF case, §5.5) and only when
-  no `[feeds: …]` metadata is declared. **Source priority:** declared `feeds`
+  no `@[feeds: …]` metadata is declared. **Source priority:** declared `feeds`
   metadata (on `OperationInfo`) → else `callee_body` → else opaque (`E` left a
   row variable).
 - **`args`** — the actual arguments, each a *(denotation, type)* pair. The
@@ -478,7 +478,7 @@ derive_K( slice_K, callee_sig, callee_body, args, ctx )  →  derived_slice_K
 **How `K`'s derivation is found** (first match wins):
 
 1. a **rule** with the conventional functor `effect_derive`, defined **in `K`'s
-   effect sort**; resolved like the `[simp]` index. Declarative transforms
+   effect sort**; resolved like the `@[simp]` index. Declarative transforms
    express directly over the row (e.g. handler discharge ≡ `merge(in, - e)`). A
    derivation that needs the host's dataflow (`ctx`/provenance/regions) crosses
    the **rule ↔ host boundary** in one of two directions: **pull** — the rule
@@ -712,7 +712,7 @@ variants; the new `effects_rows(...) ↔ effects_rows(...)` arm extracts the
 inner `EffectExpression`s and runs the row-rewrite on them. Other `Type`
 variants do term unification, same as today.
 
-The `[simp]`/ACI/canonical-`Set` substrate (earlier drafts) is **decoupled
+The `@[simp]`/ACI/canonical-`Set` substrate (earlier drafts) is **decoupled
 from effect checking** — it remains only as optional machinery for *general*
 sets (and the runtime effect catalog), not on the checking path. `Set` stays
 orphaned until a general-set consumer needs it; **`EffectSet` was removed**
@@ -907,5 +907,5 @@ ACI/`Set` substrate. Phases (variant-7 substrate first, then row checking):
    addendum, not in this proposal's scope).
 5. **Migrate `typing_pass_spec`** effect handling onto row unification; only
    then is its effect-checking honest.
-6. *(Optional, decoupled.)* The `[simp]`/ACI/canonical-`Set` substrate, only
+6. *(Optional, decoupled.)* The `@[simp]`/ACI/canonical-`Set` substrate, only
    if a *general*-set consumer appears — not needed for effect checking.

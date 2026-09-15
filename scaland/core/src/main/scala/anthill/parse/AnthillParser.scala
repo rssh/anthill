@@ -948,40 +948,15 @@ private class AnthillParserImpl(
     * WI-20260829-BAD3V — optionally a call-site type-arg bracket before those args
     * (`.name[T = Int](args)`).
     *
-    * THE BRACKET IS ADMITTED ONLY WHEN A CALL FOLLOWS IT: a bare `?x.m [simp]` must keep
-    * reading its `[simp]` as the declaration's META BLOCK, and a `[bindings]` arm that did
-    * not require the `(` would swallow it as a positional `sortBinding` — the WI-881 trap
-    * that already costs a nullary `[simp]` head its parentheses. `instArgsList` takes no
-    * cut, so the first alternative backtracks cleanly to the second when the `(` is absent.
+    * THE BRACKET IS ADMITTED ONLY WHEN A CALL FOLLOWS IT. `instArgsList` takes no cut, so
+    * the first alternative backtracks cleanly to the second when the `(` is absent.
     *
-    * IT IS NOT THE SAME TIE-BREAK AS RUSTLAND'S, and an earlier version of this comment
-    * claimed it was (found by /code-review). Rustland declares a GLR conflict and lets the
-    * continuation decide, with `prec.dynamic(1, $.meta_block)` biasing the tie toward the
-    * META reading; fastparse is ORDERED, so here the bracket alternative simply wins
-    * whenever it can parse. The two agree wherever nothing later supplies a `(` — which is
-    * every shape either grammar's tests had — and DIVERGE where a FOLLOWING rule entry
-    * supplies one across a newline:
-    *
-    *     sort S
-    *       rule {
-    *         ?x.m [simp]
-    *         (a, b)
-    *       }
-    *     end
-    *
-    * rustland reads three entries (`[simp]` staying this entry's meta block); this parser
-    * reads one call and refuses it as a bracketed dot. MEASURED on both.
-    *
-    * NO VALID PROGRAM IS KNOWN TO REACH IT, which is why the divergence is recorded rather
-    * than chased with a content-shape lookahead that would be a THIRD tie-break rule. Both
-    * implementations REFUSE the file above — rustland at conversion, "a rule head must be
-    * an atom, not a bare literal" — so what differs is which error an already-invalid
-    * program draws. For the entry to be valid the dot head would have to stand bodyless,
-    * and proposal 061 refuses a bodyless rule whose head functor is a desugaring's
-    * (`dot_apply`); give it a body and the meta block follows the BODY, not the dot, so the
-    * ambiguity does not arise. That is a bound reached by construction, not a proof: a
-    * shape nobody thought of would make this a real parity break, and the corpus row
-    * "Juxtaposed rule entries keep the meta-block bias" is where rustland's half is pinned. */
+    * It used to guard the META BLOCK too: while a block was a bare `[simp]`, a `[bindings]`
+    * arm without the `(` would have swallowed `?x.m [simp]` as a positional `sortBinding`,
+    * and rustland broke the same tie differently (a GLR conflict biased toward the block),
+    * so the two parsers diverged on a following entry that supplied a `(`. Since
+    * WI-20260915-G9EA9 the block opens with `@[`, which this arm cannot begin, so neither
+    * the swallow nor the divergence is reachable. */
   private def fieldSeg[$: P]: P[DotSeg] =
     P("." ~ located(ident) ~ dotCallSuffix).map {
       case (name, span, (typeArgs, args)) => DotSeg.Field(name, span, args, typeArgs)
@@ -1279,7 +1254,7 @@ private class AnthillParserImpl(
     )
 
   /** WI-582: a type-annotated variable argument `?x: T` in a rule LHS (e.g.
-    * `rule [simp] add(?x: Numeric, 0) = ?x`). Lowers to a `typed_var(?x, type: T)`
+    * `rule add(?x: Numeric, 0) = ?x @[simp]`). Lowers to a `typed_var(?x, type: T)`
     * marker; the loader (`reallocTerm`) STRIPS it back to the bare `?x`, keeping
     * the head structurally identical to the untyped form so the discrimination
     * tree indexes it the same (carrier-neutral — the bound rides off the
@@ -1975,11 +1950,13 @@ private class AnthillParserImpl(
 
   // ── Meta block ───────────────────────────────────────────────
 
+  /** WI-20260915-G9EA9: a block opens with the single token `@[` (mirrors rustland's
+    * `meta_block`). A bare `[` competed with type arguments and collection literals. */
   private def metaBlock[$: P]: P[MetaBlock] =
-    P("[" ~/ metaEntry.rep(1, sep = ",") ~ "]").map(es => MetaBlock(es.toIndexedSeq))
+    P("@[" ~/ metaEntry.rep(1, sep = ",") ~ "]").map(es => MetaBlock(es.toIndexedSeq))
 
   /** Open-keyed entry: `key: value` for ordinary metadata, or bare `key`
-    * for the WI-140 flag form (`[simp]` ≡ `[simp: true]`). The bare form
+    * for the WI-140 flag form (`@[simp]` ≡ `@[simp: true]`). The bare form
     * stores `Term.Bottom` as a sentinel — flag-presence checks (landing
     * with WI-157) inspect only the key, so the two forms are equivalent. */
   private def metaEntry[$: P]: P[MetaEntry] =
@@ -2064,8 +2041,8 @@ private class AnthillParserImpl(
     * begin at the declaration's own first token, which this production has already
     * consumed by the time a branch runs; the binder forms drop both the visibility and
     * any trailing meta block — a type-param binder carries neither (the desugar has no
-    * slot for them), so `public sort ?X [simp]` parses but silently ignores
-    * `public`/`[simp]`.
+    * slot for them), so `public sort ?X @[simp]` parses but silently ignores
+    * `public`/`@[simp]`.
     *
     * WI-971: a `Span` is handed down, not the raw start offset it used to be. The four
     * shapes were the reason this family looked unable to use [[located]] — each branch
@@ -2355,7 +2332,7 @@ private class AnthillParserImpl(
       Operation(vis, n,
         refuseTypeParamDefaults(n, tps.getOrElse(IndexedSeq.empty)) ++ clauses.slotBinders,
         params.toIndexedSeq, retType, clauses.requires, clauses.ensures, clauses.effects,
-        opBody, combineMeta(clauses.meta, trailingMeta), span)
+        opBody, trailingMeta, span)
     }
 
   /** Operation type-parameter list `[T, U = Int]` (WI-269). A distinct
@@ -2497,7 +2474,6 @@ private class AnthillParserImpl(
     requires: IndexedSeq[IndexedSeq[TermId]],
     ensures: IndexedSeq[IndexedSeq[TermId]],
     effects: IndexedSeq[Effect],
-    meta: IndexedSeq[MetaEntry],
     slotBinders: IndexedSeq[TypeParam]
   )
 
@@ -2506,7 +2482,6 @@ private class AnthillParserImpl(
       val reqs = ArrayBuffer.empty[IndexedSeq[TermId]]
       val enss = ArrayBuffer.empty[IndexedSeq[TermId]]
       val effs = ArrayBuffer.empty[Effect]
-      val metas = ArrayBuffer.empty[MetaEntry]
       val binders = ArrayBuffer.empty[TypeParam]
       clauses.foreach {
         // WI-840: `slotBase` is the number of requirement goals earlier clauses
@@ -2524,22 +2499,11 @@ private class AnthillParserImpl(
           }
         case (1, terms: IndexedSeq[TermId] @unchecked) => enss += terms
         case (2, effects: IndexedSeq[Effect] @unchecked) => effs ++= effects
-        // WI-087: `meta [...]` clause entries accumulate (matching effects/
-        // requires/ensures — no silent last-wins drop), merged with a trailing
-        // bare meta_block by `combineMeta`.
-        case (3, entries: IndexedSeq[MetaEntry] @unchecked) => metas ++= entries
         case _ =>
       }
       OperationClauses(reqs.toIndexedSeq, enss.toIndexedSeq, effs.toIndexedSeq,
-        metas.toIndexedSeq, binders.toIndexedSeq)
+        binders.toIndexedSeq)
     }
-
-  /** WI-087: merge `meta [...]` operation-clause entries with a trailing
-    * `[...]` meta block (clause entries first, then trailing). `None` when
-    * both are empty, so clauseless ops keep `meta = None`. */
-  private def combineMeta(clauseEntries: IndexedSeq[MetaEntry], trailing: Option[MetaBlock]): Option[MetaBlock] =
-    val all = clauseEntries ++ trailing.map(_.entries).getOrElse(IndexedSeq.empty)
-    if all.isEmpty then None else Some(MetaBlock(all))
 
   private def operationClause[$: P]: P[(Int, IndexedSeq[?])] =
     P(
@@ -2551,12 +2515,9 @@ private class AnthillParserImpl(
       // Mirrors rustland's `_effect_set` shared between operation
       // `effects` and arrow-type `@`: bare single type or braced list
       // (possibly with trailing comma).
-      (keyword("effects") ~/ effectSet).map(ts => (2, ts.map(Effect(_)).toIndexedSeq)) |
-      // WI-087: operation attributes — a keyword-introduced `meta [...]`
-      // clause carrying the existing meta_block. The `meta` keyword
-      // disambiguates from return-type application args (`-> Vec3[...]`).
-      // (Unblocks the C++ mapping codegen, which reads operation meta.)
-      (keyword("meta") ~/ metaBlock).map(mb => (3, mb.entries))
+      (keyword("effects") ~/ effectSet).map(ts => (2, ts.map(Effect(_)).toIndexedSeq))
+      // WI-20260915-G9EA9 retired WI-087's `meta [...]` clause: an operation's block
+      // trails the declaration as `@[...]`, like every other declaration's.
     )
 
   /** `const NAME : T [= value]` (proposal 039 / WI-084). Monomorphic +

@@ -21,7 +21,7 @@ MEASURED, and it is what made this ticket. examples/guardians declared four `ope
   is fixed -- this error may surface at a call that has nothing to do with
   guardians.Generator.generate.")
 
-The runtime message is GOOD -- it names the key, the operation, and warns that the symptom will appear elsewhere. The gap is entirely that nothing asks the question until an interpreter is built, and an interpreter is built lazily: `anthill run`, `common::interp_for`, and every short-lived interpreter `run_in_bridge_interp` constructs per `[simp]` fire or bridged `eq` dispatch. So `anthill load` and `anthill query` can both answer normally over a program that can never execute.
+The runtime message is GOOD -- it names the key, the operation, and warns that the symptom will appear elsewhere. The gap is entirely that nothing asks the question until an interpreter is built, and an interpreter is built lazily: `anthill run`, `common::interp_for`, and every short-lived interpreter `run_in_bridge_interp` constructs per `@[simp]` fire or bridged `eq` dispatch. So `anthill load` and `anthill query` can both answer normally over a program that can never execute.
 
 NOT A LOADER DEFECT, AND THAT IS THE POINT. WI-1122's own doc states the constraint: `is_interpreter_mapped_op` "promises at typing time that this process's interpreter has an implementation for a rust mapping, and it answers off the mapping's LANGUAGE -- it cannot check that the key resolves to anything." It cannot, because the embedder table is per-process and registration is legal right up until load seals it. So the loader is honest; what is missing is anyone asking AFTER registration is sealed and BEFORE the first call.
 

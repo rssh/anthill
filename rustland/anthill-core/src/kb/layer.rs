@@ -888,7 +888,7 @@ end
         use crate::kb::resolve::ResolveConfig;
         let mut kb = crate::kb::test_support::load_stdlib(None);
         let snap = kb.snapshot_scoped();
-        let parsed = parse::parse("namespace dv7dp.layer\n entity Tagged [Marker]\nend\n").unwrap();
+        let parsed = parse::parse("namespace dv7dp.layer\n entity Tagged @[Marker]\nend\n").unwrap();
         if let Err(errs) = load::load_all(&mut kb, &[&parsed], &NullResolver) {
             panic!("layer load errors: {errs:?}");
         }

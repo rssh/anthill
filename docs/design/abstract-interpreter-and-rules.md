@@ -70,7 +70,7 @@ The requires-gate in `folded_call_match` therefore still declines `contains` for
 since the bridge (not the unfold) serves it. **Deferred:**
 the typer inlining site (§3.2) — abandoned as type-unsound (it rewrote a call before the signature
 check); the prover site (§3.4). **Related:** proposal [043](../proposals/043-simp-rewrite.md)
-(`[simp]` rewriting), proposal 049 (`<=>`), WI-283 (typer-hosted firing — the natural host for the
+(`@[simp]` rewriting), proposal 049 (`<=>`), WI-283 (typer-hosted firing — the natural host for the
 inlining site), WI-502 / [`constrained-term-substrate.md`](./constrained-term-substrate.md) and
 WI-246 (the resolver substrate the SLD site is gated on), WI-519 (undecided-as-data — where a
 suspended guard lands), WI-578 (typed-value carrier — unaffected, per WI-580), proposal
@@ -146,14 +146,14 @@ body is executable knowledge.
 
 At a typed occurrence `append(cons(1, nil), ys)`, specialize the body against the actual
 arguments; **if the residual's size is under a threshold, inline it** (then the WI-283 loop
-re-visits and may fire again, fuel-bounded). This subsumes what a derived `[simp]` rule would do
+re-visits and may fire again, fuel-bounded). This subsumes what a derived `@[simp]` rule would do
 and does it better: a concrete argument reduces through several layers in one specialization,
 where per-constructor rules fire one layer per fuel step.
 
 This is the classic inliner heuristic — *Secrets of the GHC Inliner* (unfold when the specialized
 body's size, after discounts for statically-known arguments, is below a threshold). The host is
 the existing WI-283 per-node hook in `build_type` (reassemble → try-fire → re-visit); "fire a
-`[simp]` rule" and "inline a small specialized body" are the same move at that hook, differing
+`@[simp]` rule" and "inline a small specialized body" are the same move at that hook, differing
 only in where the RHS comes from.
 
 **The threshold is sound here** because declining to inline loses nothing: the call stays opaque
@@ -226,7 +226,7 @@ LEMMA about it (`rule bound: gte(?x, 3.0) :- gte(?x, 5.0)` against the bodied `P
 kernel-language §"A rule head functor is resolved, not declared"), and the first cut, keyed on "a
 bodied operation with any clauses", refused 26 such sites across the workspace. A BODY-LESS
 operation carrying clauses is one definition written relationally (`anthill.prelude.Set.member` /
-`.subset` / `.eq`). And an equation (`<=>`, or `=` with `[simp]`) is a law about the operation,
+`.subset` / `.eq`). And an equation (`<=>`, or `=` with `@[simp]`) is a law about the operation,
 loaded under the connective's functor — see §3.4, which already draws that line ("extra laws … are
 theorems proved from the body — never hand-written defining rules").
 
@@ -748,7 +748,7 @@ representation. Not part of the initial implementation.
    GHC-style discounts for constructor-headed arguments only if needed.
 3. **Cache design** (§8) — keying (per-arm vs per-redex-shape), interaction with discrim
    most-specific-first firing ([`project_simp_specificity_discrim`]: concrete edges beat var
-   edges — cached specializations must not outrank a user's more-specific `[simp]` rule).
+   edges — cached specializations must not outrank a user's more-specific `@[simp]` rule).
 4. **Which consumer lands first** — the typer site is nearly free (WI-283 hook + a size measure);
    the SLD site is the one that retires `member`'s unsound rules, but is gated. Retirement of the
    `list.anthill` duplicates must wait for whichever consumer actually served them.

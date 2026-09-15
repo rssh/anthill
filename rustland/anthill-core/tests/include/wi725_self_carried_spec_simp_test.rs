@@ -1,7 +1,7 @@
-//! WI-725 — a MACRO-headed `[simp]` rule is a definitional LOWERING, not a
+//! WI-725 — a MACRO-headed `@[simp]` rule is a definitional LOWERING, not a
 //! conditional typeclass law, so it fires WITHOUT the spec-op carrier guard.
 //!
-//! The `[simp]` firing guard (`simp_fire_guard_holds`) gates a spec-op law on the
+//! The `@[simp]` firing guard (`simp_fire_guard_holds`) gates a spec-op law on the
 //! carrier PROVIDING the spec — sound for an algebraic law (`get(put(m,k,v),k) <=>
 //! some(v)` holds only for a real Map). But `sort_provides` is not reflexive, so a
 //! value typed DIRECTLY at a constructor-less abstract self-carrier sort (a rule
@@ -32,12 +32,12 @@ namespace test.wi725
 
   -- A constructor-less ABSTRACT self-carrier spec (carrier = Widget itself), like
   -- Relation/Stream: `flip` is a body-less SPEC OP whose carrier `w: Widget` is the
-  -- sort. The [simp] firing guard would demand sort_provides(Widget, Widget) (false).
+  -- sort. The @[simp] firing guard would demand sort_provides(Widget, Widget) (false).
   sort Widget
     sort T = ?
     operation flip(w: Widget) -> Int64
     -- MACRO-RHS lowering: bypasses the carrier guard (WI-725).
-    rule flip(?w) <=> flip_macro(?w) [simp]
+    rule flip(?w) <=> flip_macro(?w) @[simp]
   end
 
   -- The macro (occurrence→occurrence): builds `noted(w)`, reusing the arg occurrence.
@@ -60,7 +60,7 @@ fn sym(kb: &KnowledgeBase, qn: &str) -> anthill_core::intern::Symbol {
 }
 
 /// `use_flip(w: Widget) = flip(w)` — `flip` is a body-less spec op on the abstract
-/// self-carrier `Widget`, and its `[simp]` rule has a MACRO RHS, so the WI-725 bypass
+/// self-carrier `Widget`, and its `@[simp]` rule has a MACRO RHS, so the WI-725 bypass
 /// fires it at compile time: the stored body becomes the macro output `noted(w)`, NOT
 /// a dormant `flip` apply. Without the bypass the guard blocks it (`sort_provides(
 /// Widget, Widget)` is false) and the load fails, so a successful load + a `noted`

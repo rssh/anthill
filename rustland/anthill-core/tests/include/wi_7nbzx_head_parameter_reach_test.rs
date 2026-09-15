@@ -6,7 +6,7 @@
 //! clause — so two other head shapes took the sigil spelling and silently disagreed with
 //! it. THREE divergences, measured on the tree that delivered WI-20260909-C7ANM:
 //!
-//!  1. A `[simp]` EQUATION: `pick(?a: Red, ?b) <=> 7` rewrote `pick(red(), 1)` to `7`;
+//!  1. A `@[simp]` EQUATION: `pick(?a: Red, ?b) <=> 7` rewrote `pick(red(), 1)` to `7`;
 //!     `pick(a: Red, ?b) <=> 7` loaded clean and was INERT. A DEAD RULE, one character
 //!     away from a live one — an equation's head is the CONNECTIVE (`Fn{<=>, [lhs,
 //!     rhs]}`, no named args), so the reclassifier declined at it and never saw the LHS
@@ -78,7 +78,7 @@ fn sym(kb: &KnowledgeBase, qn: &str) -> anthill_core::intern::Symbol {
 }
 
 /// One equation under test. `lhs` is the only thing that varies between a row and its
-/// control; `tag` carries `[simp]` or nothing, which is the ENABLEMENT (WI-881) and so
+/// control; `tag` carries `@[simp]` or nothing, which is the ENABLEMENT (WI-881) and so
 /// the axis the untagged rows measure.
 fn equation_src(lhs: &str, tag: &str) -> String {
     connective_src(lhs, "<=>", "", tag)
@@ -138,11 +138,11 @@ fn a_tagged_equation_reclassifies_its_lhs_in_both_spellings() {
     // THE HEADLINE ROW, driven to a VALUE. `7` is the RHS, so this is the rewrite
     // having fired — not a clean load, and not a count.
     for lhs in ["pick(?a: Red, ?b)", "pick(a: Red, ?b)"] {
-        let mut kb = crate::common::load_kb_with(&equation_src(lhs, "[simp]"));
+        let mut kb = crate::common::load_kb_with(&equation_src(lhs, "@[simp]"));
         assert_eq!(
             simplify_pick(&mut kb),
             Term::Const(Literal::Int(7)),
-            "`rule pk: {lhs} <=> 7 [simp]` must rewrite `pick(red(), 1)` to 7"
+            "`rule pk: {lhs} <=> 7 @[simp]` must rewrite `pick(red(), 1)` to 7"
         );
     }
 }
@@ -153,7 +153,7 @@ fn an_unannotated_tagged_equation_still_fires() {
     // measures the ANNOTATION and not the tag: the same equation with no `: Red` on it
     // fires before and after the repair. Without it, "both spellings rewrite to 7" is
     // also what a change that broke annotations entirely and fired everything would say.
-    let mut kb = crate::common::load_kb_with(&equation_src("pick(?a, ?b)", "[simp]"));
+    let mut kb = crate::common::load_kb_with(&equation_src("pick(?a, ?b)", "@[simp]"));
     assert_eq!(simplify_pick(&mut kb), Term::Const(Literal::Int(7)));
 }
 
@@ -197,7 +197,7 @@ namespace test.n7bzx.rhs
   sort Lib
     operation idr(x: Red) -> Red
     operation wrap(x: Red) -> Red
-    rule pk: idr(a: Red) <=> wrap(a) [simp]
+    rule pk: idr(a: Red) <=> wrap(a) @[simp]
   end
 end
 "#,
@@ -324,7 +324,7 @@ fn the_bound_on_a_reclassified_lhs_is_ENFORCED() {
     // Both spellings, because "the sigil-free spelling answers what its twin answers" is
     // a claim about the REFUSAL as much as about the rewrite.
     for lhs in ["pick(?a: Red, ?b)", "pick(a: Red, ?b)"] {
-        let mut kb = crate::common::load_kb_with(&equation_src(lhs, "[simp]"));
+        let mut kb = crate::common::load_kb_with(&equation_src(lhs, "@[simp]"));
         let out = simplify_pick_of(&mut kb, "test.n7bzx.eq.Blue.blue");
         let Term::Fn { functor, .. } = &out else {
             panic!("`{lhs}` rewrote a non-conforming redex to {out:?}")
@@ -332,7 +332,7 @@ fn the_bound_on_a_reclassified_lhs_is_ENFORCED() {
         assert_eq!(
             kb.local_name_of(*functor),
             "pick",
-            "`rule pk: {lhs} <=> 7 [simp]` must leave `pick(blue(), 1)` standing — \
+            "`rule pk: {lhs} <=> 7 @[simp]` must leave `pick(blue(), 1)` standing — \
              `blue` is not a `Red`"
         );
     }
@@ -350,7 +350,7 @@ fn a_guarded_equals_equation_reclassifies_its_lhs_too() {
     // not. Found by /code-review.
     for lhs in ["pick(?a: Red, ?b)", "pick(a: Red, ?b)"] {
         let mut kb =
-            crate::common::load_kb_with(&connective_src(lhs, "=", ":- seed(red())", "[simp]"));
+            crate::common::load_kb_with(&connective_src(lhs, "=", ":- seed(red())", "@[simp]"));
         assert_eq!(
             simplify_pick(&mut kb),
             Term::Const(Literal::Int(7)),
@@ -368,11 +368,11 @@ fn a_structural_identity_head_is_unchanged_in_both_spellings() {
     // it a new behaviour — which is the claim this row pins.
     for lhs in ["pick(?a: Red, ?b)", "pick(a: Red, ?b)"] {
         crate::common::expect_load_errors(
-            crate::common::try_load_kb_with(&connective_src(lhs, "===", "", "[simp]")),
+            crate::common::try_load_kb_with(&connective_src(lhs, "===", "", "@[simp]")),
             &["structural identity TEST"],
         );
         let mut kb =
-            crate::common::load_kb_with(&connective_src(lhs, "===", ":- seed(red())", "[simp]"));
+            crate::common::load_kb_with(&connective_src(lhs, "===", ":- seed(red())", "@[simp]"));
         let out = simplify_pick(&mut kb);
         let Term::Fn { functor, .. } = &out else {
             panic!("`{lhs} === 7` rewrote to {out:?}; a `===` head defines nothing")

@@ -1,7 +1,8 @@
 //! DV7DP: metadata must be readable through an Anthill rule and SLD resolution.
 //! Removing declaration fact emission breaks the tagged AND empty-block queries,
-//! shared-name queries, and scope checks. Rule metadata and bracket refusal tests
-//! are controls: they pass without declaration metadata by design.
+//! shared-name queries, and scope checks. The rule-metadata and unlabeled-constraint
+//! tests are controls: they pass without declaration metadata by design. What a
+//! bracket right after a type means is WI-20260915-G9EA9's, in its own test file.
 //!
 //! `kind` is driven from Anthill too: every declaration is also read through a rule
 //! that names its `MemberKind` (`kind: Sort`), and `shared_names_keep_each_declarations_block`
@@ -20,29 +21,28 @@ namespace test.dv7dp
   import anthill.prelude.{Int64}
 
   sort Tagged
-    entity tagged(n: Int64) [Marker, Key: 7]
+    entity tagged(n: Int64) @[Marker, Key: 7]
     entity plain(n: Int64)
-  end [Marker, Key: 7]
+  end @[Marker, Key: 7]
 
-  sort Id = ? [Marker, Key: 7]
+  sort Id = ? @[Marker, Key: 7]
 
   enum Colour
     entity red
     entity green
-  end [Marker, Key: 7]
+  end @[Marker, Key: 7]
 
-  entity loose(n: Int64) [Marker, Key: 7]
+  entity loose(n: Int64) @[Marker, Key: 7]
 
-  const LIMIT: Int64 = 7 [Marker, Key: 7]
+  const LIMIT: Int64 = 7 @[Marker, Key: 7]
 
   rule small(?n) :- tagged(n: ?n)
-  rule named: small(?n) :- plain(n: ?n) [Marker, Key: 7]
+  rule named: small(?n) :- plain(n: ?n) @[Marker, Key: 7]
 
-  constraint bounded: small(?n) :- ?n > 100 [Marker, Key: 7]
+  constraint bounded: small(?n) :- ?n > 100 @[Marker, Key: 7]
 
   operation twice(n: Int64) -> Int64
-    meta [Marker, Key: 7]
-    = n + n
+    = n + n @[Marker, Key: 7]
 end
 "#;
 
@@ -228,7 +228,7 @@ namespace test.dv7dp
    sort T = ?
    const SIZE: Int64 = 3
    entity box(v: T)
- end [Elem: T, Size: SIZE]
+ end @[Elem: T, Size: SIZE]
 end
 "#,
         &[("test.dv7dp.Box", "Sort")],
@@ -252,9 +252,9 @@ fn shared_names_keep_each_declarations_block() {
     // An eponymous constructor IS its sort (§6.3, one symbol), so both rows carry one
     // name; `kind` is what keeps them two. The EQUAL-block iteration is the one that
     // needs it: the two heads then differ only in `kind`.
-    for sort_block in ["[Marker, Key: 7]", "[Other]", ""] {
+    for sort_block in ["@[Marker, Key: 7]", "@[Other]", ""] {
         let source = format!(
-            "namespace test.dv7dp\n sort Point\n entity Point [Marker, Key: 7]\n end {sort_block}\nend\n"
+            "namespace test.dv7dp\n sort Point\n entity Point @[Marker, Key: 7]\n end {sort_block}\nend\n"
         );
         let mut kb = load_readers(
             &source,
@@ -273,7 +273,7 @@ fn shared_names_keep_each_declarations_block() {
         let sort = blocks(&mut kb, "own", 0);
         assert_eq!(sort.len(), 1);
         match sort_block {
-            "[Other]" => {
+            "@[Other]" => {
                 assert!(meta_has_flag(&kb, Some(sort[0]), "Other"));
                 assert!(!meta_has_flag(&kb, Some(sort[0]), "Marker"));
             }
@@ -291,8 +291,8 @@ fn redeclared_parameter_keeps_only_its_written_block() {
     // `Plain.U` is the control that a parameter without a block still reads as empty.
     let mut kb = load_readers(
         "namespace test.dv7dp\n \
-         sort Box[T]\n sort T = ? [Marker, Key: 7]\n entity box(v: T)\n end\n \
-         sort Spec[F[E]]\n sort F\n end [Marker, Key: 7]\n end\n \
+         sort Box[T]\n sort T = ? @[Marker, Key: 7]\n entity box(v: T)\n end\n \
+         sort Spec[F[E]]\n sort F\n end @[Marker, Key: 7]\n end\n \
          sort Plain[U]\n entity plain(v: U)\n end\n\
          end\n",
         &[
@@ -323,12 +323,12 @@ namespace test.dv7dp
   import anthill.reflect.MemberKind.{Sort}
 
   sort Point
-    entity Point [OnConstructor]
-  end [OnSort]
+    entity Point @[OnConstructor]
+  end @[OnSort]
 
   enum Colour
     entity red
-  end [OnEnum]
+  end @[OnEnum]
 
   rule sort_attributes(?m) :- SortInfo(name: ?s), DeclarationMeta(name: ?s, kind: Sort, meta: ?m)
   rule member_attributes(?m) :- MemberInfo(name: ?s, kind: ?k), DeclarationMeta(name: ?s, kind: ?k, meta: ?m)
@@ -359,7 +359,7 @@ end
 #[test]
 fn top_level_declarations_are_queryable() {
     let mut kb = load_readers(
-        "sort Loose\n entity loose\nend [Marker, Key: 7]\nentity Free [Marker, Key: 7]\n",
+        "sort Loose\n entity loose\nend @[Marker, Key: 7]\nentity Free @[Marker, Key: 7]\n",
         &[("Loose", "Sort"), ("Free", "Constructor")],
     );
     for i in 0..2 {
@@ -395,23 +395,11 @@ fn rules_keep_clause_metadata() {
 #[test]
 fn unlabeled_constraint_block_is_refused() {
     let errs = crate::common::parse_errs(
-        "namespace test.dv7dp\n import anthill.prelude.{Int64}\n entity tagged(n: Int64)\n constraint tagged(n: ?n) :- ?n > 100 [Marker]\nend\n",
+        "namespace test.dv7dp\n import anthill.prelude.{Int64}\n entity tagged(n: Int64)\n constraint tagged(n: ?n) :- ?n > 100 @[Marker]\nend\n",
     );
     crate::common::assert_refused_naming(
         &errs,
         &["unlabeled constraint", "label"],
         "constraint block",
     );
-}
-
-#[test]
-fn type_argument_bracket_is_not_metadata() {
-    let errs = crate::common::try_load_kb_with(
-        "namespace test.dv7dp\n import anthill.prelude.{Int64}\n sort Id = Int64 [Marker]\nend\n",
-    )
-    .err()
-    .expect("over-applied Int64");
-    crate::common::assert_refused_naming(&errs, &["over-applied"], "sort bracket");
-    let errs = crate::common::parse_errs("namespace test.dv7dp\n import anthill.prelude.{Int64}\n const K: Int64 [Marker, Key: 7]\nend\n");
-    crate::common::assert_refused_naming(&errs, &["syntax error"], "const bracket");
 }

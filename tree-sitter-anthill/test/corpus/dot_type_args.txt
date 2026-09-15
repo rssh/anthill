@@ -186,7 +186,7 @@ fact Map[K = String, V = Int64].empty[T = Int64](x)
 Dot rule head keeps its meta block
 =====================================
 
-rule dr: ?x.m [simp]
+rule dr: ?x.m @[simp]
 
 ---
 
@@ -208,7 +208,7 @@ rule dr: ?x.m [simp]
 Dot fact head keeps its meta block
 =====================================
 
-fact ?x.m [simp]
+fact ?x.m @[simp]
 
 ---
 
@@ -224,12 +224,12 @@ fact ?x.m [simp]
           (identifier))))))
 
 =====================================
-Juxtaposed rule entries keep the meta-block bias
+Juxtaposed rule entries: the block stays this entry's
 =====================================
 
 sort S
   rule {
-    ?x.m [simp]
+    ?x.m @[simp]
     (a, b)
   }
 end

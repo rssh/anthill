@@ -204,7 +204,7 @@ sort anthill.prelude.Relation
   -- so do not RELY on `or` collapsing rows an earlier step already duplicated.
   --
   -- Two-stage lowering (compile-time recipe, runtime fill):
-  --   * `where(?r, ?cond) <=> guarded_of(?r, ?cond) [simp]` fires at COMPILE time;
+  --   * `where(?r, ?cond) <=> guarded_of(?r, ?cond) @[simp]` fires at COMPILE time;
   --     `guarded_of` is a MACRO (occurrence→occurrence, WI-722/043.1) that reads the
   --     lambda + `r`'s schema and splices `where_run(r, <query recipe>)`.
   --   * `where_run` is the RUNTIME back-end: it fills the recipe's column HOLES with
@@ -212,9 +212,9 @@ sort anthill.prelude.Relation
   --     query-combining step `negate`/`union` perform.
   operation where(r: Relation, cond: (c: r.T) -> Bool) -> Relation[T = r.T, E = r.E]
 
-  rule where(?r, ?cond) <=> guarded_of(?r, ?cond) [simp]
+  rule where(?r, ?cond) <=> guarded_of(?r, ?cond) @[simp]
 
-  -- The compile-time MACRO: an occurrence→occurrence op, so the `[simp]` engine
+  -- The compile-time MACRO: an occurrence→occurrence op, so the `@[simp]` engine
   -- evaluates it at compile time (WI-722). It reads the row lambda `cond` and `r`'s
   -- schema and returns a spliced `where_run(r, <recipe>)` occurrence. Backed by a
   -- host builtin — the lambda→query translation is Rust (there is no reflect
@@ -279,7 +279,7 @@ sort anthill.prelude.Relation
   --     this name?" and refuse loudly). Dropping the collapse is what closed it.
   --
   -- Two-stage lowering, exactly as `where`: `join(?r1, ?r2, ?cond) <=> conjoin_of(?r1,
-  -- ?r2, ?cond) [simp]` fires at COMPILE time; `conjoin_of` is a MACRO that reads the
+  -- ?r2, ?cond) @[simp]` fires at COMPILE time; `conjoin_of` is a MACRO that reads the
   -- lambda + both schemas and splices `join_run(r1, r2, <query recipe>)`; `join_run`
   -- is the RUNTIME back-end that fills the recipe's column holes and wraps the query.
   -- Distinct schema type parameters `L`, `R` (NOT the two bare `Relation` params that
@@ -292,9 +292,9 @@ sort anthill.prelude.Relation
   operation join[L, R](r1: Relation[T = L], r2: Relation[T = R], cond: (c: r1.T, q: r2.T) -> Bool)
     -> Relation[T = Concat[A = L, B = R], E = {r1.E, r2.E}]
 
-  rule join(?r1, ?r2, ?cond) <=> conjoin_of(?r1, ?r2, ?cond) [simp]
+  rule join(?r1, ?r2, ?cond) <=> conjoin_of(?r1, ?r2, ?cond) @[simp]
 
-  -- The compile-time MACRO (occurrence→occurrence, so the `[simp]` engine evaluates it
+  -- The compile-time MACRO (occurrence→occurrence, so the `@[simp]` engine evaluates it
   -- at compile time, WI-722). It reads the two-row lambda `cond` and both schemas and
   -- returns a spliced `join_run(r1, r2, <recipe>)` occurrence. Backed by a host builtin
   -- (the lambda→query translation is Rust, as for `where`).

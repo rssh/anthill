@@ -2,7 +2,7 @@
 //!
 //! Every `TypeResult` now carries the (possibly-rewritten) occurrence it
 //! is the type of (`{ty, env, effects, node}`). This is the substrate for
-//! firing `[simp]` rules in the typer: a parent build-frame reassembles
+//! firing `@[simp]` rules in the typer: a parent build-frame reassembles
 //! itself from its children's result `node`s, and a firing frame swaps in
 //! a synthesized RHS. No rule fires yet, so the invariant these tests pin
 //! is the *identity* baseline: `type_check_node(occ).node` is the very

@@ -193,7 +193,7 @@ pub const SPEC_OP_FUNCTORS: &[&str] = &[
 /// is a real, unrelated 3-arg operation, so the capture was one
 /// `import anthill.reflect.{unify}` away rather than hypothetical. A captured
 /// connective does not fail; it answers differently. MEASURED by backing the addresses
-/// out: `rule tau() <=> 7 [simp]` leaves residual `eq(?_, 7)` with them and
+/// out: `rule tau() <=> 7 @[simp]` leaves residual `eq(?_, 7)` with them and
 /// `eq(?_, tau)` without — the equation silently stops firing, and the file loads clean
 /// with no diagnostic either way.
 ///
@@ -210,7 +210,7 @@ pub const SPEC_OP_FUNCTORS: &[&str] = &[
 /// that function). Measured on the stdlib the moment WI-888 made `<=>` the only
 /// equational spelling: `reflect.anthill` declares its own
 /// `unify(a: Term, b: Term, kb: KB)` — proposal 049's term-level face — so the three
-/// `rule fact_monotonicity(…) <=> constant() [simp]` rules written in that same
+/// `rule fact_monotonicity(…) <=> constant() @[simp]` rules written in that same
 /// namespace resolved their MINTED connective to `anthill.reflect.unify` and filed three
 /// clauses under a 3-ary reflect operation. They loaded clean and stopped firing:
 /// `anthill.reflect.fact_monotonicity` owned nothing, `simp_equation_rids` never saw
@@ -263,13 +263,13 @@ pub const EQUALITY_FAMILY_FUNCTORS: &[&str] = &[EQ_FUNCTOR, UNIFY_FUNCTOR, STRUC
 ///
 /// THEY WERE NOT THE SAME DEFECT, though, and the difference is why the second one
 /// needed a ticket of its own. A `===` head was silently USELESS: measured on a
-/// `[simp]`-tagged `g(?x) === ?x`, the subject was stamped
+/// `@[simp]`-tagged `g(?x) === ?x`, the subject was stamped
 /// [`SymbolKind::EquationFunctor`](crate::intern::SymbolKind) with ZERO clauses under
 /// it, `simp_equation_rids` (the eq+unify buckets) could never reach the rule, and
 /// citing `g` was refused with "defined by equations … no defining equation for it can
 /// be found" — about an equation written three lines up. An `=` head WORKED: measured
 /// across all four (connective × attribute) combinations on one shape (WI-884), the
-/// answer tracks the `[simp]` ATTRIBUTE alone — `=` fires and `<=>` without the tag is
+/// answer tracks the `@[simp]` ATTRIBUTE alone — `=` fires and `<=>` without the tag is
 /// dead. So `=` is refused not to repair a silence but to finish proposal 049's
 /// migration (build step 6, WI-526), whose 40-head first pass left 44 more in the
 /// stdlib and whose affordance — the KB owner matching BOTH connectives — was

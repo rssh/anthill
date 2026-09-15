@@ -128,7 +128,7 @@
 //!
 //! Tier 1 cannot apply at all: `Expr::DotApply` carries no `type_args`, so a dot is
 //! bracket-less by construction — the same reason eval's bracket-less readers take the
-//! bare count (WI-842). And an author-written `[simp]` dot rule is not pre-empted: it
+//! bare count (WI-842). And an author-written `@[simp]` dot rule is not pre-empted: it
 //! fires earlier in the same frame and never reaches the guard, which is unchanged and
 //! is not a silent first-match — a rewrite declared in the receiver's sort is a text
 //! written for this receiver.

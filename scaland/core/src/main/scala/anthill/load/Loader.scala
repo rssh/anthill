@@ -836,7 +836,7 @@ object Loader:
     * order it runs in; [[scanRuleGoal]] is the mint.
     *
     * WI-894/896/898 is what the mint is FOR. `ite` is the motivating case —
-    * `bool.anthill` declares no `ite` operation; its two `[simp]` equations ARE its
+    * `bool.anthill` declares no `ite` operation; its two `@[simp]` equations ARE its
     * definition, and `int64.anthill` / `ordered.anthill` reach it by `import
     * anthill.prelude.Bool.{ite}`. Without the mint that import resolves to nothing,
     * which is how the whole stdlib failed to load. */
@@ -1371,12 +1371,12 @@ object Loader:
   ): Unit =
     val name = ruleIntroducedFunctor(rule, fileSym, fileTerms).map(_._1).getOrElse("")
     // A declaration stores no clause, so there is nothing for a citation handle or a
-    // `[…]` tag to attach to. Refused rather than dropped: a label on a declaration
+    // `@[…]` tag to attach to. Refused rather than dropped: a label on a declaration
     // defines a `Rule` symbol that `using` then finds nothing under, and both carriers
     // were silently lost the moment this arm stopped asserting.
     val carrier: Option[String] =
       if rule.label.isDefined then Some("A citation label on it has nothing to cite.")
-      else if rule.meta.isDefined then Some("A `[…]` tag on it has no clause to govern.")
+      else if rule.meta.isDefined then Some("A `@[…]` tag on it has no clause to govern.")
       else rule.heads.headOption.flatMap {
         case RuleHead.TermHead(t) if headCarriesTypedColumn(fileSym, fileTerms, t) =>
           Some("A typed column `?x: T` has exactly one enforcer, a rewrite's " +
@@ -1474,7 +1474,7 @@ object Loader:
     * A BARE NAME IS AN APPLICATION OF ARITY 0 on the PREDICATE path (P85Z7): `rule
     * holds :- base(1)` introduces `holds`, scoped where it is written, exactly as
     * `rule holds()` does. On the EQUATION path it introduces nothing, deliberately —
-    * a `[simp]` head is an application, so a bare subject matches no redex.
+    * a `@[simp]` head is an application, so a bare subject matches no redex.
     *
     * The SUBJECT is the node the rule is about: for an equation (`ite(true, ?t, ?_) =
     * ?t`) that is the LHS; for a predicate head it is the head itself. This is the one
@@ -1516,7 +1516,7 @@ object Loader:
       //
       // WI-20260902-CZJ2N — THE EQUATION PATH MINTS TOO, and the `kind == Goal` guard
       // that stood here is what it deletes. P85Z7 admitted only the PREDICATE path, on
-      // the reading that a `[simp]` head is an APPLICATION which a bare name is not — so
+      // the reading that a `@[simp]` head is an APPLICATION which a bare name is not — so
       // `rule tau <=> …` matched no redex and minting `tau` would have stamped it
       // `EquationFunctor` for a law that can never run. CZJ2N makes the two spellings
       // ONE TERM, so the bare law DOES define and refusing to mint its subject would be
@@ -1636,9 +1636,43 @@ object Loader:
         case None    => "Write `<=>` to define by equations"
       s"`$op` is the structural identity TEST, not a defining connective, so $what: " +
       s"`$op` is a resolver builtin that answers every goal itself, so no clause of it is " +
-      s"ever consulted, and a `[simp]` tag on it never fires (the normalizer reads only " +
+      s"ever consulted, and a `@[simp]` tag on it never fires (the normalizer reads only " +
       s"the `<=>` equations). $remedy, or give the rule a BODY GOAL to state it " +
       s"as an ordinary law about `$op`."
+
+
+  /** A conclusion is never a bare literal — rustland's `convert_rule_heads` refusal (WI-893,
+    * spec §"A head is an atom"), which scaland lacked: a retired `q(?a) [simp]` inside
+    * `rule { … }` loaded silently as an untagged law beside a junk entry headed by the list.
+    * WI-20260915-G9EA9 made that the retired spelling's landing shape, so a list of bare
+    * names also names the one-token block. At LOAD, where rustland's converter refuses it:
+    * the parser's term-shape tests write literal facts (`fact (a: 1)`) on purpose. */
+  private def refuseBareLiteralConclusion(
+    fileSym: SymbolTable,
+    fileTerms: SimpleTermStore,
+    t: TermId,
+    what: String,
+    errors: ArrayBuffer[LoadError]
+  ): Boolean =
+    val span = fileTerms.spanOf(t)
+    def bareName(id: TermId): Option[String] = fileTerms.get(id) match
+      case Term.Ref(sym) => Some(fileSym.name(sym))
+      case Term.Ident(sym) => Some(fileSym.name(sym))
+      case Term.Fn(f, pos, named) if pos.isEmpty && named.isEmpty => Some(fileSym.name(f))
+      case _ => None
+    def atom() = errors += LoadError.Other(
+      s"a $what must be an atom, not a bare literal (a value is not a proposition)", span)
+    fileTerms.get(t) match
+      case Term.Fn(f, pos, _) if Set("ListLiteral", "SetLiteral", "TupleLiteral").contains(fileSym.name(f)) =>
+        atom()
+        val names = pos.toSeq.map(bareName)
+        if fileSym.name(f) == "ListLiteral" && names.nonEmpty && names.forall(_.isDefined) then
+          val block = names.flatten.mkString("[", ", ", "]")
+          errors += LoadError.Other(s"`$block` is a meta block in the retired spelling: write `@$block`", span)
+        true
+      case Term.Const(_) =>
+        atom(); true
+      case _ => false
 
   /** WI-1090 — push the refusal for a bodyless head written with a non-defining
     * connective, reporting whether it fired. One helper for the two callers a bodyless
@@ -1974,13 +2008,20 @@ object Loader:
     ): Option[kb.ScopeId] =
       lookupScope(kb, qualName, decl.name.span, errors)
 
+    private def refuseBareLiteralHeads(rule: Rule): Boolean =
+      rule.heads.map {
+        case RuleHead.TermHead(t) => refuseBareLiteralConclusion(fileSym, fileTerms, t, "rule head", errors)
+        case RuleHead.Bottom => false
+      }.contains(true)
+
     def atItem(item: Item, scope: kb.ScopeId, prefix: String): Unit =
       item match
         case Item.FactItem(fact) =>
           // WI-1090: a fact IS a bodyless rule (§6.1), so `fact lhs === rhs` is the same
           // dead clause the rule arm refuses — refused BEFORE the assert, so no consumer
           // that collects errors without failing the load sees the pre-fix KB.
-          if !refuseNonDefiningConnectiveHead(
+          if !refuseBareLiteralConclusion(fileSym, fileTerms, fact.term, "fact", errors)
+            && !refuseNonDefiningConnectiveHead(
             fileSym, fileTerms, fact.term, fileTerms.spanOf(fact.term), errors) then
             // WI-20260901-719FJ: a fact head is a LOGICAL SUBJECT too — `fact ns.tgt`
             // is the same reference `fact ns.tgt()` is.
@@ -1990,12 +2031,14 @@ object Loader:
 
         case Item.RuleItem(rule) =>
           val sortSort = findSortTerm(kb, "anthill.reflect.Rule")
-          loadRuleHeads(kb, rule, fileTerms, fileSym, scope, sortSort, errors)
+          if !refuseBareLiteralHeads(rule) then
+            loadRuleHeads(kb, rule, fileTerms, fileSym, scope, sortSort, errors)
 
         case Item.RuleBlockItem(block) =>
           val sortSort = findSortTerm(kb, "anthill.reflect.Rule")
           for rule <- block.entries do
-            loadRuleHeads(kb, rule, fileTerms, fileSym, scope, sortSort, errors)
+            if !refuseBareLiteralHeads(rule) then
+              loadRuleHeads(kb, rule, fileTerms, fileSym, scope, sortSort, errors)
 
         case Item.EntityItem(entity) =>
           val shortName = joinSegments(fileSym, entity.name.segments)
@@ -2524,7 +2567,7 @@ object Loader:
     * THE DEFECT, measured on the stdlib the moment WI-888 made `<=>` the only equational
     * spelling: `reflect.anthill` declares its own `unify(a: Term, b: Term, kb: KB)`
     * (proposal 049's term-level face), so the three `rule fact_monotonicity(…) <=>
-    * constant() [simp]` rules written in that same namespace resolve their MINTED
+    * constant() @[simp]` rules written in that same namespace resolve their MINTED
     * connective through the ordinary ladder onto `anthill.reflect.unify` and file three
     * clauses under a 3-ary reflect operation. They load clean and fire nothing. The `=`
     * spelling had worked only because `anthill.reflect` happens to declare no `eq`.

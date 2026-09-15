@@ -19,7 +19,7 @@
 //!
 //! `dot_apply` IS NOT THE SAME QUESTION, and 92VA4's own ticket text got this wrong before
 //! the spec was read: §5.3 gives the author that spelling — "a sort-scoped law written
-//! against the method-call form, `rule dr: dot_apply(?receiver, member, ?x) = … [simp]`" —
+//! against the method-call form, `rule dr: dot_apply(?receiver, member, ?x) = … @[simp]`" —
 //! so its two arms in `load.rs` take a SHAPE guard, not a mint gate, and their comments
 //! record the 8 tests that fall if one is added. §6.7 gives `field_access` no written form
 //! at all. `a_written_dot_apply_is_deliberately_untouched` is that asymmetry, driven.

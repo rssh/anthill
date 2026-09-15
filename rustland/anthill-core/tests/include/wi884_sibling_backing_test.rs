@@ -11,7 +11,7 @@
 //!
 //! `Bool` was outside WI-881's audit and is checked here: `and`/`or`/`not` answer, and
 //! `ite` is not an operation — WI-887 deleted the declaration, leaving the functor its
-//! two `[simp]` rules introduce. See
+//! two `@[simp]` rules introduce. See
 //! [`bool_is_audited_and_ite_is_not_one_of_its_operations`] and
 //! [`ite_reduces_under_both_spellings`]; `bool.anthill` carries the why.
 //!
@@ -57,7 +57,7 @@ namespace wi884.siblings
     operation dMinValue(n: Int64) -> Int64 = Int64.minValue()
     operation dMaxValue(n: Int64) -> Int64 = Int64.maxValue()
     -- the BARE nullary spelling, which `int64.anthill`'s own `in_bounds` constraint
-    -- uses and which a `[simp]` equation would not have reached (WI-881 on `tau`)
+    -- uses and which a `@[simp]` equation would not have reached (WI-881 on `tau`)
     operation dMinBare(n: Int64) -> Int64 = minValue
     operation dMaxBare(n: Int64) -> Int64 = maxValue
   end
@@ -104,7 +104,7 @@ end
 ///
 /// The bare spelling is not decoration: `int64.anthill`'s own
 /// `constraint in_bounds: gte(?n, minValue), lte(?n, maxValue)` writes it that way,
-/// and it is the form a `[simp]` equation would have left dead — a `[simp]` head is
+/// and it is the form a `@[simp]` equation would have left dead — a `@[simp]` head is
 /// an APPLICATION, so it matches `minValue()` and not the `var_ref` a bare name
 /// lowers to (WI-881 measured that on `Float.tau`, which is why these are host-backed).
 #[test]
@@ -268,7 +268,7 @@ fn split_keeps_its_empty_pieces_so_it_round_trips() {
 }
 
 /// `isEmpty` in all three call forms — qualified, dot on a bound parameter, dot on a
-/// literal. Written when `isEmpty` was `[simp]`-backed, where every spelling had to be
+/// literal. Written when `isEmpty` was `@[simp]`-backed, where every spelling had to be
 /// driven because INLINING IS NOT DISPATCH (this is the test `Float.tau` failed); kept
 /// now that it is host-backed, as the guard that no form lost its answer in the move.
 #[test]
@@ -295,7 +295,7 @@ fn is_empty_reaches_every_call_form() {
 /// THE SLD ARM NEEDS BOTH HALVES OF ITS SETUP, and WI-887 got there by having each
 /// half wrong in turn. (1) The redex must be nested in a COMPOUND goal: under the `eq`
 /// builtin it never reduces, because `eq` short-circuits ahead of the rule-candidate
-/// path that hosts the rewrite — that shape yields zero for any `[simp]` redex, and
+/// path that hosts the rewrite — that shape yields zero for any `@[simp]` redex, and
 /// reading its zero as a fact about `ite` is what sent WI-884 looking for a missing
 /// implementation. (2) It needs `ResolveConfig.simplify`, which is NOT the default
 /// (`resolve.rs` sets `simplify: false`), so the same goal yields zero under
@@ -382,15 +382,15 @@ fn bool_is_audited_and_ite_is_not_one_of_its_operations() {
 }
 
 /// `ite` IS NOT AN OPERATION — the half of WI-887's decision that a reducing rule
-/// cannot show. It reduces because two `[simp]` rule heads DEFINE it, and the typer's
-/// `[simp]` pass inlines it before dispatch, even in an operation body.
+/// cannot show. It reduces because two `@[simp]` rule heads DEFINE it, and the typer's
+/// `@[simp]` pass inlines it before dispatch, even in an operation body.
 ///
 /// THE TWO SPELLINGS NO LONGER DIVERGE, and that reversal is WI-894. This test used to
 /// assert that `Bool.ite(...)` "names nothing — a rule head introduces a functor, not a
 /// qualified operation symbol", and that was true only because a rule-introduced functor
 /// was ONE BARE GLOBAL NAME with no qualified identity to name. WI-894 scopes it to its
 /// declaring sort, so `anthill.prelude.Bool.ite` now EXISTS and both spellings reach the
-/// same symbol and the same `[simp]` rules. The member arm is kept, inverted: it is the
+/// same symbol and the same `@[simp]` rules. The member arm is kept, inverted: it is the
 /// regression guard for the naming path this ticket added.
 ///
 /// The un-imported REFUSAL — the negative control that makes the scoping safe — lives in
@@ -399,7 +399,7 @@ fn bool_is_audited_and_ite_is_not_one_of_its_operations() {
 ///
 /// An earlier cut of this test asserted BOTH spellings were refused. That was written
 /// off a program in which a comment line above `ite_true` had silently eaten its
-/// `[simp]` (WI-893), leaving the bare form genuinely dead — half-backed looking
+/// `@[simp]` (WI-893), leaving the bare form genuinely dead — half-backed looking
 /// backed, from the parser.
 ///
 /// ONE LOAD serves both spellings: neither call traps, so both sorts ride one source and
@@ -441,7 +441,7 @@ end
     }
 }
 
-/// THE LIMIT OF A REWRITE, driven rather than argued: a `[simp]` head is matched
+/// THE LIMIT OF A REWRITE, driven rather than argued: a `@[simp]` head is matched
 /// STRUCTURALLY, so `ite(true, ?t, ?_)` has a redex only where the condition is
 /// already a LITERAL. `mixed` below is the other case — a computed condition, the
 /// shape `ordered.anthill`'s own `max` law writes — and it does not reduce.
@@ -458,8 +458,8 @@ namespace wi884.iteLaw
   sort C
     import anthill.prelude.{Int64, Bool}
     operation myIte(cond: Bool, then: Int64, else: Int64) -> Int64
-    rule myIte(true, ?t, ?_) <=> ?t [simp]
-    rule myIte(false, ?_, ?e) <=> ?e [simp]
+    rule myIte(true, ?t, ?_) <=> ?t @[simp]
+    rule myIte(false, ?_, ?e) <=> ?e @[simp]
 
     operation literal(n: Int64) -> Int64 = myIte(true, 10, 20)
     operation mixed(a: Int64, b: Int64) -> Int64 = myIte(Int64.gte(a, b), 10, 20)
@@ -488,7 +488,7 @@ end
 /// semantic equality *test* that never binds" (kernel-language.md §5.3). That read like
 /// the explanation for [`ite_does_not_reduce_at_sld_either`], and it was written down as
 /// one before being driven. It was FALSE ABOUT THE LOADER: driven across the same four
-/// rows, the answer tracked the `[simp]` ATTRIBUTE alone — `=` fired, and `<=>` without
+/// rows, the answer tracked the `@[simp]` ATTRIBUTE alone — `=` fired, and `<=>` without
 /// the tag was dead.
 ///
 /// WI-888 SETTLED THE DIVERGENCE THE OTHER WAY, so these rows are inverted DELIBERATELY
@@ -516,7 +516,7 @@ fn the_connective_admits_the_equation_and_the_attribute_fires_it() {
     // the firing row runs first and the trapping row second, since a trap poisons only
     // LATER calls.
     const ADMITTED: [(&str, &str, Option<i64>); 2] =
-        [("unifySimp", " [simp]", Some(10)), ("unifyBare", "", None)];
+        [("unifySimp", " @[simp]", Some(10)), ("unifyBare", "", None)];
     let src: String = ADMITTED
         .iter()
         .map(|(ns, attribute, _)| row_source(ns, "<=>", attribute))
@@ -529,7 +529,7 @@ fn the_connective_admits_the_equation_and_the_attribute_fires_it() {
             if attribute.is_empty() {
                 " bare"
             } else {
-                " [simp]"
+                " @[simp]"
             }
         );
         match (expected, got) {
@@ -550,7 +550,7 @@ fn the_connective_admits_the_equation_and_the_attribute_fires_it() {
     // The REFUSED spelling, on both settings of the tag — the tag has no bearing on it,
     // which is the half a reader of the old rows would get wrong. Each row loads ALONE:
     // one refusal fails the whole load, so a shared source could not tell them apart.
-    for attribute in ["", " [simp]"] {
+    for attribute in ["", " @[simp]"] {
         let errs = crate::common::try_load_kb_with(&row_source("eqRefused", "=", attribute))
             .err()
             .unwrap_or_else(|| {

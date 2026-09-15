@@ -46,7 +46,7 @@ sort anthill.prelude.Bool
   -- functor's other consumer is smt-gen's `(ite c t e)`, which wants the condition left
   -- symbolic and no reduction at all.
   rule {
-    ite_true:   ite(true, ?t, ?_) <=> ?t [simp]
-    ite_false:  ite(false, ?_, ?e) <=> ?e [simp]
+    ite_true:   ite(true, ?t, ?_) <=> ?t @[simp]
+    ite_false:  ite(false, ?_, ?e) <=> ?e @[simp]
   }
 end

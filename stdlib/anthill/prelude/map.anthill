@@ -110,7 +110,7 @@ sort anthill.prelude.Map
   -- runnable `size` body gets the O(1) override. Closing the body-less gap is WI-444.
   operation size(m: Map) -> Int64
 
-  -- Laws (algebraic specification). The genuinely-reducing laws are tagged [simp] so
+  -- Laws (algebraic specification). The genuinely-reducing laws are tagged @[simp] so
   -- the type-directed rewriter fires them once the redex's carrier is known to provide
   -- Map (WI-596; the sort-level `requires Eq[T = K]` rides on that provides fact).
   --
@@ -121,20 +121,18 @@ sort anthill.prelude.Map
   -- written under. It reduces (`get(put(m, …), k)` → `get(m, k)` strips one `put`), so
   -- orienting it terminates. Its firing still needs a carrier that provides Map, exactly
   -- as its siblings do.
-  -- NOTE: a bare-identifier RHS immediately before `[simp]` (`<=> none [simp]`)
-  -- parses as an instantiation `none[simp]`, not as a rule meta-block; writing
-  -- the nullary constructor as `none()` / `empty()` makes `[simp]` attach as the
-  -- meta-block. (Literal/variable/application RHSs — `true`, `?s`, `some(?v)` —
-  -- have no such ambiguity.)
-  rule get(empty, ?) <=> none() [simp]
-  rule get(put(?m, ?k, ?v), ?k) <=> some(?v) [simp]
+  -- The nullary constructors below are written `none()` / `empty()`: while the tag was
+  -- a bare `[simp]`, `<=> none [simp]` parsed as the instantiation `none[simp]`.
+  -- `@[` begins no instantiation (WI-20260915-G9EA9), so the bare RHS is equally safe.
+  rule get(empty, ?) <=> none() @[simp]
+  rule get(put(?m, ?k, ?v), ?k) <=> some(?v) @[simp]
   rule get(put(?m, ?k2, ?v), ?k) = get(?m, ?k)
-    :- neq(?k, ?k2)   [simp]
+    :- neq(?k, ?k2)   @[simp]
 
-  rule contains(?m, ?k) <=> neq(get(?m, ?k), none) [simp]
+  rule contains(?m, ?k) <=> neq(get(?m, ?k), none) @[simp]
 
-  rule remove(empty, ?) <=> empty() [simp]
-  rule get(remove(?m, ?k), ?k) <=> none() [simp]
+  rule remove(empty, ?) <=> empty() @[simp]
+  rule get(remove(?m, ?k), ?k) <=> none() @[simp]
 
-  rule size(empty) <=> 0 [simp]
+  rule size(empty) <=> 0 @[simp]
 end

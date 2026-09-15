@@ -2802,7 +2802,7 @@ namespace test.wi548_op_contract
     entity tank(fuel: Int64)
     entity Full(t: Tank)
     operation fill(t: Tank) -> Tank requires Full(t) ensures Full(t)
-      meta [Refuel, Profile: "cpp20-stl"]
+      @[Refuel, Profile: "cpp20-stl"]
   end
 end
 "#,

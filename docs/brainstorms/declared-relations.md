@@ -11,7 +11,7 @@ in *Incremental foundation* below, and that is what we intend to do now.
 
 - **044** (unified name resolution) — extend to rule-predicate heads.
 - **032** (symmetric rule arrows) — rule labels.
-- **043** (`[simp]`) — simp params, macros over expressions, `min_sort`.
+- **043** (`@[simp]`) — simp params, macros over expressions, `min_sort`.
 - **014** (union types) — the `T | LogVar[T]` route.
 - **015** (`?` universal type variables) — implicit type params.
 - **017** (field access / dot projection) — `l.T` is its type-level analog.
@@ -112,7 +112,7 @@ one primitive.
 
 1. **No type declarations on rule params today** (rule heads bare). Syntactic
    prerequisite.
-2. **A `[simp]` param `(x: Tp)` must admit three fillers** — a **Tp-value**, an
+2. **A `@[simp]` param `(x: Tp)` must admit three fillers** — a **Tp-value**, an
    **expression typed Tp**, or an **unfilled var** — because simp rules are macros
    over expressions. So `Tp` is a constraint *"slot sort ≤ Tp"*, satisfiable three
    ways: the `min_sort`/`singleton` spectrum (value … typed occurrence … unbound).

@@ -54,7 +54,7 @@
 //!    `bool_has_no_derived_domain`, `a_simp_equation_reads_no_member_and_still_fires`
 //!    and `a_declined_sort_records_why` pass under EVERY back-out above, BY DESIGN:
 //!    they are the gate's other side — what a sort with no derived domain still does.
-//!    The `[simp]` one is not inert, though: it fails the moment the append stops
+//!    The `@[simp]` one is not inert, though: it fails the moment the append stops
 //!    honouring `is_directional_equation`, which is this change's blast radius.
 //!
 //! WHAT IS NOT HERE, each with its owner:
@@ -441,7 +441,7 @@ namespace test.wi743.simp
   sort Lib
     sort A = ?
     operation keep(x: A, y: Int64) -> A
-    rule keep(?x: Colour, ?y) <=> ?x [simp]
+    rule keep(?x: Colour, ?y) <=> ?x @[simp]
   end
 end
 "#,
@@ -458,7 +458,7 @@ end
     assert_eq!(
         kb.simplify(term),
         red,
-        "the `[simp]` equation must still fire over a Colour receiver",
+        "the `@[simp]` equation must still fire over a Colour receiver",
     );
 }
 

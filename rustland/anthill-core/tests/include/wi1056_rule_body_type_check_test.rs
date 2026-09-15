@@ -423,7 +423,7 @@ fn an_unresolved_receiver_is_exempt_and_a_known_one_is_not() {
 /// rule body is not a call this typer can check, and the boundary is the IMPORT.
 ///
 /// `bool.anthill` argues that `ite` cannot be an operation at all — an operation would
-/// evaluate both branches — so its two `[simp]` equations are its whole definition and
+/// evaluate both branches — so its two `@[simp]` equations are its whole definition and
 /// there is no signature to check a call against. `ordered.anthill` writes the same bare
 /// call in a rule HEAD, which this walk never visits; refusing it in a BODY would make one
 /// expression legal on one side of `:-` and not the other, and would refuse a program
@@ -431,7 +431,7 @@ fn an_unresolved_receiver_is_exempt_and_a_known_one_is_not() {
 ///
 /// The exemption is on the RESOLVED functor, which is what keeps it from being a hole:
 /// without `import anthill.prelude.Bool.{ite}` the name interns bare, carries no kind, and
-/// is still refused — correctly, since without the import it reaches none of the `[simp]`
+/// is still refused — correctly, since without the import it reaches none of the `@[simp]`
 /// rules either. Both arms are MEASURED here, and the pair is the test: the first alone
 /// would pass under a blanket skip of unknown functors.
 ///
@@ -452,7 +452,7 @@ fn an_imported_equation_functor_is_exempt_and_an_unresolved_one_is_not() {
     let msg = refusal(&no_import);
     assert!(
         msg.contains("ite") && msg.contains("Bool"),
-        "an UNIMPORTED bare `ite` reaches none of the `[simp]` rules and must still be \
+        "an UNIMPORTED bare `ite` reaches none of the `@[simp]` rules and must still be \
          refused, naming its owning sort: {msg}",
     );
 }

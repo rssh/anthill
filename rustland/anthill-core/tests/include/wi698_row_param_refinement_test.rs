@@ -1191,22 +1191,22 @@ fn branch_guarded_external_co_occurrence_rejected() {
     );
 }
 
-// ── WI-702: the `[simp]`/`[unfold]` formation gate (proposal 054 §"Consumers") ──
+// ── WI-702: the `@[simp]`/`@[unfold]` formation gate (proposal 054 §"Consumers") ──
 //
-// A `[simp]`/`[unfold]` equation is a DIRECTIONAL rewrite — `fire_simp` /
+// A `@[simp]`/`@[unfold]` equation is a DIRECTIONAL rewrite — `fire_simp` /
 // `fire_simp_equation` fire it LHS→RHS, so firing DUPLICATES / REORDERS / DROPS the
 // matched redex. That is sound today only because effectful ops never *become* simp
 // equations (the defining-equation family declines them — the part-1 gate). The one
-// hole left is a USER-WRITTEN `[simp]`/`[unfold]` rule whose sides MENTION an effectful
+// hole left is a USER-WRITTEN `@[simp]`/`@[unfold]` rule whose sides MENTION an effectful
 // operation symbol: rewriting its call is unsound (an External `create_issue` rewritten
 // twice mints two issues). WI-702 rejects such a rule at LOAD; the firing sites stay
 // effect-blind. The gate keys on the EFFECT ROW (any effect — function-hood), NOT
 // `requires` (Set/Map carry `requires Eq[T]` into member/insert/get, and the stdlib's
-// own `contains(insert(?s,?x), ?x) <=> true [simp]` laws mention them — so a
+// own `contains(insert(?s,?x), ?x) <=> true @[simp]` laws mention them — so a
 // requires-inclusive gate would reject the standard library; the whole-stdlib load in
 // github_todo_test is the standing positive control for that).
 
-/// A `[simp]` rewrite whose LHS mentions an `External`-rowed op — firing it would
+/// A `@[simp]` rewrite whose LHS mentions an `External`-rowed op — firing it would
 /// re-run / drop the external call. REJECTED at load, naming the op AND its row.
 const SIMP_EXTERNAL_SRC: &str = r#"
 namespace smoke.h1_simp_external
@@ -1216,11 +1216,11 @@ namespace smoke.h1_simp_external
     effects {External}
   = x
 
-  rule poke_ext(?x) <=> ?x [simp]
+  rule poke_ext(?x) <=> ?x @[simp]
 end
 "#;
 
-/// The `[unfold]` tag is a directional rewrite too, so it is gated identically.
+/// The `@[unfold]` tag is a directional rewrite too, so it is gated identically.
 const UNFOLD_EXTERNAL_SRC: &str = r#"
 namespace smoke.h2_unfold_external
   import anthill.prelude.{Int64, External}
@@ -1229,11 +1229,11 @@ namespace smoke.h2_unfold_external
     effects {External}
   = x
 
-  rule poke_unf(?x) <=> ?x [unfold]
+  rule poke_unf(?x) <=> ?x @[unfold]
 end
 "#;
 
-/// EFFECT-GENERAL, not External-only: a `[simp]` rule mentioning an op carrying a
+/// EFFECT-GENERAL, not External-only: a `@[simp]` rule mentioning an op carrying a
 /// USER-declared effect (`Outside`, the Clock convention) is rejected too — a
 /// non-empty effect row is not equational regardless of WHICH effect (the
 /// function-hood predicate, shared with the part-1 gate). Locks the "any effect"
@@ -1250,12 +1250,12 @@ namespace smoke.h3_simp_user_effect
     effects {Outside}
   = x
 
-  rule poke_out(?x) <=> ?x [simp]
+  rule poke_out(?x) <=> ?x @[simp]
 end
 "#;
 
-/// Negative control: a `[simp]` rewrite over PURE ops (`dbl` / `add`) LOADS — the
-/// gate rejects only effectful mentions, never `[simp]` itself. (`dbl <=> add(x,x)`
+/// Negative control: a `@[simp]` rewrite over PURE ops (`dbl` / `add`) LOADS — the
+/// gate rejects only effectful mentions, never `@[simp]` itself. (`dbl <=> add(x,x)`
 /// would loop if fired, but LOADING is what is under test.)
 const SIMP_PURE_SRC: &str = r#"
 namespace smoke.h4_simp_pure
@@ -1264,12 +1264,12 @@ namespace smoke.h4_simp_pure
 
   operation dbl(x: Int64) -> Int64 = add(x, x)
 
-  rule dbl(?x) <=> add(?x, ?x) [simp]
+  rule dbl(?x) <=> add(?x, ?x) @[simp]
 end
 "#;
 
 /// Scope control: an UNTAGGED equation mentioning the SAME `External`-rowed op LOADS.
-/// The hazard is FIRING (only `[simp]`/`[unfold]` rewrites fire); an untagged equation
+/// The hazard is FIRING (only `@[simp]`/`@[unfold]` rewrites fire); an untagged equation
 /// is an inert cite-required LAW (`unindex_functor`'d, WI-139) that never rewrites, so
 /// it is out of scope — this locks the gate to the tagged rewrites, not all equations.
 const UNTAGGED_EXTERNAL_SRC: &str = r#"
@@ -1284,7 +1284,7 @@ namespace smoke.h5_untagged_external
 end
 "#;
 
-/// WI-702: a `[simp]` rewrite mentioning an `External`-rowed op is rejected at load.
+/// WI-702: a `@[simp]` rewrite mentioning an `External`-rowed op is rejected at load.
 /// Needles tie the error to THIS op AND its effect, so an unrelated diagnostic that
 /// merely names a token cannot satisfy it.
 #[test]
@@ -1292,17 +1292,17 @@ fn simp_rule_mentioning_external_op_rejected() {
     expect_reject(
         &[SIMP_EXTERNAL_SRC],
         &["poke_ext", "External"],
-        "a `[simp]` rewrite mentioning an External-rowed op",
+        "a `@[simp]` rewrite mentioning an External-rowed op",
     );
 }
 
-/// WI-702: the `[unfold]` tag is gated identically (both are directional rewrites).
+/// WI-702: the `@[unfold]` tag is gated identically (both are directional rewrites).
 #[test]
 fn unfold_rule_mentioning_external_op_rejected() {
     expect_reject(
         &[UNFOLD_EXTERNAL_SRC],
         &["poke_unf", "External"],
-        "an `[unfold]` rewrite mentioning an External-rowed op",
+        "an `@[unfold]` rewrite mentioning an External-rowed op",
     );
 }
 
@@ -1313,19 +1313,19 @@ fn simp_rule_mentioning_user_effect_op_rejected() {
     expect_reject(
         &[SIMP_USER_EFFECT_SRC],
         &["poke_out", "Outside"],
-        "a `[simp]` rewrite mentioning a user-effect-rowed op",
+        "a `@[simp]` rewrite mentioning a user-effect-rowed op",
     );
 }
 
-/// WI-702 negative: a `[simp]` rewrite over PURE ops loads — the gate does not ban
-/// `[simp]`, only effectful mentions.
+/// WI-702 negative: a `@[simp]` rewrite over PURE ops loads — the gate does not ban
+/// `@[simp]`, only effectful mentions.
 #[test]
 fn simp_rule_over_pure_ops_still_loads() {
-    expect_load(&[SIMP_PURE_SRC], "a `[simp]` rewrite over pure ops");
+    expect_load(&[SIMP_PURE_SRC], "a `@[simp]` rewrite over pure ops");
 }
 
 /// WI-702 scope control: an UNTAGGED equation mentioning an effectful op loads — only
-/// FIRING rewrites (`[simp]`/`[unfold]`) are the hazard, not every equational law.
+/// FIRING rewrites (`@[simp]`/`@[unfold]`) are the hazard, not every equational law.
 #[test]
 fn untagged_equation_mentioning_external_op_still_loads() {
     expect_load(
@@ -1334,7 +1334,7 @@ fn untagged_equation_mentioning_external_op_still_loads() {
     );
 }
 
-/// A `[simp]` rule whose GUARD calls an `External`-rowed op in METHOD syntax
+/// A `@[simp]` rule whose GUARD calls an `External`-rowed op in METHOD syntax
 /// (`?m.peek()`). The gate runs AFTER `type_rule_bodies` dispatches the `DotApply`
 /// to `Apply(peek, ?m)`, so the effectful call is caught. Locks the ordering: a
 /// gate placed BEFORE dot-dispatch would see an un-dispatched `DotApply` and miss
@@ -1351,17 +1351,17 @@ namespace smoke.h6_simp_dot_external
 
   operation gate(m: Reg) -> Int64 = 0
 
-  rule gate(?m) <=> 0 :- gt(?m.peek(), 0) [simp]
+  rule gate(?m) <=> 0 :- gt(?m.peek(), 0) @[simp]
 end
 "#;
 
-/// WI-702: an effectful op reached via METHOD syntax in a `[simp]` guard is caught
+/// WI-702: an effectful op reached via METHOD syntax in a `@[simp]` guard is caught
 /// (the gate runs after dot-dispatch). Regression guard for the code-review finding.
 #[test]
 fn simp_rule_with_dot_syntax_effectful_guard_rejected() {
     expect_reject(
         &[SIMP_DOT_EXTERNAL_SRC],
         &["peek", "External"],
-        "a `[simp]` guard calling an External-rowed op via method syntax",
+        "a `@[simp]` guard calling an External-rowed op via method syntax",
     );
 }

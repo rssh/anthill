@@ -1,9 +1,9 @@
-//! WI-20260903-H054K — A RULE VARIABLE IN A TYPE POSITION OF A `[simp]` RHS IS
+//! WI-20260903-H054K — A RULE VARIABLE IN A TYPE POSITION OF A `@[simp]` RHS IS
 //! INSTANTIATED.
 //!
 //! ── THE DROP, AND WHY IT READ AS SILENCE ────────────────────────────────────
 //!
-//! A `[simp]` fire substitutes into the rule's RHS occurrence, and the TYPE positions of
+//! A `@[simp]` fire substitutes into the rule's RHS occurrence, and the TYPE positions of
 //! that occurrence — `Expr::Apply`'s form-(3) `recv_type` (`Map[K = …].empty()`,
 //! WI-20260829-W6JH0) and its `type_args` bracket — went through
 //! `KnowledgeBase::apply_subst`, which is term-world and documents the drop at its own
@@ -98,12 +98,12 @@
 //! ── THE CHANNELS, CENSUSED ──────────────────────────────────────────────────
 //!
 //! A type position reaches the fixed leaf ([`SubstTypeRewrite`]) down THREE channels, and
-//! only one of them is drivable from a `[simp]` RHS today:
+//! only one of them is drivable from a `@[simp]` RHS today:
 //!
 //!   * `Expr::Apply.recv_type` — the form-(3) companion receiver. DRIVEN, by every row
 //!     below.
 //!   * `Expr::Apply.type_args` — the call-site bracket. NOT DRIVEN, and not for want of
-//!     trying: a `[simp]` RHS cannot carry one at all (refused at load, MEASURED — the
+//!     trying: a `@[simp]` RHS cannot carry one at all (refused at load, MEASURED — the
 //!     bracket is read only on an applicative call in an OPERATION BODY, WI-20260829-BAD3V).
 //!     [`the_type_args_bracket_channel_is_refused_at_load`] pins that refusal, so the day
 //!     the bracket gains a channel here this file goes red and asks for a row.
@@ -145,12 +145,12 @@ fn sentence(msg: &str) -> &str {
 
 /// The receiver whose `K` disagrees with the `"a"` the driver passes, written as a rule
 /// VARIABLE the fire has to instantiate. `mkv(Bool)` supplies the type at the redex.
-const VARIABLE_WRONG: &str = "  rule mkv(?k) <=> Map[K = ?k, V = Int64].empty() [simp]\n  \
+const VARIABLE_WRONG: &str = "  rule mkv(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
                               operation dv() -> Int64 = size(put(mkv(Bool), \"a\", 1))\n";
 
 /// The same receiver written GROUND — WI-20260903-FCZ3N's own gain, and the yardstick the
 /// headline row is read against.
-const GROUND_WRONG: &str = "  rule mkg(?x) <=> Map[K = Bool, V = Int64].empty() [simp]\n  \
+const GROUND_WRONG: &str = "  rule mkg(?x) <=> Map[K = Bool, V = Int64].empty() @[simp]\n  \
                             operation dg() -> Int64 = size(put(mkg(1), \"a\", 1))\n";
 
 /// And the same call written directly in an operation body, with no rule in it at all.
@@ -165,7 +165,7 @@ const DIRECT_WRONG: &str =
 /// `String` (which is exactly what the wrong fix does — `expected bottom`), and the
 /// sentence alone says nothing about whether a second diagnosis was invented.
 ///
-/// The SECOND spelling fires one `[simp]` rule out of another, so the instantiated type has
+/// The SECOND spelling fires one `@[simp]` rule out of another, so the instantiated type has
 /// to survive a rewrite of a rewrite; it answers identically.
 ///
 /// RED under either back-out: 0 errors, on both spellings — a wrong program loading clean.
@@ -185,8 +185,8 @@ fn a_type_position_variable_is_instantiated_from_the_match() {
         ("one fire", VARIABLE_WRONG),
         (
             "a fire whose RHS is itself a redex",
-            "  rule mka(?k) <=> Map[K = ?k, V = Int64].empty() [simp]\n  \
-             rule mkb(?j) <=> mka(?j) [simp]\n  \
+            "  rule mka(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
+             rule mkb(?j) <=> mka(?j) @[simp]\n  \
              operation dc() -> Int64 = size(put(mkb(Bool), \"a\", 1))\n",
         ),
     ] {
@@ -219,7 +219,7 @@ fn a_type_position_variable_is_instantiated_from_the_match() {
 fn the_yardsticks_are_unmoved() {
     for (label, extra, expected) in [
         (
-            "the GROUND receiver in a fired `[simp]` RHS",
+            "the GROUND receiver in a fired `@[simp]` RHS",
             GROUND_WRONG,
             1,
         ),
@@ -230,7 +230,7 @@ fn the_yardsticks_are_unmoved() {
         ),
         (
             "the variable rule with NO consumer never fires",
-            "  rule mkn(?k) <=> Map[K = ?k, V = Int64].empty() [simp]\n",
+            "  rule mkn(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n",
             0,
         ),
     ] {
@@ -255,7 +255,7 @@ fn the_yardsticks_are_unmoved() {
 /// stopped objecting.
 #[test]
 fn the_matching_key_is_accepted_and_computes() {
-    const RIGHT: &str = "  rule mkr(?k) <=> Map[K = ?k, V = Int64].empty() [simp]\n  \
+    const RIGHT: &str = "  rule mkr(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
                          operation dr() -> Int64 = size(put(mkr(String), \"a\", 1))\n";
     assert!(
         errs(RIGHT).is_empty(),
@@ -268,7 +268,7 @@ fn the_matching_key_is_accepted_and_computes() {
     // errors" here could mean the whole check stopped firing rather than passing.
     assert!(
         errs(
-            "  rule mkgr(?x) <=> Map[K = String, V = Int64].empty() [simp]\n  \
+            "  rule mkgr(?x) <=> Map[K = String, V = Int64].empty() @[simp]\n  \
               operation dgr() -> Int64 = size(put(mkgr(1), \"a\", 1))\n"
         )
         .is_empty(),
@@ -281,7 +281,7 @@ fn the_matching_key_is_accepted_and_computes() {
         .unwrap_or_else(|e| panic!("dr() must evaluate: {e:?}"));
     assert!(
         matches!(got, Value::Int(1)),
-        "one `put` into an `empty()` whose receiver type came from a fired `[simp]` rule \
+        "one `put` into an `empty()` whose receiver type came from a fired `@[simp]` rule \
          has size 1 — got {got:?}"
     );
 }
@@ -300,7 +300,7 @@ fn the_matching_key_is_accepted_and_computes() {
 /// 7`, which is why the message and not only the count is asserted.
 #[test]
 fn a_value_in_type_binding_is_the_value_it_denotes() {
-    const EXTRA: &str = "  rule mkb(?k) <=> Map[K = ?k, V = Int64].empty() [simp]\n  \
+    const EXTRA: &str = "  rule mkb(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
                          operation db() -> Int64 = size(put(mkb(7), \"a\", 1))\n";
     let e = errs(EXTRA);
     assert_eq!(
@@ -371,7 +371,7 @@ fn a_binding_that_denotes_no_type_is_bottom_and_says_so() {
         ),
     ] {
         let extra = format!(
-            "{decl}  rule mkl(?k) <=> Map[K = ?k, V = Int64].empty() [simp]\n  \
+            "{decl}  rule mkl(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
              operation dl() -> Int64 = size(put(mkl({redex_arg}), \"a\", 1))\n"
         );
         let e = errs(&extra);
@@ -394,7 +394,7 @@ fn a_binding_that_denotes_no_type_is_bottom_and_says_so() {
     // A VALUE PARAMETER, which needs the driver to take one — the shape whose
     // goal-lowering leaked `var_ref[name = s]`, the reflect encoding, into the message.
     let e = errs(
-        "  rule mkp(?k) <=> Map[K = ?k, V = Int64].empty() [simp]\n  \
+        "  rule mkp(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
                   operation dp(s: String) -> Int64 = size(put(mkp(s), \"a\", 1))\n",
     );
     assert_eq!(e.len(), 1, "a value parameter denotes no type: {e:#?}");
@@ -412,7 +412,7 @@ fn a_binding_that_denotes_no_type_is_bottom_and_says_so() {
     // first cut too; it is here because `⊥` is the aggressive answer and this bounds it.
     assert!(
         errs(
-            "  rule mkq(?k) <=> Map[K = ?k, V = Int64].empty() [simp]\n  \
+            "  rule mkq(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
               operation dq[K]() -> Int64 = size(put(mkq(K), \"a\", 1))\n"
         )
         .is_empty(),
@@ -464,11 +464,11 @@ fn every_writable_type_agrees_with_its_ground_twin() {
         ),
     ] {
         let ground = errs(&format!(
-            "  rule mkg(?x) <=> Map[K = {ty}, V = Int64].empty() [simp]\n  \
+            "  rule mkg(?x) <=> Map[K = {ty}, V = Int64].empty() @[simp]\n  \
              operation dg() -> Int64 = size(put(mkg(1), {key_value}, 1))\n"
         ));
         let variable = errs(&format!(
-            "  rule mkv(?k) <=> Map[K = ?k, V = Int64].empty() [simp]\n  \
+            "  rule mkv(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
              operation dv() -> Int64 = size(put(mkv({ty}), {key_value}, 1))\n"
         ));
         assert!(
@@ -488,7 +488,7 @@ fn every_writable_type_agrees_with_its_ground_twin() {
     // AND THE MISMATCH IS STILL REPORTED THROUGH A STRUCTURAL TYPE — otherwise "agrees with
     // its ground twin" could be bought by making the whole check stop firing.
     let e = errs(
-        "  rule mkt(?k) <=> Map[K = ?k, V = Int64].empty() [simp]\n  \
+        "  rule mkt(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
                   operation dt() -> Int64 = size(put(mkt((Int64, Bool)), \"a\", 1))\n",
     );
     assert_eq!(e.len(), 1, "a String is not a `(Int64, Bool)` key: {e:#?}");
@@ -502,7 +502,7 @@ fn every_writable_type_agrees_with_its_ground_twin() {
     // THE ARROW, whose disagreement is the PARSER's. Pinned so the day it becomes writable
     // this row asks for a measurement rather than quietly starting to pass.
     let arrow = errs(
-        "  rule mka(?k) <=> Map[K = ?k, V = Int64].empty() [simp]\n  \
+        "  rule mka(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]\n  \
                       operation da() -> Int64 = \
                       size(put(mka((Int64) -> Bool), lambda (x) -> true, 1))\n",
     );
@@ -520,7 +520,7 @@ fn every_writable_type_agrees_with_its_ground_twin() {
 /// row above drives, and the call-site `type_args` bracket, which no row drives.
 ///
 /// NOT AN OVERSIGHT, and this row is what says so instead of a sentence claiming it: a
-/// `[simp]` RHS cannot carry a bracket at all. The refusal is asserted rather than
+/// `@[simp]` RHS cannot carry a bracket at all. The refusal is asserted rather than
 /// narrated, so the day that bracket gains a channel here this row goes red and asks
 /// whoever opens it to add the missing measurement.
 ///
@@ -530,13 +530,13 @@ fn every_writable_type_agrees_with_its_ground_twin() {
 fn the_type_args_bracket_channel_is_refused_at_load() {
     let e = errs(
         "  operation idt[T](v: T) -> T = v\n  \
-                  rule mkt(?k) <=> idt[T = ?k](1) [simp]\n  \
+                  rule mkt(?k) <=> idt[T = ?k](1) @[simp]\n  \
                   operation dt() -> Int64 = mkt(Bool)\n",
     );
     assert_eq!(
         e.len(),
         1,
-        "a call-site type-argument bracket in a `[simp]` RHS is refused at load: {e:#?}"
+        "a call-site type-argument bracket in a `@[simp]` RHS is refused at load: {e:#?}"
     );
     assert!(
         e[0].contains("call-site type arguments") && e[0].contains("are not supported here"),

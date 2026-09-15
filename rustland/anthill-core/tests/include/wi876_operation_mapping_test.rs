@@ -292,7 +292,7 @@ fn a_host_mapping_backs_only_the_carrier_that_wrote_it() {
     // hardcoded host surface — `Int64` now maps all twenty-one of its declared
     // operations, so it has nothing left to be the control. `Float.recip` is the
     // carrier-declared operation that is unmapped BY DESIGN rather than by omission:
-    // its equation in `stdlib/anthill/prelude/float.anthill` carries `[simp]`, so
+    // its equation in `stdlib/anthill/prelude/float.anthill` carries `@[simp]`, so
     // `recip(a)` is inlined to `div(1.0, a)` at load and never reaches a backend at
     // all. Both binding blocks say so in the same words, which is what makes it a
     // stable control instead of the next thing to be migrated.

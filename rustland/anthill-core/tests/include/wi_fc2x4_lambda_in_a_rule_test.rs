@@ -86,8 +86,8 @@
 //! `kb::simp_rewrite::tests::a_spliced_pattern_takes_the_redexs_owner`, which carries the
 //! measurement.
 //!
-//! **WHY THE `[simp]` ROW IS GREEN ON AXES 2 AND 3, measured and not assumed.** A
-//! `[simp]` equation has an EMPTY body by construction (`KnowledgeBase::is_equation`), so
+//! **WHY THE `@[simp]` ROW IS GREEN ON AXES 2 AND 3, measured and not assumed.** A
+//! `@[simp]` equation has an EMPTY body by construction (`KnowledgeBase::is_equation`), so
 //! its RHS is not among `rule_body_nodes` and `type_rule_bodies` never walks it; and the
 //! fired RHS is spliced into an OPERATION body, where the typer and eval both handle the
 //! lambda at its own site. That position needed the loader fix and nothing else — which
@@ -278,7 +278,7 @@ fn a_lambda_in_a_rule_body_is_applied_and_answers_three() {
     );
 }
 
-/// **B — THE SECOND POSITION THE TICKET NAMES:** a lambda in a `[simp]` RHS, DRIVEN
+/// **B — THE SECOND POSITION THE TICKET NAMES:** a lambda in a `@[simp]` RHS, DRIVEN
 /// through a consumer operation, with the value asserted.
 ///
 /// Two different arguments, so the answer tracks the input rather than matching a
@@ -286,7 +286,7 @@ fn a_lambda_in_a_rule_body_is_applied_and_answers_three() {
 ///
 /// RED ON AXIS 1 ONLY, and that asymmetry with row A is the reason both rows exist. The
 /// RHS occurrence is built by the same walk row A needs (WI-20260903-FCZ3N put it there),
-/// so the loader fix is shared; but a `[simp]` equation has an empty BODY, so
+/// so the loader fix is shared; but a `@[simp]` equation has an empty BODY, so
 /// `type_rule_bodies` never walks this lambda (axis 2), and the fired RHS lands in an
 /// OPERATION body where eval reduces it at its own site rather than across the bridge
 /// (axis 3). Measured, not predicted — see the matrix above.
@@ -294,7 +294,7 @@ fn a_lambda_in_a_rule_body_is_applied_and_answers_three() {
 fn a_lambda_in_a_fired_simp_rhs_is_applied_and_answers() {
     let mut kb = load(
         "zzfc2x4.simp",
-        "  rule lam(?n) <=> apply1(lambda (x: Int64) -> x * 10, ?n) [simp]\n  \
+        "  rule lam(?n) <=> apply1(lambda (x: Int64) -> x * 10, ?n) @[simp]\n  \
            operation four() -> Int64 = lam(4)\n  \
            operation seven() -> Int64 = lam(7)\n  \
            rule from_four(?r) :- ?r <=> four()\n  \
@@ -303,7 +303,7 @@ fn a_lambda_in_a_fired_simp_rhs_is_applied_and_answers() {
     assert_eq!(
         only_int(&mut kb, "zzfc2x4.simp.from_four"),
         40,
-        "a lambda spliced from a fired `[simp]` RHS must be APPLIED, not merely present",
+        "a lambda spliced from a fired `@[simp]` RHS must be APPLIED, not merely present",
     );
     assert_eq!(
         only_int(&mut kb, "zzfc2x4.simp.from_seven"),
@@ -633,7 +633,7 @@ fn a_dot_and_an_unknown_name_inside_a_rule_body_binder_are_decided() {
 ///
 /// The first cut converted at the bridge BOUNDARY, gated on the callee's declared
 /// parameter type. Two things went wrong, both closed by moving the conversion to the
-/// apply site (`Interpreter::closure_of_applied_lambda_node`): a `[simp]` MACRO reaches
+/// apply site (`Interpreter::closure_of_applied_lambda_node`): a `@[simp]` MACRO reaches
 /// that same entry and reads its lambda argument as SYNTAX (converting on the way in
 /// felled 85 rows across the relation algebra), and this row — a `Function`-typed slot the
 /// callee RETURNS rather than applies handed back an opaque `Value::Closure`, which is not

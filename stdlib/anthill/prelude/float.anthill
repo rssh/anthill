@@ -134,7 +134,7 @@ sort anthill.prelude.Float
   -- Laws and definitions.
   --
   -- WI-881 settles which of these four is WHICH, because the file used to say
-  -- "-- Laws" over all of them and some were meant to be DEFINITIONS: a `[simp]`
+  -- "-- Laws" over all of them and some were meant to be DEFINITIONS: a `@[simp]`
   -- equation is executable — it inlines LHS→RHS and makes a body-less operation run —
   -- while an untagged rule is inert specification (a rule is not backing, WI-818), and
   -- the marker was simply forgotten here. `set.anthill`, `map.anthill` and
@@ -150,21 +150,21 @@ sort anthill.prelude.Float
   -- DEFINITION. `recip` IS `1/a`, bit for bit, for every input including ±0.0, ±inf
   -- and NaN — the host `f64::recip` is literally `1.0/self`. So the equation is the
   -- implementation and `recip` needs no host mapping of its own; `div` already has one.
-  rule recip(?a) <=> div(1.0, ?a) [simp]
+  rule recip(?a) <=> div(1.0, ?a) @[simp]
 
   -- SPECIFICATION, and an EXACT one — `2·π` is exact in binary floating point (doubling
   -- only increments the exponent), so this is the same f64 as the host's `TAU`. It
-  -- WOULD have been a `[simp]` definition like `recip`'s, and it was until driving
-  -- found what inlining cannot do: a `[simp]` head is an APPLICATION, so it matches
+  -- WOULD have been a `@[simp]` definition like `recip`'s, and it was until driving
+  -- found what inlining cannot do: a `@[simp]` head is an APPLICATION, so it matches
   -- `tau()` and NOT the BARE `tau` this sort's own comment advertises as a call form
-  -- (a bare nullary call site is a `var_ref`). MEASURED — with `[simp]`, `pi` and `e`
+  -- (a bare nullary call site is a `var_ref`). MEASURED — with `@[simp]`, `pi` and `e`
   -- answered bare while `tau` alone still died `OperationBodyMissing`. Three constants
   -- of one family must behave alike, so `tau` is host-backed with its siblings and
   -- this stays a law. (Written with parentheses on both nullary names regardless: the
   -- bare spelling `rule tau <=> mul(2.0, pi)` matches nothing, which is how these four
-  -- equations came to be inert in the first place. `map.anthill` records the
-  -- mirror-image hazard on the RIGHT-hand side — `<=> none [simp]` parses as an
-  -- instantiation `none[simp]`.)
+  -- equations came to be inert in the first place. The mirror-image hazard on the
+  -- RIGHT-hand side — `<=> none [simp]` read as `none[simp]` — went with the bare tag,
+  -- WI-20260915-G9EA9.)
   rule tau() <=> mul(2.0, pi())
 
   -- SPECIFICATION, restated. The old law was `neg(?a) <=> sub(0.0, ?a)`, which is

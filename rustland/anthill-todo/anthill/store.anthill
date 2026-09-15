@@ -51,16 +51,16 @@ namespace anthill.todo.store
   -- spells "retractable only together with its item", so the closest TRUE
   -- policy is non_monotone; what keeps the audit trail is the COMMAND SURFACE,
   -- which offers no way to retract a Feedback row on its own.
-  rule fact_monotonicity(WorkItem) <=> non_monotone() [simp]
-  rule fact_monotonicity(Feedback) <=> non_monotone() [simp]
-  rule fact_monotonicity(Tag) <=> non_monotone() [simp]
+  rule fact_monotonicity(WorkItem) <=> non_monotone() @[simp]
+  rule fact_monotonicity(Feedback) <=> non_monotone() @[simp]
+  rule fact_monotonicity(Tag) <=> non_monotone() @[simp]
   -- WI-1117: a `MirrorEntry` is a satellite of its item, so it goes when the
   -- item goes — `forget` retracts it with the Feedback and Tag rows. Nothing
   -- else removes one: `export` only ever ADDS a link (the entry it names is
   -- overwritten in place, never re-created), so the append-only reading held for
   -- everything except the delete cascade — and that is exactly the half WI-1123
   -- found `Feedback` had wrong, leaving rows describing an id nothing holds.
-  rule fact_monotonicity(MirrorEntry) <=> non_monotone() [simp]
+  rule fact_monotonicity(MirrorEntry) <=> non_monotone() @[simp]
 
   -- ─── 1. Spec ────────────────────────────────────────────────────
   -- Operations declared once, parameterized by State. Each impl

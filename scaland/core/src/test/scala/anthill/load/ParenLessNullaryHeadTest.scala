@@ -124,7 +124,7 @@ class ParenLessNullaryHeadTest extends munit.FunSuite:
 
   test("an equation subject introduces its name in BOTH spellings") {
     // WI-20260902-CZJ2N FLIPPED THE BARE ARM. This asserted `want = false` for it: §5.3
-    // read a `[simp]` head as an APPLICATION which a bare name is not, so `rule tau <=>
+    // read a `@[simp]` head as an APPLICATION which a bare name is not, so `rule tau <=>
     // …` matched no redex and minting `tau` would have stamped it `EquationFunctor` for
     // a law that can never run. The two spellings are ONE TERM now, so the bare law
     // DEFINES and keeping the guard would be a new spelling-dependent rule — refusing at

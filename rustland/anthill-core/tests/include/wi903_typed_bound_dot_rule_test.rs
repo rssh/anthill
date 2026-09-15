@@ -1,11 +1,11 @@
 //! WI-903 — a typed rule pattern (`?x: T`) on a DOT rule is REFUSED at load.
 //!
 //! WI-582's bound is enforced by exactly ONE site: the resolver's
-//! `apply_eq_rules` / `typed_pattern_bounds_hold`, over a `[simp]`/`[unfold]`
+//! `apply_eq_rules` / `typed_pattern_bounds_hold`, over a `@[simp]`/`@[unfold]`
 //! directional rewrite. `load.rs` therefore refuses the annotation on every
 //! other rule shape LOUDLY — "a non-rewrite rule would silently ignore it".
 //!
-//! A DOT rule (`rule dr: dot_apply(?e, m, ?x) = rhs [simp]`, WI-279 INC2) passed
+//! A DOT rule (`rule dr: dot_apply(?e, m, ?x) = rhs @[simp]`, WI-279 INC2) passed
 //! that check and then ignored the bound anyway: it is fired by
 //! `typing::try_fire_dot_rule` against a surface `Expr::DotApply` occurrence — a
 //! typer-side path that never reads `kb.rule_type_bounds` — and the resolver
@@ -21,7 +21,7 @@
 //! Both of the loader's gates are now asked in a FIRING site's own terms, which
 //! closed a sibling leak the same question exposed — see
 //! `typed_bound_on_a_guarded_equation_is_refused`. The plain WI-582 case (an
-//! operation-headed `[simp]` equation keeps its bound) is not re-pinned here: it
+//! operation-headed `@[simp]` equation keeps its bound) is not re-pinned here: it
 //! is `wi582_typed_rule_pattern_test`'s subject, asserted there with its DeBruijn
 //! index and its three firing behaviours.
 
@@ -60,7 +60,7 @@ namespace test.wi903
 
     operation wrapped(h: Holder, v: Int64) -> Int64 = add(v, 100)
 
-    rule dr: dot_apply(?e, bump, ?x{bound}) <=> wrapped(?e, ?x) [simp]
+    rule dr: dot_apply(?e, bump, ?x{bound}) <=> wrapped(?e, ?x) @[simp]
 
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
   end
@@ -123,7 +123,7 @@ fn unannotated_dot_rule_still_loads_and_fires() {
 /// ROW THAT SHOWS THE DISCIPLINE PAYING OFF.
 ///
 /// The loader used to ask its OWN version of "is this a rewrite" — `is_equational_head`
-/// plus a `[simp]`/`[unfold]` tag — which was wider than the predicate the resolver
+/// plus a `@[simp]`/`@[unfold]` tag — which was wider than the predicate the resolver
 /// actually fires on. A GUARDED equation therefore installed its bound while no site
 /// could read it: measured `rule_type_bounds == [(1, …)]` with
 /// `kb.is_equation(rid) == false`. WI-903 made the loader ask `is_directional_equation`
@@ -131,10 +131,10 @@ fn unannotated_dot_rule_still_loads_and_fires() {
 ///
 /// WI-20260820-8RJK8 THEN MADE IT FIRE, and because the loader borrows the firing
 /// site's predicate rather than restating it, the refusal narrowed with NO EDIT AT THE
-/// LOADER. A `[simp]`-tagged guarded equation is a directional rewrite, so
+/// LOADER. A `@[simp]`-tagged guarded equation is a directional rewrite, so
 /// `fire_simp_equation` runs `typed_pattern_bounds_hold` on it and the bound has its
 /// reader — it is KEPT below. The UNTAGGED spelling is still refused, and for the
-/// reason it always had: nothing fires it (`[simp]` is the enablement, WI-881).
+/// reason it always had: nothing fires it (`@[simp]` is the enablement, WI-881).
 ///
 /// Both rows over ONE program text, so nothing but the tag differs.
 #[test]
@@ -157,7 +157,7 @@ namespace test.wi903guarded
 end
 "#;
     // TAGGED: a conditional rewrite, so the bound is installed and enforced at the match.
-    let kb = load_kb_with(&SRC.replace("TAG", "[simp]"));
+    let kb = load_kb_with(&SRC.replace("TAG", "@[simp]"));
     let rid = kb
         .rule_id_by_qn("test.wi903guarded.Lib.pk")
         .expect("the tagged guarded equation loads");
@@ -195,10 +195,10 @@ end
     );
 }
 
-/// The refusal is exactly as wide as the site that IGNORES the bound. `[simp]` is
+/// The refusal is exactly as wide as the site that IGNORES the bound. `@[simp]` is
 /// what the typer's dot path selects (`simp_rewrite::is_simp_equation` is
-/// `[simp]`-only), and that path reads no bounds; nothing in the typer selects
-/// `[unfold]`, so that rule keeps its annotation rather than being refused on a
+/// `@[simp]`-only), and that path reads no bounds; nothing in the typer selects
+/// `@[unfold]`, so that rule keeps its annotation rather than being refused on a
 /// hazard it has not been shown to have.
 ///
 /// This asserts STORAGE, not enforcement, and deliberately claims no more: the
@@ -217,14 +217,14 @@ namespace test.wi903unfold
 
     operation wrapped(h: Holder, v: Int64) -> Int64 = add(v, 100)
 
-    rule dr: dot_apply(?e, bump, ?x: String) <=> wrapped(?e, ?x) [unfold]
+    rule dr: dot_apply(?e, bump, ?x: String) <=> wrapped(?e, ?x) @[unfold]
   end
 end
 "#;
     let kb = load_kb_with(SRC);
     let rid = kb
         .rule_id_by_qn("test.wi903unfold.Holder.dr")
-        .expect("the `[unfold]` dot rule loads");
+        .expect("the `@[unfold]` dot rule loads");
     assert_eq!(
         kb.rule_type_bounds(rid).len(),
         1,
@@ -265,7 +265,7 @@ namespace test.wi903macro
     operation wrap(r: NodeOccurrence, x: NodeOccurrence) -> NodeOccurrence effects Error[Boom] =
       make_apply("test.wi903macro.Holder.wrapped", cons(r, cons(x, nil())), r)
 
-    rule dr: dot_apply(?e, bump, ?x: String) <=> wrap(?e, ?x) [simp]
+    rule dr: dot_apply(?e, bump, ?x: String) <=> wrap(?e, ?x) @[simp]
 
     operation consumer(h: Holder) -> Int64 = ?h.bump(5)
   end

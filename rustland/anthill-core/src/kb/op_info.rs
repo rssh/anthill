@@ -114,7 +114,7 @@ pub struct OpSignature {
 /// `op_bodies` map — the body now lives here beside the signature, so the typer's
 /// signature lookup and body access are one O(1) hit. `signature` is `None` until
 /// [`build_op_signatures`] populates it; `body` is `None` for a body-less spec op
-/// and is written in place by `set_op_body_node` (the `[simp]`-rewrite write-back),
+/// and is written in place by `set_op_body_node` (the `@[simp]`-rewrite write-back),
 /// so it is never a stale snapshot.
 #[derive(Debug, Clone, Default)]
 pub struct OperationRecord {
@@ -487,7 +487,7 @@ pub fn declared_type_param_var(kb: &KnowledgeBase, op_sym: Symbol, short: &str) 
 ///
 /// THE ONE OWNER of that question, because three producers ask it and they must agree
 /// on one node shape: the rule-body occurrence builder
-/// (`load::Loader::nullary_op_call_or_ref`), the `[simp]` RHS substituter
+/// (`load::Loader::nullary_op_call_or_ref`), the `@[simp]` RHS substituter
 /// (`simp_rewrite::subst_visit`) and the macro-RHS head reader
 /// (`simp_rewrite::macro_expanded_rhs_head`). Each of them used to tell a nullary CALL
 /// from a bare NAME by the stored shape — `Fn{f, [], []}` versus `Ref(f)` — and that
@@ -564,7 +564,7 @@ fn signature_from_head_with_type_params(
 }
 
 /// WI-656 — assemble the public [`OpInfoRecord`] from a cached [`OpSignature`]
-/// plus the operation's (freshly read) body node, so a `[simp]`-rewritten body is
+/// plus the operation's (freshly read) body node, so a `@[simp]`-rewritten body is
 /// always seen. The signature fields are cloned out of the cache.
 fn op_info_from_signature(
     op_sym: Symbol,

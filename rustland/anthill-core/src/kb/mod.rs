@@ -417,7 +417,7 @@ struct RuleEntry {
     /// equation, and for one whose head no source text produced.
     ///
     /// THE HEAD IS A TERM AND A TERM CANNOT ANSWER TWO OF THE QUESTIONS A FIRE ASKS.
-    /// `[simp]` firing splices the RHS into an operation body as an OCCURRENCE, and
+    /// `@[simp]` firing splices the RHS into an operation body as an OCCURRENCE, and
     /// `simp_rewrite::subst_visit` used to re-derive that occurrence from the stored
     /// head term — so every node of it arrived `Synthesized`, at the REDEX's span, with
     /// `dot_chain` clear. Both losses are real and were measured: a dotted paren-less
@@ -744,7 +744,7 @@ pub struct NamedRequirementSlot {
 /// - `functor` is free (the pass already holds it) and can only SPLIT keys, never
 ///   merge them. It also makes an entry self-describing without a term lookup.
 /// - `nth_at_span` is what closes the gap the other three leave, and it is NOT
-///   defensive: see its own doc for the `[simp]` program that collides without it.
+///   defensive: see its own doc for the `@[simp]` program that collides without it.
 ///   With it the key is injective BY CONSTRUCTION, which is why nothing asserts
 ///   distinctness on the load path — there is no residual case left to announce.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -769,9 +769,9 @@ pub struct CallSite {
     /// merely stopped naming the callee and started naming the source position.
     ///
     /// WHICH PROGRAM COLLIDES MOVED AT WI-20260903-FCZ3N. The shape this note used to
-    /// give was TWO CALLS IN ONE `[simp]` RHS: `substitute_to_occurrence` built every
+    /// give was TWO CALLS IN ONE `@[simp]` RHS: `substitute_to_occurrence` built every
     /// node of the RHS from the single redex occurrence and `synthesized_expr` inherited
-    /// that span, so `rule both(?a, ?b) <=> and(eq(?a, ?b), eq(?b, ?a)) [simp]` expanded
+    /// that span, so `rule both(?a, ?b) <=> and(eq(?a, ?b), eq(?b, ?a)) @[simp]` expanded
     /// into two classified applies at one `(op, functor, span)`. A fired RHS now keeps
     /// the span its AUTHOR wrote, so those two `eq` calls carry two spans and no longer
     /// collide (`wi873_…_test::a_simp_expansion_with_two_calls_is_two_entries` asserts
@@ -780,7 +780,7 @@ pub struct CallSite {
     ///
     /// ```anthill
     /// operation both(a: T, b: T) -> Bool = true
-    /// rule both(?a, ?b) <=> eq(?a, ?b) [simp]
+    /// rule both(?a, ?b) <=> eq(?a, ?b) @[simp]
     /// operation drive(a: T, b: T) -> Bool = and(both(a, b), both(b, a))
     /// ```
     ///
@@ -1137,8 +1137,8 @@ pub struct KnowledgeBase {
     pub(crate) op_capture_params: HashMap<Symbol, Symbol>,
 
     /// WI-1129 (proposal 056 §2.3) — the RULE-HEAD face of the same capture: for a
-    /// `[simp]` equation whose left-hand side ends in a `...?args` rest pattern
-    /// (`rule fix(?r, ...?args) <=> fix_of(?r, ?args) [simp]`), the INDEX among that
+    /// `@[simp]` equation whose left-hand side ends in a `...?args` rest pattern
+    /// (`rule fix(?r, ...?args) <=> fix_of(?r, ?args) @[simp]`), the INDEX among that
     /// LHS's positional arguments of the capture variable. Read by
     /// [`super::simp_rewrite::try_fire`], which folds the redex's leftover named
     /// arguments into one record occurrence bound there, so the macro on the RHS
@@ -1527,16 +1527,16 @@ pub struct KnowledgeBase {
     /// The typer's tree-reassembly gate reads it: a DotApply is ALWAYS
     /// rewritten by the typer (to the dispatched call), so its ancestors
     /// must be reassembled for the rewrite to reach the stored body (and
-    /// thus eval) even when no `[simp]` equation is loaded.
+    /// thus eval) even when no `@[simp]` equation is loaded.
     pub(crate) has_dot_applies: bool,
 
     /// WI-646 — cached O(1) answer to "does this KB hold ANY directional
-    /// (`[simp]`/`[unfold]`) equation under the `eq` or `unify` functor?" — the
+    /// (`@[simp]`/`@[unfold]`) equation under the `eq` or `unify` functor?" — the
     /// gate [`Self::has_directional_rewrite`] reads so the resolver's
     /// `apply_eq_rules` short-circuits a no-rewrite KB on the SLD hot path
     /// WITHOUT the per-call `rules_by_functor` bucket scan (2 `Vec` allocs). It
     /// mirrors `equation_is_directional_rewrite` over BOTH functors, so it is the
-    /// CORRECT gate — unlike the `[simp]`-only/`eq`-only `has_simp_equations`,
+    /// CORRECT gate — unlike the `@[simp]`-only/`eq`-only `has_simp_equations`,
     /// whose narrowness made WI-643's naive gate skip unfold-only / `<=>`-only
     /// KBs. `None` = not yet computed / invalidated; recomputed lazily on the next
     /// gate read. Set to `None` wherever the `eq`/`unify` functor buckets (or a
@@ -1975,7 +1975,7 @@ pub struct KnowledgeBase {
     //
     // WHY IT IS CACHED, and it is not a micro-optimisation. `register_operation_mappings`
     // runs for EVERY fresh interpreter, and `run_in_bridge_interp` builds one per bridged
-    // evaluation — once per SLD goal whose operation must be evaluated, once per `[simp]`
+    // evaluation — once per SLD goal whose operation must be evaluated, once per `@[simp]`
     // macro fire — where `register_standard_builtins` IS the entire startup cost, the KB
     // being `mem::take`n with no parse and no load. Per crossing it cost, PER MAPPING:
     // three `String` clones in the snapshot (of which `op_qn` and `host_fn` are read only
@@ -2545,7 +2545,7 @@ impl KnowledgeBase {
 
     /// WI-1129 — record `rid`'s rule-head capture position. Called by the loader from
     /// the verdict the CONVERTER reached (`ir::Rule::head_captures`); conformance —
-    /// at most one, trailing, on a `[simp]` equation head — is decided there, once.
+    /// at most one, trailing, on a `@[simp]` equation head — is decided there, once.
     pub fn record_rule_head_capture(&mut self, rid: RuleId, arg_index: usize) {
         self.rule_head_captures.insert(rid, arg_index);
     }
@@ -2722,7 +2722,7 @@ impl KnowledgeBase {
 
     /// WI-242 — record the value-typed body node for an operation.
     /// Called by the loader during operation conversion, and by the typer's
-    /// `[simp]`-rewrite write-back. WI-656: writes `record.body` in place, so the
+    /// `@[simp]`-rewrite write-back. WI-656: writes `record.body` in place, so the
     /// cached signature beside it is undisturbed.
     pub fn set_op_body_node(&mut self, op_sym: Symbol, node: Rc<NodeOccurrence>) {
         self.op_records.entry(op_sym).or_default().body = Some(node);
@@ -2956,7 +2956,7 @@ impl KnowledgeBase {
     /// PREDICATE, a nullary OPERATION and an EQUATION FUNCTOR each kept two shapes that
     /// do not unify — measured on the delivered tree: `rule tgtA :- b(1)` answered
     /// `:- tgtA` and not `:- tgtA()`; `:- flag` failed silently while `not(flag)`
-    /// SUCCEEDED (a wrong answer, not a missing one); `rule tau <=> 7 [simp]` matched
+    /// SUCCEEDED (a wrong answer, not a missing one); `rule tau <=> 7 @[simp]` matched
     /// no redex. Each on a program that loads clean.
     ///
     /// WHY THE GATE IS NOT SIMPLY GONE, which is what WI-20260902-CZJ2N's own plan
@@ -5271,7 +5271,7 @@ impl KnowledgeBase {
     /// a dispatch verdict.
     ///
     /// This closes the GOAL-position half of WI-895. An un-imported functor in an
-    /// ARGUMENT position — `holds894(ite(true, 10, 20))`, a `[simp]` redex that never
+    /// ARGUMENT position — `holds894(ite(true, 10, 20))`, a `@[simp]` redex that never
     /// fires — is a data slot, is not walked here, and stays open; that half's pin is
     /// `wi894_rule_functor_scope_test::a_rule_body_does_not_yet_refuse_an_unimported_functor`.
     ///
@@ -5309,7 +5309,7 @@ impl KnowledgeBase {
     ///     discrimination-tree backstop, exactly as in the query walk.
     ///   * a functor this rule ASSUMES — see [`Self::assumed_body_functors`].
     ///
-    /// Read AFTER the typer, which is what makes the body's dots and `[simp]` redexes
+    /// Read AFTER the typer, which is what makes the body's dots and `@[simp]` redexes
     /// already rewritten into the `Apply` forms the resolver will actually run
     /// (`type_rule_bodies`, WI-282/WI-1026); an undispatched `DotApply` has no functor
     /// symbol to test and is not a candidate.
@@ -6273,14 +6273,14 @@ impl KnowledgeBase {
     /// indexed or not).
     ///
     /// What the unindex actually changes is the `rules_by_functor()` enumeration
-    /// — notably `simp_rewrite`'s `[simp]`/`[unfold]` gather
+    /// — notably `simp_rewrite`'s `@[simp]`/`@[unfold]` gather
     /// (`has_simp_equations` and the eq-rule walk read `rules_by_functor(eq)`):
     /// after unindexing the cite-only equations, that bucket holds *only* the
-    /// indexed `[simp]`/`[unfold]` equations.
+    /// indexed `@[simp]`/`@[unfold]` equations.
     ///
     /// Used for opt-in equational rules per WI-139: equational laws (head is an
-    /// `=` / `<=>` application) without a `[simp]` / `[unfold]` attribute are
-    /// cite-required only and must not drive automatic `[simp]` rewriting (which
+    /// `=` / `<=>` application) without a `@[simp]` / `@[unfold]` attribute are
+    /// cite-required only and must not drive automatic `@[simp]` rewriting (which
     /// would loop on rules like `add_comm: add(a, b) = add(b, a)`).
     pub fn unindex_functor(&mut self, id: RuleId) {
         let head = self.rule_head(id);
@@ -6448,7 +6448,7 @@ impl KnowledgeBase {
     /// WI-663 migrated every reader that **enumerates arbitrary rules** (the
     /// `rules_by_functor` / `by_domain` scans that read a reflect-fact head's
     /// structure — `SortInfo` / `ProofRecord` / `Modifiable` / entity-ctor walks,
-    /// and the `[simp]`-equation readers `stored_lhs_functor` / `open_equation`)
+    /// and the `@[simp]`-equation readers `stored_lhs_functor` / `open_equation`)
     /// onto the graceful `fact_head_term` (skip a value head), matching the WI-659
     /// sort-alias skip. So the surviving callers here are **term-only by
     /// construction** — persistence (the persist API keys on `TermId`, so a value
@@ -6669,7 +6669,7 @@ impl KnowledgeBase {
     /// namespace-or-sort, which the loader always spells as a bare identifier.
     /// It was a `TermId` (a nullary `Term::Fn` wrapping this very symbol) until
     /// every reader — `by_domain`, the requires-guard in `resolve.rs`, the
-    /// `[simp]` enclosing-sort guard, `anthill-stl`'s clause reader — unwrapped
+    /// `@[simp]` enclosing-sort guard, `anthill-stl`'s clause reader — unwrapped
     /// it back to the functor through a three-arm `Fn | Ref | Ident` match whose
     /// non-name arms silently `continue`d. The shape was measured across the
     /// whole workspace suite before the change: every domain was a nullary `Fn`,
@@ -7241,7 +7241,7 @@ impl KnowledgeBase {
     /// where a free variable MEANS something — a resolver goal has free variables — and
     /// wrong where the surrounding relation reads a leftover var as "matches anything": in
     /// a TYPE position it silently typed a wrong program clean, because the leaf kept was
-    /// the throwaway `fresh` global a `[simp]` equation had been opened against. The
+    /// the throwaway `fresh` global a `@[simp]` equation had been opened against. The
     /// carrier-neutral read is [`subst::Substitution::resolve_as_value`], which sees every
     /// carrier; `node_occurrence::subst_type_term` is the site that moved. It does NOT reuse
     /// [`Self::reify`], the KB's general carrier-neutral σ, and its doc carries the two
@@ -8601,10 +8601,10 @@ impl KnowledgeBase {
     /// symbol every loaded equation (`lhs = rhs`) carries, and the one the loader
     /// builds equation heads with (`load.rs`).
     ///
-    /// `[simp]` firing (`simp_rewrite`) must look up `rules_by_functor` under
+    /// `@[simp]` firing (`simp_rewrite`) must look up `rules_by_functor` under
     /// *this* symbol, not a freshly-interned bare `eq`: the two differ once the
     /// prelude is registered, so a bare `intern("eq")` finds none of the loaded
-    /// `[simp]` equations (WI-283).
+    /// `@[simp]` equations (WI-283).
     ///
     /// WI-969 — PANICS on a KB that was never bootstrapped, where this used to
     /// fall back to a bare `intern("eq")`. The fallback had no production
@@ -8612,13 +8612,13 @@ impl KnowledgeBase {
     /// [`load::register_prelude`]); it existed
     /// so unit tests could skip bootstrap, and it bought that at the price of a
     /// SECOND spelling of the canonical equality head. That second spelling fails
-    /// silently in the worst way — a `[simp]` rule built on it simply never
+    /// silently in the worst way — a `@[simp]` rule built on it simply never
     /// matches, so the rewrite does not happen and nothing reports why (WI-283 is
     /// that bug). A missing prelude is now a loud, immediate error instead.
     pub fn eq_functor(&mut self) -> Symbol {
         // WI-644 / proposal 004: the `eq`/`neq` ops moved from `Eq` to its base
         // `PartialEq` (Eq is now the lawful marker requiring PartialEq). Equation
-        // heads and `[simp]` lookups key on this symbol.
+        // heads and `@[simp]` lookups key on this symbol.
         self.try_resolve_symbol("anthill.prelude.PartialEq.eq")
             .expect(
                 "eq_functor: `anthill.prelude.PartialEq.eq` is unregistered — this KB was \
@@ -8716,14 +8716,14 @@ impl KnowledgeBase {
         self.and_connective_sym = self.try_resolve_symbol("anthill.kernel.and");
     }
 
-    /// WI-646 — the candidate equational rule ids for `[simp]`/`[unfold]` firing:
+    /// WI-646 — the candidate equational rule ids for `@[simp]`/`@[unfold]` firing:
     /// the `eq` (`=`) bucket plus the `unify` (`<=>`) bucket. ONE helper for the eq+unify
     /// SELECTION that `has_simp_equations`, `try_fire`, `fire_simp_equation` (and
     /// the [`Self::has_directional_rewrite`] gate) all previously spelled inline —
     /// so the gate can never again drift from the fire sites (that drift, an
     /// `eq`-only gate against `eq`+`unify` fire sites, is exactly what caused the
     /// WI-643 regression). Callers still apply their own per-rule filter
-    /// (`is_equation` + `[simp]` / directional) on the returned ids.
+    /// (`is_equation` + `@[simp]` / directional) on the returned ids.
     pub(crate) fn simp_equation_rids(&mut self) -> Vec<RuleId> {
         let eq_sym = self.eq_functor();
         let unify_sym = self.unify_functor();
@@ -8769,7 +8769,7 @@ impl KnowledgeBase {
     /// "Conditional rewrite rules"), evaluated post-match against the match
     /// substitution by [`super::simp_rewrite::guard_holds`] — so a non-empty body
     /// no longer disqualifies a rule from being a rewrite, it gives it a
-    /// precondition. `[simp]`/`[unfold]` remains the ENABLEMENT (WI-881): the tag,
+    /// precondition. `@[simp]`/`@[unfold]` remains the ENABLEMENT (WI-881): the tag,
     /// not the body, is what decides whether anything fires.
     pub fn has_equational_head(&self, id: RuleId) -> bool {
         let entry = &self.rules[id.index()];
@@ -11124,7 +11124,7 @@ impl KnowledgeBase {
     /// registry when the loader builds its mapping cache, after which this returns
     /// [`host_fns::HostFnRegError::AfterLoad`]. The enforcement is there because the
     /// unenforced failure is SILENT in release: load itself builds interpreters (a
-    /// `[simp]` macro fire crosses `run_in_bridge_interp`), the scratch build fails with
+    /// `@[simp]` macro fire crosses `run_in_bridge_interp`), the scratch build fails with
     /// an `EvalError::Internal`, and both bridge callers `debug_assert!` on `Internal`
     /// and then residualize — so a debug build asserts while a release build merely
     /// declines to expand the macro or answer the rule, on a program that loaded clean.
@@ -11359,7 +11359,7 @@ mod tests {
     // it does when asked for kernel vocabulary it does not have: `eq_functor` /
     // `unify_functor` used to invent a bare `intern("eq")` / `intern("unify")`,
     // a SECOND spelling of the canonical head that no loaded KB can ever
-    // produce. Its failure mode was the worst kind — a `[simp]` rule built on
+    // produce. Its failure mode was the worst kind — a `@[simp]` rule built on
     // the bare spelling simply never matched, so the rewrite silently did not
     // happen (WI-283). Now the KB says so.
     //
@@ -11415,7 +11415,7 @@ mod tests {
         // The accessors return the QUALIFIED symbols, and `intern` of the short
         // name is a DIFFERENT symbol — the distinction the deleted fallback
         // erased, and the reason a bare `intern("eq")` found none of the loaded
-        // `[simp]` equations.
+        // `@[simp]` equations.
         let eq = kb.eq_functor();
         assert_eq!(
             Some(eq),
@@ -13531,7 +13531,7 @@ mod tests {
         // target subterms by binding `?a := ?b`. The SLD resolution path unifies
         // instead (`resolve_leaf` `unify_rebind = true`); this locks that
         // `match_view` stays on `unify_rebind = false`. A regression here would
-        // silently mis-fire nonlinear `[simp]` rules (Map.get / Set.member) on
+        // silently mis-fire nonlinear `@[simp]` rules (Map.get / Set.member) on
         // distinct-key redexes, dropping the equality constraint.
         let mut kb = KnowledgeBase::new();
         let x_sym = kb.intern("x");
@@ -13781,7 +13781,7 @@ mod tests {
 
     #[test]
     fn match_view_binds_vars_to_node_occurrence_children() {
-        // WI-276: a `[simp]` rule LHS `add(?a, ?b)` (TermId pattern) matches a
+        // WI-276: a `@[simp]` rule LHS `add(?a, ?b)` (TermId pattern) matches a
         // reflect Expr occurrence `Value::Node(add(1, 2))` and binds ?a/?b to
         // the child occurrences (identity preserved, not promoted to TermId).
         // This is the substrate that lets the typer-phase rewriting engine

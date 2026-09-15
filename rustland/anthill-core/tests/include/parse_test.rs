@@ -730,7 +730,7 @@ fn parse_sort_with_body() {
 
 #[test]
 fn parse_fact_with_meta() {
-    let source = r#"fact parent("alice", "bob") [trust: axiom, agent: "author"]"#;
+    let source = r#"fact parent("alice", "bob") @[trust: axiom, agent: "author"]"#;
     let parsed = parse::parse(source).expect("parse failed");
     assert_eq!(parsed.items.len(), 1);
     match &parsed.items[0] {
@@ -884,7 +884,7 @@ fn load_sort_with_body_registers_entity_of() {
 
 #[test]
 fn load_fact_and_query_by_sort() {
-    let source = r#"fact parent("alice", "bob") [trust: axiom]"#;
+    let source = r#"fact parent("alice", "bob") @[trust: axiom]"#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();
     load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
@@ -913,7 +913,7 @@ fn load_banking_namespace() {
     requires gt(m, zero-val)
     ensures eq(balance(result), add(balance(a), m))
 
-  fact initial-balance(dollars(0)) [trust: axiom]
+  fact initial-balance(dollars(0)) @[trust: axiom]
 end
 "#;
     let parsed = parse::parse(source).expect("parse failed");

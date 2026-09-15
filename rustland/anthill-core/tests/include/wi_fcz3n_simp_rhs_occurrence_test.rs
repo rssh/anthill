@@ -1,4 +1,4 @@
-//! WI-20260903-FCZ3N — A `[simp]` RULE KEEPS ITS RHS OCCURRENCE.
+//! WI-20260903-FCZ3N — A `@[simp]` RULE KEEPS ITS RHS OCCURRENCE.
 //!
 //! THE THIRD TERM→OCCURRENCE ROUND-TRIP, and the same repair as the first two.
 //! WI-20260902-2SZ88 took ENTITY CONSTRUCTORS off `materialize_from_handle_spanned` and
@@ -20,7 +20,7 @@
 //!
 //! ── TWO LOSSES IN ONE, MEASURED ─────────────────────────────────────────────
 //!
-//! On the delivered 2NXAC tree, `rule trig(?x) <=> sink(zzfc.inner.rel) [simp]` beside
+//! On the delivered 2NXAC tree, `rule trig(?x) <=> sink(zzfc.inner.rel) @[simp]` beside
 //! `rule rel(1) :- base(1)`, with `operation consumer() -> Int64 = trig(5)`:
 //!
 //! ```text
@@ -69,7 +69,7 @@
 //!
 //! GREEN UNDER THAT BACK-OUT, EACH BY DESIGN and each for its own reason:
 //! [`the_four_controls_are_unmoved`] (its rows are the yardsticks — none of them fires a
-//! `[simp]` rule carrying a citation); [`a_fired_simp_rhs_still_computes`] (a
+//! `@[simp]` rule carrying a citation); [`a_fired_simp_rhs_still_computes`] (a
 //! term-derived RHS always evaluated correctly — what it lost was provenance, not
 //! meaning; this row is instead what fails if the occurrence path builds a DIFFERENT
 //! tree); and [`a_written_field_access_in_a_simp_rhs_is_still_not_a_citation`].
@@ -101,7 +101,7 @@
 //! ── WHAT MOVING THE LOCATION COSTS, AND WHO OWNS IT ─────────────────────────
 //!
 //! ONE authored mistake fired at N sites is now reported N times, byte-identical in text
-//! AND location — measured: `rule bad(?x) <=> sink("nope") [simp]` under
+//! AND location — measured: `rule bad(?x) <=> sink("nope") @[simp]` under
 //! `c(n) = bad(n) + bad(n)` gives two `4:20: … expected Int64, got String`, where two
 //! DIRECTLY-written copies give two messages at their two spans. Before this ticket the N
 //! copies carried their N redexes' distinct spans, so they were distinguishable and every
@@ -119,7 +119,7 @@
 //!
 //! ── ONE SHAPE THIS SURFACED AND DOES NOT OWN ────────────────────────────────
 //!
-//! A LAMBDA in a `[simp]` RHS is refused, before and after, with two different bogus
+//! A LAMBDA in a `@[simp]` RHS is refused, before and after, with two different bogus
 //! messages: the term path said `x.name: expected resolved name, got unresolved` twice,
 //! and the occurrence path says `1:1: <bottom>.expr: expected surface expression` once.
 //! The second is exactly what the SAME lambda in a plain RULE BODY has always said —
@@ -169,9 +169,9 @@ fn line_col(src: &str, needle: &str) -> String {
     format!("{line}:{col}")
 }
 
-/// The row every other row here is read against: a `[simp]` rule whose RHS cites a
+/// The row every other row here is read against: a `@[simp]` rule whose RHS cites a
 /// relation by its dotted paren-less name, plus a consumer that makes it FIRE.
-const CITING_RULE_AND_CONSUMER: &str = "  rule trig(?x) <=> sink(zzfc.inner.rel) [simp]\n  \
+const CITING_RULE_AND_CONSUMER: &str = "  rule trig(?x) <=> sink(zzfc.inner.rel) @[simp]\n  \
                                         operation consumer() -> Int64 = trig(5)\n";
 
 /// **A — THE HEADLINE.** ONE diagnosis, and it is at the NAME.
@@ -236,7 +236,7 @@ fn the_four_controls_are_unmoved() {
     for (label, extra, expected) in [
         (
             "the same simp rule with NO consumer never fires",
-            "  rule trig(?x) <=> sink(zzfc.inner.rel) [simp]\n",
+            "  rule trig(?x) <=> sink(zzfc.inner.rel) @[simp]\n",
             0,
         ),
         (
@@ -251,7 +251,7 @@ fn the_four_controls_are_unmoved() {
         ),
         (
             "a ONE-SEGMENT citation in the same simp fire",
-            "  rule trig2(?x) <=> sink(rel2) [simp]\n  \
+            "  rule trig2(?x) <=> sink(rel2) @[simp]\n  \
              operation consumer2() -> Int64 = trig2(5)\n",
             1,
         ),
@@ -273,7 +273,7 @@ fn the_four_controls_are_unmoved() {
 /// `10:22` now.
 #[test]
 fn the_spliced_rhs_keeps_the_authors_span() {
-    const EXTRA: &str = "  rule trig3(?x) <=> sink(\"nope\") [simp]\n  \
+    const EXTRA: &str = "  rule trig3(?x) <=> sink(\"nope\") @[simp]\n  \
                          operation consumer3() -> Int64 = trig3(5)\n";
     let src = program(EXTRA);
     let e = errs(EXTRA);
@@ -288,7 +288,7 @@ fn the_spliced_rhs_keeps_the_authors_span() {
     );
 }
 
-/// **D — THE CAPABILITY, DRIVEN.** A fired `[simp]` rule must still COMPUTE, not merely
+/// **D — THE CAPABILITY, DRIVEN.** A fired `@[simp]` rule must still COMPUTE, not merely
 /// diagnose better: the RHS is now a different tree (the author's occurrence, not one
 /// re-derived from the head term), and a wrong tree would evaluate wrong or not at all.
 ///
@@ -306,9 +306,9 @@ namespace zzfcd
   operation twice(n: Int64) -> Int64 = n + n
   operation seven() -> Int64 = 7
   operation pair(a: Int64, b: Int64) -> Int64 = a + b
-  rule boost(?x) <=> twice(?x) [simp]
-  rule named(?x) <=> pair(a: ?x, b: 10) [simp]
-  rule nullary(?x) <=> pair(a: ?x, b: seven) [simp]
+  rule boost(?x) <=> twice(?x) @[simp]
+  rule named(?x) <=> pair(a: ?x, b: 10) @[simp]
+  rule nullary(?x) <=> pair(a: ?x, b: seven) @[simp]
   operation driveBoost(n: Int64) -> Int64 = boost(n)
   operation driveNamed(n: Int64) -> Int64 = named(n)
   operation driveNullary(n: Int64) -> Int64 = nullary(n)
@@ -326,14 +326,14 @@ end
         assert_eq!(
             matches!(got, Value::Int(n) if n == expected),
             true,
-            "{op}(5) fires a `[simp]` rule whose RHS is now the author's occurrence — \
+            "{op}(5) fires a `@[simp]` rule whose RHS is now the author's occurrence — \
              expected Int({expected}), got {got:?}"
         );
     }
 }
 
 /// **E — AND THE WRONG FIX IS REFUSED.** A HAND-WRITTEN `anthill.reflect.field_access`
-/// call in a `[simp]` RHS is a call to whatever that name denotes, NOT the name
+/// call in a `@[simp]` RHS is a call to whatever that name denotes, NOT the name
 /// `ns.rel` — WI-20260901-92VA4's rule, and the reason `synthesized_expr` hardcodes
 /// `dot_chain: false`.
 ///
@@ -354,14 +354,14 @@ fn a_written_field_access_in_a_simp_rhs_is_still_not_a_citation() {
         ("one-segment receiver", "zzfc"),
     ] {
         let extra = format!(
-            "  rule trigw(?x) <=> sink(anthill.reflect.field_access({receiver}, rel)) [simp]\n  \
+            "  rule trigw(?x) <=> sink(anthill.reflect.field_access({receiver}, rel)) @[simp]\n  \
              operation consumerw() -> Int64 = trigw(5)\n"
         );
         let e = errs(&extra);
         assert!(
             !e.is_empty(),
             "{label}: a WRITTEN `field_access` call is a call, not the name \
-             `{receiver}.rel` — it must stay refused inside a fired `[simp]` RHS too"
+             `{receiver}.rel` — it must stay refused inside a fired `@[simp]` RHS too"
         );
         assert!(
             e.iter().all(|m| !m.contains("Relation")),
@@ -372,10 +372,10 @@ fn a_written_field_access_in_a_simp_rhs_is_still_not_a_citation() {
 
 /// **F — THE POPULATION, NOT THE FIXTURE.** Every equation a firing site can reach must
 /// keep its RHS occurrence, or the repair holds only for the shape row A happens to
-/// write. Censused over a full stdlib load plus one `[simp]` fixture.
+/// write. Censused over a full stdlib load plus one `@[simp]` fixture.
 ///
 /// MEASURED at delivery: **192** live equations, **90** of them carrying a written RHS,
-/// and **21** tagged `[simp]` / `[unfold]` — the only ones `simp_rewrite::try_fire`,
+/// and **21** tagged `@[simp]` / `@[unfold]` — the only ones `simp_rewrite::try_fire`,
 /// `typing::try_fire_dot_rule` and `resolve::fire_simp_equation` will ever open — **all
 /// 21** with one. So `build_rhs_template`'s term arm serves the 102 UNTAGGED (inert)
 /// equations and any clause a host or a runtime `assert` built, of which this corpus has
@@ -385,7 +385,7 @@ fn a_written_field_access_in_a_simp_rhs_is_still_not_a_citation() {
 /// and would make this a maintenance chore that says nothing. What must not drift is that
 /// no FIREABLE equation is left on the term path — which is exactly what goes red if a
 /// third spelling of a bodyless equation appears and nobody wires it. (`rule` and `fact`
-/// are the two that exist; `fact tau() <=> 7 [simp]` loads clean, measured, and is wired
+/// are the two that exist; `fact tau() <=> 7 @[simp]` loads clean, measured, and is wired
 /// for that reason.) The floor beneath it is what stops a vacuous pass: a corpus with no
 /// tagged equations at all would satisfy "none missing" trivially.
 ///
@@ -397,7 +397,7 @@ fn every_fireable_source_equation_keeps_its_rhs_occurrence() {
     let kb = crate::common::load_kb_with(
         "namespace zzfcp\n  import anthill.prelude.Int64\n  \
          operation twice(n: Int64) -> Int64 = n + n\n  \
-         rule boost(?x) <=> twice(?x) [simp]\n  \
+         rule boost(?x) <=> twice(?x) @[simp]\n  \
          operation drive(n: Int64) -> Int64 = boost(n)\nend\n",
     );
     let mut tagged = 0usize;
@@ -437,7 +437,7 @@ fn every_fireable_source_equation_keeps_its_rhs_occurrence() {
 }
 
 /// **G — AND A RULE VARIABLE NOTHING BINDS IS STILL CAUGHT.** `rule f(?x) <=> g(?y)
-/// [simp]` names `?y` on the right and binds it nowhere on the left, so instantiating it
+/// @[simp]` names `?y` on the right and binds it nowhere on the left, so instantiating it
 /// has no value to put there. The term path said so by writing `⊥`; this ticket had to
 /// say so again, because the shared σ owner it now routes through
 /// (`node_occurrence::substitute_occurrence`) answers a DIFFERENT question about a free
@@ -456,9 +456,9 @@ fn every_fireable_source_equation_keeps_its_rhs_occurrence() {
 /// → ?q`, WI-634) — is not in `fresh` and is left alone; the resolver suites cover it.
 #[test]
 fn an_unbound_rule_variable_in_a_fired_rhs_is_still_refused() {
-    const UNBOUND: &str = "  rule fu(?x) <=> sink(?y) [simp]\n  \
+    const UNBOUND: &str = "  rule fu(?x) <=> sink(?y) @[simp]\n  \
                            operation cu(n: Int64) -> Int64 = fu(n)\n";
-    const BOUND: &str = "  rule fb(?x) <=> sink(?x) [simp]\n  \
+    const BOUND: &str = "  rule fb(?x) <=> sink(?x) @[simp]\n  \
                          operation cb(n: Int64) -> Int64 = fb(n)\n";
     let src = program(UNBOUND);
     let e = errs(UNBOUND);

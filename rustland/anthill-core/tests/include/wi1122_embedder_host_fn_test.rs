@@ -157,7 +157,7 @@ fn an_embedder_registered_function_is_callable_from_an_operation_map() {
 /// THE PLACEMENT TEST, and the one that isolates it. The registry is on the
 /// `KnowledgeBase` because `run_in_bridge_interp` (`kb/resolve.rs`) `mem::take`s the
 /// KB and builds a FRESH `Interpreter` from it per bridged evaluation — one per
-/// `[simp]` fire, per bridged `eq` dispatch — then registers builtins on THAT. A table
+/// `@[simp]` fire, per bridged `eq` dispatch — then registers builtins on THAT. A table
 /// held by the embedder's own interpreter is simply absent there, and since an unknown
 /// key is FATAL the scratch interpreter would fail to BUILD: one `operation_map` entry
 /// would break resolution program-wide, at call sites having nothing to do with it.
@@ -321,7 +321,7 @@ fn the_control_a_fresh_key_registers() {
 /// enough, and this is the test for the enforcement that replaced it.
 ///
 /// WHAT GOES WRONG UNENFORCED, and why it is worse than it looks: load itself builds
-/// interpreters (a `[simp]` macro fire crosses `run_in_bridge_interp`). A key registered
+/// interpreters (a `@[simp]` macro fire crosses `run_in_bridge_interp`). A key registered
 /// afterwards is missing from those, so the scratch build fails with an
 /// `EvalError::Internal` — and BOTH bridge callers residualize it. `simp_rewrite.rs`'s
 /// macro arm and `resolve.rs`'s `bridge_op_to_eval` each `debug_assert!` that the error

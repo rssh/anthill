@@ -1,4 +1,4 @@
-//! WI-596 — type-directed `[simp]` firing for SELF-REPRESENTING container sorts
+//! WI-596 — type-directed `@[simp]` firing for SELF-REPRESENTING container sorts
 //! (`Set` / `Map`), the phase-2 companion to the phase-1 carrier-parameter case
 //! (`Magma`, wi283_type_directed_guard_test.rs).
 //!
@@ -17,7 +17,7 @@
 //! the guarantee is that a law fires exactly over a carrier that genuinely provides
 //! the sort, and the algebraic laws hold for any valid instance, so firing there is
 //! correct, not merely harmless. The final test pins that the stdlib `Set`/`Map`
-//! reducing laws are now `[simp]`-tagged.
+//! reducing laws are now `@[simp]`-tagged.
 
 use anthill_core::kb::load::{is_equational_head, meta_has_flag};
 use anthill_core::kb::node_occurrence::Expr;
@@ -45,9 +45,9 @@ namespace test.wi596
       member(x: T, s: Bag) -> Bool
     }
     rule {
-      peek_id:  peek(?s) <=> true [simp]
-      holds_id: holds(?x, ?s) <=> true [simp]
-      member_insert: member(?x, insert(?s, ?x)) <=> true [simp]
+      peek_id:  peek(?s) <=> true @[simp]
+      holds_id: holds(?x, ?s) <=> true @[simp]
+      member_insert: member(?x, insert(?s, ?x)) <=> true @[simp]
     }
   end
 
@@ -273,9 +273,9 @@ fn nested_container_law_does_not_fire_when_carrier_lacks_spec() {
 // propagate. WI-611 closes the self-RECEIVER nested form (`member`/`insert`, `get`/`put`);
 // the nullary-producer form is tracked separately.
 
-// ── stdlib: the reducing Set/Map laws are now [simp]-tagged ────────────
+// ── stdlib: the reducing Set/Map laws are now @[simp]-tagged ────────────
 
-/// Does some equational rule whose LHS outer functor is `op_qn` carry `[simp]`?
+/// Does some equational rule whose LHS outer functor is `op_qn` carry `@[simp]`?
 fn simp_law_present(kb: &mut KnowledgeBase, op_qn: &str) -> bool {
     let op_sym = sym(kb, op_qn);
     let rule_sort = ClauseKind::Rule;
@@ -306,18 +306,18 @@ fn stdlib_set_and_map_reducing_laws_are_simp_tagged() {
     let mut kb = crate::common::load_kb_with(SRC);
     assert!(
         simp_law_present(&mut kb, "anthill.prelude.Set.contains"),
-        "the stdlib Set.contains reducing law must be [simp]-tagged (WI-596 part A)",
+        "the stdlib Set.contains reducing law must be @[simp]-tagged (WI-596 part A)",
     );
     assert!(
         simp_law_present(&mut kb, "anthill.prelude.Set.union"),
-        "the stdlib Set.union reducing law must be [simp]-tagged (WI-596 part A)",
+        "the stdlib Set.union reducing law must be @[simp]-tagged (WI-596 part A)",
     );
     assert!(
         simp_law_present(&mut kb, "anthill.prelude.Map.get"),
-        "the stdlib Map.get reducing law must be [simp]-tagged (WI-596 part A)",
+        "the stdlib Map.get reducing law must be @[simp]-tagged (WI-596 part A)",
     );
     assert!(
         simp_law_present(&mut kb, "anthill.prelude.Map.size"),
-        "the stdlib Map.size reducing law must be [simp]-tagged (WI-596 part A)",
+        "the stdlib Map.size reducing law must be @[simp]-tagged (WI-596 part A)",
     );
 }

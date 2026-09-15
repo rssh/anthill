@@ -19,11 +19,11 @@
 //!
 //! WI-884 recorded here that `ite` "reduces NOWHERE", and that has since been RETRACTED
 //! twice over, so do not read it as a live measurement. WI-893 found the measurement was
-//! a parser artifact — a comment above `ite_true` had silently eaten its `[simp]`, so the
+//! a parser artifact — a comment above `ite_true` had silently eaten its `@[simp]`, so the
 //! probed branch was the untagged one. WI-887 then deleted the `ite` DECLARATION this
 //! paragraph pointed at (the reason above stands and is why: an operation evaluates its
 //! arguments, so an `ite` operation computes BOTH branches), leaving `ite` defined solely
-//! by its two `[simp]` rules. It reduces: driven in `wi884_sibling_backing_test::
+//! by its two `@[simp]` rules. It reduces: driven in `wi884_sibling_backing_test::
 //! ite_reduces_under_both_spellings`.
 //!
 //! WI-894 then scoped that functor to `Bool`, so the name is reached by `import
@@ -452,7 +452,7 @@ const HOST_FNS: &[(
     // WI-722 (043.1) — the occurrence-BUILD side of a compile-time macro: a per-shape
     // occurrence builder returning a spliceable `NodeOccurrence` (not a `Term`, as
     // `make_fn` does). Available wherever eval runs; a macro is the only caller, at
-    // compile time via the `[simp]` fire hook.
+    // compile time via the `@[simp]` fire hook.
     ("reflect_make_apply", 3, reflect_make_apply),
     ("reflect_replace_named_arg", 3, reflect_replace_named_arg),
     ("reflect_unify", 3, reflect_unify),
@@ -600,7 +600,7 @@ fn build_host_op_registrations(
         }
         let Some(host) = host_fn_by_key(kb, &m.host_fn) else {
             // Loud, and it stops the whole interpreter — including the short-lived one
-            // the resolver builds per bridged evaluation, so an unrelated `[simp]` fire
+            // the resolver builds per bridged evaluation, so an unrelated `@[simp]` fire
             // or `eq` dispatch reports this too. That breadth is deliberate: a binding
             // block naming a function the runtime does not have is broken for the whole
             // program, not for one call. The message says so, because the site it
@@ -1938,7 +1938,7 @@ fn float_is_finite(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 // narrowing that is WI-880).
 //
 // WHY THE HOST AND NOT A LAW. `float.anthill` states four of them as equations, and
-// two of those ARE the definition and are now `[simp]`-tagged so they run as one
+// two of those ARE the definition and are now `@[simp]`-tagged so they run as one
 // (`recip`, `tau` — see that file). The two here are NOT, and the reason is the same
 // both times: IEEE arithmetic distinguishes `+0.0` from `-0.0` while every COMPARISON
 // reads them equal, so no ordering- or arithmetic-over-zero law pins the sign bit.
@@ -2069,8 +2069,8 @@ nullary_const! { Value::Float;
     float_pi("Float.pi") = std::f64::consts::PI;
     float_e("Float.e")   = std::f64::consts::E;
     // `tau`'s equation `tau() <=> mul(2.0, pi())` is EXACT (doubling only increments
-    // a binary exponent), so it could have been a `[simp]` definition like `recip`'s
-    // — and it was, until driving found what inlining cannot do. A `[simp]` head is an
+    // a binary exponent), so it could have been a `@[simp]` definition like `recip`'s
+    // — and it was, until driving found what inlining cannot do. A `@[simp]` head is an
     // APPLICATION; a BARE nullary call site is a `var_ref`, so nothing matches it and
     // `tau` written without parentheses stayed dead while `pi` and `e` — dispatched,
     // not inlined — answered. Three constants of one family must behave alike, so the
@@ -2936,7 +2936,7 @@ fn macro_rejects(
 }
 
 /// `Relation.guarded_of` (WI-714 / proposal 052) — the compile-time MACRO behind
-/// `where` (occurrence→occurrence, so the `[simp]` engine fires it at compile time,
+/// `where` (occurrence→occurrence, so the `@[simp]` engine fires it at compile time,
 /// WI-722). It reads the row lambda `cond` and compiles its body — AS SYNTAX, never
 /// applied — into a `LogicalQuery` recipe, then splices `where_run(r, <recipe>)`.
 ///

@@ -407,7 +407,7 @@ All produce the same registry membership and witness shape; the choice is docume
 - A full tactic-language (Framing C). Structured proofs are a step-list with per-step tactic dispatch — not a programmable interactive prover.
 - Proof reconstruction / decision-procedure integration (e.g. structured-to-Coq export). Witness round-trip beyond anthill is a separate concern.
 - Implicit step-claim vars: structured proofs require each step to name its claim (`rule h: <head>`). Anonymous steps + automatic claim derivation (Mizar-style "thus" / "qed") are post-v0.
-- Step-level `[simp]` / `[hint]` attributes. Steps are local to the proof; ambient-on-other-proofs semantics doesn't apply. If a step's claim is reusable, promote it to a top-level rule (Framing A).
+- Step-level `@[simp]` / `@[hint]` attributes. Steps are local to the proof; ambient-on-other-proofs semantics doesn't apply. If a step's claim is reusable, promote it to a top-level rule (Framing A).
 
 ## Open questions
 
@@ -415,7 +415,7 @@ All produce the same registry membership and witness shape; the choice is docume
 
 2. **Backward step ordering.** Should the user be able to write a step that depends on a *later* step (forward reference)? Coq's `assert` allows it via `[goal]` postponement. Anthill v0: no. Steps are strictly sequential.
 
-3. **Step claim equality vs. SLD rewriting.** If `rule h_i: foo(?x) = bar(?x)` is asserted via z3-discharge, does SLD treat it as a rewrite for subsequent steps? Probably not without explicit `[simp]` tag — consistent with WI-139's default.
+3. **Step claim equality vs. SLD rewriting.** If `rule h_i: foo(?x) = bar(?x)` is asserted via z3-discharge, does SLD treat it as a rewrite for subsequent steps? Probably not without explicit `@[simp]` tag — consistent with WI-139's default.
 
 4. **Concluding step's relation to the lemma's head.** The lemma has a single head (its conclusion, per proposal 032); the trailing `using ... by ...` discharges that head under accumulated hypotheses. If the lemma's head is `⊥` (denial / violation-shape rule), the discharge target is `false` and the encoding becomes "body + step claims are unsat" — same shape as a top-level denial proof. The discharge clause is still required; there is no implicit "body-unsat" verdict.
 

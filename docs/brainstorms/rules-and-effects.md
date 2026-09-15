@@ -10,7 +10,7 @@ out to touch five separate settled decisions that do not jointly answer it.
 ```anthill
 -- in sort anthill.prelude.PersistentCollection
 rule isEmpty(insert(?c, ?x)) <=> false          -- loads clean, INERT
-rule isEmpty(insert(?c, ?x)) <=> false [simp]   -- REFUSED, twice
+rule isEmpty(insert(?c, ?x)) <=> false @[simp]   -- REFUSED, twice
 ```
 
 Refused naming `PersistentCollection.insert` (row `{Effect}`) and
@@ -23,9 +23,9 @@ Measured, so the ground is firm:
 
 | written | verdict |
 |---|---|
-| law on the effect-polymorphic spec, `[simp]` | refused (2 errors) |
-| law on a carrier declaring its **own pure** ops, `[simp]` | loads clean, fires |
-| law over a concretely-`External` op, `[simp]` | refused — 054's own case |
+| law on the effect-polymorphic spec, `@[simp]` | refused (2 errors) |
+| law on a carrier declaring its **own pure** ops, `@[simp]` | loads clean, fires |
+| law over a concretely-`External` op, `@[simp]` | refused — 054's own case |
 | same law untagged | loads clean, inert |
 | binding `Effect = {}` at List's **provision** | changes nothing — the gate reads the *operation's* declared row |
 
@@ -42,13 +42,13 @@ this law where it would fire, but the obstacle is one operation, not two.
 Each is settled on its own and none is wrong; they simply were not written
 against each other.
 
-- **054, "Consumers that must decline it — loudly."** A `[simp]`-tagged rule
+- **054, "Consumers that must decline it — loudly."** A `@[simp]`-tagged rule
   mentioning an effectful op is refused at load: a directional rewrite
   duplicates, reorders or drops the matched call. Explicitly: *"The gate for
   that belongs at load-time tag validation, not the firing site."* **Scope: the
   argument is about a concretely-`External` row.** The row-*variable* case is
   not discussed there at all.
-- **WI-881 / CLAUDE.md.** `[simp]` is the *enablement*, not the direction. An
+- **WI-881 / CLAUDE.md.** `@[simp]` is the *enablement*, not the direction. An
   untagged equational rule is **inert** — it never rewrites.
 - **WI-818.** A rule is a *law*, not backing. It does not discharge a spec
   operation's obligation.
@@ -110,10 +110,10 @@ Two consequences worth carrying forward:
 
 Three citations, three risk profiles, currently one gate:
 
-- `[simp]` — rewrites during typing. Duplicates/drops. 054's argument applies.
-- `[unfold]` — fired by the **resolver**, which never macro-expands (WI-757
+- `@[simp]` — rewrites during typing. Duplicates/drops. 054's argument applies.
+- `@[unfold]` — fired by the **resolver**, which never macro-expands (WI-757
   measured exactly this asymmetry, where keying on `is_macro` alone let an
-  effectful macro under `[unfold]` rewrite an effectful call into the program).
+  effectful macro under `@[unfold]` rewrite an effectful call into the program).
 - bare law cited by `using` in a proof — no rewrite at all.
 
 ## Q3 — is "effect-polymorphic" a third answer? **DECIDED: no.**
@@ -135,7 +135,7 @@ concrete). Keeping them apart in the message is what stops it calling `insert`
 effectful when `insert` is not; collapsing them in the verdict is what stops the
 message promising an admissibility that does not exist.
 
-**Deferred, explicitly: post-release.** A mode that applies `[simp]` *after*
+**Deferred, explicitly: post-release.** A mode that applies `@[simp]` *after*
 typing, where effects are eliminated and the row is ground, is the only shape in
 which the polymorphic arm could earn a different verdict. Not to be implemented
 before release. WI-1050 carries it.
@@ -266,7 +266,7 @@ want — that `Error[EmptyStream]` is gone — is true.
 -- (a) PER-LABEL. Is this effect in the term's row? What guard discharge needs.
 effect_absent(head(insert(?x, ?e)), Error[EmptyStream])
 
--- (b) WHOLE-ROW. Is the row empty at all? What the [simp] gate asks.
+-- (b) WHOLE-ROW. Is the row empty at all? What the @[simp] gate asks.
 row_empty(insert(?c, ?x))
 
 rule isEmpty(insert(?c,?x)) <=> false :- row_empty(insert(?c,?x))
@@ -277,7 +277,7 @@ Which one each consumer wants, so the choice is not made by accident:
 | consumer | needs |
 |---|---|
 | guarded-effect discharge (Q4a, WI-067) | **(a)** — drop one atom, leave the rest of the row alone |
-| the `[simp]` formation gate | **(b)** — nothing may be dropped, so the row must be empty |
+| the `@[simp]` formation gate | **(b)** — nothing may be dropped, so the row must be empty |
 | Q1's law precondition | **(b)** — the law is about discarding the whole computation |
 | Q7's "both sides carry the same row" | neither — that needs row **equality**, a third thing |
 
@@ -404,7 +404,7 @@ effect gate is central and 054 is right to be strict. If they are primarily
 WI-580 derives — then effect-freedom gates the *execution* of a law and should
 not gate its *statement*.
 
-The current design says both at once: `[simp]` is the enablement (so an untagged
+The current design says both at once: `@[simp]` is the enablement (so an untagged
 law is pure specification and inert), yet formation is gated on effects for
 tagged and untagged alike at the same site. Q1 is the narrow form of this
 question; Q6 is why it keeps coming back.
@@ -510,7 +510,7 @@ that may *omit* that bind: `raise` never invokes the continuation
 argument position of an application is a place where a continuation is
 implicitly created and may be implicitly discarded.
 
-Now the matcher. `simp-rewrite-design.md` §"Matcher ≠ typer": **"a `[simp]` rule
+Now the matcher. `simp-rewrite-design.md` §"Matcher ≠ typer": **"a `@[simp]` rule
 LHS is a *functor-application* pattern."** Matching `isEmpty(insert(?c, ?x))`
 binds `?c` and `?x`. It does **not** bind the continuation — there is no pattern
 variable for "the rest of the computation", because in direct style the
@@ -552,7 +552,7 @@ Consequences, and they are the useful part:
 WI-1049 (the classification and message) · WI-1050 (check after effect
 substitution) · proposal 054 §"Consumers that must decline it — loudly"
 (WI-698/WI-702) · `docs/design/simp-rewrite-design.md` §1/§4.2/§4.3/§4.4/§6 ·
-proposal 043 (`[simp]`/`[unfold]`) · WI-881/WI-884/WI-885 · WI-818 · WI-580 +
+proposal 043 (`@[simp]`/`@[unfold]`) · WI-881/WI-884/WI-885 · WI-818 · WI-580 +
 `docs/design/abstract-interpreter-and-rules.md` §3.3 · proposal 045 +
 WI-357/WI-365 · proposal 044 (inherited-op rule attachment) · WI-757 (the
-`[unfold]`/`[simp]` asymmetry, measured)
+`@[unfold]`/`@[simp]` asymmetry, measured)

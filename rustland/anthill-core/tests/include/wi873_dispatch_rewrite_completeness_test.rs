@@ -50,7 +50,7 @@
 //!   passes under the collapsed-key mutation above for the wrong reason — `got 0` there
 //!   too, but so does everything. Two coordinates, two back-outs.
 //! - WI-20260903-FCZ3N MOVED THE COLLIDING FIXTURE, and the axis is unchanged. Two `eq`
-//!   calls written in ONE `[simp]` RHS used to share the redex's span, because the RHS
+//!   calls written in ONE `@[simp]` RHS used to share the redex's span, because the RHS
 //!   was re-derived from the head TERM and every node took `synthesized_expr`'s
 //!   `from.span`. A fired RHS now keeps the spans the author wrote, so THAT pair no
 //!   longer collides — `a_simp_expansion_with_two_calls_is_two_entries` asserts their
@@ -214,13 +214,13 @@ end
 fn a_simp_expansion_with_two_calls_is_two_entries() {
     // THE SAME DEFECT, ONE COORDINATE OVER — found in review of this ticket's first
     // patch, whose key was `(op, functor, span)`. A SPAN DOES NOT IDENTIFY A CALL, and
-    // a `[simp]` expansion is where that bites: the second rewrite was dropped exactly
+    // a `@[simp]` expansion is where that bites: the second rewrite was dropped exactly
     // as the synthesized-apply key had dropped whole call sites, and
     // `CallSite::nth_at_span` is what separates them.
     //
     // WI-20260903-FCZ3N MOVED WHICH EXPANSIONS COLLIDE, and this test's own doc
     // predicted it: "if a future change gave synthesized occurrences their own spans
-    // this would fail". A `[simp]` RHS is now spliced from the OCCURRENCE THE AUTHOR
+    // this would fail". A `@[simp]` RHS is now spliced from the OCCURRENCE THE AUTHOR
     // WROTE, so the two `eq` calls below arrive at the two spans they are written at
     // and are told apart by span alone. This arm therefore asserts DISTINCTNESS now,
     // and the collision `nth_at_span` exists for moved next door — to
@@ -240,7 +240,7 @@ namespace test.wi873.simp
     sort T = ?
     requires PartialEq[T]
     operation both(a: T, b: T) -> Bool = true
-    rule both(?a, ?b) <=> and(eq(?a, ?b), eq(?b, ?a)) [simp]
+    rule both(?a, ?b) <=> and(eq(?a, ?b), eq(?b, ?a)) @[simp]
     operation drive(a: T, b: T) -> Bool = both(a, b)
   end
 end
@@ -260,7 +260,7 @@ end
     assert_eq!(
         sites.len(),
         2,
-        "the `[simp]` RHS expands to two `eq` calls in `drive`'s body, so two \
+        "the `@[simp]` RHS expands to two `eq` calls in `drive`'s body, so two \
          rewrites must be recorded; got {}",
         sites.len()
     );
@@ -282,7 +282,7 @@ end
 #[test]
 fn one_rule_fired_at_two_redexes_collides_on_one_span() {
     // WI-20260903-FCZ3N — THE COLLISION `nth_at_span` EXISTS FOR, RE-SITED. Its old
-    // fixture (two calls written in ONE `[simp]` RHS) stopped colliding when a fired RHS
+    // fixture (two calls written in ONE `@[simp]` RHS) stopped colliding when a fired RHS
     // began keeping the author's spans; this one cannot stop colliding, because there is
     // only ONE written `eq(` and the rule fires at TWO redexes. Both splices therefore
     // land in `drive`'s body at that one span, with the same op and the same functor.
@@ -307,7 +307,7 @@ namespace test.wi873.simp2
     sort T = ?
     requires PartialEq[T]
     operation one(a: T, b: T) -> Bool = true
-    rule one(?a, ?b) <=> eq(?a, ?b) [simp]
+    rule one(?a, ?b) <=> eq(?a, ?b) @[simp]
     operation drive(a: T, b: T) -> Bool = and(one(a, b), one(b, a))
   end
 end
@@ -327,7 +327,7 @@ end
     assert_eq!(
         sites.len(),
         2,
-        "the one `[simp]` rule fires at both `one(...)` redexes, so two rewrites must \
+        "the one `@[simp]` rule fires at both `one(...)` redexes, so two rewrites must \
          be recorded; got {}",
         sites.len()
     );

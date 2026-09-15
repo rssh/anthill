@@ -2819,7 +2819,7 @@ impl SearchStream {
             Some(cached) => cached,
             None => {
                 let mut rc = kb.query_view(&goal_val);
-                // [simp] resolution-phase rewrite — carrier-neutral, so a
+                // @[simp] resolution-phase rewrite — carrier-neutral, so a
                 // `Value::Node` occurrence goal (the typer phase and `anthill
                 // prove` feed these) simplifies too, not only a hash-consed term
                 // goal. Fires only when the goal has no non-equation candidate
@@ -2829,13 +2829,13 @@ impl SearchStream {
                     if !has_non_eq {
                         // WI-595: thread the frame's σ (its constraint store +
                         // bindings) so a constraint-typed carrier var in the redex
-                        // is decidable by the type-directed `[simp]` guard, rather
+                        // is decidable by the type-directed `@[simp]` guard, rather
                         // than reading headless under an empty subst (C1). O(1)
                         // imbl clone.
                         let eq_subst = self.stack.last().unwrap().subst.clone();
                         let (rewritten, changes) = kb.apply_eq_rules(&goal_val, 100, &eq_subst);
                         // WI-634: when the WHOLE goal is a var-projecting simp
-                        // redex (`pick(?q, 7)` under `[simp] eq(pick(?a,?b),?a)`),
+                        // redex (`pick(?q, 7)` under `@[simp] eq(pick(?a,?b),?a)`),
                         // the rewrite is a bare caller var `?q`. Re-querying a bare
                         // var wildcard-matches EVERY head (a `Global` query head
                         // routes to all leaves) — spurious solutions against every
@@ -5374,7 +5374,7 @@ impl KnowledgeBase {
         result.expect_term()
     }
 
-    /// Try firing a directional `[simp]`/`[unfold]` equation at `redex` (a term
+    /// Try firing a directional `@[simp]`/`@[unfold]` equation at `redex` (a term
     /// OR a `Value::Node` occurrence) via the one-directional `match_view`
     /// matcher — the convergence of the resolver and typer rewriters (see the
     /// simp-rewriter-convergence note). `match_view` binds the rule's opened head
@@ -5394,7 +5394,7 @@ impl KnowledgeBase {
     ) -> Option<(RuleId, Value)> {
         // The redex's head functor, if it has one — read carrier-neutrally via
         // `head` (not `get_term`). A functor-less redex (a bare `Const`/`Ref`/
-        // `Ident`, e.g. `1` under `[simp] unify(1, 2)`) still fires — the functor
+        // `Ident`, e.g. `1` under `@[simp] unify(1, 2)`) still fires — the functor
         // pre-filter below is skipped and `match_view` decides.
         let current_functor = redex.head(self).functor_sym();
         // WI-595: the requires-guard decision reads ONLY the redex + `subst` (not
@@ -5406,7 +5406,7 @@ impl KnowledgeBase {
         // WI-646: `rids` are the eq+unify candidates gathered ONCE per
         // `simp_rewrite::rewrite` walk by `ResolverSimpFirer` (from
         // `KnowledgeBase::simp_equation_rids`) — `eq` for a legacy `=` equation,
-        // `unify` for the `<=>` head; WI-139 keeps only `[simp]`/`[unfold]`-tagged
+        // `unify` for the `<=>` head; WI-139 keeps only `@[simp]`/`@[unfold]`-tagged
         // equations there. Mirrors the typer's `simp_rewrite::try_fire` selection.
         for &rid in rids {
             if !self.is_directional_equation(rid) {
@@ -5531,7 +5531,7 @@ impl KnowledgeBase {
         None
     }
 
-    /// Apply equational `[simp]`/`[unfold]` rules to rewrite a redex, carrier-
+    /// Apply equational `@[simp]`/`@[unfold]` rules to rewrite a redex, carrier-
     /// neutrally: the redex arrives as a `Value` (a hash-consed term or a
     /// `Value::Node` occurrence) and the rewrite is rebuilt in the SAME carrier,
     /// so a resolution goal keeps its occurrence identity. Strategy: innermost —
@@ -5551,11 +5551,11 @@ impl KnowledgeBase {
     /// divergence (depth-bounded vs chain-bounded) is gone.
     ///
     /// O(1) gate (WI-646): short-circuit a KB with NO directional
-    /// (`[simp]`/`[unfold]`) equation via [`Self::has_directional_rewrite`] — a
+    /// (`@[simp]`/`@[unfold]`) equation via [`Self::has_directional_rewrite`] — a
     /// KB-cached bit, NOT a per-call bucket scan. This is the CORRECT gate the
     /// WI-643 note deferred: it mirrors `equation_is_directional_rewrite`
-    /// (`[simp]` OR `[unfold]`) over BOTH `eq` AND `unify`, so — unlike the
-    /// `[simp]`-only/`eq`-only `has_simp_equations` that WI-643 refused to ship as
+    /// (`@[simp]` OR `@[unfold]`) over BOTH `eq` AND `unify`, so — unlike the
+    /// `@[simp]`-only/`eq`-only `has_simp_equations` that WI-643 refused to ship as
     /// a gate — it never skips an unfold-only or `<=>`-only KB's rewrites. When it
     /// returns `false` nothing could fire anyway, so returning the redex unchanged
     /// is exactly what the driver would produce, at a bool-read's cost.
@@ -5577,7 +5577,7 @@ impl KnowledgeBase {
         (rewritten, changes)
     }
 
-    /// WI-292: whether `rid` is a DIRECTIONAL `[simp]`/`[unfold]` rewrite — the
+    /// WI-292: whether `rid` is a DIRECTIONAL `@[simp]`/`@[unfold]` rewrite — the
     /// firing gate the typer's `simp_rewrite` already applies via
     /// [`super::load::meta_has_flag`]. An equational head that carries neither tag
     /// is a logical LAW, not a rewrite, and is `unindex_functor`'d at load
@@ -5592,7 +5592,7 @@ impl KnowledgeBase {
     }
 
     /// WI-646: the resolver's per-rule fire predicate — `rid` is a directional
-    /// (`[simp]`/`[unfold]`) EQUATION. Shared by the `has_directional_rewrite`
+    /// (`@[simp]`/`@[unfold]`) EQUATION. Shared by the `has_directional_rewrite`
     /// gate AND the `fire_simp_equation` loop so the two can't drift apart: a gate
     /// that under-counts relative to the fire site would silently skip a KB that
     /// would fire (the WI-643 regression class). The additional fire-time filters
@@ -5609,7 +5609,7 @@ impl KnowledgeBase {
     /// it moved to `simp_rewrite::guard_holds`, which the fire site runs POST-MATCH,
     /// beside the requires-guard and the typed-pattern bound that already sit there.
     /// The LOADER reads this too (the WI-903 typed-pattern refusal), so widening it
-    /// here narrows that refusal in lockstep: a `[simp]`-tagged guarded equation now
+    /// here narrows that refusal in lockstep: a `@[simp]`-tagged guarded equation now
     /// HAS the enforcer the refusal said it lacked, and that narrowing needed no edit
     /// at the loader.
     ///
@@ -5620,7 +5620,7 @@ impl KnowledgeBase {
         self.has_equational_head(rid) && self.equation_is_directional_rewrite(rid)
     }
 
-    /// WI-646: whether the KB holds ANY directional (`[simp]`/`[unfold]`) equation
+    /// WI-646: whether the KB holds ANY directional (`@[simp]`/`@[unfold]`) equation
     /// under `eq` or `unify` — the O(1) gate [`Self::apply_eq_rules`] short-
     /// circuits on. Reads a KB-cached bit ([`KnowledgeBase::simp_gate_cache`]),
     /// computing it once on a miss by mirroring the per-rule fire filter
@@ -8103,7 +8103,7 @@ impl KnowledgeBase {
     /// nominal sort, `op_functor` a body call to one of X's operations, and
     /// `op_arg…` that call's carrier arguments (the witness redex whose types
     /// decide the instance). At the current binding this reads each argument's
-    /// carried type and shares the WI-596 `provides` decision with the `[simp]`
+    /// carried type and shares the WI-596 `provides` decision with the `@[simp]`
     /// guard: `Success` iff every carrier provides X, `Failure` if a ground carrier
     /// has no provider, `Delay` (suspend-as-residual, never NAF-decide; WI-519 /
     /// WI-067) when a carrier type is under-determined. A goal with fewer than two
@@ -10663,7 +10663,7 @@ impl KnowledgeBase {
     /// Re-registering the builtins per call is the simple-correct choice (the
     /// interpreter owns the lent KB, so they can't persist across calls); a
     /// registration failure surfaces as `Some(Err(_))`, which callers residualize.
-    // WI-722: `pub(super)` so the `[simp]` macro fire hook (`simp_rewrite.rs`) can
+    // WI-722: `pub(super)` so the `@[simp]` macro fire hook (`simp_rewrite.rs`) can
     // run a macro op body through the same compile-time scratch interpreter.
     pub(super) fn run_in_bridge_interp<F>(&mut self, f: F) -> Option<Result<Value, EvalError>>
     where
@@ -11652,7 +11652,7 @@ impl KnowledgeBase {
     ///
     /// **The rule-LESS clause lives HERE, not only at the goal shape** (design §3.3,
     /// "rules win while both exist"). A body-less spec op whose clauses are written as
-    /// separate `rule`s — `Ord.lt`, and every `[simp]` law over `Set.insert` — resolves
+    /// separate `rule`s — `Ord.lt`, and every `@[simp]` law over `Set.insert` — resolves
     /// through those clauses, and neither the goal shape nor the reduction may route
     /// around them. Splitting the clause between the two readers is what would let a
     /// later edit admit at one and not the other.
@@ -12559,7 +12559,7 @@ impl KnowledgeBase {
     ///   `is_thing(42)` exists.)
     /// - Refutation is DISABLED when a conjunct could be discharged by a
     ///   resolution path `query_view` does not see — the frame's `assumed_facts`
-    ///   (WI-108), the Γ overlay (WI-537), the `[simp]` eq-rewrite pass, a mounted
+    ///   (WI-108), the Γ overlay (WI-537), the `@[simp]` eq-rewrite pass, a mounted
     ///   extent source (extent rows), a scoping/quantifier MARKER (`forall_impl` /
     ///   `forall_in` / `some_in` / `__pop_assumption`), or a
     ///   `bare_bodied_bool_relation` (routed to `eq(f(args), true)`). The caller
@@ -13008,8 +13008,8 @@ mod tests {
         kb
     }
 
-    /// Build a `meta(simp: true)` term — the `[simp]` tag a loaded directional
-    /// rewrite carries. `apply_eq_rules` fires only `[simp]`/`[unfold]`-tagged
+    /// Build a `meta(simp: true)` term — the `@[simp]` tag a loaded directional
+    /// rewrite carries. `apply_eq_rules` fires only `@[simp]`/`@[unfold]`-tagged
     /// equations (WI-292, mirroring the typer's `simp_rewrite`), so a test that
     /// asserts an equation directly (bypassing the loader) must tag it to have it
     /// fire — exactly as `simp_rewrite.rs`'s `build_add_zero` does.
@@ -14280,8 +14280,8 @@ mod tests {
 
     #[test]
     fn resolve_simplification_threads_caller_var() {
-        // WI-634 end-to-end: a query var inside a redex must survive the [simp]
-        // rewrite and bind through resolution. `[simp] eq(pick(?a, ?b), ?a)` over
+        // WI-634 end-to-end: a query var inside a redex must survive the @[simp]
+        // rewrite and bind through resolution. `@[simp] eq(pick(?a, ?b), ?a)` over
         // goal `found(pick(?q, 99))` rewrites the subterm to `found(?q)`, which
         // the fact `found(7)` resolves — binding ?q = 7. Before WI-634's
         // threading the redex was SKIPPED (severing ?q), so the goal never
@@ -14293,7 +14293,7 @@ mod tests {
         let pick_sym = kb.intern("pick");
         let found_sym = kb.intern("found");
 
-        // [simp] eq(pick(?a, ?b), ?a) — DeBruijn-closed (arity 2), the loaded
+        // @[simp] eq(pick(?a, ?b), ?a) — DeBruijn-closed (arity 2), the loaded
         // form; arity-0 Global-var heads never hit the var-RHS bug.
         let a_sym = kb.intern("a");
         let b_sym = kb.intern("b");
@@ -14355,7 +14355,7 @@ mod tests {
     #[test]
     fn resolve_whole_goal_var_redex_does_not_wildcard() {
         // WI-634 guard: when the WHOLE goal is a var-projecting simp redex
-        // (`pick(?q, 99)` under `[simp] eq(pick(?a,?b), ?a)`), the rewrite is a
+        // (`pick(?q, 99)` under `@[simp] eq(pick(?a,?b), ?a)`), the rewrite is a
         // bare caller var `?q`. `step_init` must NOT re-query that bare var —
         // discrim routes a `Global` query head to EVERY leaf, so re-querying
         // would wildcard-match every fact and manufacture spurious solutions. A
@@ -14451,7 +14451,7 @@ mod tests {
 
     #[test]
     fn apply_eq_rules_instantiates_var_rhs() {
-        // WI-584: a DeBruijn var-RHS equation (the loaded `[simp]` form, unlike
+        // WI-584: a DeBruijn var-RHS equation (the loaded `@[simp]` form, unlike
         // the arity-0 `assert_fact` Global-var form which never hit the bug)
         // must fire to its SUBSTITUTED RHS, not the raw `DeBruijn(n)` template.
         let mut kb = kb_with_prelude();
@@ -14478,7 +14478,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         // DeBruijn-close (arity 2) — the loader's form. assert_fact would store
-        // arity-0 Global vars, which reify resolves directly (no bug). Tag `[simp]`
+        // arity-0 Global vars, which reify resolves directly (no bug). Tag `@[simp]`
         // (WI-292): `apply_eq_rules` fires only directional rewrites.
         let meta = simp_meta(&mut kb);
         kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
@@ -14505,7 +14505,7 @@ mod tests {
     #[test]
     fn apply_eq_rules_skips_inexpressible_query_var_links() {
         // WI-633 / WI-634 loud gate: a term rewrite can only express the
-        // synthetic LHS-match entries. A NONLINEAR `[simp]` LHS over a
+        // synthetic LHS-match entries. A NONLINEAR `@[simp]` LHS over a
         // half-ground redex UNIFIES the repeated var's two matches (WI-633's
         // leaf unification) — a substitution effect (`?x = 42`) the rewrite
         // cannot carry — so the candidate must NOT fire (it would rewrite to
@@ -14518,7 +14518,7 @@ mod tests {
         let sub_sym = kb.intern("sub");
         let f_sym = kb.intern("f");
 
-        // Equation: [simp] eq(sub(?a, ?a), 0) — nonlinear LHS.
+        // Equation: @[simp] eq(sub(?a, ?a), 0) — nonlinear LHS.
         let a_sym = kb.intern("a");
         let va = kb.fresh_var(a_sym);
         let var_a = kb.alloc(Term::Var(Var::Global(va)));
@@ -14582,7 +14582,7 @@ mod tests {
 
     #[test]
     fn apply_eq_rules_threads_severing_var_redex() {
-        // WI-634(a) completeness: `[simp] eq(pick(?a, ?b), ?a)` over redex
+        // WI-634(a) completeness: `@[simp] eq(pick(?a, ?b), ?a)` over redex
         // pick(?q, 7) projects the redex var `?q` into the RHS. `fire_simp_equation`
         // provides this via `match_view` — a one-way match leaves `?q` inert, so it
         // rides into the opened RHS bound to the caller's `?q` instead of a
@@ -14662,7 +14662,7 @@ mod tests {
     #[test]
     fn apply_eq_rules_skips_nonlinear_query_var_redex() {
         // WI-634 linearity guard: a NONLINEAR LHS whose repeated var meets a
-        // query var (`[simp] eq(sub(?a, ?a), 0)` over sub(?q, f(42))) records a
+        // query var (`@[simp] eq(sub(?a, ?a), 0)` over sub(?q, f(42))) records a
         // query link at DB-0 AND a synthetic value at DB-0 — the constraint
         // `?q = f(42)` a rewrite cannot carry. Must skip, not silently thread
         // one and drop the other.
@@ -14730,7 +14730,7 @@ mod tests {
         let add = kb.intern("add");
         let wrap = kb.intern("wrap");
 
-        // [simp] eq(add(?x, 0), ?x)
+        // @[simp] eq(add(?x, 0), ?x)
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
         let var_x = kb.alloc(Term::Var(Var::Global(vx)));
@@ -14788,10 +14788,10 @@ mod tests {
 
     #[test]
     fn apply_eq_rules_fires_unfold_only_kb() {
-        // WI-643 regression: `apply_eq_rules` fires `[simp]` OR `[unfold]`
+        // WI-643 regression: `apply_eq_rules` fires `@[simp]` OR `@[unfold]`
         // (`equation_is_directional_rewrite`), so it must NOT gate on a
-        // simp-ONLY predicate. A KB with an `[unfold]`-tagged equation and ZERO
-        // `[simp]` equations must still rewrite — an earlier `has_simp_equations`
+        // simp-ONLY predicate. A KB with an `@[unfold]`-tagged equation and ZERO
+        // `@[simp]` equations must still rewrite — an earlier `has_simp_equations`
         // short-circuit (simp-only) silently skipped every unfold rewrite here.
         let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact; // requires-free → the resolver fires it
@@ -14800,7 +14800,7 @@ mod tests {
         let unfold_me = kb.intern("unfold_me");
         let done = kb.intern("done");
 
-        // [unfold] eq(unfold_me(?x), done(?x)) — NO [simp] rule anywhere.
+        // @[unfold] eq(unfold_me(?x), done(?x)) — NO @[simp] rule anywhere.
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
         let var_x = kb.alloc(Term::Var(Var::Global(vx)));
@@ -14844,7 +14844,7 @@ mod tests {
         assert_eq!(
             kb.simplify(redex),
             expected,
-            "an [unfold]-only KB (no [simp] rules) must still rewrite unfold_me(7) → done(7)"
+            "an @[unfold]-only KB (no @[simp] rules) must still rewrite unfold_me(7) → done(7)"
         );
     }
 
@@ -14852,7 +14852,7 @@ mod tests {
     fn apply_eq_rules_gate_invalidates_when_rule_added() {
         // WI-646: the O(1) `has_directional_rewrite` gate is a KB-cached bit. A
         // gate computed `false` (no directional rule) MUST be invalidated when a
-        // `[simp]` rule is later asserted, or `apply_eq_rules` would keep
+        // `@[simp]` rule is later asserted, or `apply_eq_rules` would keep
         // short-circuiting and never rewrite. Exercises the compute-false →
         // invalidate-on-assert → recompute-true sequence.
         let mut kb = kb_with_prelude();
@@ -14873,7 +14873,7 @@ mod tests {
             "empty KB: add(7, 0) is left as-is"
         );
 
-        // Assert `[simp] eq(add(?x, 0), ?x)` — this must invalidate the cached
+        // Assert `@[simp] eq(add(?x, 0), ?x)` — this must invalidate the cached
         // gate (via `push_value_head_entry`).
         let sort = ClauseKind::Fact; // requires-free → the resolver fires it
         let domain = kb.intern("test");
@@ -14905,7 +14905,7 @@ mod tests {
         assert_eq!(
             kb.simplify(redex),
             seven,
-            "after asserting [simp] add(?x,0)=?x, the invalidated gate recomputes \
+            "after asserting @[simp] add(?x,0)=?x, the invalidated gate recomputes \
              true and add(7, 0) rewrites to 7"
         );
     }
@@ -14950,7 +14950,7 @@ mod tests {
              (WI-665 functor-specific invalidation)"
         );
 
-        // Asserting an `eq` [simp] rule DOES touch the gate's bucket → invalidated.
+        // Asserting an `eq` @[simp] rule DOES touch the gate's bucket → invalidated.
         let eq_sym = kb.eq_functor();
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
@@ -14977,7 +14977,7 @@ mod tests {
         kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
         assert!(
             kb.simp_gate_cache.is_none(),
-            "asserting an `eq` [simp] rule DOES invalidate the gate"
+            "asserting an `eq` @[simp] rule DOES invalidate the gate"
         );
     }
 
@@ -14997,7 +14997,7 @@ mod tests {
         let add = kb.intern("add");
         let wrap = kb.intern("wrap");
 
-        // [simp] eq(add(?x, 0), ?x)
+        // @[simp] eq(add(?x, 0), ?x)
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
         let var_x = kb.alloc(Term::Var(Var::Global(vx)));
@@ -15092,7 +15092,7 @@ mod tests {
         let eq_sym = kb.eq_functor();
         let wrap = kb.intern("wrap");
 
-        // [simp] eq(1, 2) — a bare-Const LHS (stored_lhs_functor == None).
+        // @[simp] eq(1, 2) — a bare-Const LHS (stored_lhs_functor == None).
         let one = kb.alloc(Term::Const(Literal::Int(1)));
         let two = kb.alloc(Term::Const(Literal::Int(2)));
         let eq_head = kb.alloc(Term::Fn {

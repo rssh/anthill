@@ -1,17 +1,19 @@
-//! WI-893 — a comment line immediately above a `[simp]`-tagged `rule { }` entry
+//! WI-893 — a comment line immediately above a `@[simp]`-tagged `rule { }` entry
 //! SILENTLY ATE the attribute. This suite exists because the tree-sitter corpus case is
 //! not enough: nothing in the repo runs `npx tree-sitter test` under `cargo test`, and
 //! the defect is invisible to a green suite. It produced a WRONG PROGRAM, not an error
 //! — the tag re-parsed as a separate junk rule headed by the list `[simp]`, so the
-//! equation went INERT (WI-881: `[simp]` is the ENABLEMENT, so a dropped tag is a
+//! equation went INERT (WI-881: `@[simp]` is the ENABLEMENT, so a dropped tag is a
 //! dropped definition) and a junk entry was asserted beside it.
 //!
-//! THE CAUSE is a GLR tie in the `[$.rule_entry]` conflict, broken by `prec.dynamic`;
-//! `tree-sitter-anthill/grammar.js` (`rule_entry`) carries it, and the four parses are
-//! pinned in `tree-sitter-anthill/test/corpus/rule_entry_meta.txt` — whose cases share
-//! one body, so each differs from the control by exactly one comment line (that is why
-//! two of them carry an entry they do not need). This file pins what a LOAD and an EVAL
-//! see.
+//! THE CAUSE was a GLR tie in a `[$.rule_entry]` conflict, broken by `prec.dynamic`:
+//! entries are juxtaposed, and a bare `[simp]` after an entry's heads read either as its
+//! block or as the next entry's collection-literal head. WI-20260915-G9EA9 removed the
+//! tie itself — a block opens with the `@[` token, which no term begins with — and the
+//! conflict with it. The four parses stay pinned in
+//! `tree-sitter-anthill/test/corpus/rule_entry_meta.txt` — whose cases share one body, so
+//! each differs from the control by exactly one comment line (that is why two of them
+//! carry an entry they do not need). This file pins what a LOAD and an EVAL see.
 //!
 //! THE DAMAGE IT ALREADY DID: driving WI-887, `bool.anthill`'s two `ite` case laws were
 //! tagged with a `-- if-then-else` line immediately above the FIRST. `ite_true`'s tag
@@ -26,7 +28,7 @@
 //! the discipline `wi884_sibling_backing_test` records. The two convert-time tests load
 //! nothing: `common::parse_errs` / `parses_clean` reach that layer without the stdlib.
 //!
-//! Reference: WI-448 (the same tie in another production pair), WI-881 (`[simp]` is the
+//! Reference: WI-448 (the same tie in another production pair), WI-881 (`@[simp]` is the
 //! enablement), WI-887 (the ticket whose central measurement this invalidated), spec
 //! §"A head is an atom".
 
@@ -38,7 +40,7 @@ use anthill_core::eval::Value;
 /// entry because the trigger needs a PRECEDING entry — a comment above a block's first
 /// entry never tripped it.
 ///
-/// Both operations are DECLARED body-less: their `[simp]` laws are their whole
+/// Both operations are DECLARED body-less: their `@[simp]` laws are their whole
 /// definition, which is what makes an eaten tag observable as `OperationBodyMissing`
 /// rather than as a silently missed rewrite.
 const TAGGED_WITH_COMMENTS: &str = r#"
@@ -54,11 +56,11 @@ namespace wi893.commentEatsTag
     rule {
       seed:      seed893(?x) <=> ?x
       -- comment above the FIRST tagged entry of the pair
-      pickTrue:  pick893(true, ?t, ?_) <=> ?t [simp]
-      pickFalse: pick893(false, ?_, ?e) <=> ?e [simp]
-      flipTrue:  flip893(true, ?t, ?_) <=> ?t [simp]
+      pickTrue:  pick893(true, ?t, ?_) <=> ?t @[simp]
+      pickFalse: pick893(false, ?_, ?e) <=> ?e @[simp]
+      flipTrue:  flip893(true, ?t, ?_) <=> ?t @[simp]
       -- comment above the SECOND tagged entry of the pair
-      flipFalse: flip893(false, ?_, ?e) <=> ?e [simp]
+      flipFalse: flip893(false, ?_, ?e) <=> ?e @[simp]
     }
 
     operation drivePickThen(n: Int64) -> Int64 = pick893(true, 10, 20)
@@ -81,7 +83,7 @@ fn without_comments(src: &str) -> String {
 }
 
 /// THE ACCEPTANCE, and the one a green suite could not have given: a tagged law whose
-/// entry is preceded by a comment is indexed as a `[simp]` equation and FIRES.
+/// entry is preceded by a comment is indexed as a `@[simp]` equation and FIRES.
 ///
 /// All four branches are driven on ONE interpreter. Pre-fix, exactly two of them died
 /// `OperationBodyMissing` — `pick893`'s THEN branch and `flip893`'s ELSE branch, the
@@ -99,7 +101,7 @@ fn a_comment_above_a_tagged_law_leaves_it_firing() {
         match interp.call(&path, &[Value::Int(0)]) {
             Ok(Value::Int(n)) if n == expected => {}
             other => panic!(
-                "{path} must reduce to {expected} — its `[simp]` law is its whole \
+                "{path} must reduce to {expected} — its `@[simp]` law is its whole \
                  definition, so anything else means the tag was eaten; got {other:?}"
             ),
         }
@@ -107,7 +109,7 @@ fn a_comment_above_a_tagged_law_leaves_it_firing() {
 }
 
 /// THE JUNK ENTRY IS GONE. The dropped attribute did not merely vanish — it was
-/// asserted as a rule of its own, headed by the list `[simp]`, so the commented program
+/// asserted as a rule of its own, headed by the list `@[simp]`, so the commented program
 /// carried one MORE entry than the identical uncommented one. Counting catches that
 /// without depending on how the junk entry happens to be shaped.
 ///
@@ -184,7 +186,7 @@ namespace wi893.atomHeads
   sort P
     rule { plain: p893(?x) :- q893(?x) }
     rule { withLiteralArg: r893(42) }
-    rule { equational: f893(?x) <=> 42 [simp] }
+    rule { equational: f893(?x) <=> 42 @[simp] }
     rule { denial: ⊥ :- s893(?x) }
     fact t893(42)
   end

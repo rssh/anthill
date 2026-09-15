@@ -1150,7 +1150,7 @@ fact Implementation("banking",
   artifact: "src/banking.rs", language: "rust",
   profile: "std",
   carrier: { Money: "i64", AccountId: "u64" })
-  [trust: proposed]
+  @[trust: proposed]
 ```
 
 4. **Verification**: The kernel generates proof obligations from operation contracts (`requires`/`ensures`). Agents discharge these obligations via testing, formal verification, or manual review, progressively upgrading the trust level.

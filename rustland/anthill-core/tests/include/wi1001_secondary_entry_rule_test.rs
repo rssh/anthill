@@ -220,7 +220,7 @@ fn condition_1_a_head_that_does_not_introduce_is_refused() {
         (
             "an operation the ENTRY ITSELF declares",
             "",
-            "    operation p(x: Int64) -> Int64 = x\n    rule p(?x) <=> 2 [simp]\n",
+            "    operation p(x: Int64) -> Int64 = x\n    rule p(?x) <=> 2 @[simp]\n",
             "resolves to 'wi1001.c1r3.Rec.p'",
         ),
 
@@ -301,7 +301,7 @@ fn condition_1_reaches_an_imported_predicate() {
 /// EXCLUDED BY CONDITION (1) RATHER THAN BY A CLAUSE OF THEIR OWN, which 059 calls "the
 /// sign the condition is the right one": a DOT rule and an OPERATOR rule carry the
 /// desugar's own functor (`dot_apply`, `add`), a QUALIFIED head references rather than
-/// introduces, and none of the three is ever fresh — so the `[simp]`-fires-in-the-typer
+/// introduces, and none of the three is ever fresh — so the `@[simp]`-fires-in-the-typer
 /// hazard cannot arise through them.
 #[test]
 fn a_desugared_or_qualified_head_introduces_nothing() {
@@ -677,7 +677,7 @@ fn the_reference_before_the_definition_is_refused_without_the_entry() {
 // ── Equations ───────────────────────────────────────────────────────────────
 
 /// AN EQUATION'S SUBJECT TAKES THE SAME TWO CONDITIONS. 059 says the
-/// `[simp]`-fires-in-the-typer hazard "cannot arise through" a desugared head *because
+/// `@[simp]`-fires-in-the-typer hazard "cannot arise through" a desugared head *because
 /// it is never fresh* — so freshness is what the hazard turns on, and a fresh subject is
 /// admitted while a bound one is not.
 ///
@@ -697,7 +697,7 @@ fn a_fresh_equation_subject_is_admitted() {
     let bound = fixture(
         "wi1001.eqno",
         "    operation twice(x: Int64) -> Int64\n",
-        "    rule twice(?x) <=> 2 [simp]\n",
+        "    rule twice(?x) <=> 2 @[simp]\n",
     );
     let errs = r3_errors(&bound);
     assert!(

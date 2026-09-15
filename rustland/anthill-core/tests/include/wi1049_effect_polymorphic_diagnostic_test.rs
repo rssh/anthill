@@ -1,10 +1,10 @@
 //! WI-1049 — an effect-POLYMORPHIC operation is not an effectful one, and the
-//! `[simp]`/`[unfold]` formation gate now says which it is refusing.
+//! `@[simp]`/`@[unfold]` formation gate now says which it is refusing.
 //!
 //! FOUND BY DRIVING, not by reading. Writing proposal-054's own example law on
 //! `PersistentCollection` —
 //!
-//!     rule isEmpty(insert(?c, ?x)) <=> false [simp]
+//!     rule isEmpty(insert(?c, ?x)) <=> false @[simp]
 //!
 //! — is refused twice with "an effectful operation is not equational", naming
 //! `PersistentCollection.insert` and `Iterable.isEmpty`. NEITHER IS EFFECTFUL.
@@ -49,7 +49,7 @@ const PURE_SRC: &str = r#"
         entity box(n: Int64)
         operation put(b: Box, x: Int64) -> Box = box(n: x)
         operation isNone(b: Box) -> Bool = false
-        rule isNone(put(?b, ?x)) <=> false [simp]
+        rule isNone(put(?b, ?x)) <=> false @[simp]
       end
     end
 "#;
@@ -186,7 +186,7 @@ fn the_two_arms_read_differently() {
 #[test]
 fn pure_carrier_ops_still_admit_the_law() {
     // CONTROL — passes either way. The gate is not refusing all laws: over
-    // genuinely pure operations the same `[simp]` equation loads clean. This is
+    // genuinely pure operations the same `@[simp]` equation loads clean. This is
     // also the REPAIR the polymorphic message now points at, so it must work.
     let kb = crate::common::load_kb_with(PURE_SRC);
     for qn in ["wi1049.pure.Box.put", "wi1049.pure.Box.isNone"] {

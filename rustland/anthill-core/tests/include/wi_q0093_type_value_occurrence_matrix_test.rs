@@ -526,7 +526,7 @@ fn a_type_argument_that_is_an_operation_parameter_stays_non_ground_until_the_cal
     assert_applied_cell(interp.kb(), &v, "the substituted type argument");
 }
 
-/// METADATA VALUES — an operation's `meta [Key: <type value>]`, read back through the
+/// METADATA VALUES — an operation's `@[Key: <type value>]`, read back through the
 /// `OperationInfo` record, in both faces. The KEY beside it is the adjacent non-value role
 /// and is pinned by [`a_metadata_key_spelled_like_a_sort_stays_a_key`].
 #[test]
@@ -536,8 +536,7 @@ namespace test.q0093meta
   import anthill.prelude.{Cell, Int64, Type}
 
   operation tagged() -> Int64
-    meta [Bare: Cell, Applied: Cell[V = Int64]]
-    = 1
+    = 1 @[Bare: Cell, Applied: Cell[V = Int64]]
 end
 "#;
     let kb = load_kb_with(src);
@@ -1019,7 +1018,7 @@ end
     );
 }
 
-/// METADATA KEY — the key half of the `metadata` row: `meta [Cell: Cell]` keeps the key as
+/// METADATA KEY — the key half of the `metadata` row: `@[Cell: Cell]` keeps the key as
 /// a key and classifies only the value. Read through the same accessor the driving row
 /// uses, so the two cannot disagree about which half is which.
 #[test]
@@ -1029,8 +1028,7 @@ namespace test.q0093mk
   import anthill.prelude.{Cell, Int64, Type}
 
   operation tagged() -> Int64
-    meta [Cell: Cell]
-    = 1
+    = 1 @[Cell: Cell]
 end
 "#;
     let kb = load_kb_with(src);

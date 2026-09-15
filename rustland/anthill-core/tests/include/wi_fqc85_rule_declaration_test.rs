@@ -480,7 +480,7 @@ fn a_declaration_carries_no_clause_text() {
         // re-spelled: a description on an UNLABELED rule is a parse error (WI-1072, "no
         // stable target"), so a described declaration always has a label and the
         // description case is unreachable. The loader carries no arm for it either.
-        ("tag", "namespace fqc85.l2\n  rule p(?x) [simp]\nend\n"),
+        ("tag", "namespace fqc85.l2\n  rule p(?x) @[simp]\nend\n"),
         (
             "type-variable introducer",
             "namespace fqc85.l3\n  import anthill.prelude.{Int64, Eq}\n  rule p[t](?x, ?y)\nend\n",
@@ -518,7 +518,7 @@ namespace fqc85.eqn
   sort C
     import anthill.prelude.{Int64, Bool}
     operation pick(cond: Bool, then: Int64, else: Int64) -> Int64
-    rule pick(true, ?t, ?_) <=> ?t [simp]
+    rule pick(true, ?t, ?_) <=> ?t @[simp]
     operation drive(n: Int64) -> Int64 = pick(true, 10, 20)
   end
 end
@@ -536,7 +536,7 @@ end
         let src = FIRES
             .replace("<=>", connective)
             .replace("fqc85.eqn", "fqc85.eqn_ref")
-            .replace(" [simp]", "");
+            .replace(" @[simp]", "");
         let errs = crate::common::try_load_kb_with(&src)
             .err()
             .unwrap_or_else(|| panic!("`{connective}` at a body-less head must be refused"));
@@ -833,8 +833,8 @@ fn an_equation_subject_written_in_two_files_is_not_refused() {
     // PASSES EITHER WAY under every back-out; it is here because the file rule reads a
     // list of rule heads that CONTAINS equation subjects, and filtering them out is a
     // line that can be deleted.
-    const A: &str = "namespace fqc85.eqsplit\n  rule pickx(true) <=> 1 [simp]\nend\n";
-    const B: &str = "namespace fqc85.eqsplit\n  rule pickx(false) <=> 2 [simp]\nend\n";
+    const A: &str = "namespace fqc85.eqsplit\n  rule pickx(true) <=> 1 @[simp]\nend\n";
+    const B: &str = "namespace fqc85.eqsplit\n  rule pickx(false) <=> 2 @[simp]\nend\n";
     let kb = crate::common::expect_loaded(crate::common::try_load_kb_with_named_files(&[
         ("eqa.anthill", A),
         ("eqb.anthill", B),

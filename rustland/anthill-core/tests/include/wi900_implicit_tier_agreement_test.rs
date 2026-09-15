@@ -110,7 +110,7 @@ end
 ///
 /// The row used to say: when the implicit target IS loaded, the name already means
 /// something, so the head REFERENCES it and introduces nothing (WI-530's decision, which
-/// kept a `[simp]` law about `List.cons` a law about `List.cons`). That decision is
+/// kept a `@[simp]` law about `List.cons` a law about `List.cons`). That decision is
 /// unchanged; what changed is its PREMISE. A rule head is RESOLVED, not declared
 /// (WI-896), and resolution no longer has a rung below scope — so an unimported `cons`
 /// head in `wi900.loaded.A` reaches nothing and MINTS `wi900.loaded.A.cons`, exactly as

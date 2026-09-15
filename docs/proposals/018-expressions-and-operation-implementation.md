@@ -612,7 +612,7 @@ Proof obligations can be discharged by:
 sort IntRing
   ensures Ring[Int64]
   -- ...
-end [proofs: "proofs/int_ring.lean"]
+end @[proofs: "proofs/int_ring.lean"]
 ```
 
 6. **Trust annotations** — mark as trusted with evidence level:
@@ -620,7 +620,7 @@ end [proofs: "proofs/int_ring.lean"]
 sort IntRing
   ensures Ring[Int64]
   -- ...
-end [trust: tested-1000]
+end @[trust: tested-1000]
 ```
 
 ### Preconditions at call sites

@@ -1,7 +1,7 @@
 //! WI-742 (proposal 060 §2, §2.1) — a `?x: T` annotation on a RELATIONAL rule head
 //! compiles to a generated `domain(?x, T)` body goal.
 //!
-//! The annotation used to be legal only on a `[simp]`/`[unfold]` EQUATION (WI-582),
+//! The annotation used to be legal only on a `@[simp]`/`@[unfold]` EQUATION (WI-582),
 //! because the resolver's rewrite path was the only site that enforced it. Proposal
 //! 060's rule gives it a second reader that is an ORDINARY GOAL: the loader installs
 //! the bound as before, and the typer prepends `domain(?x, T)` to the clause body

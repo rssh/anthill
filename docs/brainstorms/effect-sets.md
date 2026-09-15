@@ -188,7 +188,7 @@ That reframes the scary part:
 
 - **"Row/AC unification" → equational matching modulo ACI.** Associative-
   commutative-idempotent matching is the **Maude** approach, and it's what
-  anthill's equational / `[simp]` engine (WI-139 / proposal 043) is for — far
+  anthill's equational / `@[simp]` engine (WI-139 / proposal 043) is for — far
   more native than grafting row-unification into the resolver.
 - **Open rows + row vars fall out of the term form.** Effect-set value =
   `insert(insert(empty(), Modify[c]), …)`; a **row variable** is a logic var
@@ -290,7 +290,7 @@ membership, checked by `subset`) over the E representation — with `@ E` /
    an `EffectSet`; same for the `@` annotation.
 2. Decide the concrete value form: ACI-normalized `empty`/`insert` term (the
    `EffectSet` denotation of the `EffectExpression`).
-3. Ensure **ACI matching actually fires** during effect checking (via `[simp]`
+3. Ensure **ACI matching actually fires** during effect checking (via `@[simp]`
    or ACI operator attributes) — *the* real semantic commitment.
 4. Complete the `Set` laws: recursive `member(x, insert(s,y))`,
    `subset(insert(s,x), t)`, `union(insert(s,x), t)`, etc.

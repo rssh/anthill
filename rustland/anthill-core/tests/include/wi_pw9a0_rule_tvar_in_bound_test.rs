@@ -228,7 +228,7 @@ fn an_introducer_denotes_its_bound_at_any_depth() {
     assert_eq!(answers(&mut kb, "test.pw9a0.applied.g(?a, 8)"), 0);
 }
 
-/// WI-582's ORIGINAL READER. A `[simp]` equation's typed pattern is enforced by the
+/// WI-582's ORIGINAL READER. A `@[simp]` equation's typed pattern is enforced by the
 /// resolver's rewrite path (`typing::typed_pattern_bounds_hold`), not by a generated
 /// body goal, and it reads the SAME `type_bound_verdict` — so a compound bound has to
 /// work there too, and by value: the rule fires over the conforming carrier and is left
@@ -257,7 +257,7 @@ namespace test.pw9a0.simp
       keep(x: List[T = E], y: Int64) -> Int64
     }
     rule {
-      keep_id: keep[A](?x: List[T = A], ?y) <=> ?y :- Summable[A] [simp]
+      keep_id: keep[A](?x: List[T = A], ?y) <=> ?y :- Summable[A] @[simp]
     }
   end
 end
@@ -363,7 +363,7 @@ fn an_introducer_may_not_shadow_a_name_in_scope() {
 /// the verdict SUSPENDS and a relational clause leaves its rows CONDITIONAL instead.
 ///
 /// Both mean the rule never fires — the rewrite reader collapses refute and suspend to
-/// "don't fire", so a `[simp]` rule like this one is unaffected either way — but a
+/// "don't fire", so a `@[simp]` rule like this one is unaffected either way — but a
 /// variable is what `F` actually is, and a loud residual is the better half of the pair
 /// (`docs/kernel-language.md` §5.3, and the project's loud-over-silent rule).
 #[test]
@@ -378,7 +378,7 @@ namespace test.pw9a0.tp
     sort F = ?
     operation { keep(x: F, y: Int64) -> Int64 }
     rule {
-      keep_id: keep[T](?x: T, ?y) <=> ?y :- F[T] [simp]
+      keep_id: keep[T](?x: T, ?y) <=> ?y :- F[T] @[simp]
     }
   end
 end
@@ -418,10 +418,10 @@ end
 /// | `?x: Bool` (UNSATISFIABLE) | byte-identical |
 ///
 /// WHAT 8RJK8 CHANGED, and what it did not. A guarded equation's body is now proved
-/// post-match, so a `[simp]`-TAGGED one is a directional rewrite and
+/// post-match, so a `@[simp]`-TAGGED one is a directional rewrite and
 /// `typed_pattern_bounds_hold` enforces its bound — that half is now KEPT, and
 /// `wi903_typed_bound_dot_rule_test::typed_bound_on_a_guarded_equation_follows_the_tag`
-/// owns the pair. The UNTAGGED half is untouched: `[simp]` is the enablement (WI-881),
+/// owns the pair. The UNTAGGED half is untouched: `@[simp]` is the enablement (WI-881),
 /// so nothing fires an untagged equation, guarded or not, and its bound would still be
 /// decoration. The measurement above stands as the record of what "the mechanism ran"
 /// is worth without a firing site behind it.

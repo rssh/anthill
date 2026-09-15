@@ -125,7 +125,7 @@ fn wi5r2xt_a_spliced_join_names_the_join_the_author_wrote() {
     );
 }
 
-/// The SAME call written WITHOUT the dot. The name is read off the redex the `[simp]` rule
+/// The SAME call written WITHOUT the dot. The name is read off the redex the `@[simp]` rule
 /// fired on, so both spellings answer `join` — a name recovered from the dot surface alone
 /// would pass the arm above and fail this one.
 #[test]
@@ -139,7 +139,7 @@ fn wi5r2xt_the_name_comes_from_the_redex_not_from_the_dot_spelling() {
 }
 
 /// GENERALITY — the arm that makes this not a fix for `join`. A macro declared HERE,
-/// splicing a runner declared HERE, through the same `[simp]` + `make_apply` route the
+/// splicing a runner declared HERE, through the same `@[simp]` + `make_apply` route the
 /// stdlib uses. Nothing in the typer, the expander or the reader names `join`, `join_run`
 /// or `conjoin_of`, and this fixture would keep failing if any of them did.
 ///
@@ -171,7 +171,7 @@ namespace test.wi5r2xt.own
   operation myMacro(a: NodeOccurrence, b: NodeOccurrence) -> NodeOccurrence =
     make_apply("test.wi5r2xt.own.myRun", cons(a, cons(b, nil())), a)
 
-  rule mySurface(?a, ?b) <=> myMacro(?a, ?b) [simp]
+  rule mySurface(?a, ?b) <=> myMacro(?a, ?b) @[simp]
 
   operation drive() -> Bool effects Error =
     let p = person_row
@@ -252,7 +252,7 @@ namespace test.wi5r2xt.front
   operation myMacro(a: NodeOccurrence, b: NodeOccurrence) -> NodeOccurrence =
     make_apply("test.wi5r2xt.back.merge2", cons(a, cons(b, nil())), a)
 
-  rule merge2(?a, ?b) <=> myMacro(?a, ?b) [simp]
+  rule merge2(?a, ?b) <=> myMacro(?a, ?b) @[simp]
 
   operation drive() -> Bool effects Error =
     let p = person_row

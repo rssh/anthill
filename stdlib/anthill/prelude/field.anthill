@@ -139,7 +139,7 @@ sort anthill.prelude.Field
   -- the rule's preconditions; a typer/resolver skips the rewrite when the
   -- guard is not (yet) known to hold.
   --
-  -- DELIBERATELY UNTAGGED (WI-20260820-8RJK8, which made a `[simp]` guarded equation
+  -- DELIBERATELY UNTAGGED (WI-20260820-8RJK8, which made a `@[simp]` guarded equation
   -- fire). The guard says when the equation is TRUE; the tag says whether to ORIENT it,
   -- and these three are not one decision. `div(?a, ?b) = mul(?a, recip(?b))` oriented
   -- left-to-right rewrites every division in the program into a reciprocal multiply —

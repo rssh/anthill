@@ -16,7 +16,7 @@ AN EQUATION SUBJECT IN A CONTRACT CLAUSE IS SILENT UNTIL SOMEBODY CALLS — the 
 MEASURED on 8K4RB's delivered tree, three programs:
 
   operation guarded(n: Int64) -> Int64
-    requires tauX          -- beside `rule tauX <=> 7 [simp]`
+    requires tauX          -- beside `rule tauX <=> 7 @[simp]`
     = n
 
   * NEVER CALLED: `anthill load` succeeds. 2836 facts, exit 0, no diagnostic.

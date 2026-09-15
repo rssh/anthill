@@ -2,7 +2,7 @@
 //!
 //! The EXPLICIT surface for type-directed rules: a `: T` annotation on a rule
 //! LHS pattern variable. Distinct from the IMPLICIT path (WI-292), where a
-//! `[simp]` rule inherits its enclosing sort's `requires`. Here the rule is a
+//! `@[simp]` rule inherits its enclosing sort's `requires`. Here the rule is a
 //! bare top-level relation in NO requires-sort, so the implicit guard is
 //! inapplicable — the explicit `?x: Summable` bound is the deciding guard.
 //!
@@ -21,7 +21,7 @@ use smallvec::SmallVec;
 
 /// A parametric spec sort `Summable` that `Int64` provides (`fact
 /// Summable[T = Int64]`) and `Bool` does not, plus an operation `keep[A]` in a
-/// PLAIN sort (`Lib`, no `requires`) with a `[simp]` rule carrying an explicit
+/// PLAIN sort (`Lib`, no `requires`) with a `@[simp]` rule carrying an explicit
 /// typed pattern `keep(?x: Summable, ?y) = ?x`. Because `Lib` declares no
 /// `requires`, the IMPLICIT guard (WI-292) is inapplicable: only the EXPLICIT
 /// per-variable bound `?x: Summable` gates firing. The annotation is stripped
@@ -45,7 +45,7 @@ namespace test.wi582
       keep(x: A, y: A) -> A
     }
     rule {
-      keep_id: keep(?x: Summable, ?y) <=> ?x [simp]
+      keep_id: keep(?x: Summable, ?y) <=> ?x @[simp]
     }
   end
 end
@@ -188,7 +188,7 @@ namespace test.wi582tp
       keep(x: A, y: A) -> A
     }
     rule {
-      keep_id: keep[T](?x: T, ?y) <=> ?x :- Summable[T] [simp]
+      keep_id: keep[T](?x: T, ?y) <=> ?x :- Summable[T] @[simp]
     }
   end
 end

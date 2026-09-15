@@ -197,7 +197,7 @@ enum BuildFrame<'t> {
     /// empty) or `?x.method(args)`. Emitted as `dot_apply(receiver,
     /// Ident(name), ...args)` so the receiver is preserved (the old
     /// `collect_field_access_segments` flatten dropped it) and the
-    /// `[simp]` dot rules can dispatch on the receiver's sort. Only
+    /// `@[simp]` dot rules can dispatch on the receiver's sort. Only
     /// `variable` receivers route here; `Foo.bar` keeps qualified-name
     /// flattening.
     DotApply {
@@ -298,7 +298,7 @@ pub(super) struct Converter<'a> {
     /// the parent's body in the consumer's SMT preamble.
     rule_var_scopes: HashMap<Symbol, HashMap<Symbol, VarId>>,
     /// WI-1129 (proposal 056 §2.3): every `...?args` REST PATTERN converted so far
-    /// that no `[simp]` rule head has claimed — `(the capture variable's TermId, its
+    /// that no `@[simp]` rule head has claimed — `(the capture variable's TermId, its
     /// span)`. Filled by [`Self::build_parse`]'s `FnTerm` arm (the earliest point the
     /// child's `TermId` exists), drained by [`Self::claim_rule_head_captures`], and
     /// whatever remains when the file finishes converting is refused by
@@ -547,7 +547,7 @@ impl<'a> Converter<'a> {
     ///
     /// AND ONE NAME IS DELIBERATELY NOT IN THIS SET: `dot_apply` is minted (WI-618)
     /// but is ALSO a spelling the author may write — the surface of a sort-scoped dot
-    /// rule, kernel-language.md §"a `[simp]` **dot rule**". Its two readers are gated
+    /// rule, kernel-language.md §"a `@[simp]` **dot rule**". Its two readers are gated
     /// on SHAPE, not provenance, and both say so at their site (`kb/load.rs`:
     /// `visit_load`'s `dot_apply` arm and `convert_term`'s re-encode).
     ///
@@ -1349,7 +1349,7 @@ impl<'a> Converter<'a> {
                         // that were learned the hard way. An earlier wording ended "…
                         // `Sort.m[…](receiver, …)` in an operation body", which is the
                         // exact defect WI-839 split `CallTypeArgsPosition` to avoid:
-                        // MEASURED on `rule dr: ?x.m[T = Int64](?y) <=> ?y [simp]`, it
+                        // MEASURED on `rule dr: ?x.m[T = Int64](?y) <=> ?y @[simp]`, it
                         // told a RULE HEAD to move into an operation body — not a move a
                         // rule head has, and the applicative rewrite it named would be
                         // refused there in turn (`CallTypeArgsPosition::RuleHead`). This
@@ -1477,7 +1477,7 @@ impl<'a> Converter<'a> {
                 // indexes and the resolver matches is `fix(?r, ?args)`, unchanged in
                 // shape — and only `rest_slots` remembers which slots were written
                 // with the marker. EVERY one is recorded, however malformed the call:
-                // "at most one, trailing, on a `[simp]` head" is
+                // "at most one, trailing, on a `@[simp]` head" is
                 // `claim_rule_head_captures`' verdict to reach, and it can only reach
                 // it over the markers that get this far.
                 "rest_arg" => {
@@ -1566,7 +1566,7 @@ impl<'a> Converter<'a> {
                 // WI-1129 (proposal 056 §2.3): the DOT form is not a capture position.
                 // The engine that reads a rule-head capture is
                 // `simp_rewrite::try_fire`, which fires on an `Apply` / `Constructor`
-                // redex; a `dot_apply`-headed `[simp]` rule is fired by the SEPARATE
+                // redex; a `dot_apply`-headed `@[simp]` rule is fired by the SEPARATE
                 // `typing::try_fire_dot_rule`, whose `match_dot_rule_lhs` has no fold
                 // step — so a `...` here would bind nothing. Refused at the marker
                 // rather than dropped: this arm's `_ => {}` neighbour would swallow
@@ -1575,7 +1575,7 @@ impl<'a> Converter<'a> {
                 "rest_arg" => {
                     self.err(
                         "a `...` variadic capture is not supported on a dot-form call \
-                         — write the `[simp]` rule head in applicative form (`rule \
+                         — write the `@[simp]` rule head in applicative form (`rule \
                          rename(?r, ...?cols) <=> …`), the form proposal 056 §2.3 defines",
                         child,
                     );
@@ -2294,7 +2294,7 @@ impl<'a> Converter<'a> {
                 // WI-1129 (proposal 056 §2.3): record this call's `...?args` capture
                 // variable, now that its `TermId` exists. UNCLAIMED by default —
                 // `claim_rule_head_captures` takes it off this list when the call is a
-                // `[simp]` rule head's LHS, and whatever is left when the file finishes
+                // `@[simp]` rule head's LHS, and whatever is left when the file finishes
                 // converting is a `...` written where nothing could ever read it
                 // (`refuse_stray_rest_args`). Loud over silent: the alternative is a
                 // marker that parses everywhere and means something in one place.
@@ -4164,7 +4164,7 @@ impl<'a> Converter<'a> {
 
         let meta = self.convert_meta_block(node);
 
-        // WI-1129: decided HERE — at the last point where the heads AND the `[simp]`
+        // WI-1129: decided HERE — at the last point where the heads AND the `@[simp]`
         // tag are both in hand. All three `Rule` producers call it (this one,
         // `convert_rule_entry`, `convert_proof_step`), so no rule shape gets a
         // hardcoded "no capture" that would let a marker through unread.
@@ -4187,12 +4187,12 @@ impl<'a> Converter<'a> {
     /// [`Self::pending_rest_args`].
     ///
     /// The sanctioned position is exactly one: the LAST POSITIONAL argument of a
-    /// `[simp]` equation head's LEFT-HAND SIDE. That is 056 §2.3's whole surface —
+    /// `@[simp]` equation head's LEFT-HAND SIDE. That is 056 §2.3's whole surface —
     /// the capture exists so a compile-time macro can read the leftover named
-    /// arguments AS SYNTAX, and the `[simp]` engine is the only thing that ever
+    /// arguments AS SYNTAX, and the `@[simp]` engine is the only thing that ever
     /// hands a rule head its argument occurrences. Everywhere else the marker has no
     /// reader, so it is refused: at a specific site here when the head is otherwise
-    /// a lowering (a second `...`, a non-trailing one, a rule with no `[simp]` tag),
+    /// a lowering (a second `...`, a non-trailing one, a rule with no `@[simp]` tag),
     /// and by [`Self::refuse_stray_rest_args`] for the positions this never inspects
     /// (an operation body, a rule body goal, the equation's RHS, a nested argument).
     ///
@@ -4204,7 +4204,7 @@ impl<'a> Converter<'a> {
     /// (WI-20260910-7NBZX, raised by /code-review). What this records is an index into
     /// the head's PARSE `pos_args`, while `Loader::rule_head_written_columns` splices
     /// each sigil-free parameter into that list as a column — so on a head that has
-    /// both, `rule f(?x, k: Int64, ...?args) <=> … [simp]`, the capture sits at parse
+    /// both, `rule f(?x, k: Int64, ...?args) <=> … @[simp]`, the capture sits at parse
     /// index 1 and at KB index 2.
     ///
     /// NOT REACHABLE TODAY, and the reason is a NEIGHBOUR'S guard rather than anything
@@ -4265,9 +4265,9 @@ impl<'a> Converter<'a> {
         let span = self.terms.span(pos_args[at]);
         if !is_simp {
             self.err_at_span(
-                "a `...` variadic capture in a rule head needs the `[simp]` tag: the capture \
+                "a `...` variadic capture in a rule head needs the `@[simp]` tag: the capture \
                  binds the leftover named arguments as an occurrence for a COMPILE-TIME macro \
-                 to read (proposal 056 §2.3), and only a `[simp]` equation is expanded at \
+                 to read (proposal 056 §2.3), and only a `@[simp]` equation is expanded at \
                  compile time",
                 span,
             );
@@ -4309,12 +4309,12 @@ impl<'a> Converter<'a> {
     /// `heads` and `meta`, never the body, so with `eq` gone from the defining list
     /// BOTH bodyless and GUARDED `=` heads stopped claiming their `...?args`:
     ///
-    /// * `rule f(?x, ...?args) = rhs [simp]` — refused by WI-888 anyway, but it died at
+    /// * `rule f(?x, ...?args) = rhs @[simp]` — refused by WI-888 anyway, but it died at
     ///   PARSE with `refuse_stray_rest_args` saying the capture "may appear only as the
-    ///   LAST positional argument of a `[simp]` rule head's left-hand side", which is
+    ///   LAST positional argument of a `@[simp]` rule head's left-hand side", which is
     ///   where the author had put it. `parse` failing means the load never runs, so the
     ///   substitute-naming refusal WI-888 owes the author was never reached.
-    /// * `rule f(?x, ...?args) = rhs :- guard [simp]` — a GUARDED equation, which
+    /// * `rule f(?x, ...?args) = rhs :- guard @[simp]` — a GUARDED equation, which
     ///   WI-888 deliberately leaves spelled `=`, became a hard parse error.
     ///
     /// Reading the family closes the `===` case too, which had the same defect before
@@ -4358,7 +4358,7 @@ impl<'a> Converter<'a> {
         for (_, span) in std::mem::take(&mut self.pending_rest_args) {
             self.err_at_span(
                 "a `...` variadic capture may appear only as the LAST positional argument of a \
-                 `[simp]` rule head's left-hand side (proposal 056 §2.3) — an operation's own \
+                 `@[simp]` rule head's left-hand side (proposal 056 §2.3) — an operation's own \
                  capture parameter is written `...name: R` in its declaration (§2.1)",
                 span,
             );
@@ -4512,11 +4512,6 @@ impl<'a> Converter<'a> {
         let mut requires = Vec::new();
         let mut ensures = Vec::new();
         let mut effects = Vec::new();
-        // WI-087: entries from `meta [...]` clauses. Accumulated across clauses
-        // (like effects / requires / ensures in this same loop) so repeated
-        // `meta` clauses merge rather than the last silently winning. Falls back
-        // below to a trailing bare meta_block when no `meta` clause is present.
-        let mut meta_entries: Vec<MetaEntry> = Vec::new();
 
         for clause in self.children_by_kind(node, "operation_clause") {
             let mut cursor = clause.walk();
@@ -4540,28 +4535,17 @@ impl<'a> Converter<'a> {
                             self.convert_effect_into(type_child, &mut effects);
                         }
                     }
-                    // WI-087: `meta [Marker, Key: value]` — the meta_block is
-                    // nested one level under the meta_clause.
-                    "meta_clause" => {
-                        if let Some(mb) = self.convert_meta_block(child) {
-                            meta_entries.extend(mb.entries);
-                        }
-                    }
                     _ => {}
                 }
             }
         }
 
         let body = self.field(node, "body").map(|b| self.convert_expr_body(b));
-        // Prefer the accumulated `meta` clauses; otherwise fall back to a trailing
-        // bare meta_block (a direct child of the operation node).
-        let meta = if meta_entries.is_empty() {
-            self.convert_meta_block(node)
-        } else {
-            Some(MetaBlock {
-                entries: meta_entries,
-            })
-        };
+        // WI-087 / WI-20260915-G9EA9: the operation's ONE block, trailing the
+        // declaration like every other declaration's. The `meta [...]` clause is gone,
+        // and with it the two-spelling merge that let a clause silently shadow a
+        // trailing block.
+        let meta = self.convert_meta_block(node);
 
         Some(Operation {
             visibility,
@@ -5375,8 +5359,8 @@ impl<'a> Converter<'a> {
         // `load_rule` — `encode_proof_step` (kb/load.rs) reads `heads` and encodes a
         // `ProofStep` term — so nothing would ever read a capture recorded here. Not
         // claiming is what makes `refuse_stray_rest_args` report the marker; calling
-        // `claim_rule_head_captures` would CONSUME it, and a `[simp]`-tagged step
-        // written `step: f(?x, ...?args) <=> g(?x, ?args) [simp]` would load clean with
+        // `claim_rule_head_captures` would CONSUME it, and a `@[simp]`-tagged step
+        // written `step: f(?x, ...?args) <=> g(?x, ?args) @[simp]` would load clean with
         // the rest pattern silently degraded to an ordinary positional argument
         // (MEASURED, found by `/code-review`).
         let head_captures = vec![None; heads.len()];
@@ -5714,7 +5698,7 @@ fn is_term_kind(kind: &str) -> bool {
 /// bracketed aggregates. Folded into [`is_term_kind`]; read on its own by
 /// [`Converter::reject_literal_conclusion`] (WI-893). The whole family, not
 /// just the `collection_literal` a dropped `meta_block` re-parsed as: the argument
-/// that refuses it does not distinguish `[simp]` from `42`.
+/// that refuses it does not distinguish `@[simp]` from `42`.
 fn is_data_literal_kind(kind: &str) -> bool {
     matches!(
         kind,

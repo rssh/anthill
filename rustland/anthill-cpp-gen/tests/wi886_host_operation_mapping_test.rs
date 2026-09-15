@@ -141,7 +141,7 @@ fn int64_carrier_operations_lower_from_the_binding() {
 
 /// A nullary mapping is its template verbatim, and it must reach BOTH call forms —
 /// `pi` (a `var_ref`) and `pi()` (a zero-argument apply). WI-881 measured that
-/// distinction the hard way on `tau`: a `[simp]` head is an APPLICATION, so it
+/// distinction the hard way on `tau`: a `@[simp]` head is an APPLICATION, so it
 /// rewrote `tau()` and left the bare spelling dead. A backend that lowered only one
 /// of them would have the same half-working shape.
 #[test]

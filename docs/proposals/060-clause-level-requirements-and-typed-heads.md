@@ -7,7 +7,7 @@ heads remain explicitly unimplemented.
 
 ## Status: Draft (2026-08-07). The **language** half of the requirement channel (WI-1040) and of typed relational heads (WI-742). Mechanics — goal encoding, crossings, σ-carrier — are owned by [`../design/requirement-channel.md`](../design/requirement-channel.md); this proposal owns the surface and its rules. The staging invariant is assumed throughout: after the typing pass, run time performs no typing operations (channel doc §2.1).
 
-## Relates to: 058 (§3.3 bracket selection, §3.4 named slots, §3.8 conditional provisions, §3.10 instances are never chosen at run time), 052 (relation column types — the consumer of typed heads), 043 / WI-582 (typed patterns on `[simp]` heads), WI-300 (the delivered `requires(X)` guard tier), [`../design/constrained-term-substrate.md`](../design/constrained-term-substrate.md) (the desugaring `head(…) :- conforms(typeof(?x), T), body` — meaning this proposal turns into code), 055 (types in value position).
+## Relates to: 058 (§3.3 bracket selection, §3.4 named slots, §3.8 conditional provisions, §3.10 instances are never chosen at run time), 052 (relation column types — the consumer of typed heads), 043 / WI-582 (typed patterns on `@[simp]` heads), WI-300 (the delivered `requires(X)` guard tier), [`../design/constrained-term-substrate.md`](../design/constrained-term-substrate.md) (the desugaring `head(…) :- conforms(typeof(?x), T), body` — meaning this proposal turns into code), 055 (types in value position).
 
 ## The rule
 
@@ -69,7 +69,7 @@ p(?x, ?y) :- ?d = require[Eq[T]], f(?x, ?d)       -- named; passed by hand
 
 ## 2. `?x: T` on a relational head — the WI-742 answer
 
-The WI-582 restriction (`?x: T` only on `[simp]`/`[unfold]` heads) is enforcement
+The WI-582 restriction (`?x: T` only on `@[simp]`/`@[unfold]` heads) is enforcement
 coverage, not semantics. Lifted by this rule: on a relational head the annotation
 compiles to a prepended `domain(?x, T)` goal — the head itself stays structurally
 bare, so the discrimination tree indexes it identically.
@@ -335,4 +335,4 @@ row cannot (`Unresolvable`/`Ambiguous`, WI-855 — the 058 §3.3 named-instance 
 - The dictionary never becomes a head argument (rule arity, indexing, 052 citation).
 - No instance *selection* surface in rule bodies (058 §3.3).
 - No change to sort/operation-level `requires` declarations or 058 §3.4 named slots.
-- The `[simp]`-tagged equational path (WI-582 match-time bounds) is unchanged.
+- The `@[simp]`-tagged equational path (WI-582 match-time bounds) is unchanged.

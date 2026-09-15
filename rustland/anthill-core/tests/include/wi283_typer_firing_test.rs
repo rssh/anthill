@@ -1,9 +1,9 @@
-//! WI-283 — type-directed `[simp]` firing woven into the typer.
+//! WI-283 — type-directed `@[simp]` firing woven into the typer.
 //!
 //! Firing moved from the standalone pre-typer `simp_rewrite::run` pass into
 //! the typer's `build_type` walk: as the typer types an Apply/Constructor
 //! node (children typed first), it reassembles the node from its children's
-//! (possibly-rewritten) `TypeResult.node`s, fires a matching `[simp]` rule,
+//! (possibly-rewritten) `TypeResult.node`s, fires a matching `@[simp]` rule,
 //! and re-types the RHS to fixpoint. The rewrite propagates up via
 //! `TypeResult.node`. These tests pin the firing behaviour at the typer
 //! call site (`type_check_node`), reusing the `add_zero` rule shape; the
@@ -40,7 +40,7 @@ fn occ(e: Expr) -> Rc<NodeOccurrence> {
     NodeOccurrence::new_expr(e, span(), None)
 }
 
-/// Assert the `[simp]` equation `add(?x, 0) = ?x` (ground-headed, Global
+/// Assert the `@[simp]` equation `add(?x, 0) = ?x` (ground-headed, Global
 /// vars — the minimal shape; mirrors `simp_rewrite`'s test helper).
 /// Returns the `add` symbol.
 fn assert_add_zero(kb: &mut KnowledgeBase) -> Symbol {
@@ -74,7 +74,7 @@ fn assert_add_zero(kb: &mut KnowledgeBase) -> Symbol {
     add
 }
 
-/// Assert the *non-terminating* `[simp]` equation `add(?a, ?b) = add(?b, ?a)`
+/// Assert the *non-terminating* `@[simp]` equation `add(?a, ?b) = add(?b, ?a)`
 /// (a commutative law — the design's canonical "must stay bare or it loops"
 /// example). Returns the `add` symbol.
 fn assert_add_comm(kb: &mut KnowledgeBase) -> Symbol {
@@ -117,7 +117,7 @@ fn assert_add_comm(kb: &mut KnowledgeBase) -> Symbol {
 
 #[test]
 fn nonterminating_simp_rule_is_fuel_bounded_not_a_stack_overflow() {
-    // A commutative `[simp]` rule loops forever (add(7,8) → add(8,7) → …).
+    // A commutative `@[simp]` rule loops forever (add(7,8) → add(8,7) → …).
     // The typer firing must bottom out at `fuel == 0` and return — exactly
     // as the fuel-bounded `simp_rewrite::run` did — rather than recursing
     // the host stack to overflow. Reaching the assertion at all proves
@@ -140,7 +140,7 @@ fn nonterminating_simp_rule_is_fuel_bounded_not_a_stack_overflow() {
     let r = type_check_node(&mut kb, &env, &body, None);
     assert!(
         r.is_err(),
-        "a non-terminating [simp] rule must bottom out at fuel 0 leaving the \
+        "a non-terminating @[simp] rule must bottom out at fuel 0 leaving the \
          (untypeable) redex, not loop or crash",
     );
 }
@@ -260,7 +260,7 @@ fn typer_rewrites_redex_under_an_if_branch() {
 
 #[test]
 fn typer_and_resolver_phases_agree() {
-    // Phase agreement (proposal 043 §4.7): the same `[simp]` rule reduces
+    // Phase agreement (proposal 043 §4.7): the same `@[simp]` rule reduces
     // add(7, 0) → 7 both in the resolver (term, via `simplify`) and in the
     // typer (occurrence, via `type_check_node`).
     let mut kb = fresh_kb();

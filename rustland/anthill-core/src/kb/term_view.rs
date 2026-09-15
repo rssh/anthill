@@ -7,7 +7,7 @@
 //!
 //! WI-276: `Value::Node` (a reflect `Expr` occurrence) is now *structural*
 //! here — its `head`/`pos_arg`/`named_arg` expose the underlying `Expr` so a
-//! `[simp]` rule LHS can match against expression occurrences (the substrate
+//! `@[simp]` rule LHS can match against expression occurrences (the substrate
 //! for the typer-phase rewriting engine, proposal 043). Previously it was
 //! `Opaque`.
 //!
@@ -111,7 +111,7 @@ impl ViewHead {
 /// `Fn` of a name with no TYPE reading is stored as `Ref`) and removed the second HEAD
 /// here, so a bare name and a nullary application are one term AND one head. That is what
 /// makes `:- holds` reach `rule holds()`, `:- flag` route through WI-580's relational
-/// hook, and `rule tau <=> …` fire as a `[simp]` law — each of which read the `Functor`
+/// hook, and `rule tau <=> …` fire as a `@[simp]` law — each of which read the `Functor`
 /// head and skipped `Ref`.
 ///
 /// KEPT AS A FUNCTION, though it is now a plain constructor: it is the one build site the
@@ -197,7 +197,7 @@ impl ViewItem<'_> {
 //
 // `Value::Node` / `ViewItem::Node` expose a reflect `Expr` occurrence to the
 // matcher. The Apply / Constructor / DotApply / ListLit / leaf forms are
-// structural — those a `[simp]` rule LHS matches — as are `Lambda` and the
+// structural — those a `@[simp]` rule LHS matches — as are `Lambda` and the
 // Pattern-kind occurrences it binds (WI-814: `head()` also backs IDENTITY and
 // GoalKey fingerprints, where `Opaque` is a false negative, and WI-550's
 // globally-unique binder gensyms make descending under the binder capture-free).
@@ -503,7 +503,7 @@ fn apply_type_args_child(
 /// literal). WI-683: a `[…]` list-literal occurrence reads STRUCTURALLY as its
 /// `ListLiteral(e…)` term twin (`occurrence_to_term` builds exactly that
 /// `Fn{anthill.reflect.ListLiteral, pos_args: e…}`), so a carrier-neutral reader
-/// — the bounded-quant collection walk, a `[simp]` LHS — walks a list literal in
+/// — the bounded-quant collection walk, a `@[simp]` LHS — walks a list literal in
 /// ANY carrier, instead of the former `Opaque` collapse that forced a lowering.
 fn list_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol(dt::qualified(dt::LIST_LITERAL))
@@ -649,7 +649,7 @@ fn expr_wrapped_shape_inner(expr: &Expr) -> Option<(&'static str, &'static [&'st
         // WI-814 — `LoadBuildFrame::Lambda`.
         Expr::Lambda { .. } => (dt::qualified(dt::LAMBDA_EXPR), &["param", "body"]),
         // WI-814 — `LoadBuildFrame::IfExpr`. Binds nothing at all; it was opaque
-        // only because no `[simp]` LHS had ever needed it.
+        // only because no `@[simp]` LHS had ever needed it.
         Expr::If { .. } => (
             dt::qualified(dt::IF_EXPR),
             &["cond", "then_branch", "else_branch"],

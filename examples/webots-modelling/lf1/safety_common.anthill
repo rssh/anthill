@@ -350,7 +350,7 @@ namespace anthill.examples.lf1.safety.common
   --   3. The transition rule p(k+1) = p(k) + v(k)·T_c (real_pose_at).
   --
   -- (1) and (2) are genuinely axiomatic; (3) is the existing source
-  -- rule (real_pose_at's transition). Each axiom is named, [hint]-
+  -- rule (real_pose_at's transition). Each axiom is named, @[hint]-
   -- tagged so it auto-applies in proofs in this scope, and asserted
   -- via `by trust(...)` so `anthill check --report-trust` surfaces
   -- it. Future: discharge (1) in dReal / KeYmaera X; (2) remains
@@ -405,7 +405,7 @@ namespace anthill.examples.lf1.safety.common
   -- lemma's truth follows from triangle_inequality +
   -- velocity_envelope + the transition rule (the latter being
   -- definitional in source). triangle_inequality and
-  -- velocity_envelope are themselves [hint]-tagged TrustedAxioms,
+  -- velocity_envelope are themselves @[hint]-tagged TrustedAxioms,
   -- so `anthill check --report-trust` surfaces the full chain.
   rule step_distance_lemma:
     distance_at_step(?k, ?d_prev),

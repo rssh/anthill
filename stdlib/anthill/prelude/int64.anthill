@@ -50,7 +50,7 @@ sort anthill.prelude.Int64
   -- so an unrealized body-less operation is a load error here now).
   --
   -- A HOST MAPPING AND NOT AN EQUATION, though `minValue() <=> ...` would be exact
-  -- for a fixed carrier: a `[simp]` head is an APPLICATION, so it rewrites
+  -- for a fixed carrier: a `@[simp]` head is an APPLICATION, so it rewrites
   -- `minValue()` and not the BARE `minValue` that `in_bounds` just below writes.
   -- MEASURED on `Float.tau`, which is why the three float constants are host-backed
   -- too. Nullary operations want dispatch, not inlining.

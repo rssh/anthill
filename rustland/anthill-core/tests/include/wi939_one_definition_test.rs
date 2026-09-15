@@ -231,7 +231,7 @@ namespace wi939d.law
   sort Box
     entity box(n: Int64)
     operation twice(b: Box) -> Int64 = 2
-    rule twice(box(n: 0)) <=> 0 [simp]
+    rule twice(box(n: 0)) <=> 0 @[simp]
   end
 end
 "#,

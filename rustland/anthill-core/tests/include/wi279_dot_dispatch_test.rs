@@ -1,4 +1,4 @@
-//! WI-279 — dot dispatch as a client of the type-directed `[simp]` engine.
+//! WI-279 — dot dispatch as a client of the type-directed `@[simp]` engine.
 //!
 //! A value-receiver dot form `?x.method(args)` / `?x.field` reaches the typer
 //! as an `Expr::DotApply` (a pre-dispatch form). The typer dispatches it via
@@ -216,14 +216,14 @@ fn dot_no_match_reports_clear_error_at_span() {
 #[test]
 fn dot_rule_override_enables_dispatch() {
     // `special` is NOT an operation on Box, so the default fallback would fail
-    // (no-match). A sort-specific [simp] dot rule rewrites `?b.special(x)` to
+    // (no-match). A sort-specific @[simp] dot rule rewrites `?b.special(x)` to
     // `regular(b, x)` — so the body type-checks ONLY IF the override fires.
     let src = r#"
         namespace wi279.override
           sort Box
             entity box(value: Int64)
             operation regular(b: Box, x: Int64) -> Int64 = x
-            rule dr: dot_apply(?e, special, ?x) <=> regular(?e, ?x) [simp]
+            rule dr: dot_apply(?e, special, ?x) <=> regular(?e, ?x) @[simp]
             operation use_override(b: Box) -> Int64 = ?b.special(7)
           end
         end
@@ -231,7 +231,7 @@ fn dot_rule_override_enables_dispatch() {
     let (_kb, errs) = load_capturing_errors(src);
     assert!(
         errs.is_empty(),
-        "expected the [simp] dot rule to rewrite ?b.special(7) -> regular(b, 7) \
+        "expected the @[simp] dot rule to rewrite ?b.special(7) -> regular(b, 7) \
          (no `special` op exists, so the body type-checks only if the rule fired); got:\n{}",
         errors_text(&errs)
     );
@@ -248,7 +248,7 @@ fn dot_rule_override_is_sort_scoped() {
           sort Box
             entity box(value: Int64)
             operation regular(b: Box, x: Int64) -> Int64 = x
-            rule dr: dot_apply(?e, special, ?x) <=> regular(?e, ?x) [simp]
+            rule dr: dot_apply(?e, special, ?x) <=> regular(?e, ?x) @[simp]
           end
           sort Other
             entity other(tag: Int64)
@@ -278,7 +278,7 @@ fn dot_rule_nonlinear_lhs_does_not_fire_on_distinct_args() {
           sort Box
             entity box(value: Int64)
             operation regular(b: Box) -> Int64 = 0
-            rule dr: dot_apply(?e, special, ?e) <=> regular(?e) [simp]
+            rule dr: dot_apply(?e, special, ?e) <=> regular(?e) @[simp]
             operation use_nl(b: Box) -> Int64 = ?b.special(7)
           end
         end

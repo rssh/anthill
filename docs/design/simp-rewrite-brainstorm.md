@@ -4,7 +4,7 @@
 
 ## Relates to
 
-- **WI-139 (delivered)** — equational-rule attributes `[simp]`, `[unfold]`, `[hint]` already exist and are tested (`anthill-core/tests/include/equational_attr_test.rs`). The dot proposal builds on this substrate.
+- **WI-139 (delivered)** — equational-rule attributes `@[simp]`, `@[unfold]`, `@[hint]` already exist and are tested (`anthill-core/tests/include/equational_attr_test.rs`). The dot proposal builds on this substrate.
 - **Proposal 025.1** (Z3 tactic DSL) — `§"Anthill-rule-aware simplification (deferred)"`. Defers the *Z3-side translation* of simp-tagged rules and the *scope semantics* (default simp set, transitive `requires`, etc.), not the attribute itself.
 - `operation-call-model.md` — operations and dispatch.
 - `occurrence-as-value-type.md` — NodeOccurrence design; the substrate for expression-position content and macro-introduced occurrences.
@@ -44,49 +44,49 @@ Equational rules are detected by the loader (`kb::is_equation` checks for head f
 WI-139 added attribute syntax that gates resolver participation:
 
 ```
-rule my_def: foo(?a) = bar(?a)         [simp]      // indexed in by_functor → goal resolution
+rule my_def: foo(?a) = bar(?a)         @[simp]      // indexed in by_functor → goal resolution
 rule comm: comm(?a, ?b) = comm(?b, ?a)              // bare → cite-required, NOT indexed
-rule expand: g(?a) = h(?a)              [unfold]    // indexed (parallel to [simp])
-rule lemma: p(?x) = q(?x)               [hint]      // parses; SMT-side semantics deferred in v0
+rule expand: g(?a) = h(?a)              @[unfold]    // indexed (parallel to @[simp])
+rule lemma: p(?x) = q(?x)               @[hint]      // parses; SMT-side semantics deferred in v0
 ```
 
-So the annotation question 025.1 was deferring — "how do users mark which equations are directionally rewritable?" — is **already answered for the resolver phase**. `[simp]` and `[unfold]` exist; both put a rule into `by_functor` so SLD goal resolution can apply it directionally.
+So the annotation question 025.1 was deferring — "how do users mark which equations are directionally rewritable?" — is **already answered for the resolver phase**. `@[simp]` and `@[unfold]` exist; both put a rule into `by_functor` so SLD goal resolution can apply it directionally.
 
 **What 025.1 still defers is downstream:**
 - the *Z3 translation* of simp-tagged rules (when does `tactic: simplify` see them?),
 - the *scope semantics* (default simp set, named sets, transitive `requires`),
 - and, by extension, any *other phase* where simp-tagged rules ought to fire.
 
-**The dot proposal's contribution is precisely one of those other phases: applying simp-tagged rules to expression-position content as the typer walks operation bodies.** Today, `[simp]` makes equations available to the resolver. The dot proposal needs them to *also* fire during typer-driven rewriting, turning `?x.foo(?y)` into `foo(?x, ?y)`. That's the new firing site; the attribute already exists. (Why it's interleaved with typing rather than a standalone pre-pass: open question 10.)
+**The dot proposal's contribution is precisely one of those other phases: applying simp-tagged rules to expression-position content as the typer walks operation bodies.** Today, `@[simp]` makes equations available to the resolver. The dot proposal needs them to *also* fire during typer-driven rewriting, turning `?x.foo(?y)` into `foo(?x, ?y)`. That's the new firing site; the attribute already exists. (Why it's interleaved with typing rather than a standalone pre-pass: open question 10.)
 
 ## What this means concretely
 
 **The parser node.** Surface `.` syntax does **not** appear in the rules — you can't define `.` using `.`. Instead the parser lowers `x.foo(y)` to a plain `Expr` node `dot_apply(receiver: x, name: foo, args: [y])`, in the same spirit as `[a, b, c]` lowering to `ListLiteral(a, b, c)` today (`kernel-language.md`). The name follows the `reflect.anthill` `Expr`-constructor convention — snake_case, sibling to `apply` / `ho_apply` (the literals like `ListLiteral` are PascalCase because they're a separate, term-shared category; a dot-call is purely an expression form). The simp rules match that functor. The name slot is a `Symbol`, the receiver and args are expressions. This must be a *distinct* node, not desugared to a bare `apply(foo, [x, y])` at parse time — `apply`'s functor resolves through lexical scope, which would reintroduce the import requirement that "Resolution" eliminates. `dot_apply` carries the "resolve via the receiver's sort" intent that the rule acts on.
 
-The dot-expansion rules are then ordinary `rule lhs = rhs` forms over `dot_apply`, tagged with the existing WI-139 `[simp]` attribute (decided in open question 1 — reuse `[simp]`). The guards below are shown in simplified form; the default rule's guard is refined under "Resolution" so the RHS emits a *qualified* operation reference:
+The dot-expansion rules are then ordinary `rule lhs = rhs` forms over `dot_apply`, tagged with the existing WI-139 `@[simp]` attribute (decided in open question 1 — reuse `@[simp]`). The guards below are shown in simplified form; the default rule's guard is refined under "Resolution" so the RHS emits a *qualified* operation reference:
 
 ```
 rule default_dot: dot_apply(?x, ?name, ?args) = ?name(?x, ?args)
   :- operation_exists(typeof(?x), ?name)            -- refined to find_operation_on_sort; see "Resolution"
-  [simp]
+  @[simp]
 
 rule either_delegate: dot_apply(?e, ?name, ?args) = dot_apply(eliminate(?e), ?name, ?args)
   :- typeof(?e) = Either[L = ?L, R = ?R],
      not method_on_self(Either, ?name)
   with effect ?L
-  [simp]
+  @[simp]
 
 rule querybuilder_dot: dot_apply(?q, ?name, ?args) = nested_query(?q, ?name, ?args)
   :- typeof(?q) = QueryBuilder[Domain = ?D],
      entity_of(?name, ?D)
-  [simp]
+  @[simp]
 ```
 
 Note `either_delegate`'s RHS re-emits a `dot_apply` on the eliminated value — delegation is just "rewrite the dot-call onto the inner value," and the result re-fires with receiver type `R`. Wrapper-own-wins falls out of guard exclusivity: `default_dot` fires iff the wrapper has its own `?name`, `either_delegate` iff it doesn't.
 
 What changes:
 
-- Simp-tagged rules gain a second firing site: besides the SLD resolver, they apply during **typer-driven rewriting** of expression-position content (NodeOccurrence trees). Today `[simp]` only enters `by_functor` for SLD resolution; this proposal extends its meaning to "also fire while the typer walks expression bodies." (Why interleaved with typing, not a standalone pre-pass: open question 10.)
+- Simp-tagged rules gain a second firing site: besides the SLD resolver, they apply during **typer-driven rewriting** of expression-position content (NodeOccurrence trees). Today `@[simp]` only enters `by_functor` for SLD resolution; this proposal extends its meaning to "also fire while the typer walks expression bodies." (Why interleaved with typing, not a standalone pre-pass: open question 10.)
 - Rewriting is **bottom-up**: the typer classifies children first, fires applicable rules on the parent, then types the result — repeating to fixpoint.
 - Each rewrite produces a fresh `NodeOccurrence` with `origin: Synthesized { from, by }` pointing back to the source.
 - The typer type-checks the post-rewrite form; error diagnostics walk the `Synthesized` chain to report at source spans.
@@ -94,7 +94,7 @@ What changes:
 What does *not* change:
 
 - The kernel doesn't grow a new "macro" concept.
-- The `[simp]` / `[unfold]` / `[hint]` attribute syntax stays as WI-139 defined it.
+- The `@[simp]` / `@[unfold]` / `@[hint]` attribute syntax stays as WI-139 defined it.
 - Equational rules continue to participate in the SLD resolver's equational fallback as today; load-time application is *additional*, not a replacement.
 - The rule body, head, and matching machinery are unchanged.
 
@@ -126,11 +126,11 @@ So the method-call case `?x.method(args)` on a *value* receiver is the actual ga
 ```
 rule dot_field:   dot_apply(?x, ?name, []) = field_access(?x, ?name)
   :- is_entity(typeof(?x)), has_field(typeof(?x), ?name)
-  [simp]
+  @[simp]
 
 rule default_dot: dot_apply(?x, ?name, ?args) = ?op(?x, ?args)
   :- find_operation_on_sort(typeof(?x), ?name, ?op)
-  [simp]
+  @[simp]
 ```
 
 - `dot_field` fires only when the receiver is an entity, the selector is a declared field, **and** there are no args → rewrites to the existing `field_access` builtin (projection). `has_field` / `is_entity` are answerable from the `entity_fields` registry.
@@ -144,19 +144,19 @@ So `field_access` stops being a parser-level decision and becomes the *target* o
 
 **Orthogonal split, kept separate:** the entity-field rule handles *value* receivers. The existing *sort/namespace* receiver case (`Foo.bar` → qualified name) stays in `convert.rs` — the parser only sees syntactic kind (`variable` → value → `dot_apply`; `identifier` → maybe sort, resolved later). That is a different disambiguation from the entity-field one.
 
-## What firing a `[simp]` rule does
+## What firing a `@[simp]` rule does
 
-**`[simp]` tags rules, never operations.** There is no special calling convention on operations — they stay ordinary. The "macro" behaviour lives entirely in two rule-level mechanics:
+**`@[simp]` tags rules, never operations.** There is no special calling convention on operations — they stay ordinary. The "macro" behaviour lives entirely in two rule-level mechanics:
 
-1. **Rule matching binds source occurrences to rule variables.** When a `[simp]` rule matches `dot_apply(?x, ?name, ?args)` against an operation body, `?x` binds to the `Value::Node(Rc<NodeOccurrence>)` at that position — a reflect `Expr` value, not an evaluated runtime value. (This is the substrate from "What a simp rule operates on.")
+1. **Rule matching binds source occurrences to rule variables.** When a `@[simp]` rule matches `dot_apply(?x, ?name, ?args)` against an operation body, `?x` binds to the `Value::Node(Rc<NodeOccurrence>)` at that position — a reflect `Expr` value, not an evaluated runtime value. (This is the substrate from "What a simp rule operates on.")
 2. **Firing the rule reduces its RHS to normal form** at compile time, and the result replaces the matched node.
 
 Reducing the RHS is one uniform operation that covers both "build code" and "compute code":
 
 - **Reflect `Expr` constructors** (`apply`, `add`, `lambda`, `dot_apply`, …) are **irreducible** — they *are* the residual code. `apply(?op, cons(?x, ?args))` reduces to an apply-node and stops. This is how a rule emits a code template.
-- **Operations over `Expr`** (e.g. `derive(e: Expr, x: Symbol) -> Expr`) **reduce via their own definitions** — running arbitrary compile-time computation and returning an `Expr`. This is how a rule delegates to a *function-macro*. Such operations are **plain operations, not `[simp]`-tagged**; they get reduced simply because they are reached while normalizing a `[simp]` rule's RHS.
+- **Operations over `Expr`** (e.g. `derive(e: Expr, x: Symbol) -> Expr`) **reduce via their own definitions** — running arbitrary compile-time computation and returning an `Expr`. This is how a rule delegates to a *function-macro*. Such operations are **plain operations, not `@[simp]`-tagged**; they get reduced simply because they are reached while normalizing a `@[simp]` rule's RHS.
 
-So a function-macro in the Scala `Expr[X] -> Expr[Y]` sense is just an operation over the reflect `Expr` sort, called from a rule's RHS. The `Expr` sort is the macro interface; rules are the entry points; Expr-operations are helpers. There is no second macro mechanism and no operation-level `[simp]`.
+So a function-macro in the Scala `Expr[X] -> Expr[Y]` sense is just an operation over the reflect `Expr` sort, called from a rule's RHS. The `Expr` sort is the macro interface; rules are the entry points; Expr-operations are helpers. There is no second macro mechanism and no operation-level `@[simp]`.
 
 **Two readings of an operation reached in an RHS** (this is where Point A's STUCK applies):
 - An operation that **reads `Expr` structure** (`derive` pattern-matching `add(?a, ?b)`) reduces fine — it consumes syntax, never needs a runtime value.
@@ -183,7 +183,7 @@ So the three intuitions are all simultaneously true and reconciled by the reflec
 | "Arguments should be untyped" | The binding is a syntax object; you get a type only when you ask. |
 | "Represented as reflect call" | This is the mechanism that makes both of the above true at once. |
 
-It also unifies with rule matching (see "What firing a `[simp]` rule does"): a rule variable binds to `Value::Node`, and a `Value::Node` *is* a reflect `Expr`. "Bound to source, not evaluated" and "bound to a reflect value" are the same statement — and it's a property of *rule matching*, not of any operation.
+It also unifies with rule matching (see "What firing a `@[simp]` rule does"): a rule variable binds to `Value::Node`, and a `Value::Node` *is* a reflect `Expr`. "Bound to source, not evaluated" and "bound to a reflect value" are the same statement — and it's a property of *rule matching*, not of any operation.
 
 **Carried-over subterms keep their classifications.** When `?x.map(?f)` rewrites to `map(?x, ?f)`, `?x` retains its type — correct, because a value's sort is intrinsic to it, not to its syntactic position. The typer then **type-checks** (not necessarily re-infers) the constructed output: new nodes get inferred; reused subterms keep their types but are verified against their new positions. A reused subterm whose type conflicts with its new context is a genuine type error, reported via the `Synthesized` chain to source.
 
@@ -203,7 +203,7 @@ For the dot rule to honor this, its guard must **resolve and bind the qualified 
 ```
 rule default_dot: dot_apply(?x, ?name, ?args) = ?op(?x, ?args)
   :- find_operation_on_sort(typeof(?x), ?name, ?op)   -- ?op = anthill.prelude.List.map (qualified)
-  [simp]
+  @[simp]
 ```
 
 `?op` comes back fully qualified; the RHS emits a resolved `Ref` (riding the existing Ident→Ref promotion), so no import of `map` ever happens.
@@ -222,10 +222,10 @@ Tier 1 covers the common case (stdlib methods) with no import; tier 2 matches ev
 ```
 rule default_dot: dot_apply(?x, ?name, ?args) = ?op(?x, ?args)
   :- find_operation_on_sort(typeof(?x), ?name, ?op)   -- ?op fully qualified; see "Resolution"
-  [simp]
+  @[simp]
 ```
 
-`?xs.map(?f)` parses to `dot_apply(?xs, map, [?f])` and rewrites to `map(?xs, ?f)` — with `map` resolved to its qualified name via the receiver's sort, so no import is needed (see "Resolution: type-directed, not scope-directed"). No new mechanism; just an equation tagged with the existing `[simp]` attribute, fired during typer-driven rewriting.
+`?xs.map(?f)` parses to `dot_apply(?xs, map, [?f])` and rewrites to `map(?xs, ?f)` — with `map` resolved to its qualified name via the receiver's sort, so no import is needed (see "Resolution: type-directed, not scope-directed"). No new mechanism; just an equation tagged with the existing `@[simp]` attribute, fired during typer-driven rewriting.
 
 ### 2. Wrapper delegation
 
@@ -244,7 +244,7 @@ rule either_delegate: dot_apply(?e, ?name, ?args) = dot_apply(eliminate(?e), ?na
   :- typeof(?e) = Either[L = ?L, R = ?R],
      not method_on_self(Either, ?name)
   with effect ?L
-  [simp]
+  @[simp]
 ```
 
 The RHS re-emits a `dot_apply` on the eliminated value, so it re-fires with receiver type `R` and resolves `?name` on `R`'s sort. Possible future sugar (**not** existing syntax — proposed for ergonomics) that would desugar to the rule above:
@@ -281,7 +281,7 @@ Sorts that need arbitrary dispatch (KB navigation, term-with-substitution, tempo
 rule querybuilder_dot: dot_apply(?q, ?name, ?args) = nested_query(?q, ?name, ?args)
   :- typeof(?q) = QueryBuilder[Domain = ?D],
      entity_of(?name, ?D)
-  [simp]
+  @[simp]
 ```
 
 Same machinery as patterns 1 and 2, just a less constrained rule body.
@@ -307,28 +307,28 @@ end
 -- ?xc to ?x's literal value when ?x constant-folds, and STUCKs (→ residualize)
 -- otherwise. At runtime it is identity. compare then sees only values.
 rule min_le: min(?x, ?y) = ?x
-  :- constant_fold(?xc, ?x), constant_fold(?yc, ?y), compare(?xc, ?yc) <= 0   [simp]
+  :- constant_fold(?xc, ?x), constant_fold(?yc, ?y), compare(?xc, ?yc) <= 0   @[simp]
 rule min_gt: min(?x, ?y) = ?y
-  :- constant_fold(?xc, ?x), constant_fold(?yc, ?y), compare(?xc, ?yc) >  0   [simp]
+  :- constant_fold(?xc, ?x), constant_fold(?yc, ?y), compare(?xc, ?yc) >  0   @[simp]
 
 -- Algebraic laws (structural — no value needed, so no constant_fold)
-rule min_idem:  min(?a, ?a) = ?a                                [simp]
-rule min_comm:  min(?a, ?b) = min(?b, ?a)                        -- bare; would loop if [simp]
-rule min_assoc: min(min(?a, ?b), ?c) = min(?a, min(?b, ?c))     [simp]
-rule min_top:   min(?a, top) = ?a :- has_top_element(typeof(?a)) [simp]
+rule min_idem:  min(?a, ?a) = ?a                                @[simp]
+rule min_comm:  min(?a, ?b) = min(?b, ?a)                        -- bare; would loop if @[simp]
+rule min_assoc: min(min(?a, ?b), ?c) = min(?a, min(?b, ?c))     @[simp]
+rule min_top:   min(?a, top) = ?a :- has_top_element(typeof(?a)) @[simp]
 ```
 
 The default dot rule rewrites `?a.min(?b)` to `min(?a, ?b)`; the `min_*` rules then continue firing where guards match. Note `compare` is a **pure value operation** — it receives `?xc`/`?yc` (folded values), never occurrences. `constant_fold` is the single occurrence-aware predicate; everything else works on values. The RHS returns `?x` (the original source occurrence), not `?xc`, so `min(3, 5)` rewrites to the source `3` with its span intact.
 
 What this exposes:
 
-- **Symmetric operation, biased dot.** `?a.min(?b)` and `?b.min(?a)` produce different intermediate terms. `min_comm` must stay *bare* (not `[simp]`) or the load-time phase loops — the same non-termination 025.1 flags for `add_comm`. The other rules are oriented enough to make progress without commutativity.
+- **Symmetric operation, biased dot.** `?a.min(?b)` and `?b.min(?a)` produce different intermediate terms. `min_comm` must stay *bare* (not `@[simp]`) or the load-time phase loops — the same non-termination 025.1 flags for `add_comm`. The other rules are oriented enough to make progress without commutativity.
 - **Constant folding via `constant_fold`.** `min(3, 5)` reduces to `3` because `constant_fold` folds both args to literals and `compare(3, 5) <= 0` then computes. `min(?age, ?threshold)` STUCKs at `constant_fold` (non-constant occurrence) → residualizes to a runtime `min` call. The folding power available is open question 14.
 - **Typeclass dispatch falls out.** `?a.min(?b)` works iff `typeof(?a)` satisfies Ord — the same condition the operation needs. The default dot rule's guard (`operation_exists(typeof(?x), ?name)`) handles it with no typeclass special-casing.
 
 ### Example B: Automatic differentiation (symbolic, forward-mode)
 
-The canonical equational-rewriting workload. `diff` is a **plain operation over `Expr`** — *not* `[simp]`-tagged. Its behaviour is defined by `[simp]` **rules** (the rules carry the attribute, the operation does not). The rules pattern-match `Expr` structure, so `diff`'s `Expr` parameter is consumed as syntax — never constant-folded.
+The canonical equational-rewriting workload. `diff` is a **plain operation over `Expr`** — *not* `@[simp]`-tagged. Its behaviour is defined by `@[simp]` **rules** (the rules carry the attribute, the operation does not). The rules pattern-match `Expr` structure, so `diff`'s `Expr` parameter is consumed as syntax — never constant-folded.
 
 ```
 namespace anthill.math.diff
@@ -337,29 +337,29 @@ namespace anthill.math.diff
   operation diff(expr: Expr, var: Symbol) -> Expr        -- plain operation, defined by the rules below
 
   -- Base cases
-  rule diff_var_same:  diff(?x, ?x) = 1                                          [simp]
-  rule diff_var_other: diff(?y, ?x) = 0 :- is_var(?y), not_same(?y, ?x)          [simp]
-  rule diff_const:     diff(?c, ?x) = 0 :- is_const(?c)                          [simp]
+  rule diff_var_same:  diff(?x, ?x) = 1                                          @[simp]
+  rule diff_var_other: diff(?y, ?x) = 0 :- is_var(?y), not_same(?y, ?x)          @[simp]
+  rule diff_const:     diff(?c, ?x) = 0 :- is_const(?c)                          @[simp]
 
   -- Linearity
-  rule diff_add:   diff(add(?a, ?b), ?x) = add(diff(?a, ?x), diff(?b, ?x))       [simp]
-  rule diff_scale: diff(mul(?c, ?a), ?x) = mul(?c, diff(?a, ?x)) :- is_const(?c) [simp]
+  rule diff_add:   diff(add(?a, ?b), ?x) = add(diff(?a, ?x), diff(?b, ?x))       @[simp]
+  rule diff_scale: diff(mul(?c, ?a), ?x) = mul(?c, diff(?a, ?x)) :- is_const(?c) @[simp]
 
   -- Product rule
   rule diff_mul: diff(mul(?a, ?b), ?x) = add(mul(diff(?a, ?x), ?b),
-                                             mul(?a, diff(?b, ?x)))              [simp]
+                                             mul(?a, diff(?b, ?x)))              @[simp]
 
   -- Chain rule
-  rule diff_sin: diff(sin(?a), ?x) = mul(cos(?a), diff(?a, ?x))                  [simp]
+  rule diff_sin: diff(sin(?a), ?x) = mul(cos(?a), diff(?a, ?x))                  @[simp]
   rule diff_pow_const: diff(pow(?a, ?n), ?x) = mul(mul(?n, pow(?a, sub(?n, 1))),
-                                                   diff(?a, ?x)) :- is_const(?n) [simp]
+                                                   diff(?a, ?x)) :- is_const(?n) @[simp]
 end
 
 -- Arithmetic simp rules to keep diff output clean
-rule mul_zero_l: mul(0, ?a) = 0    [simp]
-rule mul_one_l:  mul(1, ?a) = ?a   [simp]
-rule mul_one_r:  mul(?a, 1) = ?a   [simp]
-rule add_zero_r: add(?a, 0) = ?a   [simp]
+rule mul_zero_l: mul(0, ?a) = 0    @[simp]
+rule mul_one_l:  mul(1, ?a) = ?a   @[simp]
+rule mul_one_r:  mul(?a, 1) = ?a   @[simp]
+rule add_zero_r: add(?a, 0) = ?a   @[simp]
 ```
 
 For `diff(add(mul(x, x), mul(3, x)), x)` the phase reduces (linearity → product/scale rules → base cases → arithmetic cleanup) to `add(add(x, x), 3)`, i.e. `2x + 3`. Correct.
@@ -367,10 +367,10 @@ For `diff(add(mul(x, x), mul(3, x)), x)` the phase reduces (linearity → produc
 What this exposes:
 
 - **Recursive rewriting to fixpoint.** Each rule application yields a tree that must keep reducing. The simp phase runs to fixpoint within an expression, not one pass — needs a divergence bound.
-- **Inlining is load-bearing.** Symbolic AD only works if function bodies are visible. The natural mechanism is the existing `[unfold]` attribute: mark the function being differentiated (and its dependencies) `[unfold]` so the phase expands its body before `diff` rules pattern-match. This makes `[unfold]`-at-load-time a prerequisite (open question 15).
+- **Inlining is load-bearing.** Symbolic AD only works if function bodies are visible. The natural mechanism is the existing `@[unfold]` attribute: mark the function being differentiated (and its dependencies) `@[unfold]` so the phase expands its body before `diff` rules pattern-match. This makes `@[unfold]`-at-load-time a prerequisite (open question 15).
 - **Rule specificity.** `diff_scale` (const × subexpr) and `diff_mul` (general product) both match `mul(3, x)`. Either authors order specific-first, or the phase picks most-specific-LHS, or general-then-cleanup is accepted (the arithmetic rules absorb the slop). Needs a documented firing strategy (open question 16).
-- **`diff` operates on the expression, not the value.** `diff(parabola(x), x)` is meaningful even though `parabola(x)` evaluated is just a number — `diff`'s rules pattern-match the `Expr`, not the result. Because `diff` is defined by `[simp]` rules, it also works at runtime via the resolver's equational fallback on runtime `Expr` values.
-- **Rule-form vs function-macro for `diff`.** The pattern-rule definition above is rule-form. If the transformation were too irregular for finite pattern rules, `diff` could instead have an operation *body* that `match`es on `Expr` and constructs the result — a function-macro — invoked from a thin entry rule. Same operation, same `Expr` interface; only the definition style differs. Either way `[simp]` stays on the entry rules, never the operation.
+- **`diff` operates on the expression, not the value.** `diff(parabola(x), x)` is meaningful even though `parabola(x)` evaluated is just a number — `diff`'s rules pattern-match the `Expr`, not the result. Because `diff` is defined by `@[simp]` rules, it also works at runtime via the resolver's equational fallback on runtime `Expr` values.
+- **Rule-form vs function-macro for `diff`.** The pattern-rule definition above is rule-form. If the transformation were too irregular for finite pattern rules, `diff` could instead have an operation *body* that `match`es on `Expr` and constructs the result — a function-macro — invoked from a thin entry rule. Same operation, same `Expr` interface; only the definition style differs. Either way `@[simp]` stays on the entry rules, never the operation.
 - **Where rewriting is the wrong tool.** Symbolic AD covers forward-mode + scalar. Reverse-mode and tensor AD need code generation (tape construction + execution), not pure rewriting. The stdlib design should be honest about this boundary.
 
 ## Effect propagation
@@ -411,7 +411,7 @@ Three reasons this matters and is consistent with the existing design:
 Completion-after-dot is a KB query with the name field unbound. When the user types `?x.<cursor>`:
 
 1. Determine the sort `S` of `?x` from surrounding context.
-2. Query: `[simp] rule dot_apply(?x, ?name, ?args) = ?result :- ...` with `typeof(?x) = S` and `?name` unbound.
+2. Query: `@[simp] rule dot_apply(?x, ?name, ?args) = ?result :- ...` with `typeof(?x) = S` and `?name` unbound.
 3. The resolver returns all bindings of `?name` consistent with some simp-flagged rule and the receiver's sort.
 4. For each, look up doc, signature, propagated effects via further KB queries.
 5. Rank and return.
@@ -435,7 +435,7 @@ The substrate-as-data invariant carries through:
 - Rules (derivation and equation) are facts in the KB.
 - **Method dispatch is also rules in the KB** — specifically, simp-flagged equations.
 
-No new subsystem. The `[simp]` annotation already exists (WI-139); the syntax gains one grammar form (`'.' name '(' args ')'`); the typer gains a rewriting step (fire applicable simp rules bottom-up, type the result). Everything else — default dispatch, delegation, DSLs — is library code shipped as `[simp]`-tagged equational rules in the prelude.
+No new subsystem. The `@[simp]` annotation already exists (WI-139); the syntax gains one grammar form (`'.' name '(' args ')'`); the typer gains a rewriting step (fire applicable simp rules bottom-up, type the result). Everything else — default dispatch, delegation, DSLs — is library code shipped as `@[simp]`-tagged equational rules in the prelude.
 
 ## Open questions
 
@@ -443,10 +443,10 @@ The annotation already exists (WI-139). The live questions are about extending i
 
 ### Attribute semantics
 
-1. **Reuse `[simp]` or introduce `[rewrite]`? — DECIDED (2026-05-21): reuse `[simp]`.** Today `[simp]` means "index this equation in `by_functor` so the resolver can apply it directionally during goal resolution." A `[simp]` rule now *also* fires during typer-driven rewriting of expression bodies — one attribute, two firing sites, consistent with "this equation is directionally usable." The rejected alternative (B) was a phase-specific attribute like `[rewrite]`/`[expand]` for load-time-only use; it adds vocabulary for a separation no concrete use case has yet demanded. If authors later need "syntactic-sugar-only, not proof normalization," B can be added then. Until then, `[simp]` carries both meanings.
+1. **Reuse `@[simp]` or introduce `[rewrite]`? — DECIDED (2026-05-21): reuse `@[simp]`.** Today `@[simp]` means "index this equation in `by_functor` so the resolver can apply it directionally during goal resolution." A `@[simp]` rule now *also* fires during typer-driven rewriting of expression bodies — one attribute, two firing sites, consistent with "this equation is directionally usable." The rejected alternative (B) was a phase-specific attribute like `[rewrite]`/`[expand]` for load-time-only use; it adds vocabulary for a separation no concrete use case has yet demanded. If authors later need "syntactic-sugar-only, not proof normalization," B can be added then. Until then, `@[simp]` carries both meanings.
 2. **Scope of a simp set.** Global? Per-namespace? Transitive `requires` chain? Multiple named sets (e.g., `simp(dot)`, `simp(arithmetic)`)? 025.1 deferred this; load-time application reraises it because expression bodies cross namespace boundaries.
-3. **Termination at the load-time phase.** Today's `[simp]`-tagged rules can loop inside the resolver, which has search bounds. Load-time rewriting needs explicit termination. Options: (a) syntactic LHS-size > RHS-size check; (b) explicit `decreases` metric; (c) run-and-detect with depth limit + diagnostic; (d) trust the author. Whatever we pick should not retroactively restrict resolver-phase use.
-4. **Interaction with SLD resolver's equational fallback.** Given question 1's decision (reuse `[simp]`), a `[simp]` rule fires in both phases — the resolver's equational fallback and typer-driven rewriting. Confirm the two paths agree: same reduction strategy (question 20), same ground/non-ground boundary (question 14), no semantic drift. This is now a verification task, not a design fork.
+3. **Termination at the load-time phase.** Today's `@[simp]`-tagged rules can loop inside the resolver, which has search bounds. Load-time rewriting needs explicit termination. Options: (a) syntactic LHS-size > RHS-size check; (b) explicit `decreases` metric; (c) run-and-detect with depth limit + diagnostic; (d) trust the author. Whatever we pick should not retroactively restrict resolver-phase use.
+4. **Interaction with SLD resolver's equational fallback.** Given question 1's decision (reuse `@[simp]`), a `@[simp]` rule fires in both phases — the resolver's equational fallback and typer-driven rewriting. Confirm the two paths agree: same reduction strategy (question 20), same ground/non-ground boundary (question 14), no semantic drift. This is now a verification task, not a design fork.
 
 ### Specific to dot dispatch
 
@@ -493,30 +493,30 @@ The annotation already exists (WI-139). The live questions are about extending i
 
     ```
     rule min_le: min(?x, ?y) = ?x
-      :- constant_fold(?xc, ?x), constant_fold(?yc, ?y), compare(?xc, ?yc) <= 0  [simp]
+      :- constant_fold(?xc, ?x), constant_fold(?yc, ?y), compare(?xc, ?yc) <= 0  @[simp]
     ```
 
     `constant_fold(?const, ?source)` is the **only** occurrence-aware builtin: at compile time it binds `?const` to `?source`'s literal value when it folds, STUCKs (→ residualize) otherwise; at runtime it is identity. `compare` and every other value operation stay occurrence-unaware, receiving folded values. This collapses the implementation from "occurrence-handling in every value operation" down to "one `constant_fold` builtin; everything else unchanged." (An implicit auto-fold path could be offered later as ergonomic sugar, but explicit `constant_fold` is the principled default.) Note DELAY proper does not arise here — the rule var is bound to a source occurrence, not unbound; the outcome is STUCK, not DELAY (the category error this question corrects).
 
     Two consequences:
-    - **One rule set, two phases.** A residualized `min(?age, ?threshold)` is evaluated at runtime by the *same* `min_le`/`min_gt` equations (they're already in `by_functor` per WI-139). The `[simp]` equations are simultaneously `min`'s definition (runtime) and its partial evaluator (compile time); STUCK is just the boundary. At runtime args are values, `constant_fold` is identity, the guard computes. Reinforces questions 4 and 20 — the phases share the rules, so they must share strategy and the constant/non-constant boundary.
+    - **One rule set, two phases.** A residualized `min(?age, ?threshold)` is evaluated at runtime by the *same* `min_le`/`min_gt` equations (they're already in `by_functor` per WI-139). The `@[simp]` equations are simultaneously `min`'s definition (runtime) and its partial evaluator (compile time); STUCK is just the boundary. At runtime args are values, `constant_fold` is identity, the guard computes. Reinforces questions 4 and 20 — the phases share the rules, so they must share strategy and the constant/non-constant boundary.
     - **Structure-reading vs value-needing operations.** An operation that pattern-matches `Expr` structure (`diff` on `add(?a,?b)`) never STUCKs — it consumes syntax. Only operations that need a *value* (`compare`, arithmetic) can STUCK, and only when their `Expr` arg doesn't constant-fold. Dispatch rules (`default_dot`, `either_delegate`) read structure + types only, so they never STUCK either.
 
     Open sub-question: how much resolver power for constant-folding guards — (a) literal arithmetic only; (b) ground-term resolution; (c) full SLD search? More power means more compile-time folding but higher cost and tighter termination obligations.
-15. **`[unfold]` at the load-time phase.** Symbolic AD requires function bodies to be visible so `diff` rules can pattern-match. The existing `[unfold]` attribute (WI-139) is the natural mechanism — but its load-time semantics need specifying (when does a `[unfold]`-tagged operation expand: always, only inside a simp-tagged context, only when reached by a firing rule?). This dovetails with 025.1's deferred `[unfold]` work.
+15. **`@[unfold]` at the load-time phase.** Symbolic AD requires function bodies to be visible so `diff` rules can pattern-match. The existing `@[unfold]` attribute (WI-139) is the natural mechanism — but its load-time semantics need specifying (when does a `@[unfold]`-tagged operation expand: always, only inside a simp-tagged context, only when reached by a firing rule?). This dovetails with 025.1's deferred `@[unfold]` work.
 16. **Rule firing strategy / specificity.** When multiple simp rules match (e.g., `diff_scale` and `diff_mul` both match `mul(3, x)`), the phase needs a deterministic order. Options: most-specific-LHS-first (Maude/Mathematica), textual order (Prolog), or general-then-cleanup (accept a more-general result and let other simp rules normalize). The resolver phase has its own search order; the load-time phase needs its own documented strategy.
-17. **Function-macros (Expr-operations) and their opacity.** `[simp]` lives on rules only; operations are never tagged. A function-macro is a plain operation over the reflect `Expr` sort, reduced when reached while normalizing a `[simp]` rule's RHS (see "What firing a `[simp]` rule does"). Two things to settle: (a) **opacity** — unlike rule LHS patterns (data, queryable both directions for LSP completion), an Expr-operation's body is forward-only/opaque; this is fine because completion keys on rule *LHS*es, not RHS computation, but confirm no completion path needs to see through the operation. (b) **discoverability** — is any marker wanted to flag "this operation is intended as a macro helper / only meaningful at compile time," or is "takes/returns `Expr`" signal enough? Lean: no marker; the `Expr` signature is the signal.
-18. **Termination interaction with symmetric laws.** The `min` example shows `min_comm` must stay bare or the load phase loops. This generalizes: any commutative/associative-commutative law is unsafe as `[simp]` at load time. Should the loader *reject* a `[simp]` tag on a rule it can detect is non-terminating (LHS and RHS same size, permuted args)? Or warn? Or trust the author? Ties into open question 3.
+17. **Function-macros (Expr-operations) and their opacity.** `@[simp]` lives on rules only; operations are never tagged. A function-macro is a plain operation over the reflect `Expr` sort, reduced when reached while normalizing a `@[simp]` rule's RHS (see "What firing a `@[simp]` rule does"). Two things to settle: (a) **opacity** — unlike rule LHS patterns (data, queryable both directions for LSP completion), an Expr-operation's body is forward-only/opaque; this is fine because completion keys on rule *LHS*es, not RHS computation, but confirm no completion path needs to see through the operation. (b) **discoverability** — is any marker wanted to flag "this operation is intended as a macro helper / only meaningful at compile time," or is "takes/returns `Expr`" signal enough? Lean: no marker; the `Expr` signature is the signal.
+18. **Termination interaction with symmetric laws.** The `min` example shows `min_comm` must stay bare or the load phase loops. This generalizes: any commutative/associative-commutative law is unsafe as `@[simp]` at load time. Should the loader *reject* a `@[simp]` tag on a rule it can detect is non-terminating (LHS and RHS same size, permuted args)? Or warn? Or trust the author? Ties into open question 3.
 19. **Re-check vs re-infer for carried-over subterms.** Reused subterms keep their `classification` in the RHS. Is type-*checking* (verify the subterm fits its new position) sufficient, or do contextual/bidirectional-inference cases require re-*inference*? Determines whether a rewrite can ever invalidate a previously-sound subterm type, and how that surfaces as a diagnostic. Type-checking is cheaper and safe for intrinsic types; re-inference is needed only if a subterm's solved type genuinely depended on its old syntactic context.
 20. **Reduction strategy (which redex first) — innermost.** Distinct axis from question 16 (which rule fires when several match *one* redex); this is *which redex* reduces first. For `p(p(?x, ?y), ?z)` the design is **leftmost-innermost / bottom-up**, forced by type-directed dispatch (the outer rule needs `typeof` of the reduced inner term) and matching the typer's bottom-up walk. Consequences to confirm:
     - **Strict, no lazy discard.** `fst(pair(?a, ?b)) = ?a` still reduces `?b` first; a looping subterm hangs the rewrite even if the enclosing rule would discard it. Outermost would dodge this; innermost gives it up.
     - **Confluence caveat.** For a confluent + terminating simp set, Church-Rosser makes the normal form strategy-independent — innermost is then only an efficiency/termination choice. For non-confluent sets it is the *defined* semantics.
-    - **Phase consistency (ties to question 4).** A `[simp]` rule fires both in the SLD resolver's equational fallback and in typer-driven rewriting. Both must use the same strategy or the rule yields different results in the two phases. Confirm the resolver's `apply_equational_fallback` strategy and match it.
+    - **Phase consistency (ties to question 4).** A `@[simp]` rule fires both in the SLD resolver's equational fallback and in typer-driven rewriting. Both must use the same strategy or the rule yields different results in the two phases. Confirm the resolver's `apply_equational_fallback` strategy and match it.
     - **Future escape hatch.** If laziness is needed for specific operators (short-circuit `and`/`or`, lazy constructors, discard-without-reduce), Maude-style per-operator `strat` / `frozen` annotations graft on without changing the default.
 
 ## Next steps
 
-1. ~~Decide `[simp]` vs new attribute~~ — **done (2026-05-21): reuse `[simp]`** (open question 1).
+1. ~~Decide `@[simp]` vs new attribute~~ — **done (2026-05-21): reuse `@[simp]`** (open question 1).
 2. **Confirm the typer is reentrant** (`type_node(node, ctx)` callable per-subtree). This gates the typer-driven rewriting approach (open question 10); if the typer is monolithic, refactoring it is the real first task. With question 1 settled, this is now the first open design task.
 3. **Spec typer-driven rewriting** — how the typer invokes the rewriter bottom-up, produces `Synthesized` nodes, and recurses. Not a standalone loader phase.
 4. **Termination + cycle story** (open questions 3, 18) — including the `Synthesized.from` ancestor-loop check.
@@ -537,7 +537,7 @@ typecheck { …interleaved simp rewriting… }  →  IR lowering  →  eval-v2 /
 
 The IR's `CallViaReq` (names-model requirement dispatch) even aligns with typeclass operations here: `min`'s `requires Ord[T]` means `compare` lowers to `CallViaReq` — same mechanism, no conflict.
 
-**Shared dependency: equation-defined operations.** The IR assumes operations have a `NodeOccurrence` body to lower. But `[simp]`-defined operations (like `min`) have *no body* — they're defined entirely by equational rules. This isn't new (`add_zero`, `first` already work this way), but the dot design leans on it: every value-conditional rule residualizes to a runtime call to a possibly-body-less operation. Resolution (must be settled in the IR doc, not here):
+**Shared dependency: equation-defined operations.** The IR assumes operations have a `NodeOccurrence` body to lower. But `@[simp]`-defined operations (like `min`) have *no body* — they're defined entirely by equational rules. This isn't new (`add_zero`, `first` already work this way), but the dot design leans on it: every value-conditional rule residualizes to a runtime call to a possibly-body-less operation. Resolution (must be settled in the IR doc, not here):
 - **Compile the equation set into a `CompiledOp`** — `min`'s rules become `if compare(a,b) <= 0 then a else b` (an `If` over a `CallViaReq`). Feasible for deterministic + complete sets; *required* for codegen (can't ship the resolver's equational fallback into emitted Rust).
 - **Keep an equational-fallback path** in eval-v2 for body-less ops — smaller step for the interpreter, insufficient for codegen.
 - Likely both: compile where the equation set is deterministic + complete; fall back to the resolver otherwise.

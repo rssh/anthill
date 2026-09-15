@@ -24,7 +24,7 @@ So the fact IS stored and IS reachable — a variable goal finds it. It is the W
 
 PRE-EXISTING, NOT INTRODUCED BY WI-20260829-YBBC3. A `lambda` has been admissible in an argument position — and therefore in a rule head, a rule body goal and a `fact` argument, which are all `_fn_arg` — since long before that ticket; the `lambda` row above is the control and it behaves identically. What YBBC3 changed is REACH: the same silent non-match is now available through `match` / `if` / `let` / `proof` as well, so four more spellings load clean and decide nothing.
 
-WHY IT MATTERS. This is the fail-open shape the project's development principles single out: a program that loads clean and answers the empty set, with no diagnostic naming the reason. `anthill.reflect.Expr` exists precisely so a rule CAN talk about expression syntax (that is what a `[simp]` macro reads, proposal 056), so "a compound form in a rule data position" is not obviously a mistake to refuse — which is exactly why the current behaviour is the worst of the three options: it is neither a refusal nor a match.
+WHY IT MATTERS. This is the fail-open shape the project's development principles single out: a program that loads clean and answers the empty set, with no diagnostic naming the reason. `anthill.reflect.Expr` exists precisely so a rule CAN talk about expression syntax (that is what a `@[simp]` macro reads, proposal 056), so "a compound form in a rule data position" is not obviously a mistake to refuse — which is exactly why the current behaviour is the worst of the three options: it is neither a refusal nor a match.
 
 WHAT TO DECIDE, and it is one question with three answers, not a bug with a fix:
 

@@ -562,7 +562,7 @@ fact ProofRecord(
   result: ProofResult,
   dependencies: List[Symbol],
   timestamp: String
-) [trust: proved]
+) @[trust: proved]
 ```
 
 This integrates with the existing `ProofResult` enum (`Proved`, `Disproved`, `Timeout`, `Unknown`) and the `Trust` sort.

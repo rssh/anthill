@@ -624,7 +624,7 @@ missing requirement surfaces at query time, not load; the runtime path itself is
    `examples/classic-mini/ancestor`, is reached by APPLICATION and does `length(ofBart.takeN(100))`
    without ever touching an element. Re-counted at delivery the shape holds (≈49 rule names with
    exactly one head variable, all cited as goals), though the exact number depends on whether
-   equational `[simp]` heads are counted, so treat it as an order of magnitude rather than a figure.
+   equational `@[simp]` heads are counted, so treat it as an order of magnitude rather than a figure.
 
    **WHAT ACTUALLY SETTLED IT WAS THE DELIVERY, NOT THE COUNT.** Dropping the collapse moves the type,
    the row and the term together, so ANY shipped source draining a one-column relation as a value would

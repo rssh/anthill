@@ -11,13 +11,13 @@
 
 ## Description
 
-A BARE NULLARY OP CALL SITE IN AN OPERATION BODY IS NOT A REDEX, so a `[simp]` law
+A BARE NULLARY OP CALL SITE IN AN OPERATION BODY IS NOT A REDEX, so a `@[simp]` law
 reaches `tau()` and not `tau` — the one half of WI-20260902-CZJ2N's step D it did not take.
 
 MEASURED on CZJ2N's delivered tree:
   namespace zz.d
     operation tau() -> Int64
-    rule tau() <=> 7 [simp]              -- and `rule tau <=> 7 [simp]`: both define now
+    rule tau() <=> 7 @[simp]              -- and `rule tau <=> 7 @[simp]`: both define now
     operation drive(n: Int64)  = tau()   -- 7
     operation drive2(n: Int64) = tau     -- residual: unify(?_, drive2(0))
   end
@@ -45,7 +45,7 @@ to pin the OTHER reading. CZJ2N's own census found those, and none of them is a 
 
 TWO CANDIDATE FIXES, in the order WI-20260902-CZJ2N's plan preferred them:
  1. ELABORATE at `check_bare_ref`'s zero-arg-call arm — return the same `Expr::Apply`
-    occurrence `tau()` builds, so `[simp]`, eval and codegen see ONE shape. This is the
+    occurrence `tau()` builds, so `@[simp]`, eval and codegen see ONE shape. This is the
     property to deliver and the one that makes the eta/call split explicit at the site that
     already decides it.
  2. Fallback if that elaboration is not local: teach `simp_rewrite::is_rewritable` and the
@@ -55,7 +55,7 @@ TWO CANDIDATE FIXES, in the order WI-20260902-CZJ2N's plan preferred them:
     name a call") would then have a fourth reader that the first three do not share.
 
 ACCEPTANCE: `operation drive2(n) = tau` beside `drive(n) = tau()` under `rule tau() <=> 7
-[simp]` answers 7 from BOTH, driven through eval. The eta rows must stay green and be named
+@[simp]` answers 7 from BOTH, driven through eval. The eta rows must stay green and be named
 as controls: `wi698_row_param_refinement_test::nullary_eta_lift_round_trips_through_eval`
 (a nullary op passed by NAME into a `() -> Int64` slot must stay an `OpRef`, not become a
 call) and `::nullary_returning_function_prefers_return_type_reading`. Say at the site which

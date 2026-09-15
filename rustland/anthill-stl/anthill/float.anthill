@@ -17,7 +17,7 @@ namespace anthill.prelude
     -- from the load-time backing check WHOLESALE (`check_provider_operations`), which
     -- WI-880 narrowed to a per-operation question now that backing is knowable per
     -- operation. `recip` is absent from this list ON PURPOSE: its equation in `stdlib/anthill/prelude/float.anthill` is
-    -- an exact definition and carries `[simp]`, so it inlines instead of dispatching.
+    -- an exact definition and carries `@[simp]`, so it inlines instead of dispatching.
     -- Every other declared operation is here.
     operation_map {
       gt: "float_gt",

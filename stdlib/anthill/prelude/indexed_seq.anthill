@@ -22,7 +22,7 @@ sort anthill.prelude.IndexedSeq
   -- Implementations are free to match these rules directly or treat
   -- them as a contract on top of their own clauses.
   --
-  -- WI-20260820-8RJK8: both are `[simp]`, so they now FIRE as conditional rewrites —
+  -- WI-20260820-8RJK8: both are `@[simp]`, so they now FIRE as conditional rewrites —
   -- the guard is proved at the redex and decides. They qualify because the right-hand
   -- side is a constant, so orienting them terminates trivially. `nth_oob_lo`'s
   -- `lt(?i, 0)` is an ordinary builtin over the index and discharges on any concrete
@@ -33,7 +33,7 @@ sort anthill.prelude.IndexedSeq
   -- because the two are one statement of the same contract and an undischargeable guard
   -- DECLINES rather than misfiring; no context that discharges it has been driven.
   rule {
-    nth_oob_lo: nth(?_, ?i)   = none :- lt(?i, 0)   [simp]
-    nth_oob_hi: nth(?xs, ?i)  = none :- gte(?i, length(?xs))   [simp]
+    nth_oob_lo: nth(?_, ?i)   = none :- lt(?i, 0)   @[simp]
+    nth_oob_hi: nth(?xs, ?i)  = none :- gte(?i, length(?xs))   @[simp]
   }
 end

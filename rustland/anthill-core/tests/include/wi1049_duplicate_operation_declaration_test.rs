@@ -2,7 +2,7 @@
 //!
 //! (Number note: `wi1049_effect_polymorphic_diagnostic_test` and the `WI-1049`
 //! comments in `body_specialize.rs` / `typing.rs` are MIS-NUMBERED — that work is
-//! the effect-polymorphic `[simp]` diagnostic, WI-1050's subject, committed
+//! the effect-polymorphic `@[simp]` diagnostic, WI-1050's subject, committed
 //! against this number by mistake. There has only ever been one WI-1049 and it is
 //! this one. Nothing here relates to that work.)
 //!
@@ -56,7 +56,7 @@
 //!     verdict it FAILS, together with the three `*_idempotent_across_loads`
 //!     suites. Non-vacuous: it asserts the re-load really did re-emit.
 //!   * `a_rule_naming_an_operation_is_not_a_second_declaration` — a rule whose
-//!     head names an operation is a LAW about it (WI-818), or the `[simp]`
+//!     head names an operation is a LAW about it (WI-818), or the `@[simp]`
 //!     defining equation that GIVES a body-less operation its meaning (WI-881).
 //!     Never a redeclaration. Refusing it would break the eq-family
 //!     definition-by-cases and every hand-written law.
@@ -213,7 +213,7 @@ fn prelude_and_full_stdlib_still_load_clean() {
 
 #[test]
 fn a_rule_naming_an_operation_is_not_a_second_declaration() {
-    // CONTROL — passes either way BY DESIGN, and MUST. A `[simp]` equation is what
+    // CONTROL — passes either way BY DESIGN, and MUST. A `@[simp]` equation is what
     // gives a body-less operation its meaning (WI-881); a plain rule head is a law
     // about it (WI-818). Neither mints a competing declaration — measured, all 345
     // stdlib operation symbols carry kind `Operation` alone.
@@ -223,7 +223,7 @@ fn a_rule_naming_an_operation_is_not_a_second_declaration() {
           sort L
             entity l(n: anthill.prelude.Int64)
             operation flag(v: L) -> Bool
-            rule flag(?v) <=> false [simp]
+            rule flag(?v) <=> false @[simp]
           end
         end
     "#;

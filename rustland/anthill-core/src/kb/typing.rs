@@ -196,7 +196,7 @@ pub enum TypeError {
     },
     /// WI-898: a citation of an EQUATION-INTRODUCED functor
     /// ([`crate::intern::SymbolKind::EquationFunctor`]) — `ite(gte(a, b), a, b)` —
-    /// that the `[simp]` rewriter left standing. Such a name denotes a function
+    /// that the `@[simp]` rewriter left standing. Such a name denotes a function
     /// DEFINED BY REWRITING; a citation of it is answered before dispatch or not at
     /// all, so one that survives to the typer has nothing left to mean.
     ///
@@ -209,7 +209,7 @@ pub enum TypeError {
     /// `census` is [`super::simp_rewrite::equation_clause_census`]'s, taken at
     /// construction (the message needs a `&mut KnowledgeBase` the renderers do not
     /// have) — it decides WHICH of the two failures this is: inert clauses that want
-    /// a `[simp]` tag, or firing clauses none of which matched.
+    /// a `@[simp]` tag, or firing clauses none of which matched.
     UnreducedEquationFunctor {
         span: Option<Span>,
         functor: Symbol,
@@ -613,7 +613,7 @@ pub enum TypeError {
     },
     /// WI-20260902-8K4RB: the subject of a bodyless EQUATION
     /// ([`crate::intern::SymbolKind::EquationFunctor`]) written in a rule-body GOAL
-    /// position — `rule reader(1) :- tauX` beside `rule tauX <=> 7 [simp]`.
+    /// position — `rule reader(1) :- tauX` beside `rule tauX <=> 7 @[simp]`.
     ///
     /// The third member of the "this term has no goal reading" family, beside
     /// [`Self::NonBoolOpInGoalPosition`] and [`Self::ConstantInGoalPosition`], and it
@@ -625,14 +625,14 @@ pub enum TypeError {
     ///
     /// NOT [`Self::UnreducedEquationFunctor`], though both are equation citations, and
     /// the difference is the REPAIR. That one is a VALUE-position citation the rewriter
-    /// left standing, so its three branches send the author to tag the equation `[simp]`
+    /// left standing, so its three branches send the author to tag the equation `@[simp]`
     /// or to inspect the left-hand patterns. Here the equation may be tagged AND firing
-    /// and the goal still cannot answer, because `[simp]` rewrites a VALUE and a goal is
+    /// and the goal still cannot answer, because `@[simp]` rewrites a VALUE and a goal is
     /// MATCHED rather than rewritten — so those repairs would send an author to inspect
     /// a clause that is fine. (Not "a rule body is not a rewrite site": measured, it IS
     /// one in a value slot — `?v = tauX()` stores the already-inlined `eq(?_, 7)`.)
-    /// MEASURED on the ticket's own fixture, which is `[simp]`-tagged with one defining
-    /// clause: that census reaches the third branch, "none of its 1 `[simp]` clause(s)
+    /// MEASURED on the ticket's own fixture, which is `@[simp]`-tagged with one defining
+    /// clause: that census reaches the third branch, "none of its 1 `@[simp]` clause(s)
     /// fired here".
     ///
     /// WHY IT WAS SILENT UNTIL NOW: the name RESOLVES, so WI-1034's "names nothing"
@@ -705,7 +705,7 @@ pub enum TypeError {
         /// from the frame names.
         from_scope: ScopeId,
     },
-    /// WI-757 (the WI-722 macro contract's diagnostic channel): a `[simp]` lowering
+    /// WI-757 (the WI-722 macro contract's diagnostic channel): a `@[simp]` lowering
     /// whose macro-headed RHS was expanded here, and the MACRO rejected the
     /// occurrences it was handed — `where(λ c -> ite(true, true, false))`, whose
     /// condition is `Bool`-valued but not goal-expressible.
@@ -719,7 +719,7 @@ pub enum TypeError {
     /// channel replaces.
     MacroRejected {
         span: Option<Span>,
-        /// The macro that rejected — the `[simp]` RHS head.
+        /// The macro that rejected — the `@[simp]` RHS head.
         macro_name: Symbol,
         /// The macro's own words, already rendered — see
         /// [`MacroRejection::detail`](super::simp_rewrite::MacroRejection).
@@ -3714,7 +3714,7 @@ pub struct TypeResult {
     /// is the type of, so a parent build-frame can reassemble itself
     /// from rewritten children and the [`TypeBuildFrame::Stamp`] frame
     /// can record the inferred type onto the *resulting* node. For a
-    /// node that no `[simp]` rule rewrites this is the input occurrence
+    /// node that no `@[simp]` rule rewrites this is the input occurrence
     /// (identity); a firing frame replaces it with the synthesized RHS
     /// (`synthesized_expr`, with the input occ as its `from`).
     pub node: Rc<NodeOccurrence>,
@@ -6676,7 +6676,7 @@ pub fn list_to_vec(kb: &KnowledgeBase, mut term: TermId) -> Vec<TermId> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum NodePos {
     /// The atom [`dispatch_calls_in_occ`] handed over at [`BodyPos::Goal`] /
-    /// [`BodyPos::GoalTuple`] — and whatever REPLACES it while it is typed (a `[simp]`
+    /// [`BodyPos::GoalTuple`] — and whatever REPLACES it while it is typed (a `@[simp]`
     /// fire's RHS, the call a dot lowers to, a WI-411 spec-op redirect), since a rewrite
     /// of the goal is still the goal. Carried only by the three build frames that can BE
     /// the handed-over atom or produce its replacement (`Apply` / `ApplyHints` /
@@ -6699,7 +6699,7 @@ enum TypeWorkOp {
         occ: Rc<NodeOccurrence>,
         env: Env,
         expected: Option<Value>,
-        /// WI-283: remaining `[simp]` fire-fuel for this node. Inherited
+        /// WI-283: remaining `@[simp]` fire-fuel for this node. Inherited
         /// unchanged by child Visits; spent (`fuel - 1`) only when an
         /// Apply/Constructor fires and re-`Visit`s its synthesized RHS.
         /// Bounds the fire chain (→ termination) without host recursion.
@@ -6718,7 +6718,7 @@ enum TypeWorkOp {
 /// produced this node's `TypeResult` — at which point it records the
 /// inferred type onto that result's `node` (WI-283: the *resulting*,
 /// possibly-rewritten occurrence, not the input — identical until a
-/// `[simp]` rule fires). Routing every node visit through here stamps
+/// `@[simp]` rule fires). Routing every node visit through here stamps
 /// each typed occurrence exactly once, uniformly across all iterative
 /// arms (Apply / Constructor / Let / Match / Lambda / If / collection
 /// literals — every form is a work-stack Build frame after WI-285, so
@@ -6726,7 +6726,7 @@ enum TypeWorkOp {
 ///
 /// WI-1104: this is the CHILD push — the node visited here is a sub-expression of the
 /// node that pushes it, so it is [`NodePos::Value`] by construction. A push that
-/// REPLACES a node (a `[simp]` fire's RHS, a dot's lowered call) keeps the replaced
+/// REPLACES a node (a `@[simp]` fire's RHS, a dot's lowered call) keeps the replaced
 /// node's position and goes through [`push_visit_at`].
 fn push_visit(
     work: &mut Vec<TypeWorkOp>,
@@ -7013,7 +7013,7 @@ enum TypeBuildFrame {
         expected: Option<Value>,
     },
     /// WI-538: an in-body proof reassembles to `Expr::Proof` with its
-    /// (possibly `[simp]`-rewritten) `conclude?` + `body` children; its
+    /// (possibly `@[simp]`-rewritten) `conclude?` + `body` children; its
     /// type is the continuation's. `env` is the pre-proof type env.
     ProofStmt {
         occ: Rc<NodeOccurrence>,
@@ -7149,7 +7149,7 @@ fn type_check_node_at(
     expected: Option<Value>,
     pos: NodePos,
 ) -> Result<TypeResult, TypeError> {
-    // WI-283: gate the in-typer `[simp]` firing on whether any rule can fire —
+    // WI-283: gate the in-typer `@[simp]` firing on whether any rule can fire —
     // read once per walk. WI-443: a loaded `dot_apply` also enables the gate —
     // DotApply nodes are always rewritten (to the dispatched call). Tree
     // REASSEMBLY is no longer gated on this (WI-408): the typer itself now
@@ -7179,7 +7179,7 @@ fn type_check_node_at(
     )
 }
 
-/// WI-657(9): [`type_check_node`] with the `[simp]` gate (`simp_enabled` +
+/// WI-657(9): [`type_check_node`] with the `@[simp]` gate (`simp_enabled` +
 /// `simp_rids`) supplied by the caller instead of recomputed. The eq/unify rule set
 /// is LOOP-INVARIANT across a whole `check_operation_bodies` pass (typing rewrites
 /// bodies, never asserts/retracts an equation), so the per-op-body driver computes
@@ -7255,11 +7255,11 @@ fn type_check_node_gated_at(
 ) -> Result<TypeResult, TypeError> {
     let mut work: Vec<TypeWorkOp> = Vec::with_capacity(32);
     let mut results: Vec<Result<TypeResult, TypeError>> = Vec::with_capacity(32);
-    // WI-283: `[simp]` fire-fuel rides on each `Visit` (not the host stack).
+    // WI-283: `@[simp]` fire-fuel rides on each `Visit` (not the host stack).
     // When an Apply/Constructor fires, the synthesized RHS is re-`Visit`ed
     // with `fuel - 1` on this same work-stack — so a non-terminating /
-    // non-confluent `[simp]` rule (e.g. a commutative law mistagged
-    // `[simp]`) bottoms out at `fuel == 0` leaving a partial redex (exactly
+    // non-confluent `@[simp]` rule (e.g. a commutative law mistagged
+    // `@[simp]`) bottoms out at `fuel == 0` leaving a partial redex (exactly
     // as the fuel-bounded `simp_rewrite::run` did) instead of recursing the
     // host stack to overflow. Children inherit the fuel unchanged; only a
     // fire spends it. Matches the WI-285 iterative discipline.
@@ -9100,7 +9100,7 @@ fn try_relation_projection_tuple(
                     Some(occ.span.span),
                     "internal: this tuple is marked as a distributive projection `.( )`, whose \
                      fields share ONE receiver by construction, but its fields' receivers are \
-                     structurally different. A rewrite (`[simp]`) changed one field's receiver \
+                     structurally different. A rewrite (`@[simp]`) changed one field's receiver \
                      without clearing the mark.",
                 )));
             }
@@ -9117,7 +9117,7 @@ fn try_relation_projection_tuple(
     // VERIFIED, not assumed (the loop above) — every field shares this receiver, so taking
     // the FIRST field's receiver is sound and not merely licensed by the mark. The hazard
     // the check closes: the mark rides through rewrites (`simp_rewrite::reassemble` carries
-    // `from_projection`), so a `[simp]` rule that rewrote ONE field's receiver would leave a
+    // `from_projection`), so a `@[simp]` rule that rewrote ONE field's receiver would leave a
     // marked tuple whose fields disagree, and this would have projected the first and
     // SILENTLY DROPPED the rest.
     //
@@ -10543,7 +10543,7 @@ fn type_mentions_spec_param(
 /// DOT-CALL path already had — `[1, 2, 3].foldLeft(0, λ)` never had the bug because the
 /// `DotApply` frame pushes only its receiver's Visit and reads that result before the
 /// arguments are typed (WI-443). Staging gives the qualified spelling the same footing,
-/// on the same work-stack, with the same fuel and the same `[simp]` gate.
+/// on the same work-stack, with the same fuel and the same `@[simp]` gate.
 ///
 /// STAGING IS NARROW, and each condition earns its place:
 ///  - the call must have a higher-order argument at all (the caller's gate) — a hint is
@@ -11639,23 +11639,23 @@ fn collect_arg_errors<'a>(
     }
 }
 
-// ── WI-279 INC2: sort-specific `[simp]` dot-rule override ────────────────
+// ── WI-279 INC2: sort-specific `@[simp]` dot-rule override ────────────────
 //
-// A dot rule like `dot_apply(?e, map, ?f) <=> either_map(?e, ?f) [simp]`
+// A dot rule like `dot_apply(?e, map, ?f) <=> either_map(?e, ?f) @[simp]`
 // (declared in a sort) OVERRIDES the default method fallback for receivers
 // whose least sort conforms to that sort. A written dot rule LOADS as the
 // reflect `Expr.dot_apply` ENTITY (`receiver:` / `name:` / `args:
 // List[ApplyArg]`) — a different shape than a surface occurrence's
 // `Expr::DotApply` (flattened `pos_args`, `name` as a Symbol field). Rather
 // than teach the generic matcher both shapes, this dedicated path scans the
-// `[simp]` dot equations, guards by the rule's enclosing sort (`rule_domain`),
+// `@[simp]` dot equations, guards by the rule's enclosing sort (`rule_domain`),
 // matches the entity LHS against the occurrence's receiver/args, and
 // instantiates the RHS — reusing `simp_rewrite`'s opener + RHS builder. It
 // handles a *var* receiver with *positional var* args (the Either-style
 // case); a name mismatch, a non-var pattern, a named-arg dot call, or an arity
 // mismatch makes it skip the rule, falling through to the default.
 
-/// Fire a sort-specific `[simp]` dot rule at a DotApply, or `Ok(None)` to fall to
+/// Fire a sort-specific `@[simp]` dot rule at a DotApply, or `Ok(None)` to fall to
 /// the default. `recv_sort` is the receiver's least sort (the firing guard's
 /// key); `from` is the DotApply occ (synthesized-RHS provenance).
 ///
@@ -11679,9 +11679,9 @@ fn collect_arg_errors<'a>(
 /// `rids` are the SAME eq+unify candidates [`fire_simp`] gets — gathered once per
 /// typing pass (WI-657(9)) and filtered here by `is_simp_equation`. This site used
 /// to re-scan the `eq` bucket alone, per DotApply, behind its own inlined copy of
-/// that predicate: a `<=>`-spelled `[simp]` dot rule was therefore NEVER SEEN, and
+/// that predicate: a `<=>`-spelled `@[simp]` dot rule was therefore NEVER SEEN, and
 /// silently did not fire (MEASURED; WI-646 unified the other three selection sites
-/// and missed this one). `[simp]` is the enablement, the connective is not —
+/// and missed this one). `@[simp]` is the enablement, the connective is not —
 /// `is_equation` accepts both, so selection must too, and 043.1's own macro rules
 /// are written `<=>`.
 fn try_fire_dot_rule(
@@ -11727,7 +11727,7 @@ fn try_fire_dot_rule(
             // WI-20260820-8RJK8 — THE THIRD SELECTION SITE, and it needs the guard for
             // the reason it needed `fires_as_dot_rule`: that predicate is
             // `is_simp_equation`, which 8RJK8 widened from "bodyless equation" to
-            // "equational head", so a `[simp]`-tagged GUARDED dot rule reaches this loop
+            // "equational head", so a `@[simp]`-tagged GUARDED dot rule reaches this loop
             // now where it could not before. Selecting it and skipping its precondition
             // would fire a conditional rewrite unconditionally — silently, since a
             // wrongly-fired rewrite leaves no diagnostic. Found by `/code-review`; the
@@ -12475,7 +12475,7 @@ fn visit_type(
     occ: Rc<NodeOccurrence>,
     env: Env,
     expected: Option<Value>,
-    // WI-283: the `[simp]` fire-fuel for this node; passed unchanged to
+    // WI-283: the `@[simp]` fire-fuel for this node; passed unchanged to
     // child Visits and to the Apply/Constructor/Let/Match build frames so
     // a fire can spend it (`fuel - 1`) when it re-`Visit`s the RHS.
     fuel: usize,
@@ -13670,7 +13670,7 @@ fn visit_type(
 /// `TypeResult.node`s — supplied as the node's child results in
 /// `for_each_child` source order, all `Ok` — returning `occ` unchanged
 /// (same `Rc`) when no child moved. The mechanism that makes the typer
-/// *tree-producing*: a `[simp]` rewrite below a node propagates up as the
+/// *tree-producing*: a `@[simp]` rewrite below a node propagates up as the
 /// ancestor chain is rebuilt.
 fn reassemble_children(
     occ: &Rc<NodeOccurrence>,
@@ -13686,7 +13686,7 @@ fn reassemble_children(
 /// [`reassemble_children`] for a contiguous slice of child results (the
 /// `for_each_child`-ordered `group` the wrapper frames drain). WI-408:
 /// unconditional — the typer itself produces rewrites (`some(...)` coercion
-/// insertion), not just `[simp]` firings, so a rewritten child must always
+/// insertion), not just `@[simp]` firings, so a rewritten child must always
 /// propagate; `reassemble`'s ptr-eq short-circuit keeps the unchanged case
 /// allocation-free.
 fn reassemble_group(
@@ -13758,7 +13758,7 @@ fn reassemble_match(
     super::simp_rewrite::reassemble(occ, &children)
 }
 
-/// WI-283: try firing a `[simp]` rule at `node` — the typer's Apply/Constructor
+/// WI-283: try firing a `@[simp]` rule at `node` — the typer's Apply/Constructor
 /// firing site. Reuses `simp_rewrite`'s matcher + RHS builder, including its
 /// type-directed guard ([`simp_fire_guard_holds`]): `node`'s children are already
 /// typed (bottom-up), so their `min_sort` is available for the guard there.
@@ -14075,7 +14075,7 @@ fn build_type(
                 pos,
             }));
             // Visit only what has NOT been typed — a staged argument is typed exactly once,
-            // on this same work-stack, with this same fuel and `[simp]` gate.
+            // on this same work-stack, with this same fuel and `@[simp]` gate.
             for (k, (_, arg)) in named_args.iter().enumerate().rev() {
                 if staged.contains(&(pos_args.len() + k)) {
                     continue;
@@ -14148,17 +14148,17 @@ fn build_type(
             let named_results = arg_results.split_off(pos_args.len());
             let pos_results = arg_results;
             // WI-283: reassemble this Apply from its children's (possibly-
-            // rewritten) `.node`s, then — when `[simp]` rules exist — fire a
+            // rewritten) `.node`s, then — when `@[simp]` rules exist — fire a
             // rule at it *before* classifying (a fired node is discarded, so
             // classifying it would be wasted); on a fire, re-type the RHS so
             // chains/cascades reach fixpoint and the produced apply gets
             // classified for req_insertion. WI-408: the reassembly itself is
             // unconditional (a typer-inserted `some(...)` coercion below must
-            // propagate even with no `[simp]` rules); `reassemble`'s ptr-eq
+            // propagate even with no `@[simp]` rules); `reassemble`'s ptr-eq
             // short-circuit keeps the unchanged case allocation-free.
             // WI-707: a SORT-headed application in a `Type` slot IS a type
             // (`Cell[V = Int64]`) — its result is the reflect `Type` sort, and there is
-            // no operation to dispatch. Sits ahead of `[simp]` firing and the spec-op
+            // no operation to dispatch. Sits ahead of `@[simp]` firing and the spec-op
             // redirect below: a type application is not a redex, and it names no
             // receiver to dispatch on. Its arguments were hinted as types by the Visit
             // arm, so an ill-typed one (`Cell[V = 3]`) still surfaces here, from the
@@ -14316,8 +14316,8 @@ fn build_type(
                 results.drain(drain_start..).collect();
             let named_results = arg_results.split_off(pos_args.len());
             let pos_results = arg_results;
-            // WI-283: reassemble + fire (gated on `[simp]` rules existing) —
-            // mirrors the Apply arm (a `[simp]` rule may target a domain
+            // WI-283: reassemble + fire (gated on `@[simp]` rules existing) —
+            // mirrors the Apply arm (a `@[simp]` rule may target a domain
             // constructor too, e.g. `transpose(transpose(?m)) = ?m`).
             //
             // WI-1104: this frame carries no [`NodePos`] and its re-Visit is an ordinary
@@ -14459,7 +14459,7 @@ fn build_type(
             // design §4, and it is why §4 asks for three variants rather than a wider
             // value dispatch.
             //
-            // PLACED BEFORE the `[simp]` dot-rule rung and the default fallback
+            // PLACED BEFORE the `@[simp]` dot-rule rung and the default fallback
             // because it decides WHICH SORT the member is looked up in; running after
             // them would let a rule or member keyed on `Type` win by position, which
             // is the lookup-order settlement §4 forbids.
@@ -14636,11 +14636,11 @@ fn build_type(
             // and typed once inside the synthesized call (with the callee's
             // param hints).
 
-            // INC2: a sort-specific `[simp]` dot rule (declared in the
+            // INC2: a sort-specific `@[simp]` dot rule (declared in the
             // receiver's sort) OVERRIDES the default. Fire it first; only fall
             // to the default fallback when none fires. Gated on remaining
             // fire-fuel (bounds the fire→re-Visit chain, as the Apply/Ctor arms
-            // do), `[simp]` rules existing, and a resolved receiver sort (the
+            // do), `@[simp]` rules existing, and a resolved receiver sort (the
             // firing guard's key).
             if fuel > 0 && simp_enabled {
                 if let Some(rs) = recv_sort {
@@ -15290,7 +15290,7 @@ fn build_type(
             //
             // WI-342: the scrutinee's `ty` rides as a `Value` — the sort lookup and the
             // pattern env binding read it carrier-agnostically (no re-ground). WI-283:
-            // `node` is the scrutinee as any `[simp]` rewrite left it, which is what
+            // `node` is the scrutinee as any `@[simp]` rewrite left it, which is what
             // `MatchFinal` reassembles the stored `Match` from. The scrutinee's own `env`
             // is deliberately not threaded (the branch envs extend `outer_env`), as it
             // was not before.
@@ -15752,7 +15752,7 @@ fn build_type(
             // synthesizing a lambda over an ill-typed body.
             match body_r {
                 // WI-283: reassemble the lambda from its [param, body]
-                // (WI-318 added param) so a `[simp]` rewrite in either
+                // (WI-318 added param) so a `@[simp]` rewrite in either
                 // propagates up. WI-803: the param is NO LONGER passed through
                 // unchanged — the frame carries the relabelled one, and a lambda
                 // rebuilt from `occ`'s written param would drop the labels and
@@ -15781,7 +15781,7 @@ fn build_type(
                 return;
             }
             // WI-283: reassemble from [cond, then, else] (before consuming
-            // `group`) so a `[simp]` rewrite inside a branch propagates up.
+            // `group`) so a `@[simp]` rewrite inside a branch propagates up.
             let node = reassemble_group(&occ, &group);
             let mut it = group.into_iter().map(|r| r.expect("aggregator"));
             let cond_r = it.next().unwrap();
@@ -15852,7 +15852,7 @@ fn build_type(
                 results.push(Err(e));
                 return;
             }
-            // WI-283: reassemble so a `[simp]` rewrite inside the goal or
+            // WI-283: reassemble so a `@[simp]` rewrite inside the goal or
             // body propagates up.
             let node = reassemble_group(&occ, &group);
             let mut it = group.into_iter().map(|r| r.expect("aggregator"));
@@ -17778,7 +17778,7 @@ fn check_apply_iter(
 
     // WI-898 — an EQUATION-INTRODUCED functor applied, which the arm above declined
     // because it owns no clauses (an equation's live under the `eq`/`unify`
-    // connective). Reaching here at all means the `[simp]` rewriter already declined
+    // connective). Reaching here at all means the `@[simp]` rewriter already declined
     // the call, which IS the diagnosis — so this is a refusal that says so, rather
     // than a fall-through to `UnknownApplyFunctor`'s much vaguer "unknown functor"
     // about a name that resolved perfectly well.
@@ -17803,7 +17803,7 @@ fn check_apply_iter(
     // under a vaguer name. So the gate withheld one diagnostic and let a worse one
     // through — invisible while rule bodies went unchecked.
     //
-    // MEASURED on `bool.anthill`'s `ite`, whose two `[simp]` equations ARE its whole
+    // MEASURED on `bool.anthill`'s `ite`, whose two `@[simp]` equations ARE its whole
     // definition ("no operation is the only correct form" — an operation would have to
     // take thunks, since the untaken branch must never evaluate). `rule clamp(?x, ?r) :-
     // ?r = ite(gte(?x, 0), ?x, 0)` reported "`ite` is a member of sort Bool, not in
@@ -22108,7 +22108,7 @@ fn member_owning_sorts_for_bare(kb: &KnowledgeBase, fn_sym: Symbol) -> BareMembe
     let mut dot_dispatchable = true;
     for (qn, &sym) in kb.symbols.by_qualified_name.iter() {
         // WI-898: an EQUATION-INTRODUCED functor is a member too — `ite` is `Bool`'s,
-        // written as two `[simp]` clauses instead of an `operation` — and this hint
+        // written as two `@[simp]` clauses instead of an `operation` — and this hint
         // exists for exactly the confusion it causes. It could not be seen while the
         // kind was `Goal`, since a `Goal` is a relation and naming a relation's sort
         // would be nonsense.
@@ -22197,7 +22197,7 @@ pub(crate) fn bare_member_call_message(
 ///
 /// THREE FAILURES, THREE REPAIRS, and the census tells them apart — which is the whole
 /// reason the counts are carried rather than the message being one sentence about all
-/// of them. Untagged clauses are INERT (`[simp]` is the enablement, spec §5.3), so the
+/// of them. Untagged clauses are INERT (`@[simp]` is the enablement, spec §5.3), so the
 /// author has to tag them; tagged clauses that did not match are a PATTERN problem, so
 /// the author has to look at what the left-hand sides require; and no clause at all is
 /// neither. Telling the author every possibility would be the diagnostic asking them
@@ -22222,9 +22222,9 @@ pub(crate) fn unreduced_equation_functor_message(
         )
     } else if census.simp_tagged == 0 {
         format!(
-            "{head}: none of its {} defining equation(s) is tagged `[simp]`, and an \
-             untagged equation never fires (spec §5.3 — `[simp]` is the enablement, not \
-             the direction). Tag the defining equation `[simp]`, or declare `{functor}` \
+            "{head}: none of its {} defining equation(s) is tagged `@[simp]`, and an \
+             untagged equation never fires (spec §5.3 — `@[simp]` is the enablement, not \
+             the direction). Tag the defining equation `@[simp]`, or declare `{functor}` \
              as an `operation`",
             census.defining,
         )
@@ -22237,7 +22237,7 @@ pub(crate) fn unreduced_equation_functor_message(
         // sent an author whose clause was skipped for its bound to inspect patterns
         // that were fine.
         format!(
-            "{head}: none of its {} `[simp]` clause(s) fired here. A clause fires only \
+            "{head}: none of its {} `@[simp]` clause(s) fired here. A clause fires only \
              where its left-hand pattern matches STRUCTURALLY (a COMPUTED argument never \
              matches a pattern that writes a literal); the typer additionally declines \
              one carrying a typed pattern bound (`?x: T`) and one its type-directed \
@@ -22863,7 +22863,7 @@ enum DotMember {
 /// and delegating keeps ONE owner for the condition either way — but no test here drives
 /// it, and this paragraph is instead of a control that would only look like one.
 ///
-/// AN AUTHOR-WRITTEN `[simp]` DOT RULE IS NOT PRE-EMPTED, because it fires EARLIER in this
+/// AN AUTHOR-WRITTEN `@[simp]` DOT RULE IS NOT PRE-EMPTED, because it fires EARLIER in this
 /// frame and never reaches here. That ordering is unchanged and is not a silent
 /// first-match: a sort-specific rewrite declared in the receiver's sort is a text the
 /// author wrote for this receiver, which is a selection, not a route order.
@@ -44316,11 +44316,11 @@ pub(crate) fn is_occurrence_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> boo
 
 /// WI-722: is `op` a compile-time MACRO — a syntax→syntax operation whose EVERY
 /// parameter type AND result type is an occurrence type ([`is_occurrence_type`])?
-/// A macro appearing as the head of a fired `[simp]` rule's RHS is EVALUATED at
+/// A macro appearing as the head of a fired `@[simp]` rule's RHS is EVALUATED at
 /// compile time over its argument occurrences, and the occurrence it returns is
 /// spliced as the rewrite result (proposal 043.1). There is NO marker — the
 /// signature classifies it, and the SAME op is an ordinary function at a runtime
-/// call site, a macro only as a `[simp]` RHS.
+/// call site, a macro only as a `@[simp]` RHS.
 ///
 /// Both conditions carry weight (043.1 §3.1): every argument being an occurrence
 /// is 043 §4.2's argument-domain rule (the macro is fed the matched pattern-var
@@ -64764,7 +64764,7 @@ fn view_child_sym<V: TermView>(kb: &KnowledgeBase, ty: &V, key: &str) -> Option<
 ///   - `Fn{S, named}` (parameterized)   → `S` (params dropped)
 ///   - everything else                  → `None`
 /// `None` is the unresolved-type-variable case (dispatch-undecidable for the
-/// type-directed `[simp]` engine) and the structural variants (arrow / named_tuple
+/// type-directed `@[simp]` engine) and the structural variants (arrow / named_tuple
 /// / …), which have no single sort head.
 pub fn sort_functor_of(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
     sort_functor_of_view(kb, &TermIdView(ty))
@@ -64777,7 +64777,7 @@ pub fn sort_functor_of(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
 /// sort or a (deep / term-backed) parameterized type; the structural variants have
 /// none. WI-320: `effects_rows`/`denoted`/`arrow` have no underlying sort head to
 /// widen to — `None` means the sort head is undefined for an occurrence typed as one
-/// of them, the correct conservative answer (no `[simp]` rule targets those
+/// of them, the correct conservative answer (no `@[simp]` rule targets those
 /// positions yet).
 pub fn sort_functor_of_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
     match type_head(kb, ty) {
@@ -65179,7 +65179,7 @@ fn literal_sort(kb: &mut KnowledgeBase, lit: &Literal) -> Value {
 /// `union(a: Set, b: Set) -> Set` — produces a carrier of the SAME concrete sort
 /// as its self-receiver argument: `insert(intBag, x)` is an `IntBag`, not the
 /// abstract `Set`. [`constructor_value_type`] would otherwise read the operation
-/// head as a bare `Ref(insert)` (an op has no entity fields), so a nested `[simp]`
+/// head as a bare `Ref(insert)` (an op has no entity fields), so a nested `@[simp]`
 /// guard on the enclosing law — `member(?x, insert(?s, ?x)) <=> true`, whose
 /// carrier argument is this `insert(…)` subterm — sees a non-provider head and
 /// SUSPENDS (`sort_provides(Set, Set)` is not reflexive; the WI-596 nested gap).
@@ -65267,7 +65267,7 @@ fn constructor_value_type(
         Some(ft) => ft.to_vec(),
         // Not a registered constructor. WI-611: it may be a self-returning spec op
         // (`insert`/`put`/`union`), which types as its concrete receiver carrier so
-        // a nested `[simp]` law's carrier argument reads a provider and can fire.
+        // a nested `@[simp]` law's carrier argument reads a provider and can fire.
         // Gated here (the non-constructor branch) so the common constructor path
         // never pays the operation-info scan. Otherwise the value's type is its own
         // bare sort.
@@ -65583,9 +65583,9 @@ fn value_type_term_d(
     }
 }
 
-/// WI-283 — the type-directed firing guard for `[simp]` rewriting.
+/// WI-283 — the type-directed firing guard for `@[simp]` rewriting.
 ///
-/// A `[simp]` rule's guard is its explicit `:- …` *plus* the `requires` of
+/// A `@[simp]` rule's guard is its explicit `:- …` *plus* the `requires` of
 /// its enclosing sort (proposal 043 §4.1). When the rule is scoped to a
 /// **parametric (spec) sort** — its redex functor is a *spec op*, e.g.
 /// `Numeric.add` — that law holds only for carriers that *satisfy* the
@@ -65613,7 +65613,7 @@ fn value_type_term_d(
 ///
 /// MUST STAY SIDE-EFFECT-FREE and rid-independent (a pure function of `kb` +
 /// `redex`). WI-655 relies on this: `simp_rewrite::try_fire` now ELIDES this
-/// guard entirely for a node whose functor matches no `[simp]` rule (it can't
+/// guard entirely for a node whose functor matches no `@[simp]` rule (it can't
 /// fire), and memoizes one passing verdict across the sibling rules under a
 /// matched functor. A diagnostic push / telemetry / cache-mutation added here
 /// would make firing observably depend on whether a functor happened to match —
@@ -65634,9 +65634,9 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
     // WI-578: each carrier argument's sort head is read from the typer-pushed
     // `inferred_type` (was `min_sort`, removed) on its occurrence. A carrier
     // supplied by name (no positional slot) reads as `None` → don't fire — the
-    // `[simp]` matcher does not match a positional rule LHS against a named-arg
+    // `@[simp]` matcher does not match a positional rule LHS against a named-arg
     // redex either, so such a redex never reaches a fire regardless.
-    // The `[simp]` firing decision is two-valued (fire / don't) — a
+    // The `@[simp]` firing decision is two-valued (fire / don't) — a
     // non-`Fire` outcome (`DontFire` or an under-determined `Suspend`) is "don't
     // fire this rewrite"; WI-300's guard consumes the third state directly.
     matches!(
@@ -65650,7 +65650,7 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
     )
 }
 
-/// WI-283 / WI-292 — the shared spec-op firing decision for `[simp]` rewriting,
+/// WI-283 / WI-292 — the shared spec-op firing decision for `@[simp]` rewriting,
 /// parameterized over how each positional argument's carrier sort head is read.
 /// Both the typer ([`simp_fire_guard_holds`]) and the resolver
 /// ([`simp_requires_guard_holds`]) share this core for the *which-argument-
@@ -65794,7 +65794,7 @@ fn simp_guard_holds_core(
 }
 
 /// WI-292 — the RESOLVER-side type-satisfaction check for a requires-guarded
-/// `[simp]` redex: the counterpart of [`simp_fire_guard_holds`] that reads each
+/// `@[simp]` redex: the counterpart of [`simp_fire_guard_holds`] that reads each
 /// argument's carrier sort from [`value_type_term`], sharing the carrier decision
 /// ([`simp_guard_holds_core`]).
 ///
@@ -65809,12 +65809,12 @@ fn simp_guard_holds_core(
 ///
 /// This is only the *type* half of the resolver's firing decision; the caller
 /// ([`super::resolve::KnowledgeBase::fire_simp_equation`]) gates it behind the
-/// `[simp]`/`[unfold]` tag (`equation_is_directional_rewrite` — a non-directional
+/// `@[simp]`/`@[unfold]` tag (`equation_is_directional_rewrite` — a non-directional
 /// law like `add_comm` must never fire) and `equation_is_requires_guarded`.
 /// Returns `true` only for a body-less SPEC-OP redex whose carrier arguments
 /// provide the spec; a non-`Fn` redex or a non-spec-op (a concrete / defaulted
 /// op) returns `false`. A container-sort rule (`Set.member`) is left skipped two
-/// ways: it is not `[simp]`-tagged AND its carrier is an *element* whose type does
+/// ways: it is not `@[simp]`-tagged AND its carrier is an *element* whose type does
 /// not provide the container (so even when it reaches the carrier check it fails).
 ///
 /// `value_type_term` consults `subst` only for variable heads; the resolver
@@ -65911,10 +65911,10 @@ pub(crate) enum FindDictOutcome {
 /// typer sweep ([`record_find_dictionary_grounding`]) rewrote the surface
 /// `requires(X)` into `find_dictionary(X_base, op_functor, op_arg…)`, choosing a
 /// body call to one of X's operations as the WITNESS whose carrier arguments
-/// decide the instance — exactly the redex a `[simp]` rule fires on
+/// decide the instance — exactly the redex a `@[simp]` rule fires on
 /// ([`simp_requires_guard_holds`]). Here we read each witness argument's carried
 /// type ([`value_type_term`], WI-578) → nominal sort head, then share the WI-596
-/// carrier decision with the `[simp]` resolver guard ([`simp_guard_holds_core`]):
+/// carrier decision with the `@[simp]` resolver guard ([`simp_guard_holds_core`]):
 /// a carrier-parameter typeclass (`Eq`) checks the type-param arguments, a
 /// self-representing container (`Set`) checks the sort-typed arguments. An
 /// under-determined CARRIER (no nominal sort head — unbound / headless) SUSPENDS,
@@ -67692,7 +67692,7 @@ fn type_check_sorts_collect(
     sources.resize(errors.len(), None);
     type_rule_bodies(kb, &rule_typing_reportable, &mut errors, &mut sources);
 
-    // WI-702 (proposal 054 §"Consumers"): reject a `[simp]`/`[unfold]` rewrite whose
+    // WI-702 (proposal 054 §"Consumers"): reject a `@[simp]`/`@[unfold]` rewrite whose
     // sides mention an effectful operation — firing it would duplicate/reorder/drop
     // the call. Load-time (all OperationInfo facts loaded), like the WI-701 sibling,
     // and AFTER `type_rule_bodies` so a body/guard method call (`?x.effectful_op()`)
@@ -68062,7 +68062,7 @@ fn check_branch_external_exclusion(kb: &mut KnowledgeBase) -> Vec<TypeError> {
 }
 
 /// WI-702: collect every `Term::Fn` functor reachable in the hash-consed head
-/// term `id` — the operation symbols an equational `[simp]`/`[unfold]` head
+/// term `id` — the operation symbols an equational `@[simp]`/`@[unfold]` head
 /// (`eq(lhs, rhs)`) mentions, so the formation gate can test each for an effect
 /// row. Iterative to survive a deep head.
 fn collect_op_functors_in_term(kb: &KnowledgeBase, id: TermId, out: &mut Vec<Symbol>) {
@@ -68083,8 +68083,8 @@ fn collect_op_functors_in_term(kb: &KnowledgeBase, id: TermId, out: &mut Vec<Sym
                 }
             }
             // WI-20260902-CZJ2N — A NULLARY CALL IS STORED BARE, so `rule tau() <=> 7
-            // [simp]` has a `Term::Ref` LHS and the `Fn`-only walk never pushed `tau`.
-            // That SILENTLY DROPS WI-702's soundness refusal: a `[simp]`/`[unfold]`
+            // @[simp]` has a `Term::Ref` LHS and the `Fn`-only walk never pushed `tau`.
+            // That SILENTLY DROPS WI-702's soundness refusal: a `@[simp]`/`@[unfold]`
             // rule naming an EFFECTFUL nullary operation loaded clean, and the firing
             // sites are effect-blind by design, so the effectful call was free to be
             // duplicated, reordered or dropped at rewrite time. Reaches a nested call
@@ -68110,12 +68110,12 @@ fn collect_op_functors_in_value(kb: &KnowledgeBase, v: &Value, out: &mut Vec<Sym
 }
 
 /// WI-702 / proposal 054 §"Consumers that must decline it — loudly": the FORMATION
-/// HOLE. A `[simp]`/`[unfold]`-tagged equation is a DIRECTIONAL rewrite the resolver
+/// HOLE. A `@[simp]`/`@[unfold]`-tagged equation is a DIRECTIONAL rewrite the resolver
 /// (`fire_simp_equation`) and typer (`fire_simp`) fire LHS→RHS, so firing DUPLICATES,
 /// REORDERS, or DROPS the matched redex. That is sound today only because effectful
 /// ops never *become* simp equations — the defining-equation family declines them
 /// (`body_specialize::defining_equations`, WI-702 part 1). The one hole left is a
-/// USER-WRITTEN `[simp]`/`[unfold]` rule whose sides mention an EFFECTFUL operation:
+/// USER-WRITTEN `@[simp]`/`@[unfold]` rule whose sides mention an EFFECTFUL operation:
 /// rewriting its call is unsound for the same reason equations of it are refused (an
 /// `External` `create_issue` rewritten twice mints two issues; a `Modify`/`Error` op
 /// is not equational either — the FUNCTION-HOOD predicate, matching the part-1 gate).
@@ -68123,7 +68123,7 @@ fn collect_op_functors_in_value(kb: &KnowledgeBase, v: &Value, out: &mut Vec<Sym
 ///
 /// Keyed on the effect ROW only, NOT `requires`: `Set`/`Map` carry a sort-level
 /// `requires Eq[T]` that rides into their ops (`member`/`insert`/`get`), and the
-/// stdlib's own `member(?x, insert(?s, ?x)) <=> true [simp]` laws mention them — a
+/// stdlib's own `member(?x, insert(?s, ?x)) <=> true @[simp]` laws mention them — a
 /// requires-inclusive gate would reject the standard library. A `requires`-only op is
 /// still a pure function once its dictionary is supplied, so rewriting it is sound;
 /// only a non-empty EFFECT row is the hazard. (Shares the effect predicate with the
@@ -68135,7 +68135,7 @@ fn collect_op_functors_in_value(kb: &KnowledgeBase, v: &Value, out: &mut Vec<Sym
 fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
     // Candidate directional rewrites live under the `eq`/`unify` functors — an
-    // equational head keeps its functor index only when `[simp]`/`[unfold]`-tagged
+    // equational head keeps its functor index only when `@[simp]`/`@[unfold]`-tagged
     // (an untagged law is `unindex_functor`'d at load, WI-139). Filter to the
     // tagged ones; their own `is_fact` status is irrelevant (a `lhs <=> rhs` law is
     // stored as an empty-body rule, i.e. a fact — so DO NOT skip facts here).
@@ -68147,7 +68147,7 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             continue;
         }
         // Every operation symbol the rule's sides mention: the head equation term
-        // (`eq(lhs, rhs)`) plus any body goals/guards (a guarded `[simp]` rule fires
+        // (`eq(lhs, rhs)`) plus any body goals/guards (a guarded `@[simp]` rule fires
         // with its guard). The body is already dot-dispatched (this pass runs after
         // `type_rule_bodies`), so a `?x.effectful_op()` guard is an `Apply` here. A
         // head written in method syntax stays a `dot_apply` TERM — but a `DotApply`
@@ -68169,9 +68169,9 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         //
         // `macro_expanded_rhs_head` — NOT a local `is_macro` test — is what keeps the
         // exemption tied to the expansion that justifies it: it re-applies `try_fire`'s
-        // own conditions ([simp] only, no typed bounds, positional RHS), so a rule the
+        // own conditions (@[simp] only, no typed bounds, positional RHS), so a rule the
         // typer does NOT expand keeps the gate. MEASURED: keyed on `is_macro` alone,
-        // an effectful macro under `[unfold]` — fired by the RESOLVER, which never
+        // an effectful macro under `@[unfold]` — fired by the RESOLVER, which never
         // macro-expands — loaded clean and rewrote the effectful call into the program.
         //
         // Skipping by SYMBOL also exempts that macro elsewhere in the same rule. Every
@@ -68207,7 +68207,7 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 // (WI-1049 decision). The `actual` clause below says which, since
                 // that is what tells the author what to do.
                 expected: format!(
-                    "{label} `[simp]`/`[unfold]` rewrite not to mention potentially \
+                    "{label} `@[simp]`/`@[unfold]` rewrite not to mention potentially \
                      effectful operation `{}`",
                     kb.qualified_name_of(f),
                 ),
@@ -68219,7 +68219,7 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 // to the pre-WI-1049 wording: that arm was never the defect.
                 //
                 // The polymorphic repair is measured, not guessed: a law over a
-                // carrier's OWN pure `insert`/`isEmpty` loads clean under `[simp]`,
+                // carrier's OWN pure `insert`/`isEmpty` loads clean under `@[simp]`,
                 // while the same law on the effect-polymorphic spec is refused.
                 actual: match block {
                     super::body_specialize::EquationBlock::Effectful(ref row) => format!(
@@ -70545,7 +70545,7 @@ fn refine_self_receiver_body_type(
 ///
 /// A `DotApply` is a PRE-DISPATCH form. Every one of them is supposed to leave the
 /// `TypeBuildFrame::DotApply` arm rewritten — to a method `Apply`, a `field_access`, a
-/// relation projection, or a `[simp]` dot-rule RHS — and that arm ends in
+/// relation projection, or a `@[simp]` dot-rule RHS — and that arm ends in
 /// `DotDispatchNoMatch` when none of those apply, so one surviving in a STORED body
 /// means its refusal was produced and then lost somewhere between the dot and the top.
 /// Eval has no arm for it: it raises `Internal("unhandled Expr variant in eval")`, which
@@ -70880,7 +70880,7 @@ fn check_operation_bodies(
     // compute it once before the per-op loop.
     let region_sorts = super::region::region_sorts(kb);
 
-    // WI-657(9): the `[simp]` gate is loop-invariant across this whole pass (typing
+    // WI-657(9): the `@[simp]` gate is loop-invariant across this whole pass (typing
     // rewrites op bodies, never asserts/retracts an equation), so compute it ONCE
     // here and thread it into each per-op body walk via `type_check_node_gated` —
     // instead of `type_check_node` recomputing `has_simp_equations` + two
@@ -71150,7 +71150,7 @@ fn check_operation_bodies(
         ) {
             Ok(result) => {
                 // WI-283: the typer is tree-producing — `result.node` is
-                // the (possibly `[simp]`-rewritten) body. Write the
+                // the (possibly `@[simp]`-rewritten) body. Write the
                 // redex-free tree back so the return-type check below and
                 // every downstream consumer (req_insertion, eval, codegen)
                 // see the rewritten form. Only when a rule actually fired
@@ -71990,7 +71990,7 @@ fn type_rule_bodies(
                 .map(|n| {
                     // WI-1026: tag whatever THIS atom reports with the atom's own
                     // file. Per-atom rather than per-rule because a rule body can
-                    // carry atoms from different files (a `[simp]`-rewritten or
+                    // carry atoms from different files (a `@[simp]`-rewritten or
                     // synthesized atom keeps its origin's span), and the point of
                     // the tag is that the path names where the author must look.
                     let before = errors.len();
@@ -72422,7 +72422,7 @@ fn type_term_head_sym(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
 /// `requires(X)` is grounded by the rule's
 /// own body: a call to one of X's operations (`eq(?x, ?y)` for `requires(Eq[T])`)
 /// is the WITNESS whose carrier arguments' runtime types decide the instance — the
-/// same redex a `[simp]` rule fires on. This sweep finds that witness and records
+/// same redex a `@[simp]` rule fires on. This sweep finds that witness and records
 /// `(spec_base, op_functor, witness_args)` positionally in the goal, so the
 /// resolver's [`find_dictionary_guard`] reads the args' carried types and checks
 /// `provides` (sharing the WI-596 carrier decision) at fire time.
@@ -72706,7 +72706,7 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
 ///
 /// Read-only: the arg carrier sorts come from the `inferred_type` the preceding
 /// `type_rule_bodies` stamped onto each body `Var` (WI-603), exactly as the typer's
-/// `[simp]` guard [`simp_fire_guard_holds`] reads them.
+/// `@[simp]` guard [`simp_fire_guard_holds`] reads them.
 ///
 /// CONSERVATIVE BOUNDARY (deliberate — the "static face of WI-300"): satisfiability
 /// is decided by [`sort_provides`] (via [`simp_guard_holds_core`]), the SAME oracle
@@ -72738,7 +72738,7 @@ fn check_rule_body_requirements(kb: &KnowledgeBase) -> Vec<TypeError> {
         // a concrete carrier that cannot satisfy it (the guard decides that at fire
         // time; the user has explicitly acknowledged the obligation). A Horn rule
         // does NOT inherit its enclosing sort's `requires` chain (that gates
-        // `[simp]`/`[unfold]` equations, not clause bodies), so the in-body goal is
+        // `@[simp]`/`@[unfold]` equations, not clause bodies), so the in-body goal is
         // the only declaration site.
         let mut declared: SmallVec<[Symbol; 2]> = SmallVec::new();
         if let Some(fd) = fd_sym {
@@ -75199,7 +75199,7 @@ fn anchor_grounding(
     // right because it asks the question where the carrier's ACTUAL type is known.
     //
     // AND THE ARM COULD EMPTY A RULE BODY. `rule fe: f(?x: Leaf) <=> 1 :- requires(...)
-    // [simp]` has that goal as its ONLY body atom, so dropping it left `new_body == []`
+    // @[simp]` has that goal as its ONLY body atom, so dropping it left `new_body == []`
     // and tripped `set_rule_body_nodes`'s fact-ness assert; with `debug_assertions` off
     // the rule silently became an UNCONDITIONAL law. No anchored equation-headed row
     // existed to catch it — `equation_headed_anchor_keeps_its_body` is now that row.
@@ -75936,7 +75936,7 @@ fn child_body_positions(
 /// is therefore WHICH rewrite an already-rewriting shape produces — a WI-408 some-coercion
 /// where the slot is `Option[T = …]`, say — and it changes it toward the reading the same
 /// call written in an operation body already gets. `holds(ite(true, 10, 20))` becoming
-/// `holds(10)` is the hazard that reason names, and it is a `[simp]` REDEX fold on a shape
+/// `holds(10)` is the hazard that reason names, and it is a `@[simp]` REDEX fold on a shape
 /// this hint cannot reach.
 ///
 /// `known` is EMPTY here, and that is not a stub: it is the map of sibling argument types
@@ -76171,14 +76171,14 @@ fn rule_body_type_term(kb: &KnowledgeBase, expr: &Expr) -> bool {
 /// stay an `Err`). `ite` is the live case and it is not an accident of the stdlib:
 /// `bool.anthill` argues that `ite` CANNOT be an operation, because an operation would
 /// evaluate both branches. So there is no signature to check the call against, and its
-/// `[simp]` clauses give a type only per redex — the typer has no reading, and inventing
+/// `@[simp]` clauses give a type only per redex — the typer has no reading, and inventing
 /// one is worse than having none (measured: a fresh type var unpinned the enclosing `=`
 /// goal's carrier and refused the program for ambiguous dispatch instead). Reporting it
 /// would refuse `rule clamp(?x, ?r) :- ?r = ite(gte(?x, 0), ?x, 0)`, a program smt-gen
 /// lowers to `(ite …)` today, and whose twin in a rule HEAD this walk never even visits.
 /// The exemption is on the RESOLVED functor: a bare `ite` with no `import
 /// anthill.prelude.Bool.{ite}` interns bare, carries no kind, and is still refused —
-/// correctly, since without the import it reaches none of the `[simp]` rules either.
+/// correctly, since without the import it reaches none of the `@[simp]` rules either.
 ///
 /// APPLIED TO BOTH SHAPES, and that was questioned in review as an unmeasured extension —
 /// it is deliberate, and here is the case. `rule r(?v, ?c) :- ?v = Wv(n: 1).foo(ite(?c, 1,
@@ -76193,12 +76193,12 @@ fn rule_body_type_term(kb: &KnowledgeBase, expr: &Expr) -> bool {
 /// WHAT IT DOES NOT CHECK, stated rather than left to be discovered: nothing about the
 /// call's TYPE survives. WI-1058 took the ARITY half, which this paragraph used to
 /// concede as well ("`rule r(?x, ?r) :- ?r = ite(?x)` loads clean against a three-argument
-/// functor") — a `[simp]` rewrite fires by MATCHING a stored LHS, so a redex at an arity
+/// functor") — a `@[simp]` rewrite fires by MATCHING a stored LHS, so a redex at an arity
 /// no LHS has can never fire, and [`data_functor_error`] refuses it through the same
 /// `unmatchable_shape_error` the subgoal check uses. What is still not derived is the
 /// TYPE: the enclosing `=` goal's right-hand side stays unknown, which is why this
 /// exemption stands and why the atom around it is still not decided. Deriving a type from
-/// a functor's `[simp]` clauses is what would retire it, and no ticket owns that yet.
+/// a functor's `@[simp]` clauses is what would retire it, and no ticket owns that yet.
 fn undecidable_by_this_typer(e: &TypeError) -> bool {
     matches!(
         e,
@@ -76564,13 +76564,13 @@ fn subgoal_shape_error(
 }
 
 /// WI-1058 — the shared half of the two "could this ever match" checks
-/// ([`subgoal_shape_error`], and the `[simp]` REDEX arm of [`data_functor_error`]):
+/// ([`subgoal_shape_error`], and the `@[simp]` REDEX arm of [`data_functor_error`]):
 /// given every shape the name's clauses present, is this term's shape none of them?
 ///
 /// ONE function because it is one question asked of two clause SOURCES — a predicate's
 /// heads and an equation's LHSs — and the rendering, the label canonicalisation and the
 /// "no clauses ⇒ no proof" rule must not differ between them. `subject` names the source
-/// in the message ("a clause" / "a `[simp]` equation"), which is the only difference.
+/// in the message ("a clause" / "a `@[simp]` equation"), which is the only difference.
 fn unmatchable_shape_error(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
@@ -76636,7 +76636,7 @@ fn unmatchable_shape_error(
 ///
 /// The one question a rule body's data slot can be asked without an expectation and
 /// without a scope, and it is the question WI-895 filed: an un-imported functor interns
-/// bare, so `holds894(ite(true, 10, 20))` loads clean, never fires as a `[simp]` redex,
+/// bare, so `holds894(ite(true, 10, 20))` loads clean, never fires as a `@[simp]` redex,
 /// and says nothing. WI-1034 closed the GOAL-position half of that; this is the other
 /// half, asked with the SAME head test ([`KnowledgeBase::undefined_functor`]) so the two
 /// positions cannot disagree about which names exist. That head test carries a
@@ -76681,7 +76681,7 @@ fn data_functor_error(
         return None;
     };
     // WI-1058 — the ONE thing that IS checkable about an EQUATION-introduced functor's
-    // redex, and the hole `undecidable_by_this_typer` handed here by name: a `[simp]`
+    // redex, and the hole `undecidable_by_this_typer` handed here by name: a `@[simp]`
     // rewrite fires by MATCHING a stored LHS, so a call at an arity no LHS has can never
     // fire, whatever the tag says. That exemption's doc states the gap exactly — "nothing
     // about the call itself survives, ARITY INCLUDED — `rule r(?x, ?r) :- ?r = ite(?x)`
@@ -76691,7 +76691,7 @@ fn data_functor_error(
     if kb.has_kind(*functor, crate::intern::SymbolKind::EquationFunctor) {
         if let Some(shapes) = super::simp_rewrite::equation_lhs_shapes(kb, *functor) {
             if let Some(e) =
-                unmatchable_shape_error(kb, occ, &shapes, "a `[simp]` equation", rule_sym)
+                unmatchable_shape_error(kb, occ, &shapes, "a `@[simp]` equation", rule_sym)
             {
                 return Some(e);
             }
@@ -76700,7 +76700,7 @@ fn data_functor_error(
     let sym = kb.undefined_functor(&Value::Node(Rc::clone(occ)))?;
     // NOT `UnknownApplyFunctor`, whose sentence is "expected a known operation or
     // arrow-typed variable" — advice about a CALL SITE, which a data slot is not. The
-    // consequence here is that nothing can unify with the term and no `[simp]` rule can
+    // consequence here is that nothing can unify with the term and no `@[simp]` rule can
     // rewrite it; `UndefinedDataFunctor` says that, in the goal twin's voice.
     Some(TypeError::UndefinedDataFunctor {
         span: Some(occ.span.span),

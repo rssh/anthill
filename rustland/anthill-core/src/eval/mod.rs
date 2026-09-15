@@ -1717,7 +1717,7 @@ impl Interpreter {
         // goes stale on its own:
         //
         //   * `op_body_cache` holds bodies read from the scoped `op_records`, including
-        //     any a layer's `[simp]` write-back rewrote — so a BASE operation could keep
+        //     any a layer's `@[simp]` write-back rewrote — so a BASE operation could keep
         //     running the layer's version of its own body.
         //   * `const_cache` holds const values forced under the layer's declarations.
         //

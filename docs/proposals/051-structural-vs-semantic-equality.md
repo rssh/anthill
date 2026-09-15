@@ -29,7 +29,7 @@ that *"None exists."*
 `set.anthill:25` makes insertion commutative,
 
 ```anthill
-rule insert(insert(?s, ?x), ?y) <=> insert(insert(?s, ?y), ?x)   -- commutative (NOT [simp]: would loop)
+rule insert(insert(?s, ?x), ?y) <=> insert(insert(?s, ?y), ?x)   -- commutative (NOT @[simp]: would loop)
 ```
 
 so `insert(insert(empty, 1), 2)` and `insert(insert(empty, 2), 1)` denote the **same set**

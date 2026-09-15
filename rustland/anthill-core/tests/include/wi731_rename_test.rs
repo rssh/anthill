@@ -26,7 +26,7 @@
 //! been `Relation[T = String]` — the name genuinely gone, exactly as the ticket said.
 //!
 //! So `rename` is an ORDINARY operation with a variadic capture — `fix`'s shape (proposal
-//! 056 §2.1) — with NO compile-time macro, no `[simp]` rule, no rule-head rest pattern, and
+//! 056 §2.1) — with NO compile-time macro, no `@[simp]` rule, no rule-head rest pattern, and
 //! nothing keyed on `rename`'s identity in the typer. `Rename[T, Map]` is a general type
 //! constructor beside `Concat` / `Without` / `Project`, reducing at the same boundary.
 //!

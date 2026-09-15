@@ -9,7 +9,7 @@
 //!
 //! THREE DECISIONS ARE PINNED HERE, each with the row that measures it.
 //!
-//! 1. `[simp]` IS STILL THE ENABLEMENT (WI-881/884/888). A guard does not enable a
+//! 1. `@[simp]` IS STILL THE ENABLEMENT (WI-881/884/888). A guard does not enable a
 //!    rewrite; the tag does. `guard_decides_a_tagged_equation` runs the full
 //!    (connective × tag) matrix and the untagged rows do not fire — the same verdict
 //!    an untagged BODYLESS equation gets, so the tag means one thing.
@@ -41,7 +41,7 @@
 //! | the same in `simp_rewrite::is_simp_equation` | 1: `the_typer_fires_a_guarded_equation_in_an_operation_body` | the other 8 |
 //! | the `guard_holds` call in `fire_simp_equation` | 5: `guard_decides_…`, `a_guard_reads_…`, `an_undetermined_…`, `a_value_guard_and_a_requires_guard_compose`, `stdlib_indexed_seq_…` | `control_…`, `the_typer_…`, `an_unfold_…`, the tag census |
 //! | `definite_only: true` in `guard_holds` | 1: `an_undetermined_guard_suspends_rather_than_naf_deciding` | the other 8 — including its OWN two control rows, which is the point |
-//! | the `[simp]` tag on `indexed_seq.anthill`'s `nth_oob_lo` | 2: `stdlib_indexed_seq_…` and the tag census | the other 7 |
+//! | the `@[simp]` tag on `indexed_seq.anthill`'s `nth_oob_lo` | 2: `stdlib_indexed_seq_…` and the tag census | the other 7 |
 //! | `guard_verdict`'s `HoldsWith` arm (drop the witness) | 1: `a_variable_the_guard_binds_reaches_the_right_hand_side` | the other 10 |
 //! | `guard_verdict`'s open-world test | 1: `a_guard_over_symbolic_parameters_declines_at_the_typer` | the other 10 |
 //!
@@ -131,15 +131,15 @@ end
 /// makes this a guard test and not a firing test.
 ///
 /// THE TAG IS THE ENABLEMENT and the untagged rows are how that is measured: the same
-/// rule, the same true guard, no `[simp]` — and the redex stands. Both connectives are
+/// rule, the same true guard, no `@[simp]` — and the redex stands. Both connectives are
 /// run because the two live in different functor buckets (`PartialEq.eq` vs
 /// `kernel.unify`) and a selection widened in only one of them would pass half of this.
 #[test]
 fn guard_decides_a_tagged_equation() {
     for conn in ["<=>", "="] {
-        for tag in ["[simp]", ""] {
+        for tag in ["@[simp]", ""] {
             let mut kb = crate::common::load_kb_with(&guarded_src(conn, tag));
-            let fires = tag == "[simp]";
+            let fires = tag == "@[simp]";
 
             let t = call_ints(&mut kb, "test.wi8rjk8.Lib.pick", &[9, 2]);
             let out = kb.simplify(t);
@@ -147,14 +147,14 @@ fn guard_decides_a_tagged_equation() {
                 assert_eq!(
                     kb.get_term(out),
                     &Term::Const(Literal::Int(9)),
-                    "`pick(?a, ?b) {conn} ?a :- gt(?a, ?b) [simp]` with the guard TRUE at \
+                    "`pick(?a, ?b) {conn} ?a :- gt(?a, ?b) @[simp]` with the guard TRUE at \
                      the redex must fire to the VALUE 9; got {:?}",
                     kb.get_term(out),
                 );
             } else {
                 assert_eq!(
                     out, t,
-                    "an UNTAGGED guarded equation is inert — `[simp]` is the enablement \
+                    "an UNTAGGED guarded equation is inert — `@[simp]` is the enablement \
                      (WI-881), and a guard does not substitute for it",
                 );
             }
@@ -182,7 +182,7 @@ namespace test.wi8rjk8ctl
 
   sort Lib
     operation pick(x: Int64, y: Int64) -> Int64
-    rule pk: pick(?a, ?b) <=> ?a [simp]
+    rule pk: pick(?a, ?b) <=> ?a @[simp]
   end
 end
 "#;
@@ -215,7 +215,7 @@ namespace test.wi8rjk8deep
 
   sort Lib
     operation peel(b: Boxed) -> Int64
-    rule pl: peel(box(v: ?a)) <=> ?a :- gt(?a, 3) [simp]
+    rule pl: peel(box(v: ?a)) <=> ?a :- gt(?a, 3) @[simp]
   end
 end
 "#;
@@ -245,27 +245,27 @@ end
     }
 }
 
-/// `[unfold]` is a directional rewrite too (`is_directional_equation` is
-/// `[simp] OR [unfold]`), so a guarded `[unfold]` equation fires in the RESOLVER.
-/// It does NOT fire in the typer, which selects `[simp]` alone — that asymmetry is
+/// `@[unfold]` is a directional rewrite too (`is_directional_equation` is
+/// `@[simp] OR @[unfold]`), so a guarded `@[unfold]` equation fires in the RESOLVER.
+/// It does NOT fire in the typer, which selects `@[simp]` alone — that asymmetry is
 /// older than this ticket and untouched by it.
 #[test]
 fn an_unfold_tagged_guarded_equation_fires() {
-    let mut kb = crate::common::load_kb_with(&guarded_src("<=>", "[unfold]"));
+    let mut kb = crate::common::load_kb_with(&guarded_src("<=>", "@[unfold]"));
     let t = call_ints(&mut kb, "test.wi8rjk8.Lib.pick", &[9, 2]);
     let out = kb.simplify(t);
     assert_eq!(
         kb.get_term(out),
         &Term::Const(Literal::Int(9)),
-        "a guarded `[unfold]` equation fires in the resolver",
+        "a guarded `@[unfold]` equation fires in the resolver",
     );
 }
 
 // ── 2. the typer fires it too ───────────────────────────────────────────
 
-/// The SECOND firing site. `[simp]` is one enablement, so a tagged guarded equation
+/// The SECOND firing site. `@[simp]` is one enablement, so a tagged guarded equation
 /// must mean the same thing in an operation BODY as at a resolution goal — this is
-/// the site where a `[simp]` equation gives a body-less operation a meaning (§5.3),
+/// the site where a `@[simp]` equation gives a body-less operation a meaning (§5.3),
 /// and leaving it out would have made a guarded law fire for a goal and not for the
 /// call that spells it.
 ///
@@ -281,7 +281,7 @@ namespace test.wi8rjk8typer
 
   sort Lib
     operation pick(x: Int64, y: Int64) -> Int64
-    rule pk: pick(?a, ?b) <=> ?a :- gt(?a, ?b) [simp]
+    rule pk: pick(?a, ?b) <=> ?a :- gt(?a, ?b) @[simp]
 
     operation caller() -> Int64 = pick(9, 2)
     operation caller_no() -> Int64 = pick(2, 9)
@@ -344,8 +344,8 @@ namespace test.wi8rjk8naf
   sort Lib
     operation susp(x: Int64, y: Int64) -> Int64
     operation ctl(x: Int64, y: Int64) -> Int64
-    rule s: susp(?a, ?b) <=> ?a :- not(p_flounder(?a)) [simp]
-    rule c: ctl(?a, ?b) <=> ?a :- not(p_def(?a)) [simp]
+    rule s: susp(?a, ?b) <=> ?a :- not(p_flounder(?a)) @[simp]
+    rule c: ctl(?a, ?b) <=> ?a :- not(p_def(?a)) @[simp]
   end
 end
 "#;
@@ -379,7 +379,7 @@ end
 // ── 4. a STDLIB guarded law, driven to a value ──────────────────────────
 
 /// `indexed_seq.anthill`'s `nth_oob_lo: nth(?_, ?i) = none :- lt(?i, 0)` — one of the
-/// fifteen guarded equations that were dead in the stdlib — tagged `[simp]` by this
+/// fifteen guarded equations that were dead in the stdlib — tagged `@[simp]` by this
 /// ticket and driven END TO END: the spec-op term `IndexedSeq.nth(nil(), -1)`
 /// rewrites to `none`.
 ///
@@ -423,7 +423,7 @@ fn stdlib_indexed_seq_out_of_bounds_law_fires_to_a_value() {
 
 /// `map.anthill`'s `get(put(?m, ?k2, ?v), ?k) = get(?m, ?k) :- neq(?k, ?k2)` is the law
 /// whose own file named this ticket as the reason it stayed untagged, and it is now
-/// `[simp]`. It composes TWO guards: the value guard this ticket added, and the
+/// `@[simp]`. It composes TWO guards: the value guard this ticket added, and the
 /// sort-level `requires Eq[T = K]` that `equation_is_requires_guarded` keys on — so it
 /// fires only over a carrier that provides `Map`.
 ///
@@ -456,7 +456,7 @@ namespace test.wi8rjk8req
     }
     -- ONE law, and guarded: `Map`'s unguarded `hit` sibling is deliberately absent, so
     -- that the guard-FALSE row below has nothing else to fire and measures THIS rule.
-    rule miss: get(put(?b, ?k2), ?k) <=> get(?b, ?k) :- neq(?k, ?k2) [simp]
+    rule miss: get(put(?b, ?k2), ?k) <=> get(?b, ?k) :- neq(?k, ?k2) @[simp]
   end
 
   sort Plain
@@ -633,7 +633,7 @@ namespace test.wi8rjk8bind
 
   sort Lib
     operation pick(x: Int64) -> Boxed
-    rule h: pick(?a) <=> wrap(v: ?p) :- src(?a, ?p) [simp]
+    rule h: pick(?a) <=> wrap(v: ?p) :- src(?a, ?p) @[simp]
   end
 end
 "#;
@@ -695,7 +695,7 @@ namespace test.wi8rjk8ow
 
   sort Lib
     operation pick(x: Int64, y: Int64) -> Int64
-    rule pk: pick(?a, ?b) <=> ?a :- neq(?a, ?b) [simp]
+    rule pk: pick(?a, ?b) <=> ?a :- neq(?a, ?b) @[simp]
 
     operation caller_ground() -> Int64 = pick(1, 2)
     operation caller_sym(p: Int64, q: Int64) -> Int64 = pick(p, q)

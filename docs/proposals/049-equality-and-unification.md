@@ -136,7 +136,7 @@ binds, so `not(=)` is always safe.
 
 ### simp and equational rules: radius-3 migration
 
-A `[simp]` rule is today `eq(LHS, RHS)` plus a `[simp]` attribute that orients it L→R
+A `@[simp]` rule is today `eq(LHS, RHS)` plus a `@[simp]` attribute that orients it L→R
 (`meta_has_flag(.., "simp")`, `load.rs:2682`); the logical engine's `apply_eq_rules`
 (`resolve.rs:1506`) already treats *every* empty-body `eq(LHS,RHS)` rule as an L→R
 rewrite. So `=` is **already** doing unify-and-derive inside simp — the directionality is
@@ -148,7 +148,7 @@ The migration boundary is the loader's **existing** `is_equation` classification
 **classification-driven, not textual**:
 
 - migrate to `<=>`: oriented rewrites — prelude `lt(?a,?b) = gt(?b,?a)`,
-  `neq(?a,?b) = not(eq(?a,?b))`, list/option/`[simp]`/`[unfold]` equations.
+  `neq(?a,?b) = not(eq(?a,?b))`, list/option/`@[simp]`/`@[unfold]` equations.
 - **stay `=`**: contracts (`ensures eq(balance(result), …)`), constraints, and body
   guard tests — these are body goals, not `is_equation` heads, and a postcondition must
   *test*, never *bind*.
@@ -169,10 +169,10 @@ must not bind — you choose a rewrite, you do not generalize the subject), dist
 the two-sided **unification** a `<=>` *body goal* performs; the discrim path used for
 simp selection runs in match mode.
 
-### `<=>` is symmetric; `[simp]` supplies firing direction
+### `<=>` is symmetric; `@[simp]` supplies firing direction
 
 An equation like `add(?x, 0) <=> ?x` is **logically symmetric** but only one orientation
-terminates. Keep the operator symmetric and let the `[simp]`/`[unfold]` tag pick the
+terminates. Keep the operator symmetric and let the `@[simp]`/`@[unfold]` tag pick the
 firing direction. Consequence: logical content is symmetric and **citable both ways**
 via `using` (the theorem registry / proof system may rewrite either direction); the
 auto-normalizer's orientation is the tag's job. A directional glyph (`~>`) would
@@ -339,7 +339,7 @@ fastparse grammar. scaland **mirrors grammar + loader only** (no typer).
 8. **scaland** (**WI-528**) — grammar + loader mirror.
 
 **Typed half — parked, separate from this type-erased sequence:** carried-`min_sort`
-type-directed `[simp]` firing, **WI-502** (design = the
+type-directed `@[simp]` firing, **WI-502** (design = the
 [typed-term carrier](design/typed-term-carrier.md)) and **WI-292** (impl); hangs off step
 3, deferred pending linked type-design issues.
 

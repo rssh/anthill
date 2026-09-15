@@ -19,11 +19,11 @@ earlier "constraint substrate / Shape A–B / `min_sort`-builtin" framing that l
 *§Decisions* for what was dropped and why.
 
 **Foundation for** typed *rule patterns* (the WI-502 goal). **Consumers (dependent tickets):**
-WI-292 (type-directed `[simp]` firing), WI-573 (guarded-effect guard discharge), WI-567 / WI-566
+WI-292 (type-directed `@[simp]` firing), WI-573 (guarded-effect guard discharge), WI-567 / WI-566
 (guard discharge over rule-defined predicates), **runtime monomorphization** (dispatch on a
 value's carried type). **Builds on:** WI-328 (the `lacks` constraint side-table), WI-537 (the Γ
 `Env{types,flow}` substrate), WI-109 (`Value::Var`), WI-246 (rule-body atoms as occurrences).
-**Proposals:** 043 §4 (`[simp]`), 049 (`<=>`), 045/046 (effect rows), 050 (Γ).
+**Proposals:** 043 §4 (`@[simp]`), 049 (`<=>`), 045/046 (effect rows), 050 (Γ).
 
 ## Why — type-dependent rules
 
@@ -34,7 +34,7 @@ WI-502 originated as **"how do we work with type-dependent rules."** Two gaps bl
 2. **No machinery in the resolver to match them** — even given the syntax, the resolver holds
    type-erased terms and cannot evaluate a pattern's type-condition.
 
-Native type-directed `[simp]` rules not firing is a *symptom* of these gaps: the typer fires them
+Native type-directed `@[simp]` rules not firing is a *symptom* of these gaps: the typer fires them
 (`simp_fire_guard_holds`) over typed occurrences, but the resolver `equation_is_requires_guarded`-
 **skips** them because it has no type to read. The foundation under both gaps is the same — **terms
 and rules carry their type**, so type-directed reasoning **reads** the type rather than
@@ -208,7 +208,7 @@ from a `Value`.)
 > **Typed-pattern surface (designed below):** a variable's type is declared **once** (e.g.
 > `p(?x: T, ?x)`, not on each occurrence), mirroring the keyed-once storage; for a non-operation head
 > it declares the relation's signature. Full design in §"Typed rule patterns — surface and matching";
-> the explicit-binder *grammar* is not yet parsed (the implicit `[simp]`/`requires` form needs none).
+> the explicit-binder *grammar* is not yet parsed (the implicit `@[simp]`/`requires` form needs none).
 
 **M5 — Explicit wakeup at the bind site (from the functional model).** A variable is an inert
 `VarId(u32)`, a binding is an entry in `Substitution.bindings`, and a branch is a *clone* — no
@@ -252,7 +252,7 @@ today, but would bite naïve resolver-side generation).
 
 This is the **goal** the substrate above exists for: rules whose firing depends on a type. It comes
 in two surface forms — an **explicit** type bound on a pattern variable, and the **implicit** guard a
-`[simp]` rule inherits from its enclosing sort's `requires` — and both **desugar to the same thing**:
+`@[simp]` rule inherits from its enclosing sort's `requires` — and both **desugar to the same thing**:
 a type-relation goal over a variable's *carried* type.
 
 ### Surface — the same conventions as operations
@@ -268,7 +268,7 @@ A **bound**, though, is a rule *condition*, not a `requires`. `requires` is the 
 construct, declared on a *sort* or *operation*; a rule's conditions live in its body. So a bound on a
 rule is a **guard** (its `:- …`), or the inline `?x: T` annotation that desugars to one. The
 correspondence is **op/sort `requires` ≡ rule `:- guard`** — the same notion ("conditions of
-applicability"), each in its construct's natural slot (proposal 043 §4.1: a `[simp]` rule's guard is
+applicability"), each in its construct's natural slot (proposal 043 §4.1: a `@[simp]` rule's guard is
 its `:- …` *plus* the enclosing sort's inherited `requires`).
 
 ```anthill
@@ -300,7 +300,7 @@ is **not blanket-inherited**. Read `requires` as an implicit parameter (a spec d
 
 This is the WI-562 principle one level down: scope a `requires` obligation to where the spec op is
 *called*, not to the whole symbol (a sort-level `requires Eq[T]` had wrongly blocked `nth` on
-`List[Waypoint]`). So a `[simp]` rule's **implicit** guard is exactly the enclosing sort/op's
+`List[Waypoint]`). So a `@[simp]` rule's **implicit** guard is exactly the enclosing sort/op's
 `requires` *as consumed by that rule* — the WI-283 guard the typer honors (`simp_fire_guard_holds`)
 and the resolver today **skips** (`equation_is_requires_guarded`) for lack of a carried type to read;
 the typed-value substrate is what lets the resolver honor it. Firing therefore honors **what the rule
@@ -364,7 +364,7 @@ bind site rather than after a full head match, and it is the substrate already b
 
 ### Status
 
-The **implicit** `[simp]`/`requires` path needs **no** new syntax — only a resolver that reads the
+The **implicit** `@[simp]`/`requires` path needs **no** new syntax — only a resolver that reads the
 carrier's carried type, which the typed-value carrier (WI-578) supplies; replacing
 `equation_is_requires_guarded`'s blanket skip with the wakeup check above is the resolver consumer
 **WI-292** (DELIVERED).
@@ -387,9 +387,9 @@ spellings load and fire:
   **loud load errors**.
 
 *Enforcement scope (deliberate):* the bound is enforced **only** where it can be — the resolver's
-`apply_eq_rules`, firing a `[simp]`/`[unfold]` **equational** rewrite. A typed annotation on any other
+`apply_eq_rules`, firing a `@[simp]`/`@[unfold]` **equational** rewrite. A typed annotation on any other
 rule (relational, or an untagged equation) is a **loud load error** rather than a silently-ignored
-bound. The **typer** also rewrites with `[simp]` rules (`simp_rewrite::try_fire`) but its match keys
+bound. The **typer** also rewrites with `@[simp]` rules (`simp_rewrite::try_fire`) but its match keys
 its substitution by fresh globals, not the synthetic-DeBruijn entries the firing check reads — so it
 cannot (yet) enforce the per-variable bound and therefore **skips** typed rules entirely (sound but
 conservative: it does not simplify with them; never wrong-fires). Wiring the typer-side check (and
@@ -399,13 +399,13 @@ variables is the body-guard fallback, not yet wired.
 
 ## Conditional rewrite rules — the general frame
 
-A typed `[simp]` rule is one instance of a more general object: a **conditional rewrite** — an
+A typed `@[simp]` rule is one instance of a more general object: a **conditional rewrite** — an
 equation applied directionally (LHS→RHS) *only when a guard holds*. Type-directedness is just the
 guard being a type-bound; the same machinery carries an arbitrary guard.
 
 ### What they are
 
-A `[simp]` rule is an equation (head `eq(LHS, RHS)`, proposal 043) tagged directionally-rewritable.
+A `@[simp]` rule is an equation (head `eq(LHS, RHS)`, proposal 043) tagged directionally-rewritable.
 Its **guard** is its explicit `:- …` **plus** the enclosing sort's `requires` (043 §4): an in-sort
 rule is type-directed even with no written guard, and an explicit guard adds value/type conditions.
 The engine evaluates the guard **generally, by resolution** — a type-bound (`Numeric[?x]`), a value
@@ -417,8 +417,8 @@ The equation is the rule **head**; the guard is the ordinary `:- body` (grammar:
 `heads ':-' body`, and `=` / `<=>` form an equation head):
 
 ```anthill
-rule [simp] add(?x, 0) = ?x :- Numeric[?x]      -- type guard (≡ the inline `add(?x: Numeric, 0)`)
-rule [simp] div(?x, ?y) = ... :- neq(?y, 0)      -- value guard
+rule add(?x, 0) = ?x :- Numeric[?x] @[simp]      -- type guard (≡ the inline `add(?x: Numeric, 0)`)
+rule div(?x, ?y) = ... :- neq(?y, 0) @[simp]      -- value guard
 ```
 
 The implicit guard (the enclosing sort's `requires`) rides on top with no written `:- `; `<=>` and the
@@ -443,11 +443,11 @@ then the carried-type check).
 
 Conditional rewrites were *specified* (043) and *parseable* (the grammar), and fired nowhere. 043's
 own indexing note named the wrong mechanism: *"guarded equations must be indexed for firing too;
-today `is_equation` requires an empty body, so guarded `[simp]` rules aren't indexed."* **Indexing was
-never the blocker** — it tracks the `[simp]` TAG alone (WI-139 unindexes untagged equational HEADS by
+today `is_equation` requires an empty body, so guarded `@[simp]` rules aren't indexed."* **Indexing was
+never the blocker** — it tracks the `@[simp]` TAG alone (WI-139 unindexes untagged equational HEADS by
 shape, the body irrelevant), so a tagged guarded equation was in the bucket and reachable all along.
 The ticket measured that directly, over four (body × tag) combinations against a rule-free base of 20
-`unify` rules: guarded + `[simp]` → 21, guarded untagged → 20, bodyless + `[simp]` → 21, bodyless
+`unify` rules: guarded + `@[simp]` → 21, guarded untagged → 20, bodyless + `@[simp]` → 21, bodyless
 untagged → 20. The fix confirmed it from the other side — widening the FIRING predicate alone made a
 tagged guarded equation fire, with nothing about indexing touched. The blocker was the empty-body
 clause **at the firing site**.
@@ -467,7 +467,7 @@ What closed it:
   firing gap alone changed nothing for any of them; the reducing ones were tagged as part of the same
   change and the non-orienting ones (the `Field` identities, `euclid_div`) deliberately were not.
 
-So a conditional rewrite is the general object; the typed `[simp]` rule is the case whose guard is a
+So a conditional rewrite is the general object; the typed `@[simp]` rule is the case whose guard is a
 type-bound, and the carried-type substrate is exactly what lets the resolver evaluate *that* guard.
 
 ### Worked examples — dormant rules in today's stdlib
@@ -489,7 +489,7 @@ WI-292):
   (logical_stream.anthill), `nth`'s two out-of-bounds cases (indexed_seq.anthill, guarded by `lt` /
   `gte`) and `Map.get` past a different key (guarded by `neq`). Fifteen, every one **untagged** — so
   each was dead twice over, and closing the firing gap alone would have changed nothing for any of
-  them. The `nth` bounds and the `Map.get` law are now `[simp]`; the stream laws wait on a guard
+  them. The `nth` bounds and the `Map.get` law are now `@[simp]`; the stream laws wait on a guard
   (`splitFirst(?s) = none` over an abstract carrier) that needs WI-567's spec-op discharge, and the
   `Field` / `euclid_div` / `interleave` laws stay untagged because they do not orient.
 
@@ -588,7 +588,7 @@ full-refinement constraints are a door opened deliberately, not by drift.
   carried type) and the firing-time conforms check reading the carried type, so a typed rule the
   resolver skips today becomes *matchable*. See *§Typed rule patterns — Status*.
 
-**Consumers (dependent tickets, not WI-502 itself):** WI-292 (type-directed `[simp]` firing),
+**Consumers (dependent tickets, not WI-502 itself):** WI-292 (type-directed `@[simp]` firing),
 WI-573 → **WI-755 (DELIVERED)** — guarded-effect guard discharge over spec-op guards; note that it
 arrived by a *different route* than this document forecasts (see §"A type guard selects a
 dictionary"), runtime monomorphization (dispatch on the carried

@@ -221,7 +221,7 @@ pub enum EvalError {
     ///
     /// The distinction this variant exists to draw: every OTHER failure of a
     /// macro is a DECLINE — the macro is merely not applicable (or not ready
-    /// yet), so the `[simp]` template call is kept and whatever downstream check
+    /// yet), so the `@[simp]` template call is kept and whatever downstream check
     /// the residual fails is the diagnostic. A rejection is the opposite: the
     /// macro IS the right one, the input is the user's, and the reason is known
     /// HERE and nowhere downstream. Before this channel existed, `where(λ c ->
@@ -571,7 +571,7 @@ impl std::error::Error for EvalError {}
 ///
 /// The sentence names the MACRO, not the surface spelling that expanded to it
 /// (`where` → `guarded_of`): the macro is what read the syntax and what the author
-/// must satisfy, and the `[simp]` rule connecting the two is greppable from the
+/// must satisfy, and the `@[simp]` rule connecting the two is greppable from the
 /// name. `detail` is the macro's own words, verbatim.
 pub fn macro_rejection_message(macro_name: Option<&str>, detail: &str) -> String {
     match macro_name {

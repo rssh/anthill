@@ -597,7 +597,7 @@ fn a_witness_supplied_provision_anchors_too() {
 
 #[test]
 fn equation_headed_anchor_keeps_its_body() {
-    // AND THE DELETED ARM COULD EMPTY A RULE BODY. A `[simp]` equation whose ONLY body
+    // AND THE DELETED ARM COULD EMPTY A RULE BODY. A `@[simp]` equation whose ONLY body
     // atom is the `requires` goal had that atom dropped, so `set_rule_body_nodes` was
     // handed `[]` and its fact-ness assert fired — `assertion left == right failed:
     // set_rule_body_nodes must not flip a rule's fact-ness`. With `debug_assertions` off
@@ -609,7 +609,7 @@ fn equation_headed_anchor_keeps_its_body() {
     let src = refining(
         "  rule answer(?r) :- f(sub(), ?r)\n  \
          operation f(x: Sub) -> Int64\n  \
-         rule fe: f(?x: Leaf) <=> 1 :- requires(Desc[T = Leaf]) [simp]\n",
+         rule fe: f(?x: Leaf) <=> 1 :- requires(Desc[T = Leaf]) @[simp]\n",
     );
     let mut kb = crate::common::load_kb_with(&src);
     // The point is that loading and querying do not PANIC; the answer is incidental.
