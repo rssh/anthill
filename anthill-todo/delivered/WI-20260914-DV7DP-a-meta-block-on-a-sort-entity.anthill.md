@@ -3,9 +3,9 @@
 - id: WI-20260914-DV7DP-a-meta-block-on-a-sort-entity
 - created: 2026-09-14T05:50:24Z
 
-- status: Claimed
-- status_agent: user
-- status_at: 2026-09-14T06:30:50Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-15T15:16:15Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -87,3 +87,4 @@ NOT TAKEN: one exhaustive emission seam (the six sites are exactly
 after validation (the load fails, and its `DescriptionInfo` has the same order); caching
 per-row symbol lookups (WI-1031 measured the same per-member cost for `MemberInfo` as
 noise).
+

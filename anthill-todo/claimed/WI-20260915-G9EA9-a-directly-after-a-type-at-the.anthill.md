@@ -3,9 +3,9 @@
 - id: WI-20260915-G9EA9-a-directly-after-a-type-at-the
 - created: 2026-09-15T12:37:14Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-15T12:37:14Z
+- status: Claimed
+- status_agent: claude
+- status_at: 2026-09-15T15:16:19Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
