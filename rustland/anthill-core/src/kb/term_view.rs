@@ -1907,6 +1907,34 @@ pub trait TermView {
     /// itself matches a tree-var) and at sub-arg var-edge captures.
     fn as_bind_value(&self) -> BindValue;
 
+    /// WI-20260827-W1YKH — the named argument called `name`, on whatever carrier it
+    /// rides, with the child handed back on ITS OWN carrier.
+    ///
+    /// BY LOCAL NAME, which is the whole difference from [`Self::named_arg`]: a named
+    /// arg's symbol may be qualified, and a caller holding a string — a reflect
+    /// accessor's `name` parameter, a `meta(…)` block's key — has no symbol to match
+    /// on. Four sites open-coded this same `named_keys` → `find` → `named_arg` chain
+    /// before it lived here (`term_field`, the kernel's meta readers, the reflect spine
+    /// walker, `project_field`), which is three chances for the name-matching rule to
+    /// drift from the other one.
+    ///
+    /// IT JUDGES ONLY THE FIELD, NOT THE RECEIVER. A value with no named args at all —
+    /// a closure, a literal, a term of the wrong shape — answers `None` here, the same
+    /// as a term that simply lacks the key. A caller that must tell those apart (only
+    /// `term_field` does; the others already pin their receiver's functor) asks about
+    /// the receiver separately, which keeps that judgement where its contract is
+    /// written rather than buried in a shared read.
+    fn named_field<'a>(&'a self, kb: &'a KnowledgeBase, name: &str) -> Option<ViewItem<'a>> {
+        // The generic route: `named_keys` allocates on every impl, so a carrier that can
+        // scan its own storage in place overrides this (see `impl TermView for TermId`,
+        // which is what the `@[simp]` gate reads through).
+        let sym = self
+            .named_keys(kb)
+            .into_iter()
+            .find(|s| kb.local_name_of(*s) == name)?;
+        self.named_arg(kb, sym)
+    }
+
     /// The LITERAL this view denotes, on whatever carrier it rides — `None` if it
     /// denotes something else.
     ///
@@ -2454,6 +2482,18 @@ impl TermView for TermIdView {
         }
     }
 
+    // Mirrors `impl TermView for TermId` (see the note at the top of that impl): in
+    // place, no `Vec`. The two must not disagree about which does the fast thing.
+    fn named_field<'a>(&'a self, kb: &'a KnowledgeBase, name: &str) -> Option<ViewItem<'a>> {
+        match kb.get_term(self.0) {
+            Term::Fn { named_args, .. } => named_args
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == name)
+                .map(|(_, t)| ViewItem::Term(*t)),
+            _ => None,
+        }
+    }
+
     fn as_bind_value(&self) -> BindValue {
         BindValue::Term(self.0)
     }
@@ -2515,6 +2555,21 @@ impl TermView for TermId {
         match kb.get_term(*self) {
             Term::Fn { named_args, .. } => named_args.iter().map(|(s, _)| *s).collect(),
             _ => Vec::new(),
+        }
+    }
+    // WI-20260827-W1YKH — IN PLACE, no `Vec`. The default `named_field` goes through
+    // `named_keys`, which allocates on every impl; this carrier can scan its own
+    // storage, and it is the one the `@[simp]` / `@[unfold]` firing gate reads through
+    // (`equation_is_directional_rewrite` asks twice per candidate rule, per
+    // resolution). Same answer, no allocation — raised by /code-review, which measured
+    // the default onto that path.
+    fn named_field<'a>(&'a self, kb: &'a KnowledgeBase, name: &str) -> Option<ViewItem<'a>> {
+        match kb.get_term(*self) {
+            Term::Fn { named_args, .. } => named_args
+                .iter()
+                .find(|(s, _)| kb.local_name_of(*s) == name)
+                .map(|(_, t)| ViewItem::Term(*t)),
+            _ => None,
         }
     }
     fn as_bind_value(&self) -> BindValue {
@@ -3154,6 +3209,17 @@ impl TermView for ViewItem<'_> {
             ViewItem::Value(v) => (*v).named_arg(kb, sym),
             ViewItem::Owned(v) => v.named_arg(kb, sym),
             ViewItem::Node(occ) => occ_view_named_arg(occ, kb, sym),
+        }
+    }
+
+    fn named_field<'a>(&'a self, kb: &'a KnowledgeBase, name: &str) -> Option<ViewItem<'a>> {
+        // Delegate, so a `ViewItem::Term` gets `TermId`'s in-place scan instead of the
+        // allocating default — the same reason every other method here delegates.
+        match self {
+            ViewItem::Term(t) => t.named_field(kb, name),
+            ViewItem::Value(v) => v.named_field(kb, name),
+            ViewItem::Node(occ) => occ.named_field(kb, name),
+            ViewItem::Owned(v) => v.named_field(kb, name),
         }
     }
 

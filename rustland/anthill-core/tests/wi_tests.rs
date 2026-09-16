@@ -378,6 +378,9 @@ mod wi_g9ea9_meta_block_token_test;
 #[path = "include/wi_z73fx_visibility_reflect_test.rs"]
 mod wi_z73fx_visibility_reflect_test;
 
+#[path = "include/wi_w1ykh_term_accessor_carrier_test.rs"]
+mod wi_w1ykh_term_accessor_carrier_test;
+
 #[path = "include/wi_0v0f7_bridged_raise_test.rs"]
 mod wi_0v0f7_bridged_raise_test;
 

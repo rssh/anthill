@@ -284,7 +284,11 @@ namespace anthill.reflect
 
   -- Extract a named field from a Fn term by short name. Mirrors
   -- `field_access(t, intern(name))` but with String input. Returns none()
-  -- when the term has no matching named arg or is not Fn-shaped.
+  -- when the term has no matching named arg or is not Fn-shaped — INCLUDING a
+  -- leaf term (a literal, a variable, a bare name), which reads as a term and
+  -- simply has no named args. A value that is no term at all — an opaque runtime
+  -- handle, a functor-less aggregate, an operation reference — RAISES instead, so
+  -- an unrecognised carrier is never spelled as `none()` (WI-20260827-W1YKH).
   operation term_field(t: Term, name: String) -> Option[T = Term]
 
   -- Extract a String literal value from a term. Returns none() unless the
@@ -297,12 +301,17 @@ namespace anthill.reflect
   operation term_as_int(t: Term) -> Option[T = Int64]
 
   -- The canonical printed text of a term — the TermPrinter rendering the
-  -- persistence layer writes. Total over terms.
+  -- persistence layer writes. Total over TERMS, on any carrier; a value that is no
+  -- term at all (an opaque runtime handle) raises rather than printing as something
+  -- it is not (WI-20260827-W1YKH).
   operation term_to_string(t: Term) -> String
 
-  -- The element terms of a cons/nil list term, tolerating both the named
-  -- (`cons(head: …, tail: …)`) and positional (`cons(…, …)`) encodings.
-  -- A non-list term yields the empty list.
+  -- The element terms of a cons/nil list term, on any carrier, tolerating both
+  -- the named (`cons(head: …, tail: …)`) and positional (`cons(…, …)`) encodings.
+  -- A non-list TERM yields the empty list; a value that is no term at all — an
+  -- opaque runtime handle, a functor-less aggregate, an operation reference —
+  -- RAISES instead, on the same receiver rule as `term_field`, so an unrecognised
+  -- carrier is never spelled as `[]` (WI-20260827-W1YKH).
   operation term_list_items(t: Term) -> List[T = Term]
 
   -- Materialize a `Term::Fn` whose functor is a known constructor into a

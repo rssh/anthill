@@ -4612,31 +4612,58 @@ fn build_value_list(interp: &mut Interpreter, elems: Vec<Value>) -> Result<Value
 /// thread Symbol values through.
 fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [term_arg, name_arg] = expect_args::<2>("term_field", args)?;
-    let tid = match &term_arg {
-        Value::Term { id: t, .. } => *t,
-        other => return Err(type_mismatch("Term", other, None)),
-    };
     let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
 
-    let found: Option<crate::kb::term::TermId> = match interp.kb.get_term(tid) {
-        crate::kb::term::Term::Fn { named_args, .. } => {
-            let named = named_args.clone();
-            named
-                .iter()
-                .find(|(s, _)| interp.kb.local_name_of(*s) == name)
-                .map(|(_, t)| *t)
-        }
-        _ => None,
-    };
+    // WI-20260827-W1YKH — READ THE ARGUMENT, DO NOT LOWER IT. A rule body hands the
+    // receiver over as an OCCURRENCE (`Value::Node`, or an `Entity` wrapping one):
+    // the resolver's σ-applied goals are deliberately not interned. Matching
+    // `Value::Term` alone raised `TypeMismatch` on every rule-body call. The raise IS
+    // reported — the bridge dispositions it as a `Fault` (WI-20260911-0V0F7) and the
+    // search is marked incomplete, "a goal could not be evaluated" — but the VALUE
+    // answer is `None` by design (WI-483: a callee's failure must not break the
+    // enclosing rule), so a rule body simply got no data out of an accessor it was
+    // entitled to read. MEASURED before the fix:
+    // `DeclarationMeta(meta: ?m), term_field(?m, "internal") = none()` residualized
+    // on every row, beside a `term_functor_name(?m)` that answered definite over the
+    // same KB because it reads the occurrence head instead of lowering.
+    //
+    // A VIEW READ, not a `value_to_term` lowering, because `TermView` is the
+    // carrier-neutral reader the repo already has: a `TermId`, a `Value::Node` and an
+    // `Entity` all answer `named_arg` on their own carrier.
+    //
+    // THE RECEIVER IS JUDGED HERE, THE FIELD LOOKUP IS NOT — and the line between them
+    // is this operation's DECLARED CONTRACT: "Returns none() when the term has no
+    // matching named arg **or is not Fn-shaped**". So a `Const`, `Var`, `Ident` or
+    // `Bottom` TERM answers `none()`, while a value with no term reading at all raises.
+    //
+    // TWO EARLIER DRAFTS GOT THIS WRONG IN OPPOSITE DIRECTIONS, both caught by
+    // /code-review: reading with no check at all turned `term_field(<a closure>, "x")`
+    // into a silent `none()` (a refusal spelled as an answer, which this ticket's
+    // acceptance forbids); then testing the head for `ViewHead::Functor` raised on a
+    // `Const`, breaking `anthill-todo`'s `unwrapped_string` — documented "Total by
+    // design", and whose whole job is to call this on a term `term_as_string` just
+    // rejected.
+    //
+    // THE REFUSED SET is the one `value_to_term` calls its honest residue: an opaque
+    // runtime handle, and a functor-LESS aggregate (`Value::Unit` / `Value::Tuple` read
+    // as `Functor { functor: None }`, so a bare `Functor { .. }` test lets them
+    // through). Asked shallowly and on purpose: a field is readable off an entity whose
+    // OTHER field holds a closure.
+    if !reads_as_term(interp.kb(), &term_arg) {
+        return Err(type_mismatch("Term", &term_arg, None));
+    }
+    let found: Option<Value> = term_arg
+        .named_field(interp.kb(), &name)
+        .map(|item| item.to_value());
 
     Ok(match found {
-        Some(field_tid) => Value::Entity {
+        Some(field) => Value::Entity {
             functor: some_sym,
             pos: Vec::new().into(),
-            named: vec![(value_key, Value::term(field_tid))].into(),
+            named: vec![(value_key, field)].into(),
         },
         None => Value::Entity {
             functor: none_sym,
@@ -4648,44 +4675,177 @@ fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 
 /// `anthill.reflect.term_to_string(t: Term) -> String` — the canonical
 /// printed text of a term, via `TermPrinter` (the renderer the persistence
-/// layer writes with). Total: any non-Term value lowers through
-/// `alloc_from_value` first, so an entity prints as its canonical term.
+/// layer writes with).
+///
+/// PARTIAL, as of WI-20260827-W1YKH, and the older "Total" claim here was never true:
+/// it rested on `alloc_from_value`, which refuses every `Value::Node` — as an
+/// `EvalError::Internal`, i.e. an invariant breach rather than a type error. A value
+/// with a term reading now lowers through the Node-aware `value_to_term` and prints as
+/// its canonical term; one without (an opaque runtime handle) raises `TypeMismatch`
+/// rather than being printed as something it is not.
 fn reflect_term_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [v] = expect_args::<1>("term_to_string", args)?;
+    // WI-20260827-W1YKH — `alloc_from_value` REFUSES EVERY `Node`, as an
+    // `EvalError::Internal`, i.e. the disposition `bridge_op_to_eval` asserts on. That
+    // was unreachable while every accessor hard-matched `Value::Term`; once `term_field`
+    // / `term_list_items` hand back a child on ITS OWN carrier it is live, through a
+    // chain that ships (`term_field` -> `term_list_items` -> `term_to_string`,
+    // anthill-todo/anthill/main.anthill).
+    //
+    // AND THE REPAIR IS NOT TO LOWER IT. An earlier draft reached for `value_to_term`
+    // and argued "printing needs a `TermId`" — false, and it contradicted this ticket's
+    // own rule while quoting it: `TermPrinter::print_occurrence` renders an occurrence
+    // natively (it is what `print_rule` already uses for a `Value::Node` head), so
+    // lowering would have interned one transient tree per printed row, permanently,
+    // on the path anthill-todo runs per stored item. Caught by /code-review.
+    if let Value::Node(occ) = v.carried() {
+        let printer = crate::persistence::print::TermPrinter::new(&interp.kb);
+        return Ok(Value::Str(printer.print_occurrence(occ)));
+    }
     let tid = match &v {
         Value::Term { id: tid, .. } => *tid,
-        other => interp
-            .kb
-            .alloc_from_value(other)
-            .map_err(|e| EvalError::Internal(format!("term_to_string: lower: {e:?}")))?,
+        other => interp.kb.alloc_from_value(other).map_err(|e| EvalError::TypeMismatch {
+            expected: "Term",
+            got: format!("{} (passed to `term_to_string`: {e:?})", other.type_name()),
+        })?,
     };
     let printer = crate::persistence::print::TermPrinter::new(&interp.kb);
     Ok(Value::Str(printer.print_term(tid)))
 }
 
-/// `anthill.reflect.term_list_items(t: Term) -> List[Term]` — the element
-/// terms of a GROUND cons/nil list term, via the printer's strict spine
-/// walker (ONE walker, one semantics: named `cons(head:…, tail:…)` or
-/// positional `cons(…, …)` with no extra args, ending in a nullary nil).
-/// A non-list or malformed spine (var tail, extra args, non-nil end)
-/// yields the EMPTY list — all-or-nothing, never a silently truncated
-/// prefix.
+/// WI-20260827-W1YKH — does this value have a TERM reading at all?
+///
+/// The accessor family's receiver rule, and both directions are load-bearing:
+///   * a LEAF term — `Const`, `Var`, `Ident`, `⊥` — reads as a term and simply has no
+///     named arguments, so `term_field` answers `none()` and `term_list_items` answers
+///     `[]`, which is what their declarations promise. An earlier draft raised here and
+///     broke `anthill-todo`'s `unwrapped_string`, documented "Total by design".
+///   * a value that names NOTHING raises, rather than answering `none()` for a carrier
+///     it merely failed to recognise — the "refusal spelled as an answer" this ticket's
+///     acceptance forbids.
+///
+/// THE SECOND HALF DEFERS TO [`crate::eval::eval::value_functor`] rather than
+/// re-deriving it, because the set is subtler than "has a functor": `Value::OpRef`
+/// heads as `Functor { functor: Some(_) }` but that head names its reflect ENCODING
+/// rather than a referent, so a hand-rolled `ViewHead` test admits it and hands a
+/// dictionary's internals back as readable fields. `value_functor` is the one owner of
+/// that distinction (WI-1024) and excludes `OpRef` and the functor-less aggregates
+/// together. Caught by /code-review.
+fn reads_as_term(kb: &crate::kb::KnowledgeBase, v: &Value) -> bool {
+    use crate::kb::term_view::{TermView, ViewHead};
+    match v.head(kb) {
+        ViewHead::Const(_) | ViewHead::Var(_) | ViewHead::Ident(_) | ViewHead::Bottom => true,
+        ViewHead::Functor { .. } => crate::eval::eval::value_functor(kb, v).is_some(),
+        ViewHead::Opaque => false,
+    }
+}
+
+/// WI-20260827-W1YKH — a `cons`/`nil` spine read off ANY carrier, the view-layer peer
+/// of [`crate::persistence::print::TermPrinter::unwrap_list_spine`].
+///
+/// SAME SEMANTICS, DELIBERATELY: `nil` ends the spine, a non-`cons` functor is not a
+/// list, and a `cons` carrying anything but exactly head+tail (either both named or
+/// both positional) is REFUSED rather than folded — all-or-nothing, never a silently
+/// truncated prefix. The two must agree; the printer's stays `TermId`-typed because it
+/// serves printing, where the term is in the store by construction.
+///
+/// IT IS SHORTER THAN ITS PEER BY ONE ARM, and that is the view layer earning its
+/// keep rather than an omission: `Ref(nil)` and a stored `Fn{nil,[],[]}` are two
+/// spellings of one thing (WI-511 / WI-20260902-CZJ2N) and `ViewHead::nullary` already
+/// collapses them, so the terminator needs one test here and two there.
+fn view_list_items(kb: &crate::kb::KnowledgeBase, v: &Value) -> Option<Vec<Value>> {
+    use crate::kb::term_view::ViewHead;
+    let mut items: Vec<Value> = Vec::new();
+    let mut cur = v.clone();
+    loop {
+        let (functor, pos_arity, named_arity) = match cur.head(kb) {
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity,
+                named_arity,
+            } => (f, pos_arity, named_arity),
+            _ => return None,
+        };
+        // THE SAME SPELLING AS THE PEER WALKER, which is what "the two must agree"
+        // costs in practice: `TermPrinter::unwrap_list_spine` takes the LAST DOTTED
+        // SEGMENT (`sym_name(s).rsplit('.')`), and `local_name_of` alone does not — an
+        // UNRESOLVED functor keeps its written name, so `List.cons` reads as "List.cons"
+        // here and "cons" there. That divergence decides whether a spine prints as
+        // `[a, b]` while reflect answers `[]`. Caught by /code-review.
+        let last_segment = |sym| {
+            let n = kb.local_name_of(sym);
+            n.rsplit('.').next().unwrap_or(n).to_string()
+        };
+        let short = last_segment(functor);
+        if short == "nil" && pos_arity == 0 && named_arity == 0 {
+            return Some(items);
+        }
+        if short != "cons" {
+            return None;
+        }
+        // ONE `named_keys` per cell, scanned for both keys. `named_field` would ask
+        // twice and the `Value` impl has no in-place override, so an N-element list
+        // cost 2N heap allocations against the peer walker's zero (/code-review).
+        let (head, tail) = match (pos_arity, named_arity) {
+            (0, 2) => {
+                let keys = cur.named_keys(kb);
+                let by = |name: &str| {
+                    keys.iter()
+                        .copied()
+                        .find(|s| last_segment(*s) == name)
+                        .and_then(|s| cur.named_arg(kb, s))
+                };
+                match (by("head"), by("tail")) {
+                    (Some(h), Some(t)) => (h.to_value(), t.to_value()),
+                    _ => return None,
+                }
+            }
+            (2, 0) => match (cur.pos_arg(kb, 0), cur.pos_arg(kb, 1)) {
+                (Some(h), Some(t)) => (h.to_value(), t.to_value()),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        items.push(head);
+        cur = tail;
+    }
+}
+
+/// `anthill.reflect.term_list_items(t: Term) -> List[Term]` — the element terms of a
+/// cons/nil list term, on any carrier, via [`view_list_items`].
+///
+/// SEMANTICS: named `cons(head:…, tail:…)` or positional `cons(…, …)` with no extra
+/// args, ending in a nullary nil. A non-list or malformed spine (var tail, extra args,
+/// non-nil end) yields the EMPTY list — all-or-nothing, never a silently truncated
+/// prefix. A receiver with no term reading at all RAISES instead, so "not a list" and
+/// "not a term" stay distinguishable.
+///
+/// NO LONGER "ONE WALKER", and the old wording here claimed it was: this reads through
+/// `TermView` rather than the printer's `TermId`-typed `unwrap_list_spine`, so the tree
+/// now holds three walkers of the same shape (that one, its occurrence twin in
+/// `persistence::print`, and this). They MUST agree; consolidating them onto one
+/// carrier-neutral owner is the remaining half of WI-20260827-W1YKH and is not done
+/// here, because the printer's semantics decide what is WRITTEN TO DISK and that wants
+/// its own driven rows.
 fn reflect_term_list_items(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [v] = expect_args::<1>("term_list_items", args)?;
-    let tid = match &v {
-        Value::Term { id: t, .. } => *t,
-        other => interp
-            .kb
-            .alloc_from_value(other)
-            .map_err(|e| EvalError::Internal(format!("term_list_items: lower: {e:?}")))?,
-    };
-    let printer = crate::persistence::print::TermPrinter::new(&interp.kb);
-    let items: Vec<Value> = printer
-        .unwrap_list_spine(tid)
-        .unwrap_or_default()
-        .into_iter()
-        .map(Value::term)
-        .collect();
+    // WI-20260827-W1YKH — READ THE SPINE, DO NOT LOWER IT. This lowered through
+    // `alloc_from_value`, which refuses every `Node` — and the refusal was an
+    // `EvalError::Internal`, which `bridge_op_to_eval` treats as an invariant breach
+    // and ASSERTS on. So a rule body calling this did not residualize like its
+    // siblings: it PANICKED the process. MEASURED, before the fix:
+    // `DeclarationMeta(meta: ?m), term_list_items(?m) = ?xs` →
+    // `bridge_op_to_eval: internal evaluator error bridging
+    // `anthill.reflect.term_list_items`: … UnsupportedVariant("Node")`.
+    // THE SAME RECEIVER RULE AS `term_field` (/code-review #4): a non-spine TERM answers
+    // the EMPTY list — that is this operation's declared "all-or-nothing" contract — but
+    // a value with no term reading at all RAISES rather than being spelled as `[]`.
+    // Without this, `term_list_items(<a closure>)` was indistinguishable from an empty
+    // list, which is the "refusal spelled as an answer" W1YKH's acceptance forbids.
+    if !reads_as_term(interp.kb(), &v) {
+        return Err(type_mismatch("Term", &v, None));
+    }
+    let items: Vec<Value> = view_list_items(&interp.kb, &v).unwrap_or_default();
     interp
         .build_list_value(items, &[])
         .map_err(|e| EvalError::Internal(format!("term_list_items: build list: {e}")))
@@ -5599,33 +5759,46 @@ fn reflect_visible_from(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     ))
 }
 
-/// The `meta(…)` term a meta reader was handed. A declaration's empty block reads back
-/// as `Ref(meta)` (the WI-719 nullary canon), so both spellings are admitted; any other
-/// term is refused rather than searched, because the kernel readers match a KEY and
-/// would answer `term_field`'s question about `some(value: 3)` without complaint.
-fn meta_term_operand(
-    interp: &mut Interpreter,
-    v: &Value,
-    op: &'static str,
-) -> Result<crate::kb::term::TermId, EvalError> {
-    // A rule body hands the row's `meta` over as an OCCURRENCE (`Value::Node`), so the
-    // Node-aware boundary, not `alloc_from_value`, which refuses every `Node`.
-    let tid = crate::kb::node_occurrence::value_to_term(&mut interp.kb, v).map_err(|e| {
-        EvalError::Internal(format!("{op}: a `meta(…)` term does not lower: {e:?}"))
-    })?;
+/// WI-20260827-W1YKH — IT CHECKS, IT NO LONGER LOWERS. This used to answer by
+/// interning the operand (`value_to_term`, which takes `&mut KnowledgeBase`), so a
+/// rule body joining N rows hash-consed N terms that then lived for the KB's lifetime
+/// — to answer a read-only question. [`crate::kb::load::meta_has_flag_view`] reads the
+/// carrier directly, so all this owes its callers is the refusal.
+///
+/// `value_head_symbol` is the carrier-neutral head read, and it collapses the three
+/// arms this had into one: `Fn{meta,…}`, and the `Ref`/`Ident` spellings a declaration's
+/// EMPTY block reads back as (the WI-719 nullary canon), all answer the same symbol.
+fn meta_term_operand(interp: &Interpreter, v: &Value, op: &'static str) -> Result<(), EvalError> {
     // BY NAME, the way the kernel readers key an entry: the loader's `meta` functor is
     // the delocalized kernel name, which a bare `intern("meta")` here does not answer.
-    let is_meta = |sym: &crate::intern::Symbol| interp.kb.local_name_of(*sym) == "meta";
-    match interp.kb.get_term(tid) {
-        crate::kb::term::Term::Fn {
-            functor, pos_args, ..
-        } if is_meta(functor) && pos_args.is_empty() => Ok(tid),
-        // An empty block reads back as the bare name (the WI-719 nullary canon).
-        crate::kb::term::Term::Ref(s) | crate::kb::term::Term::Ident(s) if is_meta(s) => Ok(tid),
-        _ => Err(EvalError::TypeMismatch {
+    // ARITY IS PART OF THE SHAPE, and so is the `Ident` spelling — the rewrite that
+    // introduced this test lost one of each, in opposite ways (/code-review).
+    //
+    // The match this replaced was `Fn { functor, pos_args, .. } if is_meta(functor) &&
+    // pos_args.is_empty()` plus `Ref(s) | Ident(s) if is_meta(s)`. A `ViewHead::Functor`
+    // test alone covers the first two — `Ref` reaches it through the WI-719 nullary
+    // canon — but `Term::Ident` / `Expr::Ident` route to `ViewHead::Ident` and NEVER to
+    // `Functor`, so an Ident-carried block silently started raising. That is verbatim
+    // the narrowing `value_head_symbol`'s doc warns of ("two sites migrated to it lost
+    // the `Term::Ident` half of the match they replaced"), and a rule body's occurrence
+    // is exactly where an Ident head turns up.
+    use crate::kb::term_view::{TermView, ViewHead};
+    let is_meta = match v.head(&interp.kb) {
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity: 0,
+            ..
+        } => interp.kb.local_name_of(f) == "meta",
+        ViewHead::Ident(s) => interp.kb.local_name_of(s) == "meta",
+        _ => false,
+    };
+    if is_meta {
+        Ok(())
+    } else {
+        Err(EvalError::TypeMismatch {
             expected: "a `meta(…)` term",
             got: format!("{} (passed to `{op}`)", v.type_name()),
-        }),
+        })
     }
 }
 
@@ -5634,12 +5807,10 @@ fn meta_term_operand(
 /// reads). `@[Marker]` and `@[Key: v]` both count as present.
 fn reflect_meta_has_flag(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [meta, key] = expect_args::<2>("meta_has_flag", args)?;
-    let tid = meta_term_operand(interp, &meta, "meta_has_flag")?;
+    meta_term_operand(interp, &meta, "meta_has_flag")?;
     let key = str_operand(interp.kb(), &key)?.into_owned();
-    Ok(Value::Bool(crate::kb::load::meta_has_flag(
-        &interp.kb,
-        Some(tid),
-        &key,
+    Ok(Value::Bool(crate::kb::load::meta_has_flag_view(
+        &interp.kb, &meta, &key,
     )))
 }
 
@@ -5650,16 +5821,19 @@ fn reflect_meta_has_flag(interp: &mut Interpreter, args: &[Value]) -> Result<Val
 /// source spelled into an anthill body.
 fn reflect_meta_value(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [meta, key] = expect_args::<2>("meta_value", args)?;
-    let tid = meta_term_operand(interp, &meta, "meta_value")?;
+    meta_term_operand(interp, &meta, "meta_value")?;
     let key = str_operand(interp.kb(), &key)?.into_owned();
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
-    let value = crate::kb::load::meta_value(&interp.kb, Some(tid), &key)
-        .filter(|v| !matches!(interp.kb.get_term(*v), crate::kb::term::Term::Bottom));
+    // WI-20260827-W1YKH — read the key's child on its own carrier (no term allocated),
+    // and test flag-form-ness through the head rather than through `get_term`: a
+    // rule-body block's child rides as an occurrence, which has no `TermId` to ask.
+    let value = crate::kb::load::meta_value_view(&interp.kb, &meta, &key)
+        .filter(|v| !matches!(v.head(&interp.kb), crate::kb::term_view::ViewHead::Bottom));
     Ok(match value {
         Some(v) => {
             let value_key = interp.kb.intern("value");
-            option_some(some_sym, value_key, Value::term(v))
+            option_some(some_sym, value_key, v)
         }
         None => option_none(none_sym),
     })

@@ -9491,14 +9491,24 @@ impl KnowledgeBase {
         let functor = obj.head(self).functor_sym()?;
         // Dispatch 1: entity field access — match the named arg by short name.
         if self.entity_fields.contains_key(&functor) {
+            // `to_value` keeps the child's carrier: a `Value::Node` field stays an
+            // occurrence rather than being flattened into the store.
+            //
+            // THE NAMED KEY DECIDES, EVEN WHEN IT RESOLVES TO NOTHING. Written with the
+            // `find` separate from the read on purpose: `named_field` collapses "no such
+            // key" and "key listed but `named_arg` could not resolve it" into one
+            // `None`, and this site must NOT treat the second as the first — falling
+            // through would let the positional plan project a DIFFERENT, positionally
+            // ranked field under the same name. A W1YKH draft did collapse them
+            // (/code-review). `named_keys` is also hoisted here so the positional plan
+            // below reuses it rather than building a second identical `Vec` — this is
+            // the resolver's dot-dispatch core, reached by every `?p.x`.
             let named_keys = obj.named_keys(self);
             if let Some(key) = named_keys
                 .iter()
                 .copied()
                 .find(|k| self.symbols.local_name(*k) == field_name)
             {
-                // `to_value` keeps the child's carrier: a `Value::Node` field
-                // stays an occurrence rather than being flattened into the store.
                 return obj.named_arg(self, key).map(|item| item.to_value());
             }
             // POSITIONAL spelling. A `Value::Entity` may keep unnamed args in `pos`,

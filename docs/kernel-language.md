@@ -3505,11 +3505,33 @@ shape as fact/rule metadata) carried as the `meta` field of the operation's
 `meta_has_flag` (flag presence) and `meta_value` (a key's value); an operation
 with no block carries an empty `meta()` (reported as "no attributes"). Both helpers are
 also declared in `anthill.reflect`, so an anthill **operation body** reads a block the way
-the kernel does. Not a rule body, today: a host operation called in a rule body with a
-string-literal argument does not reduce — `meta_has_flag(?m, "internal") = true` flounders
-exactly as the shipped `term_field(?t, "x")` does — so a reader written as a goal
-suspends rather than answering (measured, WI-20260914-Z73FX; the gap is WI-20260826-VPEWK's
-reduction path, not these declarations).
+the kernel does — **and so does a rule body**: `DeclarationMeta(meta: ?m),
+meta_has_flag(?m, "internal") = true` answers DEFINITE. An earlier version of this
+paragraph said the opposite — that a host operation with a *string-literal argument*
+does not reduce in a rule body — and that was **wrong**, filed off a measurement taken
+before these operations were host-mapped and never re-run (WI-20260914-Z73FX, corrected
+by **WI-20260827-W1YKH**). The literal was never the variable.
+
+**What a rule body actually decides is the argument's CARRIER**, and it is worth stating
+because every reflect reader has to obey it. A rule body hands an operand over as an
+OCCURRENCE — the resolver's σ-applied goals are deliberately not interned (see the
+representation note at the top of this document) — so a host function that matches
+`Value::Term` alone refuses *every* rule-body call. **The refusal is reported**: the
+bridge partitions an eval error's disposition (WI-20260911-0V0F7), `TypeMismatch` lands
+on `Fault`, and the search is marked incomplete — *"a goal could not be evaluated"* —
+so a raise does **not** read as a relation with no rows. The value answer is still
+`None`, because WI-483 substitution-transparency says a callee's failure must not break
+the enclosing rule; what the reader gets is a delay it is *told* about. (An earlier
+draft of this paragraph said the raise was swallowed silently. It is not — that claim
+came from reading a probe's stdout with stderr discarded.) A reader must therefore go
+through
+`TermView`, which answers on any carrier, and not through `value_to_term`, which is for
+the sites that genuinely need a `TermId` (constructing a term, unifying two, printing
+one). Measured under WI-20260827-W1YKH: `term_field` residualized on every row and
+`term_list_items` *panicked* the process, while `term_functor_name` — which reads the
+occurrence head — answered all along. The remaining limit here is the BINDING case
+already recorded in §5.3: `= ?v` suspends because `eq` never binds, which is
+WI-20260822-F0HHB's question about the connective, not this one about carriers.
 
 **One key is not an attribute: `internal`.** It is the visibility modifier's other
 spelling (§8.6), so it is decided at parse rather than left for a consumer to interpret:

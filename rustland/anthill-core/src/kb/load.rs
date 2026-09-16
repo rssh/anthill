@@ -17747,18 +17747,36 @@ pub fn is_equational_head(kb: &KnowledgeBase, head: TermId) -> bool {
 /// as "flag is present" — the loader stores the meta as a `meta(...)`
 /// term whose `named_args` carry the entries.
 pub fn meta_has_flag(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> bool {
-    let tid = match meta {
-        Some(t) => t,
-        None => return false,
-    };
-    if let Term::Fn { named_args, .. } = kb.get_term(tid) {
-        for (k, _) in named_args.iter() {
-            if kb.local_name_of(*k) == key {
-                return true;
-            }
-        }
+    match meta {
+        Some(tid) => tid.named_field(kb, key).is_some(),
+        None => false,
     }
-    false
+}
+
+/// WI-20260827-W1YKH — [`meta_has_flag`] asked of a value carrier.
+///
+/// The `Option<TermId>` forms below are the DECLARATION-side reading, where the block
+/// is already hash-consed. A rule body asks the same question of a value riding as an
+/// OCCURRENCE (`Value::Node`, or an `Entity` wrapping one) — the resolver's σ-applied
+/// goals are deliberately not interned — and these answer it without lowering.
+///
+/// BOTH SIDES GO THROUGH `TermView::named_field`, which is the point: `@[simp]` and a
+/// rule body must agree about what `@[Marker]` means, and one owner for the
+/// by-local-name lookup is what makes that structural rather than a promise. (A key's
+/// symbol may be qualified; a block is written with short names — `@[internal]`,
+/// `@[Profile: "cpp20-stl"]`.)
+pub fn meta_has_flag_view<V: TermView + ?Sized>(kb: &KnowledgeBase, meta: &V, key: &str) -> bool {
+    meta.named_field(kb, key).is_some()
+}
+
+/// WI-20260827-W1YKH — [`meta_value`] asked of a value carrier, answering on whatever
+/// carrier the child rides. See [`meta_has_flag_view`].
+pub fn meta_value_view<V: TermView + ?Sized>(
+    kb: &KnowledgeBase,
+    meta: &V,
+    key: &str,
+) -> Option<crate::eval::Value> {
+    meta.named_field(kb, key).map(|item| item.to_value())
 }
 
 /// WI-087: the value bound to `key` in a `meta(key: value, ...)` term, when the
@@ -17767,14 +17785,21 @@ pub fn meta_has_flag(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> boo
 /// valued attributes (`Profile: "cpp20-stl"`, `CppBody: "..."`, `CppName: "..."`).
 pub fn meta_value(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> Option<TermId> {
     let tid = meta?;
-    if let Term::Fn { named_args, .. } = kb.get_term(tid) {
-        for (k, v) in named_args.iter() {
-            if kb.local_name_of(*k) == key {
-                return Some(*v);
-            }
-        }
-    }
-    None
+    // TOTAL, AND SAID SO LOUDLY RATHER THAN FALLING BACK. A `TermId` receiver's children
+    // are `TermId`s (see `impl TermView for TermId`), so a found key ALWAYS yields one
+    // and the only `None` here is an absent key. Collapsing the two with a bare
+    // `and_then` would make "key present, child unreadable" answer exactly like "key
+    // absent" — a silent skip at the very seam this change widens, since `meta` is
+    // migrating off `TermId` onto values. A CARRIER receiver goes through
+    // `meta_value_view`, which keeps the child on its own carrier. (/code-review)
+    let item = tid.named_field(kb, key)?;
+    Some(item.as_term_id().unwrap_or_else(|| {
+        unreachable!(
+            "meta_value: `{key}` on a TermId-carried block yielded a child with no \
+             TermId — `impl TermView for TermId` returns `ViewItem::Term` for every \
+             named arg, so this is an invariant breach, not a missing key"
+        )
+    }))
 }
 
 /// Resolve a `SortRequiresInfo.sort_ref` term to the qualified name
