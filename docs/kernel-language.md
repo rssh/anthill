@@ -3503,7 +3503,22 @@ block; a second is a syntax error.
 shape as fact/rule metadata) carried as the `meta` field of the operation's
 `OperationInfo` reflection fact. Consumers read it via the kernel helpers
 `meta_has_flag` (flag presence) and `meta_value` (a key's value); an operation
-with no block carries an empty `meta()` (reported as "no attributes").
+with no block carries an empty `meta()` (reported as "no attributes"). Both helpers are
+also declared in `anthill.reflect`, so an anthill **operation body** reads a block the way
+the kernel does. Not a rule body, today: a host operation called in a rule body with a
+string-literal argument does not reduce — `meta_has_flag(?m, "internal") = true` flounders
+exactly as the shipped `term_field(?t, "x")` does — so a reader written as a goal
+suspends rather than answering (measured, WI-20260914-Z73FX; the gap is WI-20260826-VPEWK's
+reduction path, not these declarations).
+
+**One key is not an attribute: `internal`.** It is the visibility modifier's other
+spelling (§8.6), so it is decided at parse rather than left for a consumer to interpret:
+a declaration written `internal` carries the flag in its meta even though no block was
+written, `public` records nothing under either spelling, a contradicting pair is a load
+error, and the flag is refused on a clause and when given a value. Both words are
+therefore **reserved as block keys on a declaration**, under every qualification: a key is
+read by its last segment (`load_meta_block` stores that, and `meta_has_flag` compares it),
+so `@[acl.public]` is the visibility flag and not a project attribute.
 
 ### 5.9 Const (term-level named constant)
 
@@ -4925,6 +4940,32 @@ declaring scope.
 
 The former `export` statement and `export` visibility prefix (no-ops under this
 model) were removed in WI-291.
+
+**Two spellings, one statement (WI-20260914-Z73FX).** A visibility modifier may also be
+written as a flag in the declaration's meta block (§5.8): `internal entity text(raw:
+String)` and `entity text(raw: String) @[internal]` are the same declaration, decided at
+parse. Whichever is written, the name is hidden the same way and the declaration's meta
+carries `internal` — so a reader over `DeclarationMeta` (or `OperationInfo.meta`) sees
+the mark for both spellings. `public` is the default and records no flag.
+
+Three refusals keep the two from drifting apart. A **contradiction** is a load error
+naming both spellings (`internal … @[public]`, `public … @[internal]`, `@[internal,
+public]`) — the modifier does not outrank the flag, and the flag does not outrank the
+modifier. A **value** on the flag is refused (`@[internal: false]`), because flag
+presence is what every reader tests, so a false-valued flag would hide the name while
+reading as a disclaimer. And the flag is refused **wherever the modifier is not legal** —
+on a rule, fact, constraint, rule entry or proof step, each of which declares a clause
+rather than a name. Predicate visibility is a feature that has not been designed (two
+clauses of one predicate could disagree, and a clause may extend a predicate declared
+elsewhere); the refusal can be lifted when it is, where a permission could not be
+withdrawn.
+
+**Asking the question from a program.** `anthill.reflect.visible_from(s, scope)` answers
+whether code in `scope` may name `s` — the same filter resolution applies, over the mark
+the declaration set, never over a fact a loaded program could write. It is the read for
+rendering "the declarations a candidate may program against"; `meta_has_flag(meta,
+"internal")` says only that a DECLARATION was marked, which is not the same question
+where one symbol carries two declarations (an eponymous sort and constructor).
 
 **`resolve_in_scope(name, scope)`** — the resolution order:
 

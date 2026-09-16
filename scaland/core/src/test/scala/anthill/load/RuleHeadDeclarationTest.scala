@@ -365,6 +365,38 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
     loaded("atom.anthill" -> "namespace g9.atom\n  rule f(?x) <=> 1 @[simp]\nend")
   }
 
+  test("WI-20260914-Z73FX: a visibility flag is refused where the modifier is not legal") {
+    // `@[internal]` is the `internal` MODIFIER's other spelling (rustland decides
+    // visibility from either at parse). Scaland implements no §8.6 hiding, so what it
+    // mirrors is the refusals — a spelling this port accepts while rustland refuses it
+    // would be found by a program, not by a test.
+    refusedAll(Seq("`internal` and `@[public]` contradict", "keep one"),
+      "conflict.anthill" -> "namespace z73.conflict\n  internal entity x @[public]\nend")
+    refused("`@[internal]` and `@[public]` contradict",
+      "both.anthill" -> "namespace z73.both\n  entity x @[internal, public]\nend")
+    refusedAll(Seq("`@[internal]` takes no value", "is a visibility flag"),
+      "valued.anthill" -> "namespace z73.valued\n  entity x @[internal: false]\nend")
+    refusedAll(Seq("`@[internal]` on a fact", "entity, operation or const"),
+      "fact.anthill" -> "namespace z73.fact\n  fact p(1) @[internal]\nend")
+    refused("`@[public]` on a rule",
+      "rule.anthill" -> "namespace z73.rule\n  rule q(?x) :- p(?x) @[public]\nend")
+    refused("`@[internal]` on a constraint",
+      "con.anthill" -> "namespace z73.con\n  constraint small: p(?x) :- q(?x) @[internal]\nend")
+    // A `provides … language … end` block holds clauses of its own, and rustland refuses
+    // the flag there through the same converter the top level uses. Found by /code-review
+    // as the one arm a catch-all was skipping — it loaded clean here and was refused there.
+    refused("`@[internal]` on a fact",
+      "prov.anthill" ->
+        ("namespace z73.prov\n  sort C\n    entity c\n  end\n" +
+         "  provides C language rust\n    fact p(1) @[internal]\n  end\nend"))
+    // THE CONTROLS: the agreeing spellings are one statement said twice, a `public`
+    // block flag alone is the default, and a clause block with another key is untouched.
+    loaded("ok.anthill" ->
+      ("namespace z73.ok\n  internal entity a @[internal]\n  entity b @[public]\n" +
+       "  public operation f() -> anthill.prelude.Int64 = 1 @[public]\n" +
+       "  rule q(?x) :- p(?x) @[simp]\nend"))
+  }
+
   test("061: a declaration carries no clause text") {
     // A declaration stores no clause, so a citation LABEL has nothing to cite and a
     // `@[…]` tag has no clause to govern. Refused rather than dropped: both carriers were

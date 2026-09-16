@@ -610,6 +610,20 @@ pub fn load_stdlib_kb_untyped(source: &str) -> (KnowledgeBase, anthill_core::kb:
         .expect("partial load (up to the typer) must succeed");
     (kb, result)
 }
+/// A `Symbol`-typed ARGUMENT for an anthill operation: the qualified name as a
+/// `Term::Ref`, the shape reflect's `Symbol` sort carries (WI-632 by-reference).
+///
+/// Shared because two suites minted it privately and a fix to either — the panic text,
+/// or the `Ref`/`Ident` canon of WI-511/WI-719 — would have landed in one of them
+/// (WI-20260914-Z73FX, /code-review).
+pub fn symbol_term(interp: &mut Interpreter, qn: &str) -> eval::Value {
+    let sym = interp
+        .kb()
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("no symbol {qn}"));
+    eval::Value::term(interp.kb_mut().alloc(anthill_core::kb::term::Term::Ref(sym)))
+}
+
 
 /// Solutions of the unary goal `qn(?r)`, as `(the reified `?r`, the solution is
 /// definite)`.

@@ -3332,8 +3332,157 @@ impl<'a> Converter<'a> {
             })
     }
 
+    /// WI-20260914-Z73FX — a declaration's VISIBILITY and its block, decided together,
+    /// because `internal entity text(…)` and `entity text(…) @[internal]` are ONE
+    /// statement in two spellings. The only converter for a node that admits the
+    /// `visibility` modifier; a clause's block goes through [`Self::convert_clause_meta_block`].
+    ///
+    /// The two spellings leave the same IR: `visibility` says it for resolution (the
+    /// loader's `record_internal`, codegen's `pub`), and the block carries `internal`
+    /// iff the declaration is internal, so the DeclarationMeta row and `OperationInfo.meta`
+    /// say it too. `public` is the explicit default and records no flag, so a written
+    /// `@[public]` is dropped from the block rather than stored. A contradiction — the
+    /// modifier against a flag, or
+    /// two flags — is refused rather than ranked, and a flag with a value is refused
+    /// because `meta_has_flag` reads any value as present (`@[internal: false]` would hide).
+    fn convert_declaration_attributes(
+        &mut self,
+        node: Node,
+    ) -> (Option<Visibility>, Option<MetaBlock>) {
+        // Each child resolved ONCE and passed down: this runs per declaration, and the
+        // first draft asked the tree for `visibility` twice and for `meta_block` three
+        // times (/code-review).
+        let modifier = self.child_by_kind(node, "visibility");
+        let block = self.child_by_kind(node, "meta_block");
+        let mut visibility = self.convert_visibility(node);
+        let mut meta = self.convert_meta_block(node);
+        // The spelling that decided `visibility`, for a contradiction's message. A
+        // closure, not a `String`: the modifier's text is formatted only where a
+        // contradiction is actually reported.
+        let mut decided_by: Option<String> = None;
+        let mut contradicted = false;
+        for (flag, entry, has_value) in self.visibility_flags(block) {
+            let word = visibility_word(flag);
+            if has_value {
+                self.err(
+                    format!(
+                        "`@[{word}]` takes no value: `{word}` is a visibility flag — write \
+                         `@[{word}]`"
+                    ),
+                    entry,
+                );
+            }
+            let spelling = format!("`@[{word}]`");
+            match visibility {
+                // ONE SENTENCE PER DECLARATION, not one per entry: `public entity x
+                // @[internal, internal]` is a single contradiction said twice, and two
+                // copies read as two problems (/code-review).
+                Some(v) if v != flag => {
+                    if !contradicted {
+                        let by = decided_by.clone().unwrap_or_else(|| {
+                            let m = modifier.expect("a decided visibility has a spelling");
+                            format!("`{}`", self.text(m))
+                        });
+                        self.err(
+                            format!(
+                                "{by} and {spelling} contradict: a declaration is `internal` \
+                                 or `public`, not both — keep one"
+                            ),
+                            entry,
+                        );
+                        contradicted = true;
+                    }
+                }
+                _ => {
+                    visibility = Some(flag);
+                    decided_by = Some(spelling);
+                }
+            }
+        }
+        // Normalize the block: the visibility flags leave it, and `internal` comes back
+        // as its one entry — first, where the modifier is written. `retain` rather than
+        // removal by index, so this cannot drift out of step with `convert_meta_block`'s
+        // own traversal of the same entries (/code-review).
+        if let Some(b) = meta.as_mut() {
+            b.entries
+                .retain(|e| self.visibility_word_of(e.key.last()).is_none());
+        }
+        if visibility == Some(Visibility::Internal) {
+            let span = modifier
+                .or(block)
+                .map(|n| self.span(n))
+                .expect("an internal declaration has a modifier or a block");
+            let entry = MetaEntry {
+                key: Name::simple(self.intern("internal"), span),
+                value: self.terms.alloc(Term::Bottom, span),
+            };
+            meta.get_or_insert_with(|| MetaBlock { entries: Vec::new() })
+                .entries
+                .insert(0, entry);
+        }
+        if meta.as_ref().is_some_and(|b| b.entries.is_empty()) {
+            meta = None;
+        }
+        (visibility, meta)
+    }
+
+    /// WI-20260914-Z73FX — a CLAUSE's block (a rule, fact, constraint, rule entry or
+    /// proof step). `@[internal]` is the modifier's other spelling, so it is admitted
+    /// exactly where the modifier is, and no clause admits the modifier: predicate
+    /// visibility is not designed (per-clause metadata could disagree between two
+    /// clauses of one predicate), and a refusal can be lifted later where a permission
+    /// could not be withdrawn. `@[public]` is refused beside it — it would do nothing.
+    fn convert_clause_meta_block(&mut self, node: Node, what: &str) -> Option<MetaBlock> {
+        let block = self.child_by_kind(node, "meta_block");
+        for (flag, entry, _) in self.visibility_flags(block) {
+            let word = visibility_word(flag);
+            self.err(
+                format!(
+                    "`@[{word}]` on {what}: the flag is the `{word}` modifier's other \
+                     spelling, admitted exactly where the modifier is — on a sort, enum, \
+                     effects sort, type parameter, entity, operation or const"
+                ),
+                entry,
+            );
+        }
+        self.convert_meta_block(node)
+    }
+
+    /// The `internal` / `public` entries of `block`: each entry's flag, its node, and
+    /// whether a value was written.
+    fn visibility_flags<'t>(&self, block: Option<Node<'t>>) -> Vec<(Visibility, Node<'t>, bool)> {
+        let Some(block) = block else {
+            return Vec::new();
+        };
+        self.children_by_kind(block, "meta_entry")
+            .into_iter()
+            .filter_map(|entry| {
+                let key = self.field(entry, "key")?;
+                let flag = match self.text(key).rsplit('.').next()? {
+                    "internal" => Visibility::Internal,
+                    "public" => Visibility::Public,
+                    _ => return None,
+                };
+                Some((flag, entry, self.field(entry, "value").is_some()))
+            })
+            .collect()
+    }
+
+    /// The visibility a meta key spells, keyed as the loader keys an entry
+    /// (`load_meta_block` keeps a key's LAST segment, which is what `meta_has_flag`
+    /// compares — so `@[a.internal]` is the flag under every qualification, §5.8).
+    fn visibility_word_of(&self, key: Symbol) -> Option<Visibility> {
+        match self.symbols.local_name(key) {
+            "internal" => Some(Visibility::Internal),
+            "public" => Some(Visibility::Public),
+            _ => None,
+        }
+    }
+
     // ── Meta ────────────────────────────────────────────────────
 
+    /// The block as written. Callers go through [`Self::convert_declaration_attributes`]
+    /// or [`Self::convert_clause_meta_block`], which decide its visibility flags.
     fn convert_meta_block(&mut self, node: Node) -> Option<MetaBlock> {
         self.child_by_kind(node, "meta_block").map(|mb| {
             let entries = self
@@ -3784,8 +3933,7 @@ impl<'a> Converter<'a> {
 
     fn convert_abstract_sort(&mut self, node: Node) -> Option<AbstractSort> {
         let name = self.field(node, "name").map(|n| self.convert_name(n))?;
-        let visibility = self.convert_visibility(node);
-        let meta = self.convert_meta_block(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node);
         let span = self.span(node);
 
         let definition = self
@@ -3846,8 +3994,7 @@ impl<'a> Converter<'a> {
             self.err("effects_sort_item missing required `name` field", node);
             return Vec::new();
         };
-        let visibility = self.convert_visibility(node);
-        let meta = self.convert_meta_block(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node);
         let span = self.span(node);
 
         let definition = self
@@ -3918,8 +4065,7 @@ impl<'a> Converter<'a> {
 
     fn convert_sort_like(&mut self, node: Node, kind: SortDeclKind) -> Option<SortWithBody> {
         let name = self.field(node, "name").map(|n| self.convert_name(n))?;
-        let visibility = self.convert_visibility(node);
-        let meta = self.convert_meta_block(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node);
         let span = self.span(node);
 
         let descriptions: Vec<String> = self
@@ -4011,7 +4157,6 @@ impl<'a> Converter<'a> {
     /// parse-IR-equivalent to `sort CpsMonad[F[T], A]`.
     fn convert_sort_binder(&mut self, node: Node) -> Option<Item> {
         let span = self.span(node);
-        let visibility = self.convert_visibility(node);
         // Name: a `?X` marker (strip the leading `?`) or a bracket `[X]` identifier.
         let name = if let Some(m) = self.field(node, "marker") {
             let text = self.text(m).to_string();
@@ -4047,7 +4192,7 @@ impl<'a> Converter<'a> {
             }
             items
         });
-        let meta = self.convert_meta_block(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node);
         Some(self.make_type_param_item(name, members, visibility, meta, span))
     }
 
@@ -4162,7 +4307,7 @@ impl<'a> Converter<'a> {
             Vec::new()
         };
 
-        let meta = self.convert_meta_block(node);
+        let meta = self.convert_clause_meta_block(node, "a rule");
 
         // WI-1129: decided HERE — at the last point where the heads AND the `@[simp]`
         // tag are both in hand. All three `Rule` producers call it (this one,
@@ -4479,7 +4624,6 @@ impl<'a> Converter<'a> {
         let span = self.span(node);
         let name_node = self.field(node, "name")?;
         let name = self.convert_name(name_node);
-        let visibility = self.convert_visibility(node);
 
         // WI-1070: the operation's OWN `{< … >}` blocks. `fields_by_name` takes DIRECT
         // children only, so this is exactly the leading repeat — a description on a
@@ -4545,7 +4689,7 @@ impl<'a> Converter<'a> {
         // declaration like every other declaration's. The `meta [...]` clause is gone,
         // and with it the two-spelling merge that let a clause silently shadow a
         // trailing block.
-        let meta = self.convert_meta_block(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node);
 
         Some(Operation {
             visibility,
@@ -4572,12 +4716,11 @@ impl<'a> Converter<'a> {
         self.reset_var_scope();
         let span = self.span(node);
         let name = self.field(node, "name").map(|n| self.convert_name(n))?;
-        let visibility = self.convert_visibility(node);
         let ty = self.field(node, "type").map(|t| self.convert_type(t))?;
         let value = self.field(node, "value").map(|v| self.convert_expr_body(v));
         // WI-1070 — the same read as `convert_operation`'s, for the same reason.
         let descriptions = self.declaration_descriptions(node);
-        let meta = self.convert_meta_block(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node);
         Some(Const {
             visibility,
             name,
@@ -4747,7 +4890,6 @@ impl<'a> Converter<'a> {
 
     fn convert_entity(&mut self, node: Node) -> Option<Entity> {
         let name = self.field(node, "name").map(|n| self.convert_name(n))?;
-        let visibility = self.convert_visibility(node);
         let span = self.span(node);
         let descriptions = self.declaration_descriptions(node);
 
@@ -4772,7 +4914,7 @@ impl<'a> Converter<'a> {
             fields.push(decl);
         }
 
-        let meta = self.convert_meta_block(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node);
 
         Some(Entity {
             visibility,
@@ -4793,7 +4935,7 @@ impl<'a> Converter<'a> {
             return None;
         }
         let term = self.convert_term(term_node);
-        let meta = self.convert_meta_block(node);
+        let meta = self.convert_clause_meta_block(node, "a fact");
         Some(Fact { term, meta, span })
     }
 
@@ -4830,7 +4972,7 @@ impl<'a> Converter<'a> {
                 ConstraintBody::Denial { head, guard }
             }
         };
-        let meta = self.convert_meta_block(node);
+        let meta = self.convert_clause_meta_block(node, "a constraint");
         // WI-20260914-DV7DP (§7): a declaration's block is keyed by the name it declares,
         // and an unlabeled constraint declares none — refused here for the reason its
         // description block is, rather than loaded and dropped.
@@ -5019,7 +5161,7 @@ impl<'a> Converter<'a> {
             .map(|h| self.convert_rule_heads(h))
             .unwrap_or_else(|| vec![RuleHead::Bottom]);
         let body = self.field(node, "body").map(|b| self.convert_rule_body(b));
-        let meta = self.convert_meta_block(node);
+        let meta = self.convert_clause_meta_block(node, "a rule entry");
         let head_captures = self.claim_rule_head_captures(&heads, &meta);
         self.snapshot_rule_var_scope(&label);
         Some(Rule {
@@ -5346,7 +5488,7 @@ impl<'a> Converter<'a> {
             .map(|h| self.convert_rule_heads(h))
             .unwrap_or_else(|| vec![RuleHead::Bottom]);
         let body = self.field(node, "body").map(|b| self.convert_rule_body(b));
-        let meta = self.convert_meta_block(node);
+        let meta = self.convert_clause_meta_block(node, "a proof step");
         let using = self
             .field(node, "using")
             .map(|n| self.convert_proof_using_list(n))
@@ -5753,6 +5895,14 @@ fn is_pattern_kind(kind: &str) -> bool {
             | "pattern_tuple"
             | "named_pattern_field"
     )
+}
+
+/// The keyword a [`Visibility`] is written as — as a modifier and as a block flag.
+fn visibility_word(v: Visibility) -> &'static str {
+    match v {
+        Visibility::Internal => "internal",
+        Visibility::Public => "public",
+    }
 }
 
 /// Strip `{<` and `>}` delimiters from a description block token.

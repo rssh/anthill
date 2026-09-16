@@ -215,8 +215,118 @@ object Loader:
   def load(kb: KnowledgeBase, file: ParsedFile): ArrayBuffer[LoadError] =
     val errors = ArrayBuffer.empty[LoadError]
     kb.symbols.setAskingFile(Some(kb.symbols.fileIdOf(file)))
+    refuseVisibilityFlags(file.symbols, file.terms, file.items, errors)
     walkScopes(LoadPass(kb, file.symbols, file.terms, errors), file.items)
     errors
+
+  /** WI-20260914-Z73FX — `@[internal]` is the `internal` MODIFIER's other spelling, so
+    * `internal entity text(…)` and `entity text(…) @[internal]` are one statement. This
+    * is the refusal half, which is all scaland can mirror: rustland decides visibility
+    * from either spelling at parse, and scaland implements no §8.6 hiding at all (it
+    * parses `visibility` and no pass reads it), so there is nothing here for the flag to
+    * set — but a spelling this port ACCEPTS while rustland refuses it is a divergence
+    * that would be found by a program, not by a test.
+    *
+    * Three refusals, all rustland's `convert_declaration_attributes` /
+    * `convert_clause_meta_block`, message for message: a modifier contradicted by a flag,
+    * a flag with a value (`meta_has_flag` reads any value as present, so
+    * `@[internal: false]` would HIDE), and a flag on a CLAUSE, which admits no modifier.
+    *
+    * Its OWN walk rather than a `LoadPass` arm: a `SortWithBody` opens a scope, so the
+    * spine routes it to `enterScope` and `atItem` never sees the declaration whose block
+    * this reads. */
+  private def refuseVisibilityFlags(
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, items: Iterable[Item], errors: ArrayBuffer[LoadError]
+  ): Unit =
+    def word(v: Visibility): String = v match
+      case Visibility.Internal => "internal"
+      case Visibility.Public => "public"
+
+    /** The `internal` / `public` entries of a block, keyed as a reader keys one: by the
+      * key's LAST segment, which is what the meta term carries. */
+    def flags(meta: Option[MetaBlock]): IndexedSeq[(Visibility, MetaEntry)] =
+      meta.toIndexedSeq.flatMap(_.entries).flatMap { e =>
+        fileSym.name(e.key.last) match
+          case "internal" => Some((Visibility.Internal, e))
+          case "public" => Some((Visibility.Public, e))
+          case _ => None
+      }
+
+    def declaration(vis: Option[Visibility], meta: Option[MetaBlock]): Unit =
+      var decided = vis
+      var spelling = vis.map(v => s"`${word(v)}`")
+      for (flag, entry) <- flags(meta) do
+        val flagSpelling = s"`@[${word(flag)}]`"
+        // WRITTEN-VALUE TEST, and it differs from rustland's by a case neither port can
+        // spell today: rustland reads the parse NODE (`@[internal:` with anything after
+        // it), scaland reads the lowered term, and the parser writes `Term.Bottom` both
+        // for a missing value and for a written `⊥`. So `@[internal: ⊥]` alone loads here
+        // and is refused there (/code-review). Closing it needs the IR to distinguish the
+        // two, which is a change to `MetaEntry`, not to this refusal.
+        if fileTerms.get(entry.value) != Term.Bottom then
+          errors += LoadError.Other(
+            s"$flagSpelling takes no value: `${word(flag)}` is a visibility flag — " +
+            s"write `@[${word(flag)}]`", entry.key.span)
+        (decided, spelling) match
+          case (Some(v), Some(by)) if v != flag =>
+            errors += LoadError.Other(
+              s"$by and $flagSpelling contradict: a declaration is `internal` or " +
+              "`public`, not both — keep one", entry.key.span)
+          case _ =>
+            decided = Some(flag)
+            spelling = Some(flagSpelling)
+
+    def clause(what: String, meta: Option[MetaBlock]): Unit =
+      for (flag, entry) <- flags(meta) do
+        errors += LoadError.Other(
+          s"`@[${word(flag)}]` on $what: the flag is the `${word(flag)}` modifier's other " +
+          "spelling, admitted exactly where the modifier is — on a sort, enum, effects " +
+          "sort, type parameter, entity, operation or const", entry.key.span)
+
+    def proof(p: ProofDecl): Unit = p.body match
+      case Some(ProofBody.Structured(steps, _)) =>
+        steps.foreach(step => clause("a proof step", step.rule.meta))
+      case _ => ()
+
+    // A `provides … language … end` block holds CLAUSES of its own, and rustland routes
+    // each through the same `convert_fact` / `convert_rule` the top level uses — so the
+    // refusal reaches them there. This arm is what a `case _ => ()` catch-all was
+    // silently skipping (/code-review): the block loaded clean here and was refused
+    // there, which is the divergence this whole function exists to prevent.
+    def providesItem(pi: ProvidesItem): Unit = pi match
+      case ProvidesItem.RuleI(r) => clause("a rule", r.meta)
+      case ProvidesItem.RuleBlockI(b) => b.entries.foreach(r => clause("a rule entry", r.meta))
+      case ProvidesItem.FactI(f) => clause("a fact", f.meta)
+      case ProvidesItem.ProofI(p) => proof(p)
+      case ProvidesItem.ArtifactI(_) | ProvidesItem.CarrierI(_) | ProvidesItem.NamespaceMapI(_)
+         | ProvidesItem.OperationMapI(_) | ProvidesItem.ConstMapI(_)
+         | ProvidesItem.ProvidesClauseI(_) => ()
+
+    // EXHAUSTIVE over `Item`, deliberately: a catch-all is how the `provides` arm above
+    // went missing, and it is the failure WI-1007 made `LoadPass.atItem` exhaustive to
+    // stop — a new declaration kind must decide here rather than inherit silence.
+    def walk(items: Iterable[Item]): Unit =
+      for item <- items do item match
+        case Item.NamespaceItem(ns) => walk(ns.items)
+        case Item.SortWithBodyItem(sort) =>
+          declaration(sort.visibility, sort.meta); walk(sort.items)
+        case Item.AbstractSortItem(sort) => declaration(sort.visibility, sort.meta)
+        case Item.EntityItem(e) => declaration(e.visibility, e.meta)
+        case Item.OperationItem(op) => declaration(op.visibility, op.meta)
+        case Item.OperationBlockItem(b) => b.entries.foreach(op => declaration(op.visibility, op.meta))
+        case Item.ConstItem(c) => declaration(c.visibility, c.meta)
+        case Item.RuleItem(r) => clause("a rule", r.meta)
+        case Item.RuleBlockItem(b) => b.entries.foreach(r => clause("a rule entry", r.meta))
+        case Item.FactItem(f) => clause("a fact", f.meta)
+        case Item.ConstraintItem(c) => clause("a constraint", c.meta)
+        case Item.ProofItem(p) => proof(p)
+        case Item.ProvidesBlockItem(pb) => pb.items.foreach(providesItem)
+        // No block, and nothing nested that has one.
+        case Item.RequiresDeclItem(_) | Item.DescribeItem(_) | Item.ProjectItem(_)
+           | Item.ToolItem(_) | Item.WorkItemItem(_) | Item.FeedbackItem(_)
+           | Item.ImportToolsItem(_) | Item.ProvidesClauseItem(_) | Item.ImportItem(_) => ()
+
+    walk(items)
 
   /** Load multiple files: scan first, then load all. */
   def loadAll(kb: KnowledgeBase, files: IndexedSeq[ParsedFile]): ArrayBuffer[LoadError] =

@@ -375,6 +375,9 @@ mod wi_dv7dp_declaration_meta_test;
 #[path = "include/wi_g9ea9_meta_block_token_test.rs"]
 mod wi_g9ea9_meta_block_token_test;
 
+#[path = "include/wi_z73fx_visibility_reflect_test.rs"]
+mod wi_z73fx_visibility_reflect_test;
+
 #[path = "include/wi_0v0f7_bridged_raise_test.rs"]
 mod wi_0v0f7_bridged_raise_test;
 

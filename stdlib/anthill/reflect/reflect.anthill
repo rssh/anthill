@@ -232,6 +232,24 @@ namespace anthill.reflect
   -- Symbol → kind string ("Sort", "Entity", "Operation", "Field", etc.)
   operation kind(s: Symbol) -> String
 
+  -- WI-20260914-Z73FX — may code in `scope` name `s`? `internal` (§8.6) hides a name
+  -- from every scope but its declaring one and that scope's lexical descendants, so
+  -- the answer depends on WHERE it is asked: `guardians.Text.text` is visible from
+  -- `guardians.Text` and hidden from `guardians.agent`. A non-internal name answers
+  -- true everywhere. The read resolution itself filters with, and it reads the mark
+  -- the declaration set at parse, never a fact — reflect reports visibility, it does
+  -- not grant it.
+  operation visible_from(s: Symbol, scope: Symbol) -> Bool
+
+  -- The kernel's readers of a `meta(key: value, …)` term — a DeclarationMeta row's
+  -- `meta`, `OperationInfo.meta`, a clause's metadata. `meta_has_flag` is presence:
+  -- `@[Marker]` and `@[Key: v]` both count. `meta_value` is a key's written value, and
+  -- `none()` for a flag-form key or an absent one. Either refuses a term that is not
+  -- a `meta(…)`. `meta_has_flag(m, "internal")` says the DECLARATION was marked; ask
+  -- `visible_from` whether a scope may name it.
+  operation meta_has_flag(meta: Term, key: String) -> Bool
+  operation meta_value(meta: Term, key: String) -> Option[T = Term]
+
   -- Field access (dot projection): extract a field from a value.
   -- `?x.y` desugars to `field_access[Name = "y"](?x, "y")`.
   --
@@ -395,25 +413,32 @@ namespace anthill.reflect
   operation resolve_sort_instantiation_param(inst: Term, param: Term) -> Term
 
   -- ================================================================
-  -- Sort <-> Term conversion — DECLARED, AND BACKED BY NOTHING
+  -- Sort <-> Term conversion — REGISTERED, BUT NOT MAPPED
   -- ================================================================
   --
   -- WI-880 migrated this namespace's other 26 operations off their hardcoded
   -- registrations and onto `rustland/anthill-stl/anthill/reflect.anthill`'s
   -- `operation_map`. These three were NOT part of that, and the difference is worth
-  -- stating rather than leaving to be rediscovered: there was no registration to move.
-  -- They have no host function in any registry, no body, and no `@[simp]` equation, so
-  -- they run NOWHERE — not from a rule and not from an operation body either, where the
-  -- other 26 always did work. A call dies `OperationBodyMissing`.
+  -- stating rather than leaving to be rediscovered: they have no `operation_map` entry,
+  -- so every load-time and resolver-time reader of "is this operation host-backed"
+  -- counts them as unbacked, and a rule body cannot reduce them (WI-884's split).
   --
-  -- The header above said "(builtins)", which was the claim this note corrects.
+  -- THEY DO RUN FROM AN OPERATION BODY. `anthill-stl`'s `register_reflect_builtins`
+  -- binds all three by qualified name, and that function is what `runner::register_runtime`
+  -- calls on every CLI run and in every embedder. WI-20260914-Z73FX corrected this note,
+  -- which said they "run NOWHERE … a call dies `OperationBodyMissing`": MEASURED by
+  -- `guardians_test`'s `a_type_term_out_of_operation_info_decodes_to_its_sort`, which
+  -- takes the type term of `Email.send`'s `body` parameter out of its `OperationInfo`,
+  -- decodes it with `term_as_sort` from an anthill body, and reads the sort's own
+  -- operations back. The header above said "(builtins)", and on that point it was right.
   --
   -- They also escape the load-time backing check, and legitimately: WI-880 narrowed that
   -- check to a per-OPERATION question, but it walks PROVISIONS, and a namespace-level
   -- operation discharges none — §8.7's "a namespace-level operation is not backing" is
   -- the same rule seen from the other side. So nothing refuses them today.
   -- `wi880_reflect_mapping_test` uses `sort_as_term` as its CONTROL for exactly this
-  -- reason: it is the one name in this namespace that must read as un-mapped.
+  -- reason: it is the one name in this namespace that must read as un-MAPPED — which is
+  -- a different question from whether it runs, and the one that test asks.
 
   -- Convert a Type value to its Term representation
   operation sort_as_term(s: Type) -> Term

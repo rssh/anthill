@@ -2129,6 +2129,14 @@ fn corroborators_are_derived_from_data_not_asserted() {
 fn checker_interp() -> anthill_core::eval::Interpreter {
     let kb = try_load_with_agent(None, register_pipeline)
         .unwrap_or_else(|e| panic!("the trusted base must load: {e:#?}"));
+    interp_over(kb)
+}
+
+/// BOTH REGISTRIES ON ONE KB — the sentence above, as the single place that spells the
+/// set. A second copy is how one caller ends up running against a smaller reflect
+/// surface than production has, which is exactly what that sentence warns about
+/// (/code-review, WI-20260914-Z73FX).
+fn interp_over(kb: KnowledgeBase) -> anthill_core::eval::Interpreter {
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp)
         .expect("register standard eval builtins");
@@ -3455,4 +3463,174 @@ end
         .unwrap_or_else(|e| panic!("`-External` beside a row that binds `E = {{}}`: {e:#?}"));
     load("Llm", "{llm.E, Error, -External}")
         .unwrap_or_else(|e| panic!("`-External` beside an UNINSTANTIATED row var: {e:#?}"));
+}
+
+
+// ── WI-20260914-Z73FX — what a candidate may name ────────────────────────
+//
+// The ticket's own acceptance, driven against THIS example because the four `internal`
+// names it protects live here: a prompt that offers `guardians.Text.text` is bait the
+// checker refuses (`rejected/relabel.anthill`, `forged_llm.anthill`,
+// `forged_source.anthill`), so a renderer of "the declarations a candidate programs
+// against" must leave them out — and `visible_from` is how it asks.
+
+/// Reflect probes as ANTHILL BODIES, loaded beside the trusted base: what runs is the
+/// declared operation, not the host key behind it.
+const REFLECT_PROBE: &str = r#"
+namespace guardians.probe
+  import anthill.prelude.{Bool, Option, List, Type}
+  import anthill.reflect.{Symbol, Term, KB, OperationInfo, FieldInfo, visible_from, term_as_sort}
+  import anthill.reflect.KB.{kb}
+  operation vis(s: Symbol, scope: Symbol) -> Bool = visible_from(s, scope)
+  operation sort_of(t: Term) -> Option[T = Type] = term_as_sort(t)
+  operation ops_of(s: Type) -> List[T = OperationInfo] = KB.operations(kb(), s)
+  operation fields_of(s: Type) -> List[T = FieldInfo] = KB.fields(kb(), s)
+end
+"#;
+
+/// The example plus the probes, in an interpreter with both builtin registries.
+fn probe_interp() -> anthill_core::eval::Interpreter {
+    // WITH A CANDIDATE LOADED (`good`), because the scope the question is asked FROM is
+    // the candidate's: `guardians.agent` and its carrier exist only once one is there.
+    let mut owned = base_sources();
+    owned.push(agent_source("good"));
+    owned.push(REFLECT_PROBE.to_string());
+    let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let kb = common::try_load_kb_prepared_files(&refs, register_pipeline)
+        .unwrap_or_else(|e| panic!("the trusted base plus the reflect probes must load: {e:#?}"));
+    interp_over(kb)
+}
+
+/// THE ACCEPTANCE: the four `internal` names answer INVISIBLE from `guardians.agent` and
+/// visible from their own sorts, and the public doors answer visible from both.
+///
+/// The two CONTROLS are what make the first half mean anything: a query answering
+/// `false` for everything passes "text is hidden", and one answering "same scope only"
+/// passes it too. `Text.untrusted` (public, same sort) and `Email.send` (public, another
+/// namespace) fail both of those.
+#[test]
+fn a_candidates_view_leaves_out_what_it_may_not_name() {
+    let mut interp = probe_interp();
+    for (name, scope, want, why) in [
+        ("guardians.Text.text", "guardians.agent", false, "the relabel bait"),
+        ("guardians.Text.text", "guardians.agent.GoodTriage", false, "and from the candidate's own carrier"),
+        ("guardians.Text.text", "guardians.Text", true, "visible where it is declared"),
+        ("guardians.LiveLlm.live_llm", "guardians.agent", false, "the forged-llm bait"),
+        ("guardians.LiveLlm.live_llm", "guardians.LiveLlm", true, "its own sort"),
+        ("guardians.FakeLlm.fake_llm", "guardians.agent", false, "the other forged llm"),
+        ("guardians.Source.source", "guardians.agent", false, "the forged-source bait"),
+        ("guardians.Source.source", "guardians.Source", true, "its own sort"),
+        ("guardians.Text.untrusted", "guardians.agent", true, "CONTROL: the free door"),
+        ("guardians.Text.untrusted", "guardians.Text", true, "CONTROL: and from its sort"),
+        ("guardians.Email.send", "guardians.agent", true, "CONTROL: public, another namespace"),
+    ] {
+        let args = [common::symbol_term(&mut interp, name), common::symbol_term(&mut interp, scope)];
+        match interp.call("guardians.probe.vis", &args) {
+            Ok(Value::Bool(b)) => assert_eq!(b, want, "{name} from {scope} — {why}"),
+            other => panic!("{name} from {scope}: {other:?}"),
+        }
+    }
+}
+
+/// THE SECOND ACCEPTANCE ROW: `term_as_sort` RUNS, against the note in
+/// `stdlib/anthill/reflect/reflect.anthill` that said it "runs NOWHERE".
+///
+/// The note was right that `operation_map` does not name it and wrong that nothing can
+/// call it: `register_reflect_builtins` binds it, which is what the CLI and every
+/// embedder register. Driven the way a renderer would: take the type term of
+/// `Email.send`'s `body` parameter out of its `OperationInfo`, decode it to a `Type`,
+/// and ask the KB what that sort offers.
+#[test]
+fn a_type_term_out_of_operation_info_decodes_to_its_sort() {
+    let mut interp = probe_interp();
+    let send = interp
+        .kb()
+        .try_resolve_symbol("guardians.Email.send")
+        .expect("guardians.Email.send");
+    let rec = anthill_core::kb::op_info::lookup_operation_info(interp.kb(), send)
+        .expect("send has an OperationInfo");
+    let body = rec
+        .params
+        .iter()
+        .find(|(n, _)| interp.kb().local_name_of(*n) == "body")
+        .map(|(_, ty)| ty.clone())
+        .expect("send declares a `body` parameter");
+    let term = anthill_core::kb::node_occurrence::value_to_term(interp.kb_mut(), &body)
+        .expect("a declared parameter type is a term");
+    let ty = Value::term(term);
+
+    let sort = match interp.call("guardians.probe.sort_of", &[ty.clone()]) {
+        Ok(v @ Value::Entity { .. }) => v,
+        other => panic!("term_as_sort on `Text[Trusted]`: {other:?}"),
+    };
+    let Value::Entity { named, .. } = &sort else { unreachable!() };
+    let inner = named
+        .iter()
+        .find(|(k, _)| interp.kb().local_name_of(*k) == "value")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| panic!("`term_as_sort` answered `none()` for a declared type: {sort:?}"));
+
+    // WHAT THE DECODED SORT OFFERS — `Text`'s own two doors, read through `KB.operations`
+    // from an anthill body. The CONTROL is that the list is Text's and not "every
+    // operation": `Email.send` is not in it.
+    let names = |interp: &mut anthill_core::eval::Interpreter, op: &str, arg: &Value| -> Vec<String> {
+        let list = interp
+            .call(op, std::slice::from_ref(arg))
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
+        let mut out = Vec::new();
+        collect_named_symbols(interp.kb(), &list, "name", &mut out);
+        out.sort();
+        out
+    };
+    let ops = names(&mut interp, "guardians.probe.ops_of", &inner);
+    for want in ["guardians.Text.untrusted", "guardians.Text.trusted"] {
+        assert!(ops.contains(&want.to_string()), "`Text`'s own operations: {ops:?}");
+    }
+    assert!(
+        !ops.iter().any(|o| o == "guardians.Email.send"),
+        "THE CONTROL: the answer is THIS sort's operations, not every operation: {ops:?}"
+    );
+    // MEASURED, and kept as the neighbouring CONTRACT rather than as a second claim:
+    // `KB.fields` is keyed by an entity CONSTRUCTOR (WI-632's by-reference contract), so
+    // the decoded SORT answers nothing. `Text`'s only constructor is `text`, which is
+    // `internal` — this ticket's own subject — so there is no spelling of it here at all.
+    // ASSERTED ON THE LIST ITSELF, not on the walker's output: `collect_named_symbols`
+    // descends only `Value::Entity`, so a carrier it does not understand also yields an
+    // empty vec and the negative claim would hold vacuously (/code-review).
+    let fields = interp
+        .call("guardians.probe.fields_of", std::slice::from_ref(&inner))
+        .expect("fields_of runs");
+    let empty = match &fields {
+        Value::Entity { functor, pos, named, .. } => {
+            interp.kb().local_name_of(*functor) == "nil" && pos.is_empty() && named.is_empty()
+        }
+        _ => false,
+    };
+    assert!(
+        empty,
+        "`KB.fields` is keyed by an entity CONSTRUCTOR (WI-632), so the decoded SORT \
+         answers the empty list — and `Text`'s only constructor is the `internal` `text`, \
+         which this ticket's own rule leaves unspellable here: {fields:?}"
+    );
+}
+
+/// Every `<field>` symbol of a cons/nil list of entities, as qualified names — the
+/// reflect lists (`List[OperationInfo]`, `List[FieldInfo]`) arrive as value carriers.
+fn collect_named_symbols(
+    kb: &KnowledgeBase,
+    v: &Value,
+    field: &str,
+    out: &mut Vec<String>,
+) {
+    if let Value::Entity { named, .. } = v {
+        for (k, inner) in named.iter() {
+            if kb.local_name_of(*k) == field {
+                if let Some(sym) = kb.value_symbol(inner) {
+                    out.push(kb.qualified_name_of(sym).to_owned());
+                    continue;
+                }
+            }
+            collect_named_symbols(kb, inner, field, out);
+        }
+    }
 }

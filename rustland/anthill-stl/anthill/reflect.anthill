@@ -58,7 +58,11 @@ namespace anthill.reflect
       occurrence_type: "reflect_occurrence_type",
       sub_occurrences: "reflect_sub_occurrences",
       sub_occurrence_labels: "reflect_sub_occurrence_labels",
-      is_modifiable: "reflect_is_modifiable"
+      is_modifiable: "reflect_is_modifiable",
+      -- WI-20260914-Z73FX — what a scope may name, and a declaration's block.
+      visible_from: "reflect_visible_from",
+      meta_has_flag: "reflect_meta_has_flag",
+      meta_value: "reflect_meta_value"
     }
   end
 

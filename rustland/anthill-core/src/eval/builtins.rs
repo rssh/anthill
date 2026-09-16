@@ -476,6 +476,11 @@ const HOST_FNS: &[(
         reflect_sub_occurrence_labels,
     ),
     ("reflect_is_modifiable", 1, reflect_is_modifiable),
+    // WI-20260914-Z73FX — visibility and a declaration's block, as the kernel reads
+    // them: resolution's own `internal` filter, and the readers `@[simp]` goes through.
+    ("reflect_visible_from", 2, reflect_visible_from),
+    ("reflect_meta_has_flag", 2, reflect_meta_has_flag),
+    ("reflect_meta_value", 2, reflect_meta_value),
     ("kb_ambient", 0, kb_ambient),
     ("kb_loaded", 1, kb_loaded),
     // WI-5XBBQ — the layer DELTA, as operations rather than as facts. A fact is a
@@ -5548,6 +5553,116 @@ fn reflect_is_modifiable(interp: &mut Interpreter, args: &[Value]) -> Result<Val
     Ok(Value::Bool(crate::kb::region::is_modifiable_sort(
         &interp.kb, sort,
     )))
+}
+
+/// WI-20260914-Z73FX — `anthill.reflect.visible_from(s: Symbol, scope: Symbol) -> Bool`,
+/// the question a renderer of "what a scope may name" asks: `internal` hides a name
+/// from every scope but its declaring one and that scope's lexical descendants (§8.6),
+/// so one symbol is visible from its own sort and hidden from a sibling namespace. A
+/// thin binding over [`crate::intern::SymbolTable::internal_visible_from`] — the read
+/// resolution itself filters with — so the answer cannot drift from what a name in
+/// that scope resolves to. It reads the parse-decided mark, never a fact row, so a
+/// hand-written `DeclarationMeta` cannot change it.
+fn reflect_visible_from(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [s, scope] = expect_args::<2>("visible_from", args)?;
+    let sym = interp
+        .kb
+        .value_symbol(&s)
+        .ok_or_else(|| type_mismatch("Symbol", &s, None))?;
+    let scope_sym = interp
+        .kb
+        .value_symbol(&scope)
+        .ok_or_else(|| type_mismatch("Symbol (a scope)", &scope, None))?;
+    // BOTH ARGUMENTS ARE CHECKED BEFORE THE ANSWER, because this predicate's two
+    // silent failures point in OPPOSITE directions and a renderer of "what a candidate
+    // may name" would believe either. A symbol that owns no scope (an operation, a
+    // constructor) mints a `ScopeId` with no entry, so the parent walk finds nothing and
+    // EVERY internal name reads hidden; an unresolved symbol is not `is_internal`, so it
+    // reads visible — a typo failing OPEN. Loud on both (`/code-review`, WI-20260914-Z73FX).
+    if interp.kb.symbols.declaring_scope(sym).is_none() {
+        return Err(EvalError::Internal(format!(
+            "visible_from: `{}` resolves to no declaration, so there is no visibility to \
+             report — a name that does not resolve is not a visible one",
+            interp.kb.qualified_name_of(sym)
+        )));
+    }
+    let scope_id = interp.kb.symbols.scope_id(scope_sym);
+    if interp.kb.symbols.scope(scope_id).is_none() {
+        return Err(EvalError::Internal(format!(
+            "visible_from: `{}` opens no scope, so `visible from it` has no reading — \
+             pass the namespace or sort the asking code is written in",
+            interp.kb.qualified_name_of(scope_sym)
+        )));
+    }
+    Ok(Value::Bool(
+        interp.kb.symbols.internal_visible_from(sym, scope_id),
+    ))
+}
+
+/// The `meta(…)` term a meta reader was handed. A declaration's empty block reads back
+/// as `Ref(meta)` (the WI-719 nullary canon), so both spellings are admitted; any other
+/// term is refused rather than searched, because the kernel readers match a KEY and
+/// would answer `term_field`'s question about `some(value: 3)` without complaint.
+fn meta_term_operand(
+    interp: &mut Interpreter,
+    v: &Value,
+    op: &'static str,
+) -> Result<crate::kb::term::TermId, EvalError> {
+    // A rule body hands the row's `meta` over as an OCCURRENCE (`Value::Node`), so the
+    // Node-aware boundary, not `alloc_from_value`, which refuses every `Node`.
+    let tid = crate::kb::node_occurrence::value_to_term(&mut interp.kb, v).map_err(|e| {
+        EvalError::Internal(format!("{op}: a `meta(…)` term does not lower: {e:?}"))
+    })?;
+    // BY NAME, the way the kernel readers key an entry: the loader's `meta` functor is
+    // the delocalized kernel name, which a bare `intern("meta")` here does not answer.
+    let is_meta = |sym: &crate::intern::Symbol| interp.kb.local_name_of(*sym) == "meta";
+    match interp.kb.get_term(tid) {
+        crate::kb::term::Term::Fn {
+            functor, pos_args, ..
+        } if is_meta(functor) && pos_args.is_empty() => Ok(tid),
+        // An empty block reads back as the bare name (the WI-719 nullary canon).
+        crate::kb::term::Term::Ref(s) | crate::kb::term::Term::Ident(s) if is_meta(s) => Ok(tid),
+        _ => Err(EvalError::TypeMismatch {
+            expected: "a `meta(…)` term",
+            got: format!("{} (passed to `{op}`)", v.type_name()),
+        }),
+    }
+}
+
+/// WI-20260914-Z73FX — `anthill.reflect.meta_has_flag(meta: Term, key: String) -> Bool`,
+/// over the kernel's [`crate::kb::load::meta_has_flag`] (what `@[simp]` enablement
+/// reads). `@[Marker]` and `@[Key: v]` both count as present.
+fn reflect_meta_has_flag(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [meta, key] = expect_args::<2>("meta_has_flag", args)?;
+    let tid = meta_term_operand(interp, &meta, "meta_has_flag")?;
+    let key = str_operand(interp.kb(), &key)?.into_owned();
+    Ok(Value::Bool(crate::kb::load::meta_has_flag(
+        &interp.kb,
+        Some(tid),
+        &key,
+    )))
+}
+
+/// WI-20260914-Z73FX — `anthill.reflect.meta_value(meta: Term, key: String) ->
+/// Option[T = Term]`, over the kernel's [`crate::kb::load::meta_value`]. A flag-form
+/// key has no value to return and answers `none()`: presence is `meta_has_flag`'s
+/// question, and handing back the kernel's `Bottom` placeholder would put a term no
+/// source spelled into an anthill body.
+fn reflect_meta_value(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [meta, key] = expect_args::<2>("meta_value", args)?;
+    let tid = meta_term_operand(interp, &meta, "meta_value")?;
+    let key = str_operand(interp.kb(), &key)?.into_owned();
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value = crate::kb::load::meta_value(&interp.kb, Some(tid), &key)
+        .filter(|v| !matches!(interp.kb.get_term(*v), crate::kb::term::Term::Bottom));
+    Ok(match value {
+        Some(v) => {
+            let value_key = interp.kb.intern("value");
+            option_some(some_sym, value_key, Value::term(v))
+        }
+        None => option_none(none_sym),
+    })
 }
 
 /// `Substitution.lookup(s: Substitution, name: String) -> Option[Term]`.
