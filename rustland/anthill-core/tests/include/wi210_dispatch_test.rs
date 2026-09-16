@@ -548,7 +548,6 @@ fn wi350_concrete_carrier_disambiguates_self_receiver_spec() {
 #[test]
 fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
     use anthill_core::kb::term::Term;
-    use anthill_core::kb::typing::{extract_sort_ref_sym, get_named_arg};
     use smallvec::SmallVec;
     // Add a SECOND Stream impl alongside LogicalStream, so a per-call
     // `Stream[T = …]` goal is genuinely ambiguous by binding (both impls'

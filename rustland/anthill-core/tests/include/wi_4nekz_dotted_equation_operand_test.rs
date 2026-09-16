@@ -101,7 +101,6 @@
 //! the loader.
 
 use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::KnowledgeBase;
 
 /// The fixture every test here varies: `zz4n.inner.rel` is a real one-clause relation,
 /// `zz4n.two.rel2` its one-segment twin, and `body` is written in `zz4n.two`'s rule body.

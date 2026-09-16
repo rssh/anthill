@@ -62,7 +62,6 @@
 use crate::common::load_kb_with;
 use anthill_core::eval::Value;
 use anthill_core::kb::op_info::lookup_operation_info;
-use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::type_param_global_var;
 use anthill_core::kb::KnowledgeBase;
 

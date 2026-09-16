@@ -22,16 +22,13 @@
 
 use std::rc::Rc;
 
-use smallvec::SmallVec;
 
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
-use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Term, TermId, Var};
+use anthill_core::kb::term::{TermId, Var};
 use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::{ClauseKind, KnowledgeBase};
-use anthill_core::span::{SourceId, SourceSpan};
 
 // ── (A) `is_duplicate_answer` — one σ-injection gadget, every carrier ────────
 //

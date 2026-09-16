@@ -44,7 +44,6 @@
 //! (`provision_binds_param_to_carrier`, the sound but provision-relative gate that cannot be
 //! used here), proposal 058 §3.6, `docs/kernel-language.md` §5.1.
 
-use anthill_core::kb::KnowledgeBase;
 
 use crate::wi1076_self_representing_spec_carrier_test::carrier_rows;
 use crate::wi860_default_provider_relations_test::relation_rows;

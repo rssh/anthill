@@ -3671,7 +3671,6 @@ const SYNTHETIC_WRAPPER_IMPORTS: [(&str, [&str; 2]); 2] =
 
 fn item_census(parsed: &ParsedFile) -> (usize, usize) {
     use anthill_core::parse::ir::Item;
-    use anthill_core::span::Span;
 
     fn walk(items: &[Item], facts: &mut usize, others: &mut usize) {
         for item in items {

@@ -37,7 +37,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use anthill_core::eval::{Interpreter, Value};
+use anthill_core::eval::Interpreter;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentBindingError, ExtentRole};
 use anthill_core::kb::term::TermId;

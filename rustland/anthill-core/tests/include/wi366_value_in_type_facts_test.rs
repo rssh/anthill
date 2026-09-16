@@ -487,7 +487,6 @@ end
 #[test]
 fn query_pattern_written_empty_effect_row_lowers() {
     use anthill_core::kb::load;
-    use anthill_core::kb::term::Term;
     use anthill_core::parse;
     use std::collections::HashMap;
 

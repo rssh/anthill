@@ -6418,8 +6418,6 @@ fn effect_scoping_stdlib_no_spurious_errors() {
 // Constructor type param inference tests
 // ══════════════════════════════════════════════════════════════════
 
-use anthill_core::kb::typing::type_check_expr;
-use anthill_core::kb::typing::TypingEnv;
 
 #[test]
 fn constructor_infers_type_param_from_int_field() {

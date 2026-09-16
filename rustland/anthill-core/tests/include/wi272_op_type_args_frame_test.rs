@@ -27,7 +27,7 @@
 use std::sync::{Arc, Mutex};
 
 use anthill_core::eval::{Interpreter, Value};
-use anthill_core::kb::term::{Term, TermId};
+use anthill_core::kb::term::TermId;
 
 use crate::common;
 use anthill_core::kb::term_view::TermView;

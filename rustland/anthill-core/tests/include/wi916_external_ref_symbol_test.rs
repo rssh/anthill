@@ -43,9 +43,7 @@
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentError, StoredRow};
-use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::KnowledgeBase;
-use anthill_core::parse;
 
 use crate::common::{load_kb_with, mount_extent};
 

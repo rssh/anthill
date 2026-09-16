@@ -9638,7 +9638,6 @@ impl KnowledgeBase {
         fields: Vec<(Symbol, node_occurrence::TypeChild)>,
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
-        use node_occurrence::TypeChild;
         let element_sym = self.resolve_symbol("anthill.prelude.NamedTupleElement");
         let name_key = self.intern("name");
         let type_key = self.intern("type");

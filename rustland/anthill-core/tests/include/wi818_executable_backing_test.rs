@@ -32,10 +32,8 @@
 //! is not).
 
 use anthill_core::eval::{EvalError, Value};
-use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Literal, Term, Var};
+use anthill_core::kb::term::{Literal, Term};
 use anthill_core::kb::KnowledgeBase;
-use smallvec::SmallVec;
 
 // ── The ticket's three variants ─────────────────────────────────────────
 
