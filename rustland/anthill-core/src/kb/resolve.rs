@@ -8264,26 +8264,46 @@ impl KnowledgeBase {
                 // `?d` is allowed to decide — which it cannot do if the goal has
                 // already failed.
                 //
-                // `detail` IS DROPPED, and that is a known gap with an owner rather
-                // than an oversight: a resolver builtin has no diagnostic channel
-                // (`BuiltinResult` is Success / Bindings / Delay / Failure), so a
-                // `require[X]` whose provider tree genuinely cannot be built delays
-                // with nothing saying why. Routing it — a flounder report on the
-                // WI-737 path is the obvious candidate — is WI-1040 residue, recorded
-                // in that ticket's feedback. Built only on this failure edge, never
-                // on the resolving path.
+                // `detail` IS DROPPED, and the reason is no longer the one WI-1040
+                // recorded ("a resolver builtin has no diagnostic channel"). TWO have
+                // arrived since: `faults` — this very function's `&mut ReduceFaults`
+                // parameter, drained onto the stream before the verdict is acted on —
+                // and `BuiltinResult::Error`, which the `Defect` arm below now takes.
+                // NEITHER FITS THIS ARM, and that is the point: both are TERMINAL —
+                // they mark the stream incomplete and a drain reads a recorded fault
+                // as `Err` — while this delay is a PROMISE that a later binding, or a
+                // supplied `?d`, may still keep. Faulting here would fail a query that
+                // goes on to answer. What is missing is a DEFERRED note: one carried
+                // by the delayed goal and surfaced only if the residual survives to
+                // the drain (the WI-737 flounder path is where it would land). That is
+                // WI-1040 residue still, on this failure edge only.
                 let _ = detail;
                 return BuiltinResult::delay();
             }
-            // §4: a run-time tie is UNREACHABLE, not refused — overlap between
-            // provider heads is decided at typing/load. Reaching it means the
-            // coherence machinery let one through, so it is a defect: loud in
-            // debug/test (the repo's loud-over-silent rule, spelled the way
-            // `bridge_op_to_eval` spells the same class), and a delay in release
-            // rather than picking one of the two.
+            // §4: a run-time tie SHOULD be unreachable — overlap between provider
+            // heads is decided at typing/load, and where a default exists 058 §3.2's
+            // rung 2a takes it. Reaching it means one of those two let a tie through,
+            // so it is a defect — but it is a defect the AUTHOR can be told about,
+            // and it is REACHABLE from a clean-loading program.
+            //
+            // IT WAS A `debug_assert!(false, …)`, WHICH IS AN ABORT ON A PROGRAM THAT
+            // TYPE-CHECKED. Measured: a spec whose operations are all NULLARY has no
+            // carrier PARAMETER, so `goal_carrier_key` declines the default rung
+            // outright and two providers of one instance tie here — with the tie's
+            // own default (the self-providing carrier) never consulted. Under the
+            // assert that program aborted every debug build; in release it delayed,
+            // residualizing with nothing saying why. The same program one op over —
+            // the spec given any carrier-bearing operation — answers the default.
+            //
+            // `Error` IS THE VARIANT FOR THIS and its doc says so: "the resolver could
+            // not ask it", residualize and record why, scheduled like a delay so one
+            // branch's fault does not abort the others. The detail reaches
+            // `ResolveStats::errors` through `record_error`, which is the located,
+            // author-readable form the assert's panic message never was.
             FindDictFetch::Defect { detail } => {
-                debug_assert!(false, "find_dictionary: {detail}");
-                return BuiltinResult::delay();
+                return BuiltinResult::Error(ResolveError::new(format!(
+                    "find_dictionary: {detail}"
+                )));
             }
         };
         // BIND (unbound `?d`) or CHECK (bound) — one operation, because unification

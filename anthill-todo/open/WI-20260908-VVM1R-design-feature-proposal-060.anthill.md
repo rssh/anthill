@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test
 
+- depends_on: WI-20260916-8WRJC-default-rung-2a-is-declined
+
 - tags: vvm1r
 
 ## Description

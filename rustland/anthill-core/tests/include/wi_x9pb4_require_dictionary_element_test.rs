@@ -477,14 +477,15 @@ end
 ///    x9pb4_tie.MidA, x9pb4_tie.MidB`. An abort on a program with no defect in it.
 ///  * as shipped — ONE INDEFINITE solution again.
 ///
-/// WHAT IS NOT DRIVEN, and is written down rather than credited: the OTHER arm — a
-/// tie on a goal every element of which came off a CARRIED TYPE still reporting
-/// `Defect`. Nothing drives it because nothing ever did: that arm's own doc calls a
-/// run-time tie UNREACHABLE, and this ticket's job was to keep it that way, not to reach
-/// it. WI-20260913-J38VE made the same call from the other side — spelling the element
-/// out does NOT reach that arm either
-/// (`wi_j38ve_written_bracket_fetch_test::a_tie_a_written_element_does_not_cause_stays_
-/// a_delay`).
+/// THE OTHER ARM — a tie on a goal every element of which came off a CARRIED TYPE,
+/// reporting `Defect` — went undriven through this ticket and WI-20260913-J38VE, both of
+/// which say so: that arm's own doc called a run-time tie UNREACHABLE and the job was to
+/// keep it that way. It is NOT unreachable, and
+/// [`a_tie_the_default_rung_never_saw_is_an_error_not_an_abort`] at the foot of this file
+/// reaches it from a program that loads clean. What separates the two rows is what this
+/// one's fixture has and that one's lacks: here the tie is on an element NOBODY NAMED, so
+/// no provider is wrong and a delay is honest; there both providers answer the very
+/// carrier the goal names, and one of them is the carrier's own.
 #[test]
 fn a_tie_on_a_synthesized_element_delays_rather_than_reporting_a_defect() {
     let src = r#"
@@ -585,4 +586,164 @@ end
         "x9pb4_sr.IntBag",
         "and it must name the carrier WI-350's filter selected"
     );
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// THE OTHER ARM, NOW DRIVEN — a tie whose every element came off a CARRIED TYPE.
+//
+// The file header above records this arm as "NOT DRIVEN … nothing drives it because
+// nothing ever did: that arm's own doc calls a run-time tie UNREACHABLE". It is
+// reachable, from a program that loads clean, and these two rows are the reach and its
+// cause.
+//
+// THE CAUSE IS THE DEFAULT RUNG DECLINING, NOT REAL AMBIGUITY. 058 §3.2 rung 2a takes
+// the DEFAULT among tied candidates, and `Red` — which provides `Desc` for itself — has
+// the INFERRED `default_provider` row (058 §3.6) that names it. The rung never runs:
+// `goal_carrier_key` reads the carrier through `spec_carrier_param`, which asks what the
+// spec's OPERATIONS take, and a spec whose ops are all NULLARY has no such parameter —
+// so the rung is declined outright and a tie with a perfectly good default is reported
+// as one nobody can settle. [`the_same_tie_takes_its_default_when_the_spec_has_a_carrier_
+// bearing_op`] is that claim measured: the SAME two providers, one defaulted `touch(x: T)`
+// added to the spec, and the tie is gone.
+// ════════════════════════════════════════════════════════════════════════════════════
+
+/// Two providers of `Desc[T = Red]`: the carrier itself (7) and a rival (11). `tag()` is
+/// NULLARY and BODY-LESS, so nothing can value-direct it and no default body can stand in
+/// for the dictionary — the tie is the only thing under measurement.
+fn two_providers(ns: &str, carrier_op: &str) -> String {
+    format!(
+        r#"namespace {ns}
+  import anthill.prelude.Int64
+
+  sort Desc
+    sort T = ?
+    operation tag() -> Int64
+{carrier_op}  end
+
+  sort Red
+    import anthill.prelude.Int64
+    entity red
+    provides Desc[T = Red]
+    operation tag() -> Int64 = 7
+  end
+
+  sort Rival
+    import anthill.prelude.Int64
+    provides Desc[T = Red]
+    operation tag() -> Int64 = 11
+  end
+
+  rule tied(p: Red, ?r) :- ?d = require[Desc[T = Red]], Desc.tag(?r)
+  rule answer(?r) :- tied(red(), ?r)
+end
+"#
+    )
+}
+
+/// A RUN-TIME TIE IS REPORTED, NOT ASSERTED — the `Defect` arm returns
+/// [`BuiltinResult::Error`] where it used to `debug_assert!(false, …)`.
+///
+/// WHAT THE ASSERT DID TO THIS PROGRAM: it loads clean and type-checks, so a debug build
+/// ABORTED on it — the whole test binary, not the query — and a release build silently
+/// delayed with nothing saying why. `Error` is the variant whose doc describes exactly
+/// this ("the resolver could not ask it"; residualize and record why; does not stop the
+/// search), so the author now gets the sentence and the other branches still run.
+///
+/// FAILS WHEN THE CHANGE IS BACKED OUT, and not through either assertion below:
+/// MEASURED — restore the `debug_assert!` and this row PANICS at `resolve.rs`'s assert
+/// before reaching them. The test harness catches that per test thread, so the suite
+/// reports one failure rather than dying; a non-test consumer of the same debug build —
+/// the CLI, an embedding — has no such catch and the process goes down. That is what
+/// the row is really about, and it is why it asserts on the MESSAGE: an abort has no
+/// message anyone can read, only a panic string on the way out.
+#[test]
+fn a_tie_the_default_rung_never_saw_is_an_error_not_an_abort() {
+    let src = two_providers("x9pb4_tie2", "");
+    let mut kb = load_kb_with(&src);
+    let (sols, errors) = unary_with_errors(&mut kb, "x9pb4_tie2.answer");
+    assert!(
+        errors.iter().any(|m| {
+            // NAMED SEPARATELY, not as one substring: which of the two the tie
+            // enumerates first is `collect_provides_candidates`' walk order, which this
+            // row is not about — keying on the pair's ORDER would fail it for an index
+            // change with the behaviour untouched.
+            m.contains("two providers answer")
+                && m.contains("x9pb4_tie2.Red")
+                && m.contains("x9pb4_tie2.Rival")
+        }),
+        "the tie must reach `ResolveStats::errors` as a sentence naming BOTH providers \
+         — that is what the panic message used to carry and nothing else could read; \
+         got {errors:?}"
+    );
+    assert!(
+        !sols.is_empty(),
+        "the goal must RESIDUALIZE, and ZERO ROWS is not that: reporting the tie and \
+         then failing the clause is a DIFFERENT outcome from reporting it and leaving \
+         the answer open, and `all(!definite)` below cannot tell them apart — it is \
+         vacuously true on an empty list. Got {sols:?}"
+    );
+    assert!(
+        sols.iter().all(|definite| !definite),
+        "…and no row may be DEFINITE: picking one of two providers is the silent guess \
+         this arm exists to refuse. Got {sols:?}"
+    );
+}
+
+/// THE CAUSE, AND THE CONTROL — the same two providers settle silently as soon as the
+/// spec has a carrier-bearing operation, because that is what `spec_carrier_param`
+/// reads and what `goal_carrier_key` needs before 058 §3.2's rung 2a may consult the
+/// defaults substrate. `Red` self-provides, so it IS the default and answers 7.
+///
+/// PASSES EITHER WAY BY DESIGN — it measures WI-860/861's defaults substrate, which
+/// this change does not touch. Its job is to say that the row above is a tie the rung
+/// could not SEE, not two providers with a genuine claim each; without it, that row
+/// reads as "two providers always tie", which is false.
+#[test]
+fn the_same_tie_takes_its_default_when_the_spec_has_a_carrier_bearing_op() {
+    let src = two_providers(
+        "x9pb4_tie3",
+        "    operation touch(x: T) -> Int64 = 0\n",
+    );
+    let mut kb = load_kb_with(&src);
+    let (sols, errors) = unary_with_errors(&mut kb, "x9pb4_tie3.answer");
+    assert!(
+        errors.is_empty(),
+        "no tie to report once the rung can be consulted; got {errors:?}"
+    );
+    assert!(
+        matches!(
+            definite_unary(&mut kb, "x9pb4_tie3.answer").as_slice(),
+            [Value::Int(7)]
+        ),
+        "the DEFAULT is the self-providing carrier's own provision (058 §3.6's inferred \
+         row), so `Red` answers 7 and `Rival`'s 11 does not. Solutions were {sols:?}"
+    );
+}
+
+/// [`query_unary`]'s goal, resolved so [`anthill_core::kb::resolve::ResolveStats`] comes
+/// back with it. Returns each solution's definiteness and the recorded fault messages.
+fn unary_with_errors(
+    kb: &mut anthill_core::kb::KnowledgeBase,
+    qn: &str,
+) -> (Vec<bool>, Vec<String>) {
+    use anthill_core::kb::resolve::ResolveConfig;
+    use anthill_core::kb::term::{Term, Var};
+    use smallvec::SmallVec;
+
+    let sym = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("unary_with_errors: `{qn}` does not resolve"));
+    let r_sym = kb.intern("r");
+    let r_vid = kb.fresh_var(r_sym);
+    let r_var = kb.alloc(Term::Var(Var::Global(r_vid)));
+    let goal = kb.alloc(Term::Fn {
+        functor: sym,
+        pos_args: SmallVec::from_elem(r_var, 1),
+        named_args: SmallVec::new(),
+    });
+    let (sols, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+    (
+        sols.iter().map(|s| s.is_definite()).collect(),
+        stats.errors.iter().map(|e| e.message.clone()).collect(),
+    )
 }
