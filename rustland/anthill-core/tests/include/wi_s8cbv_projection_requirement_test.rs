@@ -748,3 +748,187 @@ fn a_refused_projection_is_reported_once_and_not_twice() {
         "the drop rule must NOT speak over the rung's own error; got:\n{errs}",
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════════════════
+// THE ATTRIBUTION — WHICH dictionary a `require` means, keyed on its projection ROOT.
+//
+// This ticket's own acceptance, and it turned out to be UNDRIVEN rather than unbuilt:
+// measured 2026-09-16, `rule two(x: Box, y: Box, ?d1, ?d2) :- ?d1 = require[Desc[T = x.E]],
+// ?d2 = require[Desc[T = y.E]]` already binds TWO dictionaries, different, each holding
+// its own root's element. The rows below are that measurement, made permanent.
+//
+// WHY IT WORKS WITHOUT THE SELECTOR THE TICKET PLANNED. S4 (WI-20260909-96ZTM) keys
+// attribution on the bound SORT — `canonical_sort_sym(bound) == written` — and its own
+// delivery note says that is what cannot separate `p(?x: Leaf, ?y: Leaf)`: both anchors
+// match any bracket naming `Leaf`. A PROJECTED bracket never asks that question. `x.E`
+// and `y.E` δ-ground to the two roots' ELEMENTS — `Red` and `Blue` — and the fetch keys
+// on the carried type, so the two requires are separated one layer below the selector.
+//
+// WHAT IS STILL REFUSED, and rightly: a COVERED CALL under two dictionaries. With
+// `Desc.tag()` nullary there is no carrier at the call site, so nothing could say which
+// instance it dispatches on, and the typer says exactly that. That is the
+// "genuinely unattributed case" the ticket's own narrowing leaves standing.
+// ════════════════════════════════════════════════════════════════════════════════════
+
+/// The `impl:` a bound dictionary names, or `None` when the value is not a dictionary at
+/// all — which is what the requires-deleted back-out must see.
+///
+/// THE ACCESSOR MUST RESOLVE, and that is a PANIC rather than a `None`. Folding "this KB
+/// has no `Dictionary.impl`" into the same answer as "this value is not a dictionary"
+/// would let [`with_the_requires_gone_neither_slot_is_a_dictionary`] pass for a reason
+/// that has nothing to do with its subject — every fixture here loads the stdlib, so a
+/// missing accessor is a broken harness and must say so.
+fn bound_dict_impl(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Option<String> {
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    let impl_key = kb
+        .try_resolve_symbol("anthill.realization.runtime.Dictionary.impl")
+        .expect("the `Dictionary.impl` accessor must resolve in a stdlib-loaded KB");
+    let child = v.named_arg(kb, impl_key)?.to_value();
+    match child.head(kb) {
+        ViewHead::Functor {
+            functor: Some(sym),
+            pos_arity: 0,
+            named_arity: 0,
+        } => Some(kb.qualified_name_of(sym).to_string()),
+        _ => None,
+    }
+}
+
+/// The two dictionaries `two(…, ?d1, ?d2)` binds, read one slot at a time: a clause
+/// cannot hand both to one unary query, and reading them separately is also what keeps
+/// the two answers from being told apart by their ORDER in one row.
+///
+/// `fact zero(0)` rides in every namespace this builds and is used by exactly one caller
+/// — the back-out, which needs a way to BIND both slots without a `require` and cannot
+/// reach `anthill.kernel.unify` through [`fixture`]'s import list.
+fn two_root_impls(
+    ns: &str,
+    requires: &str,
+    args: &str,
+) -> (Option<String>, Option<String>) {
+    let src = fixture(
+        ns,
+        &format!(
+            "  fact zero(0)\n  \
+             rule two(x: Box, y: Box, ?d1, ?d2) :- {requires}\n  \
+             rule answer_d1(?d) :- two({args}, ?d, ?)\n  \
+             rule answer_d2(?d) :- two({args}, ?, ?d)\n"
+        ),
+    );
+    let mut kb = crate::common::load_kb_with(&src);
+    let read = |kb: &mut anthill_core::kb::KnowledgeBase, which: &str| {
+        match crate::common::query_unary(kb, &format!("{ns}.answer_{which}")).as_slice() {
+            [(v, _)] => bound_dict_impl(kb, v),
+            other => panic!("`answer_{which}` must yield exactly one row, got {other:?}"),
+        }
+    };
+    let d1 = read(&mut kb, "d1");
+    let d2 = read(&mut kb, "d2");
+    (d1, d2)
+}
+
+const BOTH: &str =
+    "?d1 = require[Desc[T = x.E]], ?d2 = require[Desc[T = y.E]]";
+
+/// THE ACCEPTANCE — two roots of ONE sort bind two DIFFERENT dictionaries, each holding
+/// its own root's element, asserted BY VALUE (the `impl` each names).
+///
+/// The two head parameters are both `Box`, which is the shape S4's sort-matching
+/// selector explicitly cannot separate. Reading the `impl` rather than dispatching
+/// through the dictionary is deliberate: `Desc.tag()` is nullary and body-less, so a
+/// covered call under two dictionaries is REFUSED (see the header), and the bound value
+/// is the only observation available.
+///
+/// FAILS WITH THE REQUIRES GONE — [`with_the_requires_gone_neither_slot_is_a_dictionary`]
+/// is that back-out, and it is not optional: S4's first headline answered its two
+/// numbers with both requires deleted.
+#[test]
+fn two_projected_requires_bind_two_dictionaries_at_their_own_roots() {
+    let (d1, d2) = two_root_impls("test.s8cbv.two", BOTH, "box(v: red()), box(v: blue())");
+    assert_eq!(
+        (d1.as_deref(), d2.as_deref()),
+        (Some("test.s8cbv.two.Red"), Some("test.s8cbv.two.Blue")),
+        "`x.E` is `Red` and `y.E` is `Blue`, so the two requires name two instances"
+    );
+
+    // THE ARGUMENT SWAP — same clause, the colours exchanged at the call. Both
+    // dictionaries move with their roots.
+    let (s1, s2) = two_root_impls("test.s8cbv.swap", BOTH, "box(v: blue()), box(v: red())");
+    assert_eq!(
+        (s1.as_deref(), s2.as_deref()),
+        (Some("test.s8cbv.swap.Blue"), Some("test.s8cbv.swap.Red")),
+        "the attribution follows the ROOT's value, not the clause's text"
+    );
+}
+
+/// THE DISCRIMINATOR — the require ORDER swapped, the arguments held fixed.
+///
+/// THE ROW ABOVE CANNOT TELL ROOT FROM POSITION and this one is why it is not the whole
+/// acceptance: "first require to the first anchor" predicts the argument swap exactly as
+/// root-keying does. Here the two hypotheses split — keyed by ROOT, `?d1` now takes `y`'s
+/// element (`Blue`) and `?d2` takes `x`'s (`Red`); keyed by POSITION they do not move.
+/// They move.
+#[test]
+fn which_dictionary_a_require_means_is_keyed_on_its_root_not_its_position() {
+    let (d1, d2) = two_root_impls(
+        "test.s8cbv.reorder",
+        "?d1 = require[Desc[T = y.E]], ?d2 = require[Desc[T = x.E]]",
+        "box(v: red()), box(v: blue())",
+    );
+    assert_eq!(
+        (d1.as_deref(), d2.as_deref()),
+        (
+            Some("test.s8cbv.reorder.Blue"),
+            Some("test.s8cbv.reorder.Red")
+        ),
+        "`?d1` names `y.E` = Blue because its BRACKET says so; a positional pairing \
+         would have left Red in `?d1`"
+    );
+}
+
+/// THE BACK-OUT THE TWO ROWS ABOVE ARE READ AGAINST — with the requires replaced by an
+/// ordinary fact lookup, neither slot holds a dictionary at all.
+///
+/// PASSES EITHER WAY BY DESIGN, and it is still the row that makes the others evidence:
+/// this ticket has twice shipped a headline that answered the same numbers with its
+/// requires deleted, and nothing but this row notices that.
+#[test]
+fn with_the_requires_gone_neither_slot_is_a_dictionary() {
+    let (d1, d2) = two_root_impls(
+        "test.s8cbv.noreq",
+        "zero(?d1), zero(?d2)",
+        "box(v: red()), box(v: blue())",
+    );
+    assert_eq!(
+        (d1, d2),
+        (None, None),
+        "no `require`, no dictionary — if either slot still named an `impl`, the two \
+         rows above would be measuring something other than the requirement channel"
+    );
+}
+
+/// THE OTHER HALF OF THE RULE — two DISTINCT roots whose elements are the same sort name
+/// ONE instance, not two.
+///
+/// The ticket states this as "two roots that are DELTA-EQUAL must share ONE dictionary".
+/// Its own spelling — a let-alias — has no rule-body form to write it in, so this is the
+/// same claim at the value level: `x` and `y` are different parameters bound to boxes of
+/// the SAME colour, and both requires must land on that colour's provider. Separating
+/// them by their SPELLING (two brackets ⇒ two instances) would answer two dictionaries
+/// here, and a dispatch through either would then be a coin flip between identical
+/// values that nothing downstream could catch.
+///
+/// NOTE WHAT THIS IS NOT: writing the SAME root twice — `require[Desc[T = x.E]]` beside
+/// itself — is REFUSED ("two identical `require`s name no two carriers to tell their
+/// dictionaries apart"), which is the duplicate-spec-base rule and not this one. Two
+/// roots that merely happen to agree are legal and must agree.
+#[test]
+fn two_roots_that_agree_name_one_instance() {
+    let (d1, d2) = two_root_impls("test.s8cbv.agree", BOTH, "box(v: red()), box(v: red())");
+    assert_eq!(
+        (d1.as_deref(), d2.as_deref()),
+        (Some("test.s8cbv.agree.Red"), Some("test.s8cbv.agree.Red")),
+        "both roots carry `Red`, so both requires name `Red`'s provision — the \
+         attribution is on what the root IS, not on which bracket wrote it"
+    );
+}
