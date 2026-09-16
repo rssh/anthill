@@ -1238,16 +1238,47 @@ spec default and answers. Silently, and in the direction that produces a value.
 The CALLEE half is the channel doc's *"the call site drives it; `require[X]` is only the
 explicit form … the transformation reads the callee's dictionary chain
 (`provider_dict_entries` / `synth_req_names`) and synthesizes one `find_dictionary` goal
-per slot"*. NOT measured here — I1/I3's callee sort declares no `requires`, so that
-fixture says nothing about it, and a claim either way would be unfounded.
+per slot"*.
 
-**So the open question is: does a rule USE the requirement written on its enclosing (or
-callee's) declaration?** It is a semantics change against a documented boundary, not a
-gap to fill in passing, and it is DELIBERATELY not one of the filed stages — it needs a
-decision first. Row (k) — a covered call under a typed head already answering `7` by
-value-dispatch — is not an argument against it: value-direction happens to reach the same
-answer at ONE supplier, and REFUSES at two (058 §4.9, WI-1040's two-supplier fixture),
-which is exactly where inheriting would decide.
+### MEASURED 2026-09-16 — both halves, and the callee half answers TWICE
+
+The 2026-09-09 table was taken before S5 (delivered 09-12), S6's operation half (09-13)
+and S7 (09-13), every one of them on this surface, so it was re-run against HEAD along
+with the rows it was missing. **I1 ≡ I3 is unchanged**: the enclosing sort's `requires`
+still has no effect on a clause inside it.
+
+| | clause | answers |
+|---|---|---|
+| I1 | a rule INSIDE `sort Holder { requires Desc[T = Plain] }` | `1` — the spec DEFAULT |
+| I2 | the same call, `requires(Desc[T = Plain])` written IN THE BODY | `[]` — the guard `DontFire`s |
+| I3 | the same call, NOTHING declared anywhere | `1` |
+| **I4** | the same call through `operation viaop(x: Plain) requires Desc[T = Plain]`, the rule writing nothing | **`1`** |
+| **I5** | I4 with a carrier that DOES provide (`Rich provides Desc[T = Rich]`) | **`7`** — the provider's own implementation |
+
+**THE CALLEE HALF ANSWERS DIFFERENTLY DEPENDING ON WHETHER THE REQUIREMENT CAN BE MET,
+and only one of the two answers is the channel's.** Where it CAN be met the callee's
+declaration drives dispatch and nothing need be restated — I5, and the sharper
+`operation pick(x: Box) requires Desc[T = x.E]` measurement, where one clause calling it
+answers `7` at a `Box` of `Red` and `9` at a `Box` of `Blue` with the rule body writing
+NOTHING, and with a bare `?p` head as readily as a typed one. That is the channel doc's
+own position, already true: a rule body's call happens during resolution, where the
+carrier is a VALUE, so δ reads the instance off it. The operation→operation case is
+refused at load precisely because it has no value to read.
+
+Where it CANNOT be met, **I4 is I1's disease one level over**: the declaration is ignored
+and the call folds the spec's default body, answering `1` — silently, in the direction
+that produces a value — where the identical demand written in the rule body refuses to
+fire. Three spellings of one requirement over an unsatisfiable carrier, two of them
+ignored, and the two that are ignored are the two an author is most likely to reach for.
+
+**So the open question is answered for the callee half and unchanged for the enclosing
+one.** A rule needs no restatement of a requirement its callee declares — that already
+works and is the right shape. What is NOT settled, and is a defect rather than a design
+choice, is what happens when such a declaration cannot be satisfied: I4 must refuse (at
+the declaration, where `Plain provides no Desc` is decidable at load, or at the call) and
+must not fold a default. Row (k) — a covered call under a typed head already answering
+`7` by value-dispatch — remains no argument either way: value-direction reaches the same
+answer at ONE supplier and refuses at two (058 §4.9, WI-1040's two-supplier fixture).
 
 ## 8.10 Build sequence — filed 2026-09-09, VVM1R as umbrella
 
