@@ -8284,16 +8284,24 @@ impl KnowledgeBase {
             // heads is decided at typing/load, and where a default exists 058 §3.2's
             // rung 2a takes it. Reaching it means one of those two let a tie through,
             // so it is a defect — but it is a defect the AUTHOR can be told about,
-            // and it is REACHABLE from a clean-loading program.
+            // and "should" has already been wrong once.
             //
             // IT WAS A `debug_assert!(false, …)`, WHICH IS AN ABORT ON A PROGRAM THAT
-            // TYPE-CHECKED. Measured: a spec whose operations are all NULLARY has no
-            // carrier PARAMETER, so `goal_carrier_key` declines the default rung
-            // outright and two providers of one instance tie here — with the tie's
-            // own default (the self-providing carrier) never consulted. Under the
-            // assert that program aborted every debug build; in release it delayed,
-            // residualizing with nothing saying why. The same program one op over —
-            // the spec given any carrier-bearing operation — answers the default.
+            // TYPE-CHECKED — and one existed. MEASURED 2026-09-16: a spec whose
+            // operations are all NULLARY had no carrier PARAMETER for `goal_carrier_key`
+            // to key a default row at, so the rung was declined outright and two
+            // providers of one instance tied HERE with their own default — the
+            // self-providing carrier — never consulted. WI-20260916-8WRJC closed that
+            // hole at its source, and the arm is unreachable again by every route
+            // measured (`wi_x9pb4_require_dictionary_element_test`, the three rows at
+            // its foot): a tie WITH a default is settled by rung 2a before the fetch,
+            // and one with NO default does not load — the typer names both providers
+            // and the bracket that would choose.
+            //
+            // SO WHY NOT RESTORE THE ASSERT. Because the invariant held before that
+            // measurement too, and the assert is what made being wrong about it cost a
+            // process rather than a sentence. An arm reached only when something else
+            // has already broken is exactly the one that must report rather than die.
             //
             // `Error` IS THE VARIANT FOR THIS and its doc says so: "the resolver could
             // not ask it", residualize and record why, scheduled like a delay so one

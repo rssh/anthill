@@ -478,14 +478,13 @@ end
 ///  * as shipped — ONE INDEFINITE solution again.
 ///
 /// THE OTHER ARM — a tie on a goal every element of which came off a CARRIED TYPE,
-/// reporting `Defect` — went undriven through this ticket and WI-20260913-J38VE, both of
-/// which say so: that arm's own doc called a run-time tie UNREACHABLE and the job was to
-/// keep it that way. It is NOT unreachable, and
-/// [`a_tie_the_default_rung_never_saw_is_an_error_not_an_abort`] at the foot of this file
-/// reaches it from a program that loads clean. What separates the two rows is what this
-/// one's fixture has and that one's lacks: here the tie is on an element NOBODY NAMED, so
-/// no provider is wrong and a delay is honest; there both providers answer the very
-/// carrier the goal names, and one of them is the carrier's own.
+/// reporting `Defect` — stays undriven, as it was through this ticket and
+/// WI-20260913-J38VE. It briefly looked reachable (WI-20260916-8WRJC's own measurement),
+/// and the three rows at the foot of this file are why it is not: a tie WITH a default is
+/// settled by 058 §3.2 rung 2a before the fetch, and one with NO default does not LOAD.
+/// What separates those rows from this one is the ELEMENT: here the tie is on an element
+/// NOBODY NAMED, so no provider is wrong and a delay is honest; there both providers
+/// answer the very carrier the goal names.
 #[test]
 fn a_tie_on_a_synthesized_element_delays_rather_than_reporting_a_defect() {
     let src = r#"
@@ -589,27 +588,42 @@ end
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════
-// THE OTHER ARM, NOW DRIVEN — a tie whose every element came off a CARRIED TYPE.
+// WHAT HAPPENS TO A TIE WHOSE EVERY ELEMENT CAME OFF A CARRIED TYPE — the three rows
+// that bound `FindDictFetch::Defect`'s population, and leave it empty.
 //
-// The file header above records this arm as "NOT DRIVEN … nothing drives it because
-// nothing ever did: that arm's own doc calls a run-time tie UNREACHABLE". It is
-// reachable, from a program that loads clean, and these two rows are the reach and its
-// cause.
+// It briefly had one. Between the two commits of 2026-09-16 a two-provider program
+// REACHED that arm, because `goal_carrier_key` asked `spec_carrier_param` alone and a
+// spec whose operations are all NULLARY therefore had no carrier parameter to key a
+// default row at — the rung was declined outright and a tie with a perfectly good
+// default was reported. WI-20260916-8WRJC closed that (rung 2 of
+// `spec_carrier_param_or_sole`), and the arm is once again unreachable by any route
+// measured here. Its disposition still changed and stays changed: `BuiltinResult::Error`
+// rather than `debug_assert!(false, …)`, because an invariant that holds today is
+// exactly the kind that stops holding unnoticed, and the cost of being wrong was an
+// aborted process rather than a sentence.
 //
-// THE CAUSE IS THE DEFAULT RUNG DECLINING, NOT REAL AMBIGUITY. 058 §3.2 rung 2a takes
-// the DEFAULT among tied candidates, and `Red` — which provides `Desc` for itself — has
-// the INFERRED `default_provider` row (058 §3.6) that names it. The rung never runs:
-// `goal_carrier_key` reads the carrier through `spec_carrier_param`, which asks what the
-// spec's OPERATIONS take, and a spec whose ops are all NULLARY has no such parameter —
-// so the rung is declined outright and a tie with a perfectly good default is reported
-// as one nobody can settle. [`the_same_tie_takes_its_default_when_the_spec_has_a_carrier_
-// bearing_op`] is that claim measured: the SAME two providers, one defaulted `touch(x: T)`
-// added to the spec, and the tie is gone.
+// WHAT SEPARATES A SETTLED TIE FROM A REFUSED ONE IS A DEFAULT, and nothing else. 058
+// §3.2 rung 2a takes the default among tied candidates and §3.6's INFERRED row makes a
+// self-providing carrier its own default, so `Red provides Desc[T = Red]` beside a rival
+// is not a tie at all. Where NO row names a winner — two rivals, neither of them the
+// carrier — the program does not LOAD, and
+// [`a_tie_no_default_settles_is_refused_at_load_naming_both`] pins that refusal.
+//
+// WI-20260916-8WRJC IS WHY THESE ROWS ARE THREE AND NOT ONE. Until it landed
+// `goal_carrier_key` asked `spec_carrier_param` alone, so a spec whose operations are all
+// NULLARY had no carrier parameter to key a default row at, the rung was declined
+// outright, and the FIRST fixture below — which has a perfectly good default — reported
+// a tie. The row that measured that is now
+// [`a_nullary_op_spec_takes_its_default_like_any_other`], and its sibling
+// [`the_carrier_bearing_spelling_answers_the_same`] is what says the spec's operations no
+// longer decide: one defaulted, uncalled `touch(x: T)` used to be the difference between
+// a default and a tie.
 // ════════════════════════════════════════════════════════════════════════════════════
 
-/// Two providers of `Desc[T = Red]`: the carrier itself (7) and a rival (11). `tag()` is
-/// NULLARY and BODY-LESS, so nothing can value-direct it and no default body can stand in
-/// for the dictionary — the tie is the only thing under measurement.
+/// Two providers of `Desc[T = Red]` where ONE OF THEM IS THE CARRIER: `Red` itself (7,
+/// and 058 §3.6's inferred `default_provider` row therefore names it) beside `Rival` (11).
+/// `tag()` is NULLARY and BODY-LESS, so nothing can value-direct it and no default body
+/// can stand in for the dictionary — the dispatch is the only thing under measurement.
 fn two_providers(ns: &str, carrier_op: &str) -> String {
     format!(
         r#"namespace {ns}
@@ -640,83 +654,143 @@ end
     )
 }
 
-/// A RUN-TIME TIE IS REPORTED, NOT ASSERTED — the `Defect` arm returns
-/// [`BuiltinResult::Error`] where it used to `debug_assert!(false, …)`.
+/// TWO RIVAL PROVIDERS AND NO DEFAULT — `Red` provides nothing itself, so 058 §3.6
+/// writes no inferred row and rung 2a has no winner to take. `RivalA` and `RivalB` have
+/// equal claims on `Desc[T = Red]`.
 ///
-/// WHAT THE ASSERT DID TO THIS PROGRAM: it loads clean and type-checks, so a debug build
-/// ABORTED on it — the whole test binary, not the query — and a release build silently
-/// delayed with nothing saying why. `Error` is the variant whose doc describes exactly
-/// this ("the resolver could not ask it"; residualize and record why; does not stop the
-/// search), so the author now gets the sentence and the other branches still run.
+/// THE WITNESS PATH, NOT THE ANCHOR, AND THAT IS FORCED. MEASURED: the anchored spelling
+/// (`rule tied(p: Red, …) :- ?d = require[Desc[T = Red]], …`) does not LOAD here — "this
+/// clause's head bound(s) — Red — provide no `Desc`" — and a bound that DOES provide is
+/// its own default. So after WI-20260916-8WRJC the anchor form cannot tie at all, and
+/// the witness form is the arm's whole remaining population: the goal's element comes off
+/// `tag`'s ARGUMENT TYPE (`from_carried_types`, which is what makes a tie a `Defect`
+/// rather than an `Undecided`), and nothing gates the carrier on providing anything.
+fn rival_pair(ns: &str) -> String {
+    format!(
+        r#"namespace {ns}
+  import anthill.prelude.Int64
+
+  sort Desc
+    sort T = ?
+    operation tag(x: T) -> Int64
+  end
+
+  sort Red
+    entity red
+  end
+
+  sort RivalA
+    import anthill.prelude.Int64
+    provides Desc[T = Red]
+    operation tag(x: Red) -> Int64 = 7
+  end
+
+  sort RivalB
+    import anthill.prelude.Int64
+    provides Desc[T = Red]
+    operation tag(x: Red) -> Int64 = 11
+  end
+
+  rule tied(?r) :- ?d = require[Desc[T]], Desc.tag(red(), ?r)
+  rule answer(?r) :- tied(?r)
+end
+"#
+    )
+}
+
+/// WI-20260916-8WRJC'S ACCEPTANCE — a spec whose operations are ALL NULLARY keys its
+/// default like any other spec.
 ///
-/// FAILS WHEN THE CHANGE IS BACKED OUT, and not through either assertion below:
-/// MEASURED — restore the `debug_assert!` and this row PANICS at `resolve.rs`'s assert
-/// before reaching them. The test harness catches that per test thread, so the suite
-/// reports one failure rather than dying; a non-test consumer of the same debug build —
-/// the CLI, an embedding — has no such catch and the process goes down. That is what
-/// the row is really about, and it is why it asserts on the MESSAGE: an abort has no
-/// message anyone can read, only a panic string on the way out.
+/// `Red` provides `Desc` for itself, so 058 §3.6's inferred row names it and rung 2a has
+/// a winner to take. Nothing about that involves an operation, and until this ticket
+/// `goal_carrier_key` asked only `spec_carrier_param` — "the param some declared
+/// OPERATION receives on" — so this program reported `two providers answer …` instead.
+///
+/// FAILS WHEN THE CHANGE IS BACKED OUT, measured on the whole workspace: restore
+/// `spec_carrier_param` here and this is the ONE row of 7067 that moves, from `7` to zero
+/// definite rows and a recorded tie. That number is also the ticket's blast-radius
+/// census: the fourteen stdlib sorts that reach rung 2 become default-consultable at the
+/// fetch and not one of them has two candidates there.
 #[test]
-fn a_tie_the_default_rung_never_saw_is_an_error_not_an_abort() {
+fn a_nullary_op_spec_takes_its_default_like_any_other() {
     let src = two_providers("x9pb4_tie2", "");
     let mut kb = load_kb_with(&src);
     let (sols, errors) = unary_with_errors(&mut kb, "x9pb4_tie2.answer");
     assert!(
-        errors.iter().any(|m| {
-            // NAMED SEPARATELY, not as one substring: which of the two the tie
-            // enumerates first is `collect_provides_candidates`' walk order, which this
-            // row is not about — keying on the pair's ORDER would fail it for an index
-            // change with the behaviour untouched.
-            m.contains("two providers answer")
-                && m.contains("x9pb4_tie2.Red")
-                && m.contains("x9pb4_tie2.Rival")
-        }),
-        "the tie must reach `ResolveStats::errors` as a sentence naming BOTH providers \
-         — that is what the panic message used to carry and nothing else could read; \
-         got {errors:?}"
+        errors.is_empty(),
+        "a tie the defaults substrate can settle must not be REPORTED as one; got \
+         {errors:?}"
     );
     assert!(
-        !sols.is_empty(),
-        "the goal must RESIDUALIZE, and ZERO ROWS is not that: reporting the tie and \
-         then failing the clause is a DIFFERENT outcome from reporting it and leaving \
-         the answer open, and `all(!definite)` below cannot tell them apart — it is \
-         vacuously true on an empty list. Got {sols:?}"
-    );
-    assert!(
-        sols.iter().all(|definite| !definite),
-        "…and no row may be DEFINITE: picking one of two providers is the silent guess \
-         this arm exists to refuse. Got {sols:?}"
+        matches!(
+            definite_unary(&mut kb, "x9pb4_tie2.answer").as_slice(),
+            [Value::Int(7)]
+        ),
+        "the DEFAULT is the self-providing carrier's own provision, so `Red` answers 7 \
+         and `Rival`'s 11 does not. Solutions were {sols:?}"
     );
 }
 
-/// THE CAUSE, AND THE CONTROL — the same two providers settle silently as soon as the
-/// spec has a carrier-bearing operation, because that is what `spec_carrier_param`
-/// reads and what `goal_carrier_key` needs before 058 §3.2's rung 2a may consult the
-/// defaults substrate. `Red` self-provides, so it IS the default and answers 7.
+/// THE CONTROL — the same two providers, the same answer, with a carrier-bearing
+/// operation added to the spec.
 ///
-/// PASSES EITHER WAY BY DESIGN — it measures WI-860/861's defaults substrate, which
-/// this change does not touch. Its job is to say that the row above is a tie the rung
-/// could not SEE, not two providers with a genuine claim each; without it, that row
-/// reads as "two providers always tie", which is false.
+/// PASSES EITHER WAY BY DESIGN, and that is its content: this spelling always worked,
+/// because `spec_carrier_param` finds the parameter `touch` receives on. Its job is to
+/// pin that the ROW ABOVE differs from it in nothing an author would call semantic — one
+/// defaulted operation nobody implements and nobody calls — so the two answering
+/// differently was a defect and not a rule.
 #[test]
-fn the_same_tie_takes_its_default_when_the_spec_has_a_carrier_bearing_op() {
-    let src = two_providers(
-        "x9pb4_tie3",
-        "    operation touch(x: T) -> Int64 = 0\n",
-    );
+fn the_carrier_bearing_spelling_answers_the_same() {
+    let src = two_providers("x9pb4_tie3", "    operation touch(x: T) -> Int64 = 0\n");
     let mut kb = load_kb_with(&src);
     let (sols, errors) = unary_with_errors(&mut kb, "x9pb4_tie3.answer");
-    assert!(
-        errors.is_empty(),
-        "no tie to report once the rung can be consulted; got {errors:?}"
-    );
+    assert!(errors.is_empty(), "no tie to report; got {errors:?}");
     assert!(
         matches!(
             definite_unary(&mut kb, "x9pb4_tie3.answer").as_slice(),
             [Value::Int(7)]
         ),
-        "the DEFAULT is the self-providing carrier's own provision (058 §3.6's inferred \
-         row), so `Red` answers 7 and `Rival`'s 11 does not. Solutions were {sols:?}"
+        "the same 7 the nullary spelling now gives. Solutions were {sols:?}"
+    );
+}
+
+/// THE OTHER HALF OF THE RULE — a tie NO default settles is refused at LOAD, naming both
+/// providers and saying what to write.
+///
+/// `Red` provides nothing itself, so 058 §3.6 writes no inferred row and rung 2a has no
+/// winner to take: `RivalA` and `RivalB` have equal claims on `Desc[T = Red]`. The typer
+/// says so before anything runs — *"ambiguous dispatch of `Desc.tag`: 2 instances provide
+/// `Desc` … they may coexist, so say which: write `[Desc = …]` in the call's bracket
+/// list"*. Take the default where there is one; refuse, with the repair, where there is
+/// not.
+///
+/// PASSES EITHER WAY BY DESIGN — this is the typer's selection check, which
+/// WI-20260916-8WRJC does not touch. It is here because it is what says the RESOLVER's
+/// tie arm (`FindDictFetch::Defect`, resolve.rs) has no reachable population: a
+/// no-default tie never gets past load, and a tie WITH a default is settled by rung 2a
+/// before the fetch reports anything.
+///
+/// MEASURED, both routes to that arm, 2026-09-16:
+///   * the ANCHOR form — `rule tied(p: Red, …) :- ?d = require[Desc[T = Red]], …` —
+///     does not load either, with a DIFFERENT message ("this clause's head bound(s) —
+///     Red — provide no `Desc`"), and a bound that DOES provide is its own default;
+///   * the WITNESS form is this row.
+/// So the `Error` the arm now returns is the disposition for a BROKEN INVARIANT, not a
+/// live path — which is the whole reason it must not be a `debug_assert!`: an invariant
+/// that holds today is exactly the kind that stops holding without anyone noticing, and
+/// the cost of being wrong was an aborted process rather than a sentence.
+#[test]
+fn a_tie_no_default_settles_is_refused_at_load_naming_both() {
+    let errs = crate::common::try_load_kb_with(&rival_pair("x9pb4_tie4"))
+        .err()
+        .unwrap_or_else(|| panic!("two rival providers and no default must not LOAD"));
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("ambiguous dispatch")
+            && joined.contains("x9pb4_tie4.RivalA")
+            && joined.contains("x9pb4_tie4.RivalB"),
+        "the refusal must name BOTH providers — an author told only that something is \
+         ambiguous cannot write the bracket that fixes it; got:\n{joined}"
     );
 }
 

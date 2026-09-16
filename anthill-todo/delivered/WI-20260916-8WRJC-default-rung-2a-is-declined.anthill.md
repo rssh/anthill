@@ -3,9 +3,9 @@
 - id: WI-20260916-8WRJC-default-rung-2a-is-declined
 - created: 2026-09-16T18:08:41Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-16T18:08:41Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-16T18:44:58Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
