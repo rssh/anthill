@@ -3,9 +3,9 @@
 - id: WI-20260827-W1YKH-the-term-accessor-family-is
 - created: 2026-08-27T11:16:54Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: user
-- status_at: 2026-09-16T09:43:38Z
+- status_at: 2026-09-16T17:54:33Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -190,4 +190,81 @@ everything. Both rule-body rows in `wi_w1ykh_term_accessor_carrier_test.rs` are
 therefore spelled `not(… = none())`, with the payload asserted separately from an
 OPERATION body (`field_of_as_term`, which reads `term_field`'s result down to the
 `Int64`) where a result does bind.
+
+### 2026-09-16T17:54:23Z — feedback — user
+
+DELIVERED (2026-09-16), commit 1a93fc79.
+
+ACCEPTANCE, row by row.
+ 1. `term_field(as_term(some(7)), "value")` answers `some(7)` — DRIVEN, and read down to
+    the `Int64` rather than stopping at `some(…)`, from an operation body (a rule body's
+    `=` does not bind; §5.3). This is the row the item recorded as a SUSPENSION at filing.
+ 2. THE CENSUS IS COMPLETE and the family is uniform. Fixed here: `term_field`,
+    `term_list_items`, `term_to_string`. Already carrier-neutral, verified by reading not
+    assuming: `term_functor_name` (`value_head_symbol`), `term_as_int` / `term_as_string`
+    (`TermView::literal_*` — this item's census was STALE on those two; WI-20260827-2YHZ3
+    moved them), `term_as_entity`, `extract` (hands `&Value` to `extract_type`).
+    Deliberately untouched: `replace_named_arg` and `unify`, which CONSTRUCT and unify
+    rather than read, so a `TermId` is what they need.
+ 3. NO ACCESSOR ANSWERS `none()` FOR AN UNRECOGNISED CARRIER, and the converse is driven
+    too: a LEAF term answers `none()` (the contract, and what `anthill-todo`'s
+    `unwrapped_string` — "Total by design" — rests on), while a value naming nothing
+    raises. Which values those are defers to `value_functor`, the existing owner: a
+    hand-rolled `ViewHead` test admits `Value::OpRef`, whose head names its reflect
+    ENCODING, and hands a dictionary's internals back as fields.
+ 4. THE BLIND ROWS: the obligation as written is VOID. It names three suspension rows in
+    `wi_4xxsd_unreduced_host_arg_test`, "delivered 2026-08-27" — but WI-20260827-4XXSD is
+    still Open and that file never landed (`is_unreduced_op_call`, which did land, is
+    driven by `a_bare_nullary_op_name_is_still_data`). Nothing to re-point. The warning
+    behind it stands if 4XXSD ever lands with those witnesses.
+ 5. GREEN: rustland/scripts/test.sh — 36 binaries, 7086 passed, 0 failed. scaland
+    `sbt test` — 575 passed, 0 failed. 11 new rows in
+    `wi_w1ykh_term_accessor_carrier_test.rs`, of which two FAIL when the change is backed
+    out (verified by reverting and re-running, not asserted) and the rest are new coverage
+    or declared controls.
+
+WHAT THE FIX IS. A rule body binds an operand as an OCCURRENCE — σ-applied goals are
+deliberately not interned — so `Value::Term`-only readers refused every rule-body call.
+`term_field` raised (reported as a Fault, but the rule still got no data);
+`term_list_items` raised `EvalError::Internal`, which the bridge ASSERTS on, so a rule
+body PANICKED the process. `TermView::named_field` is now the single owner of the
+by-local-name lookup four sites had open-coded, with in-place overrides on the `TermId`
+carriers so the `@[simp]` gate got cheaper rather than paying a `Vec` per call.
+
+CARRIED IN, ON USER DIRECTION: the kernel meta readers are rewritten as view reads as the
+first step of moving `meta` off `TermId` onto values. They were NOT broken — they lower
+through the Node-aware `value_to_term` — and the row covering them is a stated control
+that passes both ways.
+
+THREE `/code-review` ROUNDS, and most of what rounds 2 and 3 found were defects in the
+earlier rounds' fixes: a `ViewHead::Functor` test that silently dropped the `Ident`
+spelling the original match had; a receiver guard that broke a shipped "Total by design"
+path; a `term_to_string` repair that interned on the printing path while quoting this
+item's own "do not lower" rule (`TermPrinter::print_occurrence` renders an occurrence
+natively); a `project_field` rewrite that collapsed "key unresolvable" into "key absent".
+Each is now fixed at an existing owner rather than patched locally.
+
+TWO CLAIMS OF MINE THAT MEASUREMENT KILLED, recorded because both reached the tree before
+they were caught. (a) "Lowering leaks one interned term per joined row" — FALSE; the
+store is hash-consed, and the growth test written to pin it passed with the whole change
+backed out. (b) "The raise is silently swallowed" — FALSE; WI-20260911-0V0F7 already
+partitions the bridge's dispositions and `TypeMismatch` lands on `Fault`, which prints
+"could not be evaluated … an empty answer set here is NOT a refutation". I had filtered
+stderr out of my own probes. docs/kernel-language.md §5.8 carried the second claim (put
+there by Z73FX, along with a third — that a STRING-LITERAL argument is what fails to
+reduce) and now states the carrier rule instead.
+
+MEASURED, NOT FIXED: `meta_value`'s payload is unreachable from a rule body. `not(… =
+none())` answers 1, but `= some(?v)`, `= some("kept")` and `= some(as_term("kept"))` all
+answer 0 — the payload rides as a `Term`-carried `Const` while the last two are bare
+`String`s. So a rule body can assert THAT a key is present and never WHAT it holds, and
+the obvious positive assertion measures nothing while looking like it measures
+everything. Whether those should compare equal is a carrier-equality question (WI-616),
+not this item's.
+
+REMAINING, NOT DONE HERE: three cons/nil spine walkers now exist (this one, the printer's
+and its occurrence twin) and they MUST agree — their key-matching was measured to
+disagree on a dotted unresolved name and is aligned, but consolidating them onto one
+carrier-neutral owner changes what the printer WRITES TO DISK and wants its own driven
+rows.
 
