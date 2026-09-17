@@ -106,3 +106,29 @@ THE CONSEQUENCE IS FOR FIX (i), AND IT MAKES THEM ONE CHANGE. Option (i) is exac
 
 AND IT MUST NOT BE REMOVED ON ITS OWN, for the reason this repo keeps applying: with an empty population there is no row that moves either way, so the removal cannot be driven, and a change nothing can drive does not ship. It is a guard waiting for its population, not a branch to delete.
 
+### 2026-09-17T09:22:52Z — feedback — user
+
+DEFECT B IS FIXED INLINE, no ticket of its own (user's call, and this repo's rule: the change is smaller than its ticket description would be). The semantics question this ticket left open is ANSWERED by the user: A DECLARED `requires` OUTRANKS THE SPEC'S OWN DEFAULT BODY. "It should read the slot."
+
+WHAT SHIPPED. `carrier_from_declared_slot` (typing.rs, beside `statically_pinned_carrier`) adds the DECLARED SLOT as a THIRD carrier source, after the self-receiver and the carrier param and consulted only when both are silent. One `.or_else` at the WI-444 defaulted block.
+
+THE MEASUREMENT THAT MADE IT A DEFECT rather than a policy, and it is sharper than row I4 ever was because NOTHING IS UNSATISFIABLE — `Rich` provides, and its `tag` is written:
+
+  operation viaop() -> Int64 requires Desc[T = Rich] = Desc.tag()
+
+  spec op                        before   after
+  operation tag() -> Int64       7        7
+  operation tag() -> Int64 = 1   1        7
+
+So ADDING A DEFAULT TO A SPEC silently changed a caller's answer from 7 to 1, and the thing that decided it is invisible at the call. That contradicts the rule `spec_op_parent_sort` already states in its own doc — "defaults fill gaps, they do not shadow".
+
+MECHANISM, found by backtracing the gate rather than reading dispatch code (NR6FJ's own lesson, applied): `lookup_spec_op_dispatch` is BODY-LESS-ONLY, so a defaulted op never reaches the WI-210 block at typing.rs:20144; the WI-444 block above it handles defaulted ops but pins the carrier only from a SELF-RECEIVER or a CARRIER-PARAM argument, and a NULLARY op has neither. The instrument was one `eprintln` plus `std::backtrace` in `lookup_spec_op_dispatch`'s declining arm, filtered to the probe's own op — it named line 20144 in one run.
+
+ONE WIDENING WAS BUILT AND REJECTED BY MEASUREMENT. Routing every defaulted call whose enclosing chain merely NAMES the spec into the WI-210 block makes all four cells answer 7 — and breaks three shipped rows where the default is the right answer: wi886_cpp_mapping_language_test::eval_runs_the_spec_default_when_the_only_implementation_is_cpp, wi876_operation_mapping_test::the_whole_comparison_surface_works_from_one_operation, wi869_per_provision_conditions_test::the_inherited_comparison_surface_works_from_compare_alone. A static reroute is the wrong instrument.
+
+AND ONE REGRESSION WAS SHIPPED INTO THE FIRST CUT AND CAUGHT BY /code-review. The `.or_else` fired whenever `statically_pinned_carrier` returned `None` — which is BOTH "this call names no carrier" AND "this call's carrier argument is abstract here". The second belongs to eval's value-directed dispatch. MEASURED in both directions: `operation viaop[U](x: U) requires Desc[T = Rich] = Desc.describe(x)` called at `plain()` answered 7 (Rich's `describe` on a Plain value) where it had answered 3. The correction is to ask the DECLARATION — does the spec op declare a carrier-typed parameter at all — not the call-site classification, which is `None` for both shapes. Driven by `an_abstract_argument_still_dispatches_on_the_runtime_value`.
+
+THE RESIDUE, LEFT OPEN AND PINNED BY A ROW. A slot over a TYPE PARAMETER (`requires Desc[T = U]`) still folds the default where the body-less spelling dispatches — 1 vs 7. `carrier_from_declared_slot` admits only a SORT-like binding, so it declines there deliberately. Closing it is an EVAL change (the frame holds the dictionary; there is no concrete carrier for the typer to pin), not a typer one, and `a_type_variable_slot_is_unchanged_and_still_disagrees` asserts today's behaviour so that fixing it FAILS THAT ROW rather than passing unnoticed.
+
+NINE ROWS in wi_nr6fj_defect_b_slot_over_default_test.rs. Whole-change back-out: THREE fail. Gate-only back-out: ONE fails (the abstract-argument row). Full workspace 7114 passed, 0 failed — 7105 before, and the nine that moved are this file's own. Zero corpus rows changed their verdict.
+
