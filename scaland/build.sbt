@@ -4,7 +4,12 @@ lazy val root = project
   .in(file("."))
   .aggregate(core, anthillScalaGen, anthillSmtGen)
   .settings(
-    name := "anthill-scaland"
+    name := "anthill-scaland",
+    // Declared even though the root only AGGREGATES and compiles nothing: sbt 2 warns
+    // on a subproject whose `scalaVersion` falls back to the launcher's default, and a
+    // default is exactly what must not decide this — `scala3Version` is what the
+    // scala3-compiler test dependency below is pinned to.
+    scalaVersion := scala3Version
   )
 
 lazy val core = project
@@ -20,13 +25,19 @@ lazy val core = project
     // replaced. A warning would not have carried; the whole point is that ADDING an
     // `Item` kind must stop the build until someone decides what the loader does with it.
     // Costs nothing today: core compiles clean with it (the only standing warnings are
-    // four non-local returns, a different id — re-measured under 3.8.4).
+    // FIVE non-local returns, a different id — counted on a clean compile at the sbt 2
+    // migration, which is also what showed the old count of four was stale: an
+    // INCREMENTAL run re-emits none of them, so the number can only be read off a
+    // `clean compile`).
     //
     // VERIFIED, and the only way to verify it: nothing in the tree exercises this flag, so
-    // a bump that silently retired the E029 id would drop the guard with no test failing.
-    // Control run at the 3.6.3 -> 3.8.4 bump — commenting out `atItem`'s `ConstraintItem`
-    // arm produced `[E029] Pattern Match Exhaustivity Error`, naming that arm. Re-run it
-    // by hand at the next bump; there is nothing else that can.
+    // a bump that silently retired the E029 id — or stopped delivering `scalacOptions` to
+    // the compiler at all — would drop the guard with no test failing. Control run at the
+    // 3.6.3 -> 3.8.4 bump and AGAIN at the sbt 1 -> sbt 2 migration: commenting out
+    // `atItem`'s `ConstraintItem` arm produced `[E029] Pattern Match Exhaustivity Error`,
+    // naming that arm, both times. Re-run it by hand at the next bump of EITHER — the sbt
+    // one matters as much as the Scala one, since it is what hands this flag over; there
+    // is nothing else that can.
     scalacOptions += "-Wconf:id=E029:e",
     libraryDependencies ++= Seq(
       "com.lihaoyi" %% "fastparse" % "3.1.1",
@@ -45,9 +56,28 @@ lazy val core = project
     // `dependencyClasspath` and not `fullClasspath`: emitted code needs the dependencies
     // only, and `fullClasspath` includes this project's `products`, which resources feed —
     // a cycle.
+    //
+    // THE PATHS COME THROUGH `fileConverter` (sbt 2). A classpath entry is an
+    // `xsbti.HashedVirtualFileRef` now, not a `java.io.File`, so there is no
+    // `.data.getAbsolutePath` to call — sbt 2 addresses build products through a
+    // virtual file system and `fileConverter` is the one mapping back to a real path.
+    // The harness needs real paths: it hands them to `dotc.Driver`, which opens files.
+    // VERIFIED at the migration by reading the generated file back: 17 entries, every one
+    // an existing absolute path, scala3-library / fastparse / munit among them. Worth
+    // doing rather than trusting the green suite — a classpath that came out empty would
+    // make the harness fail on `Any`, which reads as a defect in the EMITTED code.
+    //
+    // ONE ENTRY IS THIS PROJECT'S OWN PRODUCT, and under sbt 2 it is a JAR
+    // (`anthill-core_3-…-SNAPSHOT.jar`) where sbt 1 put a `classes/` directory. Test's
+    // `dependencyClasspath` has always carried the Compile product; only its SHAPE
+    // changed. It is harmless on the harness classpath, and it does NOT make the
+    // `fullClasspath` rejection above stale — that one is about Test's own products,
+    // which resources feed.
     Test / resourceGenerators += Def.task {
       val out = (Test / resourceManaged).value / "scala-compile-classpath.txt"
-      val cp = (Test / dependencyClasspath).value.map(_.data.getAbsolutePath)
+      val conv = fileConverter.value
+      val cp = (Test / dependencyClasspath).value
+        .map(entry => conv.toPath(entry.data).toAbsolutePath.toString)
       IO.write(out, cp.mkString("\n"))
       Seq(out)
     }.taskValue
