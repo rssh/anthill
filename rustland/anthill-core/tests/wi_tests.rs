@@ -1611,6 +1611,9 @@ mod wi_jm7a8_precondition_effect_test;
 #[path = "include/wi_p85z7_paren_less_nullary_head_test.rs"]
 mod wi_p85z7_paren_less_nullary_head_test;
 
+#[path = "include/wi_rdgqc_deferred_import_mint_test.rs"]
+mod wi_rdgqc_deferred_import_mint_test;
+
 #[path = "include/wi_rdgqc_head_introduction_census_test.rs"]
 mod wi_rdgqc_head_introduction_census_test;
 

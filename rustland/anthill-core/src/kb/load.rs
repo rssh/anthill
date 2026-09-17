@@ -4785,7 +4785,29 @@ pub fn scan_definitions_with_sources(
             rule_head_ladder_answer(kb, h.name, h.scope)
         })
         .collect();
-    let denotes: Vec<bool> = resolved.iter().map(ResolveResult::denotes).collect();
+    // …OR A DEFERRED SELECTIVE PREDICATE IMPORT BRINGS THE NAME IN. The ladder above
+    // cannot see one: a selective import of a PREDICATE is deferred to sub-pass 4
+    // because its target may not be minted until sub-pass 3 has run — and sub-pass 3 is
+    // THIS mint. So at this point `import X.Rec.{freshp}` has not been wired into
+    // `Side`, and a `freshp` head written there reads as introducing a name of its own.
+    //
+    // IT IS NOT A CYCLE, which is why the repair is a guard and not a reordering: the
+    // pending import names a QUALIFIED TARGET (`X.Rec.freshp`), a different name from
+    // the one the head would mint (`Side.freshp`), and `pending` is complete before
+    // sub-pass 3 — the whole pass-2 loop has run. The question is therefore order-free,
+    // which is the property WI-980 rewrote this pass to have.
+    //
+    // MEASURED: `namespace Side { import X.Rec.{freshp}  rule freshp(2) :- true }` MINTED
+    // `Side.freshp` and left the import DEAD — the author's clause silently becoming a
+    // predicate of its own rather than a clause of the one they named, on a program that
+    // loads clean. It also hid an ownership fault: the clause never reached the type's
+    // predicate, so 059 R3 had no cross-entry assembly to refuse.
+    // `wi_rdgqc_deferred_import_mint_test` drives both halves.
+    let denotes: Vec<bool> = resolved
+        .iter()
+        .zip(heads.iter())
+        .map(|(r, h)| r.denotes() || pending_import_brings_in(&pending, h.scope, h.name))
+        .collect();
     // AND AN EQUATION'S SUBJECT MAY NOT LAND ON ANOTHER SCOPE'S PREDICATE (D0EXD).
     //
     // The ladder above answers one question — does the name resolve — for every head
@@ -10446,6 +10468,23 @@ struct PendingImport {
     /// outside the per-file loop, so it must carry its own provenance to render
     /// `path:line:col` if it stays unresolved.
     file_idx: usize,
+}
+
+/// Is `name` the short name of a DEFERRED selective import into `scope`? Then a head of
+/// that name there REFERENCES what was imported and introduces nothing, exactly as it
+/// would if the import had already been wired.
+///
+/// Short name and scope only: resolving the import's TARGET is sub-pass 4's job and its
+/// failure is sub-pass 4's diagnostic (`UnresolvedName` at the import's span). This
+/// question is narrower — "did the author say this name means something else here" — and
+/// answering it needs no target. An import that turns out to name nothing therefore
+/// still suppresses the mint, which is the right way round: the program is refused
+/// either way, and refusing it for the import the author wrote beats refusing it for a
+/// predicate they did not.
+fn pending_import_brings_in(pending: &[PendingImport], scope: ScopeId, name: &str) -> bool {
+    pending
+        .iter()
+        .any(|p| p.scope == scope && p.short == name)
 }
 
 /// WI-369: reject importing an `internal` name into a scope that cannot see it.
