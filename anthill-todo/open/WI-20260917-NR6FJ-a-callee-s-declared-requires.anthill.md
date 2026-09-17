@@ -98,3 +98,11 @@ SO DEFECT A'S FIX IS ONE OF TWO PLACES, and choosing between them is the next de
 
 FIVE ATTEMPTS ARE PARKED (stash@{0}..{4}, diffs at scratchpad/nr6fj-*.diff). What every one of them has in common: it was designed by reading code and refuted by its first measurement. The instrument that finally worked was `classify()` — one funnel every variant passes through. Instrument the funnel, not the branch.
 
+### 2026-09-17T07:36:48Z — feedback — user
+
+ON THE RULE-BODY GATE, since 'removing it changes nothing' is easy to misread as 'it is dead code'. It is not dead; its POPULATION IS CURRENTLY EMPTY. `OpSlotParkSite::for_call`'s `enclosing_op.is_some()` only bites for a rule-body call that REACHES `build_op_scoped_dicts`, and no such call exists in the corpus today (measured: removing the gate moves ZERO of 7099 rows) — which is the same fact as 'the park is unreachable for this shape', seen from the other side.
+
+THE CONSEQUENCE IS FOR FIX (i), AND IT MAKES THEM ONE CHANGE. Option (i) is exactly 'make a rule-body call reach that machinery'. The moment it does, this gate blocks it again — so whoever implements (i) must remove the gate in the same diff, and can now do so knowing it costs nothing today and that its stated premise is measured FALSE for this program (it claims the bridge 'suspends when it cannot'; the bridge aborts).
+
+AND IT MUST NOT BE REMOVED ON ITS OWN, for the reason this repo keeps applying: with an empty population there is no row that moves either way, so the removal cannot be driven, and a change nothing can drive does not ship. It is a guard waiting for its population, not a branch to delete.
+
