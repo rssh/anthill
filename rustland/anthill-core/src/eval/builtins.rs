@@ -1215,6 +1215,12 @@ fn int_mod(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     // question, so the read IS the guard (WI-20260827-2YHZ3).
     match (a.literal_int64(i.kb()), b.literal_int64(i.kb())) {
         (Some(_), Some(0)) => Err(i.raise_division_by_zero("Int64.mod")),
+        // WI-875: `x mod -1` is 0 for EVERY x, `i64::MIN` included — the answer is
+        // representable, so it is RETURNED rather than raised. Without this arm
+        // `rem_euclid` panics at `(i64::MIN, -1)` in debug AND release: remainder
+        // overflow traps unconditionally, unlike add/sub/mul which merely wrap.
+        // The resolver's `BuiltinTag::Mod` answers 0 here for the same reason.
+        (Some(_), Some(-1)) => Ok(Value::Int(0)),
         (Some(x), Some(y)) => Ok(Value::Int(x.rem_euclid(y))),
         _ => Err(type_mismatch("Int64", &a, Some(&b))),
     }
@@ -1226,6 +1232,11 @@ fn int_rem(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     // question, so the read IS the guard (WI-20260827-2YHZ3).
     match (a.literal_int64(i.kb()), b.literal_int64(i.kb())) {
         (Some(_), Some(0)) => Err(i.raise_division_by_zero("Int64.rem")),
+        // WI-875, the sign-following twin of `int_mod`'s arm above: `x rem -1` is 0
+        // for every x too, so `(i64::MIN, -1)` has an answer and `%` must not be
+        // reached with it. `Int64.rem` is eval-only — the resolver registers no `rem`
+        // builtin — so this arm has no resolver counterpart to agree with.
+        (Some(_), Some(-1)) => Ok(Value::Int(0)),
         (Some(x), Some(y)) => Ok(Value::Int(x % y)),
         _ => Err(type_mismatch("Int64", &a, Some(&b))),
     }
@@ -7196,6 +7207,41 @@ mod tests {
             matches!(&err, EvalError::Internal(m) if m.contains("division_by_zero")),
             "bare KB: expected a loud Internal naming the unresolved payload sort, got {err:?}",
         );
+    }
+
+    /// WI-875: `x mod -1` and `x rem -1` are 0 for EVERY `x`, `i64::MIN` included.
+    /// Back the `-1` arms out and this test does not fail an assertion — it PANICS
+    /// (`attempt to calculate the remainder with overflow`), in release as well as
+    /// debug, since remainder overflow traps unconditionally. `i64::MIN` is the only
+    /// dividend that can reach the trap, so it is the only one worth pinning; the
+    /// ordinary dividend beside it is the control that says the arm did not swallow
+    /// the general case.
+    #[test]
+    fn mod_and_rem_by_negative_one_are_zero_rather_than_an_overflow_panic() {
+        for (name, f) in [
+            ("Int64.mod", int_mod as fn(&mut Interpreter, &[Value]) -> _),
+            ("Int64.rem", int_rem),
+        ] {
+            for dividend in [i64::MIN, -7, 0, 7, i64::MAX] {
+                let got = f(&mut dummy(), &[Value::Int(dividend), Value::Int(-1)]);
+                assert!(
+                    matches!(got, Ok(Value::Int(0))),
+                    "{name}({dividend}, -1) = 0; got {got:?}",
+                );
+            }
+        }
+    }
+
+    /// CONTROL for the arm above: an ordinary divisor still computes, and the two
+    /// operations still DIFFER — `mod` is Euclidean (non-negative), `rem` follows the
+    /// dividend's sign. Passes with and without the change; it goes red only if the
+    /// `-1` arm were widened to every negative divisor.
+    #[test]
+    fn mod_is_euclidean_where_rem_follows_the_dividend() {
+        let m = int_mod(&mut dummy(), &[Value::Int(-7), Value::Int(3)]);
+        assert!(matches!(m, Ok(Value::Int(2))), "-7 mod 3 = 2; got {m:?}");
+        let r = int_rem(&mut dummy(), &[Value::Int(-7), Value::Int(3)]);
+        assert!(matches!(r, Ok(Value::Int(-1))), "-7 rem 3 = -1; got {r:?}");
     }
 
     #[test]

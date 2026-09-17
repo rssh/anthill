@@ -194,38 +194,15 @@ fn float_division_computes() {
     );
 }
 
-/// The one overflow corner: `i64::MIN` over `-1`. `div` genuinely overflows (the
-/// quotient `-MIN` is unrepresentable) so `no solution` is correct; `mod`'s answer
-/// (0) IS representable but the CHECKED rem drops it — an accepted incompleteness
-/// (the alternative, eval's unchecked `rem_euclid`, PANICS). Pinned so neither
-/// path crashes nor is mistaken for a refusal.
-#[test]
-fn min_over_negative_one_yields_no_solution_not_a_crash() {
-    for p in [
-        "div(-9223372036854775808, -1, ?r)",
-        "mod(-9223372036854775808, -1, ?r)",
-    ] {
-        let out = query(p);
-        assert_eq!(
-            out.code, 0,
-            "`{p}` must run (no panic/refusal); stderr:\n{}",
-            out.stderr
-        );
-        assert!(
-            out.has_stdout_line("no solutions"),
-            "`{p}` -> no solutions; stdout:\n{}",
-            out.stdout
-        );
-        assert_eq!(
-            out.diagnostics("error:").count(),
-            0,
-            "`{p}` not a refusal; stderr:\n{}",
-            out.stderr
-        );
-    }
-}
+// The `i64::MIN` over `-1` corner used to be pinned here, as ONE case answering
+// `no solutions` for both `div` and `mod` — `div` because the quotient 2^63 is
+// unrepresentable, `mod` because `checked_rem_euclid` dropped an answer that IS
+// representable ("an accepted incompleteness", the pin said, the alternative being
+// eval's `rem_euclid`, which PANICS). WI-875 split them: `mod` answers 0, `div`
+// faults, and eval no longer panics. Both halves are pinned in
+// `wi875_arithmetic_overflow_test`, which owns that corner now.
 
-/// Regression guard for the `builtin_arith` `Option` generalization: the total
+/// Regression guard for the `builtin_arith` outcome-type generalization: the total
 /// ops `add`/`sub`/`mul` must still compute exactly as before.
 #[test]
 fn add_sub_mul_still_compute() {

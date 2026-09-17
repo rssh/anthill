@@ -1089,6 +1089,55 @@ enum Num {
     Float(ordered_float::OrderedFloat<f64>),
 }
 
+/// What one carrier slot of [`KnowledgeBase::builtin_arith`] produced (WI-875).
+///
+/// **This replaces an `Option`, and the replacement is the whole fix.** `None` meant
+/// "outside the operation's domain" — a spelling that had already absorbed two
+/// unrelated verdicts (a zero divisor; a carrier the operation does not define) and
+/// under which overflow would have become a third. The resolver must not treat them
+/// alike, because only one of them makes `no solution` a TRUE statement:
+///
+/// - [`Self::Undefined`] — **no answer exists.** `div(1, 0, ?q)` is in the relation
+///   for no `?q`, and the resolver knows it, so `Failure` is an answer rather than an
+///   absence of one. Left exactly as WI-20260911-0V0F7 decided it; see
+///   [`KnowledgeBase::builtin_arith`]'s doc for that argument in full.
+/// - [`Self::Overflow`] — **an answer exists and this carrier cannot hold it.**
+///   `add(i64::MAX, 1, ?r)` answering `no solutions` would assert that `i64::MAX` has
+///   no successor, and `not(add(i64::MAX, 1, ?r))` would then SUCCEED. That is a
+///   wrong answer, not a true one, so this arm FAULTS: [`ReduceFaults::fault`] both
+///   reports it and marks the answer set incomplete, which is precisely the channel
+///   0V0F7 built and declined to use for the zero divisor.
+///
+/// The rule the two arms encode, and the one to read a new carrier slot against: the
+/// resolver may answer `no solution` only where it knows no answer exists; where an
+/// answer exists that the carrier cannot hold, it must fault.
+enum ArithOutcome<T> {
+    Value(T),
+    Undefined,
+    Overflow,
+}
+
+impl<T> ArithOutcome<T> {
+    /// A `checked_*` result, whose `None` is always the representation limit — for
+    /// slots where the domain gap is spelled separately (or does not exist).
+    fn checked(v: Option<T>) -> Self {
+        match v {
+            Some(v) => Self::Value(v),
+            None => Self::Overflow,
+        }
+    }
+}
+
+/// A numeric carrier's name, for [`KnowledgeBase::arith_carrier_mismatch`]'s sentence.
+/// The spellings are the sorts a user writes, not the Rust variants.
+fn num_carrier(n: &Num) -> &'static str {
+    match n {
+        Num::Int(_) => "Int64",
+        Num::Big(_) => "BigInt",
+        Num::Float(_) => "Float",
+    }
+}
+
 /// Where a result-binding builtin should put its computed value (WI-246):
 /// bind the unbound result var, or check equality against an already-bound
 /// result. Resolved from the result arg through `TermView` *before* the
@@ -5724,54 +5773,76 @@ impl KnowledgeBase {
             BuiltinTag::Lte => {
                 self.builtin_cmp(goal, answer_subst, |ord| ord != std::cmp::Ordering::Greater, faults)
             }
+            // The i64 slots are CHECKED and report `Overflow`, so an overflowing
+            // `add`/`sub`/`mul` faults instead of panicking in debug and WRAPPING in
+            // release (WI-875 — the release half was a silently wrong answer). BigInt
+            // is arbitrary-precision and Float is IEEE (±inf is a value), so neither
+            // can overflow and both stay `Value`.
             BuiltinTag::Add => self.builtin_arith(
                 goal,
                 answer_subst,
-                |a, b| Some(a + b),
-                |a, b| Some(a + b),
-                |a, b| Some(a + b),
+                "add",
+                |a, b| ArithOutcome::checked(a.checked_add(b)),
+                |a, b| ArithOutcome::Value(a + b),
+                |a, b| ArithOutcome::Value(a + b),
                 faults,
             ),
             BuiltinTag::Sub => self.builtin_arith(
                 goal,
                 answer_subst,
-                |a, b| Some(a - b),
-                |a, b| Some(a - b),
-                |a, b| Some(a - b),
+                "sub",
+                |a, b| ArithOutcome::checked(a.checked_sub(b)),
+                |a, b| ArithOutcome::Value(a - b),
+                |a, b| ArithOutcome::Value(a - b),
                 faults,
             ),
             BuiltinTag::Mul => self.builtin_arith(
                 goal,
                 answer_subst,
-                |a, b| Some(a * b),
-                |a, b| Some(a * b),
-                |a, b| Some(a * b),
+                "mul",
+                |a, b| ArithOutcome::checked(a.checked_mul(b)),
+                |a, b| ArithOutcome::Value(a * b),
+                |a, b| ArithOutcome::Value(a * b),
                 faults,
             ),
-            // div/mod are PARTIAL: a zero divisor → None → Failure — the SLD reading
-            // of the declared `Error[DivisionByZero] :- eq(b, 0)` (eval raises the
-            // catchable effect). div truncates, mod is Euclidean (always
+            // div/mod are PARTIAL: a zero divisor → `Undefined` → Failure — the SLD
+            // reading of the declared `Error[DivisionByZero] :- eq(b, 0)` (eval raises
+            // the catchable effect). div truncates, mod is Euclidean (always
             // non-negative). Int AND BigInt compute (matching add/sub/mul's carrier
             // coverage). The float slot is IEEE division (±inf on /0) — the
             // `Float.div` behavior, NOT eval's `Int64.div` which type-errors on
-            // floats. `Mod`'s int slot is CHECKED, so it is SAFE (not a mirror)
-            // where eval's unchecked `int_mod` overflow-panics; the sole cost is
-            // i64::MIN mod -1, whose answer 0 is dropped as `no solution` (see the
-            // overflow-panic WI-875). Float has no `mod` op → None. WI-863.
+            // floats. Float has no `mod` op → `Undefined`. WI-863.
+            //
+            // THE `-1` DIVISOR SPLITS THE TWO, and WI-875 is where it stopped being one
+            // case: `i64::MIN / -1` is the quotient 2^63, which Int64 cannot hold, so it
+            // OVERFLOWS (eval's `int_div` already answers `EvalError::Overflow` there);
+            // but `x mod -1` is 0 for EVERY x, `i64::MIN` included, so it is an ordinary
+            // `Value`. `checked_rem_euclid` returns `None` at `(i64::MIN, -1)` and this
+            // arm used to hand that on as `no solution`, dropping an answer that exists
+            // — the resolver half of the same bug that panicked eval.
             BuiltinTag::Div => self.builtin_arith(
                 goal,
                 answer_subst,
-                |a, b| a.checked_div(b),
+                "div",
+                |a, b| match b {
+                    0 => ArithOutcome::Undefined,
+                    _ => ArithOutcome::checked(a.checked_div(b)),
+                },
                 Self::bigint_checked_div,
-                |a, b| Some(a / b),
+                |a, b| ArithOutcome::Value(a / b),
                 faults,
             ),
             BuiltinTag::Mod => self.builtin_arith(
                 goal,
                 answer_subst,
-                |a, b| a.checked_rem_euclid(b),
+                "mod",
+                |a, b| match b {
+                    0 => ArithOutcome::Undefined,
+                    -1 => ArithOutcome::Value(0),
+                    _ => ArithOutcome::Value(a.rem_euclid(b)),
+                },
                 Self::bigint_rem_euclid,
-                |_, _| None,
+                |_, _| ArithOutcome::Undefined,
                 faults,
             ),
             BuiltinTag::ToBigInt => self.builtin_to_bigint(goal, answer_subst),
@@ -9077,13 +9148,15 @@ impl KnowledgeBase {
     /// Generic arithmetic builtin for add/sub/mul and the PARTIAL div/mod.
     /// If 2 positional args: used as an equation builtin (reduces term to result).
     /// If 3 positional args: binds the 3rd arg to the computed result.
-    /// Operates on Int, BigInt, or Float constants. Each `*_op` returns `Option`:
-    /// `None` marks an argument outside the operation's domain (a zero divisor, or
-    /// a carrier the op does not define) and yields `Failure` — the SLD reading of
-    /// a partial operation's guard firing (WI-863). Total operations (add/sub/mul)
-    /// always return `Some`.
+    /// Operates on Int, BigInt, or Float constants. Each `*_op` returns an
+    /// [`ArithOutcome`]: `Undefined` marks an argument outside the operation's domain
+    /// (a zero divisor, or a carrier the op does not define) and yields `Failure` —
+    /// the SLD reading of a partial operation's guard firing (WI-863) — while
+    /// `Overflow` marks an answer this carrier cannot hold and FAULTS instead
+    /// ([`Self::arith_overflow`], WI-875). That type's doc carries the rule which
+    /// decides between them; the paragraph below is only about the `Undefined` half.
     ///
-    /// **WI-20260911-0V0F7 CONSIDERED MAKING THAT `None` A FAULT AND DID NOT.** That
+    /// **WI-20260911-0V0F7 CONSIDERED MAKING THAT `Undefined` A FAULT AND DID NOT.** That
     /// ticket named an inconsistency — through the OTHER door the same division raises,
     /// since `Int64.div` declares `Error[DivisionByZero] :- eq(b, 0)` and a raise
     /// escaping [`Self::bridge_op_to_eval`] is now a loud fault — and the obvious repair
@@ -9110,18 +9183,29 @@ impl KnowledgeBase {
     /// itself: `constraint div_nonzero_primary: neq(?b, 0) :- div(?_, ?b)`. Making this
     /// a fault would trade a true answer for "undecided": `not(div(1, 0, 5))` would stop
     /// succeeding, and the enclosing search would be marked incomplete over a condition
-    /// the resolver decided. Measured by building it:
-    /// `wi863_operator_arithmetic_test`'s `division_by_zero_is_no_solution_not_a_refusal`
-    /// and `min_over_negative_one_yields_no_solution_not_a_crash` both go red, each with
-    /// `1 solution(s), 1 conditional` where the pin says `no solutions`. USER DECISION,
-    /// taken: leave it.
+    /// the resolver decided. Measured by building it: the zero-divisor pins go red, each
+    /// with `1 solution(s), 1 conditional` where the pin says `no solutions`. USER
+    /// DECISION, taken: leave it.
+    ///
+    /// Those pins are `wi863_operator_arithmetic_test`'s
+    /// `division_by_zero_is_no_solution_not_a_refusal` plus, since WI-875,
+    /// `wi875_arithmetic_overflow_test`'s `zero_divisor_is_still_a_silent_no_solution`
+    /// and `negation_over_a_zero_divisor_still_refutes` — which carry this argument now,
+    /// stated as the CONTROL against the overflow fault beside them. The second of the
+    /// original pair, `min_over_negative_one_yields_no_solution_not_a_crash`, is gone:
+    /// WI-875 split that input, so `mod` answers 0 and `div` faults, and neither half
+    /// measures this paragraph any more.
     fn builtin_arith<V: TermView>(
         &mut self,
         goal: &V,
         subst: &Substitution,
-        int_op: impl Fn(i64, i64) -> Option<i64>,
-        bigint_op: impl Fn(&num_bigint::BigInt, &num_bigint::BigInt) -> Option<num_bigint::BigInt>,
-        float_op: impl Fn(f64, f64) -> Option<f64>,
+        op: &'static str,
+        int_op: impl Fn(i64, i64) -> ArithOutcome<i64>,
+        bigint_op: impl Fn(
+            &num_bigint::BigInt,
+            &num_bigint::BigInt,
+        ) -> ArithOutcome<num_bigint::BigInt>,
+        float_op: impl Fn(f64, f64) -> ArithOutcome<f64>,
         faults: &mut ReduceFaults,
     ) -> BuiltinResult {
         let pos_arity = match goal.head(self) {
@@ -9158,24 +9242,44 @@ impl KnowledgeBase {
 
         // WI-685: `value_num` reads a numeric literal carrier-neutrally through
         // the view (Term or Node), so no collapse-to-Term step is needed.
+        // `Undefined` → Failure, same as a cross-type pair: no answer exists and the
+        // resolver knows it. `Overflow` → a FAULT, because an answer does exist — see
+        // [`ArithOutcome`] for why the two must not share an arm, and this function's
+        // doc for why the `Undefined` half stays divergent from eval (WI-20260911-0V0F7).
         let result_term = match (self.value_num(&a), self.value_num(&b)) {
-            // `None` from an `*_op` = argument outside the op's domain (zero
-            // divisor / unsupported carrier) → Failure, same as a cross-type pair.
-            // NOT a fault — see this function's doc for why the divergence from eval
-            // stands rather than being closed here (WI-20260911-0V0F7).
             (Some(Num::Int(x)), Some(Num::Int(y))) => match int_op(x, y) {
-                Some(r) => self.alloc(Term::Const(Literal::Int(r))),
-                None => return BuiltinResult::Failure,
+                ArithOutcome::Value(r) => self.alloc(Term::Const(Literal::Int(r))),
+                ArithOutcome::Undefined => return BuiltinResult::Failure,
+                ArithOutcome::Overflow => return self.arith_overflow(op, faults),
             },
             (Some(Num::Big(x)), Some(Num::Big(y))) => match bigint_op(&x, &y) {
-                Some(r) => self.alloc(Term::Const(Literal::BigInt(r))),
-                None => return BuiltinResult::Failure,
+                ArithOutcome::Value(r) => self.alloc(Term::Const(Literal::BigInt(r))),
+                ArithOutcome::Undefined => return BuiltinResult::Failure,
+                ArithOutcome::Overflow => return self.arith_overflow(op, faults),
             },
             (Some(Num::Float(x)), Some(Num::Float(y))) => match float_op(x.0, y.0) {
-                Some(r) => self.alloc(Term::Const(Literal::Float(ordered_float::OrderedFloat(r)))),
-                None => return BuiltinResult::Failure,
+                ArithOutcome::Value(r) => {
+                    self.alloc(Term::Const(Literal::Float(ordered_float::OrderedFloat(r))))
+                }
+                ArithOutcome::Undefined => return BuiltinResult::Failure,
+                ArithOutcome::Overflow => return self.arith_overflow(op, faults),
             },
-            // unbound handled above; cross-type / non-numeric → fail
+            // TWO NUMBERS OF DIFFERENT CARRIERS reach no slot above, and answering
+            // `no solution` for them is the same wrong shape as the overflow this
+            // ticket fixes: an answer exists (both operands ARE numbers), so by
+            // [`ArithOutcome`]'s rule the resolver must say it cannot compute it.
+            // Found by following [`Self::arith_overflow`]'s own advice halfway —
+            // converting ONE operand with `to_bigint` lands exactly here, and used to
+            // return a bare `no solutions` that `not(…)` would then read as a
+            // refutation. No promotion is done instead: which carrier a mixed pair
+            // should compute in is a TYPING decision, not one for a builtin to take.
+            (Some(x), Some(y)) => {
+                return self.arith_carrier_mismatch(op, num_carrier(&x), num_carrier(&y), faults);
+            }
+            // A NON-NUMERIC or unbound operand is a different question and keeps the
+            // silent `Failure`: no answer exists for an ill-typed pair, so reporting
+            // the relation empty is the true verdict — the same distinction the zero
+            // divisor draws against overflow, one arm up.
             _ => return BuiltinResult::Failure,
         };
 
@@ -9186,29 +9290,80 @@ impl KnowledgeBase {
         }
     }
 
+    /// Report an [`ArithOutcome::Overflow`] and answer nothing (WI-875).
+    ///
+    /// `Failure` is the return, but it is NOT the `Failure` the `Undefined` arm gives:
+    /// [`ReduceFaults::fault`] sets `truncated` alongside the message, so this answer
+    /// set is marked INCOMPLETE and a `not(…)` above it cannot read the emptiness as a
+    /// refutation. That flag is the entire difference between the two arms at the call
+    /// site, which is why they may not share one.
+    ///
+    /// The message names `Int64` because the i64 slot is the ONLY one that can reach
+    /// here: BigInt is arbitrary-precision and Float is IEEE (±inf is a value), so both
+    /// of those slots return `Value` or `Undefined` and never `Overflow`. A carrier
+    /// that CAN overflow must widen this sentence or carry its own — and note that
+    /// [`ArithOutcome::checked`] maps every `None` to `Overflow`, so reaching for it in
+    /// a non-i64 slot is exactly what would make this text lie.
+    fn arith_overflow(&self, op: &'static str, faults: &mut ReduceFaults) -> BuiltinResult {
+        faults.fault(format!(
+            "`{op}` overflowed its carrier: the result is not representable as Int64. An \
+             empty answer set here is NOT a refutation — the answer exists and this \
+             carrier cannot hold it. Convert BOTH operands with `to_bigint` for \
+             arbitrary-precision arithmetic: a mixed Int64/BigInt pair reaches no slot \
+             of this builtin and is refused separately.",
+        ));
+        BuiltinResult::Failure
+    }
+
+    /// Report a pair of numbers this builtin has no slot for — one Int64 and one
+    /// BigInt, or either beside a Float (WI-875).
+    ///
+    /// `Failure` with `truncated`, exactly as [`Self::arith_overflow`], and for the
+    /// same reason: an answer EXISTS for two numbers, so emptiness here would be a
+    /// wrong answer rather than a true one. It says "cannot compute", never "false".
+    fn arith_carrier_mismatch(
+        &self,
+        op: &'static str,
+        left: &'static str,
+        right: &'static str,
+        faults: &mut ReduceFaults,
+    ) -> BuiltinResult {
+        faults.fault(format!(
+            "`{op}` was given operands of different numeric carriers ({left} and \
+             {right}), which it has no slot for. An empty answer set here is NOT a \
+             refutation — the answer exists and no slot computes it. Convert both \
+             operands to one carrier (`to_bigint` / `to_int`) before the call.",
+        ));
+        BuiltinResult::Failure
+    }
+
     /// The BigInt slot of `BuiltinTag::Div`. `num_bigint`'s `/` panics on a zero
-    /// divisor, so the guard is load-bearing; `None` → Failure. BigInt has no
-    /// overflow, so unlike i64 `div` only the zero case is partial (WI-863).
+    /// divisor, so the guard is load-bearing. BigInt is arbitrary-precision, so it
+    /// never reports [`ArithOutcome::Overflow`]: only the zero case is partial
+    /// (WI-863).
     fn bigint_checked_div(
         a: &num_bigint::BigInt,
         b: &num_bigint::BigInt,
-    ) -> Option<num_bigint::BigInt> {
-        (b.sign() != num_bigint::Sign::NoSign).then(|| a / b)
+    ) -> ArithOutcome<num_bigint::BigInt> {
+        match b.sign() {
+            num_bigint::Sign::NoSign => ArithOutcome::Undefined,
+            _ => ArithOutcome::Value(a / b),
+        }
     }
 
     /// The BigInt slot of `BuiltinTag::Mod`: Euclidean (always non-negative)
-    /// remainder, matching i64 `rem_euclid` and the eval `Int64.mod`. `None` on a
-    /// zero divisor. `%` follows the dividend's sign, so a negative remainder is
+    /// remainder, matching i64 `rem_euclid` and the eval `Int64.mod`. `Undefined` on
+    /// a zero divisor. `%` follows the dividend's sign, so a negative remainder is
     /// lifted by `|b|` (WI-863).
     fn bigint_rem_euclid(
         a: &num_bigint::BigInt,
         b: &num_bigint::BigInt,
-    ) -> Option<num_bigint::BigInt> {
+    ) -> ArithOutcome<num_bigint::BigInt> {
         if b.sign() == num_bigint::Sign::NoSign {
-            return None;
+            return ArithOutcome::Undefined;
         }
         let r = a % b;
-        Some(if r.sign() == num_bigint::Sign::Minus {
+        ArithOutcome::Value(if r.sign() == num_bigint::Sign::Minus {
             if b.sign() == num_bigint::Sign::Minus {
                 r - b
             } else {
