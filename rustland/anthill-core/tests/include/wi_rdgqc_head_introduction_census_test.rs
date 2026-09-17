@@ -131,6 +131,15 @@ fn a_paren_less_nullary_head_is_scoped_where_it_is_written() {
     // the module header names them.
     let src = inverted_pair!("nu", "rule pick :- ba(999)", "rule pick :- bb(1)", "pick");
     let mut kb = crate::common::load_kb_with(&src);
+    // THE NAMES, NOT ONLY THE ANSWERS. P85Z7 records the pre-fix state as "NEITHER
+    // `shared_pl` NOR `nsx.shared_pl` resolved to a symbol" while ONE uncitable global
+    // held both clauses — so a count can be right for the wrong reason and the
+    // acceptance asks for the symbols by name.
+    assert!(
+        kb.try_resolve_symbol("zzRDGQC.nua.pick").is_some()
+            && kb.try_resolve_symbol("zzRDGQC.nub.pick").is_some(),
+        "each scope's paren-less head is CITABLE under its own qualified name"
+    );
     assert_eq!(answers(&mut kb, "zzRDGQC.nua.see"), 0);
     assert_eq!(answers(&mut kb, "zzRDGQC.nub.see"), 1);
 }
@@ -201,6 +210,12 @@ fn a_multi_head_rules_functors_are_unscoped_and_two_scopes_share_one_predicate()
         (2, 2),
         "LIVE (NE0E4): each scope reads the other's head. Closing it makes this (1, 1)"
     );
+    assert!(
+        kb.try_resolve_symbol("zzRDGQC.ma.pick").is_none()
+            && kb.try_resolve_symbol("zzRDGQC.mb.pick").is_none(),
+        "and neither name is citable — the clauses live under one uncitable global, \
+         which is WHY the readers cross. Closing NE0E4 makes both `is_some()`"
+    );
     // THE CONTROL that isolates the HEAD COUNT: the same clause as a SINGLE-head rule
     // mints and does not leak. Without it the (2, 2) could be about the label.
     let ctl = "namespace zzRDGQC.mca\n  fact base(0)\n  rule pick(1) :- base(0)\n  \
@@ -234,6 +249,12 @@ fn a_host_provides_block_head_is_unscoped_and_two_specs_share_one_predicate() {
         ),
         (2, 2),
         "LIVE (TTHRK): each spec reads the other's block head. Closing it makes this (1, 1)"
+    );
+    assert!(
+        kb.try_resolve_symbol("zzRDGQC.pv.RecP.pick").is_none()
+            && kb.try_resolve_symbol("zzRDGQC.pv.RecQ.pick").is_none(),
+        "and neither name is citable in its spec's scope — the NAME lands nowhere even \
+         though APXSS already lands the CLAUSE. Closing TTHRK makes both `is_some()`"
     );
     // THE CONTROL: the SAME two rules written IN the sorts rather than in a block.
     let ctl = "namespace zzRDGQC.pc\n\
