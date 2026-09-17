@@ -1738,7 +1738,18 @@ fn scan_query_source(
     attribution: load::ImportAttribution,
 ) -> Result<(), i32> {
     let source_ids = load::register_sources(kb, &[parsed]);
-    let errors = load::scan_definitions_with_sources(kb, &[parsed], &source_ids, attribution);
+    // WI-20260821-RDGQC — `SourceRole::Query`: everything this function scans is query
+    // text. The `--pattern` arm literally parses `fact <pattern>` and `--query-file`
+    // reads a file OF fact declarations, so a goal reaches the scan wearing a clause's
+    // shape; without the role, the pattern's own head would DECLARE the functor the
+    // query is asking about and WI-754's unknown-functor refusal would report nothing.
+    let errors = load::scan_definitions_with_sources(
+        kb,
+        &[parsed],
+        &source_ids,
+        attribution,
+        load::SourceRole::Query,
+    );
     // WI-995 — the query text that follows resolves on THIS source's behalf, so its own
     // top-level imports reach it and no other file's do. Only for a real query SOURCE: a
     // `-i` flag is parsed from a synthetic one-line source that is nobody's text, and

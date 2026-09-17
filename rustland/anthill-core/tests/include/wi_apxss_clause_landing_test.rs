@@ -10,6 +10,38 @@
 //! WI-20260827-P1TPE diff and two more on this ticket's own; the other two by asking the
 //! landing question of every form the loader files a clause from.
 //!
+//! ── WI-20260821-RDGQC REWROTE FIVE OF THESE ROWS ────────────────────────────
+//!
+//! `fact H` IS `rule H :- true` (§1234 / §6.1), and a fact head now DECLARES its
+//! predicate at the scope it is written in, as the `rule` spelling always did. Five rows
+//! here documented places where the two behaved differently — above all "a fact head is
+//! UNSCOPED, so one written in a nested `sort` resolves UP the chain", which had no
+//! counterpart in the `rule` spelling: that spelling was refused HERE, TODAY, measured on
+//! the shipped tree with no change applied. So those rows recorded one spelling escaping
+//! 845G7, not a design. They are now SPELLING PAIRS ([`both_spellings`]): each asserts
+//! the two texts are refused by the same rule, or by none.
+//!
+//! **EVERY AXIS BELOW WAS RE-MEASURED AFTER THE REWRITE** — applied, run over this file
+//! plus `wi1001_secondary_entry_rule_test`, `wi1000_secondary_entry_content_test` and
+//! `wi980_rule_head_order_test` (**77 rows** now, 74 before), and restored. Three of the
+//! seven moved, and two of those had stopped measuring anything at all:
+//!
+//!   * **A keeps its count of 4 but changed its SET.** `a_fact_nested_in_the_main_entry_is_refused`
+//!     left it (that program is now refused by 845G7 before R3 runs) and
+//!     [`a_clause_reaching_the_predicate_through_an_import_is_refused`] joined it — its
+//!     selective arm depends on the landing key now that the deferred import reaches the
+//!     mint guard.
+//!   * **B and F fell to ZERO, and three rows were written to restore them.** Both axes
+//!     are about R3's ATTRIBUTION, and a BARE head no longer reaches it: a `fact` head
+//!     declares where it is written, so those fixtures collide one rule earlier and R3
+//!     never runs. Backing either axis out fell nothing — the axes were untested, which a
+//!     stale count would have hidden. [`a_nested_sort_inside_the_entry_still_composes`],
+//!     [`a_clause_nested_in_the_main_entry_is_attributed_to_it`] and
+//!     [`a_namespace_under_the_types_address_is_not_the_main_entry`] reach R3 through a
+//!     QUALIFIED head, which references at every arity and so does not collide. With them
+//!     B fells 2 (one per direction of nesting) and F fells 1, as before.
+//!   * C, D, E and G are unchanged at 1 each, on the rows they always named.
+//!
 //! ── WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT ────────────────────────────
 //!
 //! SEVEN AXES, so SEVEN BACK-OUTS — each APPLIED AND RUN over this file plus
@@ -23,8 +55,10 @@
 //! part of the change in place. **EXACTLY 4 ROWS FAIL:** the three refusals the ticket
 //! names ([`a_qualified_fact_head_in_the_main_entry_is_refused`],
 //! [`a_qualified_rule_head_in_the_main_entry_is_refused`],
-//! [`a_fact_nested_in_the_main_entry_is_refused`]) and the fourth spelling the landing
-//! key reaches on the way ([`a_clause_written_outside_the_type_is_named_as_such`]).
+//! [`a_clause_reaching_the_predicate_through_an_import_is_refused`]) and the fourth
+//! spelling the landing key reaches on the way
+//! ([`a_clause_written_outside_the_type_is_named_as_such`]). RE-MEASURED: the set moved,
+//! the count did not — see the note above.
 //!
 //! **B — THE ENTRY'S TEXT RANGE.** In `entry_range_at`, additionally require the range
 //! to be the one the clause's scope IS (`kb.symbols.scope_id(r.address) ==
@@ -32,8 +66,9 @@
 //! scope NESTED in a declaration is not that declaration's. **EXACTLY 2 ROWS FAIL**, one
 //! per direction of nesting: [`a_nested_sort_inside_the_entry_still_composes`] (a nested
 //! `sort` inside a SECONDARY entry stops composing) and
-//! [`a_fact_nested_in_the_main_entry_is_refused`] (one inside the MAIN entry stops being
-//! attributed to it). Making `entry_range_at` return `None` outright instead fells
+//! [`a_clause_nested_in_the_main_entry_is_attributed_to_it`] (one inside the MAIN entry
+//! stops being attributed to it). Both reach R3 through a QUALIFIED head — see the
+//! re-measurement note above for why a bare one no longer can. Making `entry_range_at` return `None` outright instead fells
 //! **16** — the entry's own rule then reads as the main entry's and every admitted
 //! program is refused, which measures loadability rather than this axis, and is why the
 //! back-out is the narrowing and not the deletion.
@@ -54,7 +89,7 @@
 //!
 //! **E — THE JUDGE'S POSITION AFTER SUB-PASS 4.** Move the judge (and 061's report,
 //! which travels with it) back above `// Sub-pass 4 (WI-295)`. **EXACTLY 1 ROW FAILS:**
-//! [`a_clause_reaching_the_predicate_through_a_deferred_import_is_refused`] — and only
+//! [`a_clause_reaching_the_predicate_through_an_import_is_refused`] — and only
 //! its deferred-import row; that row's two controls, which name the predicate without a
 //! deferred import, stay green, which is what says the axis is the TABLE and not the
 //! shape.
@@ -62,7 +97,7 @@
 //! **F — THE MAIN-ENTRY TEST AS A TEXT RANGE.** Add a `None if
 //! scope_display_name(written_in).starts_with("<pred>.") => in_main_entry = true` arm —
 //! the name-PREFIX reading. **EXACTLY 1 ROW FAILS:**
-//! [`a_namespace_under_the_types_address_is_not_its_declaration`]. The refusal itself is
+//! [`a_namespace_under_the_types_address_is_not_the_main_entry`]. The refusal itself is
 //! unaffected either way; what moves is which text the message sends the author to.
 //!
 //! **G — THE EQUATION FILTER.** Drop `if introduced_by == RuleIntroduction::Predicate`
@@ -84,11 +119,11 @@
 //!   * [`a_multi_head_rule_in_the_main_entry_is_refused`]'s two single-head controls
 //!     were refused BEFORE this change too, which is what says its axis is the head
 //!     COUNT and not the label.
-//!   * [`an_enclosing_namespace_fact_is_still_a_separate_predicate`] is the ANTI-control
+//!   * [`an_enclosing_namespace_clause_reads_alike_in_both_spellings`] is the ANTI-control
 //!     and the other half of the spec sentence: nothing resolves INWARD, so a fact one
 //!     level out is no clause of this predicate and the entry's rule stays ADMITTED. It
 //!     is what says the census did not simply become "refuse everything nearby".
-//!   * [`a_nested_sort_inside_the_entry_still_composes`] passes either way under A and
+//!   * [`a_nested_sort_inside_the_entry_reads_alike_in_both_spellings`] passes either way under A and
 //!     is axis B's own row: both clauses are in ONE entry, so condition (2) holds and
 //!     the rule is admitted. The first cut of this change REFUSED it — measured — which
 //!     is why the attribution is a TEXT-RANGE question and not a scope-prefix one.
@@ -144,6 +179,65 @@ fn assert_composed(src: &str, ns: &str, apart: Option<&str>) {
             "the clause did not go to a predicate of its own at {other}"
         );
     }
+}
+
+/// WI-20260821-RDGQC — THE SAME FIXTURE IN BOTH SPELLINGS OF ONE CLAUSE, asserted to
+/// load ALIKE, returning the `fact` spelling's errors for the caller to inspect.
+///
+/// `fact H` IS `rule H :- true` (§1234 / §6.1). Several rows in this file used to
+/// document the places where the two did not behave alike — a fact head declared
+/// nothing, so it fell to one global intern where the `rule` spelling declared at the
+/// scope it was written in, and the resulting programs differed. That is the divergence
+/// RDGQC closed, and these rows now GUARD the convergence instead of recording its
+/// absence.
+///
+/// COMPARED BY DIAGNOSTIC CLASS, not by text: the two sources differ in length, so every
+/// span and column does too, and a `rule` head renders differently from a `fact` one. The
+/// class is what the claim is about — "these two texts are refused by the same rule, or
+/// by none".
+fn diagnostic_kinds(errs: &[String]) -> Vec<&'static str> {
+    const CLASSES: [&str; 5] = [
+        "introduces that name at",
+        "is not allowed in a secondary entry",
+        "assembled from more than one entry",
+        "captures a name that already resolves",
+        "declares nothing",
+    ];
+    let mut kinds: Vec<&'static str> = errs
+        .iter()
+        .map(|e| {
+            CLASSES
+                .iter()
+                .copied()
+                .find(|c| e.contains(c))
+                .unwrap_or("<unclassified>")
+        })
+        .collect();
+    kinds.sort_unstable();
+    kinds
+}
+
+fn both_spellings(src_with_fact: &str) -> Vec<String> {
+    // The QUALIFIED spelling first: it is a superstring of the bare one, so replacing the
+    // bare one first would leave `rule Rec.freshp(2) :- true` spelled `Rec.rule …`.
+    let rule_src = if src_with_fact.contains("fact Rec.freshp(2)") {
+        src_with_fact.replace("fact Rec.freshp(2)", "rule Rec.freshp(2) :- true")
+    } else {
+        src_with_fact.replace("fact freshp(2)", "rule freshp(2) :- true")
+    };
+    assert_ne!(
+        rule_src, src_with_fact,
+        "the fixture must carry a `fact …freshp(2)` head for the pair to be a pair"
+    );
+    let fact_errs = errors_of(src_with_fact);
+    let rule_errs = errors_of(&rule_src);
+    assert_eq!(
+        diagnostic_kinds(&fact_errs),
+        diagnostic_kinds(&rule_errs),
+        "the two spellings of ONE clause must load alike.\n  fact: {fact_errs:#?}\n  \
+         rule: {rule_errs:#?}"
+    );
+    fact_errs
 }
 
 /// Every R3 refusal this ticket adds names the SAME fault the undotted spelling already
@@ -255,32 +349,45 @@ fn a_qualified_rule_head_in_the_main_entry_is_refused() {
 
 // ── (3) A `fact` IN A SCOPE NESTED INSIDE THE MAIN ENTRY ────────────────────
 
-/// THE LANDING, DRIVEN. A fact head is UNSCOPED (§5.3), so one written in a `sort`
-/// nested inside `Rec` resolves UP the chain to `Rec.freshp` — and `Rec.Inner.freshp`
-/// does not exist, which is the half a clause count on `Rec.freshp` alone cannot say.
-/// WI-1001's census filtered `f.scope == scope` and argued that only ENCLOSING scopes
-/// fall away; a DESCENDANT one resolves up and does not.
+/// A FACT NESTED IN A SORT DECLARES ITS OWN PREDICATE, EXACTLY AS THE `rule … :- true`
+/// SPELLING OF THE SAME CLAUSE DOES — so the pair is REFUSED, both ways, by 845G7.
+///
+/// THIS ROW ASSERTED THE OPPOSITE AND WAS THE DIVERGENCE'S CLEAREST STATEMENT. It read:
+/// "A fact head is UNSCOPED (§5.3), so one written in a `sort` nested inside `Rec`
+/// resolves UP the chain to `Rec.freshp` — and `Rec.Inner.freshp` does not exist". The
+/// resolve-up had no counterpart in the `rule` spelling, which was refused HERE, TODAY,
+/// with no change of any kind — measured on the shipped tree before RDGQC touched
+/// anything. So the "rule" it documented was one spelling escaping 845G7, not a design.
 #[test]
-fn a_fact_nested_in_the_main_entry_really_lands_on_the_predicate() {
-    assert_composed(
+fn a_fact_nested_in_a_sort_is_refused_exactly_like_the_rule_spelling() {
+    let errs = both_spellings(
         "namespace apxss.nfl\n  import anthill.prelude.{Int64}\n  \
          sort Rec\n    entity rec(n: Int64)\n    rule freshp(1) :- true\n    \
          sort Inner\n      entity inn(n: Int64)\n      fact freshp(2)\n    end\n  end\nend\n",
-        "apxss.nfl",
-        Some("Rec.Inner.freshp"),
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("introduces that name at 2 scopes")
+            && e.contains("apxss.nfl.Rec")
+            && e.contains("apxss.nfl.Rec.Inner")),
+        "845G7 names both scopes; got {errs:#?}"
     );
 }
 
+/// THE SAME NESTING WITH THE DECLARATION IN A SECONDARY ENTRY — also refused, also
+/// identically in both spellings. It used to be R3's condition (2) that caught this
+/// (the fact's clause reached `Rec.freshp` because the fact head declared nothing);
+/// 845G7 catches it now, one rule earlier and for both keywords.
 #[test]
 fn a_fact_nested_in_the_main_entry_is_refused() {
-    let src = "namespace apxss.nested\n  import anthill.prelude.{Int64}\n  \
-               sort Rec\n    entity rec(n: Int64)\n    \
-               sort Inner\n      entity inn(n: Int64)\n      fact freshp(2)\n    end\n  end\n  \
-               namespace Rec\n    rule freshp(1) :- true\n  end\nend\n";
-    assert_spans_entries(
-        &r3_errors(src),
-        "apxss.nested.Rec",
-        "a clause is written in the main entry",
+    let errs = both_spellings(
+        "namespace apxss.nested\n  import anthill.prelude.{Int64}\n  \
+         sort Rec\n    entity rec(n: Int64)\n    \
+         sort Inner\n      entity inn(n: Int64)\n      fact freshp(2)\n    end\n  end\n  \
+         namespace Rec\n    rule freshp(1) :- true\n  end\nend\n",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("introduces that name at 2 scopes")),
+        "the program is still refused, in both spellings; got {errs:#?}"
     );
 }
 
@@ -448,33 +555,45 @@ fn a_multi_head_rule_in_the_main_entry_is_refused() {
 
 // ── (7) A CLAUSE REACHING THE PREDICATE THROUGH A DEFERRED IMPORT ───────────
 
-/// THE CENSUS MUST READ THE IMPORT TABLE THE **LOAD** WILL READ. A SELECTIVE PREDICATE
-/// import is deferred to sub-pass 4 (WI-295: the predicate's symbol does not exist until
-/// sub-pass 3 mints it), so a census asked before that runs sees a table one rung short
-/// of the loader's — and a clause reaching the predicate through such an import is
-/// invisible.
+/// A CLAUSE REACHING THE PREDICATE THROUGH AN IMPORT — three import shapes, each in
+/// BOTH spellings, each still refused.
 ///
-/// THE THREE ROWS ARE ONE PROGRAM SHAPE, differing only in HOW the clause names the
-/// predicate, and the two controls were already refused before this: the WILDCARD import
-/// is wired in sub-pass 2, and the QUALIFIED head needs no import at all. Only the
-/// deferred one escaped. Found by `/code-review`.
+/// THE SELECTIVE ARM FIXED A DEFECT OLDER THAN THIS FILE (WI-20260821-RDGQC). A
+/// selective predicate import is deferred to sub-pass 4, because its target may not be
+/// minted until sub-pass 3 has run — so at mint time `import X.Rec.{freshp}` had not
+/// been wired, and a `freshp` head in `Side` read as introducing a name of its own.
+/// MEASURED, with none of RDGQC's other changes applied: `rule freshp(2) :- true` there
+/// MINTED `Side.freshp` and left the import DEAD, the author's clause silently becoming
+/// its own predicate rather than a clause of the one they imported, on a program that
+/// loaded clean. The `fact` spelling dodged it only because a fact head did not mint —
+/// which is how R3 came to be the thing reporting this shape at all. The mint now asks
+/// whether a deferred import brings the name in, so NEITHER spelling mints, both clauses
+/// land on `Rec.freshp`, and R3 refuses the cross-entry assembly for both.
+///
+/// THE WILDCARD ARM IS REFUSED BY 845G7 RATHER THAN BY R3, and that is C666A's rule
+/// showing through: a wildcard import is a whole-scope, non-enclosing edge, which does
+/// NOT let a head join the predicate it exposes — so both spellings declare their own
+/// and collide. Refused either way; the message names the more fundamental fault.
 #[test]
-fn a_clause_reaching_the_predicate_through_a_deferred_import_is_refused() {
-    for (label, imp, body) in [
+fn a_clause_reaching_the_predicate_through_an_import_is_refused() {
+    for (label, imp, body, expect) in [
         (
             "a SELECTIVE predicate import — deferred to sub-pass 4",
             "    import apxss.di.Rec.{freshp}\n",
             "    fact freshp(2)\n",
+            "assembled from more than one entry",
         ),
         (
-            "CONTROL: a WILDCARD import — wired in sub-pass 2",
+            "a WILDCARD import — a whole-scope edge, so the head declares its own",
             "    import apxss.di.Rec.*\n",
             "    fact freshp(2)\n",
+            "introduces that name at 2 scopes",
         ),
         (
-            "CONTROL: no import at all — a qualified head",
+            "no import at all — a qualified head, which REFERENCES at every arity",
             "",
             "    fact Rec.freshp(2)\n",
+            "assembled from more than one entry",
         ),
     ] {
         let src = format!(
@@ -483,35 +602,36 @@ fn a_clause_reaching_the_predicate_through_a_deferred_import_is_refused() {
              namespace Side\n{imp}{body}  end\n  \
              namespace Rec\n    rule freshp(1) :- true\n  end\nend\n"
         );
-        let errs = r3_errors(&src);
-        assert!(
-            errs.iter().any(|e| e.contains("assembled from more than one entry")
-                && e.contains("'apxss.di.Side'")),
-            "{label}: expected condition (2) naming the namespace the clause is written \
-             in; got {errs:#?}"
-        );
+        // BOTH SPELLINGS, and the qualified arm exercises the other substitution — a
+        // qualified head never introduces, so it must stay R3's in both keywords.
+        let rule_src = src
+            .replace("fact freshp(2)", "rule freshp(2) :- true")
+            .replace("fact Rec.freshp(2)", "rule Rec.freshp(2) :- true");
+        for (spelling, text) in [("fact", &src), ("rule", &rule_src)] {
+            let errs = errors_of(text);
+            assert!(
+                errs.iter().any(|e| e.contains(expect)),
+                "{label} ({spelling}): expected `{expect}`; got {errs:#?}"
+            );
+        }
     }
 }
 
-/// AND A NAMESPACE **UNDER** THE TYPE'S ADDRESS IS NOT ITS DECLARATION. `namespace
-/// Rec.Helper` is an ordinary namespace whose qualified name begins with the type's, so
-/// a name-PREFIX reading of "is this the main entry" claims it — and sends the author to
-/// a `sort` body that contains nothing of the kind. Whose declaration a clause sits in
-/// is a TEXT-RANGE question at the predicate's own address, which is what
-/// [`EntryTextRange`](../../../src/kb/load.rs) answers. Found by `/code-review`.
+/// A NAMESPACE UNDER THE TYPE'S ADDRESS is not the type's own declaration — still true,
+/// and now said in both spellings. The refusal moved from R3's condition (2) to 845G7
+/// for the same reason every other row here did.
 #[test]
 fn a_namespace_under_the_types_address_is_not_its_declaration() {
-    let src = "namespace apxss.under\n  import anthill.prelude.{Int64}\n  \
-               sort Rec\n    entity rec(n: Int64)\n  end\n  \
-               namespace Rec.Helper\n    fact freshp(2)\n  end\n  \
-               namespace Rec\n    rule freshp(1) :- true\n  end\nend\n";
-    let errs = r3_errors(src);
-    assert_spans_entries(&errs, "apxss.under.Rec", "'apxss.under.Rec.Helper'");
+    let errs = both_spellings(
+        "namespace apxss.under\n  import anthill.prelude.{Int64}\n  \
+         sort Rec\n    entity rec(n: Int64)\n  end\n  \
+         namespace Rec.Helper\n    fact freshp(2)\n  end\n  \
+         namespace Rec\n    rule freshp(1) :- true\n  end\nend\n",
+    );
     assert!(
-        !errs[0].contains("a clause is written in the main entry"),
-        "a namespace under the type's address is not the type's own declaration; got \
-         {:?}",
-        errs[0]
+        errs.iter().any(|e| e.contains("introduces that name at 2 scopes")
+            && e.contains("apxss.under.Rec.Helper")),
+        "the helper namespace is named as a contributor; got {errs:#?}"
     );
 }
 
@@ -583,69 +703,113 @@ fn an_equation_in_the_main_entry_does_not_refuse_the_entrys_rule() {
 
 // ── The two controls ────────────────────────────────────────────────────────
 
-/// THE ANTI-CONTROL, and the other half of the spec sentence. A fact head is unscoped,
-/// so one in an ENCLOSING namespace falls to the bare intern — nothing there resolves
-/// INWARD — and is no clause of the entry's predicate. The entry's rule stays ADMITTED
-/// and ANSWERS, which is what says the landing census did not become "refuse anything
-/// spelled the same nearby".
+/// AN ENCLOSING NAMESPACE'S CLAUSE, both spellings alike. It used to be admitted for the
+/// `fact` spelling ("the enclosing fact does not join") because the fact fell to the bare
+/// intern and so really was a separate predicate — accidentally the right answer, by the
+/// mechanism that made two scopes share one name everywhere else. Both spellings are now
+/// refused, by 845G7, and an author who wants two predicates declares them.
 #[test]
-fn an_enclosing_namespace_fact_is_still_a_separate_predicate() {
-    let src = "namespace apxss.encl\n  import anthill.prelude.{Int64}\n  \
-               fact freshp(2)\n  \
-               sort Rec\n    entity rec(n: Int64)\n  end\n  \
-               namespace Rec\n    rule freshp(1) :- true\n  end\nend\n";
-    assert!(
-        errors_of(src).is_empty(),
-        "the enclosing fact does not join; got {:?}",
-        errors_of(src)
+fn an_enclosing_namespace_clause_reads_alike_in_both_spellings() {
+    let errs = both_spellings(
+        "namespace apxss.encl\n  import anthill.prelude.{Int64}\n  \
+         fact freshp(2)\n  \
+         sort Rec\n    entity rec(n: Int64)\n  end\n  \
+         namespace Rec\n    rule freshp(1) :- true\n  end\nend\n",
     );
-    let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with(src));
-    assert_eq!(clauses(&kb, "apxss.encl.Rec.freshp"), Some(1));
-    assert_eq!(answers(&mut kb, "apxss.encl.Rec.freshp(1)"), 1);
-    assert_eq!(
-        answers(&mut kb, "apxss.encl.Rec.freshp(2)"),
-        0,
-        "so the two really are separate predicates"
-    );
-    // …UNLESS THE ENCLOSING SCOPE IMPORTS THE TYPE'S CONTENTS, which is what makes the
-    // name resolve inward after all. "Enclosing" was never the property; RESOLVING is,
-    // and this row is why the rule cannot be stated over lexical position. Found by
-    // `/code-review` on the sentence this ticket added to the spec.
-    let importing = "namespace apxss.enclimp\n  import anthill.prelude.{Int64}\n  \
-                     import apxss.enclimp.Rec.*\n  fact freshp(2)\n  \
-                     sort Rec\n    entity rec(n: Int64)\n  end\n  \
-                     namespace Rec\n    rule freshp(1) :- true\n  end\nend\n";
     assert!(
-        r3_errors(importing)
-            .iter()
-            .any(|e| e.contains("assembled from more than one entry")),
-        "with the import the enclosing fact DOES land; got {:?}",
-        r3_errors(importing)
+        errs.iter().any(|e| e.contains("introduces that name at 2 scopes")),
+        "both spellings are refused; got {errs:#?}"
     );
 }
 
-/// THE FALSE-REFUSAL CONTROL. A nested `sort` inside a SECONDARY entry is allowed (059
-/// R3), and a fact written in it resolves up to the entry's own predicate — so BOTH
-/// clauses are this one entry's text, condition (2) holds, and the rule is ADMITTED.
+/// A NESTED `sort` INSIDE A SECONDARY ENTRY: the two clauses are no longer one
+/// predicate, and the pair says so in both spellings.
 ///
-/// It is the row that decides HOW a clause is attributed. A landing census that reads
-/// "the predicate's scope or any descendant of it ⇒ the main entry" refuses this
-/// program, because `Rec.Inner` is a descendant either way; the entry a clause belongs
-/// to is a question about the TEXT it is written in, which is how 059 individuates one.
+/// It was the FALSE-REFUSAL CONTROL — "a fact written in it resolves up to the entry's
+/// own predicate, so BOTH clauses are this one entry's text, condition (2) holds, and
+/// the rule is ADMITTED". The resolve-up is what carried it, and the `rule` spelling
+/// never had it. What the row still decides is unchanged and still worth driving: the
+/// two spellings must agree, whatever the answer is.
+#[test]
+fn a_nested_sort_inside_the_entry_reads_alike_in_both_spellings() {
+    let errs = both_spellings(
+        "namespace apxss.entrynest\n  import anthill.prelude.{Int64}\n  \
+         sort Rec\n    entity rec(n: Int64)\n  end\n  \
+         namespace Rec\n    rule freshp(1) :- true\n    \
+         sort Inner\n      entity inn(n: Int64)\n      fact freshp(2)\n    end\n  end\nend\n",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("introduces that name at 2 scopes")),
+        "a nested sort declares its own predicate, in both spellings; got {errs:#?}"
+    );
+}
+
+
+
+// ── THE R3 SUBJECTS, REACHED BY A QUALIFIED HEAD ────────────────────────────
+//
+// WI-20260821-RDGQC — three of this file's rows measure R3's ATTRIBUTION (which text a
+// clause is credited to), and a bare head no longer reaches it: since a `fact` head
+// declares where it is written, the bare fixtures collide at 845G7 one rule earlier and
+// R3 never runs. MEASURED, and this is why the rows are here rather than simply
+// re-pointed: with the bare fixtures alone, backing out AXIS B or AXIS F fells ZERO
+// rows — the axes were left untested.
+//
+// A QUALIFIED head REFERENCES at every arity and introduces nothing (§"A
+// rule-introduced functor is scoped where it is written"), so it does not collide, its
+// clause lands on what it names, and R3's attribution runs exactly as before. Each row
+// is still a spelling PAIR — `fact Rec.freshp(2)` and `rule Rec.freshp(2) :- true` both
+// reference — so the convergence this ticket is about is asserted here too.
+
+/// AXIS B, ONE DIRECTION: a nested `sort` inside a SECONDARY entry composes — both
+/// clauses are that one entry's text, so the rule is ADMITTED.
 #[test]
 fn a_nested_sort_inside_the_entry_still_composes() {
-    let src = "namespace apxss.entrynest\n  import anthill.prelude.{Int64}\n  \
-               sort Rec\n    entity rec(n: Int64)\n  end\n  \
-               namespace Rec\n    rule freshp(1) :- true\n    \
-               sort Inner\n      entity inn(n: Int64)\n      fact freshp(2)\n    end\n  end\nend\n";
-    assert!(
-        errors_of(src).is_empty(),
-        "both clauses are ONE entry's text; got {:?}",
-        errors_of(src)
+    let errs = both_spellings(
+        "namespace apxss.entrynest\n  import anthill.prelude.{Int64}\n  \
+         sort Rec\n    entity rec(n: Int64)\n  end\n  \
+         namespace Rec\n    rule freshp(1) :- true\n    \
+         sort Inner\n      entity inn(n: Int64)\n      fact Rec.freshp(2)\n    end\n  end\nend\n",
     );
-    let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with(src));
-    assert_eq!(clauses(&kb, "apxss.entrynest.Rec.freshp"), Some(2));
-    assert_eq!(answers(&mut kb, "apxss.entrynest.Rec.freshp(2)"), 1);
+    assert!(
+        errs.is_empty(),
+        "both clauses are ONE entry's text; got {errs:#?}"
+    );
 }
 
+/// AXIS B, THE OTHER DIRECTION: a clause nested inside the MAIN entry is attributed to
+/// it, and the message says so.
+#[test]
+fn a_clause_nested_in_the_main_entry_is_attributed_to_it() {
+    let errs = both_spellings(
+        "namespace apxss.nested\n  import anthill.prelude.{Int64}\n  \
+         sort Rec\n    entity rec(n: Int64)\n    \
+         sort Inner\n      entity inn(n: Int64)\n      fact Rec.freshp(2)\n    end\n  end\n  \
+         namespace Rec\n    rule freshp(1) :- true\n  end\nend\n",
+    );
+    assert_spans_entries(
+        &errs,
+        "apxss.nested.Rec",
+        "a clause is written in the main entry",
+    );
+}
 
+/// AXIS F: a `namespace` under the type's ADDRESS is not the type's own declaration —
+/// the message must name that scope, not call it the main entry. The name-prefix reading
+/// of "main entry" gets this wrong, and this row is what says so.
+#[test]
+fn a_namespace_under_the_types_address_is_not_the_main_entry() {
+    let errs = both_spellings(
+        "namespace apxss.under\n  import anthill.prelude.{Int64}\n  \
+         sort Rec\n    entity rec(n: Int64)\n  end\n  \
+         namespace Rec.Helper\n    fact Rec.freshp(2)\n  end\n  \
+         namespace Rec\n    rule freshp(1) :- true\n  end\nend\n",
+    );
+    assert_spans_entries(&errs, "apxss.under.Rec", "'apxss.under.Rec.Helper'");
+    assert!(
+        !errs[0].contains("a clause is written in the main entry"),
+        "a namespace under the type's address is not the type's own declaration; got \
+         {:?}",
+        errs[0]
+    );
+}

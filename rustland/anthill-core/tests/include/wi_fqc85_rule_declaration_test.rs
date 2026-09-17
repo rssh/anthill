@@ -172,14 +172,17 @@ fn an_explicit_true_body_is_the_empty_conjunction() {
         Some(1),
         "one clause — the `true` contributed no goal, it IS the empty body"
     );
-    // The one place the two spellings still differ, and it is a KNOWN GAP rather than a
-    // consequence of the desugaring: a `fact` head introduces no scoped name, so `q`
-    // reaches the bare global intern (WI-20260821-RDGQC owns the enumeration of which
-    // head shapes introduce a name; kernel-language.md §6.1 records it).
+    // AND THE TWO SPELLINGS NO LONGER DIFFER ANYWHERE. This row recorded the one place
+    // they did — "a `fact` head introduces no scoped name, so `q` reaches the bare
+    // global intern" — as a KNOWN GAP belonging to WI-20260821-RDGQC. RDGQC closed it:
+    // `fact H` IS `rule H :- true` (§1234), so the fact head declares exactly as the
+    // explicit-`true` spelling beside it does, and this file's subject — that an
+    // explicit `true` body is the empty conjunction — now holds with NO exception to
+    // state.
     assert_eq!(
         clauses(&kb, "fqc85.tt.q"),
-        None,
-        "a `fact` head is NOT scoped where it is written — RDGQC, not this ticket"
+        Some(1),
+        "a `fact` head IS scoped where it is written, exactly as `rule q :- true` is"
     );
 }
 

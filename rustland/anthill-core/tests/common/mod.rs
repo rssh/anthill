@@ -1412,7 +1412,11 @@ pub fn query_pattern_term(
     // WI-966: MEASURED empty for every pattern the suites pass here, so the
     // scan's verdict is asserted rather than dropped — a pattern that stops
     // scanning clean must not reach `convert_query_term` unnoticed.
-    let errs = load::scan_definitions(kb, &[&parsed]);
+    // `scan_query_definitions`, not `scan_definitions` (WI-20260821-RDGQC): this helper
+    // carries the pattern as `fact <pattern>` exactly as the CLI does, and a fact head
+    // DECLARES now — so the Program role would make every pattern declare the functor it
+    // is asking about.
+    let errs = load::scan_query_definitions(kb, &[&parsed]);
     assert!(
         errs.is_empty(),
         "query pattern `{pattern}` failed to scan: {:?}",
@@ -1461,11 +1465,14 @@ pub fn supply_invocation_imports(kb: &mut KnowledgeBase, specs: &[&str]) {
         let src = format!("import {spec}\n");
         let parsed = parse::parse(&src).unwrap_or_else(|e| panic!("parse `-i {spec}`: {e:?}"));
         let ids = load::register_sources(kb, &[&parsed]);
+        // `SourceRole::Query` — this is the in-process spelling of a `-i` FLAG, which
+        // belongs to the query run and declares nothing (WI-20260821-RDGQC).
         let errs = load::scan_definitions_with_sources(
             kb,
             &[&parsed],
             &ids,
             load::ImportAttribution::Invocation,
+            load::SourceRole::Query,
         );
         assert!(errs.is_empty(), "`-i {spec}` did not resolve: {errs:?}");
     }

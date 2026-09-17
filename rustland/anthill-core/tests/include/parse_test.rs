@@ -965,7 +965,13 @@ fn load_workitem_and_query() {
     load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
     // Check the term has the expected structure: WorkItem(id: "WI-001", ...)
-    let wi_sym = kb.intern("WorkItem");
+    // `try_resolve_symbol` since WI-20260821-RDGQC: a fact head DECLARES its predicate
+    // (`fact H` is `rule H :- true`, §6.1), and `SymbolTable::define` mints a FRESH
+    // `Symbol` rather than reusing the interned string — so `intern` names the string
+    // and not the head.
+    let wi_sym = kb
+        .try_resolve_symbol("WorkItem")
+        .expect("the fact head declares `WorkItem`");
     let workitems = kb.rules_by_functor(wi_sym);
     assert_eq!(workitems.len(), 1, "should have one WorkItem");
 
@@ -1001,7 +1007,13 @@ fact parent("bob", "charlie")
     let mut kb = KnowledgeBase::new();
     load::load_all(&mut kb, &[&parsed], &NullResolver).expect("load failed");
 
-    let parent_sym = kb.intern("parent");
+    // `try_resolve_symbol` since WI-20260821-RDGQC: a fact head DECLARES its predicate
+    // (`fact H` is `rule H :- true`, §6.1), and `SymbolTable::define` mints a FRESH
+    // `Symbol` rather than reusing the interned string — so `intern` names the string
+    // and not the head.
+    let parent_sym = kb
+        .try_resolve_symbol("parent")
+        .expect("the fact head declares `parent`");
     let results = kb.rules_by_functor(parent_sym);
     assert_eq!(results.len(), 2, "should find 2 parent facts");
 }
@@ -1243,9 +1255,14 @@ fn retract_fact() {
     // used to hide under a user-sort key — so a KB-wide kind census is not a
     // count of this program's facts. The subject here is retracting the
     // `parent` fact, which is a functor question.
-    // `intern`: a bare top-level `fact parent(...)` head functor is an
-    // interned symbol, not a defined one.
-    let parent_sym = kb.intern("parent");
+    // `try_resolve_symbol`, and this note FLIPPED at WI-20260821-RDGQC. It used to read
+    // "a bare top-level `fact parent(...)` head functor is an interned symbol, not a
+    // defined one" — true only while a fact head declared nothing. It declares now
+    // (`fact H` is `rule H :- true`, §6.1), so the head is a DEFINED symbol and the
+    // interned string is no longer it. Retraction itself is unaffected.
+    let parent_sym = kb
+        .try_resolve_symbol("parent")
+        .expect("the fact head declares `parent`");
     let facts = kb.rules_by_functor(parent_sym);
     assert_eq!(facts.len(), 1);
 
@@ -5824,7 +5841,13 @@ fn parse_description_containing_status_open_substring() {
 
     // Sanity: the description's String literal carries the embedded
     // `status: Open` verbatim; the *fact's* status field is just `Open`.
-    let wi_sym = kb.intern("WorkItem");
+    // `try_resolve_symbol` since WI-20260821-RDGQC: a fact head DECLARES its predicate
+    // (`fact H` is `rule H :- true`, §6.1), and `SymbolTable::define` mints a FRESH
+    // `Symbol` rather than reusing the interned string — so `intern` names the string
+    // and not the head.
+    let wi_sym = kb
+        .try_resolve_symbol("WorkItem")
+        .expect("the fact head declares `WorkItem`");
     let rules = kb.rules_by_functor(wi_sym);
     assert_eq!(rules.len(), 1);
     let head = kb.rule_head(rules[0]);

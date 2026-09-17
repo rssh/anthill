@@ -4574,7 +4574,35 @@ pub fn register_sources(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<So
 /// distinguish "not yours" from "no such name". The caller may still override it.
 pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<LoadError> {
     let source_ids = register_sources(kb, files);
-    let errors = scan_definitions_with_sources(kb, files, &source_ids, ImportAttribution::PerFile);
+    let errors = scan_definitions_with_sources(
+        kb,
+        files,
+        &source_ids,
+        ImportAttribution::PerFile,
+        SourceRole::Program,
+    );
+    kb.symbols.set_asking_file(source_ids.last().copied());
+    errors
+}
+
+/// [`scan_definitions`]'s QUERY twin — see [`SourceRole`], which is the whole of the
+/// difference: nothing in a query declares.
+///
+/// It exists because the CLI is not the only place that carries a query as a clause.
+/// `tests/common::query_pattern_term` builds the SAME `fact <pattern>` text and scans
+/// it, so a pattern scanned through [`scan_definitions`] would declare its own functor
+/// exactly as the CLI's did — and the suites that assert a pattern names nothing would
+/// pass against a KB in which it names itself. One entry point per role, so the two
+/// callers cannot drift.
+pub fn scan_query_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<LoadError> {
+    let source_ids = register_sources(kb, files);
+    let errors = scan_definitions_with_sources(
+        kb,
+        files,
+        &source_ids,
+        ImportAttribution::PerFile,
+        SourceRole::Query,
+    );
     kb.symbols.set_asking_file(source_ids.last().copied());
     errors
 }
@@ -4592,11 +4620,40 @@ pub enum ImportAttribution {
     Invocation,
 }
 
+/// WI-20260821-RDGQC — WHAT THE SCANNED TEXT **IS**, and therefore whether a clause
+/// head in it DECLARES.
+///
+/// It exists because a QUERY is carried as a CLAUSE. `anthill query 'p(1)'` parses the
+/// literal text `fact p(1)` (`main.rs`, the `--pattern` arm) and `--query-file` reads a
+/// file OF fact declarations, so by the time the scan sees them a goal and a clause are
+/// the same shape. That was invisible while a fact head declared nothing; once one
+/// declares its predicate — which is what `fact H` being `rule H :- true` means — a
+/// query starts DECLARING ITS OWN FUNCTOR, and the unknown-functor channel collapses:
+/// MEASURED, `anthill query 'nosuchxyz(1)'` answered `no solutions` where it had said
+/// "does not resolve to a known functor", because the pattern's own head had just made
+/// the name a `Goal`. That is WI-754's whole diagnostic, silently deleted.
+///
+/// So the distinction is not a special case for facts; it is the one this boundary
+/// always needed and never had to state. A query ASKS. Nothing it contains is a
+/// definition of anything, whichever keyword carries it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SourceRole {
+    /// A PROGRAM. Its clause heads declare their predicates at the scope they are
+    /// written in (§"A rule-introduced functor is scoped where it is written").
+    Program,
+    /// A QUERY — the CLI's `--pattern`, its `-i` flags, and a `--query-file`'s
+    /// fact declarations. Its clauses are GOALS to run, never clauses to assert (the
+    /// caller extracts the term and never calls `assert_fact`), so no head in it
+    /// declares.
+    Query,
+}
+
 pub fn scan_definitions_with_sources(
     kb: &mut KnowledgeBase,
     files: &[&ParsedFile],
     source_ids: &[SourceId],
     attribution: ImportAttribution,
+    role: SourceRole,
 ) -> Vec<LoadError> {
     assert_eq!(
         files.len(),
@@ -4762,6 +4819,7 @@ pub fn scan_definitions_with_sources(
             file_idx,
             sites: &mut heads,
             clauses: &mut clause_sites,
+            role,
             // ONLY WHEN 059 R3 HAS SOMETHING TO JUDGE — the same condition
             // `judge_secondary_entry_rules` returns on, settled by sub-pass 1b above.
             // See `RuleHeadCollectPass::census_clauses`.
@@ -9168,13 +9226,15 @@ struct ClauseSite<'f> {
 /// clause 059 R3's condition (2) is about — APXSS's own defect, one keyword over from
 /// where this ticket first fixed it.
 ///
-/// STILL NOT WIDENED TO A BARE `Term::Ident` head, and that is a boundary rather than an
-/// oversight: `fact holds` inside a scope that declares `holds` DOES land its clause on
-/// that predicate (the `Term::Ident` arm of `convert_term_inner` resolves it), and this
-/// census misses it — spelling-independently, since the miss is about the ONE-segment
-/// paren-less shape and not about the dot. That shape is WI-20260821-RDGQC's, which owns
-/// the fact head whole; widening here would fix half of it in the one place a reader
-/// would then stop looking.
+/// A BARE `Term::Ident` HEAD IS READ TOO, since WI-20260821-RDGQC took the fact head
+/// whole. This walk used to stop at `Term::Fn`, and said so as a BOUNDARY rather than an
+/// oversight — `fact holds` inside a scope that declares `holds` DOES land its clause on
+/// that predicate (the `Term::Ident` arm of `convert_term_inner` resolves it) and the
+/// census missed it, spelling-independently, the miss being about the ONE-SEGMENT
+/// paren-less shape and not about the dot. Reading it here is the same arm
+/// [`head_subject_name`] grew under P85Z7, for the same reason: a bare name is an
+/// APPLICATION OF ARITY 0, so `fact holds` and `fact holds()` are one head written two
+/// ways and a walk that sees only one of them makes them different programs.
 fn fact_head_subject_name<'a>(
     f: &Fact,
     parse_sym: &'a crate::intern::SymbolTable,
@@ -9186,7 +9246,9 @@ fn fact_head_subject_name<'a>(
     if parse_terms.is_minted(f.term) {
         return None;
     }
-    let Term::Fn { functor, .. } = parse_terms.get(f.term) else {
+    // `Term::Ident` beside `Term::Fn` — arity 0 is an arity (P85Z7). NOT `Term::Ref`:
+    // a written `Ref(a.b)` REFERENCES, exactly as at [`head_subject_name`].
+    let (Term::Fn { functor, .. } | Term::Ident(functor)) = parse_terms.get(f.term) else {
         return None;
     };
     Some(Cow::Borrowed(parse_sym.local_name(*functor)))
@@ -10085,6 +10147,9 @@ struct RuleHeadCollectPass<'a, 'f> {
     /// silently starved here, so the caller names this condition at the flag and the
     /// judge names it at its early return; the two must stay one condition.
     census_clauses: bool,
+    /// WI-20260821-RDGQC — see [`SourceRole`]. A `Query` source's fact head files its
+    /// CLAUSE census entry as before and declares nothing.
+    role: SourceRole,
     errors: &'a mut Vec<LoadError>,
 }
 
@@ -10137,6 +10202,12 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
             let Ok(name) = subject_introduces(subject, head_count) else {
                 continue;
             };
+            // A QUERY declares nothing, whichever keyword carries the head — see
+            // [`SourceRole`]. Gated HERE and not at the walk, so a query source's clause
+            // census is unchanged; it is the MINT that a query must not reach.
+            if self.role == SourceRole::Query {
+                continue;
+            }
             self.sites.push(RuleHeadSite {
                 file_idx: self.file_idx,
                 scope,
@@ -10269,14 +10340,62 @@ impl<'f> ScopePass for RuleHeadCollectPass<'_, 'f> {
                     self.collect(rule, scope, prefix);
                 }
             }
-            // WI-1001 — recorded, never MINTED. This pass's other output decides
-            // symbols and feeds 061's reports; a fact must reach neither (§5.3: a fact
-            // head is unscoped, and 061's multi-file rule is about rule heads). It is
-            // collected because a fact is a CLAUSE, which is what R3's condition (2)
-            // counts.
+            // WI-20260821-RDGQC — RECORDED **AND** MINTED, and the second half is new.
+            //
+            // WI-1001 collected a fact only as a CLAUSE, "never MINTED … §5.3: a fact
+            // head is unscoped". That was the spec as written and it cost this, measured
+            // on the shipped tree: two namespaces each writing `fact pfact(…)` beside a
+            // rule of their own reading it got **2 answers each** — each namespace
+            // reading the OTHER's fact — where the same program with `rule` for `fact`
+            // gives 1 each, its own. Neither `zzA.pfact` nor `zzB.pfact` resolved to
+            // anything; one uncitable global held both clauses. That is WI-894's defect
+            // class, and §"Facts are rules" is the sentence that says a fact head is not
+            // exempt from WI-894's rule: a fact IS a rule with an empty body.
+            //
+            // THE BLAST RADIUS WAS CENSUSED BEFORE THE CHANGE, not after. Over stdlib
+            // and all six example projects, exactly SEVEN fact-head names resolve to
+            // nothing today and so newly mint here: `file_extension`
+            // (anthill.realization.platform — no readers at all), `audit_binding` and
+            // `audit_db`, `follower_offset`, `manipulative`, `org_domain`, `neg`. EVERY
+            // reader of all seven sits in the scope that writes it, so each resolves to
+            // the newly-minted local name and nothing moves.
+            //
+            // IT GOES THROUGH [`subject_introduces`], not a test of its own — so a
+            // QUALIFIED fact head still REFERENCES (`fact Rec.p(2)` lands its clause on
+            // `Rec.p` and introduces nothing, §1234), and the one enumeration decides for
+            // both keywords. `head_count` is 1: a fact has exactly one head.
+            //
+            // STILL NOT MINTED, and each is somebody else's: a fact inside a host
+            // `provides … language … end` block (TTHRK — see
+            // [`Self::collect_provides_block`], which files its clause and no site), and
+            // a BRACKETED provision claim (`fact Spec[T = K]`), whose functor must
+            // REFERENCE a declared sort rather than introduce one.
             Item::Fact(f) => {
-                if let Some(subject) = fact_head_subject_name(f, self.parse_sym, self.parse_terms) {
-                    self.clause(subject, f.span, scope, scope);
+                let Some(subject) = fact_head_subject_name(f, self.parse_sym, self.parse_terms)
+                else {
+                    return;
+                };
+                self.clause(subject.clone(), f.span, scope, scope);
+                // A QUERY's `fact` is the CLI's carrier for a GOAL, not a clause — see
+                // [`SourceRole`], where the measurement is.
+                if self.role == SourceRole::Query {
+                    return;
+                }
+                if let Ok(name) = subject_introduces(subject, 1) {
+                    self.sites.push(RuleHeadSite {
+                        file_idx: self.file_idx,
+                        scope,
+                        prefix: prefix.to_owned(),
+                        name,
+                        // A fact head is a PREDICATE head: its clause indexes under its
+                        // own functor. There is no equation reading to make — `fact lhs
+                        // === rhs` is refused at load (WI-1090).
+                        introduced_by: RuleIntroduction::Predicate,
+                        span: f.span,
+                        // A fact head carries no `?x: T` annotation — it is a ground
+                        // value position (WI-716).
+                        type_annotations: Vec::new(),
+                    });
                 }
             }
             // WI-20260827-APXSS — the one form whose clauses land somewhere its text is
@@ -12961,7 +13080,13 @@ fn load_phase_inner(
     // each import to a file identity the load phase and every span already share.
     let source_ids = register_sources(kb, files);
     let mut all_errors =
-        scan_definitions_with_sources(kb, files, &source_ids, ImportAttribution::PerFile);
+        scan_definitions_with_sources(
+            kb,
+            files,
+            &source_ids,
+            ImportAttribution::PerFile,
+            SourceRole::Program,
+        );
     // WI-345: non-fatal diagnostics, accumulated parallel to `all_errors`.
     // Lint passes (e.g. WI-346 requires-shadow, below) extend this; it rides
     // out on the merged `LoadResult` when the load succeeds.
@@ -36029,6 +36154,7 @@ rule at_the_top(1)
             sites: &mut sites,
             clauses: &mut clause_sites,
             census_clauses: true,
+            role: SourceRole::Program,
             errors: &mut errors,
         };
         walk_scopes(&mut pass, &file.items, global);

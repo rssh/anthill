@@ -19,8 +19,21 @@ use crate::common::load_kb_bare as load_kb;
 /// same functor symbol in both files; the `"x"` literal hash-conses; hence one
 /// shared head `TermId`. The namespaces differ, so the domains differ and the
 /// two facts are stored as distinct rules.
+/// WI-20260821-RDGQC — THE FIXTURE DECLARES AND IMPORTS, where it used to rely on two
+/// bare fact heads colliding into one global name. A fact head is scoped where it is
+/// written now (`fact H` is `rule H :- true`, §6.1), so two namespaces each writing
+/// `fact enabled(…)` are TWO predicates with one clause each — and this row's subject
+/// needs ONE predicate holding two clauses whose heads intern to the SAME `TermId`.
+///
+/// Proposal 061's own mechanism supplies it: a body-less `rule enabled(feature: ?f)`
+/// DECLARES the predicate in `wi458a`, and `wi458b` joins it by NAMED import. Both
+/// clauses then land on `wi458a.enabled` — measured, 2 results under that one name —
+/// while still being written in two namespaces, so the domains still differ and the
+/// facts still must not dedup. That is the property this test is about, restated on
+/// the shape the language actually has.
 const FILE_A: &str = r#"
 namespace wi458a
+  rule enabled(feature: ?f)
   fact enabled(feature: "x")
 end
 "#;
@@ -28,6 +41,7 @@ end
 const FILE_B: &str = r#"
 namespace wi458b
   import anthill.prelude.List.{cons}
+  import wi458a.{enabled}
   fact enabled(feature: "x")
 end
 "#;
@@ -36,7 +50,10 @@ end
 fn head_span_keys_on_occurrence_not_hashconsed_termid() {
     let mut kb = load_kb(&[FILE_A, FILE_B]);
 
-    let enabled = kb.intern("enabled");
+    // The DECLARED predicate, by qualified name — both files' clauses land on it.
+    let enabled = kb
+        .try_resolve_symbol("wi458a.enabled")
+        .expect("`wi458a.enabled` is declared by its body-less rule");
     let rids = kb.rules_by_functor(enabled);
     assert_eq!(
         rids.len(),

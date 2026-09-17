@@ -32,7 +32,7 @@
 //! | `rule p(1) :- …` applied       | YES     | A, 0 and 1                   |
 //! | `rule p :- …` paren-less       | YES     | A, 0 and 1  (P85Z7)          |
 //! | `rule f(?x) <=> …` equation    | YES     | A, two distinct symbols      |
-//! | `fact p(1)` fact head          | **no**  | B, 2 and 2  (§6.1, RDGQC b1) |
+//! | `fact p(1)` fact head          | YES     | A, 0 and 1  (see below)      |
 //! | `rule l: p(1), q(9) :- …`      | **no**  | B, 2 and 2  (NE0E4)          |
 //! | head in `provides … language`  | **no**  | B, 2 and 2  (TTHRK)          |
 //! | `rule ns.p :- …` qualified     | n/a     | C — REFERENCES, by design    |
@@ -163,35 +163,45 @@ fn an_equation_subject_is_scoped_where_it_is_written() {
 
 // ── PART B — THE SHAPES LEFT OUT: the leak, pinned beside a control ─────────
 
+/// A FACT HEAD IS SCOPED WHERE IT IS WRITTEN, EXACTLY AS THE `rule … :- true` SPELLING
+/// OF THE SAME CLAUSE IS — the two are ONE clause (§1234: "a `fact` counts, since
+/// `fact H` is `rule H :- true`"), so a program that reads one way for `fact` and
+/// another for `rule` is two programs written one way.
+///
+/// THIS ROW USED TO PIN THE OPPOSITE, and the pair is why it moved. It asserted (2, 2)
+/// — each namespace reading the OTHER's fact, neither name resolving, one uncitable
+/// global holding both clauses — beside a `rule … :- true` control at (1, 1). The
+/// control was the refutation sitting next to the claim: same clause, same two scopes,
+/// opposite programs. That is P85Z7's and CZJ2N's defect class, and §6.1's "a fact head
+/// is unscoped" was its statement rather than its justification.
+///
+/// WRITTEN AS THE PAIR, not as an absolute, so a regression shows up as the two
+/// spellings DISAGREEING again rather than as a count nobody can rank.
 #[test]
-fn a_fact_head_is_unscoped_and_two_scopes_share_one_predicate() {
-    // §6.1 / §5.3 make a fact head unscoped at EVERY arity, DELIBERATELY — `fact
-    // parent("a","b")` is how a fact-only predicate is introduced, so "names nothing"
-    // cannot simply become an error here. This row records the price: two namespaces
-    // writing one fact name share one predicate and each reads the other's fact.
-    // RDGQC bullet 1 owns the question of which fact-head shapes DECLARE.
-    let src = "namespace zzRDGQC.fa\n  fact pick(1)\n  rule see(?x) :- pick(?x)\nend\n\
-               namespace zzRDGQC.fb\n  fact pick(2)\n  rule see(?x) :- pick(?x)\nend\n";
-    let mut kb = crate::common::load_kb_with(src);
-    assert_eq!(
-        (answers(&mut kb, "zzRDGQC.fa.see"), answers(&mut kb, "zzRDGQC.fb.see")),
-        (2, 2),
-        "LIVE: each scope reads BOTH facts. Closing this makes it (1, 1) — edit the \
-         module table when you do"
-    );
-    assert!(
-        kb.try_resolve_symbol("zzRDGQC.fa.pick").is_none(),
-        "and neither name resolves — the clauses live under one uncitable global"
-    );
-    // THE CONTROL, in the shape that scopes: same two scopes, `rule` for `fact`.
-    let ctl = "namespace zzRDGQC.fca\n  rule pick(1) :- true\n  rule see(?x) :- pick(?x)\nend\n\
-               namespace zzRDGQC.fcb\n  rule pick(2) :- true\n  rule see(?x) :- pick(?x)\nend\n";
-    let mut kb = crate::common::load_kb_with(ctl);
-    assert_eq!(
-        (answers(&mut kb, "zzRDGQC.fca.see"), answers(&mut kb, "zzRDGQC.fcb.see")),
-        (1, 1),
-        "the control must scope, or the (2, 2) above measures the fixture and not the shape"
-    );
+fn a_fact_head_is_scoped_exactly_like_the_rule_spelling_of_the_same_clause() {
+    for (label, head) in [("fact", "fact pick(1)"), ("rule", "rule pick(1) :- true")] {
+        let src = format!(
+            "namespace zzRDGQC.{label}a\n  fact ba(1)\n  {head}\n  \
+             rule see(1) :- pick(?)\nend\n\
+             namespace zzRDGQC.{label}b\n  fact bb(1)\n  {head2}\n  \
+             rule see(1) :- pick(?)\nend\n",
+            head2 = head.replace("pick(1)", "pick(2)"),
+        );
+        let mut kb = crate::common::load_kb_with(&src);
+        assert!(
+            kb.try_resolve_symbol(&format!("zzRDGQC.{label}a.pick")).is_some()
+                && kb.try_resolve_symbol(&format!("zzRDGQC.{label}b.pick")).is_some(),
+            "{label}: each scope's head is CITABLE under its own qualified name"
+        );
+        assert_eq!(
+            (
+                answers(&mut kb, &format!("zzRDGQC.{label}a.see")),
+                answers(&mut kb, &format!("zzRDGQC.{label}b.see"))
+            ),
+            (1, 1),
+            "{label}: each scope answers from its OWN clause and neither from the other's"
+        );
+    }
 }
 
 #[test]

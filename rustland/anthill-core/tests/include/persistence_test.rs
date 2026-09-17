@@ -92,9 +92,14 @@ fn round_trip_escapes_preserve_content() {
             .unwrap_or_else(|e| panic!("load failed for {original:?}: {e:?}"));
 
         // Pull the round-tripped fact and reprint via the second KB.
-        // `intern` is idempotent — returns the existing symbol if scan/load
-        // interned it for the fact's functor, otherwise creates a fresh one.
-        let s_sym = kb2.intern("s");
+        // `try_resolve_symbol`, not `intern`, since WI-20260821-RDGQC: a fact head
+        // DECLARES its predicate (`fact H` is `rule H :- true`, §6.1), and
+        // `SymbolTable::define` mints a FRESH `Symbol` rather than reusing the interned
+        // string — so `intern("s")` names the string and not the head. The round trip
+        // is unchanged; only the lookup is.
+        let s_sym = kb2
+            .try_resolve_symbol("s")
+            .unwrap_or_else(|| panic!("round-tripped `s` should be declared by its own fact head"));
         let rules = kb2.rules_by_functor(s_sym);
         assert_eq!(
             rules.len(),
@@ -152,7 +157,10 @@ fn round_trip_entity_with_string_fields_preserves_escapes() {
     load::load_all(&mut kb2, &[&parsed], &NullResolver)
         .expect("entity-with-strings fact should load");
 
-    let acc_sym = kb2.intern("Account");
+    // `try_resolve_symbol` since RDGQC — see the note in `round_trip_escapes_preserve_content`.
+    let acc_sym = kb2
+        .try_resolve_symbol("Account")
+        .expect("round-tripped `Account` should be declared by its own fact head");
     let rules = kb2.rules_by_functor(acc_sym);
     assert_eq!(rules.len(), 1, "exactly one Account fact after round-trip");
 
@@ -354,11 +362,20 @@ fn full_round_trip() {
     // `EffectsRuntime` bridge and the `ProofRecord`/mapping metadata facts) are
     // `Fact`-kinded like every other fact, so a KB-wide kind census is no longer
     // a count of THIS program's facts. Count the two functors this test wrote.
-    // `intern`, not `try_resolve_symbol`: these heads were hand-built under BARE
-    // symbols and stay bare on reload (see the note below), so the interned
-    // spelling IS the head functor here — the mirror of the `ProofRecord` reads,
-    // where the resolved spelling is.
-    let syms: Vec<_> = ["Eq", "parent"].iter().map(|n| kb2.intern(n)).collect();
+    // `try_resolve_symbol`, not `intern`, and that FLIPPED at WI-20260821-RDGQC. These
+    // heads were hand-built under BARE symbols in `kb1`, and the note used to say they
+    // "stay bare on reload" — true while a fact head declared nothing. It does now
+    // (`fact H` is `rule H :- true`, §6.1), so the reloaded text's own fact head
+    // DECLARES each name and `define` mints a fresh `Symbol`; the interned string is no
+    // longer the head functor. What did NOT change is the round trip: both facts are
+    // present, under the same short names, and reprint identically below.
+    let syms: Vec<_> = ["Eq", "parent"]
+        .iter()
+        .map(|n| {
+            kb2.try_resolve_symbol(n)
+                .unwrap_or_else(|| panic!("`{n}` should be declared by its own reloaded fact head"))
+        })
+        .collect();
     let facts: Vec<_> = syms.iter().flat_map(|&s| kb2.rules_by_functor(s)).collect();
     assert_eq!(facts.len(), 2, "should have 2 facts after round-trip");
 
@@ -367,12 +384,14 @@ fn full_round_trip() {
     // import in the round-tripped file it stays a bare symbol on reload (WI-476:
     // no global short-name fallback rewrites it to `anthill.prelude.Eq`), so the
     // round-trip is faithful — look it up under the same bare name.
-    let eq_sym2 = kb2.intern("Eq");
+    let eq_sym2 = kb2.try_resolve_symbol("Eq").expect("`Eq` declared on reload");
     let eq_results = kb2.rules_by_functor(eq_sym2);
     assert_eq!(eq_results.len(), 1, "should find 1 Eq fact");
 
     // Verify we can find the parent fact by functor
-    let parent_sym2 = kb2.intern("parent");
+    let parent_sym2 = kb2
+        .try_resolve_symbol("parent")
+        .expect("`parent` declared on reload");
     let parent_results = kb2.rules_by_functor(parent_sym2);
     assert_eq!(parent_results.len(), 1, "should find 1 parent fact");
 }

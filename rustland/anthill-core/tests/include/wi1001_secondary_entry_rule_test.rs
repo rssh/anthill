@@ -486,31 +486,37 @@ fn condition_2_counts_a_main_entry_fact_as_a_clause() {
 
 /// THE FACT CENSUS IS SCOPED, AND ITS TWO ATTRIBUTIONS ARE BOTH DRIVEN.
 ///
-/// A fact head is UNSCOPED (§5.3): written in an ENCLOSING namespace it falls to the
-/// bare intern rather than joining the entry's predicate, so it is NOT a site — driven
-/// below by the clause count and by the answer, not merely by the absence of a refusal.
+/// AN ENCLOSING NAMESPACE'S CLAUSE IS REFUSED, in BOTH spellings of one clause. This
+/// half used to read "a fact head is UNSCOPED (§5.3): written in an ENCLOSING namespace
+/// it falls to the bare intern rather than joining the entry's predicate, so it is NOT a
+/// site" — and it drove that as two separate predicates. The separation was real and its
+/// mechanism was the bare intern: the same text written `rule freshp(2) :- true` was
+/// refused, because a rule head declares where it is written and collides with the
+/// entry's. WI-20260821-RDGQC made the two spellings one clause again (`fact H` IS
+/// `rule H :- true`, §1234), so both are refused now and an author who wants two
+/// predicates declares them.
 ///
 /// And a fact written in ANOTHER ENTRY is named as that entry, never as the main entry:
 /// the fact ban already reports that fact, and a second message pointing at the wrong
-/// text is worse than none.
+/// text is worse than none. That half is UNCHANGED and still driven below.
 #[test]
 fn the_fact_census_is_scoped_and_attributed() {
-    // NOT A SITE — the enclosing namespace's fact does not join.
-    let enclosing = "namespace wi1001.factencl\n  fact freshp(2)\n  \
-                     sort Rec\n    entity rec(n: Int64)\n  end\n  \
-                     namespace Rec\n    rule freshp(1) :- true\n  end\nend\n";
-    let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with(enclosing));
-    assert_eq!(
-        clauses(&kb, "wi1001.factencl.Rec.freshp"),
-        Some(1),
-        "the entry's predicate holds its own clause and not the enclosing fact's"
-    );
-    assert_eq!(answers(&mut kb, "wi1001.factencl.Rec.freshp(1)"), 1);
-    assert_eq!(
-        answers(&mut kb, "wi1001.factencl.Rec.freshp(2)"),
-        0,
-        "so the two really are separate predicates"
-    );
+    // THE ENCLOSING CLAUSE, both spellings, refused alike.
+    for (spelling, head) in [("fact", "fact freshp(2)"), ("rule", "rule freshp(2) :- true")] {
+        let enclosing = format!(
+            "namespace wi1001.factencl{spelling}\n  {head}\n  \
+             sort Rec\n    entity rec(n: Int64)\n  end\n  \
+             namespace Rec\n    rule freshp(1) :- true\n  end\nend\n"
+        );
+        let errs = crate::common::try_load_kb_with(&enclosing)
+            .err()
+            .unwrap_or_default();
+        assert!(
+            errs.iter().any(|e| e.contains("introduces that name at 2 scopes")),
+            "{spelling}: an enclosing namespace's clause collides with the entry's \
+             declaration; got {errs:#?}"
+        );
+    }
     // ATTRIBUTED TO THE OTHER ENTRY, not to the main entry.
     let errs = crate::common::try_load_kb_with_named_files(&[
         (
