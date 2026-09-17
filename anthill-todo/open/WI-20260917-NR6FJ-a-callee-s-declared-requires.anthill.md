@@ -49,3 +49,21 @@ HYPOTHESIS B — BUILT AND INERT. Give the op's own slots the same PRE-DISPATCH 
 
 SO THE NEXT QUESTION IS WHY THAT LOOKUP DECLINES: either `enclosing_requires` does not carry the operation's own slot at the point the pre-check runs (it is gated `!enclosing_requires.is_empty()`, so it is non-empty — but it may be the enclosing SORT's chain only), or `find_requires_slot` matches on bindings the call cannot satisfy (`T = Plain` against a carrier that provides nothing). Instrument THAT lookup first — one eprintln at typing.rs's WI-239 pre-check saying what `enclosing_requires` holds in viaop's body — before writing any more code. Both attempts so far were built on a mechanism read from source and neither survived its first measurement.
 
+### 2026-09-17T07:18:05Z — feedback — user
+
+THE 2x2 THAT REFRAMES THIS TICKET, measured 2026-09-17. The defect is NOT 'a decorative requires'. It is: A CALL WHOSE REQUIREMENT SLOT NOTHING CAN FILL IS NOT REFUSED, and what happens next depends on an irrelevance — whether the spec op happens to carry a default body.
+
+  spec op     carrier provides    result
+  body-less   yes                 7 / 9   correct, the slot is used (WI-20260909-S8CBV's pick)
+  defaulted   yes                 7       correct, the provider's own impl
+  defaulted   NO                  1       SILENT — the spec's default is folded, row I4
+  body-less   NO                  ABORT   loads clean, then dies at run time
+
+THE FOURTH CELL IS THE URGENT ONE and it is verbatim the failure S6 already refuses for the PROJECTION spelling: 'bridge_op_to_eval: internal evaluator error bridging viaop: DeferToRequirement: requirement param __req_desc not bound in caller frame (running viaop, requires-chain owner viaop; frame binds [])'. S8CBV's own words for it: 'it LOADED CLEAN and died DeferToRequirement ... raised as EvalError::Internal, which trips bridge_op_to_eval's debug_assert and ABORTS a debug build. Loading clean and aborting is the worst of the outcomes available here, so it is refused where it is written.' That refusal exists for `requires Desc[T = x.E]` and has NO counterpart for `requires Desc[T = Plain]` — a CONCRETE carrier that provides nothing.
+
+SO THE ACCEPTANCE SHOULD BE RESTATED: refuse the CALL whose slot cannot be filled — no provision for the pinned concrete carrier and no caller forwarding a matching requires — exactly as caller_covers does one carrier-shape over. Not the declaration (wi840 refutes that), and not by making the default lose to the slot (that is a separate semantics question, and the abort cell shows the bug is present with no default in sight).
+
+THREE MECHANISM HYPOTHESES ARE DEAD, each by its own measurement, and a next attempt should not re-derive them: (a) a namespace-level blind spot — the same program with the op inside a SORT also folds; (b) the WI-239 defer-to-requirement pre-check not consulting an op's own slots — extending it is INERT, full workspace 7099 passed and I4 unchanged; (c) the unique-impl arm above that pre-check pinning the spec default — instrumented, and NEITHER that arm NOR the pre-check is reached for this call at all. Whatever classifies `Desc.describe(x)` inside viaop's body is somewhere else in the typer; find it by instrumenting the CLASSIFICATION of that call node rather than by reading dispatch code, which is how all three of these were lost.
+
+Tree clean. stash@{0} instrumentation, stash@{1} the inert pre-check extension, stash@{2} the load-sweep; diffs also at scratchpad/nr6fj-*.diff. Census remains clean (zero shipped programs affected).
+
