@@ -151,3 +151,81 @@ WHERE THIS BELONGS: 055 work item (c) names "carry it through raw rule/fact lowe
 part of denotation completion. This is the fact-HEAD half of that, severable and much
 smaller than (c) as a whole, because the other three paths are already right.
 
+### 2026-09-17T16:01:07Z — feedback — user
+
+DIRECTION DECIDED BY THE USER (2026-09-17): `fact` IS ALWAYS AN ORDINARY FACT; A SPEC CLAIM
+IS `provides`, ONLY — including `fact Effect[T = K]`. Retire the `fact` spelling of a
+provision at BOTH levels rather than teach the loader to tell the two readings apart.
+
+WHY THIS IS BETTER THAN THE NARROW FIX ABOVE, and not merely bigger. The narrow fix
+(consult WI-710's `is_type_application` in `load_fact`) teaches the loader to distinguish
+two readings of one keyword. The retirement REMOVES THE SECOND READING, so:
+  * the missing-import silence is gone — `fact Spec[T = C]` is then just a fact, and an
+    author who means a provision writes `provides`, which ALREADY refuses an unresolved
+    spec loudly (`error: unresolved name 'NoSuchSpecXyz' in scope`);
+  * THE MIRROR DEFECT IS GONE TOO — see the note above: `fact MySpec(T: 1)`, written with
+    PARENTHESES, currently banks `SortProvidesInfo(sort_ref: Carrier, spec: SortView(MySpec,
+    T: 1))`, binding a spec parameter to the LITERAL 1. No `fact` can be a provision after
+    the retirement, so no parenthesised head can be read as one;
+  * `is_type_application` stops being load-bearing for classification altogether — there is
+    nothing left to classify.
+
+IT NEEDS NO NEW LANGUAGE SURFACE. I had said the namespace-level form has no `provides`
+replacement because `provides` names its subject by WHERE it is written. A 059 SECONDARY
+ENTRY supplies exactly that. MEASURED:
+
+    sort Carrier … end
+    namespace Carrier
+      provides HasOp[T = Carrier]
+    end
+  ->  SortProvidesInfo(sort_ref: Carrier, spec: SortView(HasOp, T: Carrier))
+
+byte-identical to what `fact HasOp[Carrier]` produces.
+
+THE EFFECT-KIND REGISTRATION MIGRATES, AND THE CAPABILITY WAS DRIVEN, not inferred from the
+fact row — this was the case I had flagged as possibly a different construct sharing the
+spelling. It is not:
+
+    namespace MyEff  provides Effect[T = MyEff]  end
+    operation act(x: Int64) -> Int64  effects {MyEff}      -> LOADS CLEAN
+    CONTROL, registration removed                          -> "declares effect `MyEff`, but
+        `zzEU.MyEff` is not a REGISTERED effect kind — nothing in the knowledge base says
+        that sort is an effect"
+
+So §5.5's registration IS the provision emission, and `provides` performs it.
+
+OBLIGATIONS ARE THE SAME, at least the one I compared — so this is a rename and not a
+weakening. A carrier that backs nothing is refused IDENTICALLY either way:
+    fact HasOp[Carrier]          -> "'zzOF.Carrier' provides 'zzOF.HasOp' but backs no
+    provides HasOp[T = Carrier]      operation 'zzOF.HasOp.doit' …"
+STATED AS A LIMIT: I compared the MEMBER-BACKING obligation only. 055 §6 describes the
+overlap as "both assert 'S satisfies C at σ', one without proof obligations", so the
+remaining obligations must be compared before the retirement is called total.
+
+MIGRATION: 20 sites, all BRACKETED and so mechanically identifiable —
+    stdlib/anthill/prelude/{sort,permission,external,effects}.anthill
+    stdlib/anthill/persistence/filesystem.anthill
+    rustland/anthill-stl/anthill/{persistence,geometry}.anthill
+    rustland/anthill-todo/anthill/coordination_rust.anthill
+    examples/guardians/lib/vocabulary.anthill
+The in-sort spelling has ZERO corpus sites, so 058 §4's existing deprecation covers the
+half nobody uses; this direction covers the half everybody does.
+
+THE SWAP IS NOT BLIND, and the deprecation warning already says why: `fact Spec[Carrier]`'s
+carrier is POSITIONAL and derived, while `provides` takes its carrier from the ADDRESS. The
+secondary-entry form is what supplies the address, which is why the migration target is
+`namespace <Carrier> { provides Spec[…] }` and not a bare keyword swap in place.
+
+FALLBACK, IF THE RETIREMENT IS NOT TAKEN: the narrow fix stands on its own — in `load_fact`,
+a head for which `is_type_application(f.term)` holds and whose functor does not resolve to a
+declared Sort is REFUSED. It closes the silent drop and (extended to the parens direction)
+the mirror defect, without deciding the retirement. It leaves the BARE in-sort claim
+(`sort X { fact Box }`, WI-365) ambiguous, which the retirement would also close.
+
+PRIOR ART: 055 parked exactly this question rather than settling it — §6 ("the observed
+overlap between op-bearing instance claims and `provides` … folding them is explicitly out
+of scope and deserves its own proposal"), Out of scope ("Instance-claim ↔ `provides`
+unification — own proposal"), and Alternatives ("`fact Modifiable[…]` → `provides`:
+deferred, not rejected — real overlap, separate concern"). This ticket is now the answer to
+that deferral, with the feasibility measured rather than assumed.
+
