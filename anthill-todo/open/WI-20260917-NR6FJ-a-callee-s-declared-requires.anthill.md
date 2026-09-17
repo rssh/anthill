@@ -82,3 +82,19 @@ A IS A BUG, B IS A SEMANTICS DECISION. A: a program that type-checks must not ab
 
 SUGGESTED SPLIT: take A as this ticket (call-site refusal on the rule->op edge, acceptance = the body-less + unprovided program is REFUSED at load instead of aborting, control = the providing carrier still answers 7 and the projection spelling is untouched), and file B separately as the default-vs-slot precedence question. Four attempts are parked: stash@{0} the classify trace, stash@{1} instrumentation, stash@{2} the inert pre-check extension, stash@{3} the load sweep; diffs at scratchpad/nr6fj-*.diff.
 
+### 2026-09-17T07:34:57Z — feedback — user
+
+THE MAP IS COMPLETE FOR DEFECT A, and the answer is that NOTHING CHECKS THIS CALL SHAPE AT ALL. Measured by instrumenting each step rather than reading it:
+
+  1. the CALLEE's body classifies CORRECTLY — `CLASSIFY Desc.describe => DeferToRequirement(slot=0)`. The declared slot is read, exactly as the implicit-parameter model wants;
+  2. the CALL SITE never builds op-scoped dictionaries — `build_op_scoped_dicts` is NEVER CALLED for `viaop` when the caller is a RULE BODY (instrumented at its first line: no output). WI-1102's use-site discharge lives INSIDE that function, so the park can never fire for this shape;
+  3. at run time the bridge raises `EvalError::Internal` and `bridge_op_to_eval` aborts a debug build.
+
+AND THE PARK'S RULE-BODY GATE IS NOT WHAT BLOCKS IT. `OpSlotParkSite::for_call` gates on `enclosing_op.is_some()`, whose stated justification is that a rule-body goal 'reaches eval through the SLD bridge, which resolves real provider dictionaries from the CONCRETE argument values at fire time and suspends when it cannot'. TWO MEASUREMENTS AGAINST THAT: (a) removing the gate costs NOTHING — full workspace 7099 passed, 0 failed, so its cited witness (`platform.needs_rebuild`'s `gt` over `Timestamp`) is covered by the sibling BUILTIN gate and the rule-body half is undriven; and (b) removing it does NOT fix the abort either, because of (2) above — the park is unreachable, not merely gated. The gate's premise is also false for this program: the bridge does not suspend, it aborts.
+
+SO DEFECT A'S FIX IS ONE OF TWO PLACES, and choosing between them is the next decision:
+  (i) WHATEVER TYPE-CHECKS A RULE-BODY CALL TO AN OPERATION gets the slot-fillability check `build_op_scoped_dicts` performs for operation-body call sites. Right place in principle (a load refusal, which is what the eval site's own WI-1102 comment asks for), but it means finding that path — four attempts have shown this control flow is not readable from source, so instrument first: print at every `classify()` for the CALLER's occurrence and see which arm takes `viaop(plain(), ?r)`.
+  (ii) THE BRIDGE STOPS ABORTING. `eval.rs`'s `DeferToRequirement: requirement param ... not bound in caller frame` becomes a failed/suspended goal rather than `EvalError::Internal`. Smaller and strictly an improvement over a crash, but it makes the program answer NOTHING instead of naming the missing provision, and that site's own comment argues the refusal belongs at the call.
+
+FIVE ATTEMPTS ARE PARKED (stash@{0}..{4}, diffs at scratchpad/nr6fj-*.diff). What every one of them has in common: it was designed by reading code and refuted by its first measurement. The instrument that finally worked was `classify()` — one funnel every variant passes through. Instrument the funnel, not the branch.
+
