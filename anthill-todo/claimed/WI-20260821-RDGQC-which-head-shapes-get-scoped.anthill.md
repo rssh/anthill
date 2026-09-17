@@ -335,3 +335,38 @@ TWO THINGS TO KNOW BEFORE TAKING IT:
 
 NOT FILED AS A TICKET — this is 058's work and I have not been asked to open one.
 
+### 2026-09-17T15:00:20Z — feedback — user
+
+CORRECTION TO MY CORRECTION — the previous note's claim about the NAMESPACE-LEVEL form is
+FALSE, and I should not have stated it. Filed as WI-20260917-S8JYF with the real numbers.
+
+I wrote: "OUTSIDE a sort, `fact Spec[…]` was NEVER a provision — measured, a
+namespace-level `fact anthill.prelude.Eq[T = Carrier]` emits NO `SortProvidesInfo` at all".
+The measurement was wrong: I grepped the `SortProvidesInfo` listing for the NAMESPACE name
+`zzT`, and those rows print SHORT names (`sort_ref: Carrier, spec: SortView(Eq, T: Carrier)`),
+so the grep could never have matched whatever the answer was. Re-measured by the short
+name, BOTH namespace-level spellings emit the provision:
+
+  namespace zz { fact anthill.prelude.Eq[Carrier] }      -> SortProvidesInfo(sort_ref: Carrier, …)
+  namespace zz { fact anthill.prelude.Eq[T = Carrier] }  -> SortProvidesInfo(sort_ref: Carrier, …)
+
+WHAT THAT CHANGES. I concluded "the retirement's surface is the IN-SORT spelling only" and
+that finishing 058 §4 would dissolve the problem. The census says the opposite: the in-sort
+spelling has ZERO users corpus-wide (the deprecation warning fires 0 times over stdlib +
+every example + anthill-stl + anthill-todo), while the NAMESPACE-LEVEL spelling has 20
+sites across 9 files including stdlib itself and anthill-stl. So the deprecation as scoped
+would retire the half nobody uses and leave the 20 real users untouched — the reverse of
+what I said.
+
+The defect itself stands and is unchanged: at BOTH levels, a `fact`-spelled provision whose
+functor is not a declared Sort loads clean and emits nothing, because the early return and
+the only diagnostic share the `kind_of == Sort` gate. S8JYF carries it with the corrected
+census, the undecidability argument (an ordinary fact-only predicate in a sort body is
+legitimate and textually identical), and the note that `fact Effect[T = K]` at namespace
+level is ALSO §5.5's effect-kind registration, so the two levels may not be one question.
+
+TWICE WRONG ON THIS ITEM, both times from a measurement I did not check: first the
+population ("bracketed", when the bracketless form has the identical defect), then the
+scope. Recorded because the pattern is the reusable part — I was reading greps for absence,
+and an absence needs a positive control before it means anything.
+
