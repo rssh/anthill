@@ -1744,3 +1744,6 @@ mod wi_8y5be_interpreter_stream_failure_test;
 
 #[path = "include/wi_hrfr5_witness_attribution_test.rs"]
 mod wi_hrfr5_witness_attribution_test;
+
+#[path = "include/wi_nr6fj_operation_requires_test.rs"]
+mod wi_nr6fj_operation_requires_test;

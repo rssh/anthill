@@ -554,6 +554,34 @@ pub enum TypeError {
         spec_sort_sym: Symbol,
         abstract_params: SmallVec<[Symbol; 2]>,
     },
+    /// WI-20260917-NR6FJ — a rule body CALLS an operation whose declared `requires`
+    /// names a CONCRETE carrier that provides no such spec, and this clause neither
+    /// declares the obligation itself.
+    ///
+    /// THE SIBLING OF [`Self::MissingRequiresForSpecOp`] one call-shape over. That one
+    /// refuses a rule-body call to a SPEC OP whose carrier provides nothing; this one
+    /// refuses a call to an ORDINARY operation that declared the same obligation — the
+    /// slot is inbound, the caller fills it, and here nothing can.
+    ///
+    /// MEASURED BEFORE IT, and the two outcomes are why this is load-blocking: with a
+    /// BODY-LESS spec op the callee's body defers to its slot, the frame binds nothing
+    /// and `bridge_op_to_eval` raises `EvalError::Internal` — a debug-build ABORT from a
+    /// program that type-checked. With a DEFAULTED one the call silently folds the
+    /// spec's default instead. The eval site's own comment asks for exactly this
+    /// refusal: "it wants a LOAD refusal naming the carrier sort and the missing
+    /// provision … WI-1102 puts the refusal at the CALL, at load, where the typer has
+    /// both."
+    ///
+    /// AT THE CALL, NEVER AT THE DECLARATION. An operation may be declared here and its
+    /// provision supplied by whoever loads the file — `wi840_named_requires_slot_test`
+    /// declares a two-slot op over a spec no carrier provides and never calls it, which
+    /// is a legitimate program and stays one.
+    UnfillableOperationRequirement {
+        span: Option<Span>,
+        callee_op: Symbol,
+        spec_sort_sym: Symbol,
+        carrier_sym: Symbol,
+    },
     /// WI-828: a cross-sort call (direct or op-as-function-value) to an
     /// operation of a `requires`-carrying sort whose requirement the call site
     /// can neither CONSTRUCT (no unique provider at the call's instantiation)
@@ -1338,6 +1366,28 @@ impl TypeError {
                     params_list.join(", "),
                 )
             }
+            TypeError::UnfillableOperationRequirement {
+                callee_op,
+                spec_sort_sym,
+                carrier_sym,
+                ..
+            } => {
+                let spec_qn = kb.qualified_name_of(*spec_sort_sym);
+                format!(
+                    "`{}` requires `{}` at carrier `{}`, and this clause can neither \
+                     supply it nor declare it — `{}` provides no `{}`. Add a `provides \
+                     {}[…]` for `{}` (or a witness sort that provides it), or write \
+                     `requires({}[…])` in this clause to take the obligation on",
+                    kb.qualified_name_of(*callee_op),
+                    spec_qn,
+                    kb.qualified_name_of(*carrier_sym),
+                    kb.qualified_name_of(*carrier_sym),
+                    spec_qn,
+                    short_name_of(spec_qn),
+                    kb.qualified_name_of(*carrier_sym),
+                    short_name_of(spec_qn),
+                )
+            }
             TypeError::UnsatisfiableRequirement {
                 op,
                 callee_sort,
@@ -1508,6 +1558,7 @@ impl TypeError {
             | TypeError::DispatchNoMatch { span, .. }
             | TypeError::DispatchAmbiguous { span, .. }
             | TypeError::AmbiguousSpecOpDispatch { span, .. }
+            | TypeError::UnfillableOperationRequirement { span, .. }
             | TypeError::AmbiguousConstrainedParamMember { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
             | TypeError::ExcessCallTypeArgs { span, .. }
@@ -1913,6 +1964,32 @@ impl TypeError {
                         spec_short
                     ),
                     actual_type: suggestion,
+                    span: self.span(kb),
+                }
+            }
+            TypeError::UnfillableOperationRequirement {
+                callee_op,
+                spec_sort_sym,
+                carrier_sym,
+                ..
+            } => {
+                let spec_qn = kb.qualified_name_of(*spec_sort_sym);
+                let carrier_qn = kb.qualified_name_of(*carrier_sym);
+                LoadError::TypeMismatch {
+                    origin: None,
+                    entity_name: kb.qualified_name_of(*callee_op).to_string(),
+                    field_name: "requires".to_string(),
+                    expected_type: format!(
+                        "a `{spec_qn}` this clause can supply for carrier `{carrier_qn}`"
+                    ),
+                    actual_type: format!(
+                        "`{carrier_qn}` provides no `{spec_qn}`, and this clause declares \
+                         no `requires({}[…])` of its own — so no call here can discharge \
+                         it. Add a `provides {}[…]` for `{carrier_qn}` (or a witness sort \
+                         that provides it), or take the obligation on in this clause",
+                        short_name_of(spec_qn),
+                        short_name_of(spec_qn),
+                    ),
                     span: self.span(kb),
                 }
             }
@@ -67741,6 +67818,12 @@ fn type_check_sorts_collect(
     // per-arg `inferred_type` the carrier decision reads is stamped.
     errors.extend(check_rule_body_requirements(kb));
 
+    // WI-20260917-NR6FJ: the OPERATION-CALL twin of the above — a rule-body call to an
+    // operation whose declared `requires` names a concrete carrier that provides no such
+    // spec. Before this the program loaded and then either ABORTED in the eval bridge
+    // (a body-less spec op) or silently folded the spec's default (a defaulted one).
+    errors.extend(check_rule_body_operation_requires(kb));
+
     // WI-583 / WI-20260822-J38JE item 4: the STATIC face of the resolver's goal
     // routing — refuse a rule-body goal that has no goal reading. A Bool-returning op
     // used bare in a goal (`:- valid(?x)`) is gated to `eq(valid(?x), true)` at resolve
@@ -72766,6 +72849,136 @@ fn check_rule_body_requirements(kb: &KnowledgeBase) -> Vec<TypeError> {
         }
         for node in body_nodes {
             check_occ_spec_op_requirements(kb, node, fd_sym, &declared, &mut errors);
+        }
+    }
+    errors
+}
+
+/// WI-20260917-NR6FJ — the OPERATION-CALL twin of [`check_rule_body_requirements`].
+///
+/// That pass refuses a rule-body call to a SPEC OP whose concrete carrier provides no
+/// instance. This one refuses a rule-body call to an ORDINARY OPERATION that DECLARED the
+/// same obligation — `operation viaop(x: Plain) requires Desc[T = Plain]` — where nothing
+/// can fill the slot. A `requires` is an inbound slot the CALLER fills; at a rule-body
+/// call the caller is this clause, and if the named carrier provides nothing and the
+/// clause declares no requirement of its own, the slot has no filler anywhere.
+///
+/// # What happened before, and why it is load-blocking
+///
+/// MEASURED, and the outcome depended on an irrelevance — whether the spec op carries a
+/// DEFAULT body:
+///
+///   * BODY-LESS: the callee's body classifies as `DeferToRequirement`, reads a slot the
+///     frame never bound, and `bridge_op_to_eval` raises `EvalError::Internal` — a
+///     debug-build ABORT from a program that type-checked;
+///   * DEFAULTED: the call silently folds the spec's default and ANSWERS, where the same
+///     demand written `requires(Desc[T = Plain])` in the clause correctly declines.
+///
+/// The eval site's own comment asks for this refusal by name: *"it wants a LOAD refusal
+/// naming the carrier sort and the missing provision … WI-1102 puts the refusal at the
+/// CALL, at load, where the typer has both."*
+///
+/// # Why here and not at WI-1102's park
+///
+/// That park lives inside [`build_op_scoped_dicts`], which — MEASURED, by instrumenting
+/// its first line — is NEVER CALLED for a rule-body caller. A rule-body call is a GOAL,
+/// not an expression call, so it never reaches the expression typer at all. The park's
+/// own rule-body gate (`OpSlotParkSite::for_call`'s `enclosing_op.is_some()`) is a
+/// second, independent reason and not the operative one: removing it moves zero rows.
+///
+/// # The boundaries, each a population this must not swallow
+///
+///   * AT THE CALL, NEVER AT THE DECLARATION — `wi840_named_requires_slot_test` declares
+///     a two-slot op over a spec nothing provides and never calls it. Legitimate: the
+///     provision may come from whoever loads the file;
+///   * A DECLARED IN-BODY `requires` SUPPRESSES IT, exactly as in the sibling pass — the
+///     author has acknowledged the obligation and the guard decides at fire time;
+///   * A TYPE-PARAMETER or PROJECTION carrier is skipped: there the caller supplies, and
+///     WI-20260909-S8CBV's caller-coverage refusal already owns the undischargeable case;
+///   * A RESOLVER BUILTIN is skipped, the same exemption and the same witness the sibling
+///     pass takes (`PartialOrd.gt` never consults an `Ord` instance);
+///   * `carrier_provides_spec`, not a bare `sort_provides`, so a WITNESS-supplied
+///     provision counts — the twin gate [`anchor_grounding`] documents.
+fn check_rule_body_operation_requires(kb: &mut KnowledgeBase) -> Vec<TypeError> {
+    let mut errors: Vec<TypeError> = Vec::new();
+    let fd_sym = kb.try_resolve_symbol(crate::parse::desugar_target::qualified(
+        crate::parse::desugar_target::FIND_DICTIONARY,
+    ));
+    let rids: Vec<crate::kb::RuleId> = kb.live_rule_ids();
+    for rid in rids {
+        if kb.is_fact(rid) {
+            continue;
+        }
+        let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        let mut declared: SmallVec<[Symbol; 2]> = SmallVec::new();
+        if let Some(fd) = fd_sym {
+            for node in &body_nodes {
+                collect_find_dictionary_bases(kb, node, fd, &mut declared);
+            }
+        }
+        let mut calls: Vec<(Symbol, Option<Span>)> = Vec::new();
+        for node in &body_nodes {
+            let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(node)];
+            while let Some(o) = stack.pop() {
+                let Some(expr) = o.as_expr() else { continue };
+                if let Expr::Apply { functor, .. } = expr {
+                    if Some(*functor) != fd_sym {
+                        calls.push((*functor, Some(o.span.span)));
+                    }
+                }
+                for_each_child(expr, |c| stack.push(Rc::clone(c)));
+            }
+        }
+        for (functor, span) in calls {
+            // AN OPERATION, and asked FIRST: a rule body is full of entity
+            // constructors and data functors, and `op_dict_entries` would build a chain
+            // for every one of them to answer "empty". The filter is the cheap read.
+            if !super::op_info::operation_is_declared(kb, functor) {
+                continue;
+            }
+            // The SPEC-OP population belongs to the sibling pass, which decides it from
+            // the CALL's own carrier arguments; a builtin never consults an instance.
+            if kb.is_builtin(functor) || lookup_spec_op_dispatch(kb, functor).is_some() {
+                continue;
+            }
+            let entries: Vec<RequiresEntry> = op_dict_entries(kb, functor).op_entries().to_vec();
+            for entry in entries {
+                let spec_canon = kb.canonical_sort_sym(entry.required_sort);
+                if declared
+                    .iter()
+                    .any(|d| kb.canonical_sort_sym(*d) == spec_canon)
+                {
+                    continue;
+                }
+                if spec_is_self_representing(kb, spec_canon) {
+                    continue;
+                }
+                let Some(param) = spec_carrier_param_or_sole(kb, spec_canon) else {
+                    continue;
+                };
+                let Some((_, bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
+                    continue;
+                };
+                let Some(bound) = binding_for_param(kb, &bindings, param, BindingKeyMatch::Label)
+                else {
+                    continue;
+                };
+                if is_type_param_value(kb, *bound) {
+                    continue;
+                }
+                let Some(carrier) = sort_functor_of_view(kb, &TermIdView(*bound)) else {
+                    continue;
+                };
+                if carrier_provides_spec(kb, carrier, spec_canon) {
+                    continue;
+                }
+                errors.push(TypeError::UnfillableOperationRequirement {
+                    span,
+                    callee_op: functor,
+                    spec_sort_sym: entry.required_sort,
+                    carrier_sym: carrier,
+                });
+            }
         }
     }
     errors

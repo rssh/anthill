@@ -3,9 +3,9 @@
 - id: WI-20260917-NR6FJ-a-callee-s-declared-requires
 - created: 2026-09-17T05:07:35Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-17T05:07:35Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-17T08:09:06Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
