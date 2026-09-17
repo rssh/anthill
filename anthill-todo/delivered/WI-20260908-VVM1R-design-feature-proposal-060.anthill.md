@@ -3,9 +3,9 @@
 - id: WI-20260908-VVM1R-design-feature-proposal-060
 - created: 2026-09-08T10:22:01Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-08T10:22:01Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-17T05:05:50Z
 
 - acceptance: cargo-test
 
