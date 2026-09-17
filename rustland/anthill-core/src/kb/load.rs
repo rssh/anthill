@@ -5769,9 +5769,10 @@ fn scan_rule(
     }
     if rule_reading(r, parse_sym, parse_terms) == RuleReading::Declaration {
         // `expect` rather than a silent skip: `RuleReading::Declaration` is reached
-        // only through the `Some((_, Predicate))` arm of this very call, so a `None`
+        // only through the `Ok((_, Predicate))` arm of this very call, so an `Err`
         // here would mean the two disagree — which is the defect this pairing exists
-        // to make impossible.
+        // to make impossible. The `Err` is `Debug`, so the panic NAMES the reason
+        // rather than only the expectation, which an `Option` could not.
         let (name, introduced_by) = rule_introduced_functor_name(r, parse_sym, parse_terms)
             .expect("a Declaration reading names the predicate it declares");
         let qualified = make_qualified(prefix, name);
@@ -6148,12 +6149,12 @@ fn rule_reading(
         }
     }
     match rule_introduced_functor_name(r, parse_sym, parse_terms) {
-        Some((_, RuleIntroduction::Predicate)) => RuleReading::Declaration,
+        Ok((_, RuleIntroduction::Predicate)) => RuleReading::Declaration,
         // An EQUATION reaches here only through a head this function already sent to
         // `Clause`; the arm is stated rather than fused so a future head shape cannot
         // acquire a declaration reading by accident.
-        Some((_, RuleIntroduction::Equation)) => RuleReading::Clause,
-        None => RuleReading::DeclaresNothing,
+        Ok((_, RuleIntroduction::Equation)) => RuleReading::Clause,
+        Err(_) => RuleReading::DeclaresNothing,
     }
 }
 
@@ -6317,108 +6318,45 @@ fn field_access_dotted_name_of(
 }
 
 /// WHY a [`RuleReading::DeclaresNothing`] rule declares nothing, in the author's terms.
-/// Asks the SAME shape questions [`rule_introduced_functor_name`] asks, in its order, so
-/// the message and the verdict cannot describe different rules.
+///
+/// WI-20260821-RDGQC — IT NO LONGER WALKS. This function used to re-derive
+/// [`rule_introduced_functor_name`]'s shape questions, in its order, so that "the
+/// message and the verdict cannot describe different rules" — an invariant held by hand
+/// across two bodies, with a `debug_assert!(false)` fall-through for the case where they
+/// had already drifted. It now ASKS the verdict and reads the reason off it, so the two
+/// are one walk and the drift is unrepresentable rather than asserted against.
+///
+/// WHAT THE OLD WALK KNEW AND THIS ONE DOES NOT HAVE TO. Its comments recorded two
+/// grammar facts — that `typed_var_arg` sits only in `_positional_fn_arg`, and that
+/// `rule_heads` is `commaSep1($._goal)` → `_term`, whose alternatives contain no
+/// expression or pattern production — which together say no SURFACE-FORM MARKER
+/// (WI-20260822-AK2AJ / AKKWF, twelve of them) can occupy a head, so every minted head
+/// really is an operator or an accessor and [`NoIntroduction::DesugaredSubject`]'s
+/// sentence is true of its whole population. MEASURED: 2 586 767 marker mints over the
+/// workspace corpus and 115 574 minted heads, with no marker name among them. That
+/// statement now lives at the one `is_minted` reader it is about ([`head_subject_name`]),
+/// which is also the site a future marker reachable from `_term` would move.
 fn bodyless_declares_nothing_detail(
     r: &Rule,
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
 ) -> String {
-    if r.heads.len() != 1 {
-        return format!(
-            "it writes {} heads at once, and a declaration declares ONE predicate",
-            r.heads.len()
-        );
-    }
-    let RuleHead::Term(tid) = &r.heads[0] else {
-        return "a `⊥` denial names no predicate, so there is nothing for it to declare".to_owned();
-    };
-    // THE SENTENCE DESCRIBES THE REACHABLE POPULATION, NOT THE PRODUCER SET, and the two
-    // stopped coinciding when WI-20260822-AK2AJ made `typed_var` a third mint category
-    // (`SimpleTermStore::minted`); WI-20260822-AKKWF then added ELEVEN more — `if_expr`,
-    // `match_expr`, `match_branch`, `let_expr`, `lambda_expr`, `proof_stmt` and the five
-    // `pattern_*` forms, all built by `convert::alloc_marker_term`. It stays true only
-    // because a MARKER can never be a head, and that now rests on TWO grammar facts, not
-    // one:
-    //   * `typed_var_arg` sits only in `_positional_fn_arg`, so it is an ARGUMENT
-    //     (AK2AJ's);
-    //   * `rule_heads` is `commaSep1($._goal)` → `_term`, whose `_non_name_atom_term`
-    //     alternatives contain no expression form and no pattern production, so nothing
-    //     `visit_pattern` or an expression `BuildFrame` builds can occupy a head
-    //     (AKKWF's — MEASURED: 2 586 767 marker mints over the workspace corpus and
-    //     115 574 minted heads seen here and at `rule_introduced_functor_name`, with no
-    //     marker name among them).
-    // So every minted head really is an operator or an accessor. A FUTURE MARKER
-    // REACHABLE IN HEAD POSITION MUST MOVE THIS TEXT WITH IT — and a marker added in a
-    // production reachable from `_term` is exactly that case, which the first bullet
-    // alone would not catch.
-    // A DOTTED PAREN-LESS HEAD IS MINTED AND STILL NAMES SOMETHING (WI-20260901-719FJ),
-    // so it is asked ahead of the desugaring sentence — the same order
-    // [`head_subject_name`] takes, because the two walks must describe one rule. Before
-    // this arm `rule nsx.tgt` got the DESUGARING sentence while `rule nsx.tgt()` got the
-    // QUALIFIED one: axis D's defect (P85Z7) surviving one spelling over. The name flows
-    // into the qualified test below rather than returning here, so the two spellings now
-    // share the sentence AND the reason.
-    let chain = dotted_citation_name(parse_sym, parse_terms, *tid);
-    if chain.is_none() && parse_terms.is_minted(*tid) {
-        return "its head functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, \
-                `?a + ?b` carries `add`), not a name the rule introduces"
-            .to_owned();
-    }
-    // A BARE NAME NO LONGER REACHES THIS ARM (WI-20260821-P85Z7): `head_subject_name`
-    // reads a `Term::Ident` head as an application of arity 0, so `rule holdsq` DECLARES
-    // and this walk must not claim it names no predicate. What still reaches it is a
-    // bare VARIABLE head (`rule ?x`) — MEASURED, and the only shape that does: a bare
-    // LITERAL (`rule 42`, `rule true`) is refused earlier with its own sentence, and
-    // every other non-`Fn` parse node was named above.
-    // THE SAME NULLARY READING THE VERDICT TAKES (WI-20260821-P85Z7). A bare name is an
-    // application of arity 0, so a `Term::Ident` head carries a NAME and the qualified
-    // check below must run for it — `head_subject_name` reads it that way and this walk
-    // has to agree or the two describe different rules.
-    //
-    // MEASURED WITH THE ARM MISSING, and found by `/code-review` on this ticket's own
-    // diff: `rule ..nosuchxyz` (body-less) fell through to "its head is not a functor
-    // application" while `rule ..nosuchxyz()` got "`..nosuchxyz` is a QUALIFIED name …"
-    // — two spellings of one head, two different explanations of one verdict, which is
-    // the exact defect this ticket exists to remove, surviving in the diagnostic.
-    //
-    // NOT GATED ON THE PREDICATE PATH, unlike `head_subject_name`'s arm, and that is a
-    // reachability statement rather than a difference of policy: an equation subject is
-    // reached only through [`parse_equation_lhs`], which needs a MINTED connective head
-    // — a `Term::Fn` — and a body-less connective head reads as `RuleReading::Clause`
-    // anyway, so it never arrives here.
-    //
-    // WHAT STILL REACHES THE FALLTHROUGH is a bare VARIABLE head (`rule ?x`), which
-    // `wi_fqc85_rule_declaration_test` drives. A bare LITERAL (`rule 42`, `rule true`)
-    // is refused earlier with its own sentence, and every other non-`Fn` parse node is
-    // named above.
-    let name = match &chain {
-        Some(name) => name.as_str(),
-        None => {
-            let (Term::Fn { functor, .. } | Term::Ident(functor)) = parse_terms.get(*tid) else {
-                return "its head is not a functor application, so it names no predicate"
-                    .to_owned();
-            };
-            parse_sym.local_name(*functor)
+    match rule_introduced_functor_name(r, parse_sym, parse_terms) {
+        Err(why) => why.detail(),
+        // UNREACHABLE, and said rather than left as a plausible-looking sentence: the
+        // caller reached this only through a `DeclaresNothing` reading, which
+        // [`rule_reading`] takes from this very call's `Err`. A `debug_assert` rather
+        // than an `unreachable!` because this is a DIAGNOSTIC path — aborting the
+        // process while rendering an error would replace a message with a crash.
+        Ok((name, _)) => {
+            debug_assert!(
+                false,
+                "`{name}` reached the detail fallthrough: rule_reading said \
+                 DeclaresNothing but rule_introduced_functor_name names it"
+            );
+            format!("the loader's two readings of `{name}` disagree — please report this")
         }
-    };
-    if name.contains('.') {
-        return format!(
-            "`{name}` is a QUALIFIED name, and a qualified name references an existing \
-             predicate — it never introduces one"
-        );
     }
-    // UNREACHABLE, and said rather than left as a plausible-looking sentence: every
-    // shape [`rule_introduced_functor_name`] refuses has been named above, so reaching
-    // here means this walk and that one have diverged. A `debug_assert` rather than an
-    // `unreachable!` because this is a DIAGNOSTIC path — aborting the process while
-    // rendering an error would replace a message with a crash.
-    debug_assert!(
-        false,
-        "`{name}` reached the detail fallthrough: rule_reading said DeclaresNothing but \
-         rule_introduced_functor_name names it"
-    );
-    format!("the loader's two readings of `{name}` disagree — please report this")
 }
 
 /// WI-1090 / WI-888 — a head the desugar wrote with an equality-family connective that
@@ -6477,8 +6415,9 @@ fn non_defining_connective_head(
 }
 
 /// ONE HEAD's SUBJECT AS WRITTEN — the local name of the node that head is about,
-/// DOTTED SPELLINGS INCLUDED. `None` when it is about no name of the source's own (a
-/// non-term head, a desugared subject).
+/// DOTTED SPELLINGS INCLUDED. `Err` when it is about no name of the source's own, and
+/// the [`NoIntroduction`] variant says WHICH shape (a non-term head, a desugared
+/// subject, a head that is not an application at all).
 ///
 /// TWO QUESTIONS ARE ASKED OF THIS ANSWER, and they part ways on two things.
 /// [`rule_introduced_functor_name`] asks which name the RULE introduces — a question
@@ -6526,9 +6465,9 @@ fn head_subject_name<'a>(
     bodyless: bool,
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-) -> Option<(Cow<'a, str>, RuleIntroduction)> {
+) -> Result<(Cow<'a, str>, RuleIntroduction), NoIntroduction<'a>> {
     let RuleHead::Term(tid) = head else {
-        return None;
+        return Err(NoIntroduction::DenialHead);
     };
     // §8.3: an equation is BODYLESS — a property of the RULE, so the caller asks it
     // through the one owner of that question ([`rule_body_is_empty_conjunction`]) rather
@@ -6584,10 +6523,10 @@ fn head_subject_name<'a>(
     // dotted `@[simp]` subject matching no redex, so the equation reading did not widen
     // when this walk learned to read a chain.
     if let Some(name) = dotted_citation_name(parse_sym, parse_terms, subject) {
-        return Some((Cow::Owned(name), introduced_by));
+        return Ok((Cow::Owned(name), introduced_by));
     }
     if parse_terms.is_minted(subject) {
-        return None;
+        return Err(NoIntroduction::DesugaredSubject);
     }
     let functor = match parse_terms.get(subject) {
         Term::Fn { functor, .. } => functor,
@@ -6629,14 +6568,15 @@ fn head_subject_name<'a>(
         // multi-segment `name` into a minted `field_access` chain, which the mint guard
         // above already refuses.
         Term::Ident(sym) => sym,
-        _ => return None,
+        _ => return Err(NoIntroduction::NotAnApplication),
     };
-    Some((Cow::Borrowed(parse_sym.local_name(*functor)), introduced_by))
+    Ok((Cow::Borrowed(parse_sym.local_name(*functor)), introduced_by))
 }
 
 /// The name a rule INTRODUCES — the name that must become a scoped symbol so a
 /// call site can name it and a sibling scope's same-spelled rule cannot silently
-/// merge with it (WI-894). `None` when the rule introduces nothing.
+/// merge with it (WI-894). `Err` when the rule introduces nothing, carrying the one
+/// [`NoIntroduction`] reason that both the verdict and the author's sentence read.
 ///
 /// [`head_subject_name`]'s shape walk of the FIRST head, plus the two refusals that
 /// separate introducing from referencing:
@@ -6663,17 +6603,123 @@ fn rule_introduced_functor_name<'a>(
     r: &Rule,
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-) -> Option<(&'a str, RuleIntroduction)> {
+) -> Result<(&'a str, RuleIntroduction), NoIntroduction<'a>> {
+    // THE HEAD COUNT IS ASKED FIRST, and that is WI-20260821-RDGQC merging two walks
+    // rather than a change of verdict: [`bodyless_declares_nothing_detail`] already
+    // asked it first (a multi-head rule whose FIRST head is also malformed should be
+    // told it writes several heads, not that its first one is unreadable), while this
+    // walk asked it last, through [`subject_introduces`]. Every count but 1 refused
+    // then and refuses now, so no rule changes reading; what changes is that the two
+    // orders are one order, which is the only way the reason and the verdict cannot
+    // drift. `heads[0]` below is total for the same reason — a 0-head rule left
+    // through the arm above.
+    if r.heads.len() != 1 {
+        return Err(NoIntroduction::SeveralHeads(r.heads.len()));
+    }
     let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
     let (subject, introduced_by) =
-        head_subject_name(r.heads.first()?, bodyless, parse_sym, parse_terms)?;
-    Some((subject_introduces(&subject, r.heads.len())?, introduced_by))
+        head_subject_name(&r.heads[0], bodyless, parse_sym, parse_terms)?;
+    Ok((subject_introduces(subject, r.heads.len())?, introduced_by))
+}
+
+/// WI-20260821-RDGQC — **THE ENUMERATION**: every reason a rule head introduces no name
+/// of its own, stated ONCE so that the VERDICT and the SENTENCE cannot describe
+/// different rules.
+///
+/// WHAT IT REPLACES, and why the replacement is the point. The verdict was
+/// [`rule_introduced_functor_name`] returning a bare `None`, and the sentence was
+/// [`bodyless_declares_nothing_detail`] — a SECOND walk that re-derived the same shape
+/// questions in the same order, whose own doc said "the two walks must describe one
+/// rule" and whose fall-through was a `debug_assert!(false)` for the case where they
+/// had stopped doing so. That is a hazard maintained by hand: every arm added to one
+/// walk had to be mirrored in the other, and the assert fired only in a debug build, on
+/// a diagnostic path, after the wrong sentence had already been chosen. MEASURED
+/// PRECEDENT, from this file's own history: `rule ..nosuchxyz` got "its head is not a
+/// functor application" while `rule ..nosuchxyz()` got the QUALIFIED sentence — two
+/// spellings of one head, two explanations of one verdict, found by `/code-review` on
+/// P85Z7's diff. The two walks are now one: the reason IS the refusal, carried by the
+/// `Err`, and `detail` is a `match` on it with no shape questions of its own.
+///
+/// **WHAT IS NOT HERE, and is somebody else's** — the ticket's enumeration is wider than
+/// the rule-head walk, and the three shapes below never reach this type because they
+/// never ask it. Each is DELIBERATE and each is measured in
+/// `wi_rdgqc_head_introduction_census_test`, which is where the enumeration is complete:
+///
+///  * a **FACT head** is unscoped at every arity (§6.1 / §5.3) — collected as a CLAUSE
+///    by [`RuleHeadCollectPass::at_item`] and never minted. Two namespaces writing one
+///    fact name share one predicate, and each reads the other's fact.
+///  * each functor of a **MULTI-HEAD** rule lands its own clause while the rule
+///    introduces nothing — the [`Self::SeveralHeads`] arm is that refusal, and
+///    WI-20260908-NE0E4 owns the cross-sort leak it leaves.
+///  * a head inside a host **`provides … language … end`** block takes the SPEC's scope
+///    for its clause and no scope at all for its name — no scan pass descends into the
+///    block ([`RuleHeadCollectPass::collect_provides_block`], WI-20260821-TTHRK).
+///
+/// They are named here rather than given unproduced variants: a variant no producer
+/// builds is its own defect class (WI-816), and the census test is the reader that keeps
+/// the list honest.
+// `Debug` alone, and it is LOAD-BEARING: `scan_rule_goal`'s `expect` renders it, so a
+// verdict/reading disagreement panics with the REASON. No other derive has a reader.
+#[derive(Debug)]
+enum NoIntroduction<'a> {
+    /// SEVERAL HEADS name no single predicate. Carries the count the sentence quotes.
+    /// Each head still LANDS its own clause — that census is [`ClauseSite`]'s, taken
+    /// per head, and is deliberately not this question.
+    SeveralHeads(usize),
+    /// A non-term head — today exactly the `⊥` DENIAL, which names no predicate.
+    DenialHead,
+    /// The subject carries the DESUGAR's functor, not the rule's (`?x.m(?y)` →
+    /// `dot_apply`, `?x.f` → `field_access`, `?a + ?b` → `add`). `minted` (WI-618) is
+    /// provenance carried rather than re-derived from a blocklist of accessor names.
+    DesugaredSubject,
+    /// The subject is neither `Term::Fn` nor `Term::Ident` — a bare VARIABLE head
+    /// (`rule ?x`) is the one shape that reaches this, a bare LITERAL being refused
+    /// earlier with its own sentence. `Term::Ref` reaches it too: a written `Ref(a.b)`
+    /// REFERENCES a declared name rather than introducing one.
+    NotAnApplication,
+    /// A QUALIFIED spelling references an existing predicate and never introduces one
+    /// — a rule about the SPELLING (§"A rule-introduced functor is scoped where it is
+    /// written"), not a ladder tier: a dotted head that resolves to NOTHING still
+    /// introduces nothing. The name rides as a [`Cow`] for [`subject_introduces`]'s own
+    /// reason — the one subject the parse symbol table never interned is a folded
+    /// dot-chain — so the borrowed case costs nothing.
+    QualifiedSpelling(Cow<'a, str>),
+}
+
+impl NoIntroduction<'_> {
+    /// WHY this rule declares nothing, in the AUTHOR's terms. The sentences are
+    /// [`bodyless_declares_nothing_detail`]'s, moved here unchanged — what moved is
+    /// that choosing one is now a `match` on the verdict instead of a walk that could
+    /// reach a different one.
+    fn detail(&self) -> String {
+        match self {
+            Self::SeveralHeads(n) => format!(
+                "it writes {n} heads at once, and a declaration declares ONE predicate"
+            ),
+            Self::DenialHead => {
+                "a `⊥` denial names no predicate, so there is nothing for it to declare"
+                    .to_owned()
+            }
+            Self::DesugaredSubject => {
+                "its head functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, \
+                 `?a + ?b` carries `add`), not a name the rule introduces"
+                    .to_owned()
+            }
+            Self::NotAnApplication => {
+                "its head is not a functor application, so it names no predicate".to_owned()
+            }
+            Self::QualifiedSpelling(name) => format!(
+                "`{name}` is a QUALIFIED name, and a qualified name references an \
+                 existing predicate — it never introduces one"
+            ),
+        }
+    }
 }
 
 /// THE TWO REFUSALS THEMSELVES, so that a caller which already holds the subject
 /// ([`RuleHeadCollectPass::collect`], which needs it for the clause census anyway) can
 /// ask the question without walking the head's shape a second time — and cannot spell
-/// the answer differently. `Some` is the name the rule INTRODUCES.
+/// the answer differently. `Ok` is the name the rule INTRODUCES.
 ///
 /// A QUALIFIED spelling references rather than introduces — see
 /// [`rule_introduced_functor_name`]. SEVERAL HEADS name no single predicate, so the rule
@@ -6687,9 +6733,19 @@ fn rule_introduced_functor_name<'a>(
 /// A chain has at least two segments, so its name always carries the dot refused above;
 /// what survives is borrowed, and the callers that want a `&'a str` — every one of them,
 /// since only an INTRODUCED name is stored — get it without restating the invariant.
-fn subject_introduces<'a>(subject: &Cow<'a, str>, head_count: usize) -> Option<&'a str> {
-    if head_count != 1 || subject.contains('.') {
-        return None;
+fn subject_introduces<'a>(
+    subject: Cow<'a, str>,
+    head_count: usize,
+) -> Result<&'a str, NoIntroduction<'a>> {
+    if head_count != 1 {
+        return Err(NoIntroduction::SeveralHeads(head_count));
+    }
+    if subject.contains('.') {
+        // BY VALUE so this MOVES rather than clones. The one subject that is `Owned` is
+        // a folded dot-chain, which is exactly the shape this arm refuses — so taking a
+        // reference here would allocate a second copy of that name on every dotted head
+        // in every file, to build a diagnostic most of them never render.
+        return Err(NoIntroduction::QualifiedSpelling(subject));
     }
     let Cow::Borrowed(name) = subject else {
         unreachable!(
@@ -6697,7 +6753,7 @@ fn subject_introduces<'a>(subject: &Cow<'a, str>, head_count: usize) -> Option<&
              refused above"
         )
     };
-    Some(name)
+    Ok(name)
 }
 
 /// WI-369: record the parse-IR `internal` visibility flag on a defined symbol,
@@ -10033,7 +10089,7 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
         let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
         let head_count = r.heads.len();
         for head in &r.heads {
-            let Some((subject, introduced_by)) =
+            let Ok((subject, introduced_by)) =
                 head_subject_name(head, bodyless, parse_sym, parse_terms)
             else {
                 continue;
@@ -10056,7 +10112,7 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
             if introduced_by == RuleIntroduction::Predicate {
                 self.clause(subject.clone(), r.span, scope, scope);
             }
-            let Some(name) = subject_introduces(&subject, head_count) else {
+            let Ok(name) = subject_introduces(subject, head_count) else {
                 continue;
             };
             self.sites.push(RuleHeadSite {
@@ -10083,7 +10139,7 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
         let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
         for head in &r.heads {
             // An EQUATION indexes under the connective here too — see [`Self::collect`].
-            if let Some((subject, RuleIntroduction::Predicate)) =
+            if let Ok((subject, RuleIntroduction::Predicate)) =
                 head_subject_name(head, bodyless, parse_sym, parse_terms)
             {
                 self.clause(subject, r.span, resolves_in, written_in);
@@ -31800,7 +31856,7 @@ impl<'a> Loader<'a> {
                 // (the prelude's `eq` denotes) and the declaration still introduced
                 // nothing — the very drop the check exists for, one name away from the
                 // fixture that caught it. Found by /code-review.
-                if let Some((name, _)) =
+                if let Ok((name, _)) =
                     rule_introduced_functor_name(r, &self.parsed.symbols, &self.parsed.terms)
                 {
                     let local = self
