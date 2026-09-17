@@ -195,3 +195,76 @@ refusal would flood every existing program. The three live shapes are each pinne
 census with the ticket that owns them (NE0E4 for multi-head, TTHRK for the provides
 block, this ticket for the fact head).
 
+### 2026-09-17T14:08:55Z — feedback — user
+
+THE ACCEPTANCE'S THIRD CLAUSE IS DELIVERED, BY A ROUTE THIS TICKET DID NOT ANTICIPATE —
+and the route is the user's, not mine. Commits 355b70e9 and be2cb2ef.
+
+WHAT I GOT WRONG FIRST, because it shaped everything after. I reported clause 3 ("for any
+shape deliberately left out, the fall-through must be a located diagnostic, not silence")
+as BLOCKED, on the reading that a fact head's silence is §6.1's intended behaviour and so
+had nothing to diagnose. I proposed a report keyed on the clause census instead. The user
+answered: `fact p(x,y)` MEANS `rule p(x,y) :- true`. That dissolves the blocker — there is
+no "fact rule" to follow, only one rule and one spelling escaping it. MEASURED on the
+shipped tree before changing anything:
+
+  namespace zzA  fact pp(1)  rule see(?x) :- pp(?x)  end   |  2 answers, zzA.pp resolves to NOTHING
+  namespace zzB  fact pp(2)  rule see(?x) :- pp(?x)  end   |  2 answers
+  the same program written `rule pp(1) :- true`            |  1 each, its own; both resolve
+
+One clause, two spellings, two programs. So the shape was never "left out" — it was
+escaping, and clause 3 is satisfied by removing the escape rather than by reporting it.
+
+THE CENSUS I RAN TO SIZE THE FIX WAS THE WRONG POPULATION, and I recommended it. It asked
+"will shipped programs break" — no, and that held exactly: 7 fact-head names newly mint
+corpus-wide, every reader of all 7 in the scope that writes it, corpus load byte-identical.
+What it did not ask is what the language's OWN SUITE encodes, which was 36 rows. Running
+the suite would have been the cheaper and truer census. Recorded because the mistake is
+reusable: for a change to a language rule, the suite IS the corpus.
+
+EVERY ONE OF THE 36 ASSERTED THE DIVERGENCE, NOT A DESIGN. The decisive one: wi_apxss
+recorded "a fact head is UNSCOPED, so one written in a nested `sort` resolves UP to the
+enclosing type's predicate" — and the `rule` spelling of that same clause was refused
+HERE, TODAY, with nothing applied. §1234's sentence for it is deleted.
+
+TWO PRE-EXISTING DEFECTS CLOSED ON THE WAY, both silent-failure class:
+ * A DEFERRED SELECTIVE IMPORT DID NOT REACH THE MINT GUARD (355b70e9, its own commit
+   with its own test). `namespace Side { import X.Rec.{freshp}  rule freshp(2) :- true }`
+   minted `Side.freshp` and left the import DEAD. It also hid an ownership fault: the
+   clause never reached the type's predicate, so 059 R3 had no assembly to refuse. The
+   `fact` spelling dodged it only because a fact head declared nothing, which is how R3
+   came to look like the thing policing this shape.
+ * THE GUARDIANS GATE COULD NOT SEE A FACT. `naming_violations` has always said "a
+   generated program may declare only under `guardians.agent.`"; a fact head minted
+   nothing, so the rule could never apply to one. It does now.
+
+AND THE wi_apxss LEDGER, RE-MEASURED RATHER THAN INHERITED (the user asked for this
+explicitly, and it was worth it): TWO OF SEVEN AXES HAD STOPPED MEASURING ANYTHING. B and
+F are about R3's ATTRIBUTION, which a bare head no longer reaches — backing either out
+fell ZERO rows against claimed 2 and 1. Restored with three rows reaching R3 through a
+QUALIFIED head. Axis A keeps its count of 4 and changed its SET. 74 -> 77 rows.
+
+ACCEPTANCE, CLAUSE BY CLAUSE:
+ 1. two scopes, same head name, each admitted shape -> TWO predicates  — DONE
+ 2. assert the qualified names resolve                                 — DONE (51268158)
+ 3. the fall-through is not silence                                    — DONE, by removing
+    the fall-through for the fact head. The two shapes still left out are NE0E4's
+    (multi-head functors) and TTHRK's (a head in a `provides … language … end` block),
+    each pinned in the census with its owner named.
+ 4. cargo-test green                                                   — 7127 passed, 0 failed
+
+scaland-sbt-test: NOT RUN. `sbt`, `scala` and `java` are all absent from this machine, so
+the criterion cannot be discharged here. The change is rustland-only and touches no
+scaland file. SCALAND HAS THE SAME DIVERGENCE — its `ruleIntroducedFunctor` refuses a fact
+head identically — and porting it is not in these commits.
+
+STILL OPEN AND NOT IMPLIED FIXED: a bracketed provision claim. `fact Spec[T = K]` whose
+functor is not a declared sort loads clean and emits no provision — measured on the
+delivered tree (`fact NoSuchSpecXyz[T = Carrier]`). The head now mints a local `Goal`, so
+`maybe_emit_fact_provides_info`'s `kind_of == Sort` gate still returns early. No worse than
+before; not fixed. It is the second half of the split-by-shape reading the user chose, and
+it needs the parse IR to carry whether the head was written with brackets — the CST tells
+`application` from a call, the converted term does not. The live witness is on record:
+`wi698_row_param_refinement_test` shipped an un-imported `Effect` through a whole review
+cycle, registering nothing while reading as though it did.
+
