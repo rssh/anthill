@@ -268,3 +268,70 @@ it needs the parse IR to carry whether the head was written with brackets — th
 `wi698_row_param_refinement_test` shipped an un-imported `Effect` through a whole review
 cycle, registering nothing while reading as though it did.
 
+### 2026-09-17T14:43:50Z — feedback — user
+
+CORRECTION TO THE OPEN ITEM ABOVE — I STATED IT TOO NARROWLY AND PROPOSED THE WRONG FIX.
+The user asked about the BRACKETLESS form, which I had not measured. Measuring it moves
+the item.
+
+WHAT I SAID: "a bracketed provision claim (`fact Spec[T = K]`) whose functor is not a
+declared sort loads clean … it needs the parse IR to carry whether the head was written
+with brackets — the CST tells `application` from a call, the converted term does not."
+
+BOTH HALVES ARE WRONG.
+
+1. THE BRACKETLESS FORM HAS THE IDENTICAL DEFECT, so "bracketed" is not the population.
+   Measured, all inside a `sort` body:
+
+     fact anthill.prelude.Eq        (functor IS a Sort)   provision emitted + DEPRECATION warning
+     fact NoSuchSpecB               (not a Sort)          SILENT — loads clean, emits nothing
+     fact NoSuchSpecD[T = Carrier]  (not a Sort)          SILENT
+
+   THE PRECISE STATEMENT is not about brackets at all: the only diagnostic that exists is
+   gated on the SAME `kind_of(functor) == Sort` test the emission is, so when the functor
+   is not a sort the provision AND its deprecation warning vanish TOGETHER. That is why
+   the `Effect` case cleared a whole review — there was nothing to see.
+
+2. THE BRACKET FLAG CANNOT WORK. `fact Box` and `fact somePredicate` are the same shape at
+   every level, CST included. There is nothing to key on, so the parse-IR change I
+   proposed would have fixed at most half the population and I would have found that out
+   while writing it.
+
+AND THE TWO READINGS ARE GENUINELY UNDECIDABLE FROM THE TEXT, which is the real finding.
+Inside a sort body BOTH of these are legitimate and correct today:
+
+   sort Rec { fact helper(1) }            an ordinary fact-only predicate, scoped to Rec
+                                          (driven: `Rec.see(?x) :- helper(?x)` answers 1)
+   sort Rec { fact SomeSpec[T = …] }      a PROVISION
+
+They are told apart ONLY by whether the functor resolves to a Sort — which is exactly the
+thing that fails when the spec is not imported. So `fact Effect[T = K]` with `Effect`
+unimported is textually indistinguishable from an ordinary fact-only predicate named
+`Effect` with a named argument `T`. No diagnostic can separate them.
+
+THE FIX IS SOMEBODY ELSE'S, AND IT ALREADY EXISTS AS A PLAN: finish 058 §4's retirement of
+the `fact` spelling of a provision. The deprecation is live and says so at every remaining
+site — "the DEPRECATED spelling of a provision (058 §4). Write `provides Spec[…]` …
+retiring the `fact` one removes the language's only construct whose meaning depended on
+its container". Once `provides` is the only spelling, the ambiguity is gone: a `fact`
+inside a sort is unambiguously an ordinary fact-only predicate, §6.1 governs it, and
+nothing is silent. AND THE LOUD CHANNEL IS ALREADY THERE — measured:
+
+   provides NoSuchSpecXyz[T = Carrier]   ->  error: unresolved name 'NoSuchSpecXyz' in scope
+   fact     NoSuchSpecXyz[T = Carrier]   ->  loads clean
+
+So the author who means a provision already gets the refusal, in the spelling 058 wants
+them to use. Nothing new has to be invented; the retirement has to finish.
+
+TWO THINGS TO KNOW BEFORE TAKING IT:
+ * OUTSIDE a sort, `fact Spec[…]` was NEVER a provision — measured, a namespace-level
+   `fact anthill.prelude.Eq[T = Carrier]` emits NO `SortProvidesInfo` at all and warns
+   nothing. That is the "meaning depended on its container" the warning names, so the
+   retirement's surface is the IN-SORT spelling only.
+ * THE SWAP IS NOT MECHANICAL, and the warning says so: `fact Spec[Carrier]`'s carrier is
+   positional and derived, while `provides Spec[…]` inside a sort takes the ENCLOSING SORT
+   as provider and the bindings say what the spec is instantiated at. An author who swaps
+   the keyword and keeps a bare positional carrier gets a DIFFERENT provision.
+
+NOT FILED AS A TICKET — this is 058's work and I have not been asked to open one.
+
