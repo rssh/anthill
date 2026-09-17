@@ -67,3 +67,18 @@ THREE MECHANISM HYPOTHESES ARE DEAD, each by its own measurement, and a next att
 
 Tree clean. stash@{0} instrumentation, stash@{1} the inert pre-check extension, stash@{2} the load-sweep; diffs also at scratchpad/nr6fj-*.diff. Census remains clean (zero shipped programs affected).
 
+### 2026-09-17T07:22:45Z — feedback — user
+
+MECHANISM FOUND, and it is TWO DEFECTS with one cause. Instrumenting `classify()` — the single funnel every CallClass passes through — was the measurement that found it; three earlier attempts read dispatch code instead and each died on its first run. Trace, both cells of the unprovided-carrier column:
+
+  BODY-LESS spec op:   CLASSIFY c.bl.noprov.Desc.describe => DeferToRequirement(slot=0)
+  DEFAULTED spec op:   (no CLASSIFY line at all)
+
+DEFECT A — THE ABORT, and it is unambiguous. The body-less case classifies CORRECTLY: the body defers to slot 0, exactly as the implicit-parameter model says it should. What is missing is that NOTHING CHECKS THE SLOT CAN BE FILLED. At run time the caller's frame binds nothing and `bridge_op_to_eval` raises `DeferToRequirement: requirement param __req_desc not bound in caller frame` — a debug-build ABORT from a program that type-checked. WHERE THE GAP IS, now measured twice from opposite directions: WI-1102's use-site discharge (`build_op_scoped_dicts`, typing.rs ~24710) parks exactly this condition — 'this call PINNED a carrier and the goal Spec[T = Carrier] has no provider' — but it is on the TYPED CALL SITE path. A call from a RULE BODY reaches the callee through `resolve_bridge_requirements` instead, which has no counterpart, so neither the park nor its drain ever runs (instrumented on this program: both silent). Note `op_body_reads_op_requirement_slot` WOULD answer true here — the classification IS DeferToRequirement at slot 0 — so the report machinery is ready and only the park is missing.
+
+DEFECT B — THE SILENT FOLD (row I4). A spec op WITH a default body is never classified at all: it is an ordinary callable operation, so the call is resolved to the default statically and the enclosing `requires` slot is never consulted. That is why the author's declaration has no effect, and why the same declaration means one thing over a body-less op and another over a defaulted one.
+
+A IS A BUG, B IS A SEMANTICS DECISION. A: a program that type-checks must not abort; refuse the call whose slot cannot be filled, mirroring S8CBV's caller_covers one carrier-shape over. B: does a declared `requires Spec[T = C]` outrank Spec's own DEFAULT body inside the declaring operation? The implicit-parameter reading says yes (the default is the fallback for when nothing was demanded). Deciding B does not block A, and A is the one with a crash behind it.
+
+SUGGESTED SPLIT: take A as this ticket (call-site refusal on the rule->op edge, acceptance = the body-less + unprovided program is REFUSED at load instead of aborting, control = the providing carrier still answers 7 and the projection spelling is untouched), and file B separately as the default-vs-slot precedence question. Four attempts are parked: stash@{0} the classify trace, stash@{1} instrumentation, stash@{2} the inert pre-check extension, stash@{3} the load sweep; diffs at scratchpad/nr6fj-*.diff.
+
