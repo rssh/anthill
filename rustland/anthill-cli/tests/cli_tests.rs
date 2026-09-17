@@ -97,6 +97,9 @@ mod wi863_nested_unknown_functor_test;
 #[path = "include/wi863_operator_arithmetic_test.rs"]
 mod wi863_operator_arithmetic_test;
 
+#[path = "include/wi875_arithmetic_overflow_test.rs"]
+mod wi875_arithmetic_overflow_test;
+
 #[path = "include/wi878_marker_arity_test.rs"]
 mod wi878_marker_arity_test;
 
