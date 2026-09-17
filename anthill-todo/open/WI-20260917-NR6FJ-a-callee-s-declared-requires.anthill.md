@@ -33,3 +33,19 @@ THE CENSUS THAT DECIDES THE SIZE, and it must run FIRST: how many operation-leve
 
 ACCEPTANCE. I4's program is REFUSED at load, with a message naming the carrier, the spec, and that the carrier provides no such thing — never the spec default. CONTROLS, each stated at its site: I5 answers 7 (passes either way BY DESIGN — this must not disturb the case where the requirement CAN be met, which is the channel working); I2 still answers [] (the in-body guard is untouched); a requires over a PROJECTION or a type VARIABLE keeps today's behaviour, since there the caller is the one who supplies and S8CBV's caller_covers refusal already owns it; and a spec op with NO default body must be measured before and after — with nothing to fold, the call already fails, so the row that moves is the DEFAULTED one. Say which rows fail when the change is backed out and run each back-out with a patch that ASSERTS it applied. cargo-test green via scripts/test.sh.
 
+## Changes
+
+### 2026-09-17T07:13:19Z — feedback — user
+
+ATTEMPT 2, ALSO NOT DELIVERED — but TWO HYPOTHESES ARE NOW DEAD with measurements, which is what a next attempt should not re-derive. Tree clean; work at stash@{0} and scratchpad/nr6fj-precheck-inert.diff.
+
+THE MODEL IS SETTLED (user, 2026-09-17): a `requires` is an IMPLICIT PARAMETER — 'if we know an implementation of Spec[T] we can put it', which is `SupplySource`'s own documented reading ('the A dictionary is PASSED IN — an inbound slot the caller fills'). Three consequences, and the first two are already consistent with what ships: the DECLARATION is always legal (it opens a slot — wi840); the CALL is where it can fail (nothing to fill the slot), which is WI-1102's park and S8CBV's caller_covers; and THE BODY MUST READ THE SLOT rather than fold the spec's default. I4 fails on the third.
+
+HYPOTHESIS A — REFUTED. 'The fold is a NAMESPACE-LEVEL blind spot, because the WI-239 defer-to-requirement pre-check is gated on `enclosing_sort`.' MEASURED: the identical program with the operation declared INSIDE A SORT also answers 1. Where the operation is declared is not the variable.
+
+WHAT THE SAME MEASUREMENT DID ESTABLISH, and it is the sharpest statement of the defect so far: ONE DECLARATION MEANS TWO DIFFERENT THINGS depending on whether the spec op carries a DEFAULT BODY. `requires Desc[T = X]` + a BODY-LESS spec op dispatches through the slot (WI-20260909-S8CBV's `pick`, answering 7 and 9 per carrier); the same declaration + a DEFAULTED spec op folds the default (I4, answering 1). A defaulted op always RESOLVES, so dispatch never returns `Deferred` and the op-slot fallback below it never runs. The author's declaration loses to a default they did not ask for, and nothing says so.
+
+HYPOTHESIS B — BUILT AND INERT. Give the op's own slots the same PRE-DISPATCH priority the enclosing sort's tree has: `find_requires_slot(kb, &subst, spec_sort, enclosing_requires, ...)` as an `.or()` beside the `find_requires_location` lookup, the same call the post-dispatch fallback already makes. Full workspace with it in: 7099 passed, 0 failed — and I4 STILL ANSWERS 1. Zero rows moved in either direction, so the branch cannot be driven and does not ship (this repo's own rule, and the third time today it has decided a diff).
+
+SO THE NEXT QUESTION IS WHY THAT LOOKUP DECLINES: either `enclosing_requires` does not carry the operation's own slot at the point the pre-check runs (it is gated `!enclosing_requires.is_empty()`, so it is non-empty — but it may be the enclosing SORT's chain only), or `find_requires_slot` matches on bindings the call cannot satisfy (`T = Plain` against a carrier that provides nothing). Instrument THAT lookup first — one eprintln at typing.rs's WI-239 pre-check saying what `enclosing_requires` holds in viaop's body — before writing any more code. Both attempts so far were built on a mechanism read from source and neither survived its first measurement.
+
