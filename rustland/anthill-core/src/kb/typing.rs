@@ -72581,10 +72581,10 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                     // answers wrongly" — the worst direction to move in.
                     if let Some(base) = goal_pos0(node).and_then(|i| occ_head_symbol(&i)) {
                         let canon = kb.canonical_sort_sym(base);
-                        if let Some((_, prev_anchored)) =
+                        if let Some((_, prev_attributed)) =
                             spec_groundings.iter().find(|(s, _)| *s == canon)
                         {
-                            if !found.anchored || !*prev_anchored {
+                            if !found.bracket_attributed || !*prev_attributed {
                                 errors.push(TypeError::Other {
                                     site: TypeError::here(),
                                     span: Some(node.span.span),
@@ -72594,20 +72594,22 @@ fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                                     },
                                     expected: format!(
                                         "at most one `require` on spec `{}` per rule, \
-                                         unless every one of them is grounded by a TYPED \
-                                         HEAD BINDING",
+                                         unless the WRITTEN BRACKET says which carrier \
+                                         each one means — by naming a typed head \
+                                         binding, or by naming the carrier of one body \
+                                         call among several",
                                         kb.local_name_of(base)
                                     ),
-                                    actual: "one of them is grounded by a body call \
-                                             instead, and a witness is chosen by scan \
-                                             order — so the written bracket cannot say \
-                                             which dictionary this is"
+                                    actual: "one of them was chosen by neither, and a \
+                                             witness the bracket does not name is picked \
+                                             by scan order — so nothing says which \
+                                             dictionary this is"
                                         .into(),
                                 });
                                 continue;
                             }
                         }
-                        spec_groundings.push((canon, found.anchored));
+                        spec_groundings.push((canon, found.bracket_attributed));
                     }
                     // WI-1040 — step 2 of the transformation: the call this
                     // dictionary covers is rewritten to carry it. Only when the goal
@@ -74196,6 +74198,121 @@ fn goal_pos0(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
 ///   solved case — and the resolver honours the pin
 ///   (`classified_apply_target`), so the two would also disagree about which
 ///   decision wins.
+/// The CARRIER a `require` bracket WRITES, as a bare sort symbol — `require[Desc[T =
+/// Leaf]]` ⟹ `Leaf`, and `None` for every bracket that names no carrier or names one this
+/// cannot read.
+///
+/// ONE OWNER, because two readers now ask it and they must agree: [`anchor_grounding`]
+/// uses it to choose between head bindings, and the witness selection below uses it to
+/// choose between CALLS. A disagreement would attribute one `require` two ways in one
+/// clause.
+///
+/// A BARE NAME ONLY. An APPLIED binding (`T = Box[E = Other]`) has arguments that decide
+/// which instance it means, and matching on its HEAD would discard them — `Box[E =
+/// Other]` would select an `?x: Box[E = Leaf]` anchor, silently. `/code-review` drove
+/// that. Declining here falls to the caller's refusal, which is the honest answer until
+/// the match compares applied brackets structurally.
+///
+/// A SORT, AND NOT THE SPEC ITSELF. `rule_type_bounds` records a head-introduced tvar by
+/// its substituted bound, so an introducer `?x: A` under `:- Desc[A]` is stored as `Desc`
+/// — and a written `require[Desc[T = Desc]]` would then "match" it by accidental symbol
+/// collision and silently pick the polymorphic head variable over the concrete one.
+/// Driven by `/code-review`: it answered the OTHER carrier's value on a clean load, where
+/// every neighbouring spelling is refused.
+fn written_carrier_sort(
+    kb: &KnowledgeBase,
+    spec_arg: &Rc<NodeOccurrence>,
+    carrier_param: Symbol,
+    spec_canon: Symbol,
+) -> Option<Symbol> {
+    let Some(Expr::Apply { named_args, .. }) = spec_arg.as_expr() else {
+        return None;
+    };
+    named_args
+        .iter()
+        .find_map(|(k, v)| {
+            if !same_label(kb, *k, carrier_param) {
+                return None;
+            }
+            match v.as_expr() {
+                Some(Expr::Ref(w)) | Some(Expr::Ident(w)) => Some(*w),
+                _ => None,
+            }
+        })
+        .filter(|w| {
+            kb.has_kind(*w, crate::intern::SymbolKind::Sort)
+                && kb.canonical_sort_sym(*w) != spec_canon
+        })
+}
+
+/// The sort an argument denotes AT LOAD, where it denotes one at all: a TYPED head
+/// parameter (through this clause's `bounds`, the same channel [`anchor_grounding`] and
+/// [`written_projection_anchor`] read) or a ground CONSTRUCTOR.
+///
+/// `None` FOR AN ORDINARY VARIABLE, and that is the boundary of load-time attribution
+/// rather than a gap in this reader: a witness goal carries its arguments and the carrier
+/// decision happens at FIRE time, so a variable's sort is a run-time fact. It is why
+/// `Desc.describe(?a, ?r)` can be attributed to no bracket at all.
+fn static_arg_sort(
+    kb: &KnowledgeBase,
+    arg: &Rc<NodeOccurrence>,
+    bounds: &[(u32, TermId)],
+) -> Option<Symbol> {
+    match arg.as_expr()? {
+        Expr::Var(Var::DeBruijn(i)) => bounds
+            .iter()
+            .find(|(b, _)| b == i)
+            .and_then(|(_, t)| sort_functor_of_view(kb, &TermIdView(*t))),
+        // A nested CALL lands here too, and answers `None` through
+        // `sort_of_constructor` — an operation is no constructor.
+        Expr::Apply { functor, .. } => kb.sort_of_constructor(*functor),
+        Expr::Ref(f) | Expr::Ident(f) => kb.sort_of_constructor(*f),
+        _ => None,
+    }
+}
+
+/// WI-20260917-HRFR5 — does this candidate call's CARRIER ARGUMENT statically name the
+/// carrier the bracket wrote?
+///
+/// FALSE COVERS TWO DIFFERENT SITUATIONS ON PURPOSE — the call names a different sort,
+/// and no carrier argument names any sort readable at load — because the one caller does
+/// the same thing with both: it does not SELECT this call. Telling them apart would
+/// matter to a reader that EXCLUDED calls, and a first cut had one (it narrowed what a
+/// bracket-chosen `require` covers); backing that out failed zero rows, so the
+/// distinction went with it rather than sitting here as a shape nothing asks for.
+///
+/// THE CARRIER RULE IS THE GUARD'S OWN ([`param_is_spec_carrier`] /
+/// [`spec_self_represented_by`], WI-596's two shapes), so which arguments count as
+/// carriers here cannot drift from which ones decide the instance at fire time.
+fn call_names_carrier(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    spec_canon: Symbol,
+    bounds: &[(u32, TermId)],
+    written: Symbol,
+) -> bool {
+    let Some(rec) = super::op_info::lookup_operation_info(kb, functor) else {
+        return false;
+    };
+    let Some(args) = align_call_args_to_params(kb, &rec.params, pos_args, named_args) else {
+        return false;
+    };
+    let type_params = kb.type_params_of_sort(spec_canon);
+    let self_representing = spec_self_represented_by(kb, &rec.params, spec_canon);
+    let wc = kb.canonical_sort_sym(written);
+    rec.params
+        .iter()
+        .zip(args.iter())
+        .filter(|((_n, pty), _)| {
+            param_is_spec_carrier(kb, spec_canon, &type_params, self_representing, pty)
+        })
+        .any(|(_, arg)| {
+            static_arg_sort(kb, arg, bounds).is_some_and(|s| kb.canonical_sort_sym(s) == wc)
+        })
+}
+
 fn collect_covered_calls(
     kb: &KnowledgeBase,
     body_nodes: &[Rc<NodeOccurrence>],
@@ -74296,14 +74413,22 @@ struct GroundedRequirement {
     /// through a DIFFERENT spec's carrier and so name no call this dictionary can be
     /// threaded into (see [`weave_covered_call`]).
     covered_calls: Vec<(Rc<NodeOccurrence>, Symbol)>,
-    /// WI-20260909-96ZTM — did a TYPED HEAD ANCHOR ground this requirement?
+    /// WI-20260909-96ZTM, widened by WI-20260917-HRFR5 — did the WRITTEN BRACKET choose
+    /// this grounding?
     ///
-    /// Two `require`s on one spec are admitted ONLY where every one of them is anchored,
-    /// because the anchor path is the only place the written bracket is READ: it is what
-    /// chose the head binding. On a witness path the bracket is never consulted — the
-    /// witness is picked by scan order — so two requires there would bind whatever the
-    /// scan reached first, which is why that case keeps the old refusal.
-    anchored: bool,
+    /// Two `require`s on one spec are admitted ONLY where every one of them was, because
+    /// otherwise nothing says which dictionary is which and they would bind whatever the
+    /// scan reached first.
+    ///
+    /// IT USED TO BE SPELLED `anchored`, and that spelling was a PROXY that has stopped
+    /// being exact. The anchor path was once the only place the bracket was read — it is
+    /// what chose the head binding — so "did an anchor ground it" answered "did the
+    /// bracket choose it" by coincidence of there being one such path. HRFR5 gives the
+    /// DIRECT WITNESS scan the same ability: where the bracket names a carrier and
+    /// exactly one candidate call's carrier argument statically names it, the bracket
+    /// chose that witness as surely as it chooses a binding. Asking the proxy would now
+    /// refuse a pair that IS attributed.
+    bracket_attributed: bool,
 }
 
 /// Rewrite one `find_dictionary(X)` goal (see [`record_find_dictionary_grounding`]).
@@ -74466,7 +74591,10 @@ fn rewrite_find_dictionary_goal(
             if let Some(goal) = make_witness(kb, *functor, pos_args, named_args) {
                 return Some(GroundedRequirement {
                     goal: Some(goal),
-                    anchored: false,
+                    // The transitive / inherited / defaulted scans do NOT take the
+                    // bracket into account: HRFR5 widened the DIRECT scan only, which is
+                    // where a carrier argument names the spec's own carrier parameter.
+                    bracket_attributed: false,
                     covered_calls: if covers {
                         collect_covered_calls(kb, body_nodes, spec_canon)
                     } else {
@@ -74481,14 +74609,23 @@ fn rewrite_find_dictionary_goal(
     // Find a DIRECT WITNESS: a body call to one of spec X's OWN operations. Its
     // carrier arguments (in the op's parameter order) decide the instance at fire
     // time.
-    for cand in body_nodes {
-        let Some(Expr::Apply {
-            functor,
-            pos_args,
-            named_args,
-            ..
-        }) = cand.as_expr()
-        else {
+    // WI-20260917-HRFR5 — THE CARRIER THE BRACKET WRITES, read once for the direct scan
+    // below. `None` for a self-representing spec (its carrier is the sort, not a
+    // parameter, so a bracket names no carrier there) and for every bracket that writes
+    // nothing readable.
+    let witness_carrier_param = if spec_is_self_representing(kb, spec_canon) {
+        None
+    } else {
+        spec_carrier_param_or_sole(kb, spec_canon)
+    };
+    let written_carrier =
+        witness_carrier_param.and_then(|p| written_carrier_sort(kb, spec_arg, p, spec_canon));
+
+    // The candidates, in body order: a body call to one of spec X's OWN operations whose
+    // arguments can ground the instance.
+    let mut direct: Vec<usize> = Vec::new();
+    for (i, cand) in body_nodes.iter().enumerate() {
+        let Some(Expr::Apply { functor, .. }) = cand.as_expr() else {
             continue;
         };
         if *functor == fd_sym {
@@ -74505,13 +74642,88 @@ fn rewrite_find_dictionary_goal(
         if !op_has_spec_carrier_param(kb, *functor, spec_canon) {
             continue;
         }
+        direct.push(i);
+    }
+
+    // WI-20260917-HRFR5 — THE WRITTEN BRACKET CHOOSES AMONG THEM, and this is the whole
+    // of lifting the anchored gate on this path.
+    //
+    // A witness was picked by SCAN ORDER, which is why two `require`s on one spec both
+    // landed on the first call and nothing could say which dictionary was which. Where
+    // the bracket names a carrier and EXACTLY ONE candidate's carrier argument
+    // statically names it, the bracket has chosen that call as surely as it chooses a
+    // head binding on the anchor path — so it is put first and marked as chosen.
+    //
+    // EXACTLY ONE, never "the first that matches": two calls at one carrier are two
+    // calls the same dictionary covers, and picking between THEM would be scan order
+    // again, wearing the bracket's name.
+    //
+    // A CLAUSE THE BRACKET CANNOT SPEAK ABOUT IS UNTOUCHED: no written carrier, or no
+    // candidate whose carrier is readable at load, leaves this list in body order and
+    // `bracket_attributed` false — which is what keeps every clause that loads today
+    // taking exactly the witness it takes today.
+    let chosen: Option<usize> = written_carrier.and_then(|w| {
+        let named: Vec<usize> = direct
+            .iter()
+            .copied()
+            .filter(|i| match body_nodes[*i].as_expr() {
+                Some(Expr::Apply {
+                    functor,
+                    pos_args,
+                    named_args,
+                    ..
+                }) => call_names_carrier(kb, *functor, pos_args, named_args, spec_canon, bounds, w),
+                _ => false,
+            })
+            .collect();
+        (named.len() == 1).then(|| named[0])
+    });
+    let order: Vec<(usize, bool)> = chosen
+        .into_iter()
+        .map(|i| (i, true))
+        .chain(
+            direct
+                .iter()
+                .copied()
+                .filter(|i| Some(*i) != chosen)
+                .map(|i| (i, false)),
+        )
+        .collect();
+
+    for (i, attributed) in order {
+        let Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        }) = body_nodes[i].as_expr()
+        else {
+            continue;
+        };
         if let Some(goal) = make_witness(kb, *functor, pos_args, named_args) {
             // A call to X's OWN operation is both the witness AND a call this
             // dictionary covers: its dispatch is exactly what the dictionary decides.
+            let covered = collect_covered_calls(kb, body_nodes, spec_canon);
             return Ok(GroundedRequirement {
                 goal: Some(goal),
-                anchored: false,
-                covered_calls: collect_covered_calls(kb, body_nodes, spec_canon),
+                bracket_attributed: attributed,
+                // A BRACKET THAT CHOSE ITS WITNESS ALSO NARROWS WHAT IT COVERS, or the
+                // two dictionaries it just separated would be woven into each other's
+                // calls one step later — the one-dictionary-per-call refusal fires and
+                // the pair is refused after all. Narrowed only where the bracket chose,
+                // so a single `require` keeps covering every call it covers today.
+                // NOT NARROWED BY THE BRACKET, AND THAT WAS BUILT AND MEASURED AWAY.
+                // A first cut filtered these to the calls whose carrier the bracket
+                // names, on the argument that two dictionaries would otherwise be woven
+                // into each other's calls. Backing that filter out failed ZERO rows,
+                // including this ticket's own acceptance, and the reason is structural:
+                // the filter can only engage where a carrier argument is READABLE, and
+                // exactly there the call is VALUE-DIRECTED — a carrier-bearing spec op
+                // dispatches on its argument, so which dictionary it carries decides
+                // nothing. The weave decides dispatch only for a CARRIER-LESS op
+                // (WI-20260909-NAR1X), which exposes no carrier argument to select on.
+                // The two mechanisms are disjoint by construction.
+                covered_calls: covered,
             });
         }
     }
@@ -74957,34 +75169,8 @@ fn anchor_grounding(
     // separate them and the refusal below still fires. Recorded, with its own row.
     if anchors.len() > 1 {
         if let Some(p) = carrier_param {
-            if let Some(Expr::Apply { named_args, .. }) = spec_arg.as_expr() {
-                let written = named_args.iter().find_map(|(k, v)| {
-                    if !same_label(kb, *k, p) {
-                        return None;
-                    }
-                    match v.as_expr() {
-                        // A BARE NAME ONLY. An APPLIED binding (`T = Box[E = Other]`) has
-                        // arguments that decide which instance it means, and matching on
-                        // its HEAD would discard them — `Box[E = Other]` would select an
-                        // `?x: Box[E = Leaf]` anchor, silently. `/code-review` drove that.
-                        // Declining here falls to the refusal below, which is the honest
-                        // answer until the match compares applied brackets structurally.
-                        Some(Expr::Ref(w)) | Some(Expr::Ident(w)) => Some(*w),
-                        _ => None,
-                    }
-                });
-                let written = written.filter(|w| {
-                    // A SORT, and not the SPEC ITSELF. `rule_type_bounds` records a
-                    // head-introduced tvar by its substituted bound, so an introducer
-                    // `?x: A` under `:- Desc[A]` is stored as `Desc` — and a written
-                    // `require[Desc[T = Desc]]` would then "match" it by accidental symbol
-                    // collision and silently pick the polymorphic head variable over the
-                    // concrete one. Driven by `/code-review`: it answered the OTHER
-                    // carrier's value on a clean load, where every neighbouring spelling
-                    // is refused.
-                    kb.has_kind(*w, crate::intern::SymbolKind::Sort)
-                        && kb.canonical_sort_sym(*w) != spec_canon
-                });
+            if matches!(spec_arg.as_expr(), Some(Expr::Apply { .. })) {
+                let written = written_carrier_sort(kb, spec_arg, p, spec_canon);
                 if let Some(w) = written {
                     let wc = kb.canonical_sort_sym(w);
                     let matched: Vec<(u32, Symbol)> = anchors
@@ -75268,7 +75454,9 @@ fn anchor_grounding(
         // is recorded here rather than claimed as fixed or as impossible. The
         // carrier-directed weave (WI-20260909-96ZTM) is what closes it.
         covered_calls: collect_covered_calls(kb, body_nodes, spec_canon),
-        anchored: true,
+        // THE ANCHOR PATH IS A BRACKET-CHOOSING PATH BY CONSTRUCTION: reading the
+        // written bracket is what selected the head binding above.
+        bracket_attributed: true,
     }))
 }
 

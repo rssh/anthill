@@ -26,10 +26,12 @@
 //!    before this ticket). **5 rows** — every row that needs two dictionaries to exist.
 //!  * **The bracket choosing among anchors**. **4 rows**, including
 //!    `wi_qmfc5…::the_written_bracket_chooses_between_two_anchors`.
-//!  * **The ANCHORED gate** (admitting two `require`s whatever grounded them). **1 row**:
-//!    [`a_witness_grounded_pair_is_refused_whatever_the_bracket_says`]. That row is the
-//!    one standing in front of five shapes that otherwise load clean with the WRONG
-//!    dictionary — see its own comment.
+//!  * **The gate on two `require`s** — admitting them whatever grounded them. **1 row**:
+//!    [`a_witness_grounded_pair_is_refused_whatever_the_bracket_says`], standing in front
+//!    of five shapes that otherwise load clean with the WRONG dictionary. Since
+//!    WI-20260917-HRFR5 the gate asks whether the WRITTEN BRACKET chose each `require`
+//!    rather than whether an ANCHOR grounded it — a widening that leaves this row's two
+//!    shapes refused, because neither gives the bracket a witness to choose.
 //!  * **The one-dictionary-per-call refusal**. **1 row**:
 //!    [`a_call_two_dictionaries_both_claim_is_refused`], which PANICS rather than fails.
 //!  * **Carrier direction** — implemented, then REMOVED, because backing it out failed
@@ -353,10 +355,22 @@ fn a_call_two_dictionaries_both_claim_is_refused() {
 
 #[test]
 fn a_witness_grounded_pair_is_refused_whatever_the_bracket_says() {
-    // TWO `require`s ARE ADMITTED ONLY WHERE EVERY ONE IS ANCHORED. Here the head IS
-    // typed, but `Desc.describe(?x, ?r)` is a WITNESS, so the witness scan grounds the
-    // requires before the anchor is ever consulted — and a witness is chosen by scan
-    // order, so the written bracket cannot say which dictionary is which.
+    // TWO `require`s ARE ADMITTED ONLY WHERE THE WRITTEN BRACKET CHOSE EACH ONE.
+    //
+    // WI-20260917-HRFR5 WIDENED THAT AND THESE TWO SHAPES STAY REFUSED, which is why the
+    // row survives it: what changed is that a bracket can now choose a WITNESS as well as
+    // a head binding, and neither shape here gives it one to choose.
+    //
+    //   * the first clause has ONE covered call, `Desc.describe(?x, ?r)` at `?x: Leaf`.
+    //     `require[Desc[T = Leaf]]` names it, but `require[Desc[T = Other]]` names a
+    //     carrier no call in this clause has — so the second `require` is chosen by
+    //     nothing, and admitting the pair would bind it by scan order;
+    //   * the second has UNTYPED carriers (`eq(?a, ?b)`), whose sorts are a run-time
+    //     fact. Nothing at LOAD can say which bracket that call belongs to.
+    //
+    // The shapes HRFR5 does admit are in `wi_hrfr5_witness_attribution_test`, and the
+    // pair here is what says the widening did not become "admit two requires whenever
+    // a witness grounds them".
     //
     // THIS IS THE GATE THAT KEEPS THE LIFT HONEST. `/code-review` drove what its absence
     // cost: with the duplicate refusal lifted for EVERY grounding path,
@@ -370,7 +384,7 @@ fn a_witness_grounded_pair_is_refused_whatever_the_bracket_says() {
         "  rule anchored(?x: Leaf, ?y: Other, ?r) :- ?d1 = require[Desc[T = Leaf]], ?d2 = require[Desc[T = Other]], seed(?x), seedo(?y), Desc.describe(?x, ?r)\n",
     ));
     assert!(
-        errs.contains("unless every one of them is grounded by a TYPED HEAD BINDING"),
+        errs.contains("unless the WRITTEN BRACKET says which carrier each one means"),
         "got:\n{errs}"
     );
 
@@ -394,7 +408,7 @@ end
 "#,
     );
     assert!(
-        errs.contains("unless every one of them is grounded by a TYPED HEAD BINDING"),
+        errs.contains("unless the WRITTEN BRACKET says which carrier each one means"),
         "got:\n{errs}"
     );
 }

@@ -1741,3 +1741,6 @@ mod wi_b8esg_head_argument_names_nothing_test;
 
 #[path = "include/wi_8y5be_interpreter_stream_failure_test.rs"]
 mod wi_8y5be_interpreter_stream_failure_test;
+
+#[path = "include/wi_hrfr5_witness_attribution_test.rs"]
+mod wi_hrfr5_witness_attribution_test;

@@ -3,9 +3,9 @@
 - id: WI-20260917-HRFR5-lift-the-anchored-gate-teach
 - created: 2026-09-17T05:05:36Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-17T05:05:36Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-17T05:54:31Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
