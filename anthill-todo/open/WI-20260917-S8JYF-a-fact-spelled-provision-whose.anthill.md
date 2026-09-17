@@ -88,3 +88,66 @@ predicate. That change does NOT affect this defect — the head now mints a loca
 instead of a bare global, so `kind_of != Sort` still holds and the early return still
 fires. No worse, not fixed.
 
+## Changes
+
+### 2026-09-17T15:33:51Z — feedback — user
+
+RESTATED AS PROPOSAL 055'S WORK, AND THE FIX NEEDS NO NEW MACHINERY. The user asked whether
+this is 055's "cannot distinguish a type from a value after `fact`" problem, and whether
+055's plan enumerates the other places. Both yes.
+
+055 ALREADY STATES THE RULE THIS VIOLATES. §2's classification list ends "the name resolves
+to NOTHING -> a loud `UnresolvedName`", and the implementation design §8 repeats it as a
+requirement, with the fallback named and forbidden:
+
+    "unresolved head: `UnresolvedName` at the name … Do not retain a fallback that retries
+     a failed value resolution as a type (or the reverse). Resolve the symbol once and
+     classify loudly."
+
+A `fact` head that names nothing does exactly the forbidden thing: it falls to the WI-476
+bare intern, which SILENTLY reclassifies the claim from a provision to an ordinary fact.
+
+WHY IT ESCAPED: §6 carves instance claims out — "`fact Modifiable[T = Cell]` … They need no
+rescue from this proposal and do not depend on the `Type` sort … not touched by this
+proposal." That is right about DENOTATION (an instance claim is not a type in value
+position) but it also carried the claims out of reach of §8's diagnostic rule. The silence
+lives in that gap, not in a missing decision.
+
+THE ENUMERATION IS design/055-implementation.md §7 — four lowering paths — AND I DROVE ALL
+OF THE REACHABLE ONES. A bracketed sort-headed application whose head resolves to NOTHING:
+
+  rule-body goal    `rule r(1) :- NoSuchSpecQ[T = Carrier]`   LOUD  ("names nothing")
+  fact DATA slot    `fact p(NoSuchTypeQ[T = Carrier])`        LOUD  ("names nothing")
+  fact HEAD         `fact NoSuchSpecXyz[T = Carrier]`         SILENT   <- the defect
+
+POSITIVE CONTROLS, so the LOUD rows are about resolution and not about the bracketed form
+being unsupported: `rule r(1) :- Modifiable[T = Cell]` (imported) loads clean, and
+`fact p(Cell[V = Int64])` loads clean.
+
+So the fact HEAD is the ONLY position in 055's own enumeration where this is silent. Its
+three siblings already do what §8 requires. That is the whole ticket, and it makes the
+change a NARROWING of one outlier to a rule the codebase already keeps everywhere else —
+not a new policy.
+
+AND THE MECHANISM IS ALREADY SHIPPED — I was wrong that this needs a parse-IR change.
+WI-710 records the surface: `SimpleTermStore::is_type_application(id)` — "was this
+`Term::Fn` written as a bracketed type application? The loader checks type ARGUMENTS only
+on these — a `(…)` call with a sort-named functor is a data constructor". 055 lists it as a
+shipped gate ("surface: `Sort[…]` is type/instance application, while `Sort(…)` is
+construction"). `load_fact` holds the parse `TermId` (`f.term`) and can ask it today.
+
+SO THE FIX IS: in `load_fact`, a head for which `is_type_application(f.term)` holds and
+whose functor does not resolve to a declared Sort is REFUSED, with the message naming the
+likely cause (the spec is not imported). It does not touch the bare/unbracketed head, does
+not need the 058 retirement decided, and reuses the gate the loader already consults for
+type ARGUMENTS on the very same nodes.
+
+STILL OUT OF ITS REACH, and unchanged from the note above: the BARE in-sort claim
+(`sort X { fact Box }`, WI-365's effect-row-only spec, which has no bindings to write).
+`fact Box` is textually identical to an ordinary nullary fact, so no surface gate separates
+them. Smaller and separate; the 20 corpus sites are all bracketed.
+
+WHERE THIS BELONGS: 055 work item (c) names "carry it through raw rule/fact lowering" as
+part of denotation completion. This is the fact-HEAD half of that, severable and much
+smaller than (c) as a whole, because the other three paths are already right.
+
