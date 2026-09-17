@@ -47,11 +47,24 @@ class ParserIntegrationTest extends munit.FunSuite:
     assert(result.isRight, s"Parse failed: ${result.left.getOrElse(IndexedSeq.empty).map(_.message).mkString(", ")}")
     val pf = result.toOption.get
 
-    // Top-level: 1 SortWithBody (Ring) + 1 Fact (Ring[Int])
+    // Top-level: 1 SortWithBody (Ring) + the SECONDARY ENTRY that claims `Ring` for
+    // `Int64`. It was `fact Ring[Int64]` — one top-level Fact — until
+    // WI-20260917-S8JYF retired the `fact` spelling of a provision (058 §4): a
+    // provision names its provider by WHERE it is written, so the claim moved to a
+    // `namespace anthill.prelude.Int64 … end` block at the carrier's own address and
+    // the file now parses to ZERO facts. Both halves are asserted, because the count
+    // alone would pass on a parse that dropped the block entirely.
     val sortItems = pf.items.collect { case Item.SortWithBodyItem(s) => s }
     val factItems = pf.items.collect { case Item.FactItem(f) => f }
+    val nsItems = pf.items.collect { case Item.NamespaceItem(n) => n }
     assertEquals(sortItems.length, 1, "Expected 1 sort with body (Ring)")
-    assertEquals(factItems.length, 1, "Expected 1 fact (Ring[Int])")
+    assertEquals(factItems.length, 0, "the `fact Ring[Int64]` spelling is retired")
+    assertEquals(nsItems.length, 1, "Expected the `namespace anthill.prelude.Int64` entry")
+    assertEquals(
+      nsItems.head.items.collect { case Item.ProvidesClauseItem(pc) => pc }.length,
+      1,
+      "the entry carries the `provides Ring[T = Int64]` claim"
+    )
 
     val ring = sortItems.head
     assertEquals(pf.symbols.name(ring.name.last), "Ring")
