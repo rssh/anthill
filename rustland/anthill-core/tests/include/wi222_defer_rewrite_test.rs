@@ -420,7 +420,7 @@ namespace test.wi222.phase_e_pin_now
     operation act(x: T) -> Bool
   end
   sort Wi222EImpl
-    fact Wi222ESpec[T = Int64]
+    provides Wi222ESpec[T = Int64]
     requires Eq[T = Int64]
     operation act(x: Int64) -> Bool = true
   end

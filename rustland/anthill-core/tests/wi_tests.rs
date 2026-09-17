@@ -1090,8 +1090,14 @@ mod wi928_entity_load_record_test;
 #[path = "include/wi931_free_standing_provider_backing_test.rs"]
 mod wi931_free_standing_provider_backing_test;
 
-#[path = "include/wi933_carrierless_provision_test.rs"]
-mod wi933_carrierless_provision_test;
+// WI-933's file is GONE (WI-20260917-S8JYF). It drove the refusal of a
+// namespace-level bracket-less `fact <Spec>` — a spelling that read as a provision
+// and named no carrier. The retirement removed the reading, so there is no
+// carrier-less provision fact left to refuse: that text is an ordinary nullary
+// fact. Its successor is `wi_s8jyf_provision_spelling_test`, which carries WI-933's
+// population as rows of its own.
+#[path = "include/wi_s8jyf_provision_spelling_test.rs"]
+mod wi_s8jyf_provision_spelling_test;
 
 #[path = "include/wi936_field_type_load_order_test.rs"]
 mod wi936_field_type_load_order_test;

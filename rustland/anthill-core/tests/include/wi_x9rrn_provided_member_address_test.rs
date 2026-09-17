@@ -95,7 +95,9 @@ namespace test.x9rrn.user
     entity Cell(v: Int64)
     operation zug(x: Cell) -> Cell = Cell(v: x.v + 1)
   end
-  fact Mid[T = Cell]
+  namespace Cell
+    provides Mid[T = Cell]
+  end
   operation drive() -> Int64 = Mid.zug(Cell(v: 41)).v
 end
 "#;
@@ -293,7 +295,9 @@ namespace test.x9rrn.rung1
     entity Cell(v: Int64)
     operation zug(x: Cell) -> Cell = Cell(v: x.v + 1)
   end
-  fact Mid[T = Cell]
+  namespace Cell
+    provides Mid[T = Cell]
+  end
   operation drive() -> Int64 = Mid.zug(Cell(v: 41)).v
 end
 "#;
@@ -391,7 +395,9 @@ namespace test.x9rrn.deep
     operation zug(x: Cell) -> Cell = Cell(v: x.v + 1)
     operation far(x: Cell) -> Cell = Cell(v: x.v + 100)
   end
-  fact Top[T = Cell]
+  namespace Cell
+    provides Top[T = Cell]
+  end
   operation near() -> Int64 = Top.zug(Cell(v: 41)).v
   operation deep() -> Int64 = Top.far(Cell(v: 41)).v
 end
@@ -446,7 +452,9 @@ namespace test.x9rrn.diamond
     entity Cell(v: Int64)
     operation zug(x: Cell) -> Cell = Cell(v: x.v + 1)
   end
-  fact Mid[T = Cell]
+  namespace Cell
+    provides Mid[T = Cell]
+  end
   operation drive() -> Int64 = Mid.zug(Cell(v: 41)).v
 end
 "#;
@@ -505,7 +513,9 @@ namespace lib
     entity Cell(v: Int64)
     operation zug(x: Cell) -> Cell = Cell(v: x.v + 1)
   end
-  fact Mid[T = Cell]
+  namespace Cell
+    provides Mid[T = Cell]
+  end
 end
 namespace app
   import anthill.prelude.{{Int64}}
@@ -573,7 +583,9 @@ namespace lib3
     entity Cell(v: Int64)
     operation b(x: Cell) -> Cell = Cell(v: x.v + 1)
   end
-  fact Mid[T = Cell]
+  namespace Cell
+    provides Mid[T = Cell]
+  end
 end
 namespace app3
   import anthill.prelude.{Int64}

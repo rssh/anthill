@@ -27,5 +27,10 @@ sort Ring
   rule ?a * (?b + ?c) <=> ?a * ?b + ?a * ?c
 end
 
--- Int64 satisfies Ring
-fact Ring[Int64]
+-- Int64 satisfies Ring. Written as a SECONDARY ENTRY (059 R2) at the carrier's
+-- own address: a provision names its provider by WHERE it is written, and
+-- WI-20260917-S8JYF retired the namespace-level `fact Ring[Int64]` spelling that
+-- derived the carrier from a binding (058 §4).
+namespace anthill.prelude.Int64
+  provides Ring[T = Int64]
+end

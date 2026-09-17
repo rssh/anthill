@@ -209,7 +209,9 @@ namespace smoke.f_rw
   -- bare global predicate, registered nothing, and stayed silent through a whole review
   -- cycle. The silent-fact half is still open (WI-20260821-RDGQC); what closed is that
   -- its effects consequence now surfaces at the label.
-  fact Effect[T = Reg]
+  namespace Reg
+    provides Effect[T = Reg]
+  end
 
   sort Mir2
     sort C = ?
@@ -337,7 +339,9 @@ namespace smoke.e_lacks
 
   sort Outside
   end
-  fact Effect[T = Outside]
+  namespace Outside
+    provides Effect[T = Outside]
+  end
 
   operation shield[EffP](f: () -> Int64 @ {EffP, -Outside}) -> Int64
     effects {EffP}
@@ -1244,7 +1248,9 @@ namespace smoke.h3_simp_user_effect
 
   sort Outside
   end
-  fact Effect[T = Outside]
+  namespace Outside
+    provides Effect[T = Outside]
+  end
 
   operation poke_out(x: Int64) -> Int64
     effects {Outside}

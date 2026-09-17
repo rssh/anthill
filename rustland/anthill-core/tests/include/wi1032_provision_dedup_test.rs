@@ -135,7 +135,7 @@ const SELF_PROVISION: &str = "    provides Desc[T = Leaf]\n";
 #[test]
 fn agreeing_provisions_are_one_dictionary_and_still_dispatch() {
     let ns = "test.wi1032.agree";
-    let src = program(ns, SELF_PROVISION, "\n  fact Desc[T = Leaf]\n");
+    let src = program(ns, SELF_PROVISION, "\n  namespace Leaf\n    provides Desc[T = Leaf]\n  end\n");
     assert_eq!(
         crate::wi1010_defaulted_op_instance_fact_test::probe(ns, &src),
         7,
@@ -160,7 +160,8 @@ fn a_supplier_conflict_behind_a_self_provision_reports_by_route() {
         ns,
         SELF_PROVISION,
         "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
-         fact Desc[T = Leaf, describe = otherDescribe]\n",
+         namespace Leaf\n    \
+         provides Desc[T = Leaf, describe = otherDescribe]\n  end\n",
     ));
     assert!(
         msg.contains(&format!("the carrier's own member '{ns}.Leaf.describe'"))
@@ -195,7 +196,7 @@ fn a_supplier_conflict_behind_a_self_provision_reports_by_route() {
 #[test]
 fn two_identical_namespace_facts_still_dispatch() {
     let ns = "test.wi1032.identical";
-    let src = program(ns, "", "\n  fact Desc[T = Leaf]\n\n  fact Desc[T = Leaf]\n");
+    let src = program(ns, "", "\n  namespace Leaf\n    provides Desc[T = Leaf]\n  end\n\n  namespace Leaf\n    provides Desc[T = Leaf]\n  end\n");
     assert_eq!(
         crate::wi1010_defaulted_op_instance_fact_test::probe(ns, &src),
         7,
@@ -232,15 +233,17 @@ fn identical_facts_in_two_namespaces_are_one_candidate() {
     operation describe(x: Leaf) -> Int64 = 7
   end
 
-  fact Desc[T = Leaf]
+  namespace Leaf
+    provides Desc[T = Leaf]
+  end
 
   operation probe() -> Int64 = Desc.describe(leaf())
 end
 
-namespace {other}
+namespace {base}.Leaf
   import {base}.{{Desc, Leaf}}
 
-  fact Desc[T = Leaf]
+  provides Desc[T = Leaf]
 end
 "#
     );
@@ -277,8 +280,8 @@ fn a_specificity_ordered_pair_still_takes_the_more_specific() {
   sort C
     import anthill.prelude.Int64
     entity c
-    fact Iter[Self = C]
-    fact Iter[Self = C, Element = Int64]
+    provides Iter[Self = C]
+    provides Iter[Self = C, Element = Int64]
     operation nxt(i: C) -> Int64 = 7
   end
 
@@ -327,7 +330,9 @@ fn one_carrier_two_disagreeing_provisions_names_it_once() {
     operation describe(x: Leaf) -> Int64 = 7
   end
 
-  fact Desc[T = Leaf, B = Int64]
+  namespace Leaf
+    provides Desc[T = Leaf, B = Int64]
+  end
 
   operation probe() -> Int64 = Desc.describe(leaf())
 end

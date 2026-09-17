@@ -27,13 +27,18 @@ namespace anthill.prelude
 
   -- Type forms a lattice via entity_of / refines (no top — the lattice is
   -- unbounded above; Nothing is the bottom). `Eq` / `Lattice` ride Type's
-  -- nominal identity (WI-361). These are namespace-level facts, so the
-  -- provides-carrier is derived from the `T = Type` binding value (→ Type);
-  -- short names resolve as `anthill.prelude` siblings (a qualified
-  -- `anthill.prelude.Type` is not accepted in binding-value position).
-  fact PartialEq[T = Type]      -- WI-644: Eq requires the PartialEq base
-  fact Eq[T = Type]
-  fact Lattice[T = Type]
+  -- nominal identity (WI-361).
+  --
+  -- WRITTEN IN A SECONDARY ENTRY (059 R2/R3), because `sort Type = ?` has no
+  -- body to write them in. These were namespace-level `fact Spec[…]` claims
+  -- until WI-20260917-S8JYF retired that spelling; a provision names its
+  -- provider by WHERE it is written, so the `namespace Type` block is what says
+  -- the carrier — nothing is derived from a binding value any more.
+  namespace Type
+    provides PartialEq[T = Type]      -- WI-644: Eq requires the PartialEq base
+    provides Eq[T = Type]
+    provides Lattice[T = Type]
+  end
 end
 
 {< Concat[A, B]: the TYPE-position surface of a schema merge (WI-714 / proposal 052 —

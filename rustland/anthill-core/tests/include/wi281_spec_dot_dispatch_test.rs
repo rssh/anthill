@@ -64,7 +64,7 @@ fn dot_method_dispatches_via_provided_spec() {
           end
           sort Widget
             entity widget(id: Int64)
-            fact Comparable[T = Widget]
+            provides Comparable[T = Widget]
             operation choose(a: Widget, b: Widget) -> Widget = ?a.pick(?b)
           end
         end
@@ -100,8 +100,8 @@ fn dot_spec_method_threads_requires() {
           end
           sort Widget
             entity widget(id: Int64)
-            fact Nameable[T = Widget]
-            fact Comparable[T = Widget]
+            provides Nameable[T = Widget]
+            provides Comparable[T = Widget]
             operation choose(a: Widget, b: Widget) -> Widget = ?a.pick(?b)
           end
         end
@@ -130,7 +130,7 @@ fn dot_no_provided_spec_still_reports_no_match() {
           end
           sort Widget
             entity widget(id: Int64)
-            fact Comparable[T = Widget]
+            provides Comparable[T = Widget]
             operation use_bad(a: Widget, b: Widget) -> Widget = ?a.zonk(?b)
           end
         end
@@ -220,7 +220,7 @@ fn dot_spec_method_unsatisfied_requires_errors_wi343() {
           end
           sort Gadget
             entity gadget(id: Int64)
-            fact Comparable[T = Gadget]
+            provides Comparable[T = Gadget]
             operation choose(a: Gadget, b: Gadget) -> Gadget = ?a.pick(?b)
           end
         end

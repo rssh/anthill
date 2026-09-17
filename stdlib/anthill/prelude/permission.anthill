@@ -97,9 +97,12 @@ namespace anthill.prelude
 
   sort Permission
     sort T = ?
-  end
 
-  fact Effect[T = Permission[?]]
+    -- The effect-kind registration (§5.5). `provides` in the kind's own body is
+    -- the one spelling since WI-20260917-S8JYF retired the namespace-level
+    -- `fact Effect[T = Permission[?]]` one (058 §4).
+    provides Effect[T = Permission[?]]
+  end
 
   -- THE VARIANCE LIVES HERE, NOT WITH THE OTHER VARIANCE FACTS, and that is a
   -- decision rather than an oversight. Every other `Covariant`/`Contravariant` in

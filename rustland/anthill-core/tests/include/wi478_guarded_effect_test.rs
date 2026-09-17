@@ -50,7 +50,9 @@ namespace anthill.test.wi478ground
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   operation risky(b: Int64) -> Unit
     effects { Boom :- eq(b, 0) }
@@ -106,7 +108,9 @@ namespace anthill.test.wi478call
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   operation risky(b: Int64) -> Unit
     effects { Boom :- eq(b, 0) }
@@ -136,7 +140,9 @@ namespace anthill.test.wi478call2
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   operation risky(b: Int64) -> Unit
     effects { Boom :- eq(b, 0) }

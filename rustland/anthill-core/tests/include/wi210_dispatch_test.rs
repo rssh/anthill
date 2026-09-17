@@ -74,7 +74,7 @@ fn fact_clause_inside_sort_body_emits_provides_info() {
             sort State = ?
           end
           sort Wi210ImplB
-            fact Wi210SpecA[State = Wi210ImplB]
+            provides Wi210SpecA[State = Wi210ImplB]
           end
         end
     "#;
@@ -106,7 +106,9 @@ fn fact_clause_at_namespace_emits_with_carrier_as_sort_ref() {
           sort Wi210NsCarrier
             entity wi210_nc
           end
-          fact Wi210NsSpec[State = Wi210NsCarrier]
+          namespace Wi210NsCarrier
+            provides Wi210NsSpec[State = Wi210NsCarrier]
+          end
         end
     "#;
     let mut kb = load_with(src);
@@ -417,11 +419,11 @@ fn dispatch_ambiguous_when_two_impls_match_same_binding() {
             entity amb_e
           end
           sort AmbA
-            fact AmbSpec[T = AmbCarrier]
+            provides AmbSpec[T = AmbCarrier]
             operation amb_op(x: AmbCarrier) -> AmbCarrier = x
           end
           sort AmbB
-            fact AmbSpec[T = AmbCarrier]
+            provides AmbSpec[T = AmbCarrier]
             operation amb_op(x: AmbCarrier) -> AmbCarrier = x
           end
         end
@@ -475,13 +477,13 @@ fn load_box_two_carriers() -> KnowledgeBase {
           sort ListBox
             sort T = ?
             entity lbox(item: T)
-            fact Box[T]
+            provides Box[T]
             operation peek(b: ListBox) -> T = match b case lbox(x) -> x
           end
           sort StreamBox
             sort T = ?
             entity sbox(item: T)
-            fact Box[T]
+            provides Box[T]
             operation peek(b: StreamBox) -> T = match b case sbox(x) -> x
           end
         end
@@ -563,7 +565,7 @@ fn wi350_abstract_stream_receiver_types_via_interface_with_two_impls() {
           import anthill.prelude.{Stream, Option, Pair}
           sort MyStream2
             sort T = ?
-            fact Stream[T]
+            provides Stream[T]
             operation splitFirst(s: MyStream2[?A])
               -> Option[Pair[?A, MyStream2[?A]]]
           end
@@ -924,7 +926,7 @@ fn requires_user_with_same_named_op_does_not_provide_or_override() {
             entity ovr_e
           end
           sort OvrProv
-            fact OvrSpec[T = OvrCarrier]
+            provides OvrSpec[T = OvrCarrier]
             operation ovr_op(x: OvrCarrier) -> OvrCarrier = x
           end
           sort OvrReq

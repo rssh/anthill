@@ -256,11 +256,18 @@ fn modify_set_get_on_cell_routes_through_arena() {
     );
 }
 
+/// `Modifiable` is declared, and the stdlib's resources CLAIM it.
+///
+/// READ OFF THE PROVISION RELATION, not off `rules_by_functor` (WI-20260917-S8JYF).
+/// The claims were `fact Modifiable[T = Cell]` and so entered the RULE index, which is
+/// what this asked; they are `provides Modifiable[T = …]` now — written in the sort's
+/// own body, or in a `namespace <Store>` secondary entry beside a free-standing entity
+/// — and a provision is not a clause. Asking the old question after the migration got
+/// the answer this test is here to refuse: zero, from a tree where every claim is
+/// present. `region.rs`'s `modifiable_claim_heads` made the same move at the same time,
+/// and for the same reason.
 #[test]
-fn modifiable_facts_for_stdlib_resources_resolve() {
-    // Confirm that `Modifiable` is registered as a sort and that
-    // FileStore / IndexedFileStore / KB / Cell satisfy it via facts
-    // emitted alongside their declarations.
+fn modifiable_claims_for_stdlib_resources_resolve() {
     let interp = interp_for(
         r#"
 namespace test.wi205_modifiable
@@ -274,10 +281,13 @@ end
             .is_some(),
         "Modifiable sort must be declared",
     );
-    let modifiable_sym = kb.try_resolve_symbol("anthill.prelude.Modifiable").unwrap();
-    let facts = kb.rules_by_functor(modifiable_sym);
+    let carriers: Vec<String> = crate::common::sort_provisions(kb)
+        .into_iter()
+        .filter(|(_, spec)| spec == "anthill.prelude.Modifiable")
+        .map(|(carrier, _)| carrier)
+        .collect();
     assert!(
-        !facts.is_empty(),
-        "expected at least one Modifiable[T = ...] fact (Cell, FileStore, etc.)",
+        carriers.iter().any(|c| c == "anthill.prelude.Cell"),
+        "expected `Cell` among the Modifiable carriers (FileStore etc. too); got {carriers:?}",
     );
 }

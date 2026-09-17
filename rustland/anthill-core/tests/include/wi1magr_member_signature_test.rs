@@ -108,7 +108,9 @@ namespace wi1magr.{ns}
 {members}
   end
 
-  fact VectorSpace[BadVec, Float]
+  namespace BadVec
+    provides VectorSpace[BadVec, Float]
+  end
 end
 "#
     )
@@ -261,7 +263,7 @@ namespace wi1magr.sametype
 
   sort Marker
     entity marker
-    fact TwoInts[T = Marker]
+    provides TwoInts[T = Marker]
     -- The spec's FIRST parameter is `a`; this member names its SECOND one `a`.
     operation combine(b: Int64, a: Int64) -> Int64 = a
   end
@@ -306,7 +308,7 @@ namespace wi1magr.receiver
 
   sort IntBox
     entity intBox(v: Int64)
-    fact Boxy[T = Int64]
+    provides Boxy[T = Int64]
     operation peek(b: IntBox) -> Int64 = b.v
 
     operation peeked() -> Int64 = peek(intBox(7))
@@ -340,7 +342,7 @@ namespace wi1magr.nodefault
 
   sort Leafy
     entity leafy
-    fact Undefaulted[T = Leafy]
+    provides Undefaulted[T = Leafy]
     operation describe(x: Leafy) -> Bool = true
   end
 end
@@ -386,7 +388,7 @@ namespace wi1magr.defaulted
 
   sort Leafy
     entity leafy
-    fact Defaulted[T = Leafy]
+    provides Defaulted[T = Leafy]
     operation describe(x: Leafy) -> Bool = true
   end
 end
@@ -431,7 +433,7 @@ namespace wi1magr.arity_and_contract
 
   sort Leafy
     entity leafy
-    fact Sp[T = Leafy]
+    provides Sp[T = Leafy]
     operation describe(b: Int64) -> Int64 requires posi(b) = b
   end
 end

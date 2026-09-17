@@ -45,7 +45,8 @@ fn program(extra: &str) -> String {
 }
 
 const RIVAL: &str = "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
-                     fact Desc[T = Leaf, describe = otherDescribe]\n";
+                     namespace Leaf\n    \
+                     provides Desc[T = Leaf, describe = otherDescribe]\n  end\n";
 
 const PATTERN: &str = "wi1044.Desc.describe(wi1044.Leaf.leaf(), ?r)";
 

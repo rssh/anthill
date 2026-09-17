@@ -541,7 +541,9 @@ namespace test.wi344_provides
   sort Widget
     entity widget(id: Int64)
   end
-  fact Comparable[T = Widget]
+  namespace Widget
+    provides Comparable[T = Widget]
+  end
 end
 "#;
     let mut kb = load_stdlib_kb();
@@ -6607,7 +6609,9 @@ namespace test.wi036_ok
   sort Widget
     entity widget(id: Int64)
   end
-  fact Comparable[T = Widget]
+  namespace Widget
+    provides Comparable[T = Widget]
+  end
   sort Box
     entity Holder(item: Comparable)
   end
@@ -6677,7 +6681,9 @@ namespace test.wi344_ok
   sort Widget
     entity widget(id: Int64)
   end
-  fact Comparable[T = Widget]
+  namespace Widget
+    provides Comparable[T = Widget]
+  end
   operation as_comparable(w: Widget) -> Comparable = w
 end
 "#;
@@ -6744,7 +6750,9 @@ namespace test.wi344_binding_mismatch
   sort Gadget
     entity gadget(id: Int64)
   end
-  fact Comparable[T = Widget]
+  namespace Widget
+    provides Comparable[T = Widget]
+  end
   operation as_cmp_gadget(w: Widget) -> Comparable[T = Gadget] = w
 end
 "#;
@@ -6775,7 +6783,9 @@ namespace test.wi036_list_ok
   sort Widget
     entity widget(id: Int64)
   end
-  fact Comparable[T = Widget]
+  namespace Widget
+    provides Comparable[T = Widget]
+  end
   sort Box
     entity Holder(items: List[T = Comparable])
   end
@@ -6809,7 +6819,9 @@ namespace test.wi036_list_bad
   sort Gadget
     entity gadget(id: Int64)
   end
-  fact Comparable[T = Widget]
+  namespace Widget
+    provides Comparable[T = Widget]
+  end
   sort Box
     entity Holder(items: List[T = Comparable])
   end
@@ -6842,7 +6854,9 @@ namespace test.wi036_pspec
   sort Widget
     entity widget(id: Int64)
   end
-  fact Comparable[T = Widget]
+  namespace Widget
+    provides Comparable[T = Widget]
+  end
   sort Box
     entity Holder(item: Comparable[T = Widget])
   end
@@ -6883,7 +6897,9 @@ namespace test.wi274_mismatch
   sort Gadget
     entity gadget(id: Int64)
   end
-  fact Comparable[T = Widget]
+  namespace Widget
+    provides Comparable[T = Widget]
+  end
   sort Box
     entity Holder(item: Comparable[T = Gadget])
   end
@@ -6928,7 +6944,6 @@ fn conditional_eqlist_source(ns: &str, elem_field: &str, elem_value: &str) -> St
         r#"
 namespace {ns}
   import anthill.prelude.{{Eq, List, Int64, Float}}
-  fact Eq[T = Int64]
   sort Elem
     entity ne(id: {elem_field})
   end
@@ -6941,6 +6956,10 @@ namespace {ns}
     entity Holder(item: Eq[T = List[T = Elem]])
   end
   fact Holder(item: [ne({elem_value})])
+end
+
+namespace anthill.prelude.Int64
+  provides Eq[T = Int64]
 end
 "#
     )

@@ -401,8 +401,12 @@ fn a_witness_grounded_pair_is_refused_whatever_the_bracket_says() {
   sort Gadget
     entity gadget(v: Int64)
   end
-  fact PartialEq[T = Thing]
-  fact PartialEq[T = Gadget]
+  namespace Thing
+    provides PartialEq[T = Thing]
+  end
+  namespace Gadget
+    provides PartialEq[T = Gadget]
+  end
   rule twin(?a, ?b, ?d1, ?d2) :- ?d1 = require[PartialEq[T = Thing]], ?d2 = require[PartialEq[T = Gadget]], eq(?a, ?b)
 end
 "#,

@@ -55,7 +55,9 @@ const RISKY_PRELUDE: &str = r#"
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   operation risky(b: Int64) -> Int64
     effects { Boom :- eq(b, 0) }
@@ -195,7 +197,9 @@ namespace anthill.test.wi067dup
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   operation risky2(b: Int64) -> Int64
     effects { Boom, Boom :- eq(b, 0) }
@@ -224,7 +228,9 @@ namespace anthill.test.wi067dup2
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   operation risky2(b: Int64) -> Int64
     effects { Boom, Boom :- eq(b, 0) }

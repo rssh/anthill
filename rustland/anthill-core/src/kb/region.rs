@@ -60,26 +60,23 @@ pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
     out
 }
 
-/// WI-862 — EVERY claim that some sort is `Modifiable`, as the claim's own head term,
-/// read from BOTH channels a provision arrives on.
+/// WI-862 — EVERY claim that some sort is `Modifiable`, as the claim's own head term.
 ///
-/// This module used to scan `rules_by_functor` alone, which is the RAW FACT index. That
-/// was complete only while `fact Modifiable[T = Cell]` inside `sort Cell` was the way to
-/// write the claim: proposal 058 §4 retires that spelling for `provides Modifiable[T =
-/// Cell]`, which files a `SortProvidesInfo` and NO fact — so the scan went blind on the
-/// migrated stdlib and `is_modifiable(Cell)` answered **false**. MEASURED: five tests
-/// across `wi206`, `wi707`, `wi314` and `kb::region::wi353_tests`, every one of them a
-/// wrong ANSWER rather than an error.
+/// ONE CHANNEL, AND IT IS THE PROVISION RELATION (WI-20260917-S8JYF). This module used
+/// to scan `rules_by_functor` — the RAW FACT index — and WI-862 widened it to read the
+/// provision relation BESIDE it, because 058 §4's migration of `fact Modifiable[T =
+/// Cell]` to `provides Modifiable[T = Cell]` files a `SortProvidesInfo` and no fact, and
+/// the fact-only scan went blind on the migrated stdlib (`is_modifiable(Cell)` answered
+/// **false** — a wrong ANSWER, not an error, across five tests in `wi206`, `wi707`,
+/// `wi314` and `kb::region::wi353_tests`).
 ///
-/// BOTH channels, not the new one only: the `fact` spelling is deprecated, not removed,
-/// and a namespace-level `fact Modifiable[T = X]` (058 §3.1, explicitly out of the
-/// retirement's scope) can never become a `provides` at all. A reader that swapped
-/// channels would trade one blind spot for another.
-///
-/// Deduplication is the caller's: `region_sorts` collects into a `HashSet`, and
-/// `is_modifiable_sort` is an `any`. A sort that writes BOTH spellings — which the
-/// deprecation warning explicitly sanctions where a rule resolves the spec as a goal —
-/// therefore contributes one answer, not two.
+/// THE RAW-FACT LEG IS NOW GONE, and dropping it is the retirement rather than an
+/// optimisation: a `fact Modifiable[T = X]` is an ordinary fact and claims nothing
+/// about any spec, so a reader that still took one for a provision would be the last
+/// site at which the retired spelling kept working — the spelling-dependent meaning
+/// this loader no longer has. What the widening bought stays: the `provides` leg is
+/// the only leg, and it sees the claim wherever it is written (a sort body, or a
+/// `namespace <Carrier>` secondary entry).
 ///
 /// AND EACH CALLER KEEPS ITS OWN READING OF A HEAD, which is WI-206's recorded landmine:
 /// `region_sorts` collects every sort reachable ANYWHERE in the head (an
@@ -88,26 +85,19 @@ pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
 /// BINDING and takes its head sort, because as an exact predicate the over-approximation
 /// inverts the answer. This function supplies the heads and decides nothing else.
 ///
-/// COST: one `all_provisions` walk per call, on top of the index lookup this used to be
-/// alone. Acceptable at both callers — `region_sorts` is computed ONCE per typing pass
+/// COST: one `all_provisions` walk per call, where this used to be an index lookup.
+/// Acceptable at both callers — `region_sorts` is computed ONCE per typing pass
 /// (`type_check_sorts` calls it before the per-op loop, saying so), and
 /// `is_modifiable_sort` backs a reflect introspection op, not a dispatch. If a third
 /// caller ever puts this on a hot path, the answer is the `EqDispatchIndex`/
 /// `DefaultProviderIndex` pattern, not a narrower channel list.
 fn modifiable_claim_heads(kb: &KnowledgeBase, modifiable: Symbol) -> Vec<TermId> {
-    let mut out: Vec<TermId> = kb
-        .rules_by_functor(modifiable)
-        .into_iter()
-        .filter_map(|rid| kb.fact_head_term(rid))
-        .collect();
     let canonical = kb.canonical_sort_sym(modifiable);
-    out.extend(
-        super::typing::all_provisions(kb)
-            .into_iter()
-            .filter(|p| kb.canonical_sort_sym(p.spec) == canonical)
-            .map(|p| p.spec_view),
-    );
-    out
+    super::typing::all_provisions(kb)
+        .into_iter()
+        .filter(|p| kb.canonical_sort_sym(p.spec) == canonical)
+        .map(|p| p.spec_view)
+        .collect()
 }
 
 /// WI-206: whether `sort` is admitted by a `Modifiable[T = …]` fact — the test

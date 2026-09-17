@@ -62,27 +62,27 @@
 //!     fires (with its own message) rather than being shadowed by this one.
 //!   * [`every_allowed_production_loads`] — the other side of default-deny: a list
 //!     that refuses everything would pass every refusal row.
-//!   * [`a_claim_about_another_carrier_is_written_one_level_out`] — the fact ban's
-//!     blast radius, measured rather than argued.
+//!   * [`a_claim_about_another_carrier_is_written_in_that_carriers_entry`] — the fact
+//!     ban's blast radius, measured rather than argued.
 //!
 //! THE GRAMMAR HAD TO CHANGE, and it is part of this ticket rather than a detour.
 //! R3 allows a spec claim written `provides Spec[X]` in a secondary entry and refuses
-//! the `fact Spec[X]` spelling there (a `fact` cannot be told from an ordinary fact
-//! over a parameterized data sort; `provides` is a declaration the grammar
-//! recognises). But `provides_clause` was admitted only in `_sort_content`, so the
+//! a `fact` there. But `provides_clause` was admitted only in `_sort_content`, so the
 //! ALLOWED spelling was unwritable in the one place 059 calls the point of the
 //! mechanism — and refusing the `fact` one would have removed a capability WI-978 and
 //! WI-1008 delivered. `_namespace_content` now admits it, and because the grammar
 //! cannot tell a secondary entry from an ordinary namespace, the loader classifies:
 //! written where no sort occupies the address it is refused, naming the namespace.
 //!
-//! WHAT IS RETIRED IS ONE SENSE OF `fact`, NOT THE SPELLING. The two are not
-//! interchangeable: `provides` takes its carrier from the enclosing scope and `fact`
-//! from the bindings, so only `fact Spec[Carrier]` can say that some OTHER sort
-//! satisfies a spec. They coincide exactly when the carrier is the entry's own sort,
-//! and that coincidence is all the refusal removes — the orphan claim is written one
-//! block outward, where nothing is refused, and
-//! [`a_claim_about_another_carrier_is_written_one_level_out`] drives it.
+//! THE BAN COSTS NOTHING NOW, and WI-20260917-S8JYF is why. This file argued that what
+//! R3 retires is one SENSE of `fact` and not the spelling, because `provides` took its
+//! carrier from the enclosing scope while `fact Spec[Carrier]` took it from the
+//! bindings — so only the `fact` one could say that some OTHER sort satisfies a spec,
+//! and the orphan claim had to stay writable one block outward. The retirement removed
+//! that sense everywhere (058 §4), and the orphan claim is now written where it always
+//! belonged: in a `namespace <Carrier>` entry at the carrier's OWN address, which R3
+//! admits. [`a_claim_about_another_carrier_is_written_in_that_carriers_entry`] drives
+//! it, and is what says the blast radius is still nil.
 
 use anthill_core::eval::{self, Interpreter, Value};
 
@@ -558,27 +558,26 @@ fn the_provides_block_interior_is_classified() {
 }
 
 /// THE ORPHAN CLAIM — the capability the fact ban must NOT have taken, and the reason
-/// the ban is narrow rather than a retirement of the `fact` spelling.
+/// the ban is narrow rather than a retirement of every claim an entry could carry.
 ///
-/// The two spellings differ ONLY WHERE THE SCOPE NAMES NO TYPE — WI-1069 measured it
-/// and corrected what this comment used to say. `provides Show[T = Other]` in a
-/// namespace with a sort at its address records `(Rec, Show-for-Other)`: provider from
-/// the scope, carrier from the binding, i.e. a witness. So does `fact Show[T = Other]`
-/// written in that same body. At an address NO type occupies the `provides` clause has
-/// no provider to be about and is refused, while `fact Show[T = Other]` still derives
-/// its carrier from the bindings — which is why the one-level-out `fact` spelling must
-/// stay writable, and it is the only thing that must.
+/// A claim about a FOREIGN carrier is not a claim about `X` at all, so R3 — which
+/// reaches a `namespace X` block's DIRECT content and nothing else — is not where it
+/// belongs. It belongs at the carrier's OWN address, in that carrier's entry, and this
+/// drives it: `Rec`'s entry supplies `Rec`'s member, `Other`'s entry claims for
+/// `Other`, and the provision is recorded under `Other`.
 ///
-/// It does. R3 reaches a `namespace X` block's DIRECT content and nothing else, so a
-/// claim about a foreign carrier — which is not a claim about `X` at all — is written
-/// one level out exactly as the corpus already writes it. This drives that: the entry
-/// supplies `Rec`'s member, the enclosing namespace claims for `Other`, and the
-/// provision is recorded under `Other`.
+/// WI-20260917-S8JYF REPOINTED THIS ROW. The claim used to be written `fact Show[T =
+/// Other]` ONE LEVEL OUT, and the argument for R3's narrowness rested on that spelling
+/// staying writable: `provides` took its carrier from the enclosing scope while a
+/// `fact` took it from the bindings, so only a `fact` could name a foreign carrier
+/// (WI-1069 measured the two agreeing everywhere else). The retirement removed the
+/// `fact` reading and the entry replaced it — the same provision, filed under the same
+/// carrier, written at that carrier's address instead of derived from a binding.
 ///
-/// Passes either way by design. It is here because the fact ban's blast radius is the
+/// Passes either way by design. It is here because the ban's blast radius is the
 /// question this row answers, and an argument is not a measurement.
 #[test]
-fn a_claim_about_another_carrier_is_written_one_level_out() {
+fn a_claim_about_another_carrier_is_written_in_that_carriers_entry() {
     let src = r#"
 namespace test.wi1000.orphanclaim
   import anthill.prelude.{Int64}
@@ -596,13 +595,15 @@ namespace test.wi1000.orphanclaim
   namespace Rec
     operation show(x: Rec) -> Int64 = 7
   end
-  fact Show[T = Other]
+  namespace Other
+    provides Show[T = Other]
+  end
 end
 "#;
     let kb = crate::common::load_kb_with(src);
     // WI-1098: outside the equality family, because `Rec` and `Other` are composites
     // and every composite now derives `PartialEq`+`Eq` — rows about structural
-    // equality, not about where a `fact Show[…]` filed.
+    // equality, not about where the `Show` claim filed.
     let carriers: Vec<String> = crate::common::sort_provisions_outside_equality(&kb)
         .into_iter()
         .filter(|(c, _)| c.starts_with("test.wi1000.orphanclaim."))
@@ -611,8 +612,8 @@ end
     assert_eq!(
         carriers,
         vec!["test.wi1000.orphanclaim.Other".to_string()],
-        "a `fact Spec[Carrier]` one level out still files under the CARRIER its \
-         bindings name — the orphan-instance route R3 must not have taken",
+        "the orphan claim files under the CARRIER whose entry carries it — the route \
+          R3 must not have taken",
     );
 }
 

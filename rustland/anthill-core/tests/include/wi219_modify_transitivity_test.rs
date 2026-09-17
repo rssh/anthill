@@ -110,7 +110,7 @@ namespace anthill.test.wi219.commit_test
 
   -- A backing store impl satisfying anthill.persistence.Store
   sort MyBackend
-    fact Store
+    provides Store
     entity bk(id: Int64)
   end
 

@@ -91,12 +91,12 @@ fn requires_to_supertrait() {
     assert!(out.contains("trait Ord: Eq {"), "output:\n{out}");
 }
 
-// ── Test 7: fact inside sort → supertrait ────────────────────────
+// ── Test 7: a provision inside a sort → supertrait ───────────────
 
 #[test]
-fn fact_inside_sort_to_supertrait() {
+fn provision_inside_sort_to_supertrait() {
     let out = gen(r#"sort QueryableStore {
-  fact Store
+  provides Store
   operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
 }
 "#);
@@ -212,17 +212,21 @@ end
     assert!(out.contains("Option"), "should import Option: {out}");
 }
 
-// ── Test 14: Namespace fact → impl marker comment ────────────────
+// ── Test 14: a secondary entry's provision → impl marker comment ─
 
 #[test]
-fn namespace_fact_to_impl_marker() {
-    // Transcribes `rustland/anthill-stl/anthill/persistence.anthill`'s spelling: the
-    // carrier is in the brackets. Written bare until WI-933, which refused that at
-    // load — see `fact_takes_its_carrier_from_the_brackets`.
+fn secondary_entry_provision_to_impl_marker() {
+    // Transcribes `rustland/anthill-stl/anthill/persistence.anthill`'s spelling: a
+    // `namespace <Store>` entry at the free-standing entity's own address. It was
+    // `fact NonMonotonicStore[FileStore]` — bare until WI-933 refused that at load,
+    // bracketed until WI-20260917-S8JYF retired the spelling; see
+    // `the_marker_takes_its_carrier_from_the_entrys_address`.
     let out = gen(r#"namespace anthill.persistence.filesystem
   import anthill.persistence.{NonMonotonicStore}
   entity FileStore(root: String, convention: String)
-  fact NonMonotonicStore[FileStore]
+  namespace FileStore
+    provides NonMonotonicStore[FileStore]
+  end
 end
 "#);
     assert!(
@@ -405,39 +409,39 @@ fn enum_variant_pascal_case() {
     assert!(out.contains("Flat,"), "should have Flat variant: {out}");
 }
 
-// ── Test 20: Fact-entity association only preceding entity ────────
+// ── Test 20: the impl marker's carrier is the ENTRY's address ────────
 
-#[test]
-/// WI-933 — THE CARRIER IS THE ONE THE BRACKETS NAME, wherever the fact stands.
+/// THE CARRIER IS THE ADDRESS THE CLAIM IS WRITTEN AT, and no neighbour is consulted.
 ///
-/// This test used to assert the opposite: that a fact associates with the entity
-/// IMMEDIATELY PRECEDING it, over the bracket-less `fact QueryableStore`. That reading
-/// is now a load error (`kb/load.rs`, `maybe_emit_fact_provides_info`) precisely
-/// because proximity lets declaration ORDER decide what a claim is about, and the
-/// mapper was doing it to text that says otherwise — MEASURED before the fix, this
-/// exact source emitted `// impl QueryableStore for ColumnDef`, discarding the
-/// author's `SqlStore`.
+/// This test has been re-pointed twice at one rule. It first asserted that a fact
+/// associates with the entity IMMEDIATELY PRECEDING it; WI-933 measured that reading
+/// emit `// impl QueryableStore for ColumnDef` over this exact source, discarding the
+/// author's `SqlStore`, and moved the mapper onto the fact's BRACKETS. WI-20260917-S8JYF
+/// retired the `fact` spelling of a provision altogether (058 §4), so the claim is a
+/// `namespace SqlStore` SECONDARY ENTRY and the carrier is its address — nothing is
+/// derived from a binding either.
 ///
-/// BOTH legs matter. The positive one fails without the fix (the marker named the
-/// wrong type); the negative one is what says the old rule is gone rather than merely
-/// outvoted — with proximity still in place, `ColumnDef` sits between the two and
-/// would win.
+/// BOTH legs matter. The positive one says the marker is emitted at all; the negative
+/// ones say no neighbour captures it — `ColumnDef` and `QueryBinding` sit between the
+/// entity and the entry, and under the original rule one of them would have won.
 #[test]
-fn fact_takes_its_carrier_from_the_brackets() {
+fn the_marker_takes_its_carrier_from_the_entrys_address() {
     let out = gen(r#"namespace store
   entity SqlStore(url: String)
   entity QueryBinding(pattern: String)
   entity ColumnDef(name: String)
-  fact QueryableStore[SqlStore]
+  namespace SqlStore
+    provides QueryableStore[SqlStore]
+  end
 end
 "#);
     assert!(
         out.contains("// impl QueryableStore for SqlStore"),
-        "the brackets name SqlStore, so the marker must too: {out}"
+        "the entry's address is SqlStore, so the marker must name it: {out}"
     );
     assert!(
         !out.contains("// impl QueryableStore for ColumnDef"),
-        "the entity that merely PRECEDES the fact must no longer capture it: {out}"
+        "the entity that merely PRECEDES the entry must not capture it: {out}"
     );
     assert!(
         !out.contains("// impl QueryableStore for QueryBinding"),
@@ -445,39 +449,42 @@ end
     );
 }
 
-/// The named-binding spelling reaches the same carrier — `fact Modifiable[T =
-/// FileStore]` is what the shipped stdlib writes, so the mapper must read a named
-/// binding as well as a leading positional. Its control is the test above, which
-/// drives the positional form over the same code path.
+/// The claim's own BINDINGS do not move the carrier — `namespace FileStore { provides
+/// Modifiable[T = FileStore] }` is what the shipped stdlib writes, and the marker names
+/// the entry. Its control is the test above, which drives a positional binding at the
+/// same site; neither is read.
 #[test]
-fn fact_carrier_is_read_from_a_named_binding_too() {
+fn the_markers_carrier_is_the_entry_not_the_binding() {
     let out = gen(r#"namespace anthill.persistence.filesystem
   entity FileStore(root: String)
   entity IndexedFileStore(root: String)
-  fact Modifiable[T = FileStore]
+  namespace FileStore
+    provides Modifiable[T = FileStore]
+  end
 end
 "#);
     assert!(
         out.contains("// impl Modifiable for FileStore"),
-        "a named carrier binding must be read: {out}"
+        "the entry at `FileStore` must get the marker: {out}"
     );
     assert!(
         !out.contains("// impl Modifiable for IndexedFileStore"),
-        "and the preceding entity must not override it: {out}"
+        "and the neighbouring entity must not take it: {out}"
     );
 }
 
-/// WI-1106 — A SORT WITH CONSTRUCTORS IS A DATA SORT, so a `fact` naming one emits no
-/// `impl` marker: it asserts an instance, not an is-a. The mapper was asserting in Rust
-/// exactly the relation the loader refuses to file — `fact Polynom[Coeff]`, where
-/// `Coeff` is the polynomial's ring PARAMETER, gave `// impl Polynom for Coeff`.
+/// NO `fact` EMITS AN `impl` MARKER, whatever it names (WI-20260917-S8JYF).
 ///
-/// AT A FILE'S TOP LEVEL, deliberately. A `fact` written inside a `namespace` block
-/// after a sort never reaches `emit_namespace_fact` at all — `emit_namespace` captures
-/// it as a supertrait edge of the preceding sort — so the defect is reachable only from
-/// this position, and probing only the namespace form said "not reproducible".
+/// WI-1106's rule stood here first and is the reason this file has the fixtures it has:
+/// a sort with CONSTRUCTORS is a data sort, so a `fact` naming one asserts an instance
+/// and not an is-a — yet the mapper emitted `// impl Polynom for Coeff`, where `Coeff`
+/// is the polynomial's ring PARAMETER. The retirement makes the gate unnecessary rather
+/// than merely satisfied: a `fact` is an ordinary fact at every address, so the mapper
+/// reads none of them and the data-sort question never arises. Both original fixtures
+/// are kept, because each reached the marker by a different route (a type argument, and
+/// a FIELD value) and both must now be silent.
 #[test]
-fn a_fact_naming_a_data_sort_emits_no_impl_marker() {
+fn no_fact_emits_an_impl_marker() {
     let out = gen(r#"entity Coeff(x: String)
 sort Polynom
   sort R = ?
@@ -487,12 +494,11 @@ fact Polynom[Coeff]
 "#);
     assert!(
         !out.contains("impl Polynom"),
-        "`Polynom` has a constructor, so it is a data sort and `fact Polynom[Coeff]` \
-         asserts an instance — no trait impl: {out}"
+        "a `fact` asserts an ordinary proposition, never an is-a — no trait impl: {out}"
     );
 
-    // The other producer, from a FIELD value rather than a type argument. Same rule,
-    // different route into `extract_fact_carrier_name`, so one fix must cover both.
+    // The other route, a FIELD value rather than a type argument. Both used to reach
+    // the marker, and both must now be silent.
     let out2 = gen(r#"entity Other(x: String)
 sort Box
   sort T = ?
@@ -505,25 +511,27 @@ fact Box(value: Other)
         "a construction over an eponymous parametric sort is not an is-a either: {out2}"
     );
 
-    // CONTROL — a constructor-LESS sort in the identical position still gets its
-    // marker, so the gate cannot pass by suppressing every fact.
+    // CONTROL — the CLAIM in the identical position still gets its marker, so this
+    // cannot pass by suppressing every marker the mapper emits.
     let ctl = gen(r#"entity Coeff(x: String)
 sort Summable
   sort R = ?
 end
-fact Summable[Coeff]
+namespace Coeff
+  provides Summable[Coeff]
+end
 "#);
     assert!(
         ctl.contains("// impl Summable for Coeff"),
-        "a spec with no constructors keeps its impl marker: {ctl}"
+        "a `provides` in a secondary entry keeps its impl marker: {ctl}"
     );
 }
 
-/// A BARE `fact <Spec>` emits NO marker. The loader refuses that spelling (WI-933),
-/// but this path parses without loading, so the text still arrives here — and the
-/// mapper has no more idea than the loader which type was meant. Emitting nothing is
-/// the point: the previous behaviour was to name whichever entity came last, which is
-/// the guess the refusal exists to prevent.
+/// A BARE `fact <Spec>` emits NO marker either — the shape WI-933 once refused at load
+/// and WI-20260917-S8JYF made an ordinary nullary fact. Kept as its own row because it
+/// reaches the mapper by a third route (no brackets at all), and because the previous
+/// behaviour here was to name whichever entity came last, which is the guess the whole
+/// address rule exists to prevent.
 #[test]
 fn a_bare_namespace_fact_emits_no_impl_marker() {
     let out = gen(r#"namespace store
@@ -537,20 +545,46 @@ end
     );
 }
 
-// ── Test 21: Fact with bindings → supertrait ─────────────────────
+// ── Test 21: a provision with bindings → supertrait, WHICH IS A KNOWN GAP ────────
 
+/// A PARAMETERIZED provision renders NO supertrait, and that is WI-1108 rather than a
+/// regression of this file.
+///
+/// It used to render one. `sort Stream { fact Streamable[T = S] }` reached the mapper's
+/// `Item::Fact` arm, which answered a `Fn` head with its FUNCTOR's local name and so
+/// emitted the bare bound `: Streamable`, dropping every binding — wrong Rust that
+/// happened to compile only because nothing in the generated tree referenced it.
+/// WI-20260917-S8JYF retired the `fact` spelling of a provision (058 §4) and with it
+/// that arm; the `provides` arm beside it is deliberately narrowed to BARE specs,
+/// because widening it was MEASURED to emit `pub trait Stream<T, E>: Iterable` into
+/// `anthill-stl`'s signature-only output — whose premise is that it references no such
+/// name — and broke the workspace build.
+///
+/// So this row pins the gap, with its own control: the BARE spelling still renders.
+/// Rendering a parameterized supertrait needs its type arguments AND its import, which
+/// is WI-587/WI-1108's territory.
 #[test]
-fn fact_with_bindings_to_supertrait() {
+fn a_parameterized_provision_renders_no_supertrait_yet() {
     let out = gen(r#"sort Stream {
   sort S = ?
   sort E = ?
-  fact Streamable[T = S]
+  provides Streamable[T = S]
   operation head(s: S) -> Option[T = S]
 }
 "#);
     assert!(
-        out.contains("Streamable"),
-        "should have supertrait Streamable: {out}"
+        !out.contains("Streamable"),
+        "WI-1108: a parameterized provision is skipped rather than rendered bare: {out}"
+    );
+    let bare = gen(r#"sort Stream {
+  sort S = ?
+  provides Streamable
+  operation head(s: S) -> Option[T = S]
+}
+"#);
+    assert!(
+        bare.contains(": Streamable"),
+        "the control — a BARE provision still renders its supertrait: {bare}"
     );
 }
 

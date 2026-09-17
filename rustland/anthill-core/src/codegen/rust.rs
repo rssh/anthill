@@ -203,7 +203,7 @@ struct SortInfo<'a> {
 }
 
 impl<'a> SortInfo<'a> {
-    fn from_items(items: &'a [Item], symbols: &SymbolTable, terms: &SimpleTermStore) -> Self {
+    fn from_items(items: &'a [Item], symbols: &SymbolTable) -> Self {
         let mut info = SortInfo {
             type_params: Vec::new(),
             supertraits: Vec::new(),
@@ -236,39 +236,33 @@ impl<'a> SortInfo<'a> {
                         info.supertraits.push(type_expr_name(symbols, &r.type_expr));
                     }
                 }
-                Item::Fact(f) => {
-                    if let Some(name) = extract_fact_sort_name(symbols, terms, f) {
-                        info.supertraits.push(name);
-                    }
-                }
-                // WI-862 (058 §4) — the SAME is-a edge, written the non-deprecated way.
-                // A sort's provision is what a Rust supertrait bound renders, and this
-                // reader knew only the `fact` spelling: migrating `sort NonMonotonicStore
-                // { fact Store }` to `provides Store` dropped `trait NonMonotonicStore:
-                // Store` to a bare `trait NonMonotonicStore`, silently
-                // (`codegen_test::full_persistence_store_hierarchy`).
+                // WI-862 (058 §4) / WI-20260917-S8JYF — A SORT'S PROVISION IS WHAT A
+                // SUPERTRAIT BOUND RENDERS, AND `provides` IS THE ONLY SPELLING OF ONE.
+                // An `Item::Fact` arm stood beside this one and pushed a supertrait for
+                // `sort NonMonotonicStore { fact Store }`; WI-862 added this arm because
+                // migrating that line to `provides Store` had silently dropped `trait
+                // NonMonotonicStore: Store` to a bare `trait NonMonotonicStore`
+                // (`codegen_test::full_persistence_store_hierarchy`). The retirement
+                // deletes the fact arm: a `fact` inside a sort is an ordinary fact and
+                // asserts no is-a, so rendering one as a bound would be the mapper
+                // asserting in Rust a relation the loader does not record.
                 //
                 // BARE SPECS ONLY, AND THE PARAMETERIZED CASE IS A KNOWN GAP — **WI-1108**.
-                // `extract_fact_sort_name` above answers a `Fn` head with its FUNCTOR's
-                // local name, so the `fact` twin renders `fact Iterable[C = Stream,
-                // Element = T, E = E]` as the bare bound `: Iterable`, dropping every
-                // binding. That is wrong Rust and it does not compile: MEASURED by
-                // widening this arm to every provision, which made `stdlib`'s
+                // A parameterized provision would render as the bare bound `: Iterable`,
+                // dropping every binding. That is wrong Rust and it does not compile:
+                // MEASURED by widening this arm to every provision, which made `stdlib`'s
                 // pre-existing `sort Stream { provides Iterable[C = Stream, …] }` emit
                 // `pub trait Stream<T, E>: Iterable` into a `suppress_imports: true`
                 // file — whose whole premise (`anthill-stl/build.rs`, WI-553) is that
                 // "the signature-only output never references" `Iterable` — and broke
                 // the workspace build. The defect is the generator's, not the
-                // retirement's; the `fact` spelling has it too and is merely unreached.
-                // Rendering a parameterized supertrait needs its type arguments AND its
-                // import, which is WI-587's territory, so it gets a ticket rather than a
-                // guess here.
+                // retirement's. Rendering a parameterized supertrait needs its type
+                // arguments AND its import, which is WI-587's territory, so it gets a
+                // ticket rather than a guess here.
                 // A CONDITIONAL provision is excluded for the same reason and under the
                 // same ticket: `provides Store :- Backed[T = …]` (WI-869's tail) is not
-                // an unconditional is-a, and `trait X: Store` asserts one. The `fact`
-                // twin could not carry conditions at all, so this shape reaches the
-                // supertrait list for the first time — rendering it would need a `where`
-                // clause the generator has no notion of.
+                // an unconditional is-a, and `trait X: Store` asserts one — rendering it
+                // would need a `where` clause the generator has no notion of.
                 Item::ProvidesClause(pc)
                     if matches!(pc.spec, TypeExpr::Simple(_)) && pc.conditions.is_empty() =>
                 {
@@ -847,8 +841,6 @@ impl<'a> RustCodegen<'a> {
     // ── Top-level dispatch ───────────────────────────────────────
 
     fn emit_items(&mut self, items: &[Item], _enclosing_ns: Option<&Namespace>) {
-        // WI-1106: which of these sorts are DATA sorts, for the `fact` marker below.
-        let data_sorts = self.collect_data_sort_names(items);
         let mut first = true;
         for item in items {
             match item {
@@ -856,6 +848,14 @@ impl<'a> RustCodegen<'a> {
                     if !first {
                         self.blank();
                     }
+                    // WI-20260917-S8JYF — a SECONDARY ENTRY's spec claims, before the
+                    // block's own module: `namespace FileStore { provides Modifiable[T =
+                    // FileStore] }` is where `// impl Modifiable for FileStore` comes
+                    // from now that the `fact Modifiable[T = FileStore]` spelling is
+                    // retired. An ordinary namespace has no `provides` (the loader
+                    // refuses one, `ProvidesClauseNeedsSort`), so this emits nothing
+                    // there.
+                    self.emit_secondary_entry_provisions(n);
                     self.emit_namespace(n);
                 }
                 Item::SortWithBody(s) => {
@@ -878,9 +878,11 @@ impl<'a> RustCodegen<'a> {
                         ),
                     });
                 }
-                Item::Fact(f) => {
-                    self.emit_namespace_fact(f, &data_sorts);
-                }
+                // WI-20260917-S8JYF — a top-level `fact` maps to NOTHING in Rust. One
+                // used to render `// impl <Trait> for <Carrier>` off its brackets; with
+                // the `fact` spelling of a provision retired it asserts no is-a, and the
+                // marker comes from a `namespace <Carrier>` secondary entry above.
+                Item::Fact(_) => {}
                 Item::Rule(_) => {
                     // Collected later for test module
                 }
@@ -944,36 +946,37 @@ impl<'a> RustCodegen<'a> {
         // Only sorts with a body should receive aggregated operations
         let body_sort_names = self.collect_body_sort_names(&ns.items);
         let sort_names = self.collect_sort_names(&ns.items);
-        // WI-1106: which of them are DATA sorts, for the `fact` marker below.
-        let data_sorts = self.collect_data_sort_names(&ns.items);
-        let _entity_names = self.collect_entity_names(&ns.items);
 
         // Map: sort_name → Vec<&Operation> for namespace-level ops
         let mut sort_ops: std::collections::HashMap<String, Vec<&Operation>> =
             std::collections::HashMap::new();
         let mut consumed_ops: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-        // Map: sort_name → Vec<String> for namespace-level facts as supertraits
-        // Associate each fact with the most recent preceding sort
+        // Map: sort_name → Vec<String>, the is-a edges a SECONDARY ENTRY at that sort's
+        // address declares. `namespace Type { provides PartialEq[T = Type] }` beside
+        // `sort Type = ?` renders `trait Type: PartialEq`, exactly as the same claim
+        // written in the sort's own body does (`collect_sort_info`) — 059 R2: what a
+        // secondary entry declares enters the sort's own scope.
+        //
+        // WI-20260917-S8JYF — WHAT REPLACED THE PROXIMITY READING. A namespace-level
+        // `fact Spec` used to be folded into the PRECEDING sort's supertrait list, so
+        // declaration ORDER decided which type a claim was about — the reading WI-978
+        // removed from the loader and WI-933 from the impl-marker path, and this was
+        // the last place it survived. The entry's ADDRESS says it now, and nothing is
+        // read off a neighbour.
+        //
+        // AN ENTRY AT A NON-SORT ADDRESS IS NOT CONSUMED HERE: a §6.3 free-standing
+        // `entity FileStore(…)` lowers to a STRUCT, which has no supertrait list, so
+        // its entry's claims render as `// impl Modifiable for FileStore` markers in
+        // [`Self::emit_secondary_entry_provisions`]. One provision, one rendering —
+        // the two paths partition on whether the address is trait-lowered.
         let mut sort_supertraits: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
-        let mut consumed_facts: std::collections::HashSet<usize> = std::collections::HashSet::new();
-
-        // Track the most recently seen sort name for fact association
-        let mut current_sort: Option<String> = None;
+        let mut consumed_entries: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
 
         for (idx, item) in ns.items.iter().enumerate() {
             match item {
-                Item::AbstractSort(s) => {
-                    current_sort = Some(self.resolve(&s.name));
-                }
-                Item::SortWithBody(s) => {
-                    current_sort = Some(self.resolve(&s.name));
-                }
-                Item::Entity(_) | Item::Namespace(_) => {
-                    // Entities and namespaces break the sort-fact association
-                    current_sort = None;
-                }
                 Item::Operation(op) => {
                     if let Some(first_param) = op.params.first() {
                         let first_type = self.type_expr_short_name(&first_param.ty);
@@ -983,23 +986,38 @@ impl<'a> RustCodegen<'a> {
                         }
                     }
                 }
-                Item::Fact(f) => {
-                    // If preceded by a sort, associate as supertrait
-                    if let Some(ref sname) = current_sort {
-                        if let Some(trait_name) =
-                            extract_fact_sort_name(self.symbols, self.terms, f)
-                        {
-                            // Only associate if the fact name is a known sort —
-                            // a `fact` naming anything else (a data constructor,
-                            // an undeclared name) is not a supertrait edge.
-                            if sort_names.contains(&trait_name) {
-                                sort_supertraits
-                                    .entry(sname.clone())
-                                    .or_default()
-                                    .push(trait_name);
-                                consumed_facts.insert(idx);
+                Item::Namespace(entry) => {
+                    let address = self.resolve(&entry.name);
+                    if !sort_names.contains(&address) {
+                        continue;
+                    }
+                    // Bare specs only, and unconditional ones — the WI-1108 bound the
+                    // in-body reader states, for its reason.
+                    let supers: Vec<String> = entry
+                        .items
+                        .iter()
+                        .filter_map(|i| match i {
+                            Item::ProvidesClause(pc)
+                                if matches!(pc.spec, TypeExpr::Simple(_))
+                                    && pc.conditions.is_empty() =>
+                            {
+                                Some(type_expr_name(self.symbols, &pc.spec))
                             }
-                        }
+                            _ => None,
+                        })
+                        .collect();
+                    if supers.is_empty() {
+                        continue;
+                    }
+                    sort_supertraits.entry(address).or_default().extend(supers);
+                    // Consumed only when the entry has NOTHING ELSE in it: an entry that
+                    // also declares operations (059 R2) still has to emit its module.
+                    if entry
+                        .items
+                        .iter()
+                        .all(|i| matches!(i, Item::ProvidesClause(_)))
+                    {
+                        consumed_entries.insert(idx);
                     }
                 }
                 _ => {}
@@ -1010,12 +1028,11 @@ impl<'a> RustCodegen<'a> {
         let mut first = true;
         let mut orphan_ops: Vec<&Operation> = Vec::new();
         for (idx, item) in ns.items.iter().enumerate() {
-            if consumed_ops.contains(&idx) || consumed_facts.contains(&idx) {
+            if consumed_ops.contains(&idx) || consumed_entries.contains(&idx) {
                 continue;
             }
             // WI-540 `emit_only`: skip a sort/enum/entity not in the subset, and
-            // skip namespace-level facts entirely (the supertrait facts are
-            // already folded into `sort_supertraits` above).
+            // skip namespace-level facts entirely — they map to nothing in Rust.
             if self.config.emit_only.is_some() {
                 let skip = match item {
                     Item::SortWithBody(s) => !self.config.emits(&self.resolve(&s.name)),
@@ -1071,6 +1088,21 @@ impl<'a> RustCodegen<'a> {
                     if !first {
                         self.blank();
                     }
+                    // A SECONDARY ENTRY whose address is NOT trait-lowered — a §6.3
+                    // free-standing `entity`, which becomes a struct and has no
+                    // supertrait list. Its claims render as `// impl <Trait> for <X>`
+                    // markers.
+                    //
+                    // GUARDED ON `sort_names`, and the guard is not redundant with the
+                    // `consumed_entries` skip above. An entry at a sort's address whose
+                    // claims were folded into that sort's supertraits is consumed ONLY
+                    // when it holds nothing else; one that also declares an operation
+                    // (059 R2) still has to emit its module, and would otherwise arrive
+                    // here and render its already-folded claims a SECOND time as
+                    // markers — one provision, two renderings.
+                    if !sort_names.contains(&self.resolve(&n.name)) {
+                        self.emit_secondary_entry_provisions(n);
+                    }
                     self.emit_namespace(n);
                 }
                 Item::Entity(e) => {
@@ -1082,9 +1114,6 @@ impl<'a> RustCodegen<'a> {
                 Item::Operation(o) => {
                     // Collect orphan ops for module trait emission
                     orphan_ops.push(o);
-                }
-                Item::Fact(f) => {
-                    self.emit_namespace_fact(f, &data_sorts);
                 }
                 Item::Rule(_) | Item::RuleBlock(_) => {
                     // Collected later for test module
@@ -1151,43 +1180,7 @@ impl<'a> RustCodegen<'a> {
             .collect()
     }
 
-    /// WI-1106 — the names of sorts declared in `items` that have CONSTRUCTORS, i.e.
-    /// the DATA sorts. A `fact` naming one asserts a data instance, never an is-a, so
-    /// [`Self::emit_namespace_fact`] must emit no `impl` marker for it.
-    ///
-    /// The rule is the loader's (`maybe_emit_fact_provides_info`, `kb/load.rs`), which
-    /// files no provision for such a fact; the mapper would otherwise assert in Rust
-    /// exactly the relation the loader refuses to record — measured, `fact
-    /// Polynom[Coeff]` emitted `// impl Polynom for Coeff` where `Polynom` is a
-    /// polynomial over a ring and `Coeff` its parameter.
-    ///
-    /// An eponymous `sort Box { entity Box(…) }` (§6.3 / WI-926) counts, since the
-    /// constructor is what makes it data — not whether it shares the sort's name.
-    fn collect_data_sort_names(&self, items: &[Item]) -> Vec<String> {
-        items
-            .iter()
-            .filter_map(|item| match item {
-                Item::SortWithBody(s) if s.items.iter().any(|i| matches!(i, Item::Entity(_))) => {
-                    Some(self.resolve(&s.name))
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn collect_entity_names(&self, items: &[Item]) -> Vec<String> {
-        items
-            .iter()
-            .filter_map(|item| {
-                if let Item::Entity(e) = item {
-                    Some(self.resolve(&e.name))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
+ 
     /// Emit an abstract sort (no body) as a trait with aggregated namespace-level operations.
     fn emit_abstract_sort_as_trait(
         &mut self,
@@ -1237,7 +1230,7 @@ impl<'a> RustCodegen<'a> {
         }
 
         let sort_name = self.resolve(&sort.name);
-        let mut info = SortInfo::from_items(&sort.items, self.symbols, self.terms);
+        let mut info = SortInfo::from_items(&sort.items, self.symbols);
 
         // Add extra namespace-level operations and supertraits
         for op in extra_ops {
@@ -1353,7 +1346,7 @@ impl<'a> RustCodegen<'a> {
         }
 
         let sort_name = self.resolve(&sort.name);
-        let info = SortInfo::from_items(&sort.items, self.symbols, self.terms);
+        let info = SortInfo::from_items(&sort.items, self.symbols);
 
         if !info.entities.is_empty() {
             self.emit_sort_as_enum(sort, &sort_name, &info);
@@ -1786,51 +1779,41 @@ impl<'a> RustCodegen<'a> {
         type_expr_name(self.symbols, ty)
     }
 
-    // ── Namespace fact → impl marker comment ─────────────────────
+    // ── Secondary entry's `provides` → impl marker comment ───────
 
-    /// A namespace-level satisfaction fact → the `impl <Trait> for <Carrier>` marker
-    /// comment.
+    /// A SECONDARY ENTRY's spec claims → the `impl <Trait> for <Carrier>` marker
+    /// comments. `namespace FileStore { provides Modifiable[T = FileStore] }` renders
+    /// `// impl Modifiable for FileStore`.
     ///
-    /// THE CARRIER COMES FROM THE BRACKETS (WI-933), not from the entity that happens
-    /// to precede the fact. It used to be `preceding_entity`, which was the reading
-    /// the bracket-less spelling forced — and that spelling is now a load error,
-    /// because deriving a carrier by proximity lets declaration ORDER decide which
-    /// type a claim is about (`kb/load.rs`, `maybe_emit_fact_provides_info`;
-    /// `docs/rust-forward-mapping.md` §2.13). Proximity was not merely redundant once
-    /// the brackets are guaranteed, it was WRONG: MEASURED, `entity SqlStore(…) entity
-    /// ColumnDef(…) fact QueryableStore[SqlStore]` emitted `// impl QueryableStore for
-    /// ColumnDef` — the author's own carrier discarded in favour of the neighbour.
+    /// THE CARRIER IS THE ADDRESS (WI-20260917-S8JYF), which is the whole reason this
+    /// replaced `emit_namespace_fact`. That function read a namespace-level `fact
+    /// QueryableStore[SqlStore]` and took the carrier from the BRACKETS — itself a
+    /// WI-933 repair of an earlier reading that took the entity PRECEDING the fact
+    /// (measured: `entity SqlStore(…) entity ColumnDef(…) fact QueryableStore[SqlStore]`
+    /// emitted `// impl QueryableStore for ColumnDef`, discarding the author's carrier).
+    /// The retirement removes the question: a `fact` at namespace level is an ordinary
+    /// fact and names no carrier at all, while a provision names its provider by WHERE
+    /// it is written, so the enclosing block's own name IS the carrier and nothing is
+    /// derived, guessed or read out of a binding.
     ///
-    /// A fact with no bindings emits NOTHING. This path parses without loading
-    /// (`anthill codegen` calls `parse` then `generate_rust`), so the loader's refusal
-    /// does not reach it and the spelling still arrives here; but the mapper has no
-    /// more idea than the loader which type was meant, and a marker naming a guessed
-    /// carrier is worse than an absent one. The diagnostic for that text is the
-    /// loader's, and it names the file and line.
-    fn emit_namespace_fact(&mut self, fact: &Fact, data_sorts: &[String]) {
-        let trait_name = match extract_fact_sort_name(self.symbols, self.terms, fact) {
-            Some(n) => n,
-            None => return,
-        };
-
-        // WI-1106 — A SORT WITH CONSTRUCTORS IS A DATA SORT, so a `fact` naming one
-        // asserts an instance and NOT an is-a. Without this the mapper emitted the
-        // very relation the loader refuses to file: measured at a file's top level,
-        // `fact Polynom[Coeff]` gave `// impl Polynom for Coeff` and `fact Box(value:
-        // Other)` gave `// impl Box for Other`. (A fact inside a `namespace` block
-        // that FOLLOWS a sort never reached here at all — it is captured as a
-        // supertrait edge by `current_sort` — which is why the two positions had to be
-        // probed separately.)
-        if data_sorts.contains(&trait_name) {
-            return;
+    /// NO DATA-SORT GATE, and it is not needed. `emit_namespace_fact` carried one
+    /// (WI-1106), because `fact Polynom[Coeff]` — an ordinary instantiation fact over a
+    /// parametric DATA sort — is shaped exactly like a claim and used to emit `// impl
+    /// Polynom for Coeff`. A `provides` clause has no second reading, and the loader
+    /// refuses one naming a data sort outright (`ProvidesNamesDataSort`).
+    ///
+    /// THE BLOCK'S OWN CONTENT still emits as a module: a secondary entry may also
+    /// declare operations (059 R2), and this reads only its `provides` items.
+    fn emit_secondary_entry_provisions(&mut self, ns: &Namespace) {
+        let carrier = self.resolve(&ns.name);
+        // The LOCAL segment: a secondary entry may be written `namespace anthill.prelude.Int64`.
+        let carrier = carrier.rsplit('.').next().unwrap_or(&carrier).to_string();
+        for item in &ns.items {
+            if let Item::ProvidesClause(pc) = item {
+                let trait_name = type_expr_name(self.symbols, &pc.spec);
+                self.line(&format!("// impl {trait_name} for {carrier}"));
+            }
         }
-
-        let entity_name = match extract_fact_carrier_name(self.symbols, self.terms, fact) {
-            Some(n) => n,
-            None => return,
-        };
-
-        self.line(&format!("// impl {trait_name} for {entity_name}"));
     }
 
     // ── Constraint → check function ──────────────────────────────
@@ -2161,53 +2144,6 @@ fn escape_rust_keyword(name: String) -> String {
         n if RESERVED.contains(&n) => format!("r#{name}"),
         _ => name,
     }
-}
-
-/// Extract a sort name from a fact term (for fact-as-supertrait pattern).
-fn extract_fact_sort_name(
-    symbols: &SymbolTable,
-    terms: &SimpleTermStore,
-    fact: &Fact,
-) -> Option<String> {
-    match terms.get(fact.term) {
-        Term::Ident(sym) => Some(symbols.local_name(*sym).to_owned()),
-        Term::Fn { functor, .. } => Some(symbols.local_name(*functor).to_owned()),
-        _ => None,
-    }
-}
-
-/// WI-933 — the CARRIER a namespace-level satisfaction fact names: the type its
-/// brackets bind, which is what `impl <Trait> for <Carrier>` needs.
-///
-/// The bootstrap mapper reads the PARSE IR, before names are resolved, so unlike the
-/// loader's `maybe_emit_fact_provides_info` it cannot ask whether a binding names a
-/// sort, an entity or an operation. It reads the shape instead: the leading positional
-/// (`fact QueryableStore[SqlStore]`), else the first named binding that is a plain
-/// name (`fact Modifiable[T = FileStore]`) — the two spellings the stdlib and this
-/// document's examples use. A binding that is not a bare name (a literal, a nested
-/// application) yields `None` and no marker, rather than a marker naming something
-/// that is not a type.
-fn extract_fact_carrier_name(
-    symbols: &SymbolTable,
-    terms: &SimpleTermStore,
-    fact: &Fact,
-) -> Option<String> {
-    let (pos_args, named_args) = match terms.get(fact.term) {
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => (pos_args, named_args),
-        _ => return None,
-    };
-    let as_name = |id: &TermId| match terms.get(*id) {
-        Term::Ident(sym) | Term::Ref(sym) => Some(symbols.local_name(*sym).to_owned()),
-        _ => None,
-    };
-    pos_args
-        .iter()
-        .find_map(as_name)
-        .or_else(|| named_args.iter().find_map(|(_, v)| as_name(v)))
 }
 
 /// Get the short name from a TypeExpr.

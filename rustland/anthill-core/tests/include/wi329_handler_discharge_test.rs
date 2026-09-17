@@ -101,7 +101,9 @@ namespace wi329.decl
   -- no registered kind, so deleting this line now fails every row in this file rather
   -- than none of them. (It used to be measured as inert — removing it left the file at
   -- 21/21 — which is the observation that ticket started from.)
-  fact Effect[T = Beep]
+  namespace Beep
+    provides Effect[T = Beep]
+  end
 
   -- Bodies, by which labels they perform.
   operation may_fail(r: Res) -> Int64

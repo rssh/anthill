@@ -209,7 +209,6 @@ namespace ak2aj.gate
     requires Eq[T]
   end
 
-  fact Summable[T = Int64]
 
   sort Lib
     sort A = ?
@@ -220,6 +219,11 @@ namespace ak2aj.gate
       keep_id: keep(?x: Summable, ?y) <=> ?x @[simp]
     }
   end
+end
+
+namespace anthill.prelude.Int64
+  import ak2aj.gate.Summable
+  provides Summable[T = Int64]
 end
 "#;
     let mut kb = crate::common::load_kb_with(SRC);

@@ -330,8 +330,10 @@ fn a_body_less_builtin_spec_op_behaves_exactly_as_the_check_only_spelling() {
   sort Witheq
     entity we(v: Int64)
   end
-  fact PartialEq[T = Witheq]
-  fact Eq[T = Witheq]
+  namespace Witheq
+    provides PartialEq[T = Witheq]
+    provides Eq[T = Witheq]
+  end
   rule checked(?x, ?y) :- requires(PartialEq[T]), eq(?x, ?y)
   rule denoted(?x, ?y) :- require[PartialEq[T]], eq(?x, ?y)
   rule control(?r) :- checked(we(v: 1), we(v: 1)), ?r <=> 1
@@ -630,7 +632,9 @@ fn a_two_supplier_carrier_dispatches_silently_through_the_dictionary() {
 
   operation otherDescribe(x: Leaf) -> Int64 = 9
 
-  fact Desc[T = Leaf, describe = otherDescribe]
+  namespace Leaf
+    provides Desc[T = Leaf, describe = otherDescribe]
+  end
 
   rule via(?x, ?r) :- {clause}Desc.describe(?x, ?r)
   rule answer(?r) :- via(leaf(), ?r)

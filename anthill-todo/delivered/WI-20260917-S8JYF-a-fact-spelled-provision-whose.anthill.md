@@ -3,9 +3,9 @@
 - id: WI-20260917-S8JYF-a-fact-spelled-provision-whose
 - created: 2026-09-17T14:59:44Z
 
-- status: Open
+- status: Delivered
 - status_agent: user
-- status_at: 2026-09-17T14:59:44Z
+- status_at: 2026-09-17T19:34:43Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -228,4 +228,84 @@ of scope and deserves its own proposal"), Out of scope ("Instance-claim ↔ `pro
 unification — own proposal"), and Alternatives ("`fact Modifiable[…]` → `provides`:
 deferred, not rejected — real overlap, separate concern"). This ticket is now the answer to
 that deferral, with the feasibility measured rather than assumed.
+
+### 2026-09-17T19:34:28Z — feedback — user
+
+DELIVERED — `provides` IS THE ONLY SPELLING OF A PROVISION, AT BOTH LEVELS.
+
+WHAT SHIPPED:
+  * `maybe_emit_fact_provides_info` and its two helpers are GONE from `load_fact`. No
+    `fact` emits `SortProvidesInfo` — neither the in-sort reading (provider from the
+    enclosing type) nor the namespace-level one (carrier DERIVED from a binding value).
+  * Three diagnostics retired with the derivation that raised them:
+    `CarrierlessProvisionFact` + `CarrierlessProvisionReason` (WI-933),
+    `UnresolvableInstanceCarrier` (WI-431 (E)), and the `ProvisionFactSpelling`
+    deprecation warning (WI-862). Each could only fire on a carrier derivation, and
+    there is no longer one.
+  * READERS keyed on the `fact` spelling dropped that leg, which is the retirement and
+    not a cleanup: `region.rs`'s `modifiable_claim_heads` reads the provision relation
+    ONLY (a `fact Modifiable[T = X]` claims nothing now); Rust codegen lost its
+    `Item::Fact` supertrait arm, its proximity-based namespace-level arm and
+    `emit_namespace_fact`, and gained `emit_secondary_entry_provisions` — an entry at a
+    trait-lowered address folds into that sort's supertraits, one at an entity's address
+    renders `// impl Spec for X`.
+  * §5.5's effect-kind registration migrated with everything else and is DRIVEN, not
+    inferred: `provides Effect[T = MyEff]` registers, a `fact` does not.
+
+CORPUS MIGRATION — 20 sites + the two the census missed (`anthill-testcases/ring-polynom`,
+`docs/measurements/guardians/d3_frame.anthill`). Written in the carrier's own body where
+it has one (`sort Modify { provides Effect[T = Modify[?]] }`), in a `namespace <Carrier>`
+SECONDARY ENTRY where it does not (`sort Type = ?`, the free-standing `entity FileStore`
+family, `Vec3`, both forges, `anthill.prelude.Int64` for the ring testcase). MEASURED: a
+cross-FILE entry works — `anthill-todo`'s and `wi931`'s both claim for a sort declared in
+another file.
+
+THE GATE WAS BUILT AND REMOVED, and that is the one place the ticket's plan changed.
+055-implementation §7 lists the fact HEAD beside three positions where a bracketed
+application over an unresolved name already reports, and it reads as the fourth. It is
+not: those three are REFERENCE positions and a clause head is a DECLARATION
+(WI-20260821-RDGQC). `fact myrel[T = Red]` is a rule-introduced predicate carrying a type
+argument — byte-identical to `fact NoSuchSpec[T = C]` except that one name is capitalized,
+which §2.3 gives no meaning. MEASURED: the refusal took
+`wi_c7anm_head_parameter_column_test::a_bracketed_head_binds_a_type_argument_not_a_parameter`
+with it. So what closes the silence is the retirement itself — with one reading left, a
+missing import demotes nothing — exactly as the 16:01 direction note argued.
+
+TEST MIGRATION — ~374 fixture sites across ~95 modules, scripted over the raw-string
+fixtures and hand-applied to the plain-string ones. 362 tests failed with the emission off
+before the migration; 0 after. `wi933_carrierless_provision_test` is DELETED (its subject
+is gone) and succeeded by `wi_s8jyf_provision_spelling_test`, which drives: a `fact`
+records no provision at either level, a secondary entry records what the fact used to, the
+provision DISPATCHES and the fact falls to the spec's default, the parens mirror defect
+(`fact MySpec(T: 1)` banking a spec parameter bound to the literal 1) is gone, effect
+registration works through `provides` only, and the deliberately-absent head gate. wi862's
+four deprecation rows are deleted; wi1069's fact/provides agreement pair is one row;
+wi431's two carrier-derivation refusals are replaced by rows that read the provision
+relation back rather than asserting a clean load.
+
+SPEC + PROPOSALS, in the same change: `kernel-language.md` §4.4, §5.1, §5.5, §6.3, §8.7,
+059's R3 table row; 058 §4 (which SAID the namespace-level population was untouched — that
+scoping was measured wrong: the in-sort half had 0 corpus sites, the namespace-level half
+had 20); 055 §6's deferred overlap, now answered; 055-implementation §7/§8;
+`rust-forward-mapping.md` §2.13; a status note on 013.
+
+WHAT IT COSTS, stated rather than discovered later:
+  * A provision is NOT a clause, so the goal `Spec(T: ?q)` no longer answers from one.
+    Where a rule resolves the spec as a goal, keep the fact BESIDE the provision —
+    §5.1 says so and `wi1069::the_two_spellings_diverge_outside_the_provision` drives it.
+  * A PARAMETERIZED provision still renders no Rust supertrait (WI-1108). The retired
+    `fact` arm rendered it bare — dropping every binding, which is wrong Rust — and
+    widening the `provides` arm was measured to break the anthill-stl build. Pinned with
+    its control by `codegen_test::a_parameterized_provision_renders_no_supertrait_yet`.
+  * The `LoadWarning` span/`Located` channel now has no producer. Kept and documented at
+    `LoadWarning::span` so the next span-bearing advisory plugs in rather than rebuilding.
+
+ACCEPTANCE: `rustland/scripts/test.sh` — 7121 passed, 0 failed. `/code-review` run at
+`high`; its two findings were mine and both are fixed in the same change (a secondary
+entry that also declares an operation rendered its provision twice in codegen; a stray
+blank line). scaland-sbt-test NOT RUN — sbt is not installed in this environment. scaland
+is untouched by the change (no `SortProvidesInfo` there); its tests do parse the repo's
+`stdlib/anthill` sources, and the migrated spellings are all existing grammar its one
+`declaration` production already admits (`providesDecl` and `namespaceDecl` are both in
+it), but that is reasoning and not a measurement.
 

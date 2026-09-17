@@ -456,7 +456,7 @@ fn a_dot_on_a_provision_tie_refuses_as_a_supplier_tie() {
     /// inferred default row for the rung.
     const MEMBER_ONLY: &str = "    operation describe(x: Leaf) -> Int64 = 7\n";
     const SECOND_WITNESS: &str = "\n  sort Other\n    import anthill.prelude.Int64\n    \
-                                  fact Desc[T = Leaf]\n    \
+                                  provides Desc[T = Leaf]\n    \
                                   operation describe(x: Leaf) -> Int64 = 11\n  end\n";
     let supply = format!("{RIVAL_WITNESS}{SECOND_WITNESS}");
     let dot = refusal(&body_less(ns, MEMBER_ONLY, &supply, DOT_OP));
@@ -548,7 +548,8 @@ end
 
 /// The second supplier: an instance fact binding a different operation for `Coll`.
 const ABSTRACT_RIVAL: &str = "\n  operation otherDescribe(x: Coll) -> Int64 = 9\n\n  \
-                              fact Desc[T = Coll, describe = otherDescribe]\n";
+                              namespace Coll\n    \
+                              provides Desc[T = Coll, describe = otherDescribe]\n  end\n";
 
 /// Both spellings of the receiver call, driven together everywhere below: agreeing on the
 /// refusal is worth nothing if they disagree on the answer, and vice versa.

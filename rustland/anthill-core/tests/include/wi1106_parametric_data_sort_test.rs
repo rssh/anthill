@@ -260,7 +260,9 @@ namespace test.wi1106.spec
     entity wi1106_c
   end
 
-  fact Wi1106Spec[Wi1106Carrier]
+  namespace Wi1106Carrier
+    provides Wi1106Spec[Wi1106Carrier]
+  end
 end
 "#;
     let mut kb = try_load_kb_with(src).expect("the provision must load clean");
@@ -285,20 +287,17 @@ end
 /// WI-407, MEASURED identical on both sides of this change. What the widening does is
 /// stop the arity from deciding.
 ///
-/// THE DROP IS SILENT, and that is a real cost stated rather than hidden: nothing is
-/// reported at the `fact` line, so the author sees a type mismatch at the *use*. It
-/// cannot simply be made loud — `sort Holder { fact Colour[count = ?] }` is a
-/// legitimate data fact, pinned clean by wi210
-/// `fact_for_non_spec_sort_does_not_emit_provides_info` — so telling a data assertion
-/// from a mis-written claim in this position is a question this rule does not answer.
-///
-/// `provides` AGREES HERE, and did not before: `provides DataSort[…]` in the same body
-/// used to file the provision and let the upcast conform, at BOTH arities. That made
-/// kernel-language §5.1 — the two spellings "record the same PROVISION", "neither can
-/// say something about a carrier the other cannot" — false over a constructor-bearing
-/// spec. `load_provides_clause` now applies the same rule, reading the PROVIDED spec's
-/// constructors (not the provider's, which would refuse every concrete carrier in the
-/// stdlib). Driven below.
+/// WI-20260917-S8JYF — THE `fact` HALF OF THIS ROW IS GONE, and the rule it measured
+/// survives on the `provides` side alone. This test drove `sort Wi1106Sub { fact
+/// Wi1106Data[T = Int64] }` and asserted the upcast was refused because the fact filed
+/// no is-a; with the `fact` spelling of a provision retired, NO fact files one, so the
+/// data-sort rule has nothing to say about that text. What remains is the half that
+/// was always a refusal: `provides DataSort[…]` used to file the provision and let the
+/// upcast conform, at BOTH arities, which made kernel-language §5.1's "neither can say
+/// something about a carrier the other cannot" false over a constructor-bearing spec.
+/// `load_provides_clause` reads the PROVIDED spec's constructors (not the provider's,
+/// which would refuse every concrete carrier in the stdlib) and refuses. Driven below,
+/// with its control.
 #[test]
 fn the_sort_body_position_takes_the_rule_too() {
     const WITH_FACT: &str = r#"
@@ -312,7 +311,7 @@ namespace test.wi1106.sortbody
 
   sort Wi1106Sub
     entity wi1106_sub
-    fact Wi1106Data[T = Int64]
+    provides Wi1106Data[T = Int64]
   end
 
   operation wi1106_up(s: Wi1106Sub) -> Wi1106Data[T = Int64] = s
@@ -321,13 +320,13 @@ end
     let errs = errors(WITH_FACT);
     assert!(
         errs.iter().any(|e| e.contains("Wi1106Sub")),
-        "a sort-body `fact` naming a DATA sort files no is-a, so the upcast must be \
-         refused — the arity must not decide it; got {errs:?}"
+        "a sort-body `provides` naming a DATA sort is refused, so the upcast does not \
+         conform — the arity must not decide it; got {errs:?}"
     );
 
     // CONTROL, and the reason the assertion above is about the UPCAST rather than
     // about an error existing: the identical body over a constructor-LESS sort still
-    // provides, so the widening did not simply disable sort-body facts.
+    // provides, so the widening did not simply disable sort-body claims.
     let spec_version = WITH_FACT
         .replace("Wi1106Data\n    sort T = ?\n    entity wi1106_data(v: T)", "Wi1106Data\n    sort T = ?")
         .replace("test.wi1106.sortbody", "test.wi1106.sortbody_ctl");
@@ -439,17 +438,24 @@ end
     );
 }
 
-/// A CARRIER BINDING THAT RESOLVED TO NOTHING is not a carrier. In a PAREN field slot
-/// a literal lowers to `Term::Const` and was already declined; in a BRACKET the
-/// converter lowers `1` as a TYPE NAME, so `fact Spec[T = 1]` arrived as a
-/// `Term::Ident` and was taken as the carrier — filing the provision under a symbol
-/// named `1`, which tripped `typing.rs`'s WI-672 `debug_assert` in a debug build and
-/// silently misbucketed it in release. The derivation now asks whether the symbol
-/// resolved at all, which is what that assert's own message asks for ("resolve the
-/// `provides` carrier at its producer").
+/// A BRACKET BINDING THAT RESOLVES TO NOTHING IS STILL LOUD — through the ORDINARY
+/// name resolver now, which is where WI-20260917-S8JYF left it.
 ///
-/// The tuple and arrow shapes lower the same way and are covered by the same filter,
-/// so all three are driven — they were three separate reports and one cause.
+/// The original defect was a CARRIER DERIVATION's: in a paren field slot a literal
+/// lowers to `Term::Const` and was already declined, but in a bracket the converter
+/// lowers `1` as a TYPE NAME, so `fact Spec[T = 1]` arrived as a `Term::Ident` and was
+/// TAKEN AS THE CARRIER — filing the provision under a symbol named `1`, which tripped
+/// `typing.rs`'s WI-672 `debug_assert` in a debug build and silently misbucketed it in
+/// release. WI-1106 added a resolution filter at the derivation and refused it with its
+/// own sentence ("its bindings name no type").
+///
+/// The retirement removed the derivation, so there is no carrier to misfile — and the
+/// text is not thereby silent: `1` in a bracket is an unresolved NAME, and the loader
+/// says so at the binding's own column. That is the check WI-672's assert message asked
+/// for ("resolve the `provides` carrier at its producer"), reached by the shorter route.
+///
+/// The tuple and arrow shapes lower the same way, so all three are driven — they were
+/// three separate reports and one cause.
 #[test]
 fn a_binding_that_resolved_to_nothing_is_refused_not_filed() {
     for binding in ["1", "(a: Int64)", "(x: Int64) -> Int64"] {
@@ -469,9 +475,9 @@ end
         );
         let errs = errors(&src);
         assert!(
-            errs.iter()
-                .any(|e| e.contains("its bindings name no type")),
-            "`[T = {binding}]` names no type, so it must be refused rather than filed              under an unresolved carrier; got {errs:?}"
+            errs.iter().any(|e| e.contains("unresolved name")),
+            "`[T = {binding}]` names no type, so the bracket must be refused rather \
+             than lowered to a symbol nothing declares; got {errs:?}"
         );
     }
 
@@ -491,7 +497,9 @@ namespace test.wi1106.unres_ctl
     entity wi1106_urc
   end
 
-  fact Wi1106URSpec2[T = Wi1106URCarrier]
+  namespace Wi1106URCarrier
+    provides Wi1106URSpec2[T = Wi1106URCarrier]
+  end
 end
 "#,
     )

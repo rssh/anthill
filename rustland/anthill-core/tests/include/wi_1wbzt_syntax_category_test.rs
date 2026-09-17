@@ -46,7 +46,9 @@ namespace test.wbzt.money
     operation neg(a: Money) -> Money = Money(cents: 0 - a.cents)
     operation zero() -> Money = Money(cents: 0)
   end
-  fact Additive[T = Money]
+  namespace Money
+    provides Additive[T = Money]
+  end
   operation plus() -> Int64 = (Money(cents: 700) + Money(cents: 25)).cents
   operation minus() -> Int64 = (Money(cents: 700) - Money(cents: 25)).cents
 end
@@ -64,7 +66,7 @@ fn drive(src: &str, qn: &str) -> String {
 /// THE TICKET'S CONTROL, AND THE ROW THAT COULD NOT PASS BEFORE IT.
 ///
 /// A carrier that claims `Additive` and NOTHING else gets a working minted `+` and `-`.
-/// Backed out, `fact Additive[T = Money]` names nothing — `Additive` does not exist —
+/// Backed out, `provides Additive[T = Money]` names nothing — `Additive` does not exist —
 /// and the only way to the operator is `fact Numeric[T = Money]`, which drags in `mul`
 /// and, through `requires PartialOrd[T]`, four comparisons.
 ///
@@ -76,7 +78,7 @@ fn a_carrier_that_only_adds_gets_plus_from_one_fact() {
     assert_eq!(
         drive(MONEY_ADDITIVE, "test.wbzt.money.plus"),
         "Int(725)",
-        "a minted `+` must reach the CARRIER's own `add` off one `fact Additive`"
+        "a minted `+` must reach the CARRIER's own `add` off one `provides Additive`"
     );
     assert_eq!(
         drive(MONEY_ADDITIVE, "test.wbzt.money.minus"),
@@ -153,8 +155,8 @@ namespace test.wbzt.omit
   import anthill.prelude.{{Int64, Additive}}
   sort Money
     entity Money(cents: Int64)
-{}{}{}{}  end
-  fact Additive[T = Money]
+{}{}{}{}    provides Additive[T = Money]
+  end
 end
 "#,
             member(
@@ -367,7 +369,9 @@ fn the_chain_discharges_for_int64_and_stops_at_the_category_money_claimed() {
     operation neg(a: Money) -> Money = Money(cents: 0 - a.cents)
     operation zero() -> Money = Money(cents: 0)
   end
-  fact Additive[T = Money]"#;
+  namespace Money
+    provides Additive[T = Money]
+  end"#;
     let loads = |spec: &str, body: &str, money: bool| {
         let (decl, ty, arg) = if money {
             (MONEY_DECL, "Money", "Money(cents: 1)")

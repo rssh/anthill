@@ -187,7 +187,9 @@ namespace test.wi424.foldeff
   import anthill.prelude.{Effect, List, Int64}
   import anthill.prelude.FiniteCollection.{foldLeft}
   sort Beep end
-  fact Effect[T = Beep]
+  namespace Beep
+    provides Effect[T = Beep]
+  end
   operation noisy_add(a: Int64, b: Int64) -> Int64 effects Beep = a + b
   operation ok(xs: List[T = Int64]) -> Int64 effects Beep = foldLeft(xs, 0, noisy_add)
 end
@@ -204,7 +206,9 @@ namespace test.wi424.foldeff2
   import anthill.prelude.{Effect, List, Int64}
   import anthill.prelude.FiniteCollection.{foldLeft}
   sort Beep end
-  fact Effect[T = Beep]
+  namespace Beep
+    provides Effect[T = Beep]
+  end
   operation noisy_add(a: Int64, b: Int64) -> Int64 effects Beep = a + b
   operation boom(xs: List[T = Int64]) -> Int64 = foldLeft(xs, 0, noisy_add)
 end

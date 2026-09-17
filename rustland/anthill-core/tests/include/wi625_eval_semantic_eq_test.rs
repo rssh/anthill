@@ -257,8 +257,10 @@ const TAGGED_SRC: &str = r#"namespace gap2.instfact.eval
       case tagged(k1, n1) ->
         match y
           case tagged(k2, n2) -> eq(k1, k2)
-  fact PartialEq[T = Tagged, eq = taggedEq]
-  fact Eq[T = Tagged, eq = taggedEq]
+  namespace Tagged
+    provides PartialEq[T = Tagged, eq = taggedEq]
+    provides Eq[T = Tagged, eq = taggedEq]
+  end
 end
 "#;
 
@@ -325,8 +327,10 @@ fn eval_undecidable_instance_fact_eq_is_loud_not_false() {
     entity lp(v: Int64)
   end
   operation loopEq(x: Loop, y: Loop) -> Bool = eq(x, y)
-  fact PartialEq[T = Loop, eq = loopEq]
-  fact Eq[T = Loop, eq = loopEq]
+  namespace Loop
+    provides PartialEq[T = Loop, eq = loopEq]
+    provides Eq[T = Loop, eq = loopEq]
+  end
 end
 "#;
     let mut i = crate::common::interp_for(src);

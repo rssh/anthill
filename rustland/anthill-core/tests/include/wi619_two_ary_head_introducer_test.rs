@@ -109,7 +109,6 @@ namespace test.wi619.eqhead
     requires Eq[T]
   end
 
-  fact Summable[T = Int64]
 
   sort Lib
     sort A = ?
@@ -120,6 +119,11 @@ namespace test.wi619.eqhead
       keep_id: keep[T](?x: T, ?y) <=> ?x :- Summable[T] @[simp]
     }
   end
+end
+
+namespace anthill.prelude.Int64
+  import test.wi619.eqhead.Summable
+  provides Summable[T = Int64]
 end
 "#,
     );

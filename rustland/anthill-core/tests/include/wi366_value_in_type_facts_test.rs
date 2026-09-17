@@ -323,7 +323,7 @@ namespace test.wi366.factrow.f
   import anthill.prelude.{Int64, Stream}
   sort MyList
     entity nil
-    fact Stream[T = Int64, E = {}]
+    provides Stream[T = Int64, E = {}]
   end
 end
 "#;

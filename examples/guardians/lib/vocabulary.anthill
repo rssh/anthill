@@ -164,13 +164,11 @@ end
 -- as a TYPE, a `Modify` target as a RESOURCE (§5.6) — so wide_row.anthill and
 -- wide_row_modify.anthill each catch a program the other does not.
 sort guardians.Filesystem
-end
-
-namespace guardians
   import anthill.prelude.{Effect}
-  import guardians.{Filesystem}
 
   -- The project's one effect KIND. Capabilities are arguments of `Permission[…]`,
-  -- never bare row labels; `Permission` itself the prelude registers.
-  fact Effect[T = Filesystem]
+  -- never bare row labels; `Permission` itself the prelude registers. Written in
+  -- the kind's own body since WI-20260917-S8JYF retired the namespace-level
+  -- `fact Effect[T = Filesystem]` spelling (058 §4).
+  provides Effect[T = Filesystem]
 end

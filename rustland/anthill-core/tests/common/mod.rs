@@ -1164,7 +1164,7 @@ pub const DESC_INSTANCES: &str = r#"
 
   sort Leaf
     entity leaf
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 1
   end
 
@@ -1176,7 +1176,7 @@ pub const DESC_INSTANCES: &str = r#"
   sort WrapDesc
     sort E = ?
     requires Desc[T = E]
-    fact Desc[T = Wrap[A = E]]
+    provides Desc[T = Wrap[A = E]]
     operation describe(w: Wrap[A = E]) -> Int64 =
       add(mul(10, Desc.describe(w.inner)), 2)
   end

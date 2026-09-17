@@ -60,13 +60,13 @@ const INSTANCES: &str = r#"
 
   sort Leaf
     entity leaf
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 1
   end
 
   sort Pebble
     entity pebble
-    fact Desc[T = Pebble]
+    provides Desc[T = Pebble]
     operation describe(x: Pebble) -> Int64 = 5
   end
 
@@ -78,7 +78,7 @@ const INSTANCES: &str = r#"
   sort WrapDesc
     sort E = ?
     requires Desc[T = E]
-    fact Desc[T = Wrap[A = E]]
+    provides Desc[T = Wrap[A = E]]
     operation describe(w: Wrap[A = E]) -> Int64 =
       add(mul(10, Desc.describe(w.inner)), 2)
   end
@@ -206,7 +206,7 @@ const DIAGONAL: &str = r#"  sort Pair
   sort PairDesc
     sort E = ?
     requires Desc[T = E]
-    fact Desc[T = Pair[A = E, B = E]]
+    provides Desc[T = Pair[A = E, B = E]]
     operation describe(p: Pair[A = E, B = E]) -> Int64 =
       add(Desc.describe(p.fst), mul(10, Desc.describe(p.snd)))
   end
@@ -341,7 +341,7 @@ fn wrapped_diagonal_same_rigid_constructs() {
   sort WPairDesc
     sort E = ?
     requires Desc[T = E]
-    fact Desc[T = Pair[A = Wrap[A = E], B = E]]
+    provides Desc[T = Pair[A = Wrap[A = E], B = E]]
     operation describe(p: Pair[A = Wrap[A = E], B = E]) -> Int64 =
       add(Desc.describe(p.snd), 7)
   end

@@ -44,7 +44,10 @@ fn eq_on_float_conflicts_with_its_noneq() {
     let src = r#"
 namespace test.wi658.eq_float
   import anthill.prelude.{Eq, Float}
-  fact Eq[T = Float]
+end
+
+namespace anthill.prelude.Float
+  provides Eq[T = Float]
 end
 "#;
     let errs = try_load(src);

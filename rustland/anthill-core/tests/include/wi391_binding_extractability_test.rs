@@ -70,7 +70,7 @@ namespace test.wi391
     sort T = ?
   end
   sort FactCarrier
-    fact WI391Spec[T = Int64]
+    provides WI391Spec[T = Int64]
   end
   sort ProvCarrier
     provides WI391Spec[T = Int64]
@@ -189,10 +189,12 @@ namespace test.wi449
     sort T = ?
   end
   sort W449EffCarrier
-    fact W449Effect[T = Modify[?]]
+    provides W449Effect[T = Modify[?]]
   end
-  -- gap 2: a NESTED positional parameterized binding (`W449Inner[Int64]`), emitted
-  -- via both the `fact` (positional) and `provides` (explicit-named) paths.
+  -- gap 2: a NESTED positional parameterized binding (`W449Inner[Int64]`), written
+  -- POSITIONALLY and with the parameter NAMED. WI-20260917-S8JYF: the two used to be
+  -- the `fact` and `provides` paths; the retirement left one lowering, so what the
+  -- pair now varies is the SURFACE — positional vs named — over that one path.
   sort W449Inner
     sort E = ?
   end
@@ -200,7 +202,7 @@ namespace test.wi449
     sort C = ?
   end
   sort W449FactCarrier
-    fact W449Outer[W449Inner[Int64]]
+    provides W449Outer[W449Inner[Int64]]
   end
   sort W449ProvCarrier
     provides W449Outer[C = W449Inner[Int64]]
@@ -210,7 +212,7 @@ end
 
 /// The base sort symbol a canonical spec binding value names: the functor of a
 /// `SortView(base-name, …)`'s `pos[0]` (the wrapped form `sort_inst_to_value` /
-/// `canonicalize_fact_binding_value` build for a parameterized binding), or a bare
+/// `sort_inst_to_value` builds for a parameterized binding), or a bare
 /// `Ref` / `Fn` functor. Mirrors the loader's `unwrap_spec_view` reader.
 fn binding_base_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
     match kb.get_term(tid) {
@@ -233,12 +235,12 @@ fn binding_base_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
     }
 }
 
-/// GAP 1: `fact Effect[T = Modify[?]]` — the positional-parameterized binding VALUE
+/// GAP 1: `provides Effect[T = Modify[?]]` — the positional-parameterized binding VALUE
 /// `Modify[?]` (`Fn{Modify, pos:[?], named:[]}` as parsed, which `type_head`
 /// classifies as `Error`) is re-lowered to the canonical `SortView(Modify, T = ?)`
 /// carrier, so it extracts non-Error and names `Modify`.
 #[test]
-fn fact_positional_parameterized_binding_value_extracts_non_error() {
+fn positional_parameterized_binding_value_extracts_non_error() {
     let kb = crate::common::load_kb_with(W449_FIXTURE);
     let modify = kb
         .try_resolve_symbol("anthill.prelude.Modify")
@@ -264,7 +266,7 @@ fn fact_positional_parameterized_binding_value_extracts_non_error() {
 /// emissions produce a BYTE-IDENTICAL hash-consed binding — fact ≡ provides parity now
 /// holds for parameterized bindings, not just the WI-391 bare-sort case.
 #[test]
-fn fact_nested_parameterized_binding_matches_provides() {
+fn a_positional_nested_binding_matches_the_named_one() {
     let kb = crate::common::load_kb_with(W449_FIXTURE);
     let inner = kb
         .try_resolve_symbol("test.wi449.W449Inner")
@@ -273,13 +275,14 @@ fn fact_nested_parameterized_binding_matches_provides() {
         .try_resolve_symbol("anthill.prelude.Int64")
         .expect("Int64 sort");
 
-    let fact_spec = provides_spec_for(&kb, "test.wi449.W449FactCarrier").expect("fact spec");
+    let fact_spec =
+        provides_spec_for(&kb, "test.wi449.W449FactCarrier").expect("positional spec");
     let prov_spec = provides_spec_for(&kb, "test.wi449.W449ProvCarrier").expect("provides spec");
-    let fact_c = binding_named(&kb, fact_spec, "C").expect("fact C binding");
+    let fact_c = binding_named(&kb, fact_spec, "C").expect("positional C binding");
     let prov_c = binding_named(&kb, prov_spec, "C").expect("provides C binding");
 
-    // The fact binding names W449Inner and PRESERVES its inner `E = Int64` arg (it is
-    // no longer flattened to a bare `Ref(W449Inner)` that drops the argument).
+    // The positional binding names W449Inner and PRESERVES its inner `E = Int64` arg
+    // (it is no longer flattened to a bare `Ref(W449Inner)` that drops the argument).
     assert_eq!(
         binding_base_sym(&kb, fact_c),
         Some(inner),

@@ -43,15 +43,20 @@ end
     );
 }
 
-/// A NESTED type inside a fact's binding value is a type, so it is checked too — the
-/// depth gate is about the READING of the syntax, not about rule bodies specifically.
+/// A NESTED type inside a fact's ARGUMENT is a type, so it is checked too — the depth
+/// gate is about the READING of the syntax, not about rule bodies specifically.
+///
+/// The fixture used to write the nested type in a `fact Modifiable[T = Cell[W =
+/// Int64]]` BINDING, which the loader read as a provision. WI-20260917-S8JYF retired
+/// that reading, so the same nested application is written where a type value goes in
+/// an ordinary fact — a data slot. What is measured is unchanged: the check follows the
+/// nesting, not the construct.
 #[test]
 fn an_undeclared_type_argument_nested_in_a_fact_binding_is_loud() {
     let src = r#"
 namespace test.wi710.nested
   import anthill.prelude.{Cell, Int64, Modifiable}
-
-  fact Modifiable[T = Cell[W = Int64]]
+  fact holds(Modifiable[T = Cell[W = Int64]])
 end
 "#;
     let errs = match try_load_kb_with(src) {
@@ -183,7 +188,9 @@ namespace test.wi710.instance
   end
   -- A positional on a spec that declares NO type params is the carrier slot (WI-407),
   -- not an over-applied type argument.
-  fact Marker[Carrier]
+  namespace Carrier
+    provides Marker[Carrier]
+  end
 end
 "#;
     try_load_kb_with(src).unwrap_or_else(|errs| {
@@ -231,7 +238,10 @@ namespace test.wi710.vars
   rule positional_var(?t) :- Modifiable[?t]
 
   -- A ground one alongside, to pin that the well-formed spelling is untouched.
-  fact Modifiable[T = Cell]
+end
+
+namespace anthill.prelude.Cell
+  provides Modifiable[T = Cell]
 end
 "#;
     try_load_kb_with(src).unwrap_or_else(|errs| {

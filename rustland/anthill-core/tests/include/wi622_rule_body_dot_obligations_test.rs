@@ -190,7 +190,7 @@ namespace anthill.test.wi622specdot
   end
   sort Widget
     entity widget(id: Int64)
-    fact Comparable[T = Widget]
+    provides Comparable[T = Widget]
   end
   sort WPair
     entity wpair(a: Widget, b: Widget)

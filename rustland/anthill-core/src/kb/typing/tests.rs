@@ -2783,12 +2783,12 @@ namespace wi842u
   end
   sort Leaf
     entity leaf
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Leaf = x
   end
   sort Rival
     entity rival
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Leaf = x
   end
   sort Stranger

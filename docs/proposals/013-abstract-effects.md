@@ -4,6 +4,16 @@
 
 ## Status: Partially implemented (grammar + parse IR + codegen + KB loading; effect checking not yet done)
 
+> **The registration is spelled `provides Effect[T = Kind]` now** — WI-20260823-VM3YB made
+> it CHECKED (an unregistered label is a load error), and WI-20260917-S8JYF retired the
+> `fact Effect[T = Kind[?]]` spelling this document writes throughout (058 §4: the `fact`
+> spelling of a provision is gone, and a `fact` is an ordinary fact). A registration is
+> written in the kind's own `sort` body, or in a `namespace <Kind> … end` secondary entry
+> (059) where it has no body. Everything else below — that an effect kind is an ordinary
+> sort, that registration is a KB fact the checker queries, that a new kind needs no
+> grammar change — is unchanged; only the keyword is. Canonical:
+> [`kernel-language.md` §5.5](../kernel-language.md#55-effects).
+
 ## Depends on: none
 
 ## Blocks: nothing (no longer blocks 011 — abstract effect parameters work)

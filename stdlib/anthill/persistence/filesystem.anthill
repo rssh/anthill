@@ -15,7 +15,13 @@ namespace anthill.persistence.filesystem
   -- unsound standing here, which is what `check_provider_operations` reports the
   -- moment §6.3's free-standing carriers become visible to it (WI-928).
   --
-  -- `Modifiable` stays: it is a marker with no operations to back.
+  -- `Modifiable` stays: it is a marker with no operations to back. It is claimed
+  -- by `provides Modifiable[T = <Store>]` in a `namespace <Store>` SECONDARY ENTRY
+  -- (059 R2/R3) beside each free-standing `entity` — the spelling since
+  -- WI-20260917-S8JYF retired the namespace-level `fact Modifiable[T = …]` one
+  -- (058 §4). A provision names its provider by WHERE it is written, and a
+  -- free-standing entity has no body to write it in, so the entry is what supplies
+  -- the address.
   --
   -- `BulkStore` IS GONE ENTIRELY (WI-932) — spec, Rust trait and both impls.
   -- The rationale lives once, in `store.anthill`'s header.
@@ -28,14 +34,18 @@ namespace anthill.persistence.filesystem
   -- per-backend is only WHICH BACKENDS A HOST REALIZES, and that is a one-line
   -- binding block in the host closure, not six copied signatures here.
   entity FileStore(root: String, convention: FileConvention)
-  fact Modifiable[T = FileStore]
+  namespace FileStore
+    provides Modifiable[T = FileStore]
+  end
 
   -- IndexedFileStore: FileStore plus a per-rule source map (for
   -- span-based retract) and a primary-key `id` index (for fast
   -- retrieve). Indexes are populated by the host as it loads the tree
   -- (`record_source` / `index_by_id`); there is no store-side bulk read.
   entity IndexedFileStore(root: String, convention: FileConvention)
-  fact Modifiable[T = IndexedFileStore]
+  namespace IndexedFileStore
+    provides Modifiable[T = IndexedFileStore]
+  end
 
   -- ItemPerFileStore (WI-1114): one file per PRIMARY row, one directory per
   -- state. The opposite storage model to the two above, and therefore a SIBLING
@@ -62,7 +72,9 @@ namespace anthill.persistence.filesystem
     id_field     : String,
     ref_field    : String
   )
-  fact Modifiable[T = ItemPerFileStore]
+  namespace ItemPerFileStore
+    provides Modifiable[T = ItemPerFileStore]
+  end
 
   -- ================================================================
   -- File conventions: how facts map to files

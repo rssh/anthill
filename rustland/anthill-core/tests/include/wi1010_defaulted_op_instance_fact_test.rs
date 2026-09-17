@@ -126,7 +126,8 @@ fn a_fact_bound_impl_beats_the_spec_default() {
         ns,
         "",
         "\n  operation leafDescribe(x: Leaf) -> Int64 = 7\n\n  \
-         fact Desc[T = Leaf, describe = leafDescribe]\n",
+         namespace Leaf\n    \
+         provides Desc[T = Leaf, describe = leafDescribe]\n  end\n",
         "",
     );
     assert_eq!(
@@ -148,7 +149,8 @@ fn a_fact_completing_a_type_only_provision_beats_the_default() {
         ns,
         "    provides Desc[T = Leaf]\n",
         "\n  operation leafDescribe(x: Leaf) -> Int64 = 7\n\n  \
-         fact Desc[T = Leaf, describe = leafDescribe]\n",
+         namespace Leaf\n    \
+         provides Desc[T = Leaf, describe = leafDescribe]\n  end\n",
         "",
     );
     assert_eq!(
@@ -238,7 +240,9 @@ fn an_abstract_receiver_reaches_the_fact_bound_impl() {
 
   operation leafDescribe(x: Leaf) -> Int64 = 7
 
-  fact Desc[T = Leaf, describe = leafDescribe]
+  namespace Leaf
+    provides Desc[T = Leaf, describe = leafDescribe]
+  end
 
   operation via_spec(s: Shape) -> Int64 = Desc.describe(s)
   operation probe() -> Int64 = via_spec(leaf())
@@ -273,7 +277,8 @@ fn an_own_member_rivalled_by_a_fact_binding_is_refused() {
         ns,
         "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n",
         "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
-         fact Desc[T = Leaf, describe = otherDescribe]\n",
+         namespace Leaf\n    \
+         provides Desc[T = Leaf, describe = otherDescribe]\n  end\n",
         "",
     );
     let errs = crate::common::try_load_kb_with(&src)
@@ -316,7 +321,9 @@ fn a_fact_bound_impls_effects_reach_the_call_site() {
 namespace {ns}
   import anthill.prelude.{{Effect, Int64}}
   sort Boom end
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   sort Desc
     sort T = ?
@@ -330,7 +337,9 @@ namespace {ns}
 
   operation leafDescribe(x: Leaf) -> Int64 effects Boom = 7
 
-  fact Desc[T = Leaf, describe = leafDescribe]
+  namespace Leaf
+    provides Desc[T = Leaf, describe = leafDescribe]
+  end
 
   operation probe() -> Int64{decl} = Desc.describe(leaf())
 end
@@ -373,7 +382,8 @@ fn an_unrunnable_own_member_is_not_a_supplier() {
         ns,
         "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64\n",
         "\n  operation otherDescribe(x: Leaf) -> Int64 = 7\n\n  \
-         fact Desc[T = Leaf, describe = otherDescribe]\n",
+         namespace Leaf\n    \
+         provides Desc[T = Leaf, describe = otherDescribe]\n  end\n",
         "",
     );
     assert_eq!(

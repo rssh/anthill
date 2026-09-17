@@ -36141,7 +36141,7 @@ fn fact_beside_self_provider_is_one_carrier(candidates: &[Provider]) -> bool {
 /// SAME APPLICATION, not merely same spec — the distinction this check turns on, and
 /// the one whose absence made a first cut refuse the STDLIB. A carrier may provide one
 /// spec MANY times at different APPLICATIONS: `sort Console` holds
-/// `fact Effect[T = ConsoleOutput]`, `[T = ConsoleError]` and `[T = ConsoleInput]`
+/// `provides Effect[T = ConsoleOutput]`, `[T = ConsoleError]` and `[T = ConsoleInput]`
 /// (console.anthill:35-37), three genuine instances that differ in the spec's CARRIER
 /// PARAM. So provisions are bucketed by that param's binding first, and only a
 /// disagreement WITHIN one bucket — same application, two answers for another param —
@@ -39094,7 +39094,8 @@ pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<super::lo
 /// WI-20260823-VM3YB — AN EFFECT LABEL MUST NAME A REGISTERED EFFECT KIND.
 ///
 /// `stdlib/anthill/prelude/effects.anthill` has stated the registration since it was
-/// written — "Effect kinds are registered via `fact Effect[T = Kind[?]]`" — and
+/// written — "Effect kinds are registered via `fact Effect[T = Kind[?]]`", the spelling
+/// WI-20260917-S8JYF retired for `provides Effect[T = Kind]` — and
 /// proposal 013 §"Effect checking is KB querying" says what it is FOR: "Unknown effect
 /// kind = missing fact". Nothing asked. An effect row could name any sort at all, so a
 /// MISSPELLED label was a silent NEW effect rather than an error, and the declaration
@@ -39104,21 +39105,20 @@ pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<super::lo
 /// list. What this pass adds is that becoming one is an ACT: the sort is registered,
 /// once, beside its declaration. Open-and-registered, not open-and-unchecked.
 ///
-/// THE REGISTRATION HAS TWO SPELLINGS AND THIS READS THE ONE THEY SHARE. A namespace-
-/// level `fact Effect[T = K]` and a `provides Effect[T = K]` inside a sort both land as
-/// an `anthill.reflect.SortProvidesInfo` provision of `Effect` (`load_fact` →
-/// `maybe_emit_fact_provides_info`, `load_provides_clause`), so [`all_provisions`] sees
-/// both and the pass needs no second reader.
+/// IT READS THE PROVISION RELATION, WHICH IS NOW THE ONLY CHANNEL. A registration is a
+/// `provides Effect[T = K]` — in `K`'s own body, or in a `namespace K` secondary entry
+/// — and lands as an `anthill.reflect.SortProvidesInfo` provision of `Effect`
+/// (`load_provides_clause`), so [`all_provisions`] sees every one of them.
 ///
-/// MEASURED, and the alternative is not merely redundant but WRONG. An `Effect`-headed
-/// CLAUSE walk (`rules_by_functor(Effect)`) finds the five bare registrations —
-/// `Suspension`, `Branch`, `External`, and guardians' `Model` / `Filesystem` — and
-/// misses `Modify` and `Error`, whose registrations are written `fact Effect[T =
-/// Modify[?]]`: the raw fact head carries that binding POSITIONALLY (`Fn{Modify, pos:[?]}`),
-/// which [`type_head`] reads as `Error`, not `Parameterized`. It is precisely
-/// `canonicalize_fact_binding_value` — on the provision path — that re-lowers a
-/// positional binding onto the base sort's declared params (WI-449). The provision leg
-/// is total over the corpus's 11 registrations; the clause leg covers 5.
+/// THE ALTERNATIVE WAS MEASURED AND IS WRONG, and it is worth keeping the measurement
+/// because it is what a reader reaches for first. An `Effect`-headed CLAUSE walk
+/// (`rules_by_functor(Effect)`) was total for neither spelling even while both existed:
+/// it found the five bare registrations — `Suspension`, `Branch`, `External`, and
+/// guardians' `Model` / `Filesystem` — and missed `Modify` and `Error`, whose
+/// registrations were written `fact Effect[T = Modify[?]]`, because a raw fact head
+/// carries that binding POSITIONALLY (`Fn{Modify, pos:[?]}`), which [`type_head`] reads
+/// as `Error` rather than `Parameterized`. Since WI-20260917-S8JYF there is no fact leg
+/// to consider: a `fact` asserts an ordinary predicate and registers nothing.
 ///
 /// WHAT IS JUDGED is a label that NAMES a kind — [`TypeHead::SortRef`] or
 /// [`TypeHead::Parameterized`], following any `sort X = Y` alias to what it names.
@@ -39153,8 +39153,8 @@ pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<super::lo
 /// THE CORPUS WAS ALREADY CLEAN, which is why this could be switched on rather than
 /// staged. The ticket predicted the opposite — that `Clock`, `ConsoleOutput` and
 /// `ConsoleError` were unregistered and that turning the check on would refuse working
-/// programs — because it counted `fact Effect[…]` only, and those three are registered
-/// with `provides`. Census over every `.anthill` tree that loads (stdlib, both
+/// programs — because it counted `fact Effect[…]` only, and those three were already
+/// registered with `provides`. Census over every `.anthill` tree that loads (stdlib, both
 /// `examples/`, `anthill-testcases/`, `lf1`, `anthill-cpp-gen`, `anthill-stl`,
 /// `anthill-todo`): 437 declared row elements at the widest, ZERO unregistered.
 ///
@@ -39737,10 +39737,11 @@ pub(crate) fn check_written_row_bindings(
                  knowledge base says that sort is an effect, so this names a label the \
                  kernel never admitted and a misspelling of it would read as a new effect \
                  rather than as an error. Effect labels are OPEN (kernel-language.md \
-                 §5.5) — any sort may be one — but becoming one is a declaration, written \
-                 where `{short}` is in scope: `fact Effect[T = {short}]` in the namespace \
-                 that declares it, or `provides Effect[T = {short}]` inside the sort that \
-                 declares it. If the label is a typo, fix the spelling."
+                 §5.5) — any sort may be one — but becoming one is a declaration: \
+                 `provides Effect[T = {short}]`, written inside `{short}`'s own \
+                 `sort`/`enum` body, or in a `namespace {short}` block at its address \
+                 when it has no body to write it in. If the label is a typo, fix the \
+                 spelling."
             ));
         }
     }
@@ -40079,10 +40080,12 @@ const ALIAS_CHAIN_LIMIT: usize = 16;
 
 /// WI-20260823-VM3YB — every REGISTERED effect kind, as canonical sort symbols.
 ///
-/// `param` is `Effect`'s declared type parameter; both registration spellings bind it,
-/// and both are instances of the ONE sort `Effect`, which is why the binding lookup runs
-/// in [`BindingKeyMatch::Label`] — the two producers key that slot differently (a
-/// `provides` clause with the resolved `Effect.T`, a `fact` with the bare written `T`).
+/// `param` is `Effect`'s declared type parameter. The lookup runs in
+/// [`BindingKeyMatch::Label`] rather than by identity: a registration written inside the
+/// KIND's own body (`sort Modify { provides Effect[T = Modify[?]] }`) keys the slot with
+/// the name as WRITTEN, which resolves against the enclosing sort's own `T`, while one
+/// written elsewhere keys it with the resolved `Effect.T`. Both name the same parameter
+/// of the ONE sort `Effect`, and the label is what says so.
 fn registered_effect_kinds(
     kb: &KnowledgeBase,
     effect_sym: Symbol,

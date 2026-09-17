@@ -117,7 +117,9 @@ const CUSTOM_EQ_TRUE_PRELUDE: &str = r#"
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   sort Color
     entity Red
@@ -143,7 +145,9 @@ const STRUCTURAL_EQ_PRELUDE: &str = r#"
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   sort Color
     entity Red
@@ -297,7 +301,9 @@ namespace anthill.test.wi573suspend
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 {CUSTOM_EQ_FALSE_COLOR}
   operation risky(c: Color) -> Int64
     effects {{ Boom :- eq(c, Red) }}
@@ -346,7 +352,9 @@ namespace anthill.test.wi573symbolic
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 {CUSTOM_EQ_FALSE_COLOR}
   operation risky(c: Color) -> Int64
     effects {{ Boom :- eq(c, Red) }}
@@ -434,7 +442,9 @@ namespace anthill.test.wi573nestedelem
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   sort Color
     entity Red
@@ -478,7 +488,9 @@ namespace anthill.test.wi573nestedfield
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   sort Color
     entity Red
@@ -531,7 +543,9 @@ namespace anthill.test.wi573nestednative
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   sort Color
     entity Red

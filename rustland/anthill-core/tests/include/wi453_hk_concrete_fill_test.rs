@@ -34,9 +34,13 @@ fn cps_src(body: &str) -> String {
     match fa
       case some(x) -> f(x)
       case none() -> none
-  fact CpsMonad[F = Option, unit = optionUnit, flatMap = optionFlatMap]
 
 {body}
+end
+
+namespace anthill.prelude.Option
+  import test.wi453.CpsMonad
+  provides CpsMonad[F = Option, unit = test.wi453.optionUnit, flatMap = test.wi453.optionFlatMap]
 end
 "#
     )
@@ -136,8 +140,12 @@ fn effectful_instance_impl_effect_is_surfaced() {
     operation unit[A](a: A) -> F[T = A]
   end
   operation optionUnit[A](a: A) -> Option[T = A] effects Error = some(a)
-  fact CpsMonad[F = Option, unit = optionUnit]
   operation pureConsumer() -> Option[T = Int64] = unit(42)
+end
+
+namespace anthill.prelude.Option
+  import test.wi453.eff.CpsMonad
+  provides CpsMonad[F = Option, unit = test.wi453.eff.optionUnit]
 end
 "#;
     let errs = load_errors(src);

@@ -40,7 +40,6 @@ namespace test.wi283guard
     }
   end
 
-  fact Magma[T = Int64]
 
   sort IntUser
     operation use_int(a: Int64, b: Int64) -> Int64 = op2(a, b)
@@ -49,6 +48,11 @@ namespace test.wi283guard
   sort BoolUser
     operation use_bool(a: Bool, b: Bool) -> Bool = op2(a, b)
   end
+end
+
+namespace anthill.prelude.Int64
+  import test.wi283guard.Magma
+  provides Magma[T = Int64]
 end
 "#;
 
@@ -115,7 +119,6 @@ namespace test.wi283carrier
     }
   end
 
-  fact Box[T = Int64]
 
   sort GoodUser
     operation use_int(x: Int64) -> Int64 = wrap(5, x)
@@ -124,6 +127,11 @@ namespace test.wi283carrier
   sort BadUser
     operation use_bool(x: Bool) -> Bool = wrap(5, x)
   end
+end
+
+namespace anthill.prelude.Int64
+  import test.wi283carrier.Box
+  provides Box[T = Int64]
 end
 "#;
 
@@ -257,7 +265,11 @@ namespace test.wi292nonsimp
     }
   end
 
-  fact Flippy[T = Int64]
+end
+
+namespace anthill.prelude.Int64
+  import test.wi292nonsimp.Flippy
+  provides Flippy[T = Int64]
 end
 "#;
 

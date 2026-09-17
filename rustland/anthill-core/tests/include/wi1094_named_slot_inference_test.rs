@@ -73,7 +73,7 @@ const DESCENDING: &str = r#"
     -- here would ALSO put a second provider on the floor `Int64` itself occupies, so a
     -- bracket-less `Ord[Int64]` — which `Boxed requires Ord[BT]` below resolves — would
     -- be ambiguous between the carrier's own order and this rival.
-    fact WeakOrd[T = Int64]
+    provides WeakOrd[T = Int64]
     operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)
   end
 "#;
@@ -82,7 +82,7 @@ const DOUBLED: &str = r#"
   sort Doubled
     import anthill.prelude.{Int64, Ord, WeakOrd}
     import anthill.prelude.Numeric.{sub}
-    fact Ord[T = Int64]
+    provides Ord[T = Int64]
     operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)
   end
 "#;
@@ -432,7 +432,7 @@ fn a_tie_the_ladder_cannot_break_is_still_reported() {
     import anthill.prelude.{Int64, Ord, WeakOrd}
     import anthill.prelude.Numeric.{sub}
     import anthill.prelude.Widget.{widget}
-    fact WeakOrd[T = Widget]
+    provides WeakOrd[T = Widget]
     operation compare(a: Widget, b: Widget) -> Int64 =
       match a
         case widget(x) ->
@@ -443,7 +443,7 @@ fn a_tie_the_ladder_cannot_break_is_still_reported() {
     import anthill.prelude.{Int64, Ord, WeakOrd}
     import anthill.prelude.Numeric.{sub}
     import anthill.prelude.Widget.{widget}
-    fact WeakOrd[T = Widget]
+    provides WeakOrd[T = Widget]
     operation compare(a: Widget, b: Widget) -> Int64 =
       match a
         case widget(x) ->
@@ -558,7 +558,7 @@ fn a_nested_frame_supply_does_not_excuse_the_erasure() {
                  requires Ord[BT]\n    \
                  operation tag(x: BT) -> Int64 = 0\n  end\n  \
                  sort BoxedInt\n    \
-                 fact Boxed[BT = Int64]\n    \
+                 provides Boxed[BT = Int64]\n    \
                  operation tag(x: Int64) -> Int64 = 1\n  end\n";
     let errs = load_errs(&program(
         "wi1094.nested",
@@ -691,7 +691,7 @@ fn an_op_scoped_named_slot_keeps_its_own_reading() {
   end
   sort LoudDesc
     import anthill.prelude.{Int64}
-    fact Desc[T = Widget]
+    provides Desc[T = Widget]
     operation describe(x: Widget) -> Int64 = 99
   end
   sort Holder

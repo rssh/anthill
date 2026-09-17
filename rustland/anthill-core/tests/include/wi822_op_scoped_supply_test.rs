@@ -182,7 +182,7 @@ namespace wi822.ghost
     sort G = ?
     sort U = ?
     requires Desc[T = U]
-    fact Desc[T = Box[B = G]]
+    provides Desc[T = Box[B = G]]
     operation describe(w: Box[B = G]) -> Int64 = add(7, Desc.describe(w.inner))
   end
   sort Holder
@@ -296,13 +296,13 @@ fn receiverless_spec_op_op_scoped_rejected_sort_level_correct() {
   end
   sort Leaf
     entity leaf
-    fact Zeroable[T = Leaf]
+    provides Zeroable[T = Leaf]
     operation zero() -> Leaf = leaf()
     operation describe(x: Leaf) -> Int64 = 1
   end
   sort Pebble
     entity pebble
-    fact Zeroable[T = Pebble]
+    provides Zeroable[T = Pebble]
     operation zero() -> Pebble = pebble()
     operation describe(x: Pebble) -> Int64 = 5
   end
@@ -381,13 +381,13 @@ namespace wi822.percallsite
   end
   sort Leaf
     entity leaf
-    fact Zeroable[T = Leaf]
+    provides Zeroable[T = Leaf]
     operation zero() -> Leaf = leaf()
     operation describe(x: Leaf) -> Int64 = 1
   end
   sort Pebble
     entity pebble
-    fact Zeroable[T = Pebble]
+    provides Zeroable[T = Pebble]
     operation zero() -> Pebble = pebble()
     operation describe(x: Pebble) -> Int64 = 5
   end
@@ -448,13 +448,13 @@ namespace wi822.collide
   end
   sort Leaf
     entity leaf
-    fact Zeroable[T = Leaf]
+    provides Zeroable[T = Leaf]
     operation zero() -> Leaf = leaf()
     operation describe(x: Leaf) -> Int64 = 1
   end
   sort Pebble
     entity pebble
-    fact Zeroable[T = Pebble]
+    provides Zeroable[T = Pebble]
     operation zero() -> Pebble = pebble()
     operation describe(x: Pebble) -> Int64 = 5
   end
@@ -512,13 +512,13 @@ namespace wi822.transitive
   end
   sort Leaf
     entity leaf
-    fact Zeroable[T = Leaf]
+    provides Zeroable[T = Leaf]
     operation zero() -> Leaf = leaf()
     operation describe(x: Leaf) -> Int64 = 1
   end
   sort Pebble
     entity pebble
-    fact Zeroable[T = Pebble]
+    provides Zeroable[T = Pebble]
     operation zero() -> Pebble = pebble()
     operation describe(x: Pebble) -> Int64 = 5
   end
@@ -528,11 +528,11 @@ namespace wi822.transitive
     operation tag(x: OT) -> Int64
   end
   sort LeafOuter
-    fact Outer[OT = Leaf]
+    provides Outer[OT = Leaf]
     operation tag(x: Leaf) -> Int64 = 100
   end
   sort PebbleOuter
-    fact Outer[OT = Pebble]
+    provides Outer[OT = Pebble]
     operation tag(x: Pebble) -> Int64 = 200
   end
   sort Holder
@@ -673,7 +673,7 @@ namespace {ns}
     operation combine(x: E) -> Int64
   end
   sort First
-    fact Pair[E = Tag, F = Int64]
+    provides Pair[E = Tag, F = Int64]
     operation combine(x: Tag) -> Int64 = 1
   end
 {second}
@@ -685,7 +685,7 @@ end
         )
     };
     const RIVAL: &str = r#"  sort Second
-    fact Pair[E = Tag, F = Tag]
+    provides Pair[E = Tag, F = Tag]
     operation combine(x: Tag) -> Int64 = 2
   end
 "#;
@@ -739,7 +739,7 @@ end
     // enumeration RETURNS on an unproposable provider rather than skipping it.
     const OPEN_ENDED: &str = r#"  sort Anything
     sort A = ?
-    fact Pair[E = A, F = A]
+    provides Pair[E = A, F = A]
     operation combine(x: A) -> Int64 = 2
   end
 "#;

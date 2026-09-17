@@ -449,9 +449,10 @@ fn default_on_a_variable_spec_is_refused() {
 /// probe written on one would measure an empty list and report it as a finding. This is
 /// `wi346_requires_shadow_test`'s helper, which is the only one that reads the channel.
 fn load_warnings(extra: &str) -> Vec<String> {
-    // stdlib AND the Rust host bindings: 21 of the migration's 39 sites live in
-    // `anthill-stl/anthill/*.anthill`, so `stdlib_dir()` alone would leave more than half
-    // the corpus unread and still report zero.
+    // stdlib AND the Rust host bindings: when this helper drove 058 §4's deprecation,
+    // 21 of the migration's 39 sites lived in `anthill-stl/anthill/*.anthill`, so
+    // `stdlib_dir()` alone would have left more than half the corpus unread and still
+    // reported zero. The breadth is kept for whatever advisory reads the channel next.
     let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
@@ -484,62 +485,24 @@ fn load_warnings(extra: &str) -> Vec<String> {
     }
 }
 
-/// THE DEPRECATION FIRES, and it fires WHERE THE TWO SPELLINGS AGREE — a scope that
-/// names a type. Both arms are in one test because the discrimination IS the claim: a
-/// version that warned on everything would pass a positive-only test.
-///
-/// The namespace-level arm is not a nicety. `provides` at an address no type occupies is
-/// refused (`ProvidesClauseNeedsSort`, WI-1000 R3), so warning there would advertise a
-/// repair the next compile rejects — `TieRepair`'s named failure mode. 058 §3.1's
-/// namespace-level instance facts keep the `fact` spelling permanently.
-#[test]
-fn the_deprecation_fires_in_a_sort_body_and_not_at_namespace_level() {
-    let src = r#"
-namespace wi862.deprecate
-  import anthill.prelude.{Int64}
 
-  sort Desc
-    sort T = ?
-    operation describe(x: T) -> Int64
-  end
+/// THE FOUR DEPRECATION ROWS ARE GONE (WI-20260917-S8JYF). They drove
+/// `LoadWarning::ProvisionFactSpelling` — 058 §4's advisory at each remaining `fact`
+/// spelling of a provision — and the retirement removed the warning with the spelling
+/// it deprecated: `the_deprecation_fires_in_a_sort_body_and_not_at_namespace_level`,
+/// `the_shipped_stdlib_emits_no_provision_fact_deprecations` (whose canary and
+/// zero-in-the-tree guard are subsumed by there being no second spelling to count),
+/// `the_deprecation_is_located` and
+/// `format_with_source_does_not_double_prefix_a_located_warning`. The last two also
+/// carried the only coverage of the warning family's span/located channel, which the
+/// retirement leaves with no producer; `LoadWarning::span` says so at its own site, so
+/// the next span-bearing advisory plugs into a documented channel rather than an
+/// undocumented one. `the_provides_spelling_raises_no_deprecation` below outlived them
+/// and now says the whole rule: there is nothing to warn about.
 
-  sort Leaf
-    entity leaf
-    fact Desc[T = Leaf]
-    operation describe(x: Leaf) -> Int64 = 1
-  end
-
-  sort Pebble
-    entity pebble
-  end
-
-  operation pebbleDescribe(x: Pebble) -> Int64 = 5
-
-  fact Desc[T = Pebble, describe = pebbleDescribe]
-end
-"#;
-    let warnings = load_warnings(src);
-    let mine: Vec<&String> = warnings
-        .iter()
-        .filter(|w| w.contains("wi862.deprecate"))
-        .collect();
-    assert_eq!(
-        mine.len(),
-        1,
-        "exactly ONE deprecation — the in-sort claim on `Leaf`, not the namespace-level \
-         instance fact on `Pebble`, which has no `provides` spelling to move to: {mine:?}"
-    );
-    let only = mine[0];
-    assert!(
-        only.contains("wi862.deprecate.Leaf")
-            && only.contains("DEPRECATED spelling")
-            && only.contains("provides"),
-        "the warning must name the PROVIDER sort and the repair: {only}"
-    );
-}
-
-/// …and writing it the new way silences it. The control for the test above: without this
-/// arm a warning that fired on `provides` too would satisfy it.
+/// The ONE survivor, restated: writing a provision the one way there is raises no
+/// advisory. It was the control for a deprecation that no longer exists; what it now
+/// pins is that the channel stays quiet on the only spelling left.
 #[test]
 fn the_provides_spelling_raises_no_deprecation() {
     let src = r#"
@@ -565,96 +528,7 @@ end
     );
 }
 
-/// **THE MIGRATION'S OWN ACCEPTANCE, and the guard that keeps it migrated.** The shipped
-/// standard library emits ZERO provision-fact deprecations.
-///
-/// This is the whole point of half (b) and it is the one assertion a future `fact
-/// Spec[…]` added to `stdlib/` cannot slip past: 39 sites warned before the migration
-/// (measured), 0 after. It reads the stdlib the loader actually ships rather than a
-/// fixture, because a corpus is where a spelling nobody re-reads survives.
-///
-/// The TOTAL warning count is asserted non-zero too, so a channel that silently carried
-/// nothing — the failure mode this file's helper exists to avoid — cannot pass as a
-/// clean corpus. The stdlib emits `RequiresShadow` warnings, which is what makes that
-/// check meaningful.
-#[test]
-fn the_shipped_stdlib_emits_no_provision_fact_deprecations() {
-    // A CANARY IN THE SAME LOAD, and it is not decoration. The corpus emits no other
-    // warning kind, so "zero deprecations" would read identically if the channel carried
-    // nothing at all — the exact measure-an-empty-collection failure this file's helper
-    // was written to avoid. The canary is one `fact` provision in a throwaway namespace:
-    // it must appear, and it must be the ONLY one.
-    let canary = r#"
-namespace wi862.canary
-  import anthill.prelude.{Int64}
-  sort Desc
-    sort T = ?
-    operation describe(x: T) -> Int64
-  end
-  sort Leaf
-    entity leaf
-    fact Desc[T = Leaf]
-    operation describe(x: Leaf) -> Int64 = 1
-  end
-end
-"#;
-    let deprecations: Vec<String> = load_warnings(canary)
-        .into_iter()
-        .filter(|w| w.contains("DEPRECATED spelling"))
-        .collect();
-    assert_eq!(
-        deprecations.len(),
-        1,
-        "the canary must warn (proving the channel is live) and the shipped stdlib plus \
-         host bindings must add nothing to it — 39 sites warned before the migration: \
-         {deprecations:?}"
-    );
-    assert!(
-        deprecations[0].contains("wi862.canary.Leaf"),
-        "the one deprecation must be the canary's, not a stdlib site: {}",
-        deprecations[0]
-    );
-}
 
-/// A DEPRECATION WITHOUT A FILE AND A LINE IS NOT ACTIONABLE, and this is the first
-/// span-bearing `LoadWarning` — the channel's `format_with_source` carried a `let _ =
-/// source` reserving it, and `LoadWarning::Located` arrived with it.
-///
-/// The probe carries a PATH (the helper stamps one), so what is asserted is the whole
-/// `path:line:col:` stamp a user sees — the `Some(p) if has_span` arm of
-/// `span::render_located`. Asserting only the line would leave the wrapper, which is the
-/// half that had to be built, with no coverage at all.
-#[test]
-fn the_deprecation_is_located() {
-    let warnings = load_warnings(
-        r#"
-namespace wi862.located
-  import anthill.prelude.{Int64}
-  sort Desc
-    sort T = ?
-    operation describe(x: T) -> Int64
-  end
-  sort Leaf
-    entity leaf
-    fact Desc[T = Leaf]
-    operation describe(x: Leaf) -> Int64 = 1
-  end
-end
-"#,
-    );
-    let only = warnings
-        .iter()
-        .find(|w| w.contains("wi862.located"))
-        .expect("the deprecation must fire");
-    // `fact Desc[T = Leaf]` is line 10 of the fixture (the leading newline is line 1).
-    // The COLUMN is not pinned: the span points at the CLAIM (`Desc[…]`) rather than at
-    // the `fact` keyword, which is the position an author needs anyway.
-    assert!(
-        only.starts_with("probe.anthill:10:"),
-        "the warning must carry the FILE and the offending line, not just the sort's \
-         name — the `Located` wrapper is what supplies the file: {only}"
-    );
-}
 
 /// **THE SUGAR MUST NOT BE THE ONE CONSTRUCT THAT PANICS.** `DefaultProvider` is declared
 /// only in `stdlib/anthill/reflect/typing.anthill`, so a KB loaded without the reflect
@@ -696,49 +570,6 @@ end
     );
 }
 
-/// **A LOCATED WARNING RENDERS FROM ITS OWN SOURCE**, so `format_with_source` must not
-/// prefix a second location computed against the caller's file.
-///
-/// `LoadWarning::span()` reports the inner span through the wrapper, so without a
-/// `Located` arm the method returns `12:5: probe.anthill:10:10: warning: …` — two
-/// locations, the leading one resolved against whatever text the caller happened to
-/// hold. `LoadError::format_at` matches `Located` first for exactly this reason. Driven
-/// with a DELIBERATELY WRONG `source` argument, since a correct one would make the two
-/// prefixes agree and hide the defect.
-#[test]
-fn format_with_source_does_not_double_prefix_a_located_warning() {
-    let src = r#"
-namespace wi862.doubleprefix
-  sort Desc
-    sort T = ?
-  end
-  sort Leaf
-    fact Desc[T = Leaf]
-  end
-end
-"#;
-    let mut parsed = anthill_core::parse::parse(src).expect("parse");
-    parsed.path = Some(std::sync::Arc::from(std::path::Path::new("probe.anthill")));
-    let mut kb = KnowledgeBase::new();
-    let result = anthill_core::kb::load::load_all(
-        &mut kb,
-        &[&parsed],
-        &anthill_core::kb::load::NullResolver,
-    )
-    .expect("this fixture names nothing outside itself, so it must load");
-    let warning = result
-        .warnings
-        .iter()
-        .find(|w| w.to_string().contains("DEPRECATED spelling"))
-        .expect("the deprecation must fire");
-    let unrelated = "a\nb\nc\n";
-    assert_eq!(
-        warning.format_with_source(unrelated),
-        warning.to_string(),
-        "a located warning must ignore the caller's source and render from its own — \
-         anything else prefixes a location computed against the wrong file"
-    );
-}
 
 /// `default` is a modifier in ONE position and an ordinary identifier everywhere else.
 ///

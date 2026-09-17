@@ -20,7 +20,9 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 const FIXTURE: &str = r#"
   import anthill.prelude.{Effect, Unit, Int64, Cell, Modify}
   sort Beep end
-  fact Effect[T = Beep]
+  namespace Beep
+    provides Effect[T = Beep]
+  end
   operation bad(c: Cell[V = Int64]) -> Unit effects Modify[c] = Cell.set(c, 1)
   operation noisy(c: Cell[V = Int64]) -> Unit effects Beep = ()
   operation pure_cb(c: Cell[V = Int64]) -> Unit = ()

@@ -173,7 +173,9 @@ fn an_unimported_effect_registers_nothing_and_the_label_is_refused() {
         namespace vm3yb.unimported
           import anthill.prelude.{Unit}
           sort Reg end
-          fact Effect[T = Reg]
+          namespace Reg
+            provides Effect[T = Reg]
+          end
           sort W
             entity w
             operation ping(x: W) -> Unit effects Reg
@@ -309,7 +311,9 @@ fn a_namespace_level_fact_registers_the_kind() {
         namespace vm3yb.fact_spelling
           import anthill.prelude.{Effect, Unit}
           sort Beep end
-          fact Effect[T = Beep]
+          namespace Beep
+            provides Effect[T = Beep]
+          end
           sort W
             entity w
             operation ping(x: W) -> Unit effects Beep
@@ -367,7 +371,9 @@ fn a_wildcard_registration_admits_every_application() {
           sort Tag
             sort T = ?
           end
-          fact Effect[T = Tag[?]]
+          namespace Tag
+            provides Effect[T = Tag[?]]
+          end
           sort W
             entity w
             operation ping(x: W) -> Unit effects Tag[T = Int64]

@@ -571,7 +571,6 @@ namespace test.wi839.introducer
     requires Eq[T]
   end
 
-  fact Summable[T = Int64]
 
   sort Lib
     sort A = ?
@@ -582,6 +581,11 @@ namespace test.wi839.introducer
       keep_id: keep[T](?x: T, ?y) <=> ?x :- Summable[T] @[simp]
     }
   end
+end
+
+namespace anthill.prelude.Int64
+  import test.wi839.introducer.Summable
+  provides Summable[T = Int64]
 end
 "#,
         "a rule-head `[T]` introducer is a READ of the channel, not a drop",

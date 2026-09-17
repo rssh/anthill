@@ -552,7 +552,9 @@ namespace test.wi342b
   sort Error
     entity err
   end
-  fact Effect[T = Error]
+  namespace Error
+    provides Effect[T = Error]
+  end
 
   operation may_fail(x: Int64) -> Int64
     effects Error
@@ -4578,8 +4580,11 @@ sort Polynom
   operation eval(p: Polynom[R], x: R) -> R
 end
 
-fact Ring[Int64]
 fact Polynom[Int64]
+
+namespace anthill.prelude.Int64
+  provides Ring[Int64]
+end
 "#;
     let parsed = parse::parse(source).expect("parse failed");
     let mut kb = KnowledgeBase::new();

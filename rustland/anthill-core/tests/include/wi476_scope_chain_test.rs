@@ -52,7 +52,9 @@ namespace test.wi476.req
     entity tag(n: Int64)
   end
   operation tagZero() -> Tag = tag(n: 42)
-  fact HasZero[T = Tag, zero = tagZero]
+  namespace Tag
+    provides HasZero[T = Tag, zero = tagZero]
+  end
 
   sort Box
     sort T = ?
@@ -86,7 +88,9 @@ namespace test.wi476.noreq
     entity tag(n: Int64)
   end
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
-  fact Combiner[T = Tag, combine = tagCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+  end
 
   operation runCombine(a: Tag, b: Tag) -> Tag = combine(a, b)
 end

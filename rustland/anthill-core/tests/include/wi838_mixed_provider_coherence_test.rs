@@ -66,10 +66,12 @@ fn mixed_instance_fact_and_witness_is_a_loud_ambiguity() {
 
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
 
-  fact Combiner[T = Tag, combine = tagCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+  end
 
   sort WitCombiner
-    fact Combiner[T = Tag]
+    provides Combiner[T = Tag]
     operation combine(x: Tag, y: Tag) -> Tag = tag(n: 5)
   end
 end
@@ -134,12 +136,12 @@ fn two_witnesses_coexist_and_are_no_load_error() {
   end
 
   sort WitA
-    fact Combiner[T = Tag]
+    provides Combiner[T = Tag]
     operation combine(x: Tag, y: Tag) -> Tag = tag(n: 5)
   end
 
   sort WitB
-    fact Combiner[T = Tag]
+    provides Combiner[T = Tag]
     operation combine(x: Tag, y: Tag) -> Tag = tag(n: 6)
   end
 end
@@ -171,8 +173,10 @@ fn two_instance_facts_keep_the_instance_diagnostic() {
   operation combineA(x: Tag, y: Tag) -> Tag = tag(n: 1)
   operation combineB(x: Tag, y: Tag) -> Tag = tag(n: 2)
 
-  fact Combiner[T = Tag, combine = combineA]
-  fact Combiner[T = Tag, combine = combineB]
+  namespace Tag
+    provides Combiner[T = Tag, combine = combineA]
+    provides Combiner[T = Tag, combine = combineB]
+  end
 end
 "#;
     let errs = load_errors(snippet);
@@ -210,10 +214,12 @@ fn fact_and_witness_for_distinct_carriers_do_not_collide() {
   end
 
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
-  fact Combiner[T = Tag, combine = tagCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+  end
 
   sort RingCombiner
-    fact Combiner[T = Ring]
+    provides Combiner[T = Ring]
     operation combine(x: Ring, y: Ring) -> Ring = ring(n: 5)
   end
 end
@@ -245,11 +251,11 @@ fn spec_with_no_ops_exemption_still_loads() {
   end
 
   sort HolderA
-    fact BareCarrier[C = Tag]
+    provides BareCarrier[C = Tag]
   end
 
   sort HolderB
-    fact BareCarrier[C = Tag]
+    provides BareCarrier[C = Tag]
   end
 end
 "#;
@@ -276,13 +282,13 @@ fn concrete_provider_exemption_still_loads() {
 
   sort MemStore
     entity mem(n: Int64)
-    fact KVStore[K = String]
+    provides KVStore[K = String]
     operation get(k: String) -> Int64 = 1
   end
 
   sort DiskStore
     entity disk(n: Int64)
-    fact KVStore[K = String]
+    provides KVStore[K = String]
     operation get(k: String) -> Int64 = 2
   end
 end
@@ -317,11 +323,13 @@ fn concrete_witness_beside_a_fact_stays_exempt() {
   end
 
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
-  fact Combiner[T = Tag, combine = tagCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+  end
 
   sort WitCombiner
     entity wit(n: Int64)
-    fact Combiner[T = Tag]
+    provides Combiner[T = Tag]
     operation combine(x: Tag, y: Tag) -> Tag = tag(n: 5)
   end
 end
@@ -351,7 +359,9 @@ fn each_provider_alone_still_loads_and_dispatches() {
     entity tag(n: Int64)
   end
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
-  fact Combiner[T = Tag, combine = tagCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+  end
 
   operation runCombine() -> Int64 =
     match combine(tag(n: 1), tag(n: 2))
@@ -372,7 +382,7 @@ end
   end
 
   sort WitCombiner
-    fact Combiner[T = Tag]
+    provides Combiner[T = Tag]
     operation combine(x: Tag, y: Tag) -> Tag = tag(n: 5)
   end
 

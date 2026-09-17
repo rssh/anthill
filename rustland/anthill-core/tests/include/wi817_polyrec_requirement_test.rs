@@ -557,7 +557,7 @@ namespace wi817.hops
 {INSTANCES}
   sort Pebble
     entity pebble
-    fact Desc[T = Pebble]
+    provides Desc[T = Pebble]
     operation describe(x: Pebble) -> Int64 = 5
   end
 
@@ -624,7 +624,7 @@ namespace wi817.ophops
 {INSTANCES}
   sort Pebble
     entity pebble
-    fact Desc[T = Pebble]
+    provides Desc[T = Pebble]
     operation describe(x: Pebble) -> Int64 = 5
   end
 
@@ -713,7 +713,7 @@ namespace wi817.tdq
   import anthill.prelude.Additive.{add}
   import anthill.prelude.Multiplicative.{mul}
   sort QuietDesc
-    fact Desc[T = Pebble]
+    provides Desc[T = Pebble]
     operation describe(x: Pebble) -> Int64 = 7
   end
   sort QuietOps
@@ -727,7 +727,7 @@ namespace wi817.tdl
   import wi817.tds.{Desc, Pebble}
   import wi817.tdq.{QuietOps}
   sort LoudDesc
-    fact Desc[T = Pebble]
+    provides Desc[T = Pebble]
     operation describe(x: Pebble) -> Int64 = 5
   end
   sort LoudOps
@@ -807,7 +807,7 @@ namespace wi817.tdqp
   import anthill.prelude.Additive.{add}
   import anthill.prelude.Multiplicative.{mul}
   sort QuietDesc
-    fact Desc[T = Pebble]
+    provides Desc[T = Pebble]
     operation describe(x: Pebble) -> Int64 = 7
   end
   sort QuietOps
@@ -821,7 +821,7 @@ namespace wi817.tdlp
   import wi817.tdsp.{Desc, Pebble}
   import wi817.tdqp.{QuietOps}
   sort LoudDesc
-    fact Desc[T = Pebble]
+    provides Desc[T = Pebble]
     operation describe(x: Pebble) -> Int64 = 5
   end
   sort LoudOps
@@ -883,16 +883,16 @@ namespace wi817.dsets
 
   sort Leaf
     entity leaf
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 1
   end
   sort Pebble
     entity pebble
-    fact Desc[T = Pebble]
+    provides Desc[T = Pebble]
     operation describe(x: Pebble) -> Int64 = 5
   end
   sort PebbleTag
-    fact Tagd[T = Pebble]
+    provides Tagd[T = Pebble]
     operation tag(x: Pebble) -> Int64 = 3
   end
 

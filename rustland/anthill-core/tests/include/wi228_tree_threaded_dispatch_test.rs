@@ -50,8 +50,8 @@ namespace test.wi228.pin_now_tree
   sort EqList
     sort A = ?
     requires Eq[T = A]
-    fact PartialEq[T = List[T = A]]
-    fact Eq[T = List[T = A]]
+    provides PartialEq[T = List[T = A]]
+    provides Eq[T = List[T = A]]
     operation eq(x: List[T = A], y: List[T = A]) -> Bool = true
   end
   sort Driver

@@ -51,7 +51,7 @@ namespace wi818.a
   end
   sort Widget
     entity widget(id: Int64)
-    fact Nameable[T = Widget]
+    provides Nameable[T = Widget]
   end
 end
 "#;
@@ -81,7 +81,7 @@ namespace wi818.b
   end
   sort Widget
     entity widget(id: Int64)
-    fact Nameable[T = Widget]
+    provides Nameable[T = Widget]
     operation tag(x: Widget) -> Int64 = 111
   end
   sort Box
@@ -124,7 +124,7 @@ namespace wi818.c
   end
   sort Widget
     entity widget(id: Int64)
-    fact Nameable[T = Widget]
+    provides Nameable[T = Widget]
   end
 end
 "#;
@@ -157,7 +157,7 @@ namespace wi818.ns
   operation tag(x: Widget) -> Int64 = 111
   sort Widget
     entity widget(id: Int64)
-    fact Nameable[T = Widget]
+    provides Nameable[T = Widget]
   end
 end
 "#;

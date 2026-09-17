@@ -162,13 +162,17 @@ fn sort_body_fixture() -> String {
     )
 }
 
-/// FIXTURE (2) — op in the SECONDARY ENTRY, claim ONE LEVEL OUT.
+/// FIXTURE (2) — op in the SECONDARY ENTRY, claim in the SORT BODY.
+///
+/// The claim stood ONE LEVEL OUT, as `fact Show[T = Rec]`, until WI-20260917-S8JYF
+/// retired that spelling (058 §4): a `fact` is an ordinary fact at any address now, so
+/// the two placements a claim HAS are the sort body and the entry — which is still the
+/// variable this row holds against fixture (3).
 fn secondary_entry_fixture() -> String {
     fixture(
         &format!(
-            "  sort Rec\n    entity rec(n: Int64)\n  end\n  \
-             namespace Rec\n    operation show(x: Rec) -> Int64 = {ANSWER}\n  end\n  \
-             fact Show[T = Rec]"
+            "  sort Rec\n    entity rec(n: Int64)\n    provides Show[T = Rec]\n  end\n  \
+             namespace Rec\n    operation show(x: Rec) -> Int64 = {ANSWER}\n  end"
         ),
         "rec(n: 7)",
     )
@@ -176,14 +180,11 @@ fn secondary_entry_fixture() -> String {
 
 /// FIXTURE (3) — op AND claim both in the secondary entry.
 ///
-/// THE CLAIM IS SPELLED `provides`, NOT `fact` (WI-1000 / 059 R3). Inside a
-/// secondary entry the `fact Spec[X]` spelling is refused and the `provides` one is
-/// allowed — not because the claim is unwelcome but because a `fact` there cannot be
-/// told from an ordinary fact over a parameterized data sort, while `provides` is a
-/// declaration the grammar recognises. The two mean the same thing (058 §4 proposes
-/// retiring the `fact` spelling outright), so this is a re-spelling of the fixture
-/// and not a change of what it asks: the claim is still in the entry, which is the
-/// whole variable this row holds against fixture (2).
+/// THE CLAIM IS SPELLED `provides`, as every claim is since WI-20260917-S8JYF
+/// completed 058 §4's retirement. Inside a secondary entry it always had to be
+/// (WI-1000 / 059 R3); what changed is that the alternative is gone everywhere else
+/// too. The claim is still in the ENTRY, which is the whole variable this row holds
+/// against fixture (2).
 fn claim_in_entry_fixture() -> String {
     fixture(
         &format!(
@@ -203,8 +204,8 @@ fn free_standing_entity_fixture() -> String {
     fixture(
         &format!(
             "  entity Rec(n: Int64)\n  \
-             namespace Rec\n    operation show(x: Rec) -> Int64 = {ANSWER}\n  end\n  \
-             fact Show[T = Rec]"
+             namespace Rec\n    operation show(x: Rec) -> Int64 = {ANSWER}\n    \
+             provides Show[T = Rec]\n  end"
         ),
         "Rec(n: 7)",
     )
@@ -260,14 +261,14 @@ fn placement_is_not_declaration_order() {
     let entry_first = fixture(
         &format!(
             "  namespace Rec\n    operation show(x: Rec) -> Int64 = {ANSWER}\n  end\n  \
-             sort Rec\n    entity rec(n: Int64)\n  end\n  fact Show[T = Rec]"
+             sort Rec\n    entity rec(n: Int64)\n    provides Show[T = Rec]\n  end"
         ),
         "rec(n: 7)",
     );
     // Two files, in both orders: the carrier's main entry and claim here, its secondary
     // entry in `entry_file` below.
     let main_file = fixture(
-        "  sort Rec\n    entity rec(n: Int64)\n  end\n  fact Show[T = Rec]",
+        "  sort Rec\n    entity rec(n: Int64)\n    provides Show[T = Rec]\n  end",
         "rec(n: 7)",
     );
     let entry_file = format!(
@@ -396,7 +397,9 @@ namespace test.wi1008
   end
   namespace Rec
   end
-  fact Show[T = Rec]
+  namespace Rec
+    provides Show[T = Rec]
+  end
 end
 "#
     );

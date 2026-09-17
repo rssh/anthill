@@ -22,6 +22,12 @@
 //! (Row 3 was RE-MEASURED, not carried over, after `Rival` lost its `entity` — see
 //! `RIVAL_WITNESS` for why it had to. Same answer, 9.)
 //!
+//! The table's `fact Desc[…]` is the spelling those measurements were taken in;
+//! WI-20260917-S8JYF retired it (058 §4) and the fixtures below write the same claims
+//! as `provides`, in the carrier's body or in a `namespace <Carrier>` entry. The
+//! measured outcomes are unchanged — what supplies a dictionary is the provision's
+//! BINDINGS, which the retirement did not touch.
+//!
 //! Only the first is the decline the ticket predicted. The other two are the same
 //! first-match defect one layer down: `Unique` resolves through `sort_ops_lookup(impl_
 //! sort, op_short)`, a first-match read over ONE sort's table, which sees the rival
@@ -153,17 +159,19 @@ fn program(ns: &str, leaf_body: &str, supply: &str, tail: &str) -> String {
 const OWN_UNRUNNABLE: &str = "    operation describe(x: Leaf) -> Int64\n";
 /// Route 1 present AND runnable — the `Unique` arm PINS it, silently.
 const OWN_RUNNABLE: &str = "    operation describe(x: Leaf) -> Int64 = 7\n";
-/// [`OWN_RUNNABLE`] with the carrier's OWN provision of the spec beside it. One constant
-/// and one spelling, because inside a sort body `fact Desc[…]` and `provides Desc[…]`
-/// emit the SAME `SortProvidesInfo` (WI-449) — so writing them differently in two tests
-/// with opposite outcomes points a reader at a difference that decides nothing. What
-/// decides is which rival is supplied.
+/// [`OWN_RUNNABLE`] with the carrier's OWN provision of the spec beside it. One
+/// constant and one spelling — since WI-20260917-S8JYF there is only one, and before it
+/// the in-sort `fact Desc[…]` and `provides Desc[…]` emitted the SAME
+/// `SortProvidesInfo` (WI-449), so writing them differently in two tests with opposite
+/// outcomes pointed a reader at a difference that decided nothing. What decides is
+/// which rival is supplied.
 const SELF_PROVIDED_OWN_RUNNABLE: &str =
-    "    fact Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n";
+    "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n";
 
 /// ROUTE 2 — a retroactive instance fact's op-valued binding. Has no name (058 §4.3).
 const RIVAL_FACT: &str = "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
-                          fact Desc[T = Leaf, describe = otherDescribe]\n";
+                          namespace Leaf\n    \
+                          provides Desc[T = Leaf, describe = otherDescribe]\n  end\n";
 /// ROUTE 3 — a WITNESS sort supplying `Leaf`'s `describe`. Nameable, hence the other
 /// repair.
 ///
@@ -172,7 +180,7 @@ const RIVAL_FACT: &str = "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n 
 /// directed by the value" — WI-855), which would make the tier-1 control below untestable.
 /// `wi857`'s `Descending` is spelled the same way for the same reason.
 pub(crate) const RIVAL_WITNESS: &str = "\n  sort Rival\n    import anthill.prelude.Int64\n    \
-                             fact Desc[T = Leaf]\n    \
+                             provides Desc[T = Leaf]\n    \
                              operation describe(x: Leaf) -> Int64 = 9\n  end\n";
 
 /// Assert the refusal is the SUPPLIER tie and names both routes.
@@ -326,7 +334,7 @@ fn a_provision_tie_is_still_reported_as_a_provider_tie() {
     /// A SECOND witness, so the two provisions tie with neither being the carrier's own
     /// — the configuration rung 2a leaves alone.
     const SECOND_WITNESS: &str = "\n  sort Other\n    import anthill.prelude.Int64\n    \
-                                  fact Desc[T = Leaf]\n    \
+                                  provides Desc[T = Leaf]\n    \
                                   operation describe(x: Leaf) -> Int64 = 11\n  end\n";
     let ns = "test.wi1027.provisiontie";
     let two_witnesses = format!("{RIVAL_WITNESS}{SECOND_WITNESS}");

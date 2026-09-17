@@ -446,8 +446,10 @@ namespace wi843.twofacts
   end
   operation combineA(x: Tag, y: Tag) -> Tag = tag(n: 1)
   operation combineB(x: Tag, y: Tag) -> Tag = tag(n: 2)
-  fact Combiner[T = Tag, combine = combineA]
-  fact Combiner[T = Tag, combine = combineB]
+  namespace Tag
+    provides Combiner[T = Tag, combine = combineA]
+    provides Combiner[T = Tag, combine = combineB]
+  end
 end
 "#;
     let errs = load_errs(src);
@@ -475,7 +477,9 @@ namespace wi843.mixed
     entity tag(n: Int64)
   end
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
-  fact Combiner[T = Tag, combine = tagCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+  end
   sort WitCombiner
     provides Combiner[T = Tag]
     operation combine(x: Tag, y: Tag) -> Tag = tag(n: 5)

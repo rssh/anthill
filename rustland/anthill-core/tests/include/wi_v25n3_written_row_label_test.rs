@@ -397,7 +397,9 @@ namespace test.v25n3.pl
   sort Clock
     entity clock
   end
-  fact Modifiable[T = Clock]
+  namespace Clock
+    provides Modifiable[T = Clock]
+  end
   import test.v25n3.pl.Clock.{clock}
   operation ask(s: Spec[E = {Modify[clock]}], p: String) -> Out
     effects {Error} = out(v: p)
@@ -490,7 +492,9 @@ namespace test.v25n3.den
   sort ClockD
     entity clockd
   end
-  fact Modifiable[T = ClockD]
+  namespace ClockD
+    provides Modifiable[T = ClockD]
+  end
   import test.v25n3.den.ClockD.{clockd}
   operation ask(s: Spec[E = {BeepD, Modify[clockd]}], p: String) -> Out
     effects {Error} = out(v: p)
@@ -1086,7 +1090,9 @@ namespace test.v25n3.inc
   sort DI
     entity di(t: String)
   end
-  fact Spec[C = DI, E = {BeepI}]
+  namespace DI
+    provides Spec[C = DI, E = {BeepI}]
+  end
   operation askI(p: String) -> Out
     requires Spec[E = {BeepI}]
     effects {Error} = out(v: p)
@@ -1255,7 +1261,9 @@ namespace test.v47vwx.inc
     entity ei(t: String)
     provides OtherI[C = String] :- Spec[E = {BeepI}]
   end
-  fact Spec[C = DI, E = {BeepI}]
+  namespace DI
+    provides Spec[C = DI, E = {BeepI}]
+  end
   operation askI(p: String) -> Out
     requires Spec[E = {BeepI}]
     effects {Error} = out(v: p)

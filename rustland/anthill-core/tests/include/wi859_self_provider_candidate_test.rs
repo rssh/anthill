@@ -180,7 +180,9 @@ fn a_fact_completing_a_type_only_self_provision_still_answers() {
 
   operation pebbleEq(a: Pebble, b: Pebble) -> Bool = true
 
-  fact PartialEq[T = Pebble, eq = pebbleEq]
+  namespace Pebble
+    provides PartialEq[T = Pebble, eq = pebbleEq]
+  end
 
   rule peq(?x, ?y) :- eq(?x, ?y)
 end
@@ -259,7 +261,9 @@ fn a_fact_rivalling_the_carriers_own_member_is_still_refused() {
 
   operation rivalDescribe(x: Leaf) -> Int64 = 7
 
-  fact Desc[T = Leaf, describe = rivalDescribe]
+  namespace Leaf
+    provides Desc[T = Leaf, describe = rivalDescribe]
+  end
 
   sort Driver
     operation drive(n: Int64) -> Int64 = describe(leaf())
@@ -373,7 +377,9 @@ fn the_mixed_fact_and_witness_pair_is_still_refused() {
   end
 
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
-  fact Combiner[T = Tag, combine = tagCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+  end
 
   sort WitCombiner
     provides Combiner[T = Tag]
