@@ -800,6 +800,40 @@ more, because `requirements` answers "which instance does THIS CALL dispatch on"
 call dispatches on one instance. The claim that "`apply_within` needs nothing — the list is
 already a list" was false: the list exists, its consumers do not.
 
+### MEASURED 2026-09-16 — the projection root ATTRIBUTES, and REMOVES NOTHING
+
+WI-20260909-S8CBV's acceptance holds at HEAD with no source change, and is driven by four
+rows in `wi_s8cbv_projection_requirement_test`: `rule two(x: Box, y: Box, ?d1, ?d2) :- ?d1
+= require[Desc[T = x.E]], ?d2 = require[Desc[T = y.E]]` binds two DIFFERENT dictionaries,
+each holding its own root's element, read off the `impl` each names.
+
+**It is keyed on the ROOT and the argument swap does not say so.** Swapping which box
+carries which colour moves both dictionaries — but "first require to the first anchor"
+predicts exactly that. The discriminating row swaps the REQUIRE ORDER with the arguments
+held fixed: `?d1` takes `y`'s element and `?d2` takes `x`'s. Beneath both sits the
+requires-deleted back-out, without which neither is evidence.
+
+**WHY IT NEEDS NO SELECTOR: a projected bracket never asks the selector's question.**
+`x.E` and `y.E` δ-ground to the roots' ELEMENTS, and the fetch keys on the carried type —
+one layer BELOW the sort-matching selector, which is also why S4's known limit (two `Leaf`
+bounds inseparable) never arises on this path.
+
+**AND THE THREE REMOVALS S8CBV CLAIMS ARE REFUTED.** Each was backed out against the full
+`wi_tests`, patched by a script asserting its pattern matched exactly once:
+
+| backed out | rows |
+|---|---|
+| S4's written-bracket selector | **4** (`wi_96ztm` ×3, `wi_qmfc5` ×1) |
+| the >1-anchor refusal | **6** (`wi_96ztm` ×2, `wi_qmfc5` ×4) |
+| the ANCHORED gate | **1** — `a_witness_grounded_pair_is_refused_whatever_the_bracket_says` |
+
+Every one of those mechanisms serves clauses that write a CONCRETE bracket and contain no
+projection at all — a population a projection root cannot reach. So the projection path is
+a DISJOINT mechanism, not a replacement, and "attribution by projection root removes the
+selector, narrows the refusal and lifts the gate" is false as a removal plan. The gate is
+the one with a path forward, and back-out 3 sizes it: it guards ONE shape, and lifting it
+is a BUILD — witness-path attribution by root — not a deletion.
+
 N dictionaries AT A CALL SITE already work, through a different channel: a callee's own
 `requires` travel the SLOT-indexed `op_dicts` (`op_dict_entries` →
 `build_op_scoped_dicts` → `push_op_scoped_slots`, WI-822), which is N-ary and has a
