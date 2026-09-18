@@ -56,3 +56,82 @@ ACCEPTANCE: a nested pair of boundaries at `Box[V=Int64]` / `Box[V=String]` answ
 the OUTER one for a `Box[V=String]` raise and the INNER one for a `Box[V=Int64]` raise, with
 the two-distinct-sorts row as the control that passes either way.
 
+## Changes
+
+### 2026-09-18T07:42:57Z — feedback — user
+
+THE THREE DIRECTIONS ARE RECLASSIFIED, AND THE DECISION IS NOW WRITTEN DOWN AS A
+CONTINUUM RATHER THAN A MENU. See `docs/proposals/027.4-error-effect-reify.md` §"What
+travels with a raise — the tag continuum" (NOT BUILT; it fixes vocabulary, it does not
+decide).
+
+WHAT REFRAMED IT. USER DIRECTION: during typing nothing is erased, and the typed tree
+carries no information loss. If that holds, a tag is not something the runtime
+reconstructs from a value — it is something the TYPER writes into the raise. So "throw
+the value alone or with a tag" is really "may the typed tree write into the raise", and
+the premise answers yes. That splits cleanly: a MONOMORPHIC throw site bakes the tag as a
+CONSTANT (no channel, no dictionary, no lookup), a POLYMORPHIC one takes it from the
+caller through a channel anthill already has — the type-argument channel (ground since
+`collect_closed_type_args`) or the requirement dictionary (WI-562).
+
+THIS TICKET'S OWN DIRECTIONS, RE-JUDGED.
+ * RECONSTRUCT from the value is the FALLBACK, not the mechanism — right where no typed
+   tree wrote a tag (host raisers, bridged entry, an empty frame channel), wrong as the
+   primary rule. And its recorded objection is milder than stated: an unwitnessed
+   parameter is not silently WRONG, it is UNCONSTRAINED. `entity none` inhabits
+   `Option[Int64]` and `Option[String]` alike, so the residue is a control-flow
+   imprecision over values well-typed either way, not a corruption. The witnessing case
+   — `InvalidParameter[T](t: T)`, the shape real error vocabulary takes — is recoverable
+   from `entity_field_types`: the field whose declared type IS the sort parameter.
+   The fallback shrinks further if host raisers carry their own tags (`raise_match_failed`
+   knows it raises `Error[MatchFailed]`), which closes the off-channel-payload question
+   by construction rather than by declining.
+ * CARRY on the value is continuum point 4 — C#, reified generics — and its price is
+   global: every allocation pays for a discrimination only the error path needs.
+ * REFUSE at install was measured WRONG as written: `None` catches WIDE, so the same
+   `Box[V=String]` still lands in a `Result[E = Box[V=Int64]]`. It removes the pretense
+   of judging, not the defect. A blanket LOAD-time refusal was considered and withdrawn —
+   it would forbid `InvalidParameter[T]`, which is the normal vocabulary (Java's
+   escape, JLS §8.1.2, and not available to us).
+
+THE SURVEY, WHICH IS THE PART WORTH KEEPING. Five designs, and none routes an exception
+on a type argument without reified generics: ML forbids a polymorphic exception
+constructor; Java forbids the declaration; TypeScript types the catch binding `unknown`;
+Rust's `downcast` is exact and its widening is `From` inserted statically at `?`; Scala
+permits the declaration, warns "non-variable type argument ... is unchecked since it is
+eliminated by erasure", and gets it wrong at run time. ANTHILL TODAY IS SCALA'S BEHAVIOUR
+MINUS THE WARNING — that is the honest statement of this defect. Haskell is the one that
+discriminates on arguments, via the `Typeable` dictionary, and pays by giving up
+covariance (`cast` is exact). C# has both and pays globally.
+
+WHAT ANTHILL'S OWN COMMITMENTS ALREADY DECIDE. Covariance is committed and driven, which
+makes a minted-token design EXPENSIVE (identity cannot subsume; the boundary would need
+the typer to enumerate its discharge SET) and a ground-type-term design CHEAP (the
+subsuming predicate is the one already in use). Anthill already evaluates type terms at
+run time — `tyOf[T](x: T) -> Type = Cell[V = T]` gives `Cell[V = Int64]` — so a term-shaped
+tag is not a new kind of thing here, and a bare-sort tag degenerates to a token's cost.
+
+THE COMPARISON IS ONE PREDICATE AND IT IS NOT ERROR-SPECIFIC. `payload_matches`'s
+`declared: Symbol` becomes a two-view relation beside `views_structurally_equal`:
+`value_inhabits_type<V: TermView, T: TermView>`. `TermView` and NOT `TermId` on either
+side — USER DIRECTION, and the reason is CLAUDE.md's representation note: a type term
+grounded per dispatch is a TRANSIENT and interned terms live for the KB's lifetime.
+(`ground_type_params` takes and returns a `TermId` today, so the install path already
+interns a freshly-grounded term per dispatch — pre-existing, one layer down, and a
+view-shaped comparison is what would let it be fixed rather than extended.)
+
+WHAT IS STILL OPEN, AND IT IS A DECISION NOT A MEASUREMENT:
+ * continuum point 2 (minted token, exact, needs an enumerated discharge set to keep
+   covariance) vs point 3 (ground type term, subsuming, reuses the existing predicate);
+ * if the tag is typeclass-supplied — `Raisable[T]` with a derived-by-default `tag()`,
+   which is Haskell's `Exception`/`fromException` riding anthill's existing dictionary
+   threading — whether a USER-WRITTEN match may override the derived one. It is the
+   per-sort policy knob and it has a hazard: an overriding match can decline a payload
+   the typer already discharged, and then the raise escapes an operation certified
+   effect-free. Derived-only keeps the discharge a GUARANTEE; overridable makes it a
+   CLAIM.
+
+THE ACCEPTANCE AS WRITTEN SURVIVES point 3 and does NOT survive a catch-wide fallback:
+nested boundaries at `Box[V=Int64]` / `Box[V=String]` route correctly only where the tag
+carries the argument.
+
