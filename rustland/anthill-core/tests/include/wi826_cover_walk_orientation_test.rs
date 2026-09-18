@@ -44,13 +44,13 @@ const DESC: &str = r#"
 
   sort Leaf
     entity leaf
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 1
   end
 
   sort Pebble
     entity pebble
-    fact Desc[T = Pebble]
+    provides Desc[T = Pebble]
     operation describe(x: Pebble) -> Int64 = 5
   end
 "#;
@@ -197,12 +197,12 @@ fn partially_bound_entry_fills_the_omitted_param_and_is_refused_at_load() {
     operation pd(a: P, b: Q) -> Int64
   end
   sort LeafLeaf
-    fact Pair[P = Leaf, Q = Leaf]
+    provides Pair[P = Leaf, Q = Leaf]
     operation pd(a: Leaf, b: Leaf) -> Int64 = 7
   end
   sort AnyPebble
     sort X = ?
-    fact Pair[P = X, Q = Pebble]
+    provides Pair[P = X, Q = Pebble]
     operation pd(a: X, b: Pebble) -> Int64 = 8
   end
 
@@ -250,8 +250,8 @@ const MID: &str = r#"  sort Mid
   end
   sort Gem
     entity gem
-    fact Desc[T = Gem]
-    fact Mid[MT2 = Gem]
+    provides Desc[T = Gem]
+    provides Mid[MT2 = Gem]
     operation describe(x: Gem) -> Int64 = 5
     operation midop(x: Gem) -> Int64 = 50
   end"#;

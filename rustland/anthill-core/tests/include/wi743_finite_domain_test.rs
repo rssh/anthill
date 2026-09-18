@@ -359,9 +359,13 @@ namespace test.wi743.abstractt
   sort Summable
     sort T = ?
   end
-  fact Summable[T = Int64]
   fact src(7)
   rule g[A](?a: A) :- src(?a), Summable[A]
+end
+
+namespace anthill.prelude.Int64
+  import test.wi743.abstractt.Summable
+  provides Summable[T = Int64]
 end
 "#,
     );

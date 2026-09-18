@@ -96,7 +96,8 @@ use crate::wi1010_defaulted_op_instance_fact_test::program;
 const TWO_SUPPLIERS_LEAF: &str =
     "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n";
 const TWO_SUPPLIERS_TAIL: &str = "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
-     fact Desc[T = Leaf, describe = otherDescribe]\n";
+     namespace Leaf\n    \
+     provides Desc[T = Leaf, describe = otherDescribe]\n  end\n";
 
 fn two_suppliers(ns: &str, tail: &str) -> String {
     program(ns, TWO_SUPPLIERS_LEAF, TWO_SUPPLIERS_TAIL, tail)
@@ -354,7 +355,9 @@ fn abstract_carrier_program(ns: &str) -> String {
 
   operation otherDescribe(x: Leaf) -> Int64 = 9
 
-  fact Desc[T = Leaf, describe = otherDescribe]
+  namespace Leaf
+    provides Desc[T = Leaf, describe = otherDescribe]
+  end
 
   operation via_spec(s: Shape) -> Int64 = Desc.describe(s)
   operation probe() -> Int64 = via_spec(leaf())

@@ -61,6 +61,6 @@ package's tracked-file policy whenever `grammar.js` changes.
 
 ```bash
 cd scaland
-sbt test
+sbt testFull      # sbt 2's `test` is INCREMENTAL; `testFull` runs everything
 sbt compile
 ```

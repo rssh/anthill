@@ -41,9 +41,20 @@ Parallel implementation in Scala 3 (sbt build, fastparse). Mirrors the Rust arch
 
 ```bash
 cd scaland
-sbt test
+sbt testFull
 sbt compile
 ```
+
+**`testFull`, NOT `test`** (sbt 2). sbt 2's `test` is INCREMENTAL — it runs only
+what the last change affected, and prints `No tests to run` when nothing did. An
+acceptance that says "scaland green" and runs `test` can therefore pass having run
+NOTHING, which is the one thing an acceptance must not do. `testFull` is sbt 2's
+"executes all tests".
+
+sbt 2 also keeps a background SERVER between invocations. If the build state changes
+underneath it — a version bump, an external `clean` — a later `sbt -batch …` can answer
+from the stale one and report `Total 0 … [success]`. MEASURED during the migration.
+`sbt shutdown` first when a run reports fewer tests than it should.
 
 ### Tree-sitter Grammar (`tree-sitter-anthill/`)
 

@@ -395,7 +395,9 @@ namespace test.vec3.freeop
   operation vec_scale(c: Float, v: FreeVec) -> FreeVec = FreeVec(x: c * v.x)
   operation vec_zero() -> FreeVec = FreeVec(x: 0.0)
 
-  fact VectorSpace[FreeVec, Float]
+  namespace FreeVec
+    provides VectorSpace[FreeVec, Float]
+  end
 end
 "#,
     )

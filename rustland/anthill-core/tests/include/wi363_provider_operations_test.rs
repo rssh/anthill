@@ -64,7 +64,7 @@ fn provider_missing_op_backing_errors() {
           end
           sort Carrier
             entity carrier(id: Int64)
-            fact Spec[T = Carrier]
+            provides Spec[T = Carrier]
           end
         end
     "#;
@@ -102,7 +102,7 @@ fn provider_with_spec_default_rule_is_rejected() {
           end
           sort Carrier
             entity carrier(id: Int64)
-            fact Spec[T = Carrier]
+            provides Spec[T = Carrier]
           end
         end
     "#;
@@ -134,7 +134,7 @@ fn provider_with_own_op_loads() {
           end
           sort Carrier
             entity carrier(id: Int64)
-            fact Spec[T = Carrier]
+            provides Spec[T = Carrier]
             operation needed(x: Carrier) -> Int64 = 0
           end
         end

@@ -73,7 +73,7 @@ namespace w57
     sort {s} = ?
     sort {t} = ?
     effects {e} = ?
-{ef_decl}    fact Box[C = Wrap[Source = {s}, T = {t}, ES = {e}{ef}], Element = {t}, E = {row}]
+{ef_decl}    provides Box[C = Wrap[Source = {s}, T = {t}, ES = {e}{ef}], Element = {t}, E = {row}]
     operation get(w: Wrap[Source = {s}, T = {t}, ES = {e}{ef}]) -> {t} effects {row} =
       match w
         case wrap(_, v) -> v
@@ -187,7 +187,7 @@ namespace w57neg
     sort WS = ?
     sort WT = ?
     effects WE = ?
-    fact Box[C = Wrap[Source = WS, T = WT, ES = WE], Element = WT, E = WE]
+    provides Box[C = Wrap[Source = WS, T = WT, ES = WE], Element = WT, E = WE]
     operation get(w: Wrap[Source = WS, T = WT, ES = WE]) -> WT effects WE =
       match w
         case wrap(_, v) -> v

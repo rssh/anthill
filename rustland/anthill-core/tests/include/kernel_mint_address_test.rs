@@ -551,8 +551,10 @@ fn guard_src(rival: &str) -> String {
       sort Noeq
         entity ne(v: Int64)
       end
-      fact PartialEq[T = Witheq]
-      fact Eq[T = Witheq]
+      namespace Witheq
+        provides PartialEq[T = Witheq]
+        provides Eq[T = Witheq]
+      end
 {rival}
       rule related909(?x, ?y) :- requires(PartialEq[T]), eq(?x, ?y)
     end

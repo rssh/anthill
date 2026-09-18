@@ -30,8 +30,8 @@ The mapping is deterministic: given the same anthill source, the same Rust code 
 | `sort T` (abstract sub-sort = type parameter) | generic `<T>` (§2.6); on spec sorts in the full mapper, members surviving Self-collapse: associated type `type T;` (§2.14) |
 | `k: s.K` (path-dependent projection, ungrounded) | `S::K` off the receiver lifted to a named generic `S: Sort` (§2.14, full mapper) |
 | `requires Eq[T]` | trait bound: `where T: Eq` or supertrait |
-| `fact SortName` or `fact SortName[bindings]` (inside sort body) | supertrait: `trait S: SortName` |
-| `fact SortName` or `fact SortName[bindings]` (in entity's namespace) | `impl SortName for Entity` |
+| `provides SortName` or `provides SortName[bindings]` (inside sort body) | supertrait: `trait S: SortName` |
+| `provides SortName` … in a `namespace Entity` SECONDARY ENTRY | `impl SortName for Entity` |
 | `List[T = X]` | `Vec<X>` |
 | `Option[T = X]` | `Option<X>` |
 | `rule` (law) | `#[cfg(test)]` property-based test stub |
@@ -265,15 +265,15 @@ constraint non_negative: gte(balance(?a), zero)
 
 These are generated in a separate `invariants` submodule for test-time checking.
 
-### 2.13 Fact as Spec Satisfaction Declaration → Supertrait or Impl
+### 2.13 Spec Satisfaction Declaration (`provides`) → Supertrait or Impl
 
-A `fact SortName` or `fact SortName[bindings]` declares a spec satisfaction (refinement) relationship. The bindings (if any) are used by the kernel for constraint checking but are ignored by the bootstrap codegen — only the sort name matters for the Rust mapping. *(In the full mapper the bindings of a spec-sort satisfaction are **not** ignored: they become the generated impl's associated-type items — §2.14.)* It maps differently depending on context:
+A `provides SortName` or `provides SortName[bindings]` clause declares a spec satisfaction (refinement) relationship. The bindings (if any) are used by the kernel for constraint checking but are ignored by the bootstrap codegen — only the sort name matters for the Rust mapping. *(In the full mapper the bindings of a spec-sort satisfaction are **not** ignored: they become the generated impl's associated-type items — §2.14.)* It maps differently depending on where the claim's provider is:
 
 **Inside a sort body** — becomes a supertrait:
 
 ```
 sort QueryableStore {                      pub trait QueryableStore: Store {
-  fact Store                      →            fn retrieve(&self, ...) -> ...;
+  provides Store                  →            fn retrieve(&self, ...) -> ...;
   operation retrieve(                      }
     store: QueryableStore,
     pattern: Term) -> List[T = Term]
@@ -282,29 +282,33 @@ sort QueryableStore {                      pub trait QueryableStore: Store {
 sort Stream {                              trait Stream<T, E>: Streamable {
   sort T                          →            ...
   sort E                                   }
-  fact Streamable[T = T]
+  provides Streamable[T = T]
   ...
 }
 ```
 
-`fact Store` inside `sort QueryableStore` means "every QueryableStore is-a Store". `fact Streamable[T = T]` inside `sort Stream` means "every Stream is-a Streamable" — in the bootstrap mapper the bindings are stripped, only the sort name `Streamable` becomes a supertrait. *(In the full mapper a binding onto a supertrait member that survives Self-collapse becomes an associated-type binding on the supertrait reference — `trait Stream: Streamable<T = Self::T>` — §2.14.)*
+`provides Store` inside `sort QueryableStore` means "every QueryableStore is-a Store". `provides Streamable[T = T]` inside `sort Stream` means "every Stream is-a Streamable" — in the bootstrap mapper the bindings are stripped, only the sort name `Streamable` becomes a supertrait. *(In the full mapper a binding onto a supertrait member that survives Self-collapse becomes an associated-type binding on the supertrait reference — `trait Stream: Streamable<T = Self::T>` — §2.14.)*
 
-**In an entity's namespace** — becomes a trait implementation, and **names its carrier in brackets**:
+**In a SECONDARY ENTRY at the carrier's address** (proposal 059 R2/R3) — the same claim, written where the carrier has no body to write it in. A §6.3 free-standing `entity` lowers to a **struct**, which has no supertrait list, so its entry's claims become impl markers:
 
 ```
 -- In namespace anthill.examples.persistence.sql:
 entity SqlStore(                           pub struct SqlStore { ... }
   connection: String, ...)        →
-fact QueryableStore[SqlStore]              impl QueryableStore for SqlStore { ... }
+namespace SqlStore                         impl QueryableStore for SqlStore { ... }
+  provides QueryableStore
+end
 ```
 
-`fact QueryableStore[SqlStore]` means "SqlStore is-a QueryableStore", which maps to implementing the trait. The brackets are the whole of what says *which* type the claim is about: a namespace names no type, so unlike the sort-body form above there is nothing enclosing for the carrier to be read off. **This is the one place the bootstrap mapper does read a fact's bindings** — the paragraph above says they are ignored, and that is about a *supertrait* claim, where the sort name is the whole mapping. An `impl` needs a carrier, and there is nowhere else to get one.
+An entry at the address of a **trait-lowered** sort folds into that trait's supertrait list instead, exactly as the same clause written in the sort's own body does — one provision, one rendering, the two paths partitioning on whether the address is trait-lowered.
 
-> **The bracket-less spelling at namespace level is refused** (WI-933). This section used to give `fact QueryableStore`, with no brackets, as the mapping — "the sort declared in this namespace provides Spec". The loader never read it that way: measured across a full stdlib + host-bindings load (WI-931), the two lines in the tree written that way produced **no** provider edge at all, while their bracketed neighbours on the next line did. A reader following this text wrote a declaration that did nothing. It is now a located load error naming the spec and both repairs. The alternative — deriving the carrier from the enclosing namespace's entity — was rejected rather than left unbuilt: `anthill.persistence.filesystem` declares two entities, so proximity would let declaration *order* decide which type a claim is about, which is exactly what WI-978 removed from this loader.
+> **The carrier is the ADDRESS, and nothing is read off a neighbour or a binding** (WI-20260917-S8JYF). This section used to describe a *`fact`* — `fact QueryableStore[SqlStore]` at namespace level, `fact Store` inside a sort body — because until that ticket the `fact` spelling was a second way of writing a provision. It is retired (058 §4): a `fact` is an ordinary fact wherever it stands, asserts no is-a, and the mapper emits nothing for one.
 >
-> **The mapper was doing exactly that, and it is fixed here too.** `emit_namespace_fact` took the entity that *preceded* the fact and never looked at the bindings — measured, `entity SqlStore(…) entity ColumnDef(…) fact QueryableStore[SqlStore]` emitted `// impl QueryableStore for ColumnDef`, silently discarding the author's carrier. It now reads the brackets (leading positional or first named binding), and a bare fact emits no marker at all rather than naming a neighbour. Pinned by `codegen_test::fact_takes_its_carrier_from_the_brackets` and its two siblings. The stdlib never showed the bug only because each `fact Modifiable[T = X]` there happens to sit directly after `entity X`.
+> Two readings died on the way there, and both were order-dependent. `emit_namespace_fact` originally took the entity that *preceded* the fact — measured, `entity SqlStore(…) entity ColumnDef(…) fact QueryableStore[SqlStore]` emitted `// impl QueryableStore for ColumnDef`, silently discarding the author's carrier — and WI-933 repaired it to read the BRACKETS. A second, separate reader folded a namespace-level `fact Spec` into the *preceding sort's* supertrait list, and survived that repair. Both are gone: a provision names its provider by where it is written, so the enclosing sort or the entry's address says it outright.
 >
-> `SqlStore` is a SKETCH — it lives at `examples/sql-store/sql.anthill`, not the stdlib (proposal 038, "What the stdlib carries"), and declares no satisfaction fact of its own, so the `fact QueryableStore[SqlStore]` line above illustrates the mapping rather than transcribing the file.
+> The bracket-less `fact Spec` at namespace level, which this section once gave as the mapping ("the sort declared in this namespace provides Spec"), was a **load error** from WI-933 until the retirement made it an ordinary nullary fact. The loader never read it as a claim: measured across a full stdlib + host-bindings load (WI-931), the two lines in the tree written that way produced **no** provider edge at all, while their bracketed neighbours on the next line did.
+>
+> `SqlStore` is a SKETCH — it lives at `examples/sql-store/sql.anthill`, not the stdlib (proposal 038, "What the stdlib carries"), and declares no satisfaction claim of its own, so the block above illustrates the mapping rather than transcribing the file.
 
 ### 2.14 Path-Dependent Projections (`s.K`) → Associated Types
 
@@ -358,7 +362,7 @@ The host generic an ungrounded `s.K` induces is the **receiver itself** (`S`); t
 
 - §2.7: `requires Eq[K]` on a spec-sort member → `where Self::K: Eq` on the trait / `where S::K: Eq` at a use site.
 - §2.8: a parametric *use* of a spec sort in bound position, `KVStore[K = String]`, is Rust's associated-type-binding syntax `KVStore<K = String>` — legal exactly because the members are associated types.
-- §2.13: for a spec-sort satisfaction (`provides` / `fact KVStore[K = String]` in a carrier's scope), the bindings are **no longer ignored** in the full mapper — they become the `type K = String;` items of the generated `impl`.
+- §2.13: for a spec-sort satisfaction (`provides KVStore[K = String]` in a carrier's scope), the bindings are **no longer ignored** in the full mapper — they become the `type K = String;` items of the generated `impl`.
 - Generic providers compose: `List provides Iterable[Element = T]` → `impl<T> Iterable for List<T> { type Element = T; }`.
 - Effect members (`sort E` on `Stream`) stay outside this rule: they *are* projectable in effect position (`effects s.E`, WI-396), but they are never grounded via `provides` and do not lower to associated types. Their host realization rides the effect channel — §5.5's resolution rule (effects resolve structurally per LanguageMapping profile) is mapper-neutral, though its `Stream<T, E>` rendering shows the bootstrap shape. Whether a full-mapper trait carries `E` at all (associated type vs erased into §5.5's wrapping) is deliberately left to the WI-002 emitter design.
 
@@ -761,13 +765,13 @@ namespace anthill.persistence
     effects (Modify{store}, Error)
 
   sort NonMonotonicStore
-    fact Store                                -- NonMonotonicStore is-a Store
+    provides Store                            -- NonMonotonicStore is-a Store
 
   operation retract(store: NonMonotonicStore, reference: FactRef) -> Bool
     effects (Modify{store}, Error)
 
   sort QueryableStore
-    fact Store                                -- QueryableStore is-a Store
+    provides Store                            -- QueryableStore is-a Store
 
   operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
     effects (Error)
@@ -776,11 +780,15 @@ end
 
 -- In namespace anthill.examples.persistence.sql:
 entity SqlStore(connection: String, schema: String, dialect: SqlDialect)
-fact QueryableStore[SqlStore]                 -- SqlStore is-a QueryableStore
+namespace SqlStore                            -- a SECONDARY ENTRY to the entity (059 R2)
+  provides QueryableStore                     -- SqlStore is-a QueryableStore
+end
 
 -- In namespace anthill.persistence.filesystem:
 entity FileStore(root: String, convention: FileConvention)
-fact NonMonotonicStore[FileStore]             -- FileStore is-a NonMonotonicStore
+namespace FileStore
+  provides NonMonotonicStore                  -- FileStore is-a NonMonotonicStore
+end
 ```
 
 Generated Rust:
@@ -829,11 +837,11 @@ pub mod filesystem {
 }
 ```
 
-Note: `fact Store` inside `sort QueryableStore` becomes supertrait `QueryableStore: Store`. At namespace level the carrier is written in brackets — `fact QueryableStore[SqlStore]` becomes `impl QueryableStore for SqlStore` (which implies `impl Store for SqlStore` since `QueryableStore: Store`).
+Note: `provides Store` inside `sort QueryableStore` becomes supertrait `QueryableStore: Store`. At an entity's own address the same clause becomes `impl QueryableStore for SqlStore` (which implies `impl Store for SqlStore` since `QueryableStore: Store`).
 
-> **Write the brackets.** The two positions are not interchangeable: `fact Store` *inside a sort body* names a supertrait and works, but a namespace-level **bracket-less** `fact <Spec>` after an entity declaration names no carrier and is **refused at load** (WI-933, §2.13) — until that refusal landed it was silently dropped, which is how two of them shipped. The examples above use the bracketed form because it is the one the loader honours, and it is what the real stdlib writes (`fact NonMonotonicStore[FileStore]` in `rustland/anthill-stl/anthill/persistence.anthill`).
+> **The entry supplies the carrier.** The two positions are not interchangeable, and neither is a `fact`: a provision names its provider by WHERE it is written, so a free-standing entity — which has no body — takes a `namespace <Entity> … end` secondary entry (059 R2/R3). A namespace-level `fact <Spec>[Carrier]` said this until WI-20260917-S8JYF retired that spelling (058 §4, §2.13), and the bracket-less form of it was a load error before that (WI-933) after two of them shipped silently doing nothing. This is what the real stdlib writes (`namespace FileStore { provides NonMonotonicStore }` in `rustland/anthill-stl/anthill/persistence.anthill`).
 
-The `sql` half of this example is a SKETCH (§2.13) and is NOT run through the bootstrap mapper — `anthill-stl`'s build script generates only stdlib files, of which `store` and `filesystem` are the persistence ones. `FileStore` is the realized backend; its satisfaction facts stand in the host closure, `rustland/anthill-stl/anthill/persistence.anthill`, beside the `operation_map` that backs them.
+The `sql` half of this example is a SKETCH (§2.13) and is NOT run through the bootstrap mapper — `anthill-stl`'s build script generates only stdlib files, of which `store` and `filesystem` are the persistence ones. `FileStore` is the realized backend; its satisfaction claims stand in the host closure, `rustland/anthill-stl/anthill/persistence.anthill`, beside the `operation_map` that backs them.
 
 ### 6.2 Prelude List
 

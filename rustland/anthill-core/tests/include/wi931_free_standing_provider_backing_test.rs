@@ -299,7 +299,9 @@ fn a_spec_level_host_mapping_backs_no_carrier() {
 namespace wi931.notastore
   import anthill.persistence.{NonMonotonicStore}
   entity ZzNotAStore(v: Int64)
-  fact NonMonotonicStore[ZzNotAStore]
+  namespace ZzNotAStore
+    provides NonMonotonicStore
+  end
 end
 ";
     let errs = match try_load_kb_with(src) {
@@ -325,10 +327,9 @@ end
 fn reinstating_the_sql_store_provision_is_refused() {
     let shape = sql_store_shape();
     let src = "
-namespace wi931.sqlback
+namespace anthill.examples.persistence.sql.SqlStore
   import anthill.persistence.{NonMonotonicStore}
-  import anthill.examples.persistence.sql.{SqlStore}
-  fact NonMonotonicStore[SqlStore]
+  provides NonMonotonicStore
 end
 ";
     let errs = match try_load_kb_with_files(&[&shape, src]) {
@@ -358,7 +359,9 @@ namespace wi931.control
     operation w931op(x: T) -> T
   end
   entity W931Carrier(v: Int64)
-  fact W931Spec[T = W931Carrier]
+  namespace W931Carrier
+    provides W931Spec[T = W931Carrier]
+  end
 end
 ";
     let errs = match try_load_kb_with(src) {

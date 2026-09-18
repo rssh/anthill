@@ -92,7 +92,6 @@ namespace test.pw9a0.{ns}
     requires Eq[T]
   end
 
-  fact Summable[T = Int64]
 
   fact src({conforming}, 7)
   fact src({other}, 8)
@@ -103,6 +102,11 @@ namespace test.pw9a0.{ns}
   -- what makes a one-row answer above a FILTER rather than a table that only ever had
   -- one row.
   rule ungated(?a, ?b) :- src(?a, ?b)
+end
+
+namespace anthill.prelude.Int64
+  import test.pw9a0.{ns}.Summable
+  provides Summable[T = Int64]
 end
 "#
     )
@@ -249,7 +253,6 @@ namespace test.pw9a0.simp
     requires Eq[T]
   end
 
-  fact Summable[T = Int64]
 
   sort Lib
     sort E = ?
@@ -260,6 +263,11 @@ namespace test.pw9a0.simp
       keep_id: keep[A](?x: List[T = A], ?y) <=> ?y :- Summable[A] @[simp]
     }
   end
+end
+
+namespace anthill.prelude.Int64
+  import test.pw9a0.simp.Summable
+  provides Summable[T = Int64]
 end
 "#,
     );

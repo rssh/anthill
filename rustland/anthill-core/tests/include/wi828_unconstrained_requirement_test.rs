@@ -50,14 +50,14 @@ const INSTANCES: &str = r#"
 
   sort Leaf
     entity leaf
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation fresh() -> Leaf = leaf()
     operation describe(x: Leaf) -> Int64 = 1
   end
 
   sort Pebble
     entity pebble
-    fact Desc[T = Pebble]
+    provides Desc[T = Pebble]
     operation fresh() -> Pebble = pebble()
     operation describe(x: Pebble) -> Int64 = 5
   end

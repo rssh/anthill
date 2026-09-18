@@ -1,8 +1,12 @@
 -- Binding-layer satisfaction for anthill.geometry (proposal 038).
 --
--- `VectorSpace requires Ring[F]`, and `fact Ring[Float]` is a per-language
--- binding fact (`float.anthill`) — so a stdlib-only load cannot satisfy this
--- provision, and it stands here rather than beside the carrier.
+-- `VectorSpace requires Ring[F]`, and `Float`'s `provides Ring[Float]` is a per-language
+-- binding claim (`float.anthill`) — so a stdlib-only load cannot satisfy this
+-- provision, and it stands here rather than in `Vec3`'s own declaration. A
+-- `namespace Vec3` SECONDARY ENTRY (059 R2/R3) is what gives it an address
+-- without moving it; it was a namespace-level `fact VectorSpace[Vec3, Float]`
+-- until WI-20260917-S8JYF retired that spelling (058 §4), and the positional
+-- carrier it used to derive is now the entry's address.
 --
 -- The four members are BACKED: `anthill.geometry.Vec3` declares
 -- `vec_add` / `vec_sub` / `vec_scale` / `vec_zero` as bodied operations.
@@ -12,5 +16,7 @@ namespace anthill.geometry
   import anthill.prelude.{Float}
   import anthill.prelude.algebra.{VectorSpace}
 
-  fact VectorSpace[Vec3, Float]
+  namespace Vec3
+    provides VectorSpace[V = Vec3, F = Float]
+  end
 end

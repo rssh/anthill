@@ -73,7 +73,11 @@ fn instance_fact_op_binding_satisfies_coverage() {
       case some(x) -> f(x)
       case none() -> none
 
-  fact CpsMonad[F = Option, pure = optionPure, flatMap = optionFlatMap]
+end
+
+namespace anthill.prelude.Option
+  import test.wi431.cps_accept.CpsMonad
+  provides CpsMonad[F = Option, pure = test.wi431.cps_accept.optionPure, flatMap = test.wi431.cps_accept.optionFlatMap]
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -101,7 +105,11 @@ fn instance_fact_missing_op_binding_is_loud() {
 
   operation optionPure[A](a: A) -> Option[T = A] = some(a)
 
-  fact CpsMonad[F = Option, pure = optionPure]
+end
+
+namespace anthill.prelude.Option
+  import test.wi431.cps_missing.CpsMonad
+  provides CpsMonad[F = Option, pure = test.wi431.cps_missing.optionPure]
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -142,7 +150,9 @@ fn instance_fact_op_dispatches_at_eval() {
     entity tag(n: Int64)
   end
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
-  fact Combiner[T = Tag, combine = tagCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+  end
 
   operation runCombine() -> Int64 =
     match combine(tag(n: 1), tag(n: 2))
@@ -190,7 +200,9 @@ fn instance_fact_op_dispatches_via_threaded_dict() {
     entity tag(n: Int64)
   end
   operation tagZero() -> Tag = tag(n: 42)
-  fact HasZero[T = Tag, zero = tagZero]
+  namespace Tag
+    provides HasZero[T = Tag, zero = tagZero]
+  end
 
   sort Box
     sort T = ?
@@ -258,8 +270,10 @@ fn instance_fact_op_dispatches_when_spec_has_requires() {
         match y
           case tag(b) -> eq(a, b)
   operation tagZero() -> Tag = tag(n: 7)
-  fact MyEq[T = Tag, myeq = tagEq]
-  fact HasZ[T = Tag, hzero = tagZero]
+  namespace Tag
+    provides MyEq[T = Tag, myeq = tagEq]
+    provides HasZ[T = Tag, hzero = tagZero]
+  end
 
   sort Box
     sort T = ?
@@ -312,8 +326,10 @@ fn instance_fact_eq_powers_list_member() {
       case color(a) ->
         match y
           case color(b) -> eq(a, b)
-  fact PartialEq[T = Color, eq = colorEq]
-  fact Eq[T = Color, eq = colorEq]
+  namespace Color
+    provides PartialEq[T = Color, eq = colorEq]
+    provides Eq[T = Color, eq = colorEq]
+  end
 
   operation hasMatch() -> Int64 =
     if contains([color(code: 1), color(code: 2)], color(code: 2)) then 1 else 0
@@ -362,7 +378,11 @@ fn instance_fact_spec_default_op_needs_no_binding() {
       case some(x) -> f(x)
       case none() -> none
 
-  fact CpsMonad[F = Option, pure = optionPure, flatMap = optionFlatMap]
+end
+
+namespace anthill.prelude.Option
+  import test.wi431.cps_default.CpsMonad
+  provides CpsMonad[F = Option, pure = test.wi431.cps_default.optionPure, flatMap = test.wi431.cps_default.optionFlatMap]
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -391,7 +411,9 @@ fn instance_fact_well_typed_binding_passes_signature_check() {
     entity tag(n: Int64)
   end
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 1)
-  fact Combiner[T = Tag, combine = tagCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+  end
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -417,7 +439,9 @@ fn instance_fact_binding_wrong_arity_is_loud() {
     entity tag(n: Int64)
   end
   operation badCombine(x: Tag) -> Tag = x
-  fact Combiner[T = Tag, combine = badCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = badCombine]
+  end
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -444,7 +468,9 @@ fn instance_fact_binding_wrong_param_type_is_loud() {
     entity tag(n: Int64)
   end
   operation badParam(x: Int64, y: Int64) -> Tag = tag(n: 0)
-  fact Combiner[T = Tag, combine = badParam]
+  namespace Tag
+    provides Combiner[T = Tag, combine = badParam]
+  end
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -472,7 +498,9 @@ fn instance_fact_binding_wrong_return_type_is_loud() {
     entity tag(n: Int64)
   end
   operation badReturn(x: Tag, y: Tag) -> Int64 = 0
-  fact Combiner[T = Tag, combine = badReturn]
+  namespace Tag
+    provides Combiner[T = Tag, combine = badReturn]
+  end
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -505,7 +533,11 @@ fn instance_fact_higher_kinded_binding_signature_fails_open() {
       case some(x) -> f(x)
       case none() -> none
 
-  fact CpsMonad[F = Option, pure = optionPure, flatMap = optionFlatMap]
+end
+
+namespace anthill.prelude.Option
+  import test.wi431.sig_hk.CpsMonad
+  provides CpsMonad[F = Option, pure = test.wi431.sig_hk.optionPure, flatMap = test.wi431.sig_hk.optionFlatMap]
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -538,8 +570,10 @@ fn duplicate_instance_facts_are_a_loud_ambiguity() {
   operation combineA(x: Tag, y: Tag) -> Tag = tag(n: 1)
   operation combineB(x: Tag, y: Tag) -> Tag = tag(n: 2)
 
-  fact Combiner[T = Tag, combine = combineA]
-  fact Combiner[T = Tag, combine = combineB]
+  namespace Tag
+    provides Combiner[T = Tag, combine = combineA]
+    provides Combiner[T = Tag, combine = combineB]
+  end
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -571,8 +605,10 @@ fn identical_instance_facts_are_idempotent_not_ambiguous() {
   end
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 7)
 
-  fact Combiner[T = Tag, combine = tagCombine]
-  fact Combiner[T = Tag, combine = tagCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+    provides Combiner[T = Tag, combine = tagCombine]
+  end
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -604,8 +640,10 @@ fn identical_instance_facts_different_field_order_are_idempotent() {
   end
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 7)
 
-  fact Combiner[T = Tag, combine = tagCombine]
-  fact Combiner[combine = tagCombine, T = Tag]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+    provides Combiner[combine = tagCombine, T = Tag]
+  end
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -623,6 +661,13 @@ end
 /// interned under different `Symbol` copies. The grouping key canonicalizes
 /// (matching the dispatch-side `provider_spec_view_bindings`), so the two still
 /// collide.
+///
+/// WI-20260917-S8JYF: "cross-namespace" is now "cross-FILE". The two claims used to be
+/// `fact Combiner[T = Tag, combine = …]` in two different namespaces, each deriving the
+/// carrier from its binding; they are two SECONDARY ENTRIES at the carrier's own address
+/// (059 R2: an entry may stand in a file that does not own the declaration), which is
+/// what makes them two entries of one scope rather than two namespaces. The property
+/// measured is unchanged.
 #[test]
 fn cross_namespace_distinct_instances_are_ambiguous() {
     let base = r#"namespace test.wi431.xbase
@@ -640,20 +685,20 @@ fn cross_namespace_distinct_instances_are_ambiguous() {
   operation combineB(x: Tag, y: Tag) -> Tag = tag(n: 2)
 end
 "#;
-    let inst_a = r#"namespace test.wi431.xinstA
-  import test.wi431.xbase.{Combiner, Tag, combineA}
-  fact Combiner[T = Tag, combine = combineA]
+    let inst_a = r#"namespace test.wi431.xbase.Tag
+  import test.wi431.xbase.{Combiner, Tag}
+  provides Combiner[T = Tag, combine = test.wi431.xbase.combineA]
 end
 "#;
-    let inst_b = r#"namespace test.wi431.xinstB
-  import test.wi431.xbase.{Combiner, Tag, combineB}
-  fact Combiner[T = Tag, combine = combineB]
+    let inst_b = r#"namespace test.wi431.xbase.Tag
+  import test.wi431.xbase.{Combiner, Tag}
+  provides Combiner[T = Tag, combine = test.wi431.xbase.combineB]
 end
 "#;
     let errs = load_errors(&[base, inst_a, inst_b]);
     assert!(
         errs.iter().any(|e| e.contains("ambigu") || e.contains("coheren")),
-        "two instance facts for (Combiner, Tag) in different namespaces must still be a loud ambiguity: {errs:?}"
+        "two instance claims for (Combiner, Tag) in different FILES must still be a loud ambiguity: {errs:?}"
     );
 }
 
@@ -680,12 +725,18 @@ end
 "#;
     let inst_a = r#"namespace test.wi431.yinstA
   import test.wi431.ybase.{Combiner, Tag, tagCombine}
-  fact Combiner[T = Tag, combine = tagCombine]
+end
+
+namespace test.wi431.eval.Tag
+  provides Combiner[T = Tag, combine = test.wi431.yinstA.tagCombine]
 end
 "#;
     let inst_b = r#"namespace test.wi431.yinstB
   import test.wi431.ybase.{Combiner, Tag, tagCombine}
-  fact Combiner[T = Tag, combine = tagCombine]
+end
+
+namespace test.wi431.eval.Tag
+  provides Combiner[T = Tag, combine = test.wi431.yinstB.tagCombine]
 end
 "#;
     let errs = load_errors(&[base, inst_a, inst_b]);
@@ -720,8 +771,12 @@ fn instance_facts_for_distinct_carriers_do_not_collide() {
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 1)
   operation ringCombine(x: Ring, y: Ring) -> Ring = ring(n: 2)
 
-  fact Combiner[T = Tag, combine = tagCombine]
-  fact Combiner[T = Ring, combine = ringCombine]
+  namespace Tag
+    provides Combiner[T = Tag, combine = tagCombine]
+  end
+  namespace Ring
+    provides Combiner[T = Ring, combine = ringCombine]
+  end
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -764,7 +819,9 @@ fn instance_fact_carrier_param_after_op_resolves_and_dispatches() {
     entity tag(n: Int64)
   end
   operation tagCombine(x: Tag, y: Tag) -> Tag = tag(n: 99)
-  fact Combiner[Tag, combine = tagCombine]
+  namespace Tag
+    provides Combiner[Tag, combine = tagCombine]
+  end
 
   operation runCombine() -> Int64 =
     match combine(tag(n: 1), tag(n: 2))
@@ -786,15 +843,27 @@ end
     }
 }
 
-/// (E, LOUD) An op-bearing instance fact whose carrier cannot be derived — the
-/// carrier type parameter `T` is simply not bound — is a LOUD load error, not a
-/// silent drop. Pre-(E) the `named_terms.first()` heuristic picked the only
-/// binding (`combine = tagCombine`, an Operation), `fact_value_to_sort_sym`
-/// returned `None`, and the loader returned early WITHOUT emitting the provision
-/// or any diagnostic — so a fact that forgot its carrier loaded clean and the
-/// instance silently did not exist (coverage/coherence/signature never ran).
+/// (E) AND WI-933 ARE BOTH GONE, AND THIS PAIR IS WHAT REPLACES THEM
+/// (WI-20260917-S8JYF).
+///
+/// They asserted two refusals that only a CARRIER DERIVATION can raise. A
+/// namespace-level `fact Spec[…]` took its carrier from a binding value, so it could
+/// fail to have one — `fact Combiner[combine = tagCombine]` bound only an operation
+/// (`UnresolvableInstanceCarrier`, (E)), and a bare `fact Holder` bound nothing at all
+/// (`CarrierlessProvisionFact`, WI-933). Each got its own sentence, and this file kept
+/// the pair so that the two could not collapse into one message.
+///
+/// The retirement removes the derivation, not just the sentences: a `fact` names no
+/// carrier because it makes no claim. A provision names its provider by ADDRESS, so
+/// "the carrier could not be derived" has no arrival — which is why there is nothing
+/// here to re-point at a new diagnostic.
+///
+/// What the two rows assert instead is the pair of facts that replaces them: the texts
+/// LOAD, and they record NOTHING. A row asserting only "loads clean" would pass against
+/// a loader that silently dropped them, which is the defect this ticket was filed for —
+/// so each reads the provision relation back.
 #[test]
-fn instance_fact_unresolvable_carrier_is_loud() {
+fn a_carrier_less_fact_loads_and_records_no_provision() {
     let snippet = r#"namespace test.wi431.no_carrier
   import anthill.prelude.Int64
 
@@ -810,27 +879,23 @@ fn instance_fact_unresolvable_carrier_is_loud() {
   fact Combiner[combine = tagCombine]
 end
 "#;
-    let errs = load_errors(&[snippet]);
+    assert_eq!(
+        load_errors(&[snippet]),
+        Vec::<String>::new(),
+        "an op-only binding names no carrier, and a `fact` needs none — it is an \
+         ordinary fact"
+    );
+    let kb = crate::common::try_load_kb_with(snippet).expect("loads");
     assert!(
-        errs.iter().any(|e| e.contains("carrier")),
-        "an op-bearing instance fact whose carrier param is unbound must be a loud \
-         carrier-derivation error, not a silent drop: {errs:?}"
+        !crate::common::sort_provisions(&kb)
+            .iter()
+            .any(|(_, spec)| spec == "test.wi431.no_carrier.Combiner"),
+        "and it records no provision — the claim is written `provides`"
     );
 }
 
-/// (E)'s boundary, RE-DECIDED BY WI-933. This test used to assert the opposite —
-/// that a bare type-only `fact Holder` at namespace level "stays lenient" — and said
-/// in its own comment that the lenient path had no real-world consumer and that
-/// WI-933 would decide whether the spelling is implemented or refused. WI-933 refused
-/// it, so this is the CONTROL that flips: it fails if the refusal is backed out.
-///
-/// The boundary (E) drew is still real and still here: the two arrivals get DIFFERENT
-/// sentences, because only an op-bearing instance fact has an unbound carrier
-/// PARAMETER to name in its repair. So this asserts the refusal AND that it is not
-/// (E)'s — a single "some error mentioning carrier" assertion would pass if the two
-/// messages collapsed into one, which is the drift the pair exists to catch.
 #[test]
-fn a_bare_type_only_fact_at_namespace_level_is_refused_in_its_own_words() {
+fn a_bare_fact_at_namespace_level_loads_and_records_no_provision() {
     let snippet = r#"namespace test.wi431.type_only
   import anthill.prelude.Int64
 
@@ -842,15 +907,16 @@ fn a_bare_type_only_fact_at_namespace_level_is_refused_in_its_own_words() {
   fact Holder
 end
 "#;
-    let errs = load_errors(&[snippet]);
-    assert!(
-        errs.iter().any(|e| e.contains("names no carrier")),
-        "WI-933: a namespace-level bracket-less `fact Holder` names no carrier and is \
-         refused, not dropped: {errs:?}"
+    assert_eq!(
+        load_errors(&[snippet]),
+        Vec::<String>::new(),
+        "a bare `fact Holder` is an ordinary nullary fact"
     );
+    let kb = crate::common::try_load_kb_with(snippet).expect("loads");
     assert!(
-        !errs.iter().any(|e| e.contains("binds operations")),
-        "and NOT with (E)'s instance-fact wording — this fact binds no operation, so \
-         there is no carrier parameter for it to tell the author to bind: {errs:?}"
+        !crate::common::sort_provisions(&kb)
+            .iter()
+            .any(|(_, spec)| spec == "test.wi431.type_only.Holder"),
+        "and it records no provision"
     );
 }

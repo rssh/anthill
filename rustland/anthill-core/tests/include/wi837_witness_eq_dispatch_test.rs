@@ -289,7 +289,9 @@ fn a_fact_bound_eq_beside_a_witness_eq_is_refused() {
 
   operation pebbleEq(a: Pebble, b: Pebble) -> Bool = true
 
-  fact PartialEq[T = Pebble, eq = pebbleEq]
+  namespace Pebble
+    provides PartialEq[T = Pebble, eq = pebbleEq]
+  end
 
   sort PebbleEqW
     provides PartialEq[T = Pebble]
@@ -321,7 +323,9 @@ fn an_own_eq_beside_a_fact_bound_eq_is_refused() {
 
   operation otherEq(a: Pebble, b: Pebble) -> Bool = false
 
-  fact PartialEq[T = Pebble, eq = otherEq]
+  namespace Pebble
+    provides PartialEq[T = Pebble, eq = otherEq]
+  end
 end
 "#;
     assert_refused(
@@ -352,7 +356,9 @@ fn a_type_only_provision_does_not_hide_a_later_eq_binding() {
 
   operation pebbleEq(a: Pebble, b: Pebble) -> Bool = true
 
-  fact PartialEq[T = Pebble, eq = pebbleEq]
+  namespace Pebble
+    provides PartialEq[T = Pebble, eq = pebbleEq]
+  end
 
   rule peq(?x, ?y) :- eq(?x, ?y)
 end
@@ -366,7 +372,7 @@ end
         ),
         1,
         "the type-only `provides PartialEq[T = Pebble]` must not hide the later \
-         `fact PartialEq[T = Pebble, eq = pebbleEq]` — 0 solutions is the structural answer"
+         `provides PartialEq[T = Pebble, eq = pebbleEq]` — 0 solutions is the structural answer"
     );
 }
 
@@ -475,7 +481,9 @@ const NS_ENTITY_SRC: &str = r#"namespace test.wi837.nsent
 
   operation bindEq(a: binding, b: binding) -> Bool = true
 
-  fact PartialEq[T = binding, eq = bindEq]
+  namespace binding
+    provides PartialEq[T = binding, eq = bindEq]
+  end
 
   rule beq(?x, ?y) :- eq(?x, ?y)
 end
@@ -492,7 +500,9 @@ const SORT_ENTITY_SRC: &str = r#"namespace test.wi837.sortent
 
   operation bindEq(a: Binding, b: Binding) -> Bool = true
 
-  fact PartialEq[T = Binding, eq = bindEq]
+  namespace Binding
+    provides PartialEq[T = Binding, eq = bindEq]
+  end
 
   rule beq(?x, ?y) :- eq(?x, ?y)
 end
@@ -524,7 +534,7 @@ fn a_namespace_level_entity_carrier_keys_the_index() {
         1,
         "a namespace-level entity emits no `SortInfo`, so the index build must reach it through \
          the composite-carrier walk it now shares with WI-664's classifier; 0 solutions means \
-         the domain re-narrowed to `SortInfo` and the written `fact PartialEq[T = binding, \
+         the domain re-narrowed to `SortInfo` and the written `provides PartialEq[T = binding, \
          eq = bindEq]` is being silently ignored again (WI-856)"
     );
 }
@@ -621,7 +631,9 @@ fn two_eq_suppliers_for_a_namespace_level_entity_are_refused() {
   operation bindEqA(a: binding, b: binding) -> Bool = true
   operation bindEqB(a: binding, b: binding) -> Bool = false
 
-  fact PartialEq[T = binding, eq = bindEqA]
+  namespace binding
+    provides PartialEq[T = binding, eq = bindEqA]
+  end
 
   sort BindingEqW
     provides PartialEq[T = binding, eq = bindEqB]

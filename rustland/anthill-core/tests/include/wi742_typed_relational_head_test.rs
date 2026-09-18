@@ -410,9 +410,13 @@ namespace test.wi742.introducer
   sort Summable
     sort T = ?
   end
-  fact Summable[T = Int64]
   fact src([1, 2], 7)
   rule g[A](@a: List[T = A], @b: Int64) :- src(@a, @b), Summable[A]
+end
+
+namespace anthill.prelude.Int64
+  import test.wi742.introducer.Summable
+  provides Summable[T = Int64]
 end
 "#;
     let mut kb = crate::common::load_kb_with(&PROG.replace('@', ""));

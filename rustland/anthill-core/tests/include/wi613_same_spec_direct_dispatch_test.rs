@@ -43,13 +43,13 @@ const SRC: &str = r#"namespace test.wi613
 
   sort Red
     entity red
-    fact Tag[T = Red]
+    provides Tag[T = Red]
     operation tagval(x: Red) -> Int64 = 1
   end
 
   sort Blue
     entity blue
-    fact Tag[T = Blue]
+    provides Tag[T = Blue]
     operation tagval(x: Blue) -> Int64 = 2
   end
 

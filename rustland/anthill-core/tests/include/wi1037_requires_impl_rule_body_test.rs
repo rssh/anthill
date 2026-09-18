@@ -111,7 +111,7 @@ fn program(ns: &str, desc_body: &str, tail: &str) -> String {
 
   sort Leaf
     entity leaf
-    fact Tag[G = Leaf]
+    provides Tag[G = Leaf]
     operation tagval(x: Leaf) -> Int64 = 7
   end
 
@@ -121,7 +121,9 @@ fn program(ns: &str, desc_body: &str, tail: &str) -> String {
     operation describeLeaf(x: L) -> Int64 = Tag.tagval(x)
   end
 
-  fact Desc[T = Leaf, describe = LeafDesc.describeLeaf]
+  namespace Leaf
+    provides Desc[T = Leaf, describe = LeafDesc.describeLeaf]
+  end
 
 {tail}end
 "#
@@ -218,11 +220,11 @@ fn an_abstract_spec_op_reaches_it_from_both_sites() {
 fn a_carrier_with_no_supplier_still_runs_the_default() {
     let ns = "test.wi1037.gap";
     let src = program(ns, " = 1", RULE).replace(
-        "  fact Desc[T = Leaf, describe = LeafDesc.describeLeaf]\n",
+        "  namespace Leaf\n    provides Desc[T = Leaf, describe = LeafDesc.describeLeaf]\n  end\n",
         "",
     );
     assert!(
-        !src.contains("fact Desc["),
+        !src.contains("provides Desc["),
         "the fixture must really have no supplier"
     );
     assert_eq!(

@@ -3,9 +3,8 @@ namespace smoke.frame
   import anthill.prelude.{Unit, String, List, Modify, Modifiable}
 
   sort FileSystem
+    provides Modifiable[T = FileSystem]
   end
-
-  fact Modifiable[T = FileSystem]
 
   operation glob(pattern: String) -> List[T = String]
 

@@ -47,7 +47,8 @@ fn describe_program(tail: &str) -> String {
         "wi1036.rewrite",
         "",
         "\n  operation leafDescribe(x: Leaf) -> Int64 = 7\n\n  \
-         fact Desc[T = Leaf, describe = leafDescribe]\n",
+         namespace Leaf\n    \
+         provides Desc[T = Leaf, describe = leafDescribe]\n  end\n",
         tail,
     )
 }
@@ -290,7 +291,8 @@ fn a_supplied_override_of_a_builtin_mapped_spec_op_is_unreachable_from_a_rule_bo
 #[test]
 fn a_rule_body_tie_on_a_builtin_mapped_spec_op_refuses_at_load() {
     const RIVAL: &str = "\n  operation otherGt(a: Point, b: Point) -> Bool = true\n\n  \
-                         fact PartialOrd[T = Point, gt = otherGt]\n";
+                         namespace Point\n    \
+                         provides PartialOrd[T = Point, gt = otherGt]\n  end\n";
     let refusal = |tail: String| match crate::common::try_load_kb_with(&own_gt_program(&tail)) {
         Ok(_) => None,
         Err(errs) => Some(errs.join(" | ")),

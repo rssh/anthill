@@ -423,12 +423,12 @@ namespace nx4fd_disc
   end
   sort Alpha
     entity alpha
-    fact Marked[M = Alpha, N = Beta]
+    provides Marked[M = Alpha, N = Beta]
     operation code() -> Int64 = 11
   end
   sort Beta
     entity beta
-    fact Marked[M = Beta, N = Alpha]
+    provides Marked[M = Beta, N = Alpha]
     operation code() -> Int64 = 22
   end
   sort Ghost
@@ -484,7 +484,7 @@ namespace nx4fd_hz
   end
   sort Leaf
     entity leaf
-    fact Zeroable[T = Leaf]
+    provides Zeroable[T = Leaf]
     operation zero() -> Leaf = leaf()
     operation describe(x: Leaf) -> Int64 = 1
   end
@@ -513,7 +513,7 @@ end
         r#"
   sort Pebble
     entity pebble
-    fact Zeroable[T = Pebble]
+    provides Zeroable[T = Pebble]
     operation zero() -> Pebble = pebble()
     operation describe(x: Pebble) -> Int64 = 5
   end

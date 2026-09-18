@@ -92,7 +92,7 @@ fn color_program(ns: &str, members: &str, rest: &str) -> String {
     format!(
         r#"
 namespace wi1125.{ns}
-  -- `Effect` is for the `fact Effect[T = Boom]` that CONSUMER_SHAPES' tails carry;
+  -- `Effect` is for the `provides Effect[T = Boom]` that CONSUMER_SHAPES' tails carry;
   -- this helper owns the import because it owns the namespace header (WI-20260823-VM3YB).
   import anthill.prelude.{{Int64, Bool, Eq, PartialEq, Effect}}
   import anthill.prelude.PartialEq.{{eq, neq}}
@@ -193,7 +193,9 @@ namespace wi1125.factbound
   end
 
   operation colorNeq(a: Color, b: Color) -> Bool = false
-  fact PartialEq(T: Color, neq: colorNeq)
+  namespace Color
+    provides PartialEq[T = Color, neq = colorNeq]
+  end
 end
 "#;
     let errs = expect_neq_refusal(src, true);
@@ -487,7 +489,9 @@ const CONSUMER_SHAPES: &[(&str, &str)] = &[
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 "#,
     ),
     // 2 — `precondition_proved`. THE row this ticket owns: measured on HEAD BEFORE

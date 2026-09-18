@@ -23,7 +23,7 @@ facts_of(kb(), WorkItem)           -- a bare sort reference as a call argument
 This was never decided as a language rule — it *emerged*, and the immediate
 question was whether to bless it or to forbid it and require an explicit
 reification marker (`is_modifiable(type_value[Cell[V = Int64]]())`), with the
-`fact Modifiable[T = Cell]` clause form re-examined alongside.
+instance-claim clause form `Modifiable[T = Cell]` re-examined alongside.
 
 The finding, on inspection, is not a grammar leak. It is the planned
 convergence of three separately-made decisions:
@@ -94,9 +94,15 @@ that overlap value syntax (§2).
    evaluates a value. `type_value[T]()` is a static type→value reifier, not
    a value→type dereference; in particular a
    `Type`-sorted *value* never dereferences into the type it names. (§4)
-5. **Instance claims stay facts.** `fact Modifiable[T = Cell]` is a top-level
-   instance claim under the WI-710 depth gate — a declaration form, not a
-   type in value position — and is not touched by this proposal. (§6)
+5. **Instance claims are not types in value position.** `Modifiable[T = Cell]`
+   as a claim is a declaration form, not a type in value position, and is not
+   touched by this proposal. (§6) *(SUPERSEDED IN ITS SPELLING by
+   WI-20260917-S8JYF: the `fact` spelling of a provision is retired (058 §4), so
+   a claim is written `provides Modifiable[T = Cell]`. The DENOTATION claim above
+   is unaffected; what the retirement removed is the reading under which a `fact`
+   head could be one — and with it the §6 carve-out that had put the fact HEAD
+   out of reach of §8's "resolve once and classify loudly" rule, which is the gap
+   the silent drop lived in.)*
 
 ## Design
 
@@ -284,10 +290,13 @@ validation judgment must not change or silently drop the denotation.
 Two shipped classification rules are restated here as spec, not left in
 commit messages:
 
-- **Depth gate:** a top-level sort-headed clause is an *instance claim* (its
+- **Depth gate:** a top-level sort-headed clause may be an *instance claim* (its
   argument grammar is richer — operation bindings `pure = optionPure`,
   carrier positionals `NonMonotonicStore[FileStore]`); only *nested*
-  sort-headed applications are type terms.
+  sort-headed applications are type terms. Since WI-20260917-S8JYF a claim is
+  written `provides`, so what stands at the top level of a `fact` is an ordinary
+  clause head; the gate's *depth* reading is unchanged and its subject is now
+  the `provides` clause's spec.
 - **Surface gate:** `[…]` marks type/instance arguments, `(…)` marks
   constructor arguments; shape cannot distinguish a sort-headed constructor
   call (`sort Leaf { entity Leaf(…) }`) from a type application — only the
@@ -354,7 +363,7 @@ Why this is the honest home:
 
 What does **not** move: `Modifiable` (and `Modify`, `ModifyRuntime`) stay in
 `anthill.prelude.effects` — they are typing-level effect machinery, and the
-instance-claim form `fact Modifiable[T = Cell]` never needs the `Type` sort
+instance-claim form `provides Modifiable[T = Cell]` never needs the `Type` sort
 (§6). Only the *query* over them (`is_modifiable(t: Type)`) is reflect.
 
 Deliberately **no prelude re-export**: code that manipulates type values
@@ -422,8 +431,8 @@ profile, one of two `Type` regimes:
   `Type` — and every reflect sort — exists **only during compilation**.
 
 Compile-only, positively stated: the entire *specification surface* keeps
-full use of types in value position in every profile — facts
-(`fact Modifiable[T = Cell]`), rules and constraints (including ones that
+full use of types in value position in every profile — facts and provisions
+(`provides Modifiable[T = Cell]`), rules and constraints (including ones that
 call `is_modifiable`), `requires`/`ensures`, prover obligations, `TypeOf`
 queries — because that surface is evaluated by the host toolchain at load
 and verification time and is never lowered to the target. The embedded
@@ -458,21 +467,39 @@ Notes:
 
 ### §6 Instance claims are not types in value position
 
-`fact Modifiable[T = Cell]` (and `fact Monad[M = Option, pure = optionPure,
-…]`, `fact NonMonotonicStore[FileStore]`) are **instance claims**: top-level
-sort-headed clauses under the §2 depth gate, with their own argument grammar.
-They need no rescue from this proposal and do not depend on the `Type` sort;
-they stay facts — which is what keeps them enumerable through the
-discrimination tree and, via proposal 052, composable as `Relation[T]`
-values. The observed overlap between op-bearing instance claims and
-`provides` (both assert "S satisfies C at σ", one without proof obligations)
-is real but orthogonal; folding them is explicitly **out of scope** and
-deserves its own proposal.
+`Modifiable[T = Cell]` (and `Monad[M = Option, pure = optionPure, …]`,
+`NonMonotonicStore[FileStore]`) are **instance claims**: top-level sort-headed
+clauses under the §2 depth gate, with their own argument grammar. They need no
+rescue from this proposal and do not depend on the `Type` sort.
+
+**The overlap this section deferred is now settled** (WI-20260917-S8JYF). It read:
+"they stay facts — which is what keeps them enumerable through the discrimination
+tree and, via proposal 052, composable as `Relation[T]` values. The observed
+overlap between op-bearing instance claims and `provides` (both assert 'S
+satisfies C at σ', one without proof obligations) is real but orthogonal; folding
+them is explicitly out of scope and deserves its own proposal." The answer is
+058 §4's retirement, delivered at both levels: a claim is `provides Spec[…]`,
+written in the carrier's own body or in a `namespace <Carrier>` secondary entry
+(059), and a `fact` is an ordinary fact.
+
+*What that costs is exactly what this section named.* A provision is NOT a
+clause, so it does not enter the discrimination tree and a goal `Spec(T: ?q)`
+does not answer from it; the reflect relation `provides(?A, ?S)` over
+`SortProvidesInfo` is how a claim is enumerated. Where a rule genuinely resolves
+`Spec[…]` as a goal, the fact is kept BESIDE the provision — two statements, only
+one of them a claim.
+
+*What it bought is why the carve-out mattered here at all.* This section is right
+about DENOTATION — an instance claim is not a type in value position — but it also
+carried the claims out of reach of §8's diagnostic rule, and the fact HEAD was the
+one position in §7's lowering table where an unresolved bracketed application
+loaded in silence. With one reading left there is nothing to classify, and a
+bracketed head that names no declared sort is refused.
 
 ### §7 Matching semantics: structural facts, semantic operations
 
 Type terms in fact arguments unify **structurally**, like every term:
-`Modifiable[T = ?t]` binds `?t = Ref(Cell)` from `fact Modifiable[T = Cell]`,
+`Modifiable[T = ?t]` binds `?t = Ref(Cell)` from a `fact Modifiable[T = Cell]`,
 and that `Ref(Cell)` does not unify with `Cell[V = Int64]` — which is
 precisely why WI-206's acceptance ("a parameterized instance answers as its
 base does") is implemented as head-sort matching *in the operation layer*

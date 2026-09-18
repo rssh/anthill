@@ -37,7 +37,6 @@ namespace anthill.prelude
   import anthill.prelude.{Effect}
 
   sort External
+    provides Effect[T = External]
   end
-
-  fact Effect[T = External]
 end

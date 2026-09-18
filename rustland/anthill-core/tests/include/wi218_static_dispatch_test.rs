@@ -30,7 +30,7 @@ namespace test.wi218
   end
 
   sort IntFoo
-    fact Foo[T = Int64]
+    provides Foo[T = Int64]
     operation describe(x: Int64) -> String = "an int"
   end
 
@@ -67,7 +67,7 @@ namespace test.wi218_origin
   end
 
   sort IntBar
-    fact Bar[T = Int64]
+    provides Bar[T = Int64]
     operation describe(x: Int64) -> String = "concrete"
   end
 

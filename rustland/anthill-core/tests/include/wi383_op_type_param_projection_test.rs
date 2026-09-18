@@ -240,7 +240,7 @@ fn provider_fact_ground_value_ties_spec_op() {
   end
   sort IntCell
     operation rd(target: IntCell) -> Int64
-    fact Box[T = IntCell, V = Int64]
+    provides Box[T = IntCell, V = Int64]
   end
   operation readInt(c: IntCell) -> Int64 = Box.rd(c)
 end
@@ -265,7 +265,7 @@ fn provider_fact_ground_value_rejects_wrong_type() {
   end
   sort IntCell
     operation rd(target: IntCell) -> Int64
-    fact Box[T = IntCell, V = Int64]
+    provides Box[T = IntCell, V = Int64]
   end
   operation readStr(c: IntCell) -> String = Box.rd(c)
 end

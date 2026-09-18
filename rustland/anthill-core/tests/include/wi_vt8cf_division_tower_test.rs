@@ -362,7 +362,9 @@ namespace test.vt8cf.rename
     operation slice(x: Box, y: Int64) -> Box
       effects { Error[DivisionByZero] :- eq(y, 0) } = Box(v: 1)
   end
-  fact Halver[T = Box]
+  namespace Box
+    provides Halver[T = Box]
+  end
 
   -- A NAMED call, carrying the SPEC op's labels, with a literal second operand that
   -- refutes `eq(b, 0)` by ground evaluation. `named_call` declares NO effects, so the
@@ -447,8 +449,10 @@ namespace test.vt8cf.money
   sort Money
     entity Money(cents: Int64){money_ops}
   end
-  fact PartialOrd[T = Money]
-  fact Numeric[T = Money]
+  namespace Money
+    provides PartialOrd[T = Money]
+    provides Numeric[T = Money]
+  end
   operation plus() -> Int64 = (Money(cents: 700) + Money(cents: 25)).cents
 end
 "#
@@ -479,9 +483,13 @@ namespace test.vt8cf.moneydiv
     operation mod(a: Money, b: Money) -> Money {effects} = Money(cents: a.cents % b.cents)
     operation rem(a: Money, b: Money) -> Money {effects} = Money(cents: Int64.rem(a.cents, b.cents))
   end
-  fact PartialOrd[T = Money]
-  fact Numeric[T = Money]
-  fact EuclideanDomain[T = Money]
+  namespace Money
+    provides PartialOrd[T = Money]
+    provides Numeric[T = Money]
+  end
+  namespace Money
+    provides EuclideanDomain[T = Money]
+  end
 end
 "#
         );

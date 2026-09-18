@@ -88,7 +88,7 @@ namespace wi606.witness
     effects ES = ?
     effects EF = ?
     requires FiniteCollection[C = S, Element = Src, E = ES]
-    fact FiniteCollection[C = Mapped[Source = S, Src = Src, T = T, ES = ES, EF = EF], Element = T, E = {ES, EF}]
+    provides FiniteCollection[C = Mapped[Source = S, Src = Src, T = T, ES = ES, EF = EF], Element = T, E = {ES, EF}]
     operation collect(m: Mapped[Source = S, Src = Src, T = T, ES = ES, EF = EF]) -> List[T = T] effects {ES, EF} =
       match splitFirst(m)
         case none() -> nil

@@ -394,7 +394,9 @@ namespace test.rsrp5.pl
   sort Clock2
     entity clock2
   end
-  fact Modifiable[T = Clock2]
+  namespace Clock2
+    provides Modifiable[T = Clock2]
+  end
   sort CPlace
     import test.rsrp5.pl.{Clock2}
     import test.rsrp5.pl.Clock2.{clock2}

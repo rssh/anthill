@@ -121,10 +121,15 @@ const SORT: &str = "sort Rec\n    entity rec(n: Int64)\n  end";
 /// property it measures is unchanged: the obligation must reach the claim in the entry
 /// exactly as it reaches the claim outside.
 fn fixture(ns: &str, main_entry: &str, claim_in_entry: bool, backed: bool) -> String {
+    // WI-20260917-S8JYF — the OUTER claim is a SECOND ENTRY, not a `fact`. It stood one
+    // level out as `fact Show[T = Rec]` until the retirement (058 §4) made a `fact` an
+    // ordinary fact at every address; what varies across the pair is still WHERE the
+    // claim is written relative to the member — the entry that also holds the op, or a
+    // separate entry that holds only the claim.
     let (inner_claim, outer_claim) = if claim_in_entry {
         ("provides Show[T = Rec]", "")
     } else {
-        ("", "fact Show[T = Rec]")
+        ("", "namespace Rec\n    provides Show[T = Rec]\n  end")
     };
     // The backing member stays in the secondary entry in every row, so the only
     // thing that varies across a row PAIR is where the CLAIM sits.
@@ -332,7 +337,9 @@ namespace wi978.plain
   namespace Holder
     operation unrelated(x: Int64) -> Int64 = x
   end
-  fact Show[T = Rec]
+  namespace Rec
+    provides Show[T = Rec]
+  end
 end
 "#;
     let kb = crate::common::load_kb_with(src);

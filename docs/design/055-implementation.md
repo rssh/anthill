@@ -196,7 +196,11 @@ relation-column inference; it is not silently discarded.
 The existing gates remain:
 
 - **depth:** a top-level sort-headed clause may be an instance claim; a nested
-  sort-headed bracket application is a type value;
+  sort-headed bracket application is a type value. *(WI-20260917-S8JYF: a `fact`
+  head is no longer an instance claim at any depth — 058 §4's retirement made
+  `provides` the only spelling of a provision — so this gate now separates a
+  top-level clause HEAD from a nested type value, and nothing about it classifies
+  a construct.)*
 - **surface:** `Sort[…]` is type/instance application, while `Sort(…)` is
   construction;
 - **call:** `op[T](…)` is a typed call, not reification of `op[T]`.
@@ -205,7 +209,14 @@ The existing gates remain:
 
 Required diagnostics are local to classification or ordinary validation:
 
-- unresolved head: `UnresolvedName` at the name;
+- unresolved head: `UnresolvedName` at the name — in a REFERENCE position. *(A
+  clause HEAD is exempt and must stay so: WI-20260821-RDGQC makes a fact head
+  declare its predicate, so `fact myrel[T = Red]` introduces `myrel` with a type
+  argument on it. WI-20260917-S8JYF built a refusal for a bracketed head whose
+  functor names no declared sort and REMOVED it on that measurement — the two
+  texts differ only in capitalization, which §2.3 does not read. What that ticket
+  closed instead is the reading: a `fact` is no longer a provision, so a missing
+  import demotes nothing.)*
 - undeclared/duplicate/over-applied type binding: existing type-argument error
   at the bracket application;
 - wrong destination: `expected String, got Type (Cell[Int64])`, not an

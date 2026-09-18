@@ -110,7 +110,9 @@ namespace test.wi206d
     sort V = ?
   end
 
-  fact Modifiable[T = Box[V = Int64]]
+  namespace Box
+    provides Modifiable[T = Box[V = Int64]]
+  end
 
   operation box_is() -> Bool = is_modifiable(Box)
   operation int_is() -> Bool = is_modifiable(Int64)

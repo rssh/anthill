@@ -187,13 +187,17 @@ namespace test.wi888.folded
     requires Eq[T]
   end
 
-  fact Summable[T = Int64]
 
   sort Lib
     sort A = ?
     operation keep(x: A, y: A) -> A
     rule keep_id: keep[T](?x: T, ?y) = ?x :- Summable[T] @[simp]
   end
+end
+
+namespace anthill.prelude.Int64
+  import test.wi888.folded.Summable
+  provides Summable[T = Int64]
 end
 "#,
     );

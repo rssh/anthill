@@ -58,7 +58,9 @@ const COLOR_PRELUDE: &str = r#"
     entity Bang
   end
   -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
+  namespace Boom
+    provides Effect[T = Boom]
+  end
 
   sort Color
     entity Red
@@ -163,9 +165,9 @@ const ALT_GUARD_PRELUDE: &str = r#"
 
   sort Boom
     entity Bang
+    -- WI-20260823-VM3YB: registers the label. Load-bearing.
+    provides Effect[T = Boom]
   end
-  -- WI-20260823-VM3YB: registers the label. Load-bearing.
-  fact Effect[T = Boom]
 
   sort Color
     entity Red

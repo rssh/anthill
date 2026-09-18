@@ -62,7 +62,7 @@ fn provider_missing_required_subspec_errors() {
           end
           sort Widget
             entity widget(id: Int64)
-            fact Comparable[T = Widget]
+            provides Comparable[T = Widget]
           end
         end
     "#;
@@ -99,8 +99,8 @@ fn provider_with_required_subspec_loads() {
           end
           sort Widget
             entity widget(id: Int64)
-            fact Nameable[T = Widget]
-            fact Comparable[T = Widget]
+            provides Nameable[T = Widget]
+            provides Comparable[T = Widget]
           end
         end
     "#;
@@ -127,7 +127,7 @@ fn provider_of_requireless_spec_loads() {
           end
           sort Gizmo
             entity gizmo(id: Int64)
-            fact Tagged[T = Gizmo]
+            provides Tagged[T = Gizmo]
           end
         end
     "#;
@@ -168,8 +168,8 @@ fn provider_satisfies_subspec_at_wrong_bindings_errors() {
           end
           sort Carrier
             entity carrier(id: Int64)
-            fact Ring[F = Carrier]
-            fact VS[V = Carrier, F = NonRing]
+            provides Ring[F = Carrier]
+            provides VS[V = Carrier, F = NonRing]
           end
         end
     "#;
@@ -214,8 +214,8 @@ fn provider_transitive_requires_gap_errors() {
           end
           sort Thing
             entity thing(id: Int64)
-            fact A[T = Thing]
-            fact Spec[T = Thing]
+            provides A[T = Thing]
+            provides Spec[T = Thing]
           end
         end
     "#;
@@ -261,8 +261,8 @@ fn shorthand_requires_binding_precise_wrong_field_errors() {
           end
           sort Carrier
             entity carrier(id: Int64)
-            fact Ring[T = Carrier]
-            fact VS[V = Carrier, F = NonRing]
+            provides Ring[T = Carrier]
+            provides VS[V = Carrier, F = NonRing]
           end
         end
     "#;
@@ -299,8 +299,8 @@ fn shorthand_requires_binding_precise_right_field_loads() {
           end
           sort Carrier
             entity carrier(id: Int64)
-            fact Ring[T = Carrier]
-            fact VS[V = Carrier, F = Carrier]
+            provides Ring[T = Carrier]
+            provides VS[V = Carrier, F = Carrier]
           end
         end
     "#;

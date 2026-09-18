@@ -80,8 +80,10 @@ const SRC: &str = r#"
       sort Noeq
         entity ne(v: Int64)
       end
-      fact PartialEq[T = Witheq]
-      fact Eq[T = Witheq]
+      namespace Witheq
+        provides PartialEq[T = Witheq]
+        provides Eq[T = Witheq]
+      end
 
       -- Fires only when the argument type provides Eq; the inner `eq` is the
       -- structural builtin, so the guard alone decides fire / don't-fire.
@@ -236,8 +238,10 @@ fn two_equal_requires_on_same_spec_is_a_loud_error() {
           sort Thing
             entity thing(v: Int64)
           end
-          fact PartialEq[T = Thing]
-          fact Eq[T = Thing]
+          namespace Thing
+            provides PartialEq[T = Thing]
+            provides Eq[T = Thing]
+          end
           rule twin(?a, ?b, ?c) :- requires(PartialEq[A]), requires(PartialEq[B]), eq(?a, ?b), eq(?b, ?c)
         end
     "#;

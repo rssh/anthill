@@ -401,8 +401,12 @@ fn a_backtracked_receiver_reclassifies_per_carrier() {
   operation leafDescribe(x: Leaf) -> Int64 = 7
   operation twigDescribe(x: Twig) -> Int64 = 5
 
-  fact Desc[T = Leaf, describe = leafDescribe]
-  fact Desc[T = Twig, describe = twigDescribe]
+  namespace Leaf
+    provides Desc[T = Leaf, describe = leafDescribe]
+  end
+  namespace Twig
+    provides Desc[T = Twig, describe = twigDescribe]
+  end
 
   fact pick({first}())
   fact pick({second}())

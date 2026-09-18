@@ -84,7 +84,9 @@ namespace wi441.thread
   import anthill.prelude.{Effect, List, Option, Bool, Int64}
   import anthill.prelude.Iterable.{find}
   sort Beep end
-  fact Effect[T = Beep]
+  namespace Beep
+    provides Effect[T = Beep]
+  end
   operation noisy(n: Int64) -> Bool effects Beep = true
   operation ok(xs: List[T = Int64]) -> Option[T = Int64] effects Beep = find(xs, noisy)
 end
@@ -101,7 +103,9 @@ namespace wi441.thread2
   import anthill.prelude.{Effect, List, Option, Bool, Int64}
   import anthill.prelude.Iterable.{find}
   sort Beep end
-  fact Effect[T = Beep]
+  namespace Beep
+    provides Effect[T = Beep]
+  end
   operation noisy(n: Int64) -> Bool effects Beep = true
   operation boom(xs: List[T = Int64]) -> Option[T = Int64] = find(xs, noisy)
 end
@@ -176,7 +180,9 @@ namespace wi441.lazy
   import anthill.prelude.{Effect, List, Bool, Int64}
   import anthill.prelude.FiniteCollection.{filter, collect}
   sort Beep end
-  fact Effect[T = Beep]
+  namespace Beep
+    provides Effect[T = Beep]
+  end
   operation noisy(n: Int64) -> Bool effects Beep = true
   operation ok(xs: List[T = Int64]) -> List[T = Int64] effects Beep =
     collect(filter(xs, noisy))
@@ -194,7 +200,9 @@ namespace wi441.lazy2
   import anthill.prelude.{Effect, List, Bool, Int64}
   import anthill.prelude.FiniteCollection.{filter, collect}
   sort Beep end
-  fact Effect[T = Beep]
+  namespace Beep
+    provides Effect[T = Beep]
+  end
   operation noisy(n: Int64) -> Bool effects Beep = true
   operation boom(xs: List[T = Int64]) -> List[T = Int64] =
     collect(filter(xs, noisy))

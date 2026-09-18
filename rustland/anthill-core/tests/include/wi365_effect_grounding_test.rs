@@ -74,7 +74,7 @@ namespace test.wi365.carrier
 
   sort MutBox
     entity mb(fd: Int64)
-    fact Box
+    provides Box
     operation peek(b: MutBox) -> Int64 effects Modify[b] =
       match b
         case mb(x) -> x

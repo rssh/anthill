@@ -171,7 +171,9 @@ namespace test.wi642.has_instance
     entity I(b: Blob)
   end
 
-  fact Relatable[T = Blob]
+  namespace Blob
+    provides Relatable[T = Blob]
+  end
   rule linked(?x, ?y) :- I(b: ?x), I(b: ?y), related(?x, ?y)
 end
 "#;

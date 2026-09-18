@@ -18,11 +18,14 @@
 -- which adds the stored-VALUE type V — independent of the resource TYPE T,
 -- which types the target place but is not itself the target.
 --
--- Effect kinds are registered via `fact Effect[T = Kind[?]]` at namespace level,
--- or `provides Effect[T = Kind]` inside the sort that declares the kind — two
--- spellings of one provision, and the second is how `Time.Clock` and the three
--- `Console` kinds below register. CHECKED since WI-20260823-VM3YB: an effect row
--- naming an unregistered sort is a load error (`typing::check_effect_registration`).
+-- Effect kinds are registered by `provides Effect[T = Kind]` — written in the
+-- kind's own body, or in a `namespace <Kind>` secondary entry (059) where the
+-- kind has no body to write it in. That is the ONE spelling since
+-- WI-20260917-S8JYF retired the namespace-level `fact Effect[T = Kind[?]]` one
+-- (058 §4): a `fact` is an ordinary fact and nothing else, so nothing derives a
+-- carrier from a binding value any more. CHECKED since WI-20260823-VM3YB: an
+-- effect row naming an unregistered sort is a load error
+-- (`typing::check_effect_registration`).
 -- Before that the registration was documented here and asked at no site, so a
 -- misspelled label was a silent new effect and every one of these lines was inert.
 -- The kernel checks effect declarations; interpretation is provided
@@ -95,6 +98,14 @@ namespace anthill.prelude
   -- header and kernel-language.md §5.6.
   sort Modify
     sort T = ?
+
+    -- REGISTERED AS AN EFFECT KIND, here rather than in a namespace-level
+    -- `fact Effect[T = Modify[?]]` (WI-20260917-S8JYF retired that spelling).
+    -- A provision names its provider by WHERE it is written, so writing it in
+    -- the kind's own body IS the registration — nothing is derived from the
+    -- binding value. `[?]` reads well and is inert: a registration records the
+    -- KIND, its base sort (§5.5).
+    provides Effect[T = Modify[?]]
   end
 
   -- ModifyRuntime[T, V]: the runtime carrier for the Modify-effect operations.
@@ -129,6 +140,7 @@ namespace anthill.prelude
   sort Error
     import anthill.prelude.{Nothing, Result}
     sort T = ?
+    provides Effect[T = Error[?]]
     operation raise(error: T) -> Nothing effects Error[T]
 
     -- THE BOUNDARY. Runs `body`; a raise inside it aborts HERE and becomes
@@ -168,10 +180,12 @@ namespace anthill.prelude
   end
 
   sort Suspension
+    provides Effect[T = Suspension]
   end
 
   sort Branch
     import anthill.prelude.{Nothing}
+    provides Effect[T = Branch]
     operation fail() -> Nothing effects Branch
   end
 
@@ -236,11 +250,6 @@ namespace anthill.prelude
     entity relation_floundered(goals: List[T = Term])
   end
 
-  -- Register as effects
-  fact Effect[T = Modify[?]]
-  fact Effect[T = Error[?]]
-  fact Effect[T = Suspension]
-  fact Effect[T = Branch]
 end
 
 -- Effect relationships:

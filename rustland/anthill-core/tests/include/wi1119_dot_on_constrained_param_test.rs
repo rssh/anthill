@@ -308,7 +308,7 @@ fn a_transitively_required_spec_lends_its_member() {
     operation detail(x: D) -> Int64
   end
   sort LeafDetail
-    fact Detail[D = Leaf]
+    provides Detail[D = Leaf]
     operation detail(x: Leaf) -> Int64 = 7
   end
 "#;
@@ -351,7 +351,7 @@ fn a_requires_refinement_wins_the_tie_rather_than_being_refused() {
     operation describe(x: D) -> Int64
   end
   sort LeafDetail
-    fact Detail[D = Leaf, describe = LeafDetail.detailed]
+    provides Detail[D = Leaf, describe = LeafDetail.detailed]
     operation detailed(x: Leaf) -> Int64 = 5
   end
 "#;

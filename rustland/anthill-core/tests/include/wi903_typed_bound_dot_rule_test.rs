@@ -148,12 +148,16 @@ namespace test.wi903guarded
     sort T = ?
   end
 
-  fact Summable[T = Int64]
 
   sort Lib
     operation pick(x: Int64, y: Int64) -> Int64
     rule pk: pick(?x: Summable, ?y) = ?y :- gt(?y, 0) TAG
   end
+end
+
+namespace anthill.prelude.Int64
+  import test.wi903guarded.Summable
+  provides Summable[T = Int64]
 end
 "#;
     // TAGGED: a conditional rewrite, so the bound is installed and enforced at the match.

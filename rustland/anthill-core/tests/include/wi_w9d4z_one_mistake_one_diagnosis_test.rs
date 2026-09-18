@@ -294,9 +294,11 @@ namespace zzw9d
     operation div(a: Money, b: Money) -> Money = Money(cents: a.cents / b.cents)
     operation mod(a: Money, b: Money) -> Money = Money(cents: a.cents % b.cents)
   end
-  fact PartialOrd[T = Money]
-  fact Numeric[T = Money]
-  fact EuclideanDomain[T = Money]
+  namespace Money
+    provides PartialOrd[T = Money]
+    provides Numeric[T = Money]
+    provides EuclideanDomain[T = Money]
+  end
 end
 ";
     let e = errs(SRC);
@@ -353,10 +355,14 @@ namespace zzw9e
     operation zero() -> Cash = Cash(cents: 0)
     operation div(a: Cash, b: Cash) -> Cash = Cash(cents: a.cents / b.cents)
   end
-  fact PartialOrd[T = Money]
-  fact EuclideanDomain[T = Money]
-  fact PartialOrd[T = Cash]
-  fact EuclideanDomain[T = Cash]
+  namespace Money
+    provides PartialOrd[T = Money]
+    provides EuclideanDomain[T = Money]
+  end
+  namespace Cash
+    provides PartialOrd[T = Cash]
+    provides EuclideanDomain[T = Cash]
+  end
 end
 ";
     let e = errs(SRC);

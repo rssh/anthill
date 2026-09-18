@@ -280,7 +280,7 @@ namespace test.wi794.wider
   end
 
   sort Square
-    fact Shape
+    provides Shape
     entity mk(n: Int64)
   end
 
@@ -301,7 +301,7 @@ namespace test.wi794.narrower
   end
 
   sort Square
-    fact Shape
+    provides Shape
     entity mk(n: Int64)
   end
 

@@ -40,7 +40,7 @@ enum wi516.delay.Delay
       let a = delayForce(m)
       delayForce(f(a)))
 
-  fact DelayMonad[M = Delay, pure = delayPure, delay = delayDelay, flatMap = delayFlatMap, force = delayForce]
+  provides DelayMonad[M = Delay, pure = delayPure, delay = delayDelay, flatMap = delayFlatMap, force = delayForce]
 end
 "#;
     if let Err(errs) = crate::common::try_load_kb_with(SRC) {
@@ -80,7 +80,7 @@ enum wi516.delaynest.Delay
   operation delayFlatMap[A, B, E1, E2](m: Delay[T = A, E = E1], f: (A) -> Delay[T = B, E = E2]) -> Delay[T = B, E = {E1, E2}] =
     delayed(lambda () -> delayForce(f(delayForce(m))))
 
-  fact DelayMonad[M = Delay, pure = delayPure, delay = delayDelay, flatMap = delayFlatMap, force = delayForce]
+  provides DelayMonad[M = Delay, pure = delayPure, delay = delayDelay, flatMap = delayFlatMap, force = delayForce]
 end
 "#;
     if let Err(errs) = crate::common::try_load_kb_with(SRC) {

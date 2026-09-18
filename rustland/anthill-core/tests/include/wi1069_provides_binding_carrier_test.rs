@@ -238,27 +238,19 @@ fn a_self_provision_is_still_read_as_self() {
 /// compared a clause in a NAMESPACE body against a `fact` one level OUT; the scope was
 /// the variable, not the spelling.
 ///
-/// Asserted as row EQUALITY rather than two separate expectations: the claim is that
-/// they agree, and two hand-written expectations would keep passing if both drifted.
-///
-/// SCOPED TO THE PROVISION, and the sibling below is why that scoping is written down
-/// rather than assumed — the two spellings do NOT agree about everything.
+/// ONE SPELLING, SINCE WI-20260917-S8JYF. This row asserted that the `provides` and
+/// `fact` spellings of one witness recorded the SAME provision — they did, which is
+/// exactly why 058 §4 could retire one of them. The `fact` leg is gone with the
+/// reading; what survives is the half that was ever a claim.
 #[test]
-fn the_provides_and_fact_spellings_of_one_witness_agree() {
-    let mut via_provides =
+fn the_provides_spelling_records_the_witness() {
+    let mut kb =
         crate::common::load_kb_with(&witness_program("test.wi1069.sp", "provides Desc[T = Leaf]"));
-    let mut via_fact =
-        crate::common::load_kb_with(&witness_program("test.wi1069.sf", "fact Desc[T = Leaf]"));
-    let (p, f) = (desc_rows(&mut via_provides), desc_rows(&mut via_fact));
     assert_eq!(
-        p,
+        desc_rows(&mut kb),
         vec!["LeafDesc | Desc | Leaf".to_string()],
-        "the `provides` spelling must record the witness"
-    );
-    assert_eq!(
-        p, f,
-        "inside a sort body the two spellings record ONE PROVISION — both take the \
-         provider from the scope and the carrier from the bindings"
+        "the clause is written in `LeafDesc` and its binding names `Leaf`: the relation \
+         must answer BOTH — provider `LeafDesc`, carrier `Leaf`"
     );
 }
 
@@ -304,14 +296,15 @@ fn the_two_spellings_diverge_outside_the_provision() {
     assert_eq!(
         spec_goal_solutions("test.wi1069.fdiv", "fact Desc[T = Leaf]"),
         1,
-        "a `fact` is a rule with an empty body, so its head is also an answerable goal"
+        "a `fact` is a rule with an empty body, so its head is an answerable goal — and \
+         since WI-20260917-S8JYF that is ALL it is"
     );
     assert_eq!(
         spec_goal_solutions("test.wi1069.pdiv", "provides Desc[T = Leaf]"),
         0,
-        "a `provides` clause asserts the provision and NOTHING ELSE — so the two \
-         spellings agree about the provision and differ about the fact index, and \
-         'the same provision' is the exact claim this file is entitled to make"
+        "a `provides` clause asserts the provision and NOTHING ELSE — which is what the \
+         retirement costs, and the standing reason to keep a fact BESIDE a provision \
+         where some rule resolves the spec as a goal"
     );
 }
 
@@ -319,22 +312,21 @@ fn the_two_spellings_diverge_outside_the_provision() {
 /// readings of the fact layer; this is the one assertion that the dictionary actually
 /// reaches the witness's member.
 ///
-/// Both spellings are driven, which is what makes it a twin rather than a second copy
-/// of `wi1010`'s witness row: that one drives the `provides` route against a DEFAULTED
-/// spec op, and the in-sort-body `fact` route is driven nowhere else.
+/// It is not a second copy of `wi1010`'s witness row: that one drives the `provides`
+/// route against a DEFAULTED spec op, and this one against a BODY-LESS one, where an
+/// answer at all is the witness dispatching.
+///
+/// WI-20260917-S8JYF: the `fact` leg is gone. It was a second SPELLING of this claim,
+/// and the retirement left one.
 #[test]
-fn a_witness_written_either_way_dispatches() {
-    for (ns, claim) in [
-        ("test.wi1069.dp", "provides Desc[T = Leaf]"),
-        ("test.wi1069.df", "fact Desc[T = Leaf]"),
-    ] {
-        assert_eq!(
-            probe(ns, &witness_program(ns, claim)),
-            7,
-            "`{claim}` must supply `Desc.describe` for `Leaf` — the spec op is \
-             body-less, so an answer at all is the witness dispatching"
-        );
-    }
+fn a_witness_dispatches() {
+    let ns = "test.wi1069.dp";
+    assert_eq!(
+        probe(ns, &witness_program(ns, "provides Desc[T = Leaf]")),
+        7,
+        "the provision must supply `Desc.describe` for `Leaf` — the spec op is \
+         body-less, so an answer at all is the witness dispatching"
+    );
 }
 
 /// CONTROL — the ONE case where the scope really does decide, kept beside the rows

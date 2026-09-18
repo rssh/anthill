@@ -55,3 +55,45 @@ assert the answers are separate, with the control being today's single shared an
 which currently reads as though it closes the shape. cargo-test green via
 rustland/scripts/test.sh.
 
+## Changes
+
+### 2026-09-17T10:16:54Z — feedback — user
+
+MEASURED, WITH A CONTROL, AND NOW PINNED IN A TEST (found while delivering
+WI-20260821-RDGQC's enumeration, 2026-09-17). This ticket had the mechanism; what it did
+not have was the LEAK driven end to end.
+
+TWO SORTS, ONE HEAD NAME, each written in its own host block:
+
+  namespace zzRDGQC.pv
+    sort RecP  entity P(v: Int64)  rule see(?x) :- pick(?x)  end
+    sort RecQ  entity Q(v: Int64)  rule see(?x) :- pick(?x)  end
+    provides RecP language rust  artifact "x.rs"  rule pick(1) :- true  end
+    provides RecQ language rust  artifact "y.rs"  rule pick(2) :- true  end
+  end
+
+  RecP.see -> 2 answers        RecQ.see -> 2 answers
+  CONTROL, the SAME two rules written IN the sorts instead of in a block:
+  RecP.see -> 1 answer (its own)   RecQ.see -> 1 (its own)
+
+So each spec's reader answers from the OTHER spec's block. The control is what makes the
+2 a measurement of the BLOCK and not of the fixture — it is the same defect class WI-894
+fixed for ordinary rule heads, in the arm no scan pass descends into.
+
+THE ROW LIVES IN `wi_rdgqc_head_introduction_census_test::
+a_host_provides_block_head_is_unscoped_and_two_specs_share_one_predicate`, beside its
+control, and it PINS today's answer: it fails when this ticket is fixed, which is the
+point. Closing this makes it (1, 1) — edit that row and the module's ledger table
+together.
+
+NOTE THE SPLIT THIS TICKET IS NOT: the block's CLAUSE already lands in the SPEC's scope
+(WI-20260827-APXSS made `load_provides_block` set `current_scope` to the base sort). It
+is the NAME that lands nowhere. So the fix is not "route the clause" — that is done —
+but "mint the head", and the scope to mint it in is the one APXSS already computes.
+
+ALSO WORTH KNOWING BEFORE TAKING IT: a reader OUTSIDE the sort is already loud. A
+qualified citation of such a head (`rule seeG(?x) :- Rec.hd(?x)`) is refused at load by
+WI-1034 ("rule-body goal `Rec.hd` names nothing"). The silence is only for a reader
+INSIDE the sort, where the bare name falls to the same global intern the head did — which
+is why the fixture above puts its readers in the sorts.
+

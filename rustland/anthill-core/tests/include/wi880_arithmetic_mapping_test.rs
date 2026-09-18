@@ -598,7 +598,9 @@ namespace wi880.notastore
     import anthill.prelude.{Int64}
     entity zzNotAStore(v: Int64)
   end
-  fact NonMonotonicStore[ZzNotAStore]
+  namespace ZzNotAStore
+    provides NonMonotonicStore[ZzNotAStore]
+  end
 end
 "#,
     );

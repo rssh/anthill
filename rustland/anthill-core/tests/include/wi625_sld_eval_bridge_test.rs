@@ -1039,8 +1039,10 @@ const INSTFACT_SRC: &str = r#"
           case tagged(k1, n1) ->
             match y
               case tagged(k2, n2) -> eq(k1, k2)
-      fact PartialEq[T = Tagged, eq = taggedEq]
-      fact Eq[T = Tagged, eq = taggedEq]
+      namespace Tagged
+        provides PartialEq[T = Tagged, eq = taggedEq]
+        provides Eq[T = Tagged, eq = taggedEq]
+      end
     end
 "#;
 

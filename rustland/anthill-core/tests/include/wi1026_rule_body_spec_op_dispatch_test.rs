@@ -189,14 +189,16 @@ pub(crate) fn program(ns: &str, leaf_body: &str, supply: &str, tail: &str) -> St
 /// default, and the one a rule body could not see. `Leaf` writes no member of its own.
 const ONE_LEAF: &str = "";
 const ONE_SUPPLY: &str = "\n  operation leafDescribe(x: Leaf) -> Int64 = 7\n\n  \
-                          fact Desc[T = Leaf, describe = leafDescribe]\n";
+                          namespace Leaf\n    \
+                          provides Desc[T = Leaf, describe = leafDescribe]\n  end\n";
 
 /// TWO suppliers — the carrier's own member (7) beside a fact binding a different
 /// operation (9). WI-1012's tie, reachable without an operation body.
 pub(crate) const TWO_LEAF: &str =
     "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64 = 7\n";
 pub(crate) const TWO_SUPPLY: &str = "\n  operation otherDescribe(x: Leaf) -> Int64 = 9\n\n  \
-                          fact Desc[T = Leaf, describe = otherDescribe]\n";
+                          namespace Leaf\n    \
+                          provides Desc[T = Leaf, describe = otherDescribe]\n  end\n";
 
 pub(crate) fn one_supplier(ns: &str, tail: &str) -> String {
     program(ns, ONE_LEAF, ONE_SUPPLY, tail)
@@ -437,11 +439,14 @@ fn a_bare_goal_naming_nothing_is_refused_at_load() {
     // `load::undefined_rule_body_goal_message`.
     let (loc, _) = crate::wi1012_static_supplier_tie_test::located(&msg);
     // 18 -> 19 in WI-909: `program` gained one `import anthill.kernel.{unify}` line
-    // above the rule. The absolute number is what makes this row worth having (it
-    // asserts the refusal is LOCATED, not merely raised), and it is also why that
-    // import is a bare line rather than a commented block — see `program`.
+    // above the rule. 19 -> 21 in WI-20260917-S8JYF: `ONE_SUPPLY` grew from one
+    // `fact Desc[…]` line into the three-line `namespace Leaf … provides … end`
+    // secondary entry the retirement moved it to. The absolute number is what makes
+    // this row worth having (it asserts the refusal is LOCATED, not merely raised),
+    // and it is also why that import is a bare line rather than a commented block —
+    // see `program`.
     assert!(
-        loc.starts_with("19:"),
+        loc.starts_with("21:"),
         "the refusal must point at the rule under test, got `{loc}` in: {msg}",
     );
 }

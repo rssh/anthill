@@ -81,15 +81,19 @@ fn override_widening_effect_rejected() {
           import anthill.prelude.{Effect, Int64}
           sort Eff1 end
           sort Eff2 end
-          fact Effect[T = Eff1]
-          fact Effect[T = Eff2]
+          namespace Eff1
+            provides Effect[T = Eff1]
+          end
+          namespace Eff2
+            provides Effect[T = Eff2]
+          end
           sort Sp
             sort T = ?
             operation op(x: T) -> T effects Eff1
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier effects Eff2 = x
           end
         end
@@ -111,14 +115,16 @@ fn override_matching_effect_loads() {
         namespace wi347.match
           import anthill.prelude.{Effect, Int64}
           sort Eff1 end
-          fact Effect[T = Eff1]
+          namespace Eff1
+            provides Effect[T = Eff1]
+          end
           sort Sp
             sort T = ?
             operation op(x: T) -> T effects Eff1
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier effects Eff1 = x
           end
         end
@@ -144,7 +150,7 @@ fn override_pure_op_loads() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier = x
           end
         end
@@ -167,14 +173,16 @@ fn override_dropping_effect_loads() {
         namespace wi347.narrow
           import anthill.prelude.{Effect, Int64}
           sort Eff1 end
-          fact Effect[T = Eff1]
+          namespace Eff1
+            provides Effect[T = Eff1]
+          end
           sort Sp
             sort T = ?
             operation op(x: T) -> T effects Eff1
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier = x
           end
         end
@@ -203,7 +211,7 @@ fn override_strengthening_precondition_rejected() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier requires gt(x, 0) = x
           end
         end
@@ -233,7 +241,7 @@ fn override_weakening_postcondition_rejected() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier = x
           end
         end
@@ -264,7 +272,7 @@ fn override_matching_contract_loads() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier requires gt(x, 0) ensures gt(x, 0) = x
           end
         end
@@ -308,7 +316,7 @@ fn override_matching_result_postcondition_loads() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier ensures gt(result, 0) = x
           end
         end
@@ -335,7 +343,7 @@ fn override_weaker_result_postcondition_is_refused() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier ensures lt(result, 0) = x
           end
         end
@@ -368,8 +376,12 @@ fn a_sigma_bound_effect_row_is_compared() {
           import anthill.prelude.{Effect, Int64}
           sort Eff1 end
           sort Eff2 end
-          fact Effect[T = Eff1]
-          fact Effect[T = Eff2]
+          namespace Eff1
+            provides Effect[T = Eff1]
+          end
+          namespace Eff2
+            provides Effect[T = Eff2]
+          end
           sort Sp
             sort T = ?
             sort E = ?
@@ -377,7 +389,7 @@ fn a_sigma_bound_effect_row_is_compared() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier, E = Eff1]
+            provides Sp[T = Carrier, E = Eff1]
             operation op(x: Carrier) -> Carrier effects Eff2 = x
           end
         end
@@ -401,7 +413,9 @@ fn a_sigma_bound_effect_row_that_matches_still_loads() {
         namespace wi347.eff_sigma_ok
           import anthill.prelude.{Effect, Int64}
           sort Eff1 end
-          fact Effect[T = Eff1]
+          namespace Eff1
+            provides Effect[T = Eff1]
+          end
           sort Sp
             sort T = ?
             sort E = ?
@@ -409,7 +423,7 @@ fn a_sigma_bound_effect_row_that_matches_still_loads() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier, E = Eff1]
+            provides Sp[T = Carrier, E = Eff1]
             operation op(x: Carrier) -> Carrier effects Eff1 = x
           end
         end
@@ -486,7 +500,7 @@ fn result_alignment_requires_the_return_types_to_agree() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Bool ensures gt(result, 0) = true
           end
         end
@@ -526,7 +540,7 @@ fn result_ret_mismatch_survives_sigma() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Int64 ensures gt(result, 0) = 1
           end
         end
@@ -564,7 +578,7 @@ fn a_parametric_return_type_still_loads() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier ensures gt(result, 0) = x
           end
         end
@@ -597,7 +611,7 @@ fn a_return_type_refusal_does_not_hide_an_independent_contract_defect() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Bool requires gt(x, 0) ensures gt(result, 0) = true
           end
         end
@@ -641,8 +655,8 @@ fn a_covariant_return_type_still_discharges_the_result_clause() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Base[B = Carrier]
-            fact Sp[T = Carrier]
+            provides Base[B = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier ensures gt(result, 0) = x
           end
         end
@@ -686,7 +700,7 @@ fn a_mismatched_return_type_no_clause_reads_is_not_the_discharge_rules_business(
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Bool ensures gt(x, 0) = true
           end
         end
@@ -731,7 +745,7 @@ fn a_weakening_is_reported_as_one_even_when_the_return_types_also_differ() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Bool ensures gt(result, 0) = true
           end
         end
@@ -779,7 +793,7 @@ fn an_impl_only_ensures_over_result_is_not_the_discharge_rules_business() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Bool ensures gt(result, 0) = true
           end
         end
@@ -885,7 +899,7 @@ fn the_contract_name_check_reaches_every_operation_shape() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Int64 ensures bogus_at_carrier(result) = 1
           end
         end
@@ -1007,19 +1021,25 @@ fn modify_row_src(ns: &str, spec_row: &str, impl_params: &str, impl_row: &str) -
           import anthill.prelude.{{Effect, Int64, Modify, Modifiable}}
           sort Eff1 end
           sort Eff2 end
-          fact Effect[T = Eff1]
-          fact Effect[T = Eff2]
+          namespace Eff1
+            provides Effect[T = Eff1]
+          end
+          namespace Eff2
+            provides Effect[T = Eff2]
+          end
           sort Res
             entity r(id: Int64)
           end
-          fact Modifiable[T = Res]
+          namespace Res
+            provides Modifiable[T = Res]
+          end
           sort Sp
             sort T = ?
             operation op(x: T, box: Res, box2: Res) -> T effects {spec_row}
           end
           sort Carrier
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op({impl_params}) -> Carrier effects {impl_row} = x
           end
         end
@@ -1142,7 +1162,9 @@ fn a_parametric_modify_is_refused_at_its_declaration_not_as_a_widening() {
         namespace wi39ad2.parametric_modify
           import anthill.prelude.{Effect, Int64, Modify}
           sort Eff1 end
-          fact Effect[T = Eff1]
+          namespace Eff1
+            provides Effect[T = Eff1]
+          end
           sort Sp
             sort T = ?
             operation op(x: T) -> T effects {Eff1}
@@ -1150,7 +1172,7 @@ fn a_parametric_modify_is_refused_at_its_declaration_not_as_a_widening() {
           sort Carrier
             sort R = ?
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier effects {Eff1, Modify[R]} = x
           end
         end
@@ -1186,9 +1208,13 @@ fn a_parametric_non_modify_atom_still_fails_open_beside_a_judged_neighbour() {
           sort Eff1
             sort T = ?
           end
-          fact Effect[T = Eff1[?]]
+          namespace Eff1
+            provides Effect[T = Eff1[?]]
+          end
           sort Eff2 end
-          fact Effect[T = Eff2]
+          namespace Eff2
+            provides Effect[T = Eff2]
+          end
           sort Sp
             sort T = ?
             operation op(x: T) -> T effects {}
@@ -1196,7 +1222,7 @@ fn a_parametric_non_modify_atom_still_fails_open_beside_a_judged_neighbour() {
           sort Carrier
             sort R = ?
             entity c(id: Int64)
-            fact Sp[T = Carrier]
+            provides Sp[T = Carrier]
             operation op(x: Carrier) -> Carrier effects {Eff1[T = R], Eff2} = x
           end
         end
@@ -1270,8 +1296,8 @@ fn a_result_region_restated_by_an_override_still_loads() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Modifiable[T = Carrier]
-            fact Sp[C = Carrier]
+            provides Modifiable[T = Carrier]
+            provides Sp[C = Carrier]
             operation new() -> Carrier effects Modify[result] = c(id: 0)
           end
         end
@@ -1415,7 +1441,7 @@ fn a_guarded_modify_over_a_place_still_loads() {
           import anthill.prelude.PartialEq.{eq}
           sort Wrapped
             entity w(id: Int64)
-            fact Modifiable[T = Wrapped]
+            provides Modifiable[T = Wrapped]
             operation touch(c: Wrapped, b: Int64) -> Unit
               effects { Modify[c] :- eq(b, 0) }
             = ()
@@ -1449,8 +1475,8 @@ fn a_place_target_refining_a_spec_place_target_is_accepted_by_comparison() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Modifiable[T = Carrier]
-            fact Sp[T = Carrier]
+            provides Modifiable[T = Carrier]
+            provides Sp[T = Carrier]
             operation put(p: Carrier, v: Int64) -> Unit effects Modify[p] = ()
           end
         end
@@ -1483,8 +1509,8 @@ fn a_place_target_naming_the_wrong_parameter_is_refused() {
           end
           sort Carrier
             entity c(id: Int64)
-            fact Modifiable[T = Carrier]
-            fact Sp[T = Carrier]
+            provides Modifiable[T = Carrier]
+            provides Sp[T = Carrier]
             operation put(p: Carrier, v: Int64) -> Unit effects Modify[v] = ()
           end
         end
@@ -1517,15 +1543,17 @@ fn a_widening_is_judged_beside_a_modify_the_spec_does_grant() {
         namespace wi39ad2.undecidable_neighbour
           import anthill.prelude.{Effect, Unit, Int64, Modify, Modifiable}
           sort Eff2 end
-          fact Effect[T = Eff2]
+          namespace Eff2
+            provides Effect[T = Eff2]
+          end
           sort Sp
             sort T = ?
             operation put(target: T) -> Unit effects Modify[target]
           end
           sort Carrier
             entity c(id: Int64)
-            fact Modifiable[T = Carrier]
-            fact Sp[T = Carrier]
+            provides Modifiable[T = Carrier]
+            provides Sp[T = Carrier]
             operation put(p: Carrier) -> Unit
               effects {Modify[p], Eff2} = ()
           end

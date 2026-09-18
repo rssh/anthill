@@ -452,7 +452,7 @@ namespace wi1102.cond
   sort Quiet
     sort E = ?
     requires Desc[T = E]
-    fact Desc[T = Box[B = E]]
+    provides Desc[T = Box[B = E]]
     operation describe(b: Box[B = E]) -> Int64 = 5
   end
   sort Reader
@@ -491,7 +491,7 @@ namespace wi1102.cond.ok
   end
   sort Leaf
     entity leaf
-    fact Desc[T = Leaf]
+    provides Desc[T = Leaf]
     operation describe(x: Leaf) -> Int64 = 3
   end
   sort Box
@@ -501,7 +501,7 @@ namespace wi1102.cond.ok
   sort Quiet
     sort E = ?
     requires Desc[T = E]
-    fact Desc[T = Box[B = E]]
+    provides Desc[T = Box[B = E]]
     operation describe(b: Box[B = E]) -> Int64 = 5
   end
   sort Reader
@@ -692,7 +692,7 @@ namespace wi1102.witnessrow
   sort Quiet
     sort E = ?
     requires Lawful[T = E]
-    fact Lawful[T = Box[B = E]]
+    provides Lawful[T = Box[B = E]]
     operation mark() -> Int64 = 5
   end
   sort Reader
@@ -747,7 +747,7 @@ namespace wi1102.uncond
   sort Box
     sort B = ?
     entity box(inner: B)
-    fact Desc[T = Box[B = Int64]]
+    provides Desc[T = Box[B = Int64]]
     operation describe(x: Box[B = Int64]) -> Int64 = 5
   end
   sort Reader

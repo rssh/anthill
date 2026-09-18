@@ -56,6 +56,16 @@ namespace anthill.stage0
     artifact "rustland/anthill-todo/src/forge/fake.rs"
   end
 
-  fact Forge[GithubForge]
-  fact Forge[FakeForge]
+  -- Each backend's `Forge` provision, in a `namespace <Backend>` SECONDARY ENTRY
+  -- (059 R2/R3) at its address — the spelling since WI-20260917-S8JYF retired the
+  -- namespace-level `fact Forge[<Backend>]` one (058 §4). A bare `provides Forge`
+  -- takes its carrier from the ADDRESS, which is what the positional argument used
+  -- to say.
+  namespace GithubForge
+    provides Forge
+  end
+
+  namespace FakeForge
+    provides Forge
+  end
 end

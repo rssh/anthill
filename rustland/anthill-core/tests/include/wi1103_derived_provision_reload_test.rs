@@ -264,7 +264,9 @@ namespace test.wi1103bad
     entity opaque(n: Int64)
   end
 
-  fact NonEq[T = Opaque]
+  namespace Opaque
+    provides NonEq[T = Opaque]
+  end
 end
 "#;
     let needle = "'test.wi1103bad.Opaque' provides 'anthill.prelude.NonEq' but backs no \

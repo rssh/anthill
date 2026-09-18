@@ -3356,31 +3356,71 @@ fn a_denial_over_the_trusted_base_is_refused() {
 }
 
 #[test]
-fn a_clause_at_an_undeclared_bare_name_is_refused() {
-    // THE BOUNDARY OF THE CONTROL ABOVE, and it is a real channel rather than a
-    // technicality. A `fact` whose functor was never declared heads at a BARE
-    // short-name intern with no qualified name at all — `Note`, not
-    // `guardians.agent.Note` — so it sits in no namespace and containment cannot
-    // hold for it: any other file that interns the same string shares the symbol,
-    // and its clauses join the candidate's.
+fn a_bare_fact_head_lands_in_the_namespace_it_is_written_in_and_the_gate_reads_it() {
+    // THIS ROW'S SUBJECT DISSOLVED, AND WHAT REPLACED IT IS STRONGER — WI-20260821-RDGQC.
     //
-    // One `entity Note(text: String)` apart from the control above, which is exactly
-    // the repair the diagnostic asks for.
+    // It used to assert that `fact Note(...)` was refused because its functor "heads at
+    // a BARE short-name intern with no qualified name at all — `Note`, not
+    // `guardians.agent.Note` — so it sits in no namespace and containment cannot hold
+    // for it: any other file that interns the same string shares the symbol, and its
+    // clauses join the candidate's". Every word of that was true, and it was a symptom
+    // of a defect in the LANGUAGE rather than a property of the gate: a fact head
+    // declared nothing, so `fact H` and `rule H :- true` — one clause by §6.1 — were
+    // two different programs. A fact head is scoped where it is written now, so the
+    // bare intern the hazard rested on does not happen.
+    //
+    // THE GATE IS BETTER OFF, and that is what this row now drives. `naming_violations`
+    // has always said "a generated program may declare only under `guardians.agent.`",
+    // but a fact head minted nothing, so that rule could never SEE one — a candidate's
+    // fact was policed only by G2's containment, indirectly, through the bare intern.
+    // Now the mint reaches it and the rule applies to a `fact` exactly as to a `sort` or
+    // a `rule`. The two arms are the two sides of that one rule.
+
+    // (a) IN THE CANDIDATE'S OWN NAMESPACE — contained, because the name really is the
+    // candidate's now. The verdict still refuses this fixture, for the reason it should:
+    // it implements nothing. That IS the containment question answered — G2 no longer
+    // has anything to say about the fact.
     let errs = check_candidate(
         r#"
         sort guardians.agent.NotingTriage
           entity mk
         end
         namespace guardians.agent
-          fact Note(text: "undeclared, and therefore nobody's")
+          fact Note(text: "the candidate's own name, in the candidate's own namespace")
         end
     "#,
     )
-    .expect_err("a clause at an undeclared bare name must be refused");
+    .expect_err("this fixture declares no carrier, so it is refused for that");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("asserts a fact at `Note`, a name it did not declare")),
-        "expected the containment rule to refuse the bare-name clause; got: {errs:#?}"
+        !errs.iter().any(|e| e.contains("asserts a fact at")),
+        "the fact is CONTAINED — it declares `guardians.agent.Note`, which is the \
+         candidate's own. Got: {errs:#?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("declares no carrier")),
+        "…and what remains is the provision question, not a naming one; got: {errs:#?}"
+    );
+
+    // (b) IN A TRUSTED NAMESPACE — refused, and by the NAMING rule rather than by an
+    // accident of interning. This is the arm the old shape could not express at all: a
+    // fact head that mints is a declaration, so `guardians.Note` is a declaration inside
+    // the trusted base, which is the one thing a candidate may never make.
+    let errs = check_candidate(
+        r#"
+        sort guardians.agent.TrespassTriage
+          entity mk
+        end
+        namespace guardians
+          fact Note(text: "a declaration inside the trusted base")
+        end
+    "#,
+    )
+    .expect_err("a candidate may not declare a name in a trusted namespace");
+    assert!(
+        errs.iter().any(|e| e.contains("`guardians.Note`")
+            && e.contains("may declare only under `guardians.agent.`")),
+        "expected the naming rule to refuse the trusted-namespace declaration; got: \
+         {errs:#?}"
     );
 }
 

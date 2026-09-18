@@ -3,9 +3,9 @@
 - id: WI-20260902-EQG4F-six-more-code-review-findings
 - created: 2026-09-02T12:00:08Z
 
-- status: Open
+- status: Delivered
 - status_agent: user
-- status_at: 2026-09-02T12:00:08Z
+- status_at: 2026-09-17T09:32:21Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -318,4 +318,39 @@ DIRECTIONS EXAMINED AND NOT TAKEN, with why:
       spelling too and break `fact ff` + `:- ff`, which works today.
   (b) port WI-1034 to scaland — parity, and loud beats silent, but per correction 1 it
       leaves the two spellings disagreeing.
+
+### 2026-09-17T09:32:53Z — feedback — user
+
+DELIVERED (2026-09-17) — every one of the seven items is answered, and nothing left in this
+ticket is actionable HERE. The closing ledger, so a reader does not have to reconstruct it
+from four rounds of feedback:
+
+  2, 3  FIXED in fefd03d3, each with its own test and back-out row
+        (NullaryBuiltinGoalTest.scala, NullaryHeadAndGoalTest.scala), plus the ten
+        follow-on fixes A-J from two /code-review rounds on that fix — including the
+        rustland parity guard `emit_obligation_with` + eqg4f_obligation_result_var_test.rs.
+  1, 5  MOVED to WI-20260902-JB6RS, which now carries both with my own measurements
+        (scaland's SubstTree/unifyMatch internal contradiction; rustland's loss at
+        reader::reflect_walk, NOT at persistence/print.rs as this ticket guessed).
+        They are one decision — "is the Sort exemption real?" — and answering it here
+        would answer it twice.
+  4     DOWNSTREAM of WI-20260908-NE0E4. Recorded there with its census and its controls;
+        declaring a multi-head rule's heads removes item 4's precondition (an unresolved
+        name). Deliberately NOT repaired here — both directions examined (drop scaland's
+        isResolved gate / port WI-1034) are recorded above with why neither ships alone.
+  6, 7  DISSOLVED, each with a paired back-out: 6's arm is load-bearing and the truncation
+        is present BOTH ways (pre-existing first-row-wins), 7 is population zero
+        (62 spans over examples/ + stdlib, gained 1, stolen 0).
+
+RESIDUE, STATED NOT CLOSED — the `isResolved` gate stays observable through the FACT-head
+route (`fact ff` + `:- ff` vs `:- ff()`), because §6.1 makes a fact head introduce no name
+DELIBERATELY. That is a spec question, not this ticket's, and NE0E4's description says so
+too. Also uncorrected doc drift from item 7: typing.rs:37773 and :66755 still say
+functor_span "keys off a converted Term::Fn FUNCTOR", which CZJ2N widened.
+
+ACCEPTANCE AT DELIVERY: not re-run in this session. The evidence is the state recorded at
+the last EQG4F commit — scaland core 570/2 (the two BootstrapTest failures verified
+PRE-EXISTING with everything stashed), smt-gen 35/35, scala-gen 1/1, rustland full suite
+green for the emit_obligation_with guard. Two NR6FJ commits have landed since and touch
+neither side of this work.
 

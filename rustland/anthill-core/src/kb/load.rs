@@ -21,7 +21,7 @@ use super::node_occurrence::{self, Expr, NodeOccurrence};
 use super::resolve::{BuiltinTag, PositionalPlan};
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{TermIdView, TermView};
-use super::typing::{binding_op_symbol, extract_sort_ref_sym, extract_type, TypeExtractor};
+use super::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
 use super::{ClauseKind, KnowledgeBase, SortKind};
 use crate::eval::value::Value;
 use crate::intern::{
@@ -1021,18 +1021,6 @@ pub enum LoadError {
         op: String,
         reason: String,
     },
-    /// WI-431 (E): a parametric INSTANCE FACT (an op-valued provision, `fact
-    /// CpsMonad[pure = …, flatMap = …]`) at namespace level binds operations but
-    /// its CARRIER cannot be derived — the spec's first type parameter (the
-    /// carrier slot, `carrier_param`) is not bound to a concrete sort/entity.
-    /// Dispatch files and looks instances up BY carrier, so without one the whole
-    /// instance — and its coverage / coherence / signature checks — would be
-    /// silently dropped (the pre-(E) early-return). Load-blocking: a missing or
-    /// mis-typed carrier binding must not quietly disable the instance.
-    UnresolvableInstanceCarrier {
-        spec: String,
-        carrier_param: String,
-    },
     /// WI-1106 — a `provides <Spec>` clause naming a sort that has CONSTRUCTORS, i.e.
     /// a DATA sort. Nothing is-a a data sort — that is what
     /// `wi407_provider_edges_test::data_sort_fact_does_not_widen_*` refuses through the
@@ -1053,40 +1041,6 @@ pub enum LoadError {
         spec: String,
         /// The sort whose body the clause stands in, qualified.
         provider: String,
-        span: Span,
-    },
-    /// WI-933 — a **bracket-less** `fact <Spec>` written at a scope that names no
-    /// type (an ordinary namespace, or a file's synthetic `<global>` root). The
-    /// spelling reads as a provision and named no carrier, so before this refusal it
-    /// emitted no `SortProvidesInfo` and no diagnostic: it loaded clean and did
-    /// nothing. Two stdlib lines were written that way and neither produced an edge
-    /// (WI-931's measurement, `fact BulkStore` / `fact QueryableStore`); both are
-    /// gone now, so the tree contains no instance and this refuses only new text.
-    ///
-    /// THE FACT TWIN OF [`Self::ProvidesClauseNeedsSort`] (WI-1000), and refused for
-    /// the same reason: a provision is filed BY carrier, so a claim that names none
-    /// at an address no type occupies is not about anything. The two repairs differ
-    /// only in which of them the author meant — brackets naming a carrier declared
-    /// elsewhere, or the bare form inside the carrier's own body, where the
-    /// enclosing type IS the carrier and the spelling already works.
-    ///
-    /// NOT the alternative the doc described. `docs/rust-forward-mapping.md` §2.13
-    /// read this spelling as "the sort declared in this namespace provides Spec",
-    /// i.e. derive the carrier from the enclosing namespace's entity. That is a
-    /// guess by proximity, and it reintroduces exactly what WI-978 removed: a
-    /// namespace with two entities (`anthill.persistence.filesystem` has `FileStore`
-    /// and `IndexedFileStore`) would let declaration ORDER pick the carrier. The doc
-    /// was corrected in the same commit.
-    CarrierlessProvisionFact {
-        /// The spec claimed, qualified.
-        spec: String,
-        /// The scope the fact was written in, qualified — a namespace, or a file's
-        /// synthetic root when the fact is at top level.
-        scope: String,
-        /// WHICH of the two ways the carrier is absent. The repair differs, so the
-        /// classification is the diagnostic's own rather than one sentence covering
-        /// both — see [`CarrierlessProvisionReason`].
-        reason: CarrierlessProvisionReason,
         span: Span,
     },
     /// WI-851: a constructor's named argument names no DECLARED FIELD of the entity.
@@ -2064,46 +2018,6 @@ fn type_param_shadow_detail(op: &str, param: &str, shadowed: &ShadowedSlot) -> S
     }
 }
 
-/// WI-1106 — the two ways a `fact <Spec>` at a scope that names no type can leave the
-/// loader without a carrier, and they differ in what the author must WRITE.
-///
-/// The list is the carrier derivation's own, form for form: it reads one value (the
-/// lowest-symbol non-op binding, else the leading positional) and resolves it to a
-/// type, so it comes away empty at exactly two places — nothing to read, or something
-/// that names no type. "Names no type" is the derivation's own verdict and includes a
-/// name that resolved to NOTHING, which a bracketed literal is (see the second
-/// variant). Named cases rather than a pre-rendered string, so both
-/// renderings share one wording via [`carrierless_provision_message`], and a third way
-/// to lose the carrier is a non-compiling `match` rather than a silent fall into the
-/// wrong repair.
-///
-/// This split could not be made until the gate in `maybe_emit_fact_provides_info`
-/// skipped EVERY constructor-bearing functor (WI-1106): before that, the second case
-/// was also where `fact Box(value: 1)` — an ordinary construction — landed, so it had
-/// to stay silent and WI-933 shipped `NoBindings` alone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CarrierlessProvisionReason {
-    /// NOTHING WAS WRITTEN — the bracket-less `fact <Spec>` WI-933 refused (`fact
-    /// BulkStore` after `entity FileStore(…)`). It reads as a provision, and the only
-    /// spelling that supplies a carrier without brackets is the sort-body one, where
-    /// the enclosing type is it.
-    NoBindings,
-    /// A BINDING WAS WRITTEN AND NAMES NO TYPE — an unbound `?`, a literal, a tuple or
-    /// arrow shape, or (on a spec with no carrier parameter for WI-431 (E) to name)
-    /// only operations. The brackets are already there, so telling the author to write
-    /// brackets would be nonsense; the repair is to correct what is inside them.
-    ///
-    /// A LITERAL REACHES HERE ONLY BECAUSE THE DERIVATION NOW ASKS WHETHER THE SYMBOL
-    /// RESOLVED. In a bracket the converter lowers `1` as a TYPE name, so it arrives
-    /// as a `Term::Ident` that `fact_value_to_sort_sym` returns unfiltered — it used
-    /// to be taken as the carrier, filing the provision under the unresolved name `1`
-    /// and tripping `typing.rs`'s WI-672 `debug_assert` (silently misbucketing it in
-    /// release). The resolution filter at the derivation is what routes it here
-    /// instead; the same filter covers the tuple and arrow shapes, which lower the
-    /// same way.
-    BindingNamesNoType,
-}
-
 /// Why a typed rule pattern (`?x: T`) cannot be enforced on the rule carrying it
 /// — the two shapes [`LoadError::TypedPatternNotEnforced`] refuses. Named cases,
 /// not a pre-rendered string, so both renderings share one wording via
@@ -2271,7 +2185,6 @@ impl LoadError {
             | LoadError::EquationSubjectInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
-            | LoadError::CarrierlessProvisionFact { span, .. }
             | LoadError::ProvidesNamesDataSort { span, .. }
             | LoadError::ProvidesClauseNeedsSort { span, .. }
             | LoadError::RuleHeadOwnedByNoScope { span, .. }
@@ -2738,13 +2651,6 @@ impl LoadError {
                 format!("instance fact `{}[…]` binds operation '{}.{}' to an operation whose signature does not match (with '{}' substituted for the spec's type parameter): {}",
                     spec, spec, op, carrier, reason)
             }
-            LoadError::UnresolvableInstanceCarrier {
-                spec,
-                carrier_param,
-            } => {
-                format!("instance fact `{}[…]` binds operations but its carrier cannot be derived: the carrier type parameter '{}' is not bound to a concrete sort (write `fact {}[{} = SomeSort, …]`)",
-                    spec, carrier_param, spec, carrier_param)
-            }
             // WI-744: no "load error: " prefix — every other variant renders the
             // bare fact and the callers prepend "error: ", so a prefix here read
             // as `error: load error: …`. `Other` is now a blocking front-door
@@ -3195,18 +3101,6 @@ impl LoadError {
                     provides_needs_sort_message(namespace)
                 )
             }
-            LoadError::CarrierlessProvisionFact {
-                spec,
-                scope,
-                reason,
-                span,
-            } => {
-                format!(
-                    "{}: {}",
-                    loc.format_start(*span),
-                    carrierless_provision_message(spec, scope, *reason)
-                )
-            }
             LoadError::ProvidesNamesDataSort {
                 spec,
                 provider,
@@ -3541,20 +3435,6 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     provides_needs_sort_message(namespace),
-                    span.start,
-                    span.end
-                )
-            }
-            LoadError::CarrierlessProvisionFact {
-                spec,
-                scope,
-                reason,
-                span,
-            } => {
-                write!(
-                    f,
-                    "{} at {}..{}",
-                    carrierless_provision_message(spec, scope, *reason),
                     span.start,
                     span.end
                 )
@@ -3984,12 +3864,6 @@ impl std::fmt::Display for LoadError {
             } => {
                 write!(f, "instance fact '{}' binds '{}.{}' to a signature-incompatible operation (carrier '{}'): {}", spec, spec, op, carrier, reason)
             }
-            LoadError::UnresolvableInstanceCarrier {
-                spec,
-                carrier_param,
-            } => {
-                write!(f, "instance fact '{}' binds operations but its carrier ('{}') is not bound to a sort", spec, carrier_param)
-            }
             // WI-744: bare message — see `format_with_source`'s note.
             LoadError::Other { message } => {
                 write!(f, "{}", message)
@@ -4372,27 +4246,6 @@ pub enum LoadWarning {
         /// Qualified name of the required spec that also declares `op`.
         spec: String,
     },
-    /// WI-862 (proposal 058 §4) — a PROVISION written with the `fact` spelling inside a
-    /// sort body. `provides X[…]` is the one spelling now; `fact` returns to meaning a
-    /// plain data assertion, which removes the language's only construct whose meaning
-    /// depended on its container.
-    ///
-    /// WARNED, NOT REFUSED, AND STAGED DELIBERATELY: the flag-day refusal waits behind
-    /// the migration, because a deprecation whose corpus has not moved yet is a
-    /// diagnostic every build prints and nobody can act on.
-    ///
-    /// SPAN-BEARING, and the first variant that is — [`LoadWarning::format_with_source`]
-    /// carried a `let _ = source` comment reserving the channel for exactly this.
-    /// A deprecation is only actionable at a LINE: the corpus has 57 of these, several
-    /// per file.
-    ProvisionFactSpelling {
-        /// Qualified name of the spec the fact claims.
-        spec: String,
-        /// Qualified name of the sort whose body it stands in — the provider.
-        sort: String,
-        /// The fact's own span, so the repair points at the line to rewrite.
-        span: Span,
-    },
     /// WI-862 — a warning stamped with the file it came from, the exact mirror of
     /// [`LoadError::Located`] and stamped at the same place, so an advisory renders
     /// `path:line:col: warning: …` the way an error renders `path:line:col: error: …`.
@@ -4436,8 +4289,15 @@ impl LoadWarning {
     /// [`Self::format_with_source`] renders, parallel to [`LoadError::span`].
     pub fn span(&self) -> Option<Span> {
         match self {
+            // NO VARIANT CARRIES A SPAN TODAY. `ProvisionFactSpelling` was the one
+            // that did, and it retired with the spelling it deprecated
+            // (WI-20260917-S8JYF): 058 §4's migration is finished, so there is no
+            // remaining site to point a line at. The CHANNEL stays — `span()`,
+            // `format_with_source`'s `Some` arm and the `Located` wrapper are the
+            // warning family's half of the located-diagnostic machinery the error
+            // family uses, and the next span-bearing advisory plugs in here rather
+            // than rebuilding it.
             LoadWarning::Other { .. } | LoadWarning::RequiresShadow { .. } => None,
-            LoadWarning::ProvisionFactSpelling { span, .. } => Some(*span),
             LoadWarning::Located { inner, .. } => inner.span(),
         }
     }
@@ -4457,28 +4317,6 @@ impl LoadWarning {
     }
 }
 
-/// THE ONE OWNER of [`LoadWarning::ProvisionFactSpelling`]'s wording, so the `Display`
-/// face and any located face cannot drift — the `ambiguous_default_message` discipline
-/// (WI-860), applied here because this text is about to appear at every remaining `fact`
-/// provision in every downstream tree.
-///
-/// It prints the REPAIR AS WRITABLE TEXT, because the two spellings do not have the same
-/// shape: `fact Spec[Carrier]`'s carrier is positional and derived, while inside a sort
-/// body `provides Spec[…]` takes the enclosing sort as its provider and the bindings say
-/// what the spec is instantiated at. An author who mechanically swaps the keyword and
-/// keeps a bare positional carrier gets a different provision.
-pub(crate) fn provision_fact_spelling_message(spec: &str, sort: &str) -> String {
-    format!(
-        "warning: `fact {spec}[…]` inside `{sort}` is the DEPRECATED spelling of a \
-         provision (058 §4). Write `provides {spec}[…]` — the two record the same \
-         provision, and retiring the `fact` one removes the language's only construct \
-         whose meaning depended on its container (a `fact` inside a sort meant something \
-         a `fact` outside one did not). The `fact` spelling additionally enters the rule \
-         index; if some rule resolves `{spec}[…]` as a GOAL, keep the fact and add the \
-         `provides` clause beside it."
-    )
-}
-
 impl std::fmt::Display for LoadWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -4490,9 +4328,6 @@ impl std::fmt::Display for LoadWarning {
                  distinct operations. Qualify `{spec}.{op}` to call the inherited one, or \
                  rename `{op}` to silence."
             ),
-            LoadWarning::ProvisionFactSpelling { spec, sort, .. } => {
-                write!(f, "{}", provision_fact_spelling_message(spec, sort))
-            }
             LoadWarning::Located {
                 path,
                 source,
@@ -4574,7 +4409,35 @@ pub fn register_sources(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<So
 /// distinguish "not yours" from "no such name". The caller may still override it.
 pub fn scan_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<LoadError> {
     let source_ids = register_sources(kb, files);
-    let errors = scan_definitions_with_sources(kb, files, &source_ids, ImportAttribution::PerFile);
+    let errors = scan_definitions_with_sources(
+        kb,
+        files,
+        &source_ids,
+        ImportAttribution::PerFile,
+        SourceRole::Program,
+    );
+    kb.symbols.set_asking_file(source_ids.last().copied());
+    errors
+}
+
+/// [`scan_definitions`]'s QUERY twin — see [`SourceRole`], which is the whole of the
+/// difference: nothing in a query declares.
+///
+/// It exists because the CLI is not the only place that carries a query as a clause.
+/// `tests/common::query_pattern_term` builds the SAME `fact <pattern>` text and scans
+/// it, so a pattern scanned through [`scan_definitions`] would declare its own functor
+/// exactly as the CLI's did — and the suites that assert a pattern names nothing would
+/// pass against a KB in which it names itself. One entry point per role, so the two
+/// callers cannot drift.
+pub fn scan_query_definitions(kb: &mut KnowledgeBase, files: &[&ParsedFile]) -> Vec<LoadError> {
+    let source_ids = register_sources(kb, files);
+    let errors = scan_definitions_with_sources(
+        kb,
+        files,
+        &source_ids,
+        ImportAttribution::PerFile,
+        SourceRole::Query,
+    );
     kb.symbols.set_asking_file(source_ids.last().copied());
     errors
 }
@@ -4592,11 +4455,40 @@ pub enum ImportAttribution {
     Invocation,
 }
 
+/// WI-20260821-RDGQC — WHAT THE SCANNED TEXT **IS**, and therefore whether a clause
+/// head in it DECLARES.
+///
+/// It exists because a QUERY is carried as a CLAUSE. `anthill query 'p(1)'` parses the
+/// literal text `fact p(1)` (`main.rs`, the `--pattern` arm) and `--query-file` reads a
+/// file OF fact declarations, so by the time the scan sees them a goal and a clause are
+/// the same shape. That was invisible while a fact head declared nothing; once one
+/// declares its predicate — which is what `fact H` being `rule H :- true` means — a
+/// query starts DECLARING ITS OWN FUNCTOR, and the unknown-functor channel collapses:
+/// MEASURED, `anthill query 'nosuchxyz(1)'` answered `no solutions` where it had said
+/// "does not resolve to a known functor", because the pattern's own head had just made
+/// the name a `Goal`. That is WI-754's whole diagnostic, silently deleted.
+///
+/// So the distinction is not a special case for facts; it is the one this boundary
+/// always needed and never had to state. A query ASKS. Nothing it contains is a
+/// definition of anything, whichever keyword carries it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SourceRole {
+    /// A PROGRAM. Its clause heads declare their predicates at the scope they are
+    /// written in (§"A rule-introduced functor is scoped where it is written").
+    Program,
+    /// A QUERY — the CLI's `--pattern`, its `-i` flags, and a `--query-file`'s
+    /// fact declarations. Its clauses are GOALS to run, never clauses to assert (the
+    /// caller extracts the term and never calls `assert_fact`), so no head in it
+    /// declares.
+    Query,
+}
+
 pub fn scan_definitions_with_sources(
     kb: &mut KnowledgeBase,
     files: &[&ParsedFile],
     source_ids: &[SourceId],
     attribution: ImportAttribution,
+    role: SourceRole,
 ) -> Vec<LoadError> {
     assert_eq!(
         files.len(),
@@ -4762,6 +4654,7 @@ pub fn scan_definitions_with_sources(
             file_idx,
             sites: &mut heads,
             clauses: &mut clause_sites,
+            role,
             // ONLY WHEN 059 R3 HAS SOMETHING TO JUDGE — the same condition
             // `judge_secondary_entry_rules` returns on, settled by sub-pass 1b above.
             // See `RuleHeadCollectPass::census_clauses`.
@@ -4785,7 +4678,29 @@ pub fn scan_definitions_with_sources(
             rule_head_ladder_answer(kb, h.name, h.scope)
         })
         .collect();
-    let denotes: Vec<bool> = resolved.iter().map(ResolveResult::denotes).collect();
+    // …OR A DEFERRED SELECTIVE PREDICATE IMPORT BRINGS THE NAME IN. The ladder above
+    // cannot see one: a selective import of a PREDICATE is deferred to sub-pass 4
+    // because its target may not be minted until sub-pass 3 has run — and sub-pass 3 is
+    // THIS mint. So at this point `import X.Rec.{freshp}` has not been wired into
+    // `Side`, and a `freshp` head written there reads as introducing a name of its own.
+    //
+    // IT IS NOT A CYCLE, which is why the repair is a guard and not a reordering: the
+    // pending import names a QUALIFIED TARGET (`X.Rec.freshp`), a different name from
+    // the one the head would mint (`Side.freshp`), and `pending` is complete before
+    // sub-pass 3 — the whole pass-2 loop has run. The question is therefore order-free,
+    // which is the property WI-980 rewrote this pass to have.
+    //
+    // MEASURED: `namespace Side { import X.Rec.{freshp}  rule freshp(2) :- true }` MINTED
+    // `Side.freshp` and left the import DEAD — the author's clause silently becoming a
+    // predicate of its own rather than a clause of the one they named, on a program that
+    // loads clean. It also hid an ownership fault: the clause never reached the type's
+    // predicate, so 059 R3 had no cross-entry assembly to refuse.
+    // `wi_rdgqc_deferred_import_mint_test` drives both halves.
+    let denotes: Vec<bool> = resolved
+        .iter()
+        .zip(heads.iter())
+        .map(|(r, h)| r.denotes() || pending_import_brings_in(&pending, h.scope, h.name))
+        .collect();
     // AND AN EQUATION'S SUBJECT MAY NOT LAND ON ANOTHER SCOPE'S PREDICATE (D0EXD).
     //
     // The ladder above answers one question — does the name resolve — for every head
@@ -5769,9 +5684,10 @@ fn scan_rule(
     }
     if rule_reading(r, parse_sym, parse_terms) == RuleReading::Declaration {
         // `expect` rather than a silent skip: `RuleReading::Declaration` is reached
-        // only through the `Some((_, Predicate))` arm of this very call, so a `None`
+        // only through the `Ok((_, Predicate))` arm of this very call, so an `Err`
         // here would mean the two disagree — which is the defect this pairing exists
-        // to make impossible.
+        // to make impossible. The `Err` is `Debug`, so the panic NAMES the reason
+        // rather than only the expectation, which an `Option` could not.
         let (name, introduced_by) = rule_introduced_functor_name(r, parse_sym, parse_terms)
             .expect("a Declaration reading names the predicate it declares");
         let qualified = make_qualified(prefix, name);
@@ -6148,12 +6064,12 @@ fn rule_reading(
         }
     }
     match rule_introduced_functor_name(r, parse_sym, parse_terms) {
-        Some((_, RuleIntroduction::Predicate)) => RuleReading::Declaration,
+        Ok((_, RuleIntroduction::Predicate)) => RuleReading::Declaration,
         // An EQUATION reaches here only through a head this function already sent to
         // `Clause`; the arm is stated rather than fused so a future head shape cannot
         // acquire a declaration reading by accident.
-        Some((_, RuleIntroduction::Equation)) => RuleReading::Clause,
-        None => RuleReading::DeclaresNothing,
+        Ok((_, RuleIntroduction::Equation)) => RuleReading::Clause,
+        Err(_) => RuleReading::DeclaresNothing,
     }
 }
 
@@ -6317,108 +6233,45 @@ fn field_access_dotted_name_of(
 }
 
 /// WHY a [`RuleReading::DeclaresNothing`] rule declares nothing, in the author's terms.
-/// Asks the SAME shape questions [`rule_introduced_functor_name`] asks, in its order, so
-/// the message and the verdict cannot describe different rules.
+///
+/// WI-20260821-RDGQC — IT NO LONGER WALKS. This function used to re-derive
+/// [`rule_introduced_functor_name`]'s shape questions, in its order, so that "the
+/// message and the verdict cannot describe different rules" — an invariant held by hand
+/// across two bodies, with a `debug_assert!(false)` fall-through for the case where they
+/// had already drifted. It now ASKS the verdict and reads the reason off it, so the two
+/// are one walk and the drift is unrepresentable rather than asserted against.
+///
+/// WHAT THE OLD WALK KNEW AND THIS ONE DOES NOT HAVE TO. Its comments recorded two
+/// grammar facts — that `typed_var_arg` sits only in `_positional_fn_arg`, and that
+/// `rule_heads` is `commaSep1($._goal)` → `_term`, whose alternatives contain no
+/// expression or pattern production — which together say no SURFACE-FORM MARKER
+/// (WI-20260822-AK2AJ / AKKWF, twelve of them) can occupy a head, so every minted head
+/// really is an operator or an accessor and [`NoIntroduction::DesugaredSubject`]'s
+/// sentence is true of its whole population. MEASURED: 2 586 767 marker mints over the
+/// workspace corpus and 115 574 minted heads, with no marker name among them. That
+/// statement now lives at the one `is_minted` reader it is about ([`head_subject_name`]),
+/// which is also the site a future marker reachable from `_term` would move.
 fn bodyless_declares_nothing_detail(
     r: &Rule,
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
 ) -> String {
-    if r.heads.len() != 1 {
-        return format!(
-            "it writes {} heads at once, and a declaration declares ONE predicate",
-            r.heads.len()
-        );
-    }
-    let RuleHead::Term(tid) = &r.heads[0] else {
-        return "a `⊥` denial names no predicate, so there is nothing for it to declare".to_owned();
-    };
-    // THE SENTENCE DESCRIBES THE REACHABLE POPULATION, NOT THE PRODUCER SET, and the two
-    // stopped coinciding when WI-20260822-AK2AJ made `typed_var` a third mint category
-    // (`SimpleTermStore::minted`); WI-20260822-AKKWF then added ELEVEN more — `if_expr`,
-    // `match_expr`, `match_branch`, `let_expr`, `lambda_expr`, `proof_stmt` and the five
-    // `pattern_*` forms, all built by `convert::alloc_marker_term`. It stays true only
-    // because a MARKER can never be a head, and that now rests on TWO grammar facts, not
-    // one:
-    //   * `typed_var_arg` sits only in `_positional_fn_arg`, so it is an ARGUMENT
-    //     (AK2AJ's);
-    //   * `rule_heads` is `commaSep1($._goal)` → `_term`, whose `_non_name_atom_term`
-    //     alternatives contain no expression form and no pattern production, so nothing
-    //     `visit_pattern` or an expression `BuildFrame` builds can occupy a head
-    //     (AKKWF's — MEASURED: 2 586 767 marker mints over the workspace corpus and
-    //     115 574 minted heads seen here and at `rule_introduced_functor_name`, with no
-    //     marker name among them).
-    // So every minted head really is an operator or an accessor. A FUTURE MARKER
-    // REACHABLE IN HEAD POSITION MUST MOVE THIS TEXT WITH IT — and a marker added in a
-    // production reachable from `_term` is exactly that case, which the first bullet
-    // alone would not catch.
-    // A DOTTED PAREN-LESS HEAD IS MINTED AND STILL NAMES SOMETHING (WI-20260901-719FJ),
-    // so it is asked ahead of the desugaring sentence — the same order
-    // [`head_subject_name`] takes, because the two walks must describe one rule. Before
-    // this arm `rule nsx.tgt` got the DESUGARING sentence while `rule nsx.tgt()` got the
-    // QUALIFIED one: axis D's defect (P85Z7) surviving one spelling over. The name flows
-    // into the qualified test below rather than returning here, so the two spellings now
-    // share the sentence AND the reason.
-    let chain = dotted_citation_name(parse_sym, parse_terms, *tid);
-    if chain.is_none() && parse_terms.is_minted(*tid) {
-        return "its head functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, \
-                `?a + ?b` carries `add`), not a name the rule introduces"
-            .to_owned();
-    }
-    // A BARE NAME NO LONGER REACHES THIS ARM (WI-20260821-P85Z7): `head_subject_name`
-    // reads a `Term::Ident` head as an application of arity 0, so `rule holdsq` DECLARES
-    // and this walk must not claim it names no predicate. What still reaches it is a
-    // bare VARIABLE head (`rule ?x`) — MEASURED, and the only shape that does: a bare
-    // LITERAL (`rule 42`, `rule true`) is refused earlier with its own sentence, and
-    // every other non-`Fn` parse node was named above.
-    // THE SAME NULLARY READING THE VERDICT TAKES (WI-20260821-P85Z7). A bare name is an
-    // application of arity 0, so a `Term::Ident` head carries a NAME and the qualified
-    // check below must run for it — `head_subject_name` reads it that way and this walk
-    // has to agree or the two describe different rules.
-    //
-    // MEASURED WITH THE ARM MISSING, and found by `/code-review` on this ticket's own
-    // diff: `rule ..nosuchxyz` (body-less) fell through to "its head is not a functor
-    // application" while `rule ..nosuchxyz()` got "`..nosuchxyz` is a QUALIFIED name …"
-    // — two spellings of one head, two different explanations of one verdict, which is
-    // the exact defect this ticket exists to remove, surviving in the diagnostic.
-    //
-    // NOT GATED ON THE PREDICATE PATH, unlike `head_subject_name`'s arm, and that is a
-    // reachability statement rather than a difference of policy: an equation subject is
-    // reached only through [`parse_equation_lhs`], which needs a MINTED connective head
-    // — a `Term::Fn` — and a body-less connective head reads as `RuleReading::Clause`
-    // anyway, so it never arrives here.
-    //
-    // WHAT STILL REACHES THE FALLTHROUGH is a bare VARIABLE head (`rule ?x`), which
-    // `wi_fqc85_rule_declaration_test` drives. A bare LITERAL (`rule 42`, `rule true`)
-    // is refused earlier with its own sentence, and every other non-`Fn` parse node is
-    // named above.
-    let name = match &chain {
-        Some(name) => name.as_str(),
-        None => {
-            let (Term::Fn { functor, .. } | Term::Ident(functor)) = parse_terms.get(*tid) else {
-                return "its head is not a functor application, so it names no predicate"
-                    .to_owned();
-            };
-            parse_sym.local_name(*functor)
+    match rule_introduced_functor_name(r, parse_sym, parse_terms) {
+        Err(why) => why.detail(),
+        // UNREACHABLE, and said rather than left as a plausible-looking sentence: the
+        // caller reached this only through a `DeclaresNothing` reading, which
+        // [`rule_reading`] takes from this very call's `Err`. A `debug_assert` rather
+        // than an `unreachable!` because this is a DIAGNOSTIC path — aborting the
+        // process while rendering an error would replace a message with a crash.
+        Ok((name, _)) => {
+            debug_assert!(
+                false,
+                "`{name}` reached the detail fallthrough: rule_reading said \
+                 DeclaresNothing but rule_introduced_functor_name names it"
+            );
+            format!("the loader's two readings of `{name}` disagree — please report this")
         }
-    };
-    if name.contains('.') {
-        return format!(
-            "`{name}` is a QUALIFIED name, and a qualified name references an existing \
-             predicate — it never introduces one"
-        );
     }
-    // UNREACHABLE, and said rather than left as a plausible-looking sentence: every
-    // shape [`rule_introduced_functor_name`] refuses has been named above, so reaching
-    // here means this walk and that one have diverged. A `debug_assert` rather than an
-    // `unreachable!` because this is a DIAGNOSTIC path — aborting the process while
-    // rendering an error would replace a message with a crash.
-    debug_assert!(
-        false,
-        "`{name}` reached the detail fallthrough: rule_reading said DeclaresNothing but \
-         rule_introduced_functor_name names it"
-    );
-    format!("the loader's two readings of `{name}` disagree — please report this")
 }
 
 /// WI-1090 / WI-888 — a head the desugar wrote with an equality-family connective that
@@ -6477,8 +6330,9 @@ fn non_defining_connective_head(
 }
 
 /// ONE HEAD's SUBJECT AS WRITTEN — the local name of the node that head is about,
-/// DOTTED SPELLINGS INCLUDED. `None` when it is about no name of the source's own (a
-/// non-term head, a desugared subject).
+/// DOTTED SPELLINGS INCLUDED. `Err` when it is about no name of the source's own, and
+/// the [`NoIntroduction`] variant says WHICH shape (a non-term head, a desugared
+/// subject, a head that is not an application at all).
 ///
 /// TWO QUESTIONS ARE ASKED OF THIS ANSWER, and they part ways on two things.
 /// [`rule_introduced_functor_name`] asks which name the RULE introduces — a question
@@ -6526,9 +6380,9 @@ fn head_subject_name<'a>(
     bodyless: bool,
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-) -> Option<(Cow<'a, str>, RuleIntroduction)> {
+) -> Result<(Cow<'a, str>, RuleIntroduction), NoIntroduction<'a>> {
     let RuleHead::Term(tid) = head else {
-        return None;
+        return Err(NoIntroduction::DenialHead);
     };
     // §8.3: an equation is BODYLESS — a property of the RULE, so the caller asks it
     // through the one owner of that question ([`rule_body_is_empty_conjunction`]) rather
@@ -6584,10 +6438,10 @@ fn head_subject_name<'a>(
     // dotted `@[simp]` subject matching no redex, so the equation reading did not widen
     // when this walk learned to read a chain.
     if let Some(name) = dotted_citation_name(parse_sym, parse_terms, subject) {
-        return Some((Cow::Owned(name), introduced_by));
+        return Ok((Cow::Owned(name), introduced_by));
     }
     if parse_terms.is_minted(subject) {
-        return None;
+        return Err(NoIntroduction::DesugaredSubject);
     }
     let functor = match parse_terms.get(subject) {
         Term::Fn { functor, .. } => functor,
@@ -6629,14 +6483,15 @@ fn head_subject_name<'a>(
         // multi-segment `name` into a minted `field_access` chain, which the mint guard
         // above already refuses.
         Term::Ident(sym) => sym,
-        _ => return None,
+        _ => return Err(NoIntroduction::NotAnApplication),
     };
-    Some((Cow::Borrowed(parse_sym.local_name(*functor)), introduced_by))
+    Ok((Cow::Borrowed(parse_sym.local_name(*functor)), introduced_by))
 }
 
 /// The name a rule INTRODUCES — the name that must become a scoped symbol so a
 /// call site can name it and a sibling scope's same-spelled rule cannot silently
-/// merge with it (WI-894). `None` when the rule introduces nothing.
+/// merge with it (WI-894). `Err` when the rule introduces nothing, carrying the one
+/// [`NoIntroduction`] reason that both the verdict and the author's sentence read.
 ///
 /// [`head_subject_name`]'s shape walk of the FIRST head, plus the two refusals that
 /// separate introducing from referencing:
@@ -6663,17 +6518,123 @@ fn rule_introduced_functor_name<'a>(
     r: &Rule,
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-) -> Option<(&'a str, RuleIntroduction)> {
+) -> Result<(&'a str, RuleIntroduction), NoIntroduction<'a>> {
+    // THE HEAD COUNT IS ASKED FIRST, and that is WI-20260821-RDGQC merging two walks
+    // rather than a change of verdict: [`bodyless_declares_nothing_detail`] already
+    // asked it first (a multi-head rule whose FIRST head is also malformed should be
+    // told it writes several heads, not that its first one is unreadable), while this
+    // walk asked it last, through [`subject_introduces`]. Every count but 1 refused
+    // then and refuses now, so no rule changes reading; what changes is that the two
+    // orders are one order, which is the only way the reason and the verdict cannot
+    // drift. `heads[0]` below is total for the same reason — a 0-head rule left
+    // through the arm above.
+    if r.heads.len() != 1 {
+        return Err(NoIntroduction::SeveralHeads(r.heads.len()));
+    }
     let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
     let (subject, introduced_by) =
-        head_subject_name(r.heads.first()?, bodyless, parse_sym, parse_terms)?;
-    Some((subject_introduces(&subject, r.heads.len())?, introduced_by))
+        head_subject_name(&r.heads[0], bodyless, parse_sym, parse_terms)?;
+    Ok((subject_introduces(subject, r.heads.len())?, introduced_by))
+}
+
+/// WI-20260821-RDGQC — **THE ENUMERATION**: every reason a rule head introduces no name
+/// of its own, stated ONCE so that the VERDICT and the SENTENCE cannot describe
+/// different rules.
+///
+/// WHAT IT REPLACES, and why the replacement is the point. The verdict was
+/// [`rule_introduced_functor_name`] returning a bare `None`, and the sentence was
+/// [`bodyless_declares_nothing_detail`] — a SECOND walk that re-derived the same shape
+/// questions in the same order, whose own doc said "the two walks must describe one
+/// rule" and whose fall-through was a `debug_assert!(false)` for the case where they
+/// had stopped doing so. That is a hazard maintained by hand: every arm added to one
+/// walk had to be mirrored in the other, and the assert fired only in a debug build, on
+/// a diagnostic path, after the wrong sentence had already been chosen. MEASURED
+/// PRECEDENT, from this file's own history: `rule ..nosuchxyz` got "its head is not a
+/// functor application" while `rule ..nosuchxyz()` got the QUALIFIED sentence — two
+/// spellings of one head, two explanations of one verdict, found by `/code-review` on
+/// P85Z7's diff. The two walks are now one: the reason IS the refusal, carried by the
+/// `Err`, and `detail` is a `match` on it with no shape questions of its own.
+///
+/// **WHAT IS NOT HERE, and is somebody else's** — the ticket's enumeration is wider than
+/// the rule-head walk, and the three shapes below never reach this type because they
+/// never ask it. Each is DELIBERATE and each is measured in
+/// `wi_rdgqc_head_introduction_census_test`, which is where the enumeration is complete:
+///
+///  * a **FACT head** is unscoped at every arity (§6.1 / §5.3) — collected as a CLAUSE
+///    by [`RuleHeadCollectPass::at_item`] and never minted. Two namespaces writing one
+///    fact name share one predicate, and each reads the other's fact.
+///  * each functor of a **MULTI-HEAD** rule lands its own clause while the rule
+///    introduces nothing — the [`Self::SeveralHeads`] arm is that refusal, and
+///    WI-20260908-NE0E4 owns the cross-sort leak it leaves.
+///  * a head inside a host **`provides … language … end`** block takes the SPEC's scope
+///    for its clause and no scope at all for its name — no scan pass descends into the
+///    block ([`RuleHeadCollectPass::collect_provides_block`], WI-20260821-TTHRK).
+///
+/// They are named here rather than given unproduced variants: a variant no producer
+/// builds is its own defect class (WI-816), and the census test is the reader that keeps
+/// the list honest.
+// `Debug` alone, and it is LOAD-BEARING: `scan_rule_goal`'s `expect` renders it, so a
+// verdict/reading disagreement panics with the REASON. No other derive has a reader.
+#[derive(Debug)]
+enum NoIntroduction<'a> {
+    /// SEVERAL HEADS name no single predicate. Carries the count the sentence quotes.
+    /// Each head still LANDS its own clause — that census is [`ClauseSite`]'s, taken
+    /// per head, and is deliberately not this question.
+    SeveralHeads(usize),
+    /// A non-term head — today exactly the `⊥` DENIAL, which names no predicate.
+    DenialHead,
+    /// The subject carries the DESUGAR's functor, not the rule's (`?x.m(?y)` →
+    /// `dot_apply`, `?x.f` → `field_access`, `?a + ?b` → `add`). `minted` (WI-618) is
+    /// provenance carried rather than re-derived from a blocklist of accessor names.
+    DesugaredSubject,
+    /// The subject is neither `Term::Fn` nor `Term::Ident` — a bare VARIABLE head
+    /// (`rule ?x`) is the one shape that reaches this, a bare LITERAL being refused
+    /// earlier with its own sentence. `Term::Ref` reaches it too: a written `Ref(a.b)`
+    /// REFERENCES a declared name rather than introducing one.
+    NotAnApplication,
+    /// A QUALIFIED spelling references an existing predicate and never introduces one
+    /// — a rule about the SPELLING (§"A rule-introduced functor is scoped where it is
+    /// written"), not a ladder tier: a dotted head that resolves to NOTHING still
+    /// introduces nothing. The name rides as a [`Cow`] for [`subject_introduces`]'s own
+    /// reason — the one subject the parse symbol table never interned is a folded
+    /// dot-chain — so the borrowed case costs nothing.
+    QualifiedSpelling(Cow<'a, str>),
+}
+
+impl NoIntroduction<'_> {
+    /// WHY this rule declares nothing, in the AUTHOR's terms. The sentences are
+    /// [`bodyless_declares_nothing_detail`]'s, moved here unchanged — what moved is
+    /// that choosing one is now a `match` on the verdict instead of a walk that could
+    /// reach a different one.
+    fn detail(&self) -> String {
+        match self {
+            Self::SeveralHeads(n) => format!(
+                "it writes {n} heads at once, and a declaration declares ONE predicate"
+            ),
+            Self::DenialHead => {
+                "a `⊥` denial names no predicate, so there is nothing for it to declare"
+                    .to_owned()
+            }
+            Self::DesugaredSubject => {
+                "its head functor is the DESUGARING's (`?x.m(?y)` carries `dot_apply`, \
+                 `?a + ?b` carries `add`), not a name the rule introduces"
+                    .to_owned()
+            }
+            Self::NotAnApplication => {
+                "its head is not a functor application, so it names no predicate".to_owned()
+            }
+            Self::QualifiedSpelling(name) => format!(
+                "`{name}` is a QUALIFIED name, and a qualified name references an \
+                 existing predicate — it never introduces one"
+            ),
+        }
+    }
 }
 
 /// THE TWO REFUSALS THEMSELVES, so that a caller which already holds the subject
 /// ([`RuleHeadCollectPass::collect`], which needs it for the clause census anyway) can
 /// ask the question without walking the head's shape a second time — and cannot spell
-/// the answer differently. `Some` is the name the rule INTRODUCES.
+/// the answer differently. `Ok` is the name the rule INTRODUCES.
 ///
 /// A QUALIFIED spelling references rather than introduces — see
 /// [`rule_introduced_functor_name`]. SEVERAL HEADS name no single predicate, so the rule
@@ -6687,9 +6648,19 @@ fn rule_introduced_functor_name<'a>(
 /// A chain has at least two segments, so its name always carries the dot refused above;
 /// what survives is borrowed, and the callers that want a `&'a str` — every one of them,
 /// since only an INTRODUCED name is stored — get it without restating the invariant.
-fn subject_introduces<'a>(subject: &Cow<'a, str>, head_count: usize) -> Option<&'a str> {
-    if head_count != 1 || subject.contains('.') {
-        return None;
+fn subject_introduces<'a>(
+    subject: Cow<'a, str>,
+    head_count: usize,
+) -> Result<&'a str, NoIntroduction<'a>> {
+    if head_count != 1 {
+        return Err(NoIntroduction::SeveralHeads(head_count));
+    }
+    if subject.contains('.') {
+        // BY VALUE so this MOVES rather than clones. The one subject that is `Owned` is
+        // a folded dot-chain, which is exactly the shape this arm refuses — so taking a
+        // reference here would allocate a second copy of that name on every dotted head
+        // in every file, to build a diagnostic most of them never render.
+        return Err(NoIntroduction::QualifiedSpelling(subject));
     }
     let Cow::Borrowed(name) = subject else {
         unreachable!(
@@ -6697,7 +6668,7 @@ fn subject_introduces<'a>(subject: &Cow<'a, str>, head_count: usize) -> Option<&
              refused above"
         )
     };
-    Some(name)
+    Ok(name)
 }
 
 /// WI-369: record the parse-IR `internal` visibility flag on a defined symbol,
@@ -6980,44 +6951,12 @@ fn provides_needs_sort_message(namespace: &str) -> String {
          WHERE it is written (the enclosing sort, or a `namespace X … end` at the \
          address of a sort `X`, which is a secondary entry to it), so here there is \
          nothing for it to be a claim about. Write it inside the sort's own \
-         declaration, or in a `namespace` block at that sort's address; a claim about \
-         a carrier named elsewhere is `fact Spec[Carrier]`."
+         declaration, or in a `namespace` block at that sort's address. A claim about \
+         a carrier declared ELSEWHERE is written the same way — in a `namespace \
+         <Carrier>` block, a secondary entry to it (proposal 059) — since \
+         WI-20260917-S8JYF retired the `fact Spec[Carrier]` spelling that used to \
+         derive a carrier from a binding here."
     )
-}
-
-/// WI-933 — the sentence for [`LoadError::CarrierlessProvisionFact`]. One owner,
-/// for the reason [`provides_needs_sort_message`] states: two rendering paths, one
-/// of them under test.
-///
-/// BOTH repairs are spelled out, as [`wildcard_non_scope_message`] does, because
-/// "this fact named no carrier" does not say which text the author meant to write —
-/// a claim about a carrier declared elsewhere and a claim written inside the
-/// carrier are different sentences, and only the author knows which.
-fn carrierless_provision_message(
-    spec: &str,
-    scope: &str,
-    reason: CarrierlessProvisionReason,
-) -> String {
-    let head = format!(
-        "`fact {spec}` claims '{spec}' is satisfied but names no carrier, and \
-         '{scope}' names no type either — a provision is filed BY the type that \
-         satisfies the spec, so this claim is about nothing and would load doing \
-         nothing"
-    );
-    match reason {
-        CarrierlessProvisionReason::NoBindings => format!(
-            "{head}. Write the carrier in brackets (`fact {spec}[Carrier]`), or write \
-             the bare `fact {spec}` inside the carrier's own `sort`/`enum` body, where \
-             the enclosing type IS the carrier — the spelling that says every such \
-             type is-a '{spec}'."
-        ),
-        CarrierlessProvisionReason::BindingNamesNoType => format!(
-            "{head}: its bindings name no type. An unbound `?`, a literal, or an \
-             operation cannot be a carrier — bind the type that satisfies '{spec}' \
-             (`fact {spec}[Carrier, …]`), or move the claim into that type's own \
-             `sort`/`enum` body."
-        ),
-    }
 }
 
 /// WI-1106 — the SPEC a `provides` clause names, as a symbol, or `None` for a shape
@@ -9090,13 +9029,15 @@ struct ClauseSite<'f> {
 /// clause 059 R3's condition (2) is about — APXSS's own defect, one keyword over from
 /// where this ticket first fixed it.
 ///
-/// STILL NOT WIDENED TO A BARE `Term::Ident` head, and that is a boundary rather than an
-/// oversight: `fact holds` inside a scope that declares `holds` DOES land its clause on
-/// that predicate (the `Term::Ident` arm of `convert_term_inner` resolves it), and this
-/// census misses it — spelling-independently, since the miss is about the ONE-segment
-/// paren-less shape and not about the dot. That shape is WI-20260821-RDGQC's, which owns
-/// the fact head whole; widening here would fix half of it in the one place a reader
-/// would then stop looking.
+/// A BARE `Term::Ident` HEAD IS READ TOO, since WI-20260821-RDGQC took the fact head
+/// whole. This walk used to stop at `Term::Fn`, and said so as a BOUNDARY rather than an
+/// oversight — `fact holds` inside a scope that declares `holds` DOES land its clause on
+/// that predicate (the `Term::Ident` arm of `convert_term_inner` resolves it) and the
+/// census missed it, spelling-independently, the miss being about the ONE-SEGMENT
+/// paren-less shape and not about the dot. Reading it here is the same arm
+/// [`head_subject_name`] grew under P85Z7, for the same reason: a bare name is an
+/// APPLICATION OF ARITY 0, so `fact holds` and `fact holds()` are one head written two
+/// ways and a walk that sees only one of them makes them different programs.
 fn fact_head_subject_name<'a>(
     f: &Fact,
     parse_sym: &'a crate::intern::SymbolTable,
@@ -9108,7 +9049,9 @@ fn fact_head_subject_name<'a>(
     if parse_terms.is_minted(f.term) {
         return None;
     }
-    let Term::Fn { functor, .. } = parse_terms.get(f.term) else {
+    // `Term::Ident` beside `Term::Fn` — arity 0 is an arity (P85Z7). NOT `Term::Ref`:
+    // a written `Ref(a.b)` REFERENCES, exactly as at [`head_subject_name`].
+    let (Term::Fn { functor, .. } | Term::Ident(functor)) = parse_terms.get(f.term) else {
         return None;
     };
     Some(Cow::Borrowed(parse_sym.local_name(*functor)))
@@ -10007,6 +9950,9 @@ struct RuleHeadCollectPass<'a, 'f> {
     /// silently starved here, so the caller names this condition at the flag and the
     /// judge names it at its early return; the two must stay one condition.
     census_clauses: bool,
+    /// WI-20260821-RDGQC — see [`SourceRole`]. A `Query` source's fact head files its
+    /// CLAUSE census entry as before and declares nothing.
+    role: SourceRole,
     errors: &'a mut Vec<LoadError>,
 }
 
@@ -10033,7 +9979,7 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
         let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
         let head_count = r.heads.len();
         for head in &r.heads {
-            let Some((subject, introduced_by)) =
+            let Ok((subject, introduced_by)) =
                 head_subject_name(head, bodyless, parse_sym, parse_terms)
             else {
                 continue;
@@ -10056,9 +10002,15 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
             if introduced_by == RuleIntroduction::Predicate {
                 self.clause(subject.clone(), r.span, scope, scope);
             }
-            let Some(name) = subject_introduces(&subject, head_count) else {
+            let Ok(name) = subject_introduces(subject, head_count) else {
                 continue;
             };
+            // A QUERY declares nothing, whichever keyword carries the head — see
+            // [`SourceRole`]. Gated HERE and not at the walk, so a query source's clause
+            // census is unchanged; it is the MINT that a query must not reach.
+            if self.role == SourceRole::Query {
+                continue;
+            }
             self.sites.push(RuleHeadSite {
                 file_idx: self.file_idx,
                 scope,
@@ -10083,7 +10035,7 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
         let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
         for head in &r.heads {
             // An EQUATION indexes under the connective here too — see [`Self::collect`].
-            if let Some((subject, RuleIntroduction::Predicate)) =
+            if let Ok((subject, RuleIntroduction::Predicate)) =
                 head_subject_name(head, bodyless, parse_sym, parse_terms)
             {
                 self.clause(subject, r.span, resolves_in, written_in);
@@ -10191,14 +10143,62 @@ impl<'f> ScopePass for RuleHeadCollectPass<'_, 'f> {
                     self.collect(rule, scope, prefix);
                 }
             }
-            // WI-1001 — recorded, never MINTED. This pass's other output decides
-            // symbols and feeds 061's reports; a fact must reach neither (§5.3: a fact
-            // head is unscoped, and 061's multi-file rule is about rule heads). It is
-            // collected because a fact is a CLAUSE, which is what R3's condition (2)
-            // counts.
+            // WI-20260821-RDGQC — RECORDED **AND** MINTED, and the second half is new.
+            //
+            // WI-1001 collected a fact only as a CLAUSE, "never MINTED … §5.3: a fact
+            // head is unscoped". That was the spec as written and it cost this, measured
+            // on the shipped tree: two namespaces each writing `fact pfact(…)` beside a
+            // rule of their own reading it got **2 answers each** — each namespace
+            // reading the OTHER's fact — where the same program with `rule` for `fact`
+            // gives 1 each, its own. Neither `zzA.pfact` nor `zzB.pfact` resolved to
+            // anything; one uncitable global held both clauses. That is WI-894's defect
+            // class, and §"Facts are rules" is the sentence that says a fact head is not
+            // exempt from WI-894's rule: a fact IS a rule with an empty body.
+            //
+            // THE BLAST RADIUS WAS CENSUSED BEFORE THE CHANGE, not after. Over stdlib
+            // and all six example projects, exactly SEVEN fact-head names resolve to
+            // nothing today and so newly mint here: `file_extension`
+            // (anthill.realization.platform — no readers at all), `audit_binding` and
+            // `audit_db`, `follower_offset`, `manipulative`, `org_domain`, `neg`. EVERY
+            // reader of all seven sits in the scope that writes it, so each resolves to
+            // the newly-minted local name and nothing moves.
+            //
+            // IT GOES THROUGH [`subject_introduces`], not a test of its own — so a
+            // QUALIFIED fact head still REFERENCES (`fact Rec.p(2)` lands its clause on
+            // `Rec.p` and introduces nothing, §1234), and the one enumeration decides for
+            // both keywords. `head_count` is 1: a fact has exactly one head.
+            //
+            // STILL NOT MINTED, and each is somebody else's: a fact inside a host
+            // `provides … language … end` block (TTHRK — see
+            // [`Self::collect_provides_block`], which files its clause and no site), and
+            // a BRACKETED provision claim (`fact Spec[T = K]`), whose functor must
+            // REFERENCE a declared sort rather than introduce one.
             Item::Fact(f) => {
-                if let Some(subject) = fact_head_subject_name(f, self.parse_sym, self.parse_terms) {
-                    self.clause(subject, f.span, scope, scope);
+                let Some(subject) = fact_head_subject_name(f, self.parse_sym, self.parse_terms)
+                else {
+                    return;
+                };
+                self.clause(subject.clone(), f.span, scope, scope);
+                // A QUERY's `fact` is the CLI's carrier for a GOAL, not a clause — see
+                // [`SourceRole`], where the measurement is.
+                if self.role == SourceRole::Query {
+                    return;
+                }
+                if let Ok(name) = subject_introduces(subject, 1) {
+                    self.sites.push(RuleHeadSite {
+                        file_idx: self.file_idx,
+                        scope,
+                        prefix: prefix.to_owned(),
+                        name,
+                        // A fact head is a PREDICATE head: its clause indexes under its
+                        // own functor. There is no equation reading to make — `fact lhs
+                        // === rhs` is refused at load (WI-1090).
+                        introduced_by: RuleIntroduction::Predicate,
+                        span: f.span,
+                        // A fact head carries no `?x: T` annotation — it is a ground
+                        // value position (WI-716).
+                        type_annotations: Vec::new(),
+                    });
                 }
             }
             // WI-20260827-APXSS — the one form whose clauses land somewhere its text is
@@ -10390,6 +10390,23 @@ struct PendingImport {
     /// outside the per-file loop, so it must carry its own provenance to render
     /// `path:line:col` if it stays unresolved.
     file_idx: usize,
+}
+
+/// Is `name` the short name of a DEFERRED selective import into `scope`? Then a head of
+/// that name there REFERENCES what was imported and introduces nothing, exactly as it
+/// would if the import had already been wired.
+///
+/// Short name and scope only: resolving the import's TARGET is sub-pass 4's job and its
+/// failure is sub-pass 4's diagnostic (`UnresolvedName` at the import's span). This
+/// question is narrower — "did the author say this name means something else here" — and
+/// answering it needs no target. An import that turns out to name nothing therefore
+/// still suppresses the mint, which is the right way round: the program is refused
+/// either way, and refusing it for the import the author wrote beats refusing it for a
+/// predicate they did not.
+fn pending_import_brings_in(pending: &[PendingImport], scope: ScopeId, name: &str) -> bool {
+    pending
+        .iter()
+        .any(|p| p.scope == scope && p.short == name)
 }
 
 /// WI-369: reject importing an `internal` name into a scope that cannot see it.
@@ -12866,7 +12883,13 @@ fn load_phase_inner(
     // each import to a file identity the load phase and every span already share.
     let source_ids = register_sources(kb, files);
     let mut all_errors =
-        scan_definitions_with_sources(kb, files, &source_ids, ImportAttribution::PerFile);
+        scan_definitions_with_sources(
+            kb,
+            files,
+            &source_ids,
+            ImportAttribution::PerFile,
+            SourceRole::Program,
+        );
     // WI-345: non-fatal diagnostics, accumulated parallel to `all_errors`.
     // Lint passes (e.g. WI-346 requires-shadow, below) extend this; it rides
     // out on the merged `LoadResult` when the load succeeds.
@@ -30959,97 +30982,43 @@ impl<'a> Loader<'a> {
         self.kb.mark_source_clause(rule_id);
         self.fact_rule_ids.push(rule_id);
 
-        // WI-210: when `fact Spec[bindings]` appears inside a sort body
-        // and Spec is itself a parameterized sort, also emit a
-        // SortProvidesInfo so dispatch (and proposal-030 specialization
-        // witnesses) can find the impl. Mirrors load_provides_clause.
-        // Brings the loader in line with kernel-language §1418.
-        // The head's own source span, so WI-933's carrier refusal points at the
-        // `fact` line rather than rendering unlocatable.
-        self.maybe_emit_fact_provides_info(term, domain, self.parsed.terms.span(f.term));
+        // WI-20260917-S8JYF (058 §4, COMPLETED) — A `fact` IS AN ORDINARY FACT AND
+        // NOTHING ELSE. `maybe_emit_fact_provides_info` stood here and filed a
+        // `SortProvidesInfo` for a head whose functor named a constructor-less sort:
+        // in a sort body the enclosing type was the provider, at a namespace or a
+        // file's root scope the carrier was DERIVED from a binding value. Both
+        // readings are gone, and with them the construct whose meaning depended on
+        // its container. A spec claim is `provides Spec[…]` — in the carrier's own
+        // declaration, or in a `namespace <Carrier>` SECONDARY ENTRY (059 R2/R3)
+        // where the carrier has no body to write it in.
+        //
+        // WHAT THE RETIREMENT BUYS is a silence this loader could not otherwise
+        // close. `fact Spec[T = C]` was a provision only when `Spec` RESOLVED to a
+        // sort, so a missing import turned the claim into an ordinary fact-only
+        // predicate — no provision, no diagnostic, identical text. The two readings
+        // were undecidable from the source (`sort Rec { fact helper(1) }` is a
+        // legitimate fact-only predicate, and `fact Box` is the same shape as a
+        // bare provider claim), so no diagnostic could tell them apart. With one
+        // reading left there is nothing to tell apart: an author who means a
+        // provision writes `provides`, which refuses an unresolved spec loudly.
+        //
+        // AND NO GATE REPLACES IT AT THIS HEAD. A bracketed head whose functor names no
+        // declared sort was refused for one build of this ticket — 055-implementation §7
+        // lists the fact HEAD beside three sibling positions where a bracketed
+        // application over an unresolved name already reports, and it looked like the
+        // fourth. It is not: those three are REFERENCE positions, where a name must
+        // resolve, and a clause head is a DECLARATION (WI-20260821-RDGQC — a fact head
+        // declares its predicate at the scope it is written in). `fact myrel[T = Red]`
+        // is a rule-introduced predicate carrying a type argument, driven by
+        // `wi_c7anm_head_parameter_column_test::a_bracketed_head_binds_a_type_argument_
+        // not_a_parameter`, and it is byte-identical to the missing-import shape — the
+        // only thing separating them is that one name is capitalized, which this
+        // language does not read (§2.3). MEASURED: the refusal took that test with it.
+        //
+        // What closes the silence is therefore the retirement itself and not a
+        // diagnostic. There is no second reading left to drop into.
 
         self.current_owner = prev_owner;
-    }
-
-    /// WI-449: canonicalize a FACT-derived spec binding VALUE to the canonical,
-    /// `provides`-identical [`Value`](crate::eval::value::Value) — the fact-path
-    /// counterpart of [`sort_inst_to_value`]'s recursive lowering. The parser builds
-    /// a parameterized binding value POSITIONALLY (`fact Effect[T = Modify[?]]` → the
-    /// `Modify[?]` value is `Fn{Modify, pos:[?], named:[]}`; a nested
-    /// `fact IndexedSeq[List[T], T]` → the `List[T]` value is `Fn{List, pos:[T]}`),
-    /// because parse has no `type_params_of_sort` to map positional args onto the
-    /// base sort's declared params, and a positional-only `Fn` is MALFORMED for
-    /// `type_head` (only `Fn{base, named}` is `Parameterized`; a no-named-arg `Fn`
-    /// → `TypeExtractor::Error`). Re-lower it here — at the load-time producer of the
-    /// `SortProvidesInfo` `SortView` — into the SAME `SortView(base, …named)` carrier
-    /// `sort_inst_to_value` builds: positional args map onto the base sort's declared
-    /// params, recursively. The result is byte-identical to the `provides` emission
-    /// and is read by the SAME `unwrap_spec_view` / `provides_spec_base_sym` dispatch
-    /// machinery (which reads named bindings only off a `SortView` wrapper, never off
-    /// a bare `Fn`). A leaf (`Ref` / `Ident` / a literal) or a NON-sort `Fn` (a reflect
-    /// constructor) is already a canonical `Value::Term` and passes through unchanged.
-    ///
-    /// Reachable for every parameterized fact binding, and lossless. The return is
-    /// ALWAYS a `Value::Term`: a user `fact` head is built by `convert_term` and
-    /// asserted via `assert_fact` (there is no value-fact head for user facts), so
-    /// the `value` reaching here is a hash-consed `Term` — even a denoted place
-    /// `Modify[c]` rides as `Ref(c)`, never a `Value::Node`. Every leaf is therefore
-    /// a `Value::Term` and `assemble_sort_view_value` collapses to a hash-consed
-    /// `SortView` term, preserving every argument (the positional→named remap is the
-    /// only reshaping). `Value` is the return type purely to share
-    /// `assemble_sort_view_value` with the `provides` path, whose `type_expr_to_value`
-    /// CAN lower a denoted place to a real `Value::Node` (the only `Value::Entity`
-    /// producer).
-    fn canonicalize_fact_binding_value(&mut self, value: TermId) -> crate::eval::value::Value {
-        use crate::eval::value::Value;
-        let (functor, pos_args, named_args) = match self.kb.get_term(value) {
-            Term::Fn {
-                functor,
-                pos_args,
-                named_args,
-            } => (*functor, pos_args.clone(), named_args.clone()),
-            _ => return Value::term(value),
-        };
-        // Only a parameterized SORT instantiation re-lowers to a `SortView`.
-        if !matches!(self.kb.kind_of(functor), Some(SymbolKind::Sort)) {
-            return Value::term(value);
-        }
-        let params = self.kb.type_params_of_sort(functor);
-        // Recurse into any explicit named values, then map each positional arg onto
-        // the base sort's declared param in order.
-        let mut named: Vec<(Symbol, Value)> = named_args
-            .iter()
-            .map(|(s, v)| (*s, self.canonicalize_fact_binding_value(*v)))
-            .collect();
-        // A stray positional (double-bind, or more positionals than declared params)
-        // is a malformed instantiation kept in `pos` — invisible to the SortView
-        // Value::Entity branch's readers but preserved rather than dropped.
-        let mut pos: Vec<Value> = Vec::new();
-        let mut positional_index: usize = 0;
-        for pos_val in pos_args.iter() {
-            let cv = self.canonicalize_fact_binding_value(*pos_val);
-            match params.get(positional_index) {
-                Some(param_name) => {
-                    positional_index += 1;
-                    let param_sym = self.kb.intern(param_name);
-                    if named.iter().any(|(s, _)| *s == param_sym) {
-                        pos.push(cv);
-                    } else {
-                        named.push((param_sym, cv));
-                    }
-                }
-                None => pos.push(cv),
-            }
-        }
-        // WI-600: a nested parameterized sort application is the PLAIN `Fn{base,
-        // named}`, NOT a `reflect.SortView` wrapper — the fact-path twin of
-        // `sort_binding_to_value`, byte-identical so a `fact Spec[…]` and a
-        // `provides Spec[…]` emit the same spec (WI-449). Only the OUTER spec view
-        // (assembled by `maybe_emit_fact_provides_info` / `sort_inst_to_value` via
-        // `assemble_sort_view_value`) is a `SortView`. A denoted-bearing child or a
-        // stray positional (which a hash-consed `Fn` can't hold) falls back to the
-        // faithful `SortView` `Value::Entity` carrier.
-        self.assemble_binding_value(functor, named, pos)
     }
 
     /// WI-600 — assemble a NESTED parameterized binding VALUE (`Element = Pair[A =
@@ -31084,363 +31053,6 @@ impl<'a> Loader<'a> {
             let mut all_pos = vec![Value::term(name_term)];
             all_pos.extend(pos);
             self.assemble_sort_view_value(all_pos, named)
-        }
-    }
-
-    /// If `fact_term` is `Spec[bindings]` claiming spec satisfaction,
-    /// emit a `SortProvidesInfo(sort_ref=<carrier>, spec=SortView(Spec,
-    /// <named bindings>))` alongside the bare fact. Two recognised
-    /// shapes (kernel-language §1418 + the stdlib namespace-level
-    /// convention):
-    /// - **Names a type**: `domain` carries `SymbolKind::Sort`. The carrier is
-    ///   `domain` itself; bindings come from the fact. This is the `sort X { …
-    ///   }` / `enum X { … }` body, §6.3's free-standing `entity X(…)`, and — the
-    ///   WI-978 fix — a `namespace X` SECONDARY ENTRY to any of them (059).
-    ///   Asked as `has_kind`, never `kind_of`: see the comment at the branch.
-    /// - **Names no type**: a plain namespace, or a file's synthetic `<global>`
-    ///   root scope. The carrier is derived from the fact's first binding value
-    ///   (the type that satisfies the spec). A claim WRITTEN BARE (`fact <Spec>`,
-    ///   nothing after the name) that names no derivable carrier is REFUSED rather
-    ///   than dropped ([`LoadError::CarrierlessProvisionFact`], WI-933/WI-1106), and
-    ///   so is one whose bindings name no type — there is no lenient exit from that
-    ///   arm. The data-sort gate below is what makes the unconditional refusal
-    ///   correct: it returns for every constructor-bearing functor, so nothing
-    ///   reaching the derivation can be a data construction.
-    ///
-    /// Positional bindings are translated to named bindings via
-    /// `type_params_of_sort` — `fact Ring[Float]` and
-    /// `fact Ring[T = Float]` produce equivalent `SortView` records.
-    fn maybe_emit_fact_provides_info(&mut self, fact_term: TermId, domain: Symbol, span: Span) {
-        // fact_term must be `Fn { functor, … }` where functor is a Sort
-        // with at least one type parameter (i.e. a spec).
-        // `written_bare` is the WRITTEN SHAPE — `fact Spec` with nothing after the
-        // name. It does NOT decide whether the refusal below fires (every carrier-less
-        // arrival is refused); it decides WHICH SENTENCE that refusal renders. Read
-        // from the shape rather than derived from the bindings because `fact
-        // Spec[combine = f]` writes brackets and still leaves the carrier underivable,
-        // so a bindings-derived test would say "write the brackets" at text that
-        // has them.
-        let written_bare = matches!(self.kb.get_term(fact_term), Term::Ref(_) | Term::Ident(_));
-        let (fact_functor, fact_pos_args, fact_named_args) = match self.kb.get_term(fact_term) {
-            Term::Fn {
-                functor,
-                pos_args,
-                named_args,
-            } => (*functor, pos_args.clone(), named_args.clone()),
-            // WI-365: a BARE provider fact (`fact Box`, no `[bindings]`) is a
-            // name term, not a `Fn`. A spec parametric only in an EFFECT row
-            // (`effects Effect = ?`) has no type-argument bindings to write —
-            // effects aren't expressible as type arguments (WI-301) — so its
-            // provider claim is necessarily bare. Treat it as a zero-binding
-            // provider so a carrier (`MutBox`) is still found at dispatch.
-            Term::Ref(functor) | Term::Ident(functor) => {
-                (*functor, SmallVec::new(), SmallVec::new())
-            }
-            _ => return,
-        };
-        if !matches!(self.kb.kind_of(fact_functor), Some(SymbolKind::Sort)) {
-            return;
-        }
-        let spec_params = self.kb.type_params_of_sort(fact_functor);
-        // WI-407: a NON-parametric spec (`spec_params` empty) still declares a
-        // real is-a — `sort QueryableStore { fact Store }`, top-level `fact
-        // QueryableStore[IndexedFileStore]`. Pre-WI-407 the gate was
-        // `spec_params.is_empty()`, so those edges never reached
-        // `SortProvidesInfo` and the declared hierarchy was invisible to
-        // subtyping (the gap WI-385's arg/field validation surfaced). Emit a
-        // zero-binding provider edge for them too.
-        //
-        // A SORT WITH CONSTRUCTORS IS A DATA SORT, WHATEVER ITS PARAMETERS
-        // (WI-1106). `sort Holder { fact Color[..] }` with `entity red/green` on
-        // `Color` asserts a data instance, not is-a (wi210
-        // `fact_for_non_spec_sort_does_not_emit_provides_info`). WI-407 wrote that
-        // rule with `&& spec_params.is_empty()` attached, deliberately keeping "a
-        // parametric data sort like `List` on its old path" — and that half-rule is
-        // what made a PARAMETRIC data sort a spec. It was not a theoretical gap:
-        //   - `fact Polynom[Int64]` (`anthill-testcases/ring-polynom`) filed
-        //     `Int64 provides Polynom` — the polynomial's RING PARAMETER read as its
-        //     carrier, an is-a nobody wrote.
-        //   - `fact Box(value: Other)`, an ordinary construction over an eponymous
-        //     parametric sort, filed `Other provides Box` off the FIELD VALUE, which
-        //     is `wi407_provider_edges_test::data_sort_fact_does_not_widen_*`'s
-        //     defect with a type parameter added. MEASURED to change a verdict: the
-        //     same upcast is refused as "expected X, got Y" without the fact and
-        //     reaches the avoidance check with it.
-        // Dropping `spec_params.is_empty()` costs nothing: instrumenting this
-        // emission over the whole corpus and all 29 test binaries recorded 216_121
-        // provisions, of which NINE had a constructor-bearing functor — seven
-        // `Polynom` and the two fixtures written to demonstrate the second bug.
-        //
-        // IT ALSO ESTABLISHES AN INVARIANT THE CARRIER-DERIVATION ARM BELOW RELIES
-        // ON. A sort with no constructors cannot be constructed, so past this point
-        // no `fact` can be a data construction, and a claim whose carrier cannot be
-        // derived is unambiguously a malformed provision. WI-933 could not refuse
-        // those — constructions landed among them — and now does.
-        if self.kb.sort_has_constructors(fact_functor) {
-            return;
-        }
-
-        use crate::eval::value::Value;
-        // Translate positional bindings → named, using the spec's declared
-        // parameter order. type_params_of_sort returns short names; positional[i]
-        // binds to params[i]. Empty for a non-parametric spec — the loop does
-        // nothing and `named_terms` stays whatever the user wrote (typically
-        // nothing). These are the ORIGINAL (parse-shape) term bindings; the carrier
-        // is read off them (its base sort is unaffected by canonicalization).
-        let mut named_terms: SmallVec<[(Symbol, TermId); 2]> = fact_named_args.clone();
-        for (i, pos_val) in fact_pos_args.iter().enumerate() {
-            let param_name = match spec_params.get(i) {
-                Some(n) => n.clone(),
-                None => continue,
-            };
-            let param_sym = self.kb.intern(&param_name);
-            // Skip if user already supplied this name explicitly.
-            if named_terms.iter().any(|(s, _)| *s == param_sym) {
-                continue;
-            }
-            named_terms.push((param_sym, *pos_val));
-        }
-
-        // Determine sort_ref (the carrier). A scope that NAMES A TYPE carries the
-        // provision for that type; any other scope derives the carrier from the
-        // fact's bindings.
-        //
-        // WI-978 — ASK `has_kind`, NOT `kind_of`. Symbol categories are a SET
-        // (WI-956/WI-926) and `kind_of` returns the FIRST kind added, so it
-        // answers off WHICH DECLARATION CAME FIRST (WI-979). MEASURED, for the
-        // three main-entry spellings beside a `namespace X` secondary entry
-        // (proposal 059): `sort X` and `enum X` are `primary=Sort`, but §6.3's
-        // free-standing `entity X(…)` is `primary=Entity` — all three carry
-        // `Sort`. So a `fact Spec[X]` written in a secondary entry to a
-        // free-standing entity matched NEITHER old arm and fell out of the
-        // `_ => return` that used to close them: no `SortProvidesInfo` was
-        // emitted at all, and with it went every reader — the backing obligation
-        // (`check_provider_operations`), coherence, and dispatch. It loaded clean
-        // with nothing backing the claim. Writing the SAME `namespace X` block
-        // BEFORE the entity made the primary kind `Namespace` and the whole
-        // obligation came back, so the PLACEMENT was never the discriminator —
-        // declaration ORDER was.
-        //
-        // THE ELSE IS "EVERYTHING ELSE", not "a namespace", which is why it is
-        // not spelled `has_kind(domain, Namespace)`. Making that third case loud
-        // instead found the second population the old `_ => return` swallowed: a
-        // `fact Spec[X]` at a FILE'S TOP LEVEL, whose domain is the synthetic root
-        // scope `<global>` (`load_items`' `domain.unwrap_or(<global>)`) — a symbol
-        // with no declared kind, so `Namespace` is as false for it as `Sort` is.
-        // It emitted no provision either, while the identical text one `namespace`
-        // in did. A root scope names no type, so it derives from the bindings
-        // exactly as a namespace does — one rule, no third case to fall out of.
-        // (`parse_test::load_polynom_with_ring_requirement` is that fixture, and
-        // it is what fails under a three-arm spelling.)
-        let sort_ref_term = if self.kb.has_kind(domain, SymbolKind::Sort) {
-            // WI-862 (058 §4) — THE DEPRECATION, and it belongs to THIS ARM ALONE.
-            //
-            // Here the scope NAMES A TYPE, so the claim's subject is the enclosing sort
-            // and `provides Spec[…]` says exactly the same thing — the two are one
-            // construct, measured end to end (058-implementation §6, probe q5). The ELSE
-            // arm derives its carrier from the bindings at a plain namespace or at
-            // `_global`, and a `provides` clause written there is REFUSED
-            // (`ProvidesClauseNeedsSort`, WI-1000 R3): warning there would advertise a
-            // repair the next compile rejects, which is `TieRepair`'s named failure mode.
-            // So the namespace-level instance facts (058 §3.1) are untouched, exactly as
-            // the proposal scopes the retirement.
-            self.warnings.push(LoadWarning::ProvisionFactSpelling {
-                spec: self.kb.qualified_name_of(fact_functor).to_string(),
-                sort: self.kb.qualified_name_of(domain).to_string(),
-                span,
-            });
-            self.kb.make_name_term_from_sym(domain)
-        } else {
-            // Derive the carrier from the spec's CARRIER ("Self") TYPE
-            // PARAMETER — the first-declared TYPE binding — NOT
-            // `named_terms.first()`. Two reasons the first binding is not
-            // reliably the carrier: (1) a POSITIONAL binding is translated and
-            // APPENDED after the named ones, so in `fact Combiner[Tag, combine
-            // = tagCombine]` the leading binding is the OP `combine`; (2)
-            // `fact_value_to_sort_sym` returns the symbol of a bare
-            // `Ref`/`Ident` WITHOUT a Sort check, so an op binding would file
-            // the provision under the operation `tagCombine` instead of `Tag`
-            // (WI-431 (E)). Selecting the non-op binding with the lowest SYMBOL
-            // INDEX (= earliest declared) finds the carrier regardless of
-            // written order, skips op bindings, and works for a structured /
-            // higher-kinded carrier param (`CpsMonad`'s `F`) that
-            // `type_params_of_sort` does not list. WI-407: a NON-parametric
-            // spec has no type param, so the raw leading positional IS the
-            // carrier (`fact QueryableStore[IndexedFileStore]` ⇒ `IndexedFileStore`).
-            let carrier_val = named_terms
-                .iter()
-                .filter(|(_, v)| binding_op_symbol(self.kb, *v).is_none())
-                .min_by_key(|(s, _)| s.index())
-                .map(|(_, v)| *v)
-                .or_else(|| fact_pos_args.first().copied());
-            // The carrier must be a TYPE (Sort or namespace-level Entity),
-            // never an operation — a binding to an op value is a
-            // mis-derivation, not a carrier.
-            //
-            // AND IT MUST NAME SOMETHING. `fact_value_to_sort_sym` returns a bare
-            // `Ref`/`Ident` UNFILTERED, deliberately — a carrier may legitimately be a
-            // namespace-level `Entity` as well as a `Sort`, so a `kind_of == Sort`
-            // test would be wrong (WI-431 (E)'s note at that function). What can be
-            // asked without that hazard is whether the symbol RESOLVED AT ALL, and an
-            // unresolved name is never a carrier.
-            //
-            // NOT HYPOTHETICAL, and the surface is what makes it reachable: in a PAREN
-            // field slot a literal lowers to `Term::Const`, which `fact_value_to_sort_
-            // sym` already declines — but in a BRACKET the converter lowers `1` as a
-            // TYPE NAME, so `fact Spec[T = 1]` arrived here as a `Term::Ident` and was
-            // taken as the carrier. The provision was then filed under a symbol whose
-            // name is `1`; `typing.rs`'s WI-672 `debug_assert` fired on it in a debug
-            // build, and a release build silently bucketed the provision under a
-            // nonsense carrier for every reader of the provider index to consult. That
-            // assert says the repair belongs "at its producer", and this is it.
-            let carrier_sym = carrier_val
-                .and_then(|val| self.fact_value_to_sort_sym(val))
-                .filter(|s| !matches!(self.kb.kind_of(*s), Some(SymbolKind::Operation)))
-                .filter(|s| {
-                    !matches!(
-                        self.kb.symbols.get(*s),
-                        crate::intern::SymbolDef::Unresolved { .. }
-                    )
-                });
-            match carrier_sym {
-                Some(sym) => self.kb.make_name_term_from_sym(sym),
-                // NO CARRIER, AND THE SCOPE NAMES NO TYPE EITHER — so nothing can
-                // say what this claim is about, and every arrival is refused. Which
-                // sentence it gets is the only remaining question.
-                //
-                // THIS ARM IS CONSTRUCTION-FREE BY CONSTRUCTION (WI-1106), which is
-                // what makes an unconditional refusal correct here. The gate above
-                // returns for any functor with constructors, and a sort with none
-                // cannot be constructed — so no `fact` reaching this point is data.
-                // WI-933 could not say that: its gate still let a PARAMETRIC data sort
-                // through, so `fact Box(value: 1)` and a nullary `fact ZzBox` landed
-                // among the malformed provisions, and the refusal had to be narrowed
-                // to a bare shape over a constructor-less functor to miss them. Both
-                // now return earlier, and the narrowing is gone with them.
-                //
-                // WI-431 (E) STILL GOES FIRST, and keeps its own sentence: an
-                // op-bearing instance fact with a carrier type-param slot to forget.
-                // That one names the unbound parameter, which the general sentence
-                // cannot.
-                //
-                // THE OTHER TWO SHARE ONE VARIANT AND DIFFER IN THEIR REPAIR, which
-                // is why the reason is carried rather than re-derived from the
-                // bindings at the rendering site:
-                //   NoBindings         `fact Spec` — WI-933's subject. Add brackets,
-                //                      or move it into the carrier's own body.
-                //   BindingNamesNoType `fact Spec[T = ?]`, `fact Spec[op = f]` — the
-                //                      brackets are already there and name no type,
-                //                      so "write the brackets" would be nonsense.
-                // The second is what WI-933 left open and this ticket closes; it had
-                // to wait for the gate above, because before it that text was
-                // indistinguishable from `fact Box(value: 1)`.
-                //
-                // WHY REFUSED AT ALL. The bracket-less spelling reads as a provision,
-                // `docs/rust-forward-mapping.md` §2.13 documented it as one, and it
-                // produced none: MEASURED by dumping every `SortProvidesInfo` of a
-                // full stdlib + host-bindings load (WI-931), where both shipped
-                // instances — `fact BulkStore` after `entity FileStore(…)` and `fact
-                // QueryableStore` after `entity SqlStore(…)` — emitted no edge while
-                // their bracketed neighbours on the next line did. Implementing the
-                // doc's reading instead (derive the carrier from the enclosing
-                // namespace's entity) was rejected rather than unimplemented: that
-                // namespace declares TWO entities, so proximity would put declaration
-                // ORDER back in charge of which type a claim is about — the
-                // discriminator WI-978 removed. The fact twin of WI-1000's `provides`
-                // refusal.
-                None => {
-                    let binds_any_op = named_terms
-                        .iter()
-                        .any(|(_, v)| binding_op_symbol(self.kb, *v).is_some());
-                    if binds_any_op {
-                        if let Some(carrier_param) = spec_params.first() {
-                            self.errors.push(LoadError::UnresolvableInstanceCarrier {
-                                spec: self.kb.qualified_name_of(fact_functor).to_string(),
-                                carrier_param: carrier_param.clone(),
-                            });
-                            return;
-                        }
-                    }
-                    self.errors.push(LoadError::CarrierlessProvisionFact {
-                        spec: self.kb.qualified_name_of(fact_functor).to_string(),
-                        scope: self.kb.qualified_name_of(domain).to_string(),
-                        reason: if written_bare {
-                            CarrierlessProvisionReason::NoBindings
-                        } else {
-                            CarrierlessProvisionReason::BindingNamesNoType
-                        },
-                        span,
-                    });
-                    return;
-                }
-            }
-        };
-
-        // WI-449: re-lower each binding VALUE to its faithful, `provides`-identical
-        // `Value` (`canonicalize_fact_binding_value` maps positional→named and rides
-        // a denoted binding as a `Value::Entity`), then assemble the spec the SAME
-        // way `sort_inst_to_value` does — so the fact and `provides` emissions are
-        // byte-identical and a denoted binding is never flattened to a `TermId`.
-        let named_values: Vec<(Symbol, Value)> = named_terms
-            .iter()
-            .map(|(s, v)| (*s, self.canonicalize_fact_binding_value(*v)))
-            .collect();
-        let spec_name_term = self.kb.make_name_term_from_sym(fact_functor);
-        let spec_value =
-            self.assemble_sort_view_value(vec![Value::term(spec_name_term)], named_values);
-
-        // Assert SortProvidesInfo(sort_ref, spec) through the Value carrier — the
-        // SAME path `load_provides_clause` uses, so an all-ground spec rides as a
-        // hash-consed `Term::Fn` and a denoted-bearing one as a `Value::Entity`
-        // value fact (one carrier decision, in `assert_fact_carrier`).
-        //
-        // AND THE SAME ENTRY POINT, which it was not: this called `assert_fact_carrier`
-        // DIRECTLY while its `provides` twin goes through the metadata wrapper, and that
-        // is a difference with teeth — the wrapper is what tells
-        // `KnowledgeBase::note_metadata_fact_presented` that the declaration walk
-        // presented this fact, so a `fact Spec[…]` provider was the one clause route
-        // whose refusal was still lost on a re-presented file (MEASURED: refused on the
-        // first load, `Ok` with zero errors on the second — WI-20260901-EA6KS, found by
-        // /code-review). The debug-only slot checks it adds are the ones its twin
-        // already passes for this very functor.
-        let provides_sym = self.kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
-        let sort_ref_arg = self.kb.intern("sort_ref");
-        let spec_arg = self.kb.intern("spec");
-        self.kb
-            .register_entity_fields(provides_sym, vec![sort_ref_arg, spec_arg]);
-        let provides_sort = ClauseKind::Requirement;
-        self.kb.assert_metadata_fact_carrier(
-            provides_sym,
-            Vec::new(),
-            vec![
-                (sort_ref_arg, Value::term(sort_ref_term)),
-                (spec_arg, spec_value),
-            ],
-            provides_sort,
-            domain,
-            None,
-        );
-    }
-
-    /// Extract the underlying nominal symbol from a fact-binding value
-    /// term. Handles `Ref`, `Ident`, and `Fn` shapes — the forms
-    /// `convert_term` produces for a plain type reference (a sort or a
-    /// namespace-level entity). NOTE: a bare `Ref`/`Ident` is returned
-    /// unfiltered (it may resolve to a non-type symbol such as an operation);
-    /// the carrier-derivation caller excludes `Operation` kinds itself, since a
-    /// type carrier may legitimately be an `Entity` (`IndexedFileStore`) as well
-    /// as a `Sort`.
-    fn fact_value_to_sort_sym(&self, value: TermId) -> Option<Symbol> {
-        match self.kb.get_term(value) {
-            Term::Ref(s) | Term::Ident(s) => Some(*s),
-            Term::Fn { functor, .. } => {
-                if matches!(self.kb.kind_of(*functor), Some(SymbolKind::Sort)) {
-                    Some(*functor)
-                } else {
-                    None
-                }
-            }
-            _ => None,
         }
     }
 
@@ -31800,7 +31412,7 @@ impl<'a> Loader<'a> {
                 // (the prelude's `eq` denotes) and the declaration still introduced
                 // nothing — the very drop the check exists for, one name away from the
                 // fixture that caught it. Found by /code-review.
-                if let Some((name, _)) =
+                if let Ok((name, _)) =
                     rule_introduced_functor_name(r, &self.parsed.symbols, &self.parsed.terms)
                 {
                     let local = self
@@ -35934,6 +35546,7 @@ rule at_the_top(1)
             sites: &mut sites,
             clauses: &mut clause_sites,
             census_clauses: true,
+            role: SourceRole::Program,
             errors: &mut errors,
         };
         walk_scopes(&mut pass, &file.items, global);

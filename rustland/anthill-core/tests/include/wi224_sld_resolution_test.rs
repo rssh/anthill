@@ -209,7 +209,7 @@ fn one_level_conditional_resolves_via_subgoal() {
           sort EqList
             sort A = ?
             requires Eq[T = A]
-            fact Eq[T = List[T = A]]
+            provides Eq[T = List[T = A]]
           end
         end
     "#;
@@ -315,7 +315,7 @@ fn two_level_conditional_chains_recursively() {
           sort EqList
             sort A = ?
             requires Eq[T = A]
-            fact Eq[T = List[T = A]]
+            provides Eq[T = List[T = A]]
           end
         end
     "#;
@@ -415,11 +415,11 @@ fn ambiguous_when_two_impls_collide_without_specificity_order() {
             entity amb_e
           end
           sort AmbA
-            fact AmbSpec[T = AmbCarrier]
+            provides AmbSpec[T = AmbCarrier]
             operation amb_op(x: AmbCarrier) -> AmbCarrier = x
           end
           sort AmbB
-            fact AmbSpec[T = AmbCarrier]
+            provides AmbSpec[T = AmbCarrier]
             operation amb_op(x: AmbCarrier) -> AmbCarrier = x
           end
         end
@@ -475,11 +475,11 @@ fn cyclic_when_conditional_subgoal_recurses() {
           sort CarB entity car_b end
           sort CyclicA
             requires CycSpec[T = CarB]
-            fact CycSpec[T = CarA]
+            provides CycSpec[T = CarA]
           end
           sort CyclicB
             requires CycSpec[T = CarA]
-            fact CycSpec[T = CarB]
+            provides CycSpec[T = CarB]
           end
         end
     "#;
@@ -527,7 +527,7 @@ fn no_match_when_no_candidate_for_bindings() {
             operation nm_op(x: T) -> T
           end
           sort OnlyForInt
-            fact NoMatchSpec[T = Int64]
+            provides NoMatchSpec[T = Int64]
             operation nm_op(x: Int64) -> Int64 = x
           end
         end
@@ -585,19 +585,19 @@ fn diamond_coherence_picks_same_a_impl_for_both_branches() {
           end
           sort CarrierA
             sort T = ?
-            fact DiamondA[T = T]
+            provides DiamondA[T = T]
             operation a_op(x: T) -> T = x
           end
           sort CarrierB
             sort T = ?
             requires DiamondA[T = T]
-            fact DiamondB[T = T]
+            provides DiamondB[T = T]
             operation b_op(x: T) -> T = x
           end
           sort CarrierC
             sort T = ?
             requires DiamondA[T = T]
-            fact DiamondC[T = T]
+            provides DiamondC[T = T]
             operation c_op(x: T) -> T = x
           end
         end

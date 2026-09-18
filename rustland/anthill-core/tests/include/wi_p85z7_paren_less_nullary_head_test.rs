@@ -85,10 +85,13 @@
 //! lowers to in every position, so deciding it for the head meant deciding it for the
 //! other three at once.
 //!
-//! A **fact** head stays unscoped at every arity (§6.1, and WI-20260821-RDGQC's
-//! enumeration owns the question) — `fact holds` and `fact holds()` are alike, which is
-//! what [`a_fact_head_is_unscoped_in_both_spellings`] asserts. The paren-less spelling
-//! is therefore NOT a second hole on the fact side; it is the same one, whole.
+//! A **fact** head is SCOPED at every arity, and `fact holds` and `fact holds()` are
+//! alike in being so — [`a_fact_head_is_scoped_in_both_spellings`]. This paragraph used
+//! to say the opposite ("stays unscoped … §6.1"), which is what RDGQC then measured and
+//! refuted: `fact H` is `rule H :- true` (§1234), so a fact head that declared nothing
+//! made one clause into two different programs. Either way the paren-less spelling is
+//! NOT a second hole on the fact side — it is the same question, whole, which is this
+//! ticket's point and the reason the row lives here.
 //!
 //! STDLIB LOADS: TWO —
 //! [`a_bare_equation_subject_defines_exactly_like_its_parenthesised_twin`] and
@@ -509,25 +512,33 @@ fn a_body_less_qualified_heads_refusal_reads_alike_in_both_spellings() {
     );
 }
 
-/// A FACT HEAD IS UNSCOPED AT EVERY ARITY (§6.1), so the two nullary spellings must
-/// agree with EACH OTHER — which is the answer to the ticket's "does `fact holds` follow
-/// the rule head". It does not: it follows the FACT rule, and that rule's own defect
-/// (two scopes' fact heads sharing one uncitable name) is WI-20260821-RDGQC's, whole,
-/// for every arity rather than newly for this one.
+/// A FACT HEAD IS SCOPED AT EVERY ARITY, so the two nullary spellings agree with each
+/// other — which is this ticket's own question, "does `fact holds` follow the rule
+/// head", answered YES.
 ///
-/// GREEN BEFORE AND AFTER. Its job is to say the fact side was not silently half-moved:
-/// were `fact_head_subject_name` given the `Term::Ident` arm too, the two counts here
-/// would part.
+/// IT USED TO ASSERT THE OPPOSITE, and said so on §6.1's authority: "a fact head is
+/// unscoped at every arity … it follows the FACT rule, and that rule's own defect (two
+/// scopes' fact heads sharing one uncitable name) is WI-20260821-RDGQC's". RDGQC took it
+/// and found the defect was the SPELLING: `fact H` is `rule H :- true` (§1234), and the
+/// two behaved as different programs — the `rule` spelling scoped, the `fact` one fell
+/// to one global intern. So there was never a separate "FACT rule" to follow; there was
+/// one rule and one spelling escaping it.
+///
+/// WHAT THIS ROW STILL GUARDS IS THIS TICKET'S AXIS, unchanged: the two NULLARY
+/// spellings must not part. Were `fact_head_subject_name` given back its `Term::Fn`-only
+/// walk, the bare arm would stop minting while the parenthesised one kept on, which is
+/// exactly the split P85Z7 exists to prevent — one keyword over.
 #[test]
-fn a_fact_head_is_unscoped_in_both_spellings() {
+fn a_fact_head_is_scoped_in_both_spellings() {
     for (label, head) in [("bare", "holdsp85z7"), ("parens", "holdsp85z7()")] {
         let kb = crate::common::load_kb_with(&format!(
             "namespace zzP85Z7.fct{label}\n  fact {head}\nend\n"
         ));
         assert_eq!(
             clauses(&kb, &format!("zzP85Z7.fct{label}.holdsp85z7")),
-            None,
-            "{label}: a fact head mints no scoped symbol — §6.1, and RDGQC owns it"
+            Some(1),
+            "{label}: a fact head declares its predicate where it is written, and its \
+             clause lands there"
         );
     }
 }

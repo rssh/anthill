@@ -3244,7 +3244,7 @@ namespace test.wi350_box
   end
   sort ListBox
     entity lbox(item: Int64)
-    fact Box[T = Int64]
+    provides Box[T = Int64]
     operation peek(b: ListBox) -> Int64 = match b case lbox(x) -> x
   end
   -- `b : Box` is an abstract spec value, so `Box.peek(b)` types through the
