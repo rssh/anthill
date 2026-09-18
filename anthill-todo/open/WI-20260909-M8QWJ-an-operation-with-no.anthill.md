@@ -44,3 +44,21 @@ REFERENCE: WI-9WVT7 (where this was measured and why its fix is not the cause), 
 
 ADJACENT: WI-20260913-KXNEX. A provision that leaves its spec's carrier parameter unbound (`provides Llm[E = …]`, bare `provides Harness`) loads clean and dies `OperationBodyMissing` at dispatch against a provider that DOES implement the operation — measured in WI-20260830-7MK73. This ticket's check would not see it (question 3 defers the abstract-carrier call, which is where it lives); KXNEX refuses it at the declaration instead, and once it lands every written provision names its carrier, so question 2's 'a provider's implementation' route reads off provisions with no silent None arm. Cross-reference, not a dependency.
 
+### 2026-09-18T12:53:07Z — feedback — claude
+
+ADJACENT, MEASURED 2026-09-18 on 19f73ff1 (while probing WI-20260918-R541X): AN UNDECLARED REQUIREMENT OVER A RIGID IS NOT REFUSED AT LOAD. Same FAMILY as this ticket -- loads clean, the trouble lands at the call -- but a DIFFERENT CONDITION: every operation here HAS an implementation; what is missing is the CALLER'S LICENCE.
+
+    sort TypeTerm { sort T = ?  operation valueOf() -> Type }        -- each provider implements valueOf
+    operation tagOf[P](x: P) -> Type requires TypeTerm[T = P] = TypeTerm.valueOf()
+    operation bad[Q](y: Q) -> Type = tagOf(y)                        -- declares NO requires
+
+ROW 1 -- ONE provider in the program (`Boom`): `bad(7)` LOADS and answers `Boom`. `Int64` has no instance, and the direct `tagOf(7)` IS refused ("a requirement suppliable at this call site", delivered WI-1102). This is a SILENT WRONG ANSWER, not a late failure: the goal `TypeTerm[T = Q]` with `Q` RIGID resolves `Unique` against the only provider head. `start_apply_deferred`'s own comment records that mechanism for the concrete case ("with one provider the goal resolves `Unique` and never defers").
+
+ROW 2 -- several providers: the same program dies at eval, `DeferToRequirement: requirement param __req_typeterm not bound in caller frame (running tagOf, requires-chain owner tagOf; frame binds [])`, and through the rule-body bridge that is a PROCESS PANIC (`bridge_op_to_eval`, kb/resolve.rs).
+
+THIS TICKET'S CHECK WOULD SEE NEITHER. Question 3 defers the abstract case WHERE A `requires` COVERS IT; this is the abstract case NO `requires` covers, reached through a NON-spec callee's op-scoped clause. It is the RIGID complement of WI-1102 (concrete carrier -> load diagnostic), and the repair it wants is the WI-325 / WI-823 "missing requires" ladder applied to a CALLEE-declared requirement -- "add `requires TypeTerm[T = Q]` to `bad`". Row 1 says in addition that resolution must not answer `Unique` for a rigid.
+
+WHY IT MATTERS BEYOND ITSELF: WI-20260911-3MV2C's direction is `raise(error: T) ... requires ErrorTag[T]`. A generic raiser that forgets the clause would raise under ANOTHER TYPE'S tag (row 1) -- a misrouted raise, silently.
+
+ROOT CAUSE NOT INVESTIGATED, NO TICKET FILED. Cross-reference, not a dependency.
+
