@@ -135,3 +135,48 @@ THE ACCEPTANCE AS WRITTEN SURVIVES point 3 and does NOT survive a catch-wide fal
 nested boundaries at `Box[V=Int64]` / `Box[V=String]` route correctly only where the tag
 carries the argument.
 
+### 2026-09-18T09:01:50Z — feedback — user
+
+FIRST STEP, AND IT IS BEHAVIOUR-NEUTRAL BY CONSTRUCTION: make the boundary's declared
+side a VIEW, keep the comparison head-only. This is the increment continuum point 3 has
+and point 2 does not, so it is worth taking BEFORE the 2-vs-3 decision — it commits to
+neither, and it pays for itself on the interning ground alone.
+
+WHAT CHANGES.
+ 1. `ground_type_params(kb: &mut KnowledgeBase, t: TermId, chan) -> TermId` stops
+    returning an interned term. A type term grounded PER DISPATCH is a transient, and
+    interned terms live for the KB's lifetime (CLAUDE.md's representation note). Today
+    this path interns one on every dispatch that carries type arguments — not only
+    `reify`'s.
+ 2. `AwaitState::ReifyBoundary { payload: Option<Symbol> }` carries the grounded VIEW
+    rather than the narrowed symbol. `payload_sort_of`'s head collapse moves from INSTALL
+    to the comparison, where the argument recursion will later hang off it.
+ 3. `payload_matches(&self, declared: Symbol, raised: &Value)` becomes generic on the
+    declared side — the two-view shape beside `views_structurally_equal`
+    (`kb/term_view.rs:2098`), NOT a second comparator (WI-486). It still answers
+    `sort_sym_compatible(head_of(declared), runtime_carrier_sort(raised))`, so every
+    verdict is unchanged.
+
+THE ACCEPTANCE HAS TO BE THE INTERNING, NOT THE VERDICTS — and saying so is the point.
+The 21+ existing reify rows PASS EITHER WAY BY DESIGN: that is what "behaviour-neutral"
+means, and a step whose only evidence is a green suite measures nothing (CLAUDE.md:
+assert the CONTROL too). So the drive is a TermStore-growth assertion across a reify
+dispatch — the store does not grow where it grew before — with the existing rows named
+at the site as the controls that cannot fail. Whoever takes this should confirm the
+store exposes a count or an epoch to assert on; if it does not, exposing one is part of
+the step, not a reason to skip the assertion.
+
+WHAT COULD MAKE IT NOT CHEAP, named so it is not a surprise: `Option<Symbol>` is `Copy`
+and a view is not, so `ReifyBoundary` gains a size and a lifetime. `AwaitState` is stored
+per frame and cloned on the `suspend_and_push` path. If that forces an `Rc` carrier the
+step is still right, but it is no longer a one-sitting change, and THAT is the thing to
+measure first.
+
+WHAT IT DOES NOT DO: no argument recursion, no tag on the raise, no decision between
+continuum points 2 and 3, no change to which raise reaches which boundary. `Box[V=Int64]`
+still catches a `Box[V=String]` after this step — this ticket's own defect is untouched.
+It only puts the declared side in the shape the fix needs and stops the transient
+interning on the way.
+
+WRITTEN FROM READING, NOT MEASURED — no build was run for this entry.
+
