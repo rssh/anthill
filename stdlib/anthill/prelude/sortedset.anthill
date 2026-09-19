@@ -104,19 +104,41 @@
 --
 -- `Set` (`set.anthill`) demands `member` / `subset` / `intersection` / `difference` and
 -- an EXTENSIONAL `eq`, which is the equality this type deliberately does not have. The
--- `empty`/`insert`/`union` overlap is surface. Nor does this provide `Iterable` /
--- `FiniteCollection` / `PersistentCollection` — so no generic container consumer takes
--- a `SortedSet` yet. That is scope, not an oversight: proposal 058 phase 4's job is to
--- demonstrate that a NAMED requirement slot threads end to end, and every provision
--- added here is surface to keep in agreement with a comparator that is part of the
--- type. Use `toList` at the boundary.
+-- `empty`/`insert`/`union` overlap is surface.
+--
+-- ── THE GENERIC COLLECTION SURFACE (WI-456) ──────────────────────────────────────
+--
+-- `Iterable` / `FiniteCollection` / `PersistentCollection` ARE provided, and each head
+-- writes the ordering: `C = SortedSet[T = T, O = O]`. That is what makes a call through
+-- the spec keep the set's comparator —
+--
+--   PersistentCollection.insert(a, "zz")    -- `a: SortedSet[T = String, O = ByLength]`
+--
+-- — because the provision match binds `O` from `a`'s type, and the sub-goal for
+-- `requires O: WeakOrd[T]` is then pinned to it rather than searched. Before WI-456 that
+-- search tied among every `WeakOrd[String]` in scope, so the call was refused in exactly
+-- the programs this type exists for: the ones holding two orderings.
+--
+-- The specs' DEFAULT bodies (`size`, `foldLeft`, `isEmpty`, `find`, …) reach this sort's
+-- `collect` / `iterator` by VALUE, and a value carries no `O`. Neither reads it, so they
+-- run; an operation here that compares must stay reachable only through a TYPED call.
 enum anthill.prelude.SortedSet
-  import anthill.prelude.{WeakOrd, List}
+  import anthill.prelude.{WeakOrd, List, Stream, Iterable, FiniteCollection, PersistentCollection}
   import anthill.prelude.List.{nil, cons}
   import anthill.prelude.PartialOrd.{lt, gt}
 
   sort T = ?                                   -- element type
   requires O: WeakOrd[T]                       -- NAMED ⇒ a parameter of the type
+
+  -- Walked in ascending order under `O`: the materialized item list is the Stream.
+  provides Iterable[C = SortedSet[T = T, O = O], Element = T, E = {}]
+  operation iterator(s: SortedSet[T = T, O = O]) -> Stream[T = T, E = {}] = toList(s)
+
+  provides FiniteCollection[C = SortedSet[T = T, O = O], Element = T, E = {}]
+  operation collect(s: SortedSet[T = T, O = O]) -> List[T = T] = toList(s)
+
+  -- `empty` / `insert` below are the provision's operations.
+  provides PersistentCollection[C = SortedSet[T = T, O = O], Element = T]
 
   -- The items, ascending under `O` and duplicate-free. The invariant is maintained by
   -- `insert`, which is the only producer; the constructor is not meant to be applied

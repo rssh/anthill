@@ -1961,6 +1961,28 @@ declaration and write that name in the parameter's type
 (`first(s: SortedSet[T = E, O = OE])` under `requires OE: Ord[E]`), which is what
 makes the forwarded dictionary the value's own.
 
+**A written slot is read back on every route to the provider, not only at a direct
+call** (WI-456).  `SortedSet.insert(s, x)` reads `O` off `s`'s type; so does
+`PersistentCollection.insert(s, x)`, and so does a generic consumer whose `requires
+PersistentCollection[C = C, …]` is built at `s`'s type.  On those routes the callee is
+the spec's and names no slot, so the reading happens where the provider is chosen: a
+provision whose head writes the slot (`provides PersistentCollection[C = SortedSet[T =
+T, O = O], …]`) binds it in the match, and the sub-goal for `requires O: WeakOrd[T]` is
+**pinned** to that witness rather than searched.  A slot the carrier's type leaves
+unwritten is read exactly as the direct route reads it: forwarded from the caller when
+the signature declares it (`s: SortedSet[T = E, O = OE]` under `requires OE: …`), and
+otherwise **refused**, whatever the provider count — a sole provider would still answer
+for the signature and not for the value.  A concrete provider whose provision head does
+not write the slot cannot carry it there, and is refused naming the `O = O` to write.
+
+**At run time a named slot is never recovered from a value.**  A value names its sort and
+carries none of its type parameters, so a dispatch that has only the value — a spec's
+default body calling a sibling spec op, as `FiniteCollection.size`'s `collect(c)` does —
+cannot learn which provider the value's construction chose.  Where more than one could
+have been, the slot is recorded as **absent** rather than guessed: an operation that
+never reads it (`SortedSet.collect`) runs, and one that does is refused at the read,
+naming the cause.
+
 A **default** (§8.7) reaches a named slot exactly where the ladder above does, and the
 two readings split it the same way (WI-861, narrowed by WI-1094).  Where the binder is
 *unbound anywhere* — the construction case — the ladder is consulted **in full**, a

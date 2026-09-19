@@ -1297,8 +1297,9 @@ class BootstrapTest extends munit.FunSuite:
       s"the witness must reach the body as a `using` parameter:\n$src")
     // EVERY operation, not the ones a reader guesses need it: a sort-level `requires`
     // "supplies every body's evidence" (kernel §8.7), so the signature that omitted it
-    // would be the one an implementor cannot write. `SortedSet` has six.
-    assertEquals(src.linesIterator.count(_.contains("(using O)")), 6,
+    // would be the one an implementor cannot write. `SortedSet` has eight — WI-456 added
+    // `iterator` and `collect` with its `Iterable` / `FiniteCollection` provisions.
+    assertEquals(src.linesIterator.count(_.contains("(using O)")), 8,
       s"every operation of the sort takes the dictionary:\n$src")
     // The parameter is a BINDER here and an ARGUMENT at every use, so the bound must
     // appear on the declaration and nowhere else — `SortedSet[T, O <: Ord[T]]` in a
@@ -1318,9 +1319,11 @@ class BootstrapTest extends munit.FunSuite:
       s"a case that shadows its enum must name the parent qualified:\n$src")
 
     // DRIVEN, not read: the closure compiles. `Ord` and `List` are siblings, and
-    // their own closures come with them.
+    // their own closures come with them. WI-456: `iterator` returns a `Stream`, which
+    // brings `stream` and — as for the iterable closure — `iterable` and `combinators`.
     ScalaCompile.assertCompiles("sortedset.anthill's emission",
-      files ++ preludeClosure("ordered", "eq", "list", "option", "pair"))
+      files ++ preludeClosure("ordered", "eq", "list", "option", "pair", "iterable", "stream",
+        "combinators"))
 
     // WHAT THE SLOT COSTS A CONSUMER, stated because it is a limit and not a rule
     // (found in review): `SortedSet` is now published as a TWO-parameter type, so

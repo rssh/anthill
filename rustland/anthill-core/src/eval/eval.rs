@@ -2919,8 +2919,14 @@ impl Interpreter {
             }
             return Ok(incoming);
         }
-        match crate::kb::typing::resolve_bridge_requirements(&mut self.kb, impl_target, arg_values)
-        {
+        match crate::kb::typing::resolve_bridge_requirements(
+            &mut self.kb,
+            impl_target,
+            arg_values,
+            // WI-456 — this route enters the frame and runs the body; a named-slot tie is
+            // an absence the body may never read. See `NamedSlotTies`.
+            crate::kb::typing::NamedSlotTies::RecordAbsent,
+        ) {
             // No chain to supply: the pre-WI-822 behaviour for every leaf impl,
             // which is the overwhelming majority of value-directed dispatches.
             BridgeRequirements::NoneNeeded => Ok(incoming),

@@ -733,7 +733,12 @@ impl Interpreter {
             return self.invoke_op_with_requirements(sym, args, requirements);
         }
         let requirements =
-            match crate::kb::typing::resolve_bridge_requirements(&mut self.kb, sym, args) {
+            match crate::kb::typing::resolve_bridge_requirements(
+                &mut self.kb,
+                sym,
+                args,
+                crate::kb::typing::NamedSlotTies::Raise,
+            ) {
                 BridgeRequirements::NoneNeeded => smallvec::SmallVec::new(),
                 BridgeRequirements::Unresolvable { detail } => {
                     return Err(EvalError::Suspended {
@@ -1296,7 +1301,12 @@ impl Interpreter {
         let op_names: std::collections::HashSet<Symbol> =
             names[sort_len..].iter().copied().collect();
         let (parent, trees) =
-            match crate::kb::typing::resolve_bridge_requirements(&mut self.kb, op_sym, args) {
+            match crate::kb::typing::resolve_bridge_requirements(
+                &mut self.kb,
+                op_sym,
+                args,
+                crate::kb::typing::NamedSlotTies::Raise,
+            ) {
                 BridgeRequirements::Resolved(parent, trees) => (parent, trees),
                 // WI-1091 — A TIE IS RAISED, not entered-unsupplied, and this is the same
                 // rule `requirements_for_value_directed_impl` applies to the sort half

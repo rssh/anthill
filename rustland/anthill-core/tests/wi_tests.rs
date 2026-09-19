@@ -1000,6 +1000,8 @@ mod wi843_coexisting_instances_test;
 
 #[path = "include/wi844_sorted_set_driver_test.rs"]
 mod wi844_sorted_set_driver_test;
+#[path = "include/wi456_sorted_set_collection_test.rs"]
+mod wi456_sorted_set_collection_test;
 
 #[path = "include/wi1109_ordering_tower_test.rs"]
 mod wi1109_ordering_tower_test;
