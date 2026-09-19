@@ -3,9 +3,9 @@
 - id: WI-20260918-CKD4J-eq-derive-derives-nothing-for
 - created: 2026-09-18T15:26:56Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-18T15:26:56Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-19T21:18:28Z
 
 - acceptance: cargo-test
 
@@ -70,4 +70,8 @@ CORRECTION + DIRECTION (2026-09-19, user). Point (2) of the previous note was ov
 ### 2026-09-19T17:23:48Z — feedback — user
 
 PROGRESS (2026-09-19). Two prerequisites DELIVERED here: b0a0e89b (an operation-level requires answers a conditional provision's SUB-goal) and ec63f8b8 (a concrete dependency is no longer blamed on an unrelated `requires` by explain_dep_refusal; this was the List.nth / 55 stl-less unit tests failure). DECIDED (user, option a): `eq` over a container whose element has no PartialEq provision is REFUSED, as for Pair today. Known fallout to resolve with the derivation: 88 fixtures compare Option[anthill.reflect.Term] (an abstract `sort Term = ?` with no provisions), 7 abstract Option.T sites, and the 8 splitFirst stream laws. SCOPING moved to its own ticket WI-20260919-1Z3E7 (proposal 066, provision `where` blocks), which this ticket now depends on: a non-member body must not use a provision's condition. MEASURED: `Box3.inner` charged its callers for `PartialEq[T]`. STILL OPEN from the brainstorm: `requires Eq[X]` does not answer a `PartialEq[X]` sub-goal (a pinned gap for both spellings, wi_ckd4j_op_requires_subgoal_test); List.contains requires only Eq[T], so the derived PartialEq[List] :- PartialEq[T] will hit it. SIDE FINDING: a Float composite has no PartialEq at TYPING time, because eq_derive::run asserts its derived NonEq+PartialEq after the typer (`FE` in the Box3 probe was 'no impl provides PartialEq').
+
+### 2026-09-19T21:18:23Z — feedback — user
+
+DELIVERED (2026-09-19). 630c52da: eq_derive::derive_conditional_eq derives provides PartialEq[S] :- PartialEq[P…] / Eq[S] :- Eq[P…] for parametric composites (greatest fixpoint over full field types), and decides a composite's parametric field at concrete arguments through those conditions (Holder with Option[T = Int64]). Stdlib derives Option, List, Result, SortedSet; Pair skipped (spoken for). The five programs answer 1 with negative twins 0; List[Float] and Option[Float] still refused. Enabled by 1Z3E7 (a layout per provision: member-less rows put their conditions in no body frame, which removed the 511-test List.nth fallout). Fallout resolved: the 8 stream laws rewritten to <=> (binding) / === (test) guards — they predated the =/<=> split (user); rule-body PartialEq dispatch over a still-open type passes to runtime (WI-945 reasoning); test fixtures adjusted (wi_w1ykh to ===, wi224 local container, wi868 underivable Wrap, wi1098 expectations). NOT TAKEN: the NonEq mirror through a parametric field; the pinned Eq→PartialEq sub-goal gap (wi_ckd4j_op_requires_subgoal_test). cargo-test 7181/0, scaland 577+35+1/0.
 
