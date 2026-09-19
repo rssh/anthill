@@ -3,9 +3,9 @@
 - id: WI-20260918-R541X-a-body-read-of-a-type
 - created: 2026-09-18T12:52:18Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-09-18T12:52:18Z
+- status_at: 2026-09-19T13:25:44Z
 
 - acceptance: cargo-test
 
@@ -47,4 +47,10 @@ ALREADY SOLVED NEARBY, so this does not start from zero. WI-20260909-S8CBV / VVM
 ACCEPTANCE: every fixture above DRIVEN to the ground `Type` value -- `Boom`, `String`, `Box(V: String)`, `Box(V: Boom)`, `Crate(W: Boom)` -- through one and two generic levels; (D)'s fault asserted on a fixture that still cannot bind; and the controls named AT THEIR SITES as rows that pass either way BY DESIGN (the monomorphic site, the unwitnessed `none`, WI-708's whole-entry op parameter, RS2G4's receiver bracket, the expression form). Each positive row states which back-out turns it red. Full workspace green via rustland/scripts/test.sh.
 
 ADJACENT, NOT THIS TICKET: an UNDECLARED requirement over a rigid is not refused at load (`bad[Q](y: Q) -> Type = tagOf(y)` with no `requires`: one provider in the program and `bad(7)` answers `Boom`; several and it dies `DeferToRequirement: ... not bound`). Recorded as a cross-reference on WI-20260909-M8QWJ; it is the RIGID complement of delivered WI-1102.
+
+## Changes
+
+### 2026-09-19T13:25:39Z — feedback — user
+
+DELIVERED (A), (B), (D); (C) split to WI-20260919-891QP by decision (user, 2026-09-19). (A) two causes, not one: the sort-parameter loop skipped the enclosing operation's rigid (now rewritten like the op loop), AND a receiver-less member called under 'requires TypeTerm[T = P]' had NOTHING pin TypeTerm.T at all -- new binder bind_sort_params_from_sole_enclosing_requirement: exactly one clause over the callee's sort AND the call pins none of that sort's params (the second gate is measured: wi606, FiniteCollection.collect(rest) over a different carrier borrowed the clause's Element/E). /code-review found the sort-level clause half dropped at the channel (the sort's rigid rode out as a bare var); fixed inline by enclosing_sort_param_ref_rewrite, cross-sort callees only so WI-424 same-sort inheritance is untouched. (B) apply_enclosing_param_refs descends by type_head into Parameterized/Arrow/NamedTuple only -- never EffectsRows (row tail), neutral heads, or PolyType. (D) two halves: a bare head that is a type param and misses the channel, and a channel HIT whose value is itself Ref(<param>) the caller could not ground -> EvalError::UnboundTypeParam (bridge disposition Fault). FOUND, NOT FIXED: a receiver-less DEFAULTED spec member is typed as a plain call to the default, so a provider's override is never reached through the slot (Box overriding TypeTerm.valueOf as Option[T = V]: tagOfP(box(..)) still answered the default's Box(V: Boom)); that is why (C)'s fixtures moved to a body-less TypeTermB. Rows + measured back-outs: wi_r541x_body_read_of_type_param_test.
 
