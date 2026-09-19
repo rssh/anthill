@@ -43,6 +43,8 @@ mod wi_r541x_body_read_of_type_param_test;
 mod wi_bqhgd_override_requires_subset_probe_test;
 #[path = "include/wi_ckd4j_concrete_dep_cover_test.rs"]
 mod wi_ckd4j_concrete_dep_cover_test;
+#[path = "include/wi_1z3e7_provision_where_blocks_test.rs"]
+mod wi_1z3e7_provision_where_blocks_test;
 #[path = "include/wi_ckd4j_op_requires_subgoal_test.rs"]
 mod wi_ckd4j_op_requires_subgoal_test;
 

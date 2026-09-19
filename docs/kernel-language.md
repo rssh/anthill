@@ -5770,13 +5770,17 @@ The **return type** is now read by two rules, and they ask different questions. 
 **Conditional provisions (WI-869; proposal 058 §3.8, §4).** A provision may carry a `:- goals` tail that scopes its conditions to **that provision**:
 
 ```anthill
-provides PartialEq[Pair] :- PartialEq[A], PartialEq[B]
-provides Eq[Pair]        :- Eq[A], Eq[B]
+provides PartialEq[Pair] :- PartialEq[A], PartialEq[B] where
+  operation eq(a: Pair, b: Pair) -> Bool = …   -- reads PartialEq[A], PartialEq[B]
+end
+provides Eq[Pair]        :- Eq[A], Eq[B]      -- no members: the one-line clause
 ```
 
-Each goal is a spec instantiation over the declaring sort's own parameters (never an arrow, a tuple, or a value goal). The provision holds only where its goals resolve, so `Pair[Float, Int64]` has `PartialEq` and not `Eq`. Conditions do the same double duty a sort-level `requires` does: they *condition* the provision and they *are* the evidence that provision's member bodies dispatch through — `Pair.compare` reads `Ord[A]` from a slot only `provides Ord[Pair] :- Ord[A], Ord[B]` puts there.
+Each goal is a spec instantiation over the declaring sort's own parameters (never an arrow, a tuple, or a value goal). The provision holds only where its goals resolve, so `Pair[Float, Int64]` has `PartialEq` and not `Eq`. Conditions do the same double duty a sort-level `requires` does: they *condition* the provision and they *are* the evidence that provision's member bodies dispatch through — `Pair.compare` reads `WeakOrd[A]` from a slot only `provides WeakOrd[Pair] :- WeakOrd[A], WeakOrd[B]` puts there.
 
-A sort-level `requires` keeps its meaning (it conditions **every** provision, and supplies every body's evidence) and the two compose. The dictionary a carrier is laid out by is therefore its `requires` chain followed by its provisions' conditions, deduplicated — **one** slot set per sort, since a body is owned by the sort and not by a provision. Strictness is what varies: a slot is demanded at a dispatch when it is a sort-level `requires` or a condition of the provision being dispatched, and is otherwise left unfilled. Reading an unfilled slot is refused at the read, not silently answered — so a body may name evidence its provision did not earn, and finds out.
+**A provision's conditions are in scope exactly for the operations written in its `where` block** (proposal 066). The block — `provides X :- goals where … end`, or `where { … }` — holds operations only, each a member **the provided spec itself declares**; they remain ordinary operations of the carrier (`Pair.eq`), found by the same rules, and conform to the spec's signature unchanged. Every other body of the carrier sees only the sort-level `requires` and its own operation-level `requires`: reading a condition from outside its block is a load error naming the block, and so is reading a *sibling* provision's condition from inside one. A helper that needs a condition states it as its own `requires`. The one-line clause is a provision with no members of its own (backed by the spec's defaults, or by derived structure); its conditions reach no body. A block is admitted in a sort or enum body only, and `where` with no `:- goals` is legal.
+
+A sort-level `requires` keeps its meaning (it conditions **every** provision, and supplies every body's evidence) and the two compose. The dictionary a carrier is laid out by is therefore its `requires` chain followed by its provisions' conditions, deduplicated — **one** slot set per sort; a body's *scope* over it is what the block decides. Strictness at a dispatch varies the same way: a slot is demanded when it is a sort-level `requires` or a condition of the provision being dispatched, and is otherwise left unfilled. Reading an unfilled slot is refused at the read, not silently answered — reachable after the `where` rule only when one operation serves two specs that declare the same member, and is dispatched through the one whose block it is not written in.
 
 A condition **admits, it never ranks**: it shrinks where a provision applies, and provisions still applicable after their conditions resolve are settled by the ordinary dispatch ladder. A provider's conditions do not discharge the *spec's* own `requires`.
 

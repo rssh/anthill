@@ -20,11 +20,12 @@
 -- EQUALITY. So the chain had to carry the WEAKEST condition, and every stronger
 -- provision then over-claimed. That is what the per-clause form removes.
 --
--- THE CONDITIONS ARE ALSO THE EVIDENCE, exactly as a sort-level `requires` is: the
--- `eq` body dispatches its component compares through the `PartialEq` provision's
--- slots and `compare` through the `Ord` provision's. A slot belonging to a
--- SIBLING provision is present but unfilled at a dispatch that did not earn it, and
--- reading one is a loud refusal rather than a silent wrong answer.
+-- THE CONDITIONS ARE ALSO THE EVIDENCE, exactly as a sort-level `requires` is — but
+-- only for the members written in the provision's own `where` block (proposal 066):
+-- `eq` dispatches its component compares through the `PartialEq` provision's slots
+-- and `compare` through the `WeakOrd` provision's. A slot belonging to a SIBLING
+-- provision is out of scope for a body (a load error to read), and at runtime is
+-- present but unfilled at a dispatch that did not earn it (WI-869).
 --
 -- ── ONE OPERATION FOR THE WHOLE ORDERING SURFACE (WI-876) ───────────────────────
 --
@@ -73,28 +74,57 @@ enum anthill.prelude.Pair
   sort B = ?
   entity pair(fst: A, snd: B)
 
-  provides PartialEq[Pair]  :- PartialEq[A], PartialEq[B]
+  -- ── EACH CONDITIONED MEMBER IS WRITTEN IN ITS PROVISION (proposal 066) ─────────
+  --
+  -- A provision's `:- goals` are in scope for exactly the operations in its `where`
+  -- block. `eq` reads `PartialEq[A]`/`PartialEq[B]`, so it sits in the `PartialEq`
+  -- block; `compare` reads `WeakOrd[A]`/`WeakOrd[B]` and sits in the `WeakOrd` one. An
+  -- operation written OUTSIDE every block sees no condition at all — `fst`/`snd` read
+  -- none — and one that tried would be a load error, not a requirement silently
+  -- charged to its callers. `Eq`, `PartialOrd` and `Ord` have no members of their own
+  -- here (`PartialOrd`'s and `Ord`'s surface comes from the specs' defaults and from
+  -- `compare`), so they keep the one-line form.
+  --
+  -- `compare` ONCE, in `WeakOrd`, and not again under `Ord`: `Ord` declares no
+  -- operation — it is a conversion to `WeakOrd` (ordered.anthill) — so `compare` is
+  -- only ever dispatched as `WeakOrd.compare`, with `WeakOrd`'s slots filled.
+  -- MEASURED (2026-09-19): through a body that `requires Ord[T]`, `WeakOrd.compare` on
+  -- two pairs answers.
+
+  -- Component compares go through the SEMANTIC spec op `PartialEq.eq`, not through
+  -- structural unification, so equality dispatches all the way down — a pair of `Set`s
+  -- compares its component by MEMBERSHIP. Each call resolves through the matching
+  -- slot of this provision's own condition list.
+  provides PartialEq[Pair]  :- PartialEq[A], PartialEq[B] where
+    operation eq(a: Pair, b: Pair) -> Bool =
+      match a
+        case pair(al, ar) ->
+          match b
+            case pair(bl, br) ->
+              if PartialEq.eq(al, bl) then PartialEq.eq(ar, br) else false
+  end
   provides Eq[Pair]         :- Eq[A], Eq[B]
   provides PartialOrd[Pair] :- PartialOrd[A], PartialOrd[B]
   -- WI-1109: TWO conditional provisions, not one. A lexicographic `Pair` is a WEAK
   -- order iff both components are, and a STRONG one iff both are strong — strictly
   -- different conditions, which is exactly why 058 §3.8 puts a `:- goals` tail on the
   -- PROVISION and not on the sort. Same shape as the `PartialEq`/`Eq` pair above.
-  provides WeakOrd[Pair] :- WeakOrd[A], WeakOrd[B]
-  provides Ord[Pair]    :- Ord[A], Ord[B]
-
+  --
   -- Lexicographic `fst`-then-`snd`. The component compares go through the SEMANTIC
-  -- spec op `WeakOrd.compare`, resolving through the provision's condition
-  -- slots — so a pair of pairs orders recursively. The tie test is `PartialEq.eq` on
-  -- the `Int64` result and not an unqualified `eq`, which inside this sort would be
-  -- `Pair.eq` calling itself.
-  operation compare(a: Pair, b: Pair) -> Int64 =
-    match a
-      case pair(al, ar) ->
-        match b
-          case pair(bl, br) ->
-            let c = WeakOrd.compare(al, bl)
-            if PartialEq.eq(c, 0) then WeakOrd.compare(ar, br) else c
+  -- spec op `WeakOrd.compare`, resolving through this provision's condition slots — so
+  -- a pair of pairs orders recursively. The tie test is `PartialEq.eq` on the `Int64`
+  -- result and not an unqualified `eq`, which inside this sort would be `Pair.eq`
+  -- calling itself.
+  provides WeakOrd[Pair] :- WeakOrd[A], WeakOrd[B] where
+    operation compare(a: Pair, b: Pair) -> Int64 =
+      match a
+        case pair(al, ar) ->
+          match b
+            case pair(bl, br) ->
+              let c = WeakOrd.compare(al, bl)
+              if PartialEq.eq(c, 0) then WeakOrd.compare(ar, br) else c
+  end
+  provides Ord[Pair]    :- Ord[A], Ord[B]
 
   operation fst(p: Pair) -> A
   operation snd(p: Pair) -> B
@@ -104,15 +134,4 @@ enum anthill.prelude.Pair
   -- rules below remain as the de-facto implementation until the typer issue is fixed.
   rule fst(pair(?a, ?b)) <=> ?a
   rule snd(pair(?a, ?b)) <=> ?b
-
-  -- Component compares go through the SEMANTIC spec op `PartialEq.eq`, not through
-  -- structural unification, so equality dispatches all the way down — a pair of `Set`s
-  -- compares its component by MEMBERSHIP. Each call resolves through the matching
-  -- slot of the `PartialEq` provision's own condition list above.
-  operation eq(a: Pair, b: Pair) -> Bool =
-    match a
-      case pair(al, ar) ->
-        match b
-          case pair(bl, br) ->
-            if PartialEq.eq(al, bl) then PartialEq.eq(ar, br) else false
 end

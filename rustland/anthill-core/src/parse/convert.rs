@@ -744,6 +744,7 @@ impl<'a> Converter<'a> {
         match node.kind() {
             "effects_sort_item" => self.convert_effects_sort_item(node),
             "requires_declaration" => self.convert_requires_items(node, owner),
+            "provides_clause" => self.convert_provides_clause_items(node, owner),
             _ => self.convert_item(node).into_iter().collect(),
         }
     }
@@ -4703,6 +4704,7 @@ impl<'a> Converter<'a> {
             body,
             descriptions,
             meta,
+            provision: None,
             span,
         })
     }
@@ -5563,6 +5565,47 @@ impl<'a> Converter<'a> {
         MappingEntry { source, target }
     }
 
+    /// Proposal 066 — a `provides … where … end` clause fans out to the clause itself
+    /// followed by its member operations, each marked with the provision it belongs to
+    /// ([`Operation::provision`]). Admitted in a sort or enum body only: a member is an
+    /// operation OF THE CARRIER, and a namespace body has none to own it.
+    fn convert_provides_clause_items(&mut self, node: Node, owner: ItemOwner) -> Vec<Item> {
+        let Some(pc) = self.convert_provides_clause(node) else {
+            return Vec::new();
+        };
+        let Some(members) = self.field(node, "members") else {
+            return vec![Item::ProvidesClause(pc)];
+        };
+        if matches!(owner, ItemOwner::NotASort) {
+            self.err(
+                "a provision's `where` member block is admitted only in a sort or enum \
+                 body — its operations are the carrier's (proposal 066)"
+                    .to_string(),
+                members,
+            );
+            return vec![Item::ProvidesClause(pc)];
+        }
+        let mut items = Vec::new();
+        let mut cursor = members.walk();
+        for child in members.named_children(&mut cursor) {
+            match child.kind() {
+                "operation_declaration" => {
+                    if let Some(mut op) = self.convert_operation(child) {
+                        op.provision = Some(pc.spec.clone());
+                        items.push(Item::Operation(op));
+                    }
+                }
+                "line_comment" | "block_comment" => {}
+                other => self.err(
+                    format!("unexpected node in a provision's `where` block: {other}"),
+                    child,
+                ),
+            }
+        }
+        items.insert(0, Item::ProvidesClause(pc));
+        items
+    }
+
     fn convert_provides_clause(&mut self, node: Node) -> Option<ProvidesClause> {
         let spec = self.field(node, "spec").map(|n| self.convert_type(n))?;
         // WI-869 (058 §3.8): the `:- goals` tail. Its children are all NAMED (every
@@ -5618,6 +5661,16 @@ impl<'a> Converter<'a> {
                 }
                 // WI-862 (058 §4) — the non-deprecated spelling of a nested spec claim.
                 "provides_clause" => {
+                    // Proposal 066: a binding block opens the carrier's scope but holds
+                    // no operations, so a member block has nowhere to put its members.
+                    if let Some(members) = self.field(child, "members") {
+                        self.err(
+                            "a provision's `where` member block is not admitted inside a \
+                             `provides … language …` binding block (proposal 066)"
+                                .to_string(),
+                            members,
+                        );
+                    }
                     if let Some(pc) = self.convert_provides_clause(child) {
                         items.push(ProvidesItem::ProvidesClause(pc));
                     }

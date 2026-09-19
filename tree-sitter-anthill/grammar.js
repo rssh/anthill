@@ -1008,9 +1008,24 @@ module.exports = grammar({
       'provides',
       field('spec', $._spec_instantiation),
       optional(seq(':-', field('conditions', $.provides_conditions))),
+      optional(field('members', $.provides_members)),
     ),
 
     provides_conditions: $ => commaSep1($._spec_instantiation),
+
+    // Proposal 066 (WI-20260919-1Z3E7): a provision's MEMBER block. A provision's
+    // `:- goals` are in scope for exactly the operations written here, so a member
+    // reads its conditions without restating them (it conforms to the spec's signature
+    // unchanged) and no other body of the carrier can. `where` opens it because a bare
+    // `provides X :- g … end` would leave `end` closing either the block or the sort.
+    // The two body forms of a sort body; OPERATIONS ONLY (066 §3).
+    provides_members: $ => seq(
+      'where',
+      choice(
+        seq('{', repeat($.operation_declaration), '}'),
+        seq(repeat($.operation_declaration), 'end'),
+      ),
+    ),
 
     provides_block: $ => seq(
       repeat(field('description', $.description_block)),

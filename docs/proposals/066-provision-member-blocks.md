@@ -1,6 +1,6 @@
 # 066: Provision blocks — a conditional provision's members are written inside it
 
-## Status: PROPOSED (2026-09-19). Decided in discussion on WI-20260918-CKD4J, including the keyword (`where`, §3).
+## Status: DELIVERED (2026-09-19, WI-20260919-1Z3E7) — the scoping rule, the syntax, the `Pair` migration. Decided in discussion on WI-20260918-CKD4J, including the keyword (`where`, §3). The per-provision LAYOUT (§2's "possible later") is the next step, agreed 2026-09-19.
 
 ## Amends: [058](058-modular-instances.md) §3.8 (conditional provisions — WHO may read a condition) and §4 (syntax). `docs/kernel-language.md` §8.7 ("Conditional provisions").
 
@@ -67,7 +67,8 @@ provides PartialEq[Pair] :- PartialEq[A], PartialEq[B] where {
 }
 ```
 
-- **The block admits operations only.** A provision's facts, rules and nested provisions are written as they are today; widening the item set is a separate decision.
+- **The block admits operations only**, and each must be an operation the provided spec itself declares (§5 Q2, decided: a helper goes outside with its own `requires`). A provision's facts, rules and nested provisions are written as they are today; widening the item set is a separate decision.
+- **In a sort or enum body only.** A namespace body and a `provides … language …` binding block have no carrier to own the operations; a block there is a parse error.
 - **`where` without `:- goals` is legal**, and means a provision whose members are grouped with it but which has no conditions to scope. It reads the same as writing the operations outside, and exists so that adding a condition later does not move code.
 - **Not the proposal-038 block.** `provides Spec language L … end` is a standalone binding block that opens the carrier's scope. The two share `provides … end`, but the new block has `where` where that one has `language`, so they never collide.
 
@@ -75,7 +76,14 @@ provides PartialEq[Pair] :- PartialEq[A], PartialEq[B] where {
 
 `pair.anthill` is the only conditional provider in the corpus. `eq` moves into the `PartialEq` block. `compare` is the member of `WeakOrd` and moves into that block. The `Eq`, `PartialOrd` and `Ord` provisions keep the one-line form.
 
-## 5. Open questions
+## 5. Open questions — answered
 
-1. **One operation serving two provisions.** `Pair.compare` is dispatched through both `WeakOrd[Pair] :- WeakOrd[A], WeakOrd[B]` and `Ord[Pair] :- Ord[A], Ord[B]`. Written once, in the `WeakOrd` block, it reads `WeakOrd[A]` evidence. When it is dispatched through `Ord`, is the `WeakOrd[A]` slot filled from `Ord[A]` (which provides it), or does the operation have to be written in both blocks? This needs measuring against WI-869's mask before the migration.
-2. **Helpers.** A private helper called by a block member, which uses the condition, is outside the block. It needs its own operation-level `requires` (supported since CKD4J's sub-goal fix), or the block admits non-member operations as well. The first option keeps "block = members" exact.
+1. **One operation serving two provisions.** ANSWERED (measured, 2026-09-19): `Ord` declares no operation — it is a conversion to `WeakOrd` — so `compare` is only ever dispatched as `WeakOrd.compare`, with `WeakOrd`'s slots filled, including through a body that `requires Ord[T]`. Written once, in the `WeakOrd` block. The case the question feared is real only for an operation that serves two specs DECLARING the same member; there the dispatch through the other spec leaves the block's slots unfilled and the read is refused at eval (WI-865's message), pinned in `wi869_per_provision_conditions_test::a_member_dispatched_through_another_spec_is_refused_at_eval`.
+2. **Helpers.** DECIDED: the block holds the provided spec's own members only (a loud load error otherwise); a helper states its own operation-level `requires` (supported since CKD4J's sub-goal fix), which answers both a component compare and a whole-carrier compare whose condition is a sub-goal.
+
+## 6. Implementation (WI-20260919-1Z3E7)
+
+- **Grammar**: `provides_members` on `provides_clause`; the converter flattens a block into carrier operations marked with `Operation::provision`, refusing it outside a sort/enum body.
+- **Loader**: one `anthill.reflect.ProvisionMemberInfo(operation, provided)` fact per member; the spec-membership check.
+- **Typer**: `ProviderDictChain::hidden_from_body` marks the condition slots a body may not resolve against; the mask rides on the body's `DictChain` (`hides`/`hidden`) and in `ResolutionScope::hidden`, and every cover decision — the scope lookup, the defer triggers, the forwarding strategies, the refusal explainer — skips a hidden slot, while every layout reader sees the chain unchanged. A refused spec-op call whose evidence is a hidden condition gets its own diagnostic naming the block (`TypeError::ProvisionConditionOutOfScope`).
+- **Migration**: `pair.anthill` (`eq` in the `PartialEq` block, `compare` in the `WeakOrd` block), and the conditional fixtures of `wi869`, `wi1093`, `nar1x`.

@@ -125,22 +125,23 @@ namespace wi1093.tower
   enum Wrap
     sort E = ?
     entity wrap(inner: E)
-    provides Base[T = Wrap] :- Base[T = E]
-    provides Sp[T = Wrap]   :- Sp[T = E]
-    operation base(x: Wrap) -> Int64 = match x case wrap(i) -> Base.base(i)
-    -- Reads the `Sp[Wrap]` provision's OWN CONDITION slot — the ELEMENT's dictionary.
-    -- Its own provision's, not a sibling's: 058 §3.8 makes a slot belonging to a
-    -- SIBLING provision present-but-unfilled at a dispatch that did not earn it, so
-    -- `Base.base(i)` here would be a legitimate refusal and not this ticket's defect.
-    -- This is exactly `Pair.compare`'s `WeakOrd.compare(al, bl)`.
-    --
-    -- THE CARRIER'S RIVAL ANSWER, so 10-vs-20 names which dictionary was read.
-    operation mark() -> Int64 = 20
-    -- THE MEASUREMENT. `Sp.mark()` takes NO receiver, so no value can direct it and the
-    -- answer can only come from the `Sp[E]` condition slot of this carrier's OWN
-    -- provision — the ELEMENT's dictionary. 10 = the element's, 20 = this carrier's own
-    -- (the wrong one), a raise = none at all.
-    operation rank(x: Wrap) -> Int64 = Sp.mark()
+    provides Base[T = Wrap] :- Base[T = E] where
+      operation base(x: Wrap) -> Int64 = match x case wrap(i) -> Base.base(i)
+    end
+    -- `rank` reads the `Sp[Wrap]` provision's OWN CONDITION slot — the ELEMENT's
+    -- dictionary — so it is written in that provision's `where` block (proposal 066).
+    -- Its own provision's, not a sibling's: `Base.base(i)` here would be out of scope
+    -- for the body, and not this ticket's defect. This is exactly `Pair.compare`'s
+    -- `WeakOrd.compare(al, bl)`.
+    provides Sp[T = Wrap]   :- Sp[T = E] where
+      -- THE CARRIER'S RIVAL ANSWER, so 10-vs-20 names which dictionary was read.
+      operation mark() -> Int64 = 20
+      -- THE MEASUREMENT. `Sp.mark()` takes NO receiver, so no value can direct it and
+      -- the answer can only come from the `Sp[E]` condition slot of this carrier's OWN
+      -- provision — the ELEMENT's dictionary. 10 = the element's, 20 = this carrier's
+      -- own (the wrong one), a raise = none at all.
+      operation rank(x: Wrap) -> Int64 = Sp.mark()
+    end
   end
 
   sort Driver

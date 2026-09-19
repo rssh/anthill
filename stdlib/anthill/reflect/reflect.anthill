@@ -1020,6 +1020,18 @@ namespace anthill.reflect
     clause    : Int64                               -- which `provides` clause
   )
 
+  -- ProvisionMemberInfo: an operation written inside a provision's `where` member
+  -- block (proposal 066, WI-20260919-1Z3E7). A member is an ordinary operation of
+  -- the carrier; this row is the whole trace of the block, and it is what puts the
+  -- provision's `:- goals` (its ProvidesConditionInfo rows) in scope for the
+  -- member's body — and, by its absence, keeps them out of every other body.
+  -- `provided` is the provided spec as a plain sort reference: the typer scopes a
+  -- condition by the base of the provision that declared it (WI-869's owners).
+  entity ProvisionMemberInfo(
+    operation : Term,                               -- the member operation
+    provided  : Term                                -- the provision's spec (base sort)
+  )
+
   -- ================================================================
   -- Typing rules (see typing.anthill for active rules)
   -- ================================================================

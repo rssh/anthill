@@ -321,9 +321,10 @@ fn the_selected_impls_own_requirement_is_filled_from_the_dictionary() {
     import anthill.prelude.Int64
     sort E = ?
     entity wrap(inner: E)
-    provides Zeroable[T = Wrap] :- Zeroable[E]
-    operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
-    operation tag(x: Wrap) -> Int64 = 9
+    provides Zeroable[T = Wrap] :- Zeroable[E] where
+      operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
+      operation tag(x: Wrap) -> Int64 = 9
+    end
   end
   rule via(?x, ?r) :- require[Zeroable[T]], Zeroable.tag(?x, ?t), Zeroable.zero(?r)
   rule answer(?r) :- via(wrap(inner: sum()), ?r)
@@ -372,9 +373,10 @@ fn the_filled_requirement_follows_the_element_and_is_not_a_constant() {
     import anthill.prelude.Int64
     sort E = ?
     entity wrap(inner: E)
-    provides Zeroable[T = Wrap] :- Zeroable[E]
-    operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
-    operation tag(x: Wrap) -> Int64 = 9
+    provides Zeroable[T = Wrap] :- Zeroable[E] where
+      operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
+      operation tag(x: Wrap) -> Int64 = 9
+    end
   end
   rule via(?x, ?r) :- require[Zeroable[T]], Zeroable.tag(?x, ?t), Zeroable.zero(?r)
   rule answer(?r) :- via(wrap(inner: {elem}), ?r)
@@ -533,9 +535,10 @@ fn a_dictionary_crossing_a_rule_head_is_read_on_its_own_carrier() {
     import anthill.prelude.Int64
     sort E = ?
     entity wrap(inner: E)
-    provides Zeroable[T = Wrap] :- Zeroable[E]
-    operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
-    operation tag(x: Wrap) -> Int64 = 9
+    provides Zeroable[T = Wrap] :- Zeroable[E] where
+      operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
+      operation tag(x: Wrap) -> Int64 = 9
+    end
   end
   rule get(?x, ?d) :- ?d = require[Zeroable[T]], Zeroable.tag(?x, ?t)
   rule use(?x, ?d, ?r) :- ?d = require[Zeroable[T]], Zeroable.tag(?x, ?u), Zeroable.zero(?r)

@@ -554,6 +554,21 @@ pub enum TypeError {
         spec_sort_sym: Symbol,
         abstract_params: SmallVec<[Symbol; 2]>,
     },
+    /// Proposal 066 (WI-20260919-1Z3E7) — [`Self::MissingRequiresForSpecOp`] where the
+    /// carrier DOES hold the evidence, as a condition of one of its provisions, and the
+    /// body is not written in that provision's `where` block. The same refusal, told
+    /// the way the author can act on: the repair is to move the operation into the
+    /// block (or give it its own `requires`), not to add a sort-level `requires` that
+    /// would condition every provision of the carrier.
+    ProvisionConditionOutOfScope {
+        span: Option<Span>,
+        /// The operation whose body made the call.
+        op: Symbol,
+        spec_op_sym: Symbol,
+        spec_sort_sym: Symbol,
+        /// The provisions (base specs) whose `:- goals` hold a `spec_sort_sym` condition.
+        provisions: SmallVec<[Symbol; 2]>,
+    },
     /// WI-20260917-NR6FJ — a rule body CALLS an operation whose declared `requires`
     /// names a CONCRETE carrier that provides no such spec, and this clause neither
     /// declares the obligation itself.
@@ -1365,6 +1380,31 @@ impl TypeError {
                     params_list.join(", "),
                 )
             }
+            TypeError::ProvisionConditionOutOfScope {
+                op,
+                spec_op_sym,
+                spec_sort_sym,
+                provisions,
+                ..
+            } => {
+                let spec_short = short_name_of(kb.qualified_name_of(*spec_sort_sym)).to_string();
+                let blocks: Vec<String> = provisions
+                    .iter()
+                    .map(|p| format!("`provides {}[…] :- … where … end`", short_name_of(kb.qualified_name_of(*p))))
+                    .collect();
+                format!(
+                    "`{}` calls `{}`, whose `{}` evidence is a condition of {} — and a \
+                     provision's conditions are in scope only for the operations written in \
+                     its `where` block (proposal 066). Move `{}` into that block, or give it \
+                     its own `requires {}[…]`",
+                    kb.qualified_name_of(*op),
+                    kb.qualified_name_of(*spec_op_sym),
+                    spec_short,
+                    blocks.join(" or "),
+                    short_name_of(kb.qualified_name_of(*op)),
+                    spec_short,
+                )
+            }
             TypeError::UnfillableOperationRequirement {
                 callee_op,
                 spec_sort_sym,
@@ -1574,6 +1614,7 @@ impl TypeError {
             | TypeError::InvalidTypeArgument { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
+            | TypeError::ProvisionConditionOutOfScope { span, .. }
             | TypeError::UnsatisfiableRequirement { span, .. }
             | TypeError::NonBoolOpInGoalPosition { span, .. }
             | TypeError::ConstantInGoalPosition { span, .. }
@@ -1963,6 +2004,19 @@ impl TypeError {
                         spec_short
                     ),
                     actual_type: suggestion,
+                    span: self.span(kb),
+                }
+            }
+            TypeError::ProvisionConditionOutOfScope { op, spec_sort_sym, .. } => {
+                LoadError::TypeMismatch {
+                    origin: None,
+                    entity_name: kb.qualified_name_of(*op).to_string(),
+                    field_name: "requires".to_string(),
+                    expected_type: format!(
+                        "`{}` evidence in scope for this body",
+                        short_name_of(kb.qualified_name_of(*spec_sort_sym)),
+                    ),
+                    actual_type: self.format(kb),
                     span: self.span(kb),
                 }
             }
@@ -2553,6 +2607,13 @@ impl TypingEnv {
     /// Must run AFTER [`Self::set_enclosing_sort`], which installs the sort half.
     pub fn set_enclosing_op(&mut self, kb: &mut KnowledgeBase, op_sym: Symbol) {
         self.enclosing_op = Some(op_sym);
+        // Proposal 066: the body sees its OWN provision's conditions, if it is written
+        // in a provision's `where` block, and no other provision's.
+        if let Some(sort) = self.enclosing_sort {
+            let hidden = provider_dict_chain(kb, sort)
+                .hidden_from_body(kb, provision_member_of(kb, op_sym));
+            self.enclosing_chain = self.enclosing_chain.clone().with_hidden(hidden);
+        }
         // The LICENCE reads every clause the operation wrote — [`op_requires_covers`]
         // walks `required_sort`s looking for spec reachability, and a value
         // precondition simply reaches nothing. The SLOTS read only the spec ones
@@ -2565,7 +2626,8 @@ impl TypingEnv {
             self.enclosing_op_chain = None;
             return;
         }
-        self.enclosing_op_chain = Some(op_dict_entries(kb, op_sym));
+        self.enclosing_op_chain =
+            Some(op_dict_entries(kb, op_sym).with_hidden(self.enclosing_chain.hidden().to_vec()));
     }
 
     fn op_requires(&self) -> &[RequiresEntry] {
@@ -2655,8 +2717,15 @@ impl TypingEnv {
     /// one left.
     pub fn set_enclosing_sort(&mut self, kb: &mut KnowledgeBase, sort: Option<Symbol>) {
         self.enclosing_sort = sort;
+        // Proposal 066: until [`Self::set_enclosing_op`] names a provision the body is a
+        // member of, EVERY provision's conditions are hidden — the safe default, so a
+        // body checked with a sort and no operation cannot read a condition it owns
+        // nothing of.
         self.enclosing_chain = match sort {
-            Some(s) => provider_dict_entries(kb, s),
+            Some(s) => {
+                let hidden = provider_dict_chain(kb, s).hidden_from_body(kb, None);
+                provider_dict_entries(kb, s).with_hidden(hidden)
+            }
             None => DictChain::empty(),
         };
     }
@@ -12288,7 +12357,12 @@ fn constraining_specs_for_param(
             op_requires_entry_carrier_map(kb, &e),
         ));
     }
-    for e in env.enclosing_requires().to_vec() {
+    // Proposal 066: another provision's condition constrains nothing in this body.
+    let hidden = env.enclosing_dict_chain().hidden().to_vec();
+    for (i, e) in env.enclosing_requires().to_vec().into_iter().enumerate() {
+        if hidden.get(i).copied().unwrap_or(false) {
+            continue;
+        }
         states.push((
             kb.canonical_sort_sym(e.required_sort),
             compose_reached_carrier_map(kb, &[], &e),
@@ -20037,6 +20111,7 @@ fn check_apply_iter(
                         Some(&dispatch_sigma),
                         &selections,
                         env.sub_goal_requires(),
+                        env.enclosing_dict_chain().hidden(),
                     );
                     classify_pin_or_apply_within(
                         kb,
@@ -20102,6 +20177,7 @@ fn check_apply_iter(
                     sigma: Some(&dispatch_sigma),
                     selected: &selections,
                     sub_goal_requires: &[],
+                    hidden: env.enclosing_dict_chain().hidden(),
                 };
                 // WI-1091 — `Conditional` ONLY, where WI-1093's draft took `Leaf` too.
                 // The defect is precisely that the WI-415 parent bundle carries the
@@ -20611,6 +20687,7 @@ fn check_apply_iter(
                 Some(&dispatch_sigma),
                 &selections,
                 env.sub_goal_requires(),
+                env.enclosing_dict_chain().hidden(),
             );
             // WI-508: a NULLARY spec op (`new() -> C`, carrier only in the
             // RESULT) gets no carrier from value args, so value-directed
@@ -21230,6 +21307,7 @@ fn check_apply_iter(
                         &subst,
                         spec_sort,
                         enclosing_requires,
+                        env.enclosing_dict_chain().hidden(),
                         Some(&sigma_ctx),
                     ) {
                         // WI-232: capture the matched entry so
@@ -22740,10 +22818,13 @@ fn carrier_from_declared_slot(
     // operations and must not be paid by a call with no slot at all. The surrounding
     // block already reaches `type_params_of_sort` four times per call (see the WI-1042
     // note at its head) — this must not be a fifth for the common case.
-    let entries = env.enclosing_frame_chain().entries();
+    let chain = env.enclosing_frame_chain();
+    let entries = chain.entries();
+    // Proposal 066: a hidden slot (another provision's condition) is not in scope.
     if !entries
         .iter()
-        .any(|e| kb.canonical_sort_sym(e.required_sort) == canon_spec)
+        .enumerate()
+        .any(|(i, e)| !chain.hides(i) && kb.canonical_sort_sym(e.required_sort) == canon_spec)
     {
         return None;
     }
@@ -22753,8 +22834,8 @@ fn carrier_from_declared_slot(
     // same reason one lookup over.
     let spec_carrier_param = spec_carrier_param_or_sole(kb, canon_spec)?;
     let mut found: Option<Symbol> = None;
-    for entry in entries {
-        if kb.canonical_sort_sym(entry.required_sort) != canon_spec {
+    for (i, entry) in entries.iter().enumerate() {
+        if chain.hides(i) || kb.canonical_sort_sym(entry.required_sort) != canon_spec {
             continue;
         }
         let Some((_, base)) = provision_binding_at_param(kb, spec_carrier_param, &entry.spec)
@@ -24342,6 +24423,9 @@ fn explain_dep_refusal(
     kb: &mut KnowledgeBase,
     dep: &RequiresEntry,
     caller_requires: &[RequiresEntry],
+    // Proposal 066 — [`DictChain::hidden`]: a hidden slot covers nothing, so it is
+    // never the entry a refusal blames.
+    caller_hidden: &[bool],
     caller_sub_chains: &[Vec<RequiresEntry>],
     ctx: &SigmaCtx,
     s3_failure: Option<ResolutionResult>,
@@ -24363,13 +24447,20 @@ fn explain_dep_refusal(
     let caller_requires: &[RequiresEntry] = if dep_is_concrete { &[] } else { caller_requires };
     let caller_sub_chains: &[Vec<RequiresEntry>] =
         if dep_is_concrete { &[] } else { caller_sub_chains };
+    let hidden = |i: usize| caller_hidden.get(i).copied().unwrap_or(false);
     let mut refused_entries: Vec<RequiresEntry> = Vec::new();
-    for entry in caller_requires {
-        if entries_cover(kb, entry, dep, None) && !entries_cover(kb, entry, dep, Some(ctx)) {
+    for (i, entry) in caller_requires.iter().enumerate() {
+        if !hidden(i)
+            && entries_cover(kb, entry, dep, None)
+            && !entries_cover(kb, entry, dep, Some(ctx))
+        {
             refused_entries.push(entry.clone());
         }
     }
     for (i, sub_chain) in caller_sub_chains.iter().enumerate() {
+        if hidden(i) {
+            continue;
+        }
         let mut slot_map: Option<HashMap<Symbol, TermId>> = None;
         for sub in sub_chain {
             if !same_sort_canonical(kb, sub.required_sort, dep.required_sort) {
@@ -24541,6 +24632,7 @@ fn build_dispatching_dict_from_chain(
                         kb,
                         dep,
                         caller_requires,
+                        caller_requires.hidden(),
                         &caller_sub_chains,
                         ctx,
                         s3_failure.clone(),
@@ -25450,7 +25542,10 @@ pub fn build_dep_projection(
     let chosen = if pinned {
         None
     } else {
-        (0..caller_requires.len()).find(|&i| entries_cover(kb, &caller_requires[i], dep, disambig))
+        // Proposal 066: a hidden slot (another provision's condition) forwards nothing.
+        (0..caller_requires.len()).find(|&i| {
+            !caller_requires.hides(i) && entries_cover(kb, &caller_requires[i], dep, disambig)
+        })
     };
     if let Some(i) = chosen {
         let name = caller_requires.name_at(kb, i)?;
@@ -25469,6 +25564,10 @@ pub fn build_dep_projection(
     // mid-loop" and invite real work above it.
     let s2_chains: &[Vec<RequiresEntry>] = if pinned { &[] } else { caller_sub_chains };
     for (i, sub_chain) in s2_chains.iter().enumerate() {
+        // Proposal 066: nor does anything projected out of one.
+        if caller_requires.hides(i) {
+            continue;
+        }
         // WI-613/WI-821: same σ-class gate as Strategy 1 (same predicate). A
         // sub-chain entry is written in the SLOT sort's own param space
         // (`direct_requires_chain(slot)` roots at the slot — `Eq[T = Eq.T]`
@@ -25528,6 +25627,7 @@ pub fn build_dep_projection(
         sigma: disambig,
         selected,
         sub_goal_requires: &[],
+        hidden: caller_requires.hidden(),
     };
     match resolve_with_rung(kb, &goal, &scope, rung) {
         ResolutionResult::Resolved(tree) => {
@@ -26761,6 +26861,7 @@ pub(crate) fn resolve_bridge_requirements(
             sigma: None,
             selected: &[],
             sub_goal_requires: &[],
+            hidden: &[],
         };
         // WI-861 — the chain's two halves have two OWNERS ([`dict_layout`]): the sort's
         // slots then the operation's, so the named-slot question is asked of whichever
@@ -28695,6 +28796,7 @@ fn infer_named_slot_bindings(
                     }),
                     selected,
                     sub_goal_requires: &[],
+                    hidden: caller_requires.hidden(),
                 };
                 let Some(provider) = (match resolve(kb, &goal, &scope) {
                     ResolutionResult::Resolved(tree) => tree.impl_sort(),
@@ -28737,6 +28839,7 @@ fn infer_named_slot_bindings(
                         }),
                         selected,
                         sub_goal_requires: &[],
+                        hidden: &[],
                     };
                     match resolve(kb, &goal, &scope) {
                         ResolutionResult::Resolved(tree) => tree.impl_sort(),
@@ -30677,6 +30780,8 @@ pub fn find_requires_slot(
     subst: &Substitution,
     spec_sort: Symbol,
     chain: &[RequiresEntry],
+    // Proposal 066 — [`ResolutionScope::hidden`]: a hidden slot is not a cover.
+    hidden: &[bool],
     disambig: Option<&SigmaCtx>,
 ) -> Option<usize> {
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
@@ -30694,7 +30799,9 @@ pub fn find_requires_slot(
         .iter()
         .enumerate()
         .filter_map(|(i, entry)| {
-            if !entry_matches_subst(kb, subst, spec_sort, &spec_qn, entry) {
+            if hidden.get(i).copied().unwrap_or(false)
+                || !entry_matches_subst(kb, subst, spec_sort, &spec_qn, entry)
+            {
                 return None;
             }
             let v = disambig.map_or(SigmaVerdict::Vacuous, |ctx| {
@@ -31294,6 +31401,12 @@ pub struct ResolutionScope<'a> {
     /// without this `requires PartialEq[X]` on the operation was invisible to it and
     /// the call was refused while the sort-level spelling of the same program loaded.
     pub sub_goal_requires: &'a [RequiresEntry],
+    /// Proposal 066 (WI-20260919-1Z3E7) — a parallel PREFIX of `available_requires`:
+    /// `true` marks a slot the body may not resolve against (another provision's `:-
+    /// goals`, [`ProviderDictChain::hidden_from_body`]). It keeps its index — the
+    /// frame layout is per sort — and never answers a goal. Empty hides nothing, which
+    /// is every scope that is not a body's own.
+    pub hidden: &'a [bool],
 }
 
 /// The synthesized resolution chain. Returned to the requirement-
@@ -31646,6 +31759,10 @@ fn resolve_inner<'a>(
     };
     for (i, ar) in scope_entries.iter().enumerate() {
         if ar.required_sort != goal.spec_sort {
+            continue;
+        }
+        // Proposal 066: another provision's condition is in the frame, not in scope.
+        if scope.hidden.get(i).copied().unwrap_or(false) {
             continue;
         }
         // WI-821: with a call-site σ in hand, a scope entry covers only on
@@ -42713,10 +42830,13 @@ fn bind_sort_params_from_sole_enclosing_requirement(
         return;
     }
     let spec_canon = kb.canonical_sort_sym(spec);
+    // Proposal 066: a hidden slot (another provision's condition) is not in scope.
     let mut over_spec = chain
         .entries()
         .iter()
-        .filter(|e| kb.canonical_sort_sym(e.required_sort) == spec_canon);
+        .enumerate()
+        .filter(|(i, e)| !chain.hides(*i) && kb.canonical_sort_sym(e.required_sort) == spec_canon)
+        .map(|(_, e)| e);
     let Some(entry) = over_spec.next().cloned() else {
         return;
     };
@@ -44101,6 +44221,7 @@ pub fn dispatch_spec_op_with_tree(
         None,
         &[],
         &[],
+        &[],
     )
 }
 
@@ -44158,6 +44279,10 @@ pub fn dispatch_spec_op_cached(
     // WI-20260918-CKD4J — the enclosing operation's own `requires`, for SUB-goals only
     // ([`ResolutionScope::sub_goal_requires`]). In the memo key: it changes the answer.
     sub_goal_requires: &[RequiresEntry],
+    // Proposal 066 — [`ResolutionScope::hidden`] over `enclosing_requires`. In the memo
+    // key too: a member and a non-member body of one carrier share a chain and must
+    // not share an answer.
+    hidden: &[bool],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     // Direct defer trigger: a spec that is a *direct* `requires` of the
     // enclosing sort (i.e. present in `enclosing_requires`) is dispatched
@@ -44179,7 +44304,7 @@ pub fn dispatch_spec_op_cached(
     let pinned_here = pinned_witness_for(kb, selected, spec_sort).is_some();
     if !pinned_here
         && !enclosing_requires.is_empty()
-        && find_requires_slot(kb, subst, spec_sort, enclosing_requires, disambig).is_some()
+        && find_requires_slot(kb, subst, spec_sort, enclosing_requires, hidden, disambig).is_some()
     {
         return (DispatchOutcome::Deferred, None);
     }
@@ -44231,6 +44356,7 @@ pub fn dispatch_spec_op_cached(
         disambig.is_some(),
         selected.to_vec(),
         sub_goal_requires.to_vec(),
+        hidden.to_vec(),
     );
     if cacheable {
         if let Some(cached) = kb.resolve_cache.borrow().get(&key) {
@@ -44245,6 +44371,7 @@ pub fn dispatch_spec_op_cached(
         disambig,
         selected,
         sub_goal_requires,
+        hidden,
     );
     if cacheable {
         kb.resolve_cache.borrow_mut().insert(key, result.clone());
@@ -44273,12 +44400,15 @@ fn resolve_at_goal(
     selected: &[InstanceSelection],
     // WI-20260918-CKD4J — [`ResolutionScope::sub_goal_requires`].
     sub_goal_requires: &[RequiresEntry],
+    // Proposal 066 — [`ResolutionScope::hidden`].
+    hidden: &[bool],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     let scope = ResolutionScope {
         available_requires: enclosing_requires,
         sigma: disambig,
         selected,
         sub_goal_requires,
+        hidden,
     };
 
     // No matching candidate ⇒ NoCandidates (permissive fall-through).
@@ -44294,8 +44424,9 @@ fn resolve_at_goal(
     // caller applied is not re-widened here.
     let candidates = collect_provides_candidates(kb, &goal, disambig);
     if candidates.is_empty() {
-        for ar in scope.available_requires {
+        for (i, ar) in scope.available_requires.iter().enumerate() {
             if ar.required_sort == goal.spec_sort
+                && !scope.hidden.get(i).copied().unwrap_or(false)
                 && requires_entry_covers_goal(kb, ar, &goal, disambig)
             {
                 return (DispatchOutcome::Deferred, None);
@@ -62925,6 +63056,101 @@ impl ProviderDictChain {
     }
 }
 
+impl ProviderDictChain {
+    /// Proposal 066 (WI-20260919-1Z3E7) — per slot: is it HIDDEN from the body of an
+    /// operation that is a member of `member_of`'s provision (`None`: of no provision)?
+    ///
+    /// A provision's `:- goals` are in scope exactly for the operations written in its
+    /// `where` block. So a slot is hidden when it is a provision CONDITION (a non-empty
+    /// owner list — a sort-level `requires` conditions every provision and is never
+    /// hidden) and the body is not a member of any provision that declared it.
+    ///
+    /// HIDDEN IS NOT REMOVED. The slot keeps its index and its name — the frame layout
+    /// is per sort (066 §2) — so a hidden slot is still forwarded wherever the frame is;
+    /// what it loses is the right to ANSWER a goal the body makes. Every cover decision
+    /// over a body's chain reads this mask; nothing that lays a dictionary out does.
+    ///
+    /// EMPTY for a carrier with no conditional provision, which hides nothing — the
+    /// same no-cost reading [`Self::strict_mask`] gives the universal case.
+    fn hidden_from_body(&self, kb: &KnowledgeBase, member_of: Option<Symbol>) -> Vec<bool> {
+        if self.conditions_for.is_empty() {
+            return Vec::new();
+        }
+        let member_canon = member_of.map(|p| kb.canonical_sort_sym(p));
+        self.conditions_for
+            .iter()
+            .map(|owners| {
+                !owners.is_empty()
+                    && !member_canon
+                        .is_some_and(|p| owners.iter().any(|s| kb.canonical_sort_sym(*s) == p))
+            })
+            .collect()
+    }
+}
+
+/// Proposal 066 — the provisions of `op_sym`'s carrier holding a `spec_sort` condition
+/// that is HIDDEN from `op_sym`'s body: the evidence the body would have resolved
+/// against, had it been written in one of those provisions' `where` blocks. Empty when
+/// nothing hidden is over `spec_sort`, which leaves a refusal as it was. For the
+/// diagnostic ([`TypeError::ProvisionConditionOutOfScope`]) only.
+pub(crate) fn hidden_conditions_over(
+    kb: &mut KnowledgeBase,
+    op_sym: Symbol,
+    spec_sort: Symbol,
+) -> SmallVec<[Symbol; 2]> {
+    let mut out: SmallVec<[Symbol; 2]> = SmallVec::new();
+    let Some(sort) = impl_parent_of_op(kb, op_sym) else {
+        return out;
+    };
+    let chain = provider_dict_chain(kb, sort);
+    let hidden = chain.hidden_from_body(kb, provision_member_of(kb, op_sym));
+    let spec_canon = kb.canonical_sort_sym(spec_sort);
+    for (i, entry) in chain.entries.iter().enumerate() {
+        if !hidden.get(i).copied().unwrap_or(false)
+            || kb.canonical_sort_sym(entry.required_sort) != spec_canon
+        {
+            continue;
+        }
+        for p in &chain.conditions_for[i] {
+            if !out.contains(p) {
+                out.push(*p);
+            }
+        }
+    }
+    out
+}
+
+/// Proposal 066 — the provision `op_sym` is a member of: the base sort of the spec
+/// whose `where` block it is written in (`ProvisionMemberInfo`), or `None` for an
+/// operation written anywhere else.
+fn provision_member_of(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
+    let entity = kb.try_resolve_symbol("anthill.reflect.ProvisionMemberInfo")?;
+    let op_canon = kb.canonical_sort_sym(op_sym);
+    for rid in kb.rules_by_functor(entity) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let head = kb.rule_head_value(rid);
+        let (Some(op), Some(provided)) = (
+            super::op_info::head_field_term(kb, head, "operation"),
+            super::op_info::head_field_term(kb, head, "provided"),
+        ) else {
+            continue;
+        };
+        let (Some(op), Some(provided)) = (
+            super::load::sort_ref_functor(kb, op),
+            super::load::sort_ref_functor(kb, provided),
+        ) else {
+            debug_assert!(false, "066: a `ProvisionMemberInfo` row with an unreadable field");
+            continue;
+        };
+        if kb.canonical_sort_sym(op) == op_canon {
+            return Some(provided);
+        }
+    }
+    None
+}
+
 /// WI-1033 — one carrier's conditional provisions, read from the
 /// `ProvidesConditionInfo` FACTS the loader emits. Grouped per provision (keyed by the
 /// provided spec's base sort) and in fact order, which is the same referent
@@ -63155,6 +63381,16 @@ pub struct DictChain {
     /// readers must keep.
     sort_len: usize,
     entries: Rc<Vec<RequiresEntry>>,
+    /// Proposal 066 (WI-20260919-1Z3E7) — a parallel PREFIX of `entries` marking the
+    /// slots the body this chain belongs to may NOT resolve against: another
+    /// provision's `:- goals` ([`ProviderDictChain::hidden_from_body`]). `None` hides
+    /// nothing, which is every chain but a body's own, and costs no allocation.
+    ///
+    /// A hidden slot keeps its index and its name — the layout is per sort (066 §2) —
+    /// so everything that LAYS OUT a dictionary reads `entries` unchanged. Everything
+    /// that decides whether a slot ANSWERS a goal (a cover, a forward, a defer) asks
+    /// [`Self::hides`] first.
+    hidden: Option<Rc<Vec<bool>>>,
 }
 
 impl DictChain {
@@ -63180,11 +63416,32 @@ impl DictChain {
             op: None,
             sort_len,
             entries: Rc::new(entries),
+            hidden: None,
         }
     }
 
     pub fn entries(&self) -> &[RequiresEntry] {
         &self.entries
+    }
+
+    /// Proposal 066 — this chain with `hidden` as its hidden-slot prefix (see the field).
+    fn with_hidden(mut self, hidden: Vec<bool>) -> Self {
+        debug_assert!(
+            hidden.len() <= self.sort_len,
+            "066: only the sort half's condition slots can be hidden"
+        );
+        self.hidden = hidden.contains(&true).then(|| Rc::new(hidden));
+        self
+    }
+
+    /// Proposal 066 — may slot `i` NOT answer a goal of the body this chain belongs to?
+    pub fn hides(&self, i: usize) -> bool {
+        self.hidden().get(i).copied().unwrap_or(false)
+    }
+
+    /// Proposal 066 — the hidden-slot prefix, for [`ResolutionScope::hidden`].
+    pub fn hidden(&self) -> &[bool] {
+        self.hidden.as_deref().map_or(&[], |v| v.as_slice())
     }
 
     /// The sort whose chain the prefix is — `None` for an unnamed chain.
@@ -63269,6 +63526,7 @@ pub fn provider_dict_entries(kb: &mut KnowledgeBase, sort_sym: Symbol) -> DictCh
         op: None,
         sort_len,
         entries,
+        hidden: None,
     }
 }
 
@@ -63331,6 +63589,7 @@ pub fn op_dict_entries(kb: &mut KnowledgeBase, op_sym: Symbol) -> DictChain {
         op: Some(op_sym),
         sort_len,
         entries,
+        hidden: None,
     }
 }
 
@@ -66962,6 +67221,7 @@ pub(crate) fn fetch_dictionary(
         sigma: None,
         selected: &[],
         sub_goal_requires: &[],
+        hidden: &[],
     };
     match resolve(kb, &goal, &scope) {
         ResolutionResult::Resolved(tree) => match dictionary_of_tree(kb, &tree) {
@@ -69236,6 +69496,7 @@ fn spec_resolves_at_bindings(
         sigma: None,
         selected: &[],
         sub_goal_requires: &[],
+        hidden: &[],
     };
     matches!(resolve(kb, &goal, &scope), ResolutionResult::Resolved(_))
 }

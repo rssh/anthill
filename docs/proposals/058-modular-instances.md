@@ -133,6 +133,8 @@ provides PartialEq[Pair[A, B]] :- PartialEq[A], PartialEq[B]
 provides Eq[Pair[A, B]]        :- Eq[A], Eq[B]        -- STRICTLY stronger condition
 ```
 
+**Who may read a condition** *(amended by [066](066-provision-member-blocks.md), WI-20260919-1Z3E7)*. A provision's conditions are in scope exactly for the operations written in its `where` member block (`provides X :- goals where … end`); every other body of the carrier sees only the sort-level `requires`. Before 066 every body was checked against every provision's conditions, so an operation belonging to no provision could read one, and the condition silently became that operation's requirement.
+
 With one chain the weaker condition must win — `Pair` takes `requires PartialEq[…]`, since an `Eq` chain would make `Pair[A = Float, B = Int64]` a load error and stop `Pair` being a general product — and the stronger provision then **over-claims**: `Eq[Pair]` asserts lawful equality wherever the components merely have the partial one. The rule is that a `:- goals` tail scopes its conditions to the one provision — each head carrying its own body. A sort-level `requires` keeps both its present jobs (conditioning every provision, *and* supplying the bodies' evidence); a `:- goals` tail does only the first, for one provision. They compose because they are not the same mechanism. Not new machinery: a per-provision chain is a second contributor to the dictionary's **provider half**, not a new half. As delivered the provider half is ONE slot set per sort — the `requires` chain then the provisions' conditions, deduplicated, because a body is owned by the sort and not by a provision — and it is STRICTNESS that is per-provision: a slot is demanded at a dispatch when it is sort-level or a condition of the provision dispatched, otherwise left unfilled, and reading an unfilled slot is refused at the read.
 
 *(design — WI-1040 / proposal 060)* Under the rule-clause requirement channel a conditional provision also makes a **partially composed** dictionary reachable: resolving `Eq[Pair[Int64, ?B]]` pins the outer provider while `?B` is unbound, so one sub-dictionary is not yet known. That splits "unfilled" into two representably distinct states ([`../design/requirement-channel.md`](../design/requirement-channel.md) §9–9.1): **not yet known** — an unbound variable, reading it *delays* and a later binding fills it; **never promised** — a structural hole, reading it *refuses*, exactly the refusal above. The two-leaf representation is owned by WI-1040.
@@ -213,6 +215,14 @@ operation biFold[T](xs: List[T]) -> T
 
 ```anthill
 provides Eq[Pair[A, B]] :- Eq[A], Eq[B]
+```
+
+*(delivered — WI-20260919-1Z3E7, [066](066-provision-member-blocks.md))* **And its member block**: `where`, then the operations the provision's conditions are in scope for, in either sort-body form (`… end` or `{ … }`).
+
+```anthill
+provides PartialEq[Pair] :- PartialEq[A], PartialEq[B] where
+  operation eq(a: Pair, b: Pair) -> Bool = …
+end
 ```
 
 A named slot becomes an ordinary type parameter of its declarer — which is exactly what the bracket then binds (`biFold[plus = AddM, times = MulM](xs)`).

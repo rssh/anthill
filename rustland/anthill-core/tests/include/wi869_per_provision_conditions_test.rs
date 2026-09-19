@@ -230,15 +230,9 @@ fn tower_with(carrier_clauses: &str, extra_driver_ops: &str) -> String {
     operation strong(x: Both) -> Int64 = 2\n  \
   end\n\
   enum Box\n    \
-    sort A = ?\n\
-{carrier_clauses}    \
-    entity box(v: A)\n    \
-    operation weak(x: Box) -> Int64 =\n      \
-      match x\n        \
-        case box(v) -> Weak.weak(v)\n    \
-    operation strong(x: Box) -> Int64 =\n      \
-      match x\n        \
-        case box(v) -> Strong.strong(v)\n  \
+    sort A = ?\n    \
+    entity box(v: A)\n\
+{carrier_clauses}  \
   end\n\
   sort Driver\n    \
     operation weakOnWeak(n: Int64) -> Int64 = Weak.weak(box(v: ow))\n    \
@@ -248,23 +242,51 @@ fn tower_with(carrier_clauses: &str, extra_driver_ops: &str) -> String {
     )
 }
 
+/// `Box`'s two members. Proposal 066: a member that reads a provision's condition is
+/// written in that provision's `where` block, so the clause strings below carry them.
+const WEAK_OP: &str = "      operation weak(x: Box) -> Int64 =\n        \
+                         match x\n          \
+                           case box(v) -> Weak.weak(v)\n";
+const STRONG_OP: &str = "      operation strong(x: Box) -> Int64 =\n        \
+                           match x\n          \
+                             case box(v) -> Strong.strong(v)\n";
+
+/// `provides <spec>[T = Box] :- <cond> where <op> end`.
+fn block(spec: &str, cond: &str, op: &str) -> String {
+    format!("    provides {spec}[T = Box] :- {cond} where\n{op}    end\n")
+}
+
+/// Both members written at sort level — for the spellings whose evidence is a
+/// SORT-level `requires`, which every body sees.
+fn loose(op: &str) -> String {
+    op.lines()
+        .map(|l| format!("{}\n", l.strip_prefix("  ").unwrap_or(l)))
+        .collect()
+}
+
+fn per_provision() -> String {
+    block("Weak", "Weak[A]", WEAK_OP) + &block("Strong", "Strong[A]", STRONG_OP)
+}
+
 /// The one call a conditional provision must REFUSE: the strong floor over a
 /// component that has only the weak one.
 const STRONG_ON_WEAK: &str =
     "    operation strongOnWeak(n: Int64) -> Int64 = Strong.strong(box(v: ow))\n";
 
-const PER_PROVISION: &str = "    provides Weak[T = Box] :- Weak[A]\n    \
-                             provides Strong[T = Box] :- Strong[A]\n";
-
 /// The pre-WI-869 spelling: ONE chain, and it must be the STRONG one because
 /// `Box.strong`'s body needs `Strong[A]` evidence.
-const SHARED_CHAIN: &str = "    requires Strong[A]\n    \
-                            provides Weak[T = Box]\n    \
-                            provides Strong[T = Box]\n";
+fn shared_chain() -> String {
+    "    requires Strong[A]\n    \
+     provides Weak[T = Box]\n    \
+     provides Strong[T = Box]\n"
+        .to_string()
+        + &loose(WEAK_OP)
+        + &loose(STRONG_OP)
+}
 
 #[test]
 fn the_mechanism_on_a_local_tower() {
-    let src = tower(PER_PROVISION);
+    let src = tower(&per_provision());
 
     // The WEAK provision is conditioned on the WEAK goal alone, so a component that
     // provides only the weak floor is admitted.
@@ -289,7 +311,7 @@ fn the_mechanism_on_a_local_tower() {
         2,
     );
     // …and one that has only the weak floor is REFUSED, naming the unmet condition.
-    let refused = load_errs(&tower_with(PER_PROVISION, STRONG_ON_WEAK));
+    let refused = load_errs(&tower_with(&per_provision(), STRONG_ON_WEAK));
     assert!(
         refused
             .iter()
@@ -305,7 +327,7 @@ fn the_mechanism_on_a_local_tower() {
 /// demands `Strong[A]` at every dispatch through it.
 #[test]
 fn the_shared_chain_control_refuses_the_weak_call() {
-    let errs = load_errs(&tower(SHARED_CHAIN));
+    let errs = load_errs(&tower(&shared_chain()));
     assert!(
         errs.iter().any(|e| {
             e.contains("wi869.tower.Weak.weak")
@@ -326,7 +348,7 @@ fn the_shared_chain_control_refuses_the_weak_call() {
 #[test]
 fn a_carrier_with_no_conditional_provision_is_unchanged() {
     let src = tower_with(
-        PER_PROVISION,
+        &per_provision(),
         "    operation bare(n: Int64) -> Int64 = Weak.weak(ow)\n    \
          operation bareStrong(n: Int64) -> Int64 = Strong.strong(bo)\n",
     );
@@ -353,11 +375,10 @@ fn a_carrier_with_no_conditional_provision_is_unchanged() {
 fn two_provisions_sharing_one_condition_own_one_slot() {
     // Both floors conditioned on `Weak[A]` alone: the STRONG provision is now satisfied
     // by a weak-only component, and the shared slot must be demanded by both dispatches.
-    let clauses = "    provides Weak[T = Box] :- Weak[A]\n    \
-                   provides Strong[T = Box] :- Weak[A]\n";
+    let clauses = block("Weak", "Weak[A]", WEAK_OP) + &block("Strong", "Weak[A]", STRONG_OP);
     // `Box.strong` must DERIVE from the weak component, else it reads evidence this
     // spelling deliberately does not declare and the load is refused — correctly.
-    let src = tower(clauses).replace(
+    let src = tower(&clauses).replace(
         "case box(v) -> Strong.strong(v)",
         "case box(v) -> Weak.weak(v)",
     );
@@ -422,38 +443,56 @@ fn a_pair_of_pairs_orders_recursively() {
     );
 }
 
-/// THE SLOT SET IS UNIFORM AND THE STRICTNESS IS PER-PROVISION — which means a body
-/// CAN name evidence its provision did not earn, and doing so must be LOUD.
-///
-/// `Box.weak` is rewritten to call `Strong.strong` on its component. It still LOADS:
-/// the `Strong[A]` slot exists in `Box`'s dictionary chain (the `Strong` provision put
-/// it there), so the typer resolves the read. At eval the slot is `Unavailable` for a
-/// dispatch that went through the WEAK provision, and the read is refused by name.
-///
-/// This is the arm that says the design is "one slot set, per-provision strictness"
-/// and not "drop the slots a provision did not declare": under the dropping design the
-/// frame would be short and the failure would be an out-of-range internal error
-/// attributed to the wrong sort.
+/// THE SLOT SET IS UNIFORM AND THE STRICTNESS IS PER-PROVISION — so a body that names
+/// evidence its provision did not earn must be LOUD, and since proposal 066 it is loud
+/// at LOAD: `Box.weak`, a member of the `Weak` block, reading `Strong[A]` is out of
+/// scope for its body. (Before 066 this LOADED — the `Strong[A]` slot was in every
+/// body's scope — and was refused only at eval, by the arm below.)
 #[test]
 fn reading_a_sibling_provisions_evidence_is_loud() {
-    let src = tower(PER_PROVISION).replace(
+    let src = tower(&per_provision()).replace(
         "case box(v) -> Weak.weak(v)",
         "case box(v) -> Strong.strong(v)",
     );
+    let errs = load_errs(&src);
+    assert!(
+        errs.iter().any(|e| e.contains("wi869.tower.Box.weak")
+            && e.contains("`provides Strong[…] :- … where … end`")),
+        "a `Weak` member reading the `Strong` provision's condition must be refused \
+         naming that provision's block; got {errs:?}",
+    );
+}
+
+/// THE RUNTIME BACKSTOP (WI-869/WI-865), still reachable after 066 and so still pinned:
+/// ONE operation serving TWO specs that declare the same member. `Box.weak` is written
+/// in the `Weak` block and reads `Weak[A]`; `Twin` declares `weak` too, and
+/// `Box provides Twin` unconditioned, so `Twin.weak(box(…))` dispatches to the same
+/// `Box.weak` with a dictionary built for `Twin` — where the `Weak[A]` slot belongs to
+/// ANOTHER provision and is `Unavailable`. The read is refused by name at eval.
+#[test]
+fn a_member_dispatched_through_another_spec_is_refused_at_eval() {
+    let src = tower_with(
+        &(per_provision() + "    provides Twin[T = Box]\n"),
+        "    operation twinOnWeak(n: Int64) -> Int64 = Twin.weak(box(v: ow))\n",
+    )
+    .replacen(
+        "enum Box",
+        "sort Twin\n    sort T = ?\n    operation weak(x: T) -> Int64\n  end\n  enum Box",
+        1,
+    );
     crate::common::try_load_kb_with(&src)
-        .expect("the read TYPES — the slot is in `Box`'s dictionary chain");
-    let err = eval_fresh(&src, "wi869.tower.Driver.weakOnWeak")
+        .expect("every body reads only its own provision's evidence, so this types");
+    let err = eval_fresh(&src, "wi869.tower.Driver.twinOnWeak")
         .expect_err("…and is refused at eval, where the slot is unfilled");
     let text = format!("{err:?}");
     assert!(
-        text.contains("wi869.tower.Strong.strong") && text.contains("pins no provider"),
+        text.contains("wi869.tower.Weak.weak") && text.contains("pins no provider"),
         "the refusal must name the operation whose evidence was missing; got {text}",
     );
     // WI-865 — AND IT SAYS THIS IS NOT A DEFECT IN THE PROGRAM. A slot the strictness
-    // rule declined to search is not a slot nothing provides: `Strong[A]` HAS a
-    // provider here (`Leaf`), and the old payload-free marker reported it with the
-    // same sentence a genuine no-match got, sending the author to declare a provider
-    // that already exists. The record now distinguishes them
+    // rule declined to search is not a slot nothing provides: `Weak[A]` HAS a provider
+    // here, and the old payload-free marker reported it with the same sentence a
+    // genuine no-match got. The record now distinguishes them
     // (`UnavailableWhy::NotThisDispatch`).
     // CONTROL: back WI-865 out and the two `contains` below fail (the message reverts
     // to "nothing provides that spec at those bindings, or more than one does").
@@ -475,9 +514,11 @@ fn reading_a_sibling_provisions_evidence_is_loud() {
 #[test]
 fn a_sort_level_requires_and_a_provision_condition_compose() {
     let clauses = "    requires Weak[A]\n    \
-                   provides Weak[T = Box]\n    \
-                   provides Strong[T = Box] :- Strong[A]\n";
-    let src = tower(clauses);
+                   provides Weak[T = Box]\n"
+        .to_string()
+        + &loose(WEAK_OP)
+        + &block("Strong", "Strong[A]", STRONG_OP);
+    let src = tower(&clauses);
     assert_eq!(
         eval_int(
             &src,
@@ -486,7 +527,7 @@ fn a_sort_level_requires_and_a_provision_condition_compose() {
         ),
         7,
     );
-    let refused = load_errs(&tower_with(clauses, STRONG_ON_WEAK));
+    let refused = load_errs(&tower_with(&clauses, STRONG_ON_WEAK));
     assert!(
         refused
             .iter()
@@ -503,11 +544,7 @@ fn a_sort_level_requires_and_a_provision_condition_compose() {
 /// because a duplicated slot shows up as a wrong or missing dispatch, not as a count.
 #[test]
 fn a_condition_restating_a_sort_level_requires_is_one_slot() {
-    let src = tower(
-        "    requires Weak[A]\n    \
-         provides Weak[T = Box] :- Weak[A]\n    \
-         provides Strong[T = Box] :- Strong[A]\n",
-    );
+    let src = tower(&("    requires Weak[A]\n".to_string() + &per_provision()));
     assert_eq!(
         eval_int(&src, "wi869.tower.Driver.weakOnWeak", "the weak floor runs"),
         7
@@ -529,8 +566,7 @@ fn a_condition_restating_a_sort_level_requires_is_one_slot() {
 #[test]
 fn a_condition_naming_an_unknown_spec_is_refused() {
     let errs = load_errs(&tower(
-        "    provides Weak[T = Box] :- NoSuchSpec[A]\n    \
-         provides Strong[T = Box] :- Strong[A]\n",
+        &(block("Weak", "NoSuchSpec[A]", WEAK_OP) + &block("Strong", "Strong[A]", STRONG_OP)),
     ));
     assert!(
         errs.iter()
@@ -670,15 +706,17 @@ fn cell_tower(eq_cond: &str) -> String {
          import anthill.prelude.{{Bool, Int64, PartialEq, Eq, PartialOrd, Ord, WeakOrd}}\n\
   sort Lawful\n    sort T = ?\n    operation witness(x: T) -> Int64\n  end\n\
   enum Cell\n    sort E = ?\n    entity cell(v: E)\n    \
-    provides PartialEq[Cell] :- PartialEq[E]\n    \
+    provides PartialEq[Cell] :- PartialEq[E] where\n      \
+      operation eq(a: Cell, b: Cell) -> Bool =\n        \
+        match a\n          case cell(x) ->\n            match b\n              case cell(y) -> PartialEq.eq(x, y)\n    \
+    end\n    \
     provides Eq[Cell] :- {eq_cond}\n    \
     provides PartialOrd[Cell] :- PartialOrd[E]\n    \
-    provides WeakOrd[Cell] :- WeakOrd[E]\n    \
-    provides Ord[Cell] :- Ord[E]\n    \
-    operation eq(a: Cell, b: Cell) -> Bool =\n      \
-      match a\n        case cell(x) ->\n          match b\n            case cell(y) -> PartialEq.eq(x, y)\n    \
-    operation compare(a: Cell, b: Cell) -> Int64 =\n      \
-      match a\n        case cell(x) ->\n          match b\n            case cell(y) -> WeakOrd.compare(x, y)\n  end\nend\n"
+    provides WeakOrd[Cell] :- WeakOrd[E] where\n      \
+      operation compare(a: Cell, b: Cell) -> Int64 =\n        \
+        match a\n          case cell(x) ->\n            match b\n              case cell(y) -> WeakOrd.compare(x, y)\n    \
+    end\n    \
+    provides Ord[Cell] :- Ord[E]\n  end\nend\n"
     )
 }
 

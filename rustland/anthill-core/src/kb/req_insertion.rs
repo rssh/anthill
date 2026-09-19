@@ -90,6 +90,20 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 if *enclosing_sort == Some(*spec_sort_sym) {
                     continue;
                 }
+                // Proposal 066: the carrier holds this evidence as a provision
+                // condition the body is not in scope for — say so, and name the block.
+                let provisions =
+                    crate::kb::typing::hidden_conditions_over(kb, raw.op, *spec_sort_sym);
+                if !provisions.is_empty() {
+                    errors.push(TypeError::ProvisionConditionOutOfScope {
+                        span: *span,
+                        op: raw.op,
+                        spec_op_sym: *spec_op_sym,
+                        spec_sort_sym: *spec_sort_sym,
+                        provisions,
+                    });
+                    continue;
+                }
                 errors.push(TypeError::MissingRequiresForSpecOp {
                     span: *span,
                     spec_op_sym: *spec_op_sym,

@@ -2027,6 +2027,7 @@ private class AnthillParserImpl(
   // diagnostics leaves most of the family unpinned (it did, until review said so).
   private def namespaceDecl[$: P]: P[Item] =
     P(located(keyword("namespace") ~/ name ~ body)).map { case ((n, (imports, items)), span) =>
+      refuseProvisionMembers(items)
       Item.NamespaceItem(Namespace(n, imports, items, span))
     }
 
@@ -2064,7 +2065,8 @@ private class AnthillParserImpl(
           Item.AbstractSortItem(
             AbstractSort(vis, n, defn, IndexedSeq.empty, meta, span, isEffectRow = false))
         case Right((imports, items, meta)) =>
-          Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, items, meta, span, SortDeclKind.Sort))
+          Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports,
+            flattenProvisionMembers(items), meta, span, SortDeclKind.Sort))
     }
 
   /** WI-454: the binder NAME, in either spelling — `?X` reuses the logical-var marker,
@@ -2126,7 +2128,8 @@ private class AnthillParserImpl(
   private def enumDecl[$: P]: P[Item] =
     P(located(visibility.? ~ keyword("enum") ~/ name ~ body ~ metaBlock.?)).map {
       case ((vis, n, (imports, items), meta), span) =>
-        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports, items, meta, span, SortDeclKind.Enum))
+        Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports,
+          flattenProvisionMembers(items), meta, span, SortDeclKind.Enum))
     }
 
   private def abstractSortRest[$: P]: P[Left[(TypeExpr, Option[MetaBlock]), Nothing]] =
@@ -2716,8 +2719,8 @@ private class AnthillParserImpl(
     * and a mark keys a provision row it has not got. */
   private def providesDecl[$: P]: P[Item] =
     P(located(providesPrefix ~ providesRest)).map {
-      case ((dflt, spec, Left(conds)), span) =>
-        Item.ProvidesClauseItem(ProvidesClause(spec, conds, dflt.isDefined, span))
+      case ((dflt, spec, Left((conds, members))), span) =>
+        Item.ProvidesClauseItem(ProvidesClause(spec, conds, dflt.isDefined, span, members))
       case ((dflt, spec, Right((lang, items))), span) =>
         if dflt.isDefined then
           errors += ParseError(
@@ -2735,12 +2738,55 @@ private class AnthillParserImpl(
     P(keyword("default").!.? ~ keyword("provides") ~/ typeExpr)
 
   private def providesRest[$: P]
-    : P[Either[IndexedSeq[TypeExpr], (TermSymbol, IndexedSeq[ProvidesItem])]] =
+    : P[Either[(IndexedSeq[TypeExpr], IndexedSeq[Operation]), (TermSymbol, IndexedSeq[ProvidesItem])]] =
     P(
       (keyword("language") ~/ ident ~ providesContent.rep ~ keyword("end"))
         .map { case (lang, items) => Right((lang, items.toIndexedSeq)) } |
-      providesConditions.map(Left(_))
+      (providesConditions ~ providesMembers.?).map { case (conds, members) =>
+        Left((conds, members.getOrElse(IndexedSeq.empty)))
+      }
     )
+
+  /** Proposal 066: a provision's `where` member block — the two body forms of a sort
+    * body, holding operations only. `where` opens it because a bare `provides X :- g …
+    * end` would leave `end` closing either the block or the sort. */
+  private def providesMembers[$: P]: P[IndexedSeq[Operation]] =
+    P(
+      keyword("where") ~/ (
+        ("{" ~/ providesMember.rep ~ "}") |
+        (providesMember.rep ~ keyword("end"))
+      )
+    ).map(_.toIndexedSeq)
+
+  /** One member: an `operation` declaration, leading visibility included — the same
+    * `visibility? 'operation' …` shape rustland's block admits (`operation_declaration`),
+    * threaded onto the entry as [[operationDecl]] threads it. */
+  private def providesMember[$: P]: P[Operation] =
+    P(located(visibility.? ~ keyword("operation") ~/ operationEntry)).map {
+      case ((vis, op), span) => op.copy(visibility = op.visibility.orElse(vis), span = span)
+    }
+
+  /** Proposal 066 — a sort / enum body's provision member blocks, flattened into the
+    * carrier's own operations after the clause that declared them. Mirrors rustland's
+    * `convert_provides_clause_items`. */
+  private def flattenProvisionMembers(items: IndexedSeq[Item]): IndexedSeq[Item] =
+    items.flatMap {
+      case Item.ProvidesClauseItem(pc) if pc.members.nonEmpty =>
+        Item.ProvidesClauseItem(pc.copy(members = IndexedSeq.empty)) +:
+          pc.members.map(Item.OperationItem(_))
+      case other => IndexedSeq(other)
+    }
+
+  /** Proposal 066 — a member block outside a sort / enum body has no carrier to own its
+    * operations. Refused loudly, as rustland's converter refuses it. */
+  private def refuseProvisionMembers(items: Seq[Item]): Unit =
+    items.foreach {
+      case Item.ProvidesClauseItem(pc) if pc.members.nonEmpty =>
+        errors += ParseError(
+          "a provision's `where` member block is admitted only in a sort or enum body " +
+          "— its operations are the carrier's (proposal 066)", pc.span)
+      case _ => ()
+    }
 
   /** WI-869: the `:- goals` tail. Each goal is a SPEC INSTANTIATION over the
     * declaring sort's own parameters, never a rule-body goal — a condition must be
@@ -2773,8 +2819,14 @@ private class AnthillParserImpl(
     * head here, finds no arm for `language`, and fails at the block's `end` — loud,
     * which is the same outcome rustland gives it. */
   private def providesNestedClause[$: P]: P[ProvidesItem] =
-    P(located(providesPrefix ~ providesConditions)).map {
-      case ((dflt, spec, conds), span) =>
+    P(located(providesPrefix ~ providesConditions ~ providesMembers.?)).map {
+      case ((dflt, spec, conds, members), span) =>
+        // Proposal 066: a binding block holds no operations, so a member block has
+        // nowhere to put its members.
+        if members.exists(_.nonEmpty) then
+          errors += ParseError(
+            "a provision's `where` member block is not admitted inside a " +
+            "`provides … language …` binding block (proposal 066)", span)
         ProvidesItem.ProvidesClauseI(ProvidesClause(spec, conds, dflt.isDefined, span))
     }
 
@@ -2866,6 +2918,9 @@ private class AnthillParserImpl(
     * the syntax error rather than discovering it only after fixing the typo. A
     * declaration that fails still drops its own, one level down (WI-950). */
   def sourceFile[$: P]: P[Seq[Item]] =
-    fastparse.P(Start ~ declaration.rep ~ End)
+    fastparse.P(Start ~ declaration.rep ~ End).map { items =>
+      refuseProvisionMembers(items)
+      items
+    }
 
 end AnthillParserImpl

@@ -689,7 +689,15 @@ case class ProvidesClause(
   spec: TypeExpr,
   conditions: IndexedSeq[TypeExpr],
   isDefault: Boolean,
-  span: Span
+  span: Span,
+  /** Proposal 066 (WI-20260919-1Z3E7) — the operations of the provision's `where`
+    * member block. A sort / enum body FLATTENS them into ordinary operations of the
+    * carrier (`AnthillParser.flattenProvisionMembers`), so after parsing a sort this is
+    * always empty, and anywhere else a non-empty one is a parse error. Rustland marks a
+    * member with the provision it belongs to, which its typer reads to scope the
+    * provision's conditions to the member's body; scaland has no typer to read it, so
+    * the membership stops here — the parser accepts every program rustland accepts. */
+  members: IndexedSeq[Operation] = IndexedSeq.empty
 )
 
 /** Standalone `provides Spec language <lang> ... end` block. */

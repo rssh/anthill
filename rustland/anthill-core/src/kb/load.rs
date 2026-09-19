@@ -11610,6 +11610,12 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         reflect_scope,
     );
     kb.symbols.define(
+        "ProvisionMemberInfo",
+        "anthill.reflect.ProvisionMemberInfo",
+        SymbolKind::Entity,
+        reflect_scope,
+    );
+    kb.symbols.define(
         "SortView",
         "anthill.reflect.SortView",
         SymbolKind::Entity,
@@ -32373,6 +32379,13 @@ impl<'a> Loader<'a> {
         // author's and does not depend on the signature loading.
         self.emit_own_descriptions(functor, &o.descriptions, domain);
 
+        // Proposal 066 — a member of a provision's `where` block. Recorded here, beside
+        // the rest of the declaration's metadata; the typer reads it to decide which
+        // provision conditions the body may resolve against.
+        if let Some(spec) = &o.provision {
+            self.emit_provision_member(functor, spec, o.span, domain);
+        }
+
         // Set owner for expression occurrences
         let prev_owner = self.current_owner;
         self.current_owner = Some(functor);
@@ -34213,6 +34226,74 @@ impl<'a> Loader<'a> {
             vec![
                 (spec_field, Value::term(spec_ref)),
                 (provider_field, Value::term(provider_ref)),
+            ],
+            ClauseKind::Fact,
+            domain,
+            None,
+        );
+    }
+
+    /// Proposal 066 (WI-20260919-1Z3E7) — `ProvisionMemberInfo(operation, provided)` for
+    /// an operation written inside `provides <spec> … where … end`. `provided` is the
+    /// spec's BASE sort, because that is the key WI-869 scopes a condition by (a
+    /// `ProviderDictChain` slot's owners are provision bases).
+    fn emit_provision_member(&mut self, op: Symbol, spec: &TypeExpr, span: Span, domain: Symbol) {
+        let name = match spec {
+            TypeExpr::Simple(n) => n.last(),
+            TypeExpr::Parameterized { name, .. } => name.last(),
+            // The grammar narrows a provision's spec to `_spec_instantiation`, which
+            // admits `variable_term`; a member block over one has no provision to
+            // scope a condition by.
+            _ => {
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "operation `{}` is written in the `where` block of a provision \
+                         whose spec names no sort, so it is a member of nothing \
+                         (proposal 066)",
+                        self.kb.qualified_name_of(op),
+                    ),
+                });
+                return;
+            }
+        };
+        let provided = self.remap_symbol(name, span);
+        // THE BLOCK HOLDS THE PROVIDED SPEC'S OWN MEMBERS (066 §5 Q2). The block scopes a
+        // body by the provision it implements, and dispatch fills that provision's slots
+        // only when the call went through that spec — so a helper, or a member of some
+        // other spec, written here would type against evidence its dispatch does not
+        // bring. A helper states its own `requires` instead. Every name is defined by
+        // pass 1, so the spec's operation symbol exists by now whatever file it is in.
+        let spec_qn = self.kb.qualified_name_of(provided).to_string();
+        let op_qn = self.kb.qualified_name_of(op).to_string();
+        let short = op_qn.rsplit('.').next().unwrap_or(&op_qn).to_string();
+        let is_member = self
+            .kb
+            .try_resolve_symbol(&format!("{spec_qn}.{short}"))
+            .is_some_and(|m| self.kb.has_kind(m, SymbolKind::Operation));
+        if !is_member {
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "operation `{op_qn}` is written in the `where` block of `provides \
+                     {spec_qn}[…]`, but `{spec_qn}` declares no operation `{short}`. A \
+                     provision's block holds that spec's own members (proposal 066); \
+                     write a helper outside it, with its own `requires`",
+                ),
+            });
+            return;
+        }
+        let entity = self.kb.resolve_symbol("anthill.reflect.ProvisionMemberInfo");
+        let operation_field = self.kb.intern("operation");
+        let provided_field = self.kb.intern("provided");
+        self.kb
+            .register_entity_fields(entity, vec![operation_field, provided_field]);
+        let op_term = self.kb.make_name_term_from_sym(op);
+        let provided_ref = self.kb.make_sort_ref(provided);
+        self.kb.assert_metadata_fact_carrier(
+            entity,
+            Vec::new(),
+            vec![
+                (operation_field, Value::term(op_term)),
+                (provided_field, Value::term(provided_ref)),
             ],
             ClauseKind::Fact,
             domain,

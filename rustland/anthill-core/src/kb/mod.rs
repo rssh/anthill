@@ -1953,6 +1953,10 @@ pub struct KnowledgeBase {
                 // WI-20260918-CKD4J — the enclosing operation's own `requires`, which
                 // answer a conditional provision's SUB-goals and so change the outcome.
                 Vec<crate::kb::typing::RequiresEntry>,
+                // Proposal 066 — the slots of the chain above the body may not resolve
+                // against (another provision's conditions); a member and a non-member
+                // body of one carrier share the chain and differ only here.
+                Vec<bool>,
             ),
             (
                 crate::kb::typing::DispatchOutcome,

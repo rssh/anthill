@@ -712,6 +712,13 @@ pub struct Operation {
     /// (§4.1 makes a description block "preserved as KB facts").
     pub descriptions: Vec<String>,
     pub meta: Option<MetaBlock>,
+    /// Proposal 066 (WI-20260919-1Z3E7) — `Some(spec)` when the operation is written
+    /// inside `provides spec :- goals where … end`, the provision's MEMBER block. The
+    /// converter flattens a block into ordinary carrier operations (a member is still
+    /// `Carrier.op`, found by the same rules), so this field is the whole trace of the
+    /// block: it is what puts the provision's `:- goals` in scope for this body, and
+    /// the absence of it is what keeps them out of every other body of the carrier.
+    pub provision: Option<TypeExpr>,
     pub span: Span,
 }
 

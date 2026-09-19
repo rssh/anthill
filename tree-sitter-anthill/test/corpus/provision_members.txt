@@ -1,0 +1,163 @@
+==================
+provision member block, end form
+==================
+
+enum Pair
+  provides PartialEq[Pair] :- PartialEq[A] where
+    operation eq(a: Pair, b: Pair) -> Bool = true
+  end
+  operation other(a: Pair) -> Int64 = 1
+end
+
+---
+
+(source_file
+  (enum_declaration
+    (name
+      (identifier))
+    (provides_clause
+      (application
+        (name
+          (identifier))
+        (sort_binding
+          (simple_type
+            (name
+              (identifier)))))
+      (provides_conditions
+        (application
+          (name
+            (identifier))
+          (sort_binding
+            (simple_type
+              (name
+                (identifier))))))
+      (provides_members
+        (operation_declaration
+          (name
+            (identifier))
+          (param
+            (identifier)
+            (simple_type
+              (name
+                (identifier))))
+          (param
+            (identifier)
+            (simple_type
+              (name
+                (identifier))))
+          (simple_type
+            (name
+              (identifier)))
+          (boolean_literal))))
+    (operation_declaration
+      (name
+        (identifier))
+      (param
+        (identifier)
+        (simple_type
+          (name
+            (identifier))))
+      (simple_type
+        (name
+          (identifier)))
+      (integer_literal))))
+
+==================
+provision member block, curly form
+==================
+
+sort Pair
+  provides WeakOrd[Pair] :- WeakOrd[A], WeakOrd[B] where {
+    operation compare(a: Pair, b: Pair) -> Int64 = 0
+  }
+end
+
+---
+
+(source_file
+  (sort_with_body
+    (name
+      (identifier))
+    (provides_clause
+      (application
+        (name
+          (identifier))
+        (sort_binding
+          (simple_type
+            (name
+              (identifier)))))
+      (provides_conditions
+        (application
+          (name
+            (identifier))
+          (sort_binding
+            (simple_type
+              (name
+                (identifier)))))
+        (application
+          (name
+            (identifier))
+          (sort_binding
+            (simple_type
+              (name
+                (identifier))))))
+      (provides_members
+        (operation_declaration
+          (name
+            (identifier))
+          (param
+            (identifier)
+            (simple_type
+              (name
+                (identifier))))
+          (param
+            (identifier)
+            (simple_type
+              (name
+                (identifier))))
+          (simple_type
+            (name
+              (identifier)))
+          (integer_literal))))))
+
+==================
+provision member block without conditions, empty
+==================
+
+sort Box
+  provides Show[Box] where
+  end
+  provides Eq[Box] :- Eq[T]
+end
+
+---
+
+(source_file
+  (sort_with_body
+    (name
+      (identifier))
+    (provides_clause
+      (application
+        (name
+          (identifier))
+        (sort_binding
+          (simple_type
+            (name
+              (identifier)))))
+      (provides_members))
+    (provides_clause
+      (application
+        (name
+          (identifier))
+        (sort_binding
+          (simple_type
+            (name
+              (identifier)))))
+      (provides_conditions
+        (application
+          (name
+            (identifier))
+          (sort_binding
+            (simple_type
+              (name
+                (identifier)))))))))

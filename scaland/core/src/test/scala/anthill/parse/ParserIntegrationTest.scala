@@ -607,6 +607,44 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(provides(1).conditions.length, 0)
   }
 
+  test("proposal 066: a `where` member block flattens into the carrier's operations, both forms") {
+    for (open, close) <- List(("where", "end"), ("where {", "}")) do
+      val src =
+        s"""sort Pair
+           |  provides PartialEq[Pair] :- PartialEq[A], PartialEq[B] $open
+           |    internal operation eq(a: Pair, b: Pair) -> Bool = true
+           |  $close
+           |  provides Eq[Pair] :- Eq[A], Eq[B]
+           |  operation fst(p: Pair) -> A
+           |end""".stripMargin
+      val pf = Parser.parse(src, "<provision-members>")
+        .getOrElse(fail(s"`$open … $close` should parse"))
+      val sort = pf.items.collectFirst { case Item.SortWithBodyItem(s) => s }.get
+      // The member is an ordinary operation of the carrier, beside the one written
+      // outside the block…
+      val ops = sort.items.collect { case Item.OperationItem(o) => pf.symbols.name(o.name.last) }
+      assertEquals(ops.toList, List("eq", "fst"))
+      // A member's leading visibility is kept, as rustland's `operation_declaration` keeps it.
+      assert(sort.items.collectFirst { case Item.OperationItem(o) => o.visibility }.flatten.isDefined)
+      // …and the clause keeps its conditions and carries no members after flattening.
+      val provides = sort.items.collect { case Item.ProvidesClauseItem(pc) => pc }
+      assertEquals(provides.map(_.conditions.length).toList, List(2, 2))
+      assert(provides.forall(_.members.isEmpty))
+  }
+
+  test("proposal 066: a `where` member block outside a sort or enum body is refused") {
+    val src =
+      """namespace n
+        |  provides PartialEq[Nothing] where
+        |    operation eq(a: Bool, b: Bool) -> Bool = true
+        |  end
+        |end""".stripMargin
+    Parser.parse(src, "<provision-members-ns>") match
+      case Left(errs) =>
+        assert(errs.exists(_.message.contains("admitted only in a sort or enum body")), errs)
+      case Right(_) => fail("a namespace-level member block must be a parse error")
+  }
+
   test("proposal 025: standalone `provides Spec language anthill ... end` block parses") {
     val src =
       """provides Stack[T = Int]
