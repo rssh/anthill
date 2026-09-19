@@ -374,15 +374,17 @@ end
 
 // ── The documented NON-scope, pinned so it stays known ──────────────────────
 
-/// A PARAMETRIC or TUPLE key whose unlawfulness lives in its ARGUMENT is NOT caught
-/// (see `check_use_site_requires_eq`'s non-scope item 2). Both of these are
-/// genuinely unlawful keys — a list of `nan` is not equal to itself — so this test
-/// pins a KNOWN GAP, not desired behaviour: it exists so the gap cannot quietly
-/// stop being documented, and it should be inverted when WI-664's parametric-
-/// container propagation lands.
+/// WI-20260919-9KYPA — THE PARAMETRIC HALF OF THIS GAP IS CLOSED, and this test is the
+/// inversion its previous form asked for ("it should be inverted when WI-664's
+/// parametric-container propagation lands"). A `List[T = Float]` key is refused where the
+/// type is written, through the conditional `NonEq[List] :- NonEq[T]` row `eq_derive`
+/// derives and the goal `check_use_site_requires_eq` now resolves against it.
+///
+/// The refusal names the WHOLE key, `List[T = Float]` — not `List`, which is a lawful
+/// container at every other argument.
 #[test]
-fn known_gap_a_parametric_or_tuple_key_over_float_still_loads() {
-    assert_loads_clean(
+fn a_parametric_key_over_float_is_refused() {
+    let errs = errors_for(
         r#"
 namespace test.wi835.gaplist
   import anthill.prelude.{Map, List, Float, Int64}
@@ -390,6 +392,25 @@ namespace test.wi835.gaplist
 end
 "#,
     );
+    assert_non_eq_key_error(
+        &errs,
+        "anthill.prelude.Map",
+        "K",
+        "anthill.prelude.List[T = anthill.prelude.Float]",
+    );
+}
+
+/// A NAMED TUPLE key whose unlawfulness lives in its argument is STILL not caught (see
+/// `check_use_site_requires_eq`'s non-scope item 2, and kernel-language.md §8.3). It is a
+/// genuinely unlawful key — `(a: nan)` is not equal to itself — so this pins a KNOWN GAP,
+/// not desired behaviour.
+///
+/// WI-20260919-9KYPA left it deliberately: a tuple functor has no SORT to carry a
+/// provision at all, so neither the derived conditional `NonEq` nor the goal that reads it
+/// reaches this key. Closing it needs the structural reading WI-644's enumeration leaves
+/// open, not another provision row.
+#[test]
+fn known_gap_a_tuple_key_over_float_still_loads() {
     assert_loads_clean(
         r#"
 namespace test.wi835.gaptuple

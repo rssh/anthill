@@ -38,7 +38,9 @@
 //!   AFTER the provider-coverage checks (so a derived `NonEq`'s witness `nonEqRefl`
 //!   is not held to op-backing: it is a propagated classification, witnessed by the
 //!   partial field, not a hand-declared primitive) and BEFORE
-//!   `check_eq_noneq_exclusive`. [`derive_total_eq`] asserts the derived
+//!   `check_eq_noneq_exclusive`. The CONDITIONAL `NonEq` mirror
+//!   ([`derive_conditional_noneq`], WI-20260919-9KYPA) rides in the same pass for the
+//!   same two reasons. [`derive_total_eq`] asserts the derived
 //!   `Eq`+`PartialEq` for each `Total` composite, and must run BEFORE the typer AND
 //!   have its rows reach the sort-ops table (its call site refreshes that table for
 //!   exactly this reason) — that function's doc carries why, and why the `NonEq`
@@ -59,9 +61,13 @@
 //! field's ARGUMENTS classifies `Partial` ([`composite_field_sorts`]), and the
 //! partial-carrier gate walks THROUGH a parametric constructor
 //! (`KnowledgeBase::partial_transparent_carriers`), so `some(nan)` is compared
-//! field-wise. What is still not derived is a CONDITIONAL `NonEq` for a parametric sort
-//! itself (`NonEq[List] :- NonEq[T]`), so `Map[K = List[T = Float]]`'s use-site check
-//! still reads only the key's own provisions.
+//! field-wise. WI-20260919-9KYPA closes the last leg: a parametric sort derives the
+//! CONDITIONAL `NonEq` row itself ([`derive_conditional_noneq`], `NonEq[List] :-
+//! NonEq[T]`), and `check_use_site_requires_eq` RESOLVES a goal against it instead of
+//! reading the key's own provisions, so `Map[K = List[T = Float]]` is refused where the
+//! type is written while `Map[K = List[T = Int64]]` loads. What remains out of scope is a
+//! NAMED TUPLE key (`Map[K = (a: Float)]`), which has no sort to carry a provision at
+//! all.
 
 use std::collections::HashSet;
 
@@ -361,6 +367,15 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
             };
             assert_provides(kb, s, spec);
             record_derived_conditions(kb, s, spec, &conds);
+            // WI-20260919-9KYPA — carry the parameters across to `run`, which mirrors
+            // them into the `NonEq` half. BOTH specs: the mirror needs the `Eq` list for
+            // its disjuncts and the `PartialEq` list for the conditions `NonEq requires
+            // PartialEq` obliges it to carry.
+            let params: Vec<Symbol> = conds.iter().map(|&(_, p)| p).collect();
+            if !params.is_empty() {
+                let cs = kb.canonical_sort_sym(s);
+                kb.conditional_eq_params.insert((cs, spec), params);
+            }
         }
     }
 }
@@ -624,6 +639,93 @@ pub(crate) fn run(kb: &mut KnowledgeBase, c: &EqClassification) {
             }
         }
     }
+
+    if let (Some(ne), Some(pe), Some(eq)) = (
+        noneq_sym,
+        partialeq_sym,
+        kb.try_resolve_symbol("anthill.prelude.Eq"),
+    ) {
+        derive_conditional_noneq(kb, ne, pe, eq);
+    }
+}
+
+/// WI-20260919-9KYPA — the CONDITIONAL `NonEq` mirror of [`derive_conditional_eq`]:
+/// `provides NonEq[List] :- NonEq[T]`, so `List[T = Float]` is a WITNESSED `NonEq`
+/// carrier and `Set[T = List[T = Float]]` is refused where the type is written
+/// (`check_use_site_requires_eq`, which resolves the goal rather than reading the key's
+/// own provisions). Without it that check looked `List` up, found no `NonEq`, and let an
+/// unlawful key through — the gap §8.3 names.
+///
+/// ONE CLAUSE PER PARAMETER, where the `Eq` half emits one clause holding every
+/// parameter. That asymmetry is the logic, not a shortcut: a parametric application is
+/// lawfully `Eq` iff EVERY argument is (a conjunction, one clause), and is `NonEq` if ANY
+/// argument is (a disjunction — and `provision_conditions` reads conditions as a
+/// conjunction WITHIN a clause and a disjunction ACROSS clauses, so the disjunction has
+/// to be spelled as separate clauses). `Pair[A = Float, B = Int64]` needs the `A` clause
+/// alone to answer.
+///
+/// Mirrors only what THIS module derived ([`KnowledgeBase::conditional_eq_params`], whose
+/// comment carries why a WRITTEN conditional `Eq` is not mirrored).
+///
+/// The row is MARKED like every other row this pass asserts: a derived `NonEq` carries
+/// the witness operation `nonEqRefl`, which no carrier backs, and WI-1103's mark is what
+/// exempts it from provider-coverage in the deriving phase AND in every later one.
+///
+/// Note it stands in [`run`], after `check_provider_operations`, and NOT beside
+/// [`derive_conditional_eq`] — which is why the parameters have to be carried across on
+/// the KB rather than recomputed here.
+fn derive_conditional_noneq(kb: &mut KnowledgeBase, noneq: Symbol, partial_eq: Symbol, eq: Symbol) {
+    // Registration order, so the clause indices a program gets do not depend on a hash
+    // iteration order (they appear in `ProvidesConditionInfo` facts a test can read).
+    let carriers: Vec<(Symbol, Vec<Symbol>, Vec<Symbol>)> = composite_sorts(kb)
+        .into_iter()
+        .filter_map(|s| {
+            let cs = kb.canonical_sort_sym(s);
+            let disjuncts = kb.conditional_eq_params.get(&(cs, eq))?.clone();
+            // The `PartialEq` row's OWN parameters, not the `Eq` row's reused: see the
+            // field's comment. Absent ⇒ this carrier derived no conditional `PartialEq`,
+            // so a `NonEq` row could not discharge its `requires PartialEq` and is not
+            // derived at all.
+            let base = kb.conditional_eq_params.get(&(cs, partial_eq))?.clone();
+            Some((s, disjuncts, base))
+        })
+        .collect();
+    let mut done: HashSet<Symbol> = HashSet::new();
+    for (s, params, partial_params) in carriers {
+        // Idempotent across load phases, the same guard the loop above uses: phase 2
+        // re-runs this pass with phase 1's row already in the relation, and a second
+        // `record_derived_conditions` would file a SECOND clause at a fresh index — a
+        // duplicate disjunct, which `provision_conditions` would then read as a real
+        // alternative.
+        if !done.insert(kb.canonical_sort_sym(s)) || super::typing::sort_provides(kb, s, noneq) {
+            continue;
+        }
+        let rid = assert_provides(kb, s, noneq);
+        kb.mark_unbacked_derived_provision(rid);
+        for p in params {
+            // EACH CLAUSE ALSO CARRIES THE `PartialEq` CONDITIONS, and that is not
+            // belt-and-braces: the `NonEq` SPEC `requires PartialEq`, so
+            // `check_provider_requires` holds every `NonEq` provision to supplying
+            // `PartialEq` at the same carrier — and `PartialEq[Result]` is itself
+            // conditional (`:- PartialEq[T], PartialEq[E]`). A clause conditioned on
+            // `NonEq[T]` alone does not entail those, which the check reports as
+            // `ProvisionConditionsTooWeak`. MEASURED: without this the whole stdlib
+            // refused on `anthill.prelude.Result`.
+            //
+            // It is also the honest reading. `NonEq[Result] :- NonEq[T]` alone would
+            // claim `Result[T = Float, E = <no equality at all>]` is a WITNESSED partial
+            // carrier, when its `E` component has no equality to be partial about. The
+            // claim is "every component has a partial equality AND at least one of them
+            // is non-reflexive", which is what these conditions say.
+            let mut conds: Vec<Condition> = vec![(noneq, p)];
+            for &q in &partial_params {
+                if !conds.contains(&(partial_eq, q)) {
+                    conds.push((partial_eq, q));
+                }
+            }
+            record_derived_conditions(kb, s, noneq, &conds);
+        }
+    }
 }
 
 /// WI-1098 — the composites that derive a lawful `Eq`: the symmetric half of the
@@ -816,8 +918,22 @@ fn is_eq_boundary(
 
 /// The sorts that ALREADY provide `NonEq` — the partial leaves the fixpoint seeds
 /// from (the non-parametric `Float`, plus any hand-written `NonEq`). Scans the
-/// `SortProvidesInfo` facts for a `NonEq` spec; runs BEFORE this pass derives any,
-/// so it never reads its own output.
+/// `SortProvidesInfo` facts for a `NonEq` spec.
+///
+/// WI-20260919-9KYPA — UNCONDITIONALLY, and the filter is load-bearing, not hygiene.
+/// This used to say it "runs BEFORE this pass derives any, so it never reads its own
+/// output", which is true of the FIRST load phase and false of every later one: the rows
+/// persist, so phase 2 re-classifies with them in the relation (the same WI-1103 hazard
+/// that made the derived rows' op-backing exemption a MARK rather than a placement).
+/// Once [`derive_conditional_noneq`] existed that stopped being harmless. A conditional
+/// `NonEq[List] :- NonEq[T]` is not a partial leaf — `List` is partial at `Float` and
+/// lawful at `Int64` — but seeded as one it makes EVERY composite holding a `List` field
+/// `Partial`, which derives a `NonEq` for each and collides with the `provides Eq` those
+/// composites write. MEASURED at this ticket: ~130 tests, the whole stdlib refusing on
+/// `EffectExpression` and 20 more.
+///
+/// [`super::typing::provision_is_conditional`] is the shared reading, so the seed here
+/// and `check_eq_noneq_exclusive` cannot disagree about which carriers are leaves.
 fn noneq_provider_sorts(kb: &KnowledgeBase, noneq_sym: Option<Symbol>) -> Vec<Symbol> {
     let (Some(provides_sym), Some(noneq)) = (
         kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo"),
@@ -846,7 +962,9 @@ fn noneq_provider_sorts(kb: &KnowledgeBase, noneq_sym: Option<Symbol>) -> Vec<Sy
         let Some(spec_base) = super::load::provides_spec_base_sym(kb, spec_view) else {
             continue;
         };
-        if kb.canonical_sort_sym(spec_base) == noneq_canon {
+        if kb.canonical_sort_sym(spec_base) == noneq_canon
+            && !super::typing::provision_is_conditional(kb, carrier, noneq)
+        {
             out.push(carrier);
         }
     }

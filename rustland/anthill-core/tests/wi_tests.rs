@@ -1778,3 +1778,6 @@ mod wi_hrfr5_witness_attribution_test;
 mod wi_nr6fj_operation_requires_test;
 #[path = "include/wi_nr6fj_defect_b_slot_over_default_test.rs"]
 mod wi_nr6fj_defect_b_slot_over_default_test;
+
+#[path = "include/wi_9kypa_parametric_key_noneq_test.rs"]
+mod wi_9kypa_parametric_key_noneq_test;

@@ -1629,6 +1629,32 @@ pub struct KnowledgeBase {
     /// (`field_wise_noneq_carriers`), a `TotalFloat` shielding its `Float`. Built by
     /// `eq_derive::run` beside that set.
     pub(crate) partial_transparent_carriers: std::collections::HashSet<Symbol>,
+    /// WI-20260919-9KYPA — (canonical carrier, spec) → the type parameters its DERIVED
+    /// conditional provision of that spec rests on (`Eq[List] :- Eq[T]` ⇒
+    /// `(List, Eq) → [T]`). Both `PartialEq` and `Eq` are recorded, because the `NonEq`
+    /// mirror needs the `PartialEq` list SEPARATELY rather than assuming it equals the
+    /// `Eq` one: the two come from independent fixpoints over the same fields, and
+    /// `NonEq` REQUIRES `PartialEq`, so the mirror row has to carry the `PartialEq`
+    /// conditions verbatim or `check_provider_requires` reports it too weak. Written by
+    /// [`eq_derive::derive_conditional_eq`] and read by `eq_derive::run`, which mirrors
+    /// each entry into the `NonEq` half (`NonEq[List] :- NonEq[T]`, ONE CLAUSE PER
+    /// PARAMETER — a conjunction for `Eq`, a DISJUNCTION for `NonEq`).
+    ///
+    /// Recorded rather than recomputed because the two passes are separated by the
+    /// typer AND by `check_provider_operations` (see [`eq_derive::run`]), and the
+    /// candidate filter that produced these carriers — "no equality provision already
+    /// names it" — reads the very relation the earlier pass then wrote into. Recomputing
+    /// it at `run` would find our own derived rows and answer `spoken_for` for every
+    /// carrier, mirroring nothing.
+    ///
+    /// DERIVED ONLY, and that is the soundness boundary: these carriers' equality is the
+    /// STRUCTURAL, field-wise one this module derived, so an argument with no lawful
+    /// equality genuinely makes the application unlawful. A carrier whose conditional
+    /// `Eq` was WRITTEN (`Pair`) has an `eq` of the author's, which may be total at an
+    /// argument its `provides` clause declines to claim — mirroring it would refuse a
+    /// key on a guess. `Pair[A = Float, …]` therefore stays the gap §8.3 names.
+    pub(crate) conditional_eq_params:
+        std::collections::HashMap<(Symbol, Symbol), Vec<Symbol>>,
 
     // WI-348 (value-fact payoff): the `op_effects` side-table is GONE. A
     // `denoted`-bearing effect label (`Modify[c]`) now lives in the
@@ -2258,6 +2284,7 @@ impl KnowledgeBase {
             existential_return_ops: std::collections::HashSet::new(),
             field_wise_noneq_carriers: std::collections::HashSet::new(),
             partial_transparent_carriers: std::collections::HashSet::new(),
+            conditional_eq_params: std::collections::HashMap::new(),
             entity_field_types: HashMap::new(),
             parameterized_type_sites: Vec::new(),
             resolved_requires_facts: HashSet::new(),
@@ -6849,6 +6876,16 @@ impl KnowledgeBase {
         if !known {
             self.provides_clause_counts.entry(key).or_default().push(conditions);
         }
+    }
+
+    /// WI-20260919-9KYPA — the PROBE face of
+    /// [`typing::provision_is_conditional`]: does `carrier` provide `spec` only under
+    /// conditions? `pub` because the distinction is the subject of an acceptance a test
+    /// crate has to be able to make — `Eq` ⊥ `NonEq` now admits a CONDITIONAL pair at one
+    /// carrier and still refuses an UNCONDITIONAL one, and a test that could not tell the
+    /// two apart would assert the admission without the refusal.
+    pub fn provision_has_conditions(&self, carrier: Symbol, spec: Symbol) -> bool {
+        typing::provision_is_conditional(self, carrier, spec)
     }
 
     /// Proposal 066 §7.5 — how many written clauses of `carrier` provide `spec`.

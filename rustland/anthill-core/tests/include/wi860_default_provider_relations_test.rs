@@ -128,12 +128,21 @@ fn index_rows(kb: &KnowledgeBase) -> Vec<String> {
 /// rows say nothing about it — a filter by spec, not a suppression of a wrong answer.
 /// The whole-corpus agreement test above keeps reading the UNFILTERED index, so the
 /// derived rows are still held to relation-vs-index equality.
+///
+/// WI-20260919-9KYPA — `NonEq` joins them, for the same reason and from the same pass:
+/// a PARAMETRIC composite (`Box[T]`) now derives a conditional `NonEq[Box] :- NonEq[T]`
+/// beside its conditional `Eq`, so its inferred row appears here too. Same subject, same
+/// filter-by-spec.
 fn index_rows_for(kb: &KnowledgeBase, carrier_qn: &str) -> Vec<String> {
     kb.default_provider_index()
         .expect("a loaded KB must carry the default-provider index")
         .rendered_rows_for_carrier(kb, carrier_qn)
         .into_iter()
-        .filter(|r| !r.starts_with("PartialEq | ") && !r.starts_with("Eq | "))
+        .filter(|r| {
+            !["PartialEq | ", "Eq | ", "NonEq | "]
+                .iter()
+                .any(|spec| r.starts_with(spec))
+        })
         .collect()
 }
 

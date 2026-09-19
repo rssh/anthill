@@ -36110,15 +36110,31 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<super::load::LoadE
 /// which for the CONCRETE carriers in play (`Float`; the WI-664 composites `Point`
 /// / … derived from `SortProvidesInfo` facts whose `sort_ref` is a nullary carrier
 /// name) IS the full carrier — so a user `provides Eq[Point]` and the derived
-/// `NonEq[Point]` group together and the conflict fires. LIMITATION (unreachable
-/// today): a PARAMETRIC carrier providing `Eq` at one instantiation and `NonEq` at
-/// another (`Box[T = Int]` lawful, `Box[T = Float]` partial) would be falsely
-/// grouped — but WI-664 derives NO per-instantiation facts (a parametric composite
-/// with an abstract element classifies non-partial; see `eq_derive`), and no
-/// provider spells a parameterized carrier in `sort_ref` (the instantiation lives
-/// in the `spec` SortView binding). When the parametric-container follow-up derives
-/// per-instantiation `Eq`/`NonEq`, this MUST become binding-aware — key on the
-/// SPEC's carrier-binding value (from `unwrap_spec_view`), NOT `sort_ref`.
+/// `NonEq[Point]` group together and the conflict fires.
+///
+/// WI-20260919-9KYPA — A CONDITIONAL PAIR IS NOT A CONTRADICTION, and that is now
+/// reachable rather than hypothetical. `eq_derive` derives BOTH halves for a parametric
+/// carrier — `Eq[List] :- Eq[T]` and `NonEq[List] :- NonEq[T]` — and they do not
+/// contradict: they hold at DIFFERENT arguments (`List[T = Int64]` lawful,
+/// `List[T = Float]` partial), which is the whole point of deriving them. Grouping by
+/// base symbol alone would read that pair as `List` claiming both, and refuse every
+/// parametric carrier in the stdlib. So the conflict now needs an UNCONDITIONAL claim on
+/// at least one side: an unconditional `Eq` asserts lawfulness at every argument, which
+/// any `NonEq` contradicts, and symmetrically. Both-conditional is admitted.
+///
+/// That is the exact shape the older LIMITATION note here predicted and it is worth
+/// saying how this differs from the remedy it prescribed ("key on the SPEC's
+/// carrier-binding value, NOT `sort_ref`"). No row is per-INSTANTIATION even now: a
+/// derived conditional row still spells the bare base in `sort_ref` and puts the
+/// argument dependence in its `:- NonEq[T]` conditions, so the binding-aware key would
+/// have nothing to separate. Reading the CONDITIONS is what separates them.
+///
+/// Its resolution is deliberately coarse — "does this spec have any condition clause at
+/// this carrier", not "are the two sides' conditions complementary". For the derived
+/// pairs they always are, by construction (one is the mirror of the other). A carrier
+/// mixing an unconditional clause with a conditional one for the SAME spec would read as
+/// conditional and escape; nothing writes that today, and refusing it needs the clause-
+/// level accounting `provides_clause_count` would have to be made exact for first.
 pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
     use super::load::LoadError;
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
@@ -36167,10 +36183,22 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<super::load::Load
         }
     }
 
-    let mut conflicts: Vec<String> = seen
+    // WI-20260919-9KYPA — both sides present is no longer the whole test; at least one
+    // must be UNCONDITIONAL. Asked only of the carriers that hold both, so the
+    // `provision_conditions` scan (a per-functor fact walk) costs nothing on the
+    // overwhelming majority that hold one or neither.
+    let both: Vec<Symbol> = seen
         .into_iter()
         .filter(|(_, (has_eq, has_noneq))| *has_eq && *has_noneq)
-        .map(|(carrier, _)| kb.qualified_name_of(carrier).to_string())
+        .map(|(carrier, _)| carrier)
+        .collect();
+    let mut conflicts: Vec<String> = both
+        .into_iter()
+        .filter(|&carrier| {
+            !provision_is_conditional(kb, carrier, eq_canon)
+                || !provision_is_conditional(kb, carrier, noneq_canon)
+        })
+        .map(|carrier| kb.qualified_name_of(carrier).to_string())
         .collect();
     conflicts.sort();
     conflicts.dedup();
@@ -36178,6 +36206,32 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<super::load::Load
         .into_iter()
         .map(|carrier| LoadError::IncompatibleEqNonEq { carrier })
         .collect()
+}
+
+/// WI-20260919-9KYPA — is the written type `ty` a PROVABLY unlawful (`NonEq`) carrier?
+/// Resolved as the goal `NonEq[T = ty]` through the canonical instance resolver, the same
+/// one `spec_resolves_at_bindings` runs for a field's declared spec — so an unconditional
+/// provision (`Float`, a `Partial` composite) and a conditional one (`NonEq[List] :-
+/// NonEq[T]`, derived by `eq_derive::derive_conditional_noneq`) are answered by one
+/// question, and the conditional one descends into `ty`'s own argument.
+///
+/// NEGATIVE, like its caller: a `false` here is "not provably unlawful", not "lawful".
+/// A named-tuple key (`Map[K = (a: Float)]`) has no sort to carry a provision at all, so
+/// it answers `false` and stays the structural-reading gap WI-644's enumeration leaves
+/// open (`check_use_site_requires_eq`'s non-scope item 2, and §8.3).
+fn noneq_holds_at(kb: &mut KnowledgeBase, noneq_sym: Symbol, ty: TermId) -> bool {
+    // The spec's own carrier parameter (`NonEq[T = …]`) — read off the declaration rather
+    // than spelled, the same way `eq_derive::spec_view` builds the views these rows are
+    // recorded under. The two must agree or the goal matches no provision.
+    let param = {
+        let name = kb
+            .type_params_of_sort(noneq_sym)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "T".to_string());
+        kb.intern(&name)
+    };
+    spec_resolves_at_bindings(kb, noneq_sym, smallvec::smallvec![(param, ty)])
 }
 
 /// WI-644 / WI-835 — USE-SITE `requires Eq` enforcement. A parametric sort with a
@@ -36230,16 +36284,20 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<super::load::Load
 /// stdlib key containers (`Map`/`Set`/`Lattice`/`Ord`) all `requires Eq`
 /// directly.
 ///
-/// (2) A PARAMETRIC or TUPLE key whose unlawfulness is in its ARGUMENT, not in
-/// itself — `Map[K = List[T = Float]]` and `Map[K = (a: Float)]` both load. The
-/// check reads the key's own provisions, and neither carrier provides `NonEq`:
-/// `List` declines a sort-level `requires Eq` (so the inner `List[T = Float]` is
-/// not a refusal either), and WI-664 derives `NonEq` for ENTITY composites, not for
-/// tuple functors. Both are genuinely unlawful keys (a list of `nan` is not equal
-/// to itself), so this is a real gap, still owned by WI-664's stated
-/// parametric-container propagation follow-up. Carried over verbatim from WI-644's
-/// non-scope list — a rewrite of this comment dropped it once, which is how a known
-/// gap becomes an unknown one.
+/// (2) A NAMED TUPLE key whose unlawfulness is in its ARGUMENT — `Map[K = (a: Float)]`
+/// loads. A tuple functor has no SORT to carry a provision, so neither the derived
+/// conditional `NonEq` nor the goal that reads it reaches it; closing it needs a
+/// STRUCTURAL reading, not another provision row. It is a genuinely unlawful key (a tuple
+/// of `nan` is not equal to itself), so this is a real gap. Carried over from WI-644's
+/// non-scope list — a rewrite of this comment dropped it once, which is how a known gap
+/// becomes an unknown one.
+///
+/// WI-20260919-9KYPA CLOSED THE PARAMETRIC HALF of what this item used to cover.
+/// `Map[K = List[T = Float]]` was here too, on the reasoning that the check "reads the
+/// key's own provisions and `List` provides no `NonEq`" — both halves of which have since
+/// changed: `eq_derive::derive_conditional_noneq` derives `NonEq[List] :- NonEq[T]`, and
+/// [`noneq_holds_at`] resolves the goal at the whole written key rather than reading an
+/// edge.
 ///
 /// (3) A container type the author never WRITES — one the typer infers at a call
 /// site — has no written instantiation to record; the declared signature it flows
@@ -36338,7 +36396,19 @@ pub(crate) fn check_use_site_requires_eq(
                     }
                     _ => continue,
                 };
-                if !sort_provides(kb, carrier, noneq_sym) {
+                // WI-20260919-9KYPA — RESOLVE `NonEq` AT THE WHOLE BOUND TYPE, where this
+                // read the head carrier's own provisions. `sort_provides(List, NonEq)` is
+                // an edge in the `SortProvidesInfo` graph and says nothing about the
+                // ARGUMENT, so once `eq_derive` derives the conditional row it answers
+                // true for `List[T = Int64]` as readily as for `List[T = Float]` — it
+                // would turn the gap into a blanket refusal of every parametric key. The
+                // goal is what distinguishes them: it descends the conditional row's
+                // `:- NonEq[T]` through the written argument and fails at `Int64`.
+                //
+                // Not a fast path plus a goal, for that same reason: an unconditional
+                // `NonEq[Float]` resolves through this goal too, so a `sort_provides`
+                // pre-check could only ADD the verdict the goal exists to refuse.
+                if !noneq_holds_at(kb, noneq_sym, *val) {
                     continue;
                 }
                 // The container's own parameter, from the raw clause. A clause that
@@ -36370,7 +36440,22 @@ pub(crate) fn check_use_site_requires_eq(
                         container: kb.qualified_name_of(base).to_string(),
                         param: kb.local_name_of(param).to_string(),
                         spec: kb.qualified_name_of(goal.spec_sort).to_string(),
-                        carrier: kb.qualified_name_of(carrier).to_string(),
+                        // WI-20260919-9KYPA — the WHOLE bound type, not its head sort.
+                        // Now that `NonEq` is decided at the argument, naming the head
+                        // would print "`anthill.prelude.List` binds a carrier that
+                        // provides `NonEq`" — a claim about `List` that is FALSE (it is
+                        // `List[T = Int64]`-lawful) and that points the author at a
+                        // container they have no reason to stop using. The refusal is
+                        // about `List[T = Float]`; say that.
+                        //
+                        // `format_term_for_goal`, not `type_display_name`: this message
+                        // has always printed QUALIFIED carrier names, and that renderer
+                        // prints local ones — switching would have silently shortened
+                        // `anthill.prelude.Float` to `Float` in every pre-existing
+                        // refusal. This one qualifies the base and recurses into the
+                        // arguments, which is the same convention `format_goal` uses for
+                        // the sibling requirement diagnostics.
+                        carrier: format_term_for_goal(kb, *val),
                         span: Some(site_span.span),
                     };
                     // WI-745: attribute to the file the site's span indexes into, so
@@ -63872,6 +63957,33 @@ pub(crate) fn provision_conditions(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<
         }
     }
     out
+}
+
+/// WI-20260919-9KYPA — does `carrier` provide `spec` only UNDER CONDITIONS?
+///
+/// The question separates a partial LEAF (`Float`, a `Partial` composite — an
+/// unconditional `NonEq`) from a carrier that is partial only at some arguments
+/// (`NonEq[List] :- NonEq[T]`). Two readers need that separation and would be wrong
+/// without it, each measured:
+///
+///  * [`check_eq_noneq_exclusive`] — a conditional `Eq` beside a conditional `NonEq` is
+///    not a contradiction (they hold at different arguments), while an unconditional
+///    claim on either side does contradict the other.
+///  * `eq_derive::noneq_provider_sorts` — the `Partial` fixpoint's SEED. A conditional
+///    `NonEq` is not a partial leaf, and seeding from one made every composite with a
+///    `List` field `Partial` on the second load phase (the rows persist), which then
+///    collided with those composites' own `provides Eq`.
+///
+/// COARSE, deliberately and identically for both: "has a clause with conditions", not
+/// "has no clause without them". A carrier mixing an unconditional clause with a
+/// conditional one for the SAME spec reads as conditional. Nothing writes that today,
+/// and the two readers have to agree — a split where one calls such a carrier a leaf and
+/// the other does not is exactly the disagreement `EqClassification`'s comment forbids.
+pub(crate) fn provision_is_conditional(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
+    let spec_canon = kb.canonical_sort_sym(spec);
+    provision_conditions(kb, carrier)
+        .iter()
+        .any(|g| kb.canonical_sort_sym(g.provided) == spec_canon && !g.conditions.is_empty())
 }
 
 /// WI-1033 — one conditional provision's goals, decoded out of its

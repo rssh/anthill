@@ -3,9 +3,9 @@
 - id: WI-20260919-9KYPA-a-parametric-container-at-an
 - created: 2026-09-19T22:18:39Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-19T22:18:39Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-19T23:53:35Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

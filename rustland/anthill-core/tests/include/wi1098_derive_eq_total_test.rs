@@ -601,11 +601,39 @@ fn no_carrier_derives_both_eq_and_noneq_over_the_corpus() {
         eq.len(),
         noneq.len()
     );
+    // WI-20260919-9KYPA — the intersection is no longer required EMPTY, because a
+    // conditional pair is not a contradiction: a parametric carrier derives both
+    // `Eq[List] :- Eq[T]` and `NonEq[List] :- NonEq[T]`, which hold at DIFFERENT
+    // arguments. What must hold is the sharper claim: every carrier in the intersection
+    // is conditional on BOTH sides, so an UNCONDITIONAL pair — the WI-658 defect — is
+    // still absent from the corpus.
     let both: Vec<&String> = eq.intersection(&noneq).collect();
+    let conditional_on_both = |qn: &str| -> bool {
+        let Some(c) = kb.try_resolve_symbol(qn) else {
+            return false;
+        };
+        ["anthill.prelude.Eq", "anthill.prelude.NonEq"].iter().all(|spec| {
+            kb.try_resolve_symbol(spec)
+                .is_some_and(|s| kb.provision_has_conditions(c, s))
+        })
+    };
+    let unconditional: Vec<&&String> =
+        both.iter().filter(|qn| !conditional_on_both(qn)).collect();
     assert!(
-        both.is_empty(),
+        unconditional.is_empty(),
         "a carrier may not provide both the lawful `Eq` and the witnessed `NonEq` \
-         (WI-658); the two derivations disagreed about {both:?}"
+         UNCONDITIONALLY (WI-658); the two derivations disagreed about {unconditional:?}"
+    );
+    // And the admission is not vacuous: the corpus DOES hold conditional pairs, so the
+    // filter above is exercised rather than trivially true. `List` and `Option` are named
+    // because they are what the 9KYPA use-site refusal rides on.
+    assert!(
+        both.len() >= 2
+            && ["anthill.prelude.List", "anthill.prelude.Option"]
+                .iter()
+                .all(|n| both.iter().any(|c| c.as_str() == *n)),
+        "the conditional pairs must be present or the exemption above measures nothing; \
+         got {both:?}"
     );
 }
 
