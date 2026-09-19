@@ -7,9 +7,11 @@ sort anthill.prelude.Int64
   -- WI-894: `ite` is a RULE-INTRODUCED functor on `Bool`, reached by an explicit
   -- import rather than by a global name — see the note in `ordered.anthill`.
   import anthill.prelude.Bool.{ite}
-  -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
+  -- WI-20260825-KD9SW: a WRITTEN bare `eq` (an effect guard, a law) names the
   -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
-  import anthill.prelude.PartialEq.{eq, neq}
+  -- WI-882 dropped `neq` from this list: its only written occurrences were the three
+  -- `neq(?b, 0)` denial constraints that duplicated the `Error[DivisionByZero]` rows.
+  import anthill.prelude.PartialEq.{eq}
 
   -- WI-876: `Int64`'s ORDERING, declared here and backed by the host in
   -- `rustland/anthill-stl/anthill/int64.anthill`'s `operation_map`. Body-less
@@ -51,14 +53,18 @@ sort anthill.prelude.Int64
   --
   -- A HOST MAPPING AND NOT AN EQUATION, though `minValue() <=> ...` would be exact
   -- for a fixed carrier: a `@[simp]` head is an APPLICATION, so it rewrites
-  -- `minValue()` and not the BARE `minValue` that `in_bounds` just below writes.
+  -- `minValue()` and not the BARE `minValue` a call site may write.
   -- MEASURED on `Float.tau`, which is why the three float constants are host-backed
   -- too. Nullary operations want dispatch, not inlining.
+  --
+  -- WI-882 DELETED `constraint in_bounds: gte(?n, minValue), lte(?n, maxValue)` from
+  -- just below these two. It was GUARDLESS — no `:-`, so it quantified over every
+  -- Int64 value there is — and it was not the precondition of anything; there is no
+  -- assertion and no call site it could be checked at. It was also inert, like every
+  -- plain denial (§8.4), so it stated nothing that fired. "Every Int64 is within
+  -- bounds" is true by construction of the carrier, not a claim the KB can discharge.
   operation minValue() -> Int64
   operation maxValue() -> Int64
-
-  -- Every Int64 is within bounds
-  constraint in_bounds: gte(?n, minValue), lte(?n, maxValue)
 
   -- WI-880: `Int64`'s ARITHMETIC, declared here for the same reason the ordering above
   -- is — a host implementation has to have a carrier to be keyed to. `Additive.add` /
@@ -99,11 +105,37 @@ sort anthill.prelude.Int64
   rule sign(?a) <=> ite(gt(?a, 0), 1, ite(lt(?a, 0), neg(1), 0))
   rule divExact(?a, ?b) <=> div(?a, ?b)
 
-  -- Constraints: invariant :- guard
-  constraint div_nonzero_primary: neq(?b, 0) :- div(?_, ?b)
-  constraint div_nonzero: neq(?b, 0) :- divExact(?_, ?b)
-  constraint rem_nonzero: neq(?b, 0) :- rem(?_, ?b)
-  constraint mod_positive: gt(?b, 0) :- mod(?_, ?b)
+  -- WI-882 DELETED four denial constraints that stood here, for two different reasons.
+  --
+  -- THREE WERE DUPLICATES. `div_nonzero_primary`, `div_nonzero` and `rem_nonzero` each
+  -- restated `neq(?b, 0)` — the precondition `div` / `divExact` / `rem` ALREADY declare
+  -- above as a live guarded `Error[DivisionByZero]` effect row. The effect row fires
+  -- (a caller that neither declares nor handles it is refused at load); a plain denial
+  -- does not (§8.4 — it is stored as reflected structure and never registered as a
+  -- guard). Stating one precondition twice, once in a channel that works and once in
+  -- one that does not, is how a reader is taught to write the dead one.
+  --
+  -- ONE WAS FALSE. `constraint mod_positive: gt(?b, 0) :- mod(?_, ?b)` forbade EVERY
+  -- negative divisor, which is not redundant with the effect row (that forbids only
+  -- ZERO) — it is a stronger claim, and a wrong one. `Int64.mod` is EUCLIDEAN, and
+  -- Euclidean mod is well defined for a negative divisor: both engines compute it and
+  -- since WI-875 they agree, including on the `-1` arm that would otherwise trap at
+  -- `i64::MIN`. MEASURED: `mod(5, -3)` is 2, in the evaluator and in the resolver.
+  -- So `b < 0` is legal and the constraint was contradicted by the implementation it
+  -- claimed to constrain; `Division.mod_nonneg`, which `division.anthill` wrote to
+  -- agree with this row deliberately, went with it. `mod`'s real precondition is
+  -- `b ≠ 0`, and the effect row already says so.
+  --
+  -- AND IT COULD NOT HAVE BEEN MOVED TO A LIVE CHANNEL HERE EVEN IF IT WERE TRUE.
+  -- MEASURED by building the move: restating it as `requires gt(b, 0)` on this
+  -- operation is refused at load with `'anthill.prelude.Int64' overrides
+  -- 'anthill.prelude.EuclideanDomain.mod' but does not refine it: it strengthens the
+  -- precondition`. `Int64.mod` OVERRIDES the spec operation, an override may only
+  -- WEAKEN a precondition, and `EuclideanDomain.mod` declares none — so a carrier
+  -- cannot add one. The denial channel accepted the row only because it was inert:
+  -- being unenforced is also being unchecked, and a claim no live channel will admit
+  -- survives indefinitely in the one channel that asks nothing of it.
+  -- Pinned by `wi882_deleted_denials_test`, whose header records the measurement.
 
   -- Bounded well-founded induction over a half-open interval [lo, hi).
   -- Proposal 025 §Auto-generated induction rules. Used by the Z3

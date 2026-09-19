@@ -56,8 +56,8 @@ namespace wi884.siblings
     import anthill.prelude.Int64.{minValue, maxValue}
     operation dMinValue(n: Int64) -> Int64 = Int64.minValue()
     operation dMaxValue(n: Int64) -> Int64 = Int64.maxValue()
-    -- the BARE nullary spelling, which `int64.anthill`'s own `in_bounds` constraint
-    -- uses and which a `@[simp]` equation would not have reached (WI-881 on `tau`)
+    -- the BARE nullary spelling, which a `@[simp]` equation would not have reached
+    -- (WI-881 on `tau`)
     operation dMinBare(n: Int64) -> Int64 = minValue
     operation dMaxBare(n: Int64) -> Int64 = maxValue
   end
@@ -102,11 +102,14 @@ end
 
 /// `Int64`'s two bounds, in BOTH nullary call forms.
 ///
-/// The bare spelling is not decoration: `int64.anthill`'s own
-/// `constraint in_bounds: gte(?n, minValue), lte(?n, maxValue)` writes it that way,
-/// and it is the form a `@[simp]` equation would have left dead — a `@[simp]` head is
-/// an APPLICATION, so it matches `minValue()` and not the `var_ref` a bare name
-/// lowers to (WI-881 measured that on `Float.tau`, which is why these are host-backed).
+/// The bare spelling is not decoration: it is the form a `@[simp]` equation would
+/// have left dead — a `@[simp]` head is an APPLICATION, so it matches `minValue()`
+/// and not the `var_ref` a bare name lowers to (WI-881 measured that on `Float.tau`,
+/// which is why these are host-backed). The example this used to cite was
+/// `int64.anthill`'s own `constraint in_bounds: gte(?n, minValue), lte(?n, maxValue)`,
+/// which WI-882 deleted (guardless, over every Int64, and inert like every plain
+/// denial). The call form it exercised is still reachable by any user, so the pin
+/// stays; only the citation went.
 #[test]
 fn int64_bounds_answer_in_both_nullary_call_forms() {
     let mut interp = crate::common::interp_for(DRIVER);

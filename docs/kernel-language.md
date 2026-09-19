@@ -3754,10 +3754,12 @@ The invariant (head) states what must be true; the guard (body after `:-`)
 states when it would apply. This is the logical reading and the desugaring
 below. **Current execution boundary:** an ordinary denial/invariant constraint
 is stored but not registered with the guard engine, so it is inert today. Only
-the quantified forms described next are enforced. WI-882 owns removal of the
-misleading stdlib denials and correction of this surface; do not rely on a
-plain constraint as an operation precondition—use an operation `requires`
-clause or guarded effect.
+the quantified forms described next are enforced. **Do not rely on a plain
+constraint as an operation precondition** — use an operation `requires` clause
+(§5.4) or a guarded effect row (§5.5). The standard library used to break this
+rule in twelve places and no longer does; see §8.4 for what each one turned out
+to be, and note that two of them were not merely inert but *wrong*, which an
+inert channel is very good at hiding.
 
 The quantified forms from proposal 023 are enforced through KB guards. The
 condition selects bindings for the variable; `some`, `one`, `lone`, and `no`
@@ -4858,7 +4860,19 @@ An ordinary denial/invariant constraint is currently stored as reflected
 structure but is **not** registered as a guard and therefore does not reject a
 load or assertion. Aggregation constraints and unsupported quantified shapes are
 refused loudly instead of being accepted without enforcement. See §6.2 for the
-exact surface boundary; WI-882 tracks the misleading legacy plain-denial uses.
+exact surface boundary.
+
+The standard library no longer states an operation precondition this way
+(WI-882). Twelve plain denials across `int64.anthill`, `float.anthill` and
+`division.anthill` were deleted: three duplicated a live guarded `Error` row,
+two (`Int64.mod_positive`, `Division.mod_nonneg`) were *false* — they forbade
+every negative divisor, and Euclidean `mod` is defined for one — six on `Float`
+were false for the same kind of reason, since every operation they restricted is
+total under IEEE, and one (`Int64.in_bounds`) was guardless and undecidable. The
+one plain denial that remains, `WeakOrd.compare_congruent`, is a **law** about an
+implementor rather than a precondition on a call site, so neither live channel can
+address it — `requires` is a call-site obligation and an effect row is a per-call
+guard — and it waits on the verifier layer.
 
 ### 8.5 Operation Contracts and Obligations
 

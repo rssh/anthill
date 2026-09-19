@@ -878,8 +878,8 @@ class ParserIntegrationTest extends munit.FunSuite:
       .getOrElse(fail("expected sort"))
     assertEquals(ns.name.segments.map(floatPf.symbols.name).mkString("."), "anthill.prelude.Float")
 
-    // No satisfaction facts in stdlib (moved to bindings); 32 operations,
-    // 5 rules, 6 constraints — a sort with no inner sorts.
+    // No satisfaction facts in stdlib (moved to bindings); 37 operations,
+    // 5 rules, NO constraints — a sort with no inner sorts.
     assertEquals(countItems(ns.items) { case Item.FactItem(_) => }, 0,
       "Float spec should declare no satisfaction facts (moved to bindings)")
     val opCount = sumItems(ns.items) {
@@ -904,8 +904,20 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(opCount, 37, "Float should expose 37 operations")
     assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 5,
       "Float should declare 5 algebraic rules (neg, abs, recip, tau, nonEqRefl)")
-    assertEquals(countItems(ns.items) { case Item.ConstraintItem(_) => }, 6,
-      "Float should declare 6 constraints")
+    // WI-882: WAS 6 — `recip_nonzero`, `div_float_nonzero`, `sqrt_nonneg`,
+    // `log_positive`, `log10_positive`, `log2_positive`. Every one named a domain
+    // restriction on an operation that is TOTAL: WI-881 backed them with the IEEE
+    // intrinsics, and IEEE answers everywhere (`sqrt(-1.0)` is NaN, `log(0.0)` is
+    // -inf, `div(1.0, 0.0)` is +inf). They were false, not merely inert, so they were
+    // deleted with NOTHING written in their place — guarding a total operation would
+    // add a partiality the carrier does not have.
+    //
+    // ZERO IS ASSERTED, not the check dropped, and that is the point of keeping this
+    // line: a structure count is the only thing that notices a constraint creeping
+    // back into a file whose whole claim is that it has none. Same reason c62d6b57
+    // kept `ring.anthill`'s after its retirement.
+    assertEquals(countItems(ns.items) { case Item.ConstraintItem(_) => }, 0,
+      "Float should declare NO constraints (WI-882 deleted all six as false)")
 
     // Loaded as part of the full stdlib chain — Eq/Ord/Numeric resolve.
     val kb = kbWithStdlib()

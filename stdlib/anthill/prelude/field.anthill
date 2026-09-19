@@ -40,10 +40,19 @@
 -- requires PartialEq[T]`. Dropping `Numeric` without writing it out would have left every
 -- guard in this file reading an `eq` no carrier owed.
 --
--- THE ASYMMETRY WITH `EuclideanDomain` IS NOW MEANINGFUL rather than accidental. That
--- sibling keeps `requires Numeric[T]` and should: its `constraint mod_nonneg` reads `gt`,
--- so it genuinely consumes the order. The branch that reads an order requires the bundle
--- that carries one; the branch that reads none does not.
+-- THE ASYMMETRY WITH `EuclideanDomain` NO LONGER HAS THE REASON STATED HERE, and this
+-- paragraph is left saying so rather than being quietly given a new one. It used to
+-- read: that sibling keeps `requires Numeric[T]` and should, because its `constraint
+-- mod_nonneg` reads `gt` and so genuinely consumes the order — the branch that reads
+-- an order requires the bundle that carries one. WI-882 deleted `mod_nonneg` as FALSE
+-- (it forbade every negative divisor, and Euclidean `mod` is well defined for one;
+-- MEASURED on `Int64`, `mod(5, -3)` is 2, in both engines), and with it went that
+-- sort's only written `gt` and its `PartialOrd.{gt}` import. So `EuclideanDomain` now
+-- reads no order either, and the two branches no longer differ in the way this
+-- argument turned on. Its `requires Numeric[T]` is UNCHANGED and may well be right for
+-- another reason; WI-882 did not study it and does not claim one. What is settled is
+-- only that the justification recorded here no longer holds — whoever next touches
+-- that requirement owes it a fresh argument rather than this one.
 --
 -- WHAT REQUIRING `Ring` BUYS, and the reason it is worth a cross-namespace `requires`:
 -- A FIELD IS NOW A RING, so a field can be the SCALAR of a vector space without saying so

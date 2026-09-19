@@ -87,7 +87,8 @@ sort anthill.prelude.EuclideanDomain
   -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
   import anthill.prelude.Additive.{add}
   import anthill.prelude.Multiplicative.{mul}
-  import anthill.prelude.PartialOrd.{gt}
+  -- WI-882 dropped `import anthill.prelude.PartialOrd.{gt}`: its only written
+  -- occurrence was the `mod_nonneg` denial deleted at the foot of this sort.
 
   sort T = ?
   requires Numeric[T]
@@ -107,17 +108,19 @@ sort anthill.prelude.EuclideanDomain
   -- the verifier, like the `Field` identities.
   rule euclid_div: add(mul(?b, div(?a, ?b)), rem(?a, ?b)) = ?a :- neq(?b, 0)
 
-  -- `mod`'s precondition, in the shape this library writes an integrity guard:
-  -- INVARIANT `:-` OCCURRENCE, read as "wherever `mod(_, b)` appears, require `b > 0`".
-  -- `int64.anthill`'s `mod_positive` is the same row over the concrete carrier, and the
-  -- two agree deliberately; written the other way round (`gte(mod(?a, ?b), zero) :-
-  -- gt(?b, zero)`) the guard is a CONDITION rather than an occurrence pattern, which
-  -- binds nothing and states nothing.
+  -- WI-882 DELETED `constraint mod_nonneg: gt(?b, zero) :- mod(?_, ?b)` from here,
+  -- together with `int64.anthill`'s `mod_positive`, which this row was written to
+  -- agree with deliberately. It was FALSE, not merely inert: it forbade every negative
+  -- divisor, and `mod` is EUCLIDEAN — well defined for `b < 0`, with a non-negative
+  -- result, which is what the concrete carrier actually computes (MEASURED on `Int64`:
+  -- `mod(5, -3)` is 2, in the evaluator and in the resolver alike since WI-875 made
+  -- the two agree). `mod`'s real precondition is `b ≠ 0`, and the `Error` row on its
+  -- declaration above already carries it in a channel that fires; a plain denial never
+  -- does (§8.4 — stored as reflected structure, never registered as a guard).
   --
-  -- `mod`'s RANGE — `0 <= mod(a, b) < |b|` — is deliberately NOT written as a constraint.
-  -- It is the property that replaces the division identity for this operation (which
-  -- pairs `div` with `rem` instead, above), and it needs an absolute value this tower
-  -- does not declare; a constraint that cannot be driven is decoration, so it is stated
-  -- here as prose until there is a `Norm`-like member to state it against.
-  constraint mod_nonneg: gt(?b, zero) :- mod(?_, ?b)
+  -- `mod`'s RANGE — `0 <= mod(a, b) < |b|` — is still deliberately NOT written as a
+  -- constraint. It is the property that replaces the division identity for this
+  -- operation (which pairs `div` with `rem` instead, above), and it needs an absolute
+  -- value this tower does not declare; it stays prose until there is a `Norm`-like
+  -- member to state it against.
 end

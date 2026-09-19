@@ -9180,10 +9180,14 @@ impl KnowledgeBase {
     /// whether a TUPLE IS IN A RELATION, and `div(1, 0, ?q)` is in it for no `?q` —
     /// which the resolver KNOWS, unlike [`Self::builtin_cmp`]'s no-order arm, where it
     /// genuinely has no order to answer with. `int64.anthill` says so in the language
-    /// itself: `constraint div_nonzero_primary: neq(?b, 0) :- div(?_, ?b)`. Making this
-    /// a fault would trade a true answer for "undecided": `not(div(1, 0, 5))` would stop
-    /// succeeding, and the enclosing search would be marked incomplete over a condition
-    /// the resolver decided. Measured by building it: the zero-divisor pins go red, each
+    /// itself: `div(a, b) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) }`.
+    /// (That citation used to be `constraint div_nonzero_primary: neq(?b, 0) :-
+    /// div(?_, ?b)`, which WI-882 deleted — it merely restated the effect row in the
+    /// inert denial channel, so the effect row was always the load-bearing half.)
+    ///
+    /// Making this a fault would trade a true answer for "undecided":
+    /// `not(div(1, 0, 5))` would stop succeeding, and the enclosing search would be
+    /// marked incomplete over a condition the resolver decided. Measured by building it: the zero-divisor pins go red, each
     /// with `1 solution(s), 1 conditional` where the pin says `no solutions`. USER
     /// DECISION, taken: leave it.
     ///

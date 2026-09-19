@@ -1039,6 +1039,9 @@ mod wi881_float_arithmetic_test;
 #[path = "include/wi884_sibling_backing_test.rs"]
 mod wi884_sibling_backing_test;
 
+#[path = "include/wi882_deleted_denials_test.rs"]
+mod wi882_deleted_denials_test;
+
 #[path = "include/wi886_cpp_mapping_language_test.rs"]
 mod wi886_cpp_mapping_language_test;
 

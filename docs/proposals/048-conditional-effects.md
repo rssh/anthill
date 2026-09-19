@@ -399,15 +399,19 @@ just do not read its guard closed-world.
 - **B. Abstract receivers / dispatch.** A guard over an abstract spec-op parameter may be
   undischargeable at the spec level; it stays conservatively present and is discharged (if at all)
   at the concrete carrier. Confirm this composes with carrier-aware dispatch (WI-350).
-- **C. Relationship to the existing constraint.** `int64.anthill` already has
-  `constraint div_nonzero_primary: neq(?b, 0) :- div(?_, ?b)`. Is the guarded effect **derived**
-  from that constraint (DRY — one statement of the precondition) or **declared independently** on
-  the op (`:- eq(b, 0)`)? Lean: declare on the op; keep the constraint as an integrity guard. They
-  state the same fact from two angles; decide whether to couple them. Extra reason not to couple:
-  the constraint's `neq` is `not(eq)` (NAF), so *deriving* the guard's refutation from it would route
-  discharge through NAF — exactly the polarity hazard the "Discharge is constructive refutation"
-  section warns against. Declaring the positive `:- eq(b, 0)` and refuting it constructively keeps
-  the obligation on the safe side.
+- **C. Relationship to the existing constraint.** *(Settled by WI-882 — recorded here because
+  the reasoning still applies to any future pairing.)* `int64.anthill` used to carry
+  `constraint div_nonzero_primary: neq(?b, 0) :- div(?_, ?b)` alongside the guarded effect.
+  The question was whether the effect should be **derived** from that constraint (DRY — one
+  statement of the precondition) or **declared independently** on the op (`:- eq(b, 0)`).
+  The lean was: declare on the op, and keep the constraint as an integrity guard. The reason
+  not to couple them held — the constraint's `neq` is `not(eq)` (NAF), so *deriving* the
+  guard's refutation from it would route discharge through NAF, exactly the polarity hazard
+  the "Discharge is constructive refutation" section warns against. What did **not** hold was
+  the second half of the lean: a plain denial is never registered as a guard (§8.4), so the
+  constraint was not an integrity guard and never had been. It stated the operation's
+  precondition in a channel that does not fire, next to one that does. WI-882 deleted it and
+  its two siblings; the declared `:- eq(b, 0)` row is the sole statement.
 - **D. Interaction with absence atoms.** Can a guard combine with a 045 absence atom
   (`-Modify[x]`)? Defer until a concrete need.
 - **E. Runtime catchability.** When divide-by-zero is eventually routed through `raise_error` so an

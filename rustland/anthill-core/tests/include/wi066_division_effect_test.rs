@@ -13,10 +13,17 @@
 //! a positive proof of `¬guard`, never by negation-as-failure.
 //!
 //! Open question C (WI-479): the guard is **declared** on the op
-//! (`:- eq(b, 0)`), NOT derived from the existing integrity constraint
-//! `div_nonzero_primary: neq(?b, 0) :- div(?_, ?b)` (that constraint is kept,
-//! unchanged, as an assert-time guard) — deriving discharge from `neq`/`not(eq)`
-//! would route it through NAF, the polarity hazard 048 warns against.
+//! (`:- eq(b, 0)`), NOT derived from an integrity constraint — deriving discharge
+//! from `neq`/`not(eq)` would route it through NAF, the polarity hazard 048 warns
+//! against. This used to add "(that constraint is kept, unchanged, as an
+//! assert-time guard)", naming `div_nonzero_primary: neq(?b, 0) :- div(?_, ?b)`.
+//! That parenthesis was wrong twice over and WI-882 removed both halves: a plain
+//! denial is NEVER an assert-time guard (§8.4 — it is stored as reflected structure
+//! and never registered with the guard engine, so only the quantified forms are
+//! enforced), and the constraint itself is now deleted from `int64.anthill` for
+//! exactly that reason — it restated this file's subject, the `eq(b, 0)` effect
+//! row, in a channel that does not fire. The declared `:- eq(b, 0)` row is now the
+//! only statement of that precondition, and it is what every test here drives.
 //!
 //! At runtime a divide-by-zero is routed through the `Error` handler as a
 //! `division_by_zero(op:)` payload (WI-467; unhandled, it surfaces as

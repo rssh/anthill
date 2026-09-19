@@ -6,8 +6,10 @@
 sort anthill.prelude.Float
   import anthill.prelude.{Eq, NonEq, Ord, Numeric}
   import anthill.prelude.algebra.{Ring}
-  -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
-  import anthill.prelude.PartialEq.{neq}
+  -- WI-882 DELETED `import anthill.prelude.PartialEq.{neq}` here. WI-20260825-KD9SW
+  -- added it because a WRITTEN name in a law or constraint head needs the import, and
+  -- the only `neq` on this sort was in the two `*_nonzero` denials at the foot of the
+  -- file; those are gone, so the import named nothing this sort writes.
   -- WI-880 DELETED `import anthill.prelude.Multiplicative.{mul}` here. This sort now
   -- DECLARES its own `mul` (below), which would have CAPTURED the imported name —
   -- refused by 059 R4, and rightly: the two laws that write a bare `mul` (`tau`,
@@ -93,7 +95,7 @@ sort anthill.prelude.Float
     isFinite(a: Float) -> Bool            -- true iff a is neither NaN nor infinite
 
     -- Power / roots
-    sqrt(a: Float) -> Float               -- principal square root, requires a >= 0
+    sqrt(a: Float) -> Float               -- principal square root; IEEE, NaN for a < 0
     hypot(a: Float, b: Float) -> Float    -- sqrt(a*a + b*b), avoids overflow
     fmod(a: Float, b: Float) -> Float     -- IEEE remainder (sign follows a)
     pow(base: Float, exp: Float) -> Float -- base ^ exp
@@ -109,9 +111,9 @@ sort anthill.prelude.Float
 
     -- Exponential / logarithm
     exp(a: Float) -> Float                -- e^a
-    log(a: Float) -> Float                -- natural log, requires a > 0
-    log10(a: Float) -> Float              -- base-10 log, requires a > 0
-    log2(a: Float) -> Float               -- base-2 log, requires a > 0
+    log(a: Float) -> Float                -- natural log; IEEE, -inf at 0.0, NaN for a < 0
+    log10(a: Float) -> Float              -- base-10 log; IEEE, -inf at 0.0, NaN for a < 0
+    log2(a: Float) -> Float               -- base-2 log; IEEE, -inf at 0.0, NaN for a < 0
 
     -- Constants (nullary operations — invoked as `pi`, `e`, etc.)
     pi() -> Float                         -- π = 3.14159…
@@ -190,11 +192,33 @@ sort anthill.prelude.Float
   -- for "IEEE eq is not reflexive" is `nan` — `eq(nan, nan) = false`.
   rule nonEqRefl() <=> nan
 
-  -- Constraints
-  constraint recip_nonzero: neq(?a, 0.0) :- recip(?a)
-  constraint div_float_nonzero: neq(?b, 0.0) :- div(?_, ?b)
-  constraint sqrt_nonneg: gte(?a, 0.0) :- sqrt(?a)
-  constraint log_positive: gt(?a, 0.0) :- log(?a)
-  constraint log10_positive: gt(?a, 0.0) :- log10(?a)
-  constraint log2_positive: gt(?a, 0.0) :- log2(?a)
+  -- WI-882 DELETED six denial constraints that stood here — `recip_nonzero`,
+  -- `div_float_nonzero`, `sqrt_nonneg`, `log_positive`, `log10_positive`,
+  -- `log2_positive` — and the delete is BARE, with nothing written in their place.
+  --
+  -- THEY WERE NOT UNDER-ENFORCED PRECONDITIONS. THEY WERE FALSE. Each named a domain
+  -- restriction (`a >= 0.0`, `b != 0.0`, `a > 0.0`) on an operation that is TOTAL.
+  -- WI-881 backed all six with the IEEE intrinsics — `float_sqrt` IS `f64::sqrt`,
+  -- `float_log` IS `f64::ln`, `float_div` IS `x / y`, `recip` inlines to `div(1.0, ?a)`
+  -- — and IEEE answers everywhere: an out-of-domain argument yields NaN or an infinity,
+  -- it does not fail. MEASURED, end to end: `sqrt(-1.0)` is NaN, `log(0.0)` is -inf,
+  -- `recip(0.0)` is +inf, `div(1.0, 0.0)` is +inf. `isNaN` / `isInfinite` / `isFinite`,
+  -- declared above, are how a caller inspects that result — the answer IS the report.
+  --
+  -- WHICH IS WHY NOTHING REPLACES THEM. WI-882's own acceptance asked for these to be
+  -- "guarded by something that FIRES", but that was written before WI-881 backed them,
+  -- when the six were the only text about operations backed by nothing at all. Guarding
+  -- a total operation would ADD a partiality the carrier does not have and refuse
+  -- programs IEEE defines. A `requires gte(a, 0.0)` on `sqrt` would be the same mistake
+  -- spelled in a channel that works, which is worse than one that is merely inert.
+  --
+  -- THE PARTIAL OPERATIONS ON THIS SORT ARE `floor` / `ceil` / `round`, which had no
+  -- constraint here and still have no effect row. They genuinely raise (MEASURED:
+  -- `floor(div(1.0, 0.0))` is `error: Float.floor: integer overflow`). Declaring that
+  -- in the signature is NOT this ticket: `Overflow` is not an anthill effect at all —
+  -- unlike `DivisionByZero`, which routes to a real `Error[DivisionByZero]`, it is a
+  -- raw `EvalError` with no payload sort in `effects.anthill` and no routing, and the
+  -- same gap covers every checked `Int64` operation (`add`/`sub`/`mul`/`neg`/`abs`).
+  -- Nor could the guard be written today: `|a| >= 2^63` needs a float literal with an
+  -- exponent, and `1e300` is a syntax error.
 end

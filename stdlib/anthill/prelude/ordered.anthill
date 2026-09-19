@@ -188,11 +188,28 @@ sort anthill.prelude.WeakOrd
   -- of one. That is what keeps a sorted structure well formed — no `Eq`-class can land
   -- in two positions — and it is the weakest law that does.
   --
-  -- Written as a `constraint` (the `Int64.div_nonzero` idiom: head must hold wherever
-  -- the body does) and NOT as an equation, deliberately. An `<=>` is available to the
-  -- equational / `@[simp]` / proof layers as a REWRITE, and rewriting `eq(a, b)` to
-  -- `eq(compare(a, b), 0)` is exactly the unsound step at a coarse kernel. An
-  -- implication states the obligation without minting the rewrite.
+  -- Written as a `constraint` (head must hold wherever the body does) and NOT as an
+  -- equation, deliberately. An `<=>` is available to the equational / `@[simp]` /
+  -- proof layers as a REWRITE, and rewriting `eq(a, b)` to `eq(compare(a, b), 0)` is
+  -- exactly the unsound step at a coarse kernel. An implication states the obligation
+  -- without minting the rewrite.
+  --
+  -- THIS IS INERT TODAY, and after WI-882 it is the ONLY plain denial left in the
+  -- standard library — that ticket deleted the other twelve, in `int64` / `float` /
+  -- `division`. (`guardians`' `verdict_is_not_silent` is a QUANTIFIED constraint,
+  -- which the guard engine does enforce; the inert channel is the plain `head :-
+  -- guard` form alone, §8.4.) Those twelve were PRECONDITIONS written in a channel
+  -- that does not fire: three duplicated a live guarded `Error` row, eight were
+  -- outright FALSE, and one was guardless and undecidable.
+  --
+  -- THIS ONE IS A LAW, not a precondition, which is why it stays. It constrains what
+  -- an implementor of `WeakOrd` may SUPPLY, not what a call site may PASS, so there is
+  -- no `requires` (a call-site obligation) and no effect row (a per-call guard) it
+  -- could become — neither channel can address an implementor. It waits on the
+  -- verifier layer rather than on a rewrite, and until that exists the honest place
+  -- for it is a channel that states the obligation without pretending to check it.
+  -- It used to cite `Int64.div_nonzero` as the idiom it followed; that constraint is
+  -- gone, and the idiom was the misleading half of what this row is doing.
   constraint compare_congruent: eq(compare(?a, ?b), 0) :- eq(?a, ?b)
 end
 
