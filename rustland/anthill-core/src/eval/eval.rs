@@ -256,8 +256,10 @@ impl Interpreter {
                         .top()
                         .and_then(|f| find_type_arg(&f.type_args, *head))
                     {
+                        self.refuse_ungrounded_channel_value(bound)?;
                         return Ok(StepOutcome::Deliver(Value::term(bound)));
                     }
+                    self.refuse_unbound_type_param(*head)?;
                     let tid = self.kb.alloc(crate::kb::term::Term::Ref(*head));
                     Ok(StepOutcome::Deliver(Value::term(tid)))
                 } else {
@@ -485,6 +487,48 @@ impl Interpreter {
         }
     }
 
+    /// WI-20260918-R541X (D) — the bare-head arms' guard: a head that is a TYPE
+    /// PARAMETER and missed the frame channel is refused, not delivered as `Ref(head)`.
+    ///
+    /// Both arms that build a type value from a bare head (`Expr::TypeValue`'s and
+    /// `reduce_var`'s WI-206 arm) ask the frame first and then took the head at face
+    /// value — right for a genuine sort, and a silent wrong answer for a parameter, which
+    /// denotes the CALLER's type and has none of its own. MEASURED before this guard: a
+    /// spec default `valueOf() -> Type = T` entered through a requirement slot answered
+    /// `T`, a sort-param read inside a generic caller answered `T`. The test is
+    /// [`crate::kb::typing::is_sort_param_symbol`] — the scope's type-parameter name
+    /// set, which holds an operation's `[P]` and a sort's `sort T = ?` alike, and is the
+    /// half of [`crate::kb::typing::genuine_concrete_sort`] that `payload_sort_of`
+    /// already relies on for the same question.
+    fn refuse_unbound_type_param(&self, head: Symbol) -> Result<(), EvalError> {
+        if !crate::kb::typing::is_sort_param_symbol(&self.kb, head) {
+            return Ok(());
+        }
+        let running = self
+            .stack
+            .top()
+            .map_or_else(|| "<no frame>".to_string(), |f| self.kb.qualified_name_of(f.op).to_string());
+        Err(EvalError::UnboundTypeParam {
+            param: self.kb.qualified_name_of(head).to_string(),
+            running,
+        })
+    }
+
+    /// (D)'s other half: a channel HIT whose value is itself a bare reference to a type
+    /// parameter is the same unbound parameter one hop later. The typer writes an
+    /// enclosing parameter as `Ref(<its symbol>)` for `collect_closed_type_args` to
+    /// ground against the calling frame; when that frame had no binding either, the
+    /// `Ref` survives, and delivering it answered the parameter's name as a type.
+    fn refuse_ungrounded_channel_value(
+        &self,
+        bound: crate::kb::term::TermId,
+    ) -> Result<(), EvalError> {
+        match self.kb.get_term(bound) {
+            crate::kb::term::Term::Ref(s) => self.refuse_unbound_type_param(*s),
+            _ => Ok(()),
+        }
+    }
+
     fn reduce_var(
         &mut self,
         sym: Symbol,
@@ -508,6 +552,9 @@ impl Interpreter {
                 })
                 .or_else(|| find_type_arg(&top.type_args, sym).map(Value::term))
         };
+        if let Some(Value::Term { id, .. }) = &bound {
+            self.refuse_ungrounded_channel_value(*id)?;
+        }
         if let Some(v) = bound {
             return Ok(StepOutcome::Deliver(v));
         }
@@ -534,6 +581,7 @@ impl Interpreter {
         // has already settled the reading: it admits a bare sort name ONLY where a
         // `Type` is expected, so one in any other value position never reaches eval.
         if self.kb.kind_of(sym) == Some(crate::intern::SymbolKind::Sort) {
+            self.refuse_unbound_type_param(sym)?;
             let tid = self.kb.alloc(crate::kb::term::Term::Ref(sym));
             return Ok(StepOutcome::Deliver(Value::term(tid)));
         }

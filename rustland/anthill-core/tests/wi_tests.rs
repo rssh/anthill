@@ -37,6 +37,8 @@ mod wi708_body_type_arg_read_test;
 
 #[path = "include/wi_rs2g4_receiver_bracket_binds_sort_params_test.rs"]
 mod wi_rs2g4_receiver_bracket_binds_sort_params_test;
+#[path = "include/wi_r541x_body_read_of_type_param_test.rs"]
+mod wi_r541x_body_read_of_type_param_test;
 
 #[path = "include/wi_wahb6_type_value_classification_test.rs"]
 mod wi_wahb6_type_value_classification_test;

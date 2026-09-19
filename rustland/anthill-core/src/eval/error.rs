@@ -242,6 +242,17 @@ pub enum EvalError {
         detail: String,
         span: Option<SourceSpan>,
     },
+    /// WI-20260918-R541X (D) — a body read of a TYPE PARAMETER (an operation's `[P]`
+    /// or a sort's `sort T = ?`) found no binding on the running frame's type-argument
+    /// channel. A parameter with no binding is not a type: delivering `Ref(T)` — what
+    /// the bare-head arms did before — answered a type the program never asked for,
+    /// silently. The typer writes every binding it can prove onto the call site
+    /// (`resolved_type_args`), so reaching here is a channel that route does not fill
+    /// yet, and the author is told which parameter and which frame.
+    UnboundTypeParam {
+        param: String,
+        running: String,
+    },
     Internal(String),
 }
 
@@ -361,6 +372,7 @@ impl EvalError {
             | EvalError::UnpinnedRequirement { .. }
             | EvalError::AmbiguousSpecOpDispatch { .. }
             | EvalError::MacroRejected { .. }
+            | EvalError::UnboundTypeParam { .. }
             | EvalError::Internal(_) => BridgeDisposition::Fault,
         }
     }
@@ -555,6 +567,12 @@ impl std::fmt::Display for EvalError {
                     None => Ok(()),
                 }
             }
+            EvalError::UnboundTypeParam { param, running } => write!(
+                f,
+                "type parameter `{param}` has no binding in the frame of `{running}` — \
+                 a body read of a type parameter needs the call site to have bound it, \
+                 and this call route did not; a parameter with no binding is not a type"
+            ),
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }

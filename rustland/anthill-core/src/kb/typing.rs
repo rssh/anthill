@@ -19020,6 +19020,11 @@ fn check_apply_iter(
             unify_types(kb, &mut subst, &proj_return_type, &exp);
         }
 
+        // WI-20260918-R541X (A) — what is STILL free after the arguments and `expected`,
+        // the enclosing scope's own `requires` clause over the callee's sort may decide.
+        // AFTER `expected` so every binding that ran before is left exactly as it was.
+        bind_sort_params_from_sole_enclosing_requirement(kb, &mut subst, env, callee_parent_sort);
+
         // WI-1063 — OPEN the callee's existential return. A RETURN's unwritten sort
         // parameter is in POSITIVE position and is EXISTENTIALLY quantified: `operation
         // widen(…) -> Stream[T = Int64]` declares `∃E. Stream[T = Int64, E]`. The body PACKS
@@ -19615,14 +19620,15 @@ fn check_apply_iter(
             .unwrap_or_default();
         if !op.type_params.is_empty() || !sort_params.is_empty() {
             let op_scope = kb.symbols.scope_id(fn_sym);
-            let enclosing_refs = op_own_param_ref_rewrite(kb, env);
+            let mut enclosing_refs = op_own_param_ref_rewrite(kb, env);
+            enclosing_refs.extend(enclosing_sort_param_ref_rewrite(kb, env, callee_parent_sort));
             // Sized for BOTH lists: the op's own parameters and — WI-20260911-RS2G4 —
             // the enclosing sort's, which the second loop below appends. The
-            // `enclosing_refs` rewrite applies to the FIRST loop only, and deliberately:
-            // a sort parameter whose walk lands on a bare var (the WI-424 body skolem
-            // included) is SKIPPED there rather than rewritten, because an occupied key
-            // is what `Interpreter::enter_operation`'s same-sort inheritance reads as
-            // "the call site chose explicitly". Each loop states its own rule at its site.
+            // `enclosing_refs` rewrite applies to BOTH loops (the second since
+            // WI-20260918-R541X); what the second loop still SKIPS is any other bare var
+            // (the WI-424 body skolem included), because an occupied key is what
+            // `Interpreter::enter_operation`'s same-sort inheritance reads as "the call
+            // site chose explicitly". Each loop states its own rule at its site.
             let mut resolved: Vec<(Symbol, TermId)> =
                 Vec::with_capacity(op.type_params.len() + sort_params.len());
             for (name, var) in &op.type_params {
@@ -19633,15 +19639,13 @@ fn check_apply_iter(
                 // the resolved type arg (`find_type_arg(...).map(Value::Term)`)
                 // rather than a stale unresolved var.
                 let walked = surface_node_binding_to_term(kb, &subst, walked);
-                // …and when the WHOLE entry is one of the enclosing operation's own
-                // skolems, it becomes the `Ref(<op-scoped>)` spelling a body reference
-                // carries, so the frame that installs this channel can ground it by
-                // symbol identity. See [`op_own_param_ref_rewrite`] for why a skolem
-                // cannot ride out as-is, and for why this is the WHOLE entry only.
-                let walked = enclosing_refs
-                    .iter()
-                    .find(|(rigid, _)| *rigid == walked)
-                    .map_or(walked, |(_, named)| *named);
+                // …and each of the enclosing operation's own skolems in it — the whole
+                // entry, or one nested in a type application (WI-20260918-R541X (B)) —
+                // becomes the `Ref(<op-scoped>)` spelling a body reference carries, so the
+                // frame that installs this channel can ground it by symbol identity. See
+                // [`apply_enclosing_param_refs`] for which positions it enters and why a
+                // row tail is not one of them.
+                let walked = apply_enclosing_param_refs(kb, walked, &enclosing_refs);
                 let key = op_scoped_type_param_symbol(kb, op_scope, *name);
                 resolved.push((key, walked));
             }
@@ -19656,6 +19660,18 @@ fn check_apply_iter(
             for (param, var_term) in sort_params.iter() {
                 let walked = walk_type_deep(kb, &subst, *var_term);
                 let walked = surface_node_binding_to_term(kb, &subst, walked);
+                // WI-20260918-R541X (A): a walk that is one of the ENCLOSING OPERATION's
+                // own skolems is NOT the "said nothing" case below — the call site chose
+                // it (`Err2.tagOf(x)` inside `g[P](x: P)` pins `Err2.T := P`), and it has
+                // the same `Ref(<op-scoped>)` spelling the first loop gives it, which
+                // `collect_closed_type_args` grounds against the caller's frame. Before
+                // this the entry was skipped and a body read of `T` answered `T`.
+                // It cannot disable the same-sort inheritance below: the WI-424 body
+                // skolem that inheritance exists for is the SORT's rigid, which
+                // `enclosing_refs` lists only for a callee in ANOTHER sort (see
+                // [`enclosing_sort_param_ref_rewrite`]), so a same-sort call still lands
+                // on the `Term::Var` skip.
+                let walked = apply_enclosing_param_refs(kb, walked, &enclosing_refs);
                 // A WALK THAT LANDS ON A BARE VARIABLE IS NOT A TYPE, and writing it
                 // would be worse than writing nothing twice over. The two shapes it
                 // takes are the two ways this call said nothing about the parameter:
@@ -27366,19 +27382,9 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
 /// The enclosing SORT's params are deliberately absent: they are not caller-instantiated
 /// per call, they ride the carrier, and no frame channel binds them.
 ///
-/// APPLIED TO A WHOLE ENTRY, NEVER INSIDE ONE, and that restriction is measured rather
-/// than cautious. A skolem nested in a canonical `effects_rows(...)` spine is a ROW TAIL
-/// (`row_tail_var_of`, WI-516: a rigid set-valued var "is a row VARIABLE, not a single
-/// concrete label"), and both `row_tail_var_of` and `row_tail_termid` match only
-/// `Term::Var` — so rewriting one to a `Ref` would leave the decompose side reading NO
-/// tail, silently closing a row that must stay open. Instrumented, a deep rewrite fired on
-/// exactly those: `EffP` and `E2` entries shaped `effects_rows(...)` across the stdlib and
-/// a row-threading probe. Substituting a row variable needs row APPEND, which a term
-/// substitution cannot express.
+/// WHERE THE PAIRS ARE APPLIED is [`apply_enclosing_param_refs`]' concern: the whole
+/// entry, and inside type applications, but never inside a row.
 ///
-/// The cost is that a skolem nested in a NON-row type argument (`List[T = U]`) still
-/// rides out ungrounded. That is the behaviour before this change, unchanged — not a
-/// regression, just not yet fixed.
 /// DECLARED BRACKETS ONLY. The rigid list this joins against also holds the WI-1FKR2
 /// INLINE signature variables, which are not in `OperationInfo.type_params` and so are
 /// never rewritten — see [`TypingEnv::op_own_param_rigids`] for what that costs.
@@ -27405,6 +27411,91 @@ fn op_own_param_ref_rewrite(kb: &mut KnowledgeBase, env: &TypingEnv) -> Vec<(Ter
         out.push((*rigid, named));
     }
     out
+}
+
+/// [`op_own_param_ref_rewrite`]'s twin one scope up: each skolem standing for one of the
+/// ENCLOSING SORT's parameters, paired with the `Ref(<sort-scoped symbol>)` a body read of
+/// it carries — the key WI-20260911-RS2G4 writes that parameter's value under, so
+/// `collect_closed_type_args` grounds it against the calling frame exactly as it grounds an
+/// operation's.
+///
+/// ONLY FOR A CALLEE IN ANOTHER SORT. A same-sort callee's parameters walk to these very
+/// rigids by the WI-424 seeding, which means "the instance I am running at"; the channel
+/// write leaves such an entry UNWRITTEN so `Interpreter::enter_operation` inherits the
+/// caller's. Rewriting it would occupy the key and disable that inheritance.
+///
+/// MEASURED (WI-20260918-R541X review): `sort SHold { sort E = ?  requires TypeTerm[T = E]
+/// operation f() -> Type = TypeTerm.valueOf() }` called as `SHold[E = Boom].f()` — the
+/// sole-clause binder pinned `TypeTerm.T` to `SHold`'s rigid, which the channel write then
+/// skipped as a bare var, so the read was refused instead of answering `Boom`.
+fn enclosing_sort_param_ref_rewrite(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    callee_parent_sort: Option<Symbol>,
+) -> Vec<(TermId, TermId)> {
+    let Some(encl) = env.enclosing_sort() else {
+        return Vec::new();
+    };
+    let rigids = env.enclosing_instance_param_rigids();
+    if rigids.is_empty() {
+        return Vec::new();
+    }
+    if callee_parent_sort.map(|c| kb.canonical_sort_sym(c)) == Some(kb.canonical_sort_sym(encl)) {
+        return Vec::new();
+    }
+    let rigids = rigids.to_vec();
+    let mut out = Vec::with_capacity(rigids.len());
+    for (param, var_term) in sort_type_params_as_pairs(kb, encl).iter() {
+        let Term::Var(Var::Global(vid)) = kb.get_term(*var_term) else {
+            continue;
+        };
+        let Some((_, rigid)) = rigids.iter().find(|(v, _)| v == vid) else {
+            continue;
+        };
+        let named = kb.alloc(Term::Ref(*param));
+        out.push((*rigid, named));
+    }
+    out
+}
+
+/// Apply [`op_own_param_ref_rewrite`]'s pairs to a channel entry — the whole entry, and
+/// every skolem nested in a TYPE APPLICATION inside it — and leave everything else as it is.
+///
+/// DEEP BUT KIND-AWARE, and the kind is the whole point (WI-20260918-R541X (B)). It first
+/// shipped WHOLE-ENTRY ONLY, so `tagOp(box(x))` inside `g[P]` carried `Box[V = !P]` and a
+/// body read answered that skolem verbatim; merely going deep is wrong the other way. A
+/// skolem nested in a canonical `effects_rows(...)` spine is a ROW TAIL (`row_tail_var_of`,
+/// WI-516: a rigid set-valued var "is a row VARIABLE, not a single concrete label"), and
+/// both `row_tail_var_of` and `row_tail_termid` match only `Term::Var` — so rewriting one to
+/// a `Ref` would leave the decompose side reading NO tail, silently closing a row that must
+/// stay open. Instrumented when this was whole-entry only, a naive deep rewrite fired on
+/// exactly those: `EffP` and `E2` entries shaped `effects_rows(...)` across the stdlib and a
+/// row-threading probe. Substituting a row variable needs row APPEND, which a term
+/// substitution cannot express.
+///
+/// So the descent is by [`type_head`], positively: a sort application
+/// (`Parameterized`), an `Arrow` and a `NamedTuple` are entered, because their children
+/// are type ARGUMENTS. Not entered: `EffectsRows` (the row tail above); the neutral heads
+/// `RigidProjection` / `ExprCarried` / `Denoted`, whose children are IDENTITY slots the
+/// σ-walk also refuses to rewrite (see `walk_type_deep_g`); and `PolyType`, whose children
+/// are under BINDERS.
+fn apply_enclosing_param_refs(
+    kb: &mut KnowledgeBase,
+    t: TermId,
+    refs: &[(TermId, TermId)],
+) -> TermId {
+    if refs.is_empty() {
+        return t;
+    }
+    if let Some((_, named)) = refs.iter().find(|(rigid, _)| *rigid == t) {
+        return *named;
+    }
+    match type_head(kb, &TermIdView(t)) {
+        TypeHead::Parameterized { .. } | TypeHead::Arrow | TypeHead::NamedTuple => {
+            kb.map_fn_children(t, |kb, c| apply_enclosing_param_refs(kb, c, refs))
+        }
+        _ => t,
+    }
 }
 
 /// WI-708: the symbol a BODY reference to op type-param `declared` resolves to — the
@@ -42509,6 +42600,86 @@ fn enclosing_requires_licensing_clause(
         return Some(out);
     }
     None
+}
+
+/// WI-20260918-R541X (A) — bind a callee's STILL-FREE sort parameters from the ONE
+/// clause of the enclosing scope (its sort's `requires`, then its operation's) that
+/// requires the callee's own sort.
+///
+/// `operation tagOf[P](x: P) -> Type requires TypeTerm[T = P] = TypeTerm.valueOf()`: the
+/// call `TypeTerm.valueOf()` has no argument and a `Type` return, so nothing at the call
+/// pins `TypeTerm.T` — yet the scope says, in its own `requires`, which `TypeTerm` it is
+/// running under. MEASURED before this: the channel write skipped the free var and the
+/// spec's default body read of `T` answered `T` (and, since (D), is refused). WI-590's
+/// [`enclosing_requires_licensing_clause`] reads the same clauses but is licensed by a
+/// RECEIVER typed at the spec's carrier, and reads the SORT half only — a receiver-less
+/// member and an operation-level `requires` both miss it.
+///
+/// THREE REFUSALS, each leaving the var free (and so loud downstream rather than guessed):
+///   * TWO clauses over the callee's sort. No rule picks between `requires TypeTerm[T = P],
+///     TypeTerm[T = Q]`, so neither is taken.
+///   * a call that pinned ANY of the sort's parameters — an argument, a bracket,
+///     `expected`, the WI-424 same-sort seeding. Such a call names an instance of its own,
+///     which the clause need not be about (see the site for the measured case).
+///   * a clause value that is neither an enclosing parameter (resolved to its BODY RIGID —
+///     a clause is stored against the declared symbols, the body sees the rigids) nor a
+///     ground type. Same resolution as WI-590's, by symbol identity.
+fn bind_sort_params_from_sole_enclosing_requirement(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    env: &TypingEnv,
+    callee_parent_sort: Option<Symbol>,
+) {
+    let Some(spec) = callee_parent_sort else {
+        return;
+    };
+    let chain = env.enclosing_frame_chain();
+    if chain.entries().is_empty() {
+        return;
+    }
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let mut over_spec = chain
+        .entries()
+        .iter()
+        .filter(|e| kb.canonical_sort_sym(e.required_sort) == spec_canon);
+    let Some(entry) = over_spec.next().cloned() else {
+        return;
+    };
+    if over_spec.next().is_some() {
+        return;
+    }
+    // THE CALL MUST SAY NOTHING ABOUT WHICH INSTANCE. One pinned parameter means the call
+    // names an instance of its own, and the clause may be about a different one:
+    // `FiniteCollection.collect(rest)` over a `rest : Mapped[…]` inside a sort that
+    // `requires FiniteCollection[C = S, …]` — MEASURED (wi606), borrowing the clause's
+    // `Element`/`E` there bound them to the wrong carrier's. WI-590 answers the same
+    // hazard with a receiver comparison (its GATE 3); a receiver-less call has nothing to
+    // compare, so the only safe licence is that nothing was pinned at all.
+    let param_vids: Vec<VarId> = sort_type_params_as_pairs(kb, spec)
+        .iter()
+        .filter_map(|(_, t)| match kb.get_term(*t) {
+            Term::Var(Var::Global(v)) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    if param_vids.iter().any(|v| subst.resolve_as_value(*v).is_some()) {
+        return;
+    }
+    let Some((_, bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
+        return;
+    };
+    for (p, t) in bindings {
+        let Some(spec_vid) = type_param_vid_in_sort(kb, spec, p) else {
+            continue;
+        };
+        let value = match clause_named_type_param(kb, t) {
+            Some(v) => env.param_rigids().iter().find(|(pv, _)| *pv == v).map(|(_, r)| *r),
+            None => type_value_is_ground(kb, t).then_some(t),
+        };
+        if let Some(value) = value.filter(|v| !occurs_in(kb, spec_vid, *v)) {
+            subst.bind_term(kb, spec_vid, value);
+        }
+    }
 }
 
 /// WI-590 — bind what [`enclosing_requires_licensing_clause`] resolved. Split from the
