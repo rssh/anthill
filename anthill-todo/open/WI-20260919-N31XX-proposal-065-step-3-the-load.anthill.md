@@ -32,3 +32,9 @@ ACCEPTANCE:
  - every migrated row still answering what it answered before.
 Each row names the back-out that turns it red. `docs/kernel-language.md`: the R541X paragraph is rewritten to the rule, and 055/065's statuses are updated. Full workspace green via rustland/scripts/test.sh.
 
+## Changes
+
+### 2026-09-19T15:35:16Z — feedback — user
+
+FROM THE BQHGD CENSUS (065 §6), two things this ticket now owns. (1) THE OVERRIDE LEG OVER-REFUSES: check_override_refinement does not align the two operations' TYPE parameters, so a spec 'requires Eq[T = B]' restated verbatim on the override is refused as 'strengthens the precondition' (a ground 'Eq[T = Int64]' restated loads). An implementation must restate 'TypeValue[T = B]' to read B, so align them. Flip wi_bqhgd_override_requires_subset_probe_test::restating_the_specs_type_param_clause_is_refused_today to positive. (2) JUDGE READS AFTER @[simp] EXPANSION: 'dq[K]() = size(put(mkq(K), ...))' with 'rule mkq(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]' passes K as an argument that inlining places in a TYPE position (wi_h054k_type_position_subst_test); judged before expansion it would be refused wrongly. MIGRATION IS FIVE TEST FILES, stdlib/anthill-stl/examples have ZERO sites: rs2g4 (8), r541x (6), wi708 (3), bad3v (1), h054k (1, the simp case, exempt once (2) holds). Every site is the resolved TypeValue form; reduce_var's WI-206 sort arm is unreached by a type-param read from checked source, which bears on whether R541X's (D) guard there stays.
+

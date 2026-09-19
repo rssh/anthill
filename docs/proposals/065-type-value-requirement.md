@@ -74,7 +74,7 @@ The requirements an implementation MAY add are those over its **own sort's** par
 
 **A direct call does not relax it.** `Box.type_value()` at a pinned carrier could in principle supply an extra operation-level dictionary. It is still refused: one member must be a valid implementation of the spec from every route that reaches it, which is §8.7's reading (a member needing more than the spec is a distinct operation, not an override).
 
-**What already exists, and what is NOT yet known.** §8.7 requires an override's `requires` to be "no stronger", and `check_override_refinement`'s precondition leg reads the implementation's `requires` list — the same list the loader injects `EffectsRuntime[…]` clauses into, so spec-requirement clauses and logical preconditions share it. An added `requires TypeValue[T = B]` is therefore PROBABLY already refused as a strengthened precondition. **Not driven.** The first implementation step drives it, and either records the existing refusal as this rule's enforcement or adds the leg.
+**What already exists — MEASURED by WI-20260919-BQHGD (§6).** `check_override_refinement`'s precondition leg already refuses an ADDED operation-level clause. It also refuses a clause RESTATED from the spec when that clause names the operation's own type parameter, because it does not align the two operations' type parameters. Step 3 adds that alignment; without it no implementation could restate `TypeValue[T = B]`.
 
 ## 4. What it closes
 
@@ -92,9 +92,31 @@ The requirements an implementation MAY add are those over its **own sort's** par
 - **§6, instance claims** — a derived `TypeValue` provision is one; derived-only (§2 above) is a rule about who writes it, not about what it denotes.
 - **§8, `type_value[T]()`** — it was to "land after WI-708", reading the frame channel. It is now a member of the spec it names; the WI-708 dependency is replaced by §1's slot dispatch. Never built in the stdlib (measured: no stdlib operation returns `Type`), so there is nothing to migrate.
 
-## 6. Migration
+## 6. Migration — MEASURED (WI-20260919-BQHGD, 2026-09-19)
 
-The stdlib has **no** operation returning `Type` (measured: 0). Ten test files contain one; among them the WI-708 rows (`ty[T]() -> Type = Cell[V = T]`), the RS2G4 rows (`Box[T = Letter].selfType()` — a sort parameter, so `Box` gains a sort-level `requires TypeValue[T = T]`), and R541X's own file. Those are the WRITTEN reads; the full census is step 1 below, and it is MEASURED rather than grepped — by the rule itself, run in the typer as a count instead of a refusal, over stdlib and every test fixture. (R541X's `refuse_unbound_type_param` marks the same two read shapes — a `TypeValue` head, `reduce_var`'s sort arm — but in the EVALUATOR, so it would count only the reads a test happens to execute.) `Type`-slot arguments (`facts_of(kb, T)`, `is_modifiable(T)`) are value reads too and are in that count.
+**The census.** The rule was run in the typer as a COUNT, not a refusal: a temporary pass at the top of `check_operation_bodies` walked every operation body and recorded each expression occurrence naming a type parameter. It covered the full workspace test run, so the stdlib, `anthill-stl`, the examples and every Rust test fixture, with 157 hits over **19 unique sites**:
+
+| where | sites | parameter kinds |
+|---|---|---|
+| stdlib, `anthill-stl`, examples | **0** | — |
+| `wi_rs2g4_receiver_bracket_binds_sort_params_test` | 8 | 5 sort (`Box.T` ×3, `Pair2.A`, `Pair2.B`), 3 operation (`both2.U`, `ty.U`, `tyb.U`) |
+| `wi_r541x_body_read_of_type_param_test` | 6 | 4 sort, 2 operation |
+| `wi708_body_type_arg_read_test` | 3 | operation |
+| `wi_bad3v_dot_type_arg_bracket_test` | 1 | operation |
+| `wi_h054k_type_position_subst_test` | 1 | operation — see below |
+
+Every site is the loader's resolved `TypeValue` form (055 §2): none arrived as a raw `Ref`, so `reduce_var`'s WI-206 sort arm is not reached by a type-parameter read from checked source. Eighteen sites are a bare parameter inside a type expression (`Cell[V = T]`) or a whole body (`= T`).
+
+**The nineteenth is not a value read, and the rule must not count it.** `operation dq[K]() -> Int64 = size(put(mkq(K), "a", 1))` passes `K` as an ARGUMENT to `rule mkq(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]`. After simp inlining, `K` sits in a TYPE position. Judged before expansion, the rule would refuse a program whose only use of `K` is as a type. **Step 3 judges reads after `@[simp]` expansion.**
+
+**The census does not cover:** bodies loaded with `run_typer: false` (never checked); rule bodies (excluded by the rule); the scaland port; and `Error.reify`'s `T1`, which reads the frame channel rather than a body (open question 2).
+
+**The §3 probe.** `wi_bqhgd_override_requires_subset_probe_test`:
+- **Refused today, as 065 wants:** an override that ADDS an operation-level clause the spec lacks ("strengthens the precondition").
+- **Loads and runs today:** a spec-only clause (a subset); a clause restated over a GROUND type (`Eq[T = Int64]` on both sides); a clause on a parametric provider sort over its own parameter (065 §3's permitted half).
+- **OVER-REFUSED today:** a clause RESTATED verbatim over the operation's own type parameter (`requires Eq[T = B]` on spec and override). The leg compares clauses structurally and does not align the two operations' type parameters (`Desc.f.B` vs `Leaf.f.B`). An implementation must restate `TypeValue[T = B]` to read `B`, so **step 3 must add that alignment**. The row pinning today's refusal is the one it flips.
+
+The migration is therefore five test files and nothing else. The RS2G4 file is the largest, and its sort-parameter reads gain a sort-level `requires TypeValue[T = T]` on `Box` and `Pair2`.
 
 ## 7. Order of work
 
