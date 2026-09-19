@@ -25,9 +25,8 @@
 //! "WI-829: cross-sort constructing tree for eq failed to emit a dispatch dict".
 //!
 //! PASS EITHER WAY BY DESIGN: `without_the_requires_the_call_is_still_refused` (the
-//! control that the lookup did not become a wildcard), and
-//! `a_stronger_requires_does_not_answer_the_weaker_subgoal` (a pinned, pre-existing
-//! gap shared with the sort-level spelling).
+//! control that the lookup did not become a wildcard). `a_stronger_requires_answers_…`
+//! is the follow-up projection's, and states its own control.
 
 use anthill_core::eval::value::Value;
 
@@ -92,40 +91,54 @@ end
     );
 }
 
-/// A PINNED GAP, not this change's: `requires Eq[X]` does not answer the `PartialEq[X]`
-/// sub-goal, although `Eq` provides `PartialEq`. The SORT-level spelling
-/// (`sort E { sort X = ?  requires Eq[X] … }`) is refused identically, so the op
-/// half is held to exactly the sort half's bar — the scope lookup is a direct cover,
-/// with no projection path to follow a conversion.
+/// `requires Eq[X]` answers the `PartialEq[X]` sub-goal, THROUGH `Eq`'s own chain:
+/// `Eq provides PartialEq[T = T]` (WI-1110's conversion), so every `Eq` dictionary
+/// carries the `PartialEq` one as a sub-slot and the resolver reads it with a
+/// projection (`FromScope { projection: [k] }`). Both spellings — on the operation and
+/// on the sort — load AND answer, each beside its negative twin.
+///
+/// CONTROL: before the projection this was a PINNED GAP — both spellings were refused
+/// at load with `PartialEq.eq.dispatch … unresolved: PartialEq[…]`, since the scope
+/// lookup took only an entry of the goal's own spec. Backing the projection loop out of
+/// `resolve_inner` restores that refusal and fails this test at `refusals`.
 #[test]
-fn a_stronger_requires_does_not_answer_the_weaker_subgoal() {
+fn a_stronger_requires_answers_the_weaker_subgoal() {
     let op_level = r#"
 namespace wickd4j.eqop
-  import anthill.prelude.{Bool, Pair, Eq}
+  import anthill.prelude.{Bool, Int64, Pair, Eq}
+  import anthill.prelude.Pair.{pair}
   import anthill.prelude.PartialEq.{eq}
   sort D
     operation same[X](a: Pair[A = X, B = X], b: Pair[A = X, B = X]) -> Bool
       requires Eq[X] = eq(a, b)
+    operation yes(n: Int64) -> Int64 =
+      if same(pair(fst: 1, snd: 2), pair(fst: 1, snd: 2)) then 1 else 0
+    operation no(n: Int64) -> Int64 =
+      if same(pair(fst: 1, snd: 2), pair(fst: 1, snd: 3)) then 1 else 0
   end
 end
 "#;
     let sort_level = r#"
 namespace wickd4j.eqsort
-  import anthill.prelude.{Bool, Pair, Eq}
+  import anthill.prelude.{Bool, Int64, Pair, Eq}
+  import anthill.prelude.Pair.{pair}
   import anthill.prelude.PartialEq.{eq}
   sort E
     sort X = ?
     requires Eq[X]
     operation same(a: Pair[A = X, B = X], b: Pair[A = X, B = X]) -> Bool = eq(a, b)
   end
+  sort D
+    operation yes(n: Int64) -> Int64 =
+      if E.same(pair(fst: 1, snd: 2), pair(fst: 1, snd: 2)) then 1 else 0
+    operation no(n: Int64) -> Int64 =
+      if E.same(pair(fst: 1, snd: 2), pair(fst: 1, snd: 3)) then 1 else 0
+  end
 end
 "#;
-    for (spelling, src) in [("operation", op_level), ("sort", sort_level)] {
-        let errs = refusals(src);
-        assert!(
-            errs.iter().any(|e| e.contains("PartialEq.eq.dispatch")),
-            "{spelling}-level `requires Eq[X]` is refused today at the `PartialEq[X]` \
-             sub-goal; got {errs:?}"
-        );
+    for (ns, src) in [("wickd4j.eqop", op_level), ("wickd4j.eqsort", sort_level)] {
+        assert_eq!(refusals(src), Vec::<String>::new(), "{ns}");
+        assert_eq!(eval_int(src, &format!("{ns}.D.yes")), 1, "{ns}");
+        assert_eq!(eval_int(src, &format!("{ns}.D.no")), 0, "{ns}");
     }
 }

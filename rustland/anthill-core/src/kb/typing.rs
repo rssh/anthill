@@ -26391,9 +26391,17 @@ fn emit_tree_as_projection(
     syms: &ProjectionSyms,
 ) -> Option<TermId> {
     match tree {
-        ResolvedRequiresNode::FromScope { scope_index, .. } => {
+        ResolvedRequiresNode::FromScope {
+            scope_index,
+            projection,
+            ..
+        } => {
             let name = caller.name_at(kb, *scope_index)?;
-            Some(build_req_var_ref(kb, syms, name))
+            let mut t = build_req_var_ref(kb, syms, name);
+            for &k in projection {
+                t = build_req_at_sort(kb, syms, t, k);
+            }
+            Some(t)
         }
         ResolvedRequiresNode::Leaf { impl_sort, .. } => {
             Some(build_empty_bundle(kb, syms, *impl_sort))
@@ -31492,6 +31500,12 @@ pub enum ResolvedRequiresNode {
     FromScope {
         scope_index: usize,
         spec_sort: Symbol,
+        /// WI-20260918-CKD4J — the path INTO the slot's dictionary, empty when the slot
+        /// itself answers. `[k]` when the slot's spec reaches the goal's through its OWN
+        /// chain — `requires Eq[X]` answering `PartialEq[X]` through `Eq provides
+        /// PartialEq[T = T]` (WI-1110's conversion): the evidence is sub-slot `k` of the
+        /// `Eq` dictionary, the same projection `build_dep_projection`'s Strategy 2 emits.
+        projection: SmallVec<[usize; 2]>,
     },
     /// WI-857 — a SPEC-HALF slot ([`DictLayout`]) whose goal did not resolve:
     /// no provider at these bindings, a tie, or a cycle. Recorded rather than
@@ -31828,6 +31842,7 @@ fn resolve_inner<'a>(
             return ResolutionResult::Resolved(ResolvedRequiresNode::FromScope {
                 scope_index: i,
                 spec_sort: goal.spec_sort,
+                projection: SmallVec::new(),
             });
         }
     }
@@ -31844,7 +31859,48 @@ fn resolve_inner<'a>(
                 return ResolutionResult::Resolved(ResolvedRequiresNode::FromScope {
                     scope_index: base + j,
                     spec_sort: goal.spec_sort,
+                    projection: SmallVec::new(),
                 });
+            }
+        }
+        // WI-20260918-CKD4J — THROUGH a scope entry's own chain, one level: `requires
+        // Eq[X]` answers a `PartialEq[X]` sub-goal, because `Eq provides PartialEq[T =
+        // T]` puts `PartialEq` in `Eq`'s chain and so in every `Eq` dictionary. The
+        // call's OWN goal already reached this through `find_requires_location`; a
+        // conditional provision's SUB-goal (`Pair`'s `PartialEq[A]` under `eq(a, b)`)
+        // had only the direct cover above, so `requires Eq[X]` was refused where
+        // `requires PartialEq[X]` loaded. Tried AFTER every direct cover, so a slot of
+        // the goal's own spec still wins. Each sub-entry is compared COMPOSED into the
+        // caller's scope through the slot's bindings (`Eq[T = X]`'s chain entry
+        // `PartialEq[T = Eq.T]` becomes `PartialEq[T = X]`) — Strategy 2's composition.
+        let all: Vec<RequiresEntry> = scope
+            .available_requires
+            .iter()
+            .chain(scope.sub_goal_requires.iter())
+            .cloned()
+            .collect();
+        for (i, ar) in all.iter().enumerate() {
+            let chain = direct_requires_chain_rc(kb, ar.required_sort);
+            if !chain.iter().any(|e| e.required_sort == goal.spec_sort) {
+                continue;
+            }
+            let map = build_child_subst_map(kb, ar);
+            for (k, sub) in chain.iter().enumerate() {
+                if sub.required_sort != goal.spec_sort {
+                    continue;
+                }
+                let composed = RequiresEntry {
+                    required_sort: sub.required_sort,
+                    spec: substitute_in_spec(kb, &sub.spec, &map),
+                    supply: sub.supply,
+                };
+                if requires_entry_covers_goal(kb, &composed, goal, scope.sigma) {
+                    return ResolutionResult::Resolved(ResolvedRequiresNode::FromScope {
+                        scope_index: i,
+                        spec_sort: goal.spec_sort,
+                        projection: SmallVec::from_elem(k, 1),
+                    });
+                }
             }
         }
     }
