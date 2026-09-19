@@ -539,6 +539,7 @@ fn wi350_concrete_carrier_disambiguates_self_receiver_spec() {
         Some(GoalCarrier::bare(listbox_sym)),
         None,
         &[],
+        &[],
     );
     assert_eq!(
         outcome,
@@ -699,6 +700,7 @@ fn dispatch_polymorphic_candidate_matches_any_per_call_value() {
         &[],
         Some(GoalCarrier::bare(logical_stream)),
         None,
+        &[],
         &[],
     );
     assert!(

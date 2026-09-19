@@ -41,6 +41,8 @@ mod wi_rs2g4_receiver_bracket_binds_sort_params_test;
 mod wi_r541x_body_read_of_type_param_test;
 #[path = "include/wi_bqhgd_override_requires_subset_probe_test.rs"]
 mod wi_bqhgd_override_requires_subset_probe_test;
+#[path = "include/wi_ckd4j_op_requires_subgoal_test.rs"]
+mod wi_ckd4j_op_requires_subgoal_test;
 
 #[path = "include/wi_wahb6_type_value_classification_test.rs"]
 mod wi_wahb6_type_value_classification_test;

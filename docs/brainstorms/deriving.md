@@ -139,6 +139,18 @@ hand-writing `provides Eq[Box] :- Eq[T]` beside its `PartialEq` twin makes the `
 program load and answer 1. The gap was quiet until WI-1102's positive use-site discharge
 turned "no row" into a refusal.
 
+**The target row is not free — MEASURED (2026-09-19, reverted experiment; details on
+CKD4J).** Hand-writing `provides PartialEq[List] :- PartialEq[T]` + `provides Eq[List] :-
+Eq[T]` (the same for `Option`) — exactly what the derivation would emit — did two things.
+First, `provider_dict_chain` turns every tail goal into a dictionary-chain SLOT, and every
+body the carrier owns then sees it as an enclosing `requires`. In `List.nth`, `gt(i, 0)` on
+`Int64` was refused as a non-forwarded wildcard (WI-821), and 511 anthill-core tests failed.
+Second, `eq` over an `Option`/`List` at an ABSTRACT element became a load error, which is
+how `Pair` already behaves. That hits the eight `splitFirst(?s) = some(?p)` stream laws and
+any rule like `eq(some(?a), none)`. So one of two things has to happen first: the derived
+conditions become check-only (discharged, never slotted), or a provision's tail is scoped
+to that provision's own members.
+
 And it has an engineering payoff, which is the argument for generation entering by the
 front door. `eq_derive` asserts its rows at TWO points in the pipeline, refreshes the
 sort-ops table after the first, and marks the second half's rows

@@ -2761,6 +2761,21 @@ impl TypingEnv {
             .unwrap_or(&self.enclosing_chain)
     }
 
+    /// WI-20260918-CKD4J — the operation's own `requires`, as the resolver's
+    /// [`ResolutionScope::sub_goal_requires`]. Their `FromScope` index is offset by
+    /// [`Self::enclosing_requires`]'s length, which names the right frame slot only
+    /// because that sort half IS the frame chain's prefix — asserted, not assumed.
+    fn sub_goal_requires(&self) -> &[RequiresEntry] {
+        let frame = self.enclosing_frame_chain();
+        debug_assert_eq!(
+            frame.sort_len(),
+            self.enclosing_requires().len(),
+            "CKD4J: the frame chain's sort half must be the enclosing sort's chain, or \
+             an op-half `FromScope` index names the wrong slot"
+        );
+        frame.op_entries()
+    }
+
     pub fn bind_var(&mut self, name: Symbol, ty: Value) {
         self.var_bindings.insert(name, ty);
     }
@@ -16164,13 +16179,20 @@ pub(crate) fn classify_pin_or_apply_within(
             Some(tree) if impl_sort != enclosing_sort => {
                 // WI-1033: the enclosing sort's DICTIONARY chain, which is the list
                 // this tree's `FromScope` indices point into.
-                // WI-822 LEG 1: STILL the sort's chain. `resolved_tree`'s `FromScope`
-                // indices come from `dispatch_spec_op_cached`, whose scope is seeded
-                // from `enclosing_requires()` — the sort half — so naming them off
-                // anything longer would index a list the resolution never saw.
-                let caller = enclosing_sort
-                    .map(|s| provider_dict_entries(kb, s))
-                    .unwrap_or_else(DictChain::empty);
+                // WI-822 LEG 1: the sort's chain is the PREFIX the resolution was
+                // seeded from (`enclosing_requires()`), and WI-20260918-CKD4J adds the
+                // op half past it — a conditional provision's SUB-goal answered by the
+                // operation's own `requires` is `FromScope` at `sort_len + j`. So the
+                // tree is named off the FRAME chain the call site hands in, whose
+                // prefix is that same sort chain (`TypingEnv::sub_goal_requires`
+                // asserts it). With no supply context the resolution had no op half
+                // either, and the sort chain is exact.
+                let caller = match op_supply {
+                    Some(ctx) => ctx.caller_requires.clone(),
+                    None => enclosing_sort
+                        .map(|s| provider_dict_entries(kb, s))
+                        .unwrap_or_else(DictChain::empty),
+                };
                 let dict = ProjectionSyms::resolve(kb)
                     .and_then(|syms| emit_tree_as_projection(kb, &caller, tree, &syms));
                 // A cross-sort constructing tree that fails to emit would degrade
@@ -20014,6 +20036,7 @@ fn check_apply_iter(
                         self_recv_carrier.clone(),
                         Some(&dispatch_sigma),
                         &selections,
+                        env.sub_goal_requires(),
                     );
                     classify_pin_or_apply_within(
                         kb,
@@ -20078,6 +20101,7 @@ fn check_apply_iter(
                     available_requires: env.enclosing_requires(),
                     sigma: Some(&dispatch_sigma),
                     selected: &selections,
+                    sub_goal_requires: &[],
                 };
                 // WI-1091 — `Conditional` ONLY, where WI-1093's draft took `Leaf` too.
                 // The defect is precisely that the WI-415 parent bundle carries the
@@ -20586,6 +20610,7 @@ fn check_apply_iter(
                 dispatch_carrier,
                 Some(&dispatch_sigma),
                 &selections,
+                env.sub_goal_requires(),
             );
             // WI-508: a NULLARY spec op (`new() -> C`, carrier only in the
             // RESULT) gets no carrier from value args, so value-directed
@@ -25487,6 +25512,7 @@ pub fn build_dep_projection(
         available_requires: caller_requires,
         sigma: disambig,
         selected,
+        sub_goal_requires: &[],
     };
     match resolve_with_rung(kb, &goal, &scope, rung) {
         ResolutionResult::Resolved(tree) => {
@@ -26719,6 +26745,7 @@ pub(crate) fn resolve_bridge_requirements(
             available_requires: &[],
             sigma: None,
             selected: &[],
+            sub_goal_requires: &[],
         };
         // WI-861 — the chain's two halves have two OWNERS ([`dict_layout`]): the sort's
         // slots then the operation's, so the named-slot question is asked of whichever
@@ -28652,6 +28679,7 @@ fn infer_named_slot_bindings(
                         param_rigids,
                     }),
                     selected,
+                    sub_goal_requires: &[],
                 };
                 let Some(provider) = (match resolve(kb, &goal, &scope) {
                     ResolutionResult::Resolved(tree) => tree.impl_sort(),
@@ -28693,6 +28721,7 @@ fn infer_named_slot_bindings(
                             param_rigids,
                         }),
                         selected,
+                        sub_goal_requires: &[],
                     };
                     match resolve(kb, &goal, &scope) {
                         ResolutionResult::Resolved(tree) => tree.impl_sort(),
@@ -31236,6 +31265,20 @@ pub struct ResolutionScope<'a> {
     /// the witness — `fold[Monoid = ListM[O = MyEq]]` — where the selection happens at
     /// the witness's own boundary, as a callee slot again.
     pub selected: &'a [InstanceSelection],
+    /// WI-20260918-CKD4J — the enclosing OPERATION's own `requires` (the op half of its
+    /// frame chain, [`DictChain::op_entries`]), consulted for SUB-goals only: a
+    /// conditional provision's `:- goals` below the goal the call made. A match is
+    /// `FromScope` at `available_requires.len() + j`, i.e. an index into the FRAME
+    /// chain, so it is set only where the tree is named against that chain.
+    ///
+    /// NOT for the call's own goal, and that is WI-822 LEG 1's decision, not an
+    /// omission: an op-scoped requirement serves the call's own spec by value-directed
+    /// dispatch, and widening the top-level lookup flipped 30 working dispatches to an
+    /// unbound slot. A sub-goal has no value to direct it — `eq(a, b)` over
+    /// `Pair[A = X, B = X]` reaches `PartialEq[X]` only as `Pair`'s condition — so
+    /// without this `requires PartialEq[X]` on the operation was invisible to it and
+    /// the call was refused while the sort-level spelling of the same program loaded.
+    pub sub_goal_requires: &'a [RequiresEntry],
 }
 
 /// The synthesized resolution chain. Returned to the requirement-
@@ -31601,6 +31644,23 @@ fn resolve_inner<'a>(
                 scope_index: i,
                 spec_sort: goal.spec_sort,
             });
+        }
+    }
+    // WI-20260918-CKD4J — a SUB-goal may also be answered by the enclosing operation's
+    // own `requires`, at its frame-chain index. See [`ResolutionScope::sub_goal_requires`]
+    // for why the call's own goal may not. Behind the sort half, so a sort-level entry
+    // that covers keeps its slot.
+    if !at_call_goal && pinned.is_none() {
+        let base = scope.available_requires.len();
+        for (j, ar) in scope.sub_goal_requires.iter().enumerate() {
+            if ar.required_sort == goal.spec_sort
+                && requires_entry_covers_goal(kb, ar, goal, scope.sigma)
+            {
+                return ResolutionResult::Resolved(ResolvedRequiresNode::FromScope {
+                    scope_index: base + j,
+                    spec_sort: goal.spec_sort,
+                });
+            }
         }
     }
 
@@ -44025,6 +44085,7 @@ pub fn dispatch_spec_op_with_tree(
         None,
         None,
         &[],
+        &[],
     )
 }
 
@@ -44079,6 +44140,9 @@ pub fn dispatch_spec_op_cached(
     // KEY as well as into the resolution — a pin changes which impl a goal resolves
     // to, so two calls on one goal that pin differently must not share an entry.
     selected: &[InstanceSelection],
+    // WI-20260918-CKD4J — the enclosing operation's own `requires`, for SUB-goals only
+    // ([`ResolutionScope::sub_goal_requires`]). In the memo key: it changes the answer.
+    sub_goal_requires: &[RequiresEntry],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     // Direct defer trigger: a spec that is a *direct* `requires` of the
     // enclosing sort (i.e. present in `enclosing_requires`) is dispatched
@@ -44151,6 +44215,7 @@ pub fn dispatch_spec_op_cached(
         enclosing_requires.to_vec(),
         disambig.is_some(),
         selected.to_vec(),
+        sub_goal_requires.to_vec(),
     );
     if cacheable {
         if let Some(cached) = kb.resolve_cache.borrow().get(&key) {
@@ -44164,6 +44229,7 @@ pub fn dispatch_spec_op_cached(
         enclosing_requires,
         disambig,
         selected,
+        sub_goal_requires,
     );
     if cacheable {
         kb.resolve_cache.borrow_mut().insert(key, result.clone());
@@ -44190,11 +44256,14 @@ fn resolve_at_goal(
     disambig: Option<&SigmaCtx>,
     // WI-841 (058 §4.5): the call site's explicit selections, for `resolve`'s step 0.
     selected: &[InstanceSelection],
+    // WI-20260918-CKD4J — [`ResolutionScope::sub_goal_requires`].
+    sub_goal_requires: &[RequiresEntry],
 ) -> (DispatchOutcome, Option<ResolvedRequiresNode>) {
     let scope = ResolutionScope {
         available_requires: enclosing_requires,
         sigma: disambig,
         selected,
+        sub_goal_requires,
     };
 
     // No matching candidate ⇒ NoCandidates (permissive fall-through).
@@ -66877,6 +66946,7 @@ pub(crate) fn fetch_dictionary(
         available_requires: &[],
         sigma: None,
         selected: &[],
+        sub_goal_requires: &[],
     };
     match resolve(kb, &goal, &scope) {
         ResolutionResult::Resolved(tree) => match dictionary_of_tree(kb, &tree) {
@@ -69150,6 +69220,7 @@ fn spec_resolves_at_bindings(
         available_requires: &[],
         sigma: None,
         selected: &[],
+        sub_goal_requires: &[],
     };
     matches!(resolve(kb, &goal, &scope), ResolutionResult::Resolved(_))
 }

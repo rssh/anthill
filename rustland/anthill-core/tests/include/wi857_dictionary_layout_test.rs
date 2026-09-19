@@ -434,6 +434,7 @@ fn the_layout_counts_what_resolve_bundles() {
             available_requires: &[],
             sigma: None,
             selected: &[],
+            sub_goal_requires: &[],
         };
         let tree = match resolve(&mut kb, &goal, &scope) {
             ResolutionResult::Resolved(t) => t,
@@ -559,6 +560,7 @@ fn an_unprovided_spec_half_slot_is_recorded_not_dropped() {
         available_requires: &[],
         sigma: None,
         selected: &[],
+        sub_goal_requires: &[],
     };
     match resolve(&mut kb, &goal, &scope) {
         ResolutionResult::Resolved(ResolvedRequiresNode::Conditional {

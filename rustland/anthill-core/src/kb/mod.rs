@@ -1950,6 +1950,9 @@ pub struct KnowledgeBase {
                 Vec<crate::kb::typing::RequiresEntry>,
                 bool,
                 Vec<crate::kb::typing::InstanceSelection>,
+                // WI-20260918-CKD4J — the enclosing operation's own `requires`, which
+                // answer a conditional provision's SUB-goals and so change the outcome.
+                Vec<crate::kb::typing::RequiresEntry>,
             ),
             (
                 crate::kb::typing::DispatchOutcome,

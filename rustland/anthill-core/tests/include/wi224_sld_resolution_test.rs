@@ -118,6 +118,7 @@ fn empty_scope<'a>(_subst: &'a Substitution) -> ResolutionScope<'a> {
         available_requires: &[],
         sigma: None,
         selected: &[],
+        sub_goal_requires: &[],
     }
 }
 
@@ -707,6 +708,7 @@ fn available_requires_match_short_circuits_resolution() {
         available_requires: &chain,
         sigma: None,
         selected: &[],
+        sub_goal_requires: &[],
     };
     match resolve(&mut kb, &goal, &scope) {
         ResolutionResult::Resolved(ResolvedRequiresNode::FromScope { scope_index, .. }) => {
