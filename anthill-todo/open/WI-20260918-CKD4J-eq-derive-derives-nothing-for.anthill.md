@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test
 
+- depends_on: WI-20260919-1Z3E7-proposal-066-provision-where
+
 - tags: modinst
 
 ## Description
@@ -64,4 +66,8 @@ MEASURED BEFORE ANY CODE (2026-09-19) — THE TARGET ROW IS NOT FREE, and the di
 ### 2026-09-19T16:10:24Z — feedback — user
 
 CORRECTION + DIRECTION (2026-09-19, user). Point (2) of the previous note was overstated. An abstract element that HAS Eq in scope discharges from the frame. MEASURED against Pair's existing conditional rows: 'r3[X](a: X, b: X) requires PartialEq[X] = eq(a, b)' loads; 'sort E { sort X = ?  requires PartialEq[X]  operation r4(a: Pair[A = X, B = X], …) = eq(a, b) }' loads; the same operation with no requires is refused, which is correct. So the only real behaviour change is for elements with NOTHING in the frame: the 8 stream laws and rules like eq(some(?a), none). BUG FOUND, fixed inline under this ticket: 'r1[X](a: Pair[A = X, B = X], …) requires PartialEq[X] = eq(a, b)' and 'r2 … requires Eq[X]' are REFUSED ('PartialEq.eq.dispatch … unresolved: PartialEq[T = <term#…>]'). An operation-level requires over a BRACKET type parameter is not used to discharge a provision's condition, while the sort-level form and a direct eq on X are. DIRECTION CHOSEN: option 2. Scope a provision's ':- goals' to that provision's own members, both in body environments and in call-site supply, and fix the bracket-parameter discharge. Then derive the rows.
+
+### 2026-09-19T17:23:48Z — feedback — user
+
+PROGRESS (2026-09-19). Two prerequisites DELIVERED here: b0a0e89b (an operation-level requires answers a conditional provision's SUB-goal) and ec63f8b8 (a concrete dependency is no longer blamed on an unrelated `requires` by explain_dep_refusal; this was the List.nth / 55 stl-less unit tests failure). DECIDED (user, option a): `eq` over a container whose element has no PartialEq provision is REFUSED, as for Pair today. Known fallout to resolve with the derivation: 88 fixtures compare Option[anthill.reflect.Term] (an abstract `sort Term = ?` with no provisions), 7 abstract Option.T sites, and the 8 splitFirst stream laws. SCOPING moved to its own ticket WI-20260919-1Z3E7 (proposal 066, provision `where` blocks), which this ticket now depends on: a non-member body must not use a provision's condition. MEASURED: `Box3.inner` charged its callers for `PartialEq[T]`. STILL OPEN from the brainstorm: `requires Eq[X]` does not answer a `PartialEq[X]` sub-goal (a pinned gap for both spellings, wi_ckd4j_op_requires_subgoal_test); List.contains requires only Eq[T], so the derived PartialEq[List] :- PartialEq[T] will hit it. SIDE FINDING: a Float composite has no PartialEq at TYPING time, because eq_derive::run asserts its derived NonEq+PartialEq after the typer (`FE` in the Box3 probe was 'no impl provides PartialEq').
 
