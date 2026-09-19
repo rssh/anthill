@@ -1,0 +1,59 @@
+## Attributes
+
+- id: WI-20260918-CKD4J-eq-derive-derives-nothing-for
+- created: 2026-09-18T15:26:56Z
+
+- status: Open
+- status_agent: user
+- status_at: 2026-09-18T15:26:56Z
+
+- acceptance: cargo-test
+
+- tags: modinst
+
+## Description
+
+`eq_derive` DERIVES NOTHING FOR A PARAMETRIC SORT, NOR FOR A COMPOSITE WITH A PARAMETRIC-TYPED FIELD — so the stdlib's own `List`, `Option` and `SortedSet` are not `Eq`, and a `requires Eq` consumer refuses them at LOAD while `eq` on the very same values works.
+
+MEASURED (freshly built CLI at 749c88d4, 2026-09-18). Every program is `contains(cons(head: X, tail: nil), X)` in an operation body, driven by a rule and asked through `anthill query`:
+
+  X = ibox(v: 1)            sort IBox { entity ibox(v: Int64) }                  loads, answers 1 — CONTROL, WI-1098's case
+  X = box(v: 1)             sort Box { sort T = ?  entity box(v: T) }            LOAD ERROR — `Box` provides no `Eq`
+  X = holder(o: some(1))    sort Holder { entity holder(o: Option[T = Int64]) }  LOAD ERROR — `Holder` provides no `Eq`
+  X = some(1)               stdlib `Option[T = Int64]`                           LOAD ERROR
+  X = cons(head: 1, tail: nil)   stdlib `List[T = Int64]`                        LOAD ERROR
+  X = a `SortedSet[T = Int64, O = Int64]`                                        LOAD ERROR
+
+`Holder` is the row to look at twice: the sort is NOT parametric and every type in it is concrete and lawful. The refusal is WI-1102's positive discharge, verbatim head: "type mismatch in anthill.prelude.List.contains.requires: expected a requirement suppliable at this call site, got requirement `anthill.prelude.Eq[T = probe.eqd.b.Box[T = anthill.prelude.Int64]]` cannot be supplied for call to `anthill.prelude.List.contains`; no impl provides anthill.prelude.Eq; … `probe.eqd.b.Box` provides no `anthill.prelude.Eq`".
+
+THE EQUALITY ITSELF WORKS. Same two sorts, no provision written: `eq(box(v: 1), box(v: 1))` / `eq(box(v: 1), box(v: 2))` / `eq(holder(o: some(1)), holder(o: some(1)))` / `eq(holder(o: some(1)), holder(o: none))` answer 1 / 0 / 1 / 0. What is missing is the ROW, not the behaviour — exactly the state WI-1098 closed for a concrete-field composite, left open one step further out.
+
+THE TARGET FORM EXISTS AND WORKS. Hand-writing `provides PartialEq[Box] :- PartialEq[T]` + `provides Eq[Box] :- Eq[T]` makes the `Box` program load and answer 1. Hand-writing `provides PartialEq[T = Holder]` + `provides Eq[T = Holder]` does the same for `Holder`, and its negative twin (`holder(o: none)`, absent from the list) answers 0. `prelude/pair.anthill` hand-writes this shape four times. So the derivation's output is known: the WI-869 conditional provision, which the dispatch ladder already reads.
+
+WHY IT IS AN ERROR AND NOT A SCOPE NOTE. It is recorded as out of scope in three places — `eq_derive.rs`'s header ("conditional derivation is not yet done"), `wi1098_derive_eq_total_test`'s "OUT OF SCOPE", and 058 §3.10 ("the parametric case still wants the clause form and is not derived") — and was never ticketed. Since WI-1102 the gap is no longer quiet: the positive use-site discharge turned "no row" into a load refusal, so a list of lists cannot be searched. `sortedset.anthill` §EQUALITY says "Equality is STRUCTURAL" and the loader cannot be told so without a hand-written line. USER DIRECTION (2026-09-18): this is an error in `eq_derive`.
+
+THE GUARD IS RIGHT AND MUST SURVIVE. `total_composites`' parametric-field guard exists because an UNCONDITIONAL claim makes `HoldFloatPair` lawful over a `Float` the classifier cannot see (`a_float_behind_a_parametric_field_is_not_claimed_lawful`, measured both ways in WI-1098). The repair is a CONDITIONAL row, not a removed guard.
+
+DIRECTION — not decided here; the reasoning is `docs/brainstorms/deriving.md` §3.1:
+ 1. A parametric sort derives `provides PartialEq[S] :- PartialEq[P…]` and `provides Eq[S] :- Eq[P…]` over the parameters its fields mention.
+ 2. A composite whose field type is a parametric sort at CONCRETE arguments (`Option[T = Int64]`) decides that field by resolving `Eq[Option[T = Int64]]` through (1)'s row, where `sort_functor_of_view` stops at the base sort today.
+ 3. The `NonEq` half is the mirror — a `holder(o: Option[T = Float])` should classify Partial and is "left non-partial (conservative)" today. Say in the delivery whether this ticket takes it or leaves it.
+TWO UNMEASURED QUESTIONS the direction leans on. Whether a provision's `:- goals` tail admits a goal over a type EXPRESSION in the sort's own parameters — `Eq[Pair[A, B]]` for `hold(p: Pair[A, B])` — which the spec's wording ("a spec instantiation over the declaring sort's own parameters") does not settle. And what resolution does with a CYCLE through two conditional provisions (mutually recursive parametric sorts): the Total classification needs it to SUCCEED, being a greatest fixpoint, where 058 §3.8 describes cycle detection as an elimination.
+
+NOT THIS TICKET, recorded so it is not lost: the refusal's own advice is stale — "add `fact anthill.prelude.Eq[…]`" and "(or assert the `fact`)" recommend the spelling WI-20260917-S8JYF retired as a provision.
+
+ACCEPTANCE — driven, each test saying at its site which change it fails without:
+ - The five refused programs above load and ANSWER 1, each beside a negative twin answering 0, so a vacuously true `contains` cannot pass.
+ - THE CONTROL THAT DISTINGUISHES A CONDITIONAL ROW FROM AN UNCONDITIONAL ONE: `contains` over `List[T = Float]` elements is STILL refused. It is refused today too — for want of any row at all — so it passes either way against the right fix and FAILS against the naive one; say so at the site. `a_float_behind_a_parametric_field_is_not_claimed_lawful` stays green for the same reason.
+ - `pair.anthill`'s hand-written provisions are not duplicated (the derivation skips a carrier that already provides), and a carrier with a dispatched `eq` is still a boundary.
+ - `kernel-language.md`'s "Nothing is derived for a parametric sort…" sentence, `eq_derive.rs`'s SCOPE note and 058 §3.10's "still proposed" agree with the code.
+ - cargo-test green.
+
+REF: rustland/anthill-core/src/kb/eq_derive.rs (header SCOPE; `total_composites`); rustland/anthill-core/tests/include/wi1098_derive_eq_total_test.rs ("OUT OF SCOPE"); docs/proposals/058-modular-instances.md §3.8, §3.10; docs/kernel-language.md §8.7 ("Conditional provisions") and §8.3 (the `=` paragraph, "A composite DERIVES its classification"); stdlib/anthill/prelude/pair.anthill (the hand-written target form); stdlib/anthill/prelude/sortedset.anthill §EQUALITY; docs/brainstorms/deriving.md §3.1, §5.6; WI-664, WI-869, WI-1098, WI-1102.
+
+## Changes
+
+### 2026-09-19T07:28:59Z — feedback — user
+
+THE 'NOT THIS TICKET' NOTE IS CLOSED (2026-09-19, in the working tree, not yet committed). The refusal no longer advises the retired spelling: the generic hint reads 'declare `provides Eq[…]` on the carrier, or add `requires Eq[…]` in scope', and the carrier clause names both places a provision is written — 'in its own declaration, or in a `namespace <qualified carrier>` block if it is declared elsewhere'. MEASURED before wording it: the advised `provides` line repairs the program in the carrier's body AND from outside in a `namespace` block at the carrier's QUALIFIED address, while the old advice (`fact Eq[T = Holder]`) re-raised the same refusal. Four sibling diagnostics carried the same stale advice and were fixed with it: `UnsatisfiedProviderRequires`, the two witness-sort selection messages, and the effect-registration refusal — whose own advice (`fact Effect[T = K]`) was MEASURED to re-raise it, and whose `namespace` advice must print the QUALIFIED address (a short `namespace Beep` for a sort-nested kind opens a different namespace). Tests: three rows appended to `wi1102_unsatisfiable_requirement_test`, and `wi_vm3yb_effect_registration_test`'s helper now pins `provides Effect[T =` and the ABSENCE of `fact Effect[T =`. REVIEW ROUND (same day, same commit). /code-review MEASURED that the qualified `namespace` block is a repair only at the FILE'S TOP LEVEL — nested in another namespace the name is read relative to it (`namespace a.b.S` inside `namespace a` opens `a.a.b.S`), the clause is refused as carrier-less and the original refusal stands — so both messages now say so, and each test file drives the nested placement as a control. The carrier clause and the generic hint also name the WITNESS route (one `provides Eq[T = Pebble]` line on `PebbleEq` repairs wi1102's class (2)); the effect message names the kind's OWN body, the only place a namespace-level kind has. `FACT_REASON` (load.rs, the 059 secondary-entry refusal) was first left alone because its rationale cited `maybe_emit_fact_provides_info`, which S8JYF deleted; it is now REWRITTEN to follow kernel-language.md §5.1's 'any `fact`' row, which already held the post-retirement reasoning. Also swept: the quoted spelling in `AmbiguousInstanceFact` / `MixedProviderKinds`, and kernel-language.md's operation auto-binding gradient, which still taught `fact Monoid[T]` as the preferred style (all four `provides` shapes MEASURED to load). The two comments that still gave the shape-recognition reason in the present tense (load.rs above the `ProvidesItem::Fact` refusal, `wi978_secondary_entry_provision_test`'s fixture doc) were put in the past tense with it. NOT A REPAIR, by design: for a genuinely `NonEq` carrier (class (3)) the advised line trades this refusal for `IncompatibleEqNonEq` — `UnprovidedProvision`'s doc says why the diagnostic cannot know that when it renders.
+
