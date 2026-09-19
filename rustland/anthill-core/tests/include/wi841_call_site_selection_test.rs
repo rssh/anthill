@@ -118,6 +118,27 @@ fn refused_with(src: &str, needle: &str, why: &str) {
     );
 }
 
+/// The diagnostic containing `needle` advises `provides` and NEVER the `fact Spec[…]`
+/// spelling WI-20260917-S8JYF retired — a `fact` provides nothing, so a selection
+/// refusal that offers one sends the author back to the same refusal. Both messages that
+/// call this offered "`fact Spec[…]` or `provides Spec[…]`" until that ticket's
+/// follow-up; backing the rewording out fails each caller on the absence leg.
+fn advises_provides_only(src: &str, needle: &str) {
+    let errs = load_errs(src);
+    let hit: Vec<&String> = errs.iter().filter(|e| e.contains(needle)).collect();
+    assert!(
+        !hit.is_empty(),
+        "no diagnostic contains {needle:?}; got: {errs:?}"
+    );
+    for e in hit {
+        assert!(
+            e.contains("declar") && e.contains("`provides ") && !e.contains("`fact"),
+            "the refusal must advise a `provides` declaration and offer no `fact`; \
+             got: {e}"
+        );
+    }
+}
+
 fn loads_clean(src: &str, why: &str) {
     if let Err(errs) = crate::common::try_load_kb_with(src) {
         panic!("{why}; got load errors: {errs:?}");
@@ -732,6 +753,7 @@ fn a_slot_bound_to_a_non_sort_is_refused() {
         ),
     );
     refused_with(&src, "must name a WITNESS SORT", "a literal is no witness");
+    advises_provides_only(&src, "must name a WITNESS SORT");
 }
 
 /// Check 1 again, on a witness that provides a DIFFERENT spec — the other way the
@@ -1154,7 +1176,7 @@ fn an_unbracketed_requires_call_is_unchanged() {
 // ── /code-review round: seven defects, each driven before it was fixed ─────
 
 /// A witness that provides the spec AT OTHER BINDINGS gets its own wording. The
-/// base-level message tells the author to add a `fact Spec[…]` — advice that is
+/// base-level message tells the author to declare a `provides Spec[…]` — advice that is
 /// actively wrong here, because `StrM` HAS one (at `T = String`), and it never names
 /// the bindings, which are the whole content of the mismatch. Two failures, two
 /// messages; asserting only the shared substring is what locked the wrong one in.
@@ -1174,7 +1196,7 @@ fn the_two_provider_failures_say_different_things() {
         !errs
             .iter()
             .any(|e| e.contains("must name a sort that declares")),
-        "a witness that DOES declare the fact must not be told to declare it; got: {errs:?}",
+        "a witness that DOES declare the provision must not be told to declare it; got: {errs:?}",
     );
 
     let never = program(
@@ -1191,6 +1213,7 @@ fn the_two_provider_failures_say_different_things() {
         "must name a sort that declares",
         "and IS told to declare one",
     );
+    advises_provides_only(&never, "must name a sort that declares");
 }
 
 /// A CONCRETE sort that provides NOTHING is a typo, not a coherence rule. Check 1
@@ -1224,6 +1247,11 @@ fn a_concrete_non_provider_is_not_reported_as_a_provider() {
 
 /// The non-sort refusal must name the SPEC in its advice. It named the OPERATION,
 /// telling the author to declare `fact <operation>[…]`.
+///
+/// The spelling pinned here was `fact <Spec>[` until WI-20260917-S8JYF's follow-up
+/// reworded the advice to `provides` (a `fact` provides nothing since that ticket);
+/// the property is unchanged — WHICH NAME the advice carries — and backing the
+/// rewording out fails the first assertion.
 #[test]
 fn the_non_sort_refusal_names_the_spec_not_the_operation() {
     let src = program(
@@ -1236,13 +1264,15 @@ fn the_non_sort_refusal_names_the_spec_not_the_operation() {
     );
     let errs = load_errs(&src);
     assert!(
-        errs.iter().any(|e| e.contains("fact wi841.nsmsg.Monoid[")),
+        errs.iter()
+            .any(|e| e.contains("provides wi841.nsmsg.Monoid[")),
         "the advice must name the SPEC to declare; got: {errs:?}",
     );
     assert!(
         !errs
             .iter()
-            .any(|e| e.contains("fact wi841.nsmsg.Holder.probe[")),
+            .any(|e| e.contains("provides wi841.nsmsg.Holder.probe[")
+                || e.contains("fact wi841.nsmsg.Holder.probe[")),
         "and must not name the OPERATION as the thing to declare; got: {errs:?}",
     );
 }

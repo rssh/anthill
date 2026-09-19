@@ -102,11 +102,12 @@ const SORT: &str = "sort Rec\n    entity rec(n: Int64)\n  end";
 /// THE TWO PLACEMENTS ARE NOW SPELLED DIFFERENTLY, and that is forced rather than
 /// chosen (WI-1000 / 059 R3). Inside a secondary entry the `fact Spec[X]` spelling is
 /// refused and `provides Spec[X]` is the one allowed — the claim is welcome, only
-/// that spelling of it is not, because in an entry a `fact` cannot be told from an
-/// ordinary fact over a parameterized data sort while `provides` is a declaration the
-/// grammar recognises. Outside, `provides` has no type at its address at all and is
-/// refused (`ProvidesClauseNeedsSort`), so the one-level-out claim must stay the
-/// `fact` spelling. The pair below is therefore the only writable one.
+/// that spelling of it is not. (When this was written the reason was that in an entry
+/// a `fact` could not be told from an ordinary fact over a parameterized data sort,
+/// and the one-level-out claim stayed the `fact` spelling because `provides` has no
+/// type at a bare namespace address — `ProvidesClauseNeedsSort`. WI-20260917-S8JYF
+/// ended both halves: a `fact` provides nothing anywhere, and the outer claim below is
+/// a SECOND ENTRY — see `fixture`.)
 ///
 /// WHAT SEPARATES THE TWO IS THE SCOPE, NOT THE SPELLING — WI-1069, correcting what
 /// this comment used to claim ("only `fact` can name a FOREIGN carrier"). Inside a

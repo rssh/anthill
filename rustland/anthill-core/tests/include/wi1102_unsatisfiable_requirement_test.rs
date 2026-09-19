@@ -70,9 +70,10 @@
 //! Backing out the row-exists WORDING fails
 //! `the_row_exists_sentence_does_not_claim_a_condition_it_never_checked`, and only that.
 //!
-//! MEASURED one at a time, each over the whole file: 12 pass, 1 fails. The three are
-//! independent, which is the claim — a shared ladder that only one reader consults is
-//! the defect all three descend from.
+//! MEASURED one at a time, each over the whole file AS IT STOOD THEN (13 rows — the
+//! advice rows at the bottom came later and are outside that count): 12 pass, 1 fails.
+//! The three are independent, which is the claim — a shared ladder that only one reader
+//! consults is the defect all three descend from.
 //!
 //! NOT DRIVEN HERE, and pinned elsewhere rather than duplicated: the FULLY-PINNED gate,
 //! whose control is an abstract carrier that must still enter unsupplied — `wi822
@@ -769,5 +770,200 @@ end
     assert!(
         text.contains("no row of it answers at these bindings"),
         "the sentence must say what was actually established; got:\n{text}"
+    );
+}
+
+// ── the advice must be a REPAIR (WI-20260917-S8JYF's follow-up) ──────────────
+//
+// S8JYF retired `fact Spec[…]` as a provision — "a `fact` is an ordinary fact and
+// nothing else" — and left this refusal offering it twice: the generic hint said "add
+// `fact Eq[…]`" and the carrier clause "(or assert the `fact`)". MEASURED while filing
+// WI-20260918-CKD4J: an author who did what the refusal said got the same refusal back.
+//
+// WHICH ROWS FAIL WHEN THE MESSAGE CHANGE IS BACKED OUT:
+// `the_refusal_advises_provides_and_never_the_retired_fact_spelling`, and the TEXT
+// assertion of `control_the_provision_written_in_a_namespace_block_loads_and_answers`
+// (the old message named no `namespace` block). Everything else here passes EITHER WAY
+// BY DESIGN — the loads are what makes the printed advice TRUE (each place it names
+// loads and answers; the spelling it dropped, and the NESTED placement it warns
+// against, do not), and all of that was true before anything printed it.
+//
+// ONE CLASS IS EXCEPTED, and on purpose: for a carrier that is genuinely `NonEq` (class
+// (3), `NON_EQ`) no provision line is a repair — applying the advice trades this refusal
+// for `IncompatibleEqNonEq`. The sentence is the same there because this diagnostic
+// renders BEFORE `eq_derive::run` asserts the `NonEq` half; `UnprovidedProvision`'s doc
+// says why that is left as-is rather than half-answered. "A REPAIR" above is a claim
+// about classes (1) and (2).
+
+/// The refusal names `provides`, names EVERY place one can be written — the carrier's
+/// declaration, a TOP-LEVEL `namespace` block at its address, a witness sort — and
+/// offers the retired `fact` spelling in neither of its two sentences.
+#[test]
+fn the_refusal_advises_provides_and_never_the_retired_fact_spelling() {
+    let text = refusal(WITNESS_PROVISION, "the witness-only provision");
+    assert!(
+        text.contains("declare `provides anthill.prelude.Eq[…]` on the carrier"),
+        "the generic hint must advise `provides`; got:\n{text}"
+    );
+    assert!(
+        text.contains("in its own declaration")
+            && text.contains("`namespace wi1102.witness.Pebble` block at the file's TOP LEVEL"),
+        "the carrier clause must name both places a provision is written ON the carrier — \
+         its declaration, and a `namespace` block at its QUALIFIED address for an author \
+         who cannot edit it, which is a repair only at the file's top level; got:\n{text}"
+    );
+    assert!(
+        text.contains("on the carrier or on a witness sort, or add `requires")
+            && text.contains("or on a witness sort — or call an operation"),
+        "BOTH sentences must offer the witness route (058) — the generic hint and the \
+         carrier clause; got:\n{text}"
+    );
+    assert!(
+        !text.contains("`fact"),
+        "a `fact` provides nothing since WI-20260917-S8JYF, so no sentence of this \
+         refusal may offer one; got:\n{text}"
+    );
+}
+
+/// The THIRD place the message names, driven, and here the smallest repair there is:
+/// `PebbleEq` already holds the `PartialEq` row, so ONE line on it answers the refusal.
+/// Passes either way BY DESIGN (see the section header) — what it guards is the advice
+/// staying true. `contains` answers 1 through `PebbleEq`'s always-true `eq`, which a
+/// structural compare of `pebble(1)` and `pebble(2)` would not.
+#[test]
+fn control_the_provision_written_on_a_witness_sort_loads_and_answers() {
+    let repaired = WITNESS_PROVISION
+        .replace("wi1102.witness", "wi1102.witnessfixed")
+        .replace(
+            "{Bool, Int64, List, PartialEq}",
+            "{Bool, Int64, List, PartialEq, Eq}",
+        )
+        .replace(
+            "    provides PartialEq[T = Pebble]\n",
+            "    provides PartialEq[T = Pebble]\n    provides Eq[T = Pebble]\n",
+        );
+    assert!(
+        repaired.contains("provides Eq[T = Pebble]"),
+        "the fixture edit must have landed, or this row drives the refused program"
+    );
+    assert_eq!(eval_int(&repaired, "wi1102.witnessfixed.Driver.has"), 1);
+}
+
+/// The SECOND place the message names, driven: the carrier is declared in one namespace
+/// and the provision is written from OUTSIDE it, in a `namespace` block at the carrier's
+/// qualified address. `control_the_provision_written_on_the_carrier_loads_and_answers`
+/// drives the first place.
+///
+/// THE CARRIER IS A BOUNDARY ON PURPOSE. `Pebble` declares its own `eq`, so `eq_derive`
+/// leaves it alone now and after WI-20260918-CKD4J alike — with a carrier the derivation
+/// reaches, the block would not be load-bearing and this would measure nothing. Both
+/// halves are asserted for that reason: WITHOUT the block the program is refused, WITH it
+/// the program loads and `contains` answers through the carrier's own always-true `eq`
+/// (`pebble(2)` is "found" in `[pebble(1)]`), which a structural compare would not.
+#[test]
+fn control_the_provision_written_in_a_namespace_block_loads_and_answers() {
+    // `block` lands at the FILE'S TOP LEVEL, `nested` inside `namespace {ns}.app` — the
+    // two placements of one and the same text.
+    let program = |ns: &str, block: &str, nested: &str| {
+        format!(
+            r#"
+namespace {ns}.lib
+  import anthill.prelude.{{Int64, Bool}}
+  sort Pebble
+    entity pebble(n: Int64)
+    operation eq(a: Pebble, b: Pebble) -> Bool = true
+  end
+end
+{block}
+namespace {ns}.app
+  import anthill.prelude.{{Bool, Int64, List}}
+  import anthill.prelude.List.{{cons, nil, contains}}
+  import {ns}.lib.Pebble
+  import {ns}.lib.Pebble.{{pebble}}
+{nested}
+  sort Driver
+    operation has(n: Int64) -> Int64 =
+      if contains(cons(head: pebble(n: 1), tail: nil), pebble(n: 2)) then 1 else 0
+  end
+end
+"#
+        )
+    };
+    let text = refusal(
+        &program("wi1102.outside.no", "", ""),
+        "the boundary carrier with no provision anywhere",
+    );
+    assert!(
+        text.contains("`namespace wi1102.outside.no.lib.Pebble` block"),
+        "the refusal must print the very address the repair below is written at; \
+         got:\n{text}"
+    );
+    let block = |ns: &str| {
+        format!(
+            "namespace {ns}.lib.Pebble\n  import anthill.prelude.{{Eq}}\n  \
+             provides Eq[T = Pebble]\nend"
+        )
+    };
+    assert_eq!(
+        eval_int(
+            &program("wi1102.outside.yes", &block("wi1102.outside.yes"), ""),
+            "wi1102.outside.yes.app.Driver.has"
+        ),
+        1,
+        "with the provision written from outside, at the carrier's address, the \
+         dictionary builds and `contains` dispatches to `Pebble`'s own `eq`"
+    );
+
+    // WHY THE MESSAGE SAYS "AT THE FILE'S TOP LEVEL": the SAME block, pasted inside the
+    // author's own namespace, is no repair. A nested `namespace` name is read relative to
+    // the enclosing one, so it opens `…app.wi1102.outside.nested.lib.Pebble` — a namespace
+    // with no sort at it — and the original refusal stands beside the new one. Passes
+    // either way BY DESIGN: it is what makes the qualifier in the advice TRUE.
+    let text = refusal(
+        &program("wi1102.outside.nested", "", &block("wi1102.outside.nested")),
+        "the qualified `namespace` block nested in another namespace",
+    );
+    assert!(
+        text.contains("wi1102.outside.nested.app.wi1102.outside.nested.lib.Pebble"),
+        "the nested block must open a RELATIVE namespace, not the carrier's address; \
+         got:\n{text}"
+    );
+    assert_names_carrier_and_provision(
+        &text,
+        "anthill.prelude.List.contains",
+        "wi1102.outside.nested.lib.Pebble",
+        "anthill.prelude.Eq",
+    );
+}
+
+/// The spelling the message DROPPED, driven: it is still refused, which is the whole
+/// reason the message may not offer it. `WITNESS_PROVISION` with the old advice applied
+/// verbatim — a namespace-level `fact Eq[T = Pebble]` — and nothing else changed.
+#[test]
+fn control_the_retired_fact_spelling_is_still_refused() {
+    const SRC: &str = r#"
+namespace wi1102.factadvice
+  import anthill.prelude.{Bool, Int64, List, PartialEq, Eq}
+  import anthill.prelude.List.{cons, nil, contains}
+  sort Pebble
+    entity pebble(n: Int64)
+  end
+  sort PebbleEq
+    provides PartialEq[T = Pebble]
+    operation eq(a: Pebble, b: Pebble) -> Bool = true
+  end
+  fact Eq[T = Pebble]
+  sort Driver
+    operation has(n: Int64) -> Int64 =
+      if contains(cons(head: pebble(n: 1), tail: nil), pebble(n: 2)) then 1 else 0
+  end
+end
+"#;
+    let text = refusal(SRC, "the old advice, applied verbatim");
+    assert_names_carrier_and_provision(
+        &text,
+        "anthill.prelude.List.contains",
+        "wi1102.factadvice.Pebble",
+        "anthill.prelude.Eq",
     );
 }

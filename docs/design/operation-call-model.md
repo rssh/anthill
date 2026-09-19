@@ -763,7 +763,7 @@ Coherence at the **diamond join point** (caller D requires B and C, both with `r
 
 ### Error reporting
 
-- `NoMatch`: "no impl provides Eq[List[Int64]] in scope; add `fact Eq[T = List[Int64]] :- ...` or `requires Eq[T = List[Int64]]`."
+- `NoMatch`: "no impl provides Eq[List[Int64]]; declare `provides Eq[…]` on the carrier or on a witness sort, or add `requires Eq[…]` in scope." (The `fact Eq[…]` this first advised stopped being a provision with WI-20260917-S8JYF, so the advice re-raised the error it answered.)
 - `Ambiguous(candidates)`: "Eq[List[Int64]] is ambiguous: matches IntListEq, GenericListEq[T=Int64]. Disambiguate with priority annotation."
 - `Cyclic`: "instance resolution for Eq[F[T]] is cyclic: F[T]'s impl requires Eq[F[T]] which requires Eq[F[T]] which..."
 

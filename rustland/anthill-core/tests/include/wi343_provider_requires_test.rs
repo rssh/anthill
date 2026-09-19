@@ -77,6 +77,26 @@ fn provider_missing_required_subspec_errors() {
         text.contains("Comparable") && text.contains("Nameable") && text.contains("Widget"),
         "expected the diagnostic to name Widget, Comparable, and Nameable; got:\n{text}"
     );
+    // THE REPAIR, which only the LOCATED rendering (`format_at`, what the CLI prints)
+    // carries — `Display` above stops at the verdict. It advised "add a `fact
+    // Nameable[…]` for the carrier" until WI-20260917-S8JYF's follow-up: that ticket made
+    // a `fact Spec[…]` an ordinary fact that provides nothing, so the advice re-raised
+    // this refusal. Backing the rewording out fails BOTH legs below; the rows above pass
+    // either way by design (they are WI-343's verdict, not the wording).
+    let located: Vec<String> = errs
+        .iter()
+        .map(|e| e.format_at(&anthill_core::span::LineIndex::new(src)))
+        .collect();
+    assert!(
+        located.iter().any(
+            |m| m.contains("(declare `provides ") && m.contains("Nameable[…]` on the carrier)")
+        ),
+        "the located refusal must advise declaring the `provides`; got:\n{located:#?}"
+    );
+    assert!(
+        !located.iter().any(|m| m.contains("`fact")),
+        "a `fact` provides nothing, so the refusal may not offer one; got:\n{located:#?}"
+    );
 }
 
 // ── A complete provision (carrier provides the spec AND its requires) ───

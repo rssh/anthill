@@ -1229,8 +1229,7 @@ impl TypeError {
                 let spec_qn = kb.qualified_name_of(*spec);
                 format!(
                     "the `[{} = …]` binding on {} selects a provider, so its value must \
-                     name a WITNESS SORT — a sort declaring `fact {}[…]` or `provides \
-                     {2}[…]`",
+                     name a WITNESS SORT — a sort declaring `provides {2}[…]`",
                     short_name_of(spec_qn),
                     kb.qualified_name_of(*op),
                     spec_qn,
@@ -1297,7 +1296,7 @@ impl TypeError {
                 } else {
                     format!(
                         "{} does not provide {} — a call-site `[{} = {}]` on {} must \
-                         name a sort that declares `fact {1}[…]` or `provides {1}[…]`",
+                         name a sort that declares `provides {1}[…]`",
                         kb.qualified_name_of(*witness),
                         spec_qn,
                         short_name_of(spec_qn),
@@ -23733,10 +23732,27 @@ impl RequirementRefusal {
                      a row at this instantiation"
                 )
             } else {
+                // EVERY place a provision can be written, and NOT `fact`: since
+                // WI-20260917-S8JYF a `fact Spec[…]` is an ordinary fact and provides
+                // nothing, so the "(or assert the `fact`)" this used to offer was a repair
+                // that re-raises this very refusal — MEASURED, WI-20260918-CKD4J's probes.
+                // The `namespace` half is what an author who cannot edit the carrier needs
+                // (a secondary entry, 059 R2/R3); `provides_needs_sort_message` words the
+                // same two places. The WITNESS half is the 058 route and is often the
+                // smallest repair — a sort that already holds the `PartialEq` row takes
+                // the `Eq` one in a line (MEASURED on wi1102's `WITNESS_PROVISION`).
+                //
+                // "AT THE FILE'S TOP LEVEL" IS LOAD-BEARING. A `namespace` name nested in
+                // another namespace is read RELATIVE to it — MEASURED: `namespace a.b.S`
+                // pasted inside `namespace a` opens `a.a.b.S`, the clause is refused as
+                // carrier-less and this refusal still stands. The qualified address printed
+                // here is a repair only where it is absolute.
                 format!(
-                    "; `{carrier}` provides no `{spec}` — declare `provides {}` on \
-                     `{carrier}` (or assert the `fact`), or call an operation that does \
-                     not require it",
+                    "; `{carrier}` provides no `{spec}` — declare `provides {}`: on \
+                     `{carrier}` itself (in its own declaration, or, if it is declared \
+                     elsewhere, in a `namespace {carrier}` block at the file's TOP LEVEL \
+                     — nested in another namespace that name is read relative to it), or \
+                     on a witness sort — or call an operation that does not require it",
                     self.dep_text,
                 )
             });
@@ -31575,8 +31591,11 @@ fn resolve_inner<'a>(
         stack.pop();
         return ResolutionResult::NoMatch {
             goal_text: format_goal(kb, goal),
+            // `provides`, not `fact`: WI-20260917-S8JYF retired `fact Spec[…]` as a
+            // provision, so advising it sent the author back to this same `NoMatch`.
             hint: format!(
-                "no impl provides {}; add `fact {0}[…]` or `requires {0}[…]` in scope",
+                "no impl provides {0}; declare `provides {0}[…]` on the carrier or on a \
+                 witness sort, or add `requires {0}[…]` in scope",
                 kb.qualified_name_of(goal.spec_sort)
             ),
             spec: goal.spec_sort,
@@ -39197,7 +39216,7 @@ pub fn check_effect_registration(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     // pre-registered by `register_stdlib_scopes`, so an unresolvable name means a KB that
     // never loaded the prelude — nothing there can name an effect either. Reaching HERE
     // means `Effect` is declared and carries no type parameter, which no registration
-    // could bind: every `fact Effect[T = K]` in the tree would be malformed too. Returning
+    // could bind: every `provides Effect[T = K]` in the tree would be malformed too. Returning
     // empty would make this pass inert exactly the way the declaration it enforces used to
     // be — the failure this ticket exists to end, re-created in the checker.
     let Some(param) = kb
@@ -39207,7 +39226,7 @@ pub fn check_effect_registration(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
     else {
         return vec![super::load::LoadError::Other {
             message: format!(
-                "`{}` declares no type parameter, so no `fact Effect[T = Kind]` can \
+                "`{}` declares no type parameter, so no `provides Effect[T = Kind]` can \
                  bind one and no effect kind can be registered — the \
                  effect-registration check cannot run. The prelude declares \
                  `sort Effect {{ sort T = ? }}` \
@@ -39247,25 +39266,41 @@ pub fn check_effect_registration(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             // load (`unresolved name 'Beep'`, plus a carrier-less provision error) and
             // left the original refusal standing; naming it qualified would be advice
             // about a spelling the binding slot does not take.
+            //
+            // NOT `fact Effect[…]`: WI-20260917-S8JYF retired it, so the line this used to
+            // advise re-raised this refusal (MEASURED, and pinned from the other side by
+            // `wi_s8jyf…::an_effect_kind_registers_through_provides_only`).
+            //
+            // THREE PLACES, each MEASURED to load: the kind's OWN body (the only one a
+            // namespace-level kind has — it is declared by no sort, and it is the spelling
+            // effects.anthill documents first), the sort that declares a NESTED kind, and a
+            // secondary entry. The secondary entry's address is printed QUALIFIED and is
+            // absolute only at the FILE'S TOP LEVEL: nested in another namespace the same
+            // name is read relative to it — `namespace a.Host.Beep` inside `namespace a`
+            // opens `a.a.Host.Beep`, the clause is refused as carrier-less, and this
+            // refusal stands. (A RELATIVE name nested beside the declaration — `namespace
+            // Beep` — loads too, and `a_namespace_block_provides_registers_the_kind`
+            // drives it; the message prints the one spelling that needs no "where".)
+            let op = kb.qualified_name_of(op_sym);
+            let label = type_display_name_value(kb, &label);
+            let kind_qn = kb.qualified_name_of(kind);
             let short = kb.local_name_of(kind);
             errors.push(super::load::LoadError::Other {
                 message: format!(
-                    "operation `{}` declares effect `{}`, but `{}` is not a REGISTERED \
-                     effect kind — nothing in the knowledge base says that sort is an \
-                     effect, so this row element names a label the kernel never admitted \
-                     and a misspelling of it would read as a new effect rather than as an \
-                     error. Effect labels are OPEN (kernel-language.md §5.5) — any sort \
-                     may be one — but becoming one is a declaration, written where `{}` is \
-                     in scope: `fact Effect[T = {}]` in the namespace that declares it, or \
-                     `provides Effect[T = {}]` inside the sort that declares it (proposal \
-                     013; `stdlib/anthill/prelude/effects.anthill`). If the label is a \
-                     typo, fix the spelling.",
-                    kb.qualified_name_of(op_sym),
-                    type_display_name_value(kb, &label),
-                    kb.qualified_name_of(kind),
-                    short,
-                    short,
-                    short,
+                    "operation `{op}` declares effect `{label}`, but `{kind_qn}` is not a \
+                     REGISTERED effect kind — nothing in the knowledge base says that sort \
+                     is an effect, so this row element names a label the kernel never \
+                     admitted and a misspelling of it would read as a new effect rather \
+                     than as an error. Effect labels are OPEN (kernel-language.md §5.5) — \
+                     any sort may be one — but becoming one is a declaration, `provides \
+                     Effect[T = {short}]`, written where `{short}` is in scope: in \
+                     `{short}`'s own body, or inside the sort that declares it. If it is \
+                     declared elsewhere, write the clause in a `namespace {kind_qn}` block \
+                     at the file's TOP LEVEL — that is the sort's own ADDRESS, and nested \
+                     in another namespace the same name is read relative to it and opens \
+                     a different one (proposal 013; \
+                     `stdlib/anthill/prelude/effects.anthill`). If the label is a typo, \
+                     fix the spelling.",
                 ),
             });
         }

@@ -5726,22 +5726,22 @@ Different namespaces may declare different providers of the same spec for the sa
 
 A tie with no single most-refined definer is a genuine ambiguity (resolution falls back to first-match and should be avoided — give one a distinct path or name). To deliberately invoke a non-winning op, qualify the call (`Iterable.map(xs, f)`).
 
-**Operation auto-binding.** Operations in parametric sorts are implicitly parameterized — like type parameters (`sort T = ?`), they are logical variables bound at instantiation. When a sort satisfies a spec via `fact S[T]`, operations with matching names and compatible signatures are **automatically unified** — no explicit binding needed.
+**Operation auto-binding.** Operations in parametric sorts are implicitly parameterized — like type parameters (`sort T = ?`), they are logical variables bound at instantiation. When a sort satisfies a spec via `provides S[T]`, operations with matching names and compatible signatures are **automatically unified** — no explicit binding needed. (The clause was spelled `fact S[T]` until WI-20260917-S8JYF; a `fact` is now an ordinary fact and provides nothing — §5.1.)
 
 The binding gradient:
 
 ```
 -- Full auto-binding: T=T and all same-named operations unified
-fact Monoid
+provides Monoid
 
 -- Explicit type, auto-bind operations (preferred style)
-fact Monoid[T]
+provides Monoid[T]
 
 -- Explicit rename when names differ
-fact Monoid[T, combine = add]
+provides Monoid[T, combine = add]
 ```
 
-When `fact S[T]` appears inside a sort body, it means both spec satisfaction AND operation inheritance: the sort gains all operations defined in the spec. Defaulted operations (a spec-level `operation … = body`) carry over automatically; the satisfying sort only provides the primitive operations. For example, `Stream` defines `head` by a default body over `splitFirst`, so a sort declaring `fact Stream[T]` inherits `head` without redeclaring it.
+When `provides S[T]` appears inside a sort body, it means both spec satisfaction AND operation inheritance: the sort gains all operations defined in the spec. Defaulted operations (a spec-level `operation … = body`) carry over automatically; the satisfying sort only provides the primitive operations. For example, `Stream` defines `head` by a default body over `splitFirst`, so a sort declaring `provides Stream[T]` inherits `head` without redeclaring it.
 
 **A NAMESPACE-level operation is not backing (WI-935).** Backing must be reachable *through the carrier* — the carrier's own member or an inherited spec default (see the next paragraph for the full list). A free operation declared at **namespace** level, with the same name and signature and sitting beside the carrier, is none of those and backs nothing: `check_provider_operations` reports one `… no own <op> on <carrier>` per declared member (measured). The refusal is not incidental. A spec member is dispatched *through* its carrier, so with two carriers of one spec there are two `vec_add`s and the carrier is the only thing that distinguishes them; a namespace-level name has no carrier dimension to distinguish by. The implementation therefore goes in the carrier's sort body. Writing it there means writing the long form `sort E { entity E(…); operation … }` where `entity E(…)` stood — the same declaration (§6.3), now with somewhere to put members, but **not** a no-op edit: it changes the parse-IR item kind, and a codegen backend reached the two spellings by different paths — scaland's `Bootstrap` emitted a `case class` for the sugar and `enum Vec3: case Vec3(…)` for the long form, which is the `Vec3.Vec3` §6.3 rules out. Fixed and pinned by byte-equality of the two emissions (WI-940).
 

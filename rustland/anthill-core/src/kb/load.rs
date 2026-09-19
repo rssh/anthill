@@ -2435,7 +2435,7 @@ impl LoadError {
                 required,
                 derived_from,
             } => {
-                format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (add a `fact {}[…]` for the carrier){}",
+                format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (declare `provides {}[…]` on the carrier){}",
                     carrier, spec, required, carrier, required, required,
                     derived_row_clause(spec, derived_from.as_deref()))
             }
@@ -2544,7 +2544,7 @@ impl LoadError {
                 spec,
                 count,
             } => {
-                format!("ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' — each binds the spec's operations differently, and an instance fact has no NAME, so no use-site selection can spell one (named instance facts are not supported); keep exactly one `fact {}[…]` per (spec, carrier)",
+                format!("ambiguous instance: {} distinct instance facts provide '{}' for carrier '{}' — each binds the spec's operations differently, and an instance fact has no NAME, so no use-site selection can spell one (named instance facts are not supported); keep exactly one op-binding `provides {}[…, op = f]` per (spec, carrier) — that clause is what an instance fact is written as since WI-20260917-S8JYF retired `fact Spec[…]`",
                     count, spec, carrier, spec)
             }
             LoadError::MixedProviderKinds {
@@ -2553,7 +2553,7 @@ impl LoadError {
                 fact_count,
                 witnesses,
             } => {
-                format!("ambiguous provider kinds: '{}' for carrier '{}' is provided BOTH by {} instance fact(s) (`fact {}[…]`, binding the spec's operations in the fact itself) AND by {} witness sort(s) ({}), backing them with their own member ops — two distinct dictionaries for one (spec, carrier); drop either the instance fact(s) or the witness sort(s). Two WITNESSES here would be legal and selected at the use site (`[{} = <witness>]`), but an instance fact has NO NAME, so no call site could spell it.",
+                format!("ambiguous provider kinds: '{}' for carrier '{}' is provided BOTH by {} instance fact(s) (`provides {}[…, op = f]`, binding the spec's operations in the clause itself) AND by {} witness sort(s) ({}), backing them with their own member ops — two distinct dictionaries for one (spec, carrier); drop either the instance fact(s) or the witness sort(s). Two WITNESSES here would be legal and selected at the use site (`[{} = <witness>]`), but an instance fact has NO NAME, so no call site could spell it.",
                     spec, carrier, fact_count, spec,
                     witnesses.len(),
                     witnesses.iter().map(|w| format!("'{}'", w)).collect::<Vec<_>>().join(", "),
@@ -8432,11 +8432,12 @@ impl SecondaryEntryPass<'_> {
                 // 15 blocks is one). Since WI-862 the repair is writable IN PLACE —
                 // `provides Spec[T = Carrier]`, the arm above — where before it meant
                 // moving the claim out to the entry's direct content. The
-                // discriminator problem is why:
-                // `maybe_emit_fact_provides_info` recognises a claim by SHAPE (a
-                // functor that is a sort with at least one type parameter), which
-                // cannot tell a spec claim from a fact over a parameterized DATA sort,
-                // and that population is exactly what the default-deny rule refuses.
+                // discriminator problem WAS why: the loader recognised a claim by SHAPE
+                // (a functor that is a sort with at least one type parameter), which
+                // could not tell a spec claim from a fact over a parameterized DATA
+                // sort. WI-20260917-S8JYF deleted that recogniser — a `fact` is an
+                // ordinary fact everywhere — and the refusal now stands on §5.1's
+                // plainer ground; see [`FACT_REASON`].
                 // The corpus pays nothing — it contains no secondary entry, so no
                 // block sits inside one.
                 // A block's clauses load into the SPEC's scope, so this fact is never a
@@ -8770,22 +8771,26 @@ const RULE_DECLARATION_REASON: &str = "a body-less `rule` DECLARES a predicate (
 
 /// 059's fact ban. Shared by the entry-level and the `provides`-block-interior sites.
 ///
-/// WI-1001 MOVED THE WEIGHT ONTO THE DISCRIMINATOR, and the old first clause had to
-/// go: it read "facts are rules … so the rule ban reaches it", and there is no longer
-/// a rule ban for it to reach. Since 061 a `fact H` IS `rule H :- true`, so a fact
-/// with a FRESH head satisfies both of the narrow rule's conditions — what refuses it
-/// here is the second clause alone, which is about the SPELLING and not about the
-/// head: `maybe_emit_fact_provides_info` recognises a spec claim by SHAPE (a functor
-/// that is a sort with at least one type parameter), and that shape cannot be told
-/// from an ordinary fact over a parameterized DATA sort. Nothing is thereby
-/// unwritable: the rule spelling of the same assertion is admitted by the narrow rule,
-/// and the message says so.
-const FACT_REASON: &str = "in a secondary entry a `fact Spec[X]` cannot be told from \
-    an ordinary fact over a parameterized data sort — the claim is recognised by \
-    SHAPE, and default-deny refuses the spelling rather than guess. A claim that THIS \
-    sort satisfies a spec is written `provides Spec[…]` here, which is a declaration \
-    and needs no discriminator; a claim about ANY OTHER carrier is not about this sort \
-    at all and belongs one level out, where `fact Spec[Carrier]` stays the spelling. \
+/// THE REFUSAL PREDATES WI-20260917-S8JYF AND ITS REASON CHANGED WITH IT — the wording
+/// below follows `docs/kernel-language.md` §5.1's "any `fact`" row, which is the owner.
+/// It used to be default-deny against a `fact Spec[X]` that could not be told from an
+/// ordinary fact over a parameterized DATA sort (the loader recognised a spec claim by
+/// SHAPE). There is now nothing to tell apart — a `fact` is an ordinary fact wherever it
+/// stands — so what refuses it is simply that an entry adds MEMBERS and SPEC CLAIMS and
+/// a `fact` is neither. The old text also offered an ESCAPE the retirement removed
+/// ("belongs one level out, where `fact Spec[Carrier]` stays the spelling"): following
+/// it re-raised the requirement refusal it was meant to answer, which
+/// `wi1102…::control_the_retired_fact_spelling_is_still_refused` pins.
+///
+/// Nothing is thereby unwritable: a fact with a FRESH head is `rule H :- true` (061),
+/// which the narrow rule (WI-1001) admits, and the message says so.
+const FACT_REASON: &str = "a secondary entry adds MEMBERS and SPEC CLAIMS, and a `fact` \
+    is neither — since WI-20260917-S8JYF a `fact Spec[X]` is an ordinary fact wherever \
+    it stands and provides nothing. Every spec claim an entry can make is written \
+    `provides Spec[…]` here, including one whose carrier is some OTHER sort (a witness \
+    claim: this sort supplies the dictionary); a claim that belongs to another carrier \
+    is written the same way at THAT carrier, in its declaration or in a `namespace \
+    <Carrier>` block. \
     An ordinary assertion with a FRESH head is written as the rule it desugars to \
     (`rule freshp(1) :- true`), which 059 R3's narrow rule admits";
 

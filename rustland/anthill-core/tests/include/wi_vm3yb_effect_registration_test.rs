@@ -1,7 +1,9 @@
 //! WI-20260823-VM3YB — an effect-row label must name a REGISTERED effect kind.
 //!
 //! `stdlib/anthill/prelude/effects.anthill` has documented the registration since it was
-//! written ("Effect kinds are registered via `fact Effect[T = Kind[?]]`") and proposal
+//! written ("Effect kinds are registered via `fact Effect[T = Kind[?]]`" — the spelling
+//! of the day; WI-20260917-S8JYF retired it for `provides Effect[T = Kind]`, which is how
+//! every fixture below registers) and proposal
 //! 013 says what it is for ("Unknown effect kind = missing fact"). Nothing asked, at any
 //! site, so the declaration was inert everywhere it appeared and a MISSPELLED label was a
 //! silent new effect. `typing::check_effect_registration` is the site that asks; this
@@ -30,14 +32,33 @@ fn load_errors(src: &str) -> Vec<String> {
     }
 }
 
-/// Did the load refuse `label` as unregistered? Matches on BOTH halves the ticket's
-/// acceptance names — the label and the repair — so a refusal that merely mentions the
-/// operation cannot satisfy these rows.
+/// Was `label` refused as unregistered AT ALL — the verdict, and nothing about its
+/// wording. The NEGATIVE row (`a_label_inside_a_parameters_arrow_row_is_not_checked`)
+/// asks this one: read through [`refused_unregistered`] its `!` would pass vacuously the
+/// day the wording drifted, whether or not the arrow position had started being refused.
+fn was_refused(errs: &[String], label: &str) -> bool {
+    errs.iter()
+        .any(|e| e.contains("is not a REGISTERED effect kind") && e.contains(label))
+}
+
+/// Did the load refuse `label` as unregistered, WITH THE REPAIR? Matches on BOTH halves
+/// the ticket's acceptance names — the label and the repair — so a refusal that merely
+/// mentions the operation cannot satisfy these rows. For POSITIVE assertions only; see
+/// [`was_refused`].
+///
+/// THE REPAIR IS `provides`, AND THE RETIRED SPELLING MUST BE ABSENT. This pinned
+/// `fact Effect[T =` until WI-20260917-S8JYF's follow-up: that ticket retired the `fact`
+/// spelling of a provision and left this message advising it, so an author who did what
+/// the refusal said got the same refusal back (MEASURED — and
+/// `wi_s8jyf_provision_spelling_test::an_effect_kind_registers_through_provides_only`
+/// pins the behaviour from the other side). Backing the message change out fails every
+/// row that asserts this, on the absence leg.
 fn refused_unregistered(errs: &[String], label: &str) -> bool {
     errs.iter().any(|e| {
         e.contains("is not a REGISTERED effect kind")
             && e.contains(label)
-            && e.contains("fact Effect[T =")
+            && e.contains("provides Effect[T =")
+            && !e.contains("fact Effect[T =")
     })
 }
 
@@ -67,7 +88,7 @@ fn an_unregistered_label_is_refused_naming_the_label_and_the_registration() {
     );
     assert!(
         refused_unregistered(&errs, "Unregistered"),
-        "an unregistered label must be refused, naming the label and `fact Effect[…]`; \
+        "an unregistered label must be refused, naming the label and `provides Effect[…]`; \
          got: {errs:#?}"
     );
 }
@@ -158,10 +179,11 @@ fn a_lacks_atom_is_judged_on_its_label() {
 #[test]
 fn an_unimported_effect_registers_nothing_and_the_label_is_refused() {
     // THE SHAPE THAT SHIPPED A REVIEW CYCLE. `wi698_row_param_refinement_test`'s fixture
-    // wrote exactly this — `fact Effect[T = Reg]` with `Effect` MISSING from the import
-    // list — where the head mints a bare global predicate that is not
-    // `anthill.prelude.Effect`, so no provision is emitted and nothing is registered. The
-    // suite was green throughout.
+    // wrote exactly this — a registration with `Effect` MISSING from the import list. It
+    // was spelled `fact Effect[T = Reg]` then, where the head mints a bare global
+    // predicate that is not `anthill.prelude.Effect`, so no provision is emitted and
+    // nothing is registered; the suite was green throughout. The fixture below is the
+    // same omission in today's `provides` spelling (WI-20260917-S8JYF's migration).
     //
     // The FACT half of that (a fact whose functor resolves to nothing, admitted silently)
     // is NOT fixed here and is not this pass's to fix: it is `remap_name_str`'s bare-
@@ -276,8 +298,10 @@ fn the_repair_the_message_names_actually_loads() {
     assert!(
         refused
             .iter()
-            .any(|e| e.contains("inside the sort that declares it")),
-        "the message must say WHERE the short name is in scope; got: {refused:#?}"
+            .any(|e| e.contains("in `Beep`'s own body, or inside the sort that declares it")),
+        "the message must say WHERE the short name is in scope — BOTH places, since a \
+         namespace-level kind is declared by no sort and has only the first; got: \
+         {refused:#?}"
     );
     let repaired = load_errors(
         r#"
@@ -296,19 +320,130 @@ fn the_repair_the_message_names_actually_loads() {
     "#,
     );
     expect_clean(&repaired, "the repair the message names");
+
+    // THE SECOND PLACE THE MESSAGE NAMES, for an author who cannot edit `Host`: a
+    // `namespace` block at the sort's ADDRESS. The address must be the QUALIFIED one —
+    // MEASURED, a short `namespace Beep` opens `vm3yb.….Beep`, a namespace with no sort
+    // there, and both the clause and the original refusal come back. So the message
+    // prints the qualified name, and this drives exactly that text.
+    //
+    // Backing the message change out fails the `contains` below (the old text offered
+    // `fact Effect[T = Beep]` "in the namespace that declares it" instead). The load
+    // underneath it passes either way BY DESIGN: it is what makes the advice TRUE, and it
+    // was true before anything printed it.
+    assert!(
+        refused
+            .iter()
+            .any(|e| e
+                .contains("`namespace vm3yb.nested_kind.Host.Beep` block at the file's TOP LEVEL")),
+        "the message must name the sort's QUALIFIED address for the secondary entry, and \
+         say it is an address only at the file's top level; got: {refused:#?}"
+    );
+    let repaired_from_outside = load_errors(
+        r#"
+        namespace vm3yb.nested_kind_outside
+          import anthill.prelude.{Unit}
+          sort Host
+            sort Beep end
+          end
+          sort W
+            import vm3yb.nested_kind_outside.Host.{Beep}
+            entity w
+            operation ping(x: W) -> Unit effects Beep
+          end
+        end
+        namespace vm3yb.nested_kind_outside.Host.Beep
+          import anthill.prelude.{Effect}
+          provides Effect[T = Beep]
+        end
+    "#,
+    );
+    expect_clean(
+        &repaired_from_outside,
+        "the `namespace <address>` repair the message names",
+    );
+
+    // THE FIRST PLACE — the kind's OWN body — which is the only one a namespace-level kind
+    // has. Driven on the nested kind here; the namespace-level case is how the prelude's
+    // own kinds register (`Modify`, `Error`, `Suspension`, `Branch`), which
+    // `the_prelude_effect_kinds_are_all_registered` drives. Passes either way BY DESIGN,
+    // like the load above.
+    let repaired_in_own_body = load_errors(
+        r#"
+        namespace vm3yb.nested_kind_own_body
+          import anthill.prelude.{Unit, Effect}
+          sort Host
+            sort Beep
+              provides Effect[T = Beep]
+            end
+          end
+          sort W
+            import vm3yb.nested_kind_own_body.Host.{Beep}
+            entity w
+            operation ping(x: W) -> Unit effects Beep
+          end
+        end
+    "#,
+    );
+    expect_clean(
+        &repaired_in_own_body,
+        "the own-body repair the message names",
+    );
+
+    // WHY THE MESSAGE SAYS "AT THE FILE'S TOP LEVEL": the SAME qualified block nested in
+    // the declaring namespace is no repair. The name is read relative to the enclosing
+    // namespace, opens `vm3yb.….vm3yb.….Host.Beep` — no sort there — and the original
+    // refusal stands beside the carrier-less one. Passes either way BY DESIGN: it is
+    // what makes the qualifier in the advice TRUE.
+    let nested = load_errors(
+        r#"
+        namespace vm3yb.nested_kind_nested_block
+          import anthill.prelude.{Unit, Effect}
+          sort Host
+            sort Beep end
+          end
+          namespace vm3yb.nested_kind_nested_block.Host.Beep
+            provides Effect[T = Beep]
+          end
+          sort W
+            import vm3yb.nested_kind_nested_block.Host.{Beep}
+            entity w
+            operation ping(x: W) -> Unit effects Beep
+          end
+        end
+    "#,
+    );
+    assert!(
+        was_refused(&nested, "vm3yb.nested_kind_nested_block.Host.Beep")
+            && nested.iter().any(|e| e.contains(
+                "vm3yb.nested_kind_nested_block.vm3yb.nested_kind_nested_block.Host.Beep"
+            )),
+        "a qualified `namespace` block NESTED in another namespace must open a relative \
+         namespace and leave the kind unregistered; got: {nested:#?}"
+    );
 }
 
 // ── The two registration spellings ───────────────────────────────────
 
 #[test]
-fn a_namespace_level_fact_registers_the_kind() {
+fn a_namespace_block_provides_registers_the_kind() {
     // The CONTROL for `an_unregistered_label_is_refused_…`: the same program with the
-    // registration written. Load-bearing now — deleting the `fact` line turns this row
-    // red, which is exactly what `wi329_handler_discharge_test` and
+    // registration written. Load-bearing now — deleting the `provides` line turns this
+    // row red, which is exactly what `wi329_handler_discharge_test` and
     // `wi698_row_param_refinement_test` MEASURED as untrue before this ticket.
+    //
+    // (Named `a_namespace_level_fact_…`, over a `vm3yb.fact_spelling` fixture, until
+    // WI-20260917-S8JYF's migration rewrote its body to the secondary-entry spelling
+    // below and left both names behind.)
+    //
+    // The block's name is SHORT and that is right HERE: it is nested in the namespace
+    // that declares `Beep`, and a nested `namespace` name is read relative to the
+    // enclosing one. The refusal prints the QUALIFIED address instead because that is the
+    // spelling with one placement to explain (the file's top level) —
+    // `the_repair_the_message_names_actually_loads` drives it, and its nested twin.
     let errs = load_errors(
         r#"
-        namespace vm3yb.fact_spelling
+        namespace vm3yb.namespace_block
           import anthill.prelude.{Effect, Unit}
           sort Beep end
           namespace Beep
@@ -321,7 +456,7 @@ fn a_namespace_level_fact_registers_the_kind() {
         end
     "#,
     );
-    expect_clean(&errs, "a `fact Effect[T = Beep]`-registered label");
+    expect_clean(&errs, "a label registered from a `namespace Beep` block");
 }
 
 #[test]
@@ -357,13 +492,14 @@ fn a_sort_level_provides_registers_the_kind() {
 
 #[test]
 fn a_wildcard_registration_admits_every_application() {
-    // `fact Effect[T = Tag[?]]` — the prelude's own spelling for `Modify` and `Error` —
-    // registers the KIND, so any application of it is admitted. This is also where the
-    // pass's one measured design decision is driven: the raw fact head carries `Tag[?]`
-    // POSITIONALLY, which `type_head` reads as malformed, and only the provision path's
-    // `canonicalize_fact_binding_value` re-lowers it onto `Tag`'s declared params
-    // (WI-449). A clause-walking reader finds the bare registrations and misses this one
-    // — measured over the corpus at 5 kinds of 11.
+    // `provides Effect[T = Tag[?]]` — the prelude's own spelling for `Modify` and `Error`
+    // (`fact Effect[T = Tag[?]]` until WI-20260917-S8JYF) — registers the KIND, so any
+    // application of it is admitted. This is also where the pass's one measured design
+    // decision WAS driven, and the history is kept because it is what a reader reaches for
+    // first: a raw FACT head carried `Tag[?]` POSITIONALLY, which `type_head` reads as
+    // malformed, and only the provision path's `canonicalize_fact_binding_value` re-lowered
+    // it onto `Tag`'s declared params (WI-449). A clause-walking reader found the bare
+    // registrations and missed this one — measured over the corpus at 5 kinds of 11.
     let errs = load_errors(
         r#"
         namespace vm3yb.wildcard
@@ -437,7 +573,7 @@ fn a_label_inside_a_parameters_arrow_row_is_not_checked() {
     "#,
     );
     assert!(
-        !refused_unregistered(&errs, "Boom"),
+        !was_refused(&errs, "Boom"),
         "the arrow position is NOT checked today — if this now refuses, update \
          `check_effect_registration`'s scope paragraph with it; got: {errs:#?}"
     );
@@ -447,9 +583,10 @@ fn a_label_inside_a_parameters_arrow_row_is_not_checked() {
 fn the_prelude_effect_kinds_are_all_registered() {
     // DRIVES THE REGISTRATION READER ITSELF rather than inferring it from a clean load: a
     // pass that read NOTHING would also leave every row above green except the refusals.
-    // Asserts the set the corpus census recorded — the four in effects.anthill, `External`
-    // (a `fact`), and `Clock` plus the three Console kinds (all `provides`) — through
-    // operations that declare each one.
+    // Asserts the set the corpus census recorded — the four in effects.anthill, `External`,
+    // and `Clock` plus the three Console kinds, every one a `provides` since
+    // WI-20260917-S8JYF (`External` was the census's one `fact`) — through operations that
+    // declare each one.
     //
     // TWO operations, not one, and the split is a real rule rather than tidiness:
     // proposal 054 §"Branch and External" refuses a row carrying BOTH `Branch` and
