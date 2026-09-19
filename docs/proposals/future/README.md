@@ -39,10 +39,6 @@ its only move.
   the operation half deferred from proposal 039 (term-level constants).
 - [associated-relations.md](associated-relations.md) — relations as
   per-instance-dispatched spec members, deferred from proposal 052's
-  relations-as-values design.
-- [bilateral-refutation.md](bilateral-refutation.md) — two-sided type theory
-  (Li & Ramsay) read against anthill. Mostly a **negative** result: the `Eq`
-  use-site question is answered positively by 058 §3.10, so no `refutes`
-  channel is warranted on one instance. What survives is `NonEq` as the
-  checkable shadow of a law that is never discharged, plus three concrete gaps
-  behind `ProofResult.Disproved`.
+  relations-as-values design. The carrier-directed half has since been delivered
+  by 060 / 061 as a guarded JOIN; what remains is dispatch through a requirement
+  dictionary.

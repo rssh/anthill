@@ -310,9 +310,10 @@ work** and is not required for uniform name resolution.
   by the same exposed-set filter). There is no operations-vs-rules split here.
 - The genuinely-separate question is **per-instance dispatch of a spec's rule
   clauses** (each provider supplying clauses, selected at resolution) — *not*
-  visibility, which already works. See [052 §Future — associated relations](052-rules-as-stream-valued-operations.md);
-  cross-spec ambiguity there = **load error** (decidable at the `requires` site, so
-  loud — unlike a plain unqualified rule miss, a silent 0-solutions).
+  visibility, which already works. See
+  [future/associated-relations](future/associated-relations.md) (moved out of 052 on
+  2026-08-15); cross-spec ambiguity there = **load error** (decidable at the `requires`
+  site, so loud — unlike a plain unqualified rule miss, a silent 0-solutions).
 
 ## Related
 
