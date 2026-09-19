@@ -6843,7 +6843,7 @@ impl KnowledgeBase {
     }
 
     /// Proposal 066 §7.5 — how many written clauses of `carrier` provide `spec`.
-    pub(crate) fn provides_clause_count(&self, carrier: Symbol, spec: Symbol) -> u32 {
+    pub fn provides_clause_count(&self, carrier: Symbol, spec: Symbol) -> u32 {
         let key = (self.canonical_sort_sym(carrier), self.canonical_sort_sym(spec));
         self.provides_clause_counts.get(&key).map_or(0, |s| s.len() as u32)
     }

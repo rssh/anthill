@@ -206,11 +206,17 @@ fn one_level_conditional_resolves_via_subgoal() {
     let src = r#"
         namespace test.wi224.one_level
           import anthill.prelude.{Eq, List, Int64}
+          -- WI-20260918-CKD4J: a LOCAL container, not the stdlib `List`, which now
+          -- derives its own `provides Eq[List] :- Eq[T]` and would answer this goal
+          -- ahead of the witness under test. No constructors, so nothing is derived.
+          sort Coll
+            sort T = ?
+          end
           import anthill.prelude.Option.{some}
           sort EqList
             sort A = ?
             requires Eq[T = A]
-            provides Eq[T = List[T = A]]
+            provides Eq[T = Coll[T = A]]
           end
         end
     "#;
@@ -225,7 +231,7 @@ fn one_level_conditional_resolves_via_subgoal() {
     // Build goal Eq[T = List[T = Int64]].
     let list_int = parametric_carrier(
         &mut kb,
-        "anthill.prelude.List",
+        "test.wi224.one_level.Coll",
         "T",
         "anthill.prelude.Int64",
     );
@@ -313,10 +319,16 @@ fn two_level_conditional_chains_recursively() {
     let src = r#"
         namespace test.wi224.two_level
           import anthill.prelude.{Eq, List, Int64}
+          -- WI-20260918-CKD4J: a LOCAL container, not the stdlib `List`, which now
+          -- derives its own `provides Eq[List] :- Eq[T]` and would answer this goal
+          -- ahead of the witness under test. No constructors, so nothing is derived.
+          sort Coll
+            sort T = ?
+          end
           sort EqList
             sort A = ?
             requires Eq[T = A]
-            provides Eq[T = List[T = A]]
+            provides Eq[T = Coll[T = A]]
           end
         end
     "#;
@@ -331,11 +343,11 @@ fn two_level_conditional_chains_recursively() {
     // Build the outer goal: Eq[T = List[T = List[T = Int64]]].
     let list_int = parametric_carrier(
         &mut kb,
-        "anthill.prelude.List",
+        "test.wi224.two_level.Coll",
         "T",
         "anthill.prelude.Int64",
     );
-    let list_sym = kb.try_resolve_symbol("anthill.prelude.List").expect("List");
+    let list_sym = kb.try_resolve_symbol("test.wi224.two_level.Coll").expect("List");
     let t_sym = kb.intern("T");
     let list_list_int = kb.alloc(Term::Fn {
         functor: list_sym,

@@ -13035,6 +13035,9 @@ fn load_phase_inner(
     // and delete the mark — that re-opens a five-carrier phase-2 refusal.
     let eq_classification = super::eq_derive::classify(kb);
     super::eq_derive::derive_total_eq(kb, &eq_classification);
+    // WI-20260918-CKD4J — the CONDITIONAL rows, after the total ones so a composite
+    // with a field of a derived-total sort reads that row as a provision.
+    super::eq_derive::derive_conditional_eq(kb, &eq_classification);
     mark!("eq_derive::classify + derive_total_eq");
     // WI-1109 — materialize forwarded provision rows (`Ord provides WeakOrd[T = T]` ⇒
     // every `Ord` carrier gets a `WeakOrd` row at its own bindings). HERE, beside the

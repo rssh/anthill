@@ -21240,6 +21240,36 @@ fn check_apply_iter(
                             node: Rc::clone(occ),
                         });
                     }
+                    // WI-20260918-CKD4J — A RULE-BODY GOAL WHOSE TYPE IS STILL OPEN IS
+                    // NOT REFUSED HERE. A rule body reaches eval through the SLD bridge,
+                    // which resolves the provider from the CONCRETE argument values
+                    // (`call_op_bridged`) and suspends when it cannot — WI-945 states the
+                    // same for an element unpinned at load: it is "the ORDINARY case
+                    // there, every goal argument being a variable". MEASURED: with
+                    // `Option` providing `PartialEq[Option] :- PartialEq[T]`,
+                    // `eq(some(?x), some(?x))` typed its goal as
+                    // `PartialEq[Option[T = TypeVar[?_]]]`, the condition over the open
+                    // element failed, and the rule was refused at load — where before the
+                    // row existed the same call had no candidate and passed. A GROUND goal
+                    // is still refused: nothing later can change its answer.
+                    if env.in_rule_body() {
+                        let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
+                        // OPEN = a logic var or a sort parameter (`type_value_is_ground`),
+                        // OR a `TypeExtractor.TypeVar` — the typer's marker for a type it
+                        // could not infer, which that predicate reads as ground because
+                        // its `name` field is a name and not a var.
+                        let open = goal.bindings.iter().any(|(_, v)| {
+                            !type_value_is_ground(kb, *v) || type_term_mentions_type_var(kb, *v)
+                        });
+                        if open {
+                            return Ok(TypeResult {
+                                ty: resolved_ret.clone(),
+                                env: env.clone(),
+                                effects,
+                                node: Rc::clone(occ),
+                            });
+                        }
+                    }
                     return Err(TypeError::DispatchNoMatch {
                         span,
                         op: fn_sym,
@@ -33950,7 +33980,7 @@ fn unwrap_spec_view(
 /// bindings (`is_type_param_binding`) and threads `TermId`s into `SortGoal` /
 /// the child subst map, so an effect binding is never one they consume; the full
 /// denoted spec stays preserved on `RequiresEntry.spec` regardless.
-fn unwrap_spec_view_value(
+pub(crate) fn unwrap_spec_view_value(
     kb: &KnowledgeBase,
     spec: &Value,
 ) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
@@ -63319,7 +63349,7 @@ fn provision_member_of_uncached(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 /// lays that clause's conditions out as slots ([`provider_dict_chain`]); a spec with
 /// several clauses has them decided as alternatives at the dispatch
 /// ([`alternative_condition_goals`]).
-fn provision_conditions(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<ProvisionConditions> {
+pub(crate) fn provision_conditions(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<ProvisionConditions> {
     let mut out: Vec<ProvisionConditions> = Vec::new();
     let Some(cond_sym) = kb.try_resolve_symbol("anthill.reflect.ProvidesConditionInfo") else {
         return out;
@@ -63379,14 +63409,14 @@ fn provision_conditions(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<ProvisionCo
 /// WI-1033 — one conditional provision's goals, decoded out of its
 /// `ProvidesConditionInfo` facts. The in-memory shape [`provision_conditions`] hands
 /// [`provider_dict_chain`]; the facts are the record.
-struct ProvisionConditions {
+pub(crate) struct ProvisionConditions {
     /// Base sort of the spec this provision provides — the key a chain is laid out by.
-    provided: Symbol,
+    pub(crate) provided: Symbol,
     /// Which `provides` clause of the carrier, in source order. Two clauses may provide
     /// one spec, and their condition lists are ALTERNATIVES.
-    clause: i64,
+    pub(crate) clause: i64,
     /// The condition views of THIS clause, in fact order. A conjunction.
-    conditions: Vec<Value>,
+    pub(crate) conditions: Vec<Value>,
 }
 
 /// WI-869 — does a body owned by `sort` READ requirement slots, i.e. must a call
@@ -65380,6 +65410,16 @@ enum TypeHead {
 /// `type_var` name, never the bindings / fields / arrow children. WI-361: a bare
 /// sort is `Ref(S)` and a parameterized type is `Fn{S, named}` (functor = base
 /// sort) on both carriers — there is no deep `sort_ref`/`parameterized` wrapper.
+/// WI-20260918-CKD4J — the parameter a type NAMES, when it is a type variable
+/// (`TypeExtractor.TypeVar[name = T]`, the form a sort's field typed by its own `T`
+/// takes): its `name` symbol. `None` for any other type.
+pub(crate) fn type_var_name_of_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
+    match type_head(kb, ty) {
+        TypeHead::TypeVar(s) => Some(s),
+        _ => None,
+    }
+}
+
 fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
     // WI-436: a 0-ary TypeExtractor meta-ctor (`Nothing`) canonicalizes to a bare
     // `Ref` head, so classify by the functor SYMBOL read off either spelling

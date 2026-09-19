@@ -92,8 +92,10 @@ sort anthill.prelude.LogicalStream
   -- LogicalStream need not be one. The normalizer's fuel would bound it, but bounding
   -- a divergence is not the same as not writing one. Both guards also need
   -- `splitFirst` to RUN on the carrier (WI-567), which a bare spec-op term cannot do.
+  -- The guards are `<=>` (binds `?first`/`?rest`) and `===` (binds nothing), not the
+  -- dispatched `=` test — see `stream.anthill`'s laws (WI-20260918-CKD4J).
   rule interleave(?a, ?b) = mplus(pure(?first), interleave(?b, ?rest))
-    :- splitFirst(?a) = some(pair(?first, ?rest))
+    :- splitFirst(?a) <=> some(pair(?first, ?rest))
   rule interleave(?a, ?b) = ?b
-    :- splitFirst(?a) = none
+    :- splitFirst(?a) === none
 end

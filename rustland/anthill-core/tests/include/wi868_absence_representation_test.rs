@@ -39,10 +39,15 @@ const BUILTIN_READ: &str = r#"
 namespace wi868.builtin
   import anthill.prelude.{Int64, Bool, PartialEq}
 
+  -- `opaque`'s FUNCTION field keeps `Wrap` out of WI-20260918-CKD4J's derivation, which
+  -- would otherwise give it `provides PartialEq[Wrap] :- PartialEq[E]` and so a provider
+  -- at `Wrap[E = Int64]` — the absence this fixture is built on. A function has no
+  -- equality, so no row is derived and `PartialEq[Wrap[E = Int64]]` stays unprovided.
   enum Wrap
-    import anthill.prelude.{Int64}
+    import anthill.prelude.{Int64, Function}
     sort E = ?
     entity wrap(v: E)
+    entity opaque(f: Function[A = Int64, B = Int64])
   end
 
   sort Top

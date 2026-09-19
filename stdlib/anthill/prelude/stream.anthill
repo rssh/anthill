@@ -136,12 +136,20 @@ sort anthill.prelude.Stream
   -- wall. Over an ABSTRACT stream the guard is under-determined and must SUSPEND (WI-067),
   -- which is what the firing engine does; tagging them today would add a guard that always
   -- declines. Tag them with WI-567.
-  rule headOption(?s) = some(fst(?p)) :- splitFirst(?s) = some(?p)
-  rule headOption(?s) = none :- splitFirst(?s) = none
+  --
+  -- THE GUARD CONNECTIVE (WI-20260918-CKD4J): a guard that BINDS the witness the
+  -- right-hand side uses is a match, `splitFirst(?s) <=> some(?p)` — the bind column;
+  -- one that binds nothing is a test, `=== none` — structural identity. These laws were
+  -- written `=` before `=`/`<=>` were told apart, and `=` is the dispatched `PartialEq`
+  -- test: once `Option` derived its conditional `PartialEq`, `= some(?p)` over the
+  -- abstract element demanded a `PartialEq[T]` nothing supplies, and the file stopped
+  -- loading.
+  rule headOption(?s) = some(fst(?p)) :- splitFirst(?s) <=> some(?p)
+  rule headOption(?s) = none :- splitFirst(?s) === none
   -- WI-567: `head`'s happy path. The empty case has no law — at the TYPE level
   -- it is the declared `Error[EmptyStream]`; at EVAL it is the body's raise.
-  rule head(?s) = fst(?p) :- splitFirst(?s) = some(?p)
-  rule tail(?s) = snd(?p) :- splitFirst(?s) = some(?p)
-  rule isEmpty(?s) = true :- splitFirst(?s) = none
-  rule isEmpty(?s) = false :- splitFirst(?s) = some(?)
+  rule head(?s) = fst(?p) :- splitFirst(?s) <=> some(?p)
+  rule tail(?s) = snd(?p) :- splitFirst(?s) <=> some(?p)
+  rule isEmpty(?s) = true :- splitFirst(?s) === none
+  rule isEmpty(?s) = false :- splitFirst(?s) <=> some(?)
 end

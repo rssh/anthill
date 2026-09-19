@@ -54,10 +54,10 @@
 //! because it demonstrates the derivation. `a_dispatched_eq_is_not_shadowed…`'s
 //! DISPATCH half is the same (WI-837 shipped it); only its provision rows move.
 //!
-//! OUT OF SCOPE, and left underivable rather than falsely claimed: a composite whose
-//! field is PARAMETRIC (`Option[Float]`, `Pair[A, B]`, `List`) and a parametric sort
-//! itself — both need a CONDITIONAL provision (`provides Eq[Pair] :- Eq[A], Eq[B]`),
-//! which this ticket does not derive. That is the same boundary the module header
+//! OUT OF SCOPE HERE, and derived since by WI-20260918-CKD4J: a composite whose field is
+//! PARAMETRIC (`Option[Float]`, `Pair[A, B]`, `List`) and a parametric sort itself —
+//! both need a CONDITIONAL provision (`provides Eq[Pair] :- Eq[A], Eq[B]`), which
+//! `eq_derive::derive_conditional_eq` now asserts. That is the same boundary the module header
 //! already draws for the `NonEq` half ("entities + named tuples with CONCRETE
 //! fields"), met here in the direction where being wrong is a false CLAIM rather
 //! than a missed one. A carrier whose `eq` is DISPATCHED is left alone too — see
@@ -491,11 +491,15 @@ end
         vec![
             ("HoldFloat".to_string(), "NonEq".to_string()),
             ("HoldFloat".to_string(), "PartialEq".to_string()),
+            ("HoldFloatPair".to_string(), "PartialEq".to_string()),
             ("HoldInt".to_string(), "Eq".to_string()),
             ("HoldInt".to_string(), "PartialEq".to_string()),
         ],
-        "`HoldFloatPair` must derive NOTHING — neither the `Eq` its non-partial \
-         classification would suggest nor the `NonEq` the hidden `Float` would"
+        "`HoldFloatPair` must not be claimed LAWFUL — no `Eq`. Since WI-20260918-CKD4J it \
+         derives `PartialEq`, which is TRUE: `Pair[A = Float, B = Int64]` has a partial \
+         equality through `Pair`'s `PartialEq[A], PartialEq[B]` clause (`Float` provides \
+         `PartialEq`). The `NonEq` the hidden `Float` would give it is the mirror that \
+         ticket left open."
     );
 }
 
@@ -673,17 +677,17 @@ end
     );
 }
 
-/// A PARAMETRIC sort derives nothing either: `List`/`Option`'s lawful equality is
-/// conditional on its element's, and an unconditional `Eq[List]` would claim
-/// `List[Float]` lawful. Driven over the SHIPPED stdlib rather than a fixture,
-/// because that is where the population this change touches actually lives.
+/// A PARAMETRIC sort derives a CONDITIONAL row (WI-20260918-CKD4J) — never an
+/// unconditional one. `List`/`Option`'s lawful equality is conditional on the element's,
+/// and an unconditional `Eq[List]` would claim `List[Float]` lawful; so the rows exist,
+/// and each rests on `T` (`provides Eq[List] :- Eq[T]`). Driven over the SHIPPED stdlib
+/// rather than a fixture, because that is where the population this touches lives.
+/// `wi_ckd4j_conditional_eq_derivation_test` drives the rows; this pins their SHAPE.
 ///
-/// `Duration` is the positive neighbour, in the same scan and the same KB: a
-/// non-parametric prelude composite (`duration(millis: Int64, label: String)`) that
-/// DOES pick up the derived pair. Without it the absence below would also hold on a
-/// build where the derivation never ran.
+/// `Duration` is the non-parametric neighbour, in the same scan and the same KB: it
+/// picks up the unconditional pair (one clause, no condition).
 #[test]
-fn a_parametric_sort_is_not_derived() {
+fn a_parametric_sort_derives_a_conditional_row() {
     let kb = crate::common::load_kb_with("namespace wi1098.empty\nend\n");
     let rows = crate::common::sort_provisions(&kb);
     let equality_of = |carrier: &str| -> Vec<String> {
@@ -701,20 +705,40 @@ fn a_parametric_sort_is_not_derived() {
         v.sort();
         v
     };
-    assert_eq!(
-        equality_of("anthill.prelude.Duration"),
-        vec!["Eq".to_string(), "PartialEq".to_string()],
-        "the NEIGHBOUR: a non-parametric prelude composite derives the lawful pair, so \
-         the two absences below are about being parametric and not about the \
-         derivation being off"
-    );
-    for parametric in ["anthill.prelude.List", "anthill.prelude.Option"] {
-        assert!(
-            equality_of(parametric).is_empty(),
-            "a parametric container may not be claimed unconditionally lawful — its \
-             equality is conditional on its arguments' (`provides Eq[Pair] :- Eq[A], \
-             Eq[B]`), which this ticket does not derive; {parametric} got {:?}",
-            equality_of(parametric)
+    for carrier in [
+        "anthill.prelude.Duration",
+        "anthill.prelude.List",
+        "anthill.prelude.Option",
+    ] {
+        assert_eq!(
+            equality_of(carrier),
+            vec!["Eq".to_string(), "PartialEq".to_string()],
+            "{carrier} derives the pair"
         );
     }
+    // …CONDITIONALLY for the parametric two: a `ProvidesConditionInfo` row per
+    // provision, over the element `T`. The Float refusal in the sibling test file is
+    // what this shape buys.
+    for (carrier, spec) in [
+        ("List", "PartialEq"),
+        ("List", "Eq"),
+        ("Option", "PartialEq"),
+        ("Option", "Eq"),
+    ] {
+        let c = kb
+            .try_resolve_symbol(&format!("anthill.prelude.{carrier}"))
+            .expect("carrier");
+        let s = kb
+            .try_resolve_symbol(&format!("anthill.prelude.{spec}"))
+            .expect("spec");
+        assert_eq!(kb.provides_clause_count(c, s), 1, "{carrier}/{spec}: one clause");
+    }
+    let duration = kb.try_resolve_symbol("anthill.prelude.Duration").expect("Duration");
+    let eq = kb.try_resolve_symbol("anthill.prelude.Eq").expect("Eq");
+    assert_eq!(
+        kb.provides_clause_count(duration, eq),
+        0,
+        "the non-parametric neighbour's row is the TOTAL derivation's, unconditional and \
+         outside the clause record"
+    );
 }

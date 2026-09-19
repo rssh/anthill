@@ -87,11 +87,11 @@ namespace test.w1ykh
   -- POSITIVE read, spelled as a REFUTATION of `none()` rather than as a match on the
   -- payload. `some(?v)` would not do: an unbound variable inside the pattern does not
   -- bind here (§5.3 — `eq` never binds, WI-20260822-F0HHB), so that row answers 0
-  -- whether the reader works or not. `not(… = none())` needs the call to RUN and to
+  -- whether the reader works or not. `not(… === none())` needs the call to RUN and to
   -- FIND the key, which is exactly the claim, and it is measured to fail when the
   -- reader is backed out.
-  rule reads_a_field(?m)   :- subject_meta(?m), not(term_field(?m, "Tag") = none())
-  rule reads_a_missing(?m) :- subject_meta(?m), term_field(?m, "absent") = none()
+  rule reads_a_field(?m)   :- subject_meta(?m), not(term_field(?m, "Tag") === none())
+  rule reads_a_missing(?m) :- subject_meta(?m), term_field(?m, "absent") === none()
   rule reads_a_flag(?m)    :- subject_meta(?m), meta_has_flag(?m, "Tag") = true
   -- `meta_value` READ FROM A RULE BODY: the block rides as an occurrence here, so this
   -- is the row that fails if the meta readers stop reading carriers.
@@ -104,14 +104,14 @@ namespace test.w1ykh
   -- of those are a bare `String`. So a rule body can assert THAT the key was found and
   -- not WHAT it holds. Recorded on the ticket as a usability gap in `meta_value`, not
   -- fixed here.
-  rule reads_a_meta_value(?m) :- subject_meta(?m), not(meta_value(?m, "Tag") = none())
+  rule reads_a_meta_value(?m) :- subject_meta(?m), not(meta_value(?m, "Tag") === none())
   rule reads_a_functor(?m) :- subject_meta(?m), term_functor_name(?m) = some("meta")
 
   -- The rule-body row for the list reader: its bug was a PANIC, so reaching any answer
   -- at all is what this guards. A `meta(…)` block is not a cons spine, so `[]` is the
   -- honest answer — which is also what a totally broken walker returns, hence
   -- `three_items` below, where the walker is driven on a REAL spine.
-  rule reads_a_list(?m)    :- subject_meta(?m), term_list_items(?m) = []
+  rule reads_a_list(?m)    :- subject_meta(?m), term_list_items(?m) === []
 
   -- Driven from an OPERATION body, where an unbound result binds (a rule body's does
   -- not — §5.3, `eq` never binds, WI-20260822-F0HHB), so the walker's CONTENT can be
@@ -213,7 +213,7 @@ fn a_list_read_does_not_panic_from_a_rule_body() {
     let (definite, conditional) = counts(&mut kb, "reads_a_list");
     assert_eq!(
         definite, 1,
-        "`term_list_items(?m) = []` answered {definite} definite \
+        "`term_list_items(?m) === []` answered {definite} definite \
          ({conditional} conditional) — a `meta(…)` block is not a cons spine, so the \
          one joined row's answer is the EMPTY list"
     );

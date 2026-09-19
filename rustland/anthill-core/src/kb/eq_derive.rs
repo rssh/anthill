@@ -53,9 +53,11 @@
 //! non-partial (conservative: structural eq, no derived `NonEq`), NOT silently
 //! claimed handled. WI-1098 meets the SAME boundary from the other side, where being
 //! wrong would be a false CLAIM rather than a missed refusal: a composite with a
-//! parametric field, and a parametric sort itself, derive NO `Eq` — their lawful
-//! equality is conditional on their arguments' (`provides Eq[Pair] :- Eq[A], Eq[B]`),
-//! and conditional derivation is not yet done.
+//! parametric field, and a parametric sort itself, derive no UNCONDITIONAL `Eq` — their
+//! lawful equality is conditional on their arguments' (`provides Eq[Pair] :- Eq[A],
+//! Eq[B]`). WI-20260918-CKD4J derives exactly that conditional form
+//! ([`derive_conditional_eq`]), reading a field's full TYPE rather than its head sort; the
+//! `NonEq` half above is still not propagated through a parametric field.
 
 use std::collections::HashSet;
 
@@ -217,6 +219,292 @@ pub(crate) fn derive_total_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
     }
 }
 
+/// WI-20260918-CKD4J — a derived condition: `spec[P]` over the carrier's OWN type
+/// parameter `P`. The derived row reads `provides X[S] :- spec₁[P₁], …`.
+type Condition = (Symbol, Symbol);
+
+/// WI-20260918-CKD4J — the CONDITIONAL half of the `Eq` derivation: rows for the
+/// composites [`total_composites`] must leave out — a PARAMETRIC sort (`List[T]`,
+/// `Option[T]`, a user `Box[T]`) and a composite whose field is a parametric sort at
+/// concrete arguments (`holder(o: Option[T = Int64])`).
+///
+/// A parametric sort's lawful equality is CONDITIONAL on its arguments', so what it
+/// derives is exactly the WI-869 form `pair.anthill` hand-writes — `provides
+/// PartialEq[Box] :- PartialEq[T]` and `provides Eq[Box] :- Eq[T]`, over the parameters
+/// its fields mention. An UNCONDITIONAL claim would make `List[Float]` lawful; this
+/// makes it lawful exactly where `Float` would be, i.e. nowhere
+/// (`a_float_behind_a_parametric_field_is_not_claimed_lawful`).
+///
+/// Per field TYPE, not per field head sort — the head-only reading is what excluded
+/// these carriers. [`field_conditions`] answers what a field's equality rests on: a
+/// parameter of the carrier rests on that parameter; a non-parametric sort on nothing,
+/// if it provides the spec or is derivable; a parametric application `H[Q = a]` on
+/// `H`'s own conditions TRANSLATED through its arguments — so `Option[T = Int64]` rests
+/// on `Eq[Int64]` (true) and `Pair[A = Float, …]` on `Eq[Float]` (false).
+///
+/// A GREATEST fixpoint, like the total one and for the same reason: `List` is `cons(head:
+/// T, tail: List[T = T])`, lawful iff `T` is, which only an optimistic seed derives.
+/// Run AFTER [`derive_total_eq`], so the rows that pass asserted are read as provisions.
+///
+/// NOT DERIVED, each deliberately: a `Partial` composite (it derives `NonEq`), an
+/// equality BOUNDARY (its `eq` is the author's), a carrier any equality provision
+/// already names (`Pair` writes its own — not duplicated), and a sort with a field whose
+/// equality nothing decides (an arrow, a `Float` argument, an unwritten argument).
+/// THE `NonEq` MIRROR IS NOT TAKEN: `holder(o: Option[T = Float])` still classifies
+/// neither way (the module header's parametric-container follow-up) — it derives no
+/// `Eq` here, which is the half whose error would be a false claim.
+pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
+    let (Some(partial_eq), Some(eq)) = (
+        kb.try_resolve_symbol("anthill.prelude.PartialEq"),
+        kb.try_resolve_symbol("anthill.prelude.Eq"),
+    ) else {
+        return;
+    };
+    let spoken_for: HashSet<Symbol> = ["PartialEq", "Eq", "NonEq"]
+        .into_iter()
+        .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
+        .flat_map(|spec| super::typing::provision_carriers_of_spec(kb, spec))
+        .map(|s| kb.canonical_sort_sym(s))
+        .collect();
+    // One symbol per canonical composite, in registration order.
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    let candidates: Vec<Symbol> = c
+        .sorts
+        .iter()
+        .copied()
+        .filter(|&s| {
+            let cs = kb.canonical_sort_sym(s);
+            seen.insert(cs)
+                && !c.boundary.contains(&cs)
+                && !c.partial.contains(&cs)
+                && !spoken_for.contains(&cs)
+                && !super::typing::sort_provides(kb, s, eq)
+                && !super::typing::sort_provides(kb, s, partial_eq)
+        })
+        .collect();
+    for spec in [partial_eq, eq] {
+        // Optimistic seed: every candidate derivable, resting on nothing.
+        let mut derived: std::collections::HashMap<Symbol, Vec<Condition>> = candidates
+            .iter()
+            .map(|&s| (kb.canonical_sort_sym(s), Vec::new()))
+            .collect();
+        loop {
+            let mut changed = false;
+            for &s in &candidates {
+                let cs = kb.canonical_sort_sym(s);
+                if !derived.contains_key(&cs) {
+                    continue;
+                }
+                let params: Vec<Symbol> = kb.type_param_syms_of(s).to_vec();
+                let mut conds: Vec<Condition> = Vec::new();
+                let mut ok = true;
+                'fields: for ctor in kb.field_constructors_of_sort(s) {
+                    let Some(fields) = kb.entity_field_types(ctor) else {
+                        continue;
+                    };
+                    for (_, ftype) in fields.to_vec() {
+                        match field_conditions(kb, &ftype, spec, &params, &derived) {
+                            Some(fc) => {
+                                for x in fc {
+                                    if !conds.contains(&x) {
+                                        conds.push(x);
+                                    }
+                                }
+                            }
+                            None => {
+                                ok = false;
+                                break 'fields;
+                            }
+                        }
+                    }
+                }
+                if !ok {
+                    derived.remove(&cs);
+                    changed = true;
+                } else if derived.get(&cs) != Some(&conds) {
+                    derived.insert(cs, conds);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for &s in &candidates {
+            let Some(conds) = derived.get(&kb.canonical_sort_sym(s)).cloned() else {
+                continue;
+            };
+            assert_provides(kb, s, spec);
+            record_derived_conditions(kb, s, spec, &conds);
+        }
+    }
+}
+
+/// WI-20260918-CKD4J — what a field of type `ty` needs for its `spec` equality, as
+/// conditions over the carrier's own `params`: `Some(vec![])` for a field whose equality
+/// holds outright, `None` for one nothing decides. `derived` is the fixpoint's current
+/// verdict for the candidates (canonical carrier → its conditions).
+fn field_conditions<V: TermView>(
+    kb: &KnowledgeBase,
+    ty: &V,
+    spec: Symbol,
+    params: &[Symbol],
+    derived: &std::collections::HashMap<Symbol, Vec<Condition>>,
+) -> Option<Vec<Condition>> {
+    // A field typed by one of the carrier's own parameters (`value: T`) is that
+    // parameter's CANONICAL variable (`KnowledgeBase::canonical_type_param_var`) — or,
+    // in a type the extractor produced, a `TypeVar` naming it.
+    if let ViewHead::Var(v) = ty.head(kb) {
+        return params
+            .iter()
+            .find(|&&p| {
+                kb.canonical_type_param_var(p)
+                    .is_some_and(|t| matches!(kb.get_term(t), Term::Var(w) if *w == v))
+            })
+            .map(|&p| vec![(spec, p)]);
+    }
+    if let Some(name) = super::typing::type_var_name_of_view(kb, ty) {
+        let name = kb.local_name_of(name).to_string();
+        return params
+            .iter()
+            .find(|p| kb.local_name_of(**p) == name)
+            .map(|&p| vec![(spec, p)]);
+    }
+    let head = super::typing::sort_functor_of_view(kb, ty)?;
+    if params.contains(&head) {
+        return Some(vec![(spec, head)]);
+    }
+    if super::typing::is_sort_param_symbol(kb, head) {
+        // Some OTHER sort's parameter: nothing here decides it.
+        return None;
+    }
+    let h_params: Vec<Symbol> = kb.type_param_syms_of(head).to_vec();
+    // `head`'s own conditions for `spec`, over ITS parameters: a candidate's current
+    // verdict, else a written/derived provision (unconditional, or ONE conditional
+    // clause — alternatives are not translated), else nothing.
+    let h_conds: Vec<Condition> = if let Some(dc) = derived.get(&kb.canonical_sort_sym(head)) {
+        dc.clone()
+    } else if super::typing::sort_provides(kb, head, spec) {
+        let spec_canon = kb.canonical_sort_sym(spec);
+        let clauses: Vec<Vec<Value>> = super::typing::provision_conditions(kb, head)
+            .into_iter()
+            .filter(|g| kb.canonical_sort_sym(g.provided) == spec_canon)
+            .map(|g| g.conditions)
+            .collect();
+        match clauses.as_slice() {
+            [] => Vec::new(),
+            [one] => {
+                let mut out = Vec::with_capacity(one.len());
+                for cv in one {
+                    let (base, bindings) = super::typing::unwrap_spec_view_value(kb, cv)?;
+                    let q = bindings.iter().find_map(|(_, t)| {
+                        super::typing::sort_functor_of_view(
+                            kb,
+                            &crate::kb::term_view::TermIdView(*t),
+                        )
+                        .filter(|q| h_params.contains(q))
+                    })?;
+                    out.push((base, q));
+                }
+                out
+            }
+            _ => return None,
+        }
+    } else {
+        return None;
+    };
+    // Translate each of `head`'s conditions through the field type's argument for it.
+    // An UNWRITTEN argument of a SELF-reference (`tail: List` inside `List`) is the
+    // carrier's own parameter of that name — the reading the typer's
+    // `rigidify_unwritten_sort_params` gives it; unwritten anywhere else, nothing decides it.
+    let self_ref = h_params.iter().all(|q| params.contains(q)) && !h_params.is_empty();
+    let mut out: Vec<Condition> = Vec::new();
+    for (cspec, q) in h_conds {
+        let q_name = kb.local_name_of(q).to_string();
+        let arg = ty
+            .named_keys(kb)
+            .into_iter()
+            .find(|k| kb.local_name_of(*k) == q_name)
+            .and_then(|k| ty.named_arg(kb, k))
+            .map(|it| it.to_value());
+        let needs = match arg {
+            Some(arg) => field_conditions(kb, &arg, cspec, params, derived)?,
+            None if self_ref => vec![(cspec, q)],
+            None => return None,
+        };
+        for x in needs {
+            if !out.contains(&x) {
+                out.push(x);
+            }
+        }
+    }
+    Some(out)
+}
+
+/// WI-20260918-CKD4J — the `:- goals` tail of a derived row, filed exactly as the loader
+/// files a written one (`load_provides_conditions`): one `ProvidesConditionInfo` per
+/// condition, joined to the provision by its view, under a fresh clause index; and the
+/// clause itself recorded for `provides_clause_count`. Nothing for an unconditional row.
+fn record_derived_conditions(kb: &mut KnowledgeBase, carrier: Symbol, spec: Symbol, conds: &[Condition]) {
+    let carrier_ref = kb.make_sort_ref(carrier);
+    let provided = spec_view(kb, spec, carrier_ref);
+    let mut lowered: Vec<Value> = Vec::with_capacity(conds.len());
+    if !conds.is_empty() {
+        let cond_sym = kb.resolve_symbol("anthill.reflect.ProvidesConditionInfo");
+        let sort_ref_sym = kb.intern("sort_ref");
+        let provided_sym = kb.intern("provided");
+        let condition_sym = kb.intern("condition");
+        let clause_sym = kb.intern("clause");
+        kb.register_entity_fields(
+            cond_sym,
+            vec![sort_ref_sym, provided_sym, condition_sym, clause_sym],
+        );
+        let scope = kb.symbols.scope_id(carrier);
+        let clause = kb.next_provides_clause_index(scope);
+        let clause_term = kb.alloc(Term::Const(crate::kb::term::Literal::Int(clause as i64)));
+        let carrier_term = kb.make_name_term_from_sym(carrier);
+        for &(cspec, p) in conds {
+            let param_ref = kb.make_sort_ref(p);
+            let cv = Value::term(spec_view(kb, cspec, param_ref));
+            lowered.push(cv.clone());
+            kb.assert_fact_carrier(
+                cond_sym,
+                Vec::new(),
+                vec![
+                    (sort_ref_sym, Value::term(carrier_term)),
+                    (provided_sym, Value::term(provided)),
+                    (condition_sym, cv),
+                    (clause_sym, Value::term(clause_term)),
+                ],
+                ClauseKind::Requirement,
+                carrier,
+                None,
+            );
+        }
+    }
+    kb.record_provides_clause(carrier, spec, lowered);
+}
+
+/// `SortView(spec, <spec's carrier param> = binding)` — the view shape of a provision's
+/// spec and of each of its conditions (see [`assert_provides`]).
+fn spec_view(kb: &mut KnowledgeBase, spec: Symbol, binding: crate::kb::term::TermId) -> crate::kb::term::TermId {
+    let sort_view_sym = kb.resolve_symbol("anthill.reflect.SortView");
+    let t_param = {
+        let name = kb
+            .type_params_of_sort(spec)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "T".to_string());
+        kb.intern(&name)
+    };
+    let spec_name = kb.make_name_term_from_sym(spec);
+    kb.alloc(Term::Fn {
+        functor: sort_view_sym,
+        pos_args: SmallVec::from_elem(spec_name, 1),
+        named_args: SmallVec::from_elem((t_param, binding), 1),
+    })
+}
+
 /// WI-664 entry point (a post-load pass). See the module header for placement, and
 /// [`derive_total_eq`] for why the `Eq` half of the same classification is asserted
 /// before the typer instead of here.
@@ -324,8 +612,8 @@ pub(crate) fn run(kb: &mut KnowledgeBase, c: &EqClassification) {
 ///    duplicate-provision error (the explicit-`provides` control).
 ///  * a PARAMETRIC sort (`List[T]`, `Option[T]`) — its lawful equality is CONDITIONAL
 ///    on its arguments' (`provides Eq[Pair] :- Eq[A], Eq[B]`), and an unconditional
-///    `Eq[List]` would claim `List[Float]` lawful. Conditional derivation is not this
-///    ticket; the sort is left underivable rather than falsely claimed.
+///    `Eq[List]` would claim `List[Float]` lawful. [`derive_conditional_eq`] derives the
+///    conditional row for it instead.
 ///
 /// A field keeps its composite in the set only if the field's sort is NON-PARAMETRIC
 /// and either already provides `Eq` or is itself Total. The non-parametric demand is
