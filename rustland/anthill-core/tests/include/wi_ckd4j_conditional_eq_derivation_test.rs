@@ -119,3 +119,132 @@ fn pair_keeps_its_written_rows() {
         );
     }
 }
+
+// ── The `NonEq` mirror ──────────────────────────────────────────────────────────
+
+/// `NaN` behind a PARAMETRIC constructor, and behind a composite's parametric-typed
+/// field, is compared FIELD-WISE, so IEEE's `nan != nan` holds through it. Each row
+/// beside a NaN-free twin that must stay equal, and a `TotalFloat` row that must stay
+/// equal too — a non-parametric boundary still shields its `Float`.
+///
+/// CONTROL, measured before the mirror: the four NaN rows ALL answered 1 — the
+/// structural shortcut, because the partial-carrier gate stopped at `some` / `cons` /
+/// `holder` / `hp` without looking inside. Backing out `partial_transparent_carriers`
+/// (the gate walking through a parametric constructor) restores 1 for the `Option` and
+/// `List` rows, and for `Holder`'s, whose field IS an `Option`; backing out the argument
+/// walk in `composite_field_sorts` leaves `Holder` and `HoldPair` unclassified, so they
+/// take the shortcut at their own head.
+#[test]
+fn nan_behind_a_parametric_type_is_not_equal_to_itself() {
+    let src = r#"
+namespace wickd4j.nan
+  import anthill.prelude.{Bool, Int64, Float, Option, List, Pair, TotalFloat}
+  import anthill.prelude.Option.{some}
+  import anthill.prelude.List.{cons, nil}
+  import anthill.prelude.Pair.{pair}
+  import anthill.prelude.Float.{nan}
+  import anthill.prelude.PartialEq.{eq}
+  sort Holder
+    entity holder(o: Option[T = Float])
+  end
+  sort HoldPair
+    entity hp(p: Pair[A = Float, B = Int64])
+  end
+  sort D
+    operation optNan(n: Int64) -> Int64 = if eq(some(nan), some(nan)) then 1 else 0
+    operation optOne(n: Int64) -> Int64 = if eq(some(1.0), some(1.0)) then 1 else 0
+    operation lstNan(n: Int64) -> Int64 =
+      if eq(cons(head: nan, tail: nil), cons(head: nan, tail: nil)) then 1 else 0
+    operation lstOne(n: Int64) -> Int64 =
+      if eq(cons(head: 1.0, tail: nil), cons(head: 1.0, tail: nil)) then 1 else 0
+    operation holderNan(n: Int64) -> Int64 =
+      if eq(holder(o: some(nan)), holder(o: some(nan))) then 1 else 0
+    operation holderOne(n: Int64) -> Int64 =
+      if eq(holder(o: some(1.0)), holder(o: some(1.0))) then 1 else 0
+    operation hpNan(n: Int64) -> Int64 =
+      if eq(hp(p: pair(fst: nan, snd: 1)), hp(p: pair(fst: nan, snd: 1))) then 1 else 0
+    operation hpOne(n: Int64) -> Int64 =
+      if eq(hp(p: pair(fst: 1.0, snd: 1)), hp(p: pair(fst: 1.0, snd: 1))) then 1 else 0
+    operation optTotal(n: Int64) -> Int64 =
+      if eq(some(TotalFloat(raw: nan)), some(TotalFloat(raw: nan))) then 1 else 0
+  end
+end
+"#;
+    assert_eq!(refusals(src), Vec::<String>::new());
+    for (op, want) in [
+        ("optNan", 0),
+        ("optOne", 1),
+        ("lstNan", 0),
+        ("lstOne", 1),
+        ("holderNan", 0),
+        ("holderOne", 1),
+        ("hpNan", 0),
+        ("hpOne", 1),
+        ("optTotal", 1),
+    ] {
+        assert_eq!(eval_int(src, &format!("wickd4j.nan.D.{op}")), want, "{op}");
+    }
+}
+
+/// A composite whose `Float` sits behind a parametric field CLASSIFIES `Partial`: it
+/// derives `NonEq`, so a hand-written `provides Eq[Holder]` is refused (`Eq` ⊥
+/// `NonEq`, WI-658) — the false claim the mirror exists to catch. CONTROL: the same
+/// line over `Option[T = Int64]` loads (that `Holder` is lawful). Before the mirror the
+/// first program LOADED: nothing classified `Holder`.
+#[test]
+fn a_float_behind_a_parametric_field_classifies_partial() {
+    let prog = |elem: &str| {
+        format!(
+            r#"
+namespace wickd4j.partial
+  import anthill.prelude.{{Int64, Float, Option, Eq}}
+  sort Holder
+    entity holder(o: Option[T = {elem}])
+    provides Eq[T = Holder]
+  end
+end
+"#
+        )
+    };
+    let errs = refusals(&prog("Float"));
+    assert!(
+        errs.iter().any(|e| e.contains("wickd4j.partial.Holder") && e.contains("NonEq")),
+        "a `Float` behind `Option` makes `Holder` NonEq, so `provides Eq` is refused; \
+         got {errs:?}"
+    );
+    assert_eq!(refusals(&prog("Int64")), Vec::<String>::new());
+}
+
+/// A `Partial` composite HAS a partial equality, and says so where the typer can read
+/// it: `requires PartialEq[X]` at `pt(x: Float)` / `holder(o: Option[T = Float])` loads
+/// and answers — 1 on equal values, 0 on NaN. CONTROL: its `PartialEq` row used to be
+/// asserted only after the typer, beside the `NonEq` one, and this program was refused
+/// at load ("`PartialEq[T = Pt]` cannot be supplied").
+#[test]
+fn a_partial_composite_satisfies_requires_partial_eq() {
+    let src = r#"
+namespace wickd4j.pe
+  import anthill.prelude.{Bool, Int64, Float, Option, PartialEq}
+  import anthill.prelude.Option.{some}
+  import anthill.prelude.Float.{nan}
+  import anthill.prelude.PartialEq.{eq}
+  sort Pt
+    entity pt(x: Float)
+  end
+  sort Holder
+    entity holder(o: Option[T = Float])
+  end
+  sort D
+    operation same[X](a: X, b: X) -> Bool requires PartialEq[X] = eq(a, b)
+    operation ptOne(n: Int64) -> Int64 = if same(pt(x: 1.0), pt(x: 1.0)) then 1 else 0
+    operation ptNan(n: Int64) -> Int64 = if same(pt(x: nan), pt(x: nan)) then 1 else 0
+    operation hOne(n: Int64) -> Int64 = if same(holder(o: some(1.0)), holder(o: some(1.0))) then 1 else 0
+    operation hNan(n: Int64) -> Int64 = if same(holder(o: some(nan)), holder(o: some(nan))) then 1 else 0
+  end
+end
+"#;
+    assert_eq!(refusals(src), Vec::<String>::new());
+    for (op, want) in [("ptOne", 1), ("ptNan", 0), ("hOne", 1), ("hNan", 0)] {
+        assert_eq!(eval_int(src, &format!("wickd4j.pe.D.{op}")), want, "{op}");
+    }
+}

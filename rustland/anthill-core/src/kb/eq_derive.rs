@@ -44,20 +44,24 @@
 //!   exactly this reason) — that function's doc carries why, and why the `NonEq`
 //!   half cannot join it.
 //!
-//! SCOPE (proposal 004 / WI-664): entities + named tuples with CONCRETE fields. A
-//! partial leaf reached only THROUGH a parametric container (`Option[Float]`,
-//! `List[Float]`, `Set`/`Map` over `Float`) is the documented "parametric-container
-//! propagation" follow-up — `sort_functor_of_view` resolves a field's type to its
-//! BASE sort (`Option`), whose element param is abstract, so the concrete `Float`
-//! argument is not seen and such a composite classifies non-partial. It is left
-//! non-partial (conservative: structural eq, no derived `NonEq`), NOT silently
-//! claimed handled. WI-1098 meets the SAME boundary from the other side, where being
+//! SCOPE (proposal 004 / WI-664): entities + named tuples. A partial leaf reached only
+//! THROUGH a parametric container (`Option[Float]`, `List[Float]`, `Pair[Float, …]`) was
+//! the "parametric-container propagation" follow-up — `sort_functor_of_view` resolved a
+//! field's type to its BASE sort, so the concrete `Float` argument was not seen. Since
+//! WI-20260918-CKD4J a field contributes the sorts its type's ARGUMENTS name too
+//! ([`composite_field_sorts`]), and such a composite classifies `Partial`. WI-1098 meets the SAME boundary from the other side, where being
 //! wrong would be a false CLAIM rather than a missed refusal: a composite with a
 //! parametric field, and a parametric sort itself, derive no UNCONDITIONAL `Eq` — their
 //! lawful equality is conditional on their arguments' (`provides Eq[Pair] :- Eq[A],
 //! Eq[B]`). WI-20260918-CKD4J derives exactly that conditional form
-//! ([`derive_conditional_eq`]), reading a field's full TYPE rather than its head sort; the
-//! `NonEq` half above is still not propagated through a parametric field.
+//! ([`derive_conditional_eq`]), reading a field's full TYPE rather than its head sort; and
+//! mirrors it for the `NonEq` half: a composite reaching `Float` through a parametric
+//! field's ARGUMENTS classifies `Partial` ([`composite_field_sorts`]), and the
+//! partial-carrier gate walks THROUGH a parametric constructor
+//! (`KnowledgeBase::partial_transparent_carriers`), so `some(nan)` is compared
+//! field-wise. What is still not derived is a CONDITIONAL `NonEq` for a parametric sort
+//! itself (`NonEq[List] :- NonEq[T]`), so `Map[K = List[T = Float]]`'s use-site check
+//! still reads only the key's own provisions.
 
 use std::collections::HashSet;
 
@@ -217,6 +221,26 @@ pub(crate) fn derive_total_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
             assert_provides(kb, s, eq);
         }
     }
+    // WI-20260918-CKD4J — THE `PartialEq` HALF OF A `Partial` COMPOSITE, here and not in
+    // [`run`], for the same reason as the rows above: a provision reaches a call site
+    // only through the typer. MEASURED: `same[X](a: X, b: X) requires PartialEq[X]` at
+    // `pt(x: Float)` was refused at load ("`PartialEq[T = Pt]` cannot be supplied") —
+    // a partial composite HAS a partial equality, and said so only after the typer had
+    // finished. Only the `NonEq` half has a reason to stay in `run` (its unbacked
+    // `nonEqRefl`); `PartialEq`'s `eq` is the builtin structural one, held to the same
+    // provider-coverage bar as any written provision, which it passes.
+    if let Some(pe) = partialeq_sym {
+        let mut seen: HashSet<Symbol> = HashSet::new();
+        for &s in &c.sorts {
+            let cs = kb.canonical_sort_sym(s);
+            if c.partial.contains(&cs)
+                && seen.insert(cs)
+                && !super::typing::sort_provides(kb, s, pe)
+            {
+                assert_provides(kb, s, pe);
+            }
+        }
+    }
 }
 
 /// WI-20260918-CKD4J — a derived condition: `spec[P]` over the carrier's OWN type
@@ -250,9 +274,10 @@ type Condition = (Symbol, Symbol);
 /// equality BOUNDARY (its `eq` is the author's), a carrier any equality provision
 /// already names (`Pair` writes its own — not duplicated), and a sort with a field whose
 /// equality nothing decides (an arrow, a `Float` argument, an unwritten argument).
-/// THE `NonEq` MIRROR IS NOT TAKEN: `holder(o: Option[T = Float])` still classifies
-/// neither way (the module header's parametric-container follow-up) — it derives no
-/// `Eq` here, which is the half whose error would be a false claim.
+/// THE `NonEq` MIRROR is the other half of the classification: `holder(o: Option[T =
+/// Float])` reaches `Float` through its field type's ARGUMENTS ([`composite_field_sorts`])
+/// and so classifies `Partial` — derived `NonEq` + `PartialEq`, compared field-wise — and
+/// is no candidate here.
 pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
     let (Some(partial_eq), Some(eq)) = (
         kb.try_resolve_symbol("anthill.prelude.PartialEq"),
@@ -566,6 +591,18 @@ pub(crate) fn run(kb: &mut KnowledgeBase, c: &EqClassification) {
         }
     }
     kb.field_wise_noneq_carriers = field_wise;
+    // WI-20260918-CKD4J — the parametric composites' constructors, walked THROUGH by the
+    // partial-carrier gate (see `partial_transparent_carriers`). Every one, boundary or
+    // not: a parametric boundary's own `eq` (`Pair.eq`) compares its components, so a
+    // `Float` argument makes it partial too. A NON-parametric boundary (`TotalFloat`)
+    // is not here, and still shields what it holds.
+    let transparent: HashSet<Symbol> = c
+        .sorts
+        .iter()
+        .filter(|&&s| !kb.type_param_syms_of(s).is_empty())
+        .flat_map(|&s| kb.field_constructors_of_sort(s))
+        .collect();
+    kb.partial_transparent_carriers = transparent;
 
     // WI-1103 — MARK every row asserted here. The exemption from provider-coverage
     // op-backing is this pass's placement made a property of the ROW, so it holds in
@@ -823,6 +860,16 @@ fn noneq_provider_sorts(kb: &KnowledgeBase, noneq_sym: Option<Symbol>) -> Vec<Sy
 /// element param) yields no edge: it carries no structural equality of its own, and
 /// the parametric-container-of-Float case is the documented follow-up (module
 /// header), left non-partial rather than falsely claimed handled.
+///
+/// WI-20260918-CKD4J (the `NonEq` mirror) — AND THE SORTS A FIELD TYPE'S ARGUMENTS
+/// NAME, through every parametric application: `o: Option[T = Float]` contributes
+/// `Option` and `Float`, `p: Pair[A = Float, B = Int64]` contributes `Pair`, `Float`,
+/// `Int64`. A parametric container's equality compares its elements (a parametric
+/// boundary's own `eq` included — `Pair.eq` compares components), so a `Float`
+/// argument makes the field partial. Only the ARGUMENTS are entered, never a sort's
+/// own fields, so a non-parametric boundary (`TotalFloat`) still shields its `Float`.
+/// The Total half reads the same list and is unmoved by the extra entries: a field
+/// whose head is parametric already excludes its composite there.
 fn composite_field_sorts(kb: &KnowledgeBase, sort: Symbol) -> Vec<Symbol> {
     let mut out: Vec<Symbol> = Vec::new();
     for ctor in kb.field_constructors_of_sort(sort) {
@@ -831,12 +878,27 @@ fn composite_field_sorts(kb: &KnowledgeBase, sort: Symbol) -> Vec<Symbol> {
         };
         let fields: Vec<(Symbol, Value)> = fields.to_vec();
         for (_name, ftype) in &fields {
-            if let Some(fsort) = super::typing::sort_functor_of_view(kb, ftype) {
-                out.push(fsort);
-            }
+            push_type_sorts(kb, ftype, &mut out);
         }
     }
     out
+}
+
+/// A type's head sort, then — for a parametric head — the sorts its argument types
+/// name, recursively. See [`composite_field_sorts`].
+fn push_type_sorts<V: TermView>(kb: &KnowledgeBase, ty: &V, out: &mut Vec<Symbol>) {
+    let Some(head) = super::typing::sort_functor_of_view(kb, ty) else {
+        return;
+    };
+    out.push(head);
+    if kb.type_param_syms_of(head).is_empty() {
+        return;
+    }
+    for key in ty.named_keys(kb) {
+        if let Some(arg) = ty.named_arg(kb, key) {
+            push_type_sorts(kb, &arg.to_value(), out);
+        }
+    }
 }
 
 /// Assert a derived `SortProvidesInfo(sort_ref = carrier, spec = SortView(spec, <T>

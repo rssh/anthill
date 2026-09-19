@@ -491,15 +491,15 @@ end
         vec![
             ("HoldFloat".to_string(), "NonEq".to_string()),
             ("HoldFloat".to_string(), "PartialEq".to_string()),
+            ("HoldFloatPair".to_string(), "NonEq".to_string()),
             ("HoldFloatPair".to_string(), "PartialEq".to_string()),
             ("HoldInt".to_string(), "Eq".to_string()),
             ("HoldInt".to_string(), "PartialEq".to_string()),
         ],
-        "`HoldFloatPair` must not be claimed LAWFUL — no `Eq`. Since WI-20260918-CKD4J it \
-         derives `PartialEq`, which is TRUE: `Pair[A = Float, B = Int64]` has a partial \
-         equality through `Pair`'s `PartialEq[A], PartialEq[B]` clause (`Float` provides \
-         `PartialEq`). The `NonEq` the hidden `Float` would give it is the mirror that \
-         ticket left open."
+        "`HoldFloatPair` must not be claimed LAWFUL — no `Eq`. Since WI-20260918-CKD4J's \
+         `NonEq` mirror it classifies `Partial` exactly as `HoldFloat` does: the `Float` \
+         behind `Pair[A = Float, …]` is reached through the field type's ARGUMENTS \
+         (`composite_field_sorts`), so it derives `NonEq` + `PartialEq`."
     );
 }
 

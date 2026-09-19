@@ -1621,6 +1621,14 @@ pub struct KnowledgeBase {
     /// [`Self::value_reaches_partial_carrier`]. Empty ⇒ zero behavioral change
     /// (a KB with no Float-containing composites is byte-identical to pre-WI-664).
     pub(crate) field_wise_noneq_carriers: std::collections::HashSet<Symbol>,
+    /// WI-20260918-CKD4J (the `NonEq` mirror) — constructor functors of PARAMETRIC
+    /// composites. Whether a value of one reaches a partial carrier is a question about
+    /// its ARGUMENTS (`some(nan)` does, `some(1)` does not), so the partial-carrier gate
+    /// WALKS THROUGH such a constructor instead of stopping at it — where a constructor
+    /// of a non-parametric sort is decided by its classification alone
+    /// (`field_wise_noneq_carriers`), a `TotalFloat` shielding its `Float`. Built by
+    /// `eq_derive::run` beside that set.
+    pub(crate) partial_transparent_carriers: std::collections::HashSet<Symbol>,
 
     // WI-348 (value-fact payoff): the `op_effects` side-table is GONE. A
     // `denoted`-bearing effect label (`Modify[c]`) now lives in the
@@ -2249,6 +2257,7 @@ impl KnowledgeBase {
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),
             field_wise_noneq_carriers: std::collections::HashSet::new(),
+            partial_transparent_carriers: std::collections::HashSet::new(),
             entity_field_types: HashMap::new(),
             parameterized_type_sites: Vec::new(),
             resolved_requires_facts: HashSet::new(),

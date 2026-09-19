@@ -5201,12 +5201,20 @@ pub(crate) const HAS_BODIED_OP_CALL: GateSpec = GateSpec {
 };
 
 /// WI-664 — does the value reach an UNSHIELDED partial (Float) carrier?
+///
+/// WI-20260918-CKD4J — CAPPED, as [`REACHES_EQ_OVERRIDE`] is, and for the reason the cap
+/// became necessary: since the gate walks THROUGH a parametric constructor
+/// (`KnowledgeBase::partial_transparent_carriers`), a container's whole spine is scanned
+/// per `eq`, where the head answered in O(1) before. Past the cap it answers "reaches",
+/// which is the SAFE direction — the value is then compared FIELD-WISE, which agrees
+/// with the structural shortcut wherever the shortcut was right and is the correct
+/// answer wherever it was not.
 pub(crate) const REACHES_PARTIAL_CARRIER: GateSpec = GateSpec {
     combine: Combine::Any,
     chase_sigma: false,
     head_check: HeadCheck::PartialCarrier,
     opaque: false,
-    depth_cap: None,
+    depth_cap: Some((REACH_DEPTH_CAP, true)),
 };
 
 impl HeadCheck {
@@ -5255,7 +5263,19 @@ impl HeadCheck {
                 match head.functor_sym() {
                     // A sort/constructor head reads the O(1) per-constructor NonEq
                     // classification and STOPS (no descent into a shielded field).
-                    Some(f) => HeadVerdict::Stop(kb.field_wise_noneq_carriers.contains(&f)),
+                    Some(f) if kb.field_wise_noneq_carriers.contains(&f) => {
+                        HeadVerdict::Stop(true)
+                    }
+                    // WI-20260918-CKD4J — …except a PARAMETRIC composite's constructor,
+                    // whose partiality is its arguments': `some(nan)` reaches `Float`,
+                    // `some(1)` does not, and no per-constructor verdict can say both.
+                    // MEASURED before: `eq(some(nan), some(nan))`, `eq(cons(nan, nil),
+                    // …)` and `eq(holder(o: some(nan)), …)` all answered TRUE — the
+                    // structural shortcut on a value the gate never looked inside.
+                    Some(f) if kb.partial_transparent_carriers.contains(&f) => {
+                        HeadVerdict::Recurse
+                    }
+                    Some(_) => HeadVerdict::Stop(false),
                     // A functor-less aggregate (tuple/unit) has no sort to key on.
                     None => HeadVerdict::Recurse,
                 }
