@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20260919-891QP-a-provider-s-or-witness-s-own
+
 - tags: typing
 
 ## Description

@@ -32,3 +32,9 @@ TWO DIRECTIONS, TO BE DECIDED IN A DESIGN NOTE FIRST.
 
 ACCEPTANCE: both fixtures DRIVEN to `Box(V: Boom)` / `Crate(W: Boom)`, through one and two generic levels. The two R541X (C) rows are flipped to positive, each stating which back-out turns it red. Full workspace green via rustland/scripts/test.sh.
 
+## Changes
+
+### 2026-09-19T14:54:42Z — feedback — user
+
+DIRECTION DECIDED (user, 2026-09-19): proposal 065 (docs/proposals/065-type-value-requirement.md), neither (i) nor (ii) as written. A rigid read as a value requires 'requires TypeValue[T = B]' in scope; TypeValue (anthill.reflect, member type_value, 055 §8's spelling) is DERIVED for every sort, CONDITIONAL for a parametric one. This ticket closes through the INSTANCE context: Box's derived 'provides TypeValue[T = Box[V = V]] requires TypeValue[T = V]' serves Box.V, filled by the dictionary builder from Box[V = Boom]. Projection paths are not needed for value reads (still the tool for the bridge's unify_types). Now step 4 of 065's order of work: it waits on the census, conditional derivation (with CKD4J) and the load rule + lowering. The fixture here uses TypeTermB; under 065 the provider's member needs no hand-written clause once derivation lands.
+
