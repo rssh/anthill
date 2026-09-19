@@ -98,11 +98,11 @@ The stdlib has **no** operation returning `Type` (measured: 0). Ten test files c
 
 ## 7. Order of work
 
-1. **Census + the §3 probe.** Count the value reads of rigids across stdlib and tests; drive whether an implementation adding `requires TypeValue[T = B]` is already refused.
-2. **Conditional derivation** (with CKD4J): derived `TypeValue` for every sort and former, conditional for parametric sorts; refuse a user-written provision.
-3. **The load rule + lowering (§1)**, with the migration of step 1's census in the same change, so the suite never passes through a state where the rule is on and a read is unmigrated.
-4. **891QP** through instance contexts (§4); its two R541X rows flip to positive.
-5. **H20YY**.
+1. **Census + the §3 probe** (WI-20260919-BQHGD). Count the value reads of rigids across stdlib and tests; drive whether an implementation adding `requires TypeValue[T = B]` is already refused.
+2. **Conditional derivation** (WI-20260919-HXGXF, on CKD4J's mechanism): derived `TypeValue` for every sort and former, conditional for parametric sorts; refuse a user-written provision.
+3. **The load rule + lowering (§1)** (WI-20260919-N31XX), with the migration of step 1's census in the same change, so the suite never passes through a state where the rule is on and a read is unmigrated.
+4. **WI-20260919-891QP** through instance contexts (§4); its two R541X rows flip to positive.
+5. **WI-20260919-H20YY**.
 
 ## Open questions
 

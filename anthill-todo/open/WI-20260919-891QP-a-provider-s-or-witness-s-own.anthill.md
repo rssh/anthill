@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20260919-N31XX-proposal-065-step-3-the-load
+
 - tags: typing
 
 ## Description
