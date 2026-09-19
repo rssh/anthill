@@ -361,15 +361,21 @@ static STDLIB_ONLY_PARSED: std::sync::LazyLock<Vec<parse::ir::ParsedFile>> =
 /// copy.
 #[allow(dead_code)]
 pub fn load_kb_with_stdlib_only(source: &str) -> KnowledgeBase {
+    expect_loaded(try_load_kb_with_stdlib_only(source))
+}
+
+/// [`load_kb_with_stdlib_only`]'s `try_` twin, for a fixture whose refusal IS the
+/// assertion — in particular one that holds only where the stl host bindings are
+/// absent (`Int64` then provides no `PartialEq`/`PartialOrd`).
+#[allow(dead_code)]
+pub fn try_load_kb_with_stdlib_only(source: &str) -> Result<KnowledgeBase, Vec<String>> {
     let user = parse::parse(source).expect("parse user source");
     let mut refs: Vec<&parse::ir::ParsedFile> = STDLIB_ONLY_PARSED.iter().collect();
     refs.push(&user);
     let mut kb = KnowledgeBase::new();
-    expect_loaded(
-        load::load_all(&mut kb, &refs, &NullResolver)
-            .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()),
-    );
-    kb
+    load::load_all(&mut kb, &refs, &NullResolver)
+        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>())?;
+    Ok(kb)
 }
 
 /// Load the stdlib plus each `(name, source)` as a file that KNOWS ITS PATH.

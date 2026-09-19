@@ -24348,6 +24348,21 @@ fn explain_dep_refusal(
 ) -> Option<RequirementRefusal> {
     // A cover that holds coarsely but not under σ is precisely the entry the
     // pre-WI-821 code would have blindly forwarded.
+    //
+    // WI-20260918-CKD4J — BUT ONLY FOR A DEP WHOSE ELEMENT IS STILL OPEN. A fully
+    // CONCRETE dep (`PartialEq[T = Int64]`, the `PartialOrd` chain of `gt(i, 0)`) was
+    // never forwardable to a wildcard `requires PartialEq[T]`, so that entry is not why
+    // it failed — the dep failed CONSTRUCTION, and the verdict belongs to the arms
+    // below, exactly as it does when no such entry is in scope. MEASURED: with the
+    // entry counted, an unrelated `requires PartialEq[T]` (sort-level, or a conditional
+    // provision's `:- PartialEq[T]`) turned a call that loads without it into this
+    // refusal, whose "its element is a different type parameter" was false. `Ambiguous`
+    // is untouched — it is its own signature.
+    let dep_is_concrete = goal_from_requires_entry(kb, dep)
+        .is_some_and(|g| g.bindings.iter().all(|(_, v)| type_value_is_ground(kb, *v)));
+    let caller_requires: &[RequiresEntry] = if dep_is_concrete { &[] } else { caller_requires };
+    let caller_sub_chains: &[Vec<RequiresEntry>] =
+        if dep_is_concrete { &[] } else { caller_sub_chains };
     let mut refused_entries: Vec<RequiresEntry> = Vec::new();
     for entry in caller_requires {
         if entries_cover(kb, entry, dep, None) && !entries_cover(kb, entry, dep, Some(ctx)) {
