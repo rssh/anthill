@@ -76,6 +76,10 @@ that overlap value syntax (§2).
    is independent of the expected sort, and is recorded once in resolved IR;
    ordinary type-checking then accepts or rejects it. Tuple and arrow type
    surfaces overlap value grammar and use `type_value[…]()` explicitly. (§2)
+   *(AMENDED FOR TYPE PARAMETERS by [proposal 065](065-type-value-requirement.md),
+   2026-09-19: a RIGID type parameter denotes a `Type` value only where
+   `requires TypeValue[T = B]` is in scope, and the read lowers to that slot's
+   `type_value()`. The classification is unchanged; a sort name is untouched.)*
 2. **`Type` moves from `anthill.prelude` to `anthill.reflect`.**
    Types-as-values is reflection; the sort lives with its peers `Term` and
    `Symbol`, and importing it names the dependency. (§3)
@@ -217,7 +221,8 @@ explicit `TypeValue`, and every later lowering path consumes that decision:
   single-constructor sort) — these are the same names
   `facts_of(kb(), WorkItem)` accepts today;
 - the name resolves to an in-scope **type parameter** → a type value carrying
-  that parameter; proposal 062's `is_entity_of(Trust, TrustLevel)` therefore
+  that parameter — *well-formed only under `requires TypeValue[T = …]` for a rigid
+  one, and read through that requirement ([065](065-type-value-requirement.md))*; proposal 062's `is_entity_of(Trust, TrustLevel)` therefore
   passes two ordinary goal arguments, both denoting types, and does not give
   `is_entity_of` type parameters of its own;
 - the name resolves to a **parameter, field, or local** → the expression
@@ -554,6 +559,14 @@ operation type_value[T]() -> Type
 so generic code can reify its own type parameter (`type_value[T]()` inside an
 `operation f[T](…)`). Body-side `T` currently lowers through the dead WI-272
 frame channel, so this lands **after WI-708** — the dependency is explicit.
+
+> **SUPERSEDED IN ITS BACKING by [proposal 065](065-type-value-requirement.md)
+> (2026-09-19).** `type_value` is the member of a spec, `anthill.reflect.TypeValue`,
+> whose instances are derived for every sort and conditional for a parametric one.
+> `type_value[T = B]()` is that member called with a callee bracket, and it —
+> like a bare `B` in value position — is well-formed only where `requires
+> TypeValue[T = B]` is in scope. The WI-708 frame channel is no longer its
+> backing: the read is a slot dispatch. It was never built, so nothing migrates.
 
 ### §9 Universes, declined
 
