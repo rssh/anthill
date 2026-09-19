@@ -4,7 +4,7 @@
 //!
 //! WI-1026 made a rule-body call on a defaulted spec op honour the typer's pin, but
 //! only for `CallClass::PinNow`. `classify_pin_or_apply_within` writes
-//! `ConcreteApplyWithin` instead the moment `sort_reads_requirement_slots(impl_sort)`
+//! `ConcreteApplyWithin` instead the moment `op_reads_requirement_slots(impl_sort)`
 //! — exactly when the supplied implementation's own sort has `requires` — and the
 //! decode answered `None` for it. `reduce_op_value` then kept the SPELLED functor,
 //! which is the spec op, and folded ITS body: the DEFAULT.

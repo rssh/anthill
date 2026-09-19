@@ -779,7 +779,8 @@ impl Interpreter {
                     });
                 }
                 BridgeRequirements::Resolved(parent, trees) => {
-                    self.frame_requirements_from_trees(parent, &trees)
+                    let p = crate::kb::typing::op_owner_provision(&self.kb, sym);
+                    self.frame_requirements_from_trees(parent, p, &trees)
                         .map_err(|f| {
                             EvalError::Suspended {
                                 detail: match f {
@@ -827,13 +828,16 @@ impl Interpreter {
         // which memoizes the requires chain on `kb`.
         &mut self,
         parent: Symbol,
+        // Proposal 066 §7 — the provision the frame's operation is a member of; the
+        // `__req_self` stand-in is that frame's parent bundle.
+        self_provision: Option<Symbol>,
         trees: &[(Symbol, crate::kb::typing::ResolvedRequiresNode)],
     ) -> Result<smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>, FrameReqFailure> {
         let mut out: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]> =
             smallvec::SmallVec::with_capacity(trees.len() + 1);
         // WI-857: layout-valid — see `stand_in_requirement`.
         let self_slot = self
-            .stand_in_requirement(parent, parent)
+            .stand_in_requirement(parent, parent, self_provision)
             .map_err(|_| FrameReqFailure::NoDictionarySort)?;
         out.push((self.fields.req_self, self_slot));
         for (name, tree) in trees {
@@ -933,8 +937,11 @@ impl Interpreter {
         // substitution-composed walk). See operation-call-model.md
         // §"Host-to-entry-op boundary".
         let parent_sym = crate::kb::typing::impl_parent_of_op(&self.kb, sym);
-        let names = parent_sym
-            .map(|p| crate::kb::typing::provider_dict_entries(&mut self.kb, p).names(&mut self.kb));
+        // Proposal 066 §7: the operation's OWN frame — its sort's chain under the
+        // provision it is a member of.
+        let names = parent_sym.map(|_| {
+            crate::kb::typing::op_owner_dict_entries(&mut self.kb, sym).names(&mut self.kb)
+        });
         let expected = names.as_ref().map_or(0, |n| n.len());
         if chain_dicts.len() != expected {
             return Err(EvalError::Internal(format!(
@@ -952,22 +959,25 @@ impl Interpreter {
         // chains involved are empty — the same chain-free accident this ticket is about
         // — so the check is what keeps it valid when 058 phase 7 gives those specs
         // chains.
-        if let Some(p) = parent_sym {
+        if parent_sym.is_some() {
             // WI-869: the DICTIONARY chain, matching the `synth_req_names` count check
             // above — the divergence this file's own comment warns about three lines up
             // is precisely what a declared-chain read reintroduces here, silently
             // validating fewer dicts than were supplied.
-            let chain = crate::kb::typing::provider_dict_entries(&mut self.kb, p);
+            let chain = crate::kb::typing::op_owner_dict_entries(&mut self.kb, sym);
             for (entry, dict) in chain.iter().zip(chain_dicts.iter()) {
                 // WI-867: through `refuse_arity`, the same owner
                 // [`Self::alloc_dictionary`] asks at construction — so a host that
                 // used the constructor cannot be refused here for a reason the
                 // constructor phrased differently, and a value that came from
                 // somewhere else is still judged by the one rule.
+                // A slot's dictionary is a dispatch dictionary, not a parent bundle:
+                // no operation's frame to lay a self case out for.
                 let want = crate::kb::typing::dict_layout(
                     &mut self.kb,
                     entry.required_sort,
                     dict.impl_sort(),
+                    None,
                 );
                 if let Some(why) = want.refuse_arity(&self.kb, dict.arity()) {
                     return Err(EvalError::Internal(format!(
@@ -980,7 +990,8 @@ impl Interpreter {
             smallvec::SmallVec::new();
         if let (Some(p), Some(names)) = (parent_sym, names) {
             // WI-857: layout-valid — see `stand_in_requirement`.
-            let placeholder = self.stand_in_requirement(p, p)?;
+            let self_provision = crate::kb::typing::op_owner_provision(&self.kb, sym);
+            let placeholder = self.stand_in_requirement(p, p, self_provision)?;
             requirements.push((self.fields.req_self, placeholder));
             for (name, dict) in names.iter().zip(chain_dicts) {
                 requirements.push((*name, dict));
@@ -1227,18 +1238,21 @@ impl Interpreter {
         // WI-1033: the names come OFF the chain, so the zip below cannot pair a
         // dictionary chain with a declared-chain naming (WI-869 did exactly that at
         // four producers). WI-657(12): no owned clone — only `required_sort` is read.
-        let chain = crate::kb::typing::provider_dict_entries(&mut self.kb, parent_sym);
+        // Proposal 066 §7: the entry op's OWN frame — its provision's chain.
+        let chain = crate::kb::typing::op_owner_dict_entries(&mut self.kb, op_sym);
+        let self_provision = crate::kb::typing::op_owner_provision(&self.kb, op_sym);
         let names = chain.names(&mut self.kb);
         let mut out: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]> =
             smallvec::SmallVec::with_capacity(names.len() + 1);
-        let self_slot = self.stand_in_requirement(parent_sym, parent_sym)?;
+        let self_slot = self.stand_in_requirement(parent_sym, parent_sym, self_provision)?;
         out.push((self.fields.req_self, self_slot));
         // `names` and `chain` are ONE `DictChain`, so the zip cannot truncate — that is
         // now a property of the type rather than of these two lines being adjacent.
         // (`expand_dispatching_dict` still checks its analogous pair at runtime, because
         // there the two sides come from DIFFERENT symbols, bridged by canonicalization.)
         for (name, entry) in names.iter().zip(chain.iter()) {
-            let slot = self.stand_in_requirement(entry.required_sort, parent_sym)?;
+            // A slot's stand-in is a dispatch dictionary, not a parent bundle.
+            let slot = self.stand_in_requirement(entry.required_sort, parent_sym, None)?;
             out.push((*name, slot));
         }
         Ok(out)
@@ -1326,7 +1340,11 @@ impl Interpreter {
                 }
             };
         let seeded = self
-            .frame_requirements_from_trees(parent, &trees)
+            .frame_requirements_from_trees(
+                parent,
+                crate::kb::typing::op_owner_provision(&self.kb, op_sym),
+                &trees,
+            )
             .map_err(|f| {
                 EvalError::Internal(match f {
                     FrameReqFailure::CallerScopeSlot(name) => format!(
@@ -1422,8 +1440,12 @@ impl Interpreter {
         &mut self,
         spec: Symbol,
         functor: Symbol,
+        // Proposal 066 §7 — [`crate::kb::typing::dict_layout`]'s parameter of the same
+        // name: read only for a `__req_self` stand-in (`spec == functor`).
+        self_provision: Option<Symbol>,
     ) -> Result<value::Dictionary, EvalError> {
-        let arity = crate::kb::typing::dict_layout(&mut self.kb, spec, functor).arity();
+        let arity =
+            crate::kb::typing::dict_layout(&mut self.kb, spec, functor, self_provision).arity();
         if arity == 0 {
             // The common `__req_self` case. Short-circuited so a requires-free sort
             // does not build a marker dictionary per frame entry and discard it.
@@ -1529,7 +1551,9 @@ impl Interpreter {
         subs: impl IntoIterator<Item = value::Dictionary>,
     ) -> Result<value::Dictionary, EvalError> {
         let subs: smallvec::SmallVec<[value::Dictionary; 2]> = subs.into_iter().collect();
-        let layout = crate::kb::typing::dict_layout(&mut self.kb, spec, provider);
+        // A host-built dictionary is a dispatch dictionary for `spec` at `provider`; a
+        // host has no operation frame to lay a self case out for.
+        let layout = crate::kb::typing::dict_layout(&mut self.kb, spec, provider, None);
         if let Some(why) = layout.refuse_arity(&self.kb, subs.len()) {
             return Err(EvalError::Internal(format!("alloc_dictionary: {why}")));
         }

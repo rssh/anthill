@@ -897,14 +897,13 @@ fn q5_the_conversion_slot_is_one_slot_and_the_value_flows_through_it() {
         sigma: None,
         selected: &[],
         sub_goal_requires: &[],
-        hidden: &[],
     };
     let tree = match resolve(&mut kb, &goal, &scope) {
         ResolutionResult::Resolved(t) => t,
         other => panic!("`Ord[T = Rev]` must resolve; got {other:?}"),
     };
     let provider = tree.impl_sort().expect("a resolved provision pins an impl");
-    let layout = dict_layout(&mut kb, goal.spec_sort, provider);
+    let layout = dict_layout(&mut kb, goal.spec_sort, provider, None);
     let bundled = match &tree {
         ResolvedRequiresNode::Conditional { sub_resolutions, .. } => sub_resolutions.len(),
         ResolvedRequiresNode::Leaf { .. } => 0,

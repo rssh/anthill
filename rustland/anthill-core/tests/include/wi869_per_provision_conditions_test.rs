@@ -366,11 +366,11 @@ fn a_carrier_with_no_conditional_provision_is_unchanged() {
     );
 }
 
-/// TWO PROVISIONS SHARING ONE CONDITION are one slot with TWO owners — the arm the
-/// dedup's `conditions_for[i].push` exists for, which neither the stdlib nor any other
-/// arm here reaches (`Pair`'s four provisions have four disjoint condition sets).
-/// Without it the `SmallVec<[Symbol; 2]>` per slot would be speculative generality; with
-/// it, the slot must stay strict for BOTH provisions, which is what the two calls check.
+/// TWO PROVISIONS WITH THE SAME CONDITION. Under WI-869's one chain per carrier this
+/// was one slot with two owners, strict for both dispatches; since proposal 066 §7 each
+/// provision lays out its own chain, and each holds its `Weak[A]`. Both dispatches must
+/// still find it — `Box.strong` below reads the weak evidence through the `Strong`
+/// provision's own slot.
 #[test]
 fn two_provisions_sharing_one_condition_own_one_slot() {
     // Both floors conditioned on `Weak[A]` alone: the STRONG provision is now satisfied
@@ -397,8 +397,7 @@ fn two_provisions_sharing_one_condition_own_one_slot() {
             "…and the same slot serves `Strong`"
         ),
         1,
-        "a slot recorded as owned by only the FIRST provision would be `Unavailable` \
-         under the second, and `Box.strong`'s read of it would be refused",
+        "the `Strong` provision's chain must hold its own `Weak[A]` condition",
     );
 }
 
@@ -443,9 +442,8 @@ fn a_pair_of_pairs_orders_recursively() {
     );
 }
 
-/// THE SLOT SET IS UNIFORM AND THE STRICTNESS IS PER-PROVISION — so a body that names
-/// evidence its provision did not earn must be LOUD, and since proposal 066 it is loud
-/// at LOAD: `Box.weak`, a member of the `Weak` block, reading `Strong[A]` is out of
+/// A body that names evidence its provision did not earn must be LOUD, and since
+/// proposal 066 it is loud at LOAD (and since §7 the evidence is not even in its frame): `Box.weak`, a member of the `Weak` block, reading `Strong[A]` is out of
 /// scope for its body. (Before 066 this LOADED — the `Strong[A]` slot was in every
 /// body's scope — and was refused only at eval, by the arm below.)
 #[test]
@@ -463,14 +461,14 @@ fn reading_a_sibling_provisions_evidence_is_loud() {
     );
 }
 
-/// THE RUNTIME BACKSTOP (WI-869/WI-865), still reachable after 066 and so still pinned:
-/// ONE operation serving TWO specs that declare the same member. `Box.weak` is written
-/// in the `Weak` block and reads `Weak[A]`; `Twin` declares `weak` too, and
-/// `Box provides Twin` unconditioned, so `Twin.weak(box(…))` dispatches to the same
-/// `Box.weak` with a dictionary built for `Twin` — where the `Weak[A]` slot belongs to
-/// ANOTHER provision and is `Unavailable`. The read is refused by name at eval.
+/// Proposal 066 §7.3 — A MEMBER BACKS ONLY ITS OWN PROVISION. `Twin` declares `weak`
+/// too, and `Box provides Twin` unconditioned; `Box.weak` is written in the `Weak`
+/// block and exists only where `Weak[A]` holds, so `Twin[Box]` has no `weak`. Before
+/// §7 this LOADED, the dispatch `Twin.weak(box(…))` reached `Box.weak` by name with a
+/// dictionary laid out for `Twin`, and the `Weak[A]` read was refused only at eval
+/// (WI-865's `NotThisDispatch`). Now it is refused at load, on the `Twin` provision.
 #[test]
-fn a_member_dispatched_through_another_spec_is_refused_at_eval() {
+fn a_member_does_not_back_another_provision() {
     let src = tower_with(
         &(per_provision() + "    provides Twin[T = Box]\n"),
         "    operation twinOnWeak(n: Int64) -> Int64 = Twin.weak(box(v: ow))\n",
@@ -480,30 +478,11 @@ fn a_member_dispatched_through_another_spec_is_refused_at_eval() {
         "sort Twin\n    sort T = ?\n    operation weak(x: T) -> Int64\n  end\n  enum Box",
         1,
     );
-    crate::common::try_load_kb_with(&src)
-        .expect("every body reads only its own provision's evidence, so this types");
-    let err = eval_fresh(&src, "wi869.tower.Driver.twinOnWeak")
-        .expect_err("…and is refused at eval, where the slot is unfilled");
-    let text = format!("{err:?}");
+    let errs = load_errs(&src);
     assert!(
-        text.contains("wi869.tower.Weak.weak") && text.contains("pins no provider"),
-        "the refusal must name the operation whose evidence was missing; got {text}",
-    );
-    // WI-865 — AND IT SAYS THIS IS NOT A DEFECT IN THE PROGRAM. A slot the strictness
-    // rule declined to search is not a slot nothing provides: `Weak[A]` HAS a provider
-    // here, and the old payload-free marker reported it with the same sentence a
-    // genuine no-match got. The record now distinguishes them
-    // (`UnavailableWhy::NotThisDispatch`).
-    // CONTROL: back WI-865 out and the two `contains` below fail (the message reverts
-    // to "nothing provides that spec at those bindings, or more than one does").
-    assert!(
-        text.contains("conditions ANOTHER of `wi869.tower.Box`'s provisions"),
-        "the refusal must name the CARRIER whose other provision put the slot there; \
-         got {text}",
-    );
-    assert!(
-        !text.contains("nothing provides"),
-        "…and must not report a missing provider for a spec that has one; got {text}",
+        errs.iter().any(|e| e.contains("`provides wi869.tower.Twin[…]` on `wi869.tower.Box` has no `weak`")
+            && e.contains("`provides wi869.tower.Weak[…]`")),
+        "`Twin[Box]` must be refused naming the block `Box.weak` belongs to; got {errs:?}",
     );
 }
 

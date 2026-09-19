@@ -435,14 +435,13 @@ fn the_layout_counts_what_resolve_bundles() {
             sigma: None,
             selected: &[],
             sub_goal_requires: &[],
-            hidden: &[],
         };
         let tree = match resolve(&mut kb, &goal, &scope) {
             ResolutionResult::Resolved(t) => t,
             other => panic!("{spec_qn}[T = Int64] must resolve; got {other:?}"),
         };
         let provider = tree.impl_sort().expect("a resolved provision pins an impl");
-        let layout = dict_layout(&mut kb, goal.spec_sort, provider);
+        let layout = dict_layout(&mut kb, goal.spec_sort, provider, None);
         assert_eq!(
             layout.arity(),
             expect_spec_half,
@@ -562,7 +561,6 @@ fn an_unprovided_spec_half_slot_is_recorded_not_dropped() {
         sigma: None,
         selected: &[],
         sub_goal_requires: &[],
-        hidden: &[],
     };
     match resolve(&mut kb, &goal, &scope) {
         ResolutionResult::Resolved(ResolvedRequiresNode::Conditional {

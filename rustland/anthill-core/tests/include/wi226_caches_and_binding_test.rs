@@ -121,7 +121,6 @@ fn resolve_cache_memoizes_dispatch_at_same_goal_and_scope() {
         None,
         &[],
         &[],
-        &[],
     );
     let after_first = kb.resolve_cache_len();
     assert_eq!(
@@ -139,7 +138,6 @@ fn resolve_cache_memoizes_dispatch_at_same_goal_and_scope() {
         &enclosing_requires,
         None,
         None,
-        &[],
         &[],
         &[],
     );

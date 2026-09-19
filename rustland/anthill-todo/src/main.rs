@@ -5078,7 +5078,7 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
             .kb_mut()
             .intern("anthill.todo.store.FileBasedWorkitemStore");
         let entries: Vec<_> =
-            anthill_core::kb::typing::provider_dict_entries(interp.kb_mut(), main_sym)
+            anthill_core::kb::typing::provider_dict_entries(interp.kb_mut(), main_sym, None)
                 .entries()
                 .to_vec();
         let mut out: smallvec::SmallVec<[_; 2]> = smallvec::SmallVec::new();

@@ -4982,7 +4982,7 @@ end
 
         // The prediction for a `Holder` dictionary supplied by `Int64`: `Holder`'s two
         // `requires` then `Int64`'s (none), which is what makes a swap observable.
-        let predicted = dict_layout(&mut kb, holder, int64);
+        let predicted = dict_layout(&mut kb, holder, int64, None);
         assert_eq!(
             (predicted.spec_len, predicted.provider_len),
             (2, 0),
@@ -4991,14 +4991,14 @@ end
             predicted.describe(&kb),
         );
 
-        let agrees = DictLayout::from_halves(&kb, holder, int64, 2, 0);
+        let agrees = DictLayout::from_halves(&kb, holder, int64, None, 2, 0);
         assert!(
             agrees.divergence_from(&kb, &predicted).is_none(),
             "the CONTROL: a producer that built what `dict_layout` predicts diverges \
              from nothing",
         );
 
-        let swapped = DictLayout::from_halves(&kb, holder, int64, 0, 2);
+        let swapped = DictLayout::from_halves(&kb, holder, int64, None, 0, 2);
         assert_eq!(
             swapped.arity(),
             predicted.arity(),
@@ -5015,7 +5015,7 @@ end
              `DictLayout` resolves; got: {why}",
         );
 
-        let wrong_total = DictLayout::from_halves(&kb, holder, int64, 1, 0);
+        let wrong_total = DictLayout::from_halves(&kb, holder, int64, None, 1, 0);
         assert!(
             wrong_total.divergence_from(&kb, &predicted).is_some(),
             "this check is a SUPERSET of the arity-only one it replaced",
@@ -5041,14 +5041,14 @@ end
         let mut kb = load_stdlib_and_stl(Some(SRC));
         let holder = sym(&kb, "test.wi866.Holder");
 
-        let predicted = dict_layout(&mut kb, holder, holder);
+        let predicted = dict_layout(&mut kb, holder, holder, None);
         assert_eq!(
             (predicted.spec_len, predicted.provider_len),
             (2, 0),
             "`dict_layout`'s self branch counts the ONE list as the spec half",
         );
         // What `dict_sub_goals` hands in for the same pair: no spec half at all.
-        let produced = DictLayout::from_halves(&kb, holder, holder, 0, 2);
+        let produced = DictLayout::from_halves(&kb, holder, holder, None, 0, 2);
         assert!(
             produced.divergence_from(&kb, &predicted).is_none(),
             "the producer's `(0, n)` and the layout's `(n, 0)` are ONE list: {}",

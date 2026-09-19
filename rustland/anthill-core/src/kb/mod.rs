@@ -1810,7 +1810,7 @@ pub struct KnowledgeBase {
     // requires caches (derives from the chain); invalidated by
     // `invalidate_requires_chain_cache`. Avoids rebuilding the Vec +
     // collision-disambiguation HashMap on every frame push.
-    pub(crate) synth_req_names_cache: RefCell<HashMap<Symbol, Rc<Vec<Symbol>>>>,
+    pub(crate) synth_req_names_cache: RefCell<HashMap<(Symbol, Option<Symbol>), Rc<Vec<Symbol>>>>,
 
     /// WI-822 LEG 1 — memoized per OPERATION: its own op-scoped `requires` chain
     /// (`typing::op_requires_chain_rc`) and the `__req_*` names of the frame slots
@@ -1840,14 +1840,23 @@ pub struct KnowledgeBase {
         RefCell<HashMap<Symbol, Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
     pub(crate) op_frame_names_cache: RefCell<HashMap<Symbol, Rc<Vec<Symbol>>>>,
 
-    /// WI-869 — memoized DICTIONARY chain per carrier: the sort's own `requires`
-    /// chain followed by its conditional provisions' `:- goals` (`typing::
-    /// provider_dict_chain`). Cleared by `invalidate_requires_chain_cache` alongside
-    /// the two caches above, whose `requires_tree` it derives from — and, WI-1033, ALSO
-    /// from `ProvidesConditionInfo` facts, which nothing retracts or re-asserts after
-    /// the load that emits them.
+    /// WI-869 / proposal 066 §7 — memoized DICTIONARY chain per (carrier, provision
+    /// layout key): the sort's own `requires` chain followed by that provision's `:-
+    /// goals` (`typing::provider_dict_chain`). Only keyed entries live here; the
+    /// unkeyed chain is the sort-level `Rc` itself. Cleared by
+    /// `invalidate_requires_chain_cache` alongside the two caches above, whose
+    /// `requires_tree` it derives from — and, WI-1033, ALSO from
+    /// `ProvidesConditionInfo` facts, which nothing retracts or re-asserts after the
+    /// load that emits them.
     pub(crate) provider_dict_chain_cache:
-        RefCell<HashMap<Symbol, Rc<crate::kb::typing::ProviderDictChain>>>,
+        RefCell<HashMap<(Symbol, Symbol), Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
+    /// Proposal 066 §7 — memoized `typing::provision_layout_key` per (carrier, provision)
+    /// and `typing::provision_member_of` per operation. Both decode facts
+    /// (`ProvidesConditionInfo`, `ProvisionMemberInfo`) and both are read per dispatch —
+    /// eval's frame push asks the target's provision every call. Cleared with the chain
+    /// caches above, which they key.
+    pub(crate) provision_layout_key_cache: RefCell<HashMap<(Symbol, Symbol), Option<Symbol>>>,
+    pub(crate) provision_member_cache: RefCell<HashMap<Symbol, Option<Symbol>>>,
 
     // WI-424 — memoized `(param symbol, canonical Var term)` pairs per
     // parametric sort (`typing::sort_type_params_as_pairs`). Consulted on hot
@@ -1953,10 +1962,6 @@ pub struct KnowledgeBase {
                 // WI-20260918-CKD4J — the enclosing operation's own `requires`, which
                 // answer a conditional provision's SUB-goals and so change the outcome.
                 Vec<crate::kb::typing::RequiresEntry>,
-                // Proposal 066 — the slots of the chain above the body may not resolve
-                // against (another provision's conditions); a member and a non-member
-                // body of one carrier share the chain and differ only here.
-                Vec<bool>,
             ),
             (
                 crate::kb::typing::DispatchOutcome,
@@ -2024,6 +2029,14 @@ pub struct KnowledgeBase {
     // across `stdlib/` and `anthill-stl/`. A per-file counter restarts at 0 for the
     // second file and hands its first clause the index the first file's already used.
     provides_clause_seen: HashMap<ScopeId, usize>,
+    /// Proposal 066 §7.5 — written `provides` clauses per (carrier, provided spec base),
+    /// recorded by the loader BY CONTENT — each clause's lowered condition list.
+    /// `SortProvidesInfo` cannot answer it: two clauses of one spec write the SAME row,
+    /// which the fact store keeps once. Nor can a count or a source location: re-loading
+    /// the same files (the idempotency the witness tests pin) re-parses them with new
+    /// source ids, and would turn every spec into two alternatives. Two clauses with
+    /// the same carrier, spec and conditions ARE one provision.
+    provides_clause_counts: HashMap<(Symbol, Symbol), Vec<Vec<crate::eval::value::Value>>>,
 }
 
 /// WI-20260901-EA6KS — the per-load bookkeeping that belongs to the LOAD CHECKS, taken
@@ -2216,6 +2229,8 @@ impl KnowledgeBase {
             domain_value_face_declined: HashMap::new(),
             sort_domain_is_written: std::collections::HashSet::new(),
             provider_dict_chain_cache: RefCell::new(HashMap::new()),
+            provision_layout_key_cache: RefCell::new(HashMap::new()),
+            provision_member_cache: RefCell::new(HashMap::new()),
             sort_alias_index: None,
             provides_index: None,
             sort_info_index: None,
@@ -2264,6 +2279,7 @@ impl KnowledgeBase {
             host_const_mappings: Vec::new(),
             default_providers: None,
             provides_clause_seen: HashMap::new(),
+            provides_clause_counts: HashMap::new(),
         }
     }
 
@@ -2294,6 +2310,8 @@ impl KnowledgeBase {
         self.requires_tree_cache.borrow_mut().clear();
         self.synth_req_names_cache.borrow_mut().clear();
         self.provider_dict_chain_cache.borrow_mut().clear();
+        self.provision_layout_key_cache.borrow_mut().clear();
+        self.provision_member_cache.borrow_mut().clear();
         // WI-822 LEG 1: the op-keyed half of the same layout — its names are the
         // sort half's continuation, so it goes stale for exactly the same reasons.
         self.op_requires_chain_cache.borrow_mut().clear();
@@ -6803,6 +6821,33 @@ impl KnowledgeBase {
     /// WI-1033 / WI-862 — THE ONE OWNER of the `provides`-clause numbering, across every
     /// file. Both openers of a provision ask here; see the field's comment for why the
     /// counter cannot live on the per-file `Loader`.
+    /// Proposal 066 §7.5 — record one written `provides spec` clause of `carrier`.
+    pub(crate) fn record_provides_clause(
+        &mut self,
+        carrier: Symbol,
+        spec: Symbol,
+        conditions: Vec<crate::eval::value::Value>,
+    ) {
+        let key = (self.canonical_sort_sym(carrier), self.canonical_sort_sym(spec));
+        let known = self.provides_clause_counts.get(&key).is_some_and(|seen| {
+            seen.iter().any(|c| {
+                c.len() == conditions.len()
+                    && c.iter().zip(&conditions).all(|(a, b)| {
+                        crate::kb::term_view::views_structurally_equal(self, a, b)
+                    })
+            })
+        });
+        if !known {
+            self.provides_clause_counts.entry(key).or_default().push(conditions);
+        }
+    }
+
+    /// Proposal 066 §7.5 — how many written clauses of `carrier` provide `spec`.
+    pub(crate) fn provides_clause_count(&self, carrier: Symbol, spec: Symbol) -> u32 {
+        let key = (self.canonical_sort_sym(carrier), self.canonical_sort_sym(spec));
+        self.provides_clause_counts.get(&key).map_or(0, |s| s.len() as u32)
+    }
+
     pub(crate) fn next_provides_clause_index(&mut self, scope: ScopeId) -> usize {
         let seen = self.provides_clause_seen.entry(scope).or_insert(0);
         let clause = *seen;

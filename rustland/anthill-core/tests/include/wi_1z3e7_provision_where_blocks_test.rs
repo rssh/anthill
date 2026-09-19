@@ -1,5 +1,6 @@
 //! WI-20260919-1Z3E7 (proposal 066) — a provision's `:- goals` are in scope exactly for
-//! the operations written in its `where` block.
+//! the operations written in its `where` block, and (§7) each provision has a dictionary
+//! layout of its own.
 //!
 //! Before this, every body of a carrier was checked as if every provision's conditions
 //! were sort-level `requires` (the per-sort dictionary chain was each body's scope), so
@@ -7,19 +8,21 @@
 //! then became that operation's requirement, charged to its callers and stated in no
 //! definition. MEASURED on CKD4J: `Box3.inner` using `PartialEq[T]` loaded, and
 //! `Box3.inner(box3(v: fe(1.5)), …)` was refused naming a requirement of `Box3` nobody
-//! wrote. Now the condition's slot is HIDDEN from every body but its members'
-//! (`ProviderDictChain::hidden_from_body`): it keeps its index and name — the layout is
-//! per sort — and answers no goal.
+//! wrote. Now a body's chain is its provision's — the sort-level `requires` then that
+//! provision's conditions (`provider_dict_entries(sort, provision)`), the sort-level
+//! chain alone outside every block — so a condition of another provision is simply not
+//! in its scope.
 //!
 //! ── WHICH TESTS FAIL WHEN THE CHANGE IS BACKED OUT ──────────────────────────────
 //!
-//! Making `hidden_from_body` hide nothing (the pre-066 scope) fails
-//! `a_non_member_reading_a_condition_is_a_load_error` and
-//! `a_sibling_blocks_condition_is_out_of_scope`: both programs then LOAD. That is the
-//! control that the refusal is this change's — the same programs loaded before it.
-//! Removing the `where` production from the grammar fails every test here that writes a
-//! block (a parse error). PASS EITHER WAY BY DESIGN: `a_helper_with_its_own_requires_*`
-//! — the repair 066 §1 prescribes for a helper must keep working, block or no block.
+//! Laying a carrier out as ONE chain again (every provision's conditions in every body's
+//! scope) fails `a_non_member_reading_a_condition_is_a_load_error` and
+//! `a_sibling_blocks_condition_is_out_of_scope` — both programs then LOAD — and
+//! `each_provision_has_its_own_layout` / `alternative_clauses_hold_when_one_does`, whose
+//! controls are stated at their sites. Removing the `where` production from the grammar
+//! fails every test here that writes a block (a parse error). PASS EITHER WAY BY DESIGN:
+//! `a_helper_with_its_own_requires_needs_no_block` — the repair 066 §1 prescribes for a
+//! helper must keep working, block or no block.
 
 use anthill_core::eval::value::Value;
 
@@ -217,5 +220,166 @@ end
         errs.iter().any(|e| e.contains("wi1z3e7.notmember.Box.helper")
             && e.contains("declares no operation `helper`")),
         "got {errs:?}"
+    );
+}
+
+/// 066 §7.5: a member backs only its own clause, so a `where` block on one of TWO
+/// clauses of one spec would leave the other clause without the member. Refused until
+/// blocks are instances of their own.
+#[test]
+fn a_block_on_one_of_two_clauses_of_a_spec_is_refused() {
+    let src = r#"
+namespace wi1z3e7.twoclauses
+  import anthill.prelude.{Bool, Int64, PartialEq, Eq}
+  sort Box
+    sort T = ?
+    entity box(v: T)
+    provides PartialEq[Box] :- PartialEq[T] where
+      operation eq(a: Box, b: Box) -> Bool =
+        match a
+          case box(x) -> match b case box(y) -> PartialEq.eq(x, y)
+    end
+    provides PartialEq[Box] :- Eq[T]
+  end
+end
+"#;
+    let errs = refusals(src);
+    assert!(
+        errs.iter().any(|e| e.contains("provides `anthill.prelude.PartialEq` in 2 clauses")),
+        "got {errs:?}"
+    );
+}
+
+// ── §7: a layout per provision ───────────────────────────────────────────────────
+
+/// Proposal 066 §7.1 — THE LAYOUT IS PER PROVISION. `Pair` has no sort-level
+/// `requires`, so its members' frames are exactly their provisions' conditions and an
+/// operation outside every block reads nothing. Under WI-869's one chain per carrier
+/// every one of these was the same TEN slots. CONTROL: back §7 out (one chain) and the
+/// four lengths below all read 10.
+#[test]
+fn each_provision_has_its_own_layout() {
+    use anthill_core::kb::typing::provider_dict_entries;
+    let mut kb = crate::common::load_kb_with("namespace wi1z3e7.layout\nend\n");
+    let sym = |kb: &anthill_core::kb::KnowledgeBase, qn: &str| {
+        kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("{qn} is loaded"))
+    };
+    let pair = sym(&kb, "anthill.prelude.Pair");
+    let partial_eq = sym(&kb, "anthill.prelude.PartialEq");
+    let weak_ord = sym(&kb, "anthill.prelude.WeakOrd");
+    let lens: Vec<usize> = [None, Some(partial_eq), Some(weak_ord)]
+        .into_iter()
+        .map(|p| provider_dict_entries(&mut kb, pair, p).len())
+        .collect();
+    assert_eq!(lens, vec![0, 2, 2], "sort-level / PartialEq block / WeakOrd block");
+}
+
+/// Proposal 066 §7 — TWO CLAUSES OF ONE SPEC ARE ALTERNATIVES: the provision holds where
+/// EITHER clause's conditions do. `Box[OnlyA]` satisfies the first clause and not the
+/// second. CONTROL: under WI-869's one chain both clauses' conditions were strict slots
+/// of every `Show` dispatch, so this call was refused for the missing `SB[OnlyA]`.
+#[test]
+fn alternative_clauses_hold_when_one_does() {
+    let src = r#"
+namespace wi1z3e7.alt
+  import anthill.prelude.{Int64}
+  sort Show
+    sort T = ?
+    operation show(x: T) -> Int64
+  end
+  sort SA
+    sort T = ?
+    operation sa(x: T) -> Int64
+  end
+  sort SB
+    sort T = ?
+    operation sb(x: T) -> Int64
+  end
+  sort OnlyA
+    entity oa
+    provides SA[T = OnlyA]
+    operation sa(x: OnlyA) -> Int64 = 1
+  end
+  sort Neither
+    entity ne
+  end
+  enum Box
+    sort A = ?
+    entity box(v: A)
+    provides Show[T = Box] :- SA[A]
+    provides Show[T = Box] :- SB[A]
+    operation show(x: Box) -> Int64 = 5
+  end
+  sort D
+    operation viaA(n: Int64) -> Int64 = Show.show(box(v: oa))
+  end
+end
+"#;
+    assert_eq!(refusals(src), Vec::<String>::new());
+    assert_eq!(eval_int(src, "wi1z3e7.alt.D.viaA"), 5);
+    // …and where NEITHER holds the call is still refused.
+    let neither = src.replace(
+        "    operation viaA(n: Int64) -> Int64 = Show.show(box(v: oa))\n",
+        "    operation viaA(n: Int64) -> Int64 = Show.show(box(v: ne))\n",
+    );
+    let errs = refusals(&neither);
+    assert!(
+        errs.iter().any(|e| e.contains("wi1z3e7.alt.Show.show")),
+        "no alternative holds for `Box[Neither]`; got {errs:?}"
+    );
+}
+
+/// Proposal 066 §7.4 — a helper calling a MEMBER directly (`Box.eq(a, b)`, or the
+/// receiver spelling `a.eq(b)`) gets the member's provision dictionary built at the call,
+/// its condition answered by the helper's own `requires`. CONTROL: the same-sort
+/// inherit alone (WI-418) hands `Box.eq` the helper's frame, which holds no `PartialEq`
+/// condition slot, and the read is unbound at eval. Without the `requires` the call is
+/// the ordinary load refusal.
+#[test]
+fn a_helper_calling_a_member_directly_builds_its_dictionary() {
+    let src = r#"
+namespace wi1z3e7.direct
+  import anthill.prelude.{Bool, Int64, PartialEq}
+  sort Box
+    sort T = ?
+    entity box(v: T)
+    provides PartialEq[Box] :- PartialEq[T] where
+      operation eq(a: Box, b: Box) -> Bool =
+        match a
+          case box(x) -> match b case box(y) -> PartialEq.eq(x, y)
+    end
+    operation same(a: Box, b: Box) -> Bool requires PartialEq[T] = Box.eq(a, b)
+    operation dot(a: Box, b: Box) -> Bool requires PartialEq[T] = a.eq(b)
+  end
+  sort D
+    operation sameYes(n: Int64) -> Int64 = if Box.same(box(v: 1), box(v: 1)) then 1 else 0
+    operation sameNo(n: Int64) -> Int64 = if Box.same(box(v: 1), box(v: 2)) then 1 else 0
+    operation dotYes(n: Int64) -> Int64 = if Box.dot(box(v: 1), box(v: 1)) then 1 else 0
+    operation dotNo(n: Int64) -> Int64 = if Box.dot(box(v: 1), box(v: 2)) then 1 else 0
+  end
+end
+"#;
+    assert_eq!(refusals(src), Vec::<String>::new());
+    assert_eq!(eval_int(src, "wi1z3e7.direct.D.sameYes"), 1);
+    assert_eq!(eval_int(src, "wi1z3e7.direct.D.sameNo"), 0);
+    assert_eq!(eval_int(src, "wi1z3e7.direct.D.dotYes"), 1);
+    assert_eq!(eval_int(src, "wi1z3e7.direct.D.dotNo"), 0);
+    let bare = src
+        .replace(
+            "operation same(a: Box, b: Box) -> Bool requires PartialEq[T] =",
+            "operation same(a: Box, b: Box) -> Bool =",
+        )
+        .replace(
+            "    operation dot(a: Box, b: Box) -> Bool requires PartialEq[T] = a.eq(b)\n",
+            "",
+        )
+        .replace("    operation dotYes(n: Int64) -> Int64 = if Box.dot(box(v: 1), box(v: 1)) then 1 else 0\n", "")
+        .replace("    operation dotNo(n: Int64) -> Int64 = if Box.dot(box(v: 1), box(v: 2)) then 1 else 0\n", "");
+    let errs = refusals(&bare);
+    assert!(
+        errs.iter().any(|e| e.contains("`wi1z3e7.direct.Box.same` calls `wi1z3e7.direct.Box.eq`")
+            && e.contains("or give it its own `requires PartialEq[…]`")),
+        "with no `PartialEq[T]` in scope the member's condition cannot be supplied, and \
+         the refusal names the helper's repair; got {errs:?}"
     );
 }

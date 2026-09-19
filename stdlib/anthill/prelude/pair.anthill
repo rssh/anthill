@@ -23,9 +23,10 @@
 -- THE CONDITIONS ARE ALSO THE EVIDENCE, exactly as a sort-level `requires` is — but
 -- only for the members written in the provision's own `where` block (proposal 066):
 -- `eq` dispatches its component compares through the `PartialEq` provision's slots
--- and `compare` through the `WeakOrd` provision's. A slot belonging to a SIBLING
--- provision is out of scope for a body (a load error to read), and at runtime is
--- present but unfilled at a dispatch that did not earn it (WI-869).
+-- and `compare` through the `WeakOrd` provision's. Each provision has a dictionary
+-- LAYOUT of its own (066 §7): a dispatch through `PartialEq` builds exactly
+-- `[PartialEq[A], PartialEq[B]]`, and a SIBLING provision's condition is in no member's
+-- frame — reading one is a load error.
 --
 -- ── ONE OPERATION FOR THE WHOLE ORDERING SURFACE (WI-876) ───────────────────────
 --

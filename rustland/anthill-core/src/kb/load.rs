@@ -34132,8 +34132,14 @@ impl<'a> Loader<'a> {
         // ORDER is the fact assertion order, which is source order here and is the SAME
         // referent `direct_requires` already uses for the sort-level half — the two are
         // separate per-functor scans, so they cannot interleave.
-        if !pc.conditions.is_empty() {
-            self.load_provides_conditions(pc, domain, clause, domain_term, &spec_value);
+        let conditions = if pc.conditions.is_empty() {
+            Vec::new()
+        } else {
+            self.load_provides_conditions(pc, domain, clause, domain_term, &spec_value)
+        };
+        // Proposal 066 §7.5 — the clause, by CONTENT, for `provides_clause_count`.
+        if let Some(spec_sym) = named_spec {
+            self.kb.record_provides_clause(domain, spec_sym, conditions);
         }
         self.kb.assert_metadata_fact_carrier(
             provides_sym,
@@ -34235,8 +34241,8 @@ impl<'a> Loader<'a> {
 
     /// Proposal 066 (WI-20260919-1Z3E7) — `ProvisionMemberInfo(operation, provided)` for
     /// an operation written inside `provides <spec> … where … end`. `provided` is the
-    /// spec's BASE sort, because that is the key WI-869 scopes a condition by (a
-    /// `ProviderDictChain` slot's owners are provision bases).
+    /// spec's BASE sort, because that is the key a carrier's chains are laid out by
+    /// (`typing::provision_layout_key`).
     fn emit_provision_member(&mut self, op: Symbol, spec: &TypeExpr, span: Span, domain: Symbol) {
         let name = match spec {
             TypeExpr::Simple(n) => n.last(),
@@ -34317,8 +34323,9 @@ impl<'a> Loader<'a> {
         clause: usize,
         domain_term: crate::kb::term::TermId,
         provided: &crate::eval::value::Value,
-    ) {
+    ) -> Vec<crate::eval::value::Value> {
         use crate::eval::value::Value;
+        let mut lowered: Vec<Value> = Vec::with_capacity(pc.conditions.len());
         // LOUD, not a silent drop: the conditions were written and would otherwise
         // condition nothing — the provision would keep its over-claiming shared-chain
         // meaning while its author read the file as if it did not.
@@ -34331,7 +34338,7 @@ impl<'a> Loader<'a> {
                     pc.conditions.len(),
                 ),
             });
-            return;
+            return lowered;
         };
         let cond_sym = self
             .kb
@@ -34372,7 +34379,10 @@ impl<'a> Loader<'a> {
                 vec![
                     (sort_ref_sym, Value::term(domain_term)),
                     (provided_sym, provided.clone()),
-                    (condition_sym, v),
+                    (condition_sym, {
+                        lowered.push(v.clone());
+                        v
+                    }),
                     (clause_sym, Value::term(clause_term)),
                 ],
                 ClauseKind::Requirement,
@@ -34380,6 +34390,7 @@ impl<'a> Loader<'a> {
                 None,
             );
         }
+        lowered
     }
 
     /// Standalone `provides Spec language X ... end`. Proposal 038.

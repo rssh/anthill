@@ -9851,7 +9851,7 @@ impl KnowledgeBase {
     /// * **`Stamped`** — exactly one supplier. Written through
     ///   [`super::typing::classify_pin_or_apply_within`], the SAME writer the typer
     ///   uses, so "may the caller enter it bare or does it need a dictionary"
-    ///   (`sort_reads_requirement_slots`) is decided in one place and WI-1037's
+    ///   (`op_reads_requirement_slots`) is decided in one place and WI-1037's
     ///   `NeedsDict` route is inherited rather than re-derived.
     /// * **`Refused`** — two or more (058 §4.9). The caller leaves the call un-reduced.
     ///
@@ -10188,9 +10188,8 @@ impl KnowledgeBase {
             // typer's static route agree about which callees need a channel.
             let woven_next = dict.and_then(|dict| {
                 let parent = super::typing::impl_parent_of_op(self, target);
-                let needs_reqs = parent
-                    .map(|p| super::typing::sort_reads_requirement_slots(self, p))
-                    .unwrap_or(false);
+                let needs_reqs =
+                    parent.is_some() && super::typing::op_reads_requirement_slots(self, target);
                 let has_op_slots = parent.is_some()
                     && !super::typing::op_requires_chain_rc(self, target).is_empty();
                 (needs_reqs || has_op_slots).then(|| WovenDispatch {

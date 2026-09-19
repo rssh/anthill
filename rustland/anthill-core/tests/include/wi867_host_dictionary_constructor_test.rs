@@ -2,7 +2,7 @@
 //!
 //! WI-857 gave a requirement dictionary one layout and guarded the host BOUNDARY:
 //! `call_with_requirements` validates each supplied chain dictionary against
-//! `dict_layout(slot spec, dict provider)`. The CONSTRUCTOR was not guarded — the
+//! `dict_layout(slot spec, dict provider, None)`. The CONSTRUCTOR was not guarded — the
 //! public `alloc_requirement(functor, subs)` had no spec to check against, so a host
 //! could build a dictionary that claims a provider and bundles nothing, and carry it
 //! around until a frame push read a slot that was not there. That failure names the
@@ -51,7 +51,7 @@ fn wi867_the_fixture_has_a_non_empty_layout() {
         .kb()
         .try_resolve_symbol("anthill.prelude.Int64")
         .expect("Int64 is a stdlib carrier");
-    let layout = dict_layout(interp.kb_mut(), ord, int64);
+    let layout = dict_layout(interp.kb_mut(), ord, int64, None);
     assert_eq!(
         layout.arity(),
         1,

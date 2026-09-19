@@ -43,7 +43,7 @@ pub enum OccurrenceOrigin {
 /// The distinction that matters is not "which impl" but **whether the callee can be
 /// entered without a requirement dictionary**. `classify_pin_or_apply_within` already
 /// decides exactly that — it writes `ConcreteApplyWithin` the moment
-/// `sort_reads_requirement_slots(impl_sort)` and `PinNow` otherwise — and this type is
+/// `op_reads_requirement_slots(impl_sort)` and `PinNow` otherwise — and this type is
 /// that decision carried to the consumer instead of being flattened into an
 /// `Option<Symbol>` that both engines then had to re-derive by convention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -415,7 +415,8 @@ fn chain_for(
     if let Some(cached) = cache.get(&s) {
         return cached.clone();
     }
-    let chain = crate::kb::typing::provider_dict_entries(kb, s);
+    // No enclosing operation: the sort-level chain (proposal 066 §7).
+    let chain = crate::kb::typing::provider_dict_entries(kb, s, None);
     cache.insert(s, chain.clone());
     chain
 }

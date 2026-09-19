@@ -107,7 +107,7 @@ fn wi866_dispatch_spec_of_op_answers_by_shape() {
 /// when `expand_dispatching_dict`'s arity guard fires.
 ///
 /// BACK-OUT: with the pre-WI-866 derivation the layout for a namespace-level
-/// `dispatched_from` is `dict_layout(<the namespace>, provider)`, and its `describe`
+/// `dispatched_from` is `dict_layout(<the namespace>, provider, None)`, and its `describe`
 /// names `wi866.shapes` as a SPEC — a sort-shaped claim about a namespace, in the
 /// sentence that is supposed to explain which half of the dictionary is short.
 #[test]
@@ -121,22 +121,22 @@ fn wi866_a_namespace_is_no_longer_described_as_a_spec() {
         .try_resolve_symbol("anthill.prelude.Int64")
         .expect("Int64 is a carrier-keyed provider");
 
-    let old_reading = dict_layout(&mut kb, ns, provider).describe(&kb);
+    let old_reading = dict_layout(&mut kb, ns, provider, None).describe(&kb);
     assert!(
         old_reading.contains("spec `wi866.shapes`"),
         "the pre-WI-866 reading renders the namespace as the dictionary's spec; got: \
          {old_reading}",
     );
 
-    let new_reading = dict_layout(&mut kb, provider, provider).describe(&kb);
+    let new_reading = dict_layout(&mut kb, provider, provider, None).describe(&kb);
     assert!(
         !new_reading.contains("wi866.shapes"),
         "the spec-less reading names only the provider, which is the whole of what \
          such a dictionary is; got: {new_reading}",
     );
     assert_eq!(
-        dict_layout(&mut kb, ns, provider).arity(),
-        dict_layout(&mut kb, provider, provider).arity(),
+        dict_layout(&mut kb, ns, provider, None).arity(),
+        dict_layout(&mut kb, provider, provider, None).arity(),
         "and the two readings still COUNT the same, which is why nothing failed \
          before — the defect was never arithmetic",
     );
@@ -215,7 +215,7 @@ fn wi866_the_two_half_dispatch_still_runs() {
 /// EVERY DICTIONARY THE LOADER EMITS, CENSUSED — not a fixture's.
 ///
 /// WI-857's invariant is that a dictionary bundles exactly
-/// `dict_layout(spec, provider).arity()` slots. `dict_sub_goals` now says so at its
+/// `dict_layout(spec, provider, None).arity()` slots. `dict_sub_goals` now says so at its
 /// own producer (`check_against_prediction`), but the WI-415 parent-bundle producer
 /// (`build_dispatching_dict_from_chain`) had no such check and, on the
 /// `require_complete = false` route, silently DROPPED a dep that failed to project —
@@ -231,7 +231,7 @@ fn wi866_the_two_half_dispatch_still_runs() {
 /// requirements" where in fact none could be built.
 ///
 /// IT ASKS THE QUESTION EVAL ASKS, and a first draft did not: it keyed every
-/// dictionary on `dict_layout(provider, provider)`, the PARENT-BUNDLE reading, which
+/// dictionary on `dict_layout(provider, provider, None)`, the PARENT-BUNDLE reading, which
 /// is right only for `build_dispatching_dict_direct`'s output. The other rewrite route
 /// (`emit_tree_as_projection`) emits an INSTANCE dictionary, whose layout is the spec
 /// half plus the provider half — so a correctly-sized one over a spec with a non-empty
@@ -343,7 +343,7 @@ fn wi866_no_emitted_dictionary_is_short_of_its_layout() {
             continue;
         }
         let spec = dispatch_spec_of_op(&kb, spec_op).or_provider(provider);
-        let want = dict_layout(&mut kb, spec, provider).arity();
+        let want = dict_layout(&mut kb, spec, provider, None).arity();
         if slots != want {
             short.push(format!(
                 "`{}` at `{}`: {slots} slot(s) emitted, layout wants {want}",

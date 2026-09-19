@@ -2019,9 +2019,10 @@ impl Interpreter {
                         "DeferToRequirement classification missing enclosing_sort".into(),
                     )
                 })?;
+                // No enclosing operation: the sort-level chain (proposal 066 §7).
                 (
                     encl,
-                    crate::kb::typing::provider_dict_entries(&mut self.kb, encl)
+                    crate::kb::typing::provider_dict_entries(&mut self.kb, encl, None)
                         .names(&mut self.kb),
                 )
             }
@@ -2146,7 +2147,10 @@ impl Interpreter {
         // cannot drift on it.
         let spec =
             crate::kb::typing::dispatch_spec_of_op(&self.kb, dispatched_from).or_provider(provider);
-        let layout = crate::kb::typing::dict_layout(&mut self.kb, spec, provider);
+        // Proposal 066 §7: a parent bundle (spec == provider) is the TARGET's frame, laid
+        // out for the provision the target is a member of.
+        let self_provision = crate::kb::typing::op_owner_provision(&self.kb, target);
+        let layout = crate::kb::typing::dict_layout(&mut self.kb, spec, provider, self_provision);
         let arity = dict.arity();
         if arity != layout.arity() {
             return Err(EvalError::Internal(format!(
@@ -2175,8 +2179,9 @@ impl Interpreter {
             // than of the op the call named.
             return Ok(reqs);
         };
+        // Proposal 066 §7: the target's OWN frame — its sort's chain under its provision.
         let names =
-            crate::kb::typing::provider_dict_entries(&mut self.kb, owner).names(&mut self.kb);
+            crate::kb::typing::op_owner_dict_entries(&mut self.kb, target).names(&mut self.kb);
         let Some(slots) = layout.slots_for(&self.kb, owner) else {
             // `resolve_op_target` can land on a THIRD sort — a same-short-name
             // default the provider merely inherits, or an instance-fact binding
@@ -2204,7 +2209,12 @@ impl Interpreter {
         // `same_sort_canonical` would bridge for identity while the two chain reads
         // disagreed. Checked rather than `debug_assert`ed because the alternative is
         // a frame silently short of the slots its body reads.
-        if slots.len() != names.len() {
+        //
+        // AT LEAST, not exactly (proposal 066 §7): a dispatch through a provision lays
+        // the provider half out for that provision, and a target written outside every
+        // block reads only its sort-level PREFIX — whose names every chain of the
+        // carrier shares, so binding the first `names.len()` slots is exact for it.
+        if slots.len() < names.len() {
             return Err(EvalError::Internal(format!(
                 "deferred dispatch frame-push: `{}` reads {} requirement slot(s) but \
                  the dictionary layout gives it {} ({})",
@@ -2943,7 +2953,8 @@ impl Interpreter {
                 candidates,
             }),
             BridgeRequirements::Resolved(parent, trees) => {
-                self.frame_requirements_from_trees(parent, &trees)
+                let p = crate::kb::typing::op_owner_provision(&self.kb, impl_target);
+                self.frame_requirements_from_trees(parent, p, &trees)
                     .map_err(|f| {
                         EvalError::Internal(match f {
                             // `resolve_bridge_requirements` resolves with an EMPTY
