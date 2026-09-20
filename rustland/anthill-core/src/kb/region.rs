@@ -91,6 +91,13 @@ pub(crate) fn region_sorts(kb: &KnowledgeBase) -> HashSet<Symbol> {
 /// `is_modifiable_sort` backs a reflect introspection op, not a dispatch. If a third
 /// caller ever puts this on a hot path, the answer is the `EqDispatchIndex`/
 /// `DefaultProviderIndex` pattern, not a narrower channel list.
+///
+/// WI-20260920-E3DC5 — "ONCE per typing pass" ONLY BECAME TRUE WITH THAT TICKET, and the
+/// gap is worth knowing about because this comment is what made it invisible. The call
+/// sat inside `check_operation_bodies`, which `type_check_sorts_collect` invokes once per
+/// SORT, so it ran 204 times on a stdlib load — `sorts × provisions` — while reading as
+/// though it ran once. It is now hoisted to that loop's caller and threaded in; see the
+/// `debug_assert` at the old site, which pins the loop-invariance the hoist rests on.
 fn modifiable_claim_heads(kb: &KnowledgeBase, modifiable: Symbol) -> Vec<TermId> {
     let canonical = kb.canonical_sort_sym(modifiable);
     super::typing::all_provisions(kb)

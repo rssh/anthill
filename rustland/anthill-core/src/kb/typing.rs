@@ -32789,6 +32789,35 @@ pub(crate) struct ProvidesIndex {
     /// than a cache of its own (cf. WI-1112, where a new index needed its producers
     /// enumerated, and WI-954, where a stale index answered EMPTY).
     carrier_edges: HashMap<Symbol, SmallVec<[(crate::kb::RuleId, Symbol); 4]>>,
+    /// WI-20260920-E3DC5 — the CONDITION relation (`ProvidesConditionInfo`), keyed by the
+    /// canonical symbol of its `sort_ref` field's functor: the exact identity
+    /// [`provision_conditions`] re-filters with (`same_sort_canonical`). That predicate
+    /// answers about ONE sort and had no bucket to ask, so it walked every condition fact
+    /// per call — 877 calls over a stdlib load, and the walk lengthens as the relation
+    /// grows, which is the product both factors of `type_check_sorts`' cost were paying.
+    ///
+    /// MEASURED (release, stdlib + an empty namespace, `ANTHILL_LOAD_TIMING=1`, medians of
+    /// 15 interleaved runs, both arms in ONE binary behind a switch so no binary-to-binary
+    /// variance rides along). Forcing WI-20260919-HXGXF's `TypeValue` gate open — which
+    /// asserts a condition row per parametric sort as well as a provision row per sort —
+    /// grew `check_provider_requires`, this bucket's hottest consumer, by **+1.91 ms**
+    /// without it and by **+0.65 ms** with it (6.05 → 7.96 ms against 5.66 → 6.31 ms).
+    /// Per-call counters attribute that to `provision_conditions` itself: ~877 calls either
+    /// way, whose total grew 2.8× for a 1.77× relation before the bucket and 1.4× after.
+    ///
+    /// A DIFFERENT RELATION IN THE SAME INDEX, and that is the point rather than an
+    /// economy. Its validity window is `provides_index`' window EXACTLY, because the two
+    /// relations have the same producers: every `ProvidesConditionInfo` fact is written
+    /// beside the `SortProvidesInfo` fact it conditions — by the loader
+    /// (`load_provides_conditions`, from a `provides … :- …` clause) or by
+    /// `eq_derive::record_derived_conditions` (reached through `assert_derived_provision`,
+    /// and from `eq_derive::run`'s `NonEq` mirror, which runs inside the same
+    /// drop-and-rebuild bracket). So there is no window in which this bucket could be
+    /// stale while `provides_index` is live, and — by `carrier_edges`' reasoning, which
+    /// this follows deliberately — living INSIDE `ProvidesIndex` means every existing drop
+    /// site drops it and the one builder fills it. A cache of its own would have added a
+    /// fourth set of producers to audit (cf. WI-1112) for no separation that buys anything.
+    conditions_by_carrier: SymbolKeyedFactIndex,
 }
 
 /// WI-660 — the provides-fact rids for a SPEC-BASE-keyed lookup: the `by_spec_base`
@@ -32831,9 +32860,63 @@ fn provides_rids_by_carrier_canon(
     )
 }
 
+/// WI-20260920-E3DC5 — ONE decoder for a `ProvidesConditionInfo` fact, shared by its three
+/// readers: [`provision_conditions`], [`conditioned_provision_pairs`], and the
+/// `conditions_by_carrier` bucket that [`build_provides_index`] fills.
+///
+/// EXTRACTED BECAUSE THE THIRD READER ARRIVED. Two of these existed as one function's body;
+/// adding a bucket and a sweep would have made three copies of one criterion kept in step
+/// by hand — the shape `carrier_edges`' doc refuses in so many words ("using the consumer's
+/// own decode makes the memo the function, not a lookalike"), and the shape WI-838's
+/// cross-kind blind spot came from. A bucket that decodes `sort_ref` even slightly
+/// differently from the predicate reading out of it files facts where nobody looks, and
+/// reads as the relation being EMPTY for that sort — which for this relation means a
+/// conditional provision read as UNCONDITIONAL.
+///
+/// Carrier-agnostic throughout (`rule_head_value` + `head_field_term` / `head_field_value`),
+/// and `sort_ref` through `sort_ref_functor` rather than a `Term::Fn` shape test:
+/// `make_name_term_from_sym` applies the WI-511 canon and yields a `Ref` for a constructor
+/// owner. The sibling reader `check_provider_requires` decodes the same field the same way.
+///
+/// `None` for a non-fact or a row missing any of the three fields — the rid is then in no
+/// bucket AND invisible to both readers, which is the agreement that matters. The `clause`
+/// index is NOT read here: only `provision_conditions` needs it, and it is the one field
+/// whose absence is tolerated (it defaults) rather than disqualifying.
+fn decoded_condition_row(kb: &KnowledgeBase, rid: crate::kb::RuleId) -> Option<(Symbol, Symbol, Value)> {
+    if !kb.is_fact(rid) {
+        return None;
+    }
+    let head = kb.rule_head_value(rid);
+    let sort_ref = super::op_info::head_field_term(kb, head, "sort_ref")?;
+    let owner = super::load::sort_ref_functor(kb, sort_ref)?;
+    let provided = super::op_info::head_field_value(kb, head, "provided")?;
+    let condition = super::op_info::head_field_value(kb, head, "condition")?;
+    let provided_base = spec_base_functor(kb, &provided)?;
+    Some((owner, provided_base, condition))
+}
+
+/// WI-20260920-E3DC5 — the `ProvidesConditionInfo`-fact rids for a CARRIER-keyed lookup:
+/// the canonical-`sort_ref` bucket when [`ProvidesIndex`] is built, else a live scan of
+/// every condition fact (the pre-build / no-index fallback — which is the state the whole
+/// derive block below `provides_index = None` runs in, by design). The bucket keys on
+/// `canonical_sort_sym(sort_ref-functor)`, so the caller passes any sort symbol; the one
+/// consumer keeps its per-fact `same_sort_canonical` re-filter, which is load-bearing on
+/// the scan fallback because that arm returns EVERY condition fact.
+fn condition_rids_by_carrier(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<crate::kb::RuleId> {
+    SymbolKeyedFactIndex::rids_or_scan(
+        kb,
+        kb.provides_index.as_ref().map(|p| &p.conditions_by_carrier),
+        kb.canonical_sort_sym(sort_sym),
+        "anthill.reflect.ProvidesConditionInfo",
+    )
+}
+
 /// WI-660/WI-672 — build the [`ProvidesIndex`] in ONE pass over the SortProvidesInfo facts:
 /// `by_spec_base` keyed by canonical spec base, `by_carrier` by canonical carrier
-/// (WI-672; see the struct doc). Called at TWO points in `load.rs`:
+/// (WI-672; see the struct doc). WI-20260920-E3DC5 adds a SECOND walk, over the
+/// `ProvidesConditionInfo` facts, filling `conditions_by_carrier` — a different relation
+/// with the same validity window, which is why it is built here and not on its own
+/// schedule (the field's doc carries that argument). Called at TWO points in `load.rs`:
 /// (1) `type_check_sorts` start — every provider that type-check itself needs already
 /// exists (the loader/witness/instantiation passes all ran; `type_check` asserts none),
 /// and type-check is the hot consumer; (2) again right after `eq_derive::run` (the only
@@ -32905,10 +32988,59 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
             }
         }
     }
+    // WI-20260920-E3DC5 — the CONDITION bucket, over a second relation. A separate walk
+    // and not a branch inside the one above: the two relations have different functors and
+    // different fields, and the only thing they share is the window in which they are
+    // valid (see `conditions_by_carrier`).
+    //
+    // `sort_ref_functor` and a CANONICAL key, matching the consumer arm for arm — the rule
+    // [`SymbolKeyedFactIndex`] states: key on whatever identity the consumer compares
+    // with, which here is `same_sort_canonical` over a `sort_ref_functor` read.
+    // (`build_requires_index` matches `Term::Fn` because ITS consumer does; follow the
+    // consumer, not the sibling builder.)
+    //
+    // NEITHER CHOICE IS DISTINGUISHED BY THE CORPUS TODAY, and that is recorded rather
+    // than left for someone to assume otherwise: both mutations were MEASURED — bucketing
+    // through a bare `Term::Fn` match, and keying on the raw symbol instead of the
+    // canonical one — and the whole condition-index suite passes with either. Every
+    // condition fact in a stdlib load has a `Term::Fn` `sort_ref` whose functor is already
+    // canonical, because conditions are written on SORTS (a `Ref` comes from the WI-511
+    // canon on a CONSTRUCTOR owner, and no `provides … :- …` has one). So these are
+    // faithfulness choices, not defended positions: a future producer that writes a
+    // constructor-owned or non-canonically-interned carrier would be served correctly by
+    // this spelling and silently dropped by either other one — and a dropped fact here is
+    // a provision read as UNCONDITIONAL, the `ProvisionConditionsTooWeak` over-claim minted
+    // by an index. What IS pinned by a test is the carrier-agnostic head read; see below.
+    let mut conditions_by_carrier = SymbolKeyedFactIndex::default();
+    if let Some(cond_sym) = kb.try_resolve_symbol("anthill.reflect.ProvidesConditionInfo") {
+        for rid in kb.rules_by_functor(cond_sym) {
+            // THE CONSUMER'S OWN DECODE ([`decoded_condition_row`]), so the bucket holds
+            // exactly the rids the readers can use — see that function for why all three
+            // readers share it. A row it rejects is in no bucket AND invisible to the
+            // readers, so the two arms still agree.
+            //
+            // The carrier-agnostic head read is load-bearing and is NOT justified by the
+            // shipped derived rows — that claim was MEASURED AND IS FALSE, recorded here so
+            // nobody re-derives it. A term-only `fact_head_named_args` builder was tried and
+            // the whole condition-index suite still passed:
+            // `eq_derive::record_derived_conditions` lowers every field through
+            // `Value::term`, so its rows ARE term-carried. What fails is a head carrying a
+            // denoted-bearing condition (a `Value::Node` inside the view, WI-662's shape on
+            // the requires side) — `fact_head_named_args` is `None` for the whole head, the
+            // fact lands in no bucket, and the provision silently reads UNCONDITIONAL.
+            // Driven by `a_denoted_condition_fact_is_bucketed_not_dropped`, which builds
+            // exactly that head because the loader cannot yet emit one.
+            let Some((owner, _, _)) = decoded_condition_row(kb, rid) else {
+                continue;
+            };
+            conditions_by_carrier.insert(kb.canonical_sort_sym(owner), rid);
+        }
+    }
     kb.provides_index = Some(ProvidesIndex {
         by_spec_base,
         by_carrier,
         carrier_edges,
+        conditions_by_carrier,
     });
 }
 
@@ -33400,19 +33532,70 @@ fn decoded_provision_rows(kb: &KnowledgeBase, provides_sym: Symbol) -> Vec<Decod
 
 /// The (carrier, provided-spec) pairs whose provision carries a `:- goals` tail, from ONE
 /// sweep of the condition facts. A conditional provision neither forwards nor is forwarded
-/// through — see [`derive_forwarded_provisions`] — and asking per carrier re-swept the
-/// whole `ProvidesConditionInfo` relation each time.
-fn conditioned_provision_pairs(
-    kb: &KnowledgeBase,
-    carriers: &[Symbol],
-) -> std::collections::HashSet<(Symbol, Symbol)> {
+/// through — see [`derive_forwarded_provisions`].
+///
+/// ONE SWEEP IS WHAT THIS SAYS AND, SINCE WI-20260920-E3DC5, WHAT IT DOES. The body used
+/// to call [`provision_conditions`] once PER CARRIER, and that predicate walks the WHOLE
+/// `ProvidesConditionInfo` relation to answer about one sort — so the "one sweep" the
+/// comment promised was in fact `carriers × conditions`, a product of two quantities that
+/// BOTH grow with the program.
+///
+/// MEASURED AT FOUR SIZES, not inferred from the shape. A generated fixture of `n` carriers,
+/// each writing one unconditional provision of a forwarder and one conditional provision
+/// (so carriers AND conditions grow together, as they do when a derivation pass adds rows),
+/// timed at the `derive_forwarded_provisions` mark. Two release binaries — this commit's
+/// parent and this commit — run interleaved, medians of 5:
+///
+/// ```text
+///   n       50     100     200     400       ×8 input   last doubling   exponent
+///   before  3.26    7.83   23.96   82.06 ms    ×25.2        ×3.43          1.78
+///   after   0.59    0.80    1.42    2.77 ms     ×4.7        ×1.95          0.96
+/// ```
+///
+/// Before, each doubling multiplies the time by 2.41 → 3.06 → 3.43, climbing toward the ×4
+/// of a pure quadratic as the fixed stdlib base cost washes out. After: 1.35 → 1.78 → 1.95,
+/// climbing toward the ×2 of a linear pass. At `n = 400` this pass is 30× faster.
+///
+/// ON THE REAL STDLIB (release, + an empty namespace, medians of 15 interleaved runs):
+/// forcing WI-20260919-HXGXF's `TypeValue` gate open takes the relation 219 → 387 rows and
+/// the carrier list 101 → 180 (1.78×) while ALSO asserting a condition row per parametric
+/// sort — and the pass went 0.51 → 2.04 ms, i.e. it grew by **4×** for a 1.78× input,
+/// because the cost is the PRODUCT and not either factor. With this rewrite the same
+/// comparison is 0.25 → 0.36 ms: the growth is 93 % gone, and per-step marks put the step
+/// this function owns at 51 % of the pass before and under 10 % after.
+///
+/// THE CARRIER FILTER IS GONE WITH THE LOOP, and dropping it changes no answer: the only
+/// reader asks `contains((r.carrier, r.base))` for rows `r` of the very relation the
+/// carrier list was distilled from, so every pair it can ask about is one this collects.
+/// Collecting the rest costs a `HashSet` entry per conditioned provision and saves
+/// building the carrier list at all.
+///
+/// The emptiness test the per-carrier form applied (`!pc.conditions.is_empty()`) is not
+/// lost either — it was already vacuous. [`provision_conditions`] creates a group only
+/// when it has decoded a `condition` field to seed it with, so every group it returns has
+/// at least one. Here the fact IS the condition, which is why the decode below reads the
+/// field and then only checks that it is present.
+fn conditioned_provision_pairs(kb: &KnowledgeBase) -> std::collections::HashSet<(Symbol, Symbol)> {
     let mut out = std::collections::HashSet::new();
-    for carrier in carriers {
-        for pc in provision_conditions(kb, *carrier) {
-            if !pc.conditions.is_empty() {
-                out.insert((*carrier, kb.canonical_sort_sym(pc.provided)));
-            }
-        }
+    let Some(cond_sym) = kb.try_resolve_symbol("anthill.reflect.ProvidesConditionInfo") else {
+        return out;
+    };
+    for rid in kb.rules_by_functor(cond_sym) {
+        // [`decoded_condition_row`] and not a second spelling of it: this set is consulted
+        // INSTEAD of asking [`provision_conditions`], so a row that predicate would have
+        // decoded and this one skipped is a conditional provision read as unconditional.
+        let Some((owner, provided_base, _)) = decoded_condition_row(kb, rid) else {
+            continue;
+        };
+        // Both endpoints canonical, because the asker's are: `decoded_provision_rows`
+        // canonicalizes carrier and base, and the per-carrier form this replaces compared
+        // owners with `same_sort_canonical`. Two symbols agree under that predicate
+        // exactly when `canonical_sort_sym` sends them to one symbol, so a set keyed on
+        // the canonical pair answers the same question with one lookup.
+        out.insert((
+            kb.canonical_sort_sym(owner),
+            kb.canonical_sort_sym(provided_base),
+        ));
     }
     out
 }
@@ -33504,15 +33687,7 @@ fn forwarded_rows_to_derive(
 ) -> Vec<(Symbol, Symbol, Symbol, Vec<(String, TermId)>)> {
     let rows = decoded_provision_rows(kb, provides_sym);
 
-    // `Symbol` is not `Ord`, so dedup through a set rather than a sort.
-    let carriers: Vec<Symbol> = {
-        let mut seen = std::collections::HashSet::new();
-        rows.iter()
-            .map(|r| r.carrier)
-            .filter(|c| seen.insert(*c))
-            .collect()
-    };
-    let conditioned = conditioned_provision_pairs(kb, &carriers);
+    let conditioned = conditioned_provision_pairs(kb);
 
     // forwarder -> the floors it forwards to, each with the parameter MAP that translates
     // the forwarder's bindings into the floor's ([`forwarding_param_map`]). A CONDITIONAL
@@ -63986,38 +64161,24 @@ fn provision_member_of_uncached(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 /// ([`alternative_condition_goals`]).
 pub(crate) fn provision_conditions(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<ProvisionConditions> {
     let mut out: Vec<ProvisionConditions> = Vec::new();
-    let Some(cond_sym) = kb.try_resolve_symbol("anthill.reflect.ProvidesConditionInfo") else {
-        return out;
-    };
-    for rid in kb.rules_by_functor(cond_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let head = kb.rule_head_value(rid);
-        // Same decoding as `direct_requires`, field for field: `sort_ref` is a ground
-        // name term, the two views ride as `Value`s so a denoted-bearing one survives.
-        let Some(sort_ref) = super::op_info::head_field_term(kb, head, "sort_ref") else {
+    // WI-20260920-E3DC5: the canonical-`sort_ref` bucket when `provides_index` is built,
+    // else every condition fact — which is why the `same_sort_canonical` re-filter below
+    // stays. This predicate answers about ONE sort and is asked ~877 times per stdlib
+    // load; without a bucket each of those walked the whole relation, so its cost was
+    // `calls × relation` and grew with any pass that adds conditioned provisions.
+    for rid in condition_rids_by_carrier(kb, sort_sym) {
+        // [`decoded_condition_row`] — the shared decode, so this predicate and the bucket
+        // it now reads through cannot answer about different sets of facts.
+        let Some((owner, provided_base, condition)) = decoded_condition_row(kb, rid) else {
             continue;
         };
-        // `sort_ref_functor`, not a bare `Term::Fn` match: `make_name_term_from_sym`
-        // applies the WI-511 canon and yields a `Ref` for a constructor owner, which a
-        // shape test would silently drop. The sibling reader `check_provider_requires`
-        // decodes the same field the same way.
-        let Some(owner) = super::load::sort_ref_functor(kb, sort_ref) else {
-            continue;
-        };
+        // The per-fact re-filter the bucket's contract requires: `rids_or_scan`'s no-index
+        // arm returns EVERY condition fact, so this is what scopes the answer to one sort
+        // before the index exists.
         if !same_sort_canonical(kb, owner, sort_sym) {
             continue;
         }
-        let (Some(provided), Some(condition)) = (
-            super::op_info::head_field_value(kb, head, "provided"),
-            super::op_info::head_field_value(kb, head, "condition"),
-        ) else {
-            continue;
-        };
-        let Some(provided_base) = spec_base_functor(kb, &provided) else {
-            continue;
-        };
+        let head = kb.rule_head_value(rid);
         // The clause index is what separates two provisions of one spec at one
         // application; without it they merge and their conditions read as a conjunction.
         let clause = super::op_info::head_field_term(kb, head, "clause")
@@ -69237,6 +69398,15 @@ fn type_check_sorts_collect(
     let mut rule_typing_reportable: std::collections::HashSet<crate::kb::RuleId> =
         std::collections::HashSet::new();
 
+    // WI-314 / WI-20260920-E3DC5 — the region set for result-escape masking. PROGRAM-GLOBAL
+    // and loop-invariant across this pass, so it is computed here, once, and threaded into
+    // every `check_operation_bodies` call; that function used to compute it itself and so
+    // walked the whole provision relation once per SORT. Its own comment carries the
+    // measurement and the `debug_assert` that pins the invariance.
+    //
+    // ABOVE BOTH CALLS, so the sort loop and the free-op sweep share the one set.
+    let region_sorts = super::region::region_sorts(kb);
+
     if kb.try_resolve_symbol("anthill.reflect.SortInfo").is_some() {
         for &sort_sym in sort_names {
             let sort_info = find_sort_info(kb, sort_sym);
@@ -69259,7 +69429,7 @@ fn type_check_sorts_collect(
             };
 
             check_entity_facts(kb, &ctor_syms, &mut errors, &mut sources);
-            check_operation_bodies(kb, &op_syms, &mut errors, &mut sources);
+            check_operation_bodies(kb, &op_syms, &mut errors, &mut sources, &region_sorts);
             if TYPECHECK_FREE_OPS {
                 sort_owned_ops.extend(op_syms.iter().copied());
             }
@@ -69295,7 +69465,7 @@ fn type_check_sorts_collect(
             .filter(|s| !sort_owned_ops.contains(s))
             .collect();
         if !free_ops.is_empty() {
-            check_operation_bodies(kb, &free_ops, &mut errors, &mut sources);
+            check_operation_bodies(kb, &free_ops, &mut errors, &mut sources, &region_sorts);
         }
     }
 
@@ -72277,6 +72447,9 @@ fn check_operation_bodies(
     // carries that body's file). On entry `sources` is parallel to `errors`
     // (each tagging pass restores that on exit); it is restored here too.
     sources: &mut Vec<Option<crate::span::SourceId>>,
+    // WI-314's region set for result-escape masking, computed ONCE by the caller —
+    // see where it is used below for why it is a parameter and not a local.
+    region_sorts: &HashSet<Symbol>,
 ) {
     struct OpInfo {
         op_sym: Symbol,
@@ -72534,7 +72707,39 @@ fn check_operation_bodies(
 
     // WI-314: region set for result-escape masking — program-global, so
     // compute it once before the per-op loop.
-    let region_sorts = super::region::region_sorts(kb);
+    //
+    // WI-20260920-E3DC5 — "ONCE" NOW MEANS ONCE. This function is called PER SORT
+    // (`type_check_sorts_collect`'s loop) plus once for the free ops, so the line that
+    // used to stand here — `let region_sorts = region::region_sorts(kb);` — ran 204 times
+    // on a stdlib load, and each run is a full walk of the provision relation
+    // (`all_provisions`, which `modifiable_claim_heads` filters down to the `Modifiable`
+    // claims). That is `sorts × provisions` — a term that grows with BOTH factors, in a
+    // pass whose own comment said it was computed once. MEASURED (release, stdlib + an
+    // empty namespace, medians of 15 interleaved runs, both arms in one binary): the
+    // `type_check_sorts` mark is 18.61 ms with the per-call walk and 16.09 ms with this
+    // hoist, and its growth when WI-20260919-HXGXF's gate is forced open falls from
+    // +3.37 ms to +1.70 ms. Per-call counters: `all_provisions` goes from 204 calls to 1.
+    // Hoisted to the caller, which computes it before the loop, exactly as this comment
+    // always claimed. `region.rs`' own note ("`region_sorts` is computed ONCE per typing
+    // pass — `type_check_sorts` calls it before the per-op loop") is true as of this
+    // change and was not before.
+    //
+    // THE HOIST IS ONLY SOUND IF THE SET IS LOOP-INVARIANT, which is the same property
+    // the `simp_enabled` gate below rests on and states: this pass rewrites op bodies and
+    // asserts no `SortProvidesInfo`. Pinned rather than asserted in prose — the
+    // `debug_assert` recomputes and compares, so every debug-build test run (the whole
+    // suite) checks the invariant at all 204 call sites, and a future pass that starts
+    // minting `Modifiable` claims mid-loop is LOUD instead of silently masking a `Modify`
+    // it should have kept. It restores the per-call walk in debug builds, which is what
+    // those builds already paid before this change, so it costs nothing that was not
+    // already being spent.
+    debug_assert_eq!(
+        *region_sorts,
+        super::region::region_sorts(kb),
+        "WI-20260920-E3DC5: the region set changed during type-checking, so hoisting it \
+         out of the per-sort loop is no longer sound — a pass now asserts a `Modifiable` \
+         provision mid-pass and result-escape masking would read a stale set"
+    );
 
     // WI-657(9): the `@[simp]` gate is loop-invariant across this whole pass (typing
     // rewrites op bodies, never asserts/retracts an equation), so compute it ONCE
@@ -72959,7 +73164,7 @@ fn check_operation_bodies(
                     &result.env,
                     &op.return_type,
                     op.op_sym,
-                    &region_sorts,
+                    region_sorts,
                     &result.effects,
                 );
                 // Validate every effect the body produces was declared. WI-365:

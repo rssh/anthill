@@ -6225,3 +6225,388 @@ end
         );
     }
 }
+
+/// WI-20260920-E3DC5 — the `ProvidesConditionInfo` bucket (`ProvidesIndex::
+/// conditions_by_carrier`) and the two readers it changed: [`provision_conditions`],
+/// which now asks the bucket instead of walking the whole relation, and
+/// `conditioned_provision_pairs`, which now sweeps it once instead of once per carrier.
+///
+/// A WRONG ANSWER HERE IS NOT A SLOW ONE, and it fails in the dangerous direction. A
+/// condition fact that falls out of a bucket makes a CONDITIONAL provision read as
+/// UNCONDITIONAL — the carrier is then claimed to provide the spec at every binding,
+/// including those where its `:- goals` tail does not hold. That is exactly the over-claim
+/// `LoadError::ProvisionConditionsTooWeak` exists to refuse, manufactured by the reader
+/// instead of written by an author; and on the forwarding path it is a derived lower-floor
+/// row that `derive_forwarded_provisions` deliberately under-derives rather than
+/// fabricate. The program loads clean either way, which is why this is tested and not
+/// argued.
+#[cfg(test)]
+mod e3dc5_condition_index_tests {
+    use super::super::{
+        build_provides_index, conditioned_provision_pairs, impl_sorts_providing_spec,
+        provision_conditions, ProvisionConditions,
+    };
+    use crate::eval::value::Value;
+    use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+    use crate::kb::term::{Literal, Term};
+    use crate::kb::test_support::load_stdlib;
+    use crate::kb::{ClauseKind, KnowledgeBase, Symbol};
+    use crate::span::{SourceId, SourceSpan};
+
+    /// A forwarding tower whose carriers differ in ONE respect: `CPlain` provides the
+    /// forwarder unconditionally and `CCond` provides it under a `:- goals` tail. Both
+    /// halves are needed in one fixture — the derived row for `CPlain` is the POSITIVE
+    /// control that says the derivation ran at all, so `CCond`'s missing row means
+    /// "refused" rather than "the pass did nothing".
+    const SRC: &str = r#"
+namespace test.e3dc5
+  import anthill.prelude.{Int64}
+  sort CLow
+    sort T = ?
+  end
+  sort CFwd
+    sort T = ?
+    provides CLow[T = T]
+  end
+  sort CBnd
+    sort T = ?
+  end
+  sort CPlain
+    sort T = ?
+    entity cplain(x: T)
+    provides CFwd[T = CPlain]
+  end
+  sort CCond
+    sort T = ?
+    entity ccond(x: T)
+    provides CFwd[T = CCond] :- CBnd[T = T]
+    -- WRITTEN BY HAND, as `pair.anthill` writes both of its floors: a carrier whose
+    -- provision of a forwarder is conditional gets NO derived lower floor (the deriver
+    -- under-derives rather than drop the `:- goals` tail), so without this clause the
+    -- program is REFUSED — `check_provider_requires` reports that `CCond` provides
+    -- `CFwd`, which requires `CLow`, and does not provide it. That refusal is itself
+    -- the end-to-end evidence that the condition is seen; it cannot be asserted here
+    -- because `load_stdlib` raises on any load error by design, so the guard is driven
+    -- directly below instead.
+    provides CLow[T = CCond] :- CBnd[T = T]
+  end
+end
+"#;
+
+    /// Every sort the KB names — the POPULATION for the equivalence test, so it is not
+    /// scoped to this fixture's five sorts. The stdlib supplies the conditional provisions
+    /// that make the comparison non-vacuous (`Pair`'s two hand-written tails, and every
+    /// row `eq_derive` derives for a composite).
+    fn all_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
+        let Some(sort_info) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
+            panic!("the stdlib declares SortInfo");
+        };
+        let mut out = Vec::new();
+        for rid in kb.rules_by_functor(sort_info) {
+            if !kb.is_fact(rid) {
+                continue;
+            }
+            let head = kb.rule_head_value(rid);
+            let Some(name_tid) = crate::kb::op_info::head_field_term(kb, head, "name") else {
+                continue;
+            };
+            match kb.get_term(name_tid) {
+                Term::Ref(s) => out.push(*s),
+                Term::Fn { functor, .. } => out.push(*functor),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("{qn} resolves"))
+    }
+
+    /// The comparable shape of one sort's answer: `(provided spec, clause, how many
+    /// conditions)`. The conditions themselves are `Value`s whose equality is structural
+    /// and spelled elsewhere; what a bucket can get WRONG is which facts it hands over,
+    /// and that is what the count and the grouping show.
+    fn shape(kb: &KnowledgeBase, groups: &[ProvisionConditions]) -> Vec<(String, i64, usize)> {
+        groups
+            .iter()
+            .map(|g| {
+                (
+                    kb.qualified_name_of(g.provided).to_string(),
+                    g.clause,
+                    g.conditions.len(),
+                )
+            })
+            .collect()
+    }
+
+    /// THE BUCKET IS THE SCAN, over the whole population.
+    ///
+    /// With the index live every `provision_conditions` call reads
+    /// `conditions_by_carrier`; with it dropped the same call falls back to
+    /// `rules_by_functor` over every condition fact — the pre-E3DC5 path, and still the
+    /// path the derive block below `provides_index = None` runs on. The two must agree
+    /// sort for sort, group for group.
+    ///
+    /// NOT VACUOUS, and asserted so: the run checks that the population is the KB's
+    /// hundreds of sorts and that dozens of condition GROUPS are actually found, so a
+    /// bucket that answered EMPTY everywhere could not agree its way to a pass.
+    ///
+    /// CONTROL, MEASURED RATHER THAN ASSUMED — and the first two guesses were WRONG, which
+    /// is why they are written down. Keying the bucket on the RAW `sort_ref` symbol instead
+    /// of the canonical one, and reading `sort_ref` through a bare `Term::Fn` match instead
+    /// of `sort_ref_functor`, were both tried: this test PASSES under either, because every
+    /// condition fact in a stdlib load already has a `Term::Fn` `sort_ref` whose functor is
+    /// canonical (conditions are written on sorts, never on constructor owners). Those are
+    /// faithfulness choices the corpus cannot distinguish.
+    ///
+    /// What this test DOES catch is a bucket that is INCOMPLETE — the WI-954 failure mode,
+    /// where the index answers where the scan would have spoken. Verified by dropping half
+    /// the facts from the bucket (`rid.index() % 2 == 0`): this test fails, as do the other
+    /// three in this module, the load itself having gone wrong. It passes either way if
+    /// only `conditioned_provision_pairs` is reverted — that function is the next test's
+    /// subject, and is not even consulted here.
+    #[test]
+    fn the_condition_bucket_answers_exactly_what_the_scan_answers() {
+        let mut kb = load_stdlib(Some(SRC));
+        assert!(
+            kb.provides_index.is_some(),
+            "premise: a full load leaves the provides index BUILT — without this both \
+             arms would be the scan and the test would measure nothing",
+        );
+        let sorts = all_sorts(&kb);
+        assert!(
+            sorts.len() > 100,
+            "premise: the population is the KB's sorts, not the fixture's ({} found)",
+            sorts.len(),
+        );
+
+        let indexed: Vec<Vec<(String, i64, usize)>> = sorts
+            .iter()
+            .map(|&s| shape(&kb, &provision_conditions(&kb, s)))
+            .collect();
+        kb.provides_index = None;
+        let scanned: Vec<Vec<(String, i64, usize)>> = sorts
+            .iter()
+            .map(|&s| shape(&kb, &provision_conditions(&kb, s)))
+            .collect();
+
+        let groups: usize = scanned.iter().map(|g| g.len()).sum();
+        assert!(
+            groups > 20,
+            "premise: the comparison must have conditioned provisions to compare; got \
+             {groups} groups across {} sorts",
+            sorts.len(),
+        );
+        for ((s, i), scan) in sorts.iter().zip(&indexed).zip(&scanned) {
+            assert_eq!(
+                i,
+                scan,
+                "provision conditions of `{}` disagree between the bucket and the scan",
+                kb.qualified_name_of(*s),
+            );
+        }
+    }
+
+    /// THE FUNCTION THAT CHANGED SHAPE, DRIVEN DIRECTLY.
+    /// `conditioned_provision_pairs` was rewritten from a loop calling
+    /// [`provision_conditions`] once PER CARRIER into one sweep of the condition facts,
+    /// and its answer is what `derive_forwarded_provisions` consults twice: a conditional
+    /// provision neither forwards nor is forwarded through, because copying a head without
+    /// its `:- goals` tail would claim a floor unconditionally at bindings where the
+    /// source provision does not hold.
+    ///
+    /// POSITIVE AND NEGATIVE IN ONE RUN. `CCond` writes two conditional provisions and
+    /// both pairs must be present; `CPlain` writes an unconditional one and its pair must
+    /// be ABSENT — a sweep that returned every provision, or that keyed the pair wrongly,
+    /// fails on the negative rather than passing silently. The stdlib's own conditional
+    /// provisions are counted too, so the sweep is exercised over the whole relation and
+    /// not just five fixture sorts.
+    ///
+    /// THE POPULATED-RELATION ARM MATTERS: this pass runs with `provides_index` dropped,
+    /// so the sweep reads `rules_by_functor` directly and this test measures that path —
+    /// which is the one the load pipeline actually takes.
+    ///
+    /// CONTROL, VERIFIED: keep only the FIRST pair per carrier — the grouping hazard the
+    /// per-carrier form carried, since [`provision_conditions`] returns one group per
+    /// (clause, spec) and a sweep could collapse them — and this test fails on `CCond`'s
+    /// second clause while the other three in this module still pass. It passes either way
+    /// if only the `conditions_by_carrier` bucket is reverted: that bucket is the other
+    /// tests' subject and is not consulted here, because this pass runs with
+    /// `provides_index` dropped.
+    #[test]
+    fn the_condition_sweep_finds_every_conditioned_pair_and_only_those() {
+        let mut kb = load_stdlib(Some(SRC));
+        let low = sym(&kb, "test.e3dc5.CLow");
+        let fwd = sym(&kb, "test.e3dc5.CFwd");
+        let plain = sym(&kb, "test.e3dc5.CPlain");
+        let cond = sym(&kb, "test.e3dc5.CCond");
+        let canon = |k: &KnowledgeBase, s: Symbol| k.canonical_sort_sym(s);
+
+        // The state the pass runs in — see the doc above.
+        kb.provides_index = None;
+        let pairs = conditioned_provision_pairs(&kb);
+
+        assert!(
+            pairs.len() > 10,
+            "premise: the stdlib's own conditional provisions are in the population, so \
+             the sweep is exercised over the whole relation; got {} pairs",
+            pairs.len(),
+        );
+        assert!(
+            pairs.contains(&(canon(&kb, cond), canon(&kb, fwd))),
+            "`CCond provides CFwd :- CBnd[T = T]` is conditioned and must be found",
+        );
+        assert!(
+            pairs.contains(&(canon(&kb, cond), canon(&kb, low))),
+            "`CCond provides CLow :- CBnd[T = T]` is conditioned and must be found — the \
+             second clause of the same carrier, so a sweep keeping one pair per carrier \
+             fails here",
+        );
+        assert!(
+            !pairs.contains(&(canon(&kb, plain), canon(&kb, fwd))),
+            "NEGATIVE: `CPlain provides CFwd` carries no tail, so its pair must be absent \
+             — without this a sweep returning every provision would pass",
+        );
+    }
+
+    /// THE CONSUMER, END TO END: the unconditional carrier DOES gain its derived row.
+    ///
+    /// The other half of the guard above, and the reason that one means something. If
+    /// `derive_forwarded_provisions` derived nothing at all, every "is not conditioned"
+    /// assertion would still hold while the feature was dead. Here the pass must actually
+    /// have materialized `CPlain provides CLow[T = CPlain]` from `CFwd provides CLow[T = T]`.
+    ///
+    /// READ OFF THE DIRECT PROVISION RELATION (`impl_sorts_providing_spec`) and
+    /// deliberately NOT off `sort_provides`, which is TRANSITIVE: `CPlain provides CFwd`
+    /// and `CFwd provides CLow`, so the transitive question answers `true` whether or not
+    /// a row was ever derived, and a test asking it would measure nothing.
+    #[test]
+    fn the_unconditional_carrier_gains_its_derived_lower_floor() {
+        let kb = load_stdlib(Some(SRC));
+        let low = sym(&kb, "test.e3dc5.CLow");
+        let plain = sym(&kb, "test.e3dc5.CPlain");
+
+        let carriers: Vec<Symbol> = impl_sorts_providing_spec(&kb, low)
+            .into_iter()
+            .map(|c| kb.canonical_sort_sym(c))
+            .collect();
+        let names: Vec<&str> = carriers.iter().map(|&c| kb.qualified_name_of(c)).collect();
+        assert!(
+            carriers.contains(&kb.canonical_sort_sym(plain)),
+            "`CPlain` provides the forwarder unconditionally, so \
+             `derive_forwarded_provisions` must materialize its `CLow` row. Carriers of \
+             `CLow`: {names:?}",
+        );
+    }
+
+    /// A DENOTED-BEARING CONDITION FACT MUST LAND IN A BUCKET.
+    ///
+    /// [`provision_conditions`] decodes its four fields carrier-agnostically
+    /// (`head_field_term` / `head_field_value`), so it can read a head whose `condition`
+    /// carries a `Value::Node` — WI-662's denoted-bearing shape, the one
+    /// `fact_head_named_args` answers `None` for. A builder that read the head term-only
+    /// would leave exactly those facts in NO bucket, and the provision would silently read
+    /// UNCONDITIONAL once the index went live: the `ProvisionConditionsTooWeak` over-claim,
+    /// minted by an index instead of written by an author.
+    ///
+    /// BUILT DIRECTLY, NOT FROM SOURCE, for the reason `wi1112`'s sibling test gives: the
+    /// loader lowers every term-representable view (WI-390), so this head is not producible
+    /// from surface syntax. `eq_derive`'s DERIVED conditions are term-carried too —
+    /// MEASURED, the whole of this module still passes with a term-only builder — so this
+    /// fixture is the only thing in the corpus that distinguishes the two decodes, and
+    /// without it the builder's carrier-agnostic read would be untested.
+    ///
+    /// CONTROL: this is the ONE test that fails if `build_provides_index` buckets the
+    /// condition relation through `fact_head_named_args` instead of `rule_head_value` +
+    /// `head_field_term`. Verified by making that mutation: this test fails and the other
+    /// four in this module still pass.
+    #[test]
+    fn a_denoted_condition_fact_is_bucketed_not_dropped() {
+        let mut kb = load_stdlib(Some(SRC));
+        let plain = sym(&kb, "test.e3dc5.CPlain");
+        let bnd = sym(&kb, "test.e3dc5.CBnd");
+        let low = sym(&kb, "test.e3dc5.CLow");
+
+        let before = provision_conditions(&kb, plain).len();
+
+        // The head shape `assert_fact_carrier` emits for a condition whose view carries a
+        // `Value::Node` binding. `sort_ref` and `provided` stay term-carried (the builder
+        // and the consumer both read `sort_ref` as a term); the `condition` is what makes
+        // `fact_head_named_args` `None` for the whole head.
+        let cond_sym = kb.resolve_symbol("anthill.reflect.ProvidesConditionInfo");
+        let sort_ref_field = kb.intern("sort_ref");
+        let provided_field = kb.intern("provided");
+        let condition_field = kb.intern("condition");
+        let clause_field = kb.intern("clause");
+        kb.register_entity_fields(
+            cond_sym,
+            vec![
+                sort_ref_field,
+                provided_field,
+                condition_field,
+                clause_field,
+            ],
+        );
+        let sortview = kb.resolve_symbol("anthill.reflect.SortView");
+        let k = kb.intern("k");
+        let sort_ref = Value::term(kb.make_name_term_from_sym(plain));
+        let low_base = Value::term(kb.make_name_term_from_sym(low));
+        let bnd_base = Value::term(kb.make_name_term_from_sym(bnd));
+        let provided = Value::Entity {
+            functor: sortview,
+            pos: vec![low_base].into(),
+            named: Vec::new().into(),
+        };
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+        let node = NodeOccurrence::new_expr(Expr::Const(Literal::Int(7)), span, None);
+        let condition = Value::Entity {
+            functor: sortview,
+            pos: vec![bnd_base].into(),
+            named: vec![(k, Value::Node(node))].into(),
+        };
+        let clause = Value::term(kb.alloc(Term::Const(Literal::Int(97))));
+        let rid = kb.assert_fact_carrier(
+            cond_sym,
+            Vec::new(),
+            vec![
+                (sort_ref_field, sort_ref),
+                (provided_field, provided),
+                (condition_field, condition),
+                (clause_field, clause),
+            ],
+            ClauseKind::Requirement,
+            plain,
+            None,
+        );
+        assert!(
+            kb.fact_head_named_args(rid).is_none(),
+            "premise: the fact just asserted is a VALUE fact — `fact_head_named_args` is \
+             `None` for it. Without this the test would not distinguish the two decodes",
+        );
+
+        // The scan is the reference: it is the decode the consumer has always used.
+        kb.provides_index = None;
+        let scanned = provision_conditions(&kb, plain);
+        assert_eq!(
+            scanned.len(),
+            before + 1,
+            "premise: the scan sees the new condition — it is the answer the bucket must \
+             match",
+        );
+
+        build_provides_index(&mut kb);
+        assert!(
+            kb.provides_index.is_some(),
+            "the index is built, so the read below goes through the bucket",
+        );
+        let indexed = provision_conditions(&kb, plain);
+        assert_eq!(
+            shape(&kb, &indexed),
+            shape(&kb, &scanned),
+            "the denoted-bearing condition must be reachable through the bucket; a \
+             term-only builder leaves it in none and the provision reads UNCONDITIONAL",
+        );
+    }
+}
