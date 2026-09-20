@@ -98,3 +98,7 @@ introducer) is NOT this ticket's: it is filed as WI-20260911-5G28A-rule-head-typ
 the acceptance rows. Read the notes above as measurements the reflect model must also be able
 to state, not as this ticket's work list.
 
+### 2026-09-20T18:56:29Z — feedback — user
+
+also thibk - are we need some notion for unfilled rigid patameter '?'  (like unknown in typescript)  or have rigid type-var itself as type
+
