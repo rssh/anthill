@@ -510,16 +510,19 @@ impl Interpreter {
     /// (`wi_r541x_body_read_of_type_param_test`'s unbracketed `SHold.f()`) is now a LOAD
     /// refusal and is asserted as one.
     ///
-    /// WHAT STILL REACHES IT, and why this must not be deleted: a PROVIDER's or
-    /// WITNESS's own parameter on a member entered through a requirement SLOT
-    /// (`Box provides TypeTermB[T = Box[V = V]]`, whose member reads `V`). The
-    /// dictionary carries no type bindings, so no clause the author can write makes that
-    /// read resolvable today — 065 §4 closes it through instance contexts
-    /// (WI-20260919-891QP, step 4), and until then this is the located fault rather than
-    /// a silent `Box(V: V)`. Both (C) rows in that file drive exactly this path.
+    /// THE PROVIDER CASE NO LONGER REACHES IT EITHER, since 065 §1's lowering. A
+    /// PROVIDER's or WITNESS's own parameter on a member entered through a requirement
+    /// SLOT (`Box provides TypeTermB[T = Box[V = V]]`, whose member reads `V`) was the
+    /// one shape no clause could repair, because the dictionary carries no type
+    /// BINDINGS. It answers now — the read is a dispatch through `Box requires
+    /// TypeValue[T = V]`, and the evidence that selected the provision IS the type — so
+    /// R541X's two (C) rows assert `Box(V: Boom)` and `Crate(W: Boom)` rather than this
+    /// fault. That is WI-20260919-891QP.
     ///
-    /// It also stays as the guard for a KB built WITHOUT the typer (`run_typer: false`),
-    /// which no load rule has passed over at all.
+    /// SO WHAT KEEPS IT: a KB built WITHOUT the typer (`run_typer: false`), over which no
+    /// load rule has passed at all. A backstop that fires on nothing from checked source
+    /// is what an invariant looks like once it holds, and anything that makes it fire
+    /// again from checked source is a new hole rather than a regression of this one.
     fn refuse_unbound_type_param(&self, head: Symbol) -> Result<(), EvalError> {
         if !crate::kb::typing::is_sort_param_symbol(&self.kb, head) {
             return Ok(());

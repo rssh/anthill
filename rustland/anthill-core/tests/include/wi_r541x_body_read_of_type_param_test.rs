@@ -151,9 +151,6 @@ namespace test.r541x
     TypeTerm.valueOf()
   operation outer[Q](y: Q) -> Type requires TypeValue[T = Q], TypeTerm[T = Q] = tagOfP(y)
   operation tagOfB[P](x: P) -> Type requires TypeTermB[T = P] = TypeTermB.valueOfB()
-  operation twoReq[P, Q](x: P, y: Q) -> Type
-    requires TypeValue[T = P], TypeValue[T = Q], TypeTerm[T = P], TypeTerm[T = Q] =
-    TypeTerm.valueOf()
 
   operation g[P](x: P) -> Type requires TypeValue[T = P] = Err2.tagOf(x)
   operation g2[Q](y: Q) -> Type requires TypeValue[T = Q] = g(y)
@@ -175,7 +172,6 @@ namespace test.r541x
   operation b2() -> Type = gBoxS("s")
   operation c1() -> Type = tagOfB(box(boom("x")))
   operation c2() -> Type = tagOfB(crate(boom("x")))
-  operation d1() -> Type = twoReq(boom("x"), boom("y"))
   operation k_mono() -> Type = Err2.tagOf(box("s"))
   operation k_none() -> Type = Err2.tagOf(noneInt())
   operation k_op() -> Type = gOp("s")
@@ -259,44 +255,72 @@ fn a_nested_rigid_under_a_sort_param_is_grounded() {
 
 // ── (C), asserted as (D)'s located fault ─────────────────────────────────────────────
 
-/// A PROVIDER's member entered through the requirement slot: its frame never learns `V`
-/// (a `Dictionary` carries no type bindings). NOT FIXED BY THIS TICKET — the direction is
-/// undecided. Pinned as the located fault so the old silent `Box(V: V)` cannot return,
-/// and so the fix that lands turns this row red on purpose.
+/// 891QP CLOSED — a PROVIDER's own parameter on a member entered through the requirement
+/// slot now ANSWERS, where it was a located fault.
+///
+/// `Box provides TypeTermB[T = Box[V = V]]`, and `valueOfB() -> Type = Box[V = V]` reads
+/// `V` — Box's own parameter, on a member the caller reaches through `TypeTermB`'s slot.
+/// A `Dictionary` carries no type BINDINGS, so the frame channel could never learn `V`,
+/// and R541X pinned the located fault (`EvalError::UnboundTypeParam`) so the old silent
+/// `Box(V: V)` could not return. Proposal 065 §4 said this row would flip when the read
+/// became a slot dispatch, because the evidence rides the INSTANCE: `Box requires
+/// TypeValue[T = V]` is discharged when the provision is selected, and reading `V` is a
+/// walk of that dictionary. WI-20260919-N31XX's lowering is that change, and this is the
+/// flip.
+///
+/// BACK-OUT: restore `lower_rigid_read_to_slot`'s sort-half gate (`slot <
+/// chain.sort_len()` returns `None`) and this answers `UnboundTypeParam` again — the
+/// state this row asserted before.
 #[test]
-fn a_providers_own_param_is_a_located_fault_not_a_wrong_answer() {
-    assert_eq!(unbound_param("c1"), "test.r541x.Box.V");
+fn a_providers_own_param_answers_through_its_instance() {
+    assert_eq!(eval_type("c1"), "Box(V: Boom)");
 }
 
-/// The WITNESS idiom (`DESC_INSTANCES`): `CrateTT.E` is derivable only from the spec's
-/// `T`, and nothing derives it. Same status as the row above.
+/// …and the WITNESS idiom (`DESC_INSTANCES`), the same flip one shape over:
+/// `CrateTT provides TypeTermB[T = Crate[W = E]]` determines `E` from the head, and
+/// `CrateTT requires TypeValue[T = E]` is what its member reads.
 #[test]
-fn a_witnesss_own_param_is_a_located_fault_not_a_wrong_answer() {
-    assert_eq!(unbound_param("c2"), "test.r541x.CrateTT.E");
+fn a_witnesss_own_param_answers_through_its_instance() {
+    assert_eq!(eval_type("c2"), "Crate(W: Boom)");
 }
 
 // ── (D) ──────────────────────────────────────────────────────────────────────────────
 
-/// A fixture that STILL CANNOT BIND: two clauses over one spec, and no rule picks one, so
-/// (A)'s binder takes neither. The body read is refused, naming the parameter and the
-/// frame. Before (D): the silent `T`.
+/// TWO CLAUSES OVER ONE SPEC, NOW REFUSED AT LOAD — WI-20260919-N31XX's lowering.
 ///
-/// WI-20260919-N31XX — STILL A RUN-TIME FAULT, and that is the lowering's gate showing
-/// its shape. `TypeTerm.valueOf`'s read of `T` is backed by a SORT-level clause, which
-/// the lowering deliberately leaves on the channel (see `lower_rigid_read_to_slot`),
-/// because a defaulted member reached receiver-less is dispatched statically and its
-/// frame carries no dictionary. Lower it and this row goes red as a LOAD refusal instead
-/// — measured — which is where it will land once WI-20260919-H20YY makes that dispatch
-/// carry its evidence.
+/// `twoReq[P, Q] requires TypeTerm[T = P], TypeTerm[T = Q]` calling `TypeTerm.valueOf()`
+/// names no carrier, so nothing picks which clause the call runs under. Before 065 this
+/// LOADED and the body's read of `T` was a located run-time fault
+/// (`EvalError::UnboundTypeParam` naming `TypeTerm.T`), which is what this row used to
+/// assert. Now `TypeTerm` declares `requires TypeValue[T = T]` for its member to read
+/// `T`, and building that evidence at this call needs a `T` the call leaves
+/// unconstrained — so the program is refused at LOAD, naming the call.
+///
+/// THAT IS THE PROPOSAL WORKING, not a regression: 065's opening claim is that it makes
+/// the unreachable cases UNWRITABLE rather than merely loud. The ambiguity was always
+/// there; it is now reported where the author can act on it instead of when the body runs.
+///
+/// ITS OWN FIXTURE, for the reason [`an_ungrounded_receiver_is_now_refused_at_load`]
+/// gives: a load refusal is fatal to the whole file.
 #[test]
-fn two_clauses_over_one_spec_are_a_located_fault() {
-    match eval("d1") {
-        Err(EvalError::UnboundTypeParam { param, running }) => {
-            assert_eq!(param, "test.r541x.TypeTerm.T");
-            assert_eq!(running, "test.r541x.TypeTerm.valueOf");
-        }
-        other => panic!("expected UnboundTypeParam, got {other:?}"),
-    }
+fn two_clauses_over_one_spec_are_refused_at_load() {
+    let src = SRC.replace(
+        "  operation tagOfB[P]",
+        "  operation twoReq[P, Q](x: P, y: Q) -> Type\n    requires TypeValue[T = P], \
+         TypeValue[T = Q], TypeTerm[T = P], TypeTerm[T = Q] =\n    TypeTerm.valueOf()\n\n\
+           operation d1() -> Type = twoReq(boom(\"x\"), boom(\"y\"))\n\n  operation tagOfB[P]",
+    );
+    assert_ne!(src, SRC, "the anchor must still be in SRC");
+    let errs = match crate::common::try_load_kb_with(&src) {
+        Ok(_) => panic!("two clauses over one spec must not load: nothing picks one"),
+        Err(e) => e,
+    };
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.reflect.TypeValue")
+            && e.contains("test.r541x.TypeTerm.T")
+            && e.contains("unconstrained at this call site")),
+        "the refusal must name the evidence and the parameter no clause pins; got {errs:?}"
+    );
 }
 
 /// (D)'s CHANNEL half, NOW REFUSED AT LOAD — WI-20260919-N31XX (proposal 065).

@@ -21499,10 +21499,53 @@ fn check_apply_iter(
                             env.enclosing_dict_chain(),
                             callee_frame_key(kb, fn_sym),
                         );
-                    let caller_requires = if serves {
-                        env.enclosing_dict_chain().clone()
-                    } else {
+                    // WI-20260919-N31XX — AND A CROSS-SORT CALL FROM A FREE OPERATION
+                    // TAKES THE WHOLE FRAME **FOR A `TypeValue` DEP**.
+                    //
+                    // The gap: a free operation has no enclosing sort, so the branch
+                    // hands `build_concrete_dispatch_dict` an EMPTY chain, and
+                    // `require_complete` drops the whole dictionary the moment the
+                    // callee's own sort-level dep needs forwarding. MEASURED —
+                    // `operation g[P](x: P) requires TypeValue[T = P] = Err2.tagOf(x)`
+                    // built NO dictionary, so `Err2.tagOf` ran with an empty requirements
+                    // frame and the slot read in its body died `Internal`. Five
+                    // `wi_r541x_body_read_of_type_param_test` rows.
+                    //
+                    // KEYED ON THE CALLEE'S CHAIN NAMING `TypeValue`, and the narrowness
+                    // is a deliberately pinned invariant and not caution.
+                    // `wi822_op_scoped_supply_test::the_instance_dictionary_channel_never_
+                    // forwards_an_op_slot` says the instance-dictionary builders read the
+                    // SORT half on purpose: that channel is read strictly at eval, and
+                    // several routes into an operation fill NO op slot — entry from the
+                    // HOST seeds none. Its own measurement is that the composed chain
+                    // does not make that program work, it only MIS-ATTRIBUTES the failure
+                    // to the caller. Widening unconditionally flips that row.
+                    //
+                    // WHY `TypeValue` MAY WIDEN WHERE `Desc` MAY NOT: since 065 the
+                    // caller of an operation that needs this evidence must DECLARE it —
+                    // the forward half of the rule refuses a caller that does not — so
+                    // any anthill call route fills the slot before the forward is read.
+                    // Host entry remains the hole WI-822 names, unchanged and no worse
+                    // for `TypeValue` than for every other op-scoped requirement.
+                    //
+                    // STRICTLY ADDITIVE otherwise: a non-empty sort chain, a same-sort
+                    // call, or a callee whose chain never names `TypeValue` all behave
+                    // exactly as before, so no call that builds a dictionary today builds
+                    // a different one.
+                    //
+                    // A SEPARATE CONDITION, NOT A REDEFINITION OF `serves`, because
+                    // `serves` also gates the proposal 066 §7.4 refusal below: flipping
+                    // it turned 59 unit tests red with `PartialOrd.lt` refused "its
+                    // evidence is a condition of `provides … where … end`", a diagnostic
+                    // aimed at calls it was never about. Only the CHAIN moves here.
+                    let whole_frame = !serves
+                        || (enclosing_sort != Some(parent_sym)
+                            && env.enclosing_dict_chain().entries().is_empty()
+                            && callee_chain_reads_type_value(kb, parent_sym, callee_provision));
+                    let caller_requires = if whole_frame {
                         env.enclosing_frame_chain().clone()
+                    } else {
+                        env.enclosing_dict_chain().clone()
                     };
                     // WI-828: a σ-refused requirement is a LOAD diagnostic —
                     // classifying `dispatch_dict: None` here loaded clean and
@@ -24779,6 +24822,44 @@ fn build_dispatching_dict_from_chain(
                         pinned: Some(w),
                         // An author who NAMED a witness is told about the witness, not
                         // sent to write a `provides` line on the carrier.
+                        unprovided: None,
+                    }));
+                }
+                // WI-20260919-N31XX — A `TypeValue` DEP IS NEVER BENIGNLY UNFILLED,
+                // the SORT-half twin of the leg in `build_op_scoped_dicts`.
+                //
+                // Falling through to the silent `Ok(None)` is safe for a dep the callee
+                // never reads, and most are — that is the whole reason this arm has
+                // three narrower signatures before it rather than one refusal. But since
+                // 065 §1's lowering, a value read of a rigid IS a dispatch through its
+                // slot, so a body holding `TypeValue` evidence demonstrably reads it, and
+                // an unfilled slot is an eval-time `Internal` no handler can catch.
+                // MEASURED exactly so: `Holder[U = List].tyb()`, where a bare parametric
+                // bracket value expands to `List[T = ?t]` (WI-20260911-RS2G4) and the
+                // conditional derived instance then wants `TypeValue[T = ?t]` for a `?t`
+                // nothing pins, LOADED and died
+                // `Internal("… `__req_typevalue` not bound in caller frame")`.
+                //
+                // RAISED, not parked: the three signatures below defer because only the
+                // callee's body can say whether the slot is read, and here that question
+                // is already answered by the lowering.
+                if type_value_forward_unsuppliable(kb, dep) {
+                    return Err(Box::new(RequirementRefusal {
+                        dep_text: render_requires_entry(kb, dep),
+                        unconstrained: disambig
+                            .map(|ctx| unconstrained_elements(kb, dep, ctx))
+                            .unwrap_or_default(),
+                        refused_covers: Vec::new(),
+                        construction: "`TypeValue` is answered only by the dispatching \
+                                       dictionary, and since a value read of a rigid is a \
+                                       dispatch through that slot (proposal 065 §1) it \
+                                       cannot be left unfilled. Determine the type at \
+                                       this call — write the element rather than a bare \
+                                       parametric name — or declare the same `requires \
+                                       anthill.reflect.TypeValue[…]` so the evidence is \
+                                       passed in"
+                            .to_owned(),
+                        pinned: None,
                         unprovided: None,
                     }));
                 }
@@ -72699,6 +72780,29 @@ fn surviving_dot_apply(
 /// WI-20260919-N31XX — `anthill.reflect.TypeValue`, or `None` in a KB loaded without
 /// the reflect stdlib. One resolution point, so the rule's readers cannot disagree about
 /// which sort they are talking about.
+/// WI-20260919-N31XX — does the callee's own sort-level chain name `TypeValue`?
+///
+/// The gate on widening the caller chain `build_concrete_dispatch_dict` is given. See
+/// that call site for why `TypeValue` may widen where another spec may not: since 065 a
+/// caller that needs this evidence must declare it, so every anthill route fills the slot
+/// before the forward is read, while `wi822_op_scoped_supply_test`'s pinned account —
+/// that the instance-dictionary channel reads the SORT half because host entry seeds no
+/// op slot — stands untouched for everything else.
+fn callee_chain_reads_type_value(
+    kb: &mut KnowledgeBase,
+    callee_sort: Symbol,
+    callee_provision: Option<Symbol>,
+) -> bool {
+    let Some(tv) = type_value_spec_sym(kb) else {
+        return false;
+    };
+    let canon = kb.canonical_sort_sym(tv);
+    provider_dict_entries(kb, callee_sort, callee_provision)
+        .entries()
+        .iter()
+        .any(|e| kb.canonical_sort_sym(e.required_sort) == canon)
+}
+
 fn type_value_spec_sym(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol("anthill.reflect.TypeValue")
 }
@@ -72845,36 +72949,25 @@ fn lower_rigid_read_to_slot(
     let enclosing_op = env.enclosing_op()?;
     let chain = env.enclosing_frame_chain();
     let slot = type_value_slot(chain, kb, param)?;
-    // ONLY AN OPERATION-LEVEL SLOT IS LOWERED, and the line is where the frame stops
-    // being guaranteed to carry the evidence rather than where it would be convenient.
+    // BOTH HALVES OF THE CHAIN ARE LOWERED, and what made the sort half reachable was
+    // one line elsewhere rather than anything here.
     //
-    // An OP-HALF slot is an INPUT the caller supplies at every call
-    // (`build_op_scoped_dicts` fills it on every route that reaches the operation), so a
-    // body may read it unconditionally. A SORT-HALF slot rides the INSTANCE, and the
-    // frame carries it only when the operation was entered THROUGH a dictionary. A spec
-    // op with a DEFAULT BODY is not — it is dispatched statically, and WI-20260919-HXGXF
-    // measured its body running with an empty requirements frame, the very fact that
-    // forced `TypeValue.type_value` itself to be body-less.
+    // An OP-HALF slot is an INPUT the caller supplies at every call. A SORT-HALF slot
+    // rides the INSTANCE, and the frame carries it only when the operation was entered
+    // with its dictionary built — which, for a cross-sort call, is
+    // `build_concrete_dispatch_dict`'s job. That builder was being handed the caller's
+    // SORT-only chain, so a FREE operation's own `requires TypeValue[T = P]` was
+    // invisible to it and the projection failed; `require_complete` then dropped the
+    // whole dictionary and the callee ran with an empty frame. See the `serves` note at
+    // that call site for the measurement.
     //
-    // MEASURED HERE TOO, which is what the line is drawn from rather than reasoned into:
-    // lowering the sort half as well took five `wi_r541x_body_read_of_type_param_test`
-    // rows to `Internal("DeferToRequirement: requirement param `__req_typevalue` not
-    // bound in caller frame (running `TypeTerm.valueOf` … frame binds [])")` — working
-    // programs dying, not a diagnostic. `TypeTerm.valueOf` and `Err2.tagOf` are both
-    // defaulted members reached receiver-less.
-    //
-    // WHAT IT COSTS, stated because it is a real capability left on the table: the same
-    // run showed the sort half WORKS wherever dispatch does reach the slot — R541X's two
-    // (C) rows, a PROVIDER's and a WITNESS's own parameter entered through a requirement
-    // slot, answered `Box(V: Boom)` and `Crate(W: Boom)` instead of their located fault.
-    // That is 065 §4 / WI-20260919-891QP closing for free, and this gate holds it back.
-    // Lifting it needs a statically-dispatched defaulted member to carry its dictionary,
-    // which is WI-20260919-H20YY. Until then 065 §1's "the channel stops being consulted"
-    // is true of op-level reads only — which is what §1's own "once every such read is
-    // backed by a slot" makes conditional.
-    if slot < chain.sort_len() {
-        return None;
-    }
+    // WHAT IT CLOSED: R541X's two (C) rows — a PROVIDER's and a WITNESS's own parameter
+    // on a member entered through a requirement slot — now ANSWER `Box(V: Boom)` and
+    // `Crate(W: Boom)` where they were a located fault. That is 065 §4 /
+    // WI-20260919-891QP, which the proposal said would flip when the read became a slot
+    // dispatch. A `Dictionary` still carries no type BINDINGS; what changed is that the
+    // answer no longer needs one, because the evidence that selected the provision IS the
+    // type.
     let resolved_spec = chain.entries()[slot].clone();
     let spec_op_sym = kb.try_resolve_symbol("anthill.reflect.TypeValue.type_value")?;
     // Derived, not re-spelled: `kb.intern(short_name_of(&op_qn))` is what every other

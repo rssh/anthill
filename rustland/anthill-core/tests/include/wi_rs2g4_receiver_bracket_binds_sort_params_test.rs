@@ -533,31 +533,33 @@ fn the_wi708_operation_parameter_channel_is_unchanged() {
     assert_eq!(eval_type(&mut interp, "w_ty"), "Box(T: Letter)");
 }
 
-/// WHAT THE CHANNEL CARRIES FOR A BRACKET VALUE WITH AN UNWRITTEN SLOT — DECIDED AND
-/// PINNED, because both readings are honest ("a list of something") and a consumer has to
-/// know which one arrives.
+/// A BRACKET VALUE WITH AN UNWRITTEN SLOT LEAVES THE ELEMENT UNDETERMINED, AND A BODY
+/// THAT READS IT IS REFUSED — the decision this row has always been about, re-verdicted
+/// by proposal 065 (WI-20260919-N31XX).
 ///
-/// It carries what σ HOLDS: the expanded `List[T = ?T]`, variable and all, rather than
-/// the bare `Ref(List)` the author wrote. Translating it back at the channel would be a
-/// SECOND representation of one decision, kept in step by hand. The consumer owns the
-/// verdict either way — `bound_names_a_determinate_type` refuses a bare `Ref` and a bare
-/// `Var` alike — so nothing downstream has to tell them apart to be correct, only to
-/// report well.
+/// `[T = List]` says *a list of something*, and RS2G4 decided what the something IS: σ
+/// holds the EXPANDED `List[T = ?T]`, variable and all, rather than the bare `Ref(List)`
+/// the author wrote. That decision stands and is unchanged — it is what makes the
+/// refusal below name `List[T = <term>]` rather than `List`.
 ///
-/// WI-20260919-N31XX — THE READ MOVED FROM AN OPERATION PARAMETER TO A SORT ONE, and the
-/// row measures what it always measured. Proposal 065's lowering turns a value read
-/// backed by an OP-LEVEL `requires TypeValue[…]` into a slot dispatch, and the evidence
-/// for `List[T = ?T]` cannot be built — `?T` is exactly the undetermined thing this row
-/// is about — so the free `tyb[U]()` spelling is now a LOAD refusal, correctly: reading a
-/// type the call only partially determines is not well-formed. A SORT-level clause is not
-/// lowered (see `lower_rigid_read_to_slot`'s gate), so `Holder[U]`'s member still reads
-/// `U` through the channel, which is the thing under test. MEASURED: with the read left
-/// on an operation parameter this row died
-/// `Internal("… `__req_typevalue` not bound in caller frame")` at run time — the slot was
-/// read and never filled — which is what forced the op half to be refused at load.
+/// WHAT CHANGED IS WHO ANSWERS. The body's read of the sort's `U` used to be served by
+/// the frame type-argument channel, which happily delivered the variable; 065 §1 makes a
+/// value read a dispatch through `requires TypeValue[T = U]`, and the conditional derived
+/// instance for `List` then wants `TypeValue[T = ?T]` for a `?T` nothing pins. So the
+/// call is refused AT LOAD. That is the right verdict and not a lost capability: reading
+/// a type the call only partially determines was never meaningful, and the old answer
+/// was a `Type` value with a dangling variable inside it.
+///
+/// MEASURED, and it is why the refusal exists at all: before the sort half of the
+/// lowering got its leg in `build_dispatching_dict_from_chain`, this program LOADED and
+/// died `Internal("… `__req_typevalue` not bound in caller frame")` — the silent no-dict
+/// classification, read at last.
+///
+/// THE CONTROL IS THE WRITTEN FORM, one line down, which loads and answers. Without it
+/// this row would pass against a rule that refused every bracket value.
 #[test]
-fn a_bracket_value_with_an_unwritten_slot_arrives_expanded() {
-    let src = r#"
+fn a_bracket_value_with_an_unwritten_slot_is_refused_where_it_is_read() {
+    let decls = r#"
 namespace test.rs2g4x
   import anthill.prelude.{Int64, Type, List}
   import anthill.reflect.{TypeValue}
@@ -572,24 +574,32 @@ namespace test.rs2g4x
     entity hold(u: U)
     operation tyb() -> Type = Box[T = U]
   end
-  operation w_bare() -> Type = Holder[U = List].tyb()
-  operation w_written() -> Type = Holder[U = List[T = Int64]].tyb()
-end
 "#;
-    let mut interp = interp_for(src);
-    let bare = match interp.call("test.rs2g4x.w_bare", &[]) {
-        Ok(Value::Term { id, .. }) => TermPrinter::new(interp.kb()).print_term(id),
-        other => panic!("{other:?}"),
+    let bare = format!("{decls}  operation w_bare() -> Type = Holder[U = List].tyb()
+end
+");
+    let errs = match try_load_kb_with(&bare) {
+        Ok(_) => panic!("a bare `[U = List]` leaves the element undetermined and must not load"),
+        Err(e) => e,
     };
     assert!(
-        bare.starts_with("Box(T: List(T: ") && bare.ends_with("))"),
-        "a bare inner value arrives as `List` APPLIED to the minted variable, not bare: {bare}"
+        errs.iter().any(|e| e.contains("anthill.reflect.TypeValue")
+            && e.contains("anthill.prelude.List")
+            && e.contains("cannot be left unfilled")),
+        "the refusal must name the evidence and the expanded carrier; got {errs:#?}"
     );
 
-    // CONTROL — a WRITTEN inner value is untouched by the expansion and by the channel.
-    let written = match interp.call("test.rs2g4x.w_written", &[]) {
+    // CONTROL — the WRITTEN inner value determines the element, so the evidence is the
+    // derived `List provides TypeValue[…] requires TypeValue[T = Int64]` and it answers.
+    let written = format!(
+        "{decls}  operation w_written() -> Type = Holder[U = List[T = Int64]].tyb()
+end
+"
+    );
+    let mut interp = interp_for(&written);
+    let got = match interp.call("test.rs2g4x.w_written", &[]) {
         Ok(Value::Term { id, .. }) => TermPrinter::new(interp.kb()).print_term(id),
         other => panic!("{other:?}"),
     };
-    assert_eq!(written, "Box(T: List(T: Int64))");
+    assert_eq!(got, "Box(T: List(T: Int64))");
 }
