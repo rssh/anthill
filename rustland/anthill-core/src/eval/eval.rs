@@ -500,6 +500,26 @@ impl Interpreter {
     /// set, which holds an operation's `[P]` and a sort's `sort T = ?` alike, and is the
     /// half of [`crate::kb::typing::genuine_concrete_sort`] that `payload_sort_of`
     /// already relies on for the same question.
+    ///
+    /// WI-20260919-N31XX (proposal 065) — IT IS A BACKSTOP NOW, AND ONLY HALF OF IT IS
+    /// STILL REACHED FROM CHECKED SOURCE. The load rule refuses a value-position read of
+    /// a rigid unless `requires TypeValue[T = B]` stands in scope, and it refuses a
+    /// caller that FORWARDS a rigid into an operation that inspects it — so a program
+    /// that reaches here through the CHANNEL, with a parameter the call site simply
+    /// failed to pin, is one the loader would already have rejected. That row
+    /// (`wi_r541x_body_read_of_type_param_test`'s unbracketed `SHold.f()`) is now a LOAD
+    /// refusal and is asserted as one.
+    ///
+    /// WHAT STILL REACHES IT, and why this must not be deleted: a PROVIDER's or
+    /// WITNESS's own parameter on a member entered through a requirement SLOT
+    /// (`Box provides TypeTermB[T = Box[V = V]]`, whose member reads `V`). The
+    /// dictionary carries no type bindings, so no clause the author can write makes that
+    /// read resolvable today — 065 §4 closes it through instance contexts
+    /// (WI-20260919-891QP, step 4), and until then this is the located fault rather than
+    /// a silent `Box(V: V)`. Both (C) rows in that file drive exactly this path.
+    ///
+    /// It also stays as the guard for a KB built WITHOUT the typer (`run_typer: false`),
+    /// which no load rule has passed over at all.
     fn refuse_unbound_type_param(&self, head: Symbol) -> Result<(), EvalError> {
         if !crate::kb::typing::is_sort_param_symbol(&self.kb, head) {
             return Ok(());

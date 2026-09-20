@@ -1,6 +1,8 @@
 # 065: `TypeValue[B]` — a rigid type is a value only where a requirement says so
 
-## Status: PROPOSED (2026-09-19). Decided in discussion after WI-20260918-R541X; supersedes the two open directions recorded on WI-20260919-891QP.
+## Status: PARTLY IMPLEMENTED (2026-09-20). Proposed 2026-09-19, decided in discussion after WI-20260918-R541X; supersedes the two open directions recorded on WI-20260919-891QP.
+
+**BUILT:** §2's derivation (WI-20260919-HXGXF, sorts only — structural FORMERS deferred), §3's subset rule including the type-parameter alignment an implementation needs to restate a clause (WI-20260919-N31XX part 1), and "The rule" itself with §6's migration (N31XX part 2) — in both halves, the READ and the FORWARD. **NOT BUILT: §1, the lowering.** A value read is still served by the frame type-argument channel, not by a slot dispatch, so §1's "the channel stops being consulted" has not happened and steps 4 (891QP) and 5 (H20YY) are untouched. §7 records each step's state and what it measured.
 
 ## Amends: [055](055-types-in-value-position.md) §2 (its type-PARAMETER bullet — a rigid denotes a `Type` value only under a requirement) and §8 (`type_value[T]()` is backed by that requirement, not by the frame channel). 055's other decisions stand unchanged; §5 below goes through them one by one.
 
