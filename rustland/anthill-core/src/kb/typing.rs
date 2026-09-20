@@ -22692,6 +22692,26 @@ pub struct InstanceTie {
     /// this call can steer the tie whatever the candidates are, because a key
     /// deliberately does not reach sub-resolutions.
     pub at_call_goal: bool,
+    /// WI-456 — which NAMED slot of which provider this sub-goal was filling, when it
+    /// was filling one. `None` at a call's own goal, and at a sub-goal that fills a
+    /// provision CONDITION (§4's `:- goals` tail admits no binder) or an ANONYMOUS
+    /// `requires`.
+    ///
+    /// It does NOT re-attribute the tie — `spec` and `candidates` stay the sub-goal's
+    /// own, which is the mis-attribution 058 §8 fixed. It adds the one fact the repair
+    /// needs and only the level that owns the slot knows: `TieRepair::SubGoal` can say
+    /// *bind `OA` of `LexFst`* instead of telling an author to add a named slot to a
+    /// provider that already has two.
+    pub slot: Option<TieSlot>,
+}
+
+/// WI-456 — a named requirement slot, as a tie names it. See [`InstanceTie::slot`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TieSlot {
+    /// The provider whose slot it is (`LexFst`).
+    pub owner: Symbol,
+    /// The slot's binder (`OA`).
+    pub binder: Symbol,
 }
 
 /// WI-843 — what the author can actually DO about a tie. A typed answer rather than
@@ -22722,7 +22742,18 @@ pub enum TieRepair {
     /// *"unknown type-param"* — so neither spelling exists, and §4.2's answer is for
     /// the witness to declare a NAMED slot the caller binds in the key's value
     /// position (`fold[Monoid = ListM[O = MyEq]]`).
-    SubGoal,
+    ///
+    /// WI-456 — the payload is that slot, WHEN THE PROVIDER ALREADY HAS ONE. Without it
+    /// this arm told an author to "give the conditional provider a NAMED requirement
+    /// slot" in front of a `LexFst` that declares two, leaving them to guess the name
+    /// and the spelling; with it the message names both. `None` is the honest answer for
+    /// the shape that has no binder to name — an ANONYMOUS `requires`, conditional or
+    /// not, and a provision CONDITION, whose `:- goals` tail admits no name at all (§4)
+    /// — where declaring a named slot really is the first step. Its own driver
+    /// (`a_tie_below_a_named_slot_is_not_attributed_to_that_slot`) fires it for an
+    /// UNCONDITIONAL `requires Marked[T = Tok]`, which is why the wording may not say
+    /// "the conditional provider".
+    SubGoal(Option<SubGoalSlot>),
     /// WI-1032 — every candidate is the SAME provider, reached through two provisions
     /// that are not identical. A bracket names a PROVIDER, so no spelling separates them;
     /// and the repair is not "keep one" either, because the provisions may agree (one
@@ -22733,6 +22764,39 @@ pub enum TieRepair {
     /// names_it_once`. Before it existed this rendered as [`Self::ValueDirected`] and
     /// printed the carrier TWICE — advising a pin on a carrier that is already pinned.
     OneProviderTwoProvisions,
+}
+
+/// WI-456 — [`TieRepair::SubGoal`]'s payload, rendered: the provider whose named slot
+/// the tied sub-goal fills, and the slot's binder. Strings rather than `Symbol`s because
+/// [`TieRepair`] is what crosses into `LoadError` and `TypeError`, which render without
+/// a `KnowledgeBase` in hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubGoalSlot {
+    /// The provider, qualified (`my.ns.LexFst`).
+    pub owner: String,
+    /// The binder, as written (`OA`).
+    pub binder: String,
+}
+
+/// WI-1032 — a tie's candidates as names, BY CANONICAL PROVIDER rather than one entry
+/// per candidate. Two provisions of one carrier are two candidates whenever they are not
+/// byte-identical (the collector's dedup is structural), and rendering them per candidate
+/// printed the carrier TWICE. Deduping cannot hide a rival: two distinct providers have
+/// distinct canonical symbols and both survive.
+///
+/// WI-456 gave it a second caller — [`describe_resolution_failure`], which was rendering
+/// `tie.candidates` raw and so printed the `(Leaf, Leaf)` this fixed on the other face.
+fn tie_candidate_names(kb: &KnowledgeBase, tie: &InstanceTie) -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::with_capacity(tie.candidates.len());
+    let mut seen: SmallVec<[Symbol; 2]> = SmallVec::new();
+    for s in &tie.candidates {
+        let canon = kb.canonical_sort_sym(*s);
+        if !seen.contains(&canon) {
+            seen.push(canon);
+            candidates.push(kb.qualified_name_of(*s).to_string());
+        }
+    }
+    candidates
 }
 
 /// WI-843 — §4.4 check 3's criterion, with ONE owner: is `sort` a provider whose
@@ -22768,22 +22832,16 @@ fn is_value_directed_provider(
 /// `wi1032_provision_dedup_test::a_specificity_ordered_pair_still_takes_the_more_specific`).
 /// With no driver left, a dedup here would be untested code.
 fn render_instance_tie(kb: &KnowledgeBase, tie: &InstanceTie) -> (Vec<String>, TieRepair) {
-    // WI-1032 — BY CANONICAL PROVIDER, not one entry per candidate. Two provisions of one
-    // carrier are two candidates whenever they are not byte-identical (the collector's
-    // dedup is structural), and rendering them per candidate printed the carrier TWICE.
-    // Deduping here is a RENDERING rule and cannot hide a rival: two distinct providers
-    // have distinct canonical symbols and both survive.
-    let mut candidates: Vec<String> = Vec::with_capacity(tie.candidates.len());
-    let mut seen: SmallVec<[Symbol; 2]> = SmallVec::new();
-    for s in &tie.candidates {
-        let canon = kb.canonical_sort_sym(*s);
-        if !seen.contains(&canon) {
-            seen.push(canon);
-            candidates.push(kb.qualified_name_of(*s).to_string());
-        }
-    }
+    let candidates = tie_candidate_names(kb, tie);
     if !tie.at_call_goal {
-        return (candidates, TieRepair::SubGoal);
+        // WI-456 — the slot rides from the frame that owns it ([`InstanceTie::slot`]).
+        return (
+            candidates,
+            TieRepair::SubGoal(tie.slot.map(|s| SubGoalSlot {
+                owner: kb.qualified_name_of(s.owner).to_string(),
+                binder: kb.local_name_of(s.binder).to_string(),
+            })),
+        );
     }
     // ONE provider reached twice: no bracket separates a provider from itself, and
     // `ValueDirected`'s "pin the carrier" is advice for a carrier that is already pinned.
@@ -22830,25 +22888,74 @@ pub(crate) fn unselected_instance_message(
         candidates.len(),
         candidates.join(", "),
     );
+    format!("{head}{}", tie_repair_advice(spec, repair))
+}
+
+/// WI-456 — the REPAIR half of a tie's message, with one owner.
+///
+/// Split out of [`unselected_instance_message`] because a tie reaches an author by two
+/// routes and only one of them was saying what to do. The other is
+/// [`describe_resolution_failure`]'s `Ambiguous` arm — a requirement that could not be
+/// supplied for a call, which rendered the candidates and dropped [`TieRepair`] on the
+/// floor, so the sentence the author then read was the generic *"select a witness that
+/// provides this requirement at these bindings, or drop the selection"*. MEASURED on
+/// `SortedSet[T = Duo[…], O = LexFst]`: the witness DOES provide at those bindings and
+/// dropping the selection loses the ordering, while the repair that works — binding
+/// `LexFst`'s own `OA` in the type — went unmentioned. That is the two-checks-disagree
+/// defect WI-456's 2026-08-15 note caught between §4.5 and the explicit-witness check,
+/// one level down, and the [`TieRepair`] discipline ("every way of reaching this
+/// diagnostic must say which of the arms it is") is only enforceable if every way of
+/// reaching it goes through this function.
+///
+/// "EVERY WAY" MEANS EVERY LOAD-TIME WAY, and the exception is named rather than
+/// implied: [`BridgeRequirements::Ambiguous`] → `EvalError::AmbiguousRequirement` is a
+/// THIRD face of the same tie, and it does not read this sentence. That is not an
+/// oversight left to tidy — it is the RUNTIME, value-directed route, where §4.2 leaves
+/// rule bodies out of selection and there is genuinely no bracket to write, so its
+/// repair ("route the call through an operation that can write one") is a different
+/// one. Giving it the slot's NAME would still help, and that is an increment of its
+/// own: the slot would have to ride through `BridgeRequirements` and the wording would
+/// be a third arm, on the face WI-456(a) deliberately kept as WI-855's raise.
+///
+/// The leading separator belongs to the arm — the four read as one sentence with the
+/// head and they do not punctuate alike.
+fn tie_repair_advice(spec: &str, repair: &TieRepair) -> String {
     match repair {
         TieRepair::Bracket(bracket) => format!(
-            "{head} — they may coexist, so say which: write `{bracket}` (or another of \
+            " — they may coexist, so say which: write `{bracket}` (or another of \
              them) in the call's bracket list"
         ),
-        TieRepair::ValueDirected => format!(
-            "{head}, and none can be named here: each is a CONCRETE provider, where an \
-             explicit witness is refused because the VALUE decides the dispatch — and \
-             this call has no value that does. Pin the carrier through the call's \
-             receiver or its expected result type"
+        TieRepair::ValueDirected => ", and none can be named here: each is a CONCRETE \
+             provider, where an explicit witness is refused because the VALUE decides the \
+             dispatch — and this call has no value that does. Pin the carrier through the \
+             call's receiver or its expected result type"
+            .to_owned(),
+        // WI-456 — the two arms differ in whether a binder EXISTS to name, and that is
+        // the whole difference: the channel is the same one either way.
+        TieRepair::SubGoal(Some(slot)) => format!(
+            ". The tie is in a SUB-GOAL of this call's resolution, which no \
+             call-site bracket KEY reaches (§4.5) — it fills named slot `{binder}` of \
+             `{owner}`, so bind that slot in the VALUE position, as \
+             `{owner}[{binder} = …]`: in the call's bracket where the call names the \
+             witness itself, or, where it is reached as the value of an enclosing slot, \
+             in the type that names it there. Or keep a single provider of `{spec}`",
+            binder = slot.binder,
+            owner = slot.owner,
         ),
-        TieRepair::SubGoal => format!(
-            "{head}. The tie is in a SUB-GOAL of this call's resolution, which no \
-             call-site bracket reaches (§4.5) — give the conditional provider a NAMED \
-             requirement slot and bind it in the value position (`f[Spec = W[Slot = \
-             Chosen]]`), or keep a single provider of `{spec}`"
+        // The requirement it fills has NO BINDER, so there is no name to print and
+        // nothing to bind. That is an anonymous `requires` (conditional or not) or a
+        // provision CONDITION, whose `:- goals` tail admits no name at all — saying
+        // "the conditional provider" would send an author who wrote a plain
+        // `requires Marked[T = Tok]` looking for a condition they never wrote.
+        TieRepair::SubGoal(None) => format!(
+            ". The tie is in a SUB-GOAL of this call's resolution, which no \
+             call-site bracket reaches (§4.5), and the requirement it fills is \
+             ANONYMOUS, so there is no slot to bind — give that requirement a NAMED \
+             slot on its provider (`requires O: …`) and bind it in the value position \
+             (`f[Spec = W[O = Chosen]]`), or keep a single provider of `{spec}`"
         ),
         TieRepair::OneProviderTwoProvisions => format!(
-            "{head}: it is ONE provider reached through several provisions of `{spec}` \
+            " — it is ONE provider reached through several provisions of `{spec}` \
              that are not identical. No bracket separates a provider from itself — write \
              the provisions as ONE (a single `provides`/`fact` binding every parameter), \
              since two that merely AGREE still tie here"
@@ -23893,7 +24000,10 @@ pub struct RequirementRefusal {
     /// A `Symbol`, rendered by `render` like every other name here — the other fields
     /// are pre-rendered because they are LISTS built during the walk; a single name is
     /// not, and `render` already holds the `kb`.
-    pinned: Option<Symbol>,
+    ///
+    /// WI-456 — and WHY it could not be used, because the two reasons take opposite
+    /// advice. See [`PinnedWitness`].
+    pinned: Option<PinnedWitness>,
     /// WI-1102: the carrier this call PINNED and the provision it lacks — 058 §3.10's
     /// use-site discharge. Present exactly on the signature `unconstrained` is the
     /// complement of: every element determined, and the named carrier providing
@@ -24006,7 +24116,7 @@ impl RequirementRefusal {
                 self.dep_text,
                 owner,
                 usage,
-                kb.qualified_name_of(*w),
+                kb.qualified_name_of(w.witness()),
             ),
             None => format!(
                 "requirement `{}`{} cannot be supplied for {}",
@@ -24090,8 +24200,17 @@ impl RequirementRefusal {
         }
         // The advice differs by branch: an author who already WROTE a witness cannot be
         // told to pin one.
+        //
+        // WI-456 — and a witness that TIED INSIDE gets no tail at all, because
+        // [`Self::construction`] already carries the tie's own repair and the `Unusable`
+        // sentence would contradict it. NARROW ON PURPOSE: the `None` tail is the repair
+        // for an UNCONSTRAINED ELEMENT, which a tie's advice does not cover and which
+        // `explain_dep_refusal` reports through this very branch — suppressing on "the
+        // construction clause said something" rather than on WHICH clause it answered
+        // would have silenced that one too.
         msg.push_str(match self.pinned {
-            Some(_) => " — select a witness that provides this requirement at these bindings, or drop the selection and let it resolve",
+            Some(PinnedWitness::TiedInside(_)) => "",
+            Some(PinnedWitness::Unusable(_)) => " — select a witness that provides this requirement at these bindings, or drop the selection and let it resolve",
             None => " — pin the element at the call site (bind it through an argument or an explicit type argument), or align the enclosing `requires` element with the callee's",
         });
         msg
@@ -24680,6 +24799,10 @@ fn explain_dep_refusal(
             }
         }
     }
+    // NOT [`failure_carries_repair`], and the difference is the point: that one asks
+    // whether a REPAIR can be attached (`at_call_goal` included), while this gate asks
+    // the wider question of whether construction tied AT ALL — narrowing it here would
+    // stop producing refusals for at-call-goal ties entirely.
     let ambiguous = matches!(s3_failure, Some(ResolutionResult::Ambiguous { .. }));
     if refused_entries.is_empty() && !ambiguous {
         return None;
@@ -24819,7 +24942,11 @@ fn build_dispatching_dict_from_chain(
                             .as_ref()
                             .map(|r| describe_resolution_failure(kb, r))
                             .unwrap_or_default(),
-                        pinned: Some(w),
+                        pinned: Some(if failure_carries_repair(s3_failure.as_ref()) {
+                            PinnedWitness::TiedInside(w)
+                        } else {
+                            PinnedWitness::Unusable(w)
+                        }),
                         // An author who NAMED a witness is told about the witness, not
                         // sent to write a `provides` line on the carrier.
                         unprovided: None,
@@ -32425,6 +32552,45 @@ impl ResolutionResult {
         }
     }
 
+    /// WI-456 — [`Self::forwarded`], plus the NAMED SLOT this sub-goal was filling.
+    ///
+    /// One method rather than two calls because the two facts are recorded at the same
+    /// place for the same reason: the frame below is the only one that knows either.
+    /// `slot` is stamped ONLY into an as-yet-unstamped [`InstanceTie`] and touches
+    /// nothing else, so every non-tie failure passes through exactly as `forwarded` left
+    /// it. The caller has already decided it OWNS the tie (`!is_forwarded()`), which
+    /// makes the `or` unreachable rather than load-bearing — kept because "a stamp never
+    /// overwrites a stamp" is the property, and a second caller would have to earn it.
+    fn stamped_slot(self, slot: Option<TieSlot>) -> Self {
+        match (self.forwarded(), slot) {
+            (
+                ResolutionResult::Ambiguous {
+                    goal_text,
+                    mut tie,
+                    forwarded,
+                },
+                Some(s),
+            ) => {
+                // ONE gate, at the caller (`!is_forwarded()`). This is not a second
+                // one: it fails a future caller that skips that test rather than
+                // quietly preferring the first stamp, which is how the mis-attribution
+                // `a_tie_below_a_named_slot_is_not_attributed_to_that_slot` catches
+                // would come back.
+                debug_assert!(
+                    tie.slot.is_none(),
+                    "a tie is stamped by the frame that OWNS it, and only once",
+                );
+                tie.slot = Some(s);
+                ResolutionResult::Ambiguous {
+                    goal_text,
+                    tie,
+                    forwarded,
+                }
+            }
+            (other, _) => other,
+        }
+    }
+
     /// Whether this failure came back from a SUB-goal — see [`Self::forwarded`].
     /// `false` for `Resolved`, which is about the goal it resolved.
     fn is_forwarded(&self) -> bool {
@@ -32795,6 +32961,10 @@ fn resolve_inner<'a>(
                     spec: goal.spec_sort,
                     candidates,
                     at_call_goal,
+                    // WI-456 — stamped by the level that OWNS the slot, on the way out
+                    // (the `err` arm of the sub-goal loop below); this level is the
+                    // tie's own and knows only that it tied.
+                    slot: None,
                 },
                 forwarded: false,
             };
@@ -32990,7 +33160,28 @@ fn resolve_inner<'a>(
                     // WI-865: THE ONE PLACE A FAILURE STOPS BEING ABOUT THE GOAL THE
                     // CALLER ASKED FOR. Everything else returns a failure this frame
                     // generated for its own `goal`.
-                    return err.forwarded();
+                    //
+                    // WI-456 — and THE one place that knows whose named slot the failed
+                    // sub-goal was filling, which is what lets `TieRepair::SubGoal` name
+                    // a repair instead of describing a shape. Nothing else about the tie
+                    // is touched — `spec` and `candidates` stay the sub-goal's, which is
+                    // the re-attribution 058 §8 measured and fixed.
+                    //
+                    // `!is_forwarded()` IS THE WHOLE CORRECTNESS CONDITION, and reading it
+                    // as "innermost wins" is not the same test. A tie passes through every
+                    // enclosing provider on its way out; `forwarded` is false only in the
+                    // frame whose OWN sub-goal `sg` is the goal that tied. Without it, a
+                    // tie raised under a provider with ANONYMOUS requires (which stamps
+                    // nothing) would keep travelling until some outer provider with a
+                    // named slot stamped it — and the message would then assert that the
+                    // tie fills THAT slot and advise binding it, which re-selects the same
+                    // provider and the same tie. An unstamped tie renders the schema
+                    // wording instead, which is true of every shape.
+                    let owns_the_tie = !err.is_forwarded();
+                    return err.stamped_slot(named.filter(|_| owns_the_tie).map(|s| TieSlot {
+                        owner: chosen_impl_sort,
+                        binder: s.binder,
+                    }));
                 }
             }
         }
@@ -34390,6 +34581,8 @@ fn resolve_nullary_result_carrier(
             spec: spec_sort,
             candidates: many.iter().copied().collect(),
             at_call_goal: true,
+            // Always `at_call_goal`, so there is no enclosing provider and no slot.
+            slot: None,
         })),
     }
 }
@@ -42688,14 +42881,42 @@ fn describe_resolution_failure(kb: &KnowledgeBase, result: &ResolutionResult) ->
         // renderer. It was rendered eagerly in the resolver before, which meant every
         // consumer paid for strings — and, worse, for the concreteness scan beside
         // them — including the two that drop the result on the floor.
-        ResolutionResult::Ambiguous { goal_text, tie, .. } => format!(
-            "constructing `{goal_text}` is ambiguous among providers: {}",
-            tie.candidates
-                .iter()
-                .map(|s| kb.qualified_name_of(*s).to_string())
-                .collect::<Vec<_>>()
-                .join(", "),
-        ),
+        // WI-456 — AND THE REPAIR, which this arm used to drop. It rendered the
+        // candidates and stopped, so the only advice the author got was the generic tail
+        // its caller appends ("select a witness that provides this requirement at these
+        // bindings, or drop the selection") — false on both halves for the shape that
+        // reaches here most often, a pinned witness whose OWN named slot tied. See
+        // [`tie_repair_advice`], which is now the one owner of the sentence.
+        ResolutionResult::Ambiguous { goal_text, tie, .. } => {
+            // AND ONLY FOR A SUB-GOAL TIE, which is a COST decision and is measured.
+            // [`render_instance_tie`]'s concreteness scan walks every `SortInfo` fact,
+            // and this arm runs EAGERLY to fill `RequirementRefusal::construction` —
+            // including for the WI-945 refusals that are parked and then truncated, on
+            // loads that go on to succeed. Attaching the advice unconditionally cost
+            // **+9% on a clean stdlib load** (0.72 s → 0.79 s, release, quiet machine,
+            // 5 runs each); the `!at_call_goal` branch returns BEFORE the scan, so this
+            // spelling measures 0.73 s, back inside the noise. The arms left out lose nothing they had:
+            // an at-call-goal tie reaching a requirement projection is already answered
+            // by `RequirementRefusal`'s own `pinned` / element advice, whereas the
+            // sub-goal tie is the one that had NO repair anywhere, which is this
+            // ticket's whole subject.
+            let advice = tie_repair_is_attachable(tie)
+                .then(|| {
+                    tie_repair_advice(
+                        kb.qualified_name_of(tie.spec),
+                        &render_instance_tie(kb, tie).1,
+                    )
+                })
+                .unwrap_or_default();
+            format!(
+                // WI-1032's dedup holds on THIS face too. Re-rendering `tie.candidates`
+                // raw printed one carrier twice for a provider reached through two
+                // non-identical provisions — the very `(Leaf, Leaf)` symptom WI-1032
+                // records as fixed — while the other face printed it once.
+                "constructing `{goal_text}` is ambiguous among providers: {}{advice}",
+                tie_candidate_names(kb, tie).join(", "),
+            )
+        }
         // The reader of NoMatch's purpose-built hint (eagerly formatted since
         // WI-821, previously consumed by nothing).
         ResolutionResult::NoMatch { hint, .. } => hint.clone(),
@@ -42703,6 +42924,57 @@ fn describe_resolution_failure(kb: &KnowledgeBase, result: &ResolutionResult) ->
             format!("construction is cyclic: {}", path.join(" -> "))
         }
         ResolutionResult::Resolved(_) => String::new(),
+    }
+}
+
+/// WI-456 — may a tie's repair be attached where [`describe_resolution_failure`]
+/// renders it?
+///
+/// THE ONE OWNER OF THE `at_call_goal` GATE, and it has to be one: the first cut asked
+/// this question in two places — here, to decide [`PinnedWitness::TiedInside`], and at
+/// the render, to decide whether to pay [`render_instance_tie`]'s scan — with two
+/// different predicates. `/code-review` found the gap that opens between them: an
+/// at-call-goal tie under a pinned witness was classified `TiedInside` (so the generic
+/// tail was suppressed) and then given no advice (so nothing replaced it), leaving a
+/// refusal with NO repair at all where HEAD had one. Two gates for one invariant is the
+/// two-checks-disagree defect this ticket exists to close, so there is now one.
+fn tie_repair_is_attachable(tie: &InstanceTie) -> bool {
+    !tie.at_call_goal
+}
+
+/// WI-456 — does this failure's rendering already name a repair? See
+/// [`tie_repair_is_attachable`] for why the `at_call_goal` half is part of the question
+/// and not a separate one. `None` is "construction was never attempted", which advises
+/// nothing either; the non-`Ambiguous` arms render an ACCOUNT — a hint, a cycle path —
+/// with no advice in it.
+fn failure_carries_repair(result: Option<&ResolutionResult>) -> bool {
+    matches!(result, Some(ResolutionResult::Ambiguous { tie, .. }) if tie_repair_is_attachable(tie))
+}
+
+/// WI-456 — a witness this call-site bracket PINNED, and why the projection failed
+/// with it, because the two answers need opposite advice.
+///
+/// Written as one value rather than a `Symbol` beside a `bool` on the
+/// "make illegal state unrepresentable" rule: a flag would let a refusal carry
+/// [`Self::Unusable`]'s advice with a tie's account, or the reverse, and both render as a
+/// confident sentence. Here the witness cannot be recorded without saying which it is.
+#[derive(Clone, Copy, Debug)]
+enum PinnedWitness {
+    /// Nothing the pinned witness provides fits, so naming a different one is the repair.
+    Unusable(Symbol),
+    /// The pinned witness is FINE and construction tied INSIDE it — the tie's own repair
+    /// is already in [`RequirementRefusal::construction`] (WI-456's `tie_repair_advice`),
+    /// and the generic *"select a witness … or drop the selection"* would contradict it.
+    /// MEASURED on `SortedSet[T = Boxed[E = String], O = ByInner]`: `ByInner` does
+    /// provide at these bindings and dropping it loses the ordering the program is for.
+    TiedInside(Symbol),
+}
+
+impl PinnedWitness {
+    fn witness(self) -> Symbol {
+        match self {
+            PinnedWitness::Unusable(w) | PinnedWitness::TiedInside(w) => w,
+        }
     }
 }
 

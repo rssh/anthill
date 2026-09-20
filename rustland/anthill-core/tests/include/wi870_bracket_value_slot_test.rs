@@ -160,10 +160,21 @@ fn a_bare_pin_leaves_the_witnesss_own_sub_goal_ambiguous() {
             .any(|e| e.contains("Ascending") && e.contains("Descending")),
         "the tie is the witness's element ordering, naming both program rivals: {errs:?}"
     );
+    // WI-456 SHARPENED THIS ASSERTION rather than replacing it. The wording it used to
+    // accept — `f[Spec = W[Slot = Chosen]]`, a SCHEMA — told an author to "give the
+    // conditional provider a NAMED requirement slot" in front of a `LexFst` that
+    // declares two, leaving the name to be guessed. The repair now names the slot it
+    // is about, so the control asserts the NAME: a schema would pass the old test and
+    // fails this one.
+    // ONE message must carry the WHOLE repair. Two `any()`s would be satisfied by two
+    // different errors — a message naming the slot and an unrelated one that happens to
+    // contain the spelling — while no single one told the author what to write.
     assert!(
-        errs.iter()
-            .any(|e| e.contains("[Slot = Chosen]") || e.contains("named requirement slot")),
-        "and the repair it prints is the value-position binding this ticket wires: {errs:?}"
+        errs.iter().any(|e| e.contains("named slot `OA` of")
+            && e.contains("wi870.tie.LexFst")
+            && e.contains("wi870.tie.LexFst[OA = …]")),
+        "and the repair names the witness's own slot, and the spelling the arms below \
+         write, in ONE message — not a schema for one: {errs:?}"
     );
 }
 

@@ -1975,6 +1975,23 @@ otherwise **refused**, whatever the provider count — a sole provider would sti
 for the signature and not for the value.  A concrete provider whose provision head does
 not write the slot cannot carry it there, and is refused naming the `O = O` to write.
 
+**A WITNESS's own named slot is written in the same two places, one level in** (WI-456).
+Where the provider chosen for a slot is itself a witness with named slots
+(`SortedSet[T = Boxed[E = String], O = ByInner]` under `ByInner requires OI: WeakOrd[E]`),
+nothing the carrier's type said reaches `OI`, and its sub-goal searches.  That search is
+where rival orderings tie — and the binding that answers it is an ordinary nested type
+application, written either in the bracket value WI-870 delivers
+(`f[WeakOrd = ByInner[OI = ByLength]]`) or, where the witness is reached through a type
+rather than a bracket, in that type (`O = ByInner[OI = ByLength]`).  The two spellings
+are one mechanism: a named slot is a type parameter, so nesting needs no separate rule,
+and the binding composes to any depth.  **The tie's diagnostic names that slot**, because
+the repair is unwritable without its name: a message that printed the *schema*
+(`f[Spec = W[Slot = Chosen]]`) told an author to declare a slot on a provider that
+already had one.  Where the tied sub-goal fills no binder at all — an **anonymous**
+`requires`, conditional or not, or a provision **condition**, whose `:- goals` tail
+admits no name at all (§4) — there is nothing to bind, declaring a named slot really is
+the first step, and the message says that instead.
+
 **At run time a named slot is never recovered from a value.**  A value names its sort and
 carries none of its type parameters, so a dispatch that has only the value — a spec's
 default body calling a sibling spec op, as `FiniteCollection.size`'s `collect(c)` does —

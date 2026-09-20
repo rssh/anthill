@@ -970,3 +970,128 @@ has been waiting on. The `ProvidesItem` exhaustivity error (a build setting, fro
 is what forced that decision to be made rather than defaulted — it named the one site.
 
 scaland green: **527** tests over three modules (1 + 23 + 503).
+
+## §32 — WI-456(b): the sub-goal tie at a WITNESS's own slot had a channel and no name (DELIVERED 2026-09-20)
+
+WI-456's 2026-08-15 note split the two-ordering problem into (a) the provisions, (b) *"give
+the §4.5 sub-goal tie a channel"*, and (c) the diagnostic that named a repair a concrete
+provider could not take. (a) and (c) landed with the tree (`fe4e0bbc` / `b3f333b5`), and
+(b) was left open against the population the tree commit narrowed it to: **the provider is
+a WITNESS sort rather than a carrier**, where the slot is in no type the call writes.
+
+**MEASURED FIRST, AND THE PREMISE WAS WRONG IN THE USEFUL DIRECTION.** The channel was
+never missing. On `SortedSet[T = Boxed[E = String], O = ByInner]` with `ByInner requires
+OI: WeakOrd[E]` and three `WeakOrd[String]` providers in scope, writing the nested binding
+in the CARRIER'S TYPE — `O = ByInner[OI = ByLength]` — loads clean, orders the set by that
+binding, and survives three levels of indirection out to a generic consumer written against
+`PersistentCollection` alone. §18's second producer (`selections_from_slot_bindings`)
+already carried a type-written nesting to any depth; WI-456(a)'s `carried_slot` already read
+the outer slot off the provision match. What was missing sat entirely in the diagnostics,
+and it was the **same defect the note caught at (4), one level down: two checks disagreeing
+about what the author should do.**
+
+| route | what the author wrote | what they were told |
+|---|---|---|
+| 1 — call bracket | `WeakOrd.compare[WeakOrd = ByInner](…)` | `TieRepair::SubGoal`'s SCHEMA: *"give the conditional provider a NAMED requirement slot and bind it in the value position (`f[Spec = W[Slot = Chosen]]`)"* — in front of a provider declaring one already, with the name left to guess |
+| 2 — carrier type | `SortedSet[…, O = ByInner]` | *"select a witness that provides this requirement at these bindings, or drop the selection and let it resolve"* — FALSE on both halves: `ByInner` does provide at those bindings, and dropping the selection loses the ordering |
+
+Route 2 reached that tail because `describe_resolution_failure`'s `Ambiguous` arm rendered
+the candidate list and **dropped `TieRepair` on the floor**, so the only advice left was the
+generic one its caller appends.
+
+### What shipped
+
+**`InstanceTie` gains `slot`,** stamped in `resolve_inner`'s provider-half `err` arm — the
+one frame that knows whose named slot the failed sub-goal was filling. `spec` and
+`candidates` are untouched, so this is not the re-attribution §8 measured and fixed.
+`TieRepair::SubGoal` carries that slot and names it.
+
+**THE CONDITION IS `!err.is_forwarded()`, AND THE FIRST DRAFT GOT IT WRONG** — `/code-review`
+caught it with a repro the suite could not see. "Stamp the innermost owner, guarded by
+`slot.is_none()`" sounds like the same rule and is not: `named_requirement_slots` is empty
+for the overwhelmingly common all-anonymous owner, so a tie raised under such a provider
+stamped nothing and kept travelling until the next frame out with a named slot claimed it.
+MEASURED on a fixture where `ByInner`'s `OI` resolves fine (`TokVia` is the sole
+`WeakOrd[Tok]`) and `TokVia`'s own ANONYMOUS `requires Marked` ties:
+
+> it fills named slot `OI` of `ma.ByInner`, so bind that slot in the VALUE position, as
+> `ma.ByInner[OI = …]`
+
+Binding `OI` re-selects `TokVia` and re-raises the identical tie — the "advertise a repair
+the next compile rejects" failure the enum exists to prevent, reintroduced by the ticket
+closing an instance of it. `!err.is_forwarded()` is true only in the frame whose OWN
+sub-goal is the goal that tied; an unstamped tie renders the anonymous-requirement wording,
+which is true of every shape.
+
+**`tie_repair_advice` IS THE ONE OWNER OF THE REPAIR SENTENCE**, which is what makes the
+`TieRepair` discipline ("every way of reaching this diagnostic must say which arm it is")
+enforceable at all: route 2 reads the same sentence rather than its own. *One owner* means
+one **load-time** owner, and the exception is named rather than implied:
+`BridgeRequirements::Ambiguous` → `EvalError::AmbiguousRequirement` is a third face of the
+same tie and does not read it. That is the RUNTIME, value-directed route, where §4.2 leaves
+rule bodies out of selection and there is genuinely no bracket, so its repair is a different
+one. Giving it the slot's NAME would still help, and is an increment of its own on the face
+WI-456(a) deliberately kept as WI-855's raise.
+
+**`pinned` CARRIES WHY, NOT A FLAG BESIDE IT.** The first cut added
+`construction_advises: bool` and suppressed the generic tail for ANY advising construction
+clause — including `explain_dep_refusal`'s unconstrained-element refusal, whose tail (*"pin
+the element at the call site"*) is a repair a tie's advice does not cover. `pinned` is now
+`PinnedWitness::{Unusable, TiedInside}`: the suppression is keyed on WHICH clause answered,
+six sites that only ever said `false` lose the field, and a refusal whose flag disagrees with
+its account is unrepresentable rather than merely untested.
+
+**THE REPAIR IS ATTACHED ONLY WHERE IT IS FREE, and that is a measurement.**
+`render_instance_tie`'s concreteness scan walks every `SortInfo` fact, and
+`describe_resolution_failure` runs EAGERLY to fill `construction` — including for WI-945
+refusals that are parked and then truncated, on loads that go on to succeed. Attaching the
+advice unconditionally cost **+9% on a clean load** (0.72 s → 0.79 s, release, quiet machine,
+5 runs each). The `!at_call_goal` branch returns before the scan, so restricting the append
+to the sub-goal tie measures **0.73 s**, back inside the noise.
+
+**AND THAT GATE IMMEDIATELY GREW A SECOND DEFECT, found by the same review.** `TiedInside`
+was decided by "is it `Ambiguous`" while the advice was attached only when
+`!at_call_goal` — two gates for one invariant, so an at-call-goal tie under a pinned witness
+was classified `TiedInside` (tail suppressed) and then given nothing to replace it, leaving
+a refusal with **no repair at all** where HEAD had one. `tie_repair_is_attachable(tie)` is
+now the single owner and both gates call it; `explain_dep_refusal`'s own `ambiguous` gate
+deliberately does NOT, because it asks the wider question of whether construction tied at
+all. *Not driven by a test:* the shape needs a tie at a pinned dep's own goal, and the
+WI-1032 two-provision fixture tried here does not tie (specificity answers it). The
+guarantee is structural — one predicate — and the `Unusable` arm has a positive driver.
+
+**THE LONGER FIX, NOT TAKEN HERE**: memoize `sorts_with_constructors` on the KB (there is
+precedent in `provider_dict_chain_cache`). That would let the advice be attached for EVERY
+tie, remove the gate above and its second defect with it, and also take the same whole-KB
+scan out of `resolve_inner`'s own per-sub-goal arm. It is held back because the scan reads
+`SortInfo` facts that are still being asserted while a KB loads, so it is an invalidation
+question and not a caching one — a measurable increment of its own, not a line in this one.
+
+### Back-out matrix, measured one edit at a time
+
+| reverted | fails |
+|---|---|
+| the slot stamp | both `names_the_slot` arms + wi870's `a_bare_pin_leaves_the_witnesss_own_sub_goal_ambiguous` |
+| `!err.is_forwarded()` (`owns_the_tie = true`) | `a_tie_below_a_named_slot_is_not_attributed_to_that_slot` ALONE |
+| route 2's repair append | `route_2_a_tie_under_a_carrier_named_witness_names_the_slot` AND `a_tie_below_a_named_slot_is_not_attributed_to_that_slot` — both read their verdict off route 2's message, the second one for the anonymous-requirement wording |
+| the `TiedInside` suppression | `route_2_does_not_also_advise_the_opposite` ALONE |
+| — | `single_witness_provider_control_a_bare_witness_loads` passes under all of them, BY DESIGN: one provider, no tie, which is what pins the refusal to the TIE and not to the bare-witness shape |
+
+**THE ACCEPTANCE DRIVES THE ADVICE, NOT THE STRING.** `the_advised_repair_loads_and_its_
+slot_decides_the_order` writes what the diagnostic told the author to write and asserts the
+set's first element: `[OI = ByLength]` reads `"zz"` back and `[OI = Alphabetical]` reads
+`"aaa"`. It writes it in the **qualified** spelling the message actually prints, too — the
+short name is what the fixture's imports make available, and a dotted witness name carrying
+a slot bracket was a form no test had ever loaded. A grep-the-message test would pass while
+advertising a repair that does not work, which is the failure mode this whole enum exists
+to prevent.
+
+**WI-870's control was SHARPENED, not replaced.** It accepted the schema; it now asserts the
+slot's NAME **and the spelling in ONE message** — two `any()`s over the error list would be
+satisfied by two different errors while no single one carried the whole repair. The new
+wi456 arms follow the same rule.
+
+**WHAT (b) DOES NOT CLOSE, and it is the ticket's own recorded remainder**: a site that can
+write neither a type nor a bracket — a spec DEFAULT body reaching an ordering-reading
+operation by VALUE. No dictionary travels with a value (WI-402), and closing it needs
+WI-1093's measured eval defect, not a new mechanism.
