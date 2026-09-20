@@ -237,6 +237,97 @@ end
     );
 }
 
+// ── 065 §1, THE LOWERING ─────────────────────────────────────────────────────────────
+
+/// THE LOWERING IS REAL AND THE ANSWER COMES FROM THE DICTIONARY, NOT THE CHANNEL.
+///
+/// 065 §1: a value-position read of a rigid IS a slot dispatch —
+/// `TypeValue[T = B].type_value()`, through the requirement slot. Every row above would
+/// pass equally against the pre-065 frame type-argument channel, so none of them measures
+/// this; that is what this row is for.
+///
+/// THE CONTROL IS THE BACKED-OUT CHANNEL, and it was RUN. Neutralize the `find_type_arg`
+/// lookup in eval's `Expr::TypeValue` bare-head arm — the thing that served every one of
+/// these reads before 065 — and the measurement is exact:
+///
+///  * this row, [`a_bare_read_and_a_nested_read_lower_alike`],
+///    [`the_clause_admits_the_read_and_the_answer_is_the_ground_type`] and
+///    [`the_clause_reaches_through_two_generic_levels`] stay GREEN, so their answers come
+///    from the DICTIONARY and not from the channel;
+///  * **`wi708_body_type_arg_read_test` passes in full with the channel OFF** — the file
+///    whose entire subject is that channel, because its reads are op-level and therefore
+///    lowered. That is the sharpest statement of what changed;
+///  * 16 rows go red, every one of them a SORT-half read —
+///    `wi_r541x_body_read_of_type_param_test`'s (A)/(B) rows,
+///    `wi_rs2g4_receiver_bracket_binds_sort_params_test`'s eval half, and this file's own
+///    [`the_operation_level_subset_rule_is_065_3`], whose `Box.valueOf` reads `V` under a
+///    SORT-level clause.
+///
+/// So the channel is still load-bearing for exactly the half `lower_rigid_read_to_slot`
+/// declines to lower, and for nothing else. 065 §1's "the channel stops being consulted"
+/// is now true of op-level reads; WI-20260919-H20YY is what makes it true of the rest.
+///
+/// WHAT IT DRIVES: a read one level deep (`tyOf`) and a read TWO levels deep (`mid`
+/// forwards its own rigid, so the evidence must travel caller → callee as a DICTIONARY,
+/// which is precisely what the channel could not do for a provider entered through a
+/// slot). Both answer the ground type.
+///
+/// AND A NESTED READ — `Pair[A = B, B = C]` reads two distinct rigids in one type
+/// expression, so the argument pump has to resolve two different slots. A single-rigid
+/// row cannot tell a correct slot lookup from one that always picks slot 0.
+#[test]
+fn a_lowered_read_answers_through_its_slot() {
+    let src = r#"
+namespace test.n31xx.lower
+  import anthill.prelude.{Int64, String, Bool, Type}
+  import anthill.reflect.{TypeValue}
+
+  sort Pair2[A, B]
+    entity pr(x: A, y: B)
+  end
+
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = B
+  operation mid[U](y: U) -> Type requires TypeValue[T = U] = tyOf(y)
+
+  operation both[A, B](a: A, b: B) -> Type
+    requires TypeValue[T = A], TypeValue[T = B] = Pair2[A = A, B = B]
+
+  operation one_level() -> Type = tyOf(5)
+  operation two_levels() -> Type = mid("s")
+  operation two_slots() -> Type = both(5, true)
+end
+"#;
+    assert_eq!(eval_type(src, "test.n31xx.lower.one_level"), "Int64");
+    assert_eq!(eval_type(src, "test.n31xx.lower.two_levels"), "String");
+    // TWO DISTINCT SLOTS IN ONE EXPRESSION — `A` is slot 0 and `B` is slot 1, and a
+    // lookup that ignored the parameter would answer `Pair2(A: Int64, B: Int64)`.
+    assert_eq!(
+        eval_type(src, "test.n31xx.lower.two_slots"),
+        "Pair2(A: Int64, B: Bool)"
+    );
+}
+
+/// THE BARE READ AND THE NESTED READ ARE THE SAME NODE, which is why 065 §1 says only the
+/// LEAF changes: `= B` and `= Cell[V = B]` differ by who consumes the `Type` the read
+/// produces, and the argument pump was always the builder for the second.
+#[test]
+fn a_bare_read_and_a_nested_read_lower_alike() {
+    let src = r#"
+namespace test.n31xx.leaf
+  import anthill.prelude.{Cell, Int64, Type}
+  import anthill.reflect.{TypeValue}
+
+  operation bare[B](x: B) -> Type requires TypeValue[T = B] = B
+  operation nested[B](x: B) -> Type requires TypeValue[T = B] = Cell[V = B]
+
+  operation ask_bare() -> Type = bare(5)
+  operation ask_nested() -> Type = nested(5)
+end
+"#;
+    assert_eq!(eval_type(src, "test.n31xx.leaf.ask_bare"), "Int64");
+    assert_eq!(eval_type(src, "test.n31xx.leaf.ask_nested"), "Cell(V: Int64)");
+}
+
 // ── 065 §3, THE OPERATION-LEVEL SUBSET RULE ──────────────────────────────────────────
 
 /// AN IMPLEMENTATION MAY NOT ADD AN OPERATION-LEVEL CLAUSE, AND MAY ADD AN INSTANCE ONE.

@@ -14187,6 +14187,42 @@ fn build_type(
             env,
         } => {
             let total = pos_args.len() + named_args.len();
+            // WI-20260919-N31XX (proposal 065 §1) — THE LOWERING: a BARE read of a rigid
+            // in value position IS a slot dispatch, and this is the leaf that changes.
+            //
+            // `B` becomes `TypeValue[T = B].type_value()`, classified
+            // `DeferToRequirement` against the slot the enclosing frame already carries
+            // for `requires TypeValue[T = B]`. Nothing else needs a new surface: a type
+            // EXPRESSION mentioning `B` (`Cell[V = B]`) is evaluated by the argument
+            // pump, whose leaves are these very nodes, so the pump was always the builder
+            // 065 §1 says it is.
+            //
+            // CLASSIFIED HERE AND NOT RE-VISITED. The synthesized call is nullary and its
+            // dispatch is already decided ([`type_value_slot`] says which slot), so
+            // pushing it back through `check_apply_iter` would ask a question that has no
+            // answer — `type_value()` names no carrier, which is the whole reason the
+            // slot is looked up rather than inferred. Its type is `Type` by declaration.
+            //
+            // NO SLOT MEANS NO LOWERING, AND THAT IS HOW THE RULE IS ENFORCED. A read the
+            // frame cannot back is left as the `Expr::TypeValue` it was;
+            // `check_operation_bodies` refuses whatever bare rigid read SURVIVES typing.
+            // So "is there a slot" and "is this read well-formed" are ONE question asked
+            // in ONE place, and the rule can never admit a read the lowering then fails
+            // to back. It is also what keeps 065 §6's nineteenth census site working: a
+            // `K` that `@[simp]` inlining moves into a TYPE position is not lowered here
+            // (no slot) and then vanishes from the tree when the enclosing node is
+            // rewritten, so the surviving-read pass never sees it.
+            if total == 0 {
+                if let Some(lowered) = lower_rigid_read_to_slot(kb, &env, &occ, head) {
+                    let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
+                    results.push(Ok(TypeResult::pure(
+                        type_ty,
+                        unwrap_env(env),
+                        lowered,
+                    )));
+                    return;
+                }
+            }
             let drain_start = results.len() - total;
             let arg_results: Vec<Result<TypeResult, TypeError>> = results.split_off(drain_start);
             // An ill-typed type argument is surfaced before the WI-709 fit check, the
@@ -72642,190 +72678,253 @@ fn surviving_dot_apply(
 /// ALLOWED to read as values: those `B` for which `TypeValue[T = B]` stands among the
 /// requirements in scope.
 ///
-/// BOTH LEVELS, and they are two different readers because they are two different
-/// carriers: an operation-level clause rides `OperationInfo.requires` and emits no
-/// relation fact, while a sort-level one rides a `SortRequiresInfo` fact. That is the
-/// same split [`any_requirement_names_spec`] states at length, and missing either half
-/// would refuse a program whose clause is written in the other spelling.
+/// THE SAME LIST THE LOWERING INDEXES, read through the same decoder
+/// ([`type_value_clause_param`]). That is not tidiness: [`lower_rigid_read_to_slot`]
+/// lowers a read it finds a slot for, and this pass refuses a read that SURVIVED
+/// un-lowered — so if the two lists disagreed, a read the chain backs but this misses
+/// would be refused although it is well-formed, and a read this admits but the chain
+/// lacks would be neither lowered nor refused, silently falling back to the frame
+/// channel with no slot behind it. One list, one decoder, no third state.
 ///
-/// SORT-LEVEL IS DIRECT, NOT TRANSITIVE, and that is a scope fact rather than a
-/// shortcut: a transitively required spec's own clauses are written over THAT spec's
-/// parameters, not over this sort's, so they can never name a parameter this body reads.
-/// [`direct_requires`] is also what the dictionary LAYOUT is built from
-/// ([`provider_dict_entries`]), so the set admitted here and the set of slots that will
-/// actually exist at run time are read off one list.
+/// BOTH LEVELS COME FOR FREE, because [`op_dict_entries`] IS the sort half followed by
+/// the op half — a clause written on the enclosing sort and one written on the operation
+/// are found by one walk, at the index each will actually occupy at run time. It also
+/// normalizes, which is what makes an op-level clause decodable at all (see
+/// [`type_value_clause_param`]).
 ///
-/// KEYED BY THE PARAMETER'S CANONICAL LOGICAL VARIABLE, not by its symbol. An
-/// operation's type parameter is its own logical variable (`load.rs`: "distinct from any
-/// same-named outer sort parameter"), and a clause can name it in TWO spellings — a
-/// `Ref` / `Ident` on the op-scoped symbol `<ns>.<op>.B`, and a bare `Var::Global`, the
-/// shape a clause that went through a substitution carries. [`clause_named_type_param`]
-/// is the reader that collapses both to the one variable, and [`type_param_global_var`]
-/// resolves the READ side to that same variable, so the two sides agree by construction.
-/// A symbol comparison would admit the first spelling and silently miss the second —
-/// a silent FALSE REFUSAL. It also keeps a same-named parameter of an enclosing sort
-/// correctly distinct, which is the keying part 1 of this ticket had to get right in
-/// `check_override_refinement` for the same reason.
-///
-/// A CLAUSE OVER A CONCRETE TYPE (`requires TypeValue[T = Int64]`) CONTRIBUTES NOTHING
-/// here, and needs to: it backs no rigid read, because a concrete sort in value position
-/// is not a rigid read at all (065's "What the rule does NOT touch").
+/// SO THIS ADMITS MORE THAN THE LOWERING TAKES, on purpose: a SORT-half clause backs a
+/// read that `lower_rigid_read_to_slot` declines to lower, and that read is correct —
+/// it is served by the frame type-argument channel until WI-20260919-H20YY. What must
+/// never happen is the reverse.
 /// WI-20260919-N31XX — `anthill.reflect.TypeValue`, or `None` in a KB loaded without
-/// the reflect stdlib. One resolution point, so the rule's three readers cannot disagree
-/// about which sort they are talking about.
+/// the reflect stdlib. One resolution point, so the rule's readers cannot disagree about
+/// which sort they are talking about.
 fn type_value_spec_sym(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol("anthill.reflect.TypeValue")
 }
 
-/// WI-20260919-N31XX (proposal 065) — is this UNSUPPLIABLE op-level dependency a
-/// `TypeValue` requirement over a bare TYPE PARAMETER? If so the call must be refused.
+/// WI-20260919-N31XX (proposal 065) — is this UNSUPPLIABLE dependency a `TypeValue`
+/// requirement? If so the call must be refused rather than left with an empty slot.
 ///
-/// THE FORWARD HALF OF THE RULE. The read half ([`rigid_value_reads`]) refuses a body
-/// that inspects a rigid without saying so; it does not refuse a caller that hands its
-/// own rigid to an operation which does. `mid[U](y: U) = tyOf(y)` against
-/// `tyOf[B] requires TypeValue[T = B]` inspects nothing, holds no evidence and declares
-/// none — and with only the read half it loads, so a signature could still quietly
-/// depend on a type it promises nothing about.
+/// IT IS THE EXACT DUAL OF THE LOWERING'S OWN LINE. [`lower_rigid_read_to_slot`] lowers a
+/// value read backed by an OP-HALF slot, so from that point every such slot is READ at
+/// run time; this runs in [`build_op_scoped_dicts`], which fills exactly the op half, so
+/// "the op half is lowered" and "the op half must be suppliable" are one invariant seen
+/// from its two ends. The SORT half is neither lowered nor refused here, and that is the
+/// same gate stated once more: a sort-half read stays on the frame type-argument channel
+/// until WI-20260919-H20YY makes a statically-dispatched defaulted member carry its
+/// dictionary.
 ///
 /// WHY IT MAY BE RAISED WHERE THE SIBLING CASES ARE SILENT. [`build_op_scoped_dicts`]
 /// makes an unsuppliable op slot a SILENT ABSENCE deliberately — its own comment gives
 /// the measurement: 29 stdlib bodies declare a chain and NEVER READ IT, so a slot nothing
-/// fills costs them nothing. `TypeValue` can never be one of those. `type_value()` is
-/// NULLARY (WI-20260919-HXGXF's fact 1), so no argument and no receiver names the type
-/// and the dispatching dictionary is the ONLY carrier of the answer; a body holding this
-/// evidence necessarily reads it through the slot. An unfilled one is therefore either an
-/// eval-time `Internal` death no handler can catch, or a clause that was pure noise.
+/// fills costs them nothing. A `TypeValue` slot can never be one of those: `type_value()`
+/// is NULLARY (WI-20260919-HXGXF's fact 1), so the dispatching dictionary is the only
+/// carrier of the answer, and since the lowering the body demonstrably reads it. An
+/// unfilled one is an eval-time `Internal` death no handler can catch.
 ///
-/// A BARE TYPE PARAMETER AND NOTHING ELSE, and that narrowness is MEASURED rather than
-/// cautious. A first cut fired on every unsuppliable `TypeValue` dep and took
-/// `wi_rs2g4_receiver_bracket_binds_sort_params_test::a_bracket_value_with_an_unwritten_slot_arrives_expanded`
-/// red: `tyb[U = List]()` binds `U` to a BARE parametric sort, which WI-20260911-RS2G4
-/// expands to `List[T = ?t]` with a fresh variable, so the conditional derived instance
-/// wants `TypeValue[T = ?t]` for a `?t` nothing determines. That carrier is a
-/// PARTIALLY-UNKNOWN TYPE, not a rigid a caller could have declared evidence for, and
-/// refusing it would reject a legitimate program over a variable the author never wrote.
-/// The distinction is exactly [`clause_named_type_param`]'s: `Ref(B)` / `Var` is a
-/// parameter, `Fn { functor: List, … }` is a type. Whether an unsuppliable slot over a
-/// partially-unknown carrier should also be refused is the LOWERING's question (065 §1),
-/// since it is the lowering that makes such a slot actually get read.
+/// IT COVERS TWO SHAPES, and the second was only forced by the lowering.
+///  * A BARE TYPE PARAMETER — `mid[U](y: U) = tyOf(y)` forwards its own rigid into an
+///    operation that inspects it, holding no evidence and having declared none. This is
+///    the FORWARD half of 065's rule: without it the rule would refuse a body that READS
+///    a rigid but not one that HANDS it on, and a signature could still quietly depend on
+///    a type it promises nothing about.
+///  * A CARRIER THE CALL LEAVES UNDETERMINED — `tyb[U = List]()`, where a bare parametric
+///    bracket value expands to `List[T = ?t]` (WI-20260911-RS2G4) and the conditional
+///    derived instance then wants `TypeValue[T = ?t]` for a `?t` nothing pins. MEASURED:
+///    while this shape was excluded, that call LOADED and then died
+///    `Internal("… `__req_typevalue` not bound in caller frame")` once the lowering made
+///    the slot get read. It was excluded on purpose BEFORE the lowering, and the comment
+///    there said this was the lowering's question to answer; this is the answer. Reading
+///    a type the call only partially determines is not well-formed, and the repair is to
+///    write the element (`tyb[U = List[T = Int64]]()`, which loads and answers).
 fn type_value_forward_unsuppliable(kb: &KnowledgeBase, dep: &RequiresEntry) -> bool {
     let Some(tv) = type_value_spec_sym(kb) else {
         return false;
     };
-    if kb.canonical_sort_sym(dep.required_sort) != kb.canonical_sort_sym(tv) {
-        return false;
+    kb.canonical_sort_sym(dep.required_sort) == kb.canonical_sort_sym(tv)
+}
+
+/// WI-20260919-N31XX (proposal 065) — the type PARAMETER a `TypeValue` requirement
+/// clause names, or `None` when the entry is not a `TypeValue` clause over a parameter.
+///
+/// THE ONE READER for "which rigid does this clause make readable", shared by the
+/// lowering (which turns it into a slot index) and by the rule (which refuses a read no
+/// clause backs). Written once because the two must never disagree: see
+/// [`type_value_backed_params`] for what the third state would be.
+///
+/// BY THE PARAMETER'S CANONICAL LOGICAL VARIABLE, not by symbol.
+/// [`clause_named_type_param`] collapses the two spellings a clause can use — a `Ref` /
+/// `Ident` on the op-scoped symbol, and a bare `Var::Global` — onto the one variable, and
+/// [`type_param_global_var`] resolves the READ side to that same variable, so the two
+/// sides agree by construction. A symbol comparison would admit the first spelling and
+/// silently miss the second.
+///
+/// A CLAUSE OVER A CONCRETE TYPE (`requires TypeValue[T = Int64]`) answers `None`, and
+/// needs to: it backs no rigid read, because a concrete sort in value position is not a
+/// rigid read at all (065's "What the rule does NOT touch").
+///
+/// READ OFF THE NORMALIZED CHAIN. Both callers hand entries from [`op_dict_entries`],
+/// which runs `normalize_op_requires_entry`, so a clause arrives in `SortView` shape with
+/// its positionals already filled into named slots — the one shape
+/// `unwrap_spec_view_value` decodes into bindings. A BARE application decodes as "no
+/// bindings", which cost this ticket its first cut: an op-level clause was read as
+/// binding nothing and `operation ty[T]() -> Type requires TypeValue[T = T]` was refused
+/// with its own clause written two columns away.
+///
+/// `find_map` over the bindings rather than a lookup of the `T` key, because `TypeValue`
+/// has exactly ONE type parameter, so there is only ever one binding to test.
+fn type_value_clause_param(kb: &KnowledgeBase, entry: &RequiresEntry) -> Option<VarId> {
+    let tv = type_value_spec_sym(kb)?;
+    if kb.canonical_sort_sym(entry.required_sort) != kb.canonical_sort_sym(tv) {
+        return None;
     }
-    // READ OFF THE NORMALIZED CHAIN, which is what `dep` comes from: `op_dict_entries`
-    // runs `normalize_op_requires_entry`, so an op-level clause reaches here in
-    // `SortView` shape with its positionals already filled into named slots — the one
-    // shape `unwrap_spec_view_value` decodes into bindings. (A BARE application would
-    // decode as "no bindings", which is the trap `type_value_backed_params` documents at
-    // length and which cost this ticket its first cut.) If that normalization ever
-    // stopped happening this would answer `false` and the call would go back to being a
-    // silent absence — it fails OPEN, to today's behaviour, rather than refusing a
-    // program it cannot read.
+    let (_, bindings) = unwrap_spec_view_value(kb, &entry.spec)?;
+    bindings
+        .iter()
+        .find_map(|(_, v)| clause_named_type_param(kb, *v))
+}
+
+/// WI-20260919-N31XX (proposal 065 §1) — the FRAME SLOT that backs a value read of the
+/// rigid `param`, as an index into the enclosing operation's composed dictionary chain.
+///
+/// WHY A DIRECT CHAIN LOOKUP RATHER THAN THE DISPATCH MACHINERY. `type_value()` is
+/// NULLARY (WI-20260919-HXGXF's fact 1): no argument and no receiver names the type, so
+/// `check_apply_iter`'s ordinary route has nothing to pin `TypeValue.T` with and cannot
+/// tell two clauses apart — `twoReq[P, Q] requires TypeValue[T = P], TypeValue[T = Q]`
+/// offers two slots and the call site says nothing about which. 065 §8's own spelling
+/// `type_value[T = B]()` would say it, but that binds the SORT's parameter through a
+/// callee bracket, which is refused today. Here the answer is not inferred at all: the
+/// READ names its parameter, so the slot is a lookup, and the ambiguity never arises.
+/// Driven by `a_lowered_read_answers_through_its_slot`'s two-parameter row, which a
+/// lookup that ignored the parameter would answer `Pair2(A: Int64, B: Int64)`.
+///
+/// THE SAME LIST THE RUNTIME READS. `start_apply_deferred` resolves a slot through
+/// `op_dict_entries(kb, enclosing_op).names(kb)`, which is this chain; indexing anything
+/// else would name a different dictionary at run time than the one chosen here.
+fn type_value_slot(chain: &DictChain, kb: &KnowledgeBase, param: VarId) -> Option<usize> {
+    chain
+        .entries()
+        .iter()
+        .position(|e| type_value_clause_param(kb, e) == Some(param))
+}
+
+/// WI-20260919-N31XX (proposal 065 §1) — LOWER a bare value-position read of a rigid to
+/// `TypeValue[T = B].type_value()`, dispatched through the frame slot that backs it.
+///
+/// `None` when the read cannot be lowered, and every `None` is a case the caller leaves
+/// as the `Expr::TypeValue` it was: `head` is not a type parameter (a genuine nominal
+/// sort — `Cell[V = Int64]` reads no rigid), there is no enclosing operation, no slot
+/// backs this parameter, or the slot is in the sort half (below). A read left un-lowered
+/// and unbacked is refused after typing by the surviving-read pass, so a `None` is never
+/// silent.
+///
+/// THE ANSWER IS A DICTIONARY WALK, which is why no per-carrier member is needed.
+/// `TypeValue.type_value` is body-less and backed by a BUILTIN on the spec op
+/// (`BuiltinTag::TypeValueOf`, WI-20260919-HXGXF), and `Dictionary(sub… , impl: S)` names
+/// the head in `impl` — so the evidence that selected the call IS the type, GHC's
+/// `Typeable`. `start_apply_deferred` reads the slot, `expand_dispatching_dict` builds
+/// `__req_self`, `dispatch_resolved_operation` parks it in `builtin_dispatch_dict`, and
+/// `type_value_of_self` turns it into the `Type` term. Every one of those already exists;
+/// this is the one missing leaf.
+///
+/// `enclosing_op` IS `Some`, ALWAYS, and it must be: `start_apply_deferred` picks the
+/// chain to index by that field — `op_dict_entries(op)` when it is `Some`, the sort-only
+/// `provider_dict_entries` otherwise — and the slot is an index into the COMPOSED chain.
+///
+/// SYNTHESIZED, NOT REWRITTEN IN PLACE, so the original read keeps its span: the node is
+/// built `from` the read's occurrence, which puts a later diagnostic on the `B` the
+/// author wrote rather than on the operation.
+fn lower_rigid_read_to_slot(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    head: Symbol,
+) -> Option<Rc<NodeOccurrence>> {
+    let param = type_param_global_var(kb, head)?;
+    let enclosing_op = env.enclosing_op()?;
+    let chain = env.enclosing_frame_chain();
+    let slot = type_value_slot(chain, kb, param)?;
+    // ONLY AN OPERATION-LEVEL SLOT IS LOWERED, and the line is where the frame stops
+    // being guaranteed to carry the evidence rather than where it would be convenient.
     //
-    // `any` rather than a lookup of the `T` key because `TypeValue` has exactly ONE type
-    // parameter, so there is only ever one binding to test; the sole-parameter fact is
-    // itself checked where the rule's other reader depends on it.
-    unwrap_spec_view_value(kb, &dep.spec).is_some_and(|(_, bindings)| {
-        bindings
-            .iter()
-            .any(|(_, v)| clause_named_type_param(kb, *v).is_some())
-    })
+    // An OP-HALF slot is an INPUT the caller supplies at every call
+    // (`build_op_scoped_dicts` fills it on every route that reaches the operation), so a
+    // body may read it unconditionally. A SORT-HALF slot rides the INSTANCE, and the
+    // frame carries it only when the operation was entered THROUGH a dictionary. A spec
+    // op with a DEFAULT BODY is not — it is dispatched statically, and WI-20260919-HXGXF
+    // measured its body running with an empty requirements frame, the very fact that
+    // forced `TypeValue.type_value` itself to be body-less.
+    //
+    // MEASURED HERE TOO, which is what the line is drawn from rather than reasoned into:
+    // lowering the sort half as well took five `wi_r541x_body_read_of_type_param_test`
+    // rows to `Internal("DeferToRequirement: requirement param `__req_typevalue` not
+    // bound in caller frame (running `TypeTerm.valueOf` … frame binds [])")` — working
+    // programs dying, not a diagnostic. `TypeTerm.valueOf` and `Err2.tagOf` are both
+    // defaulted members reached receiver-less.
+    //
+    // WHAT IT COSTS, stated because it is a real capability left on the table: the same
+    // run showed the sort half WORKS wherever dispatch does reach the slot — R541X's two
+    // (C) rows, a PROVIDER's and a WITNESS's own parameter entered through a requirement
+    // slot, answered `Box(V: Boom)` and `Crate(W: Boom)` instead of their located fault.
+    // That is 065 §4 / WI-20260919-891QP closing for free, and this gate holds it back.
+    // Lifting it needs a statically-dispatched defaulted member to carry its dictionary,
+    // which is WI-20260919-H20YY. Until then 065 §1's "the channel stops being consulted"
+    // is true of op-level reads only — which is what §1's own "once every such read is
+    // backed by a slot" makes conditional.
+    if slot < chain.sort_len() {
+        return None;
+    }
+    let resolved_spec = chain.entries()[slot].clone();
+    let spec_op_sym = kb.try_resolve_symbol("anthill.reflect.TypeValue.type_value")?;
+    // Derived, not re-spelled: `kb.intern(short_name_of(&op_qn))` is what every other
+    // producer of this field does, and a literal would be a second place the member's
+    // name is written.
+    let op_qn = kb.qualified_name_of(spec_op_sym).to_owned();
+    let op_short_sym = kb.intern(short_name_of(&op_qn));
+    let pass = super::simp_rewrite::simp_pass(kb);
+    let node = NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            recv_type: None,
+            functor: spec_op_sym,
+            pos_args: Vec::new(),
+            named_args: Vec::new(),
+            type_args: Vec::new(),
+        },
+        Rc::clone(occ),
+        pass,
+        occ.owner,
+    );
+    let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
+    node.set_inferred_type(Value::term(type_ty));
+    classify(
+        kb,
+        &node,
+        CallClass::DeferToRequirement {
+            spec_op_sym,
+            op_short_sym,
+            resolved_spec,
+            slot,
+            // NO PROJECTION. `proj_path` descends INTO a slot's requirement tree for a
+            // requirement reached through another; the slot found here IS the
+            // `TypeValue` clause, at the top of its own entry.
+            proj_path: SmallVec::new(),
+            enclosing_sort: env.enclosing_sort(),
+            enclosing_op: Some(enclosing_op),
+        },
+    );
+    Some(node)
 }
 
 fn type_value_backed_params(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     op_sym: Symbol,
-    parent_sym: Option<Symbol>,
 ) -> HashSet<VarId> {
-    let mut backed = HashSet::new();
-    let Some(spec) = type_value_spec_sym(kb) else {
-        // A KB loaded without the reflect stdlib has no `TypeValue` to require, so it
-        // has no reads to admit either — and with no spec there is no derivation and no
-        // slot, so this is the empty answer and not a swallowed failure.
-        return backed;
-    };
-    let canon = kb.canonical_sort_sym(spec);
-    // `TypeValue`'s SOLE parameter, read off the DECLARATION rather than spelled `"T"`
-    // here. The literal would be a second place the spec's parameter name is written, and
-    // renaming it there would leave this matching nothing — which admits no clause at all
-    // and refuses every read in the program. Reading the declaration makes that
-    // impossible; a spec with no parameter (or more than one) is not `TypeValue`'s shape
-    // and admits nothing, which is the fail-closed direction.
-    let params = kb.type_params_of_sort(canon);
-    let [param_name] = params.as_slice() else {
-        return backed;
-    };
-    let sort_view = kb.try_resolve_symbol("anthill.reflect.SortView");
-    let entries = op_requires_entries(kb, op_sym)
-        .into_iter()
-        .chain(parent_sym.into_iter().flat_map(|p| direct_requires(kb, p)));
-    for entry in entries {
-        if kb.canonical_sort_sym(entry.required_sort) != canon {
-            continue;
-        }
-        // THE TWO PRODUCERS STORE TWO SHAPES, and this reads both through the ONE face
-        // they share. A sort-level clause arrives as `SortView(TypeValue, T = …)`; an
-        // op-level one arrives as the BARE APPLICATION the author wrote
-        // (`TypeValue[T = B]`), because `push_op_requires_clause_term` stores it
-        // verbatim. `unwrap_spec_view_value` cannot serve both — for a bare application
-        // it answers `(functor, NO bindings)`, which is exactly what this function must
-        // not read as "binds nothing"; MEASURED, that is why the first cut admitted no
-        // op-level clause at all and refused `operation ty[T]() -> Type requires
-        // TypeValue[T = T]` with its own clause written two columns away.
-        // `named_keys`/`named_arg` are the same in both shapes, so they are the face;
-        // `normalize_op_requires_entry` is the other way to reconcile them and is not
-        // taken here because it wants `&mut KnowledgeBase` to allocate a normalized
-        // term this pass has no use for.
-        let is_sort_view = matches!(
-            entry.spec.head(kb),
-            ViewHead::Functor { functor: Some(f), .. }
-                if sort_view.is_some_and(|sv| same_sort_canonical(kb, f, sv))
-        );
-        let mut bound: Option<TermId> = None;
-        // Matched by SHORT name because the two loaders key a clause's bindings
-        // differently — the sort path re-keys by the required spec's own parameter
-        // symbols, the op path by the clause's — which is the same asymmetry
-        // `direct_requires`' conversion half matches on.
-        let named = entry
-            .spec
-            .named_keys(kb)
-            .into_iter()
-            .find(|k| short_name_of(kb.local_name_of(*k)) == param_name.as_str());
-        if let Some(key) = named {
-            bound = entry.spec.named_arg(kb, key).and_then(|it| it.as_term_id());
-        } else if !is_sort_view {
-            // THE POSITIONAL SPELLING, `requires TypeValue[B]`, which is the stdlib's own
-            // (`requires Eq[T]`) and so is the one an author is most likely to reach for.
-            //
-            // ONLY WHEN NO NAMED BINDING WAS WRITTEN AT ALL, which is why this is an
-            // `else` and not an `if bound.is_none()`. A named binding the view cannot
-            // hand back as a `TermId` — a denoted `Value::Node` carrier (WI-662) — leaves
-            // `bound` `None` having been written, and falling through would then read
-            // positional 0 of a clause whose author wrote a named one. On the
-            // bare-application shape positional 0 is the FIRST TYPE ARGUMENT, so that
-            // would admit an unrelated parameter as the one this body may read: a silent
-            // wrong ACCEPT, which is the one failure direction this rule must not have.
-            //
-            // AND ONLY ON THE BARE-APPLICATION SHAPE: a `SortView`'s positional 0 is the
-            // BASE SORT, so reading it would admit `TypeValue` itself as a readable
-            // parameter — the same wrong accept by the other route.
-            bound = entry.spec.pos_arg(kb, 0).and_then(|it| it.as_term_id());
-        }
-        // BY LOGICAL VARIABLE, not by symbol, and that is [`clause_named_type_param`]'s
-        // whole subject: a clause names a type parameter in TWO spellings — a `Ref` /
-        // `Ident` naming the op-scoped symbol, and a bare `Var::Global`, which is what a
-        // clause that went through a substitution carries. Comparing symbols would admit
-        // the first and silently miss the second; the parameter's canonical variable is
-        // the one identity both spellings agree on, and it is what the READ side is
-        // resolved to as well.
-        if let Some(vid) = bound.and_then(|t| clause_named_type_param(kb, t)) {
-            backed.insert(vid);
-        }
-    }
-    backed
+    op_dict_entries(kb, op_sym)
+        .entries()
+        .iter()
+        .filter_map(|e| type_value_clause_param(kb, e))
+        .collect()
 }
 
 /// WI-20260919-N31XX — every VALUE-position read of a rigid type in this body, as
@@ -73527,7 +73626,7 @@ fn check_operation_bodies(
                 // times.
                 let reads = rigid_value_reads(kb, &result.node);
                 if !reads.is_empty() {
-                    let backed = type_value_backed_params(kb, op.op_sym, op.parent_sym);
+                    let backed = type_value_backed_params(kb, op.op_sym);
                     if let Some((_, param, span)) =
                         reads.into_iter().find(|(vid, _, _)| !backed.contains(vid))
                     {

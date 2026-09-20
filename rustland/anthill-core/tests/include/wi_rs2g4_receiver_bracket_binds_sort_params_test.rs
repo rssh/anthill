@@ -543,6 +543,18 @@ fn the_wi708_operation_parameter_channel_is_unchanged() {
 /// verdict either way — `bound_names_a_determinate_type` refuses a bare `Ref` and a bare
 /// `Var` alike — so nothing downstream has to tell them apart to be correct, only to
 /// report well.
+///
+/// WI-20260919-N31XX — THE READ MOVED FROM AN OPERATION PARAMETER TO A SORT ONE, and the
+/// row measures what it always measured. Proposal 065's lowering turns a value read
+/// backed by an OP-LEVEL `requires TypeValue[…]` into a slot dispatch, and the evidence
+/// for `List[T = ?T]` cannot be built — `?T` is exactly the undetermined thing this row
+/// is about — so the free `tyb[U]()` spelling is now a LOAD refusal, correctly: reading a
+/// type the call only partially determines is not well-formed. A SORT-level clause is not
+/// lowered (see `lower_rigid_read_to_slot`'s gate), so `Holder[U]`'s member still reads
+/// `U` through the channel, which is the thing under test. MEASURED: with the read left
+/// on an operation parameter this row died
+/// `Internal("… `__req_typevalue` not bound in caller frame")` at run time — the slot was
+/// read and never filled — which is what forced the op half to be refused at load.
 #[test]
 fn a_bracket_value_with_an_unwritten_slot_arrives_expanded() {
     let src = r#"
@@ -553,9 +565,15 @@ namespace test.rs2g4x
     import anthill.prelude.Type
     entity box(v: T)
   end
-  operation tyb[U]() -> Type requires TypeValue[T = U] = Box[T = U]
-  operation w_bare() -> Type = tyb[U = List]()
-  operation w_written() -> Type = tyb[U = List[T = Int64]]()
+  sort Holder[U]
+    import anthill.prelude.Type
+    import anthill.reflect.{TypeValue}
+    requires TypeValue[T = U]
+    entity hold(u: U)
+    operation tyb() -> Type = Box[T = U]
+  end
+  operation w_bare() -> Type = Holder[U = List].tyb()
+  operation w_written() -> Type = Holder[U = List[T = Int64]].tyb()
 end
 "#;
     let mut interp = interp_for(src);

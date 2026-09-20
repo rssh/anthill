@@ -6019,7 +6019,18 @@ fn type_of_dictionary(
     let head = dict.impl_sort();
     let arity = dict.arity();
     if arity == 0 {
-        return Ok(interp.kb_mut().make_name_term_from_sym(head));
+        // `Ref(S)`, NOT `Fn { functor: S, no args }`, and the two are not
+        // interchangeable. WI-361's producer flip makes a bare sort the term `Ref(S)`
+        // itself ([`KnowledgeBase::make_sort_ref`]), which is what eval's own bare-head
+        // arm delivers and what a `fact Modifiable[T = Cell]` carries — an `Fn` head does
+        // NOT unify with it, the WI-206 lesson the `Expr::TypeValue` arm states at
+        // length. MEASURED by WI-20260919-N31XX's lowering: with `make_name_term_from_sym`
+        // here, a read lowered to this builtin answered `Fn(Int64)` where every
+        // pre-lowering row expected `Ref(Int64)`, and four rows across
+        // `wi708_body_type_arg_read_test` and `wi_bad3v_dot_type_arg_bracket_test` went
+        // red asking for "a sort ref binding". Invisible until the lowering landed,
+        // because `TermPrinter` renders both as `Int64`.
+        return Ok(interp.kb_mut().make_sort_ref(head));
     }
     // The head's own type parameters, in DECLARATION order — the order
     // `type_value_derive` emits the conditions in, so condition `i` is the evidence for

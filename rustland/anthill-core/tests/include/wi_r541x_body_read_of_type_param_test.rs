@@ -280,6 +280,14 @@ fn a_witnesss_own_param_is_a_located_fault_not_a_wrong_answer() {
 /// A fixture that STILL CANNOT BIND: two clauses over one spec, and no rule picks one, so
 /// (A)'s binder takes neither. The body read is refused, naming the parameter and the
 /// frame. Before (D): the silent `T`.
+///
+/// WI-20260919-N31XX — STILL A RUN-TIME FAULT, and that is the lowering's gate showing
+/// its shape. `TypeTerm.valueOf`'s read of `T` is backed by a SORT-level clause, which
+/// the lowering deliberately leaves on the channel (see `lower_rigid_read_to_slot`),
+/// because a defaulted member reached receiver-less is dispatched statically and its
+/// frame carries no dictionary. Lower it and this row goes red as a LOAD refusal instead
+/// — measured — which is where it will land once WI-20260919-H20YY makes that dispatch
+/// carry its evidence.
 #[test]
 fn two_clauses_over_one_spec_are_a_located_fault() {
     match eval("d1") {
