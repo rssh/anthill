@@ -25233,6 +25233,48 @@ fn build_op_scoped_dicts(
             rung_for_dep(kb, callee_op, dep.required_sort),
         );
         if projected.is_none() {
+            // WI-20260919-N31XX (proposal 065) — AN UNFILLED `TypeValue` SLOT IS NEVER
+            // BENIGN, which is what takes it out of the silent-absence rule below.
+            //
+            // That rule exists for a measured reason its own comment gives: 29 stdlib
+            // bodies declare a chain and NEVER READ IT, so a slot no dictionary could
+            // fill costs them nothing. `TypeValue` cannot be one of them.
+            // `type_value()` is NULLARY (WI-20260919-HXGXF's fact 1), so no argument and
+            // no receiver names the type and the DISPATCHING DICTIONARY is the only
+            // carrier of the answer — a body holding this evidence necessarily reads it
+            // through the slot, and an unfilled slot is therefore either an eval-time
+            // `Internal` death no handler can catch, or a clause that was pure noise.
+            //
+            // SO IT IS REFUSED AT THE CALL, where the information is: `mid[U](y: U) =
+            // tyOf(y)` forwards its own rigid into an operation that requires evidence
+            // about it, holding none and having declared none. That is 065's
+            // parametricity rule at the one site that can see both halves — the callee's
+            // demand and the caller's (empty) supply. Without it the rule covers the
+            // READ and not the FORWARD, and a signature could still quietly depend on a
+            // type it promises nothing about.
+            //
+            // RAISED, NOT PARKED, unlike the WI-1102 leg below: that one parks because
+            // whether the callee MISSES the slot lives in its body, which may not be
+            // typed yet. Here there is nothing to wait for — the answer cannot exist.
+            if type_value_forward_unsuppliable(kb, &dep) {
+                kb.unsuppliable_requirements.truncate(parked_mark);
+                return Err(Box::new(RequirementRefusal {
+                    dep_text: render_requires_entry(kb, &dep),
+                    unconstrained: Vec::new(),
+                    refused_covers: Vec::new(),
+                    construction: "its carrier is a type parameter, which has no derived \
+                                   `TypeValue` instance, and no `requires` of the CALLING \
+                                   operation names it either. `TypeValue` is answered only \
+                                   by the dispatching dictionary, so this slot cannot be \
+                                   left unfilled: declare the same `requires \
+                                   anthill.reflect.TypeValue[…]` on the caller so the \
+                                   evidence is passed in, or stop handing a type parameter \
+                                   to an operation that inspects it (proposal 065)"
+                        .to_owned(),
+                    pinned: None,
+                    unprovided: None,
+                }));
+            }
             if let Some(tie @ ResolutionResult::Ambiguous { .. }) = &s3_failure {
                 // ONLY the tie is raised HERE. A σ-refused cover and a `Cyclic` stay
                 // silent absences, which is what keeps the 29 stdlib bodies that have a
@@ -72628,13 +72670,78 @@ fn surviving_dot_apply(
 /// A CLAUSE OVER A CONCRETE TYPE (`requires TypeValue[T = Int64]`) CONTRIBUTES NOTHING
 /// here, and needs to: it backs no rigid read, because a concrete sort in value position
 /// is not a rigid read at all (065's "What the rule does NOT touch").
+/// WI-20260919-N31XX — `anthill.reflect.TypeValue`, or `None` in a KB loaded without
+/// the reflect stdlib. One resolution point, so the rule's three readers cannot disagree
+/// about which sort they are talking about.
+fn type_value_spec_sym(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol("anthill.reflect.TypeValue")
+}
+
+/// WI-20260919-N31XX (proposal 065) — is this UNSUPPLIABLE op-level dependency a
+/// `TypeValue` requirement over a bare TYPE PARAMETER? If so the call must be refused.
+///
+/// THE FORWARD HALF OF THE RULE. The read half ([`rigid_value_reads`]) refuses a body
+/// that inspects a rigid without saying so; it does not refuse a caller that hands its
+/// own rigid to an operation which does. `mid[U](y: U) = tyOf(y)` against
+/// `tyOf[B] requires TypeValue[T = B]` inspects nothing, holds no evidence and declares
+/// none — and with only the read half it loads, so a signature could still quietly
+/// depend on a type it promises nothing about.
+///
+/// WHY IT MAY BE RAISED WHERE THE SIBLING CASES ARE SILENT. [`build_op_scoped_dicts`]
+/// makes an unsuppliable op slot a SILENT ABSENCE deliberately — its own comment gives
+/// the measurement: 29 stdlib bodies declare a chain and NEVER READ IT, so a slot nothing
+/// fills costs them nothing. `TypeValue` can never be one of those. `type_value()` is
+/// NULLARY (WI-20260919-HXGXF's fact 1), so no argument and no receiver names the type
+/// and the dispatching dictionary is the ONLY carrier of the answer; a body holding this
+/// evidence necessarily reads it through the slot. An unfilled one is therefore either an
+/// eval-time `Internal` death no handler can catch, or a clause that was pure noise.
+///
+/// A BARE TYPE PARAMETER AND NOTHING ELSE, and that narrowness is MEASURED rather than
+/// cautious. A first cut fired on every unsuppliable `TypeValue` dep and took
+/// `wi_rs2g4_receiver_bracket_binds_sort_params_test::a_bracket_value_with_an_unwritten_slot_arrives_expanded`
+/// red: `tyb[U = List]()` binds `U` to a BARE parametric sort, which WI-20260911-RS2G4
+/// expands to `List[T = ?t]` with a fresh variable, so the conditional derived instance
+/// wants `TypeValue[T = ?t]` for a `?t` nothing determines. That carrier is a
+/// PARTIALLY-UNKNOWN TYPE, not a rigid a caller could have declared evidence for, and
+/// refusing it would reject a legitimate program over a variable the author never wrote.
+/// The distinction is exactly [`clause_named_type_param`]'s: `Ref(B)` / `Var` is a
+/// parameter, `Fn { functor: List, … }` is a type. Whether an unsuppliable slot over a
+/// partially-unknown carrier should also be refused is the LOWERING's question (065 §1),
+/// since it is the lowering that makes such a slot actually get read.
+fn type_value_forward_unsuppliable(kb: &KnowledgeBase, dep: &RequiresEntry) -> bool {
+    let Some(tv) = type_value_spec_sym(kb) else {
+        return false;
+    };
+    if kb.canonical_sort_sym(dep.required_sort) != kb.canonical_sort_sym(tv) {
+        return false;
+    }
+    // READ OFF THE NORMALIZED CHAIN, which is what `dep` comes from: `op_dict_entries`
+    // runs `normalize_op_requires_entry`, so an op-level clause reaches here in
+    // `SortView` shape with its positionals already filled into named slots — the one
+    // shape `unwrap_spec_view_value` decodes into bindings. (A BARE application would
+    // decode as "no bindings", which is the trap `type_value_backed_params` documents at
+    // length and which cost this ticket its first cut.) If that normalization ever
+    // stopped happening this would answer `false` and the call would go back to being a
+    // silent absence — it fails OPEN, to today's behaviour, rather than refusing a
+    // program it cannot read.
+    //
+    // `any` rather than a lookup of the `T` key because `TypeValue` has exactly ONE type
+    // parameter, so there is only ever one binding to test; the sole-parameter fact is
+    // itself checked where the rule's other reader depends on it.
+    unwrap_spec_view_value(kb, &dep.spec).is_some_and(|(_, bindings)| {
+        bindings
+            .iter()
+            .any(|(_, v)| clause_named_type_param(kb, *v).is_some())
+    })
+}
+
 fn type_value_backed_params(
     kb: &KnowledgeBase,
     op_sym: Symbol,
     parent_sym: Option<Symbol>,
 ) -> HashSet<VarId> {
     let mut backed = HashSet::new();
-    let Some(spec) = kb.try_resolve_symbol("anthill.reflect.TypeValue") else {
+    let Some(spec) = type_value_spec_sym(kb) else {
         // A KB loaded without the reflect stdlib has no `TypeValue` to require, so it
         // has no reads to admit either — and with no spec there is no derivation and no
         // slot, so this is the empty answer and not a swallowed failure.

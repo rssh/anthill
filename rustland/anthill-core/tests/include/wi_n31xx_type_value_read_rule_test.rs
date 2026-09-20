@@ -1,6 +1,13 @@
 //! WI-20260919-N31XX (proposal 065, "The rule") — A RIGID TYPE IS A VALUE ONLY WHERE A
 //! REQUIREMENT SAYS SO.
 //!
+//! TWO HALVES, and the second is not decoration. The READ half refuses
+//! `operation bad[B](x: B) -> Type = Cell[V = B]`, which inspects `B` without saying so.
+//! The FORWARD half refuses `mid[U](y: U) = tyOf(y)`, which inspects nothing but hands
+//! its own rigid to an operation that does, holding no evidence and having declared none.
+//! With only the first, a signature could still quietly depend on a type it promises
+//! nothing about — see [`a_middle_level_that_drops_the_clause_is_refused_at_the_call`].
+//!
 //! `operation bad[B](x: B) -> Type = Cell[V = B]` reads `B` in VALUE position. Under 065
 //! that is a LOAD error unless `TypeValue[T = B]` stands among the requirements in scope,
 //! and the refusal names the parameter, the read's line and column, and the clause to
@@ -30,6 +37,10 @@
 //!   wrote, not as a `SortView`, and `unwrap_spec_view_value` answers "no bindings" for
 //!   it — so `operation ty[T]() -> Type requires TypeValue[T = T]` was refused with its
 //!   own clause written two columns away.
+//! * **the FORWARD leg off** — the `TypeValue` arm in `build_op_scoped_dicts` removed,
+//!   so an unsuppliable op slot goes back to being a silent absence: **1 red**,
+//!   [`a_middle_level_that_drops_the_clause_is_refused_at_the_call`]. Its plain-spec
+//!   half stays green either way, which is what says the leg is narrow on purpose.
 //! * **the post-simp placement off** — the rule reading `op.body_node` (the tree the
 //!   typer was handed) instead of `result.node` (the tree it wrote back): **2 red** —
 //!   [`a_simp_expanded_type_position_is_not_a_value_read`] and, in the census file
@@ -142,28 +153,34 @@ end
     assert_eq!(eval_type(src, "test.n31xx.two.ask"), "Cell(V: Int64)");
 }
 
-/// …AND A MIDDLE LEVEL THAT DROPS THE CLAUSE STILL LOADS TODAY — pinned, not accepted.
+/// …AND A MIDDLE LEVEL THAT DROPS THE CLAUSE IS REFUSED AT THE CALL — the FORWARD half
+/// of the rule, which the read half above does not cover.
 ///
-/// `mid[U](y: U) = tyOf(y)` hands its own rigid to an operation that `requires
-/// TypeValue[T = B]`, without declaring the evidence itself. Under 065 that should be
-/// refused: `mid` cannot supply a dictionary it never received, so parametricity is only
-/// half enforced while this loads. It loads because the value read still goes through the
-/// frame TYPE-ARGUMENT CHANNEL (WI-272/708), which carries the caller's binding rather
-/// than a dictionary — so nothing at this call site needs evidence at all. Closing it is
-/// the LOWERING's job (065 §1): once a read IS a slot dispatch, `tyOf`'s body needs the
-/// dictionary and this call cannot fill it.
+/// `mid[U](y: U) = tyOf(y)` reads nothing; it hands its own rigid to an operation that
+/// `requires TypeValue[T = U]`, holding no evidence and having declared none. Without
+/// this the rule would cover the READ and not the FORWARD, and a signature could still
+/// quietly depend on a type it promises nothing about — parametricity half enforced.
 ///
-/// THE SECOND HALF IS WHY THIS IS NOT A `TypeValue` DEFECT, and it is the reason the row
-/// pins rather than refuses: the SAME shape over a plain user spec — `requires TT[T = B]`,
-/// nothing to do with 065 — loads equally clean. MEASURED here, both sides, in one run.
-/// So what this records is a PRE-EXISTING gap in operation-level requirement propagation
-/// through a generic caller, which this ticket neither opens nor closes.
+/// WHY IT IS REFUSED RATHER THAN LEFT AS AN UNFILLED SLOT. `build_op_scoped_dicts` makes
+/// an unsuppliable op slot a SILENT ABSENCE on purpose, and its own comment gives the
+/// measured reason: 29 stdlib bodies declare a chain and never read it, so a slot nothing
+/// fills costs them nothing. `TypeValue` can never be one of those — `type_value()` is
+/// NULLARY, so no argument and no receiver names the type and the dispatching dictionary
+/// is the ONLY carrier of the answer (WI-20260919-HXGXF's fact 1). A body holding this
+/// evidence necessarily reads it through the slot, so an unfilled one is either an
+/// eval-time `Internal` death no handler can catch or a clause that was pure noise.
 ///
-/// It is a PIN and flips POSITIVE when the lowering lands; a reviewer who finds it red
-/// should check that the other half went red with it, since only a TypeValue-specific
-/// refusal would be this ticket's doing.
+/// AT THE CALL, NOT AT THE DECLARATION: `mid`'s signature is legal on its own, and it is
+/// only this call that needs what `mid` has not got. The refusal is located there.
+///
+/// THE SECOND HALF IS THE CONTROL AND IT STILL LOADS. The same forward shape over a
+/// plain user spec — `requires TT[T = B]`, nothing to do with 065 — is accepted, because
+/// this leg is deliberately narrow: it says `TypeValue` evidence is never benignly
+/// absent, NOT that operation-level requirement propagation is now checked in general.
+/// That wider gap is real and pre-existing, and is not this ticket's to close; without
+/// this row a later reader would have no way to tell the two apart.
 #[test]
-fn a_middle_level_that_drops_the_clause_still_loads_today() {
+fn a_middle_level_that_drops_the_clause_is_refused_at_the_call() {
     let type_value = load_errors(
         r#"
 namespace test.n31xx.twobad
@@ -177,6 +194,24 @@ namespace test.n31xx.twobad
 end
 "#,
     );
+    assert_eq!(type_value.len(), 1, "exactly one refusal, got {type_value:#?}");
+    let e = &type_value[0];
+    for want in [
+        "anthill.reflect.TypeValue",
+        "cannot be supplied for call to",
+        "test.n31xx.twobad.tyOf",
+        "only by the dispatching dictionary",
+    ] {
+        assert!(e.contains(want), "expected {want:?} in the refusal; got {e:?}");
+    }
+    // LOCATED AT THE CALL inside `mid` (the fixture's seventh line), not at `tyOf`'s
+    // declaration on the sixth: `tyOf` is well-formed, and the caller is what is wrong.
+    assert!(
+        e.starts_with("7:"),
+        "the refusal belongs at the forwarding call; got {e:?}"
+    );
+
+    // THE CONTROL — the same shape over a plain spec, still accepted. See the doc above.
     let plain_spec = load_errors(
         r#"
 namespace test.n31xx.othersp
@@ -195,15 +230,10 @@ end
 "#,
     );
     assert_eq!(
-        type_value,
-        Vec::<String>::new(),
-        "today an undeclared forward of `TypeValue` loads; the LOWERING is what refuses it"
-    );
-    assert_eq!(
         plain_spec,
         Vec::<String>::new(),
-        "and so does the same shape over a plain spec — so the gap is requirement \
-         propagation in general, not anything this ticket introduced"
+        "this leg is narrow by design: it does not close operation-level requirement \
+         propagation in general, and that wider gap is pre-existing"
     );
 }
 
