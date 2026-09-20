@@ -1626,13 +1626,14 @@ object Bootstrap:
     *
     * ITS OWN NAME SHADOWS THE ENUM'S inside the enum body, and two anthill names that
     * §5 converts to one is a shape this backend already knows it must handle
-    * ([[refuseColliding]] for the file path): `sortedset.anthill` declares `sort
-    * SortedSet` with the constructor `sorted_set`, which are two symbols in anthill —
-    * so [[shapeOf]]'s eponymy test, keyed on the ANTHILL name deliberately, correctly
-    * classifies the sort as a SUM — and `Names.scalaTypeName` sends both to
-    * `SortedSet`. MEASURED under dotc: `case SortedSet[…](…) extends SortedSet[T, O]`
-    * is `Cyclic inheritance: class SortedSet extends itself`, followed by `enum case
-    * does not extend its enum class`.
+    * ([[refuseColliding]] for the file path): a sort `Box` with a constructor `box`
+    * is two symbols in anthill — so [[shapeOf]]'s eponymy test, keyed on the ANTHILL
+    * name deliberately, correctly classifies the sort as a SUM — and
+    * `Names.scalaTypeName` sends both to `Box`. MEASURED under dotc: `case Box[…](…)
+    * extends Box[T]` is `Cyclic inheritance: class Box extends itself`, followed by
+    * `enum case does not extend its enum class`. (`sortedset.anthill` was the corpus's
+    * driver until WI-456 made its constructors `tip` / `bin`, which shadow nothing;
+    * the driver is BootstrapTest's own `anthill.shadow.Box` fixture now.)
     *
     * QUALIFYING THE PARENT is the whole fix, and it is available because every
     * emitted declaration is in a named package. Only the REPARAMETERIZED form needs

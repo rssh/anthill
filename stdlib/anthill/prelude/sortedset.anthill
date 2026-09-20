@@ -1,7 +1,7 @@
 -- SortedSet: a set kept in the order of a comparator the TYPE names (proposal 058
 -- §5.3, WI-844). The prelude's `Set` is an unordered spec whose equality is
--- membership; this is a concrete, list-backed structure whose element order is part
--- of what it IS — which is why its ordering slot is NAMED.
+-- membership; this is a concrete structure — a weight-balanced tree — whose element
+-- order is part of what it IS, which is why its ordering slot is NAMED.
 --
 -- ── WHAT THE NAME BUYS (058 §4.7) ────────────────────────────────────────────────
 --
@@ -78,33 +78,39 @@
 --
 -- ── EQUALITY ─────────────────────────────────────────────────────────────────────
 --
--- Equality is STRUCTURAL, and how exact that is depends on `O` (WI-1109).
+-- Equality is EXTENSIONAL (WI-456): `provides PartialEq` / `Eq` at `SortedSet[T = T, O =
+-- O]`, and `eq` compares the two sets' elements IN ORDER through the ELEMENT's own
+-- `PartialEq` — so a set whose elements are themselves compared semantically compares
+-- that way all the way down. STRUCTURE IS NOT THE ANSWER and `===` must not be used for
+-- it: a weight-balanced tree's SHAPE depends on the order its elements arrived in, so
+-- `{1, 2, 3}` built two ways is one set in two shapes. (The list this replaced was
+-- canonical under an `Ord`, and structural equality was right for it; that is the one
+-- property the tree gives up, and providing `eq` is what pays for it.)
 --
--- WHERE `O`'s KERNEL IS `Eq` — an `Ord` comparator — the sorted item list is canonical
--- and two sets with the same members ARE the same term. (`Set` needs its own extensional
--- `eq` precisely because its `insert` algebra is not canonical.)
+-- How much that equality can see depends on `O` (WI-1109).
+--
+-- WHERE `O`'s KERNEL IS `Eq` — an `Ord` comparator — equal in order is equal as sets of
+-- ELEMENTS: two sets with the same members are `=`.
 --
 -- WHERE IT IS COARSER — any `WeakOrd` that is not an `Ord`, which is what the slot
 -- permits and what a key-based comparator is — THIS SET STORES EQUIVALENCE CLASSES, and
--- one member of each class SURVIVES. Which one is observable, so canonicity does not
--- hold: MEASURED under a by-length comparator, `{"zz","aa","b"}` has TWO elements, and
+-- one member of each class SURVIVES. Which one is observable: MEASURED under a
+-- by-length comparator, `{"zz","aa","b"}` has TWO elements, and
 --
 --     union({"zz"}, {"aa"}) = ["zz"]     union({"aa"}, {"zz"}) = ["aa"]
 --
--- — same members, different terms. THE RULE, and it is contract rather than discovery:
--- `insert` keeps the INCUMBENT and `union` keeps the LEFT operand's representative, so
--- `union` is NOT commutative under a coarse kernel. A consumer that needs a set of
--- ELEMENTS rather than of classes writes `requires O: Ord[T]` and gets it checked; one
--- that compares two sorted sets structurally must not do so across a coarse `O`.
+-- — and `eq` sees the survivor, so those two are NOT `=`. THE RULE, and it is contract
+-- rather than discovery: `insert` keeps the INCUMBENT and `union` keeps the LEFT
+-- operand's representative, so `union` is NOT commutative under a coarse kernel. A
+-- consumer that needs a set of ELEMENTS rather than of classes writes `requires O:
+-- Ord[T]` and gets it checked.
 --
--- No `provides Eq` is declared, so nothing is claimed about comparing across two `O`s —
--- they are different types.
+-- Nothing is claimed about comparing across two `O`s — they are different types.
 --
 -- ── AND NO `provides Set` EITHER, deliberately ───────────────────────────────────
 --
--- `Set` (`set.anthill`) demands `member` / `subset` / `intersection` / `difference` and
--- an EXTENSIONAL `eq`, which is the equality this type deliberately does not have. The
--- `empty`/`insert`/`union` overlap is surface.
+-- `Set` (`set.anthill`) demands `member` / `subset` / `intersection` / `difference`,
+-- which this type does not have. The `empty`/`insert`/`union`/`eq` overlap is surface.
 --
 -- ── THE GENERIC COLLECTION SURFACE (WI-456) ──────────────────────────────────────
 --
@@ -123,16 +129,28 @@
 -- `collect` / `iterator` by VALUE, and a value carries no `O`. Neither reads it, so they
 -- run; an operation here that compares must stay reachable only through a TYPED call.
 enum anthill.prelude.SortedSet
-  import anthill.prelude.{WeakOrd, List, Stream, Iterable, FiniteCollection, PersistentCollection}
+  import anthill.prelude.{WeakOrd, PartialEq, Eq, List, Int64, Bool, Stream, Iterable,
+                          FiniteCollection, PersistentCollection}
   import anthill.prelude.List.{nil, cons}
-  import anthill.prelude.PartialOrd.{lt, gt}
+  import anthill.prelude.PartialOrd.{lt, gt, lte}
+  import anthill.prelude.Additive.{add}
+  import anthill.prelude.Multiplicative.{mul}
 
   sort T = ?                                   -- element type
   requires O: WeakOrd[T]                       -- NAMED ⇒ a parameter of the type
 
   -- Walked in ascending order under `O`: the materialized item list is the Stream.
+  -- `iterator` / `collect` MATERIALIZE, where the list this replaced returned its stored
+  -- list: O(n) and n conses, paid by every spec default that reads through them. The two
+  -- questions a tree answers without walking — `size` and `isEmpty` — are overridden
+  -- below (WI-444) so those defaults do not pay it.
   provides Iterable[C = SortedSet[T = T, O = O], Element = T, E = {}]
   operation iterator(s: SortedSet[T = T, O = O]) -> Stream[T = T, E = {}] = toList(s)
+
+  operation isEmpty(s: SortedSet[T = T, O = O]) -> Bool =
+    match s
+      case tip() -> true
+      case bin(_, _, _, _) -> false
 
   provides FiniteCollection[C = SortedSet[T = T, O = O], Element = T, E = {}]
   operation collect(s: SortedSet[T = T, O = O]) -> List[T = T] = toList(s)
@@ -140,64 +158,196 @@ enum anthill.prelude.SortedSet
   -- `empty` / `insert` below are the provision's operations.
   provides PersistentCollection[C = SortedSet[T = T, O = O], Element = T]
 
-  -- The items, ascending under `O` and duplicate-free. The invariant is maintained by
-  -- `insert`, which is the only producer; the constructor is not meant to be applied
-  -- directly with an arbitrary list.
-  entity sorted_set(items: List[T = T])
+  -- EXTENSIONAL, because the tree is not canonical — see EQUALITY above.
+  --
+  -- WRITTEN IN THE PROVISION (proposal 066), exactly as `Pair`'s `eq` is: `eq` and its
+  -- worker read `PartialEq[T]`, so they sit in the block whose condition supplies it. An
+  -- operation written outside every block sees no condition at all, and would have taken
+  -- the ELEMENT's `PartialEq` through the ORDERING's chain instead — `requires O:
+  -- WeakOrd[T]` carries `Eq[T]` (ordered.anthill), so the condition below cannot fail and
+  -- the misplacement would have resolved silently.
+  --
+  -- SIZE FIRST, which is what makes an unequal comparison free: the trees carry their
+  -- counts, so two sets of different size are decided without materializing either.
+  provides PartialEq[T = SortedSet[T = T, O = O]] :- PartialEq[T] where
+    operation eq(a: SortedSet[T = T, O = O], b: SortedSet[T = T, O = O]) -> Bool =
+      if PartialEq.eq(size(a), size(b)) then sameElements(toList(a), toList(b)) else false
 
-  operation empty() -> SortedSet[T = T, O = O] = sorted_set(items: nil())
+  end
 
+  provides Eq[T = SortedSet[T = T, O = O]] :- Eq[T]
+
+  -- A WEIGHT-BALANCED tree (Adams; the `Data.Set` parameters δ = 3, ratio = 2, which
+  -- Hirai & Yamamoto proved are the one integer pair that keeps this `balance` sound).
+  -- `n` is the node's element count, so `size` is O(1) and every rebalancing decision
+  -- reads it. Ascending under `O` in order, no two elements in one class — the invariant
+  -- every producer below maintains.
+  --
+  -- THE CONSTRUCTORS ARE REACHABLE AND `n` IS NOT DERIVED, which is a hole a comment
+  -- cannot close: §8.6 leaks an enum's constructors, so `bin(n: 99, elem: 1, left: tip(),
+  -- right: tip())` is writable from outside and makes `size` lie and every balance
+  -- decision read a false weight. The list this replaced was forgeable the same way (an
+  -- unsorted `items`), and deriving `n` instead of storing it would cost `size` and each
+  -- balance test their O(1). What would actually close it is a visibility on the
+  -- constructors — `internal entity` — which the language does not have today.
+  entity tip
+  entity bin(n: Int64, elem: T, left: SortedSet[T = T, O = O], right: SortedSet[T = T, O = O])
+
+  operation empty() -> SortedSet[T = T, O = O] = tip()
+
+  operation size(s: SortedSet[T = T, O = O]) -> Int64 =
+    match s
+      case tip() -> 0
+      case bin(n, _, _, _) -> n
+
+  -- O(log n). A new element in an existing CLASS under `O` leaves the INCUMBENT (see
+  -- EQUALITY above); the set's members are unchanged, though the spine back to the root
+  -- is rebuilt — `Data.Set` skips that with a pointer-equality check this has no way to
+  -- write.
   operation insert(s: SortedSet[T = T, O = O], x: T) -> SortedSet[T = T, O = O] =
     match s
-      case sorted_set(items) -> sorted_set(items: insertSorted(items, x))
+      case tip() -> node(x, tip(), tip())
+      case bin(_, y, l, r) ->
+        let c = WeakOrd.compare(x, y)
+        if lt(c, 0) then balance(y, insert(l, x), r)
+        else if gt(c, 0) then balance(y, l, insert(r, x))
+        else s
 
-  -- A single-pass MERGE, not a fold of `insert`: both operands already satisfy the
-  -- entity's invariant (ascending under `O`, duplicate-free), which is exactly the
-  -- precondition a merge needs — so re-searching from the head per element of `b` would
-  -- discard information the types already guarantee, at O(|a|·|b|) instead of
-  -- O(|a|+|b|). Read through `toList` rather than a second `case sorted_set(items)`:
-  -- the entity has one accessor.
+  -- Divide and conquer (Adams' `union`): split `b` around `a`'s root and rejoin. `a`'s
+  -- root survives and `b`'s element in its class is dropped by the split, which is what
+  -- makes `union` LEFT-BIASED (see EQUALITY above). O(m·log(n/m + 1)) for m ≤ n, TIMES A
+  -- CONSTANT 2 this spelling pays and Adams' does not: `below` and `above` are two walks
+  -- of `b` where one `split` returning both halves would do. Closing it wants a `Pair`
+  -- of sets threaded through the recursion, which is a change to make with its own
+  -- measurement rather than inside this one.
   operation union(a: SortedSet[T = T, O = O],
                   b: SortedSet[T = T, O = O]) -> SortedSet[T = T, O = O] =
-    sorted_set(items: merge(toList(a), toList(b)))
+    match a
+      case tip() -> b
+      case bin(_, x, l, r) ->
+        match b
+          case tip() -> a
+          case bin(_, _, _, _) -> link(x, union(l, below(b, x)), union(r, above(b, x)))
 
-  operation toList(s: SortedSet[T = T, O = O]) -> List[T = T] =
-    match s
-      case sorted_set(items) -> items
+  operation toList(s: SortedSet[T = T, O = O]) -> List[T = T] = toListOnto(s, nil())
 
-  -- The two recursion carriers. Members rather than locals because Anthill has no
-  -- local recursive binding, and `internal` because they are the implementation and not
-  -- the interface — the modifier `list.anthill`'s own workers (`reverseOnto`,
-  -- `mapElemsOnto`) carry for the same reason. Hiding them is not cosmetic:
-  -- both take a bare `List`, so nothing in their signatures binds `O`, and an outside
-  -- caller would get either an under-determined refusal or the carrier's own provider —
-  -- neither of which respects the set's ordering. Called from WITHIN the sort, both
-  -- inherit the enclosing frame's `O` dictionary.
+  -- ── the implementation ──────────────────────────────────────────────────────────
   --
-  -- Both READ the order through `WeakOrd.compare`, which resolves via slot `O` — the
-  -- one the construction site filled. Two sets built with different comparators run
-  -- different code here, out of one body (058 §4.6).
-  internal operation insertSorted(l: List[T = T], x: T) -> List[T = T] =
-    match l
-      case nil() -> cons(head: x, tail: nil())
-      case cons(h, t) ->
-        let c = WeakOrd.compare(x, h)
-        if lt(c, 0) then cons(head: x, tail: cons(head: h, tail: t))
-        else if gt(c, 0) then cons(head: h, tail: insertSorted(t, x))
-        else cons(head: h, tail: t)          -- same CLASS under `O`: the incumbent
-                                             -- stays (see EQUALITY above)
+  -- Members rather than locals because Anthill has no local recursive binding, and
+  -- `internal` because they are the implementation and not the interface — the modifier
+  -- `list.anthill`'s own workers (`reverseOnto`, `mapElemsOnto`) carry for the same
+  -- reason. Every one takes a `SortedSet[T = T, O = O]` or is called only from inside the
+  -- sort, so each inherits the enclosing frame's `O` dictionary.
 
-  -- Merge two ascending, duplicate-free lists into one. Equal heads collapse to a
-  -- single element — the set property, applied across the two operands.
-  internal operation merge(xs: List[T = T], ys: List[T = T]) -> List[T = T] =
+  -- `eq`'s worker, and it carries its own evidence: a `where` block holds the SPEC's own
+  -- members (proposal 066), and `sameElements` is none of `PartialEq`'s — so the element
+  -- comparator reaches it through an OP-SCOPED `requires`, filled at the call `eq` makes
+  -- from that provision's condition.
+  --
+  -- Equal LENGTH by `eq`'s size guard, so running out of `xs` means running out of both.
+  internal operation sameElements(xs: List[T = T], ys: List[T = T]) -> Bool
+      requires PartialEq[T] =
     match xs
-      case nil() -> ys
+      case nil() -> true
       case cons(x, xt) ->
         match ys
-          case nil() -> cons(head: x, tail: xt)
-          case cons(y, yt) ->
-            let c = WeakOrd.compare(x, y)
-            if lt(c, 0) then cons(head: x, tail: merge(xt, cons(head: y, tail: yt)))
-            else if gt(c, 0) then cons(head: y, tail: merge(cons(head: x, tail: xt), yt))
-            else cons(head: x, tail: merge(xt, yt))    -- equal: one element, not two
+          case nil() -> false
+          case cons(y, yt) -> if PartialEq.eq(x, y) then sameElements(xt, yt) else false
+
+  internal operation toListOnto(s: SortedSet[T = T, O = O], acc: List[T = T]) -> List[T = T] =
+    match s
+      case tip() -> acc
+      case bin(_, x, l, r) -> toListOnto(l, cons(head: x, tail: toListOnto(r, acc)))
+
+  -- A node over two subtrees already balanced against each other.
+  internal operation node(x: T, l: SortedSet[T = T, O = O],
+                          r: SortedSet[T = T, O = O]) -> SortedSet[T = T, O = O] =
+    bin(n: add(add(size(l), size(r)), 1), elem: x, left: l, right: r)
+
+  -- Restore the weight invariant after ONE side changed by one element (an `insert`), or
+  -- by `link`'s one step. δ = 3: a side more than three times the other rotates.
+  internal operation balance(x: T, l: SortedSet[T = T, O = O],
+                             r: SortedSet[T = T, O = O]) -> SortedSet[T = T, O = O] =
+    let sl = size(l)
+    let sr = size(r)
+    if lte(add(sl, sr), 1) then node(x, l, r)
+    else if gt(sr, mul(3, sl)) then rotateLeft(x, l, r)
+    else if gt(sl, mul(3, sr)) then rotateRight(x, l, r)
+    else node(x, l, r)
+
+  -- ratio = 2: the heavy side's INNER subtree decides between a single and a double
+  -- rotation. The `tip()` arms are unreachable — `balance` rotates toward a side only
+  -- when it outweighs the other more than threefold, so that side, and for the double
+  -- rotation its inner subtree, is non-empty. They are written as the single rotation of
+  -- the same node (the OUTER one rebuilds it unrotated), and a rotation moves nodes
+  -- without reordering them: reached anyway, they would change the tree's BALANCE and
+  -- never its contents or their order. That is why they are not a refusal — there is no
+  -- wrong answer to guard against, and raising here would put an `Error` row on every
+  -- operation of this sort.
+  internal operation rotateLeft(x: T, l: SortedSet[T = T, O = O],
+                                r: SortedSet[T = T, O = O]) -> SortedSet[T = T, O = O] =
+    match r
+      case tip() -> node(x, l, r)
+      case bin(_, y, ly, ry) ->
+        if lt(size(ly), mul(2, size(ry))) then node(y, node(x, l, ly), ry)
+        else
+          match ly
+            case tip() -> node(y, node(x, l, ly), ry)
+            case bin(_, z, lz, rz) -> node(z, node(x, l, lz), node(y, rz, ry))
+
+  internal operation rotateRight(x: T, l: SortedSet[T = T, O = O],
+                                 r: SortedSet[T = T, O = O]) -> SortedSet[T = T, O = O] =
+    match l
+      case tip() -> node(x, l, r)
+      case bin(_, y, ly, ry) ->
+        if lt(size(ry), mul(2, size(ly))) then node(y, ly, node(x, ry, r))
+        else
+          match ry
+            case tip() -> node(y, ly, node(x, ry, r))
+            case bin(_, z, lz, rz) -> node(z, node(y, ly, lz), node(x, rz, r))
+
+  -- Join `l < x < r` of ANY relative sizes: descend the heavier side until the two are
+  -- within δ of each other, then rebalance on the way back up.
+  internal operation link(x: T, l: SortedSet[T = T, O = O],
+                          r: SortedSet[T = T, O = O]) -> SortedSet[T = T, O = O] =
+    match l
+      case tip() -> insertMin(x, r)
+      case bin(sl, y, ly, ry) ->
+        match r
+          case tip() -> insertMax(x, l)
+          case bin(sr, z, lz, rz) ->
+            if lt(mul(3, sl), sr) then balance(z, link(x, l, lz), rz)
+            else if lt(mul(3, sr), sl) then balance(y, ly, link(x, ry, r))
+            else node(x, l, r)
+
+  -- `x` below every element of `s` / above every element — no comparison needed.
+  internal operation insertMin(x: T, s: SortedSet[T = T, O = O]) -> SortedSet[T = T, O = O] =
+    match s
+      case tip() -> node(x, tip(), tip())
+      case bin(_, y, l, r) -> balance(y, insertMin(x, l), r)
+
+  internal operation insertMax(x: T, s: SortedSet[T = T, O = O]) -> SortedSet[T = T, O = O] =
+    match s
+      case tip() -> node(x, tip(), tip())
+      case bin(_, y, l, r) -> balance(y, l, insertMax(x, r))
+
+  -- The elements of `s` strictly below / strictly above `x` under `O`. An element in
+  -- `x`'s own class is in NEITHER — which is how `union` drops `b`'s representative.
+  internal operation below(s: SortedSet[T = T, O = O], x: T) -> SortedSet[T = T, O = O] =
+    match s
+      case tip() -> s
+      case bin(_, y, l, r) ->
+        let c = WeakOrd.compare(x, y)
+        if lt(c, 0) then below(l, x)
+        else if gt(c, 0) then link(y, l, below(r, x))
+        else l
+
+  internal operation above(s: SortedSet[T = T, O = O], x: T) -> SortedSet[T = T, O = O] =
+    match s
+      case tip() -> s
+      case bin(_, y, l, r) ->
+        let c = WeakOrd.compare(x, y)
+        if lt(c, 0) then link(y, above(l, x), r)
+        else if gt(c, 0) then above(r, x)
+        else r
 end

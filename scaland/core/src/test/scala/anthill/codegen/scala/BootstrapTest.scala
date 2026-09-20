@@ -1287,7 +1287,7 @@ class BootstrapTest extends munit.FunSuite:
     // rather than a phantom: `O <: Ord[T]` is the requirement itself, stated where
     // §2.7a says an is-a claim belongs — on the type. It is also this data sort's
     // DISCHARGE (`checkDischarged` would otherwise refuse a requirement no
-    // constructor field carries, and `items: List[T]` does not carry `Ord[T]`).
+    // constructor field carries, and `bin`'s `elem: T` does not carry `Ord[T]`).
     val files = gen(parseStdlib("anthill/prelude/sortedset.anthill"))
     val src = files.find(_.relPath.endsWith("/SortedSet.scala"))
       .getOrElse(fail(s"expected SortedSet.scala in: ${files.map(_.relPath)}")).contents
@@ -1297,9 +1297,10 @@ class BootstrapTest extends munit.FunSuite:
       s"the witness must reach the body as a `using` parameter:\n$src")
     // EVERY operation, not the ones a reader guesses need it: a sort-level `requires`
     // "supplies every body's evidence" (kernel §8.7), so the signature that omitted it
-    // would be the one an implementor cannot write. `SortedSet` has eight — WI-456 added
-    // `iterator` and `collect` with its `Iterable` / `FiniteCollection` provisions.
-    assertEquals(src.linesIterator.count(_.contains("(using O)")), 8,
+    // would be the one an implementor cannot write. `SortedSet` has twenty: its surface
+    // (WI-456 added `iterator` / `collect` / `size` / `eq` with the collection and
+    // equality provisions) plus the weight-balanced tree's own workers.
+    assertEquals(src.linesIterator.count(_.contains("(using O)")), 20,
       s"every operation of the sort takes the dictionary:\n$src")
     // The parameter is a BINDER here and an ARGUMENT at every use, so the bound must
     // appear on the declaration and nowhere else — `SortedSet[T, O <: Ord[T]]` in a
@@ -1308,15 +1309,19 @@ class BootstrapTest extends munit.FunSuite:
       "_root_.anthill.prelude.List[T]"),
       s"a USE of the sort writes arguments, not bounds:\n$src")
 
-    // THE ENUM CASE'S PARENT IS QUALIFIED, and this is the one file in the corpus
-    // that shows why: anthill's `sort SortedSet` and its constructor `sorted_set` are
-    // two symbols — which is why `shapeOf`, keyed on the ANTHILL name, correctly says
-    // Sum — and §5 sends both to the Scala name `SortedSet`, where the case shadows
-    // the enum. MEASURED under dotc with the bare parent: `Cyclic inheritance: class
-    // SortedSet extends itself`, then `enum case does not extend its enum class`.
-    assert(src.contains("case SortedSet[T, O <: _root_.anthill.prelude.WeakOrd[T]]" +
-      "(items: _root_.anthill.prelude.List[T]) extends _root_.anthill.prelude.SortedSet[T, O]"),
-      s"a case that shadows its enum must name the parent qualified:\n$src")
+    // The tree's two cases, each naming the parent QUALIFIED. Since WI-456 they are
+    // `tip` / `bin`, which do not shadow the enum's own name — the shadowing driver
+    // this file used to be moved to `an enum case that shadows its enum names the
+    // parent qualified` below.
+    // The NULLARY case restates the binders and extends explicitly — Scala 3 infers a
+    // case's type arguments from its FIELDS, which `Tip` has none of — while `Bin`'s
+    // fields mention both and it needs neither.
+    assert(src.contains("case Tip[T, O <: _root_.anthill.prelude.WeakOrd[T]]() " +
+      "extends SortedSet[T, O]"),
+      s"the empty case must restate the binders and extend the enum:\n$src")
+    assert(src.contains("case Bin(n: _root_.scala.Long, elem: T, " +
+      "left: SortedSet[T, O], right: SortedSet[T, O])"),
+      s"the node case carries the tree's fields:\n$src")
 
     // DRIVEN, not read: the closure compiles. `Ord` and `List` are siblings, and
     // their own closures come with them. WI-456: `iterator` returns a `Stream`, which
@@ -1341,8 +1346,34 @@ class BootstrapTest extends munit.FunSuite:
     // drop `TypeParamDecl.declWith` and the FIRST assertion fails on a bare
     // `enum SortedSet[T, O]:` (not `checkDischarged`, which is asked only about the
     // ANONYMOUS requirements and so has nothing to say either way); drop the named
-    // arm of `requiresMapping`'s evidence and the `using` count is 0; drop
-    // `enumParent`'s qualification and the compile reports the cyclic inheritance.
+    // arm of `requiresMapping`'s evidence and the `using` count is 0. (The
+    // qualification's own driver is the next test.)
+  }
+
+  test("an enum case that shadows its enum names the parent qualified") {
+    // THE SHAPE, in two lines, because the corpus no longer has one: anthill's `sort
+    // Box` and its constructor `box` are two symbols — which is why `shapeOf`, keyed on
+    // the ANTHILL name, correctly says Sum — and §5 sends both to the Scala name `Box`,
+    // where the case shadows the enum. MEASURED under dotc with the bare parent:
+    // `Cyclic inheritance: class Box extends itself`, then `enum case does not extend
+    // its enum class`. `sortedset.anthill` was this driver until WI-456 made its
+    // constructors `tip` / `bin`, which shadow nothing.
+    // NULLARY, because that is the case Scala cannot infer the parent of — so it is the
+    // one emitted with an explicit `extends`, which is where the qualification shows.
+    val files = gen(parseSource(
+      """namespace anthill.shadow
+        |  enum Box
+        |    sort T = ?
+        |    entity box
+        |    entity full(v: T)
+        |  end
+        |end
+        |""".stripMargin, "box.anthill"))
+    val src = files.find(_.relPath.endsWith("/Box.scala"))
+      .getOrElse(fail(s"expected Box.scala in: ${files.map(_.relPath)}")).contents
+    assert(src.contains("case Box[T]() extends _root_.anthill.shadow.Box[T]"),
+      s"a case that shadows its enum must name the parent qualified:\n$src")
+    ScalaCompile.assertCompiles("the shadowing enum's emission", files)
   }
 
   test("WI-1022: a named requirement slot on an OPERATION is still refused") {

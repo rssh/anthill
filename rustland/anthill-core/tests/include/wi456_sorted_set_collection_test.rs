@@ -33,7 +33,11 @@
 //!    FAIL (load error, the sub-goal tie quoted above);
 //!  * runtime fix out → `finite_collection_*` FAILS (`AmbiguousRequirement` for
 //!    `SortedSet.collect`) and so does the named-slot refusal test (the tie's wording);
-//!    the other tests dispatch straight to `SortedSet`'s own ops;
+//!    the other tests dispatch straight to `SortedSet`'s own ops. WHICH ROWS drive that
+//!    bridge narrowed when `SortedSet` gained O(1) `size` and `isEmpty` members: those
+//!    override the spec defaults (WI-444), so `sizeByLength` / `sizeAlphabetical` /
+//!    `emptyByLength` now call them directly and `firstByLength`'s
+//!    `FiniteCollection.collect` is the row left on the default-body route;
 //!  * `single_ordering_control_*` PASSES either way by design: with one `WeakOrd[Int64]`
 //!    provider in scope the searched sub-goal has one answer.
 //!  * the refusals (`an_erased_*`, `a_provision_head_*`) and the forward (`a_declared_*`)

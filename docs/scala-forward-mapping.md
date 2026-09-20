@@ -483,11 +483,10 @@ still leaves `R` uninferable, so it takes the explicit form too (WI-1055).
 
 **A parent named by a case that shadows it is written qualified** (WI-1022). §5 converts identifiers
 many-to-one, so a constructor whose anthill name merely *differs* from its sort's can still reach
-Scala as the same identifier: `sortedset.anthill` declares `sort SortedSet` with the constructor
-`sorted_set`, two symbols in anthill — which is why the sort classifies as an enum and not as §2.4's
-eponymous case, a test keyed on the *anthill* name — and both become `SortedSet`. Inside the enum
-body the case's name wins, so the bare form is `Cyclic inheritance: class SortedSet extends itself`
-(measured). Only the explicit-parent form above is affected: a case whose fields cover every
+Scala as the same identifier: a sort `Box` with the constructor `box` is two symbols in anthill —
+which is why the sort classifies as an enum and not as §2.4's eponymous case, a test keyed on the
+*anthill* name — and both become `Box`. Inside the enum body the case's name wins, so the bare form
+is `Cyclic inheritance: class Box extends itself` (measured). Only the explicit-parent form above is affected: a case whose fields cover every
 parameter writes no `extends` at all. In the **empty package** there is no qualified spelling of a
 top-level type (`_root_.RootSet` is `not a member of <root>`), so that shape is refused.
 
@@ -802,17 +801,24 @@ types, and merging one into the other is a type error before it is a wrong answe
 constructs carry the two halves of that:
 
 ```
-enum SortedSet {                            enum SortedSet[T, O <: Ord[T]] {
-  sort T = ?                                  case SortedSet[T, O <: Ord[T]](
-  requires O: Ord[T]                            items: List[T])
-  entity sorted_set(             →              extends _root_.….SortedSet[T, O]
-    items: List[T = T])                     }
+enum SortedSet {                            enum SortedSet[T, O <: WeakOrd[T]] {
+  sort T = ?                                  case Tip[T, O <: WeakOrd[T]]()
+  requires O: WeakOrd[T]                        extends SortedSet[T, O]
+  entity tip                     →            case Bin(n: Long, elem: T,
+  entity bin(n: Int64, elem: T,                   left: SortedSet[T, O],
+    left: SortedSet[…],                           right: SortedSet[T, O])
+    right: SortedSet[…])                      }
   operation insert(
-    s: SortedSet[T = T, O = O],             trait SortedSetOps[T, O <: Ord[T]] {
+    s: SortedSet[T = T, O = O],             trait SortedSetOps[T, O <: WeakOrd[T]] {
     x: T) -> SortedSet[…]                     def insert(s: SortedSet[T, O], x: T)
 }                                                        (using O): SortedSet[T, O]
                                             }
 ```
+
+The two cases differ because Scala infers a case's type arguments from its FIELDS: `Bin` mentions
+both parameters and needs neither a binder list nor an `extends`, while the nullary `Tip` must
+restate them. A case that SHADOWS its enum needs its parent qualified as well — see above; since
+WI-456 no prelude file shows that, and `BootstrapTest`'s own `Box` fixture is the driver.
 
 The parameter is the *distinction*; the **bound** is the requirement itself, stated where §2.7a says
 an is-a claim belongs — on the type — and `using O` is the *witness*, because a body dispatches
