@@ -98,15 +98,33 @@ fn an_override_adding_an_op_level_clause_is_refused() {
     assert!(errs[0].contains(STRENGTHENS), "{errs:#?}");
 }
 
-/// THE OVER-REFUSAL. The spec declares `requires Eq[T = B]` and the override restates it
-/// verbatim; the leg does not align the two operations' type parameters, so the
-/// restatement reads as an addition. PINS TODAY'S BEHAVIOUR: WI-20260919-N31XX aligns the
-/// type parameters and turns this row into "loads and answers".
+/// THE ROW THAT FLIPPED (WI-20260919-N31XX). The spec declares `requires Eq[T = B]` and
+/// the override restates it VERBATIM. That is a subset, not an addition, and it now loads
+/// and runs.
+///
+/// It did not before, and the reason is this probe's whole point: the leg compares clauses
+/// by structural equality, and an operation's type parameter is its own logical variable,
+/// so `Desc.f.B` and `Leaf.f.B` were two symbols and the restatement read as an addition
+/// ("it strengthens the precondition"). `check_override_refinement` now aligns the two
+/// operations' type parameters the way it already aligned their value parameters and
+/// `result`.
+///
+/// 065 §3 IS WHY THIS HAD TO FLIP, not tidiness: an implementation must be able to restate
+/// `requires TypeValue[T = B]` in order to read `B` at all. While this row was refused,
+/// the subset rule admitted no restatement over a type parameter, so the parametricity
+/// rule had no legal spelling.
+///
+/// CONTROL: back out the type-parameter alignment in `check_override_refinement` and this
+/// row goes red with exactly one "strengthens the precondition". Its three neighbours stay
+/// green either way — `an_override_adding_an_op_level_clause_is_refused` because an ADDED
+/// clause is still an addition once aligned, and `restating_a_ground_clause_loads` because
+/// hash-consing already gave both sides one `TermId`.
+///
+/// `loads_and_answers` and not merely "loads": the alignment must leave DISPATCH intact,
+/// so all three routes are called and their values asserted.
 #[test]
-fn restating_the_specs_type_param_clause_is_refused_today() {
-    let errs = refusal("requires Eq[T = B]", "requires Eq[T = B]", "");
-    assert_eq!(errs.len(), 1, "{errs:#?}");
-    assert!(errs[0].contains(STRENGTHENS), "{errs:#?}");
+fn restating_the_specs_type_param_clause_loads() {
+    loads_and_answers("requires Eq[T = B]", "requires Eq[T = B]", "");
 }
 
 /// CONTROL for the row above: the same restatement over a GROUND type loads and runs —

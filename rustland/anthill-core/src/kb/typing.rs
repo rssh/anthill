@@ -39621,8 +39621,92 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
                 }
                 a
             };
+            // WI-20260919-N31XX (proposal 065 §3) — AND THE TWO OPERATIONS' TYPE
+            // PARAMETERS ALIGN TOO, for exactly the reason their VALUE parameters do.
+            //
+            // The legs below compare clauses by carrier-agnostic STRUCTURAL equality, and
+            // an operation's type parameter is its own logical variable (`load.rs`: "an op
+            // type-param is its own logical variable, distinct from any same-named outer
+            // sort parameter"). So `Desc.f.B` and `Leaf.f.B` are two different symbols, and
+            // without this an override RESTATING the spec's clause verbatim —
+            // `requires Eq[T = B]` on both sides — read as an ADDITION and was refused as
+            // "it strengthens the precondition". MEASURED by WI-20260919-BQHGD's probe,
+            // which pinned that over-refusal as today's behaviour; a GROUND restatement
+            // (`Eq[T = Int64]`) always loaded, because hash-consing gives both sides one
+            // `TermId`, which is what made the gap look like an absence rather than a bug.
+            //
+            // IT IS 065 §3 THAT MAKES THIS LOAD-BEARING rather than a nicety. An
+            // implementation must be able to restate `requires TypeValue[T = B]` to read
+            // `B` at all — that is the whole of "a spec that wants its implementations to
+            // inspect `B` must say so in the spec". Without the alignment no implementation
+            // could ever restate it, so the subset rule would admit nothing and the
+            // parametricity rule would have no legal spelling.
+            //
+            // KEYED ON THE OP-SCOPED SYMBOL, not on `OpInfoRecord::type_params`' own
+            // `Symbol`. That field holds the BARE interned name (`B`), while a clause
+            // reference resolves to the op-scoped `<ns>.<op>.B` — the symbol
+            // `substitute_impl_params_alloc` will be matching against. Keying on the bare
+            // name would make every substitution a silent no-op, the same failure σ's own
+            // comment records above.
+            //
+            // ONE CLAUSE SPELLING IS ALIGNED, AND IT IS THE ONLY ONE THAT OCCURS.
+            // `substitute_impl_params_alloc` rewrites `Ref` / `Ident` / nullary `Fn` and
+            // leaves `Term::Var` alone, while `clause_named_type_param` documents a SECOND
+            // spelling — a bare `Var::Global`, which is how a row TAIL arrives. MEASURED
+            // rather than assumed: a `debug_assert` refusing any impl precondition clause
+            // containing a bare `Var` was run over the full workspace and never fired
+            // across 7211 tests, so no clause in the corpus uses it. A future one would
+            // fail OPEN — the alignment would miss it and the restatement would be refused
+            // as an addition, which is a FALSE REFUSAL the author can see and not a silent
+            // wrong answer. That is why this ships keyed on the symbol spelling rather than
+            // growing a `Var`-aware rewrite for a shape nothing produces.
+            //
+            // AN ARITY MISMATCH ALIGNS NOTHING, for the reason the VALUE-parameter guard
+            // above gives at length: a positional `zip` across two different arities pairs
+            // unrelated parameters. There is no `continue` here to match the value side's,
+            // because differing TYPE arity is not itself a signature refusal today; the
+            // conservative answer is to align nothing and let the clause comparison fall
+            // where it falls.
+            //
+            // ONE WALK, TWO SPELLINGS, like `param_align` above — the `TermId`-valued map
+            // the hash-consed clause rewrite takes and the `Symbol → Symbol` map the
+            // occurrence rewrite takes, built from the same pairs so they cannot disagree.
+            let type_param_pairs: Vec<(Symbol, Symbol)> = {
+                let mut pairs = Vec::new();
+                if impl_info.type_params.len() == spec_info.type_params.len() {
+                    let impl_scope = kb.symbols.scope_id(impl_op);
+                    let spec_scope = kb.symbols.scope_id(spec_op);
+                    for ((ip, _), (sp, _)) in impl_info
+                        .type_params
+                        .iter()
+                        .zip(spec_info.type_params.iter())
+                    {
+                        // `None` is not a skipped case worth reporting: `type_param_sym`
+                        // reads the set `add_type_param` filled, so a parameter it does not
+                        // know is one no clause reference could have resolved to either.
+                        if let (Some(i), Some(s)) = (
+                            kb.symbols.type_param_sym(impl_scope, kb.local_name_of(*ip)),
+                            kb.symbols.type_param_sym(spec_scope, kb.local_name_of(*sp)),
+                        ) {
+                            if i != s {
+                                pairs.push((i, s));
+                            }
+                        }
+                    }
+                }
+                pairs
+            };
+            let type_param_align: Vec<(Symbol, TermId)> = type_param_pairs
+                .iter()
+                .map(|(i, s)| {
+                    let t = kb.alloc(Term::Ref(*s));
+                    (*i, t)
+                })
+                .collect();
+
             let full_align: Vec<(Symbol, TermId)> = {
                 let mut a = param_align.clone();
+                a.extend(type_param_align.iter().copied());
                 if let Some(entry) = result_binders {
                     a.push(entry);
                 }
@@ -39630,6 +39714,20 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<super::load::Loa
             };
             let full_align_syms: HashMap<Symbol, Symbol> = {
                 let mut m = param_align_syms.clone();
+                // BOTH SPELLINGS OR NEITHER — the invariant `param_align`'s own comment
+                // states ("a param that aligns on one carrier aligns on the other"). The
+                // effects leg reads this `Symbol → Symbol` map, and a guarded effect row
+                // over a type parameter is the same restatement problem as a clause.
+                //
+                // NO TEST EXERCISES THIS HALF, and that is recorded rather than left to be
+                // assumed from its presence: MEASURED, with this one line removed the full
+                // workspace runs 7211 tests and 0 failures, exactly as with it. No fixture
+                // has a guarded effect row over an operation's own type parameter. It is
+                // here because the two maps are one alignment and letting them disagree is
+                // how the next such row gets refused for a reason nobody can see — not
+                // because anything today needs it. The contract half IS driven, by
+                // `restating_the_specs_type_param_clause_loads`.
+                m.extend(type_param_pairs.iter().copied());
                 if let Some((ir, sr)) = result_binder_syms {
                     m.insert(ir, sr);
                 }
