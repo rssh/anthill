@@ -216,6 +216,11 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     register_if_present(interp, "anthill.prelude.Cell.get", cell_get)?;
     register_if_present(interp, "anthill.prelude.Cell.set", cell_set)?;
 
+    // WI-20260919-HXGXF — `TypeValue`'s sole implementation, which reads a requirement
+    // dictionary as DATA. Beside the dictionary readers below because it reads the same
+    // value, though it is reached from a spec op's default body rather than called on one.
+    register_if_present(interp, "anthill.reflect.TypeValue.type_value", type_value_of_self)?;
+
     // WI-577 — first-class runtime dispatch values: the anthill face of a
     // requirement dictionary (a resolved spec impl) and `Value::OpRef` (a resolved
     // operation reference). Native readers over the values themselves (WI-1045).
@@ -5967,6 +5972,92 @@ fn expect_dictionary(interp: &Interpreter, v: &Value) -> Result<Dictionary, Eval
 fn dict_impl(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [d] = expect_args::<1>("Dictionary.impl", args)?;
     Ok(symbol_value(expect_dictionary(interp, &d)?.impl_sort()))
+}
+
+/// WI-20260919-HXGXF (proposal 065 §2) — `anthill.reflect.type_value_of_self() -> Type`:
+/// the `Type` named by the dispatching dictionary of the `TypeValue.type_value` call
+/// currently running. The sole implementation of `TypeValue`, reached from that spec op's
+/// default body.
+///
+/// THE DICTIONARY IS THE TYPE. `Dictionary(sub₀ … subₙ₋₁, impl: S)` carries the head sort
+/// in `impl` and one sub-dictionary per condition of the provision that selected it — and
+/// the derived conditional instance is to emit exactly one condition per type parameter,
+/// in declaration order, so sub `i` is the evidence for parameter `i`. THAT DERIVATION IS
+/// NOT BUILT YET (WI-20260919-HXGXF is partial): the arity check below is what will catch
+/// it if the two ever disagree, and until the derivation lands the only provisions that
+/// reach here are hand-written ones.
+/// Rebuilding the type is therefore a walk, not a lookup: `Ref(S)` at arity 0, and
+/// `S[p₀ = <sub₀'s type>, …]` otherwise. That is GHC's `Typeable` representation, and it
+/// is why no per-carrier implementation is needed.
+///
+/// READS THE RUNNING FRAME, not an argument. A builtin is dispatched with no frame of its
+/// own (`dispatch_resolved_operation` calls it and pushes nothing), so `stack.top()` is
+/// the frame of the `type_value()` body that called it — the one
+/// `expand_dispatching_dict` filled with `__req_self`. Calling this from anywhere else is
+/// a loud error rather than a wrong type: there is no dictionary to be the answer.
+fn type_value_of_self(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [] = expect_args::<0>("TypeValue.type_value", args)?;
+    let dict = interp.builtin_dispatch_dict.clone().ok_or_else(|| {
+        EvalError::Internal(
+            "TypeValue.type_value: no dispatching dictionary. The call reached this builtin \
+             without going through a requirement slot, so nothing names the type it is \
+             about — `type_value()` is nullary and the dictionary is its only evidence."
+                .into(),
+        )
+    })?;
+    let t = type_of_dictionary(interp, &dict)?;
+    Ok(Value::term(t))
+}
+
+/// The `Type` term a dictionary names — see [`type_value_of_self`]. Recursive over the
+/// sub-dictionaries, which is what makes a NESTED argument
+/// (`Box[V = List[T = Int64]]`) answer the whole term rather than its head.
+fn type_of_dictionary(
+    interp: &mut Interpreter,
+    dict: &Dictionary,
+) -> Result<crate::kb::term::TermId, EvalError> {
+    let head = dict.impl_sort();
+    let arity = dict.arity();
+    if arity == 0 {
+        return Ok(interp.kb_mut().make_name_term_from_sym(head));
+    }
+    // The head's own type parameters, in DECLARATION order — the order
+    // `type_value_derive` emits the conditions in, so condition `i` is the evidence for
+    // parameter `i`.
+    let params: Vec<crate::intern::Symbol> = interp.kb().type_param_syms_of(head).to_vec();
+    // THE CONDITIONS DO NOT START AT SUB 0. A provision's dictionary chain is the
+    // carrier's OWN sort-level `requires` first and the provision's conditions after
+    // (`provider_dict_chain`), so a carrier that writes `requires` — `Map requires Eq[T =
+    // K]` — shifts every condition by that many slots. Reading from 0 would hand back the
+    // `Eq` dictionary's impl sort as a type argument, silently. Re-derived here rather
+    // than assumed, from the same function that built the layout.
+    let base = crate::kb::typing::provider_dict_entries(interp.kb_mut(), head, None).len();
+    if base + params.len() != arity {
+        return Err(EvalError::Internal(format!(
+            "TypeValue.type_value: `{}` has {} type parameter(s) after {base} sort-level \
+             requirement(s), but its dictionary carries {arity} sub-instance(s); \
+             `type_value_derive` and this reader disagree about the layout",
+            interp.kb().qualified_name_of(head),
+            params.len(),
+        )));
+    }
+    let mut named: Vec<(crate::intern::Symbol, crate::kb::term::TermId)> = Vec::with_capacity(arity);
+    for (i, p) in params.into_iter().enumerate() {
+        // Total by construction: `Dictionary::from_value` validated the whole tree, and
+        // `i < arity`. A `None` here would be that invariant broken, so it is loud.
+        let sub = dict.sub(base + i).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "type_value_of_self: dictionary sub {i} missing below arity {arity}"
+            ))
+        })?;
+        named.push((p, type_of_dictionary(interp, &sub)?));
+    }
+    let kb = interp.kb_mut();
+    Ok(kb.alloc(crate::kb::term::Term::Fn {
+        functor: head,
+        pos_args: smallvec::SmallVec::new(),
+        named_args: named.into_iter().collect(),
+    }))
 }
 
 /// `Dictionary.arity(d) -> Int64` — number of sub-requirement dicts.

@@ -1781,3 +1781,6 @@ mod wi_nr6fj_defect_b_slot_over_default_test;
 
 #[path = "include/wi_9kypa_parametric_key_noneq_test.rs"]
 mod wi_9kypa_parametric_key_noneq_test;
+
+#[path = "include/wi_hxgxf_type_value_derivation_test.rs"]
+mod wi_hxgxf_type_value_derivation_test;

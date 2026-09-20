@@ -776,12 +776,22 @@ fn a_conditional_provisions_goals_answer_a_reflect_query() {
     // a lexicographic pair is weakly ordered iff both components are, a strictly weaker
     // condition than the `Ord` one. Asserted as a COUNT and not merely `!is_empty()`: a
     // rule that dropped the `provided` join would still answer, and would answer the
-    // same ten rows for every spec.
+    // same rows for every spec.
+    //
+    // WI-20260919-HXGXF COULD have made this SIX — `provides TypeValue[Pair] :-
+    // TypeValue[A], TypeValue[B]` is exactly the shape this query counts — and for a
+    // while it did, at twelve. It is TEN again because that derivation is DEMAND-GATED:
+    // `type_value_derive` derives nothing unless some `requires TypeValue[…]` exists in
+    // the loaded program, and the stdlib has none (measured: zero in stdlib, anthill-stl
+    // and examples). So this count is a live witness that the gate is shut over the
+    // stdlib, and it will move to twelve of its own accord when 065 step 3
+    // (WI-20260919-N31XX) makes rigid value reads require `TypeValue`.
     assert_eq!(
         solutions.len(),
         10,
         "`provides_when(Pair, ?spec, ?cond)` must answer once per condition of each of \
-         `Pair`'s five provisions",
+         `Pair`'s five written provisions — and no derived `TypeValue` row, the stdlib \
+         requiring none",
     );
 }
 

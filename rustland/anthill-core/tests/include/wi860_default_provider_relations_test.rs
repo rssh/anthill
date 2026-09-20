@@ -133,13 +133,16 @@ fn index_rows(kb: &KnowledgeBase) -> Vec<String> {
 /// a PARAMETRIC composite (`Box[T]`) now derives a conditional `NonEq[Box] :- NonEq[T]`
 /// beside its conditional `Eq`, so its inferred row appears here too. Same subject, same
 /// filter-by-spec.
+/// WI-20260919-HXGXF — `TypeValue` joins them, and for a stronger reason: it is derived
+/// for EVERY sort, so its inferred row is present at every carrier in every fixture. It
+/// can never be the subject of a question about what a fixture wrote.
 fn index_rows_for(kb: &KnowledgeBase, carrier_qn: &str) -> Vec<String> {
     kb.default_provider_index()
         .expect("a loaded KB must carry the default-provider index")
         .rendered_rows_for_carrier(kb, carrier_qn)
         .into_iter()
         .filter(|r| {
-            !["PartialEq | ", "Eq | ", "NonEq | "]
+            !["PartialEq | ", "Eq | ", "NonEq | ", "TypeValue | "]
                 .iter()
                 .any(|spec| r.starts_with(spec))
         })

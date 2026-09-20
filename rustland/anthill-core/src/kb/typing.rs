@@ -53331,6 +53331,88 @@ fn project_via_provided_spec(
 /// `requires Ord[T]` lending `Eq`'s members, is not reached). The candidate filter
 /// then finds no bound, so the projection is conservatively rejected (sound — never a
 /// wrong ground type). Transitive op-requires lending is deferred (no motivating driver).
+/// WI-20260919-HXGXF — does ANY requirement in the loaded program name `spec`?
+///
+/// The demand gate for `type_value_derive`: deriving a `TypeValue` row for every sort
+/// grows the provider relation by 77% and costs ~113ms per load, of which only 5ms is the
+/// derivation itself — the rest is every downstream pass walking a bigger relation
+/// (measured with `ANTHILL_LOAD_TIMING=1`, 3-run averages). Nothing requires `TypeValue`
+/// yet, so without this gate the whole cost is paid for evidence no one asks for.
+///
+/// BOTH LEVELS, because a requirement can be written at either and the gate is only sound
+/// if it sees both: a sort-level `requires` rides a `SortRequiresInfo` fact, an
+/// operation-level one rides `OperationInfo.requires` and emits no such fact. Checking
+/// only the relation would have missed exactly the spelling this feature's own tests use
+/// (`operation tv[B](…) requires TypeValue[T = B]`).
+///
+/// SHORT-CIRCUITS on the first hit, so the cost falls on the case where the answer is NO
+/// — which is the case the gate exists to make cheap, and is why the sort-level relation
+/// scan (one pass, no per-sort lookups) is tried first.
+///
+/// MEASURED at ~23ms on a ~940ms stdlib load when the answer is NO, dominated by one
+/// `lookup_operation_info` per operation. That is the price of not paying the ~113ms the
+/// unconditional derivation costs, and the net against baseline is within run-to-run
+/// noise. A pre-filter on the fact's own `requires` field would cut most of it and was
+/// tried; it is left out because the emptiness test wants a carrier-agnostic list read
+/// and the saving is below the measurement floor here.
+///
+/// This is a gate, not an analysis: it answers "does anyone ask?", not "which carriers do
+/// they ask about". The precise question needs the concrete bindings at call sites, which
+/// only exist after the typer — and this pass must run before it.
+pub(crate) fn any_requirement_names_spec(kb: &KnowledgeBase, spec: Symbol) -> bool {
+    let canon = kb.canonical_sort_sym(spec);
+    if let Some(req_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") {
+        for rid in kb.rules_by_functor(req_sym) {
+            if !kb.is_fact(rid) {
+                continue;
+            }
+            let head = kb.rule_head_value(rid);
+            if let Some(v) = super::op_info::head_field_value(kb, &head, "spec") {
+                if spec_base_functor(kb, &v)
+                    .is_some_and(|b| kb.canonical_sort_sym(b) == canon)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    // The operation-level half, over the `OperationInfo` RELATION rather than over a list
+    // of sorts. A first cut walked `eq_derive::composite_sorts`, which is the
+    // ENTITY-BEARING sorts — and so missed every operation of a sort that declares no
+    // entity, which is exactly the shape this feature's own tests use (`sort D` holding
+    // only operations). Measured: three of five acceptance rows went red because the gate
+    // never opened for them.
+    //
+    // Decoded through the SAME reader the dictionary layout uses
+    // (`op_requires_entries`), so the gate and the consumer cannot disagree about what a
+    // clause names — a conjunction `requires A, B` in particular, which lowers to one
+    // `conjunction(..)` value and would hide both specs from a shape test.
+    let Some(op_info_sym) = kb.try_resolve_symbol("anthill.reflect.OperationInfo") else {
+        return false;
+    };
+    for rid in kb.rules_by_functor(op_info_sym) {
+        if !kb.is_fact(rid) {
+            continue;
+        }
+        let head = kb.rule_head_value(rid);
+        let Some(name_tid) = super::op_info::head_field_term(kb, &head, "name") else {
+            continue;
+        };
+        let op = match kb.get_term(name_tid) {
+            Term::Ref(s) | Term::Ident(s) => *s,
+            Term::Fn { functor, .. } => *functor,
+            _ => continue,
+        };
+        if op_requires_entries(kb, op)
+            .iter()
+            .any(|e| kb.canonical_sort_sym(e.required_sort) == canon)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn op_requires_entries(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<RequiresEntry> {
     let Some(rec) = super::op_info::lookup_operation_info(kb, op_sym) else {
         return Vec::new();

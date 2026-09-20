@@ -4,6 +4,7 @@ pub mod defaults;
 pub(crate) mod discrim;
 pub(crate) mod entity_slots;
 pub(crate) mod eq_derive;
+pub(crate) mod type_value_derive;
 pub mod execute;
 pub mod extent;
 pub(crate) mod flow_derive;
@@ -1655,6 +1656,23 @@ pub struct KnowledgeBase {
     /// key on a guess. `Pair[A = Float, …]` therefore stays the gap §8.3 names.
     pub(crate) conditional_eq_params:
         std::collections::HashMap<(Symbol, Symbol), Vec<Symbol>>,
+    /// WI-20260919-HXGXF — canonical carriers whose `anthill.reflect.TypeValue` provision
+    /// THIS LOADER DERIVED, so the derived-only refusal can tell its own rows from an
+    /// author's.
+    ///
+    /// The refusal cannot read provenance off the relation: a derived provision fact is
+    /// deliberately indistinguishable from a written one (the whole point of deriving is
+    /// that the two are the same claim). Reading "everything present before I derive" is
+    /// right in the FIRST load phase and wrong in every later one, because the rows
+    /// persist — the WI-1103 hazard. MEASURED: without this set a second
+    /// `load_phase_inner` over the stdlib reported `HandWrittenTypeValue` for all ~200
+    /// carriers the first phase had just derived, failing 126 tests.
+    ///
+    /// A SET RATHER THAN `mark_derived_provision`, deliberately: that mark is read by
+    /// `self_supplied_entries` to decide a derived row adds NO dictionary slot, and these
+    /// rows' conditions must become slots — they are what carries the type arguments to
+    /// `type_value()`. Reusing it would empty the dictionary this feature exists to read.
+    pub(crate) derived_type_value_carriers: std::collections::HashSet<Symbol>,
 
     // WI-348 (value-fact payoff): the `op_effects` side-table is GONE. A
     // `denoted`-bearing effect label (`Modify[c]`) now lives in the
@@ -2285,6 +2303,7 @@ impl KnowledgeBase {
             field_wise_noneq_carriers: std::collections::HashSet::new(),
             partial_transparent_carriers: std::collections::HashSet::new(),
             conditional_eq_params: std::collections::HashMap::new(),
+            derived_type_value_carriers: std::collections::HashSet::new(),
             entity_field_types: HashMap::new(),
             parameterized_type_sites: Vec::new(),
             resolved_requires_facts: HashSet::new(),

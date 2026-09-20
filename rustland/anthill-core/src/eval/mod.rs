@@ -364,6 +364,23 @@ pub struct Interpreter {
     pub(crate) builtins: HashMap<Symbol, BuiltinFn>,
     pub(crate) reflect: ReflectSymbols,
     pub(crate) error_layer: Option<ErrorLayer>,
+    /// WI-20260919-HXGXF — the dispatching DICTIONARY of the builtin currently running,
+    /// or `None` outside one.
+    ///
+    /// A builtin is the ONE backing kind that receives no frame:
+    /// `dispatch_resolved_operation` calls it as `(builtin)(self, &args)` and drops the
+    /// `requirements` that `expand_dispatching_dict` just built, where every other kind
+    /// gets them pushed onto a `Frame`. That is right for every builtin that existed
+    /// before — an arithmetic primitive reads its operands and nothing else — and wrong
+    /// for one whose ANSWER IS ITS EVIDENCE. `TypeValue.type_value()` is nullary, so no
+    /// argument and no receiver names the type it must return; only the dictionary that
+    /// selected the call does.
+    ///
+    /// Set and RESTORED around the builtin call, so it is a parameter in everything but
+    /// spelling — a builtin that calls back into anthill (legal since
+    /// WI-20260913-2858G) sees its own dictionary on the way in and the caller's again on
+    /// the way out, rather than inheriting whatever ran last.
+    pub(crate) builtin_dispatch_dict: Option<crate::eval::value::Dictionary>,
     pub(crate) fields: FieldSymbols,
     pub(crate) closures: ClosureArenaRef,
     pub(crate) streams: StreamArenaRef,
@@ -443,6 +460,7 @@ impl Interpreter {
             None => ActivationStack::with_cap(usize::MAX),
         };
         Self {
+            builtin_dispatch_dict: None,
             kb,
             stack,
             builtins: HashMap::new(),

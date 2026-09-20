@@ -199,6 +199,19 @@ pub enum BuiltinTag {
     /// `Eq` instance. See [`KnowledgeBase::sem_eq_core`] for the full
     /// reflexivity / dispatch / buried-override / structural cascade.
     SemEq,
+    /// WI-20260919-HXGXF — `anthill.reflect.TypeValue.type_value()` (proposal 065 §2).
+    ///
+    /// REGISTERED FOR ITS LOAD-TIME EFFECT, not for an SLD one. `op_backed` accepts a
+    /// spec op that `is_builtin`, and that is what backs the derived `TypeValue`
+    /// provision of every carrier at once without a default body — which the op must not
+    /// have, since a defaulted spec op is dispatched statically and never reaches the
+    /// requirement slot that carries its only evidence (see the spec's own comment).
+    ///
+    /// The ANSWER is produced by the INTERPRETER builtin of the same name, which reads
+    /// the dispatching dictionary. A rule body has no dictionaries, so a `type_value()`
+    /// GOAL has nothing to resolve against and the arm below says so rather than
+    /// inventing a type.
+    TypeValueOf,
     /// `anthill.prelude.PartialEq.neq(?a, ?b)` — semantic inequality
     /// (`neq(a,b) <=> not(eq(a,b))`): [`KnowledgeBase::sem_eq_core`] with the
     /// verdict inverted.
@@ -5759,6 +5772,18 @@ impl KnowledgeBase {
             BuiltinTag::IsEntityOf => self.builtin_is_entity_of(goal, answer_subst),
             BuiltinTag::ExtractSort => self.builtin_extract_sort(goal, answer_subst),
             BuiltinTag::DispatchCarrier => self.builtin_dispatch_carrier(goal, answer_subst),
+            // WI-20260919-HXGXF — the tag exists for its LOAD-TIME effect (backing the
+            // body-less spec op); there is no SLD answer to give. A rule body carries no
+            // requirement dictionaries, and the dictionary is the only thing that names
+            // which type a nullary `type_value()` is about — so this is a malformed
+            // QUESTION, not an unproven one, and it says so instead of failing silently
+            // into a `not(…)` that would then read as true.
+            BuiltinTag::TypeValueOf => BuiltinResult::Error(ResolveError::new(
+                "anthill.reflect.TypeValue.type_value() has no answer in a rule body: it \
+                 reads the requirement dictionary that dispatched it, and a rule body has \
+                 none. Call it from an operation whose `requires TypeValue[…]` supplies one."
+                    .to_string(),
+            )),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
             BuiltinTag::HoApply => {
                 unreachable!("HoApply is handled in step_init, not execute_builtin")

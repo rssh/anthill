@@ -251,7 +251,7 @@ pub(crate) fn derive_total_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
 
 /// WI-20260918-CKD4J — a derived condition: `spec[P]` over the carrier's OWN type
 /// parameter `P`. The derived row reads `provides X[S] :- spec₁[P₁], …`.
-type Condition = (Symbol, Symbol);
+pub(crate) type Condition = (Symbol, Symbol);
 
 /// WI-20260918-CKD4J — the CONDITIONAL half of the `Eq` derivation: rows for the
 /// composites [`total_composites`] must leave out — a PARAMETRIC sort (`List[T]`,
@@ -647,6 +647,24 @@ pub(crate) fn run(kb: &mut KnowledgeBase, c: &EqClassification) {
     ) {
         derive_conditional_noneq(kb, ne, pe, eq);
     }
+}
+
+/// WI-20260919-HXGXF — assert `carrier provides spec` with `conds` as its ONE clause's
+/// conditions, and hand back nothing: the shared spelling of what this module has always
+/// done inline, so `type_value_derive` files its rows exactly as the equality derivations
+/// file theirs (same provision fact, same `ProvidesConditionInfo` rows, same clause
+/// numbering) rather than growing a second, subtly different writer.
+///
+/// An EMPTY `conds` is an unconditional row, which is the concrete-sort case and not a
+/// degenerate one — `record_derived_conditions` files the clause and no condition facts.
+pub(crate) fn assert_derived_provision(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    spec: Symbol,
+    conds: &[Condition],
+) {
+    assert_provides(kb, carrier, spec);
+    record_derived_conditions(kb, carrier, spec, conds);
 }
 
 /// WI-20260919-9KYPA — the CONDITIONAL `NonEq` mirror of [`derive_conditional_eq`]:

@@ -605,6 +605,23 @@ pub enum LoadError {
     IncompatibleEqNonEq {
         carrier: String,
     },
+    /// WI-20260919-HXGXF (proposal 065 §2) — a HAND-WRITTEN `provides
+    /// anthill.reflect.TypeValue[…]`. Every instance is derived
+    /// (`type_value_derive`); writing one is a load error wherever it is written — the
+    /// carrier's own body, a `namespace <Carrier>` block at its qualified address, or a
+    /// witness sort — because all three land in the same provision relation this reads.
+    ///
+    /// DERIVED-ONLY IS A SOUNDNESS RULE, not a style one. `type_value()` is the kernel's
+    /// answer to "what type is this", and a forgeable instance makes every such answer a
+    /// CLAIM instead of a fact: `Boom provides TypeValue[T = Boom]` with a `type_value`
+    /// answering `Int64` would route a reify boundary, a `facts_of` or an error tag to
+    /// the wrong sort, silently and with the program loading clean. GHC made `Typeable`
+    /// derived-only for the same reason; WI-20260911-3MV2C reached the same line
+    /// independently for the error tag.
+    HandWrittenTypeValue {
+        /// The carrier the provision was written at, qualified.
+        carrier: String,
+    },
     /// WI-20260831-V25N3 — an effect label written in a ROW TYPE-ARGUMENT
     /// (`s: Spec[E = {Beep}]`) that names no registered kind, or a `Modify` whose
     /// target is not a place. §5.5 judges a row element ONCE, AT ITS ORIGIN, so a
@@ -2511,6 +2528,10 @@ impl LoadError {
                 format!("'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive: a carrier's `eq` cannot be both lawful (reflexive) and non-reflexive. A partial carrier (e.g. IEEE Float) provides PartialEq + NonEq; a lawful carrier provides PartialEq + Eq — drop whichever is wrong.",
                     carrier)
             }
+            LoadError::HandWrittenTypeValue { carrier } => {
+                format!("'{}' writes `provides anthill.reflect.TypeValue[…]`, but every `TypeValue` instance is DERIVED by the loader and none may be written. A written instance would make `type_value()` a claim instead of a fact — an instance answering the wrong type would route a reify boundary, a `facts_of` or an error tag to the wrong sort, silently. Delete the clause: '{}' already has its derived instance.",
+                    carrier, carrier)
+            }
             LoadError::NonEqKeyRequiresLawfulEq {
                 container,
                 param,
@@ -4215,6 +4236,14 @@ impl std::fmt::Display for LoadError {
                     "a binding `<=>` / `let` is not allowed in a {} contract \
                      (contracts test, not bind; use `=`) at {}..{}",
                     position, span.start, span.end,
+                )
+            }
+            LoadError::HandWrittenTypeValue { carrier } => {
+                write!(
+                    f,
+                    "'{}' writes `provides anthill.reflect.TypeValue[…]`, but every \
+                     `TypeValue` instance is DERIVED and none may be written",
+                    carrier,
                 )
             }
         }
@@ -13038,7 +13067,16 @@ fn load_phase_inner(
     // WI-20260918-CKD4J — the CONDITIONAL rows, after the total ones so a composite
     // with a field of a derived-total sort reads that row as a provision.
     super::eq_derive::derive_conditional_eq(kb, &eq_classification);
-    mark!("eq_derive::classify + derive_total_eq");
+    // WI-20260919-HXGXF — BEFORE THE TYPER, for `derive_total_eq`'s reason and measured
+    // the same way. The typer RESOLVES a call's `requires TypeValue[…]` against the
+    // provider relation, so a row asserted after it does not exist for the only reader
+    // that would have used it: with this pass below the typer every `tv[B = Boom]()` was
+    // refused "no impl provides anthill.reflect.TypeValue" while the rows were sitting in
+    // the KB. Unlike `eq_derive::run`'s half there is no reason to be late — these rows
+    // introduce no unbacked operation, so `check_provider_operations` passes them.
+    mark!("eq_derive::classify + derive_total_eq + derive_conditional_eq");
+    all_errors.extend(super::type_value_derive::run(kb));
+    mark!("type_value_derive::run");
     // WI-1109 — materialize forwarded provision rows (`Ord provides WeakOrd[T = T]` ⇒
     // every `Ord` carrier gets a `WeakOrd` row at its own bindings). HERE, beside the
     // TOTAL eq derivation, for the reason its comment above states and this pass
@@ -13105,6 +13143,21 @@ fn load_phase_inner(
     // `derive_forwarded_provisions` above has materialized the forwarded row and the
     // sort-ops delta on the line above has inherited the spec's operations onto it. Still
     // ABOVE the typer, whose `is_builtin` readers must see the derived tags.
+    // WI-20260919-HXGXF — tag `TypeValue.type_value` HERE, not in `register_builtin_tags`.
+    // That bootstrap runs before any stdlib file is read, and it can only name symbols the
+    // bootstrap itself pre-defines (which is why `anthill.prelude.PartialEq` is built by
+    // hand there). `TypeValue` is an ordinary stdlib sort, so its op resolves only once
+    // `anthill.reflect` has loaded — and pre-defining it in the bootstrap to work around
+    // that would mean two declarations of one sort, which is the duplicate the bootstrap's
+    // own comment exists to avoid. `None` on a prelude-less KB, where nothing can provide
+    // the spec either.
+    //
+    // The tag's effect is load-time: it is what `op_backed` reads to accept the BODY-LESS
+    // spec op, and body-less is forced (see the spec's comment — a defaulted spec op is
+    // dispatched statically and never reaches the slot carrying its only evidence).
+    if let Some(tv) = kb.try_resolve_symbol("anthill.reflect.TypeValue.type_value") {
+        kb.register_builtin_tag_sym(tv, super::resolve::BuiltinTag::TypeValueOf);
+    }
     all_errors.extend(derive_carrier_builtin_tags(kb));
     mark!("derive_carrier_builtin_tags");
     // WI-743 (proposal 060 §2.2) — derive `anthill.kernel.domain_member` from the

@@ -223,6 +223,17 @@ pub struct DefaultRow {
     /// also for a DECLARED mark naming a self-provider, which is why the origin is
     /// stored rather than derived from that equality.
     pub(crate) provider: Symbol,
+    /// WI-20260919-HXGXF — the provider's NAME TERM, so the probe can render it through
+    /// the same walk it renders [`Self::carrier`] with.
+    ///
+    /// `render_row` used to print the carrier with `type_display_name` and the provider
+    /// with `local_name_of`, and those two disagree for exactly one sort: the display
+    /// walk has an arm for the BOTTOM type, so `Nothing` renders `nothing` there and
+    /// `Nothing` here. Every other carrier agreed, so the asymmetry was invisible until
+    /// `type_value_derive` filed the first provision ever held at `Nothing` — and then
+    /// the corpus test comparing the SLD relation against this index failed on one row
+    /// out of hundreds, reporting a disagreement that was only ever in the rendering.
+    pub(crate) provider_name: TermId,
     pub(crate) origin: DefaultOrigin,
 }
 
@@ -301,7 +312,7 @@ fn render_row(kb: &KnowledgeBase, r: &DefaultRow, with_origin: bool) -> String {
         "{} | {} | {}",
         kb.local_name_of(r.spec),
         typing::type_display_name(kb, r.carrier),
-        kb.local_name_of(r.provider)
+        typing::type_display_name(kb, r.provider_name)
     );
     if with_origin {
         format!("{} ({})", base, r.origin.label())
@@ -553,6 +564,23 @@ fn derive_rows(
         // own provisions say — a conditional provision's row lands at the carrier its
         // clause WROTE (`List[T = E]`), which is all a default needs, since a default
         // only ever chooses among candidates that already resolved.
+        // The provider's name TERM, reused from its own provision rather than minted:
+        // `derive_rows` holds `kb` immutably, and CHECK 1 above has just established that
+        // such a provision exists (`carriers` is non-empty), so the lookup is total. It is
+        // what `render_row` prints the provider through, so that the provider and the
+        // carrier go through ONE display walk — see [`DefaultRow::provider_name`].
+        let provider_canon = kb.canonical_sort_sym(provider);
+        let Some(provider_name) = provisions
+            .iter()
+            .find(|p| p.provider == provider_canon)
+            .map(|p| p.provider_name)
+        else {
+            debug_assert!(
+                false,
+                "a declared mark passed CHECK 1 but names no provision to take its name term from"
+            );
+            continue;
+        };
         for (carrier, carrier_base) in carriers {
             push_row(
                 &mut rows,
@@ -561,6 +589,7 @@ fn derive_rows(
                     carrier,
                     carrier_base,
                     provider,
+                    provider_name,
                     origin: DefaultOrigin::Declared,
                 },
             );
@@ -584,6 +613,7 @@ fn derive_rows(
                 carrier: p.provider_name,
                 carrier_base: p.provider,
                 provider: p.provider,
+                provider_name: p.provider_name,
                 origin: DefaultOrigin::Inferred,
             },
         );

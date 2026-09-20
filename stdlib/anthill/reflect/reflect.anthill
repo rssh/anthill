@@ -121,6 +121,57 @@ namespace anthill.reflect
   -- source span and owner (not hash-consed), and the subject of typing
   -- judgments. (WI-252: merges the former duplicate sorts `Occurrence` and
   -- `ExprOccurrence`.)
+  {< TypeValue[T]: evidence that the rigid type `T` may be READ AS A VALUE
+     (proposal 065 §2; WI-20260919-HXGXF).
+
+     `type_value()` answers the `Type` that `T` names, from a DEFAULT BODY that serves
+     every carrier (see the member). Every INSTANCE is DERIVED by the loader — a
+     user-written `provides TypeValue[…]` is a load error. NOT YET ENFORCED: the
+     refusal is still unbuilt, so a hand-written provision loads today.
+     That is not a style rule. A forgeable instance
+     makes every type read a CLAIM instead of a fact: `Boom provides TypeValue[T =
+     Boom]` with a `type_value` answering `Int64` would route a boundary, a
+     `facts_of`, or an error tag to the wrong sort, silently. GHC made `Typeable`
+     derived-only for the same reason.
+
+     A CONCRETE sort gets an unconditional instance; a PARAMETRIC one gets a
+     conditional instance over its parameters (`Box provides TypeValue[T = Box[V =
+     V]] :- TypeValue[T = V]`), which is `Typeable a => Typeable (Box a)` and is the
+     same derivation shape `eq_derive` runs for `Eq` (WI-20260918-CKD4J).
+
+     NO OPERATION RECEIVES ON `T`, so the carrier parameter is decided by rung 2 of
+     `spec_carrier_param_or_sole` — the SOLE type parameter, which is the carrier by
+     construction. `Eq` and `NonEq` are the same shape and reach the same rung.
+
+     STRUCTURAL FORMERS (named tuples, arrows) get no instance yet: they have no sort
+     to carry a provision, so they need a structural reading rather than a provision
+     row — the same open shape as the named-tuple key in kernel-language.md §8.3. >}
+  sort TypeValue
+    sort T = ?
+    {< BODY-LESS, AND BACKED BY A BUILTIN ON THIS SPEC OP — the two halves are forced,
+       and MEASURED (WI-20260919-HXGXF).
+
+       `type_value()` is NULLARY, so no receiver value carries the carrier at run time and
+       WI-350's abstract-receiver fallback has nothing to resolve from. The dispatching
+       DICTIONARY is the only thing that knows which type this call is about, so the call
+       MUST reach the slot (`DeferToRequirement`) — and a call to a spec op with a DEFAULT
+       BODY does not: measured, it dispatched statically and the body ran with an empty
+       requirements frame. So no default body.
+
+       But a body-less spec op with no carrier member is refused at load ("backs no
+       operation `type_value` … no default on `TypeValue`, no own `type_value` on `Boom`"),
+       and the loader cannot synthesize a per-carrier body (`set_op_body_node` is only ever
+       fed parsed source or a `@[simp]` rewrite). The remaining backing kind is a BUILTIN on
+       the spec op, which `op_backed` accepts and which covers every provider at once —
+       the same way `PartialEq.eq` is backed.
+
+       The builtin reconstructs the `Type` from the dictionary that selected it:
+       `Dictionary(sub₀ … subₙ₋₁, impl: S)` names the head in `impl` and carries one sub per
+       type parameter, so the type is a walk of its own evidence — GHC's `Typeable`. >}
+    operation type_value() -> Type
+  end
+
+
   sort NodeOccurrence = ?
 
   -- Builtin operations on occurrences

@@ -196,13 +196,15 @@ fn eval_int(src: &str, ns: &str, why: &str) -> i64 {
 /// filtered of the equality family (`Leaf` is a composite and derives `PartialEq`/`Eq`,
 /// and since WI-20260919-9KYPA a PARAMETRIC composite derives a conditional `NonEq` too,
 /// whose inferred rows are true and are not this file's subject).
+/// WI-20260919-HXGXF — and `TypeValue`, derived for EVERY sort (proposal 065 §2), so its
+/// inferred row stands at every carrier in every fixture.
 fn index_rows_for(kb: &KnowledgeBase, carrier_qn: &str) -> Vec<String> {
     kb.default_provider_index()
         .expect("a loaded KB must carry the default-provider index")
         .rendered_rows_for_carrier(kb, carrier_qn)
         .into_iter()
         .filter(|r| {
-            !["PartialEq | ", "Eq | ", "NonEq | "]
+            !["PartialEq | ", "Eq | ", "NonEq | ", "TypeValue | "]
                 .iter()
                 .any(|spec| r.starts_with(spec))
         })

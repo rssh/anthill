@@ -742,6 +742,36 @@ pub fn definite_unary(kb: &mut KnowledgeBase, qn: &str) -> Vec<eval::Value> {
 /// the caller is asserting.
 #[allow(dead_code)]
 pub fn sort_provisions(kb: &KnowledgeBase) -> Vec<(String, String)> {
+    sort_provisions_all(kb)
+        .into_iter()
+        // WI-20260919-HXGXF — `anthill.reflect.TypeValue` is derived for EVERY sort
+        // (proposal 065 §2), so its row is present for every carrier in every fixture and
+        // carries no information about what that fixture WROTE. Filtered HERE rather than
+        // at each call site, which is the difference from the equality family below: those
+        // three are derived only for carriers the classification reaches, so a fixture can
+        // still mean something by asking about them, and a suite opts out per-probe. This
+        // one is universal, so a fixture can never mean anything by it.
+        //
+        // MEASURED when the derivation landed: 20 tests across six files failed, every
+        // diff the expected set plus one `(<sort>, "TypeValue")` per sort and nothing else.
+        // A test that genuinely wants to see these rows calls [`sort_provisions_all`] —
+        // `wi_hxgxf_*` does, because they are its subject.
+        //
+        // CURRENTLY INERT FOR MOST FIXTURES, and kept anyway. The derivation is
+        // demand-gated: it fires only for a program that writes some `requires
+        // TypeValue[…]`, and almost no fixture does — so for those, filtering removes
+        // nothing. It bites for a fixture that DOES write the clause (the derivation then
+        // covers every sort in that program, stdlib included), and it will bite
+        // everywhere once 065 step 3 makes rigid value reads require `TypeValue`. Dropping
+        // it would re-break the same 20 tests then.
+        .filter(|(_, spec)| spec != "anthill.reflect.TypeValue")
+        .collect()
+}
+
+/// [`sort_provisions`] WITHOUT the universal-`TypeValue` filter — every provision row the
+/// KB holds. For a suite whose subject IS the derived `TypeValue` rows.
+#[allow(dead_code)]
+pub fn sort_provisions_all(kb: &KnowledgeBase) -> Vec<(String, String)> {
     use anthill_core::kb::term::{Term, TermId};
     let Some(sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
         return Vec::new();

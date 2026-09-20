@@ -2584,9 +2584,18 @@ impl Interpreter {
 
         // 2. Registered Rust builtin?
         if let Some(builtin) = self.builtins.get(&target).cloned() {
+            // WI-20260919-HXGXF — HAND THE BUILTIN ITS DISPATCHING DICTIONARY. A builtin
+            // gets no `Frame`, so the `requirements` `expand_dispatching_dict` just built
+            // for it would otherwise be dropped here. `TypeValue.type_value()` is nullary
+            // and its whole answer lives in that dictionary. Saved and RESTORED, not
+            // assigned: a builtin may call back into anthill, and the dispatch that
+            // returns must see its own again.
+            let saved_dict = self.builtin_dispatch_dict.take();
+            self.builtin_dispatch_dict =
+                find_requirement(&requirements, self.fields.req_self).cloned();
             let result = if self.profiling {
                 let t0 = std::time::Instant::now();
-                let r = (builtin)(self, &arg_values)?;
+                let r = (builtin)(self, &arg_values);
                 let dt = t0.elapsed().as_nanos();
                 BUILTIN_PROF.with(|p| {
                     let mut m = p.borrow_mut();
@@ -2596,9 +2605,10 @@ impl Interpreter {
                 });
                 r
             } else {
-                (builtin)(self, &arg_values)?
+                (builtin)(self, &arg_values)
             };
-            return Ok(StepOutcome::Deliver(result));
+            self.builtin_dispatch_dict = saved_dict;
+            return Ok(StepOutcome::Deliver(result?));
         }
 
         // 3. Anthill-defined operation body.
