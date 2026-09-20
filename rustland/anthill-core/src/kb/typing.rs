@@ -597,6 +597,34 @@ pub enum TypeError {
         spec_sort_sym: Symbol,
         carrier_sym: Symbol,
     },
+    /// WI-20260919-N31XX (proposal 065, "The rule") — a RIGID TYPE IS READ AS A VALUE
+    /// AND NOTHING IN SCOPE SAYS IT MAY BE.
+    ///
+    /// `operation bad[B](x: B) -> Type = Cell[V = B]` reads `B` in value position. Under
+    /// 065 that is well-formed only under `requires TypeValue[T = B]` among the
+    /// requirements in scope — the operation's own, or its enclosing sort's. Otherwise
+    /// the signature `f[B](x: B) -> R` would promise nothing about whether `f` inspects
+    /// `B`, which is 065's opening complaint: parametricity is false, a provider's own
+    /// parameter reached through a slot has no call site that could supply it, and an
+    /// erasing backend has nothing to read.
+    ///
+    /// EXPLICIT, NOT INFERRED (user decision, 2026-09-19): the clause is part of the
+    /// SIGNATURE, because the signature is what a caller — and a spec — reads. Inferring
+    /// it from the body is deferred, not rejected (065 open question 1), and it could not
+    /// apply to a body-less spec operation at all.
+    ///
+    /// WHAT IT DOES NOT COVER, each because the read is not a value read: a TYPE position
+    /// (`x: B`, `-> List[T = B]`, a `requires` bracket) is static and erasable; a CONCRETE
+    /// sort in value position (`Cell[V = Int64]`) reads no rigid and its `TypeValue` is
+    /// discharged statically; and a RULE BODY unifies types rather than reading them.
+    ///
+    /// `param` is the parameter as the author wrote it; `op` is the operation whose
+    /// signature must gain the clause.
+    TypeValueReadUnbacked {
+        span: Option<Span>,
+        param: Symbol,
+        op: Symbol,
+    },
     /// WI-828: a cross-sort call (direct or op-as-function-value) to an
     /// operation of a `requires`-carrying sort whose requirement the call site
     /// can neither CONSTRUCT (no unique provider at the call's instantiation)
@@ -1427,6 +1455,20 @@ impl TypeError {
                     short_name_of(spec_qn),
                 )
             }
+            // WI-20260919-N31XX — 065's message verbatim: the parameter, the read, and
+            // the clause to add, on the operation that must carry it.
+            TypeError::TypeValueReadUnbacked { param, op, .. } => {
+                let p = short_name_of(kb.local_name_of(*param));
+                format!(
+                    "`{p}` is read as a VALUE here, and nothing in scope requires \
+                     `TypeValue[T = {p}]` — so the signature of `{}` promises nothing \
+                     about whether it inspects `{p}` (proposal 065). Add `requires \
+                     anthill.reflect.TypeValue[T = {p}]` to `{}`, or use `{p}` only in \
+                     type position",
+                    kb.qualified_name_of(*op),
+                    short_name_of(kb.qualified_name_of(*op)),
+                )
+            }
             TypeError::UnsatisfiableRequirement {
                 op,
                 callee_sort,
@@ -1598,6 +1640,7 @@ impl TypeError {
             | TypeError::DispatchAmbiguous { span, .. }
             | TypeError::AmbiguousSpecOpDispatch { span, .. }
             | TypeError::UnfillableOperationRequirement { span, .. }
+            | TypeError::TypeValueReadUnbacked { span, .. }
             | TypeError::AmbiguousConstrainedParamMember { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
             | TypeError::ExcessCallTypeArgs { span, .. }
@@ -2017,6 +2060,24 @@ impl TypeError {
                         short_name_of(kb.qualified_name_of(*spec_sort_sym)),
                     ),
                     actual_type: self.format(kb),
+                    span: self.span(kb),
+                }
+            }
+            // WI-20260919-N31XX — the operation is the entity (it is the signature that
+            // must change) and `requires` the field, as the sibling above has it.
+            TypeError::TypeValueReadUnbacked { param, op, .. } => {
+                let p = short_name_of(kb.local_name_of(*param));
+                LoadError::TypeMismatch {
+                    origin: None,
+                    entity_name: kb.qualified_name_of(*op).to_string(),
+                    field_name: "requires".to_string(),
+                    expected_type: format!("`requires anthill.reflect.TypeValue[T = {p}]`"),
+                    actual_type: format!(
+                        "`{p}` is read as a VALUE and nothing in scope requires \
+                         `TypeValue[T = {p}]`, so the signature promises nothing about \
+                         whether this operation inspects `{p}` (proposal 065). Add the \
+                         clause, or use `{p}` only in type position"
+                    ),
                     span: self.span(kb),
                 }
             }
@@ -72535,6 +72596,207 @@ fn surviving_dot_apply(
     None
 }
 
+/// WI-20260919-N31XX (proposal 065, "The rule") — the type parameters this body is
+/// ALLOWED to read as values: those `B` for which `TypeValue[T = B]` stands among the
+/// requirements in scope.
+///
+/// BOTH LEVELS, and they are two different readers because they are two different
+/// carriers: an operation-level clause rides `OperationInfo.requires` and emits no
+/// relation fact, while a sort-level one rides a `SortRequiresInfo` fact. That is the
+/// same split [`any_requirement_names_spec`] states at length, and missing either half
+/// would refuse a program whose clause is written in the other spelling.
+///
+/// SORT-LEVEL IS DIRECT, NOT TRANSITIVE, and that is a scope fact rather than a
+/// shortcut: a transitively required spec's own clauses are written over THAT spec's
+/// parameters, not over this sort's, so they can never name a parameter this body reads.
+/// [`direct_requires`] is also what the dictionary LAYOUT is built from
+/// ([`provider_dict_entries`]), so the set admitted here and the set of slots that will
+/// actually exist at run time are read off one list.
+///
+/// KEYED BY THE PARAMETER'S CANONICAL LOGICAL VARIABLE, not by its symbol. An
+/// operation's type parameter is its own logical variable (`load.rs`: "distinct from any
+/// same-named outer sort parameter"), and a clause can name it in TWO spellings — a
+/// `Ref` / `Ident` on the op-scoped symbol `<ns>.<op>.B`, and a bare `Var::Global`, the
+/// shape a clause that went through a substitution carries. [`clause_named_type_param`]
+/// is the reader that collapses both to the one variable, and [`type_param_global_var`]
+/// resolves the READ side to that same variable, so the two sides agree by construction.
+/// A symbol comparison would admit the first spelling and silently miss the second —
+/// a silent FALSE REFUSAL. It also keeps a same-named parameter of an enclosing sort
+/// correctly distinct, which is the keying part 1 of this ticket had to get right in
+/// `check_override_refinement` for the same reason.
+///
+/// A CLAUSE OVER A CONCRETE TYPE (`requires TypeValue[T = Int64]`) CONTRIBUTES NOTHING
+/// here, and needs to: it backs no rigid read, because a concrete sort in value position
+/// is not a rigid read at all (065's "What the rule does NOT touch").
+fn type_value_backed_params(
+    kb: &KnowledgeBase,
+    op_sym: Symbol,
+    parent_sym: Option<Symbol>,
+) -> HashSet<VarId> {
+    let mut backed = HashSet::new();
+    let Some(spec) = kb.try_resolve_symbol("anthill.reflect.TypeValue") else {
+        // A KB loaded without the reflect stdlib has no `TypeValue` to require, so it
+        // has no reads to admit either — and with no spec there is no derivation and no
+        // slot, so this is the empty answer and not a swallowed failure.
+        return backed;
+    };
+    let canon = kb.canonical_sort_sym(spec);
+    // `TypeValue`'s SOLE parameter, read off the DECLARATION rather than spelled `"T"`
+    // here. The literal would be a second place the spec's parameter name is written, and
+    // renaming it there would leave this matching nothing — which admits no clause at all
+    // and refuses every read in the program. Reading the declaration makes that
+    // impossible; a spec with no parameter (or more than one) is not `TypeValue`'s shape
+    // and admits nothing, which is the fail-closed direction.
+    let params = kb.type_params_of_sort(canon);
+    let [param_name] = params.as_slice() else {
+        return backed;
+    };
+    let sort_view = kb.try_resolve_symbol("anthill.reflect.SortView");
+    let entries = op_requires_entries(kb, op_sym)
+        .into_iter()
+        .chain(parent_sym.into_iter().flat_map(|p| direct_requires(kb, p)));
+    for entry in entries {
+        if kb.canonical_sort_sym(entry.required_sort) != canon {
+            continue;
+        }
+        // THE TWO PRODUCERS STORE TWO SHAPES, and this reads both through the ONE face
+        // they share. A sort-level clause arrives as `SortView(TypeValue, T = …)`; an
+        // op-level one arrives as the BARE APPLICATION the author wrote
+        // (`TypeValue[T = B]`), because `push_op_requires_clause_term` stores it
+        // verbatim. `unwrap_spec_view_value` cannot serve both — for a bare application
+        // it answers `(functor, NO bindings)`, which is exactly what this function must
+        // not read as "binds nothing"; MEASURED, that is why the first cut admitted no
+        // op-level clause at all and refused `operation ty[T]() -> Type requires
+        // TypeValue[T = T]` with its own clause written two columns away.
+        // `named_keys`/`named_arg` are the same in both shapes, so they are the face;
+        // `normalize_op_requires_entry` is the other way to reconcile them and is not
+        // taken here because it wants `&mut KnowledgeBase` to allocate a normalized
+        // term this pass has no use for.
+        let is_sort_view = matches!(
+            entry.spec.head(kb),
+            ViewHead::Functor { functor: Some(f), .. }
+                if sort_view.is_some_and(|sv| same_sort_canonical(kb, f, sv))
+        );
+        let mut bound: Option<TermId> = None;
+        // Matched by SHORT name because the two loaders key a clause's bindings
+        // differently — the sort path re-keys by the required spec's own parameter
+        // symbols, the op path by the clause's — which is the same asymmetry
+        // `direct_requires`' conversion half matches on.
+        let named = entry
+            .spec
+            .named_keys(kb)
+            .into_iter()
+            .find(|k| short_name_of(kb.local_name_of(*k)) == param_name.as_str());
+        if let Some(key) = named {
+            bound = entry.spec.named_arg(kb, key).and_then(|it| it.as_term_id());
+        } else if !is_sort_view {
+            // THE POSITIONAL SPELLING, `requires TypeValue[B]`, which is the stdlib's own
+            // (`requires Eq[T]`) and so is the one an author is most likely to reach for.
+            //
+            // ONLY WHEN NO NAMED BINDING WAS WRITTEN AT ALL, which is why this is an
+            // `else` and not an `if bound.is_none()`. A named binding the view cannot
+            // hand back as a `TermId` — a denoted `Value::Node` carrier (WI-662) — leaves
+            // `bound` `None` having been written, and falling through would then read
+            // positional 0 of a clause whose author wrote a named one. On the
+            // bare-application shape positional 0 is the FIRST TYPE ARGUMENT, so that
+            // would admit an unrelated parameter as the one this body may read: a silent
+            // wrong ACCEPT, which is the one failure direction this rule must not have.
+            //
+            // AND ONLY ON THE BARE-APPLICATION SHAPE: a `SortView`'s positional 0 is the
+            // BASE SORT, so reading it would admit `TypeValue` itself as a readable
+            // parameter — the same wrong accept by the other route.
+            bound = entry.spec.pos_arg(kb, 0).and_then(|it| it.as_term_id());
+        }
+        // BY LOGICAL VARIABLE, not by symbol, and that is [`clause_named_type_param`]'s
+        // whole subject: a clause names a type parameter in TWO spellings — a `Ref` /
+        // `Ident` naming the op-scoped symbol, and a bare `Var::Global`, which is what a
+        // clause that went through a substitution carries. Comparing symbols would admit
+        // the first and silently miss the second; the parameter's canonical variable is
+        // the one identity both spellings agree on, and it is what the READ side is
+        // resolved to as well.
+        if let Some(vid) = bound.and_then(|t| clause_named_type_param(kb, t)) {
+            backed.insert(vid);
+        }
+    }
+    backed
+}
+
+/// WI-20260919-N31XX — every VALUE-position read of a rigid type in this body, as
+/// (the parameter's canonical variable, the symbol as written, span), in SOURCE ORDER.
+///
+/// THE WALK AND THE ADMISSION TEST ARE SEPARATE, and that split is what keeps the rule
+/// off the hot path: almost every operation body in a program reads no rigid at all, and
+/// this walk answers empty for it without asking what the operation requires.
+/// [`type_value_backed_params`] costs a `lookup_operation_info` and a `direct_requires`
+/// chain per call — the same per-operation read `any_requirement_names_spec`' doc
+/// measured at ~23 ms over a stdlib load — so it runs only once this has found something
+/// to admit.
+///
+/// THE SHAPE IT LOOKS FOR is proposal 055 §2's classified form: the loader mints a
+/// nominal type in value position as an `Expr::TypeValue`, and a BARE one (no type
+/// arguments) whose head is a type parameter is exactly "read the rigid `B` as a value".
+/// A read nested inside a type expression — `Cell[V = B]` — is the same node one level
+/// down, and [`for_each_child`](super::node_occurrence::for_each_child) yields those
+/// arguments, so the plain walk reaches it with no special case. An applied
+/// `Expr::TypeValue` is never itself a rigid read: a type parameter takes no arguments.
+///
+/// WHAT THE WALK DOES NOT REACH, and each is correct rather than tolerated. A CALLEE
+/// BRACKET (`tyOf[T = B]()`) is a type position, and `for_each_child`'s `Apply` arm does
+/// not yield `type_args` — so it is excluded by construction, not by a test here. A
+/// TYPE ANNOTATION is a `NodeKind::Type` occurrence, for which `as_expr()` is `None`.
+/// A RULE BODY is not an operation body and this pass never sees one.
+///
+/// A RAW `Expr::Ref` / `Expr::Ident` NAMING A TYPE PARAMETER IS NOT COUNTED, and that is
+/// MEASURED rather than assumed: WI-20260919-BQHGD's census ran this question over the
+/// full workspace — stdlib, `anthill-stl`, the examples and every fixture — and found all
+/// 157 hits over 19 sites arrived as `Expr::TypeValue`, none as a raw `Ref`. Eval's
+/// WI-206 bare-sort arm in `reduce_var` is therefore not reached by a type-parameter read
+/// from checked source. Counting the raw form here would mean judging occurrences the
+/// loader has not classified as value reads at all.
+///
+/// SOURCE ORDER, so the FIRST unbacked read is reported: children are pushed in reverse
+/// and popped, which is pre-order DFS left to right — the same reason and the same
+/// spelling as [`surviving_dot_apply`] above. An author fixing the last read first would
+/// reload only to be told about the first.
+///
+/// AN EXPLICIT STACK, not host recursion, for the reason [`surviving_dot_apply`] gives:
+/// a body's nesting depth is the author's, and it must not decide whether the loader
+/// stands up.
+fn rigid_value_reads(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+) -> Vec<(VarId, Symbol, Option<Span>)> {
+    let mut out = Vec::new();
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(node) = stack.pop() {
+        let Some(expr) = node.as_expr() else { continue };
+        if let Expr::TypeValue {
+            head,
+            pos_args,
+            named_args,
+        } = expr
+        {
+            if pos_args.is_empty() && named_args.is_empty() {
+                // A TYPE PARAMETER and not a sort: `type_param_global_var` answers
+                // `Some` only for a symbol `add_type_param` registered, which is the
+                // same membership test every other clause reader in this file uses, and
+                // it yields the parameter's CANONICAL variable — the identity
+                // `type_value_backed_params` keys its answer on, for the reason stated
+                // there. A genuine nominal sort head falls straight through:
+                // `Cell[V = Int64]` reads no rigid, which is 065's "concrete sorts"
+                // exclusion.
+                if let Some(vid) = type_param_global_var(kb, *head) {
+                    out.push((vid, *head, Some(node.span.span)));
+                }
+            }
+        }
+        let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+        super::node_occurrence::for_each_child(expr, |child| children.push(Rc::clone(child)));
+        stack.extend(children.into_iter().rev());
+    }
+    out
+}
+
 /// Check operation bodies against their declared return types.
 fn check_operation_bodies(
     kb: &mut KnowledgeBase,
@@ -73134,6 +73396,40 @@ fn check_operation_bodies(
                             .and_then(|ty| sort_functor_of_view(kb, &ty)),
                         receiver_param: None,
                     });
+                }
+                // WI-20260919-N31XX (proposal 065, "The rule") — A RIGID READ AS A VALUE
+                // NEEDS A `requires TypeValue[T = B]` IN SCOPE.
+                //
+                // ON THE STORED TREE, AFTER THE WRITE-BACK ABOVE, and that placement is
+                // the rule rather than a detail. 065 §6 measured the nineteenth census
+                // site: `operation dq[K]() -> Int64 = size(put(mkq(K), "a", 1))` passes
+                // `K` to `rule mkq(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]`, and
+                // after inlining `K` sits in a TYPE position. Judged BEFORE expansion —
+                // which is where WI-20260919-BQHGD's temporary census pass sat, at the
+                // top of this function — the rule would refuse a program whose only use
+                // of `K` is as a type. `result.node` is the redex-free body, so the rule
+                // sees what eval will run. DRIVEN by
+                // `wi_n31xx_type_value_read_rule_test::a_simp_expanded_type_position_is_not_a_value_read`,
+                // whose `dq` carries no clause beside a control op that does; measured
+                // the other way round, `wi_h054k_type_position_subst_test` is the census
+                // file that does NOT appear among the refusals when the rule goes on.
+                //
+                // ONE DIAGNOSTIC PER BODY, the first read in source order, like the
+                // dot backstop above: the repair is a single clause on the signature, so
+                // reporting every read of the same parameter would be one fix told many
+                // times.
+                let reads = rigid_value_reads(kb, &result.node);
+                if !reads.is_empty() {
+                    let backed = type_value_backed_params(kb, op.op_sym, op.parent_sym);
+                    if let Some((_, param, span)) =
+                        reads.into_iter().find(|(vid, _, _)| !backed.contains(vid))
+                    {
+                        errors.push(TypeError::TypeValueReadUnbacked {
+                            span,
+                            param,
+                            op: op.op_sym,
+                        });
+                    }
                 }
                 let mut subst = Substitution::new();
                 // WI-341/342: both sides are carrier-agnostic `Value` — the

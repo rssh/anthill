@@ -400,6 +400,7 @@ fn a_bracket_contradicting_an_argument_stays_loud() {
 const EVAL_SRC: &str = r#"
 namespace test.rs2g4e
   import anthill.prelude.{Option, Int64, String, Bool, Type, List}
+  import anthill.reflect.{TypeValue}
 
   sort Letter
     entity la
@@ -412,20 +413,28 @@ namespace test.rs2g4e
 
   sort Box[T]
     import anthill.prelude.{Type, List}
+    import anthill.reflect.{TypeValue}
     entity box(v: T)
+    -- 065: the members below read `T` as a VALUE, so the SORT carries the evidence —
+    -- it rides the instance, which is what a member entered at that instance can read.
+    requires TypeValue[T = T]
     operation selfType() -> Type = Box[T = T]
     operation viaSibling() -> Type = selfType()
     operation nestedSelf() -> Type = List[T = List[T = T]]
-    operation both2[U]() -> Type = Duo2[A = T, B = U]
+    -- `U` is the OPERATION's own, so its clause is the operation's: the caller supplies it.
+    operation both2[U]() -> Type requires TypeValue[T = U] = Duo2[A = T, B = U]
   end
 
   sort Pair2[A, B]
     import anthill.prelude.Type
+    import anthill.reflect.{TypeValue}
     entity pr(x: A, y: B)
+    requires TypeValue[T = A]
+    requires TypeValue[T = B]
     operation both() -> Type = Pair2[A = A, B = B]
   end
 
-  operation ty[U]() -> Type = Box[T = U]
+  operation ty[U]() -> Type requires TypeValue[T = U] = Box[T = U]
 
   operation w_recv_self() -> Type = Box[T = Letter].selfType()
   operation w_callee_self() -> Type = Box.selfType[T = Letter]()
@@ -539,11 +548,12 @@ fn a_bracket_value_with_an_unwritten_slot_arrives_expanded() {
     let src = r#"
 namespace test.rs2g4x
   import anthill.prelude.{Int64, Type, List}
+  import anthill.reflect.{TypeValue}
   sort Box[T]
     import anthill.prelude.Type
     entity box(v: T)
   end
-  operation tyb[U]() -> Type = Box[T = U]
+  operation tyb[U]() -> Type requires TypeValue[T = U] = Box[T = U]
   operation w_bare() -> Type = tyb[U = List]()
   operation w_written() -> Type = tyb[U = List[T = Int64]]()
 end

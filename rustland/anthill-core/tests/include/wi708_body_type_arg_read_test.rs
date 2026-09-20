@@ -25,8 +25,9 @@ fn a_body_type_param_read_carries_its_binding() {
     let src = r#"
 namespace test.wi708
   import anthill.prelude.{Cell, Int64, Type}
+  import anthill.reflect.{TypeValue}
 
-  operation ty[T]() -> Type = Cell[V = T]
+  operation ty[T]() -> Type requires TypeValue[T = T] = Cell[V = T]
   operation ty_int() -> Type = ty[T = Int64]()
 end
 "#;
@@ -81,8 +82,9 @@ fn distinct_instantiations_read_distinct_bindings() {
     let src = r#"
 namespace test.wi708b
   import anthill.prelude.{Cell, Int64, String, Type}
+  import anthill.reflect.{TypeValue}
 
-  operation ty[T]() -> Type = Cell[V = T]
+  operation ty[T]() -> Type requires TypeValue[T = T] = Cell[V = T]
   operation ty_int() -> Type = ty[T = Int64]()
   operation ty_str() -> Type = ty[T = String]()
 end
@@ -186,9 +188,10 @@ fn a_type_argument_passed_through_a_generic_caller_is_ground() {
     let src = r#"
 namespace test.wi708c
   import anthill.prelude.{Cell, Int64, Type}
+  import anthill.reflect.{TypeValue}
 
-  operation tyOf[T](x: T) -> Type = Cell[V = T]
-  operation tyOf2[U](y: U) -> Type = tyOf(y)
+  operation tyOf[T](x: T) -> Type requires TypeValue[T = T] = Cell[V = T]
+  operation tyOf2[U](y: U) -> Type requires TypeValue[T = U] = tyOf(y)
 
   operation direct() -> Type = tyOf(5)
   operation nested() -> Type = tyOf2(5)

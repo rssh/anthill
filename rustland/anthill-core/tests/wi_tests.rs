@@ -1786,3 +1786,6 @@ mod wi_9kypa_parametric_key_noneq_test;
 
 #[path = "include/wi_hxgxf_type_value_derivation_test.rs"]
 mod wi_hxgxf_type_value_derivation_test;
+
+#[path = "include/wi_n31xx_type_value_read_rule_test.rs"]
+mod wi_n31xx_type_value_read_rule_test;

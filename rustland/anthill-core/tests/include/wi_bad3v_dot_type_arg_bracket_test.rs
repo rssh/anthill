@@ -411,10 +411,11 @@ fn a_companion_receiver_call_drives_its_type_argument() {
     let src = r#"
 namespace test.bad3v
   import anthill.prelude.{Cell, Int64, String, Type}
+  import anthill.reflect.{TypeValue}
 
   sort Box
     sort E = ?
-    operation ty[T]() -> Type = Cell[V = T]
+    operation ty[T]() -> Type requires TypeValue[T = T] = Cell[V = T]
   end
 
   operation via_companion() -> Type = Box[E = Int64].ty[T = String]()

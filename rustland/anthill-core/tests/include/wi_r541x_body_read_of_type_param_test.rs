@@ -34,9 +34,23 @@
 //!   row below existed; it too goes through that function.)
 //! * **(sort rewrite)** — `enclosing_sort_param_ref_rewrite`'s pairs not added: 1 red,
 //!   [`a_sort_level_requirement_reaches_the_member`]. Found by `/code-review`.
-//! * **(D, channel half)** — `refuse_ungrounded_channel_value` returns `Ok(())`: red
-//!   [`an_ungrounded_channel_value_is_a_located_fault`], which then answers `SHold.E`'s
-//!   name as a type.
+//! * **(D, channel half)** — SUPERSEDED BY WI-20260919-N31XX (proposal 065). That row
+//!   asserted a located RUN-TIME fault for an unbracketed `SHold.f()`; under 065 `SHold`
+//!   must declare `requires TypeValue[T = E]` for its member to read `E`, and a call that
+//!   pins nothing cannot supply it — so the program is refused at LOAD and the row is now
+//!   [`an_ungrounded_receiver_is_now_refused_at_load`], in its own fixture. The
+//!   `refuse_ungrounded_channel_value` back-out no longer reaches it.
+//!
+//! WHAT 065 CHANGED HERE, and what it deliberately did not. Every read of a type
+//! parameter as a VALUE in this file now carries its evidence: `TypeTerm`, `Err2`, `Box`
+//! and `CrateTT` gained a SORT-level `requires TypeValue[T = …]`, and `tagOp` / `tagExpr`
+//! and the operations that forward to them gained the operation-level clause. The clause
+//! is on the SORT for the four sorts and not on their members, and that is 065 §3's table
+//! rather than taste — MEASURED: with `valueOfB requires TypeValue[T = V]` written on the
+//! member instead, `Box` and `CrateTT` were both refused "it strengthens the precondition",
+//! because an operation-level clause is an extra input the spec's caller cannot supply.
+//! (C)'s two rows still assert (D)'s located run-time fault, unchanged: a PROVIDER's own
+//! parameter entered through a requirement slot is 065 step 4's (WI-20260919-891QP).
 //!
 //! WHY (C)'s SPEC IS BODY-LESS. A receiver-less member WITH a default body
 //! (`TypeTerm.valueOf`) is typed as a plain call to that default (WI-365's route), so a
@@ -59,10 +73,20 @@ const SRC: &str = r#"
 namespace test.r541x
   import anthill.prelude.{Option, Int64, String, Type}
   import anthill.prelude.Option.{none}
+  import anthill.reflect.{TypeValue}
 
   sort TypeTerm
     import anthill.prelude.Type
+    import anthill.reflect.{TypeValue}
     sort T = ?
+    -- 065: `valueOf` reads the sort's own `T` as a VALUE. THE CLAUSE IS THE SORT'S AND
+    -- NOT THE OPERATION'S, and that is 065 §3's table rather than a preference: an
+    -- operation-level clause is an extra INPUT the caller supplies per call, so an
+    -- implementation may not add one the spec lacks — MEASURED here, with the clause on
+    -- `valueOfB` instead, `Box` and `CrateTT` were both refused "it strengthens the
+    -- precondition". A clause over the provider's OWN parameters rides the INSTANCE,
+    -- which is the half 065 §3 permits.
+    requires TypeValue[T = T]
     operation valueOf() -> Type = T
   end
 
@@ -73,7 +97,9 @@ namespace test.r541x
 
   sort Err2
     import anthill.prelude.Type
+    import anthill.reflect.{TypeValue}
     sort T = ?
+    requires TypeValue[T = T]
     operation tagOf(error: T) -> Type = T
   end
 
@@ -88,8 +114,10 @@ namespace test.r541x
 
   sort Box
     import anthill.prelude.Type
+    import anthill.reflect.{TypeValue}
     sort V = ?
     entity box(v: V)
+    requires TypeValue[T = V]
     provides TypeTermB[T = Box[V = V]]
     operation valueOfB() -> Type = Box[V = V]
   end
@@ -101,7 +129,9 @@ namespace test.r541x
 
   sort CrateTT
     import anthill.prelude.Type
+    import anthill.reflect.{TypeValue}
     sort E = ?
+    requires TypeValue[T = E]
     provides TypeTermB[T = Crate[W = E]]
     operation valueOfB() -> Type = Crate[W = E]
   end
@@ -109,32 +139,35 @@ namespace test.r541x
   -- A SORT-level clause: the member runs under `TypeTerm[T = E]` for its own instance.
   sort SHold
     import anthill.prelude.Type
+    import anthill.reflect.{TypeValue}
     sort E = ?
     entity shold(e: E)
+    requires TypeValue[T = E]
     requires TypeTerm[T = E]
     operation f() -> Type = TypeTerm.valueOf()
   end
 
-  operation tagOfP[P](x: P) -> Type requires TypeTerm[T = P] = TypeTerm.valueOf()
-  operation outer[Q](y: Q) -> Type requires TypeTerm[T = Q] = tagOfP(y)
+  operation tagOfP[P](x: P) -> Type requires TypeValue[T = P], TypeTerm[T = P] =
+    TypeTerm.valueOf()
+  operation outer[Q](y: Q) -> Type requires TypeValue[T = Q], TypeTerm[T = Q] = tagOfP(y)
   operation tagOfB[P](x: P) -> Type requires TypeTermB[T = P] = TypeTermB.valueOfB()
-  operation twoReq[P, Q](x: P, y: Q) -> Type requires TypeTerm[T = P], TypeTerm[T = Q] =
+  operation twoReq[P, Q](x: P, y: Q) -> Type
+    requires TypeValue[T = P], TypeValue[T = Q], TypeTerm[T = P], TypeTerm[T = Q] =
     TypeTerm.valueOf()
 
-  operation g[P](x: P) -> Type = Err2.tagOf(x)
-  operation g2[Q](y: Q) -> Type = g(y)
-  operation tagOp[T](x: T) -> Type = T
-  operation gOp[P](x: P) -> Type = tagOp(x)
-  operation gBox[P](x: P) -> Type = tagOp(box(x))
-  operation gBox2[Q](y: Q) -> Type = gBox(y)
-  operation gBoxS[P](x: P) -> Type = Err2.tagOf(box(x))
-  operation tagExpr[P](x: P) -> Type = Box[V = P]
+  operation g[P](x: P) -> Type requires TypeValue[T = P] = Err2.tagOf(x)
+  operation g2[Q](y: Q) -> Type requires TypeValue[T = Q] = g(y)
+  operation tagOp[T](x: T) -> Type requires TypeValue[T = T] = T
+  operation gOp[P](x: P) -> Type requires TypeValue[T = P] = tagOp(x)
+  operation gBox[P](x: P) -> Type requires TypeValue[T = P] = tagOp(box(x))
+  operation gBox2[Q](y: Q) -> Type requires TypeValue[T = Q] = gBox(y)
+  operation gBoxS[P](x: P) -> Type requires TypeValue[T = P] = Err2.tagOf(box(x))
+  operation tagExpr[P](x: P) -> Type requires TypeValue[T = P] = Box[V = P]
   operation noneInt() -> Option[T = Int64] = none()
 
   operation a1() -> Type = tagOfP(boom("x"))
   operation a2() -> Type = outer(boom("x"))
   operation a1s() -> Type = SHold[E = Boom].f()
-  operation a1u() -> Type = SHold.f()
   operation a3() -> Type = g("s")
   operation a3b() -> Type = g2("s")
   operation b1() -> Type = gBox("s")
@@ -258,13 +291,44 @@ fn two_clauses_over_one_spec_are_a_located_fault() {
     }
 }
 
-/// (D)'s CHANNEL half: `SHold.f()` with no bracket says nothing about `E`, so `valueOf`'s
-/// channel carries `Ref(SHold.E)` and the calling frame has nothing to ground it with.
-/// The read is refused naming `SHold.E` — the parameter actually missing — rather than
-/// delivering its name as a type.
+/// (D)'s CHANNEL half, NOW REFUSED AT LOAD — WI-20260919-N31XX (proposal 065).
+///
+/// `SHold.f()` with no bracket says nothing about `E`. Before 065 this LOADED and the
+/// read of `SHold.E` was a located RUN-TIME fault (`EvalError::UnboundTypeParam`),
+/// which is what this row used to assert. Under 065 `SHold` must declare
+/// `requires TypeValue[T = E]` for its member to read `E` at all, and a sort-level
+/// requirement has to be SUPPLIABLE at every call site of its members — which this one
+/// is not, because nothing pins `E`. So the diagnostic moved from run time to load, and
+/// it moved to the CALL, which is where the missing information is: `a1s`'s
+/// `SHold[E = Boom].f()` supplies it and `a1u`'s `SHold.f()` cannot.
+///
+/// WHY IT IS ITS OWN FIXTURE: a load refusal is fatal to the whole file, so leaving
+/// `a1u` in the shared `SRC` would take all fifteen rows above down with it.
+///
+/// THE (D) RUN-TIME FAULT IS NOT GONE and is not dead code — the two (C) rows above
+/// still drive it, because a PROVIDER's own parameter reached through a requirement
+/// slot is 065 step 4's (WI-20260919-891QP), not this ticket's. What this row records
+/// is that the CHANNEL half of (D) is no longer reachable from checked source.
+///
+/// BACK-OUT: remove `requires TypeValue[T = E]` from `SHold` and the file no longer
+/// loads at all — the rule refuses `valueOf`'s read of `T` instead.
 #[test]
-fn an_ungrounded_channel_value_is_a_located_fault() {
-    assert_eq!(unbound_param("a1u"), "test.r541x.SHold.E");
+fn an_ungrounded_receiver_is_now_refused_at_load() {
+    let src = SRC.replace(
+        "  operation a1s() -> Type = SHold[E = Boom].f()",
+        "  operation a1s() -> Type = SHold[E = Boom].f()\n  operation a1u() -> Type = SHold.f()",
+    );
+    assert_ne!(src, SRC, "the anchor must still be in SRC");
+    let errs = match crate::common::try_load_kb_with(&src) {
+        Ok(_) => panic!("an unbracketed `SHold.f()` must not load: nothing pins `E`"),
+        Err(e) => e,
+    };
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.reflect.TypeValue")
+            && e.contains("test.r541x.SHold.E")
+            && e.contains("unconstrained at this call site")),
+        "the refusal must name the evidence and the parameter nothing pins; got {errs:?}"
+    );
 }
 
 // ── CONTROLS — green with or without every mechanism above ───────────────────────────
