@@ -72760,7 +72760,7 @@ fn surviving_dot_apply(
 /// requirements in scope.
 ///
 /// THE SAME LIST THE LOWERING INDEXES, read through the same decoder
-/// ([`type_value_clause_param`]). That is not tidiness: [`lower_rigid_read_to_slot`]
+/// ([`type_value_clause_param_at`]). That is not tidiness: [`lower_rigid_read_to_slot`]
 /// lowers a read it finds a slot for, and this pass refuses a read that SURVIVED
 /// un-lowered — so if the two lists disagreed, a read the chain backs but this misses
 /// would be refused although it is well-formed, and a read this admits but the chain
@@ -72771,7 +72771,7 @@ fn surviving_dot_apply(
 /// the op half — a clause written on the enclosing sort and one written on the operation
 /// are found by one walk, at the index each will actually occupy at run time. It also
 /// normalizes, which is what makes an op-level clause decodable at all (see
-/// [`type_value_clause_param`]).
+/// [`type_value_clause_param_at`]).
 ///
 /// SO THIS ADMITS MORE THAN THE LOWERING TAKES, on purpose: a SORT-half clause backs a
 /// read that `lower_rigid_read_to_slot` declines to lower, and that read is correct —
@@ -72878,9 +72878,16 @@ fn type_value_forward_unsuppliable(kb: &KnowledgeBase, dep: &RequiresEntry) -> b
 ///
 /// `find_map` over the bindings rather than a lookup of the `T` key, because `TypeValue`
 /// has exactly ONE type parameter, so there is only ever one binding to test.
-fn type_value_clause_param(kb: &KnowledgeBase, entry: &RequiresEntry) -> Option<VarId> {
-    let tv = type_value_spec_sym(kb)?;
-    if kb.canonical_sort_sym(entry.required_sort) != kb.canonical_sort_sym(tv) {
+/// `tv_canon` IS THE SPEC'S CANONICAL SYMBOL, PASSED IN, because both callers are LOOPS
+/// over a whole `DictChain`. Resolving `anthill.reflect.TypeValue` by NAME inside would
+/// be a string lookup per ENTRY per read, on a path [`lower_rigid_read_to_slot`] takes
+/// for every bare type-value node in every body. Found by `/code-review`.
+fn type_value_clause_param_at(
+    kb: &KnowledgeBase,
+    tv_canon: Symbol,
+    entry: &RequiresEntry,
+) -> Option<VarId> {
+    if kb.canonical_sort_sym(entry.required_sort) != tv_canon {
         return None;
     }
     let (_, bindings) = unwrap_spec_view_value(kb, &entry.spec)?;
@@ -72907,10 +72914,11 @@ fn type_value_clause_param(kb: &KnowledgeBase, entry: &RequiresEntry) -> Option<
 /// `op_dict_entries(kb, enclosing_op).names(kb)`, which is this chain; indexing anything
 /// else would name a different dictionary at run time than the one chosen here.
 fn type_value_slot(chain: &DictChain, kb: &KnowledgeBase, param: VarId) -> Option<usize> {
+    let canon = kb.canonical_sort_sym(type_value_spec_sym(kb)?);
     chain
         .entries()
         .iter()
-        .position(|e| type_value_clause_param(kb, e) == Some(param))
+        .position(|e| type_value_clause_param_at(kb, canon, e) == Some(param))
 }
 
 /// WI-20260919-N31XX (proposal 065 §1) — LOWER a bare value-position read of a rigid to
@@ -73013,10 +73021,13 @@ fn type_value_backed_params(
     kb: &mut KnowledgeBase,
     op_sym: Symbol,
 ) -> HashSet<VarId> {
+    let Some(canon) = type_value_spec_sym(kb).map(|tv| kb.canonical_sort_sym(tv)) else {
+        return HashSet::new();
+    };
     op_dict_entries(kb, op_sym)
         .entries()
         .iter()
-        .filter_map(|e| type_value_clause_param(kb, e))
+        .filter_map(|e| type_value_clause_param_at(kb, canon, e))
         .collect()
 }
 
