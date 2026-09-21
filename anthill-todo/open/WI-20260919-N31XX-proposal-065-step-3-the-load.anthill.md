@@ -34,7 +34,7 @@ Each row names the back-out that turns it red. `docs/kernel-language.md`: the R5
 
 ## Changes
 
-### 2026-09-19T15:35:16Z — feedback — user
+### 2026-09-19T15:35:16Z — feedback — claude
 
 FROM THE BQHGD CENSUS (065 §6), two things this ticket now owns. (1) THE OVERRIDE LEG OVER-REFUSES: check_override_refinement does not align the two operations' TYPE parameters, so a spec 'requires Eq[T = B]' restated verbatim on the override is refused as 'strengthens the precondition' (a ground 'Eq[T = Int64]' restated loads). An implementation must restate 'TypeValue[T = B]' to read B, so align them. Flip wi_bqhgd_override_requires_subset_probe_test::restating_the_specs_type_param_clause_is_refused_today to positive. (2) JUDGE READS AFTER @[simp] EXPANSION: 'dq[K]() = size(put(mkq(K), ...))' with 'rule mkq(?k) <=> Map[K = ?k, V = Int64].empty() @[simp]' passes K as an argument that inlining places in a TYPE position (wi_h054k_type_position_subst_test); judged before expansion it would be refused wrongly. MIGRATION IS FIVE TEST FILES, stdlib/anthill-stl/examples have ZERO sites: rs2g4 (8), r541x (6), wi708 (3), bad3v (1), h054k (1, the simp case, exempt once (2) holds). Every site is the resolved TypeValue form; reduce_var's WI-206 sort arm is unreached by a type-param read from checked source, which bears on whether R541X's (D) guard there stays.
 
@@ -51,4 +51,27 @@ ONE GAP PINNED, NOT ACCEPTED. A generic caller that FORWARDS a requirement witho
 THE LOWERING'S BLOCKER, IDENTIFIED. type_value() is NULLARY, so a bare B read names no carrier and cannot pick WHICH TypeValue slot to dispatch through when several are in scope (twoReq[P, Q] has two). 065 §8's own spelling type_value[T = B]() is REFUSED today — HXGXF recorded the message — because T is the SORT's parameter and the callee bracket is not wired for that shape although 065 §8 attributes the binding to RS2G4. So part 3 is that binding PLUS the lowering, and it is the piece that also closes the forwarding gap above. The route itself is mapped: a plain Expr::Apply to anthill.reflect.TypeValue.type_value synthesized in the TypeBuildFrame::TypeValue arm reaches defer_to_op_scoped_slot and then start_apply_deferred / expand_dispatching_dict / builtin_dispatch_dict / type_value_of_self, all of which HXGXF already built and drives end to end.
 
 SELF-REVIEW (/code-review high) found four, all fixed before commit, the two that mattered being a named binding unreadable as a TermId falling through to the positional arm (a silent wrong ACCEPT) and the spec's sole parameter name being a "T" literal rather than read off the declaration.
+
+### 2026-09-21T09:14:49Z — feedback — claude
+
+STAYS OPEN. The work is in (five commits, d1d89a14 / a9dca5cd / 8b80344b / 7ae08e01 / 16da9206, plus 8f7ea4ad), the workspace is green (7225/0; scaland 614 total/0), but ONE ACCEPTANCE ITEM IS NOT MET AS WRITTEN and it is the user's to judge, not mine.
+
+'EVERY MIGRATED ROW STILL ANSWERING WHAT IT ANSWERED BEFORE' — FIVE ROWS CHANGED VERDICT.
+
+Three now refuse at LOAD where they answered at run time:
+ * wi_r541x .. an_ungrounded_receiver_is_now_refused_at_load — was EvalError::UnboundTypeParam for an unbracketed SHold.f(). SHold must declare requires TypeValue[T = E] for its member to read E, and a call pinning nothing cannot supply it.
+ * wi_r541x .. two_clauses_over_one_spec_are_refused_at_load — was UnboundTypeParam. twoReq[P, Q] requires TypeTerm at both P and Q, so nothing picks which clause TypeTerm.valueOf() runs under and the evidence cannot be built.
+ * wi_rs2g4 .. a_bracket_value_with_an_unwritten_slot_is_refused_where_it_is_read — was ANSWERING Box(T: List(T: ?var)). A bare [U = List] expands to List[T = ?T] (RS2G4) and the conditional derived instance wants TypeValue[T = ?T] for a ?T nothing pins.
+
+Two now ANSWER where they faulted — 065 §4 / WI-20260919-891QP arriving:
+ * wi_r541x .. a_providers_own_param_answers_through_its_instance — Box(V: Boom), was UnboundTypeParam.
+ * wi_r541x .. a_witnesss_own_param_answers_through_its_instance — Crate(W: Boom), was UnboundTypeParam.
+
+THE ARGUMENT FOR ACCEPTING THEM is 065's own: 'R541X made the unreachable cases loud; this proposal makes them UNWRITABLE'. Each of the three refusals is a program that was always ill-formed and is now reported where the author can act on it; the two flips are the step the proposal predicted. No migrated row LOST a capability. Each is documented at its site with what changed and the back-out that restores the old verdict.
+
+THE ARGUMENT AGAINST is that the acceptance says what it says, and three programs that used to load now do not — a surface change to what the language admits, which is a decision and not a test detail.
+
+NOTHING ELSE IS OUTSTANDING: the load rule (both the READ and the FORWARD half), the lowering for OP-level and SORT-level clauses, the census migration across five files, the §3 subset rows, kernel-language.md's R541X paragraph, and 055/065's statuses are all in. 891QP is closed by this and should be marked so once this is.
+
+SPUN OFF, neither blocking: WI-20260920-XSVCS (the general requirement-propagation gap this narrowly closed only for TypeValue) and WI-20260921-28TAT (remove the frame type-argument channel, now down to one reader).
 
