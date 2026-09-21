@@ -1789,3 +1789,6 @@ mod wi_hxgxf_type_value_derivation_test;
 
 #[path = "include/wi_n31xx_type_value_read_rule_test.rs"]
 mod wi_n31xx_type_value_read_rule_test;
+
+#[path = "include/wi_xsvcs_op_requires_forward_test.rs"]
+mod wi_xsvcs_op_requires_forward_test;

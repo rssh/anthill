@@ -25407,18 +25407,69 @@ fn build_op_scoped_dicts(
                     unprovided: None,
                 }));
             }
-            // WI-1102 (058 §3.10) — the use-site discharge: this call PINNED a carrier
-            // and the goal `Spec[T = Carrier]` has no provider. PARKED, not raised, for
-            // WI-945's reason exactly one channel over — the σ that proves the element
-            // is pinned lives only here, and whether the callee will MISS the slot lives
-            // only in its body, which may not be typed yet. See
-            // [`UnsuppliableRequirement`].
-            if let (Some(site), Some(nomatch @ ResolutionResult::NoMatch { .. })) =
-                (park, &s3_failure)
-            {
-                if let Some(unprovided) = unprovided_provision(kb, &dep) {
-                    let construction = describe_resolution_failure(kb, nomatch);
-                    let dep_text = render_requires_entry(kb, &dep);
+            // TWO PARKED VERDICTS, DECIDED BY ONE `match` so a slot cannot be reported
+            // twice. They are disjoint by construction — WI-1102's needs every element
+            // of the dep GROUND ([`unprovided_provision`]), XSVCS's needs one of them to
+            // be a caller RIGID — but writing them as two independent `if`s would leave
+            // that disjointness as a fact to re-derive at every later edit, and a
+            // double push is one call site with two errors.
+            if let Some(site) = park {
+                // WI-1102 (058 §3.10) — the use-site discharge: this call PINNED a
+                // carrier and the goal `Spec[T = Carrier]` has no provider. PARKED, not
+                // raised, for WI-945's reason exactly one channel over — the σ that
+                // proves the element is pinned lives only here, and whether the callee
+                // will MISS the slot lives only in its body, which may not be typed yet.
+                // See [`UnsuppliableRequirement`].
+                let unprovided = match &s3_failure {
+                    Some(nomatch @ ResolutionResult::NoMatch { .. }) => {
+                        unprovided_provision(kb, &dep)
+                            .map(|u| (u, describe_resolution_failure(kb, nomatch)))
+                    }
+                    _ => None,
+                };
+                let refusal = match unprovided {
+                    Some((unprovided, construction)) => Some(RequirementRefusal {
+                        dep_text: render_requires_entry(kb, &dep),
+                        unconstrained: Vec::new(),
+                        refused_covers: Vec::new(),
+                        construction,
+                        pinned: None,
+                        unprovided: Some(unprovided),
+                    }),
+                    // WI-20260920-XSVCS — THE FORWARD: the carrier is a type parameter
+                    // of the CALLER, and the caller declared no `requires` that covers
+                    // it. See [`caller_rigid_carrier`] for why that is a verdict and not
+                    // a gap.
+                    None => caller_rigid_carrier(kb, &dep, &disambig, site.enclosing_op)
+                        .map(|c| RequirementRefusal {
+                            // RENDERED IN THE CALLER'S SPELLING, not `dep`'s. The entry
+                            // still names the CALLEE's formal (`tyOf.B`), and an author
+                            // told to declare `requires TT[T = tyOf.B]` would be copying
+                            // a parameter of a declaration that is not theirs. Same rule,
+                            // and the same reason, as the projection arm above.
+                            dep_text: c.clause.clone(),
+                            unconstrained: Vec::new(),
+                            refused_covers: Vec::new(),
+                            construction: format!(
+                                "its carrier is `{}`, a type parameter of the CALLING \
+                                 operation `{}`, which declares no `requires` that \
+                                 covers it — the caller's frame is the only thing that \
+                                 could ever fill this slot, and it holds nothing for \
+                                 `{}`. Declare `requires {}` on `{}` so the evidence is \
+                                 passed in, or call `{}` with a type whose provision is \
+                                 known here",
+                                c.carrier,
+                                kb.qualified_name_of(site.enclosing_op),
+                                c.carrier,
+                                c.clause,
+                                kb.qualified_name_of(c.declare_on),
+                                kb.qualified_name_of(callee_op),
+                            ),
+                            pinned: None,
+                            unprovided: None,
+                        }),
+                };
+                if let Some(refusal) = refusal {
                     kb.unsuppliable_requirements.push(UnsuppliableRequirement {
                         span: site.span,
                         source: site.source,
@@ -25427,14 +25478,7 @@ fn build_op_scoped_dicts(
                         // not write it, so naming the parent would attribute the
                         // requirement to a declaration that has none.
                         callee_sort: callee_op,
-                        refusal: Box::new(RequirementRefusal {
-                            dep_text,
-                            unconstrained: Vec::new(),
-                            refused_covers: Vec::new(),
-                            construction,
-                            pinned: None,
-                            unprovided: Some(unprovided),
-                        }),
+                        refusal: Box::new(refusal),
                         slot: SlotToRead::Op(op_index),
                     });
                 }
@@ -25470,6 +25514,10 @@ fn build_op_scoped_dicts(
 struct OpSlotParkSite {
     span: Option<Span>,
     source: crate::span::SourceId,
+    /// The operation whose body wrote this call — the CALLER. Carried because a
+    /// refusal about a slot the caller could have declared must name the caller;
+    /// `for_call` already requires it to exist (the rule-body gate).
+    enclosing_op: Symbol,
 }
 
 impl OpSlotParkSite {
@@ -25481,7 +25529,12 @@ impl OpSlotParkSite {
         span: Option<Span>,
         source: crate::span::SourceId,
     ) -> Option<Self> {
-        (enclosing_op.is_some() && !kb.is_builtin(callee_op)).then_some(Self { span, source })
+        let enclosing_op = enclosing_op?;
+        (!kb.is_builtin(callee_op)).then_some(Self {
+            span,
+            source,
+            enclosing_op,
+        })
     }
 }
 
@@ -25553,6 +25606,185 @@ fn unprovided_provision(
         spec: dep.required_sort,
         has_a_row: carrier_has_provision_row(kb, carrier, dep.required_sort),
     })
+}
+
+/// WI-20260920-XSVCS — a dep whose carrier is the CALLER's own type parameter, written
+/// as the caller would have to declare it.
+pub(crate) struct CallerRigidCarrier {
+    /// The parameter, spelled as the CALLER wrote it (`U`, `T`) — never the callee's
+    /// formal, which is a name from a declaration the author does not own.
+    carrier: String,
+    /// The whole requirement re-keyed into that spelling, ready to be pasted after
+    /// `requires`. The WHOLE clause and not just the carrier binding, for
+    /// [`RequirementRefusal::render`]'s own measured reason one arm over: a
+    /// multi-parameter spec written with a binding omitted fills the rest from its own
+    /// parameters, which §5.2 legislates as a second load error — advice that trades one
+    /// refusal for another.
+    clause: String,
+    /// WHERE that clause goes — the calling OPERATION when the carrier is one of its
+    /// `[…]` brackets, the enclosing SORT when it is one of the sort's parameters. The
+    /// distinction is not cosmetic: an operation cannot declare its sort's parameter out
+    /// from under it, and the corpus has one of each (`test.xsvcs.fwd.mid`'s `U`,
+    /// `test.wi416.Coll`'s `T`).
+    declare_on: Symbol,
+}
+
+/// WI-20260920-XSVCS — is this unfilled op slot's carrier a type parameter of the
+/// CALLER, which the caller declared nothing about?
+///
+/// THE ONE DISCRIMINATION THIS TICKET IS, and it is a VERDICT where the rest of
+/// [`build_op_scoped_dicts`]' unfilled slots are a GAP. Reaching this function at all
+/// means [`build_dep_projection`] found no forward, so the caller's own chain — the
+/// COMPOSED one, its sort half included — covers nothing here. A carrier that is the
+/// caller's rigid can be filled from NOWHERE ELSE: it is not ground, so no provider can
+/// be constructed for it (that is WI-1102's case, and the `match` above takes it first);
+/// it is not open, so it is not the WI-415/418 abstract-call gap that a later, more
+/// pinned call site still resolves. The caller's frame is the only possible supplier and
+/// it declared no slot. Nothing downstream will ever fill it, and a body that reads it
+/// dies `EvalError::Internal` — not a `Raised`, so no handler sees it, and a debug build
+/// ABORTS through `bridge_op_to_eval`'s `debug_assert`.
+///
+/// STILL PARKED, NOT RAISED, because the verdict this answers is only half of one.
+/// "Nothing can fill the slot" and "the callee needs it filled" are different questions
+/// and only the callee's BODY answers the second — [`build_op_scoped_dicts`]' own header
+/// records the measurement, 29 stdlib bodies that declare a chain and never read it. So
+/// the refusal is BUILT here, where the σ that proves the carrier is a caller rigid is
+/// alive, and DECIDED in [`report_unsuppliable_requirements`] against
+/// [`op_body_reads_op_requirement_slot`], once every body is typed.
+///
+/// THE CENSUS THAT CHOSE THIS GATE over "ask whether the body reads it and refuse every
+/// unfilled slot that does": instrumented at this site, a full workspace run yields 57
+/// distinct unfilled op slots, of which **31 have a body that READS** the slot and stay
+/// green today — the concrete-carrier population, which other routes still supply. Only
+/// **4** name a caller rigid, and all four are this defect:
+/// `test.n31xx.twobad` (065's own forward, refused one arm above), `test.n31xx.othersp`
+/// (the same shape over a plain spec, which this ticket turns from "loads" into
+/// "refused"), this ticket's `test.xsvcs.fwd`, and — the one nobody wrote as a test —
+/// `test.wi416.Coll.contains`, which calls `List.contains(items, x)` on its own `T`
+/// while `contains` declares `requires Eq[T]` and its body reads it. That fixture has
+/// loaded clean since WI-416 and would have died `Internal` had anything called it.
+///
+/// DOES NOT SUBSUME [`type_value_forward_unsuppliable`]'s arm, and the arm stays ABOVE
+/// this one deliberately. That leg RAISES, unconditionally: `type_value()` is nullary,
+/// so no body holding the evidence can fail to read it, and there is nothing to wait for
+/// — parking it would make 065's rule depend on a body predicate that can only ever
+/// answer `true`. It also reaches deps this does not (a `TypeValue` over a carrier that
+/// is not a caller rigid) and sites this does not (`park` is `None` for a builtin callee
+/// and where the caller is not an operation body). The shape they share —
+/// `test.n31xx.twobad` — keeps 065's message, which names the proposal and the reason
+/// `TypeValue` is special, and that is the better message for it.
+///
+/// `None` for every other unfilled slot, which is the pre-existing behaviour those
+/// classes have and not a decision this ticket makes about them.
+fn caller_rigid_carrier(
+    kb: &KnowledgeBase,
+    dep: &RequiresEntry,
+    ctx: &SigmaCtx,
+    caller_op: Symbol,
+) -> Option<CallerRigidCarrier> {
+    let goal = goal_from_requires_entry(kb, dep)?;
+    let params = caller_param_rigids(kb, caller_op, ctx.param_rigids);
+    let mut found: Option<(String, Symbol)> = None;
+    let mut bindings: Vec<String> = Vec::new();
+    for (k, v) in &goal.bindings {
+        // EVERY BINDING MUST BE WRITEABLE BY THE CALLER, or there is no clause to print
+        // and this function answers `None`. Two spellings qualify and nothing else does:
+        // a parameter the CALLER declares (rendered as the caller's own name) and a
+        // GROUND type (rendered as itself). `format_term_for_goal`'s fallback prints an
+        // unrecognized term as `<term#N>`, and an element that is merely OPEN prints the
+        // CALLEE's parameter (`anthill.prelude.List.T`) — the first does not parse and
+        // the second is the wrong clause, and the message's whole contract is that what
+        // it prints can be pasted.
+        //
+        // A REFUSAL WITHHELD, never a wrong value: such a call keeps exactly the
+        // behaviour it has today, eval's own `not bound` raise included. The census
+        // found no row of this shape, so the arm costs nothing it was catching.
+        let rendered = match sigma_class_terminal(kb, ctx, *v) {
+            // A binding that terminates at a RIGID is an enclosing-scope parameter
+            // ([`sigma_class_terminal`]'s second component) — but only one the caller
+            // DECLARES can be named, a WI-424 body skolem having no written name.
+            Some((cls, true)) => {
+                let (_, name, owner) = params.iter().find(|(r, _, _)| *r == cls)?;
+                // THE FIRST such binding is the carrier for the message's purposes. A
+                // spec with two caller-parameter elements is repaired by declaring the
+                // one clause either way — `clause` carries both — so naming one of them
+                // is a choice of wording, not of verdict.
+                if found.is_none() {
+                    found = Some((name.clone(), *owner));
+                }
+                name.clone()
+            }
+            // Concrete: no σ-class, and it renders as the sort it names.
+            None if type_value_is_ground(kb, *v) => format_term_for_goal(kb, *v),
+            // Open (the WI-415/418 gap), or a carrier this function cannot name.
+            _ => return None,
+        };
+        bindings.push(format!("{} = {}", kb.local_name_of(*k), rendered));
+    }
+    // `found` is armed only by a binding, so reaching here means `bindings` is non-empty
+    // and the bracket is unconditional — a `!bindings.is_empty()` guard here would be a
+    // branch nothing can take.
+    let (carrier, declare_on) = found?;
+    let clause = format!(
+        "{}[{}]",
+        kb.qualified_name_of(goal.spec_sort),
+        bindings.join(", ")
+    );
+    Some(CallerRigidCarrier {
+        carrier,
+        clause,
+        declare_on,
+    })
+}
+
+/// WI-20260920-XSVCS — the caller's declared type parameters as `(the rigid its body
+/// skolemized the parameter to, the name the author wrote, the declaration that owns
+/// it)`.
+///
+/// BOTH FAMILIES, because `ctx.param_rigids` is the concatenation of exactly those two
+/// (see [`TypingEnv::param_rigids`]) and the corpus has a live instance of each. Reading
+/// only the operation's brackets would answer `None` for `test.wi416.Coll.contains`,
+/// whose carrier is its SORT's `T`, and the diagnostic would silently fall back to
+/// printing the callee's formal.
+///
+/// KEYED BY THE RIGID, not by symbol: [`sigma_class_terminal`] hands back a canonical
+/// variable that has already been through [`canonical_global_var`], so the lookup must
+/// put each declared parameter through the same map or a written `Var::Global` and the
+/// call site's `Var::Rigid` never meet.
+fn caller_param_rigids(
+    kb: &KnowledgeBase,
+    caller_op: Symbol,
+    param_rigids: &[(VarId, TermId)],
+) -> Vec<(VarId, String, Symbol)> {
+    let mut declared: Vec<(Symbol, VarId, Symbol)> = Vec::new();
+    if let Some(info) = lookup_operation_info_full(kb, caller_op) {
+        for (name, var) in &info.type_params {
+            if let Var::Global(v) = var {
+                declared.push((*name, *v, caller_op));
+            }
+        }
+    }
+    // THE NARROWED READER (WI-956), not `impl_parent_of_op`: this asks which SORT
+    // declares the caller, and the un-narrowed one answers with the NAMESPACE for a free
+    // operation — which declares no type parameters and could never carry the `requires`
+    // this function's `declare_on` names.
+    if let Some(parent) = impl_parent_sort_of_op(kb, caller_op) {
+        for (name, term) in sort_type_params_as_pairs(kb, parent).iter() {
+            if let Some((v, _)) = elem_var_step(kb, *term) {
+                declared.push((*name, v, parent));
+            }
+        }
+    }
+    declared
+        .into_iter()
+        .map(|(name, v, owner)| {
+            (
+                canonical_global_var(kb, v, param_rigids),
+                short_name_of(kb.local_name_of(name)).to_owned(),
+                owner,
+            )
+        })
+        .collect()
 }
 
 /// WI-415: substitute the per-call type bindings into a `requires`-entry spec

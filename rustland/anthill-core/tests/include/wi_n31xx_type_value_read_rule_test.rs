@@ -37,10 +37,13 @@
 //!   wrote, not as a `SortView`, and `unwrap_spec_view_value` answers "no bindings" for
 //!   it — so `operation ty[T]() -> Type requires TypeValue[T = T]` was refused with its
 //!   own clause written two columns away.
-//! * **the FORWARD leg off** — the `TypeValue` arm in `build_op_scoped_dicts` removed,
-//!   so an unsuppliable op slot goes back to being a silent absence: **1 red**,
-//!   [`a_middle_level_that_drops_the_clause_is_refused_at_the_call`]. Its plain-spec
-//!   half stays green either way, which is what says the leg is narrow on purpose.
+//! * **the FORWARD leg off** — the `TypeValue` arm in `build_op_scoped_dicts` removed:
+//!   **1 red**, [`a_middle_level_that_drops_the_clause_is_refused_at_the_call`], which
+//!   is now red on its MESSAGE rather than on the load. Since WI-20260920-XSVCS the
+//!   program is still refused with the arm gone — the caller-rigid park catches the same
+//!   shape — but with the other arm's wording, and the row asserts 065's. Its plain-spec
+//!   half is that other arm, and was this leg's narrowness control until XSVCS closed
+//!   the wider gap; see the row's own doc.
 //! * **the post-simp placement off** — the rule reading `op.body_node` (the tree the
 //!   typer was handed) instead of `result.node` (the tree it wrote back): **2 red** —
 //!   [`a_simp_expanded_type_position_is_not_a_value_read`] and, in the census file
@@ -173,12 +176,20 @@ end
 /// AT THE CALL, NOT AT THE DECLARATION: `mid`'s signature is legal on its own, and it is
 /// only this call that needs what `mid` has not got. The refusal is located there.
 ///
-/// THE SECOND HALF IS THE CONTROL AND IT STILL LOADS. The same forward shape over a
-/// plain user spec — `requires TT[T = B]`, nothing to do with 065 — is accepted, because
-/// this leg is deliberately narrow: it says `TypeValue` evidence is never benignly
-/// absent, NOT that operation-level requirement propagation is now checked in general.
-/// That wider gap is real and pre-existing, and is not this ticket's to close; without
-/// this row a later reader would have no way to tell the two apart.
+/// THE SECOND HALF WAS THIS LEG'S NARROWNESS CONTROL AND IS NOW ITS SUBSUMPTION ROW.
+/// The same forward shape over a plain user spec — `requires TT[T = B]`, nothing to do
+/// with 065 — used to LOAD, because this leg said only that `TypeValue` evidence is
+/// never benignly absent and not that operation-level requirement propagation was
+/// checked in general. WI-20260920-XSVCS closed that wider gap: a carrier that is the
+/// CALLER's own type parameter is unfillable whatever the spec, so the plain-spec shape
+/// is now refused too — parked, and reported because `tyOf`'s body reads the slot.
+///
+/// THE TWO ARMS STAY DISTINCT, and this row is where that is visible. 065's arm runs
+/// FIRST and RAISES, so the `TypeValue` half keeps the message that names the proposal
+/// and the reason `TypeValue` is special; XSVCS's parks, and reaches a dep 065's cannot
+/// (any spec) at a site 065's does not need (a caller with a body to read). See
+/// [`caller_rigid_carrier`]'s header for why neither subsumes the other, and
+/// `wi_xsvcs_op_requires_forward_test` for the plain-spec shape driven to an answer.
 #[test]
 fn a_middle_level_that_drops_the_clause_is_refused_at_the_call() {
     let type_value = load_errors(
@@ -211,7 +222,8 @@ end
         "the refusal belongs at the forwarding call; got {e:?}"
     );
 
-    // THE CONTROL — the same shape over a plain spec, still accepted. See the doc above.
+    // THE SAME SHAPE OVER A PLAIN SPEC — refused since WI-20260920-XSVCS, by the OTHER
+    // arm. See the doc above.
     let plain_spec = load_errors(
         r#"
 namespace test.n31xx.othersp
@@ -229,11 +241,21 @@ namespace test.n31xx.othersp
 end
 "#,
     );
-    assert_eq!(
-        plain_spec,
-        Vec::<String>::new(),
-        "this leg is narrow by design: it does not close operation-level requirement \
-         propagation in general, and that wider gap is pre-existing"
+    assert_eq!(plain_spec.len(), 1, "exactly one refusal, got {plain_spec:#?}");
+    let p = &plain_spec[0];
+    // THE OTHER ARM'S MESSAGE, asserted rather than just the count: a row that checked
+    // only "one error" would keep passing if 065's arm started answering for this shape
+    // too, which is the thing the doc above says does NOT happen.
+    for want in [
+        "cannot be supplied for call to `test.n31xx.othersp.tyOf`",
+        "type parameter of the CALLING operation `test.n31xx.othersp.mid`",
+        "Declare `requires test.n31xx.othersp.TT[T = U]` on `test.n31xx.othersp.mid`",
+    ] {
+        assert!(p.contains(want), "expected {want:?} in the refusal; got {p:?}");
+    }
+    assert!(
+        !p.contains("proposal 065"),
+        "the plain-spec shape must NOT get the TypeValue arm's message; got {p:?}"
     );
 }
 
