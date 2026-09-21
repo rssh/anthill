@@ -1174,10 +1174,22 @@ WI-20260920-XSVCS, measured on the merged tree — backing this out with XSVCS i
 `requires OE: WeakOrd[E]` runs on the sort and is refused on the operation — is
 **WI-20260921-159S9**, whose fix direction is the *entry* side, because composing the caller
 chain and deferring on every op-scoped call were both measured and rejected at WI-822. And
-**a dictionary stored in a value** is **WI-20260921-R10KC**: it inverts
-`a_default_body_reading_the_slot_by_value_is_refused_naming_it` rather than adding a test,
-and it is not a type-safety question — `std::set<T, Compare>` keeps the type parameter and a
-stored instance at once — but a representation-and-reach one (where it lives, extensional
-`eq`, the discrimination tree, SMT, codegen). It has **no instance in the stdlib**: `find` /
-`exists` take a user predicate, `size` / `foldLeft` walk the iterator, and `collect` /
-`iterator` read no `O`, which is why the provided surface runs.
+what was filed as **a dictionary stored in a value** is **WI-20260921-R10KC** — **DELIVERED
+2026-09-21, and the framing did not survive the measurement**. Nothing needed to be stored:
+at every site in the driving program the carrier's type is written or inferred, so the
+dictionary *was* built, and the typer's defaulted fall-through arm had already resolved it
+when `classify_pin_or_apply_within` dropped it on the `PinNow` branch — whose `needs_reqs`
+test counts only this layout's SPEC half, so a spec declaring no `requires` threads nothing
+even though the PROVIDER half is exactly the evidence its default body needs. A spec's
+default body now receives that instance and resolves a body-less sibling by projection out
+of it, so the test above INVERTED and is now
+`a_default_body_reads_the_named_slot_through_its_provisions_dictionary`. What remains of
+the value-carried question is the routes with **no static type** to build a dictionary from
+— an existential return opened to a rigid skolem, a host entry, the SLD bridge — each
+MEASURED in `wi_r10kc_spec_default_body_dictionary_test`, the first two DRIVEN there and
+the bridge stated rather than driven (the rule shape that reaches it residualizes one goal
+earlier, with one provider in scope as well as two, so an assertion would not be about the
+slot); and the *channel*
+question it raised is **WI-20260921-EE0EP**. The "no instance in the stdlib" observation
+still holds and still explains why the provided surface ran: `find` / `exists` take a user
+predicate, `size` / `foldLeft` walk the iterator, and `collect` / `iterator` read no `O`.

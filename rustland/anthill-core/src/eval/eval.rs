@@ -2596,6 +2596,18 @@ impl Interpreter {
             return self.enter_reify_boundary(arg_values, &requirements);
         }
 
+        // 1c. WI-20260921-R10KC — A SPEC DEFAULT BODY REACHES ITS OWN SPEC'S MEMBERS
+        // THROUGH THE DICTIONARY IT WAS ENTERED WITH. See
+        // [`Self::spec_instance_for_sibling_call`].
+        //
+        // ABOVE THE BUILTIN ARM, not below it, and that placement is load-bearing (found
+        // by /code-review): step 2 seeds `builtin_dispatch_dict` from THIS channel and
+        // returns, so a sibling that happens to be HOST-backed rather than body-backed
+        // would otherwise reach its builtin with the dictionary unset — and for a nullary
+        // one like `TypeValue.type_value()` the dictionary is its whole answer (WI-HXGXF).
+        // One source construct must not behave two ways on that distinction.
+        let requirements = self.spec_instance_for_sibling_call(target, &arg_values, requirements)?;
+
         // 2. Registered Rust builtin?
         if let Some(builtin) = self.builtins.get(&target).cloned() {
             // WI-20260919-HXGXF — HAND THE BUILTIN ITS DISPATCHING DICTIONARY. A builtin
@@ -2742,6 +2754,37 @@ impl Interpreter {
             }
         }
 
+        // 3c. WI-20260921-R10KC — the RECEIVER-LESS sibling, which no value can direct.
+        // Runs only after step 3b found no supplier, so every call it serves is one that
+        // raised a moment ago. See [`Self::dictionary_resolved_sibling`].
+        if let Some(impl_target) = self.dictionary_resolved_sibling(target) {
+            if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
+                self.note_dispatch(impl_target);
+                let saved_dict = self.builtin_dispatch_dict.take();
+                self.builtin_dispatch_dict =
+                    find_requirement(&requirements, self.fields.req_self).cloned();
+                let result = (builtin)(self, &arg_values);
+                self.builtin_dispatch_dict = saved_dict;
+                return Ok(StepOutcome::Deliver(result?));
+            }
+            if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
+                self.note_dispatch(impl_target);
+                let requirements = self.requirements_for_value_directed_impl(
+                    impl_target,
+                    target,
+                    &arg_values,
+                    requirements,
+                )?;
+                return self.enter_operation(
+                    impl_target,
+                    body_node,
+                    &params,
+                    arg_values,
+                    requirements,
+                );
+            }
+        }
+
         // WI-625 (the eval→SLD bridge): a body-less carrier `eq` op invoked
         // directly (a typer PinNow-pinned `Set.eq`/`Map.eq`, WI-210/WI-350 gap 6;
         // or a dictionary-resolved `Set.eq`, gap 4) has no host body for the
@@ -2762,6 +2805,171 @@ impl Interpreter {
         // shared helper so this path and the host-entry direct path report the
         // SAME verdict for the same target.
         Err(self.unrunnable_target_error(target))
+    }
+
+    /// WI-20260921-R10KC — THE CHANNEL A SPEC'S DEFAULT BODY HANDS ITS SIBLINGS.
+    ///
+    /// A body-less spec operation IS a dictionary entry, so a default body calling one
+    /// resolves its EVIDENCE out of the dictionary its own frame was entered with —
+    /// [`Self::expand_dispatching_dict`], the same projection the `DeferToRequirement`
+    /// route already performs. What was missing is that the sibling call's channel
+    /// carried no `__req_self`, so the dispatch fell to value-direction and then tried to
+    /// RECONSTRUCT the requirement from the argument data.
+    ///
+    /// THE SLOT THAT CANNOT BE RECONSTRUCTED. A `Value::Entity` names its carrier sort
+    /// and none of its type arguments. Most of them are recoverable from the data anyway
+    /// — the elements of a `MySet[T = String]` are strings — and that is why the rebuild
+    /// SUCCEEDS wherever the reconstructed goal has a unique answer. A NAMED requirement
+    /// slot (`MySet requires O: WeakOrd[T]`) is the one type argument with no footprint
+    /// in the data: it is a SELECTION the construction site made, two `WeakOrd[String]`
+    /// providers are equally consistent with every element, and the rebuild records the
+    /// absence (`NamedSlotNotCarried`) rather than guessing. Both routes find the same
+    /// implementation; only this one brings the evidence.
+    ///
+    /// WHAT THIS DOES **NOT** DO, stated because an earlier draft of this comment claimed
+    /// it: it does not choose the TARGET. `Dictionary.resolveOp` is
+    /// [`Self::dispatch_via_sort_ops_table`] plus the projection above, and only the
+    /// projection is here — the callee is still selected by value-direction in the arms
+    /// below. [`Self::dictionary_resolved_sibling`] is the one place the dictionary picks
+    /// a target, and it fires only where value-direction cannot: a RECEIVER-LESS sibling,
+    /// which no argument can classify.
+    ///
+    /// **THE LICENCE, ASKED DIRECTLY.** WI-456 tried frame inheritance UNGUARDED and
+    /// backed it out because "a dictionary does not record which spec it witnesses" (it
+    /// broke `wi435_iterable_op_on_map_handle_value_dispatches`). It still does not; what
+    /// it records is the PROVIDER. An earlier draft of this function INFERRED the spec
+    /// from the running frame's `op` — and that is unsound, DRIVEN by /code-review:
+    /// [`Self::enter_closure`] deliberately pairs the CALLER's `op` with the LAMBDA's
+    /// captured `requirements` ("the closure inherits its caller's `op` for
+    /// error-reporting purposes"), so on any frame running a lambda the two describe
+    /// different things and a foreign `__req_self` was installed. The invariant the prose
+    /// wanted is asked of the dictionary instead:
+    ///
+    ///  1. the frame HOLDS an instance (the cheapest gate, and the one that excludes
+    ///     nearly every dispatch);
+    ///  2. `target`'s parent is a SORT ([`impl_parent_sort_of_op`], not the dotted
+    ///     parent — a namespace is never `provided`, and a free operation must not
+    ///     acquire a `__req_self` it never carried);
+    ///  3. the dictionary's provider PROVIDES that sort
+    ///     ([`crate::kb::typing::sort_provides`]) and is not that sort — which is what
+    ///     distinguishes an INSTANCE from a WI-415 parent bundle, whose projection would
+    ///     resolve back to `target` and buy nothing;
+    ///  4. the dictionary is the SHAPE that pair lays out
+    ///     ([`crate::kb::typing::dict_layout`]);
+    ///  5. it COVERS the op that will actually RUN after a value-directed redirect —
+    ///     asked of the resolver the selected arm will itself ask, so a `Some` here is
+    ///     the callee the dispatch enters.
+    ///
+    /// A dictionary that fails any of them is not evidence for this call, and the call
+    /// keeps the route it has today. That is not the silent skip the loud-error rule
+    /// guards against: value-direction still runs and is still loud at its own read.
+    ///
+    /// FILLS ONLY A CHANNEL WITH NO `__req_self`, and MERGES rather than replaces. Not
+    /// "only an EMPTY channel", which is what a first cut tested: a channel built by
+    /// [`Self::start_apply_with_op_slots`] carries OP-SCOPED slots and no self slot ("this
+    /// frame had none before and gains none"), so an emptiness test silently skipped every
+    /// callee with a `requires` of its own. [`Self::requirements_for_value_directed_impl`]
+    /// was refined to the same reading by WI-1091 and this is now its twin.
+    fn spec_instance_for_sibling_call(
+        &mut self,
+        target: Symbol,
+        // WI-20260921-R10KC — the call's arguments, for gate (5).
+        arg_values: &[Value],
+        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+    ) -> Result<SmallVec<[(Symbol, super::value::Dictionary); 2]>, EvalError> {
+        if find_requirement(&requirements, self.fields.req_self).is_some() {
+            return Ok(requirements);
+        }
+        // (1) the frame HOLDS an instance.
+        let Some(dict) = self
+            .stack
+            .top()
+            .and_then(|top| find_requirement(&top.requirements, self.fields.req_self).cloned())
+        else {
+            return Ok(requirements);
+        };
+        // (2) `target`'s parent is a SORT.
+        let Some(spec) = crate::kb::typing::impl_parent_sort_of_op(&self.kb, target) else {
+            return Ok(requirements);
+        };
+        // (3) the provider PROVIDES it, and is not it.
+        let provider = dict.impl_sort();
+        if crate::kb::typing::same_sort_canonical(&self.kb, provider, spec)
+            || !crate::kb::typing::sort_provides(&self.kb, provider, spec)
+        {
+            return Ok(requirements);
+        }
+        // (4) the shape this pair lays out.
+        if crate::kb::typing::dict_layout(&mut self.kb, spec, provider, None).arity() != dict.arity()
+        {
+            return Ok(requirements);
+        }
+        // (5) …AND IT COVERS THE OP THAT WILL ACTUALLY RUN. `target` is only where the
+        // call POINTS: the arms below redirect it from the receiver VALUE, and a redirect
+        // can land on a THIRD sort's member (`Iterable.isEmpty` on a `List` lands on
+        // `Stream.isEmpty`), which this dictionary carries nothing for.
+        //
+        // ASKED OF THE RESOLVER THE SELECTED ARM WILL ASK, which is decided by whether
+        // `target` has a body: step 3 consults ONLY `resolve_carrier_override_by_value`
+        // and, on `None`, enters `target` itself with no redirect at all; step 3b (the
+        // body-less arm) consults only `resolve_spec_op_target_by_value`. Asking both
+        // would consult a reader the dispatch never asks — whose candidate set is filtered
+        // differently — and could withhold the channel from a call that has no redirect.
+        //
+        // AN `Err` PROPAGATES. It is the same resolver, with the same arguments, that the
+        // arm below raises on, so surfacing it here reports the identical tie one call
+        // earlier rather than swallowing a verdict the arm might never reach (step 3's
+        // `None` path returns before step 3b, so a dropped tie would be dropped for good).
+        //
+        // WITHOUT GATE (5) such a call would not fall back to the route it has today:
+        // [`Self::requirements_for_value_directed_impl`] re-expands a non-empty channel
+        // only where it COVERS the redirected op and otherwise passes it through
+        // UNCHANGED (WI-1091) — right for a channel a caller really built, wrong for this
+        // synthesized one, whose pre-R10KC alternative was `resolve_bridge_requirements`
+        // REBUILDING the third sort's own chain from the argument values.
+        let redirect = if self.cached_operation_body(target).is_some() {
+            self.resolve_carrier_override_by_value(target, arg_values)?
+        } else {
+            self.resolve_spec_op_target_by_value(target, arg_values)?
+        };
+        if let Some(running) = redirect {
+            if running != target
+                && !crate::kb::typing::dictionary_covers_target(
+                    &mut self.kb,
+                    spec,
+                    provider,
+                    running,
+                )
+            {
+                return Ok(requirements);
+            }
+        }
+        let mut out = self.expand_dispatching_dict(target, target, &dict)?;
+        // MERGE: an op-scoped slot the caller filled is this call's own evidence and is
+        // not replaced by the sort half above. Names cannot collide — the op half of
+        // `op_dict_entries` is laid out past the sort half's `sort_len`.
+        out.extend(requirements);
+        Ok(out)
+    }
+
+    /// WI-20260921-R10KC — `Dictionary.resolveOp`'s OTHER half: pick the sibling out of
+    /// the frame's instance when NO VALUE CAN.
+    ///
+    /// Value-direction classifies the carrier from a self-receiver ARGUMENT
+    /// (`spec_call_runtime_carrier`), so a RECEIVER-LESS spec op — `operation zero() -> T`,
+    /// `Sp.mark()` — has nothing to classify and answers `NoSupplier`. Before this the
+    /// call then fell through every arm to `unrunnable_target_error` with the dictionary
+    /// that names its answer sitting unread in the channel
+    /// ([`Self::spec_instance_for_sibling_call`] had just put it there).
+    ///
+    /// STRICTLY ADDITIVE, and that is why it is placed where it is: it runs only after
+    /// step 3 found no body and step 3b found no supplier, so every call it serves is one
+    /// that raised a moment ago. `resolve_op_target_checked` refuses a marker functor, so
+    /// an absence-carrying dictionary still raises rather than dispatching.
+    fn dictionary_resolved_sibling(&mut self, target: Symbol) -> Option<Symbol> {
+        let dict = find_requirement(&self.stack.top()?.requirements, self.fields.req_self)?.clone();
+        let impl_target = self.dispatch_via_sort_ops_table(target, &dict).ok()?;
+        (impl_target != target).then_some(impl_target)
     }
 
     /// WI-822 LEG 2 — the frame requirements for an impl reached by VALUE-DIRECTED

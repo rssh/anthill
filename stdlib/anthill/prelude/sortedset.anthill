@@ -127,19 +127,27 @@
 -- search tied among every `WeakOrd[String]` in scope, so the call was refused in exactly
 -- the programs this type exists for: the ones holding two orderings.
 --
--- The specs' DEFAULT bodies (`size`, `foldLeft`, `isEmpty`, `find`, …) reach this sort's
--- `collect` / `iterator` by VALUE, and a value carries no `O`. Neither reads it, so they
--- run; an operation here that compares must stay reachable only through a TYPED call.
+-- A SPEC'S DEFAULT BODY REACHES THIS SORT'S MEMBERS THROUGH ITS PROVISION'S DICTIONARY
+-- (WI-20260921-R10KC). This paragraph used to say the opposite — that such a body reached
+-- `collect` / `iterator` by VALUE, that a value carries no `O`, and that an operation here
+-- which COMPARES must therefore stay reachable only through a TYPED call, being otherwise
+-- REFUSED (`NamedSlotNotCarried`). That was true, and it was a defect rather than a
+-- constraint: the dictionary was BUILT at the call site and then dropped before the frame
+-- that reads it. A default body now receives it and resolves a body-less sibling by
+-- PROJECTION out of it, so the slot is read rather than searched, and an operation here
+-- that compares is reachable through either route.
 --
--- WHY THAT IS A CONSTRAINT AND NOT AN ACCIDENT: a default body written in a SPEC redispatches
--- its member on the abstract carrier `C`, so the bridge re-resolves the chain from the
--- argument VALUES and the slot's goal is SEARCHED rather than read back — which would
--- re-decide a question the construction site already decided, and is therefore REFUSED
--- (`NamedSlotNotCarried`), not answered. Whether a dictionary may instead RIDE IN the value
--- is WI-20260921-R10KC, open and language-wide; it is not blocked on type safety
--- (`std::set<T, Compare>` keeps the parameter and a stored instance at once) but on
--- representation and reach — `tip` is nullary, `bin` IS the set with no root wrapper, `eq`
--- here is extensional, the discrimination tree indexes structure, and SMT terms are data.
+-- WHAT STILL IS NOT REACHABLE, and the boundary is narrow: a route with NO STATIC TYPE to
+-- build a dictionary from. An EXISTENTIAL RETURN opened to a rigid skolem names no
+-- provider, so the read is refused as before; a HOST `interp.call` is served by
+-- value-direction, which answers from the ARGUMENTS; and the SLD bridge keeps the tie a
+-- verdict and residualizes. `wi_r10kc_spec_default_body_dictionary_test` drives each.
+--
+-- (The value-carried dictionary this note used to defer to is not what closed it. Nothing
+-- here needs one: `tip` stays nullary, `bin` stays the set with no root wrapper, `eq` here
+-- stays extensional, and the discrimination tree still indexes structure. The remaining
+-- half of that question — whether a signature that OMITS the slot may be handed the
+-- argument's own dictionary, so `O` and `s.O` mean one thing — is WI-20260921-EE0EP.)
 enum anthill.prelude.SortedSet
   import anthill.prelude.{WeakOrd, PartialEq, Eq, List, Int64, Bool, Stream, Iterable,
                           FiniteCollection, PersistentCollection}

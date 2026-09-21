@@ -28,11 +28,22 @@
 //!    built, and a body that does read the slot is refused naming why
 //!    (`a_default_body_reading_the_slot_by_value_is_refused_naming_it`).
 //!
+//!    WI-20260921-R10KC INVERTED THAT ROW and renamed it
+//!    `a_default_body_reads_the_named_slot_through_its_provisions_dictionary`: a spec
+//!    default body is no longer ON the value route. It receives its provision's
+//!    dictionary and resolves the body-less sibling BY PROJECTION out of it, so the
+//!    slot is read rather than reconstructed. The runtime absence above survives for
+//!    the routes with no static type to build a dictionary from — see that variant's
+//!    doc at `UnavailableWhy::NamedSlotNotCarried`.
+//!
 //! BACKED-OUT CONTROLS, both measured:
 //!  * typer fix out → `spec_insert_*`, `generic_consumer_*` and `finite_collection_*`
 //!    FAIL (load error, the sub-goal tie quoted above);
 //!  * runtime fix out → `finite_collection_*` FAILS (`AmbiguousRequirement` for
-//!    `SortedSet.collect`) and so does the named-slot refusal test (the tie's wording);
+//!    `SortedSet.collect`). It used to also name the named-slot REFUSAL test here;
+//!    WI-20260921-R10KC inverted that row and it is now
+//!    `a_default_body_reads_the_named_slot_through_its_provisions_dictionary`, whose own
+//!    back-out controls are R10KC's two edits and are recorded at its site;
 //!    the other tests dispatch straight to `SortedSet`'s own ops. WHICH ROWS drive that
 //!    bridge narrowed when `SortedSet` gained O(1) `size` and `isEmpty` members: those
 //!    override the spec defaults (WI-444), so `sizeByLength` / `sizeAlphabetical` /
@@ -317,15 +328,42 @@ fn a_provision_head_that_omits_the_slot_is_refused() {
     );
 }
 
-/// THE LIMIT OF THE RUNTIME FIX, pinned so it stays loud. A spec default body reaches
-/// its carrier's operations by VALUE, and a value carries no `O`; `SortedSet`'s
-/// `collect` / `iterator` never read it, which is why the provided surface runs. An
-/// operation that DOES compare, reached the same way, has no ordering to use — and must
-/// be refused naming that, not run under a guessed one. `Tagged` is the smallest such
-/// carrier: `keepLeast` compares through `O`, and `Pick.twice`'s default body calls it
-/// by value.
+/// WI-20260921-R10KC — A SPEC DEFAULT BODY READS THE NAMED SLOT, AND THE SLOT DECIDES.
+///
+/// THIS TEST INVERTED. It was `a_default_body_reading_the_slot_by_value_is_refused_naming_it`
+/// and it PINNED the refusal: a spec default body reached its carrier's operations by
+/// VALUE, a value carries its sort and none of its type arguments, and the named slot
+/// `O` — a SELECTION the construction site made, with no footprint in the data — could
+/// not be recovered. `SortedSet`'s `collect` / `iterator` never read it, which is why the
+/// provided surface ran; `Tagged.keepLeast` does, and it was refused.
+///
+/// It is no longer reached by value. `Pick.twice`'s frame now carries the `Pick[Tagged]`
+/// INSTANCE (`Dictionary(<the WeakOrd slot>, impl: Tagged)`), and the sibling
+/// `keepLeast` resolves BY PROJECTION out of it — `Dictionary.resolveOp`, spelled in eval
+/// as `dispatch_via_sort_ops_table` + `expand_dispatching_dict`. Both routes find
+/// `Tagged.keepLeast`; only this one brings the evidence it reads.
+///
+/// **BOTH ROWS SPLIT BY ORDERING, and the `direct` row FIRST.** It used to compare `"zz"`
+/// against `"a"`, where `ByLength` and `Alphabetical` agree that `"a"` is least — so its
+/// `1` proved the typed call RAN and not that the comparator DECIDED. `"aaa"` against
+/// `"zz"` splits them: `ByLength` keeps `"zz"` (2 < 3) and `Alphabetical` keeps `"aaa"`
+/// (a < z), so `String.length` reads back 2 or 3 and one answer twice fails the test.
+/// That is what makes the `defaultByLength` / `defaultAlphabetical` rows evidence about WHICH dictionary
+/// travelled rather than that some route answered.
+///
+/// BACKED OUT, MEASURED — the two edits are independent and each is necessary:
+///  * `classify_pin_or_apply_within`'s `threads_instance` out → both default-body rows
+///    fail with the `NAMED requirement slot … cannot be recovered` refusal this test
+///    used to assert. The typer resolves the `Pick[Tagged]` instance either way; without
+///    that clause it is dropped on the `PinNow` branch and the frame is empty.
+///  * `Interpreter::spec_instance_for_sibling_call` out → the same two rows fail the same
+///    way: the dictionary reaches `twice`'s frame and the sibling call's own channel is
+///    still empty, so the dispatch falls to value-direction regardless.
+/// The two `direct` rows pass either way BY DESIGN — a typed call at a written carrier
+/// type was never on this route — which is what makes them the control for the split
+/// itself: they prove `ByLength` and `Alphabetical` really do disagree here.
 #[test]
-fn a_default_body_reading_the_slot_by_value_is_refused_naming_it() {
+fn a_default_body_reads_the_named_slot_through_its_provisions_dictionary() {
     let src = program(
         "wi456.byvalue",
         "  sort Pick\n    \
@@ -345,25 +383,56 @@ fn a_default_body_reading_the_slot_by_value_is_refused_naming_it() {
          case tagged(v) -> if lt(WeakOrd.compare(x, v), 0) then tagged(v: x) else tagged(v: v)\n  \
          end\n  \
          sort Driver\n    \
-         operation direct(n: Int64) -> Int64 =\n      \
-         match Pick.keepLeast(Tagged.single[T = String, O = ByLength](\"zz\"), \"a\")\n        \
+         operation directByLength(n: Int64) -> Int64 =\n      \
+         match Pick.keepLeast(Tagged.single[T = String, O = ByLength](\"aaa\"), \"zz\")\n        \
          case tagged(v) -> String.length(v)\n    \
-         operation byValue(n: Int64) -> Int64 =\n      \
-         match Pick.twice(Tagged.single[T = String, O = ByLength](\"zz\"), \"a\")\n        \
+         operation directAlphabetical(n: Int64) -> Int64 =\n      \
+         match Pick.keepLeast(Tagged.single[T = String, O = Alphabetical](\"aaa\"), \"zz\")\n        \
+         case tagged(v) -> String.length(v)\n    \
+         operation defaultByLength(n: Int64) -> Int64 =\n      \
+         match Pick.twice(Tagged.single[T = String, O = ByLength](\"aaa\"), \"zz\")\n        \
+         case tagged(v) -> String.length(v)\n    \
+         operation defaultAlphabetical(n: Int64) -> Int64 =\n      \
+         match Pick.twice(Tagged.single[T = String, O = Alphabetical](\"aaa\"), \"zz\")\n        \
          case tagged(v) -> String.length(v)\n  \
          end",
     );
-    // The typer-dispatched call reads `O = ByLength` off the type and runs: "a" is
-    // shorter than "zz".
+    // THE CONTROL FOR THE SPLIT: a typed call at a written carrier type, which was never
+    // on the value route. If these two ever agreed, the rows below would prove nothing.
     assert_eq!(
-        eval_int(&src, "wi456.byvalue.Driver.direct", "the typer-dispatched compare"),
-        1
+        eval_int(
+            &src,
+            "wi456.byvalue.Driver.directByLength",
+            "the typer-dispatched compare under ByLength keeps \"zz\" (2 < 3)"
+        ),
+        2
     );
-    let err = format!("{:?}", eval_fresh(&src, "wi456.byvalue.Driver.byValue"));
-    assert!(
-        err.contains("NAMED requirement slot") && err.contains("cannot be recovered"),
-        "a by-value dispatch into an operation that reads the named slot must be refused \
-         naming the slot's cause; got {err}"
+    assert_eq!(
+        eval_int(
+            &src,
+            "wi456.byvalue.Driver.directAlphabetical",
+            "the typer-dispatched compare under Alphabetical keeps \"aaa\" (a < z)"
+        ),
+        3
+    );
+    // THE ACCEPTANCE: ONE default body, two orderings, two answers.
+    assert_eq!(
+        eval_int(
+            &src,
+            "wi456.byvalue.Driver.defaultByLength",
+            "`Pick.twice`'s default body must reach `Tagged.keepLeast` through the \
+             `Pick[Tagged]` instance, whose slot is ByLength"
+        ),
+        2
+    );
+    assert_eq!(
+        eval_int(
+            &src,
+            "wi456.byvalue.Driver.defaultAlphabetical",
+            "…and the SAME body under Alphabetical must answer differently — one answer \
+             twice would mean the comparator did not decide"
+        ),
+        3
     );
 }
 

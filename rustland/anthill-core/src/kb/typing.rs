@@ -16302,7 +16302,72 @@ pub(crate) fn classify_pin_or_apply_within(
     // read off the operation alone and does not, so an operation with no resolvable
     // parent and a `requires` of its own would have panicked the `unwrap` below.
     let has_op_slots = impl_sort.is_some() && !op_requires_chain_rc(kb, impl_op).is_empty();
-    let class = if needs_reqs || has_op_slots {
+    // WI-20260921-R10KC — …OR THE TREE PINS A PROVIDER THE CALLEE'S OWN PARENT IS NOT,
+    // which is the case the two tests above cannot see: the dictionary is then the
+    // callee's DISPATCH ENVIRONMENT rather than a source of its own named slots, and a
+    // callee that reads no slot of its own still resolves a body-less SIBLING out of it
+    // (`Dictionary.resolveOp` — `dispatch_via_sort_ops_table` plus
+    // [`Interpreter::expand_dispatching_dict`] in eval).
+    //
+    // THE SHAPE, and it is why the two tests above are blind to it: a spec that declares
+    // NO `requires` of its own, whose DEFAULT BODY calls a body-less member. `needs_reqs`
+    // counts only [`op_owner_dict_entries`] — the SPEC half — so it is 0, the class was
+    // `PinNow`, and the instance the defaulted fall-through arm had just resolved
+    // (`Dictionary(<the carrier's own requires>, impl: carrier)`, whose PROVIDER half
+    // `dict_layout` reserves) was dropped on this line. The body then reached the
+    // carrier's member by VALUE, and a value carries its sort and none of its type
+    // parameters — so a named requirement slot chosen at construction could not be
+    // recovered and the dispatch was refused. Both routes find the same implementation;
+    // only this one brings the evidence.
+    //
+    // GATED BY [`dictionary_covers_target`] — ASKED OF THE OP EVAL WILL ENTER, which is
+    // not `impl_op`. A first cut asked it of `impl_op` with `spec := impl_parent_of_op(
+    // impl_op)`, and /code-review showed that is a TAUTOLOGY: that function's own first
+    // line is `impl_parent_of_op(target)`, so `owner == spec` and `slots_for` always takes
+    // the self branch; and its `names.is_empty()` early return is the very reader
+    // `needs_reqs` already consulted, so it could only ever answer `true` on the branch
+    // where this disjunct decides anything. The guard described below did not exist.
+    //
+    // WHAT IT GUARDS, now that it does: eval resolves the dictionary's OWN member for this
+    // op (`dispatch_via_sort_ops_table` → `resolve_op_target(provider, fn_sym)`), and that
+    // can land on a THIRD sort — `FiniteCollection.filter` at a carrier that INHERITS
+    // `filter` from `Iterable`. A dictionary laid out for `(spec, provider)` carries
+    // nothing for such an owner, so handing it one is `expand_dispatching_dict`'s WI-857
+    // raise deferred to run time. Such a call keeps the `PinNow` it has today.
+    //
+    // THE SPEC IS THE DISPATCHED ONE, not the callee's parent — `dispatch_spec_of_op`'s
+    // collapse, so this reader and `expand_dispatching_dict`'s agree about the layout
+    // (WI-866 gave that question one owner precisely so two readers could not drift).
+    //
+    // THIS ALSO NARROWS THE BLAST RADIUS, which the tautology did not: `threads_instance`
+    // is reached at every arm that resolves a tree, including WI-1093's supplier-pinned
+    // one, whose own doc records that the `impl_op`/tree pairing is UNGUARDED and
+    // "examined and NOT driven". Where the two diverge the layout no longer covers the
+    // resolved member, so the promotion declines instead of selecting on the divergence.
+    //
+    // AND NOT WHERE THE CALLEE WOULD INHERIT ANYWAY. `dispatch_dict` is `None` on the
+    // same-sort arm below, so promoting there would NOT thread the instance — it would
+    // hand the callee the CALLER's frame, which is the unguarded frame inheritance WI-456
+    // backed out, reached by a class promotion instead of a frame read. The promotion
+    // fails its own purpose there, so it declines: `PinNow` is what such a call has today.
+    // Read with `same_sort_canonical`, unlike the `inherits` test below, because two
+    // interned copies of one sort are one sort for this question (WI-864).
+    let threads_instance = impl_sort.is_some_and(|parent| {
+        if enclosing_sort.is_some_and(|encl| same_sort_canonical(kb, parent, encl)) {
+            return false;
+        }
+        resolved_tree.as_ref().is_some_and(|tree| {
+            tree.impl_sort().is_some_and(|provider| {
+                if same_sort_canonical(kb, provider, parent) {
+                    return false;
+                }
+                let spec = dispatch_spec_of_op(kb, fn_sym).or_provider(provider);
+                let entered = resolve_op_target(kb, provider, impl_op);
+                dictionary_covers_target(kb, spec, provider, entered)
+            })
+        })
+    });
+    let class = if needs_reqs || has_op_slots || threads_instance {
         // WI-829: a CROSS-SORT spec-op dispatch that CONSTRUCTS its callee's
         // requirement dictionary (a `resolved_tree` with a `FromScope` — the
         // deeper dict built around the enclosing frame's own requirement) cannot
@@ -23729,7 +23794,7 @@ pub(crate) fn render_suppliers(
 /// for sorts `canonical_sort_sym` agreement is equivalent to `qualified_name_of` agreement
 /// ([`same_qname`]) — the canonical form additionally normalizes to the index's canonical
 /// copy, which is why sort sites use this rather than `same_qname`.
-fn same_sort_canonical(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
+pub(crate) fn same_sort_canonical(kb: &KnowledgeBase, a: Symbol, b: Symbol) -> bool {
     a == b || kb.canonical_sort_sym(a) == kb.canonical_sort_sym(b)
 }
 
@@ -27205,6 +27270,32 @@ pub enum UnavailableWhy {
     /// none, so the provider its construction chose is not recoverable here; several
     /// providers of the slot's spec exist, so none is taken. Fieldless for
     /// [`Self::UnderDetermined`]'s reason: it is recorded only at its own slot.
+    ///
+    /// WI-20260921-R10KC — WHAT IS LEFT OF THIS, now that the largest producer is gone.
+    /// Every SPEC DEFAULT BODY calling a body-less sibling used to arrive here: the
+    /// dictionary was built at the call site and dropped, the frame was empty, and the
+    /// dispatch fell to value-direction. It no longer does — `classify_pin_or_apply_within`
+    /// threads the instance and `Interpreter::spec_instance_for_sibling_call` projects it
+    /// — so the population that remains is the routes with NO STATIC TYPE to build a
+    /// dictionary from, each MEASURED in
+    /// `wi_r10kc_spec_default_body_dictionary_test`'s "THE ROUTES WITH NO STATIC TYPE"
+    /// section — two of the three DRIVEN there, the SLD bridge stated rather than driven
+    /// because the rule shape that reaches it residualizes one goal earlier:
+    ///
+    ///  * AN EXISTENTIAL RETURN, opened per use to a rigid skolem (`operation mk() ->
+    ///    MySet[T = String]` over a body that builds at `O = ByLength`, kernel-language.md
+    ///    WI-1063). The skolem names no provider, so no dictionary can be built at the
+    ///    call site either. THIS is the live population, and the one whose refusal this
+    ///    variant carries.
+    ///  * THE HOST ENTRY does NOT reach here: `seed_entry_requirements` installs a
+    ///    self-rooted STAND-IN rather than a marker (WI-868's decision, with three
+    ///    measurements at [`crate::eval::Interpreter::stand_in_requirement`]), and the
+    ///    read then falls to value-direction, which answers from the ARGUMENTS. Measured
+    ///    as a silently WRONG answer for a named slot, and PINNED as such by
+    ///    `the_host_entry_route_answers_by_value_direction`.
+    ///  * THE SLD BRIDGE does not reach here either, by construction:
+    ///    [`NamedSlotTies::Raise`] keeps the tie a verdict, and the bridge residualizes
+    ///    rather than entering on a recorded absence.
     NamedSlotNotCarried,
 }
 

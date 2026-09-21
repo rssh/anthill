@@ -1993,12 +1993,31 @@ admits no name at all (§4) — there is nothing to bind, declaring a named slot
 the first step, and the message says that instead.
 
 **At run time a named slot is never recovered from a value.**  A value names its sort and
-carries none of its type parameters, so a dispatch that has only the value — a spec's
-default body calling a sibling spec op, as `FiniteCollection.size`'s `collect(c)` does —
-cannot learn which provider the value's construction chose.  Where more than one could
-have been, the slot is recorded as **absent** rather than guessed: an operation that
-never reads it (`SortedSet.collect`) runs, and one that does is refused at the read,
-naming the cause.
+carries none of its type parameters, so a dispatch that has only the value cannot learn
+which provider the value's construction chose.  Where more than one could have been, the
+slot is recorded as **absent** rather than guessed: an operation that never reads it
+(`SortedSet.collect`) runs, and one that does is refused at the read, naming the cause.
+
+**A spec's DEFAULT BODY is not such a dispatch** (WI-20260921-R10KC; it was named as the
+example here until this ticket).  A body-less spec operation *is* a dictionary entry, so
+a default body calling a sibling — any shared body over a member the carrier supplies —
+takes its EVIDENCE **by projection out of the dictionary its own frame was entered with**
+rather than rebuilding it from the argument value. (The callee is still selected by the
+value where a value can select it; the dictionary picks the target only for a
+**receiver-less** sibling, which no argument can classify.)  The dictionary is the call site's: `dict_layout`'s provider half already
+reserves the carrier's own `requires`, so one dictionary carries both what the sibling
+resolves to and the evidence that implementation reads.  This holds whether or not the
+spec declares `requires` of its own — a spec with an empty chain still has a provider
+half — and it is what makes a shared body over a witnessed carrier answer by *that
+carrier's* witness: one polymorphic body over two rival orderings gives two answers.
+
+What remains without a static type to build a dictionary from is narrow, and each route
+answers differently: an **existential return** opened to a rigid skolem (§"In a RETURN
+the quantifier flips to ∃") names no provider, so the read is refused as above; a **host
+entry** is served by value-direction, which answers from the arguments; and a **rule-body
+bridge** keeps the tie a verdict and residualizes.  See
+`docs/design/path-dependent-types.md` §5.5 for why this is the boundary of dynamic
+δ-elimination rather than an implementation gap.
 
 A **default** (§8.7) reaches a named slot exactly where the ladder above does, and the
 two readings split it the same way (WI-861, narrowed by WI-1094).  Where the binder is

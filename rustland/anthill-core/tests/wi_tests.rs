@@ -1800,3 +1800,6 @@ mod wi_n31xx_type_value_read_rule_test;
 
 #[path = "include/wi_xsvcs_op_requires_forward_test.rs"]
 mod wi_xsvcs_op_requires_forward_test;
+
+#[path = "include/wi_r10kc_spec_default_body_dictionary_test.rs"]
+mod wi_r10kc_spec_default_body_dictionary_test;

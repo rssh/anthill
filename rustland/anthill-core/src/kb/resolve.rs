@@ -10228,9 +10228,24 @@ impl KnowledgeBase {
             // of the dictionary in hand, so it is carried one hop further rather than
             // dropped here — [`WovenDispatch`], read by `call_op_bridged`.
             //
-            // The predicate is `classify_pin_or_apply_within`'s own (`needs_reqs ||
-            // has_op_slots`), asked of the TARGET, so the resolver's woven route and the
-            // typer's static route agree about which callees need a channel.
+            // The predicate is a SUBSET of `classify_pin_or_apply_within`'s (`needs_reqs
+            // || has_op_slots`), asked of the TARGET. It used to be the whole of it, and
+            // this comment said the two routes AGREE about which callees need a channel;
+            // WI-20260921-R10KC added a third disjunct there (`threads_instance` — a
+            // resolved tree pinning a provider the callee's parent is not) and did NOT
+            // add it here, so the claim is now false in one direction and stated rather
+            // than quietly left.
+            //
+            // WHAT THAT COSTS, named so it is not rediscovered as a new defect: a RULE
+            // BODY reaching R10KC's shape — a spec with an empty `requires` chain whose
+            // default body calls a body-less sibling — computes `None` here, so
+            // `call_op_bridged` gets no `dispatched_through`, the bridged frame carries no
+            // `__req_self`, and the sibling falls back to value-direction. The operation-
+            // body route is fixed and this one is not. It is left for a ticket rather than
+            // widened here because the dictionary IS already in hand at this site, so the
+            // change is a behaviour change on the resolver's own dispatch with no driver
+            // in this ticket's fixtures — and `WovenDispatch` feeds `reduce_op_value`,
+            // whose folding decisions it would also move.
             let woven_next = dict.and_then(|dict| {
                 let parent = super::typing::impl_parent_of_op(self, target);
                 let needs_reqs =

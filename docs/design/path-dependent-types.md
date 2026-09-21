@@ -902,7 +902,10 @@ the contextual part never lives *inside* the value:
 The fences: a neutral roots only at an operation interface and dies at instantiation
 (escape-free, WI-401) — it never lands in an asserted fact; **runtime `Type` values stay
 ground** (at eval the receiver carries its real sort, so a value-position projection
-δ-grounds dynamically — `extract` never meets an un-eliminable projection at runtime);
+δ-grounds dynamically — `extract` never meets an un-eliminable projection at runtime)
+— **but read §5.5 before relying on that last clause**: a receiver names its sort and
+NONE of its type arguments, so it grounds a projection its own data determines and no
+other, and a WITNESS member (a named requirement slot) is exactly the case it does not;
 and the host mapping is known per class — ground as today, rigid by the WI-403
 transliteration `(Convert[A = X, B = Y], X, M)` → `<X as Convert<B = Y>>::M` (carrier
 param → `Self`, other bindings → equality bounds, member name → associated-type name).
@@ -1165,6 +1168,106 @@ flexible heads in rule bodies. The **instance-fact** primitive is its own ticket
 (op-valued fact bindings are new; the binding-lowering question is WI-391's
 fact-vs-provides decision, which it depends on).
 
+## 5.5 Rigids, and why projection cannot be fully eliminated (2026-09-21, WI-20260921-R10KC)
+
+§5.3 stratified `Type` into **ground / flexible / rigid neutral** and fenced the rigid
+class with a promise: *"runtime `Type` values stay ground — at eval the receiver carries
+its real sort, so a value-position projection δ-grounds dynamically; `extract` never
+meets an un-eliminable projection at runtime."* That promise is **narrower than it
+reads**, and this section says where it stops. It was written when the only rigid was
+§5.3's type-receiver projection; three more sources have arrived since, and one of them
+breaks the dynamic-δ argument outright.
+
+### Where rigids come from now — four sources, three of them later than §5.3
+
+| source | spelling | what the rigid is | reference |
+|---|---|---|---|
+| type-receiver projection | `P.Key` | `RigidTypeProjection(requires, var, member)` | §5.3, WI-428 |
+| an **unwritten parameter slot**, top level | `s: Stream[T = Int64]` | the projection `s.E` — *the language already spells this name* | WI-1059 |
+| an **unwritten parameter slot**, nested | `List[T = Stream]` | a **fresh rigid per slot**, with **no name at all** | WI-1061 |
+| an **existential return**, opened per use | `-> Stream[T = Int64]` ≡ `∃E. Stream[T = Int64, E]` | a fresh **skolem** ρ, minted per *use* | WI-1063 |
+
+Reflect keeps the three kinds apart by the question they answer, which is the operative
+distinction here: `Skolem(name, id)` unifies with **nothing but itself**, `FlexVar` with
+**anything**, and `TypeVar` is a *placeholder* carrying no identity and is not a variable
+at all (WI-1079). A rigid is a skolem; `name` is only what a diagnostic prints, so two
+rigids for one parameter name render alike and are different types.
+
+### Two reasons elimination can fail, and they are not the same reason
+
+**(a) A rigid that nothing spells.** WI-1061's nested filler is minted precisely because
+*nothing spells the inner row of `List[T = Stream]`*. δ needs a path to eliminate along;
+there is none, so the rigid is not merely un-eliminated but un-nameable. This is a
+*syntactic* limit and it is by design — §5.3's own argument against a general
+`TypeMember(τ, M)` is that the sound fragment is the one keyed to something that carries
+identity.
+
+**(b) A rigid that is a WITNESS — and this is the one that breaks the runtime fence.**
+The dynamic-δ argument is that a runtime receiver names its own sort, so the projection
+grounds. True for a member the sort *determines* — a `MySet[T = String]`'s `T` is
+recoverable from its elements. **False for a member that is a SELECTION the data does not
+record**, which is exactly what a named requirement slot is (058 §4.7: a named slot is a
+type parameter, and a `Value::Entity` carries its functor and none of its type
+arguments). MEASURED, on a carrier `enum MySet requires O: WeakOrd[T]` with two rival
+`WeakOrd[String]` in scope:
+
+```anthill
+operation mk(n: Int64) -> MySet[T = String] =          -- packs O := ByLength (WI-1063)
+  MySet.insert(MySet.empty[T = String, O = ByLength](), "zz")
+```
+
+A use of `mk` opens `O = ρ`. At run time the value is `node(elem: "zz", rest: nothing())`
+— it names `MySet`, and nothing in it names `ByLength`. So the projection does **not**
+δ-ground dynamically; the dispatch is refused naming the slot
+(`UnavailableWhy::NamedSlotNotCarried`). **The fence should be read as: a runtime value
+grounds a projection whose member its own data determines, and no other.**
+
+The two halves refuse at *different phases*, which is worth recording because it is not
+obviously right: the DIRECT call `MySet.contains(mk(0), …)` is refused **at load**
+(WI-1094's message, naming the slot and the repair), while the same value reached through
+a spec's default body loads clean and refuses **at run time**. One phase apart for one
+cause.
+
+### What carries a witness, then: the dictionary, not δ
+
+A witness is **evidence**, and evidence travels in the requirement dictionary — the
+`dict_layout` provider half — not in the type's projection and not in the datum. Written
+out, the discipline is:
+
+* a **written** slot (`MySet[T = String, O = ByLength]`) pins the provider in the type,
+  and every dictionary resolved at that type carries it;
+* a **declared and forwarded** slot (`requires O: WeakOrd[T]` on the consumer, `O` written
+  in the parameter's type) hands the caller's evidence through the frame — this is the
+  form that RUNS, at any nesting depth;
+* an **unwritten** slot has no channel, and is refused (WI-1094).
+
+A container needs nothing of its own. `List[T = MySet[T = String, O = ByLength]]` has ONE
+element type, hence one witness for every element, and a generic consumer over it —
+written against the spec alone, knowing no ordering — keeps that witness through its own
+`requires` slot. MEASURED: two such lists at the two rival orderings give different
+answers through one polymorphic body.
+
+**And a heterogeneous list cannot be built at all** — `cons(byLength_set, cons(alphabetical_set, nil()))`
+is refused *`expected List[T = MySet[T = String, O = ByLength]], got List[T = MySet[T =
+String, O = Alphabetical]]`*. The reason is **rank-1-ness, not a missing ∃**: an unwritten
+nested slot is one fresh rigid **per slot**, and a list has one element type. A witness
+quantified *per datum* rather than per type is the one shape a value-carried dictionary
+would be the sole answer for, and it is the type discipline that excludes it.
+
+### The open question this leaves
+
+**Should `O` and `s.O` differ at all?** WI-1059 says a top-level unwritten slot *is* the
+projection `s.O` — the language names it — yet a call through it is refused exactly as a
+nested, nameless one is. MEASURED: the two produce the same WI-1094 message, word for
+word, so **depth is not the axis**; the axis is that a signature which omits the slot has
+nowhere for the caller to put a dictionary. WI-1094 put the two outcomes side by side in
+its own acceptance — *"either forwards the value's comparator … or is refused"* — and
+shipped the refusal. Whether the projection should instead **be** the channel, so that
+writing `O` and projecting `s.O` are one thing, is undecided; it is a question about the
+requirement channel's surface, not about δ.
+
+Driver for everything measured here: `wi_r10kc_spec_default_body_dictionary_test`.
+
 ## 6. Seam map
 
 | piece | seam |
@@ -1179,6 +1282,7 @@ fact-vs-provides decision, which it depends on).
 | `expected → argument` inference (push the param type into a polymorphic arg); the missing half of bidirectional flow | **WI-427** (anchor: the §4.1 bidirectional-flow checklist example) |
 | ungrounded `s.K` lowered to the host (realization / codegen) | **WI-403** — rule **decided** 2026-06-09 (§5.2: associated types + `S::K`, normative in `docs/rust-forward-mapping.md` §2.14); emitter rides **WI-002** (the KB-driven full mapper), WI-403 re-pointed onto it and left open |
 | Capitalized dotted fall-through in type position → **hard error** (today: warning + degenerate nominal; a false reject *and* a false accept, §5.3) | **WI-429** (fix vs the delivered WI-376 classifier; independent of WI-428, deliverable first) |
+| rigid sources beyond §5.3, and the runtime-δ fence's real boundary — a witness rigid does NOT δ-ground at eval (§5.5) | **WI-20260921-R10KC** ✓ **DELIVERED** (2026-09-21): the evidence travels in the frame's dictionary, not in the projection. The `O`-vs-`s.O` channel question (§5.5, last paragraph) is left undecided, and is WI-1094's to reopen |
 | type-receiver projection `RigidTypeProjection` (§5.3): classifier arm, δ-at-formation / δ-through-the-bound, ζ by σ-class, bare-spec sugar, `TypeExtractor` entity | **WI-428** |
 | carrier-precise `requires` matching for `ExprCarried` neutrals (promoted from WI-400's deferred list; end-state = the §5.3 convergence onto var-keying) | **WI-430** |
 | HK emulation (§5.4): structured-param member registration, **fill-as-requirement-discharge** (co-delivers WI-428 increment B), injective application decomposition, Miller guard for rule bodies | **WI-383** ✓ **DELIVERED** (2026-06-14): the op-type-param projection `T.V` (forms + grounds via explicit-requires, self-carrier structured member, entity-resource provider-fact bind), the marked carrier `sort …[F[T]]` (WI-451/452) + concrete fill `F := Option` (WI-453, requirement-discharge), and injective application decomposition (free via the parameterized unify arm) are end-to-end. The rule-body Miller-fragment guard is a resolver/SLD refinement (deferred — flexible `?f(?x)` heads load; the guard fires only once concrete monad values flow through the law rules, downstream of instances) |
