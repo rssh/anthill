@@ -39,3 +39,19 @@ ACCEPTANCE:
  - `Frame.type_args`, `FrameTypeArgs`, `ClosureTypeArgs`' remains, `find_type_arg`, `ground_type_params`, `collect_closed_type_args`, `collect_resolved_type_args` and the typer's `resolved_type_args` stamping are GONE, with `wi272_op_type_args_frame_test` deleted and its deletion explained;
  - full workspace green via rustland/scripts/test.sh; scaland `sbt testFull`.
 
+## Changes
+
+### 2026-09-21T09:08:57Z — feedback — claude
+
+ROUTE (a) IS MISSTATED IN THE DESCRIPTION — 'classify the reify call' is the wrong fix, and the real one is smaller and general (user, 2026-09-21: 'why reify is not classified automatically by requirement in signature?').
+
+WHY REIFY IS NOT CLASSIFIED, and why that is CORRECT. All five `CallClass` variants are DISPATCH REWRITES — PinNow, ConcreteApplyWithin, DeferToRequirement, UnresolvedSpecOp, EtaOpRef. Classification means 'send this call somewhere else'. `Error.reify` needs no rewrite: the stdlib declares it body-less ON PURPOSE because 'the boundary is a FRAME, and the interpreter installs it BY SYMBOL'. There is nothing to redirect, so the absence of a classification is right.
+
+THE ACTUAL DEFECT IS A COUPLING. `op_dicts` lives INSIDE `CallClass::ConcreteApplyWithin`, and `build_op_scoped_dicts` has exactly three callers, all on dispatch paths: `eta_op_scoped_dicts`, `classify_pin_or_apply_within`, and `check_apply_iter`'s ConcreteApplyWithin arm. But an OPERATION-LEVEL `requires` is an INPUT THE CALLER OWES THE CALLEE — a fact about the callee's SIGNATURE, not about where the call goes. Nothing about 'who do I dispatch to' should decide whether an input is supplied. An operation that HAS a requirement but needs NO dispatch rewrite falls between the two, and `reify` is the first such operation to exist.
+
+IT FAILS SILENTLY, which is what makes it worth fixing generally rather than for reify: `requires TypeValue[T = T1]` on `Error.reify` LOADS CLEAN, the typer accepts it, and the dictionary is simply never built — measured `reqs=[]` at the dispatch site. Any future body-less, specially-dispatched operation with a `requires` hits the same hole with no diagnostic.
+
+REPLACES ROUTE (a) WITH: build op-scoped dictionaries whenever the CALLEE HAS A NON-EMPTY OP HALF (`op_dict_entries(callee).op_entries()`), independently of the dispatch decision — either a `CallClass` variant carrying only `op_dicts` and no rewrite, or lifting `op_dicts` out of `ConcreteApplyWithin` onto its own occurrence stamp. Routes (b) and (c) in the description are then unnecessary: (b) was circular and (c) was a narrow (a).
+
+WORTH A ROW OF ITS OWN whichever way this lands: an operation with an op-level `requires` that the call site never builds should not load clean. Today it does.
+
