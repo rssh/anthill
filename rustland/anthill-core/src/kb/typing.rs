@@ -21600,7 +21600,22 @@ fn check_apply_iter(
                     // fall back to the inherit, handing the member a frame without its
                     // provision's conditions — unbound at eval. So it is a load error
                     // here, unless a refusal is already parked for it just below.
-                    if !serves && dispatch_dict.is_none() && unsuppliable.is_none() {
+                    //
+                    // WI-456 — "already parked" means a refusal that says MORE than this
+                    // one does, and [`RequirementRefusal::no_scope_route`] says less: it is
+                    // the signature for "no route, and none of the four reasons applies",
+                    // whose tail can only advise declaring a slot. THIS error names both
+                    // operations and the provision, and its repair ("or give it its own
+                    // `requires …`") is the one an author can act on. So the least-specific
+                    // signature YIELDS here rather than displacing it.
+                    //
+                    // MEASURED as the one regression the no-route arm caused across the
+                    // workspace (7226 tests, this alone):
+                    // `wi_1z3e7 a_helper_calling_a_member_directly_builds_its_dictionary`,
+                    // where parking turned §7.4's message into the generic tail.
+                    let parked_says_more =
+                        unsuppliable.as_deref().is_some_and(|r| !r.no_scope_route);
+                    if !serves && dispatch_dict.is_none() && !parked_says_more {
                         let provision = callee_provision.unwrap_or(parent_sym);
                         return Err(TypeError::ProvisionConditionOutOfScope {
                             span,
@@ -23993,6 +24008,54 @@ pub struct RequirementRefusal {
     /// How Strategy-3 construction terminated, rendered — the `Ambiguous`
     /// provider set when there is one, else the `NoMatch`/`Cyclic` account.
     construction: String,
+    /// WI-456 — [`Self::construction`] ALREADY ENDS IN A REPAIR, so the generic tail must
+    /// not add a second one that contradicts it. True exactly where the account came from
+    /// a tie whose `tie_repair_advice` is attachable ([`failure_carries_repair`]).
+    ///
+    /// THIS IS THE `None`-PINNED PEER OF [`PinnedWitness::TiedInside`], which covers the
+    /// same contradiction for a refusal that DID pin a witness. That enum is a value rather
+    /// than a flag for a stated reason — a flag beside a `Symbol` could pair `Unusable`'s
+    /// advice with a tie's account — and that reason does not reach here: this says nothing
+    /// about a witness, only whether the account is self-sufficient, and there is no
+    /// witness at this site to mismatch it against.
+    ///
+    /// NARROW, exactly as `TiedInside`'s own doc requires: it suppresses the tail ONLY when
+    /// [`Self::unconstrained`] is empty. That tail is the repair for an UNCONSTRAINED
+    /// ELEMENT, which a tie's advice does not cover — suppressing on "the construction said
+    /// something" rather than on WHICH clause it answered would silence that one too.
+    ///
+    /// **NOT DRIVEN BY A TEST, AND SAID SO RATHER THAN IMPLIED.** No program I could write
+    /// reaches the op-scoped tie with an ATTACHABLE repair, and no existing test does
+    /// either — wi870 / wi858 / wi456_sorted_set_collection / wi1026 / wi822 all pass
+    /// untouched by this field (58 rows). THREE fixtures were tried and each LOADED CLEAN:
+    ///
+    ///   1. an op-scoped `requires WeakOrd[T = Boxed[E = String]]` over the witness
+    ///      `ByInner` with its named slot `OI`;
+    ///   2. the same against wi456's own `BY_INNER` / `Boxed` fixture verbatim;
+    ///   3. an element sort providing `Eq` + `PartialOrd` but NOT `WeakOrd`, with two rival
+    ///      witnesses over it, so nothing could be defaulted to.
+    ///
+    /// All three are answered by rung 2a (058 §3.2) before a tie can form — the carrier's
+    /// own provision wins and the rivals stay opt-in by bracket, which is WI-861's flip.
+    /// So the path may not be reachable on today's surface at all. The guarantee here is
+    /// STRUCTURAL — one predicate, one suppression, gated on one emptiness test — which is
+    /// the same standing WI-456(b) recorded for its own at-call-goal-tie-under-a-pin shape.
+    /// A reader who finds a reaching fixture should turn this paragraph into a driver.
+    construction_carries_repair: bool,
+    /// The enclosing scope offers NO ROUTE to this dep — no chain entry covers it, no
+    /// sub-chain projection reaches it, construction found nothing, and none of the four
+    /// signatures above explains why. The plainest shape is a signature that QUANTIFIES a
+    /// type parameter and declares no `requires` to carry its dictionary
+    /// (`f[T, O](s: SortedSet[T = T, O = O])`): [`carried_slot`] reads the binder as
+    /// `Forwarded` because the signature declared it, but declaring a type PARAMETER is
+    /// not declaring a SLOT, so the scope has nothing to forward. Before this, such a
+    /// call took the silent `Ok(None)` and died at eval with `Internal(DeferToRequirement:
+    /// __req_* not bound … frame binds [])`, naming neither the requirement nor a repair.
+    ///
+    /// It changes only the ADVICE. "Pin the element at the call site" is the repair for an
+    /// UNCONSTRAINED element and is not this one: here the element is a rigid the caller
+    /// already pinned, and what is missing is the slot to carry its dictionary.
+    no_scope_route: bool,
     /// WI-841: the witness this call-site bracket PINNED for the dep, when it did.
     /// A pinned dep that fails to project can never degrade to "no dict, carry on":
     /// the author named a provider and it was not used, so the refusal is
@@ -24074,6 +24137,49 @@ pub struct UnprovidedProvision {
 /// for one would decode to the PROVIDER, `has_a_row` could never be `true`, and a
 /// carrier whose provision is a witness elsewhere would be told to write a row it
 /// already has. The two questions "which parameter holds the carrier" get ONE answer.
+/// WI-456 — is `carrier` itself the PROVIDER of `spec` at `carrier`, with no rival?
+///
+/// NOT [`carrier_has_provision_row`], and the difference is the whole soundness of
+/// [`provider_half_projection`]. That predicate asks whether any provision DISPATCHES at
+/// this carrier — which a WITNESS does (`ByLength provides WeakOrd[T = String]` dispatches
+/// at `String`) — and its own doc says both provenances count on purpose, because the
+/// diagnostic it serves wants exactly that. Strategy 2b needs the other question: whose
+/// `requires` chain is the PROVIDER HALF of the dictionary sitting in that slot. For a
+/// witness that is the WITNESS's chain, not the carrier's, so reading the carrier's would
+/// index a real dictionary at the wrong slot.
+///
+/// MEASURED before this predicate existed (found by /code-review): with `ShowBox[E]
+/// requires Tagged[T = Box[E = E]] provides Shown[T = Box[E = E]]`, a body requiring
+/// `Shown[T = Box[E = E]]` took Strategy 2b, read `Box`'s chain where the dictionary held
+/// `ShowBox`'s, and RAN — answering 99 (the witness's own requirement) where 7 was
+/// correct. With Strategy 2b backed out the same program is refused at load. A silently
+/// wrong answer from a correctly-refused program is the worst trade this file can make.
+///
+/// TWO CONDITIONS, and the second is not redundant. A self-provision must exist AND no
+/// OTHER provider may dispatch at this carrier: 058 tier 3 lets nameable witnesses coexist
+/// with a carrier's own row, and where one does, which dictionary the slot holds is the
+/// resolution's answer and not this syntactic read's. So a rival makes Strategy 2b decline
+/// and fall through, rather than guess.
+fn carrier_is_its_own_sole_provider(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
+    let carrier_param = spec_carrier_param_or_sole(kb, spec);
+    let mut saw_self = false;
+    for (provider, spec_t, _) in provisions_of_spec(kb, spec) {
+        let dispatch_carrier = carrier_param
+            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(spec_t)))
+            .map_or(provider, |(_, base)| base);
+        if !same_sort_canonical(kb, dispatch_carrier, carrier) {
+            continue;
+        }
+        if same_sort_canonical(kb, provider, carrier) {
+            saw_self = true;
+        } else {
+            // A witness dispatching at this carrier: the slot may hold ITS dictionary.
+            return false;
+        }
+    }
+    saw_self
+}
+
 fn carrier_has_provision_row(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
     let carrier_param = spec_carrier_param_or_sole(kb, spec);
     provisions_of_spec(kb, spec).any(|(provider, spec_t, _)| {
@@ -24208,6 +24314,35 @@ impl RequirementRefusal {
         // `explain_dep_refusal` reports through this very branch — suppressing on "the
         // construction clause said something" rather than on WHICH clause it answered
         // would have silenced that one too.
+        // The NO-ROUTE advice replaces the generic one for the reason the `unprovided`
+        // clause above replaces it: the generic tail tells the author to pin an element,
+        // and here the element is already pinned — to a type parameter of their own
+        // signature. What is missing is a slot to carry the dictionary for it.
+        if self.no_scope_route {
+            // THE ENCLOSING SORT, and NOT "or its operation" (corrected by /code-review).
+            // An OP-SCOPED slot does not reach the instance-dictionary builder at all —
+            // that is `wi822 the_instance_dictionary_channel_never_forwards_an_op_slot`'s
+            // deliberate sort-half read — so a program that declares one is refused HERE,
+            // and advising the operation tells such an author to do the thing they already
+            // did. That is the WI-1102 failure this file warns about twenty lines up
+            // ("repeating it would send them looking for a second binding that is not
+            // missing"). The sort is the spelling that actually carries it today.
+            msg.push_str(
+                " — nothing in the enclosing scope supplies it: declare a requirement slot \
+                 for it on the enclosing SORT (`requires <name>: <the spec above>`) and \
+                 write `<name>` where the parameter's type names that slot; a slot declared \
+                 on the OPERATION does not reach this call",
+            );
+            return msg;
+        }
+        // WI-456 — …AND THE SAME SUPPRESSION WHERE NO WITNESS WAS PINNED. `TiedInside`
+        // reaches only a refusal that pinned one; an op-scoped tie pins none, so its account
+        // carried the tie's repair and the `None` arm appended a contradicting second.
+        // GATED ON `unconstrained` BEING EMPTY, which is what keeps it from silencing the
+        // case that arm exists for — see [`Self::construction_carries_repair`].
+        if self.construction_carries_repair && self.unconstrained.is_empty() {
+            return msg;
+        }
         msg.push_str(match self.pinned {
             Some(PinnedWitness::TiedInside(_)) => "",
             Some(PinnedWitness::Unusable(_)) => " — select a witness that provides this requirement at these bindings, or drop the selection and let it resolve",
@@ -24697,7 +24832,12 @@ fn report_unsuppliable_requirements(
 /// Empty is the load-bearing answer: WI-945 reads it as the §5.2 verdict for a
 /// projection that failed with no σ-refused cover and no `Ambiguous` — non-empty
 /// means no supply can ever exist, empty means the dep is fully determined and
-/// merely unprovided (the WI-415/418 gap that stays a silent no-dict).
+/// merely unprovided.
+///
+/// WI-456 — AND "MERELY UNPROVIDED" NO LONGER MEANS SILENT. That gap used to fall
+/// through to a no-dict classification that loaded clean and died at eval; it is now
+/// parked as [`RequirementRefusal::no_scope_route`] and decided against the callee's
+/// body. So an empty answer here selects WHICH refusal, not whether there is one.
 fn unconstrained_elements(
     kb: &mut KnowledgeBase,
     dep: &RequiresEntry,
@@ -24825,6 +24965,8 @@ fn explain_dep_refusal(
     // WI-841: this explainer is the σ-signature one; a PIN refusal is built by the
     // caller, which is the only place that knows a pin was in force.
     Some(RequirementRefusal {
+        no_scope_route: false,
+        construction_carries_repair: false,
         dep_text,
         unconstrained,
         refused_covers,
@@ -24935,6 +25077,8 @@ fn build_dispatching_dict_from_chain(
                 // explicit instruction ignored on top.
                 if let Some(w) = pinned_witness {
                     return Err(Box::new(RequirementRefusal {
+                        no_scope_route: false,
+                        construction_carries_repair: false,
                         dep_text: render_requires_entry(kb, dep),
                         unconstrained: Vec::new(),
                         refused_covers: Vec::new(),
@@ -24972,6 +25116,8 @@ fn build_dispatching_dict_from_chain(
                 // is already answered by the lowering.
                 if type_value_forward_unsuppliable(kb, dep) {
                     return Err(Box::new(RequirementRefusal {
+                        no_scope_route: false,
+                        construction_carries_repair: false,
                         dep_text: render_requires_entry(kb, dep),
                         unconstrained: disambig
                             .map(|ctx| unconstrained_elements(kb, dep, ctx))
@@ -25027,6 +25173,8 @@ fn build_dispatching_dict_from_chain(
                     let unconstrained = unconstrained_elements(kb, dep, ctx);
                     if !unconstrained.is_empty() {
                         *slot = Some(Box::new(RequirementRefusal {
+                            no_scope_route: false,
+                            construction_carries_repair: false,
                             dep_text: render_requires_entry(kb, dep),
                             unconstrained,
                             refused_covers: Vec::new(),
@@ -25055,6 +25203,8 @@ fn build_dispatching_dict_from_chain(
                         if let Some(unprovided) = unprovided_provision(kb, dep) {
                             let construction = describe_resolution_failure(kb, nomatch);
                             *slot = Some(Box::new(RequirementRefusal {
+                                no_scope_route: false,
+                                construction_carries_repair: false,
                                 dep_text: render_requires_entry(kb, dep),
                                 unconstrained: Vec::new(),
                                 refused_covers: Vec::new(),
@@ -25063,6 +25213,51 @@ fn build_dispatching_dict_from_chain(
                                 unprovided: Some(unprovided),
                             }));
                         }
+                    }
+                    // …AND THE PLAIN CASE, which had no reader either: the scope offers NO
+                    // ROUTE and none of the signatures above says why. The four arms are
+                    // each about a REASON the search failed (a named witness that did not
+                    // land, a σ-refused cover, an unconstrained element, a carrier with no
+                    // provision); this one is the absence of any route at all, whose
+                    // commonest spelling is a signature quantifying a type parameter with
+                    // no `requires` to carry its dictionary (see [`RequirementRefusal::
+                    // no_scope_route`]). It fell through to `Ok(None)` and died at eval as
+                    // `Internal(DeferToRequirement: … not bound … frame binds [])`.
+                    //
+                    // PARKED like its siblings, not raised: whether the missing dictionary
+                    // is a defect or an irrelevance is the CALLEE BODY's answer
+                    // ([`UnsuppliableRequirement`]), and a callee that never reads the slot
+                    // must keep running exactly as it did — `SortedSet.collect` reaches
+                    // here on the very programs where `SortedSet.insert` must not.
+                    //
+                    // THE ACCOUNT IS KEPT FOR THE ARMS THAT ARE FREE, and dropped only for
+                    // the one that is not (corrected by /code-review; the first cut dropped
+                    // it wholesale). `describe_resolution_failure`'s whole-KB
+                    // `sorts_with_constructors` scan — WI-456(b)'s measured +9% — lives ONLY
+                    // in its `Ambiguous` arm. `NoMatch` is a `hint.clone()` and `Cyclic` a
+                    // `path.join`, both already computed. Dropping those cost nothing and
+                    // LOST the cause: a cyclic construction rendered as "nothing in the
+                    // enclosing scope supplies it — declare a requirement slot", advice that
+                    // cannot repair a cycle, with `construction is cyclic: A -> B -> A`
+                    // printed nowhere.
+                    if slot.is_none() {
+                        let construction = match &s3_failure {
+                            Some(f @ (ResolutionResult::NoMatch { .. }
+                            | ResolutionResult::Cyclic { .. })) => {
+                                describe_resolution_failure(kb, f)
+                            }
+                            _ => String::new(),
+                        };
+                        *slot = Some(Box::new(RequirementRefusal {
+                            no_scope_route: true,
+                            construction_carries_repair: false,
+                            dep_text: render_requires_entry(kb, dep),
+                            unconstrained: Vec::new(),
+                            refused_covers: Vec::new(),
+                            construction,
+                            pinned: None,
+                            unprovided: None,
+                        }));
                     }
                 }
                 return Ok(None);
@@ -25434,6 +25629,8 @@ fn build_op_scoped_dicts(
                     supply: entry.supply,
                 };
                 return Err(Box::new(RequirementRefusal {
+                    no_scope_route: false,
+                    construction_carries_repair: false,
                     dep_text: render_requires_entry(kb, &shown),
                     unconstrained: Vec::new(),
                     refused_covers: Vec::new(),
@@ -25503,6 +25700,8 @@ fn build_op_scoped_dicts(
             if type_value_forward_unsuppliable(kb, &dep) {
                 kb.unsuppliable_requirements.truncate(parked_mark);
                 return Err(Box::new(RequirementRefusal {
+                    no_scope_route: false,
+                    construction_carries_repair: false,
                     dep_text: render_requires_entry(kb, &dep),
                     unconstrained: Vec::new(),
                     refused_covers: Vec::new(),
@@ -25526,6 +25725,16 @@ fn build_op_scoped_dicts(
                 // it is not silent any more, but neither is it decided here.
                 kb.unsuppliable_requirements.truncate(parked_mark);
                 return Err(Box::new(RequirementRefusal {
+                    no_scope_route: false,
+                    // WI-456 — the account below carries the TIE'S OWN repair, so the
+                    // generic tail must not append a second one contradicting it. This is
+                    // the `pinned: None` peer of `PinnedWitness::TiedInside`: the sort half
+                    // gets that suppression through the witness it pinned, and this route
+                    // pins none — so before this flag the message printed BOTH "bind that
+                    // slot in the VALUE position" and "pin the element at the call site".
+                    // That is the two-checks-disagree defect WI-456(b) closed on the other
+                    // two routes and left open on this one. Found by /code-review.
+                    construction_carries_repair: failure_carries_repair(Some(tie)),
                     dep_text: render_requires_entry(kb, &dep),
                     unconstrained: Vec::new(),
                     refused_covers: Vec::new(),
@@ -25556,6 +25765,8 @@ fn build_op_scoped_dicts(
                 };
                 let refusal = match unprovided {
                     Some((unprovided, construction)) => Some(RequirementRefusal {
+                        no_scope_route: false,
+                        construction_carries_repair: false,
                         dep_text: render_requires_entry(kb, &dep),
                         unconstrained: Vec::new(),
                         refused_covers: Vec::new(),
@@ -25574,6 +25785,8 @@ fn build_op_scoped_dicts(
                             // told to declare `requires TT[T = tyOf.B]` would be copying
                             // a parameter of a declaration that is not theirs. Same rule,
                             // and the same reason, as the projection arm above.
+                            no_scope_route: false,
+                            construction_carries_repair: false,
                             dep_text: c.clause.clone(),
                             unconstrained: Vec::new(),
                             refused_covers: Vec::new(),
@@ -26268,6 +26481,26 @@ pub fn build_dep_projection(
         }
     }
 
+    // WI-456 — Strategy 2b: the caller slots' PROVIDER halves. Strategy 2 searches each
+    // slot spec's DECLARED chain, which is the dictionary's SPEC half; a carrier's own
+    // `requires` lives in the provider half, past it ([`provider_half_projection`]).
+    //
+    // A SECOND PASS, not interleaved into the loop above (found by /code-review). Run
+    // per-slot it would order the search `slot0.spec → slot0.provider → slot1.spec`, so a
+    // dep that slot 1's SPEC half covers would be taken from slot 0's PROVIDER half
+    // instead — silently changing which real dictionary is forwarded, in a function whose
+    // own Strategy 1 comment calls blind first-match "a soundness bug (wrong runtime
+    // dispatch)". Every spec half is searched before any provider half, so the existing
+    // preference is exactly preserved and 2b only answers what nothing else would.
+    //
+    // `s2_chains` is EMPTY for a pinned dep (Strategy 2's own `if pinned` source), so this
+    // loop is likewise skipped there — an explicit `if !pinned` here would be dead.
+    for i in 0..s2_chains.len() {
+        if let Some(t) = provider_half_projection(kb, dep, caller_requires, i, syms, disambig) {
+            return Some(t);
+        }
+    }
+
     // Strategy 3 — static construction via SortProvidesInfo. Build a
     // SortGoal from the dep's spec bindings and run SLD resolution. WI-821:
     // the σ context rides into the scope so the resolution's own
@@ -26292,6 +26525,132 @@ pub fn build_dep_projection(
             None
         }
     }
+}
+
+/// WI-456 — Strategy 2b: project a dep out of the PROVIDER HALF of a caller slot's
+/// dictionary.
+///
+/// Strategy 2 searches `direct_requires_chain(slot spec)`, which is the dictionary's
+/// SPEC half. A conditional provider's own `requires` is not there: for `spec != provider`
+/// [`dict_layout`] lays the dictionary out as the spec half and THEN the provider half
+/// (`provider_dict_entries(provider, Some(spec))`, which prefixes the provider's own
+/// sort-level `requires`). So a caller holding `PersistentCollection[C = SortedSet[T = E,
+/// O = OE], Element = E]` holds `SortedSet`'s `WeakOrd` dictionary — at `spec_len + k`,
+/// where Strategy 2 never looks.
+///
+/// MEASURED as the shape that needed it: `insertD(s: SortedSet[T = E, O = OE], x: E)` on a
+/// sort requiring that collection instance loaded clean and died at eval with
+/// `Internal(DeferToRequirement: __req_weakord not bound … frame binds [])`, while the
+/// comparator sat one `requirement_at_sort` step inside the slot it did hold.
+///
+/// # Why the index is sound rather than a guess
+///
+/// A wrong index here is the WI-869 failure — a projection that reads a REAL dictionary
+/// from the WRONG slot, which resolves and computes the wrong answer, and which
+/// `check_against_prediction` cannot catch because that guards a dictionary's
+/// CONSTRUCTION and this is a READ. Three things pin it, and none is optional:
+///
+///  * the offset is [`DictLayout::spec_len`], from the file's single owner of the split,
+///    rather than a second computation of the spec chain's length here;
+///  * the search runs over `provider_dict_entries(carrier, Some(spec))` — the very list
+///    the producer bundles into that half — so index `k` means the same thing at both ends;
+///  * [`carrier_is_its_own_sole_provider`] GATES it. The provider half belongs to whichever
+///    sort provides the spec, and that is the carrier only when the carrier provides it
+///    ITSELF (`SortedSet provides PersistentCollection[C = SortedSet[…]]`) and no witness
+///    rivals it there. `carrier_has_provision_row` is NOT that question — it answers `true`
+///    for a witness too, by design — and using it here shipped a measured wrong-slot read;
+///    see the predicate's own doc.
+///
+/// Entries of the provider half are written in the PROVIDER's own parameter space
+/// (`SortedSet.T`, `SortedSet.O`), so they are composed into caller scope through the
+/// carrier binding's own arguments before being compared — the same one-level composition
+/// Strategy 2 applies through [`build_child_subst_map`], with the map read off the carrier
+/// rather than off the spec. [`align_by_short_name`] is the join, exactly as
+/// [`carrier_arg_impl_subst`] makes it.
+fn provider_half_projection(
+    kb: &mut KnowledgeBase,
+    dep: &RequiresEntry,
+    caller_requires: &DictChain,
+    i: usize,
+    syms: &ProjectionSyms,
+    disambig: Option<&SigmaCtx>,
+) -> Option<TermId> {
+    let entry = caller_requires[i].clone();
+    let spec = entry.required_sort;
+    // WHICH parameter holds the carrier — the same two-rung ladder `unprovided_provision`
+    // reads, so the two cannot disagree about it.
+    let param = spec_carrier_param_or_sole(kb, spec)?;
+    let param_name = kb.local_name_of(param).to_string();
+    let goal = goal_from_requires_entry(kb, &entry)?;
+    let bound = goal
+        .bindings
+        .iter()
+        .find(|(k, _)| kb.local_name_of(*k) == param_name)
+        .map(|(_, v)| *v)?;
+    let view = TermIdView(bound);
+    let carrier = sort_functor_of_view(kb, &view)?;
+    if !carrier_is_its_own_sole_provider(kb, carrier, spec) {
+        return None;
+    }
+    // AND DECLINE `spec == carrier` OUTRIGHT (found by /code-review). There
+    // [`dict_layout`] folds the two halves into ONE list — `spec_len` becomes the WHOLE
+    // length and `provider_len` 0 — and the two sides would also be keyed by different
+    // provisions (`None` there, `Some(spec)` here), so no index computed from them is
+    // one this function can justify. A self-providing spec used as its own carrier is
+    // exotic and 2b has no measured need for it; declining falls through to Strategy 3
+    // and costs nothing, where guessing loaded clean and died
+    // `Internal(requirement_at_sort: index out of range)` at run time.
+    if same_sort_canonical(kb, spec, carrier) {
+        return None;
+    }
+    // THE PRE-FILTER FIRST, before any allocation (found by /code-review). Strategy 2
+    // builds its composition map lazily and only for a same-sort candidate for exactly
+    // this reason, and 2b runs for EVERY dep Strategies 0-2 miss — so a dep whose spec
+    // appears nowhere in this half must cost an `Rc` clone and a symbol compare, not a
+    // chain copy plus a `HashMap`. Same load-time path the ticket measures at +9%
+    // sensitivity elsewhere.
+    let entries = provider_dict_entries(kb, carrier, Some(spec)).entries_rc();
+    if !entries
+        .iter()
+        .any(|e| same_sort_canonical(kb, e.required_sort, dep.required_sort))
+    {
+        return None;
+    }
+    let args: SmallVec<[(Symbol, TermId); 2]> = view
+        .named_keys(kb)
+        .into_iter()
+        .filter_map(|k| {
+            view.named_arg(kb, k)
+                .and_then(|it| it.as_term_id())
+                .map(|v| (k, v))
+        })
+        .collect();
+    let carrier_params = impl_param_symbols(kb, carrier);
+    let map: HashMap<Symbol, TermId> = align_by_short_name(kb, &args, &carrier_params)
+        .into_iter()
+        .collect();
+    // [`DictLayout::slots_for`] OWNS the two-half fold — its spec arm answers for BOTH
+    // when spec == provider — so the base comes from it rather than from a `spec_len`
+    // read that is only right in one of the two cases.
+    let base = dict_layout(kb, spec, carrier, None)
+        .slots_for(kb, carrier)?
+        .start;
+    let k = (0..entries.len()).find(|&k| {
+        // The same same-sort pre-filter Strategy 2 applies: composition never changes
+        // `required_sort`, so a mismatched entry skips the allocating walk.
+        if !same_sort_canonical(kb, entries[k].required_sort, dep.required_sort) {
+            return false;
+        }
+        let composed = RequiresEntry {
+            required_sort: entries[k].required_sort,
+            spec: substitute_in_spec(kb, &entries[k].spec, &map),
+            supply: entries[k].supply,
+        };
+        entries_cover(kb, &composed, dep, disambig)
+    })?;
+    let name = caller_requires.name_at(kb, i)?;
+    let inner = build_req_var_ref(kb, syms, name);
+    Some(build_req_at_sort(kb, syms, inner, base + k))
 }
 
 /// WI-226: binding-aware predicate for slot matching in

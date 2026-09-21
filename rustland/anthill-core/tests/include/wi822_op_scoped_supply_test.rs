@@ -212,20 +212,28 @@ end
     );
 }
 
-/// The unbound-dictionary message NAMES ITS FRAME. WI-822's own investigation
-/// could not attribute the failure from the text ("requirement param
-/// `__req_desc` not bound in caller frame" — which frame?) and had to establish
-/// it by probe; the message now carries the running operation and the sort
-/// whose requires chain owns the slot.
+/// The missing-dictionary message NAMES ITS FRAME. WI-822's own investigation could not
+/// attribute the failure from the text ("requirement param `__req_desc` not bound in
+/// caller frame" — which frame?) and had to establish it by probe; the message carries
+/// the running operation and the sort whose requires chain owns the slot.
 ///
-/// Driven through the shape that still reaches it — the WI-415 gap named in
-/// `CallClass::ConcreteApplyWithin`'s own doc: a CROSS-SORT call from a
-/// `requires`-free caller over an ABSTRACT argument. Nothing can build the
-/// callee a dictionary (no caller slot to forward, no concrete binding to
-/// construct from), so `Holder.probe` is entered with an empty channel and its
-/// deferred read finds no slot. The value-directed route that used to land
-/// here no longer does — that is LEG 2 — so this pins the DIAGNOSTIC, on a
-/// defect of its own that neither leg of WI-822 claims.
+/// Driven through the WI-415 gap named in `CallClass::ConcreteApplyWithin`'s own doc: a
+/// CROSS-SORT call from a `requires`-free caller over an ABSTRACT argument. Nothing can
+/// build the callee a dictionary — no caller slot to forward, no concrete binding to
+/// construct from.
+///
+/// **WI-456 MOVED THIS SHAPE FROM EVAL TO LOAD, and the assertions are unchanged because
+/// the ATTRIBUTION is what this test guards and it survived the move.** Until then the
+/// program loaded clean and died `Internal(DeferToRequirement: `__req_desc` not bound …
+/// running `Holder.probe`, requires-chain owner `Holder`)`; the same two names are now in
+/// a LOCATED load error (`wi456_no_scope_route_test`), which is strictly more than the
+/// eval text gave — it has a span. What is asserted here is therefore the same claim one
+/// stage earlier, and this test fails if that refusal ever stops naming the frame.
+///
+/// The eval text is NOT dead — `requirements_for_value_directed_impl`'s `Unresolvable`
+/// arm still enters unsupplied by design, and a host entry still seeds no op slot — but
+/// no shape in this file reaches it any more, which is why this one now reads the load
+/// verdict rather than pretending to drive eval.
 #[test]
 fn unbound_requirement_message_names_the_running_frame() {
     let src = format!(
@@ -245,18 +253,26 @@ namespace wi822.named
 end
 "#
     );
-    let got = eval_fresh(&src, "wi822.named.Caller.go", 0);
-    let msg = match got {
-        Err(anthill_core::eval::EvalError::Internal(msg)) => msg,
-        other => panic!("expected an Internal requirement error to inspect; got {other:?}"),
-    };
+    let errs = crate::common::try_load_kb_with(&src).err().unwrap_or_else(|| {
+        panic!(
+            "WI-456: a cross-sort call whose caller declares nothing that could carry the \
+             callee's dictionary is refused at LOAD. If this loads again, the shape is back \
+             to dying at eval and the assertions below must be re-pointed there."
+        )
+    });
+    let msg = errs.join("\n");
     assert!(
         msg.contains("wi822.named.Holder.probe"),
-        "the unbound-requirement message must name the RUNNING operation; got {msg}"
+        "the missing-requirement message must name the RUNNING operation; got {msg}"
     );
+    // ON A DISTINCT TOKEN, because `Holder` is a substring of `Holder.probe` above and an
+    // assertion that cannot fail independently is not one (found by /code-review). The
+    // requirement text is what the OWNER contributes and the callee name does not: the
+    // chain is `Holder`'s, so the dep is written at `Holder`'s own parameter.
     assert!(
-        msg.contains("wi822.named.Holder"),
-        "the unbound-requirement message must name the requires-chain OWNER; got {msg}"
+        msg.contains("wi822.named.Desc[T = wi822.named.Holder.HT]"),
+        "the missing-requirement message must name the requirement the OWNER's chain \
+         demands, at the owner's own parameter; got {msg}"
     );
 }
 
@@ -570,20 +586,29 @@ end
 ///
 /// MEASURED BOTH WAYS, and the difference is NOT the one predicted. A /code-review
 /// finding expected the composed chain to turn a load-time `UnsatisfiableRequirement`
-/// into an eval-time unbound `var_ref`; driven, the program LOADS either way and fails
-/// at eval either way — Strategy 3 cannot construct an abstract dep and the
-/// `require_complete` abort has no σ-refusal signature to report, so it classifies
-/// dict-less rather than refusing. What DOES differ is who is blamed:
+/// into an eval-time unbound `var_ref`; driven, the program LOADED either way and failed
+/// at eval either way. What DIFFERS is who is blamed:
 ///
-///   * composed  → `var_ref(__req_desc) unbound … running `Holder.probe`; frame binds
-///     ["__req_self"]` — the CALLER is named for a slot no route ever gives it.
-///   * sort-only → `DeferToRequirement: `__req_desc` not bound … running `Coll.size`,
-///     requires-chain owner `Coll`` — the callee, whose own sort-level `requires` is
-///     the thing that genuinely went unsupplied.
+///   * composed  → the CALLER, `Holder.probe`, is named for a slot no route ever gives it.
+///   * sort-only → the CALLEE, `Coll.size`, whose own SORT-level `requires` is the thing
+///     that genuinely went unsupplied.
 ///
-/// The second is the true account, and mis-attribution is the exact failure WI-822's
-/// own investigation had to work around with a probe. Restoring the composed chain in
+/// The second is the true account, and mis-attribution is the exact failure WI-822's own
+/// investigation had to work around with a probe. Restoring the composed chain in
 /// `enclosing_dict_chain` flips this assertion.
+///
+/// **WI-456 MOVED THE VERDICT FROM EVAL TO LOAD AND THE ATTRIBUTION CAME WITH IT**, which
+/// is why this still reads as one assertion rather than two: the `require_complete` abort
+/// that "classified dict-less rather than refusing" is the silent `Ok(None)` that ticket
+/// closed, so the program no longer loads. The refusal names `Coll.size` and its
+/// requirement and does NOT name `Holder.probe` — the same two halves, one stage earlier
+/// and with a span. The composed-chain flip is still what this measures: build
+/// `caller_requires` from the composed chain and the blame moves to `Holder.probe`, in
+/// the load text exactly as it did in the eval text.
+///
+/// SO THE SORT-ONLY CHAIN IS A DECISION, NOT AN OVERSIGHT, and WI-456's follow-on must
+/// not "fix" it by composing: that channel is read STRICTLY at eval, and the routes that
+/// fill no op slot (this program is entered from the HOST) are why.
 #[test]
 fn the_instance_dictionary_channel_never_forwards_an_op_slot() {
     let src = format!(
@@ -604,25 +629,16 @@ namespace wi822.instchan
 end
 "#
     );
-    let kb = crate::common::load_kb_with(&src);
-    let leaf_sym = kb.resolve_symbol("wi822.instchan.Leaf.leaf");
-    let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
-    let leaf = Value::Entity {
-        functor: leaf_sym,
-        pos: Vec::new().into(),
-        named: Vec::new().into(),
-    };
-    let msg = match interp.call("wi822.instchan.Holder.probe", &[leaf]) {
-        Err(anthill_core::eval::EvalError::Internal(m)) => m,
-        other => panic!(
-            "expected the callee's own unsupplied sort-level requirement to raise; \
-             got {other:?}"
-        ),
-    };
+    let errs = crate::common::try_load_kb_with(&src).err().unwrap_or_else(|| {
+        panic!(
+            "WI-456: the callee's unsuppliable sort-level requirement is refused at LOAD. \
+             If this loads again, the verdict has moved back to eval and the attribution \
+             below must be read off the `EvalError::Internal` text instead."
+        )
+    });
+    let msg = errs.join("\n");
     assert!(
-        msg.contains("wi822.instchan.Coll.size") && msg.contains("requires-chain owner"),
+        msg.contains("wi822.instchan.Coll.size"),
         "the failure must be attributed to `Coll.size`, whose SORT-level `requires` \
          went unsupplied; got {msg}"
     );
