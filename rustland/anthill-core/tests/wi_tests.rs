@@ -335,8 +335,14 @@ mod wi261_result_in_effects_test;
 #[path = "include/wi270_expected_type_test.rs"]
 mod wi270_expected_type_test;
 
-#[path = "include/wi272_op_type_args_frame_test.rs"]
-mod wi272_op_type_args_frame_test;
+// WI-272's `wi272_op_type_args_frame_test` was DELETED by WI-20260921-28TAT along with
+// the channel it observed. Its three rows asserted that `Frame.type_args` got FILLED —
+// keyed `T`, per-call, inferred or explicit — and never that anything READ what they
+// checked. By the time it was removed the channel's last reader was gone: value reads
+// went through the `TypeValue` slot (WI-20260919-N31XX) and the reify boundary reads its
+// payload sort out of a requirement dictionary, so the rows measured a channel that was
+// written and then dropped. A test that asserts a value is stored, where nothing loads
+// it, stays green through the removal of everything that made storing it worthwhile.
 
 #[path = "include/wi284_min_sort_test.rs"]
 mod wi284_min_sort_test;

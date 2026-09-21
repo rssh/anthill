@@ -247,7 +247,7 @@ pub enum EvalError {
     /// channel. A parameter with no binding is not a type: delivering `Ref(T)` — what
     /// the bare-head arms did before — answered a type the program never asked for,
     /// silently. The typer writes every binding it can prove onto the call site
-    /// (`resolved_type_args`), so reaching here is a channel that route does not fill
+    /// (WI-272's type-arg stamp, since removed), so reaching here is a channel that route does not fill
     /// yet, and the author is told which parameter and which frame.
     UnboundTypeParam {
         param: String,

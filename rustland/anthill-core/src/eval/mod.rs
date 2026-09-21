@@ -27,7 +27,7 @@ use crate::parse::desugar_target as dt;
 
 pub use error::{macro_rejection_message, render_raised_payload, BridgeDisposition, EvalError};
 pub use eval::value_functor;
-pub use frame::{ActivationStack, Frame, FrameTypeArgs};
+pub use frame::{ActivationStack, Frame};
 pub use value::Value;
 
 use cell_arena::CellArenaRef;
@@ -324,33 +324,76 @@ pub(crate) struct ErrorLayer {
     pub reify: Symbol,
     pub result_ok: Symbol,
     pub result_err: Symbol,
-    /// `Error.reify`'s PAYLOAD type parameter, as a SYMBOL — the key
-    /// `enter_reify_boundary` reads `T1` off the type-argument channel with.
+    /// WI-20260921-28TAT — the FRAME SLOT NAME `Error.reify`'s own
+    /// `requires ErrorTag[T = T1]` fills, i.e. `__req_errortag`. The boundary reads the
+    /// payload sort out of THAT dictionary now, off the requirement channel, in place of
+    /// the frame type-argument channel this ticket removes.
     ///
-    /// RESOLVED HERE SO A RENAME CANNOT BE SILENT. Read by name at the boundary, a
-    /// missing `T1` is indistinguishable from the two legitimate reasons a boundary
-    /// cannot be narrowed, so renaming the parameter in
-    /// `stdlib/anthill/prelude/effects.anthill` would quietly revert EVERY boundary in
-    /// the program to catching wide — no error, no diagnostic, nothing printed. Resolved
-    /// at layer construction it is a missing symbol, which makes the whole layer `None`:
-    /// `Error.reify` then dispatches as an ordinary body-less operation and fails loudly
-    /// as `OperationBodyMissing`, which is what a declaration nothing implements should do.
-    pub reify_payload_param: Symbol,
+    /// RESOLVED HERE rather than spelled at the boundary, and the reason is sharper than
+    /// it was for the `T1` parameter symbol this replaces: the slot name is DERIVED from
+    /// the required spec's name
+    /// (`op_dict_entries(reify).names()`), so it changes if the clause is rewritten or
+    /// removed. Read ad hoc at the boundary, a clause deleted from
+    /// `stdlib/anthill/prelude/effects.anthill` would leave every boundary in the
+    /// program silently catching wide. Resolved at construction, the whole layer is
+    /// `None` and `Error.reify` fails loudly as an unimplemented body-less operation.
+    pub reify_payload_slot: Symbol,
+    /// WI-20260921-28TAT — WHICH SUB-DICTIONARY of that slot carries the payload sort.
+    ///
+    /// `Error.reify requires ErrorTag[T = T1]`, and `ErrorTag` is supplied by
+    /// `Error provides ErrorTag[T = T] :- TypeValue[T = T]` — a provision universal in
+    /// the payload. So the ErrorTag dictionary's OWN `impl` is `Error`, the provider,
+    /// for every payload alike: the tag carries no payload information of its own and
+    /// ALL of it is in the `TypeValue` evidence it is conditioned on. Reading
+    /// `impl_sort()` directly narrowed every boundary in the program to `Error` —
+    /// measured, and it made a `Boom` raise escape a boundary typed at `Boom`.
+    ///
+    /// RESOLVED FROM THE LAYOUT, not written as `0`. The sub index is the position of
+    /// the `TypeValue` entry in `provider_dict_entries(Error, ErrorTag)` — the same
+    /// chain the dictionary was BUILT from — so a sort-level `requires` added to `Error`
+    /// later, or a second condition on the provision, moves both together. Written as a
+    /// literal it would silently read the wrong sub.
+    pub reify_payload_sub: usize,
 }
 
 impl ErrorLayer {
     /// `None` for a KB without the prelude — such a program declares no `reify`
     /// to call, so the boundary is simply absent rather than broken.
-    fn resolve(kb: &KnowledgeBase) -> Option<Self> {
-        let r = |qn: &str| kb.try_resolve_symbol(qn);
-        let reify = r("anthill.prelude.Error.reify")?;
+    fn resolve(kb: &mut KnowledgeBase) -> Option<Self> {
+        // Every NAME resolved first, so the `&KnowledgeBase` closure is done before the
+        // two chain reads below take `&mut` (`op_dict_entries` / `provider_dict_entries`
+        // memoize, so they need it).
+        let (reify, result_ok, result_err, error_sort, tag, tv) = {
+            let r = |qn: &str| kb.try_resolve_symbol(qn);
+            (
+                r("anthill.prelude.Error.reify")?,
+                r("anthill.prelude.Result.ok")?,
+                r("anthill.prelude.Result.err")?,
+                r("anthill.prelude.Error")?,
+                r("anthill.prelude.ErrorTag")?,
+                r("anthill.reflect.TypeValue")?,
+            )
+        };
         Some(Self {
             reify,
-            result_ok: r("anthill.prelude.Result.ok")?,
-            result_err: r("anthill.prelude.Result.err")?,
-            // Proposal 058 §4.2 rule 1 is why it is `T1` and not `T`: the latter would
-            // shadow the enclosing sort's own parameter.
-            reify_payload_param: kb.type_param_sym_of(reify, "T1")?,
+            result_ok,
+            result_err,
+            // The op half's SOLE slot. `op_entries()` is `reify`'s own `requires`
+            // chain; exactly one clause is declared, and taking it positionally rather
+            // than by spelling the `__req_*` name keeps this in step with whatever
+            // `op_dict_entries` names it.
+            reify_payload_slot: {
+                let chain = crate::kb::typing::op_dict_entries(kb, reify);
+                let sort_len = chain.sort_len();
+                chain.names(kb).get(sort_len).copied()?
+            },
+            reify_payload_sub: {
+                let tv_canon = kb.canonical_sort_sym(tv);
+                let chain = crate::kb::typing::provider_dict_entries(kb, error_sort, Some(tag));
+                chain
+                    .iter()
+                    .position(|e| kb.canonical_sort_sym(e.required_sort) == tv_canon)?
+            },
         })
     }
 }
@@ -453,7 +496,7 @@ impl Interpreter {
 
     pub fn with_config(mut kb: KnowledgeBase, config: EvalConfig) -> Self {
         let reflect = ReflectSymbols::resolve(&kb);
-        let error_layer = ErrorLayer::resolve(&kb);
+        let error_layer = ErrorLayer::resolve(&mut kb);
         let fields = FieldSymbols::resolve(&mut kb);
         let stack = match config.depth_cap {
             Some(cap) => ActivationStack::with_cap(cap),
@@ -1188,7 +1231,6 @@ impl Interpreter {
             expr: body_term,
             locals,
             requirements,
-            type_args: smallvec::SmallVec::new(),
             awaiting: None,
         })?;
         let result = self.run();
@@ -1618,17 +1660,6 @@ impl Interpreter {
         self.closures.with(h, |c| c.requirements.clone())
     }
 
-    /// Test-only: snapshot the top frame's operation type-arg
-    /// channel. Acceptance fixtures observe what the eval installed
-    /// on `Frame.type_args` after a call entry (WI-272). Empty when
-    /// the stack is empty or the top frame has no type params.
-    #[doc(hidden)]
-    pub fn top_frame_type_args_for_test(&self) -> FrameTypeArgs {
-        self.stack
-            .top()
-            .map(|f| f.type_args.clone())
-            .unwrap_or_default()
-    }
 
     /// Test-only entry point: drive a single expression as the body of an
     /// ad-hoc operation, with `frame.requirements` pre-seeded. Used to
@@ -1655,7 +1686,6 @@ impl Interpreter {
             expr: expr_node,
             locals: smallvec::SmallVec::new(),
             requirements,
-            type_args: smallvec::SmallVec::new(),
             awaiting: None,
         })?;
         self.run()

@@ -2736,22 +2736,6 @@ impl TypingEnv {
         &self.param_rigids[..self.sort_rigid_len]
     }
 
-    /// The OPERATION's OWN params alone — the complement of
-    /// [`Self::enclosing_instance_param_rigids`]. These are the ones a CALLER
-    /// instantiates, so a callee's type-argument channel may still mention their skolems
-    /// when the body is checked (see [`op_own_param_ref_rewrite`]).
-    ///
-    /// TWO FAMILIES LIVE HERE, NOT ONE (WI-1FKR2): the declared `[A]` brackets and the
-    /// INLINE signature variables (`via(b: Box[?t]) -> Box[?t]`), which §5.4 quantifies
-    /// exactly as it does a bracket. `op_own_param_ref_rewrite` reaches only the first —
-    /// it keys off `OperationInfo.type_params`, which the inline family is not in — so an
-    /// inline variable still rides out of a call site un-rewritten and ungroundable,
-    /// reproducing the WI-708 dangling-var shape one level down. Not a regression (that
-    /// is the behaviour before the rewrite existed) and not covered by a test; recorded on
-    /// WI-20260908-9WVT7.
-    fn op_own_param_rigids(&self) -> &[(VarId, TermId)] {
-        &self.param_rigids[self.sort_rigid_len..]
-    }
 
     /// Set the sort whose body is currently being type-checked and
     /// snapshot its **direct** `requires` chain (cheap-ish: one
@@ -10229,8 +10213,12 @@ fn attach_eta_dispatch_dict(
     // them (`List` declares no `requires`), so an eta of the one stdlib operation with an
     // op-scoped clause was minting a dict-less `OpRef` — which value-direction covered
     // for, and WI-1091's widened placement does not.
-    let (subst, selected, op_dicts) =
-        eta_op_scoped_dicts(kb, env, sym, fn_ty, expected, Some(occ.span.span))?;
+    // WI-20260921-28TAT: STAMPED HERE, once, rather than threaded into each of the five
+    // `EtaOpRef` constructions below. Same "computed ahead of the branches" discipline as
+    // `spread_labels`, now enforced by there being nowhere else to put it — the evidence
+    // is a property of this call site, not of which dispatch branch it takes.
+    let (subst, selected) =
+        eta_op_scoped_dicts(kb, env, sym, fn_ty, expected, Some(occ.span.span), occ)?;
     let Some(parent) = impl_parent_of_op(kb, sym) else {
         // Namespace-level op — no enclosing sort `requires`. WI-700: still MARK the
         // eta (dict None) so a nullary eta mints an `OpRef` at eval (a namespace op
@@ -10239,7 +10227,6 @@ fn attach_eta_dispatch_dict(
         occ.set_classification(CallClass::EtaOpRef {
             dict: None,
             spread_labels,
-            op_dicts,
         });
         return Ok(());
     };
@@ -10253,7 +10240,6 @@ fn attach_eta_dispatch_dict(
         occ.set_classification(CallClass::EtaOpRef {
             dict: None,
             spread_labels,
-            op_dicts,
         });
         return Ok(());
     }
@@ -10271,7 +10257,6 @@ fn attach_eta_dispatch_dict(
             occ.set_classification(CallClass::EtaOpRef {
                 dict: None,
                 spread_labels,
-                op_dicts,
             });
             return Ok(());
         };
@@ -10280,7 +10265,6 @@ fn attach_eta_dispatch_dict(
         occ.set_classification(CallClass::EtaOpRef {
             dict: Some(dict),
             spread_labels,
-            op_dicts,
         });
         return Ok(());
     }
@@ -10305,7 +10289,6 @@ fn attach_eta_dispatch_dict(
             occ.set_classification(CallClass::EtaOpRef {
                 dict: Some(dict),
                 spread_labels,
-                op_dicts,
             });
             Ok(())
         }
@@ -10373,14 +10356,11 @@ fn eta_op_scoped_dicts(
     fn_ty: &Value,
     expected: &Value,
     span: Option<Span>,
-) -> Result<
-    (
-        Substitution,
-        Vec<InstanceSelection>,
-        SmallVec<[Option<TermId>; 2]>,
-    ),
-    TypeError,
-> {
+    // WI-20260921-28TAT — the eta occurrence the op half is STAMPED onto. See
+    // `NodeOccurrence`'s `op_dicts` field for why it is a stamp and not a `CallClass`
+    // field.
+    occ: &Rc<NodeOccurrence>,
+) -> Result<(Substitution, Vec<InstanceSelection>), TypeError> {
     // Pin the op's element type(s) by unifying its eta arrow against the
     // expected arrow (best-effort: a non-unifiable expected leaves a dep
     // abstract, which `build_concrete_dispatch_dict` then forwards or rejects).
@@ -10448,8 +10428,9 @@ fn eta_op_scoped_dicts(
     // WI-1091: a TIE in the op half is refused here exactly as it is at a written call
     // site — an eta carries no bracket to decide it either, and `attach_eta_dispatch_dict`
     // already turns the sort half's refusal into `UnsatisfiableRequirement { eta: true }`.
-    let op_dicts = build_op_scoped_dicts(
+    stamp_op_scoped_dicts(
         kb,
+        occ,
         &subst,
         sym,
         env.enclosing_frame_chain(),
@@ -10467,18 +10448,13 @@ fn eta_op_scoped_dicts(
         // either: the eta's own caller chain is what a forwarded slot reads, exactly as it
         // is for every other dep this path cannot pin.
         &HashMap::new(),
-    )
-    .map_err(|refusal| TypeError::UnsatisfiableRequirement {
         span,
-        op: sym,
-        // The OPERATION owns an op-scoped clause, so it is what the message must name
+        // The OPERATION owns an op-scoped clause, so it is what the refusal must name
         // as the declaration whose requirement could not be supplied — its parent sort
-        // did not write it.
-        callee_sort: sym,
-        eta: true,
-        refusal,
-    })?;
-    Ok((subst, selected, op_dicts))
+        // did not write it. `eta: true` is this site's alone.
+        true,
+    )?;
+    Ok((subst, selected))
 }
 
 /// WI-275: the expected-type hint for a higher-order argument occurrence. Only a
@@ -16296,9 +16272,14 @@ pub(crate) fn classify_pin_or_apply_within(
     // requirements channel too, even when its sort declares none — that is the
     // `Holder.probe requires Zeroable[HT]` shape, which used to be `PinNow` and
     // therefore had no channel at all.
-    let op_dicts = match op_supply {
-        Some(ctx) => build_op_scoped_dicts(
+    // WI-20260921-28TAT: STAMPED, not folded into the class below. This build used to
+    // feed `ConcreteApplyWithin`'s `op_dicts` field and was DISCARDED on the `PinNow`
+    // arm; the stamp is read on every apply route, so a pinned callee with an op-scoped
+    // clause now gets its evidence too.
+    if let Some(ctx) = op_supply {
+        stamp_op_scoped_dicts(
             kb,
+            occ,
             ctx.subst,
             impl_op,
             ctx.caller_requires,
@@ -16312,16 +16293,10 @@ pub(crate) fn classify_pin_or_apply_within(
                 occ.span.source,
             ),
             ctx.param_arg_types,
-        )
-        .map_err(|refusal| TypeError::UnsatisfiableRequirement {
-            span: Some(occ.span.span),
-            op: impl_op,
-            callee_sort: impl_op,
-            eta: false,
-            refusal,
-        })?,
-        None => SmallVec::new(),
-    };
+            Some(occ.span.span),
+            false,
+        )?;
+    }
     // WI-822 LEG 1: … but only where there IS a parent to name as the callee's
     // `callee_spec_sort`. `needs_reqs` implied `impl_sort.is_some()`; `has_op_slots` is
     // read off the operation alone and does not, so an operation with no resolvable
@@ -16394,7 +16369,6 @@ pub(crate) fn classify_pin_or_apply_within(
             enclosing_sort,
             resolved_tree,
             dispatch_dict,
-            op_dicts,
             enclosing_op: op_supply.and_then(|c| c.enclosing_op),
         }
     } else {
@@ -18877,7 +18851,7 @@ fn check_apply_iter(
         // WI-408: materialize the recorded some-coercions — wrap each flagged
         // argument's typed node in a synthesized `some(...)` and reassemble
         // this apply from the new children. MUST run before any annotation
-        // write (`set_resolved_type_args` / `classify` below): the rebuilt
+        // write (`classify` below): the rebuilt
         // node starts with fresh annotation cells. The parent reassembles in
         // turn from `TypeResult.node` (WI-283), and the root reaches the
         // stored body via `set_op_body_node`.
@@ -19775,119 +19749,13 @@ fn check_apply_iter(
             check_unconstrained_type_params(kb, &subst, &op, fn_sym, span)?;
         }
 
-        // Write resolved op type-arg values back to the apply
-        // occurrence so the eval can install them on the callee's
-        // `Frame.type_args` (WI-272). Positional, in the callee's
-        // `[T1, T2, ...]` declaration order; each entry pairs the type
-        // param with the term the substitution walked its Var to. Skipped
-        // for ops without `[...]` (the common case) — `resolved_type_args`
-        // defaults to empty.
-        //
-        // WI-708: the channel KEY is the symbol a BODY reference to the param
-        // resolves to (the op-scoped `<ns>.<op>.T`), NOT the bare-interned
-        // `OperationInfo.type_params` name (`kb.intern("T")`). The two differ,
-        // and `reduce_var`'s `find_type_arg` matches by symbol IDENTITY, so a
-        // channel keyed by the bare name is dead for body reads (a body `T`
-        // fell through to the WI-206 bare-sort arm, delivering a dangling
-        // `Ref(T)`). `op.type_params` itself CANNOT be re-keyed —
-        // `seed_op_type_args` matches call-site `[T = …]` labels (also
-        // bare-interned) against it — so only the eval channel is translated,
-        // making the two keyings agree on the op-scoped identity.
-        //
-        // WI-20260911-RS2G4: and the ENCLOSING SORT's parameters, on the same channel.
-        // A member body reads `T` exactly as it reads an op-scoped one — `reduce_var` /
-        // the nullary-head arm consult `Frame.type_args` by SYMBOL — and nothing wrote
-        // it, so `operation selfType() -> Type = Box[T = T]` called as
-        // `Box[T = Letter].selfType()` evaluated to a dangling `Box[T = Box.T]`. WI-708's
-        // keying rule ONE LEVEL UP: the key is the symbol a BODY reference resolves to,
-        // which for a sort parameter IS the sort-scoped `<ns>.<Sort>.T` —
-        // [`sort_type_params_as_pairs`]' own first element, so no re-resolution is needed
-        // here (`a_sort_param_channel_key_is_the_symbol_a_body_read_resolves_to` asserts
-        // the identity rather than assuming it).
-        //
-        // KEY DISTINCTNESS IS NOT AN ORDERING QUESTION. `find_type_arg` scans in REVERSE
-        // and takes the last match, so a shared key would make declaration order decide.
-        // It cannot arise: the op-scoped `<ns>.<op>.T` and the sort-scoped
-        // `<ns>.<Sort>.T` are different symbols, and WI-840's
-        // `check_op_type_param_shadowing` refuses an operation whose own bracket repeats
-        // its enclosing sort's SHORT name — which is the 058 §4.2 rule-1 collision half,
-        // the other half of the rule this ticket delivers.
-        let sort_params = callee_parent_sort
-            .map(|parent| sort_type_params_as_pairs(kb, parent))
-            .unwrap_or_default();
-        if !op.type_params.is_empty() || !sort_params.is_empty() {
-            let op_scope = kb.symbols.scope_id(fn_sym);
-            let mut enclosing_refs = op_own_param_ref_rewrite(kb, env);
-            enclosing_refs.extend(enclosing_sort_param_ref_rewrite(kb, env, callee_parent_sort));
-            // Sized for BOTH lists: the op's own parameters and — WI-20260911-RS2G4 —
-            // the enclosing sort's, which the second loop below appends. The
-            // `enclosing_refs` rewrite applies to BOTH loops (the second since
-            // WI-20260918-R541X); what the second loop still SKIPS is any other bare var
-            // (the WI-424 body skolem included), because an occupied key is what
-            // `Interpreter::enter_operation`'s same-sort inheritance reads as "the call
-            // site chose explicitly". Each loop states its own rule at its site.
-            let mut resolved: Vec<(Symbol, TermId)> =
-                Vec::with_capacity(op.type_params.len() + sort_params.len());
-            for (name, var) in &op.type_params {
-                let var_term = type_param_var_term(kb, *var);
-                let walked = walk_type_deep(kb, &subst, var_term);
-                // WI-394: the deep walk stops at a non-`Term` (`Value::Node`)
-                // binding, leaving a bare var; surface it so the eval installs
-                // the resolved type arg (`find_type_arg(...).map(Value::Term)`)
-                // rather than a stale unresolved var.
-                let walked = surface_node_binding_to_term(kb, &subst, walked);
-                // …and each of the enclosing operation's own skolems in it — the whole
-                // entry, or one nested in a type application (WI-20260918-R541X (B)) —
-                // becomes the `Ref(<op-scoped>)` spelling a body reference carries, so the
-                // frame that installs this channel can ground it by symbol identity. See
-                // [`apply_enclosing_param_refs`] for which positions it enters and why a
-                // row tail is not one of them.
-                let walked = apply_enclosing_param_refs(kb, walked, &enclosing_refs);
-                let key = op_scoped_type_param_symbol(kb, op_scope, *name);
-                resolved.push((key, walked));
-            }
-            // THE WRITE STAYS UNCONDITIONAL under the STATIC guard above, and is
-            // therefore an empty `Vec` when every sort-param walk is skipped (raised by
-            // `/code-review`). That is LAST-WINS, which is the rule this channel already
-            // has — the op half has overwritten on re-typing since WI-272, and
-            // `set_inferred_type`'s doc states the same for the type beside it. Guarding
-            // on `!resolved.is_empty()` would make it FIRST-wins for the sort half alone,
-            // preserving entries a later, better-informed pass chose not to write. Not
-            // driven either way: no program was found that re-types such an occurrence.
-            for (param, var_term) in sort_params.iter() {
-                let walked = walk_type_deep(kb, &subst, *var_term);
-                let walked = surface_node_binding_to_term(kb, &subst, walked);
-                // WI-20260918-R541X (A): a walk that is one of the ENCLOSING OPERATION's
-                // own skolems is NOT the "said nothing" case below — the call site chose
-                // it (`Err2.tagOf(x)` inside `g[P](x: P)` pins `Err2.T := P`), and it has
-                // the same `Ref(<op-scoped>)` spelling the first loop gives it, which
-                // `collect_closed_type_args` grounds against the caller's frame. Before
-                // this the entry was skipped and a body read of `T` answered `T`.
-                // It cannot disable the same-sort inheritance below: the WI-424 body
-                // skolem that inheritance exists for is the SORT's rigid, which
-                // `enclosing_refs` lists only for a callee in ANOTHER sort (see
-                // [`enclosing_sort_param_ref_rewrite`]), so a same-sort call still lands
-                // on the `Term::Var` skip.
-                let walked = apply_enclosing_param_refs(kb, walked, &enclosing_refs);
-                // A WALK THAT LANDS ON A BARE VARIABLE IS NOT A TYPE, and writing it
-                // would be worse than writing nothing twice over. The two shapes it
-                // takes are the two ways this call said nothing about the parameter:
-                //  * a FLEXIBLE var — the call pinned it from no bracket, no argument
-                //    and no context. There is no answer to carry.
-                //  * a RIGID (the WI-424 seeded body skolem) — the body's name for "the
-                //    ENCLOSING instance", which has no type-time value at all. Its value
-                //    is in the CALLER's frame, and forwarding it is the eval's job
-                //    ([`Interpreter::enter_operation`]'s same-sort inheritance).
-                // Either entry would also OCCUPY the key, and an occupied key is exactly
-                // what that inheritance treats as "the call site chose explicitly" — so
-                // writing one here would silently disable it.
-                if matches!(kb.get_term(walked), Term::Var(_)) {
-                    continue;
-                }
-                resolved.push((*param, walked));
-            }
-            occ.set_resolved_type_args(resolved);
-        }
+        // WI-272's per-call-site type-argument STAMP (`set_resolved_type_args`) was
+        // written here, and WI-20260921-28TAT removed it with the channel it fed. What
+        // it recorded — what each of the callee's `[T_i]` resolves to at THIS call — is
+        // now carried by the requirement channel wherever it is still needed: a value
+        // read of a rigid dispatches through its `TypeValue` slot (WI-20260919-N31XX),
+        // and the reify boundary reads its payload sort out of the dictionary
+        // `Error.reify requires ErrorTag[T = T1]` supplies.
 
         // WI-844 (058 §5.3 / §4.7): a NAMED requirement slot IS a type parameter, so
         // the chosen provider rides in the TYPE — and an argument carrying that type
@@ -21457,6 +21325,47 @@ fn check_apply_iter(
                     }
                 }
             }
+            // WI-20260921-28TAT — A SPEC-OP CALL THAT NO ARM ABOVE CLASSIFIED still
+            // owes its callee any op-scoped `requires`. Every classification above is a
+            // DISPATCH REWRITE, and some spec-op calls rightly need none: `Error.reify`
+            // is declared inside `sort Error { sort T = ? }` and names that `T`
+            // NOWHERE, so no carrier dispatches on it, the spec-op machinery
+            // deliberately excludes it (see the `signature_mentions` filter below), and
+            // the prelude declares it body-less because the boundary is a FRAME the
+            // interpreter installs by symbol. There is nothing to redirect — and until
+            // this site existed, nothing to supply either: its `requires
+            // TypeValue[T = T1]` loaded clean and measured `reqs=[]` at dispatch.
+            //
+            // GATED ON "nothing classified", not run unconditionally, because the
+            // concrete-dispatch arms above reach `classify_pin_or_apply_within`, which
+            // already stamped; running here too would build the same dictionaries a
+            // second time.
+            //
+            // AND THE TWO `DeferToRequirement` ARMS STAMP TOO, as of this ticket: they
+            // call `classify()` directly rather than through
+            // `classify_pin_or_apply_within`, so a deferred call whose callee declares an
+            // op-level `requires` used to get no dictionary at all — the same
+            // silent-absence class this site fixes for the unclassified arm, one dispatch
+            // route over. They key the stamp on the SPEC op, which is what the typer has:
+            // the impl is chosen at run time from the dictionary, and §8.7 forbids an
+            // override from strengthening the clause, so the spec's chain is the one both
+            // ends agree on. So the gate below is exact — every classifying arm stamps.
+            if occ.classification_is_none() && !op_dict_entries(kb, fn_sym).op_entries().is_empty()
+            {
+                stamp_op_scoped_dicts(
+                    kb,
+                    occ,
+                    &subst,
+                    fn_sym,
+                    env.enclosing_frame_chain(),
+                    env.param_rigids(),
+                    &selections,
+                    OpSlotParkSite::for_call(kb, fn_sym, env.enclosing_op(), span, occ.span.source),
+                    &param_to_arg_type,
+                    span,
+                    false,
+                )?;
+            }
         } else {
             // WI-222 Phase E (i) Direct case: fn_sym is not a spec op.
             // If its parent sort declares any `requires`, tag for an
@@ -21648,8 +21557,9 @@ fn check_apply_iter(
                     // slot may forward from the caller's own op slots, which is how an
                     // op-scoped requirement relays hop to hop — whereas the instance
                     // dict above must not (see `TypingEnv::enclosing_chain`).
-                    let op_dicts = build_op_scoped_dicts(
+                    stamp_op_scoped_dicts(
                         kb,
+                        occ,
                         &subst,
                         fn_sym,
                         env.enclosing_frame_chain(),
@@ -21663,18 +21573,9 @@ fn check_apply_iter(
                             occ.span.source,
                         ),
                         &param_to_arg_type,
-                    )
-                    // WI-1091: a TIE in the op half is a load refusal, as the sort half's
-                    // is one line above — see `build_op_scoped_dicts`.
-                    .map_err(|refusal| {
-                        TypeError::UnsatisfiableRequirement {
-                            span,
-                            op: fn_sym,
-                            callee_sort: fn_sym,
-                            eta: false,
-                            refusal,
-                        }
-                    })?;
+                        span,
+                        false,
+                    )?;
                     classify(
                         kb,
                         occ,
@@ -21685,7 +21586,6 @@ fn check_apply_iter(
                             enclosing_sort,
                             resolved_tree: None,
                             dispatch_dict,
-                            op_dicts,
                             enclosing_op: env.enclosing_op(),
                         },
                     );
@@ -24548,29 +24448,20 @@ fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bo
                 Some(CallClass::ConcreteApplyWithin {
                     fn_target_sym,
                     dispatch_dict,
-                    op_dicts,
                     ..
                 }) => Step::Call {
                     // The INHERIT arm is about the sort half alone: eval takes
                     // `start_apply_same_sort`'s inherit path exactly when no sort-half
                     // dictionary was built, whatever the op half carries.
                     inherit: dispatch_dict.is_none().then_some(*fn_target_sym),
-                    dicts: dispatch_dict
-                        .iter()
-                        .chain(op_dicts.iter().flatten())
-                        .copied()
-                        .collect(),
+                    dicts: dispatch_dict.iter().copied().collect(),
                 },
                 // WI-1095 channel 5. `inherit: None` is not an omission: an eta'd
                 // `OpRef` escapes to a foreign apply frame instead of inheriting this
                 // one, which is why a SAME-SORT eta carries `var_ref(__req_self)` at all.
-                Some(CallClass::EtaOpRef { dict, op_dicts, .. }) => Step::Call {
+                Some(CallClass::EtaOpRef { dict, .. }) => Step::Call {
                     inherit: None,
-                    dicts: dict
-                        .iter()
-                        .chain(op_dicts.iter().flatten())
-                        .copied()
-                        .collect(),
+                    dicts: dict.iter().copied().collect(),
                 },
                 // Carries no dictionary: a `PinNow` is plain-applied to a concrete impl
                 // whose parent has no `requires` (see the "does not follow" paragraph),
@@ -24582,6 +24473,17 @@ fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bo
                 // Not a classified call at all.
                 None => Step::Nothing,
             };
+            // WI-20260921-28TAT — THE OP HALF, scanned for every class and for an
+            // UNCLASSIFIED call. It used to ride inside two of the arms above; it is a
+            // stamp on the occurrence now, which is the whole point — a call may owe its
+            // callee an op-scoped input without needing any dispatch rewrite, and this
+            // walker must see that dictionary wherever it hangs. Scanned before the
+            // `match` so no arm can forget it.
+            for d in occ.op_dicts().iter().flatten() {
+                if dict_forwards_frame_slot(kb, *d, &sort_names) {
+                    return true;
+                }
+            }
             match step {
                 Step::Reads => return true,
                 Step::Call { inherit, dicts } => {
@@ -24647,9 +24549,60 @@ fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bo
 /// Answering `false` for an unfollowed callee is a REFUSAL WITHHELD, never a wrong
 /// value: the program keeps exactly the behaviour it has today, eval's own `not bound`
 /// raise included.
+/// WI-20260921-28TAT — is `op` a BODY-LESS operation whose NATIVE backing reads its
+/// requirement slots?
+///
+/// The one population is `anthill.prelude.Error.reify`, and the list is spelled out
+/// rather than inferred because there is nothing to infer it FROM: reify is body-less,
+/// is not a `BuiltinFn` (a builtin returns a value and cannot enter a closure — 047 §4),
+/// and has no carrier member, so every structural test for "is this implemented" answers
+/// no. It is nonetheless implemented, by `Interpreter::enter_reify_boundary`, which the
+/// dispatch arms reach by SYMBOL.
+///
+/// BY SYMBOL, resolved from the canonical name, exactly as `ErrorLayer` resolves the
+/// same operation (WI-897: an operation's meaning is its symbol, never its name). A KB
+/// without the prelude resolves nothing and answers `false`, which is right — such a
+/// program declares no `reify` to call.
+///
+/// The lookup is a string resolve, and it sits on a cold path: reached only for a
+/// BODY-LESS callee that already has a PARKED op-slot refusal, which is rare.
+fn native_backing_reads_slots(kb: &KnowledgeBase, op: Symbol) -> bool {
+    kb.try_resolve_symbol("anthill.prelude.Error.reify") == Some(op)
+}
+
 fn op_body_reads_op_requirement_slot(kb: &mut KnowledgeBase, op: Symbol, op_index: usize) -> bool {
+    // WI-20260921-28TAT — BODY-LESS IS NOT "READS NOTHING". This arm answered `false`
+    // with the comment "body-less: it dispatches through its carrier and reads nothing",
+    // and that premise is FALSE for an operation whose backing is not a carrier member:
+    // whatever implements it is INVISIBLE to this walk, so the walk cannot prove it does
+    // not read the slot. `Error.reify` is exactly that — body-less on purpose (the
+    // boundary is a FRAME the interpreter installs by symbol), so no member exists to
+    // check, and the interpreter reads its `requires ErrorTag[T = T1]` dictionary at
+    // `enter_reify_boundary` on every single call.
+    //
+    // MEASURED: while this answered `false`, an `ErrorTag` dep that could not be
+    // resolved was PARKED and then silently dropped — the boundary simply stopped
+    // narrowing, 23 call sites went unevidenced, and nothing was printed. That is the
+    // "prefer a loud error over a silent skip" rule with the sign flipped, and it is the
+    // same silent-absence class this whole ticket is about.
+    //
+    // NOT A BLANKET `true`, and the first cut WAS one — measured, it took
+    // `wi201_bare_spec_member_sugar_test` red. `operation useExplicit[P](s: P) requires
+    // Store[State = P]` is an ordinary body-less DECLARATION, and calling it with a
+    // carrier that provides no `Store` is a program kernel-language.md §8.7 decides the
+    // other way ON PURPOSE: "a requirement that is merely unpinnable at the argument
+    // types … is not an error at all — the call proceeds, and only a body that actually
+    // reads the missing slot fails" (WI-822/WI-855). Nothing implements `useExplicit`,
+    // so the call cannot run whatever this answers, and the withheld refusal costs
+    // nothing.
+    //
+    // WHAT SEPARATES THE TWO IS A BACKING THAT RUNS. `Error.reify` is body-less and
+    // IMPLEMENTED — by the interpreter, which installs the boundary by symbol and reads
+    // this very dictionary at `enter_reify_boundary` on every call. That backing is
+    // invisible to this walk, so the walk cannot prove it does not read, and withholding
+    // the refusal is what let 23 unevidenced call sites through in silence.
     let Some(body) = kb.op_body_node(op).map(Rc::clone) else {
-        return false; // body-less: it dispatches through its carrier and reads nothing
+        return native_backing_reads_slots(kb, op);
     };
     let chain = op_dict_entries(kb, op);
     let want = chain.sort_len() + op_index;
@@ -24682,32 +24635,30 @@ fn op_body_reads_op_requirement_slot(kb: &mut KnowledgeBase, op: Symbol, op_inde
             // A defer at some OTHER slot: this half is per-index (see the doc), so it is
             // not evidence about `want`.
             Some(CallClass::DeferToRequirement { .. }) => Step::Nothing,
-            Some(CallClass::ConcreteApplyWithin {
-                dispatch_dict,
-                op_dicts,
-                ..
-            }) => Step::Forwards(
-                dispatch_dict
-                    .iter()
-                    .chain(op_dicts.iter().flatten())
-                    .copied()
-                    .collect(),
-            ),
-            // WI-1095 channel 3 — the eta's two dictionaries. `op_dicts` is the half that
-            // can name this slot; `dict` is searched too, though today it cannot (see the
-            // doc above), so the answer does not rest on an invariant declared elsewhere.
-            Some(CallClass::EtaOpRef { dict, op_dicts, .. }) => Step::Forwards(
-                dict.iter()
-                    .chain(op_dicts.iter().flatten())
-                    .copied()
-                    .collect(),
-            ),
+            Some(CallClass::ConcreteApplyWithin { dispatch_dict, .. }) => {
+                Step::Forwards(dispatch_dict.iter().copied().collect())
+            }
+            // WI-1095 channel 3 — the eta's sort-half dictionary. The OP half that can
+            // name this slot is the occurrence stamp, scanned below for every class;
+            // `dict` is searched too, though today it cannot name one (see the doc
+            // above), so the answer does not rest on an invariant declared elsewhere.
+            Some(CallClass::EtaOpRef { dict, .. }) => {
+                Step::Forwards(dict.iter().copied().collect())
+            }
             // Carries no dictionary — see the sort half's arm of the same shape.
             Some(CallClass::PinNow { .. }) | Some(CallClass::UnresolvedSpecOp { .. }) => {
                 Step::Nothing
             }
             None => Step::Nothing,
         };
+        // WI-20260921-28TAT — the op half, off the occurrence stamp, for every class and
+        // for an unclassified call. See the sort half's walker for why it is scanned
+        // outside the `match`.
+        for d in occ.op_dicts().iter().flatten() {
+            if dict_forwards_frame_slot(kb, *d, &this_slot) {
+                return true;
+            }
+        }
         match step {
             Step::Reads => return true,
             Step::Forwards(dicts) => {
@@ -25493,6 +25444,67 @@ fn build_concrete_dispatch_dict(
 // bundled: the seven that were here are each a distinct call-site fact this function
 // reads once, and a struct around them would be a carrier invented for a lint.
 #[allow(clippy::too_many_arguments)]
+/// WI-20260921-28TAT — THE ONE WRITER of an occurrence's op-scoped evidence: build the
+/// dictionaries this call site owes its callee's OWN `requires` slots, and stamp them.
+///
+/// WHY A FUNCTION OF ITS OWN, replacing three inline `build_op_scoped_dicts` calls that
+/// each fed a `CallClass` field. An operation-level `requires` is an INPUT THE CALLER
+/// OWES THE CALLEE — a fact about the callee's SIGNATURE. It has nothing to do with
+/// WHERE the call dispatches, which is the only thing a `CallClass` records: all five
+/// variants are rewrites ("send this call somewhere else"). While the evidence rode
+/// inside `ConcreteApplyWithin`, an operation that HAS a requirement but needs NO
+/// rewrite fell between the two and was handed NOTHING — silently. MEASURED on
+/// `Error.reify requires TypeValue[T = T1]`: it loads clean, the typer accepts the
+/// clause, every reify row still passes, and the dispatch site sees `reqs=[]`. The
+/// prelude declares `reify` body-less ON PURPOSE (the boundary is a FRAME the
+/// interpreter installs by symbol), so there is nothing to redirect and no
+/// classification is right — which left it with no way to be handed its input.
+///
+/// A STAMP is what makes the two independent: the classification says where the call
+/// goes, this says what it carries, and a call may need either, both or neither.
+#[allow(clippy::too_many_arguments)]
+fn stamp_op_scoped_dicts(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    subst: &Substitution,
+    callee_op: Symbol,
+    caller_requires: &DictChain,
+    param_rigids: &[(VarId, TermId)],
+    selected: &[InstanceSelection],
+    park: Option<OpSlotParkSite>,
+    param_arg_types: &HashMap<Symbol, Value>,
+    span: Option<Span>,
+    eta: bool,
+) -> Result<(), TypeError> {
+    let dicts = build_op_scoped_dicts(
+        kb,
+        subst,
+        callee_op,
+        caller_requires,
+        param_rigids,
+        selected,
+        park,
+        param_arg_types,
+    )
+    // WI-1091: a TIE in the op half is a load refusal, as the sort half's is.
+    .map_err(|refusal| TypeError::UnsatisfiableRequirement {
+        span,
+        op: callee_op,
+        callee_sort: callee_op,
+        eta,
+        refusal,
+    })?;
+    // EMPTY IS NOT WRITTEN, and the asymmetry is deliberate rather than an
+    // optimization: `carry_typer_stamps_from` reads an empty cell as "unstamped" and
+    // leaves the destination's alone, so writing an empty vector over a carried stamp
+    // would be the one way to CLEAR one. `build_op_scoped_dicts` returns empty for
+    // every callee with no op half, which is nearly all of them.
+    if !dicts.is_empty() {
+        occ.set_op_dicts(dicts);
+    }
+    Ok(())
+}
+
 fn build_op_scoped_dicts(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -27681,6 +27693,10 @@ pub(crate) fn resolve_bridge_requirements(
         // [`DictLayout`] halves count is present and positionally exact. WI-857's
         // "one owner for the three readers that must agree about the ANCHOR'S SLOT"
         // now has a fourth, and this is it.
+        // WI-20260921-28TAT — and a REFINEMENT clause (`sort Narrow requires Boom`,
+        // where `Boom` is a data sort with no type parameter, so nothing can provide it
+        // and no member could be reached through a slot held for it). Same treatment,
+        // same reason: a leaf that keeps the slot positionally exact.
         if is_effects_runtime(kb, entry.required_sort) {
             trees.push((
                 *name,
@@ -28586,179 +28602,9 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
     })
 }
 
-/// The rewrite that makes a callee's type-argument channel READABLE by the frame that
-/// installs it: each skolem standing for one of the ENCLOSING operation's own type
-/// parameters, paired with the `Term::Ref(<op-scoped symbol>)` a BODY reference to that
-/// parameter carries.
-///
-/// WHY THE CHANNEL CANNOT SIMPLY CARRY THE SKOLEM. At a call site inside `operation
-/// caller[U](…)` the callee's `T` genuinely resolves to `U` — a `Var::Rigid` minted per
-/// body — because what `U` stands for is decided by the CALLER, not here. Written as the
-/// skolem, that entry is unreadable at run time: eval's `collect_closed_type_args` has
-/// only the frame's channel, keyed by op-scoped symbols, and a skolem carries no symbol
-/// that keys it. Written as `Ref(caller.U)` it is the SAME spelling `reduce_var`'s
-/// `find_type_arg` already resolves for a body reference (WI-708), so one identity match
-/// answers both.
-///
-/// IDENTITY, NOT NAME, AND THAT IS THE POINT. Joining a skolem to a channel entry by
-/// short name looks equivalent and is not: an anonymous skolem — the `?` an unwritten
-/// slot of `Box[V = ?]` becomes — is named after the SORT's parameter, so a caller
-/// declaring `[V]` captured it and the unwritten slot was silently filled with the
-/// caller's unrelated type argument (measured: `Cell[V = Box[V = String]]` where the
-/// control spelling the caller's parameter `[W]` left `Box[V = ?V]`). Only skolems minted
-/// for THIS operation's declared parameters are listed here, so nothing else can match.
-///
-/// The enclosing SORT's params are deliberately absent: they are not caller-instantiated
-/// per call, they ride the carrier, and no frame channel binds them.
-///
-/// WHERE THE PAIRS ARE APPLIED is [`apply_enclosing_param_refs`]' concern: the whole
-/// entry, and inside type applications, but never inside a row.
-///
-/// DECLARED BRACKETS ONLY. The rigid list this joins against also holds the WI-1FKR2
-/// INLINE signature variables, which are not in `OperationInfo.type_params` and so are
-/// never rewritten — see [`TypingEnv::op_own_param_rigids`] for what that costs.
-fn op_own_param_ref_rewrite(kb: &mut KnowledgeBase, env: &TypingEnv) -> Vec<(TermId, TermId)> {
-    let Some(enclosing) = env.enclosing_op() else {
-        return Vec::new();
-    };
-    let rigids = env.op_own_param_rigids();
-    if rigids.is_empty() {
-        return Vec::new();
-    }
-    let Some(rec) = super::op_info::lookup_operation_info(kb, enclosing) else {
-        return Vec::new();
-    };
-    let scope = kb.symbols.scope_id(enclosing);
-    let mut out = Vec::with_capacity(rec.type_params.len());
-    for (name, var) in &rec.type_params {
-        let Var::Global(vid) = var else { continue };
-        let Some((_, rigid)) = rigids.iter().find(|(v, _)| v == vid) else {
-            continue;
-        };
-        let key = op_scoped_type_param_symbol(kb, scope, *name);
-        let named = kb.alloc(Term::Ref(key));
-        out.push((*rigid, named));
-    }
-    out
-}
 
-/// [`op_own_param_ref_rewrite`]'s twin one scope up: each skolem standing for one of the
-/// ENCLOSING SORT's parameters, paired with the `Ref(<sort-scoped symbol>)` a body read of
-/// it carries — the key WI-20260911-RS2G4 writes that parameter's value under, so
-/// `collect_closed_type_args` grounds it against the calling frame exactly as it grounds an
-/// operation's.
-///
-/// ONLY FOR A CALLEE IN ANOTHER SORT. A same-sort callee's parameters walk to these very
-/// rigids by the WI-424 seeding, which means "the instance I am running at"; the channel
-/// write leaves such an entry UNWRITTEN so `Interpreter::enter_operation` inherits the
-/// caller's. Rewriting it would occupy the key and disable that inheritance.
-///
-/// MEASURED (WI-20260918-R541X review): `sort SHold { sort E = ?  requires TypeTerm[T = E]
-/// operation f() -> Type = TypeTerm.valueOf() }` called as `SHold[E = Boom].f()` — the
-/// sole-clause binder pinned `TypeTerm.T` to `SHold`'s rigid, which the channel write then
-/// skipped as a bare var, so the read was refused instead of answering `Boom`.
-fn enclosing_sort_param_ref_rewrite(
-    kb: &mut KnowledgeBase,
-    env: &TypingEnv,
-    callee_parent_sort: Option<Symbol>,
-) -> Vec<(TermId, TermId)> {
-    let Some(encl) = env.enclosing_sort() else {
-        return Vec::new();
-    };
-    let rigids = env.enclosing_instance_param_rigids();
-    if rigids.is_empty() {
-        return Vec::new();
-    }
-    if callee_parent_sort.map(|c| kb.canonical_sort_sym(c)) == Some(kb.canonical_sort_sym(encl)) {
-        return Vec::new();
-    }
-    let rigids = rigids.to_vec();
-    let mut out = Vec::with_capacity(rigids.len());
-    for (param, var_term) in sort_type_params_as_pairs(kb, encl).iter() {
-        let Term::Var(Var::Global(vid)) = kb.get_term(*var_term) else {
-            continue;
-        };
-        let Some((_, rigid)) = rigids.iter().find(|(v, _)| v == vid) else {
-            continue;
-        };
-        let named = kb.alloc(Term::Ref(*param));
-        out.push((*rigid, named));
-    }
-    out
-}
 
-/// Apply [`op_own_param_ref_rewrite`]'s pairs to a channel entry — the whole entry, and
-/// every skolem nested in a TYPE APPLICATION inside it — and leave everything else as it is.
-///
-/// DEEP BUT KIND-AWARE, and the kind is the whole point (WI-20260918-R541X (B)). It first
-/// shipped WHOLE-ENTRY ONLY, so `tagOp(box(x))` inside `g[P]` carried `Box[V = !P]` and a
-/// body read answered that skolem verbatim; merely going deep is wrong the other way. A
-/// skolem nested in a canonical `effects_rows(...)` spine is a ROW TAIL (`row_tail_var_of`,
-/// WI-516: a rigid set-valued var "is a row VARIABLE, not a single concrete label"), and
-/// both `row_tail_var_of` and `row_tail_termid` match only `Term::Var` — so rewriting one to
-/// a `Ref` would leave the decompose side reading NO tail, silently closing a row that must
-/// stay open. Instrumented when this was whole-entry only, a naive deep rewrite fired on
-/// exactly those: `EffP` and `E2` entries shaped `effects_rows(...)` across the stdlib and a
-/// row-threading probe. Substituting a row variable needs row APPEND, which a term
-/// substitution cannot express.
-///
-/// So the descent is by [`type_head`], positively: a sort application
-/// (`Parameterized`), an `Arrow` and a `NamedTuple` are entered, because their children
-/// are type ARGUMENTS. Not entered: `EffectsRows` (the row tail above); the neutral heads
-/// `RigidProjection` / `ExprCarried` / `Denoted`, whose children are IDENTITY slots the
-/// σ-walk also refuses to rewrite (see `walk_type_deep_g`); and `PolyType`, whose children
-/// are under BINDERS.
-fn apply_enclosing_param_refs(
-    kb: &mut KnowledgeBase,
-    t: TermId,
-    refs: &[(TermId, TermId)],
-) -> TermId {
-    if refs.is_empty() {
-        return t;
-    }
-    if let Some((_, named)) = refs.iter().find(|(rigid, _)| *rigid == t) {
-        return *named;
-    }
-    match type_head(kb, &TermIdView(t)) {
-        TypeHead::Parameterized { .. } | TypeHead::Arrow | TypeHead::NamedTuple => {
-            kb.map_fn_children(t, |kb, c| apply_enclosing_param_refs(kb, c, refs))
-        }
-        _ => t,
-    }
-}
 
-/// WI-708: the symbol a BODY reference to op type-param `declared` resolves to — the
-/// op-scoped `<ns>.<op>.T` symbol `scan_operation_params` defines as a LOCAL of the op
-/// scope. The loader converts an op body under `current_scope == op_scope`, so a body
-/// reference reads a type param via `resolve_in_scope(short_name, op_scope)`, which hits
-/// that local; resolving the param's short name in the same scope here reproduces exactly
-/// the symbol the reference carries — the key `reduce_var`'s `find_type_arg` (an identity
-/// match) needs. This is deliberately NOT the bare `OperationInfo.type_params` symbol
-/// (`kb.intern("T")`), which stays the call-site / seeding key (`seed_op_type_args`).
-///
-/// Gated on the param being a genuine op-scope type param (`is_type_param`), NOT a bare
-/// `resolve_in_scope`. `op.type_params` also carries synthesized bare-spec carriers
-/// (`mint_bare_spec_carrier`, a `?P` named after a spec member — NOT a scope local). A
-/// bare resolve of such a name would search the op scope's ENCLOSING / import parents and
-/// could bind it to an unrelated VISIBLE sort of the same short name — keying the channel
-/// onto a body-readable symbol and hijacking a body read of that real sort (`find_type_arg`
-/// runs ahead of the WI-206 bare-sort arm). The `is_type_param` gate confines the re-key to
-/// real params; a carrier keeps its inert `declared` key, which no body reference resolves
-/// to, exactly as before WI-708.
-fn op_scoped_type_param_symbol(
-    kb: &KnowledgeBase,
-    op_scope: crate::intern::ScopeId,
-    declared: Symbol,
-) -> Symbol {
-    let short = kb.local_name_of(declared).to_string();
-    if !kb.symbols.is_type_param(op_scope, &short) {
-        return declared;
-    }
-    match kb.symbols.resolve_in_scope(&short, op_scope) {
-        crate::intern::ResolveResult::Found(s) => s,
-        _ => declared,
-    }
-}
 
 /// Seed `subst` from `op[bindings](args)` call sites: named bindings
 /// match by name, positional by declaration order. Names that don't
@@ -29759,7 +29605,7 @@ fn selections_from_slot_bindings(
         };
         let var_term = type_param_var_term(kb, var);
         // WALKED THEN SURFACED, the pairing `check_apply_iter`'s sibling σ-read of these
-        // very vars uses (`set_resolved_type_args`, WI-394): the deep walk STOPS at a
+        // very vars used (WI-394): the deep walk STOPS at a
         // non-`Term` (`Value::Node`) binding and leaves a bare var behind, which
         // `is_type_param_value` then reads as ABSTRACT — so a `Value::Node`-carried
         // witness would derive no selection and say nothing about it. Walking without
@@ -29835,7 +29681,7 @@ enum SlotBinderState {
 /// the `Value::Node`-carried ones the walk stops at. A variable surviving both is
 /// therefore unbound, and re-probing `subst` here would be a second reading of one fact
 /// that can only disagree with the first. [`selections_from_slot_bindings`] and
-/// `set_resolved_type_args` read these very variables through the same pair and call a
+/// WI-272's type-arg stamp read these very variables through the same pair and called a
 /// surviving var abstract on the same grounds.
 ///
 /// ASKED THROUGH [`type_head`], NOT BY MATCHING CARRIERS — WI-1079's lesson, and here it
@@ -31938,7 +31784,11 @@ pub enum CallClass {
         /// INSTANCE and these are this CALL's evidence for this OPERATION. Eval
         /// appends them to the frame AFTER the sort half, matching the slot order
         /// [`op_dict_entries`] lays out.
-        op_dicts: SmallVec<[Option<TermId>; 2]>,
+        ///
+        /// WI-20260921-28TAT MOVED IT OUT, onto `NodeOccurrence`'s own `op_dicts`
+        /// stamp; this paragraph stays because it is still what the stamp holds. What
+        /// changed is only WHERE: a dispatch class records where a call GOES, and the
+        /// callee's op-scoped input is owed whether or not the call goes anywhere.
         /// WI-822 LEG 1 — the CALLER's operation, whose chain the `var_ref` forwards
         /// above read at eval. Recorded beside `enclosing_sort` because a forward may
         /// now name an OP slot, which no sort alone can name.
@@ -32027,20 +31877,13 @@ pub enum CallClass {
         /// [`Value::OpRef`](crate::eval::Value)'s field of the same name for what the
         /// runtime does with them and why the value cannot re-derive them.
         spread_labels: Option<std::rc::Rc<[Symbol]>>,
-        /// WI-1091 — the OPERATION'S OWN `requires` slots, in chain order, built at the
-        /// eta site by the very [`build_op_scoped_dicts`] a written call site uses (so a
-        /// `[Spec = Witness]` bracket on the eta reaches them the same way). EMPTY for an
-        /// operation that writes no `requires` of its own.
-        ///
-        /// SEPARATE FROM `dict`, and the separation is what makes the eta work at all for
-        /// the shape that needed this: `List.member` carries `requires Eq[T]` on the
-        /// OPERATION while `List` itself requires nothing, so the sort half is `None` and
-        /// this is the whole supply. Before it, an eta'd `member` reached
-        /// [`attach_eta_dispatch_dict`]'s `op_reads_requirement_slots` guard and minted
-        /// a dict-less `OpRef` — which was harmless while value-direction served the
-        /// body's `eq(head, x)`, and is a `__req_eq not bound` under WI-1091's widened
-        /// placement.
-        op_dicts: SmallVec<[Option<TermId>; 2]>,
+        // WI-1091's op half — the OPERATION'S OWN `requires` slots, built at the eta
+        // site by the very `build_op_scoped_dicts` a written call site uses — LIVED
+        // HERE until WI-20260921-28TAT moved it to `NodeOccurrence`'s `op_dicts` stamp.
+        // It is still the whole supply for the shape that needed it (`List.member`
+        // carries `requires Eq[T]` on the OPERATION while `List` requires nothing, so
+        // `dict` above is `None`); what changed is that the evidence no longer depends
+        // on this variant being the one that got written.
     },
 }
 
@@ -33096,6 +32939,37 @@ fn resolve_inner<'a>(
     // bracket-less call into one is the same erased binding one level down.
     rung: DefaultRung,
 ) -> ResolutionResult {
+    // WI-20260921-28TAT — A REFINEMENT GOAL IS ALREADY DISCHARGED, and asking the
+    // provider search about it can only fail. `sort Narrow requires Boom` names a DATA
+    // sort — no type parameter, so nothing can `provides` it and no member could be
+    // reached through a slot held for it — and the clause declares `Narrow <: Boom`
+    // rather than demanding a dictionary ([`clause_is_dispatchable`]). Reaching the
+    // search, it produced "no impl provides test.reify.Boom; declare `provides
+    // test.reify.Boom[…]`", advice no author can act on, and it made EVERY derived
+    // instance of a refinement sort unresolvable: `TypeValue[T = Narrow]` failed on it,
+    // and `Narrow provides Eq` would have failed identically.
+    //
+    // A LEAF ROOTED AT THE SORT ITSELF, not a skip: this walk is positional (it produces
+    // the dictionary's spec half), so the slot must stay exactly where the chain indexes
+    // it. Same shape and same reason as the `EffectsRuntime` kind-anchor's leaf — "there
+    // is nothing to resolve, and the slot the `DictLayout` halves count is present and
+    // positionally exact". Nothing dispatches through it, so nothing reads it.
+    //
+    // ONE SITE, NOT THREE, AND THAT IS MEASURED. The anchor beside it is exempted at two
+    // OTHER sites as well (`build_dep_projection` and the resolved-tree builder), and
+    // mirroring it there looked like the consistent thing to do. It is not needed:
+    // backed out of both, the whole `wi_tests` suite is 4826/0 — every refinement clause
+    // reaches the resolver, so this is where it belongs and the other two would have
+    // been dead code carrying a confident comment. The anchor needs its own two because
+    // it is SYNTHESIZED into chains those sites build directly (WI-857); a refinement
+    // clause is written by an author and only ever arrives here, as a goal.
+    if !clause_is_dispatchable(kb, goal.spec_sort) {
+        return ResolutionResult::Resolved(ResolvedRequiresNode::Leaf {
+            impl_sort: goal.spec_sort,
+            spec_sort: goal.spec_sort,
+            bindings: SmallVec::new(),
+        });
+    }
     // WI-841 (058 §4.5) — STEP 0. `stack.is_empty()` is exactly "this is the goal the
     // CALL made", so a selection reaches the call's own goal and no sub-goal: a
     // conditional witness still resolves its `:-` subgoals by SEARCH (tier 2), which
@@ -48051,7 +47925,7 @@ fn synthesize_named_tuple_literal(
 /// other slot takes the child's TYPED result node (itself possibly
 /// rewritten). The rebuilt node starts with fresh annotation cells, so the
 /// caller must rebuild BEFORE writing `classification` /
-/// `resolved_type_args` onto the apply/constructor occurrence.
+/// the typer's stamps onto the apply/constructor occurrence.
 fn wrap_some_children(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
@@ -54766,7 +54640,81 @@ pub(crate) fn any_requirement_names_spec(kb: &KnowledgeBase, spec: Symbol) -> bo
             return true;
         }
     }
+    // WI-20260921-28TAT — THE THIRD SPELLING: a PROVISION CONDITION,
+    // `provides ErrorTag[T = T] :- TypeValue[T = T]`. A condition is a requirement in
+    // every sense that matters here — it is a goal the resolver must discharge to select
+    // the instance — but it rides a `ProvidesConditionInfo` fact and so is named by
+    // NEITHER relation above: not `SortRequiresInfo` (it is not the sort's own clause)
+    // and not `OperationInfo.requires` (no operation declares it).
+    //
+    // MEASURED, and it is the failure this leg exists to stop. With `Error.reify
+    // requires ErrorTag[T = T1]` and `Error provides ErrorTag[T = T] :- TypeValue[T = T]`
+    // the ONLY demand for `TypeValue` in the whole program is that condition. The gate
+    // answered NO, `type_value_derive` emitted no rows at all, and every `ErrorTag`
+    // resolution in the program then failed on its own condition — including
+    // `ErrorTag[T = Boom]` at a call that pins `Boom` outright. It failed SILENTLY: an
+    // unresolved op-scoped dep is a `None` slot, so the boundary simply stopped narrowing
+    // and 23 call sites went unevidenced with nothing printed.
+    //
+    // The gate's own doc says it answers "does anyone ask?"; a condition asks. Scanning
+    // the relation directly rather than through `provision_conditions`, which is
+    // CARRIER-keyed and would need a sort to ask about — the question here is
+    // program-wide.
+    if let Some(cond_sym) = kb.try_resolve_symbol("anthill.reflect.ProvidesConditionInfo") {
+        for rid in kb.rules_by_functor(cond_sym) {
+            let Some((_, _, condition)) = decoded_condition_row(kb, rid) else {
+                continue;
+            };
+            if condition_names_spec(kb, &condition, canon) {
+                return true;
+            }
+        }
+    }
     false
+}
+
+/// WI-20260921-28TAT — does this provision condition name `canon`?
+///
+/// THROUGH [`spec_base_functor`], NOT [`push_op_requires_clause`]. The two clause
+/// channels have DIFFERENT SHAPES and the first cut used the wrong one: an op-`requires`
+/// clause is a bare `Fn{spec, bindings}`, so its head functor IS the spec, while a
+/// provision condition arrives in `SortView` shape, whose head functor is
+/// `anthill.reflect.SortView` and whose spec sits at positional 0. MEASURED: read with
+/// the bare-application reader, all 21 stdlib condition facts answered
+/// `anthill.reflect.SortView` — including `Error provides ErrorTag :- TypeValue` — so
+/// the leg was present, ran, and matched nothing.
+///
+/// A CONJUNCTION (`:- Eq[T], TypeValue[T]`) lowers to one `conjunction(..)` value whose
+/// own functor would hide both specs, so it is flattened rather than shape-tested.
+fn condition_names_spec(kb: &KnowledgeBase, condition: &Value, canon: Symbol) -> bool {
+    if let Some(base) = spec_base_functor(kb, condition) {
+        if kb.canonical_sort_sym(base) == canon {
+            return true;
+        }
+    }
+    // The conjunction case: `conjunction(a, b)` carries its conjuncts as children, each
+    // itself a `SortView`.
+    let Value::Term { id, .. } = condition else {
+        return false;
+    };
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = kb.get_term(*id)
+    else {
+        return false;
+    };
+    if kb.local_name_of(*functor) != "conjunction" {
+        return false;
+    }
+    let kids: Vec<TermId> = pos_args
+        .iter()
+        .copied()
+        .chain(named_args.iter().map(|(_, t)| *t))
+        .collect();
+    kids.iter()
+        .any(|a| condition_names_spec(kb, &Value::term(*a), canon))
 }
 
 fn op_requires_entries(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<RequiresEntry> {
@@ -64931,7 +64879,7 @@ pub enum SupplySource {
 /// an unsound `HashMap` key. `NodeOccurrence` and `NodeKind` both
 /// `#[derive(Debug)]`, and `NodeKind::Expr` holds FOUR `RefCell` channels the typer
 /// fills in AFTER an entry is already in `resolve_cache`: `classification`,
-/// `resolved_type_args`, `inferred_type`, `lowered_receiver`.
+/// `op_dicts`, `inferred_type`, `lowered_receiver`.
 ///
 /// A WI-815 edit narrowed this to "only the span half is still live", on the
 /// grounds that the `Cell<(KbId, TermId)>` `term_cache` had been deleted. That was
@@ -65071,6 +65019,43 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 /// `Rc` bump. Shares the `requires_tree` cache's lifetime exactly — both are cleared
 /// together by `invalidate_requires_chain_cache` whenever `SortRequiresInfo` changes,
 /// so the flattened chain can never outlive the tree it was flattened from.
+/// WI-20260921-28TAT — does a `requires` clause naming `required` put a DICTIONARY SLOT
+/// in the chain, or is it a REFINEMENT declaration?
+///
+/// ONE KEYWORD, TWO RELATIONS, and until this predicate they were conflated. Both are
+/// written `requires X` on a sort and both ride the same `SortRequiresInfo` fact:
+///
+///   `sort Narrow requires Boom`   `Narrow <: Boom` — a REFINEMENT. It is read by
+///                                 [`sort_refines`], through `requires_chain_flat`,
+///                                 and that is the whole of its meaning.
+///   `sort C requires Eq[T]`       a SPEC DEMAND — an inbound dictionary slot the
+///                                 caller fills, read by every dispatch site.
+///
+/// A SPEC IS A SORT WITH AT LEAST ONE TYPE PARAMETER. That is not a criterion invented
+/// here: it is `enclosing_is_spec`'s (WI-840) and `spec_op_parent_sort`'s own reading,
+/// and it is exactly the right question for THIS one, because a dictionary is selected
+/// BY the carrier its parameters name. A sort with no type parameter has no carrier to
+/// dispatch on, nothing can `provides` it, and no member could be reached through a slot
+/// held for it — so a slot for it can never be filled by anything.
+///
+/// WHAT THE CONFLATION COST, measured. `sort Narrow requires Boom` put an unfillable
+/// `Boom` slot in `Narrow`'s dictionary chain, so building ANY dictionary whose impl is
+/// `Narrow` failed with `no impl provides test.reify.Boom` — advice the author cannot
+/// act on, since `Boom` is a closed ADT and `provides Boom[…]` is not a thing that can
+/// be written. It surfaced through `TypeValue[T = Narrow]` (WI-20260921-28TAT's reify
+/// boundary) only because nothing had asked for a dictionary at a refinement sort
+/// before; `Narrow provides Eq` would have failed identically. The cost was not confined
+/// to the diagnostic: an unresolved op-scoped dep is a SILENTLY absent slot, so the
+/// boundary simply stopped narrowing.
+///
+/// FILTERED HERE, on the DICTIONARY side alone. `requires_chain_flat` — which
+/// [`sort_refines`] and [`check_obligations`] read — is built from the tree by its own
+/// path and is deliberately left whole, so `Narrow` still refines `Boom` and the
+/// subsumption a boundary written at `Boom` performs on a `Narrow` payload is unchanged.
+pub(crate) fn clause_is_dispatchable(kb: &KnowledgeBase, required: Symbol) -> bool {
+    !kb.type_params_of_sort(required).is_empty()
+}
+
 pub fn direct_requires_chain_rc(
     kb: &mut KnowledgeBase,
     sort_sym: Symbol,

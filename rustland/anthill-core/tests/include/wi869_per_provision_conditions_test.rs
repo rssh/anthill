@@ -778,20 +778,24 @@ fn a_conditional_provisions_goals_answer_a_reflect_query() {
     // rule that dropped the `provided` join would still answer, and would answer the
     // same rows for every spec.
     //
-    // WI-20260919-HXGXF COULD have made this SIX — `provides TypeValue[Pair] :-
-    // TypeValue[A], TypeValue[B]` is exactly the shape this query counts — and for a
-    // while it did, at twelve. It is TEN again because that derivation is DEMAND-GATED:
-    // `type_value_derive` derives nothing unless some `requires TypeValue[…]` exists in
-    // the loaded program, and the stdlib has none (measured: zero in stdlib, anthill-stl
-    // and examples). So this count is a live witness that the gate is shut over the
-    // stdlib, and it will move to twelve of its own accord when 065 step 3
-    // (WI-20260919-N31XX) makes rigid value reads require `TypeValue`.
+    // TWELVE, AND THE SIXTH PROVISION IS DERIVED. `provides TypeValue[Pair] :-
+    // TypeValue[A], TypeValue[B]` is exactly the shape this query counts, and
+    // WI-20260919-HXGXF's derivation emits it. This row read TEN while that derivation
+    // was DEMAND-GATED and the stdlib asked for `TypeValue` nowhere, and it said in so
+    // many words that it "will move to twelve of its own accord" once something required
+    // it. WI-20260921-28TAT is that: `Error.reify requires ErrorTag[T = T1]`, whose
+    // provision `Error provides ErrorTag[T = T] :- TypeValue[T = T]` is a standing
+    // demand in the PRELUDE, so the gate is open for every program.
+    //
+    // Still asserted as a COUNT and not `!is_empty()`, for the original reason: a rule
+    // that dropped the `provided` join would still answer, and would answer the same
+    // rows for every spec.
     assert_eq!(
         solutions.len(),
-        10,
+        12,
         "`provides_when(Pair, ?spec, ?cond)` must answer once per condition of each of \
-         `Pair`'s five written provisions — and no derived `TypeValue` row, the stdlib \
-         requiring none",
+         `Pair`'s five written provisions PLUS its derived `TypeValue` one — the \
+         prelude's `reify` clause holds the derivation gate open",
     );
 }
 

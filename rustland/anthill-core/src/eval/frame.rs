@@ -13,17 +13,18 @@ use smallvec::SmallVec;
 
 use crate::intern::Symbol;
 use crate::kb::node_occurrence::{MatchBranch, NodeOccurrence};
-use crate::kb::term::TermId;
 
 use super::value::Value;
 
-/// Operation type-argument channel — one entry per declared `[T_i]`
-/// in the callee's declaration order, paired with the typer-resolved
-/// type term. Inline capacity 2 matches the requirements channel
-/// (proposal 042 §"Two channels, deterministic ordering"). Used on
-/// `Frame.type_args`, both `ApplyArgs` variants, and threaded through
-/// every apply/dispatch path in `eval::eval`.
-pub type FrameTypeArgs = SmallVec<[(Symbol, TermId); 2]>;
+// WI-272's `FrameTypeArgs` — the per-frame operation type-argument channel — was
+// REMOVED by WI-20260921-28TAT. It answered "what does this type parameter stand for at
+// run time" by carrying the typer's per-call-site binding down every apply path and
+// grounding it against the calling frame. Proposal 065 §1 answers that question through
+// the REQUIREMENT channel instead: a value read of a rigid dispatches through its
+// `TypeValue` slot (WI-20260919-N31XX), and the reify boundary reads its payload sort
+// out of the dictionary `Error.reify requires ErrorTag[T = T1]` puts in the call's
+// requirement channel. With both migrated the channel had no readers — only its own
+// maintenance and a test that asserted it got filled.
 
 /// State a frame is in while waiting for a child frame to produce a value.
 /// When the child delivers, the matching variant says how to consume the
@@ -86,15 +87,10 @@ pub enum AwaitState {
     },
     /// An apply node is collecting arg values one at a time. `remaining`
     /// holds the argument occurrences still to evaluate (in order).
-    /// `type_args` carries the typer-resolved operation type
-    /// arguments forward to dispatch, paralleling the requirements
-    /// channel on `ApplyWithinArgs` (WI-272). Empty when the callee
-    /// has no declared type params.
     ApplyArgs {
         target: Symbol,
         buffered: Vec<Value>,
         remaining: Vec<Rc<NodeOccurrence>>,
-        type_args: FrameTypeArgs,
     },
     /// WI-223: an `apply_within` node — like ApplyArgs but threads the
     /// callee's name-keyed `requirements` channel through to the callee
@@ -103,16 +99,11 @@ pub enum AwaitState {
     /// are evaluated before args; this variant carries them forward.
     /// `start_apply_within` builds it as the expanded named frame
     /// requirements (WI-237 names model).
-    /// `type_args` rides alongside the requirements channel —
-    /// positional in the callee's `[T1, T2, ...]` declaration order,
-    /// each entry `(declared-name, resolved-type-term)`. Installed on
-    /// the callee's `Frame.type_args` at dispatch (WI-272).
     ApplyWithinArgs {
         target: Symbol,
         buffered: Vec<Value>,
         remaining: Vec<Rc<NodeOccurrence>>,
         requirements: SmallVec<[(Symbol, crate::eval::value::Dictionary); 2]>,
-        type_args: FrameTypeArgs,
     },
     /// A constructor node is collecting (possibly named) field values.
     ConstructorArgs {
@@ -202,7 +193,10 @@ pub enum AwaitState {
     /// `Error` EFFECT, not interpreter faults.
     ReifyBoundary {
         /// The payload SORT this boundary discharges — `Some(Boom)` for a `reify` typed
-        /// at `Error[Boom]`, read off the type-argument channel as `T1` at the call site.
+        /// at `Error[Boom]`, read at the call site out of the dictionary
+        /// `Error.reify requires ErrorTag[T = T1]` puts in the requirement channel
+        /// (WI-20260921-28TAT; it used to come off the per-frame type-argument channel,
+        /// which that ticket removed).
         ///
         /// CARRIED BECAUSE THE TYPE SYSTEM ALREADY DRAWS THIS LINE AND THE RUNTIME MUST
         /// TOO. `reify`'s row shares its tail: a body raising `{Error[Boom],
@@ -219,12 +213,15 @@ pub enum AwaitState {
         /// `T1` to that sort once at INSTALL keeps the catch path total.
         ///
         /// `None` IS "THIS BOUNDARY CANNOT BE NARROWED", AND IT CATCHES WIDE — exactly
-        /// what every boundary did before the narrowing existed. Three shapes reach it,
-        /// all ordinary: a `T1` still standing for an enclosing operation's type
-        /// parameter (a generic `reify` entered from a host `interp.call` or a rule-body
-        /// bridge, where the frame channel is empty and nothing can ground it), a `T1`
-        /// whose head names no sort (a TUPLE payload's head is the ENTITY
-        /// `TypeExtractor.NamedTuple`), and a `T1` absent from the channel altogether.
+        /// what every boundary did before the narrowing existed. WI-20260921-28TAT
+        /// EMPTIED IT OF THE SHAPES IT USED TO HOLD, and that is the point of the move to
+        /// the requirement channel: a `T1` standing for an enclosing operation's type
+        /// parameter is now supplied by that operation's own `requires ErrorTag[T = P]`,
+        /// and one with NO evidence — a TUPLE payload, whose structural former has no
+        /// sort to carry a derived `TypeValue`, or a generic caller that declared
+        /// nothing — is a LOAD ERROR naming the clause to add, not a silent widening.
+        /// What still reaches `None` is a KB with no prelude, which has no `ErrorLayer`
+        /// and so no boundary either.
         ///
         /// NOT A FALLBACK PAPERING OVER AN ERROR — the ROW is the guarantee either way.
         /// The typer discharged this label by the signature (WI-329), and the narrowing
@@ -260,41 +257,30 @@ pub struct Frame {
     /// against it. Per `docs/design/operation-call-model.md` §"Runtime:
     /// frame, requirement value, closure".
     pub requirements: SmallVec<[(Symbol, crate::eval::value::Dictionary); 2]>,
-    /// Operation-level type arguments for the call that pushed this
-    /// frame (WI-272). Per `docs/design/operation-call-model.md`
-    /// §"Operation type arguments", sequenced *after* sort-level
-    /// requirements; held as a separate channel rather than collapsing
-    /// into `requirements` (the "polymorphic value" alternative). Each
-    /// entry is `(declared-param-name, resolved-type-term)`, in the
-    /// callee's `[T1, T2, ...]` declaration order. Body-side
-    /// `var_ref(T)` reads consult this list alongside `requirements`.
-    pub type_args: FrameTypeArgs,
     /// None = fresh (ready to reduce `expr`); Some = suspended, waiting for
     /// the child frame above to deliver a value.
     pub awaiting: Option<AwaitState>,
 }
 
 /// Captured context for pushing a child frame: everything the eval
-/// inherits from the parent's locals/requirements/type-args scope.
+/// inherits from the parent's locals/requirements scope.
 /// `expr` is supplied separately by each caller (it's the child
 /// sub-expression about to be reduced).
 pub struct ChildFrameContext {
     pub op: Symbol,
     pub locals: SmallVec<[(Symbol, Value); 4]>,
     pub requirements: SmallVec<[(Symbol, crate::eval::value::Dictionary); 2]>,
-    pub type_args: FrameTypeArgs,
 }
 
 impl Frame {
     /// Snapshot this frame's context for a child push. Centralises the
-    /// otherwise-fivefold `(op, locals.clone(), requirements.clone(),
-    /// type_args.clone())` destructure in `eval::eval`.
+    /// otherwise-fivefold `(op, locals.clone(), requirements.clone())`
+    /// destructure in `eval::eval`.
     pub fn child_context(&self) -> ChildFrameContext {
         ChildFrameContext {
             op: self.op,
             locals: self.locals.clone(),
             requirements: self.requirements.clone(),
-            type_args: self.type_args.clone(),
         }
     }
 }
@@ -450,7 +436,6 @@ mod tests {
             expr: dummy_occ(),
             locals: SmallVec::new(),
             requirements: SmallVec::new(),
-            type_args: SmallVec::new(),
             awaiting: None,
         }
     }

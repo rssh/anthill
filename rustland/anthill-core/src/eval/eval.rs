@@ -20,7 +20,7 @@ use crate::kb::KnowledgeBase;
 
 use super::closure::Closure;
 use super::error::EvalError;
-use super::frame::{AwaitState, ChildFrameContext, Frame, FrameTypeArgs};
+use super::frame::{AwaitState, ChildFrameContext, Frame};
 use super::pattern::{constructor_pattern_name, match_pattern};
 use super::value::Value;
 use super::Interpreter;
@@ -246,7 +246,7 @@ impl Interpreter {
                     // no clause to lower against.
                     //
                     // WHAT REACHED HERE BEFORE was the WI-272/708 frame type-argument
-                    // channel — `find_type_arg(&f.type_args, *head)`. It is gone; see
+                    // channel — `find_type_arg(&f.*head)`. It is gone; see
                     // that removal for the measurement.
                     //
                     // THE REFUSAL STAYS as the backstop for a KB built without the typer
@@ -340,14 +340,14 @@ impl Interpreter {
                     NodeKind::Expr { classification, .. } => classification.borrow().clone(),
                     _ => None,
                 };
-                // The typer writes the resolved operation type-arg
-                // values (positional, declaration order) into the
-                // apply occurrence's `resolved_type_args` RefCell
-                // after seeding + unification + unconstrained checks.
-                // Eval reads them here so every dispatch path (plain,
-                // deferred, same-sort, pin-now) installs the same
-                // type-arg channel on the callee's frame (WI-272).
-                let type_args = collect_closed_type_args(&mut self.kb, &self.stack, occ);
+                // WI-20260921-28TAT — the callee's OP-SCOPED evidence, off the
+                // occurrence stamp rather than out of a `CallClass` field, and read
+                // ONCE here so every arm below is handed the same thing. That is the
+                // whole change: what a call CARRIES is now independent of where it
+                // GOES, so the plain-apply arm — which owns `Error.reify`, a body-less
+                // operation the interpreter installs by symbol and that no
+                // classification describes — can be handed a dictionary too.
+                let op_dicts = occ.op_dicts();
                 use crate::kb::typing::CallClass;
                 match class.as_deref() {
                     Some(CallClass::DeferToRequirement {
@@ -365,14 +365,12 @@ impl Interpreter {
                         *enclosing_op,
                         pos_args,
                         named_args,
-                        type_args,
                     ),
                     Some(CallClass::ConcreteApplyWithin {
                         fn_target_sym,
                         spec_op_sym,
                         enclosing_sort,
                         dispatch_dict,
-                        op_dicts,
                         enclosing_op,
                         ..
                     }) => self.start_apply_same_sort(
@@ -380,11 +378,10 @@ impl Interpreter {
                         *spec_op_sym,
                         *enclosing_sort,
                         *dispatch_dict,
-                        op_dicts,
+                        &op_dicts,
                         *enclosing_op,
                         pos_args,
                         named_args,
-                        type_args,
                     ),
                     // WI-1037 — EXHAUSTIVE, no `_` arm. The two classes above are
                     // routed to starts that install a requirements channel; every
@@ -405,7 +402,11 @@ impl Interpreter {
                         // starts that install one. See
                         // `NodeOccurrence::apply_dispatch`.
                         let target = occ.classified_apply_target().unwrap_or(*functor);
-                        self.start_apply(target, pos_args, named_args, type_args)
+                        // WI-20260921-28TAT: …and the callee's own op-scoped slots, if
+                        // it declares any. See [`Self::start_apply_with_op_slots`].
+                        self.start_apply_with_op_slots(
+                            target, &op_dicts, pos_args, named_args,
+                        )
                     }
                 }
             }
@@ -416,7 +417,6 @@ impl Interpreter {
                 requirements,
                 ..
             } => {
-                let type_args = collect_closed_type_args(&mut self.kb, &self.stack, occ);
                 // WI-857: `apply_within(fn = …)` has TWO producers with OPPOSITE
                 // conventions — `record_apply_within_rewrite` writes the SPEC op,
                 // `record_apply_within_concrete` writes the IMPL member — so passing
@@ -435,7 +435,6 @@ impl Interpreter {
                     named_args,
                     requirements,
                     &[],
-                    type_args,
                 )
             }
             Expr::Constructor {
@@ -684,7 +683,7 @@ impl Interpreter {
                 &[],
             )?));
         }
-        self.dispatch_call(sym, Vec::new(), SmallVec::new())
+        self.dispatch_call(sym, Vec::new())
     }
 
     /// WI-714 (proposal 052) — build the `Relation` VALUE a rule reference denotes.
@@ -1003,7 +1002,6 @@ impl Interpreter {
             expr: Rc::clone(node),
             locals: SmallVec::new(),
             requirements: SmallVec::new(),
-            type_args: SmallVec::new(),
             awaiting: None,
         });
         let result = match pushed {
@@ -1022,28 +1020,26 @@ impl Interpreter {
     /// Shared by `occ_is_eta_marked` (`.is_some()`) and `eta_dispatch_dict`
     /// (`.flatten()`), so the classification read lives in one place.
     fn eta_marker(occ: &Rc<NodeOccurrence>) -> Option<Option<TermId>> {
-        Self::eta_classification(occ).map(|(dict, _, _)| dict)
+        Self::eta_classification(occ).map(|(dict, _)| dict)
     }
 
-    /// WI-1087 / WI-1091: the whole `EtaOpRef` payload — `(dict, spread_labels,
-    /// op_dicts)`. The read that [`Self::eta_marker`], [`Self::eta_spread_labels`] and
-    /// [`Self::eta_op_scoped_reqs`] share, so the halves of one classification are never
-    /// fetched by three different matches.
-    #[allow(clippy::type_complexity)]
+    /// WI-1087: the whole `EtaOpRef` payload — `(dict, spread_labels)`. The read that
+    /// [`Self::eta_marker`] and [`Self::eta_spread_labels`] share, so the halves of one
+    /// classification are never fetched by two different matches.
+    ///
+    /// WI-20260921-28TAT: the op half is NO LONGER PART OF IT — it is a stamp on the
+    /// occurrence, which [`Self::eta_op_scoped_reqs`] reads directly. What stays here is
+    /// what the classification genuinely records: that this occurrence is an eta at all,
+    /// and the sort-half dictionary to mint it with.
     fn eta_classification(
         occ: &Rc<NodeOccurrence>,
-    ) -> Option<(
-        Option<TermId>,
-        Option<Rc<[crate::intern::Symbol]>>,
-        SmallVec<[Option<TermId>; 2]>,
-    )> {
+    ) -> Option<(Option<TermId>, Option<Rc<[crate::intern::Symbol]>>)> {
         match &occ.kind {
             NodeKind::Expr { classification, .. } => match classification.borrow().as_deref() {
                 Some(crate::kb::typing::CallClass::EtaOpRef {
                     dict,
                     spread_labels,
-                    op_dicts,
-                }) => Some((*dict, spread_labels.clone(), op_dicts.clone())),
+                }) => Some((*dict, spread_labels.clone())),
                 _ => None,
             },
             _ => None,
@@ -1054,7 +1050,7 @@ impl Interpreter {
     /// any — captured on the minted `OpRef` so the apply path can spread by NAME. See
     /// `Value::OpRef::spread_labels`.
     fn eta_spread_labels(occ: &Rc<NodeOccurrence>) -> Option<Rc<[crate::intern::Symbol]>> {
-        Self::eta_classification(occ).and_then(|(_, labels, _)| labels)
+        Self::eta_classification(occ).and_then(|(_, labels)| labels)
     }
 
     /// WI-1091 — the OPERATION's own `requires` slots the typer built at this eta site,
@@ -1072,9 +1068,14 @@ impl Interpreter {
         &mut self,
         occ: &Rc<NodeOccurrence>,
     ) -> Result<Option<Rc<[Option<super::value::Dictionary>]>>, EvalError> {
-        let Some((_, _, op_dicts)) = Self::eta_classification(occ) else {
+        // STILL GATED ON THE ETA MARKER, though the evidence now hangs on the
+        // occurrence: an APPLY occurrence carries the same stamp, and its dictionaries
+        // are installed by the apply path (`push_op_scoped_slots`). Reading the stamp
+        // ungated would mint an `OpRef` carrying a second copy of them.
+        if Self::eta_classification(occ).is_none() {
             return Ok(None);
-        };
+        }
+        let op_dicts = occ.op_dicts();
         if op_dicts.is_empty() {
             return Ok(None);
         }
@@ -1587,7 +1588,6 @@ impl Interpreter {
         functor: Symbol,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
-        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         // WI-218: if this apply's functor has a typer-recorded dispatch
         // rewrite via the legacy term-keyed map, redirect to the impl op.
@@ -1598,7 +1598,7 @@ impl Interpreter {
         let target = functor;
 
         if pos_args.is_empty() && named_args.is_empty() {
-            return self.dispatch_call(target, Vec::new(), type_args);
+            return self.dispatch_call(target, Vec::new());
         }
 
         // Build the per-arg occurrence stream. Positional args come
@@ -1620,7 +1620,6 @@ impl Interpreter {
                 target,
                 buffered: Vec::new(),
                 remaining,
-                type_args,
             },
             first,
         )
@@ -1649,7 +1648,6 @@ impl Interpreter {
         // `requires` of its own, and for the rebuild-only `Expr::ApplyWithin` arm,
         // whose IR form carries only the instance channel.
         op_dicts: &[Option<TermId>],
-        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         if requirements_occ.len() > 1 {
             return Err(EvalError::Internal(format!(
@@ -1683,7 +1681,7 @@ impl Interpreter {
         // a forwarded slot is a `var_ref` into the caller's own channel, so it has to
         // be read before the callee's frame is pushed.
         self.push_op_scoped_slots(target, functor, op_dicts, &mut requirements)?;
-        self.dispatch_apply_with_requirements(target, requirements, type_args, args, named_args)
+        self.dispatch_apply_with_requirements(target, requirements, args, named_args)
     }
 
     /// WI-822 LEG 1 — append `target`'s OP-SCOPED requirement slots (the tail of
@@ -1913,7 +1911,6 @@ impl Interpreter {
         enclosing_op: Option<Symbol>,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
-        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         let callee_parent = crate::kb::typing::impl_parent_of_op(&self.kb, target);
         let inherit = dispatch_dict.is_none()
@@ -1937,7 +1934,6 @@ impl Interpreter {
             return self.dispatch_apply_with_requirements(
                 target,
                 caller_reqs,
-                type_args,
                 pos_args,
                 named_args,
             );
@@ -1954,25 +1950,44 @@ impl Interpreter {
                 named_args,
                 std::slice::from_ref(&dict_occ),
                 op_dicts,
-                type_args,
             );
         }
-        // WI-822 LEG 1: no instance dictionary, but the callee may still have
-        // op-scoped slots of its own — the `Holder.probe requires Zeroable[HT]` shape,
-        // whose sort declares nothing. `start_apply` installs NO channel at all, so
-        // such a call goes through the requirements-passing dispatch with the
-        // op-scoped slots alone. Note the absence of `__req_self`: this frame had none
-        // before and gains none, so only the new slots are new.
+        self.start_apply_with_op_slots(target, op_dicts, pos_args, named_args)
+    }
+
+    /// WI-822 LEG 1 — a call with NO instance dictionary whose callee may still have
+    /// op-scoped slots of its own: the `Holder.probe requires Zeroable[HT]` shape, whose
+    /// sort declares nothing. [`Self::start_apply`] installs NO channel at all, so such a
+    /// call goes through the requirements-passing dispatch with the op-scoped slots
+    /// alone. Note the absence of `__req_self`: this frame had none before and gains
+    /// none, so only the new slots are new.
+    ///
+    /// WI-20260921-28TAT LIFTED IT OUT of [`Self::start_apply_same_sort`]'s tail so the
+    /// PLAIN-APPLY arm shares it. That arm — `PinNow`, and `None`, i.e. no
+    /// classification at all — is where a call that needs no dispatch rewrite lands, and
+    /// a call needing no rewrite may still OWE its callee an op-scoped input.
+    /// `Error.reify` is the first operation to be exactly that: body-less on purpose
+    /// (the boundary is a FRAME the interpreter installs by symbol), so nothing
+    /// classifies it, and `requires TypeValue[T = T1]` is the evidence that tells the
+    /// boundary which payload sort it discharges. Before this it reached `start_apply`
+    /// and its dictionary was dropped on the floor with no diagnostic.
+    fn start_apply_with_op_slots(
+        &mut self,
+        target: Symbol,
+        op_dicts: &[Option<TermId>],
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> Result<StepOutcome, EvalError> {
         if !op_dicts.is_empty() {
             let mut reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> = SmallVec::new();
             self.push_op_scoped_slots(target, target, op_dicts, &mut reqs)?;
             if !reqs.is_empty() {
                 return self.dispatch_apply_with_requirements(
-                    target, reqs, type_args, pos_args, named_args,
+                    target, reqs, pos_args, named_args,
                 );
             }
         }
-        self.start_apply(target, pos_args, named_args, type_args)
+        self.start_apply(target, pos_args, named_args)
     }
 
     /// Runtime path for `CallClass::DeferToRequirement`: resolve the
@@ -1998,7 +2013,6 @@ impl Interpreter {
         enclosing_op: Option<Symbol>,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
-        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         // WI-861 (found by review) — WI-822 LEG 1 gave this path a SECOND chain owner and
         // the `enclosing_sort` demand stayed in front of BOTH, so an op-scoped
@@ -2110,7 +2124,7 @@ impl Interpreter {
         }
         let target = self.dispatch_via_sort_ops_table(spec_op_sym, &dispatching_dict)?;
         let requirements = self.expand_dispatching_dict(spec_op_sym, target, &dispatching_dict)?;
-        self.dispatch_apply_with_requirements(target, requirements, type_args, pos_args, named_args)
+        self.dispatch_apply_with_requirements(target, requirements, pos_args, named_args)
     }
 
     /// Build the callee's `frame.requirements` from a resolved dispatching
@@ -2256,7 +2270,6 @@ impl Interpreter {
         &mut self,
         target: Symbol,
         requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
-        type_args: FrameTypeArgs,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
     ) -> Result<StepOutcome, EvalError> {
@@ -2266,7 +2279,6 @@ impl Interpreter {
                 target,
                 Vec::new(),
                 requirements,
-                type_args,
             );
         }
         let mut remaining: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(total_args);
@@ -2283,7 +2295,6 @@ impl Interpreter {
                 buffered: Vec::new(),
                 remaining,
                 requirements,
-                type_args,
             },
             first,
         )
@@ -2354,9 +2365,8 @@ impl Interpreter {
         &mut self,
         target: Symbol,
         arg_values: Vec<Value>,
-        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
-        self.dispatch_call_with_requirements(target, arg_values, SmallVec::new(), type_args)
+        self.dispatch_call_with_requirements(target, arg_values, SmallVec::new())
     }
 
     /// Records each dispatch into the recent-dispatch ring (for the
@@ -2370,10 +2380,9 @@ impl Interpreter {
         target: Symbol,
         arg_values: Vec<Value>,
         requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
-        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         self.note_dispatch(target);
-        self.dispatch_call_with_requirements_inner(target, arg_values, requirements, type_args)
+        self.dispatch_call_with_requirements_inner(target, arg_values, requirements)
     }
 
     /// Push `target` onto the bounded recent-dispatch ring (newest at the
@@ -2412,7 +2421,6 @@ impl Interpreter {
         target: Symbol,
         arg_values: Vec<Value>,
         requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
-        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         // 0. Proposal 027.4 — THE REIFY BOUNDARY, ABOVE the lookup below, because
         //    that lookup matches by SHORT NAME (`find_local`). Without this a local
@@ -2426,7 +2434,7 @@ impl Interpreter {
         //    is the arm an `OpRef` denoting `reify` arrives at, which never passes
         //    through here.)
         if Some(target) == self.error_layer.as_ref().map(|l| l.reify) {
-            return self.enter_reify_boundary(arg_values, &type_args);
+            return self.enter_reify_boundary(arg_values, &requirements);
         }
 
         // 1. Local binding to target — a closure, or (WI-275) an eta'd
@@ -2453,10 +2461,10 @@ impl Interpreter {
             other => other,
         };
         if let Some(callable) = local_callable {
-            return self.apply_callable_value(callable, arg_values, requirements, type_args);
+            return self.apply_callable_value(callable, arg_values, requirements);
         }
 
-        self.dispatch_resolved_operation(target, arg_values, requirements, type_args)
+        self.dispatch_resolved_operation(target, arg_values, requirements)
     }
 
     /// Apply a CALLABLE VALUE — a closure or an `OpRef` — to `args`.
@@ -2475,7 +2483,6 @@ impl Interpreter {
         callable: Value,
         args: Vec<Value>,
         requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
-        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         match callable {
             Value::Closure(handle) => {
@@ -2484,10 +2491,9 @@ impl Interpreter {
                 // here are discarded — see closure invocation in the design.
                 // Type-args from the apply site are likewise dropped:
                 // closure invocation restores the lambda's captured
-                // type_args, not the caller's. See
+                // not the caller's. See
                 // `docs/design/operation-call-model.md` §"Closures".
                 drop(requirements);
-                drop(type_args);
                 self.enter_closure(handle, args)
             }
             Value::OpRef {
@@ -2543,7 +2549,7 @@ impl Interpreter {
                 // to the one diagnostic that locates a runaway loop. The `_inner`
                 // tail needs no such call — the wrapper already noted its target.
                 self.note_dispatch(op);
-                self.dispatch_resolved_operation(op, spread, requirements, type_args)
+                self.dispatch_resolved_operation(op, spread, requirements)
             }
             // LOUD, not a fall-through. `dispatch_call_with_requirements_inner`
             // pre-filters its local to the two callable carriers, so this is
@@ -2573,7 +2579,6 @@ impl Interpreter {
         target: Symbol,
         arg_values: Vec<Value>,
         requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
-        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         // 1b. Proposal 027.4 — THE REIFY BOUNDARY, ahead of every other route
         // because `Error.reify` is none of them: it has no body (the prelude
@@ -2588,7 +2593,7 @@ impl Interpreter {
         // meaning is its symbol, never its name), so this costs one
         // `Option<Symbol>` comparison per dispatch.
         if Some(target) == self.error_layer.as_ref().map(|l| l.reify) {
-            return self.enter_reify_boundary(arg_values, &type_args);
+            return self.enter_reify_boundary(arg_values, &requirements);
         }
 
         // 2. Registered Rust builtin?
@@ -2668,7 +2673,6 @@ impl Interpreter {
                             &impl_params,
                             arg_values,
                             requirements,
-                            type_args,
                         );
                     }
                 }
@@ -2679,7 +2683,6 @@ impl Interpreter {
                 &params,
                 arg_values,
                 requirements,
-                type_args,
             );
         }
 
@@ -2734,7 +2737,6 @@ impl Interpreter {
                         &params,
                         arg_values,
                         requirements,
-                        type_args,
                     );
                 }
             }
@@ -3326,7 +3328,6 @@ impl Interpreter {
         params: &[(Symbol, Value)],
         arg_values: Vec<Value>,
         requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
-        type_args: FrameTypeArgs,
     ) -> Result<StepOutcome, EvalError> {
         if arg_values.len() != params.len() {
             return Err(EvalError::ArityMismatch {
@@ -3335,7 +3336,6 @@ impl Interpreter {
                 got: arg_values.len(),
             });
         }
-        let type_args = self.inherit_enclosing_sort_type_args(target, type_args)?;
         if self.profiling {
             OP_PROF.with(|p| p.borrow_mut().entry(target).or_insert((0, 0)).0 += 1);
         }
@@ -3367,81 +3367,11 @@ impl Interpreter {
             expr: body_node,
             locals,
             requirements,
-            type_args,
             awaiting: None,
         };
         Ok(StepOutcome::Continue)
     }
 
-    /// WI-20260911-RS2G4 — A BARE SIBLING CALL KEEPS THE ENCLOSING INSTANCE's type
-    /// arguments.
-    ///
-    /// A sort parameter read inside a member is a projection off the RECEIVER's instance,
-    /// and the WI-272 channel now carries it ([`crate::kb::typing`]'s
-    /// `set_resolved_type_args`). But the typer can only write an entry where the CALL
-    /// SITE determined one: inside a member body, `selfType()` written bare says nothing
-    /// about `T` — it means "the same instance I am running at" — and the typer's σ has
-    /// only the WI-424 body rigid there, which is not a type. So the entry is absent and
-    /// the value has to come from the frame the call is made IN. MEASURED without this:
-    /// `Box[T = Letter].viaSibling()`, whose body is the single call `selfType()`,
-    /// returned the dangling `Box[T = Box.T]` while the direct
-    /// `Box[T = Letter].selfType()` returned `Box[T = Letter]`.
-    ///
-    /// THE FRAME INSTALL, not a dispatch route. `start_apply_same_sort` applies the WI-841
-    /// same-sort rule to REQUIREMENTS, but it is reached only for a callee with a
-    /// dictionary to install — `sort Box[T]` declares no `requires`, so its members are a
-    /// plain apply that never sees it. Type arguments differ from dictionaries in exactly
-    /// the way that matters here: a dictionary depends on the dispatch ROUTE, a type
-    /// argument does not, so one place — where every route installs the callee's frame —
-    /// is both sufficient and the only spelling that cannot drift between routes.
-    ///
-    /// THE GATE IS THE KEY ITSELF: a caller entry is inherited only when its symbol is one
-    /// of the CALLEE's parent sort's declared type parameters. That is "same sort" stated
-    /// as the question the inheritance actually asks, and it subsumes it — a caller in a
-    /// different sort holds that sort's parameter symbols, which are different symbols, and
-    /// an op-scoped `<ns>.<op>.T` is never a sort's declared parameter. A spec call
-    /// entering an IMPL of another sort therefore inherits nothing, which is right: the
-    /// impl's parameters are its own.
-    ///
-    /// UNLESS THE CALL SITE CHOSE EXPLICITLY — WI-841's own proviso. A key the callee's
-    /// channel already carries is left alone, so `Box[T = Int64].empty()` written inside
-    /// `sort Box[T]` runs at `Int64` and not at the enclosing instance.
-    fn inherit_enclosing_sort_type_args(
-        &self,
-        target: Symbol,
-        mut type_args: FrameTypeArgs,
-    ) -> Result<FrameTypeArgs, EvalError> {
-        // THE CALLER'S CHANNEL FIRST, and it is not tidiness: this runs on EVERY
-        // operation entry, and the two steps below are string-keyed hash lookups —
-        // `impl_parent_sort_of_op` splits the qualified name and resolves the parent
-        // through `by_qualified_name`, `type_param_syms_of` canonicalizes and looks up a
-        // scope. A caller frame with NO type arguments has nothing to give, which is
-        // every call outside a parameterised sort's members, so the common path pays one
-        // `is_empty()` (found by `/code-review`).
-        let Some(caller) = self.stack.top() else {
-            return Err(EvalError::Internal(
-                "inherit_enclosing_sort_type_args with no parent frame".into(),
-            ));
-        };
-        if caller.type_args.is_empty() {
-            return Ok(type_args);
-        }
-        let Some(parent) = crate::kb::typing::impl_parent_sort_of_op(&self.kb, target) else {
-            return Ok(type_args);
-        };
-        let declared = self.kb.type_param_syms_of(parent);
-        if declared.is_empty() {
-            return Ok(type_args);
-        }
-        let inherited: FrameTypeArgs = caller
-            .type_args
-            .iter()
-            .filter(|(sym, _)| declared.contains(sym) && !type_args.iter().any(|(k, _)| k == sym))
-            .copied()
-            .collect();
-        type_args.extend(inherited);
-        Ok(type_args)
-    }
 
     /// WI-20260903-FC2X4 — a LAMBDA THE RESOLVER PROVED, as the closure this apply can
     /// enter. Anything else is returned unchanged.
@@ -3512,9 +3442,6 @@ impl Interpreter {
                 c.requirements.iter().cloned().collect();
             (c.param_pattern.clone(), c.body.clone(), reqs)
         });
-        // WI-20260919-N31XX — and NO type-argument channel is restored; see the lambda's
-        // construction site for why the snapshot is gone.
-        let type_args = FrameTypeArgs::new();
         let arg = Self::gather_closure_arg(&param_pattern, args)?;
         let bindings = match match_pattern(self, &param_pattern, &arg) {
             Some(b) => b,
@@ -3540,7 +3467,6 @@ impl Interpreter {
             expr: body,
             locals,
             requirements,
-            type_args,
             awaiting: None,
         };
         Ok(StepOutcome::Continue)
@@ -3575,7 +3501,7 @@ impl Interpreter {
     fn enter_reify_boundary(
         &mut self,
         arg_values: Vec<Value>,
-        type_args: &FrameTypeArgs,
+        requirements: &[(Symbol, super::value::Dictionary)],
     ) -> Result<StepOutcome, EvalError> {
         // EVERYTHING THAT CAN REFUSE THIS CALL RUNS BEFORE ANYTHING IS INSTALLED,
         // so a bad call is a plain error over an untouched stack. Both refusals
@@ -3598,28 +3524,43 @@ impl Interpreter {
                 got: body.type_name().to_string(),
             });
         }
-        // `T1`, the payload SORT this boundary discharges — off the type-argument channel
-        // the typer filled at this call site, then narrowed to the sort it names.
+        // `T1`, THE PAYLOAD SORT THIS BOUNDARY DISCHARGES — read out of the DICTIONARY
+        // that `Error.reify`'s own `requires ErrorTag[T = T1]` put in this call's
+        // requirement channel. No grounding walk and no per-frame type-argument channel:
+        // the evidence travels the way every other requirement does, which is what lets
+        // it cross a GENERIC caller — `catchIt[P]` declares `requires ErrorTag[T = P]`
+        // and its own call sites fill that slot, one hop per level.
         //
-        // KEYED BY THE SYMBOL the layer resolved once (`ErrorLayer::reify_payload_param`),
-        // not by the written name: read by name, a renamed parameter in
-        // `effects.anthill` would be indistinguishable from the two legitimate reasons a
-        // boundary cannot be narrowed, and every boundary in the program would quietly
-        // revert to catching wide. Resolved at layer construction, a rename is a missing
-        // symbol, the layer is `None`, and `Error.reify` fails loudly as a body-less
-        // operation instead.
+        // TWO HOPS, NOT ONE, and the second is not decoration. `ErrorTag` is supplied by
+        // `Error provides ErrorTag[T = T] :- TypeValue[T = T]`, a provision UNIVERSAL in
+        // the payload — so the tag dictionary's own `impl` is `Error` for every payload
+        // alike and carries no payload information at all. The answer is in the
+        // `TypeValue` evidence it is conditioned on, at `reify_payload_sub`. Reading
+        // `impl_sort()` off the tag directly narrowed every boundary in the program to
+        // `Error`: measured, and it made a `Boom` raise escape a boundary typed at `Boom`.
         //
-        // `None` AT EVERY STEP MEANS "CANNOT NARROW", NOT "SOMETHING WENT WRONG", and the
-        // boundary then catches wide exactly as it did before the narrowing existed. See
-        // `AwaitState::ReifyBoundary::payload` for the three shapes that reach it and for
-        // why refusing instead broke working programs. The ROW is the guarantee either
-        // way; this is the extra check, available only where the payload is nominal.
+        // KEYED BY SYMBOLS THE LAYER RESOLVED ONCE (`reify_payload_slot`,
+        // `reify_payload_sub`), never by spelling `__req_errortag` or `0` here. Read by
+        // name or position, a clause renamed in `effects.anthill` would be
+        // indistinguishable from a payload that genuinely cannot be narrowed, and every
+        // boundary in the program would quietly revert to catching wide. Resolved at
+        // layer construction it is a missing symbol, the layer is `None`, and
+        // `Error.reify` fails loudly as a body-less operation instead.
+        //
+        // `None` STILL MEANS "CANNOT NARROW" HERE, but it is no longer how an
+        // unevidenced call arrives: since WI-20260921-28TAT a `reify` whose `T1` has no
+        // `ErrorTag` evidence is a LOAD ERROR naming the clause to add
+        // (`native_backing_reads_slots` — this operation is body-less and implemented by
+        // THIS function, so the parked refusal is reported rather than withheld). What
+        // reaches `None` now is a KB with no prelude, where there is no layer at all.
+        // See `AwaitState::ReifyBoundary::payload`. The ROW is the guarantee either way.
         let payload = self
             .error_layer
             .as_ref()
-            .map(|l| l.reify_payload_param)
-            .and_then(|key| find_type_arg(type_args, key))
-            .and_then(|t| payload_sort_of(&self.kb, t));
+            .map(|l| l.reify_payload_slot)
+            .and_then(|slot| requirements.iter().find(|(n, _)| *n == slot))
+            .and_then(|(_, dict)| dict.sub(self.error_layer.as_ref()?.reify_payload_sub))
+            .map(|tv| tv.impl_sort());
 
         // The profiler counts this the way `enter_operation` counts an ordinary
         // entry; without it `Error.reify` appears in neither `ANTHILL_PROFILE`
@@ -3642,7 +3583,7 @@ impl Interpreter {
             AwaitState::ReifyBoundary { payload },
             crate::kb::node_occurrence::bottom_node(),
         )?;
-        self.apply_callable_value(body, Vec::new(), SmallVec::new(), SmallVec::new())
+        self.apply_callable_value(body, Vec::new(), SmallVec::new())
     }
 
     /// Proposal 027.4 — build one arm of the `Result` a boundary delivers.
@@ -4005,11 +3946,10 @@ impl Interpreter {
                     target,
                     mut buffered,
                     mut remaining,
-                    type_args,
                 } => {
                     buffered.push(v);
                     if remaining.is_empty() {
-                        return self.dispatch_call(target, buffered, type_args);
+                        return self.dispatch_call(target, buffered);
                     }
                     let next_expr = remaining.remove(0);
                     let top = self.stack.top_mut().unwrap();
@@ -4017,7 +3957,6 @@ impl Interpreter {
                         target,
                         buffered,
                         remaining,
-                        type_args,
                     });
                     let ctx = self.stack.top().unwrap().child_context();
                     self.stack.push(child_frame(ctx, next_expr))?;
@@ -4028,7 +3967,6 @@ impl Interpreter {
                     mut buffered,
                     mut remaining,
                     requirements,
-                    type_args,
                 } => {
                     buffered.push(v);
                     if remaining.is_empty() {
@@ -4036,7 +3974,6 @@ impl Interpreter {
                             target,
                             buffered,
                             requirements,
-                            type_args,
                         );
                     }
                     let next_expr = remaining.remove(0);
@@ -4046,7 +3983,6 @@ impl Interpreter {
                         buffered,
                         remaining,
                         requirements,
-                        type_args,
                     });
                     let ctx = self.stack.top().unwrap().child_context();
                     self.stack.push(child_frame(ctx, next_expr))?;
@@ -4540,84 +4476,6 @@ fn find_requirement<'a>(
     reqs.iter().rev().find(|(s, _)| *s == name).map(|(_, h)| h)
 }
 
-/// The payload SORT a boundary typed at `T1` discharges, or `None` where the runtime
-/// cannot narrow — see [`AwaitState::ReifyBoundary::payload`] for what `None` then means.
-///
-/// A PLAIN SORT NAME, or the head of a parameterized one. `has_kind(_, Sort)` is not
-/// decoration: a TUPLE type is `Fn { functor: TypeExtractor.NamedTuple }`, and
-/// `NamedTuple` is an ENTITY, so head-reading alone would install a boundary at a symbol
-/// no value's `runtime_carrier_sort` can ever equal — silently declining every raise.
-/// Measured before this test existed: a `reify` at `(a: Int64, b: String)` let its own
-/// raise escape `main` as `error: Tuple`, out of an operation the typer typed
-/// effect-free.
-///
-/// AND A TYPE PARAMETER IS NOT A PAYLOAD SORT, even though it passes `has_kind(_, Sort)`
-/// — `scan_operation_params` registers each `[P]` as a `SymbolKind::Sort` so that a bare
-/// `x: P` routes through the type-param branch, exactly as `sort T = ?` does inside a
-/// sort. An ungrounded parameter reaches here as `Ref(<op-scoped P>)` (that is the
-/// spelling `op_own_param_ref_rewrite` gives it), and taking it at face value narrowed a
-/// boundary to a symbol no value's carrier sort can ever equal, so every raise was
-/// declined. MEASURED, on `rule viaGenericRule(?r) :- catchIt(lambda () -> mayFail(0 - 1), ?r)`
-/// — a rule-body bridge, whose frame channel is empty so nothing grounds `P`: `no
-/// solutions`, silently, where the same call at a concrete payload answered
-/// `err(boom(why: "negative"))`.
-///
-/// BOTH TESTS ARE [`genuine_concrete_sort`], the typer's own, rather than a fourth
-/// spelling of "is this a parameter". It asks the scope's name SET
-/// (`is_sort_param_symbol`); a hand-rolled test over the ordered SYMBOL list disagrees
-/// with it, because `add_type_param` appends to that list only when the name insert is
-/// new — driven by the review on `sort Rec { sort Inner.T = ?  sort T = ? }`, where the
-/// set says "parameter" and the list says "not", and this would then narrow to a symbol
-/// no carrier can equal.
-fn payload_sort_of(kb: &KnowledgeBase, t1: crate::kb::term::TermId) -> Option<Symbol> {
-    let head = match kb.get_term(t1) {
-        Term::Ref(s) => *s,
-        Term::Fn { functor, .. } => *functor,
-        _ => return None,
-    };
-    crate::kb::typing::genuine_concrete_sort(kb, head)
-}
-
-/// Ground every type-parameter reference in `t` against the enclosing operation's
-/// type-argument channel — the deep half of [`collect_closed_type_args`].
-///
-/// BY SYMBOL IDENTITY, through the same [`find_type_arg`] a body reference goes through
-/// (`reduce_var`, WI-708). A reference to an enclosing operation's type parameter reaches
-/// here as `Term::Ref(<op-scoped symbol>)` because the typer writes it that way
-/// (`op_own_param_ref_rewrite`), which is what lets this be an identity match rather than
-/// a name comparison. A genuine sort reference is no key of any channel — those hold only
-/// an operation's own parameter symbols — so it falls straight through.
-///
-/// Recursion mirrors [`KnowledgeBase::apply_subst`]: `Fn` children are mapped, every
-/// other carrier is a leaf. A `Var` leaf is deliberately left alone: a skolem the typer did
-/// not rewrite is not this operation's parameter (an anonymous `?` slot, an inline
-/// signature variable), and an unsolved `Var::Global` is the typer's to refuse
-/// (`check_unconstrained_type_params`) — filling either here would be a guess.
-fn ground_type_params(
-    kb: &mut KnowledgeBase,
-    t: crate::kb::term::TermId,
-    chan: &FrameTypeArgs,
-) -> crate::kb::term::TermId {
-    if let Term::Ref(sym) = kb.get_term(t) {
-        let sym = *sym;
-        return find_type_arg(chan, sym).unwrap_or(t);
-    }
-    kb.map_fn_children(t, |kb, id| ground_type_params(kb, id, chan))
-}
-
-/// Find a frame-level operation type-argument value by its declared
-/// param name (e.g. `T` from `operation foo[T](...)`). Same lookup
-/// contract as `find_requirement` but on the type-arg channel
-/// (WI-272). Reverse order so an inner scope's `T` shadows an outer
-/// one if closure capture ever bridges nested definitions with
-/// same-named type params.
-fn find_type_arg(type_args: &FrameTypeArgs, name: Symbol) -> Option<crate::kb::term::TermId> {
-    type_args
-        .iter()
-        .rev()
-        .find(|(s, _)| *s == name)
-        .map(|(_, t)| *t)
-}
 
 /// Assemble a fresh child frame from a snapshotted parent context
 /// plus the sub-expression to reduce. Centralises the otherwise-
@@ -4629,68 +4487,8 @@ fn child_frame(ctx: ChildFrameContext, expr: Rc<NodeOccurrence>) -> Frame {
         expr,
         locals: ctx.locals,
         requirements: ctx.requirements,
-        type_args: ctx.type_args,
         awaiting: None,
     }
-}
-
-/// Read the typer-resolved operation type arguments off an
-/// apply/apply_within occurrence's RefCell into the eval's frame-channel
-/// shape (WI-272). Skips the SmallVec allocation when the occurrence
-/// has no entries — the common case (ops without `[T, ...]`).
-fn collect_resolved_type_args(occ: &Rc<NodeOccurrence>) -> FrameTypeArgs {
-    occ.with_resolved_type_args(|entries| {
-        if entries.is_empty() {
-            FrameTypeArgs::new()
-        } else {
-            entries.iter().copied().collect()
-        }
-    })
-}
-
-/// [`collect_resolved_type_args`] CLOSED over the calling frame's own channel — the
-/// only spelling any dispatch path should use.
-///
-/// THE INVARIANT: a frame's type-argument channel is GROUND with respect to the generic
-/// context it was installed from. No entry mentions a type parameter of an enclosing
-/// operation, so every reader — `reduce_var`'s body read (WI-708), the `Term::Ref` head
-/// arm, `Error.reify`'s payload (027.4) — gets a type it can use without chasing.
-///
-/// WHY THE TYPER CANNOT DO THIS. It writes `resolved_type_args` once per CALL SITE, and
-/// at a call site inside `operation caller[U](…)` the callee's `T` is genuinely `U` —
-/// `U` is a skolem there, and what it stands for is not known until `caller` is called.
-/// Grounding is therefore a run-time step, and this is the one place a callee's channel
-/// is built, so it is the one place that step belongs.
-///
-/// MEASURED, and it is not a `reify` corner: `operation tyOf[T](x: T) -> Type = Cell[V =
-/// T]` called from `operation tyOf2[U](y: U) -> Type = tyOf(y)` evaluated to `Cell[V =
-/// Var(Rigid P)]` — a dangling variable, the exact WI-708 regression one level deeper —
-/// while the direct `tyOf(5)` gave `Cell[V = Int64]`. The `Error.reify` case
-/// (`Error.reify(body)` inside `operation catchIt[P](…) -> Result[E = P, …]`) is the
-/// same defect reached through the `T1` channel.
-///
-/// Costs nothing on the common path: no callee type params, or no enclosing ones, and
-/// the two `is_empty` tests answer before any walk.
-fn collect_closed_type_args(
-    kb: &mut KnowledgeBase,
-    stack: &super::frame::ActivationStack,
-    occ: &Rc<NodeOccurrence>,
-) -> FrameTypeArgs {
-    let mut args = collect_resolved_type_args(occ);
-    if args.is_empty() {
-        return args;
-    }
-    let Some(caller) = stack.top() else {
-        return args;
-    };
-    if caller.type_args.is_empty() {
-        return args;
-    }
-    let chan = caller.type_args.clone();
-    for (_, t) in args.iter_mut() {
-        *t = ground_type_params(kb, *t, &chan);
-    }
-    args
 }
 
 /// The sort / constructor a value REFERENCES: an entity, a `Fn` term, or a bare

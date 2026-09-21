@@ -324,7 +324,9 @@ fn a_rebuilt_call_carries_the_pin_so_the_woven_arm_must_restamp() {
         // WI-822 LEG 1: no op-scoped slots — this fixture's target writes no
         // `requires` of its own, and the classification under test is the
         // dictionary-carry, which the op half does not participate in.
-        op_dicts: Default::default(),
+        // WI-20260921-28TAT: the op half is no longer a field here at all; it is the
+        // occurrence's own `op_dicts` stamp, which this fixture leaves unstamped for
+        // exactly the reason above.
         enclosing_op: None,
     });
 

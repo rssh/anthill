@@ -131,6 +131,15 @@ namespace anthill.prelude
     operation set(target: T, value: V) -> Unit effects Modify[target]
   end
 
+  -- ErrorTag[T]: the EVIDENCE a reify boundary discharges its payload sort with —
+  -- WI-20260921-28TAT, proposal 065 §3's open note ("whether ErrorTag IS TypeValue or
+  -- refines it is 3MV2C's to decide"). It rides on the Error MARKER rather than being
+  -- derived for every sort, and `TypeValue` underneath is what makes the payload
+  -- READABLE.
+  sort ErrorTag
+    sort T = ?
+  end
+
   -- Error[T]: failure carrying a payload of type T, and the boundary that
   -- catches it. `raise` and `reify` are Filinski's pair at `M = Result`
   -- (proposal 047 §3, 027.4): `raise(x)` REFLECTS `err(x)` into direct-style
@@ -139,8 +148,10 @@ namespace anthill.prelude
   -- rather than a try/catch — the caught value is ordinary data.
   sort Error
     import anthill.prelude.{Nothing, Result}
+    import anthill.reflect.{TypeValue}
     sort T = ?
     provides Effect[T = Error[?]]
+    provides ErrorTag[T = T] :- TypeValue[T = T]
     operation raise(error: T) -> Nothing effects Error[T]
 
     -- THE BOUNDARY. Runs `body`; a raise inside it aborts HERE and becomes
@@ -171,12 +182,25 @@ namespace anthill.prelude
     -- IT CATCHES ITS OWN PAYLOAD AND LETS THE REST PAST. A body declaring two
     -- `Error` labels reified at one of them discharges only that one; the other
     -- stays in the CALLER's row, which the typer already requires it to declare.
-    -- Where the runtime cannot tell — a payload that is a tuple, or a `T1` still
-    -- standing for an enclosing operation's type parameter — the boundary catches
-    -- WIDE, because the row discharged the label whatever the payload turns out
-    -- to be. 027.4 carries the measurements.
+    --
+    -- `requires ErrorTag[T = T1]` IS WHAT MAKES THAT DECIDABLE, and it replaced a
+    -- catch-WIDE fallback (WI-20260921-28TAT). The boundary reads the payload SORT
+    -- out of the dictionary this clause puts in the call's requirement channel;
+    -- before it, the sort came off a per-frame type-argument channel, and where that
+    -- channel could not ground `T1` the boundary silently caught every payload —
+    -- swallowing a label its own row had left to its caller. There is no such
+    -- fallback now: a call whose `T1` has no `ErrorTag` evidence is a LOAD ERROR
+    -- naming the clause to add.
+    --
+    -- SO A GENERIC BOUNDARY DECLARES IT. An operation reifying at its OWN type
+    -- parameter writes `requires ErrorTag[T = P]`, and its callers supply the
+    -- evidence — the ordinary requirement route, one hop per generic level. A
+    -- payload with no derived `TypeValue` instance (a TUPLE, whose structural former
+    -- has no sort to carry one) cannot be reified at until that instance exists.
+    -- 027.4 carries the measurements.
     operation reify[Rho, X, T1](body: () -> X @ {Error[T1], Rho}) -> Result[E = T1, T = X]
       effects {Rho}
+      requires ErrorTag[T = T1]
   end
 
   sort Suspension

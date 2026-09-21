@@ -25753,7 +25753,7 @@ impl<'a> Loader<'a> {
     /// `type_arg(name: Option[Ref], value: Type)` hash-consed terms — from the
     /// occurrence type-args. This handle feeds ONLY occurrence materialization
     /// (`collect_type_args`) and persistence printing; the typer and runtime read
-    /// the occurrence / `resolved_type_args` side-table. A `Value::Node`
+    /// the occurrence side-table. A `Value::Node`
     /// (value-in-type) entry, which a hash-consed term cannot hold, is OMITTED —
     /// the occurrence is the source of truth and carries it faithfully. Returns
     /// `None` when there is no ground entry (no `type_args` named arg added).

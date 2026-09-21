@@ -3174,19 +3174,26 @@ class BootstrapTest extends munit.FunSuite:
     // they are pinned rather than written down.
   }
 
-  test("WI-1080: a refusal costs ONE DECLARATION — effects.anthill's nine siblings emit") {
-    // THE CORPUS INSTANCE the ticket was filed on. effects.anthill declares eleven
+  test("WI-1080: a refusal costs ONE DECLARATION — effects.anthill's reflect-free siblings emit") {
+    // THE CORPUS INSTANCE the ticket was filed on. effects.anthill declares twelve
     // sorts in `namespace anthill.prelude`; exactly two name `anthill.reflect`
     // (`MatchFailed`'s fields are NodeOccurrence/Term, `RelationFloundered` carries a
-    // Term), and refusing at the FILE took the other nine out with them.
+    // Term), and refusing at the FILE took the other ten out with them.
+    //
+    // TEN, NOT NINE, since WI-20260921-28TAT added `ErrorTag` — the evidence a reify
+    // boundary discharges its payload sort with. It is reflect-FREE itself (`sort T = ?`
+    // and nothing else), so it emits; what names `anthill.reflect` is the CONDITION on
+    // `Error`'s provision of it (`:- TypeValue[T = T]`), and a provision condition is
+    // not a field type. That this row moved by exactly one, and that the one is the sort
+    // added, is the measurement: a refusal still costs ONE declaration.
     val out = Bootstrap.generate(parseStdlib("anthill/prelude/effects.anthill"), scalaTypes)
 
     val emitted = out.files.map(f => f.relPath.substring(f.relPath.lastIndexOf('/') + 1))
     assertEquals(emitted.sorted, IndexedSeq(
       "Branch.scala", "DivisionByZero.scala", "Effect.scala", "EmptyStream.scala",
-      "Error.scala", "Modifiable.scala", "Modify.scala", "ModifyRuntime.scala",
-      "Suspension.scala").sorted,
-      "the nine reflect-free sorts are what survives a refusal of the other two")
+      "Error.scala", "ErrorTag.scala", "Modifiable.scala", "Modify.scala",
+      "ModifyRuntime.scala", "Suspension.scala").sorted,
+      "the ten reflect-free sorts are what survives a refusal of the other two")
     // BOTH refusals, which is the multiplicity half: the second was never absent
     // before this ticket, it was unreachable behind the first throw.
     assertEquals(out.refusals.length, 2, out.refusals.map(_.getMessage).mkString("\n"))

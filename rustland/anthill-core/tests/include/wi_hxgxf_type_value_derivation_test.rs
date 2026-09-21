@@ -211,12 +211,32 @@ end
     );
 }
 
-/// THE CONTROL ON THE GATE: the SAME program without the `requires` clause derives
-/// NOTHING. This is what keeps the gate from being a no-op that happens to pass — and it
-/// is the property that makes the whole feature cost zero today, the stdlib requiring
-/// `TypeValue` nowhere.
+/// THE GATE HAS OPENED, AND THE TRANSITION IS THE POINT OF THIS ROW NOW.
+///
+/// It used to assert the CONTROL — that a program requiring `TypeValue` nowhere derives
+/// NOTHING — and that was the cost argument (~113ms/load unconditionally, 0 gated). The
+/// gate's own comment predicted the end of it: "step 3 is what makes the clause appear at
+/// every rigid value read, and at that point the gate opens BY ITSELF: it keys on the
+/// REQUIREMENT existing, so step 3 removes nothing and there is no flag left behind."
+///
+/// WI-20260921-28TAT IS WHEN THAT ARRIVED, one step earlier than expected and from the
+/// prelude rather than from a user's rigid read: `Error.reify requires ErrorTag[T = T1]`
+/// with `Error provides ErrorTag[T = T] :- TypeValue[T = T]`. Every program that loads
+/// the prelude — which is every program — now carries a standing demand for `TypeValue`,
+/// so the derivation runs and the gate is permanently open.
+///
+/// WHAT THIS ROW STILL GUARANTEES, and it is why it was kept rather than deleted: the
+/// gate is not DEAD. It is still the predicate that decides, and the assertion now names
+/// the clause that opens it — so a change removing `reify`'s requirement, or one breaking
+/// `any_requirement_names_spec`' provision-condition leg (WI-20260921-28TAT: conditions
+/// are `SortView`-shaped, and reading them with the bare-application decoder matched
+/// NOTHING while looking like it worked), takes this row red instead of silently
+/// returning the workspace to deriving nothing.
+///
+/// BACKED OUT: drop the `requires ErrorTag[T = T1]` line in `prelude/effects.anthill`, or
+/// the `condition_names_spec` leg of the gate, and this goes red.
 #[test]
-fn no_requirement_means_no_derivation() {
+fn the_preludes_reify_clause_holds_the_derivation_gate_open() {
     let src = r#"
 namespace wihxgxf.nogate
   import anthill.prelude.{Int64}
@@ -232,9 +252,17 @@ end
         .filter(|(_, spec)| spec == "anthill.reflect.TypeValue")
         .collect();
     assert!(
-        rows.is_empty(),
-        "nothing requires `TypeValue`, so nothing may be derived — this is the whole \
-         cost argument (~113ms/load unconditionally, 0 gated); got {rows:?}"
+        !rows.is_empty(),
+        "the prelude's `Error.reify requires ErrorTag[T = T1]` — whose provision is \
+         conditioned on `TypeValue` — is a standing demand, so the gate is open and \
+         every sort carries a derived row; got none"
+    );
+    // The demand reaches a sort of the USER's program, not merely the prelude's own:
+    // the gate is program-wide, and a row only for `anthill.*` would mean the
+    // derivation had been narrowed to the asker rather than opened.
+    assert!(
+        rows.iter().any(|(c, _)| c == "wihxgxf.nogate.Holder"),
+        "the open gate derives for every sort, this program's included; got {rows:?}"
     );
 }
 

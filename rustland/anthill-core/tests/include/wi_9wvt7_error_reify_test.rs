@@ -65,6 +65,7 @@ namespace test.reify
   import anthill.prelude.{Int64, String, Error, Result, List}
   import anthill.prelude.List.{cons, nil}
   import anthill.reflect.{KB, LoadFailed}
+  import anthill.prelude.{ErrorTag}
 
   sort Boom
     entity boom(why: String)
@@ -238,7 +239,8 @@ namespace test.reify
   -- call site `T1` is the skolem `P` and only the CALL to `catchIt` says what `P` is.
   -- The frame's type-argument channel carries `P = Boom` there, and
   -- `collect_closed_type_args` grounds `T1` against it before the dispatch.
-  operation catchIt[P](body: () -> Int64 @ {Error[P]}) -> Result[E = P, T = Int64] =
+  operation catchIt[P](body: () -> Int64 @ {Error[P]}) -> Result[E = P, T = Int64]
+      requires ErrorTag[T = P] =
     Error.reify(body)
 
   operation viaGeneric() -> Result[E = Boom, T = Int64] =
@@ -252,7 +254,8 @@ namespace test.reify
   -- it. This is the row that needs `P` ground: a boundary that cannot be narrowed catches
   -- wide, so it would swallow the `Other`.
   operation catchItEsc[P](body: () -> Int64 @ {Error[P], Error[Other]})
-      -> Result[E = P, T = Int64] effects {Error[Other]} =
+      -> Result[E = P, T = Int64] effects {Error[Other]}
+      requires ErrorTag[T = P] =
     Error.reify(body)
 
   operation genericDeclines() -> Result[E = Boom, T = Int64] effects {Error[Other]} =

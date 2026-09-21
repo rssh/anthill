@@ -3,9 +3,9 @@
 - id: WI-20260921-28TAT-remove-the-frame-type-argument
 - created: 2026-09-21T09:07:19Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-09-21T09:07:19Z
+- status_at: 2026-09-21T15:16:47Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -54,4 +54,33 @@ IT FAILS SILENTLY, which is what makes it worth fixing generally rather than for
 REPLACES ROUTE (a) WITH: build op-scoped dictionaries whenever the CALLEE HAS A NON-EMPTY OP HALF (`op_dict_entries(callee).op_entries()`), independently of the dispatch decision — either a `CallClass` variant carrying only `op_dicts` and no rewrite, or lifting `op_dicts` out of `ConcreteApplyWithin` onto its own occurrence stamp. Routes (b) and (c) in the description are then unnecessary: (b) was circular and (c) was a narrow (a).
 
 WORTH A ROW OF ITS OWN whichever way this lands: an operation with an op-level `requires` that the call site never builds should not load clean. Today it does.
+
+### 2026-09-21T15:16:32Z — feedback — claude
+
+DELIVERED — THE CHANNEL IS GONE, and the route that replaced it is the requirement channel, as 065 §1 said it would be.
+
+THE COUPLING WAS THE REAL DEFECT, and fixing it is what unblocked everything else. Op-level `requires` evidence lived in `CallClass::ConcreteApplyWithin`, i.e. in a DISPATCH REWRITE. It is now a `NodeOccurrence` stamp (`op_dicts`), written by one function (`stamp_op_scoped_dicts`) and read on every apply route. What a call CARRIES is independent of where it GOES: `Error.reify` needs no rewrite — the prelude declares it body-less because the boundary is a FRAME the interpreter installs by symbol — so no classification described it and nothing handed it its input. Measured before: `reqs=[]` at the dispatch site, loading clean. After: `reqs=1`, carrying the payload sort.
+
+THE SURFACE IS THE USER'S `ErrorTag`, and my first report on it was WRONG — recorded because the correction matters. I reported that `Error provides ErrorTag[T = T] :- TypeValue[T = T]` "resolves to nothing, a universal provision carries no content". It resolves fine. What was broken was the DEMAND GATE, and it took two fixes: `any_requirement_names_spec` scanned sort-level and operation-level `requires` but NOT provision conditions, so with `ErrorTag` the only demand for `TypeValue` in the program was that condition, the gate answered "nobody asks", `type_value_derive` emitted nothing, and every `ErrorTag` resolution failed on its own condition — 23 call sites, silently. The first fix then matched NOTHING because conditions are `SortView`-shaped and I decoded them with the bare-application reader; all 21 stdlib condition facts answered `anthill.reflect.SortView`. 23 unresolved → 1.
+
+`ErrorTag` EARNS ITS KEEP, which was not obvious. It keeps `TypeValue`'s "never benignly unfilled" rule (N31XX) intact for source rigid reads while reify's evidence rides a separate spec judged by the general rule — the gate I had added to that leg was backed out and is not in the diff. The boundary reads TWO hops: the tag's own `impl` is `Error` for every payload alike (the provision is universal), so the payload is in the `TypeValue` evidence it is conditioned on, at an index resolved from the layout rather than written as `0`.
+
+THE CONDITION CONFLATION, and the bug my first fix caused. `sort Narrow requires Boom` is a REFINEMENT — `Boom` is a data sort, no type parameter, nothing can provide it — but it rode the same `SortRequiresInfo` fact as a spec demand, so it put an unfillable slot in `Narrow`'s dictionary chain and NO dictionary whose impl is `Narrow` could be built (`TypeValue[T = Narrow]` surfaced it; `Narrow provides Eq` would have failed identically). I first filtered it out of `direct_requires_chain_rc` — WRONG: `find_requires_location` names slots by walking the UNFILTERED `requires_tree`, so indices went out of range and 253 anthill-todo rows died `index out of bounds: the len is 1 but the index is 1`. I DISMISSED THOSE AS A REBUILD ARTIFACT ONCE; they were real, and the second look is what caught it. The codebase had already learned this exact lesson about the `EffectsRuntime` kind-anchor ("a provider built a dictionary SHORTER than the chain it is indexed by"), so the fix follows that precedent: the clause KEEPS ITS SLOT and resolves to a structural `Leaf` rooted at itself.
+
+WHAT WENT: `Frame.type_args`, `FrameTypeArgs`, `collect_closed_type_args`, `collect_resolved_type_args`, `ground_type_params`, `find_type_arg`, `inherit_enclosing_sort_type_args`, `top_frame_type_args_for_test`, the typer's ~90-line stamping block, `set_resolved_type_args` / `with_resolved_type_args` / `NodeKind::Expr.resolved_type_args`, and behind them `op_own_param_ref_rewrite`, `enclosing_sort_param_ref_rewrite`, `apply_enclosing_param_refs`, `op_scoped_type_param_symbol`, `op_own_param_rigids`, `payload_sort_of`, `ErrorLayer::reify_payload_param`. `wi272_op_type_args_frame_test` deleted with its deletion explained at the registration site: its three rows asserted the channel got FILLED and nothing read what they checked.
+
+ACCEPTANCE, against the ticket's list:
+ - a boundary at an enclosing operation's type parameter still NARROWS — `genericDeclineOuter` sees its `Other`. It is driven through the caller's own `requires ErrorTag[T = P]`, which `catchIt`/`catchItEsc` now declare: the capability the channel had, now expressed rather than inferred.
+ - an unevidenced boundary is a LOAD ERROR naming the clause, not a silent catch-wide. `native_backing_reads_slots` is what makes it fire: body-less is not "reads nothing" when the backing is the interpreter. The tuple-payload rows go with that — a structural former has no derived `TypeValue`, so reify at a tuple is refused until one exists.
+ - host entry: unchanged, and the rule-body row (`viaGenericRule`) still answers.
+ - the channel and its stamping are GONE; `wi272` deleted.
+ - kernel-language.md §8.7's sentence was WRONG as written ("is not an error at all") and is corrected to describe the conditional refusal, its body-walk blind spot, and the open general question.
+
+NOT DELIVERED, filed instead after discussion: WI-20260921-3G1YT (a declared `requires` unconditionally owed — 4808/21 measured, blocked on receiver-parameter inference for the stdlib combinators) and WI-20260921-6JP6N (a deferred call supplies no op-scoped `requires`; the inline fix was attempted and REFUTED by `wi456_sorted_set_collection_test`, and the site records why).
+
+ONE SITE FOR THE REFINEMENT LEAF, MEASURED. The `EffectsRuntime` anchor it mirrors is exempted at two other sites as well; mirroring it there was tried and is NOT needed — backed out of both, `wi_tests` is 4826/0. Every refinement clause reaches `resolve_inner` as a goal, so that is the one place it belongs; the other two would have been dead code carrying a confident comment. Recorded at the live site with why the anchor differs (it is SYNTHESIZED into chains those sites build directly; a refinement clause is author-written and only ever arrives as a goal).
+
+GREEN: Rust core `wi_tests` 4826/0; full workspace 7227/0 across 36 binaries via rustland/scripts/test.sh; scaland `sbt testFull` 578/0. Scaland needed one fix of its own — `BootstrapTest`'s "effects.anthill's nine siblings emit" is ten now that `ErrorTag` is declared there, and the row records why it moved by exactly one (`ErrorTag` is reflect-FREE; what names `anthill.reflect` is the CONDITION on `Error`'s provision of it, not a field type).
+
+SELF-REVIEW (/code-review high): 2 findings, both addressed — the deferred-call gap above, and `ErrorLayer::resolve` now needing six symbols instead of three (a prelude-without-reflect KB would lose the boundary; believed unreachable since `sort Error` imports `TypeValue`, and nothing asserts it). Two stale docs of my own fixed.
 

@@ -6,6 +6,7 @@
 /// all the way down. The tree is `Rc`-linked from the start so reflection
 /// bindings are cheap (`Rc::clone`), eval can stash on its frame stack
 /// without lifetime threading, and cross-pass identity is `Rc::ptr_eq`.
+use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
@@ -505,7 +506,7 @@ impl NodeOccurrence {
                 origin: OccurrenceOrigin::Source,
                 dot_chain,
                 classification: RefCell::new(None),
-                resolved_type_args: RefCell::new(Vec::new()),
+                op_dicts: RefCell::new(SmallVec::new()),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
             },
@@ -577,7 +578,7 @@ impl NodeOccurrence {
                     // fixed for at WI-502.
                     dot_chain: self.is_dot_chain(),
                     classification: RefCell::new(None),
-                    resolved_type_args: RefCell::new(Vec::new()),
+                    op_dicts: RefCell::new(SmallVec::new()),
                     inferred_type: RefCell::new(None),
                     lowered_receiver: RefCell::new(None),
                 },
@@ -714,7 +715,7 @@ impl NodeOccurrence {
         //
         // All four `RefCell`s are built empty and the two STAMPS are then carried by
         // `carry_typer_stamps_from` (`inferred_type` and the `CallClass`), exactly as
-        // every other rebuild path does. The other two — `resolved_type_args`,
+        // every other rebuild path does. The other one —
         // `lowered_receiver` — are typer output that does not exist yet: at the moment a
         // macro returns, this node has not been typed.
         let rebuilt = Rc::new(NodeOccurrence {
@@ -724,7 +725,7 @@ impl NodeOccurrence {
                 // WI-20260902-4NEKZ: carried, for the reason `rebuilt_expr` states.
                 dot_chain: self.is_dot_chain(),
                 classification: RefCell::new(None),
-                resolved_type_args: RefCell::new(Vec::new()),
+                op_dicts: RefCell::new(SmallVec::new()),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
             },
@@ -780,12 +781,15 @@ impl NodeOccurrence {
     /// is the `Expr::Constructor.from_projection` discipline ("riding INSIDE the
     /// `Expr` makes every rebuild site a compile error until it decides"):
     ///
-    ///   * `resolved_type_args` — read only off KB-STORED op bodies
-    ///     (`collect_resolved_type_args`, from eval's `Expr::Apply`/`ApplyWithin`
-    ///     arms). The rebuild paths feed SLD, and the eval bridge re-enters by op
-    ///     SYMBOL, so a rebuilt node never reaches that reader. Carrying it would
-    ///     be inert, not wrong; it is left out so the excluded set stays the one a
-    ///     reader can check.
+    ///   * WI-20260921-28TAT `op_dicts` IS CARRIED, and it is carried because it
+    ///     ALREADY WAS: until that ticket it rode inside `ConcreteApplyWithin`, which
+    ///     this carries verbatim, so leaving it behind when the field became a stamp
+    ///     of its own would have been a silent behaviour change smuggled in under a
+    ///     refactor. The refinement argument above covers it for the same reason it
+    ///     covers the classification — opening/substituting binds a var to a value OF
+    ///     the carrier the typer already saw, and the typer re-types a `@[simp]`
+    ///     splice — and its cost is one `SmallVec` clone of at most two `Option<TermId>`.
+    ///
     ///   * `lowered_receiver` — a `Weak` twin, same-pass-only, and by its own doc a
     ///     dropped twin means `None` is the HONEST answer. Carrying it would alias
     ///     a stale receiver, so this one must NOT be carried.
@@ -815,7 +819,7 @@ impl NodeOccurrence {
                 // be decided about rather than silently skipped.
                 dot_chain: _,
                 classification: dst_class,
-                resolved_type_args: _,
+                op_dicts: dst_op_dicts,
                 inferred_type: dst_ty,
                 lowered_receiver: _,
             },
@@ -824,7 +828,7 @@ impl NodeOccurrence {
                 origin: _,
                 dot_chain: _,
                 classification: src_class,
-                resolved_type_args: _,
+                op_dicts: src_op_dicts,
                 inferred_type: src_ty,
                 lowered_receiver: _,
             },
@@ -837,6 +841,12 @@ impl NodeOccurrence {
         }
         if let Some(c) = src_class.borrow().as_deref() {
             *dst_class.borrow_mut() = Some(Box::new(c.clone()));
+        }
+        // Same "an unstamped `src` leaves this slot alone" discipline as the two above:
+        // empty is what an unstamped op-dict cell holds.
+        let src_dicts = src_op_dicts.borrow();
+        if !src_dicts.is_empty() {
+            *dst_op_dicts.borrow_mut() = src_dicts.clone();
         }
     }
 
@@ -860,7 +870,7 @@ impl NodeOccurrence {
                 // it is not the dot the author wrote even when it expands one.
                 dot_chain: false,
                 classification: RefCell::new(None),
-                resolved_type_args: RefCell::new(Vec::new()),
+                op_dicts: RefCell::new(SmallVec::new()),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
             },
@@ -1004,6 +1014,16 @@ impl NodeOccurrence {
 
     /// Record the typer's `CallClass` for this occurrence. Only `Expr`-kind
     /// occurrences carry typer metadata; rule heads ignore the call.
+    /// WI-20260921-28TAT — is this occurrence UNCLASSIFIED? True for a non-Expr kind
+    /// too, which is right for the one caller: it asks "did any dispatch arm claim this
+    /// call", and a kind that cannot hold a classification did not.
+    pub fn classification_is_none(&self) -> bool {
+        match &self.kind {
+            NodeKind::Expr { classification, .. } => classification.borrow().is_none(),
+            _ => true,
+        }
+    }
+
     pub fn set_classification(&self, class: super::typing::CallClass) {
         if let NodeKind::Expr { classification, .. } = &self.kind {
             *classification.borrow_mut() = Some(Box::new(class));
@@ -1066,31 +1086,25 @@ impl NodeOccurrence {
         }
     }
 
-    /// Record the typer-resolved operation type arguments for an
-    /// apply call site (WI-272). `args` is positional in the callee's
-    /// `[T1, T2, ...]` declaration order; each entry is the
-    /// `(declared-name, resolved-type-term)`. No-op on non-Expr kinds.
-    pub fn set_resolved_type_args(&self, args: Vec<(Symbol, TermId)>) {
-        if let NodeKind::Expr {
-            resolved_type_args, ..
-        } = &self.kind
-        {
-            *resolved_type_args.borrow_mut() = args;
+
+
+    /// WI-20260921-28TAT — record the operation-level `requires` evidence this call
+    /// site owes its callee. One writer ([`super::typing::stamp_op_scoped_dicts`]); see
+    /// the field for why this is a stamp rather than a `CallClass` field. No-op on
+    /// non-Expr kinds.
+    pub fn set_op_dicts(&self, dicts: SmallVec<[Option<TermId>; 2]>) {
+        if let NodeKind::Expr { op_dicts, .. } = &self.kind {
+            *op_dicts.borrow_mut() = dicts;
         }
     }
 
-    /// Run `f` with a borrowed slice of the typer-resolved op type
-    /// arguments populated by `set_resolved_type_args` (WI-272). The
-    /// slice is empty when the callee has no type params, or when the
-    /// typer hasn't run yet for this occurrence (e.g. a hand-built
-    /// test fixture). RefCell-borrowed callback avoids cloning the
-    /// underlying Vec on the hot apply path.
-    pub fn with_resolved_type_args<R>(&self, f: impl FnOnce(&[(Symbol, TermId)]) -> R) -> R {
+    /// The op-scoped evidence stamped by [`Self::set_op_dicts`], or empty — for a
+    /// callee that declares no `requires` of its own, for a non-Expr occurrence, and
+    /// for a hand-built fixture the typer never walked.
+    pub fn op_dicts(&self) -> SmallVec<[Option<TermId>; 2]> {
         match &self.kind {
-            NodeKind::Expr {
-                resolved_type_args, ..
-            } => f(&resolved_type_args.borrow()),
-            _ => f(&[]),
+            NodeKind::Expr { op_dicts, .. } => op_dicts.borrow().clone(),
+            _ => SmallVec::new(),
         }
     }
 
@@ -1181,22 +1195,28 @@ pub enum NodeKind {
         /// typer writes after construction while other walkers may hold
         /// shared `Rc` references to this occurrence.
         classification: RefCell<Option<Box<super::typing::CallClass>>>,
-        /// Typer-resolved operation type arguments for an
-        /// `Expr::Apply` / `Expr::ApplyWithin` call site (WI-272),
-        /// positionally in declaration order against the callee's
-        /// declared `[T1, T2, ...]` parameters. Each entry is
-        /// `(declared-param-name, resolved-type-term)`. Empty when the
-        /// callee has no type params or this isn't an apply
-        /// occurrence. Populated after the typer has unified the call's
-        /// type-arg bindings with arg / expected types; the eval reads
-        /// it on call entry and installs the values on
-        /// `Frame.type_args`. See `docs/design/operation-call-model.md`
-        /// §"Operation type arguments".
-        resolved_type_args: RefCell<Vec<(Symbol, TermId)>>,
+        /// WI-20260921-28TAT — the OPERATION-LEVEL `requires` evidence this call site
+        /// owes its callee: one entry per op-scoped slot of the callee
+        /// ([`super::typing::op_dict_entries`]' tail), in chain order, each the
+        /// dictionary expression that fills it. Empty for the ~all of operations that
+        /// declare no `requires` of their own.
+        ///
+        /// A STAMP AND NOT A FIELD OF `CallClass`, which is where it lived until this
+        /// ticket, and the move is the fix rather than tidying. Every `CallClass`
+        /// variant is a DISPATCH REWRITE — "send this call somewhere else". An
+        /// operation-level `requires` is an INPUT THE CALLER OWES THE CALLEE, a fact
+        /// about the callee's SIGNATURE; nothing about where a call dispatches should
+        /// decide whether an input is supplied. Carried inside
+        /// `ConcreteApplyWithin`, an operation that HAS a requirement but needs NO
+        /// rewrite fell between the two and got NOTHING — silently, with no
+        /// diagnostic: `Error.reify requires TypeValue[T = T1]` loaded clean and
+        /// measured `reqs=[]` at its dispatch site. See
+        /// [`super::typing::stamp_op_scoped_dicts`] for the one writer.
+        op_dicts: RefCell<SmallVec<[Option<TermId>; 2]>>,
         /// Typer-attached inferred type for this occurrence (WI-284):
         /// the `TypeResult.ty` the typer computes but historically
         /// discarded. Kept here — a third per-node annotation alongside
-        /// `classification` / `resolved_type_args` — so the type-directed
+        /// `classification` / `op_dicts` — so the type-directed
         /// `@[simp]` engine can read each occurrence's least declared sort
         /// (`sort_functor_of_view` over `inferred_type`) without recomputing. Written
         /// by the typer's `Stamp` work-frame once a node's `TypeResult`
@@ -1528,7 +1548,7 @@ pub enum Expr {
         /// `(Some(name), type)` for `T = Int`, or `(None, type)` for
         /// positional `Int`. Empty when the call site doesn't bind any
         /// (the typer-resolved values for inferred slots live in
-        /// `NodeKind::Expr.resolved_type_args`).
+        /// `NodeKind::Expr`'s typer stamps).
         /// WI-342 S4b: carrier-agnostic `Value`, mirroring `Apply.type_args`.
         type_args: Vec<(Option<Symbol>, Value)>,
     },

@@ -1401,7 +1401,7 @@ fn build_rhs_template(
 ///    `join(p, q, λ)` would report the macro's name instead of `join`. MEASURED: all four
 ///    arms of `wi_5r2xt_macro_spliced_call_name_test` fail without it.
 ///  * **NO SHARING WITH THE STORED RULE.** A `NodeKind::Expr` carries the typer's
-///    `RefCell` stamps (`inferred_type`, the `CallClass`, `resolved_type_args`,
+///    `RefCell` stamps (`inferred_type`, the `CallClass`, `op_dicts`,
 ///    `lowered_receiver`). Splicing the rule's own `Rc` into an operation body would make
 ///    two call sites of one `@[simp]` rule write those cells over each other.
 ///    `reparented_from` allocates, so every fire gets its own nodes.
@@ -1736,7 +1736,7 @@ fn try_expand_macro(
         // it did not build — and that argument is very often ALREADY `Synthesized`, since
         // the `@[simp]` engine rewrites children before parents. Re-parenting it would copy
         // it into a fresh `Rc` that claims to be an expansion of the template CONTAINING
-        // it, and would drop `resolved_type_args` / `lowered_receiver` — and `None` there
+        // it, and would drop `op_dicts` / `lowered_receiver` — and `None` there
         // is not "unknown" but "no dot was ever typed here", a distinction those writes are
         // unconditional in order to keep.
         Ok(Value::Node(result)) => {
