@@ -130,6 +130,16 @@
 -- The specs' DEFAULT bodies (`size`, `foldLeft`, `isEmpty`, `find`, …) reach this sort's
 -- `collect` / `iterator` by VALUE, and a value carries no `O`. Neither reads it, so they
 -- run; an operation here that compares must stay reachable only through a TYPED call.
+--
+-- WHY THAT IS A CONSTRAINT AND NOT AN ACCIDENT: a default body written in a SPEC redispatches
+-- its member on the abstract carrier `C`, so the bridge re-resolves the chain from the
+-- argument VALUES and the slot's goal is SEARCHED rather than read back — which would
+-- re-decide a question the construction site already decided, and is therefore REFUSED
+-- (`NamedSlotNotCarried`), not answered. Whether a dictionary may instead RIDE IN the value
+-- is WI-20260921-R10KC, open and language-wide; it is not blocked on type safety
+-- (`std::set<T, Compare>` keeps the parameter and a stored instance at once) but on
+-- representation and reach — `tip` is nullary, `bin` IS the set with no root wrapper, `eq`
+-- here is extensional, the discrimination tree indexes structure, and SMT terms are data.
 enum anthill.prelude.SortedSet
   import anthill.prelude.{WeakOrd, PartialEq, Eq, List, Int64, Bool, Stream, Iterable,
                           FiniteCollection, PersistentCollection}
@@ -185,13 +195,19 @@ enum anthill.prelude.SortedSet
   -- reads it. Ascending under `O` in order, no two elements in one class — the invariant
   -- every producer below maintains.
   --
-  -- THE CONSTRUCTORS ARE REACHABLE AND `n` IS NOT DERIVED, which is a hole a comment
-  -- cannot close: §8.6 leaks an enum's constructors, so `bin(n: 99, elem: 1, left: tip(),
-  -- right: tip())` is writable from outside and makes `size` lie and every balance
-  -- decision read a false weight. The list this replaced was forgeable the same way (an
-  -- unsorted `items`), and deriving `n` instead of storing it would cost `size` and each
-  -- balance test their O(1). What would actually close it is a visibility on the
-  -- constructors — `internal entity` — which the language does not have today.
+  -- THE CONSTRUCTORS ARE REACHABLE AND `n` IS NOT DERIVED: §8.6 leaks an enum's
+  -- constructors, so `bin(n: 99, elem: 1, left: tip(), right: tip())` is writable from
+  -- outside and makes `size` lie and every balance decision read a false weight. The list
+  -- this replaced was forgeable the same way (an unsorted `items`), and deriving `n`
+  -- instead of storing it would cost `size` and each balance test their O(1).
+  --
+  -- THE GATE EXISTS — an earlier version of this comment said it did not, and that was
+  -- STALE. `internal entity` is the language's only hide gate (§8.6, WI-20260914-Z73FX),
+  -- and it is MEASURED to close exactly this: marking the two constructors `internal`
+  -- refuses `bin(n: 99, …)` from a sibling sort at LOAD, while the sort's own operations
+  -- keep matching on them. What is missing is the DECISION, not the mechanism, and it is
+  -- not free: it is visible in the surface, since it also forbids an outside `match` on a
+  -- set's shape, which is the same reach a `case bin(…)` in a consumer relies on.
   entity tip
   entity bin(n: Int64, elem: T, left: SortedSet[T = T, O = O], right: SortedSet[T = T, O = O])
 

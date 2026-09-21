@@ -1108,3 +1108,76 @@ hang one dictionary on), `eq` is extensional and would have to exclude the field
 discrimination tree indexes structure, and SMT terms are data. `anthill.realization.runtime.
 Dictionary` is already a first-class value (`alloc_dictionary`), so the carrier exists; what
 does not exist is a decision to put one in a carrier's fields.
+
+## §33 — WI-456: the comparator in a dictionary the caller already holds (DELIVERED 2026-09-21)
+
+§32 closed (b) and left one sentence standing: *"a site that can write NEITHER a type NOR a
+bracket"*. Measured, that sentence covered **three shapes**, not one, and conflating them
+would have sent a follow-on at the wrong target.
+
+**STRATEGY 2B — the shape that turned out to be an unreached projection.** A caller holding
+`PersistentCollection[C = SortedSet[T = E, O = OE], Element = E]` **already holds** the
+comparator. `dict_layout` lays a `spec != provider` dictionary out as the spec half and then
+the **provider** half (`provider_dict_entries(provider, Some(spec))`, which prefixes the
+provider's own sort-level `requires`), so `SortedSet`'s `requires O` is the first entry of
+that second half. Strategy 2 searches `direct_requires_chain` of the **spec** — the first
+half only — so such a body loaded clean and died `Internal(DeferToRequirement: __req_weakord
+not bound … frame binds [])` with the answer one `requirement_at_sort` step inside a slot the
+frame did hold. `provider_half_projection` reads it at `DictLayout::spec_len() + k`, and the
+program runs: `zz` under `ByLength`, `aaa` under `Alphabetical`, through one polymorphic body
+that names no comparator.
+
+**A SECOND PASS, NOT INTERLEAVED.** Run per slot, the search order would be `slot0.spec →
+slot0.provider → slot1.spec`, so a dep that slot 1's *spec* half covers would be taken from
+slot 0's *provider* half instead — silently changing which real dictionary is forwarded, in a
+function whose own Strategy 1 comment calls blind first-match "a soundness bug (wrong runtime
+dispatch)". Every spec half is searched before any provider half.
+
+**THE GATE IS THE WHOLE SOUNDNESS.** A wrong index here is the WI-869 failure — a real
+dictionary read from the wrong slot, which resolves and computes a wrong answer, and which
+`check_against_prediction` cannot catch because that guards a dictionary's *construction* and
+this is a *read*. Three things pin it: the offset comes from `DictLayout::spec_len`, the
+file's single owner of the split; the search runs over the very list the producer bundles
+into that half, so index `k` means the same thing at both ends; and
+`carrier_is_its_own_sole_provider` gates it. The first draft used
+`carrier_has_provision_row`, which answers `true` for a **witness** by design — its own doc
+says both provenances count — and that shipped a measured wrong-slot read: a program
+**answered 99** (the witness's own requirement) where refusal was correct. `spec == carrier`
+is declined outright, because `dict_layout` folds both halves there and no index computed
+from it would be one this can justify.
+
+**AND THE SILENT `Ok(None)` BESIDE IT.** `build_dispatching_dict_from_chain`'s
+`require_complete` arm explained four reasons a dep fails to project (WI-841 / 828 / 945 /
+1102) and took a silent no-dict for everything else — *"eval will inherit or value-direct"*,
+defensible for a same-sort call and **no answer at all** for a cross-sort one whose caller
+declares nothing. It is now a **parked** `no_scope_route` refusal, decided against the
+**callee's body** (`UnsuppliableRequirement` / `op_body_reads_sort_requirement_slot`). That
+distinction is not a nicety: `SortedSet.collect` reaches this very site on the very programs
+where `SortedSet.insert` must not, because `collect`'s body reads no ordering. It yields to
+`ProvisionConditionOutOfScope` (proposal 066 §7.4), whose message names both operations and a
+repair this one cannot — the single workspace regression the refusal caused, and the reason
+the least-specific signature yields rather than wins.
+
+**THE TWO-CHECKS-DISAGREE DEFECT, ONE COORDINATE OVER.** `construction_carries_repair`: an
+op-scoped tie's account already ends in `tie_repair_advice`, and render's `None` arm appended
+a contradicting second repair — §32's defect, on the third route. Gated on `unconstrained`
+being empty so the arm the generic repair exists for is not silenced. **Not driven by a
+test** and said so at the site: three fixtures were tried and each loads clean, all answered
+by rung 2a first.
+
+**BACK-OUTS RUN**: the park → 4 red; the tail advice alone → 1; Strategy 2b → 1; its gate →
+1, and the program then answers 99 instead of refusing. Complementary to
+WI-20260920-XSVCS, measured on the merged tree — backing this out with XSVCS in still fails
+4; XSVCS gates the **op** half on a caller rigid, this covers the **sort-level** chain.
+
+**THE OTHER TWO SHAPES ARE TICKETS, NOT REMAINDER.** The **op-scoped slot** — the identical
+`requires OE: WeakOrd[E]` runs on the sort and is refused on the operation — is
+**WI-20260921-159S9**, whose fix direction is the *entry* side, because composing the caller
+chain and deferring on every op-scoped call were both measured and rejected at WI-822. And
+**a dictionary stored in a value** is **WI-20260921-R10KC**: it inverts
+`a_default_body_reading_the_slot_by_value_is_refused_naming_it` rather than adding a test,
+and it is not a type-safety question — `std::set<T, Compare>` keeps the type parameter and a
+stored instance at once — but a representation-and-reach one (where it lives, extensional
+`eq`, the discrimination tree, SMT, codegen). It has **no instance in the stdlib**: `find` /
+`exists` take a user predicate, `size` / `foldLeft` walk the iterator, and `collect` /
+`iterator` read no `O`, which is why the provided surface runs.
