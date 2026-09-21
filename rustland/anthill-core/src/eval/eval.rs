@@ -18,7 +18,7 @@ use crate::kb::resolve::PositionalPlan;
 use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::KnowledgeBase;
 
-use super::closure::{Closure, ClosureTypeArgs};
+use super::closure::Closure;
 use super::error::EvalError;
 use super::frame::{AwaitState, ChildFrameContext, Frame, FrameTypeArgs};
 use super::pattern::{constructor_pattern_name, match_pattern};
@@ -238,27 +238,19 @@ impl Interpreter {
                 named_args,
             } => {
                 if pos_args.is_empty() && named_args.is_empty() {
-                    // WI-708 — a bare head that names the enclosing operation's TYPE
-                    // PARAMETER reads its CALL-SITE BINDING off the frame's type-arg
-                    // channel (WI-272). A type parameter denotes a type value like any
-                    // other nominal head (proposal 055 §2), but the type it denotes is
-                    // the caller's, so the frame is asked before the head is taken at
-                    // face value. MEASURED: without this, `operation ty[T]() -> Type =
-                    // Cell[V = T]` evaluated to a dangling `Cell[V = Ref(T)]` — the exact
-                    // regression `wi708_body_type_arg_read_test` pins, and the reason a
-                    // type parameter cannot simply be `Ref(sym)` here.
+                    // WI-20260919-N31XX — THE READ IS NOT SERVED HERE ANY MORE. Under
+                    // proposal 065 §1 a value-position read of a rigid is lowered by the
+                    // typer into `TypeValue[T = B].type_value()`, a dispatch through the
+                    // requirement slot, so a type parameter never reaches this arm from
+                    // checked source: it is either lowered, or refused at load for having
+                    // no clause to lower against.
                     //
-                    // The lookup is by SYMBOL, so it can only ever hit a declared type
-                    // parameter of the frame being evaluated; a genuine sort head is
-                    // never a key in that channel and falls straight through.
-                    if let Some(bound) = self
-                        .stack
-                        .top()
-                        .and_then(|f| find_type_arg(&f.type_args, *head))
-                    {
-                        self.refuse_ungrounded_channel_value(bound)?;
-                        return Ok(StepOutcome::Deliver(Value::term(bound)));
-                    }
+                    // WHAT REACHED HERE BEFORE was the WI-272/708 frame type-argument
+                    // channel — `find_type_arg(&f.type_args, *head)`. It is gone; see
+                    // that removal for the measurement.
+                    //
+                    // THE REFUSAL STAYS as the backstop for a KB built without the typer
+                    // (`run_typer: false`), over which no load rule has passed.
                     self.refuse_unbound_type_param(*head)?;
                     let tid = self.kb.alloc(crate::kb::term::Term::Ref(*head));
                     Ok(StepOutcome::Deliver(Value::term(tid)))
@@ -573,7 +565,6 @@ impl Interpreter {
                     // WI-1045: no conversion — the dictionary IS this value.
                     find_requirement(&top.requirements, sym).map(|d| d.as_value().clone())
                 })
-                .or_else(|| find_type_arg(&top.type_args, sym).map(Value::term))
         };
         if let Some(Value::Term { id, .. }) = &bound {
             self.refuse_ungrounded_channel_value(*id)?;
@@ -1155,21 +1146,16 @@ impl Interpreter {
             .top()
             .map(|f| f.requirements.iter().cloned().collect())
             .unwrap_or_default();
-        // Snapshot the enclosing frame's type_args alongside (WI-272)
-        // — same lexical-capture rule. Both channels share the
-        // "lambda inherits its creation scope" convention from
-        // §"Closures" of operation-call-model.md.
-        let type_args: ClosureTypeArgs = self
-            .stack
-            .top()
-            .map(|f| f.type_args.iter().cloned().collect())
-            .unwrap_or_default();
+        // WI-20260919-N31XX — NO TYPE-ARGUMENT SNAPSHOT. A lambda used to capture the
+        // creating frame's type-argument channel so a body read of an enclosing `T`
+        // resolved at invocation. Since proposal 065 §1 that read is a dispatch through a
+        // requirement slot, and `requirements` above is the channel that carries it.
+        // MEASURED before removing: with the snapshot emptied, `wi_tests` is 4824/4824.
         let handle = self.closures.alloc(Closure {
             param_pattern: param,
             body,
             env,
             requirements,
-            type_args,
         });
         Ok(StepOutcome::Deliver(Value::Closure(handle)))
     }
@@ -3503,7 +3489,6 @@ impl Interpreter {
             body: Rc::clone(body),
             env: SmallVec::new(),
             requirements: SmallVec::new(),
-            type_args: SmallVec::new(),
         });
         Value::Closure(handle)
     }
@@ -3522,12 +3507,14 @@ impl Interpreter {
         // inline size 1 (most lambdas need 0–1 reqs/type-args), the
         // frame-side has 2; collect across the size boundary. Single
         // arena borrow grabs param/body/both channels at once.
-        let (param_pattern, body, requirements, type_args) = self.closures.with(&handle, |c| {
+        let (param_pattern, body, requirements) = self.closures.with(&handle, |c| {
             let reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
                 c.requirements.iter().cloned().collect();
-            let ta: FrameTypeArgs = c.type_args.iter().cloned().collect();
-            (c.param_pattern.clone(), c.body.clone(), reqs, ta)
+            (c.param_pattern.clone(), c.body.clone(), reqs)
         });
+        // WI-20260919-N31XX — and NO type-argument channel is restored; see the lambda's
+        // construction site for why the snapshot is gone.
+        let type_args = FrameTypeArgs::new();
         let arg = Self::gather_closure_arg(&param_pattern, args)?;
         let bindings = match match_pattern(self, &param_pattern, &arg) {
             Some(b) => b,
