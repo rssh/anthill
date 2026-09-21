@@ -98,7 +98,7 @@ Tagged sequence `modinst`; WI-648 is the umbrella.
 | — | phase 7's three spin-offs: per-clause `provides … :- goals` — ✅ **WI-869** (`wi869_per_provision_conditions_test`), see §16; the bracket-value slot binding — ✅ **WI-870** (`wi870_bracket_value_slot_test`), see §18; the componentwise-provider slot defect (**WI-871**) — open, independent of the 8x chain |
 | 8d | an omitted NAMED slot inferred INTO THE TYPE, and the ERASED one refused (§26's bound) | ✅ **WI-1094** (`wi1094_named_slot_inference_test`) — see §27 |
 | — | selection on the OP-SCOPED route (§4.5's bracket reaching an operation's own `requires`) | ✅ **WI-1091** (`wi841_call_site_selection_test::an_op_scoped_selection_decides_and_the_value_shows_it`) — see §28 |
-| deferred | named instance facts; implicit scoped selection; the general existential (WI-402); `Coherent` rows + `coherent sort` sugar; `within:`; `NoDefault` | — |
+| deferred | named instance facts; implicit scoped selection; the general existential (NOT WI-402 — that is delivered and covers `ensures Spec[C]`, the RETURN position; the general one has no ticket); `Coherent` rows + `coherent sort` sugar; `within:`; `NoDefault` | — |
 | — | **the umbrella closes** | ✅ **WI-648** — every row above Delivered, **295** tests over the 21 sequence files green (311 with `wi817`'s, which hold the acceptance program), and the `scaland` grammar residue closed with it — WI-862's `default` modifier AND the in-block `provides` clause the shipped stl needs. See §31 |
 
 **The standing lesson** (earned three times before delivery, once after): a design that moves an error — or asserts a mechanism already runs — must enumerate the consumers of the thing it moves and check each still has a site to complain from and a check that fires there. Rung 2a's flip inventory (§3) is written before implementation for exactly this reason.
@@ -1091,7 +1091,20 @@ slot's NAME **and the spelling in ONE message** — two `any()`s over the error 
 satisfied by two different errors while no single one carried the whole repair. The new
 wi456 arms follow the same rule.
 
-**WHAT (b) DOES NOT CLOSE, and it is the ticket's own recorded remainder**: a site that can
-write neither a type nor a bracket — a spec DEFAULT body reaching an ordering-reading
-operation by VALUE. No dictionary travels with a value (WI-402), and closing it needs
-WI-1093's measured eval defect, not a new mechanism.
+**WHAT (b) DOES NOT CLOSE**: a site that can write neither a type nor a bracket — a spec
+DEFAULT body reaching an ordering-reading operation by VALUE. The refusal is real and
+measured (`NamedSlotNotCarried`): a value names its sort and carries none of its type
+parameters, so the bridge re-resolves the chain from the argument values and the slot's
+goal is SEARCHED rather than read back.
+
+**ITS ATTRIBUTION WAS WRONG AND IS CORRECTED HERE.** This ticket's earlier notes — and the
+first draft of this section — blamed WI-402 ("no dictionary travels with a value") and
+WI-1093. **Both are Delivered**, and WI-402 is not even that question: it is `ensures
+Spec[C]`, a dictionary flowing OUT of an operation's RETURN. Storing a dictionary in a
+DATUM is a different thing, and it has no ticket. Nor is it blocked on type safety — a
+type parameter and a stored witness coexist in `std::set<T, Compare>` — so what stands in
+the way here is representation and reach: `tip` is nullary, `bin` IS the set (no root to
+hang one dictionary on), `eq` is extensional and would have to exclude the field, the
+discrimination tree indexes structure, and SMT terms are data. `anthill.realization.runtime.
+Dictionary` is already a first-class value (`alloc_dictionary`), so the carrier exists; what
+does not exist is a decision to put one in a carrier's fields.

@@ -55,8 +55,10 @@
 -- from one already chosen during typing. "Runtime choice" means which statically
 -- pinned branch executed — ordinary universal polymorphism, the `report[T, O]` form
 -- above. A HETEROGENEOUS collection of differently-ordered sets
--- (`List[T = SortedSet[T = String, O = ?]]`) is the general existential question
--- (WI-402), neither needed nor foreclosed here.
+-- (`List[T = SortedSet[T = String, O = ?]]`) is the general existential question,
+-- neither needed nor foreclosed here. NOT WI-402, which is delivered and covers the
+-- RETURN position only (`ensures Spec[C]`, a dictionary flowing out of an operation);
+-- an existential in a TYPE-ARGUMENT position has no ticket.
 --
 -- ── ONE CAVEAT, AND IT IS NOT THIS FILE'S (WI-857) ───────────────────────────────
 --

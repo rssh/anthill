@@ -834,7 +834,8 @@ leaves a sort's parameters implicit where they are in scope and allows a PARTIAL
 Scala has no bare type constructor in this position"*. For a partial *named* binding Scala does have
 one — `SortedSet[String, ?]` — so the refusal is stricter than it needs to be here. It is not
 narrowed in this section because the rule spans every multi-parameter sort, not the named slots, and
-the wildcard's meaning is the existential question `sortedset.anthill` itself defers (WI-402).
+the wildcard's meaning is the existential question `sortedset.anthill` itself defers (in a
+TYPE-ARGUMENT position, which is not WI-402's delivered `ensures Spec[C]` return form).
 Nothing in the corpus writes a partial application (they are all refused, so nothing can), and every
 occurrence in `sortedset.anthill` writes both slots.
 
