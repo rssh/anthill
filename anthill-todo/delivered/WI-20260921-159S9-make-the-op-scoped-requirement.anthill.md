@@ -3,9 +3,9 @@
 - id: WI-20260921-159S9-make-the-op-scoped-requirement
 - created: 2026-09-21T14:58:46Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-21T14:58:46Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-21T16:54:41Z
 
 - acceptance: cargo-test
 
@@ -38,4 +38,34 @@ WHAT 28TAT LEFT IN PLACE that bears on the acceptance here. Op-level evidence is
 ALSO FROM 28TAT, and it is the reason the priority note in the description is now literal rather than anticipated: the frame type-argument channel IS GONE (commit on `main`), so the requirement channel is the only channel. `Error.reify` is the first operation whose op-level `requires` is load-bearing at run time — the reify boundary reads its payload sort out of that dictionary — and an unsupplied slot there is a LOAD ERROR rather than a silent widening (`native_backing_reads_slots`: body-less is not "reads nothing" when the backing is the interpreter).
 
 SUPERSEDES WI-20260921-6JP6N, filed by me before I saw this ticket and rejected as a duplicate: it scoped the same defect at the call site, which is the framing this ticket already argues against.
+
+### 2026-09-21T16:54:36Z — feedback — claude
+
+DELIVERED. Both spellings run: `operation ins[E, OE](s: SortedSet[T = E, O = OE], x: E) requires OE: WeakOrd[E]` prints zz and answers aaa under O = Alphabetical — one polymorphic body, two orderings, two answers.
+
+TWO HALVES, in the order the ticket prescribed.
+
+1. EVAL, the entry side. `Interpreter::fill_missing_op_scoped_slots`, called from `enter_operation` — the last point every body-entry route passes. It fills whatever op-scoped slots the entering route left unbound, resolving them from the ARGUMENT VALUES via `resolve_bridge_requirements`, the same resolver the host entry and value-direction already use.
+
+2. TYPER, one line. `build_concrete_dispatch_dict`'s caller chain at the cross-sort site is now `env.enclosing_frame_chain()` unconditionally, where it was `enclosing_dict_chain()` widened for two special cases.
+
+WHAT THE TREE HAD ALREADY MOVED. The ticket names four unfilled routes; THREE had closed since it was written. WI-1091 gave the host entry `seed_entry_op_requirements` and the eta `push_captured_op_scoped_slots`, and `requirements_for_value_directed_impl` already read the composed chain. Only the DEFERRED route was still empty — which is what the 28TAT feedback note predicted, and why the fix is at entry rather than at the call site (a defer-arm stamp is keyed to the SPEC's chain while the impl is chosen at run time; `push_op_scoped_slots`' `built_for != target` guard refuses it).
+
+THE 30-TEST MEASUREMENT DID NOT APPLY. It belongs to `enclosing_requires()` — whether a call DEFERS instead of being value-directed — which is untouched. The dictionary builder is a different question, and widening it ALONE measured 4841 passed / 2 failed, both failures being the two rows that pinned the old decision.
+
+BOTH PINS RE-DERIVED, NOT RE-POINTED.
+ * `wi456 an_op_scoped_slot_is_refused_for_now` -> `an_op_scoped_slot_is_a_working_spelling`, a VALUE assertion over both orderings.
+ * `wi822 the_instance_dictionary_channel_never_forwards_an_op_slot` -> `..._forwards_an_op_slot`, driven to 1 and 12 rather than to a load verdict. Its attribution argument is SUPERSEDED rather than contradicted: the premise was "a slot no route ever gives it", WI-1091 gave it, and the program now runs — so there is no failure left to attribute.
+
+TWO SPECIAL CASES SUBSUMED. The unconditional widening made the old `!serves` arm and WI-20260919-N31XX's `TypeValue` arm redundant; `callee_chain_reads_type_value` is removed as unread. Their 15 drivers (wi_1z3e7 + 14 wi_r541x) pass on the general rule, which is the evidence that it is general.
+
+BACK-OUT MATRIX, MEASURED on wi_tests' 4847 rows, not reasoned:
+ * eval gate alone out -> 1 failure, `a_deferred_dispatch_fills_the_targets_op_scoped_slot`, and exactly that row.
+ * typer half alone out -> 20 failures: 5 this ticket's, 15 the subsumed special cases'.
+
+FOUND BY /code-review AND FIXED IN THE PASS: the gate's catch-all arm swallowed `BridgeRequirements::Ambiguous`, entering unsupplied on a provider tie where both sibling routes raise. Now raises `EvalError::AmbiguousRequirement`, scoped to the slots this gate supplies so a sort-half tie cannot fail a call that used to run.
+
+ALSO: the refusal's tail said "a slot declared on the OPERATION does not reach this call", which is now false — corrected to name both spellings, both genuine repairs. `docs/kernel-language.md` §5.3 already asserted that which declaration carries the clause "changes nothing an author can observe"; the implementation was the lagging side. Added the forward rule and the four-route ENTRY invariant that makes it sound.
+
+ACCEPTANCE MET: (B) runs and answers zz/aaa; both pins inverted and re-derived; `op_scoped_relay_chain_correct_via_value_direction` still computes 551; full workspace 7248 passed, 0 failed. scaland has no requirement channel, so nothing to port.
 

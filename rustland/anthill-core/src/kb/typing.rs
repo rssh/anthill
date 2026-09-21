@@ -2463,27 +2463,41 @@ pub struct TypingEnv {
     /// consulted at every spec-op call site under this body; caching it here avoids
     /// re-walking `SortRequiresInfo` per apply.
     ///
-    /// WI-822 LEG 1 — STILL THE SORT'S ALONE, and every reader of it stays as it was.
-    /// This is the chain a spec INSTANCE dictionary is built and forwarded against
-    /// (`build_concrete_dispatch_dict`, `emit_tree_as_projection`, the `FromScope`
-    /// indices `resolve_inner` hands back), and that channel is read STRICTLY at eval:
-    /// a `var_ref` in it must resolve or the dispatch has no target. The operation's
-    /// own slots are not evidence that channel may forward, because several routes
-    /// into an operation legitimately fill none of them (a host `interp.call`, an eta'd
-    /// `OpRef`) — forwarding one there would turn WI-828's LOAD-time
-    /// `UnsatisfiableRequirement` into an eval-time unbound `var_ref`, which is the
-    /// exact move WI-828 exists to prevent.
+    /// THE SORT HALF. It is still exactly that — a SORT's chain — but since
+    /// WI-20260921-159S9 it is no longer what the INSTANCE-DICTIONARY builders are
+    /// handed: `check_apply_iter`'s cross-sort site passes
+    /// [`Self::enclosing_frame_chain`], so a slot declared on the OPERATION carries a
+    /// forwarded dictionary exactly as one declared on the sort does.
+    ///
+    /// WI-822 LEG 1 narrowed that read to this field and the narrowing was load-bearing
+    /// while it stood: the instance channel is consulted STRICTLY at eval — a `var_ref`
+    /// in it must resolve or the dispatch has no target — and four routes into an
+    /// operation filled no op slot, so forwarding one turned WI-828's LOAD-time
+    /// `UnsatisfiableRequirement` into an eval-time unbound `var_ref`. All four now
+    /// fill: a host `interp.call` (WI-1091 `seed_entry_op_requirements`), an eta'd
+    /// `OpRef` (`push_captured_op_scoped_slots`), value-directed dispatch (which reads
+    /// the composed chain), and the DEFERRED route (159S9's
+    /// `Interpreter::fill_missing_op_scoped_slots`, at `enter_operation`). The premise
+    /// went away before the narrowing did.
+    ///
+    /// WHAT STILL READS THIS FIELD ALONE is [`Self::enclosing_requires`] — the DEFER
+    /// decision, "is this call served by a frame slot or by value-direction" — and that
+    /// one is untouched. Widening IT was measured at 30 failures across
+    /// wi842/wi843/wi855/wi876/wi886/wi869, and the two questions stay separate: which
+    /// chain a dictionary PROJECTS FROM is not which channel a call DISPATCHES THROUGH.
     enclosing_chain: DictChain,
     /// WI-822 LEG 1 — the FRAME chain of the body being checked: [`Self::enclosing_chain`]
     /// followed by the enclosing OPERATION's own op-scoped slots ([`op_dict_entries`]).
     /// `None` for the operations that write no `requires` of their own, which is nearly
     /// all of them, and where it would be the same value.
     ///
-    /// Two readers, both of which are about the OPERATION's own channel and neither of
-    /// which is the instance dictionary: [`op_scoped_defer_location`] (which slot a body
-    /// call defers to) and [`build_op_scoped_dicts`]' caller chain (what a callee's op
-    /// slot may forward FROM — the caller's own op slots included, which is how an
-    /// op-scoped requirement relays hop to hop).
+    /// THREE readers since WI-20260921-159S9, the third being the one the other two
+    /// were once defined against: [`op_scoped_defer_location`] (which slot a body call
+    /// defers to), [`build_op_scoped_dicts`]' caller chain (what a callee's op slot may
+    /// forward FROM — the caller's own op slots included, which is how an op-scoped
+    /// requirement relays hop to hop), and now `check_apply_iter`'s cross-sort
+    /// INSTANCE-DICTIONARY build. This doc used to say the instance dictionary must not
+    /// be a reader; see [`Self::enclosing_chain`] for the premise that changed.
     enclosing_op_chain: Option<DictChain>,
     /// WI-562: the enclosing OPERATION's own op-scoped `requires` chain (WI-448),
     /// snapshotted for the body about to be checked. Consulted (before provider
@@ -2853,18 +2867,27 @@ impl TypingEnv {
         self.enclosing_chain.entries()
     }
 
-    /// WI-1033 — the enclosing SORT's chain AS A [`DictChain`], for the INSTANCE
-    /// dictionary builders. They index it by slot and name those slots, and taking the
-    /// two from one value is what keeps them from drifting; every other reader wants
-    /// only the entries and goes through [`Self::enclosing_requires`].
+    /// WI-1033 — the enclosing SORT's chain AS A [`DictChain`]. A chain's slot INDICES
+    /// and its slot NAMES must come from one value or they drift, which is why a reader
+    /// that needs both takes this rather than [`Self::enclosing_requires`]'s entries.
+    ///
+    /// WI-20260921-159S9 — NO LONGER THE INSTANCE-DICTIONARY BUILDERS' CHAIN. They take
+    /// [`Self::enclosing_frame_chain`] now, so an op-scoped slot forwards a dictionary
+    /// too; this remains the SORT half for the readers that genuinely mean the sort's
+    /// own — the eta same-sort test, the `__req_self` capture, and `serves`.
     fn enclosing_dict_chain(&self) -> &DictChain {
         &self.enclosing_chain
     }
 
     /// WI-822 LEG 1 — the enclosing OPERATION's frame chain: the sort's slots then its
     /// own. Identical to [`Self::enclosing_dict_chain`] for an operation that writes no
-    /// `requires`. See the `enclosing_op_chain` field for which two readers want it and
-    /// why the instance-dictionary builders must NOT.
+    /// `requires`, which is nearly all of them.
+    ///
+    /// WI-20260921-159S9 — **AND THIS IS NOW THE INSTANCE-DICTIONARY BUILDERS' CHAIN
+    /// TOO.** The `enclosing_op_chain` field doc used to name two readers and say the
+    /// builders must NOT be a third; that restriction is lifted, and the field doc on
+    /// [`Self::enclosing_chain`] records what replaced its premise. The DEFER decision
+    /// ([`Self::enclosing_requires`]) is still the sort half and is a different question.
     fn enclosing_frame_chain(&self) -> &DictChain {
         self.enclosing_op_chain
             .as_ref()
@@ -21473,54 +21496,57 @@ fn check_apply_iter(
                             env.enclosing_dict_chain(),
                             callee_frame_key(kb, fn_sym),
                         );
-                    // WI-20260919-N31XX — AND A CROSS-SORT CALL FROM A FREE OPERATION
-                    // TAKES THE WHOLE FRAME **FOR A `TypeValue` DEP**.
+                    // WI-20260921-159S9 — **THE WHOLE FRAME, UNCONDITIONALLY: a slot
+                    // declared on the OPERATION is as good as one declared on its SORT.**
                     //
-                    // The gap: a free operation has no enclosing sort, so the branch
-                    // hands `build_concrete_dispatch_dict` an EMPTY chain, and
-                    // `require_complete` drops the whole dictionary the moment the
-                    // callee's own sort-level dep needs forwarding. MEASURED —
-                    // `operation g[P](x: P) requires TypeValue[T = P] = Err2.tagOf(x)`
-                    // built NO dictionary, so `Err2.tagOf` ran with an empty requirements
-                    // frame and the slot read in its body died `Internal`. Five
-                    // `wi_r541x_body_read_of_type_param_test` rows.
+                    // This read used to be the SORT half, widened for two special cases
+                    // (`!serves`, and WI-20260919-N31XX's `TypeValue` dep out of a free
+                    // operation). The narrowing was WI-822 LEG 1's central decision and
+                    // it had a real reason: this channel is read STRICTLY at eval, so
+                    // projecting from a slot no route fills turns WI-828's load-time
+                    // refusal into an eval-time unbound `var_ref`. Four routes into an
+                    // operation filled none.
                     //
-                    // KEYED ON THE CALLEE'S CHAIN NAMING `TypeValue`, and the narrowness
-                    // is a deliberately pinned invariant and not caution.
-                    // `wi822_op_scoped_supply_test::the_instance_dictionary_channel_never_
-                    // forwards_an_op_slot` says the instance-dictionary builders read the
-                    // SORT half on purpose: that channel is read strictly at eval, and
-                    // several routes into an operation fill NO op slot — entry from the
-                    // HOST seeds none. Its own measurement is that the composed chain
-                    // does not make that program work, it only MIS-ATTRIBUTES the failure
-                    // to the caller. Widening unconditionally flips that row.
+                    // THREE OF THE FOUR HAVE SINCE CLOSED, and the fourth closes with
+                    // this change: a HOST entry seeds the op half from the argument
+                    // values (WI-1091 `seed_entry_op_requirements`), an eta'd `OpRef`
+                    // carries its slots captured (`push_captured_op_scoped_slots`),
+                    // value-directed dispatch already resolves the COMPOSED chain, and
+                    // `Interpreter::fill_missing_op_scoped_slots` now fills whatever the
+                    // entering route left unbound — which is what the DEFERRED route
+                    // left. So the premise the narrowing rested on no longer holds.
                     //
-                    // WHY `TypeValue` MAY WIDEN WHERE `Desc` MAY NOT: since 065 the
-                    // caller of an operation that needs this evidence must DECLARE it —
-                    // the forward half of the rule refuses a caller that does not — so
-                    // any anthill call route fills the slot before the forward is read.
-                    // Host entry remains the hole WI-822 names, unchanged and no worse
-                    // for `TypeValue` than for every other op-scoped requirement.
+                    // MEASURED, both halves, on this tree:
+                    //  * the widening ALONE — 4841 passed, 2 failed, and both failures
+                    //    are the two rows that pin the old decision
+                    //    (`wi456 an_op_scoped_slot_is_refused_for_now`, `wi822
+                    //    the_instance_dictionary_channel_never_forwards_an_op_slot`).
+                    //    The 30-test breakage WI-822 recorded is NOT this read: it
+                    //    belongs to `enclosing_requires()`, which decides whether a call
+                    //    DEFERS instead of being value-directed, and is untouched here.
+                    //  * `wi822`'s own fixture, which that row asserts is refused, now
+                    //    LOADS AND RUNS and computes 1 and 12 — so the "composing only
+                    //    mis-attributes the failure" measurement is superseded rather
+                    //    than contradicted: there is no longer a failure to attribute.
+                    //  * the widening WITHOUT the eval gate is a genuine regression, and
+                    //    that is why the two land together: a deferred call to an
+                    //    override repeating its spec's op-scoped clause loaded clean and
+                    //    died `var_ref(__req_desc) unbound`. Backing the gate out fails
+                    //    `wi_159s9_op_scoped_entry_test::a_deferred_dispatch_fills_the_
+                    //    targets_op_scoped_slot`, and exactly that row.
+                    //  * backing THIS line out fails 20 rows, five of them this ticket's
+                    //    and FIFTEEN belonging to the two special cases the unconditional
+                    //    form subsumed — `wi_1z3e7`'s helper row (the old `!serves` arm)
+                    //    and all fourteen `wi_r541x_body_read_of_type_param_test` rows
+                    //    (N31XX's `TypeValue` arm, whose gate `callee_chain_reads_type_-
+                    //    value` this ticket deleted as unread). They pass on the general
+                    //    rule, which is what says it is general.
                     //
-                    // STRICTLY ADDITIVE otherwise: a non-empty sort chain, a same-sort
-                    // call, or a callee whose chain never names `TypeValue` all behave
-                    // exactly as before, so no call that builds a dictionary today builds
-                    // a different one.
-                    //
-                    // A SEPARATE CONDITION, NOT A REDEFINITION OF `serves`, because
-                    // `serves` also gates the proposal 066 §7.4 refusal below: flipping
-                    // it turned 59 unit tests red with `PartialOrd.lt` refused "its
-                    // evidence is a condition of `provides … where … end`", a diagnostic
-                    // aimed at calls it was never about. Only the CHAIN moves here.
-                    let whole_frame = !serves
-                        || (enclosing_sort != Some(parent_sym)
-                            && env.enclosing_dict_chain().entries().is_empty()
-                            && callee_chain_reads_type_value(kb, parent_sym, callee_provision));
-                    let caller_requires = if whole_frame {
-                        env.enclosing_frame_chain().clone()
-                    } else {
-                        env.enclosing_dict_chain().clone()
-                    };
+                    // `serves` STAYS, because it also gates the proposal 066 §7.4 refusal
+                    // below — flipping that turned 59 unit tests red with `PartialOrd.lt`
+                    // refused by a diagnostic aimed at calls it was never about. Only the
+                    // CHAIN moved.
+                    let caller_requires = env.enclosing_frame_chain().clone();
                     // WI-828: a σ-refused requirement is a LOAD diagnostic —
                     // classifying `dispatch_dict: None` here loaded clean and
                     // died at eval reading the unbound `__req_*`.
@@ -24284,19 +24310,26 @@ impl RequirementRefusal {
         // and here the element is already pinned — to a type parameter of their own
         // signature. What is missing is a slot to carry the dictionary for it.
         if self.no_scope_route {
-            // THE ENCLOSING SORT, and NOT "or its operation" (corrected by /code-review).
-            // An OP-SCOPED slot does not reach the instance-dictionary builder at all —
-            // that is `wi822 the_instance_dictionary_channel_never_forwards_an_op_slot`'s
-            // deliberate sort-half read — so a program that declares one is refused HERE,
-            // and advising the operation tells such an author to do the thing they already
-            // did. That is the WI-1102 failure this file warns about twenty lines up
-            // ("repeating it would send them looking for a second binding that is not
-            // missing"). The sort is the spelling that actually carries it today.
+            // EITHER SCOPE, SINCE WI-20260921-159S9 — and the tail this replaces is the
+            // reason the ticket existed. It used to end "a slot declared on the OPERATION
+            // does not reach this call", which was true of the sort-half read
+            // `build_concrete_dispatch_dict` then had, and is FALSE now that the builder
+            // reads the caller's whole frame: an author who declares the clause on the
+            // operation gets a working program.
+            //
+            // A REFUSAL MUST NOT NAME A REPAIR THAT IS NOT ONE, in either direction. The
+            // earlier correction (by /code-review) was to DROP "or its operation" for
+            // exactly that reason — advising the operation told an author to do the thing
+            // they had already done, the WI-1102 failure this file warns about ("repeating
+            // it would send them looking for a second binding that is not missing"). Both
+            // spellings carry it today, so naming both is now the accurate advice rather
+            // than the misleading one. `wi456_no_scope_route_test::the_refusal_names_the_
+            // repair_and_not_a_witness_choice` drives the text.
             msg.push_str(
                 " — nothing in the enclosing scope supplies it: declare a requirement slot \
-                 for it on the enclosing SORT (`requires <name>: <the spec above>`) and \
-                 write `<name>` where the parameter's type names that slot; a slot declared \
-                 on the OPERATION does not reach this call",
+                 for it on the enclosing SORT (`requires <name>: <the spec above>`) or on \
+                 this OPERATION, and write `<name>` where the parameter's type names that \
+                 slot",
             );
             return msg;
         }
@@ -73719,28 +73752,15 @@ fn surviving_dot_apply(
 /// WI-20260919-N31XX — `anthill.reflect.TypeValue`, or `None` in a KB loaded without
 /// the reflect stdlib. One resolution point, so the rule's readers cannot disagree about
 /// which sort they are talking about.
-/// WI-20260919-N31XX — does the callee's own sort-level chain name `TypeValue`?
-///
-/// The gate on widening the caller chain `build_concrete_dispatch_dict` is given. See
-/// that call site for why `TypeValue` may widen where another spec may not: since 065 a
-/// caller that needs this evidence must declare it, so every anthill route fills the slot
-/// before the forward is read, while `wi822_op_scoped_supply_test`'s pinned account —
-/// that the instance-dictionary channel reads the SORT half because host entry seeds no
-/// op slot — stands untouched for everything else.
-fn callee_chain_reads_type_value(
-    kb: &mut KnowledgeBase,
-    callee_sort: Symbol,
-    callee_provision: Option<Symbol>,
-) -> bool {
-    let Some(tv) = type_value_spec_sym(kb) else {
-        return false;
-    };
-    let canon = kb.canonical_sort_sym(tv);
-    provider_dict_entries(kb, callee_sort, callee_provision)
-        .entries()
-        .iter()
-        .any(|e| kb.canonical_sort_sym(e.required_sort) == canon)
-}
+// WI-20260919-N31XX's `callee_chain_reads_type_value` STOOD HERE, and
+// WI-20260921-159S9 removed it rather than leaving it unread. It gated a narrow
+// widening of the chain `build_concrete_dispatch_dict` is given — the whole frame, but
+// only for a callee whose chain names `TypeValue`, only out of a free operation, only
+// where the sort half was empty. That widening is now unconditional at the same call
+// site (a slot declared on the OPERATION is as good as one declared on its SORT), so
+// the predicate selected nothing: every call it admitted, and every call it declined,
+// takes the whole frame. `wi_r541x_body_read_of_type_param_test`'s five rows are its
+// drivers and they pass on the general rule.
 
 fn type_value_spec_sym(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol("anthill.reflect.TypeValue")

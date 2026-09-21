@@ -19,6 +19,7 @@ use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::KnowledgeBase;
 
 use super::closure::Closure;
+use super::FrameReqFailure;
 use super::error::EvalError;
 use super::frame::{AwaitState, ChildFrameContext, Frame};
 use super::pattern::{constructor_pattern_name, match_pattern};
@@ -3529,13 +3530,174 @@ impl Interpreter {
         }
     }
 
+    /// WI-20260921-159S9 — **THE LAST GATE: an operation's own OP-SCOPED slots, filled
+    /// from the ARGUMENT VALUES for whichever route did not supply them at the call
+    /// site.**
+    ///
+    /// The instance-dictionary builders now project from the caller's WHOLE frame (see
+    /// `TypingEnv::enclosing_dict_chain`), so a body that writes its own `requires` can
+    /// emit a `var_ref(__req_*)` into a dictionary it forwards. That is only sound if
+    /// EVERY route into an operation fills those slots, and before this one did not:
+    /// `start_apply_deferred` resolves its target out of a frame slot and expands the
+    /// dictionary's sort half alone, so a deferred call landed on a body whose op half
+    /// was empty.
+    ///
+    /// MEASURED, and it is the reason this function exists rather than a stamp at the
+    /// defer arms. `wi_159s9_op_scoped_entry_test::a_deferred_dispatch_fills_the_targets_
+    /// op_scoped_slot` is the driver — a spec op declaring `requires Desc[T = U]` over
+    /// its own op type param, an impl repeating the structurally identical clause (which
+    /// is the only shape §8.7's no-strengthening rule admits here), and a caller
+    /// deferring through its `requires Sp[T = UT]` slot. Without this gate it loads clean
+    /// and dies `var_ref(__req_desc) unbound in requirement position (running
+    /// `…SpLeaf.m`; frame binds ["__req_self"])`; with it, it answers 101. Backing the
+    /// gate out fails that row and, measured across `wi_tests`' 4847, exactly that row.
+    ///
+    /// WHY NOT AT THE CALL SITE: WI-20260921-28TAT measured that and recorded the
+    /// refutation in this ticket. The defer arms would have to stamp against the SPEC's
+    /// chain, but the impl is chosen at RUN time and lays out its OWN op-scoped chain;
+    /// a `TermId` built from the caller's substitution against one declaration cannot be
+    /// re-keyed onto another, and `push_op_scoped_slots`' `built_for != target` guard
+    /// fires saying so. The argument values, by contrast, are what an op-scoped
+    /// requirement ranges over — which is why this is the BRIDGE's resolution
+    /// ([`crate::kb::typing::resolve_bridge_requirements`]), shared verbatim with the
+    /// host entry ([`super::Interpreter::seed_entry_op_requirements`]) and with
+    /// value-direction ([`Self::requirements_for_value_directed_impl`]). Three routes,
+    /// one resolver.
+    ///
+    /// BEST-EFFORT, matching every other producer of this channel: a slot the arguments
+    /// cannot pin is left ABSENT and the body's own read is the judge
+    /// (`start_apply_deferred` raises naming the frame). "Has a chain" and "needs it"
+    /// are different questions and only the body answers the second — the rule measured
+    /// against the stdlib at WI-822 LEG 2 and unchanged here.
+    ///
+    /// COSTS ONE CACHED `is_empty()` on the universal path: an operation that writes no
+    /// `requires` of its own returns at the first test, off `op_requires_chain_rc`'s
+    /// per-op cache.
+    fn fill_missing_op_scoped_slots(
+        &mut self,
+        target: Symbol,
+        arg_values: &[Value],
+        requirements: &mut SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+    ) -> Result<(), EvalError> {
+        use crate::kb::typing::BridgeRequirements;
+        // The universal early-out: nearly every operation writes no `requires`.
+        if crate::kb::typing::op_requires_chain_rc(&mut self.kb, target).is_empty() {
+            return Ok(());
+        }
+        let chain = crate::kb::typing::op_dict_entries(&mut self.kb, target);
+        let sort_len = chain.sort_len();
+        let names = chain.names(&mut self.kb);
+        if sort_len >= names.len() {
+            return Ok(());
+        }
+        // Only the slots THIS route left unbound. A call site that stamped them
+        // (`push_op_scoped_slots`) supplied evidence built against the caller's own
+        // substitution, which is strictly more precise than anything the argument
+        // values can say here; re-resolving would discard it.
+        let missing: SmallVec<[Symbol; 2]> = names[sort_len..]
+            .iter()
+            .copied()
+            .filter(|n| find_requirement(requirements, *n).is_none())
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let (parent, trees) = match crate::kb::typing::resolve_bridge_requirements(
+            &mut self.kb,
+            target,
+            arg_values,
+            // As at the value-directed route, and for its reason: this gate ENTERS the
+            // frame and runs the body, so a named-slot tie is an absence the body may
+            // never read. The host entry raises instead because it is the outermost
+            // route and has no caller to attribute to; here there is one.
+            crate::kb::typing::NamedSlotTies::RecordAbsent,
+        ) {
+            BridgeRequirements::Resolved(parent, trees) => (parent, trees),
+            // A TIE IS RAISED, not entered-unsupplied — the rule both sibling routes
+            // already apply, and the one place this gate must not be merely
+            // best-effort. `BridgeRequirements::Ambiguous` is a VARIANT of its own
+            // precisely because it carries a different verdict from `Unresolvable`:
+            // "these types do not pin a dictionary" is ordinary and the body may never
+            // read the slot, whereas a tie says a dictionary IS constructible and
+            // nothing picks it. There is no legitimate "proceed unsupplied" reading of
+            // that, and deferring to the read gains nothing — the read can only report
+            // a MISSING dictionary, naming neither the tie nor the candidates.
+            //
+            // …AND ONLY WHERE THE TIED SLOT IS ONE OF THIS FUNCTION'S, exactly as
+            // `seed_entry_op_requirements` scopes it: this gate supplies the OP half
+            // alone, so a tie in the SORT half is a slot it never asked about and
+            // raising on it would fail a call that used to run. Scoped to `missing`
+            // rather than to the whole op half for the same reason one step finer — a
+            // slot the CALL SITE already supplied is not this gate's to re-decide.
+            BridgeRequirements::Ambiguous {
+                requirement,
+                candidates,
+                slot,
+            } if missing.contains(&slot) => {
+                return Err(EvalError::AmbiguousRequirement {
+                    op: self.kb.qualified_name_of(target).to_string(),
+                    requirement,
+                    candidates,
+                })
+            }
+            // Unresolvable, a tie outside this gate's half, or nothing needed: enter
+            // with the frame as the route left it. "Has a chain" and "needs it" are
+            // different questions and only the body answers the second.
+            _ => {
+                if self.trace_requirements {
+                    eprintln!(
+                        "[req] `{}`: op-scoped slot(s) NOT filled at entry — the \
+                         argument types do not pin them",
+                        self.kb.qualified_name_of(target),
+                    );
+                }
+                return Ok(());
+            }
+        };
+        let provision = crate::kb::typing::op_owner_provision(&self.kb, target);
+        let built = match self.frame_requirements_from_trees(parent, provision, &trees) {
+            Ok(b) => b,
+            // The same best-effort verdict as an unresolvable chain, and TRACED rather
+            // than dropped in silence: this gate is a RESCUE for routes that supplied
+            // nothing, so a failure to build leaves the frame exactly as the route left
+            // it rather than failing a call that used to run. The body's read stays the
+            // judge, and `ANTHILL_TRACE_REQ` ties its `not bound` back to this cause
+            // without a source edit — the rule `requirements_for_value_directed_impl`
+            // states for its own `Unresolvable` arm.
+            Err(f) => {
+                if self.trace_requirements {
+                    // Named rather than `{:?}`-ed: `FrameReqFailure` carries no `Debug`
+                    // and its two causes have different owners, which is the whole
+                    // reason WI-1045 kept them apart.
+                    let why = match f {
+                        FrameReqFailure::CallerScopeSlot(n) => format!(
+                            "slot `{}` resolved to a caller scope, but this resolution \
+                             ran with none",
+                            self.kb.local_name_of(n),
+                        ),
+                        FrameReqFailure::NoDictionarySort =>
+                            "this KB never loaded `anthill.realization.runtime.Dictionary`"
+                                .to_string(),
+                    };
+                    eprintln!(
+                        "[req] `{}`: op-scoped slot(s) NOT filled at entry — {why}",
+                        self.kb.qualified_name_of(target),
+                    );
+                }
+                return Ok(());
+            }
+        };
+        requirements.extend(built.into_iter().filter(|(n, _)| missing.contains(n)));
+        Ok(())
+    }
+
     fn enter_operation(
         &mut self,
         target: Symbol,
         body_node: Rc<NodeOccurrence>,
         params: &[(Symbol, Value)],
         arg_values: Vec<Value>,
-        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+        mut requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
     ) -> Result<StepOutcome, EvalError> {
         if arg_values.len() != params.len() {
             return Err(EvalError::ArityMismatch {
@@ -3547,6 +3709,10 @@ impl Interpreter {
         if self.profiling {
             OP_PROF.with(|p| p.borrow_mut().entry(target).or_insert((0, 0)).0 += 1);
         }
+        // WI-20260921-159S9 — every route that enters a body passes HERE, so this is
+        // where "an op-scoped slot is as good as a sort-scoped one" is made true for
+        // the routes that fill none. See [`Self::fill_missing_op_scoped_slots`].
+        self.fill_missing_op_scoped_slots(target, &arg_values, &mut requirements)?;
         let mut locals: SmallVec<[(Symbol, Value); 4]> = SmallVec::new();
         for (i, (pname, _ptype)) in params.iter().enumerate() {
             locals.push((*pname, arg_values[i].clone()));

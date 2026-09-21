@@ -80,6 +80,23 @@
 //! above is left standing because the shapes it enumerates are the ones that
 //! had to be repaired. The two WI-1091 rows at the end of this file drive the
 //! op half at a boundary with no call site.
+//!
+//! **WI-20260921-159S9 FINISHED IT, and one row in this file INVERTED** —
+//! `the_instance_dictionary_channel_forwards_an_op_slot`, which until then
+//! asserted the opposite under the opposite name. LEG 1 also narrowed a SECOND
+//! channel, the INSTANCE-DICTIONARY builders' caller chain, for the same reason
+//! and with the same measurement behind it: several routes into an operation
+//! filled no op slot, so projecting from one would turn a load-time refusal
+//! into an eval-time unbound `var_ref`. WI-1091 closed three of those routes
+//! (see the paragraph above); 159S9 closed the fourth — a DEFERRED dispatch,
+//! whose target is chosen at run time and whose call site therefore cannot
+//! build evidence for it, now fills its op half at entry
+//! (`Interpreter::fill_missing_op_scoped_slots`) — and only then widened the
+//! builders to the whole frame. So a `requires` written on an OPERATION now
+//! forwards a dictionary exactly as one written on its SORT does, which is what
+//! `docs/kernel-language.md` §5.3 had already said an author could not observe a
+//! difference in. The general form and its back-out matrix are in
+//! `wi_159s9_op_scoped_entry_test`.
 
 use anthill_core::eval::{Interpreter, Value};
 
@@ -571,46 +588,55 @@ end
          descent did not happen at all; got {got:?}"
     );
 }
-/// THE INSTANCE-DICTIONARY CHANNEL DOES NOT FORWARD AN OP SLOT, and this pins the
-/// attribution that says so.
+/// **THE INSTANCE-DICTIONARY CHANNEL FORWARDS AN OP SLOT — RE-DERIVED, not re-pointed
+/// (WI-20260921-159S9).**
 ///
 /// `Holder.probe requires Desc[HT]` (op-scoped) cross-sort-calls `Coll.size`, whose
 /// SORT declares `requires Desc[CT]`, at the abstract `CT := HT`. Two chains could
 /// answer the callee's dep: the caller's SORT chain (empty here) and the caller's own
-/// OP slot. Only the first is offered — the caller chain the instance-dictionary
-/// builders read is `TypingEnv::enclosing_chain`, the sort half — because that channel
-/// is read STRICTLY at eval (`start_apply_within` needs the dictionary to pick a
-/// target at all) while several routes into an operation fill no op slot: this very
-/// program is entered from the HOST, where `seed_entry_requirements` deliberately
-/// seeds none.
+/// OP slot. This file used to assert that only the first was offered, and that the
+/// program was therefore REFUSED AT LOAD naming `Coll.size`.
 ///
-/// MEASURED BOTH WAYS, and the difference is NOT the one predicted. A /code-review
-/// finding expected the composed chain to turn a load-time `UnsatisfiableRequirement`
-/// into an eval-time unbound `var_ref`; driven, the program LOADED either way and failed
-/// at eval either way. What DIFFERS is who is blamed:
+/// # WHAT THE OLD ASSERTION MEASURED, AND WHY IT NO LONGER HOLDS
 ///
-///   * composed  → the CALLER, `Holder.probe`, is named for a slot no route ever gives it.
-///   * sort-only → the CALLEE, `Coll.size`, whose own SORT-level `requires` is the thing
-///     that genuinely went unsupplied.
+/// It measured ATTRIBUTION, not capability. Driven both ways at the time, the program
+/// failed either way and the two readings differed only in who was blamed: composed →
+/// the CALLER, `Holder.probe`, for a slot no route gave it; sort-only → the CALLEE,
+/// `Coll.size`, whose own `requires` genuinely went unsupplied. The second was the true
+/// account *because the first premise was true* — this program is entered from the HOST,
+/// and `seed_entry_requirements` seeded no op slot.
 ///
-/// The second is the true account, and mis-attribution is the exact failure WI-822's own
-/// investigation had to work around with a probe. Restoring the composed chain in
-/// `enclosing_dict_chain` flips this assertion.
+/// **THAT PREMISE IS NOW FALSE, and that is the whole of the change.** WI-1091 gave the
+/// host entry `seed_entry_op_requirements`, which resolves the op half from the
+/// ARGUMENT VALUES — and an op-scoped requirement ranges over the operation's own
+/// parameters, so `Holder.probe(leaf())` pins `Desc[HT := Leaf]` exactly. So there is no
+/// longer a failure to attribute: the slot IS filled, the dictionary IS forwarded, and
+/// the program RUNS. WI-20260921-159S9 then closed the last unfilled route (the
+/// DEFERRED one, at `Interpreter::fill_missing_op_scoped_slots`) and widened the builder
+/// to `TypingEnv::enclosing_frame_chain()`.
 ///
-/// **WI-456 MOVED THE VERDICT FROM EVAL TO LOAD AND THE ATTRIBUTION CAME WITH IT**, which
-/// is why this still reads as one assertion rather than two: the `require_complete` abort
-/// that "classified dict-less rather than refusing" is the silent `Ok(None)` that ticket
-/// closed, so the program no longer loads. The refusal names `Coll.size` and its
-/// requirement and does NOT name `Holder.probe` — the same two halves, one stage earlier
-/// and with a span. The composed-chain flip is still what this measures: build
-/// `caller_requires` from the composed chain and the blame moves to `Holder.probe`, in
-/// the load text exactly as it did in the eval text.
+/// # SO THIS IS A VALUE ASSERTION NOW, AND IT HAD TO BECOME ONE
 ///
-/// SO THE SORT-ONLY CHAIN IS A DECISION, NOT AN OVERSIGHT, and WI-456's follow-on must
-/// not "fix" it by composing: that channel is read STRICTLY at eval, and the routes that
-/// fill no op slot (this program is entered from the HOST) are why.
+/// A load verdict cannot distinguish "the op slot was forwarded" from "the callee
+/// re-found a `Desc` by itself" — both load clean. TWO answers out of ONE body are what
+/// separate them:
+///
+///   * `Holder.probe(leaf())` → **1**, `Leaf.describe`;
+///   * `Holder.probe(wrap(leaf()))` → **12**, `WrapDesc.describe` computing `10·1 + 2`,
+///     which requires the forwarded dictionary AND one descent into its own chain.
+///
+/// 1 twice would mean the projection landed on a slot that does not depend on the
+/// receiver; a load refusal means the op half never reached the builder at all. Either
+/// is a back-out signature, which is what the old `try_load_kb_with(..).err()` shape
+/// could not give.
+///
+/// THE OLD ROW IS NOT SIMPLY INVERTED TO "IT LOADS": that would have been the
+/// re-pointing this ticket's acceptance forbids, and it would pass for a program that
+/// loads and then dies at eval — which is precisely what the typer half does WITHOUT
+/// the entry-side fill. `wi_159s9_op_scoped_entry_test::a_deferred_dispatch_fills_the_
+/// targets_op_scoped_slot` is the row that measures that half separately.
 #[test]
-fn the_instance_dictionary_channel_never_forwards_an_op_slot() {
+fn the_instance_dictionary_channel_forwards_an_op_slot() {
     let src = format!(
         r#"
 namespace wi822.instchan
@@ -626,27 +652,27 @@ namespace wi822.instchan
     sort HT = ?
     operation probe(x: HT) -> Int64 requires Desc[HT] = Coll.size(x)
   end
+  sort Driver
+    operation shallow(n: Int64) -> Int64 = Holder.probe(leaf())
+    operation deep(n: Int64) -> Int64 = Holder.probe(wrap(leaf()))
+  end
 end
 "#
     );
-    let errs = crate::common::try_load_kb_with(&src).err().unwrap_or_else(|| {
-        panic!(
-            "WI-456: the callee's unsuppliable sort-level requirement is refused at LOAD. \
-             If this loads again, the verdict has moved back to eval and the attribution \
-             below must be read off the `EvalError::Internal` text instead."
-        )
-    });
-    let msg = errs.join("\n");
+    // `eval_fresh` goes through `interp_for`, which panics on a dirty load — so each
+    // value assertion is also the clean-load assertion the old row made.
+    let shallow = eval_fresh(&src, "wi822.instchan.Driver.shallow", 0);
     assert!(
-        msg.contains("wi822.instchan.Coll.size"),
-        "the failure must be attributed to `Coll.size`, whose SORT-level `requires` \
-         went unsupplied; got {msg}"
+        matches!(shallow, Ok(Value::Int(1))),
+        "`Coll.size`'s SORT-level `requires Desc[CT]` answered from `Holder.probe`'s OWN \
+         op-scoped slot; got {shallow:?}"
     );
+    let deep = eval_fresh(&src, "wi822.instchan.Driver.deep", 0);
     assert!(
-        !msg.contains("wi822.instchan.Holder.probe"),
-        "`Holder.probe` must NOT be blamed: it is only blamed when the instance \
-         dictionary forwards its OP slot, which no route into this program fills; \
-         got {msg}"
+        matches!(deep, Ok(Value::Int(12))),
+        "expected 12 = `WrapDesc.describe` (10·`Leaf.describe` + 2). 1 would mean the \
+         forwarded dictionary does not depend on the receiver; a load refusal would mean \
+         the op half never reached the instance-dictionary builder; got {deep:?}"
     );
 }
 

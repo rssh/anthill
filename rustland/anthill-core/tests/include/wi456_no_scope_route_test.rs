@@ -51,10 +51,10 @@
 //! **BACK-OUT MATRIX, measured on this tree rather than reasoned — THREE separable
 //! changes, three disjoint failure sets.**
 //!
-//!  * the parked `no_scope_route` refusal → `an_undeclared_ordering_is_refused_at_load`,
-//!    `an_op_scoped_slot_is_refused_for_now` and
-//!    `the_refusal_names_the_repair_and_not_a_witness_choice` (3), each going back to
-//!    loading clean and dying at eval;
+//!  * the parked `no_scope_route` refusal → `an_undeclared_ordering_is_refused_at_load`
+//!    and `the_refusal_names_the_repair_and_not_a_witness_choice` (2), each going back
+//!    to loading clean and dying at eval. (It was 3 until WI-20260921-159S9 inverted the
+//!    op-scoped arm, which no longer measures the refusal at all.)
 //!  * the tail advice ALONE → `the_refusal_names_the_repair_and_not_a_witness_choice`
 //!    alone (1). The other two assert the VERDICT and say nothing about the wording,
 //!    which is why [`assert_no_route`] deliberately does not check the advice;
@@ -86,16 +86,22 @@
 //!    provider half of the very dictionary the caller holds, at
 //!    `dict_layout(..).spec_len() + k`. `a_parent_instance_requirement_projects_the_-
 //!    comparator` drives it to two values;
-//!  * THE OP-SCOPED SLOT — still refused, and BY DECISION rather than oversight.
-//!    `wi822 the_instance_dictionary_channel_never_forwards_an_op_slot` pins it: the
-//!    instance-dictionary builders read `TypingEnv::enclosing_chain`, the SORT half,
-//!    because that channel is read strictly at eval while several routes into an operation
-//!    fill no op slot (a HOST entry seeds none). Composing the chain moves the blame onto
-//!    the caller for a slot no route gives it, which that test measures. So the follow-on
-//!    is NOT "compose the chain" — it is to make the op-half channel reliable at every
-//!    entry, which is a larger question than this file.
+//!  * THE OP-SCOPED SLOT — **CLOSED by WI-20260921-159S9, and its arm here INVERTED
+//!    rather than disappearing** (`an_op_scoped_slot_is_a_working_spelling`, now a value
+//!    assertion over both orderings). It was refused BY DECISION rather than oversight:
+//!    the instance-dictionary builders read `TypingEnv::enclosing_chain`, the SORT half,
+//!    because that channel is read strictly at eval while several routes into an
+//!    operation filled no op slot. The follow-on was NOT "compose the chain" but "make
+//!    the op-half channel reliable at every entry" — and that is what landed. Three
+//!    routes had closed already (a HOST entry seeds the op half from the argument values
+//!    since WI-1091; an eta carries its slots captured; value-direction reads the
+//!    composed chain); the DEFERRED route was the remaining hole and
+//!    `Interpreter::fill_missing_op_scoped_slots` fills it at `enter_operation`. Only
+//!    then did the builder widen to `enclosing_frame_chain()`.
 //!
-//! When that one lands too, its arm here inverts rather than disappears.
+//! So `a_sort_level_slot_is_the_repair` is no longer THE repair, only A repair — the
+//! message's tail still names it because it is the one that needs no type parameters,
+//! but the operation-level spelling now works too. Both are driven to values here.
 
 use anthill_core::eval::Value;
 
@@ -226,24 +232,55 @@ fn the_refusal_names_the_repair_and_not_a_witness_choice() {
     );
 }
 
-/// An OP-SCOPED `requires OE: WeakOrd[E]` — the author DID declare a slot, and the
-/// projector still cannot see it (measured: `caller_requires` is empty here, the op half
-/// never reaching this builder). Refused rather than run, which is the honest verdict
-/// today and strictly better than the eval `Internal` it replaces.
+/// An OP-SCOPED `requires OE: WeakOrd[E]` — the author DID declare a slot, and IT NOW
+/// REACHES THE PROJECTOR. **THIS ARM INVERTED, as its earlier text said it would.**
 ///
-/// THIS ARM IS EXPECTED TO INVERT when the op half is threaded into `caller_requires`;
-/// it is written as a load assertion so that change cannot land silently.
+/// It used to read `assert_no_route`: `caller_requires` was the SORT half, so the op
+/// clause never reached the builder and the call was refused — the honest verdict then,
+/// and strictly better than the eval `Internal` it replaced, but still one of two
+/// spellings of one program of which only one worked.
+///
+/// WI-20260921-159S9 made the builder read the caller's WHOLE frame and gave the
+/// deferred entry route a fill for its op half, so the clause is now carried. Written as
+/// a VALUE assertion rather than a clean-load one, and over BOTH orderings: a load
+/// verdict cannot tell "the slot travelled" from "the callee re-found a comparator", and
+/// `zz` twice would mean the slot decided nothing.
+///
+/// The general form, its back-out matrix and the deferred-route control live in
+/// `wi_159s9_op_scoped_entry_test`; this arm stays HERE because it is the refusal this
+/// file's tail advice used to name, and the two must not drift.
 #[test]
-fn an_op_scoped_slot_is_refused_for_now() {
-    let errs = load_errs(&program(
+fn an_op_scoped_slot_is_a_working_spelling() {
+    let src = program(
         "wi456nr.opscoped",
         "  sort PolyC\n    \
          operation insertC[E, OE](s: SortedSet[T = E, O = OE], x: E) \
          -> SortedSet[T = E, O = OE]\n        \
          requires OE: WeakOrd[E] =\n      \
-         SortedSet.insert(s, x)\n  end",
-    ));
-    assert_no_route(&errs, "an op-scoped slot does not reach the dict builder");
+         SortedSet.insert(s, x)\n  end\n  \
+         sort Driver\n    \
+         operation byLength() -> String =\n      \
+         let s = SortedSet.empty[T = String, O = ByLength]()\n      \
+         Head.head(SortedSet.toList(PolyC.insertC(PolyC.insertC(s, \"zz\"), \"aaa\")))\n    \
+         operation alphabetical() -> String =\n      \
+         let s = SortedSet.empty[T = String, O = Alphabetical]()\n      \
+         Head.head(SortedSet.toList(PolyC.insertC(PolyC.insertC(s, \"zz\"), \"aaa\")))\n  end",
+    );
+    assert_eq!(
+        eval_str(&src, "wi456nr.opscoped.Driver.byLength", "the length ordering travels"),
+        "zz",
+    );
+    assert_eq!(
+        eval_str(
+            &src,
+            "wi456nr.opscoped.Driver.alphabetical",
+            "the alphabetic ordering travels"
+        ),
+        "aaa",
+        "the SAME body as `a_sort_level_slot_is_the_repair` drives, with the clause \
+         written on the OPERATION instead of the sort — two spellings of one program, \
+         and they now agree",
+    );
 }
 
 /// REQUIRING THE CARRIER INSTANCE RATHER THAN THE ORDERING — and it RUNS, which is
