@@ -3,9 +3,9 @@
 - id: WI-20260921-6JP6N-a-deferred-call-supplies-no-op
 - created: 2026-09-21T14:17:31Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-21T14:17:31Z
+- status: Rejected
+- status_agent: claude
+- status_at: 2026-09-21T15:39:20Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -32,4 +32,8 @@ ACCEPTANCE:
  - `wi456_sorted_set_collection_test::generic_consumer_keeps_the_carriers_ordering` still answers — it is the row that refuted the spec-keyed shortcut;
  - the note left at the spec-op-exit gate in typing.rs is replaced by what actually landed;
  - full workspace green via rustland/scripts/test.sh; scaland `sbt testFull`.
+
+## Reason
+
+DUPLICATE of WI-20260921-159S9, which I had not seen when I filed this — it landed on origin/main while 28TAT was in flight. 159S9 is strictly larger and better framed: it names start_apply_deferred in its own blast radius alongside seed_entry_requirements / expand_dispatching_dict / call_with_requirements ('all sort-keyed'), it has already MEASURED that deferring on every op-scoped call breaks 30 tests, and its conclusion is that the work is the ENTRY side rather than the call site — which is the framing this ticket got wrong. The one thing here that 159S9 lacked, the refutation of the spec-keyed call-site shortcut (wi456_sorted_set_collection_test, 'supplied 1 slot(s) for PersistentCollection.insert, but dispatch landed on SortedSet.insert'), has been folded into 159S9 as feedback so it is not retried.
 

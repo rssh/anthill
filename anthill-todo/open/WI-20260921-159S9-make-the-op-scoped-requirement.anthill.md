@@ -23,3 +23,19 @@ NOT A REOPEN OF WI-822, which delivered both its legs and recorded this residue 
 
 ACCEPTANCE: the (B) spelling above RUNS and prints zz, and answers aaa when its caller's set is built with O = Alphabetical (one polymorphic body, two orderings — so one answer twice means the slot decided nothing); wi456_no_scope_route_test::an_op_scoped_slot_is_refused_for_now INVERTS to a value assertion rather than being deleted; the_instance_dictionary_channel_never_forwards_an_op_slot is re-derived rather than merely re-pointed — if the chain is composed, its attribution assertion must be replaced by a measurement saying who SHOULD be blamed once the op half is reliably filled; op_scoped_relay_chain_correct_via_value_direction still computes 551; full workspace green via rustland/scripts/test.sh.
 
+## Changes
+
+### 2026-09-21T15:38:33Z — feedback — claude
+
+ONE ROUTE'S SHORTCUT REFUTED, from WI-20260921-28TAT — recorded here so it is not retried. `start_apply_deferred` is named in this ticket's blast radius; this is what happens if you try to fill it from the CALL SITE instead of the entry side.
+
+THE ATTEMPT. The two `CallClass::DeferToRequirement` arms call `classify()` directly rather than through `classify_pin_or_apply_within`, so they stamp no op-scoped dictionaries, and `start_apply_deferred` installs the SORT half alone. The obvious repair is to stamp there for the SPEC op (`fn_sym`), on the reading that §8.7 forbids an override from STRENGTHENING a clause — so the spec's chain looks like the one both ends share.
+
+IT IS WRONG, and eval's own count guard says so. The impl is chosen at run time and lays out its OWN op-scoped chain; "not strengthened" does not mean "same layout". MEASURED: `wi456_sorted_set_collection_test::generic_consumer_keeps_the_carriers_ordering` failed with `EvalError::Internal("op-scoped frame push: the call site supplied 1 slot(s) for `anthill.prelude.PersistentCollection.insert`, but dispatch landed on `anthill.prelude.SortedSet.insert`")`. The stamp holds `TermId`s built from the CALLER's substitution against the SPEC's chain, and nothing at eval can re-key them onto a different declaration — which is this ticket's own conclusion ("the work is the ENTRY side, not the call site") arriving from the other direction. Reverted; the site in `check_apply_iter`'s spec-op exit carries the note.
+
+WHAT 28TAT LEFT IN PLACE that bears on the acceptance here. Op-level evidence is no longer a field of `CallClass::ConcreteApplyWithin`: it is a `NodeOccurrence` stamp (`op_dicts`) written by ONE function (`stamp_op_scoped_dicts`) and read on every apply route, so "what a call carries" is now independent of "where it dispatches". Three writers stamp it today — `classify_pin_or_apply_within` (which also covers the `PinNow` arm, where the build used to be discarded), the Direct arm, and a new site at the spec-op exit for a call NO arm classified. The defer arms are the remaining hole, and the gate there (`occ.classification_is_none()`) documents that it does not cover them.
+
+ALSO FROM 28TAT, and it is the reason the priority note in the description is now literal rather than anticipated: the frame type-argument channel IS GONE (commit on `main`), so the requirement channel is the only channel. `Error.reify` is the first operation whose op-level `requires` is load-bearing at run time — the reify boundary reads its payload sort out of that dictionary — and an unsupplied slot there is a LOAD ERROR rather than a silent widening (`native_backing_reads_slots`: body-less is not "reads nothing" when the backing is the interpreter).
+
+SUPERSEDES WI-20260921-6JP6N, filed by me before I saw this ticket and rejected as a duplicate: it scoped the same defect at the call site, which is the framing this ticket already argues against.
+
