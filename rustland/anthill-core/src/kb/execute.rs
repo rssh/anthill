@@ -79,7 +79,16 @@ pub(crate) enum SynthKey {
     /// vars never collapse (no false reuse); it merely forgoes a memo hit.
     RawVar(u32),
     Lit(Literal),
-    Ref(Symbol),
+    // WI-20260921-3G1YT — `Ref(Symbol)` STOOD HERE and is removed as dead. It is NOT the
+    // "kept distinct for totality" case its neighbours `DeBruijnVar` and `Rigid` are:
+    // those are still CONSTRUCTED (`append_synth_key`'s `ViewHead::Var` arms), while this
+    // had no producing path at all. `ViewHead::Ref` was retired by WI-20260902-CZJ2N — a
+    // nullary application now reads as `Functor` at arity 0 — so a `Term::Ref(f)` leaf
+    // keys as `Functor(f) … EndFn`.
+    //
+    // INJECTIVITY IS UNAFFECTED, which is the only property that matters here: that
+    // encoding is self-delimiting and therefore distinct from `Ident(f)`, so no two goals
+    // collapse onto one memo key as a result of this removal.
     Ident(Symbol),
     Bottom,
 }

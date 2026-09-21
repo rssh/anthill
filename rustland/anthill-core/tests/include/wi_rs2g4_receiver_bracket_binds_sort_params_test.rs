@@ -582,11 +582,17 @@ end
         Ok(_) => panic!("a bare `[U = List]` leaves the element undetermined and must not load"),
         Err(e) => e,
     };
+    // WI-20260921-3G1YT — "cannot be left unfilled" belonged to 065's hardcoded
+    // `TypeValue` arm, now deleted; the general path refuses this identically. What is
+    // asserted instead is STRONGER and is what the fixture is about: the bracket is bare,
+    // so `List`'s element is UNWRITTEN, and the refusal now shows it as `List[T = ?]`
+    // (before, an unbound var rendered `<term#23484>` — an interning id). `?` is the
+    // language's own spelling for an undetermined parameter and points straight at the
+    // repair, which is the `w_written` control immediately below.
     assert!(
         errs.iter().any(|e| e.contains("anthill.reflect.TypeValue")
-            && e.contains("anthill.prelude.List")
-            && e.contains("cannot be left unfilled")),
-        "the refusal must name the evidence and the expanded carrier; got {errs:#?}"
+            && e.contains("anthill.prelude.List[T = ?]")),
+        "the refusal must name the evidence and show the UNWRITTEN element; got {errs:#?}"
     );
 
     // CONTROL — the WRITTEN inner value determines the element, so the evidence is the

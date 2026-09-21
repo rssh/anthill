@@ -184,12 +184,194 @@ end
 /// CALLER's own type parameter is unfillable whatever the spec, so the plain-spec shape
 /// is now refused too — parked, and reported because `tyOf`'s body reads the slot.
 ///
-/// THE TWO ARMS STAY DISTINCT, and this row is where that is visible. 065's arm runs
-/// FIRST and RAISES, so the `TypeValue` half keeps the message that names the proposal
-/// and the reason `TypeValue` is special; XSVCS's parks, and reaches a dep 065's cannot
-/// (any spec) at a site 065's does not need (a caller with a body to read). See
-/// [`caller_rigid_carrier`]'s header for why neither subsumes the other, and
-/// `wi_xsvcs_op_requires_forward_test` for the plain-spec shape driven to an answer.
+/// THE TWO ARMS ARE NOW ONE (WI-20260921-3G1YT). 065's arm was keyed on
+/// `dep.required_sort == anthill.reflect.TypeValue` and ran first, so this half used to
+/// carry its own message; that hardcode is deleted and both halves take XSVCS's, which
+/// says the same thing for ANY spec and additionally names where to declare the evidence.
+/// See `wi_xsvcs_op_requires_forward_test` for the plain-spec shape driven to an answer,
+/// and [`a_rule_body_forward_is_refused_too`] for the site that hardcode really covered.
+/// WI-20260921-3G1YT — THE SAME FORWARD FROM A **RULE BODY**, where there is no
+/// enclosing operation. Added because its ABSENCE is what made deleting 065's arm look
+/// safe: with `type_value_forward_unsuppliable` disabled the suite is 6385 passed / 2
+/// FAILED and both failures are about MESSAGE TEXT, so the corpus said "this arm decides
+/// no verdict". It does decide one — here — and **a refusal that becomes silent fails no
+/// test**, which is why nothing caught it.
+///
+/// WHY THIS SITE IS THE ONE THE OTHER ARM CANNOT REACH: `caller_rigid_carrier` is
+/// `enclosing_op`-scoped, and a rule body has no enclosing operation. WI-945's note says
+/// a rule-body goal is deliberately NOT refused in general — it reaches eval through the
+/// SLD bridge, which resolves dictionaries from concrete argument values and suspends
+/// when it cannot. `TypeValue` is the exception, because 065 §1's lowering synthesizes
+/// the read and the slot is therefore not optional.
+///
+/// DRIVEN BY BACKING OUT: with the arm removed this program LOADS CLEAN (measured: 4203
+/// facts, 431 rules) and dies at eval on an unbound `__req_typevalue`. This row is the
+/// only one in the workspace that fails on that removal.
+#[test]
+fn a_rule_body_forward_is_refused_too() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.rulebody
+  import anthill.prelude.{Cell, Int64, Type}
+  import anthill.reflect.{TypeValue}
+
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = Cell[V = B]
+
+  rule names(?x, ?t) :- ?t = tyOf(?x)
+end
+"#,
+    );
+    assert!(
+        !errs.is_empty(),
+        "a rule body forwarding an unevidenced rigid into a TypeValue reader must be \
+         refused at load, not left to die on an unbound slot at eval"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.reflect.TypeValue")
+            && e.contains("test.n31xx.rulebody.tyOf")),
+        "the refusal must name the evidence and the callee; got {errs:#?}"
+    );
+}
+
+/// WI-20260921-3G1YT — **THE SAME DEFECT AT A USER TYPECLASS, WHICH IS WHY THE RULE IS
+/// NOT `TypeValue`'s.** `Stamp` is `TypeValue` in miniature and shares nothing with it but
+/// its SHAPE: one operation, nullary in its own carrier, so no value can ever be
+/// dispatched on to reach it and the SLD bridge has nothing to resolve a provider from.
+///
+/// MEASURED BEFORE THE FIX: this program LOADED CLEAN while the byte-identical shape
+/// spelled `TypeValue` was refused — because N31XX's arm asked
+/// `dep.required_sort == anthill.reflect.TypeValue` and nothing asked the general
+/// question. That hardcode is deleted; the rule now keys on
+/// [`spec_has_value_directed_route`], and `TypeValue` is an instance of it.
+///
+/// WHICH TESTS FAIL IF THE RULE IS BACKED OUT: this one and
+/// [`a_rule_body_forward_is_refused_too`], the `TypeValue` spelling of the same site.
+/// Both, together, are what says the rule is general rather than one spec's.
+#[test]
+fn a_user_typeclass_of_the_same_shape_is_refused_too() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.userclass
+  import anthill.prelude.{Int64}
+
+  sort Stamp
+    sort T = ?
+    operation stamp() -> Int64
+  end
+
+  operation stampOf[B](x: B) -> Int64 requires Stamp[T = B] = Stamp.stamp()
+
+  rule names(?x, ?n) :- ?n = stampOf(?x)
+end
+"#,
+    );
+    assert!(
+        !errs.is_empty(),
+        "a rule body forwarding an unevidenced rigid into a NULLARY user typeclass must \
+         be refused, exactly as the `TypeValue` spelling is"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("test.n31xx.userclass.Stamp")
+            && e.contains("no value can")),
+        "the refusal must name the user spec and say why no value can supply it; \
+         got {errs:#?}"
+    );
+}
+
+/// WI-20260921-3G1YT — THE SORT HALF OF THE SAME SITE, pinned because deleting its arm
+/// is a REGRESSION and the suite could not see it. A `requires` on the SORT, at a
+/// no-route spec, reached from a rule body: refused, and it must stay so.
+///
+/// MEASURED: with `type_value_forward_unsuppliable`'s remaining call site removed, this
+/// program LOADS CLEAN while every other row in the file stays green — the same
+/// silent-refusal shape as [`a_rule_body_forward_is_refused_too`], one channel over.
+/// /code-review caught it with this exact probe.
+///
+/// WHY IT IS STILL SPELLED `TypeValue` AND NOT THE GENERAL RULE: the general rule needs
+/// the CALLEE'S OP to ask whether its body reads the slot, and
+/// `build_dispatching_dict_from_chain` is handed the callee's SORT. The op-level twin IS
+/// general ([`a_user_typeclass_of_the_same_shape_is_refused_too`]); this half is the
+/// remaining work, and its own gap is PRE-EXISTING — a sort-level `requires Stamp[T = U]`
+/// at a nullary user typeclass loads clean before and after this ticket.
+#[test]
+fn a_sort_level_rule_body_forward_is_refused_too() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.sortlevel
+  import anthill.prelude.{Cell, Int64, Type}
+  import anthill.reflect.{TypeValue}
+
+  sort Holder
+    sort U = ?
+    requires TypeValue[T = U]
+    operation get(x: U) -> Type = Cell[V = U]
+  end
+
+  rule names(?x, ?t) :- ?t = Holder.get(?x)
+end
+"#,
+    );
+    assert!(
+        !errs.is_empty(),
+        "a SORT-level TypeValue clause forwarded from a rule body must be refused; \
+         leaving it silent is the regression this row exists to catch"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("anthill.reflect.TypeValue")),
+        "the refusal must name the evidence; got {errs:#?}"
+    );
+}
+
+/// CONTROL — a user typeclass of the same shape whose operation DOES receive on its
+/// carrier. `stamp(x: T)` gives the bridge a value to classify, so the rule-body
+/// exemption stands and the program loads. It is the other half of what
+/// [`spec_has_value_directed_route`] decides, and it FAILS if that predicate is made to
+/// answer `false` for everything.
+#[test]
+fn a_user_typeclass_with_a_receiver_still_loads() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.userclassrecv
+  import anthill.prelude.{Int64}
+
+  sort Shown
+    sort T = ?
+    operation shown(x: T) -> Int64
+  end
+
+  operation shownOf[B](x: B) -> Int64 requires Shown[T = B] = Shown.shown(x)
+
+  rule names(?x, ?n) :- ?n = shownOf(?x)
+end
+"#,
+    );
+    assert!(
+        errs.is_empty(),
+        "a spec whose operation receives on its carrier CAN be resolved from a value at \
+         fire time, so the rule-body exemption stands; got {errs:#?}"
+    );
+}
+
+/// CONTROL for the row above — the SAME rule body with the clause DECLARED on the
+/// forwarding operation, so the evidence is in scope and nothing is refused. Without it
+/// the row above would pass for a program that is refused for some unrelated reason.
+#[test]
+fn a_rule_body_forward_with_the_clause_loads() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.rulebodyok
+  import anthill.prelude.{Cell, Int64, Type}
+  import anthill.reflect.{TypeValue}
+
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = Cell[V = B]
+
+  rule names(?t) :- ?t = tyOf(5)
+end
+"#,
+    );
+    assert!(errs.is_empty(), "a CONCRETE argument needs no forwarded clause; got {errs:#?}");
+}
+
 #[test]
 fn a_middle_level_that_drops_the_clause_is_refused_at_the_call() {
     let type_value = load_errors(
@@ -211,7 +393,12 @@ end
         "anthill.reflect.TypeValue",
         "cannot be supplied for call to",
         "test.n31xx.twobad.tyOf",
-        "only by the dispatching dictionary",
+        // WI-20260921-3G1YT — XSVCS's wording, shared with the plain-spec half below.
+        // 065's arm was a hardcoded `dep.required_sort == anthill.reflect.TypeValue` and
+        // is deleted; this clause IS "answered only by the dispatching dictionary", said
+        // for any spec, and it additionally names WHERE to declare the evidence.
+        "the caller's frame is the only thing that could ever fill this slot",
+        "test.n31xx.twobad.mid",
     ] {
         assert!(e.contains(want), "expected {want:?} in the refusal; got {e:?}");
     }

@@ -25163,6 +25163,26 @@ fn build_dispatching_dict_from_chain(
                 // RAISED, not parked: the three signatures below defer because only the
                 // callee's body can say whether the slot is read, and here that question
                 // is already answered by the lowering.
+                // WI-20260919-N31XX / WI-20260921-3G1YT — THE SORT HALF'S LAST HARDCODE,
+                // and the only one left. The OP half's twin is gone: it is now the general
+                // rule "a rule-body goal at a spec no value can name is refused"
+                // ([`spec_has_value_directed_route`], in [`build_op_scoped_dicts`]), of
+                // which `TypeValue` is an instance.
+                //
+                // IT STAYS HERE BECAUSE THIS FUNCTION CANNOT ASK THE GENERAL QUESTION YET.
+                // The rule needs the CALLEE'S OP to ask [`op_body_reads_sort_requirement_-
+                // slot`], and this function is handed `callee_spec_sort` — the SORT — so
+                // the read half is unavailable without plumbing the op down through both
+                // callers. Raising on the spec property ALONE would over-refuse, which is
+                // measured at the op half's own site (6 rows).
+                //
+                // WHAT IT COSTS TO LEAVE: only `TypeValue` is guarded here. MEASURED — a
+                // SORT-level `requires Stamp[T = U]` at a nullary user typeclass, reached
+                // from a rule body, LOADS CLEAN both before and after this ticket, so that
+                // gap is PRE-EXISTING and not this change's. Deleting this arm would turn
+                // the `TypeValue` spelling of the same program from refused into silent,
+                // which is a REGRESSION and is why it is still here (caught by
+                // /code-review, with that exact probe).
                 if type_value_forward_unsuppliable(kb, dep) {
                     return Err(Box::new(RequirementRefusal {
                         no_scope_route: false,
@@ -25807,27 +25827,6 @@ fn build_op_scoped_dicts(
             // RAISED, NOT PARKED, unlike the WI-1102 leg below: that one parks because
             // whether the callee MISSES the slot lives in its body, which may not be
             // typed yet. Here there is nothing to wait for — the answer cannot exist.
-            if type_value_forward_unsuppliable(kb, &dep) {
-                kb.unsuppliable_requirements.truncate(parked_mark);
-                return Err(Box::new(RequirementRefusal {
-                    no_scope_route: false,
-                    construction_carries_repair: false,
-                    dep_text: render_requires_entry(kb, &dep),
-                    unconstrained: Vec::new(),
-                    refused_covers: Vec::new(),
-                    construction: "its carrier is a type parameter, which has no derived \
-                                   `TypeValue` instance, and no `requires` of the CALLING \
-                                   operation names it either. `TypeValue` is answered only \
-                                   by the dispatching dictionary, so this slot cannot be \
-                                   left unfilled: declare the same `requires \
-                                   anthill.reflect.TypeValue[…]` on the caller so the \
-                                   evidence is passed in, or stop handing a type parameter \
-                                   to an operation that inspects it (proposal 065)"
-                        .to_owned(),
-                    pinned: None,
-                    unprovided: None,
-                }));
-            }
             if let Some(tie @ ResolutionResult::Ambiguous { .. }) = &s3_failure {
                 // ONLY the tie is raised HERE. A σ-refused cover and a `Cyclic` stay
                 // silent absences, which is what keeps the 29 stdlib bodies that have a
@@ -25859,7 +25858,92 @@ fn build_op_scoped_dicts(
             // be a caller RIGID — but writing them as two independent `if`s would leave
             // that disjointness as a fact to re-derive at every later edit, and a
             // double push is one call site with two errors.
-            if let Some(site) = park {
+            // WI-20260921-3G1YT — THE RULE-BODY EXEMPTION IS LIFTED FOR A DEP THE BRIDGE
+            // CANNOT RESCUE. [`OpSlotParkSite::for_call`] declines a rule-body site on
+            // WI-945's reason: such a goal reaches eval through the SLD bridge, which
+            // resolves real provider dictionaries from the CONCRETE ARGUMENT VALUES and
+            // suspends when it cannot, so an unpinned element is the ordinary case there.
+            //
+            // THAT PREMISE IS A VALUE-DIRECTED ONE, and it fails exactly where no value
+            // can name the carrier — [`spec_has_value_directed_route`]. For such a spec the
+            // bridge has nothing to resolve FROM, so "it will sort itself out at fire time"
+            // is false and the slot is certain death.
+            //
+            // THIS IS WHAT N31XX's HARDCODE WAS, GENERALIZED. That arm asked
+            // `dep.required_sort == anthill.reflect.TypeValue` and raised before this gate,
+            // which is why `TypeValue` alone was protected. MEASURED: a USER typeclass of
+            // the identical shape — `sort Stamp { sort T = ?; operation stamp() -> Int64 }`
+            // with `stampOf[B](x: B) requires Stamp[T = B] = Stamp.stamp()` forwarded from
+            // `rule names(?x, ?n) :- ?n = stampOf(?x)` — LOADED CLEAN while the `TypeValue`
+            // spelling was refused. Nothing is special about `TypeValue` here except that
+            // someone wrote a check for it.
+            //
+            // THE READ QUESTION IS STILL THE BODY'S. Parking does not refuse; it defers to
+            // [`report_unsuppliable_requirements`], so a callee that never reads the slot
+            // still loads and answers — which is what keeps `test.xsvcs.fwd.TT`,
+            // `wi1102.witnessrow.Lawful` and `nx4fd_disc.Marked` green. "No route" makes an
+            // unfilled slot UNRESCUABLE, not read.
+            // WI-20260921-3G1YT — A RULE-BODY GOAL AT A SPEC NO VALUE CAN NAME: RAISED
+            // HERE, NOT PARKED, AND THE PASS ORDER IS WHY.
+            //
+            // [`OpSlotParkSite::for_call`] declines a rule-body site on WI-945's reason —
+            // such a goal reaches eval through the SLD bridge, which resolves provider
+            // dictionaries from the CONCRETE ARGUMENT VALUES at fire time and suspends
+            // when it cannot, so an unpinned element is the ordinary case there. That
+            // premise is a VALUE-DIRECTED one and it fails exactly where no value can name
+            // the carrier ([`spec_has_value_directed_route`]): the bridge has nothing to
+            // resolve FROM, so the slot is certain death rather than a deferred question.
+            //
+            // PARKING CANNOT SERVE IT. MEASURED, by widening the park gate and watching
+            // the refusal vanish: `report_unsuppliable_requirements` runs BEFORE rule
+            // bodies are typed, so a rule-body park lands in an already-drained queue and
+            // is dropped in silence. `check_sorts`' own `debug_assert!` says this in the
+            // other direction ("nothing may park after it"), and it cannot catch the case
+            // because it runs before the offending push.
+            //
+            // AND THE READ QUESTION IS ANSWERABLE HERE, which is what makes raising sound
+            // rather than blunt. Parking exists because a callee may be typed after its
+            // caller; a RULE body is typed after EVERY operation body, so
+            // [`op_body_reads_op_requirement_slot`] already has its answer. A callee that
+            // never reads the slot still loads — which is what keeps `test.xsvcs.fwd.TT`,
+            // `wi1102.witnessrow.Lawful` and `nx4fd_disc.Marked` green.
+            //
+            // THIS IS N31XX's HARDCODE, GENERALIZED. That arm asked `dep.required_sort ==
+            // anthill.reflect.TypeValue` and raised above this block, which is why one
+            // spec was protected and no other. MEASURED: a USER typeclass of identical
+            // shape — `sort Stamp { sort T = ?; operation stamp() -> Int64 }` with
+            // `stampOf[B](x: B) requires Stamp[T = B] = Stamp.stamp()` reached from
+            // `rule names(?x, ?n) :- ?n = stampOf(?x)` — LOADED CLEAN while the
+            // `TypeValue` spelling was refused.
+            if park.is_some_and(|s| s.enclosing_op.is_none())
+                && !spec_has_value_directed_route(kb, dep.required_sort)
+                && op_body_reads_op_requirement_slot(kb, callee_op, op_index)
+            {
+                kb.unsuppliable_requirements.truncate(parked_mark);
+                return Err(Box::new(RequirementRefusal {
+                    no_scope_route: false,
+                    construction_carries_repair: false,
+                    dep_text: render_requires_entry(kb, &dep),
+                    unconstrained: Vec::new(),
+                    refused_covers: Vec::new(),
+                    construction: format!(
+                        "this is a RULE-body goal, whose dictionaries the SLD bridge \
+                         resolves from the concrete argument values at fire time — but \
+                         `{}` declares no operation taking its own carrier, so no value can \
+                         ever name a provider for it and the bridge has nothing to read. \
+                         The dispatching dictionary is the only carrier of the answer, and \
+                         a rule body cannot declare one. Call `{}` from an operation that \
+                         declares the matching `requires`, or give `{}` an operation that \
+                         receives on its carrier",
+                        kb.qualified_name_of(dep.required_sort),
+                        kb.qualified_name_of(callee_op),
+                        kb.qualified_name_of(dep.required_sort),
+                    ),
+                    pinned: None,
+                    unprovided: None,
+                }));
+            }
+            if let Some(site) = park.filter(|s| s.enclosing_op.is_some()) {
                 // WI-1102 (058 §3.10) — the use-site discharge: this call PINNED a
                 // carrier and the goal `Spec[T = Carrier]` has no provider. PARKED, not
                 // raised, for WI-945's reason exactly one channel over — the σ that
@@ -25888,7 +25972,8 @@ fn build_op_scoped_dicts(
                     // of the CALLER, and the caller declared no `requires` that covers
                     // it. See [`caller_rigid_carrier`] for why that is a verdict and not
                     // a gap.
-                    None => caller_rigid_carrier(kb, &dep, &disambig, site.enclosing_op)
+                    None => site.enclosing_op.and_then(|enclosing_op| {
+                        caller_rigid_carrier(kb, &dep, &disambig, enclosing_op)
                         .map(|c| RequirementRefusal {
                             // RENDERED IN THE CALLER'S SPELLING, not `dep`'s. The entry
                             // still names the CALLEE's formal (`tyOf.B`), and an author
@@ -25909,7 +25994,7 @@ fn build_op_scoped_dicts(
                                  passed in, or call `{}` with a type whose provision is \
                                  known here",
                                 c.carrier,
-                                kb.qualified_name_of(site.enclosing_op),
+                                kb.qualified_name_of(enclosing_op),
                                 c.carrier,
                                 c.clause,
                                 kb.qualified_name_of(c.declare_on),
@@ -25917,7 +26002,8 @@ fn build_op_scoped_dicts(
                             ),
                             pinned: None,
                             unprovided: None,
-                        }),
+                        })
+                    }),
                 };
                 if let Some(refusal) = refusal {
                     kb.unsuppliable_requirements.push(UnsuppliableRequirement {
@@ -25937,6 +26023,61 @@ fn build_op_scoped_dicts(
         out.push(projected);
     }
     Ok(out)
+}
+
+/// WI-20260919-N31XX — is this UNSUPPLIABLE dependency a `TypeValue` requirement?
+///
+/// WI-20260921-3G1YT REDUCED IT TO ONE CALLER, the SORT half. The OP half's arm is gone,
+/// replaced by the general rule keyed on [`spec_has_value_directed_route`]; see that
+/// site for why `TypeValue` is an instance of it rather than a case, and see this
+/// function's remaining call site for why the sort half cannot ask the general question
+/// yet.
+fn type_value_forward_unsuppliable(kb: &KnowledgeBase, dep: &RequiresEntry) -> bool {
+    let Some(tv) = type_value_spec_sym(kb) else {
+        return false;
+    };
+    kb.canonical_sort_sym(dep.required_sort) == kb.canonical_sort_sym(tv)
+}
+
+/// WI-20260921-3G1YT — CAN A RUNTIME VALUE EVER DIRECT DISPATCH TO `spec_sort`? True
+/// when at least one of its operations takes a receiver eval could classify a carrier
+/// from. FALSE for a spec whose every operation is nullary in its own carrier — and that
+/// is the property that decides whether the SLD bridge can rescue an unfilled slot.
+///
+/// THE TWO READERS ARE EVAL'S OWN, deliberately: `eval::spec_call_runtime_carrier` finds
+/// the receiver with exactly [`self_receiver_param_index`] (the SELF-REPRESENTING shape,
+/// `Stream.head(s: Stream)`) and [`spec_carrier_param_candidates`] (the CARRIER-PARAM
+/// shape, `FiniteCollection.collect(c: C)`). Asking a third way here would let a spec be
+/// dispatchable at eval and refused at load, or the reverse.
+///
+/// A SPEC WITH NO OPERATIONS IS A MARKER, and answers TRUE — the opposite verdict to
+/// "nothing can dispatch it", so the empty case cannot be left to `.any()`'s `false`.
+/// The question this serves is "can the bridge recover the provider?", and a marker has
+/// NOTHING TO RECOVER: `anthill.prelude.Eq` declares only `sort T = ?` (eq/neq live on
+/// `PartialEq`, WI-644) and `anthill.prelude.ErrorTag` declares nothing at all. Both are
+/// proof obligations, and an unfilled slot for one costs its callers nothing. MEASURED:
+/// without this arm 42 rows fail — all 16 `wi_9wvt7_error_reify_test` rows on
+/// `ErrorTag[T = <tuple>]`, and `eval_test::m3_float_comparison_and_max` on an ordinary
+/// `Eq[T = Float]` that `Float provides Eq` answers.
+///
+/// NOT A VERDICT ON ITS OWN — that was this predicate's first, refuted use. Raising
+/// wherever it is false took 6 more rows (`test.xsvcs.fwd.TT`, `wi1102.witnessrow.Lawful`,
+/// `nx4fd_disc.Marked`), whose callees' bodies never read the evidence and which LOAD AND
+/// ANSWER. "No route" makes an unfilled slot UNRESCUABLE, not read; whether it is read is
+/// [`op_body_reads_op_requirement_slot`]'s question and is decided where it always was.
+fn spec_has_value_directed_route(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
+    let ops = super::op_requirements::operations_of_sort(kb, spec_sort);
+    if ops.is_empty() {
+        return true;
+    }
+    ops.iter().any(|&op| {
+        let Some(info) = lookup_operation_info_full(kb, op) else {
+            return false;
+        };
+        self_receiver_param_index(kb, &info.params, spec_sort).is_some()
+            || spec_carrier_param_candidates(kb, &info.params, op)
+                .is_some_and(|(_, cands)| !cands.is_empty())
+    })
 }
 
 /// WI-1102 — a call site permitted to PARK an op-slot refusal, and the location it would
@@ -25964,10 +26105,15 @@ fn build_op_scoped_dicts(
 struct OpSlotParkSite {
     span: Option<Span>,
     source: crate::span::SourceId,
-    /// The operation whose body wrote this call — the CALLER. Carried because a
-    /// refusal about a slot the caller could have declared must name the caller;
-    /// `for_call` already requires it to exist (the rule-body gate).
-    enclosing_op: Symbol,
+    /// The operation whose body wrote this call — the CALLER, or `None` in a RULE body.
+    /// A refusal about a slot the caller could have declared must name the caller, so the
+    /// arm that says that is gated on `Some`; the WI-1102 arm names only the callee and
+    /// runs either way.
+    ///
+    /// WI-20260921-3G1YT made it optional. It was `Symbol`, with `for_call` returning
+    /// `None` for a rule body — see the gate's own note for why that stopped being right
+    /// for every dep.
+    enclosing_op: Option<Symbol>,
 }
 
 impl OpSlotParkSite {
@@ -25979,7 +26125,6 @@ impl OpSlotParkSite {
         span: Option<Span>,
         source: crate::span::SourceId,
     ) -> Option<Self> {
-        let enclosing_op = enclosing_op?;
         (!kb.is_builtin(callee_op)).then_some(Self {
             span,
             source,
@@ -43410,6 +43555,17 @@ fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
             }
         }
         Term::Const(Literal::Int(i)) => i.to_string(),
+        // WI-20260921-3G1YT — AN UNBOUND VAR IN TYPE POSITION IS "THIS ELEMENT IS
+        // UNDETERMINED", and `?` is how the language already spells that (`sort T = ?`).
+        // It fell to the `<term#NNN>` arm below, which is loud about nothing: the reader
+        // is shown an interning id and cannot tell that the element IS the defect.
+        //
+        // MEASURED as the message this repairs. `Holder[U = List].tyb()` — a bare
+        // parametric bracket whose element nothing writes — refused naming
+        // `TypeValue[T = anthill.prelude.List[T = <term#23484>]]`; it now reads
+        // `List[T = ?]`, which shows the unwritten element and therefore the repair
+        // (write it — `Holder[U = List[T = Int64]]` is that fixture's own control).
+        Term::Var(_) => "?".to_owned(),
         _ => format!("<term#{}>", t.raw()),
     }
 }
@@ -43847,7 +44003,7 @@ fn witness_instantiation(
     let subst: Vec<(VarId, TermId)> = named_args
         .iter()
         .filter_map(|(carrier_param, witness_occ)| {
-            let wvid = witness_param_vid_of_occurrence(kb, *witness_occ, witness, &witness_params)?;
+            let wvid = witness_param_vid_of_occurrence(kb, *witness_occ, &witness_params)?;
             let cvid = type_param_vid_in_sort(kb, carrier_sym, *carrier_param)?;
             let arg = recv_bindings.iter().find(|e| e.0 == cvid)?.1;
             Some((wvid, arg))
@@ -43863,7 +44019,10 @@ fn witness_instantiation(
 fn witness_param_vid_of_occurrence(
     kb: &KnowledgeBase,
     occ: TermId,
-    witness: Symbol,
+    // WI-20260921-3G1YT — the `witness: Symbol` parameter was dropped as unused (it
+    // warned). Both arms below match against `witness_params`, which already IS that
+    // witness's declared parameter list, so the symbol added nothing; passing it
+    // suggested a second identity check that was never performed.
     witness_params: &[(Symbol, TermId)],
 ) -> Option<VarId> {
     let vid_of = |t: TermId| match kb.get_term(t) {
@@ -43904,7 +44063,7 @@ fn apply_witness_instantiation(
     witness_params: &[(Symbol, TermId)],
     subst: &[(VarId, TermId)],
 ) -> TermId {
-    if let Some(v) = witness_param_vid_of_occurrence(kb, tid, witness, witness_params) {
+    if let Some(v) = witness_param_vid_of_occurrence(kb, tid, witness_params) {
         if let Some((_, bound)) = subst.iter().find(|(w, _)| *w == v) {
             return *bound;
         }
@@ -73764,48 +73923,6 @@ fn surviving_dot_apply(
 
 fn type_value_spec_sym(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol("anthill.reflect.TypeValue")
-}
-
-/// WI-20260919-N31XX (proposal 065) — is this UNSUPPLIABLE dependency a `TypeValue`
-/// requirement? If so the call must be refused rather than left with an empty slot.
-///
-/// IT IS THE EXACT DUAL OF THE LOWERING'S OWN LINE. [`lower_rigid_read_to_slot`] lowers a
-/// value read backed by an OP-HALF slot, so from that point every such slot is READ at
-/// run time; this runs in [`build_op_scoped_dicts`], which fills exactly the op half, so
-/// "the op half is lowered" and "the op half must be suppliable" are one invariant seen
-/// from its two ends. The SORT half is neither lowered nor refused here, and that is the
-/// same gate stated once more: a sort-half read stays on the frame type-argument channel
-/// until WI-20260919-H20YY makes a statically-dispatched defaulted member carry its
-/// dictionary.
-///
-/// WHY IT MAY BE RAISED WHERE THE SIBLING CASES ARE SILENT. [`build_op_scoped_dicts`]
-/// makes an unsuppliable op slot a SILENT ABSENCE deliberately — its own comment gives
-/// the measurement: 29 stdlib bodies declare a chain and NEVER READ IT, so a slot nothing
-/// fills costs them nothing. A `TypeValue` slot can never be one of those: `type_value()`
-/// is NULLARY (WI-20260919-HXGXF's fact 1), so the dispatching dictionary is the only
-/// carrier of the answer, and since the lowering the body demonstrably reads it. An
-/// unfilled one is an eval-time `Internal` death no handler can catch.
-///
-/// IT COVERS TWO SHAPES, and the second was only forced by the lowering.
-///  * A BARE TYPE PARAMETER — `mid[U](y: U) = tyOf(y)` forwards its own rigid into an
-///    operation that inspects it, holding no evidence and having declared none. This is
-///    the FORWARD half of 065's rule: without it the rule would refuse a body that READS
-///    a rigid but not one that HANDS it on, and a signature could still quietly depend on
-///    a type it promises nothing about.
-///  * A CARRIER THE CALL LEAVES UNDETERMINED — `tyb[U = List]()`, where a bare parametric
-///    bracket value expands to `List[T = ?t]` (WI-20260911-RS2G4) and the conditional
-///    derived instance then wants `TypeValue[T = ?t]` for a `?t` nothing pins. MEASURED:
-///    while this shape was excluded, that call LOADED and then died
-///    `Internal("… `__req_typevalue` not bound in caller frame")` once the lowering made
-///    the slot get read. It was excluded on purpose BEFORE the lowering, and the comment
-///    there said this was the lowering's question to answer; this is the answer. Reading
-///    a type the call only partially determines is not well-formed, and the repair is to
-///    write the element (`tyb[U = List[T = Int64]]()`, which loads and answers).
-fn type_value_forward_unsuppliable(kb: &KnowledgeBase, dep: &RequiresEntry) -> bool {
-    let Some(tv) = type_value_spec_sym(kb) else {
-        return false;
-    };
-    kb.canonical_sort_sym(dep.required_sort) == kb.canonical_sort_sym(tv)
 }
 
 /// WI-20260919-N31XX (proposal 065) — the type PARAMETER a `TypeValue` requirement
