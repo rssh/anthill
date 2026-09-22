@@ -2269,6 +2269,19 @@ meant, since the grounding anchor (a covered call's argument, or the typed head)
 pins the CARRIER and nothing else. A named element that disagrees with the anchor's
 own type is a load error, not a second opinion.
 
+**A bracket element may be a LOGICAL VARIABLE** (`require[Sp[C = ?c, P = Int64]]`,
+WI-20260922-QHDGC), and it reads as the ABSTRACT case above rather than as a
+selector: `Sp[C = Red, P = ?p]` matches what `Sp[C = Red]` matches, not what
+`Sp[C = Red, P = Int64]` does. A logical variable is a type here for the same
+reason it is one in a bounding guard (`Desc[?t]`) and at a §2.1 head parameter's
+type (`?x: ?t`) — types carry logical variables and unify — so refusing it at this
+one position was a defect rather than a distinction. The variable is the CLAUSE'S
+OWN: it shares identity with every other occurrence of that name in the clause, so
+it is a place a future binding can be delivered to, and it is not yet bound BY
+selection. What a bracket element may **not** be is a literal, an entity
+constructor, a rule name or a tuple type; each of those is a load error naming the
+offending carrier.
+
 **The carrier binding may be a PATH PROJECTION off one of the clause's own typed
 head parameters** (WI-20260909-S8CBV): `rule anchored(p: Box, ?r) :- ?d =
 require[Desc[T = p.E]], Desc.tag(?r)` names the `Desc` instance of the ELEMENT of

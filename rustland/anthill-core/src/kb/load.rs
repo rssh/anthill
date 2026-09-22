@@ -22386,6 +22386,35 @@ impl<'a> Loader<'a> {
             SpecBindingLowering::Dropped => {}
             other => return other,
         }
+        // WI-20260922-QHDGC — A LOGICAL VARIABLE IS A TYPE, here as everywhere else.
+        //
+        // The other two type positions already honour CLAUDE.md's first paragraph — a
+        // BOUNDING GUARD (`:- Desc[?t]`) and a HEAD PARAMETER's type (`rule r(?x: ?t)`)
+        // both load a `?t` and let it unify. This slot did not: it asked only the two NAME
+        // rungs, a variable spells no name, and the drop rule then reported it with the
+        // message a literal `Desc[T = 3]` gets — "takes sorts and its own type parameter
+        // names; this argument is neither". ONE SITE OUT OF STEP, and the guard and the
+        // head parameter are what say so: were a variable genuinely a category error in
+        // type position, they would refuse it too.
+        //
+        // WHY THE CENSUS THAT CHOSE THE NARROW RULE DOES NOT DECIDE IT. It reads "every
+        // free-name binding in the corpus spells the spec's own declared parameter …
+        // anything else was already a mistake". That establishes nobody WROTE `?t` here,
+        // not that writing it means nothing — the "unread does not imply unowed" inference
+        // WI-20260921-3G1YT was filed to reject, one channel over.
+        //
+        // THROUGH THE ORDINARY WALK, NOT A COPY OF ITS VAR ARM. `build_body_atom_occurrence`
+        // owns the parse-var → KB-var mint (`var_map`, minting on first occurrence), and
+        // going through it is what makes the bracket's `?t` THE SAME VARIABLE as every
+        // other `?t` in the clause — which is the whole content of "it binds". A local
+        // `kb.fresh_var` here would have loaded identically and bound nothing to it.
+        //
+        // ORDER IS FREE against the projection rung above — a `Term::Var` carries no
+        // dotted name, so `try_require_spec_projection` answers `Dropped` for it either
+        // way. Asked here so that rung's "asked FIRST" reasoning stays true as written.
+        if matches!(self.parsed.terms.get(parse_id), Term::Var(_)) {
+            return SpecBindingLowering::Lowered(self.build_body_atom_occurrence(parse_id));
+        }
         let Some(sym) = self.require_spec_binding_sort(parse_id) else {
             return SpecBindingLowering::Dropped;
         };
@@ -22417,11 +22446,25 @@ impl<'a> Loader<'a> {
     /// all vanished with no diagnostic — and, before the pairing fix above, silently
     /// re-indexed their neighbours. Driven by `/code-review` over all five.
     ///
+    /// FOUR OF THOSE FIVE, SINCE WI-20260922-QHDGC. A LOGICAL VARIABLE NEVER REACHES HERE
+    /// any more: [`Self::require_spec_binding_occurrence`] admits it one rung above, on the
+    /// ground that a bounding guard (`Desc[?t]`) and a §2.1 head parameter's type
+    /// (`?x: ?t`) already took one, so reporting it here made this the ONE type position
+    /// out of step. The literal, the constructor, the rule name and the tuple type are
+    /// still mistakes and still say so, one driven row each in
+    /// `wi_qhdgc_require_spec_logical_variable_test`.
+    ///
     /// A CENSUS SAYS THE NARROW RULE COSTS NOTHING: every free-name binding in the corpus
     /// spells the spec's own declared parameter — `Eq[T]` ×24, `Desc[T]` ×23,
     /// `PartialEq[T]` ×15, plus `WeakOrd[T]`, `Ord[T]`, `Relatable[T]`, `Spec[T]`,
     /// `Spec[C]`, `Walk[C]`, `Bag[E]`, `Desc[T = T]`. Anything else was already a mistake;
     /// it just could not say so.
+    ///
+    /// AND THE CENSUS IS EVIDENCE ABOUT THE CORPUS, NOT ABOUT THE LANGUAGE — worth stating
+    /// where it is quoted, because it was once read as the latter. "Nobody wrote `?v` here"
+    /// does not establish that writing it means nothing; that is the "unread does not imply
+    /// unowed" inference WI-20260921-3G1YT was filed to reject, and QHDGC is where it was
+    /// rejected one channel over.
     fn report_dropped_spec_binding(
         &mut self,
         base: Symbol,
@@ -22449,6 +22492,20 @@ impl<'a> Loader<'a> {
                     declared.join(", ")
                 },
             ),
+            // NO CARRIER IS KNOWN TO REACH THIS ARM SINCE WI-20260922-QHDGC, and it is kept
+            // anyway. The LOGICAL VARIABLE was the one shape that did — `parse_arg_type_name_of`
+            // answers `None` for a `Term::Var` and `Some(name)` for every other spelling that
+            // parses in this position — and that shape is now admitted a rung above. MEASURED
+            // over the carriers a bracket can hold: a literal (`3`, `"s"`, `1.5`, `true`), a
+            // tuple (`(Leaf, Leaf)`), an arrow (`(Int64) -> Int64`), an entity constructor and
+            // a rule name all take the `Some` arm, naming themselves.
+            //
+            // NOT DELETED, and the reason is this ticket's own lesson: "I could not find a
+            // carrier" is not "no carrier exists", which is the "unread does not imply unowed"
+            // inference WI-20260921-3G1YT was filed to reject and QHDGC rejected one channel
+            // over. Removing a diagnostic on that inference would trade a message for a silent
+            // drop at whatever shape the survey missed. What the note buys is that a reader
+            // who sees this text quoted in a ticket knows to check the variable rung first.
             None => format!(
                 "`{}`'s type parameter list takes sorts and its own type parameter names; \
                  this argument is neither",

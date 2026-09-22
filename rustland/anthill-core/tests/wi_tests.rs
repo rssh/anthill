@@ -1733,6 +1733,9 @@ mod wi_8rjk8_guarded_equation_fires_test;
 #[path = "include/wi_51w18_require_spec_type_args_test.rs"]
 mod wi_51w18_require_spec_type_args_test;
 
+#[path = "include/wi_qhdgc_require_spec_logical_variable_test.rs"]
+mod wi_qhdgc_require_spec_logical_variable_test;
+
 #[path = "include/wi_qmfc5_typed_head_anchor_test.rs"]
 mod wi_qmfc5_typed_head_anchor_test;
 

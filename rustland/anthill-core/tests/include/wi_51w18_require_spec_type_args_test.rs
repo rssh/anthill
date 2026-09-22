@@ -381,7 +381,9 @@ fn a_name_that_denotes_nothing_is_reported() {
     // open, and inventing one at this site would refuse the stdlib idiom". The rule was
     // not hard to state once `/code-review` showed what the silence cost — the drop was
     // applied to EVERY carrier, so a literal, an entity constructor, a rule name, a
-    // logical variable and a tuple all vanished with no diagnostic.
+    // logical variable and a tuple all vanished with no diagnostic. (Of those five the
+    // LOGICAL VARIABLE has since been admitted — WI-20260922-QHDGC; the other four are
+    // still mistakes and still say so.)
     //
     // THE RULE IS ABOUT NAMES: a value that spells one of the spec's OWN declared
     // parameters is the wildcard (`Desc[T]`, X9PB4); anything else that denotes no sort
@@ -404,11 +406,22 @@ fn a_binding_that_is_not_a_name_at_all_is_reported() {
     // NAMES rather than about "a name that denotes no sort": none of these is a name.
     // Each silently vanished, and before the pairing fix each also re-indexed the
     // argument written after it.
+    // WI-20260922-QHDGC REMOVED ONE CARRIER FROM THIS LIST: a LOGICAL VARIABLE
+    // (`Desc[T = ?v]`), which is now admitted and lowers to the clause's own variable.
+    // The user decided it, and the table in
+    // `wi_qhdgc_require_spec_logical_variable_test` is the argument: a bounding guard
+    // (`Desc[?t]`) and a head parameter's type (`?x: ?t`) both already took a logical
+    // variable, so this site was the one out of step rather than the three agreeing.
+    //
+    // THE CENSUS BELOW DID NOT DECIDE IT, and that is worth stating where the census is
+    // quoted: "every free-name binding in the corpus spells the spec's own declared
+    // parameter" establishes that nobody WROTE `?v` here, not that writing it is
+    // meaningless — the "unread does not imply unowed" inference WI-20260921-3G1YT was
+    // filed to reject. The other four carriers stay refused, one driven row each.
     for spelling in [
         "Desc[T = 3]",            // a literal
         "Desc[T = leaf]",         // an entity constructor
         "Desc[T = seed]",         // a rule name
-        "Desc[T = ?v]",           // a logical variable in type position
         "Desc[T = (Leaf, Leaf)]", // a tuple type
     ] {
         let ns = "test.w51w18.nn";
