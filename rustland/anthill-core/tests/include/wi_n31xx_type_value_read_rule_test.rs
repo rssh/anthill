@@ -272,9 +272,9 @@ end
     );
     assert!(
         errs.iter().any(|e| e.contains("test.n31xx.userclass.Stamp")
-            && e.contains("no value can")),
-        "the refusal must name the user spec and say why no value can supply it; \
-         got {errs:#?}"
+            && e.contains("nothing in the clause determines")),
+        "the refusal must name the user spec and say why the clause determines no \
+         instance; got {errs:#?}"
     );
 }
 
@@ -362,9 +362,9 @@ end
     );
     assert!(
         errs.iter().any(|e| e.contains("test.n31xx.sluser.Stamp")
-            && e.contains("no value can")),
-        "the refusal must name the user spec and say why no value can supply it; \
-         got {errs:#?}"
+            && e.contains("nothing in the clause determines")),
+        "the refusal must name the user spec and say why the clause determines no \
+         instance; got {errs:#?}"
     );
 }
 
@@ -426,12 +426,25 @@ end
     );
 }
 
-/// CONTROL — the SORT-half peer of [`a_user_typeclass_with_a_receiver_still_loads`]: a
-/// spec whose operation receives on its carrier gives the bridge a value to classify, so
-/// the rule-body exemption stands and the program loads. It FAILS if
-/// [`spec_has_value_directed_route`] is made to answer `false` for everything.
+/// WI-20260922-0DK3H — **INVERTED, AND THE INVERSION IS THE TICKET.** This row used to
+/// assert that the program LOADS, on the reason `spec_has_value_directed_route` gave:
+/// `shown(x: T)` receives on its carrier, so eval could classify a value and recover the
+/// provider at fire time. That predicate is deleted — "we can't have runtime dispatch
+/// because it is a runtime error instead of a loading error" (user, 2026-09-22) — and
+/// with it the reason this row stood.
+///
+/// NOTHING PINS `U` AND THE CLAUSE DECLARES NOTHING, so no route reaches the slot: the
+/// caller's own `requires` (Strategies 1/2) is a rule body's `require[…]` and there is
+/// none, the clause holds no spec-typed value (route 4), and the provider facts decide
+/// nothing ([`dep_completes_to_a_unique_provider`] — `Shown` has no provider at all
+/// here). The dep is owed and unfillable, so it is refused where it is written.
+///
+/// ITS CONTROL IS [`a_sort_level_call_that_pins_the_carrier_still_loads`], one fixture
+/// down: the SAME spec and the SAME forwarding operation, differing only in that the call
+/// names a concrete argument. That pair is what says this refusal is about the missing
+/// evidence and not about the shape.
 #[test]
-fn a_sort_level_user_typeclass_with_a_receiver_still_loads() {
+fn a_sort_level_user_typeclass_with_a_receiver_is_refused() {
     let errs = load_errors(
         r#"
 namespace test.n31xx.sluserrecv
@@ -453,19 +466,62 @@ end
 "#,
     );
     assert!(
-        errs.is_empty(),
-        "a spec whose operation receives on its carrier CAN be resolved from a value at \
-         fire time, so the rule-body exemption stands; got {errs:#?}"
+        errs.iter().any(|e| e.contains("test.n31xx.sluserrecv.Shown")),
+        "a rule-body goal that pins nothing and declares nothing must be refused AT LOAD, \
+         and the refusal must name the spec whose evidence is missing; got {errs:#?}"
     );
 }
 
-/// CONTROL — a user typeclass of the same shape whose operation DOES receive on its
-/// carrier. `stamp(x: T)` gives the bridge a value to classify, so the rule-body
-/// exemption stands and the program loads. It is the other half of what
-/// [`spec_has_value_directed_route`] decides, and it FAILS if that predicate is made to
-/// answer `false` for everything.
+/// CONTROL for the row above, and the half that says the refusal is about EVIDENCE rather
+/// than about a spec with a receiver. Same `Shown`, same `Holder.get`, but the call names
+/// `leaf()`, so the dep is `Shown[T = Leaf]` and `Leaf provides Shown` answers it
+/// statically. It passes on both trees.
 #[test]
-fn a_user_typeclass_with_a_receiver_still_loads() {
+fn a_sort_level_call_that_pins_the_carrier_still_loads() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.sluserpin
+  import anthill.prelude.{Int64}
+
+  sort Shown
+    sort T = ?
+    operation shown(x: T) -> Int64
+  end
+
+  sort Leaf
+    entity leaf
+    provides Shown[T = Leaf]
+    operation shown(x: Leaf) -> Int64 = 7
+  end
+
+  sort Holder
+    sort U = ?
+    requires Shown[T = U]
+    operation get(x: U) -> Int64 = Shown.shown(x)
+  end
+
+  rule names(?n) :- ?n = Holder.get(leaf())
+end
+"#,
+    );
+    assert!(
+        errs.is_empty(),
+        "the call pins `U = Leaf` and `Leaf provides Shown`, so the dictionary is \
+         determined at load; got {errs:#?}"
+    );
+}
+
+/// WI-20260922-0DK3H — **INVERTED, the OP-half twin of
+/// [`a_sort_level_user_typeclass_with_a_receiver_is_refused`].** Same deletion, same
+/// reason: `shown(x: T)` receiving on its carrier used to rescue this through
+/// `spec_has_value_directed_route`, and a rescue that says "eval will recover it" is the
+/// runtime dispatch this ticket removes.
+///
+/// THE TWO HALVES ARE BOTH HERE ON PURPOSE. WI-855 legislates that the sort-level and
+/// op-level spellings of one requirement give ONE verdict; an inversion that moved only
+/// one of them would split that, and this pair is what catches it.
+#[test]
+fn a_user_typeclass_with_a_receiver_is_refused() {
     let errs = load_errors(
         r#"
 namespace test.n31xx.userclassrecv
@@ -483,9 +539,9 @@ end
 "#,
     );
     assert!(
-        errs.is_empty(),
-        "a spec whose operation receives on its carrier CAN be resolved from a value at \
-         fire time, so the rule-body exemption stands; got {errs:#?}"
+        errs.iter().any(|e| e.contains("test.n31xx.userclassrecv.Shown")),
+        "the op-half spelling must be refused exactly as the sort-half one is, and name \
+         the same spec; got {errs:#?}"
     );
 }
 

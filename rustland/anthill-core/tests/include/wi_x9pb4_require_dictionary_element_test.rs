@@ -61,7 +61,7 @@
 //! `bindings.push` what it built. Three of this file's five rows fail, plus one in
 //! the neighbouring file:
 //!
-//!  * `the_woven_spelling_answers_what_the_plain_one_does` — FAILS. The woven rule's
+//!  * `the_woven_spelling_answers_both_boxes` (then named `…_what_the_plain_one_does`) — FAILS. The woven rule's
 //!    DEFINITE answers go to `[]` against the plain spelling's `[0, 2]`; its only
 //!    solution is an INDEFINITE one.
 //!  * `the_bound_dictionary_names_the_carrier_that_provides_the_spec` — FAILS: `?d`
@@ -121,9 +121,26 @@ namespace x9pb4
   fact Box(items: [])
 
   rule woven(?ls, ?n) :- require[FiniteCollection[C = List[T = String]]], size(?ls, ?n)
-  rule plain(?ls, ?n) :- size(?ls, ?n)
 
   rule answer_woven(?n) :- Box(items: ?ls), woven(?ls, ?n)
+end
+"#;
+
+/// WI-20260922-0DK3H — [`SRC`] WITHOUT the `require`, which is now a LOAD ERROR and so
+/// cannot share a file with the rules that must load. See
+/// [`the_plain_spelling_is_refused_and_the_require_is_the_repair`].
+const PLAIN_SRC: &str = r#"
+namespace x9pb4_plain
+  import anthill.prelude.{List, String, Bool, Int64, FiniteCollection}
+  import anthill.prelude.FiniteCollection.{size}
+
+  sort Box
+    entity Box(items: List[T = String])
+  end
+
+  fact Box(items: ["a", "b"])
+
+  rule plain(?ls, ?n) :- size(?ls, ?n)
   rule answer_plain(?n) :- Box(items: ?ls), plain(?ls, ?n)
 end
 "#;
@@ -142,29 +159,52 @@ fn ints(kb: &mut anthill_core::kb::KnowledgeBase, qn: &str) -> Vec<i64> {
     got
 }
 
-/// THE ACCEPTANCE ROW — the two spellings must AGREE, and agree on two numbers.
+/// THE ACCEPTANCE ROW — the woven spelling answers two numbers, BY VALUE.
 ///
-/// The plain spelling is asserted FIRST and by value: it is WI-20260830-NX4FD's win,
-/// it passes either way, and without it the equality below would be satisfied by two
-/// spellings that both answer nothing.
+/// WI-20260922-0DK3H CHANGED WHAT THIS IS MEASURED AGAINST. It used to assert that the
+/// woven spelling answers what the PLAIN one does, with the plain answer read first as
+/// the control. The plain spelling is now a load error
+/// ([`the_plain_spelling_is_refused_and_the_require_is_the_repair`]), so the comparison
+/// has no second side; the guarantee it bought — "an equality both sides satisfy by
+/// answering nothing proves nothing" — is bought instead by asserting `[0, 2]` outright,
+/// over two `Box`es whose lengths DISAGREE.
+///
+/// THE TWO ROWS ARE STILL A PAIR, and a sharper one than before: they are the same goal
+/// differing by exactly the `require`, and now one loads and the other does not.
 #[test]
-fn the_woven_spelling_answers_what_the_plain_one_does() {
+fn the_woven_spelling_answers_both_boxes() {
     let mut kb = load_kb_with(SRC);
-    let plain = ints(&mut kb, "x9pb4.answer_plain");
-    assert_eq!(
-        plain,
-        vec![0, 2],
-        "the CONTROL first — the PLAIN `size(?ls, ?n)` is NX4FD's win and must bind \
-         each Box's length; if it moved, the row below measures something other than \
-         the `require` spelling"
-    );
     let woven = ints(&mut kb, "x9pb4.answer_woven");
     assert_eq!(
-        woven, plain,
-        "`require[FiniteCollection[C = List[T = String]]], size(?ls, ?n)` must answer \
-         exactly what the same goal answers WITHOUT the `require`. Before this ticket \
-         the woven rule yielded ONE INDEFINITE solution — the `find_dictionary` goal \
-         came back `Undecided` and the arity+1 site routed to `unify` and delayed"
+        woven,
+        vec![0, 2],
+        "`require[FiniteCollection[C = List[T = String]]], size(?ls, ?n)` must bind each \
+         Box's length. Before X9PB4 the woven rule yielded ONE INDEFINITE solution — the \
+         `find_dictionary` goal came back `Undecided` and the arity+1 site routed to \
+         `unify` and delayed"
+    );
+}
+
+/// WI-20260922-0DK3H — **THE OTHER HALF, AND THE TICKET'S THESIS IN ONE PAIR.** The same
+/// `size(?ls, ?n)` over the same `List` WITHOUT the bracket: nothing types `?ls`, so the
+/// dep `Iterable[C, Element, E]` has every element open and no provider fact can decide
+/// it. The only thing that could ever have supplied the dictionary is the runtime value
+/// of `?ls`, and that is the dispatch this ticket removes.
+///
+/// IT USED TO ANSWER `[0, 2]`, and this row's own former doc says why that was not a
+/// static win: "`size` also reaches `2` by value-directed dispatch (WI-1044)". That is
+/// precisely the route deleted here.
+#[test]
+fn the_plain_spelling_is_refused_and_the_require_is_the_repair() {
+    let errs = match crate::common::try_load_kb_with(PLAIN_SRC) {
+        Err(errs) => errs,
+        Ok(_) => panic!("the plain spelling has no evidence and must be refused at load"),
+    };
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("Iterable") || e.contains("FiniteCollection")),
+        "the refusal must name the spec whose evidence is missing, so the author is sent \
+         to the `require[…]` spelling the row above drives; got {errs:#?}"
     );
 }
 

@@ -2459,6 +2459,26 @@ pub struct TypingEnv {
     /// must not change what defers to what. Read only by
     /// [`Self::referencing_scope`]. `None` outside the rule-body sweep.
     rule_scope: Option<Symbol>,
+    /// WI-20260922-0DK3H — the spec VIEWS this RULE BODY DECLARES, as `require[X]` /
+    /// `requires(X)` brackets (the `find_dictionary` goals the converter lowered them to,
+    /// whose slot 0 carries the instance WHOLE — `lower_require`'s "WHOLE, not stripped").
+    ///
+    /// ROUTE 4's SLOT SOURCE, ONE SOURCE OVER, and that is why it rides here rather than
+    /// in a predicate of its own: [`held_spec_views`] already asks "what contracts does
+    /// this caller hold?", and a clause that WRITES `require[FiniteCollection[C = …]]`
+    /// holds one for the same reason a parameter's type does — it is evidence read off
+    /// the clause's own text, not a walk of somebody else's body. Feeding it through the
+    /// one channel is also what makes the TRANSITIVE leg work for free:
+    /// [`scope_contract_covers_dep`] walks `direct_requires_chain`, so a declared
+    /// `FiniteCollection` discharges the `Iterable` that `FiniteCollection` itself
+    /// requires. Exactly the carrier-aware transitive suppression
+    /// [`check_one_spec_op_requirement`]'s doc defers as "a clean follow-up gated on an
+    /// actual driver" — WI-20260922-0DK3H is that driver, and the cover walk supplies the
+    /// carriers its exact-symbol match could not.
+    ///
+    /// Empty outside the rule-body sweep, where it is `None` for the same reason
+    /// [`Self::rule_scope`] is.
+    rule_declared_specs: Rc<Vec<Value>>,
     /// The enclosing SORT's dictionary chain, snapshotted once per body. It is
     /// consulted at every spec-op call site under this body; caching it here avoids
     /// re-walking `SortRequiresInfo` per apply.
@@ -2606,6 +2626,7 @@ impl TypingEnv {
             local_resources: Vec::new(),
             enclosing_sort: None,
             rule_scope: None,
+            rule_declared_specs: Rc::new(Vec::new()),
             enclosing_chain: DictChain::empty(),
             enclosing_op_chain: None,
             op_requires: Rc::new(Vec::new()),
@@ -2846,6 +2867,17 @@ impl TypingEnv {
     /// WI-977 — see [`Self::rule_scope`]. Set once per rule by the rule-body sweep.
     fn set_rule_scope(&mut self, domain: Symbol) {
         self.rule_scope = Some(domain);
+    }
+
+    /// WI-20260922-0DK3H — see [`Self::rule_declared_specs`]. Set once per rule by the
+    /// rule-body sweep, which is the one place holding the `RuleId` the brackets are
+    /// collected from.
+    fn set_rule_declared_specs(&mut self, specs: Vec<Value>) {
+        self.rule_declared_specs = Rc::new(specs);
+    }
+
+    fn rule_declared_specs(&self) -> &[Value] {
+        &self.rule_declared_specs
     }
 
     /// The enclosing SORT's slots alone.
@@ -24869,9 +24901,9 @@ fn build_dispatching_dict_from_chain(
                 // MEASURED as the gap this closes: a SORT-level `requires Stamp[T = U]`
                 // at a nullary user typeclass, reached from a rule body, LOADED CLEAN
                 // before this arm while the `TypeValue` spelling was refused.
-                if let Some(callee_op) = rule_body_callee {
-                    if !spec_has_value_directed_route(kb, dep.required_sort)
-                        && !dep_has_searchable_pin(kb, dep)
+                if let Some(callee_op) = rule_body_callee.filter(|&op| !kb.is_builtin(op)) {
+                    if !spec_is_a_marker(kb, dep.required_sort)
+                        && !dep_completes_to_a_unique_provider(kb, dep, callee_spec_sort)
                     {
                         let unconstrained = disambig
                             .map(|ctx| unconstrained_elements(kb, dep, ctx))
@@ -25643,8 +25675,8 @@ fn build_op_scoped_dicts(
             // `rule names(?x, ?n) :- ?n = stampOf(?x)` — LOADED CLEAN while the
             // `TypeValue` spelling was refused.
             if park.is_some_and(|s| s.enclosing_op.is_none())
-                && !spec_has_value_directed_route(kb, dep.required_sort)
-                && !dep_has_searchable_pin(kb, &dep)
+                && !spec_is_a_marker(kb, dep.required_sort)
+                && !dep_completes_to_a_unique_provider(kb, &dep, callee_op)
             {
                 kb.unsuppliable_requirements.truncate(parked_mark);
                 let dep_text = render_requires_entry(kb, &dep);
@@ -25753,14 +25785,15 @@ fn unrescuable_rule_body_refusal(
         unconstrained,
         refused_covers: Vec::new(),
         construction: format!(
-            "this is a RULE-body goal, whose dictionaries the SLD bridge resolves from \
-             the concrete argument values at fire time — but `{spec}` declares no \
-             operation taking its own carrier, so no value can name a provider for it, \
-             and this call pins no element the resolver could search on either. The \
-             dispatching dictionary is the only carrier of the answer, and a rule body \
-             cannot declare one. Call `{callee}` from an operation that declares the \
-             matching `requires`, pin the element at this call, or give `{spec}` an \
-             operation that receives on its carrier",
+            "this is a RULE-body goal, and nothing in the clause determines which \
+             `{spec}` instance it means: the clause declares no `require[{spec}[…]]`, \
+             this call pins no element, and `{spec}`'s provider facts do not decide one \
+             either. Taking the dictionary from the argument's RUNTIME VALUE instead \
+             would turn a load error into a run-time one — the clause would load and \
+             then report by not answering (WI-20260922-0DK3H) — so it is refused where \
+             it is written. Declare `require[{spec}[…]]` in the clause, pin the element \
+             at this call, or call `{callee}` from an operation that declares the \
+             matching `requires`",
             spec = kb.qualified_name_of(dep.required_sort),
             callee = kb.qualified_name_of(callee_op),
         ),
@@ -25769,29 +25802,64 @@ fn unrescuable_rule_body_refusal(
     }
 }
 
-/// WI-20260921-3G1YT — DOES THIS DEP CARRY A CONCRETE ELEMENT THE RESOLVER COULD SEARCH
-/// ON? True when any binding mentions no type parameter, so a goal built from it has
-/// something to match a provider fact against.
+/// WI-20260922-0DK3H — DO THE PROVIDER FACTS DETERMINE A DICTIONARY FOR THIS DEP?
 ///
-/// THE THIRD RESCUE ROUTE, and the one that refuted a narrower rule. The SLD bridge
-/// resolves a GOAL, and a goal can be answered from a pinned ELEMENT even where no value
-/// can name a carrier: `nx4fd_disc.Marked` declares only the nullary `code()`, so
-/// [`spec_has_value_directed_route`] is false for it, yet `Ghost.probe(alpha(), ?x)` pins
-/// `M = Alpha` and the resolver completes `N = Beta` off `Alpha provides Marked[M = Alpha,
-/// N = Beta]`. MEASURED: without this condition
-/// `wi_nx4fd …a_completion_selects_the_provider_the_pinned_element_names` is refused, and
-/// it is the ONE row in the workspace that says so.
+/// THIS REPLACES `dep_has_searchable_pin`, and the replacement is the ticket. That
+/// predicate asked whether any binding was GROUND — "so a goal built from it has
+/// something to match a provider fact against at fire time". That is a RUNTIME answer to
+/// a LOAD-time question: it admitted a program on the strength of the resolver *having a
+/// key*, never on its *finding* anything, so a clause whose dictionary nothing determines
+/// loaded and then reported by not answering. This asks instead whether the facts leave
+/// exactly one answer, which is a proof.
 ///
-/// `rigid_ok = false` IS THE POINT — see [`type_value_is_ground_g`]'s two readings. A
-/// `Var::Rigid` is the enclosing sort's parameter skolemized: determined, but ABSTRACT, so
-/// there is no fact to match it against. `Stamp[T = B]` at the caller's own rigid carries
-/// nothing searchable and is the case this must not excuse.
-fn dep_has_searchable_pin(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> bool {
-    goal_from_requires_entry(kb, dep).is_some_and(|g| {
-        g.bindings
-            .iter()
-            .any(|(_, v)| type_value_is_ground(kb, *v))
-    })
+/// IT IS THE SAME PROOF EVAL ALREADY RUNS, deliberately, so the two cannot drift:
+/// [`unique_provider_completion`] is [`resolve_bridge_requirements`]' own step. It reads
+/// provider FACTS only, excludes a provider that disagrees on an element the call DID
+/// pin, declines one that leaves an open element abstract (it would answer at more than
+/// one completion, which is proof the arguments do not decide), and returns `None` on a
+/// second surviving completion. What the bridge does at fire time, this does at load.
+///
+/// THE EMPTY SCOPE IS THE POINT, not an omission: the question is what the FACTS decide,
+/// and a caller slot is not a fact. Every forwarding route has already run — this is
+/// reached only after [`build_dep_projection`] declined — so passing the scope would
+/// re-ask, with the same inputs, a question answered `no` one call up.
+///
+/// A FULLY PINNED DEP NEEDS NO ARM OF ITS OWN, and that was MEASURED rather than reasoned
+/// into the diff. [`unique_provider_completion`] answers `None` the moment `open` is
+/// empty, so a first cut added `resolve_bridge_requirements`' `if all_pinned { goal }`
+/// branch beside it, on the theory that such a dep would otherwise be refused although
+/// its goal resolves. Backing that branch out moved ZERO rows over the whole crate
+/// (4886 pass either way): the fully-pinned case cannot reach here, because Strategy 3 —
+/// the static resolution inside [`build_dep_projection`] — has already answered it, and a
+/// fully-pinned dep that Strategy 3 could not resolve is one this would not resolve
+/// either. A branch that cannot be driven is not in the diff.
+fn dep_completes_to_a_unique_provider(
+    kb: &mut KnowledgeBase,
+    dep: &RequiresEntry,
+    owner: Symbol,
+) -> bool {
+    let Some(goal) = goal_from_requires_entry(kb, dep) else {
+        return false;
+    };
+    // The EMPTY scope is the point, not an omission: this asks what the PROVIDER FACTS
+    // decide, and a caller slot is not one. Every forwarding route ran already — this
+    // arm is reached only after [`build_dep_projection`] declined — so consulting the
+    // scope here would re-ask a question that was answered `no` one call up.
+    let scope = ResolutionScope {
+        available_requires: &[],
+        sigma: None,
+        selected: &[],
+        sub_goal_requires: &[],
+    };
+    let rung = rung_for_dep(kb, owner, dep.required_sort);
+    let goal = match unique_provider_completion(kb, &goal, &scope, rung) {
+        Some(completed) => completed,
+        None => return false,
+    };
+    matches!(
+        resolve_with_rung(kb, &goal, &scope, rung),
+        ResolutionResult::Resolved(_)
+    )
 }
 
 /// WI-20260921-3G1YT — ROUTE 4: A SPEC-TYPED VALUE IN SCOPE CARRIES THAT SPEC'S
@@ -26286,9 +26354,14 @@ fn held_spec_views(
     env: &TypingEnv,
     arg_types: &[Value],
 ) -> Vec<HeldSpecView> {
+    // WI-20260922-0DK3H — AND THIS CLAUSE'S OWN DECLARED BRACKETS. See
+    // [`TypingEnv::rule_declared_specs`]: a written `require[Spec[…]]` is a contract the
+    // clause holds, and routing it through this one source is what gives it the
+    // transitive cover walk rather than a second, carrier-blind notion of "declared".
     let views: Vec<(Symbol, Value)> = env
         .bound_types()
         .chain(arg_types.iter())
+        .chain(env.rule_declared_specs().iter())
         .filter_map(|t| sort_functor_of_view(kb, t).map(|s| (s, t.clone())))
         .collect();
     let mut out: Vec<HeldSpecView> = Vec::new();
@@ -26309,47 +26382,30 @@ fn held_spec_views(
     out
 }
 
-/// WI-20260921-3G1YT — CAN A RUNTIME VALUE EVER DIRECT DISPATCH TO `spec_sort`? True
-/// when at least one of its operations takes a receiver eval could classify a carrier
-/// from. FALSE for a spec whose every operation is nullary in its own carrier — and that
-/// is the property that decides whether the SLD bridge can rescue an unfilled slot.
+/// WI-20260922-0DK3H — DOES THIS SPEC DECLARE NO OPERATIONS AT ALL? A spec that does not
+/// is a MARKER: a proof obligation with nothing to read, so an unfilled slot for one
+/// costs its callers nothing and a rule-body goal is not refused over it.
 ///
-/// THE TWO READERS ARE EVAL'S OWN, deliberately: `eval::spec_call_runtime_carrier` finds
-/// the receiver with exactly [`self_receiver_param_index`] (the SELF-REPRESENTING shape,
-/// `Stream.head(s: Stream)`) and [`spec_carrier_param_candidates`] (the CARRIER-PARAM
-/// shape, `FiniteCollection.collect(c: C)`). Asking a third way here would let a spec be
-/// dispatchable at eval and refused at load, or the reverse.
+/// THIS IS THE SURVIVING HALF OF `spec_has_value_directed_route`, and the split is the
+/// ticket's own finding. That predicate bundled two unrelated claims under one name and
+/// one `||`. Its receiver arm — "some operation takes a receiver eval could classify a
+/// carrier from, so a VALUE can name a provider at fire time" — was the runtime dispatch
+/// WI-20260922-0DK3H removes, and it is gone with its two eval readers
+/// (`self_receiver_param_index`, `spec_carrier_param_candidates`, still eval's own and
+/// unchanged there). Its empty-operations arm is not an appeal to run time at all: it is
+/// a STRUCTURAL FACT about the declaration, decidable at load, and deleting it with the
+/// rest would have been a different change wearing the same name.
 ///
-/// A SPEC WITH NO OPERATIONS IS A MARKER, and answers TRUE — the opposite verdict to
-/// "nothing can dispatch it", so the empty case cannot be left to `.any()`'s `false`.
-/// The question this serves is "can the bridge recover the provider?", and a marker has
-/// NOTHING TO RECOVER: `anthill.prelude.Eq` declares only `sort T = ?` (eq/neq live on
-/// `PartialEq`, WI-644) and `anthill.prelude.ErrorTag` declares nothing at all. Both are
-/// proof obligations, and an unfilled slot for one costs its callers nothing. MEASURED:
-/// without this arm 42 rows fail — all 16 `wi_9wvt7_error_reify_test` rows on
-/// `ErrorTag[T = <tuple>]`, and `eval_test::m3_float_comparison_and_max` on an ordinary
-/// `Eq[T = Float]` that `Float provides Eq` answers.
+/// MEASURED, and why the arm is kept rather than argued for: without it 42 rows fail —
+/// all 16 `wi_9wvt7_error_reify_test` rows on `ErrorTag[T = <tuple>]`, and
+/// `eval_test::m3_float_comparison_and_max` on an `Eq[T = Float]` that `Float provides Eq`
+/// answers. `anthill.prelude.Eq` declares only `sort T = ?` (eq/neq live on `PartialEq`,
+/// WI-644) and `anthill.prelude.ErrorTag` declares nothing at all.
 ///
-/// NOT A VERDICT ON ITS OWN — that was this predicate's first, refuted use. Raising
-/// wherever it is false took 6 more rows (`test.xsvcs.fwd.TT`, `wi1102.witnessrow.Lawful`,
-/// `nx4fd_disc.Marked`), whose callees declare a clause they never use. "No route" makes
-/// an unfilled slot UNRESCUABLE, which is one conjunct of a rule-body verdict and never
-/// the whole of one. Those three fixtures are now REPAIRED rather than excused — the
-/// clause a body does not use is deleted (WI-20260921-3G1YT), which is why the walk that
-/// used to stand beside this predicate is gone.
-fn spec_has_value_directed_route(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
-    let ops = super::op_requirements::operations_of_sort(kb, spec_sort);
-    if ops.is_empty() {
-        return true;
-    }
-    ops.iter().any(|&op| {
-        let Some(info) = lookup_operation_info_full(kb, op) else {
-            return false;
-        };
-        self_receiver_param_index(kb, &info.params, spec_sort).is_some()
-            || spec_carrier_param_candidates(kb, &info.params, op)
-                .is_some_and(|(_, cands)| !cands.is_empty())
-    })
+/// NOT A VERDICT ON ITS OWN, in either direction: it EXEMPTS, and the refusal it guards
+/// needs [`dep_completes_to_a_unique_provider`] to fail as well.
+fn spec_is_a_marker(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
+    super::op_requirements::operations_of_sort(kb, spec_sort).is_empty()
 }
 
 /// WI-1102 — a call site permitted to PARK an op-slot refusal, and the location it would
@@ -29146,8 +29202,6 @@ fn lookup_operation_info_full(kb: &KnowledgeBase, functor: Symbol) -> Option<Ope
         requires: rec.requires,
     })
 }
-
-
 
 
 
@@ -75892,6 +75946,24 @@ fn type_rule_bodies(
             // requirement frame this body must not acquire (see above); this field
             // is read by `referencing_scope` alone.
             env.set_rule_scope(kb.rule_domain(rid));
+            // WI-20260922-0DK3H — and what this clause DECLARES. See
+            // [`TypingEnv::rule_declared_specs`]: the brackets are route 4's slot source,
+            // so a rule-body call's dep is discharged by the clause's own
+            // `require[Spec[…]]` exactly as an operation-body call's is by a parameter's
+            // type. Collected HERE because this is the only site holding the `RuleId`.
+            //
+            // The builtin is absent in a minimal KB that never registered it; then no
+            // rule can carry a bracket and the list is correctly empty — the same reason
+            // [`check_rule_body_requirements`] states at its own `fd_sym`.
+            if let Some(fd) = kb.try_resolve_symbol(crate::parse::desugar_target::qualified(
+                crate::parse::desugar_target::FIND_DICTIONARY,
+            )) {
+                let mut declared: Vec<Value> = Vec::new();
+                for node in &body_nodes {
+                    collect_declared_spec_views(node, fd, &mut declared);
+                }
+                env.set_rule_declared_specs(declared);
+            }
             // WI-557 / WI-602: mark this as rule-body context so `check_apply_iter`
             // treats the WI-539 value-precondition `requires`-check as refutation-
             // aware — a rule body is SLD/relational with no call-site Γ, so a
@@ -77120,6 +77192,40 @@ fn check_goal_atom_reading(
             },
             Some(o.span.source),
         ));
+    }
+}
+
+/// WI-20260922-0DK3H — the spec INSTANCES a rule body declares, whole. The sibling of
+/// [`collect_find_dictionary_bases`], which takes only the base SYMBOL because its reader
+/// ([`check_one_spec_op_requirement`]) compares symbols; this one keeps the bracket's
+/// bindings, because its reader ([`scope_contract_covers_dep`], through
+/// [`held_spec_views`]) composes them — and the bindings are exactly what the deferred
+/// carrier-aware suppression needed.
+///
+/// SLOT 0 CARRIES THE INSTANCE WHOLE — `lower_require`'s "WHOLE, not stripped" and
+/// WI-20260909-51W18's retention. A bare `require[Desc]` therefore contributes
+/// `Ref(Desc)`, which [`sort_functor_of_view`] reads as the unparameterised view and the
+/// cover walk treats as binding nothing — the same "empty is a real answer" that
+/// [`RequirementBracket`] states for its own reader.
+fn collect_declared_spec_views(
+    occ: &Rc<NodeOccurrence>,
+    fd_sym: Symbol,
+    out: &mut Vec<Value>,
+) {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(o) = stack.pop() {
+        let Some(expr) = o.as_expr() else { continue };
+        if let Expr::Apply {
+            functor, pos_args, ..
+        } = expr
+        {
+            if *functor == fd_sym {
+                if let Some(instance) = pos_args.first() {
+                    out.push(Value::Node(Rc::clone(instance)));
+                }
+            }
+        }
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
     }
 }
 

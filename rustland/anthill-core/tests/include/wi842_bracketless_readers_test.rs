@@ -272,29 +272,49 @@ fn a_self_providing_carrier_now_answers_where_it_used_to_tie() {
 /// WI-861 moved the TIED arm onto [`TWIG`] for the reason that constant states: `Leaf` +
 /// `RIVAL` now resolves by rung 2a. The UNTIED arm keeps `Leaf`, so the pair still
 /// differs by exactly one thing — whether anything answers the dispatch.
+/// WI-20260922-0DK3H — **INVERTED, BOTH ARMS, and the second one is the finding.** This
+/// row's subject — a rule-body tie is NOT resolved by first-match — is unchanged and is
+/// still measured, at the HOST entry, by this file's `probe_entity` rows. What is gone is
+/// the rule-body CHANNEL for it, because a rule body no longer reaches value-directed
+/// dispatch at all.
+///
+/// THE TIED ARM was the expected inversion: two `Twig` witnesses disagree (3 vs 5) and
+/// nothing in the clause chooses, so an undecided dictionary is refused where the call is
+/// written instead of delaying into a query that returns nothing.
+///
+/// THE UNTIED ARM INVERTS TOO, AND THAT WAS NOT PREDICTED — it was measured, and the
+/// reason is worth keeping. `Leaf` looks like a sole provider, but `DESC_INSTANCES` also
+/// carries `WrapDesc provides Desc[T = Wrap[A = E]]` with `E` OPEN. Per
+/// [`unique_provider_completion`]'s own rule, a provider that leaves an element abstract
+/// answers at MORE THAN ONE completion and so proves the arguments do not decide: at
+/// `Desc[T = ?]` both `T := Leaf` and `T := Wrap[A = …]` are answerable. The clause
+/// genuinely determines no dictionary, and only the runtime value of `?x` ever did.
+///
+/// SO THE PAIR IS NO LONGER ONE-PROVIDER vs TWO; both arms are refused for the same
+/// reason, and the arm that still separates them lives at the host entry where a VALUE is
+/// in hand. Asserted here as one refusal each so a future change that admits either is
+/// loud.
 #[test]
-fn a_rule_body_delays_on_the_tie_instead_of_first_matching() {
+fn a_rule_body_tie_is_refused_at_load_on_both_arms() {
     const RULE: &str = r#"
   rule described(?x, ?y)
     :- eq(?y, Holder.probe(?x))
 "#;
-    // ONE provider: the rule answers, and answers 1 (not 7).
-    let (definite_1, definite_7) =
-        rule_answers("wi842.vd.rule.untied", "", RULE, "Leaf.leaf", (1, 7));
-    assert_eq!(
-        (definite_1, definite_7),
-        (1, 0),
-        "with one provider the rule must fire for the provider's answer (1) and refute 7"
-    );
-    // TWO providers: neither answer is DEFINITE. A definite 3 (or 5) here is a
-    // first-match commitment — the defect this ticket closes.
-    let (tied_3, tied_5) = rule_answers("wi842.vd.rule.tie", TWIG, RULE, "Twig.twig", (3, 5));
-    assert_eq!(
-        (tied_3, tied_5),
-        (0, 0),
-        "with two providers the rule may not DECIDE either answer: the dispatch is \
-         ambiguous, so the goal delays (a residual, non-definite solution)"
-    );
+    for (ns, extra, what) in [
+        ("wi842.vd.rule.untied", "", "one provider plus WrapDesc's open-ended row"),
+        ("wi842.vd.rule.tie", TWIG, "two disagreeing Twig witnesses"),
+    ] {
+        let errs = match crate::common::try_load_kb_with(&program(ns, extra, RULE)) {
+            Err(errs) => errs,
+            Ok(_) => panic!("{what}: a rule-body goal that determines no dictionary must \
+                             be refused at load, not delayed"),
+        };
+        assert!(
+            errs.iter().any(|e| e.contains("Desc")),
+            "{what}: the refusal must name the spec whose dictionary is undetermined; \
+             got {errs:#?}"
+        );
+    }
 }
 
 /// `described(<ctor>(), n)` for the two candidate answers — the count of DEFINITE

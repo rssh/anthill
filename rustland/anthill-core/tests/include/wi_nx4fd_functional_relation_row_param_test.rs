@@ -95,6 +95,16 @@ use anthill_core::eval::Value;
 
 use crate::common::{definite_unary, load_kb_with, query_unary};
 
+/// WI-20260922-0DK3H — the load errors of a fixture this ticket turned from a silent
+/// non-answer into a refusal. Panics if it loads, because "it loaded" is the outcome
+/// these rows exist to reject.
+fn load_errors(src: &str) -> Vec<String> {
+    match crate::common::try_load_kb_with(src) {
+        Err(errs) => errs,
+        Ok(_) => panic!("expected a LOAD refusal, but the program loaded clean"),
+    }
+}
+
 /// One file, one `List`, two `Box`es of DIFFERENT length, and the spec op beside the
 /// carrier's own operation at the same arity. Two rows rather than one so a predicate
 /// that answered a constant fails as loudly as one that answered nothing.
@@ -277,20 +287,21 @@ end
     );
 }
 
-/// CONTROL — THE SOUNDNESS ROW, and it passes with either half backed out.
+/// WI-20260922-0DK3H — **INVERTED: "answers nothing" IS the silent failure, so it is now
+/// a LOAD error.** The same sort-level shape as the row above at a carrier that provides
+/// NO `VectorSpace` at all: nothing pins `F` and no provider completes it.
 ///
-/// The same sort-level shape as above at a carrier that provides NO `VectorSpace` at
-/// all: nothing pins `F` and no provider completes it, so the slot gets the recorded
-/// absence and the body's `VectorSpace.vec_add` read is REFUSED. The goal answers
-/// `[]`.
+/// WHAT IT USED TO ASSERT, and why that was the defect rather than the guarantee: the
+/// program LOADED and the goal answered `[]` — a non-answer indistinguishable from "the
+/// search found no solution". The slot had no filler anywhere and nothing said so. That
+/// is exactly "a runtime error instead of a loading error" (user, 2026-09-22).
 ///
-/// It answered `[]` before this ticket too — the whole call was `Unresolvable`, which
-/// suspends. That is the point: the marker arm widened what a call may RUN with, and
-/// this says it did not widen what a call may ANSWER. A definite-looking wrong answer
-/// here is exactly what kernel-language.md §5.3 warns about for the arity+1 view, and
-/// what the ticket predicted (wrongly, on a different fixture) would happen.
+/// THE SOUNDNESS CLAIM IT CARRIED IS NOT RETRACTED — no wrong dictionary is guessed, and
+/// [`rival_completions_are_refused_rather_than_guessed`] is where that is now driven. The
+/// change is only WHEN the author is told: at the call they wrote, not at a query that
+/// quietly returns nothing.
 #[test]
-fn an_under_determined_slot_with_no_completion_answers_nothing() {
+fn an_under_determined_slot_with_no_completion_is_refused_at_load() {
     let src = r#"
 namespace nx4fd_no
   import anthill.prelude.{Int64}
@@ -311,13 +322,11 @@ namespace nx4fd_no
   rule doubled(?r) :- mark(?m), G2.twice(blob(n: 1), ?r)
 end
 "#;
-    let mut kb = load_kb_with(src);
-    let all = query_unary(&mut kb, "nx4fd_no.doubled");
+    let errs = load_errors(src);
     assert!(
-        all.iter().all(|(_, definite)| !definite),
-        "a slot nothing pins and nothing completes must not produce a DEFINITE \
-         answer — the body reads the requirement, and a dictionary guessed for it \
-         would be the wrong one. Got {all:?}"
+        errs.iter().any(|e| e.contains("VectorSpace")),
+        "a slot nothing pins and nothing completes has no filler anywhere, so it is \
+         refused AT LOAD and the refusal names the spec; got {errs:#?}"
     );
 }
 
@@ -372,11 +381,24 @@ end
     );
 }
 
-/// CONTROL — the WI-519 residual. The relational view is a sound CHECKER, not a
-/// generator (WI-580 §5): an UNGROUND receiver must SUSPEND rather than enumerate.
-/// Admitting a parametric row must not turn it into a generator. Passes either way.
+/// WI-20260922-0DK3H — **INVERTED, and it is one half of this ticket's sharpest pair.**
+/// A bare `size(?ls, ?n)` names no carrier, declares no `require[…]`, and nothing in the
+/// clause types `?ls`: `FiniteCollection.size` owes `Iterable[C, Element, E]` with every
+/// element open. The dictionary could only ever come from the runtime value of `?ls`,
+/// which is the dispatch this ticket removes, so the clause is refused where it is
+/// written.
+///
+/// THE OTHER HALF IS [`the_woven_spelling_is_the_repair`], and the two clauses differ by
+/// EXACTLY the `require[FiniteCollection[C = List[T = String]]]`. That is what makes this
+/// a measurement of the declared channel rather than of the goal shape.
+///
+/// WHAT IT USED TO ASSERT — that the goal SUSPENDS to a residual rather than enumerating
+/// — is not retracted as a statement about the relational view (WI-519/WI-580 §5: a sound
+/// CHECKER, not a generator). It simply is no longer reachable from this clause, because
+/// the clause no longer loads. The generator claim keeps its own driver in
+/// [`a_parametric_row_is_not_a_generator`]'s family above, which pins a carrier.
 #[test]
-fn an_unground_receiver_still_suspends() {
+fn an_unground_receiver_with_no_declaration_is_refused() {
     let src = r#"
 namespace nx4fd_ung
   import anthill.prelude.{List, String, Int64}
@@ -385,11 +407,53 @@ namespace nx4fd_ung
   rule gen(?n) :- mark(?m), size(?ls, ?n)
 end
 "#;
+    let errs = load_errors(src);
+    assert!(
+        errs.iter().any(|e| e.contains("Iterable") || e.contains("FiniteCollection")),
+        "a bare `size(?ls, ?n)` has no evidence anywhere and must be refused at load; \
+         got {errs:#?}"
+    );
+}
+
+/// WI-20260922-0DK3H — **THE REPAIR, DRIVEN, and the control for the row above.** The
+/// same `size(?ls, ?n)` over the same `List`, with the one thing the refused clause
+/// lacks: the clause DECLARES its dictionary.
+///
+/// IT ANSWERS BY VALUE, not merely loads — two `Box`es whose lengths DISAGREE (0 and 2),
+/// so a `require` that resolved nothing and bound nothing fails here as loudly as one
+/// that answered a constant.
+#[test]
+fn the_woven_spelling_is_the_repair() {
+    let src = r#"
+namespace nx4fd_rep
+  import anthill.prelude.{List, String, Bool, Int64, FiniteCollection}
+  import anthill.prelude.FiniteCollection.{size}
+
+  sort Box
+    entity Box(items: List[T = String])
+  end
+
+  fact Box(items: ["a", "b"])
+  fact Box(items: [])
+
+  rule woven(?ls, ?n) :- require[FiniteCollection[C = List[T = String]]], size(?ls, ?n)
+  rule answer(?n) :- Box(items: ?ls), woven(?ls, ?n)
+end
+"#;
     let mut kb = load_kb_with(src);
+    let mut got: Vec<i64> = definite_unary(&mut kb, "nx4fd_rep.answer")
+        .iter()
+        .map(|v| match v {
+            anthill_core::eval::Value::Int(i) => *i,
+            other => panic!("expected an Int column, got {other:?}"),
+        })
+        .collect();
+    got.sort_unstable();
     assert_eq!(
-        definite_unary(&mut kb, "nx4fd_ung.gen").len(),
-        0,
-        "an unground `size(?ls, ?n)` must not GENERATE — it suspends to a residual"
+        got,
+        vec![0, 2],
+        "the declared bracket must supply the dictionary and each `Box`'s length must \
+         come back DEFINITE"
     );
 }
 
@@ -467,10 +531,21 @@ end
 ///    `None` on the second surviving completion, the slot takes the recorded absence,
 ///    the body's `Zeroable.zero()` read is refused, and the call residualizes.
 ///
-/// The second arm passes with the change backed out (it answered nothing before too);
-/// the FIRST is what makes it a measurement rather than a tautology.
+/// WI-20260922-0DK3H — **THE SECOND ARM IS INVERTED: rivals are now REFUSED, not left
+/// unfilled.** The first arm is untouched and still carries the measurement.
+///
+/// "Nothing decides, so answer nothing" is the silent failure this ticket converts. A tie
+/// among providers is the one shape the codebase already refuses at LOAD everywhere else
+/// — WI-855 legislates it for the dictionary a call selects, and `unique_provider_
+/// completion` itself returns `None` on the second surviving completion rather than
+/// picking. What changes is only that the `None` is now reported where the call is
+/// written instead of becoming a query that comes back empty.
+///
+/// THE FIRST ARM IS WHAT KEEPS THIS HONEST, and it is why both live in one fixture: with
+/// ONE provider the completion is exact and the call answers `1`. If the refusal below
+/// were about the SHAPE rather than about the tie, that arm would be refused too.
 #[test]
-fn rival_completions_leave_the_slot_unfilled_rather_than_guess() {
+fn rival_completions_are_refused_rather_than_guessed() {
     let base = |extra: &str| {
         format!(
             r#"
@@ -509,7 +584,7 @@ end
          could name, so the call must answer 1 — `[]` here would make the arm below \
          measure an un-drivable fixture. Got {got:?}"
     );
-    let mut rivals = load_kb_with(&base(
+    let errs = load_errors(&base(
         r#"
   sort Pebble
     entity pebble
@@ -519,13 +594,11 @@ end
   end
 "#,
     ));
-    let got = definite_unary(&mut rivals, "nx4fd_hz.r");
-    assert_eq!(
-        got.len(),
-        0,
-        "with TWO providers and nothing pinned, the arguments do not decide — the \
-         slot must be left unfilled and the read refused. A `1` or a `5` here is a \
-         GUESSED dictionary. Got {got:?}"
+    assert!(
+        errs.iter().any(|e| e.contains("Zeroable")),
+        "with TWO providers and nothing pinned the arguments do not decide, and an \
+         undecided dictionary is a LOAD refusal naming the spec — answering nothing at \
+         a query is how this used to be discovered. Got {errs:#?}"
     );
 }
 
@@ -537,7 +610,16 @@ end
 /// population moved wrongly it took `require[PartialEq[T]], eq(?x, ?y)` from ONE
 /// solution to ZERO — a silent regression a green corpus did not catch — so
 /// /code-review was right that "the suite is green either way" is not evidence about
-/// it. MEASURED here instead, both spellings over one `List`.
+/// it. MEASURED here instead, over one `List`.
+///
+/// WI-20260922-0DK3H — **THE PLAIN CONTROL IS GONE FROM THE FIXTURE, because it no longer
+/// loads.** `rule plain(?ls, ?n) :- size(?ls, ?n)` names no carrier and declares nothing,
+/// so it is now refused where it is written; it could not stay in a file whose other
+/// rules must load. Its job — "a spelling that answers nothing would satisfy an equality
+/// between two spellings" — is done here by asserting the woven answer BY VALUE (`[2]`)
+/// instead of against a neighbour. The refused half keeps its own row, one file over and
+/// one fixture up, as [`an_unground_receiver_with_no_declaration_is_refused`], whose
+/// control is [`the_woven_spelling_is_the_repair`].
 ///
 /// WHAT THIS ROW MEASURED WHEN NX4FD LANDED, kept because the sequence is the point:
 /// the PLAIN `size(?ls, ?n)` answered `Int(2)` and the WOVEN
@@ -576,25 +658,17 @@ namespace nx4fd_weave
   fact Box(items: ["a", "b"])
 
   rule woven(?ls, ?n) :- require[FiniteCollection[C = List[T = String]]], size(?ls, ?n)
-  rule plain(?ls, ?n) :- size(?ls, ?n)
 
   rule answer_woven(?n) :- Box(items: ?ls), woven(?ls, ?n)
-  rule answer_plain(?n) :- Box(items: ?ls), plain(?ls, ?n)
 end
 "#;
     let mut kb = load_kb_with(src);
-    let plain = ints(&mut kb, "nx4fd_weave.answer_plain");
-    assert_eq!(
-        plain,
-        vec![2],
-        "the PLAIN spelling is the ticket's win and must answer 2 — without it the \
-         equality below is satisfied by two spellings that both answer nothing"
-    );
     let woven = ints(&mut kb, "nx4fd_weave.answer_woven");
     assert_eq!(
-        woven, plain,
-        "the WOVEN spelling must answer exactly what the plain one does. `[]` here is \
-         this row's pre-X9PB4 reading — the woven call's dictionary was never built, \
-         so the only solution was an INDEFINITE one the arity+1 site delayed on"
+        woven,
+        vec![2],
+        "the WOVEN spelling must answer the `Box`'s length by value. `[]` here is this \
+         row's pre-X9PB4 reading — the woven call's dictionary was never built, so the \
+         only solution was an INDEFINITE one the arity+1 site delayed on"
     );
 }

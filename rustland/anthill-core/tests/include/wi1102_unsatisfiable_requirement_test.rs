@@ -40,10 +40,20 @@
 //! `gt(c, 0)` in that body is a fully-pinned `Ord[Int64]` with no provider. Measured
 //! before the gate existed.
 //!
-//! Backing out the ENCLOSING-OP gate (the same function's `enclosing_op.is_some()`)
-//! fails `control_a_rule_body_goal_is_not_refused` here and refuses the stdlib itself:
-//! `platform.needs_rebuild`'s `gt(?t_in, ?t_out)` compares two `Timestamp`s and
-//! `Ord[Timestamp]` has no provider anywhere.
+//! THE ENCLOSING-OP GATE'S CONTROL IS INVERTED (WI-20260922-0DK3H), and the sentence
+//! that used to stand here is RETRACTED rather than edited away, because it was the
+//! reason the rescue survived three tickets. It read: backing the gate out "refuses the
+//! stdlib itself: `platform.needs_rebuild`'s `gt(?t_in, ?t_out)` compares two
+//! `Timestamp`s and `Ord[Timestamp]` has no provider anywhere."
+//!
+//! IT DOES NOT, AND THAT WAS MEASURED RATHER THAN ARGUED. `PartialOrd.gt` is a RESOLVER
+//! BUILTIN; its default body, which is what carries the `requires`, is never entered, so
+//! no `provides` row would change the outcome. The BUILTIN gate one paragraph up is what
+//! covers `needs_rebuild`, and the two gates were conflated because `dep_has_searchable_
+//! pin` happened to rescue the builtin shapes too (a `Timestamp` element is ground).
+//! Deleting that rescue is what separated them: the sort half now takes the same
+//! `!kb.is_builtin` exemption the op half always had, the stdlib loads, and
+//! `a_rule_body_goal_with_no_evidence_is_refused_at_load` is refused on its own merits.
 //!
 //! THE READ GATE IS GONE (WI-20260921-3G1YT), and this file's own row is where it was
 //! measured. Backing it out used to fail `control_a_body_that_never_reads_the_slot_still_
@@ -410,14 +420,28 @@ end
     );
 }
 
-/// THE ENCLOSING-OP GATE. A rule-body goal reaches eval through the SLD bridge, which
-/// resolves real provider dictionaries from the CONCRETE argument values at fire time
-/// and suspends when it cannot — so a carrier that provides nothing is the ORDINARY case
-/// there. This is stdlib `platform.needs_rebuild`'s shape (`gt` on two `Timestamp`s),
-/// on a NON-builtin spec op so it is the rule-body gate under test and not the builtin
-/// one.
+/// WI-20260922-0DK3H — **INVERTED.** This was the ENCLOSING-OP GATE's control: a
+/// rule-body goal reaches eval through the SLD bridge, which resolves real provider
+/// dictionaries from the CONCRETE argument values at fire time, so a carrier that
+/// provides nothing was the ORDINARY case there. That premise is deleted.
+///
+/// ITS STATED REASON DISSOLVED RATHER THAN BEING OVERRULED, which is why this is an
+/// inversion and not a regression. The row's own justification was "refusing it at load
+/// takes the stdlib's own `needs_rebuild` with it" — `platform.needs_rebuild`'s
+/// `gt(?t_in, ?t_out)` over two `Timestamp`s, which no `Ord[Timestamp]` provides.
+/// MEASURED: it does NOT. `PartialOrd.gt` is a RESOLVER BUILTIN, whose default body
+/// carrying the `requires` is never entered, and the builtin exemption
+/// [`OpSlotParkSite::for_call`] already took now also guards the sort half. The stdlib
+/// loads; only the shape below, which has no such excuse, is refused.
+///
+/// WHY IT IS REFUSED: nothing pins `HT`, the clause declares no `require[…]`, `Mystery`
+/// provides no `Desc`, and `Desc` has no provider the facts could complete to. The slot
+/// has no filler anywhere, and before this ticket that was discovered at eval.
+///
+/// ITS CONTROL IS [`a_rule_body_goal_that_pins_its_carrier_loads_and_answers`], which is
+/// the same clause with the one thing it lacks.
 #[test]
-fn control_a_rule_body_goal_is_not_refused() {
+fn a_rule_body_goal_with_no_evidence_is_refused_at_load() {
     const SRC: &str = r#"
 namespace wi1102.rulebody
   import anthill.prelude.{Int64, Bool}
@@ -436,10 +460,79 @@ namespace wi1102.rulebody
   rule described(?x, ?n) :- eq(Holder.probe(?x), ?n)
 end
 "#;
+    let text = refusal(SRC, "a rule-body goal with no evidence");
     assert!(
-        crate::common::try_load_kb_with(SRC).is_ok(),
-        "a rule body resolves its dictionary from the concrete query value at fire \
-         time; refusing it at load takes the stdlib's own `needs_rebuild` with it"
+        text.contains("wi1102.rulebody.Desc"),
+        "the refusal must name the spec whose evidence is missing; got:\n{text}"
+    );
+}
+
+/// WI-20260922-0DK3H — **THE REPAIR, DRIVEN.** The row above refuses and its message
+/// names two repairs; this drives the first — "pin the element at this call" — and it
+/// ANSWERS rather than merely loading, because "it loads clean" is not evidence that a
+/// dictionary was built.
+///
+/// THE OTHER REPAIR, the `require[…]` bracket, is driven where the bracket is
+/// LOAD-BEARING and deliberately not here: `wi_x9pb4 …::the_woven_spelling_answers_both_
+/// boxes` and `wi_nx4fd …::the_woven_spelling_is_the_repair`, whose carriers nothing else
+/// types. A bracket written beside the pin below would pass with the bracket DELETED,
+/// which is the one thing a row demonstrating a channel must not do.
+///
+/// The answer `7` is `Leaf`'s own `describe`, so a route that resolved nothing binds
+/// nothing here.
+#[test]
+fn a_rule_body_goal_that_pins_its_carrier_loads_and_answers() {
+    const SRC: &str = r#"
+namespace wi1102.rulebodyok
+  import anthill.prelude.{Int64, Bool}
+  import anthill.prelude.PartialEq.{eq}
+  sort Desc
+    sort T = ?
+    operation describe(x: T) -> Int64
+  end
+  sort Leaf
+    entity leaf
+    provides Desc[T = Leaf]
+    operation describe(x: Leaf) -> Int64 = 7
+  end
+  sort Holder
+    sort HT = ?
+    operation probe(x: HT) -> Int64 requires Desc[T = HT] = Desc.describe(x)
+  end
+  rule described(?n) :- eq(Holder.probe(leaf()), ?n)
+end
+"#;
+    // GROUND queries, for the reason `wi842_bracketless_readers_test::rule_answers`
+    // states at its own site: an unbound query var trips the caller-var delay pre-check
+    // and the body never runs (the WI-483 pattern), so a free `?n` would measure the
+    // delay rather than the dictionary.
+    let mut kb = crate::common::load_kb_with(SRC);
+    let functor = kb.resolve_symbol("wi1102.rulebodyok.described");
+    let mut definite_for = |answer: i64| {
+        let a = kb.alloc(anthill_core::kb::term::Term::Const(
+            anthill_core::kb::term::Literal::Int(answer),
+        ));
+        let goal = kb.alloc(anthill_core::kb::term::Term::Fn {
+            functor,
+            pos_args: smallvec::SmallVec::from_slice(&[a]),
+            named_args: smallvec::SmallVec::new(),
+        });
+        kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
+            .iter()
+            .filter(|s| s.is_definite())
+            .count()
+    };
+    assert_eq!(
+        definite_for(7),
+        1,
+        "the call pins `HT = Leaf` and `Leaf provides Desc`, so the dictionary is \
+         determined at load and the rule must FIRE for `Leaf`'s own answer"
+    );
+    assert_eq!(
+        definite_for(9),
+        0,
+        "…and REFUTE any other, so the row above is a verdict rather than a search that \
+         happened to succeed"
     );
 }
 
