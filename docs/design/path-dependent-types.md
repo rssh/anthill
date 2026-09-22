@@ -472,11 +472,25 @@ operation caller() -> String = check(poly(), "abc")   -- must typecheck
 
 Three flows must meet:
 
-1. **expected → argument (WI-427, not yet built).** `poly()`'s `X` appears only in its
+1. **expected → argument (WI-427, DELIVERED).** `poly()`'s `X` appears only in its
    return, so it is unconstrained *from the argument*; it is pinned to `String` only by
    the **param type** `Wrapper[P = Inner[T = String]]` flowing *down* into the argument.
-   Today this fails (`X unconstrained`) — args are synthesized in isolation
-   (`push_visit_no_hint`). This is the missing half of "both sides."
+   Before WI-427 this failed (`X unconstrained`) — args were synthesized in isolation
+   (`push_visit_no_hint`). It is the half of "both sides" that used to be missing;
+   `wi427_bidirectional_flow_test`'s three rows are live and carry no `#[ignore]`.
+
+   **AND IT DOES NOT REACH AN ∃-BOUND SLOT, which is the boundary worth stating beside
+   it** (WI-20260921-EE0EP). `poly`'s `X` is **∀**-bound — the CALLER chooses, so an
+   expectation may solve it. A return's omitted named slot is **∃** (§"In a RETURN the
+   quantifier flips to ∃", WI-1063): the producer already chose and packed, and the use
+   site opens a fresh skolem. MEASURED on `mk() -> MySet[T = String]` with the slot
+   omitted: the expectation DOES flow down — the refusal reads *"expected
+   `MySet[T = String, O = ByLength]`, got `MySet[O = ?O, T = String]`"*, naming the
+   pushed type — and correctly fails to unify, because solving `?O` from the expectation
+   would let a caller assert a witness the producer never packed. Bidirectionality is
+   working there and declining; the missing piece is not a direction but a **default** on
+   the slot, which would make omission *mean* one determinate provider so producer and
+   consumer reconstruct the same witness instead of one of them guessing.
 2. **projection off the now-grounded receiver (WI-398, delivered).** With
    `poly() : Wrapper[P = Inner[T = String]]`, the call-site projection `s.cell.T` grounds
    to `String`.
@@ -1239,7 +1253,28 @@ out, the discipline is:
 * a **declared and forwarded** slot (`requires O: WeakOrd[T]` on the consumer, `O` written
   in the parameter's type) hands the caller's evidence through the frame — this is the
   form that RUNS, at any nesting depth;
-* an **unwritten** slot has no channel, and is refused (WI-1094).
+* an **unwritten** slot at the TOP LEVEL of a parameter's type is the projection `s.O`,
+  which NAMES the parameter — so the caller reads the provider out of that argument's
+  type and the dictionary is forwarded like any other (WI-20260921-EE0EP). Writing `O`
+  and omitting it mean the same thing **at a typed call site**, and measurably not at the
+  host boundary: `interp.call` passes values and no types, so the slot is unfilled and
+  value-direction answers alike for rival orderings (pinned by
+  `wi_ee0ep_param_dictionary_test::the_host_entry_does_not_receive_the_parameters_dictionary`).
+  That is the same §5.5 fence one step out — the channel reads a TYPE, so it reaches
+  exactly as far as types do.
+* an unwritten slot with **no name** still has no channel and is refused: WI-1061's
+  nested slot (`List[T = SortedSet]`) takes a fresh rigid nothing spells, and an
+  existential return's opened skolem (WI-1063) names no provider at all. For the return
+  case a bracket at the CONSUMER does not repair it — `MySet[O = W].contains(mk(), x)`
+  and `MySet.contains[O = W](mk(), x)` both pin the parameter's type and leave the
+  argument's own reading `?O` (measured) — so the slot must be written where the value is
+  PRODUCED. **A DEFAULT would change this**, and is the natural next step rather than a
+  wider channel: a slot with a declared default provider is not erased by omission,
+  because omitting it names that default on both sides, so the producer's choice and the
+  consumer's reconstruction agree by construction. Not built; recorded here because it is
+  the one thing that makes an ∃-bound slot fillable without the caller choosing. So **depth is
+  the axis**, which it was not before EE0EP — WI-1094 refused both alike, and the
+  difference WI-1059/WI-1061 already drew is what the channel now keys on.
 
 A container needs nothing of its own. `List[T = MySet[T = String, O = ByLength]]` has ONE
 element type, hence one witness for every element, and a generic consumer over it —
@@ -1282,7 +1317,7 @@ Driver for everything measured here: `wi_r10kc_spec_default_body_dictionary_test
 | `expected → argument` inference (push the param type into a polymorphic arg); the missing half of bidirectional flow | **WI-427** (anchor: the §4.1 bidirectional-flow checklist example) |
 | ungrounded `s.K` lowered to the host (realization / codegen) | **WI-403** — rule **decided** 2026-06-09 (§5.2: associated types + `S::K`, normative in `docs/rust-forward-mapping.md` §2.14); emitter rides **WI-002** (the KB-driven full mapper), WI-403 re-pointed onto it and left open |
 | Capitalized dotted fall-through in type position → **hard error** (today: warning + degenerate nominal; a false reject *and* a false accept, §5.3) | **WI-429** (fix vs the delivered WI-376 classifier; independent of WI-428, deliverable first) |
-| rigid sources beyond §5.3, and the runtime-δ fence's real boundary — a witness rigid does NOT δ-ground at eval (§5.5) | **WI-20260921-R10KC** ✓ **DELIVERED** (2026-09-21): the evidence travels in the frame's dictionary, not in the projection. The `O`-vs-`s.O` channel question (§5.5, last paragraph) is left undecided, and is WI-1094's to reopen |
+| rigid sources beyond §5.3, and the runtime-δ fence's real boundary — a witness rigid does NOT δ-ground at eval (§5.5) | **WI-20260921-R10KC** ✓ **DELIVERED** (2026-09-21): the evidence travels in the frame's dictionary, not in the projection. The `O`-vs-`s.O` channel question (§5.5, last paragraph) is **DECIDED** by **WI-20260921-EE0EP** ✓ (2026-09-22): they are one thing for a TOP-LEVEL parameter slot — the projection names the parameter, the caller reads the witness out of that argument's type, and the dictionary rides the ordinary op-scoped channel. Whether `s.O` becomes WRITABLE in a signature is a separate question and stays open |
 | type-receiver projection `RigidTypeProjection` (§5.3): classifier arm, δ-at-formation / δ-through-the-bound, ζ by σ-class, bare-spec sugar, `TypeExtractor` entity | **WI-428** |
 | carrier-precise `requires` matching for `ExprCarried` neutrals (promoted from WI-400's deferred list; end-state = the §5.3 convergence onto var-keying) | **WI-430** |
 | HK emulation (§5.4): structured-param member registration, **fill-as-requirement-discharge** (co-delivers WI-428 increment B), injective application decomposition, Miller guard for rule bodies | **WI-383** ✓ **DELIVERED** (2026-06-14): the op-type-param projection `T.V` (forms + grounds via explicit-requires, self-carrier structured member, entity-resource provider-fact bind), the marked carrier `sort …[F[T]]` (WI-451/452) + concrete fill `F := Option` (WI-453, requirement-discharge), and injective application decomposition (free via the parameterized unify arm) are end-to-end. The rule-body Miller-fragment guard is a resolver/SLD refinement (deferred — flexible `?f(?x)` heads load; the guard fires only once concrete monad values flow through the law rules, downstream of instances) |

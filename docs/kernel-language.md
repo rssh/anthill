@@ -1953,13 +1953,38 @@ nothing anywhere has bound it — a construction such as
 `SortedSet.empty[T = Int64]()` — the dispatch ladder answers and the answer is
 **bound into the parameter**, so it is part of the constructed value's type and
 every later bracket-less call reads it back.  Where a *signature* omitted it
-(`size(s: SortedSet[T = String])`), the slot is universally quantified: the
-argument's provider was chosen elsewhere and no dictionary travels with a value,
-so a call that dispatches through the slot is **refused**, regardless of how many
-providers are in scope.  The repair is to name the slot on the enclosing
-declaration and write that name in the parameter's type
-(`first(s: SortedSet[T = E, O = OE])` under `requires OE: Ord[E]`), which is what
-makes the forwarded dictionary the value's own.
+(`size(s: SortedSet[T = String])`), the slot is universally quantified — the
+argument's provider was chosen elsewhere — and the dictionary is **forwarded from
+that argument** (WI-20260921-EE0EP).  Nothing is recovered from the value: the
+slot is the projection `s.O` (§"How the slot is named"), so it names the
+parameter, and the *caller* reads the provider out of that argument's type, where
+it is written.  The call therefore answers with the comparator the value's own
+construction site chose, so at **a typed call site** writing `O` and leaving it out
+mean the same thing at run time.  They do **not** at the host boundary: `interp.call`
+is handed values and no types, a runtime value carries none of its type arguments
+(§4.7), and the unfilled slot falls to value-direction — which recovers the element
+type and cannot recover the witness, so both orderings answer alike.  That is
+WI-868's stand-in hole, which this rule widens the reach of rather than creates;
+a host that must choose supplies the dictionary itself
+(`Interpreter::call_with_requirements`).
+
+Four cases keep the older **refusal**.  Three because there is no argument to read:
+a slot nothing spells (WI-1061's nested `List[T = SortedSet]`, which takes a fresh
+rigid rather than a projection), an existential **return** (WI-1063, whose opened
+skolem names no provider), and a slot some other entry of the frame already covers
+— an anonymous `requires` of the same spec, or a second parameter of the same
+carrier — where which dictionary the body means is not decidable and is refused
+rather than guessed.  The fourth is about the CHANNEL rather than the argument: an
+operation that writes **any** `requires` of its own gets none, because the widening
+that lets a body read a synthesized slot is chosen per call site and would forward
+the author's own op-scoped slots with it.  Each prints its own repair.  The repair differs by case and the
+diagnostic names it: for a collision, name the slot on the enclosing declaration and
+write that name in the parameter's type (`first(s: SortedSet[T = E, O = OE])` under
+`requires OE: Ord[E]`); for a nameless or existential slot, write it where the value is
+**produced** — a bracket at the consuming call pins only the parameter's type and leaves
+the argument's own slot a skolem.  (A **default** on a requirement slot would remove the
+existential case entirely, since omission would then name one determinate provider on
+both sides; not built.)
 
 **A written slot is read back on every route to the provider, not only at a direct
 call** (WI-456).  `SortedSet.insert(s, x)` reads `O` off `s`'s type; so does
@@ -1971,8 +1996,8 @@ T, O = O], …]`) binds it in the match, and the sub-goal for `requires O: WeakO
 **pinned** to that witness rather than searched.  A slot the carrier's type leaves
 unwritten is read exactly as the direct route reads it: forwarded from the caller when
 the signature declares it (`s: SortedSet[T = E, O = OE]` under `requires OE: …`), and
-otherwise **refused**, whatever the provider count — a sole provider would still answer
-for the signature and not for the value.  A concrete provider whose provision head does
+otherwise forwarded from the ARGUMENT (WI-20260921-EE0EP) — in both cases whatever the
+provider count, since the count was never what made the answer right.  A concrete provider whose provision head does
 not write the slot cannot carry it there, and is refused naming the `O = O` to write.
 
 **A WITNESS's own named slot is written in the same two places, one level in** (WI-456).

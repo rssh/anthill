@@ -614,66 +614,158 @@ fn a_list_holds_one_witness_for_every_element() {
     );
 }
 
-/// DEPTH IS NOT THE AXIS — an unwritten NAMED SLOT has no channel anywhere, and this
-/// row exists because a review said it should not matter whether the slot is written `O`
-/// or reached as the projection `s.O`, and a first draft of this file implied that
-/// TOP-LEVEL and NESTED differed. They do not, MEASURED: both get the same WI-1094
-/// refusal, word for word.
+/// **DEPTH IS THE AXIS — SINCE WI-20260921-EE0EP, AND IT WAS NOT BEFORE.** This row used
+/// to assert the opposite, and the inversion is the finding rather than an edit: a
+/// TOP-LEVEL unwritten slot now has a channel and a NESTED one still has none.
 ///
-/// WI-1059 says a top-level unwritten slot takes "the projection off the value that
-/// carries it" — `s: MySet[T = String]` is checked as `s: MySet[T = String, O = s.O]` —
-/// so the slot HAS a name there, where a nested one (WI-1061) has only a fresh rigid.
-/// That difference is real for what the TYPE says and makes none to the DICTIONARY,
-/// because a signature that omits the slot has nowhere for the caller to put one. The
-/// refusal says exactly that and names the repair: "declare a NAMED slot for it … so the
-/// caller supplies the value's own".
+/// WI-1059 and WI-1061 always said the two differ — a top-level unwritten slot IS the
+/// projection off the value that carries it (`s: MySet[T = String]` is checked as
+/// `s: MySet[T = String, O = s.O]`), where a nested one (`List[T = MySet[T = String]]`)
+/// takes a fresh rigid with **no name at all**. What was true before EE0EP is that the
+/// difference bought NOTHING: both got WI-1094's refusal, word for word, because a
+/// signature that omits the slot had nowhere for a caller to put a dictionary.
 ///
-/// THIS IS WI-1094's DECISION, not a defect of this ticket, and the distinction is
-/// sharp: R10KC is about a dictionary that EXISTS at the call site and never reaches the
-/// frame; this is about a signature with no slot to carry one. WI-1094's acceptance put
-/// the two outcomes side by side — "either forwards the value's comparator … or is
-/// refused" — and shipped the refusal. Whether the projection should instead BE the
-/// channel is a live question; this row is what a change to it would flip.
+/// EE0EP keys its channel on exactly that name. The synthesized slot
+/// ([`SupplySource::FromParam`]) records WHICH PARAMETER to read the witness out of, so a
+/// slot the language can spell as `s.O` is suppliable and a slot nothing spells is not.
+/// The nested case is therefore not an oversight: there is no receiver to read, the
+/// element is reached by a pattern match, and `List`'s own type says nothing about the
+/// element's ordering. Writing the element's slot is the repair, and it works —
+/// `wi_ee0ep_param_dictionary_test::a_list_element_keeps_its_own_ordering` drives it.
 ///
-/// PASSES EITHER WAY with respect to this ticket's two edits — no dictionary is built on
-/// either route, so there is nothing for them to thread.
+/// DRIVEN BY VALUE on the half that changed, not just by loading: the top arm must answer
+/// the ARGUMENT's comparator, and one answer twice would mean the channel delivered some
+/// other dictionary.
+///
+/// BACKED OUT: the top arm reverts to the refusal the nested arm still gets.
 #[test]
-fn an_unwritten_named_slot_has_no_channel_at_any_depth() {
-    let refusal = |body: &str| -> Vec<String> {
-        crate::common::try_load_kb_with(&program("r10kc.depth", RIVALS, body))
-            .err()
-            .unwrap_or_else(|| panic!("an unwritten named slot must not load:\n{body}"))
-    };
-    let names_the_repair = |errs: &[String]| {
-        errs.iter().any(|e| {
-            e.contains("universally quantified") && e.contains("declare a NAMED slot for it")
-        })
-    };
-
-    // TOP LEVEL — the slot HAS a name here (`s.O`, WI-1059) and is still refused.
-    let top = refusal(
+fn the_channel_reaches_a_named_slot_and_not_a_nameless_one() {
+    // TOP LEVEL — the slot is `s.O`, the language spells it, and the argument supplies it.
+    let top = program(
+        "r10kc.depth",
+        RIVALS,
         "  sort Bulk\n    \
          operation has(s: MySet[T = String], x: String) -> Bool = MySet.contains(s, x)\n  \
+         end\n  \
+         sort Driver\n    \
+         operation byLength(n: Int64) -> Bool =\n      \
+         Bulk.has(MySet.insert(MySet.empty[T = String, O = ByLength](), \"zz\"), \"aa\")\n    \
+         operation alphabetical(n: Int64) -> Bool =\n      \
+         Bulk.has(MySet.insert(MySet.empty[T = String, O = Alphabetical](), \"zz\"), \"aa\")\n  \
          end",
     );
     assert!(
-        names_the_repair(&top),
-        "a top-level unwritten slot is the projection `s.O` and STILL has no dictionary \
-         channel; got {top:?}"
+        eval_bool(&top, "r10kc.depth.Driver.byLength", "the top-level channel"),
+        "a top-level unwritten slot is the projection `s.O`, which EE0EP supplies from \
+         the argument — ByLength must answer yes"
+    );
+    assert!(
+        !eval_bool(&top, "r10kc.depth.Driver.alphabetical", "the same body, the rival"),
+        "…and the rival ordering must answer no through the SAME body; one answer twice \
+         would mean the dictionary was re-derived rather than forwarded"
     );
 
-    // NESTED — the same refusal, so depth decides nothing about the witness.
-    let nested = refusal(
+    // NESTED — a fresh rigid nothing spells, so there is no receiver to read a witness
+    // out of and the refusal stands.
+    let nested = crate::common::try_load_kb_with(&program(
+        "r10kc.depth.nested",
+        RIVALS,
         "  sort Bulk\n    \
          operation headHas(ss: List[T = MySet[T = String]], x: String) -> Bool =\n      \
          match ss\n        \
          case nil() -> false\n        \
          case cons(h, t) -> MySet.contains(h, x)\n  \
          end",
-    );
+    ))
+    .err()
+    .unwrap_or_else(|| panic!("a NESTED unwritten slot has no name and must not load"));
+    // PINS THE NAMED-SLOT REFUSAL, not "some error happened". The first cut allowed
+    // `expected ?T` as an alternative, which is the generic unification message and would
+    // have kept this row green on any unrelated type error in the fixture — so it would
+    // have stopped measuring the thing its own doc claims.
     assert!(
-        names_the_repair(&nested),
-        "nested gets the SAME refusal — the axis is the missing slot, not the depth; \
-         got {nested:?}"
+        nested
+            .iter()
+            .any(|e| e.contains("NOTHING HERE CAN SUPPLY IT")
+                && e.contains("named requirement slot `O")),
+        "a nested unwritten slot takes a fresh rigid (WI-1061) that nothing spells, so no \
+         parameter can supply it — and the refusal must say so by name; got {nested:?}"
+    );
+}
+
+/// **THE SIBLING ROUTE DISPATCHES ONLY WITHIN ITS OWN SPEC** — the gate a `/code-review`
+/// of this ticket found missing, and which cost a SILENT WRONG ANSWER rather than a
+/// missing one.
+///
+/// `dictionary_resolved_sibling` (step 3c) reads `__req_self` off the frame and hands it
+/// to `resolve_op_target`, which keys on the target's SHORT NAME alone
+/// (`sort_ops_lookup(provider, short)`). Nothing asked whether the dictionary was FOR the
+/// spec the target belongs to. So a call to an unrelated spec's member, reached while the
+/// frame happened to hold some instance dictionary, was redirected into that dictionary's
+/// provider by name.
+///
+/// MEASURED before the gate: `Other.mark()` — body-less and receiver-less, so it reaches
+/// 3c — called from `Marked`'s default body at a carrier `Box` that provides `Marked` and
+/// NOT `Other`, answered **99** out of `Box.mark`. The trace read
+/// `__req_self provider = Box` / `resolved to Box.mark`. Before WI-20260921-R10KC added
+/// this route the same call was a loud `unrunnable_target_error`, so the ticket's own
+/// "strictly additive" claim was true only about the PREVIOUS outcome.
+///
+/// The gate is [`spec_instance_for_sibling_call`]'s (2) and (3), unchanged: the target's
+/// parent is a SORT, and the dictionary's provider PROVIDES it and is not it. Failing
+/// either falls back to the loud error, so it can only restore a refusal and never break
+/// a working call — which is why the four rows above still pass.
+///
+/// BACKED OUT: this row answers `99` instead of raising.
+#[test]
+fn the_sibling_route_does_not_dispatch_across_specs_by_short_name() {
+    let src = r#"
+namespace r10kc.crossspec
+  import anthill.prelude.{Int64, String, Bool, List, WeakOrd, Ord}
+
+  sort ByLength
+    import anthill.prelude.String.{length}
+    import anthill.prelude.Numeric.{sub}
+    provides WeakOrd[T = String]
+    operation compare(a: String, b: String) -> Int64 = sub(length(a), length(b))
+  end
+
+  -- A spec the carrier does NOT provide, whose member is BODY-LESS and RECEIVER-LESS —
+  -- the two properties that carry a call to step 3c.
+  sort Other
+    operation mark() -> Int64
+  end
+
+  -- The spec whose DEFAULT BODY runs with `__req_self` in its frame.
+  sort Marked
+    sort C = ?
+    operation tag(c: C) -> Int64
+    operation run(c: C) -> Int64 = Other.mark()
+  end
+
+  -- The carrier. Its `requires` is what puts a real dictionary in the frame; its `mark`
+  -- is the short-name collision. It provides `Marked`, never `Other`.
+  enum Box
+    sort T = ?
+    requires O: WeakOrd[T]
+    entity box(v: T)
+    provides Marked[C = Box[T = T, O = O]]
+    operation tag(c: Box[T = T, O = O]) -> Int64 = 1
+    operation mark() -> Int64 = 99
+    operation make(v: T) -> Box[T = T, O = O] = box(v)
+  end
+
+  sort Driver
+    operation go(n: Int64) -> Int64 =
+      Marked.run(Box.make[T = String, O = ByLength]("z"))
+  end
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    let got = interp.call("r10kc.crossspec.Driver.go", &[Value::Int(0)]);
+    assert!(
+        got.is_err(),
+        "`Other.mark` is not a member of anything `Box` provides, so the frame's `Box` \
+         dictionary must not answer it — a short-name match is not a dispatch. Got {got:?}"
     );
 }

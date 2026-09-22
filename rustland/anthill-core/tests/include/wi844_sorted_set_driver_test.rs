@@ -639,39 +639,56 @@ fn a_signature_omitting_the_ordering_accepts_both() {
     );
 }
 
-/// …and the refusing half, which §4.7 does not state and this ticket measured: the
-/// erasure is only free for a body that never DISPATCHES through the omitted slot. One
-/// that does has no comparator to use, and says so — it does not pick.
+/// …and the DISPATCHING half, which §4.7 does not state and which changed hands twice.
 ///
-/// The pair matters: "omitting is allowed" and "omitting is silently resolved" would
-/// look identical from the accepting test alone.
+/// WI-844 measured that a body which DISPATCHES through the omitted slot had no
+/// comparator to use, and made it loud — first as a tier-3 tie (a refusal that depended
+/// on the provider COUNT), then, at WI-1094, as a count-independent refusal naming the
+/// universally-quantified slot. The property both versions were written for is that the
+/// body never PICKS.
 ///
-/// **WI-1094 REWROTE WHAT IT SAYS, AND THE REASON IS THAT THE OLD MESSAGE WAS RIGHT BY
-/// ACCIDENT.** It used to be a tier-3 tie — *"constructing `Ord[T = String]` is ambiguous
-/// among providers: String, ByLength, Alphabetical"* — which is a refusal that DEPENDS ON
-/// THE COUNT: `wi1094`'s `a_sole_provider_does_not_excuse_the_erasure` runs this very
-/// shape with ONE provider declared, and before WI-1094 it loaded clean and constructed
-/// silently. The defect is not the tie; it is that `O` is universally quantified here and
-/// no dictionary for it is in the frame, so ANY construction answers for a value that
-/// already chose. That is what is refused now, count-independently. The one thing that
-/// did not change is the property this arm was written for: it still does not pick.
+/// **WI-20260921-EE0EP KEEPS THAT PROPERTY AND CHANGES THE VERDICT.** It still does not
+/// pick — it FORWARDS: the parameter's unwritten slot receives the argument's own
+/// dictionary, so the body reads the comparator the construction site chose. "Omitting is
+/// allowed", "omitting is silently resolved" and "omitting forwards" are three different
+/// things, and only a VALUE assertion tells them apart — so this row drives both
+/// orderings through the one signature and requires them to disagree. One answer twice
+/// would be the silent resolution this arm has always existed to rule out.
+///
+/// BACKED OUT (EE0EP): reverts to WI-1094's refusal, which is what this row asserted
+/// before.
 #[test]
-fn omitting_the_ordering_in_a_body_that_dispatches_is_loud() {
+fn omitting_the_ordering_in_a_body_that_dispatches_forwards_the_arguments_own() {
     let src = program(
         "wi844.underdetermined",
-        "  sort Any\n    \
-         operation size(s: SortedSet[T = String]) -> Int64 =\n      \
-         SortedSet.toList(s).length()\n  end",
+        &format!(
+            "  sort Any\n{FIRST}    \
+             operation headOf(s: SortedSet[T = String], dflt: String) -> String =\n      \
+             first(SortedSet.toList(s))\n  end\n  \
+             sort Driver\n    \
+             operation byLength(n: Int64) -> String =\n      \
+             let s = SortedSet.empty[T = String, O = ByLength]()\n      \
+             Any.headOf(SortedSet.insert(SortedSet.insert(s, \"zz\"), \"aaa\"), \"\")\n    \
+             operation alphabetical(n: Int64) -> String =\n      \
+             let s = SortedSet.empty[T = String, O = Alphabetical]()\n      \
+             Any.headOf(SortedSet.insert(SortedSet.insert(s, \"zz\"), \"aaa\"), \"\")\n  end"
+        ),
     );
-    let errs = load_errs(&src);
-    assert!(
-        errs.iter().any(|e| {
-            e.contains("universally quantified")
-                && e.contains("`O: anthill.prelude.WeakOrd`")
-                && e.contains("anthill.prelude.SortedSet.toList")
-        }),
-        "a body that reads the order through an OMITTED slot is under-determined and \
-         must say so, never pick one: {errs:?}"
+    assert_eq!(
+        eval_str(&src, "wi844.underdetermined.Driver.byLength", "the omitted slot, ByLength"),
+        "zz",
+        "the body dispatches through a slot its signature omits, and takes the \
+         ARGUMENT's comparator — `zz` is ByLength's first"
+    );
+    assert_eq!(
+        eval_str(
+            &src,
+            "wi844.underdetermined.Driver.alphabetical",
+            "the same body, the rival ordering"
+        ),
+        "aaa",
+        "…and the SAME body answers differently for a differently-ordered argument. One \
+         answer twice would mean it picked a comparator rather than forwarding one"
     );
 }
 

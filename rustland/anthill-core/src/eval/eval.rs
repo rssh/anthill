@@ -2921,13 +2921,51 @@ impl Interpreter {
         // earlier rather than swallowing a verdict the arm might never reach (step 3's
         // `None` path returns before step 3b, so a dropped tie would be dropped for good).
         //
+        // AND IT IS ASKED ONLY WHERE A REDIRECT CAN HAPPEN, which excludes a HOST-BACKED
+        // target (found by `/code-review`). The argument above holds for a BODY-backed
+        // target, where step 3 or 3b really does consult the same resolver. It does not
+        // hold for a builtin: this function runs BEFORE step 2, and step 2 dispatches
+        // `self.builtins.get(&target)` DIRECTLY — no redirect of any kind — so "does this
+        // dictionary cover the op that will actually run" has the trivial answer that the
+        // op that will run IS `target`. Consulting a redirect resolver for it asks a
+        // question the dispatch never asks, and propagating that resolver's tie ABORTS a
+        // call the builtin would have served.
+        //
+        // NOT PURELY SUBTRACTIVE, and the direction is stated rather than left implicit:
+        // where the resolver would have answered `Some(other)` for a builtin target, gate
+        // (5) used to DECLINE and withhold the dictionary; it is now installed. That is
+        // right for the same reason — gates (2)–(4) have already established that the
+        // dictionary is for `target`'s spec, at a provider that provides it, with a
+        // matching layout, and `target` is precisely what step 2 runs — and it is what
+        // `WI-20260919-HXGXF` wants, since a nullary host-backed member's whole answer
+        // lives in that dictionary.
+        //
+        // EXAMINED AND NOT DRIVEN: no fixture here reaches it. Driving it needs a
+        // host-backed SPEC member with a self-receiver whose value-directed resolution
+        // ties, and the attempts all died earlier — `PartialEq`'s two-supplier case is
+        // refused at load by the semantic-equality coherence rule, and `TypeValue`'s
+        // member is nullary, so it has no receiver to resolve from. Recorded as a bound
+        // rather than closed; the whole workspace is the evidence that it regresses
+        // nothing.
+        //
+        // STRUCTURAL, not a reachability claim. A first cut of this comment argued the
+        // hole was unreachable because the host-backed spec members were `PartialEq`'s,
+        // whose two-supplier case is refused at load by the semantic-equality coherence
+        // rule — that was wrong twice over: `anthill.reflect.TypeValue` and
+        // `anthill.realization.runtime.OpRef` carry host-backed members too, and a gate
+        // belongs to the SHAPE of the dispatch rather than to whichever sorts the stdlib
+        // happens to register. The skip below is correct because a builtin has no
+        // redirect, and would remain correct if the builtin set were empty.
+        //
         // WITHOUT GATE (5) such a call would not fall back to the route it has today:
         // [`Self::requirements_for_value_directed_impl`] re-expands a non-empty channel
         // only where it COVERS the redirected op and otherwise passes it through
         // UNCHANGED (WI-1091) — right for a channel a caller really built, wrong for this
         // synthesized one, whose pre-R10KC alternative was `resolve_bridge_requirements`
         // REBUILDING the third sort's own chain from the argument values.
-        let redirect = if self.cached_operation_body(target).is_some() {
+        let redirect = if self.builtins.contains_key(&target) {
+            None
+        } else if self.cached_operation_body(target).is_some() {
             self.resolve_carrier_override_by_value(target, arg_values)?
         } else {
             self.resolve_spec_op_target_by_value(target, arg_values)?
@@ -2962,12 +3000,40 @@ impl Interpreter {
     /// that names its answer sitting unread in the channel
     /// ([`Self::spec_instance_for_sibling_call`] had just put it there).
     ///
-    /// STRICTLY ADDITIVE, and that is why it is placed where it is: it runs only after
-    /// step 3 found no body and step 3b found no supplier, so every call it serves is one
-    /// that raised a moment ago. `resolve_op_target_checked` refuses a marker functor, so
-    /// an absence-carrying dictionary still raises rather than dispatching.
+    /// ONLY WHERE THE DICTIONARY IS FOR THIS TARGET'S SPEC, and that gate is the whole
+    /// difference between restoring a dispatch and inventing one.
+    ///
+    /// "Strictly additive" was the first cut's justification — it runs only after step 3
+    /// found no body and step 3b found no supplier, so every call it serves is one that
+    /// raised a moment ago — and it is true about the PREVIOUS outcome and says nothing
+    /// about the new one. [`crate::kb::typing::resolve_op_target`] keys on the target's
+    /// SHORT NAME alone (`sort_ops_lookup(provider, short)`), so an unrelated spec's
+    /// member reached while the frame happens to hold some instance dictionary was
+    /// redirected into that dictionary's provider by name. MEASURED: `Other.mark()`,
+    /// body-less and receiver-less, called from `Marked`'s default body at a carrier
+    /// `Box` that provides `Marked` and NOT `Other`, answered `99` out of `Box.mark` —
+    /// where the pre-WI-20260921-R10KC behaviour was a loud `unrunnable_target_error`.
+    /// Turning an error into a wrong answer is the one trade this route must not make.
+    ///
+    /// SO IT ASKS GATES (2) AND (3) OF [`Self::spec_instance_for_sibling_call`], the same
+    /// two, in the same order: the target's parent is a SORT, and the dictionary's
+    /// provider PROVIDES it and is not it. Failing either returns `None`, which falls
+    /// through to the `unrunnable_target_error` this route was added to avoid — so the
+    /// gate can only restore the old loud failure, never break a call that works.
+    /// R10KC's own shape passes it: there the provider is the CARRIER (`MySet`) and the
+    /// target's parent is the SPEC (`Searchable`), which the carrier provides.
+    ///
+    /// `resolve_op_target_checked` additionally refuses a marker functor, so an
+    /// absence-carrying dictionary still raises rather than dispatching.
     fn dictionary_resolved_sibling(&mut self, target: Symbol) -> Option<Symbol> {
         let dict = find_requirement(&self.stack.top()?.requirements, self.fields.req_self)?.clone();
+        let spec = crate::kb::typing::impl_parent_sort_of_op(&self.kb, target)?;
+        let provider = dict.impl_sort();
+        if crate::kb::typing::same_sort_canonical(&self.kb, provider, spec)
+            || !crate::kb::typing::sort_provides(&self.kb, provider, spec)
+        {
+            return None;
+        }
         let impl_target = self.dispatch_via_sort_ops_table(target, &dict).ok()?;
         (impl_target != target).then_some(impl_target)
     }
