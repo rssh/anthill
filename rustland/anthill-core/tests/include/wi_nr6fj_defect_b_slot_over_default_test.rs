@@ -38,17 +38,27 @@
 //!
 //! Drop the `.or_else(carrier_from_declared_slot)` and THREE rows fail, each by
 //! answering the spec's `1`: the two acceptances and
-//! `a_parameterized_carrier_in_the_slot_dispatches_to_its_own_member`. The other FIVE
+//! `a_parameterized_carrier_in_the_slot_dispatches_to_its_own_member`. The other FOUR
 //! pass either way BY DESIGN and say so at their sites (one of them,
 //! `an_abstract_argument_still_dispatches_on_the_runtime_value`, is the control on the
 //! change's GATE rather than on its feature, and fails only when that gate is removed) — they exist because the obvious
 //! over-fire (route every defaulted call whose enclosing chain merely NAMES the spec
 //! into dispatch) was BUILT and MEASURED, and it broke three shipped rows where the
-//! default is the right answer. See `a_type_variable_slot_is_unchanged_and_still_
-//! disagrees` for which three and why a static reroute is the wrong instrument.
+//! default is the right answer. See `a_type_variable_slot_now_reaches_the_provider_too`
+//! for which three and why a static reroute is the wrong instrument.
 //!
 //! Full workspace with the change in: 7114 passed, 0 failed — 7105 before, and the NINE
 //! that moved are this file's own rows. Zero corpus rows changed their verdict.
+//!
+//! ## THE RESIDUE IS CLOSED — WI-20260919-H20YY
+//!
+//! This ticket closed the half where the declared slot names a CONCRETE carrier and left
+//! the TYPE-PARAMETER half open, pinned by `a_type_variable_slot_now_reaches_the_
+//! provider_too` (then named `..._is_unchanged_and_still_disagrees`). H20YY closed that
+//! half with the instrument this file's own prose named — a DEFERRAL at the call rather
+//! than a static reroute — so that row is now a positive and every cell of the table
+//! above reads 7. A slot over a type parameter has no carrier to pin; it has a
+//! dictionary, and the call is classified to walk it.
 
 use anthill_core::eval::Value;
 
@@ -351,30 +361,41 @@ end
     );
 }
 
-/// THE RESIDUE, PINNED SO IT CANNOT MOVE SILENTLY — a slot over a TYPE PARAMETER is
-/// unchanged, and the two spellings still disagree there.
+/// THE RESIDUE, NOW CLOSED — WI-20260919-H20YY. A slot over a TYPE PARAMETER reaches the
+/// provider too, and the two spellings finally agree at every shape.
 ///
 /// `operation viaop[U](x: U) -> Int64 requires Desc[T = U] = Desc.tag()` called at a
-/// `Rich`: the BODY-LESS spelling answers 7, the DEFAULTED one answers 1. That is the
-/// same defect as the acceptance row, one step more abstract, and this change does NOT
-/// fix it: `carrier_from_declared_slot` admits only a SORT-like binding, so a slot whose
-/// carrier is a type parameter pins nothing and the default still folds.
+/// `Rich`. This row asserted `(1, 7)` — the DEFAULTED spelling folding to the spec's own
+/// default while the BODY-LESS one dispatched — and was written so that closing the
+/// residue would FAIL IT. This is that failure, taken as the flip it was built to be.
 ///
-/// NOT AN OVERSIGHT — THE OBVIOUS FIX WAS BUILT AND MEASURED. Routing every defaulted
-/// call whose enclosing chain merely NAMES the spec into the WI-210 dispatch block makes
-/// all four cells answer 7, and breaks three shipped rows where the default is the right
-/// answer: `wi886_cpp_mapping_language_test::
+/// WHY NR6FJ COULD NOT CLOSE IT, and what changed. Its instrument was a CARRIER:
+/// `carrier_from_declared_slot` admits only a sort-like binding, and over `Desc[T = U]`
+/// there is no carrier to name — which provider `U` stands for is settled per call. This
+/// row's own doc drew the right conclusion at the time: *"with no concrete carrier the
+/// dispatch belongs at the call, where the frame holds the dictionary"*. H20YY is that,
+/// and the ROUTE is what makes it safe — the call is classified
+/// `CallClass::DeferToRequirement`, exactly as a body-less op's is, so eval walks the
+/// slot's dictionary and `resolve_op_target` yields the provider's override when it has
+/// one and the SPEC OP ITSELF when it does not.
+///
+/// THAT LAST CLAUSE IS WHY THE REJECTED FIX'S THREE CASUALTIES SURVIVE. The instrument
+/// rejected here was a static reroute of every defaulted call whose chain merely NAMES
+/// the spec into the WI-210 dispatch block, which broke three shipped rows where the
+/// default is the right answer: `wi886_cpp_mapping_language_test::
 /// eval_runs_the_spec_default_when_the_only_implementation_is_cpp`,
 /// `wi876_operation_mapping_test::the_whole_comparison_surface_works_from_one_operation`
 /// and `wi869_per_provision_conditions_test::
-/// the_inherited_comparison_surface_works_from_compare_alone`. A static reroute is the
-/// wrong instrument: with no concrete carrier the dispatch belongs at the call, where
-/// the frame holds the dictionary — an EVAL change, not a typer one.
+/// the_inherited_comparison_surface_works_from_compare_alone`. A deferral does not
+/// reroute anything: a provider with no override still runs the default, through the
+/// same dictionary. All three are green, and
+/// [`a_providing_carrier_with_no_override_still_takes_the_default`] is this file's own
+/// row for that rule.
 ///
-/// PASSES EITHER WAY BY DESIGN. It asserts today's behaviour, not the desired one, and
-/// it is written so that fixing the residue FAILS THIS ROW — which is the intent.
+/// BACK-OUT: make `defer_defaulted_call_to_slot` return `false` at entry and this
+/// returns to `(1, 7)`, the state it pinned before.
 #[test]
-fn a_type_variable_slot_is_unchanged_and_still_disagrees() {
+fn a_type_variable_slot_now_reaches_the_provider_too() {
     let tv = "  operation viaop[U](x: U) -> Int64 requires Desc[T = U] = Desc.tag()\n  \
               rule answer(?r) :- viaop(rich(), ?r)\n";
     assert_eq!(
@@ -382,8 +403,8 @@ fn a_type_variable_slot_is_unchanged_and_still_disagrees() {
             answer("test.defb.tvd", DEFAULTED, tv),
             answer("test.defb.tvb", BODY_LESS, tv),
         ),
-        (Some(1), Some(7)),
-        "the type-parameter slot is the RESIDUE this ticket did not close — see this \
-         row's doc for the fix that was built, measured and rejected",
+        (Some(7), Some(7)),
+        "a slot over a type parameter must reach the provider in BOTH spellings — \
+         WI-20260919-H20YY closed the residue this row was built to pin",
     );
 }

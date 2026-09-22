@@ -20447,6 +20447,59 @@ fn check_apply_iter(
                     });
                 }
             }
+
+            // WI-20260919-H20YY — NOTHING STATICALLY PINNED A CARRIER, so the enclosing
+            // scope's `requires` slot is the only thing that can direct this call. Route
+            // it through the SAME two slot routes a BODY-LESS spec op takes, instead of
+            // falling through to a plain apply of the spec's default body — which is what
+            // made a provider's override unreachable, silently. See the helper for the
+            // measurement and for why the answer here is a deferral and not a carrier.
+            //
+            // LAST, after both carrier routes, and that order is the point: an argument
+            // that names a carrier is argument-PRECISE evidence and a slot is not, so
+            // this can only widen the block into ground where the carrier routes already
+            // declined. It reaches no call that pins today.
+            //
+            // COST: [`call_names_no_carrier`] is asked a SECOND time here —
+            // [`carrier_from_declared_slot`] asked it for its own route just above. Named
+            // because the WI-1042 note at this block's head counts these reads, and its
+            // expensive leg ([`sort_type_params_as_pairs`]) would be a fifth. It is not
+            // hoisted: the gate is what makes that helper safe to call at all, so moving
+            // it to the caller would leave a function whose contract is enforced
+            // elsewhere. The duplicate is confined to calls that reach the expensive leg
+            // — no self-receiver AND no classified carrier param, i.e. the NULLARY spec-op
+            // shape — and every other call leaves on the two `matches!` compares. MEASURED
+            // on the fixture load behind this ticket: 119 calls reach this block, 4 reach
+            // the leg.
+            if carrier.is_none()
+                && call_names_no_carrier(
+                    kb,
+                    spec_sort,
+                    &recv_carrier,
+                    carrier_param_sym,
+                    &op.params,
+                )
+            {
+                let op_qn = kb.qualified_name_of(fn_sym).to_string();
+                let op_short_sym = kb.intern(short_name_of(&op_qn));
+                if defer_defaulted_call_to_slot(
+                    kb,
+                    env,
+                    occ,
+                    &subst,
+                    spec_sort,
+                    fn_sym,
+                    op_short_sym,
+                    &selections,
+                ) {
+                    return Ok(TypeResult {
+                        ty: resolved_ret,
+                        env: env.clone(),
+                        effects,
+                        node: Rc::clone(occ),
+                    });
+                }
+            }
         }
 
         // WI-210 phase 3 dispatch (proposal 038): if `fn_sym` is a spec
@@ -23193,6 +23246,81 @@ pub(crate) fn supplier_tie_repair(
     }
 }
 
+/// WI-20260917-NR6FJ DEFECT B — THE CALL IS SILENT ABOUT ITS CARRIER: it has no
+/// self-receiver, it classified no carrier param, and the spec op DECLARES no
+/// carrier-typed parameter at all. `true` iff NOTHING at this call site — no argument
+/// now, no runtime value later — can say which provider it means, so the only thing that
+/// can direct it is the enclosing scope's `requires` slot.
+///
+/// SILENT, NOT MERELY UNPINNED — and the difference between those two readings is a
+/// WRONG ANSWER. [`statically_pinned_carrier`] returns `None` for BOTH "this call names
+/// no carrier at all" (a nullary op) and "this call HAS a carrier argument whose type is
+/// abstract here", and only the first belongs to a slot-directed route. The second is
+/// deliberately left to eval's value-directed dispatch (see the WI-444 block's own note:
+/// *"Eval's value-directed override (eval.rs step 3) is the dynamic dual for an
+/// ABSTRACT-receiver call this cannot pin"*), which reads the carrier off the RUNTIME
+/// VALUE — the only correct source when the argument decides it.
+///
+/// MEASURED, on the first cut of [`carrier_from_declared_slot`], which lacked this gate:
+///
+/// ```text
+/// operation viaop[U](x: U) -> Int64 requires Desc[T = Rich] = Desc.describe(x)
+/// rule answer(?r) :- viaop(plain(), ?r)
+/// ```
+///
+/// answered 7 — `Rich`'s `describe` run on a `plain()` value — where it had answered 3,
+/// `Plain`'s own. Silently pre-empting a dynamic dispatch with a static guess is the same
+/// class of defect the slot routes exist to remove, so they are gated on the call SHAPE
+/// and `wi_nr6fj_defect_b_slot_over_default_test::
+/// an_abstract_argument_still_dispatches_on_the_runtime_value` drives it.
+///
+/// ASKED OF THE DECLARATION, NOT OF THE CALL, and that is the whole correction. The first
+/// cut gated on `carrier_param` — the call-site CLASSIFICATION — which is `None` both for
+/// an op with no carrier parameter AND for one whose argument was too abstract to
+/// classify. The hazard above is the second, so the gate let it straight through.
+/// [`declared_type_param_vid`] reads the spec op's OWN declared parameter type
+/// (`describe(x: T)`), which no argument can make abstract.
+///
+/// `classified_carrier_param` is still taken: it is the cheap positive answer, and a call
+/// that classified a carrier param is one every caller must decline anyway. It is named
+/// apart from the spec's own carrier param BECAUSE the two were once one word at the only
+/// call site, and reading the first as the second is what produced the wrong answer.
+///
+/// WI-20260919-H20YY — EXTRACTED because a SECOND route asks it. The defaulted block's
+/// slot DEFERRAL (the `requires Spec[T = P]` half, over a type PARAMETER, which pins no
+/// static carrier for [`carrier_from_declared_slot`] to find) must answer the same
+/// question in the same words: it too would otherwise pre-empt value-directed dispatch on
+/// an abstract argument. Two copies of a gate whose failure mode is a silent wrong answer
+/// is exactly the drift this tree keeps paying for.
+fn call_names_no_carrier(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    self_receiver: &ReceiverCarrier,
+    // The carrier param the CALL SITE classified, not the spec's own — see above, where
+    // confusing the two was a shipped wrong answer.
+    classified_carrier_param: Option<Symbol>,
+    op_params: &[(Symbol, Value)],
+) -> bool {
+    if classified_carrier_param.is_some()
+        || !matches!(self_receiver, ReceiverCarrier::NotApplicable)
+    {
+        return false;
+    }
+    let canon_spec = kb.canonical_sort_sym(spec_sort);
+    // The DECLARATION half of [`carrier_param_receiver_for_values`] — a parameter whose
+    // declared type is one of the spec's own type parameters. Spelled from the same two
+    // primitives so the two cannot drift about what "carrier-typed" means.
+    let spec_params = sort_type_params_as_pairs(kb, canon_spec);
+    let declares_a_carrier_param = op_params.iter().any(|(_, pty)| {
+        declared_type_param_vid(kb, pty).is_some_and(|pvid| {
+            spec_params
+                .iter()
+                .any(|(_, t)| matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == pvid))
+        })
+    });
+    !declares_a_carrier_param
+}
+
 /// WI-20260917-NR6FJ DEFECT B — THE DECLARED SLOT AS A CARRIER SOURCE, third beside the
 /// self-receiver and the carrier param, and read only when neither of those pinned one.
 ///
@@ -23215,14 +23343,14 @@ pub(crate) fn supplier_tie_repair(
 /// and answers 7 ([`lookup_spec_op_dispatch`] admits it); defaulted, it folded. One
 /// declaration, two meanings, decided by something the caller cannot see.
 ///
-/// A FALLBACK AND NOT A PRIORITY, and the gate in the body is what enforces it. When the
-/// call has ANY carrier source of its own — a self-receiver or a carrier-param argument —
-/// this declines outright, whether or not that source pinned a carrier statically. For
-/// `describe(x: T)` called at a `Plain` inside an operation whose slot names `Rich`, the
-/// value being described is the carrier, and when its type is abstract the carrier is
-/// eval's to read at run time. So this widens the block strictly into ground where NO
-/// call-site carrier exists at all; no call that pins today, and no call that eval pins
-/// tomorrow, changes its answer.
+/// A FALLBACK AND NOT A PRIORITY, and [`call_names_no_carrier`] is what enforces it. When
+/// the call has ANY carrier source of its own — a self-receiver or a carrier-param
+/// argument — this declines outright, whether or not that source pinned a carrier
+/// statically. For `describe(x: T)` called at a `Plain` inside an operation whose slot
+/// names `Rich`, the value being described is the carrier, and when its type is abstract
+/// the carrier is eval's to read at run time. So this widens the block strictly into
+/// ground where NO call-site carrier exists at all; no call that pins today, and no call
+/// that eval pins tomorrow, changes its answer.
 ///
 /// TWO SLOTS THAT DISAGREE PIN NOTHING. `requires Desc[T = Rich], Desc[T = Other]`
 /// leaves the block where it was (running the default) rather than taking the first
@@ -23234,73 +23362,39 @@ pub(crate) fn supplier_tie_repair(
 ///
 /// THE BINDING FILTER IS [`provision_binding_at_param`]'s and is load-bearing: it admits
 /// only a SORT-like base, so `requires Desc[T = U]` over a type PARAMETER pins nothing
-/// here. That case is the caller's to supply and already works — it reaches the callee
-/// through the SLD bridge, which resolves the dictionary from the concrete argument at
-/// fire time.
+/// here — there IS no static carrier to name, since which provider `U` stands for is
+/// settled per call.
+///
+/// WI-20260919-H20YY — AND THAT HALF IS NOT THIS FUNCTION'S TO ANSWER, where this
+/// paragraph used to claim it "already works … through the SLD bridge". MEASURED FALSE:
+/// `tagOfP[P](x: P) requires TypeTerm[T = P] = TypeTerm.valueOf()` over a `Box` that
+/// OVERRIDES the defaulted `valueOf` ran the SPEC'S DEFAULT and answered `Box(V: Boom)`
+/// where the override says `Option(T: Boom)` — silently, because a carrier this declines
+/// to pin left the defaulted block with no route at all and the call became a plain apply
+/// of the default. Nothing consulted the dictionary. The parametric half is served beside
+/// this one, by the slot DEFERRAL in the WI-444 block ([`defer_defaulted_call_to_slot`]):
+/// over a type parameter the answer is not a carrier but the frame's slot at run time,
+/// which is the dictionary-passing reading 058 gives a spec op.
 fn carrier_from_declared_slot(
     kb: &KnowledgeBase,
     env: &TypingEnv,
     spec_sort: Symbol,
     self_receiver: &ReceiverCarrier,
-    // The carrier param the CALL SITE classified, not the spec's own — see the gate
-    // below, where confusing the two was a shipped wrong answer.
+    // The carrier param the CALL SITE classified, not the spec's own — see
+    // [`call_names_no_carrier`], where confusing the two was a shipped wrong answer.
     classified_carrier_param: Option<Symbol>,
     op_params: &[(Symbol, Value)],
 ) -> Option<GoalCarrier> {
-    // THE CALL MUST BE SILENT, not merely unpinned — and the difference between those
-    // two readings is a WRONG ANSWER. `statically_pinned_carrier` returns `None` for
-    // BOTH "this call names no carrier at all" (a nullary op) and "this call HAS a
-    // carrier argument whose type is abstract here", and only the first is this
-    // function's business. The second is deliberately left to eval's value-directed
-    // dispatch (see the WI-444 block's own note: *"Eval's value-directed override
-    // (eval.rs step 3) is the dynamic dual for an ABSTRACT-receiver call this cannot
-    // pin"*), which reads the carrier off the RUNTIME VALUE — the only correct source
-    // when the argument decides it.
-    //
-    // MEASURED, on the first cut of this function, which lacked this gate:
-    //
-    // ```text
-    // operation viaop[U](x: U) -> Int64 requires Desc[T = Rich] = Desc.describe(x)
-    // rule answer(?r) :- viaop(plain(), ?r)
-    // ```
-    //
-    // answered 7 — `Rich`'s `describe` run on a `plain()` value — where it had answered
-    // 3, `Plain`'s own. Silently pre-empting a dynamic dispatch with a static guess is
-    // the same class of defect this function exists to remove, so it is gated on the
-    // call shape and `wi_nr6fj_defect_b_slot_over_default_test::
-    // an_abstract_argument_still_dispatches_on_the_runtime_value` drives it.
-    //
-    // ASKED OF THE DECLARATION, NOT OF THE CALL, and that is the whole correction. The
-    // first cut gated on `carrier_param` — the call-site CLASSIFICATION — which is `None`
-    // both for an op with no carrier parameter AND for one whose argument was too
-    // abstract to classify. The hazard above is the second, so the gate let it straight
-    // through. [`declared_type_param_vid`] reads the spec op's OWN declared parameter type
-    // (`describe(x: T)`), which no argument can make abstract.
-    //
-    // `classified_carrier_param` is still taken: it is the cheap positive answer, and a
-    // call that classified a carrier param is one this must decline anyway. It is named
-    // apart from the spec's own carrier param read below BECAUSE the two were once one
-    // word here, and reading the first as the second is what produced the wrong answer.
-    if classified_carrier_param.is_some()
-        || !matches!(self_receiver, ReceiverCarrier::NotApplicable)
-    {
+    if !call_names_no_carrier(
+        kb,
+        spec_sort,
+        self_receiver,
+        classified_carrier_param,
+        op_params,
+    ) {
         return None;
     }
     let canon_spec = kb.canonical_sort_sym(spec_sort);
-    // The DECLARATION half of [`carrier_param_receiver_for_values`] — a parameter whose
-    // declared type is one of the spec's own type parameters. Spelled from the same two
-    // primitives so the two cannot drift about what "carrier-typed" means.
-    let spec_params = sort_type_params_as_pairs(kb, canon_spec);
-    let declares_a_carrier_param = op_params.iter().any(|(_, pty)| {
-        declared_type_param_vid(kb, pty).is_some_and(|pvid| {
-            spec_params
-                .iter()
-                .any(|(_, t)| matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == pvid))
-        })
-    });
-    if declares_a_carrier_param {
-        return None;
-    }
     // The enclosing OPERATION's chain — the sort's slots then its own (WI-822 LEG 1) —
     // because an operation body DOES inherit its sort's `requires`. (A rule body does
     // not; that is `check_rule_body_requirements`' documented rule and 060 §8.9 row I1,
@@ -23333,6 +23427,32 @@ fn carrier_from_declared_slot(
         let Some((_, base)) = provision_binding_at_param(kb, spec_carrier_param, &entry.spec)
         else {
             continue;
+        };
+        // WI-20260919-H20YY — A TYPE PARAMETER IS NOT A CARRIER, and the shared filter
+        // above does not say so. [`provision_binding_at_param`] admits any base of
+        // `SymbolKind::Sort`, and a type parameter IS one: it is DECLARED `sort T = ?`,
+        // so `requires TypeTerm[T = P]` pinned `P` itself as the carrier sort. Nothing
+        // downstream then matched — `carrier_override_suppliers` finds no supplier at a
+        // parameter — so the block ran the spec's DEFAULT body and a provider's override
+        // was never reached. MEASURED: `tagOfP(box(…))` answered `Box(V: Boom)` where
+        // `Box`'s override says `Option(T: Boom)`.
+        //
+        // This restores what this function's own doc always claimed ("`requires Desc[T =
+        // U]` over a type PARAMETER pins nothing here"); the claim was true of the
+        // intent and false of the code. [`genuine_concrete_sort`] is the predicate that
+        // means it — "not a sort-type-param, and a name that really plays the sort role"
+        // — and it is the same question its two existing readers ask: *may I treat this
+        // as a carrier now*.
+        //
+        // `return None` AND NOT `continue`, so a parametric slot cannot be passed over in
+        // favour of a concrete sibling: `requires Desc[T = Rich], Desc[T = U]` must pin
+        // nothing, exactly as the disagreement clause above requires, rather than
+        // silently taking the one that happens to be written concretely. Over a
+        // parameter there is no static carrier to find, and the honest answer for the
+        // whole question is "not statically pinned" — which is what hands the call to the
+        // slot deferral ([`defer_defaulted_call_to_slot`]), where it belongs.
+        let Some(base) = genuine_concrete_sort(kb, base) else {
+            return None;
         };
         let base = kb.canonical_sort_sym(base);
         match found {
@@ -33450,6 +33570,139 @@ fn defer_to_op_scoped_slot(
         },
     );
     true
+}
+
+/// WI-20260919-H20YY — ROUTE A DEFAULTED SPEC MEMBER THROUGH THE SAME SLOT A BODY-LESS
+/// ONE TAKES, when the call names no carrier of its own. `true` iff it did.
+///
+/// THE DEFECT, measured on the R541X delivery commit (c3fe68ab):
+///
+/// ```text
+/// sort TypeTerm { sort T = ?  operation valueOf() -> Type = T }        -- a DEFAULT body
+/// sort Box { sort V = ?  entity box(v: V)  provides TypeTerm[T = Box[V = V]]
+///            operation valueOf() -> Type = Option[T = V] }             -- Box's OVERRIDE
+/// operation tagOfP[P](x: P) -> Type requires TypeTerm[T = P] = TypeTerm.valueOf()
+/// tagOfP(box(boom("x")))   -- answered `Box(V: Boom)`, the DEFAULT's `T`
+/// ```
+///
+/// It LOADED CLEAN and answered the spec's default, never the provider's override, with
+/// no diagnostic. CONTROL, measured at the same time: the identical member made BODY-LESS
+/// DOES dispatch to the provider through the slot (R541X's (C) fixtures,
+/// `TypeTermB.valueOfB`). One declaration, two meanings, decided by whether the spec op
+/// happens to carry a default body — which is WI-20260917-NR6FJ DEFECT B's sentence
+/// verbatim, one binding-shape over. That ticket closed the half where the slot names a
+/// CONCRETE carrier (`requires Desc[T = Rich]`, served by
+/// [`carrier_from_declared_slot`]); this is the half where it names a type PARAMETER,
+/// which pins no static carrier at all and which that function's doc wrongly recorded as
+/// "already works".
+///
+/// WHY A DEFERRAL AND NOT A CARRIER. Over `requires TypeTerm[T = P]` there is no carrier
+/// to name at load: which provider `P` stands for is settled per call, and the evidence
+/// that settles it is the dictionary the caller already passes. So the repair is the
+/// dictionary-passing reading 058 gives a spec op — classify
+/// [`CallClass::DeferToRequirement`] and let eval walk the slot — and NOT a static pin.
+/// Eval's `dispatch_via_sort_ops_table` then asks [`resolve_op_target`] for the
+/// dictionary's own member: the provider's override when it has one, and `fn_sym` ITSELF
+/// when it does not, which runs the spec's default body exactly as before. That
+/// fall-through is what keeps a provider WITHOUT an override on the default — defaults
+/// fill GAPS, they do not SHADOW (WI-444's rule, read from the other end).
+///
+/// THE TWO ROUTES ARE THE BODY-LESS BLOCK'S, IN ITS ORDER, and calling them here is the
+/// whole change: the sort-level [`find_requires_location`] pre-check (WI-239) first, then
+/// the operation's own [`defer_to_op_scoped_slot`] (WI-822/1091) as its fallback. Both are
+/// needed and neither subsumes the other — MEASURED: `tagOfP` is a FREE operation, so
+/// `enclosing_sort` is `None` and only the op-scoped route can serve it, while
+/// `SHold.f()`'s sort-level `requires TypeTerm[T = E]` is reached only by the first.
+///
+/// A PIN AT THIS CALL STILL OUTRANKS THE FORWARD — 058 §4.1 tier 1, the same
+/// `pinned_witness_for` gate all three sort-level defer sites keep. Deferring says "the
+/// enclosing frame answers this"; an explicit witness on THIS call says otherwise.
+///
+/// GATED ON [`call_names_no_carrier`], which is the one clause a reader will try to drop
+/// since the enclosing block already failed to pin a carrier. Failing to pin is NOT the
+/// same question: [`statically_pinned_carrier`] answers `None` both for a call that names
+/// no carrier at all and for one whose carrier ARGUMENT is merely abstract here, and the
+/// second belongs to eval's value-directed dispatch, which reads the carrier off the
+/// runtime value. Deferring those to the slot is precisely the wrong answer NR6FJ
+/// measured — `viaop[U](x: U) requires Desc[T = Rich] = Desc.describe(x)` computing
+/// `Rich`'s 7 for a `plain()` — so the gate is shared with that route rather than
+/// re-derived here.
+fn defer_defaulted_call_to_slot(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    fn_sym: Symbol,
+    op_short_sym: Symbol,
+    selections: &[InstanceSelection],
+) -> bool {
+    // WI-841 tier 1 — A PIN AT THIS CALL OUTRANKS THE FORWARD, the same gate all three
+    // sort-level defer sites keep. Not an early return: it is the gate on the SORT half
+    // below and is handed to the op half, which asks it in its own words, so the two
+    // halves refuse a pinned call for one reason rather than two.
+    let pinned_spec = pinned_witness_for(kb, selections, spec_sort).is_some();
+    // EXACTLY ONE CLAUSE OVER THE SPEC, OR NOTHING IS DIRECTED — the same refusal
+    // [`bind_sort_params_from_sole_enclosing_requirement`] applies to the same shape, and
+    // asked through the same owner so the two cannot drift.
+    //
+    // WITHOUT IT THIS ROUTE PICKS, which is exactly what it must not do, and two shipped
+    // rows measured it: `requires Desc[T = Rich], Desc[T = Other]` answered `Rich`'s 7
+    // where the default (1) is the only honest answer
+    // (`wi_nr6fj_defect_b_slot_over_default_test::two_slots_that_disagree_pin_nothing`),
+    // and R541X's `twoReq[P, Q] requires TypeTerm[T = P], TypeTerm[T = Q]` LOADED — the
+    // deferral silently supplied the evidence whose absence is what N31XX refuses the
+    // program for (`wi_r541x_body_read_of_type_param_test::
+    // two_clauses_over_one_spec_are_refused_at_load`). Both are the ORDER-DEPENDENT
+    // answer, reached through the soft first-match tie-break the locating walks fall back
+    // to when no clause is σ-precise; the walks are right to be soft for a call that
+    // pins something, and this route is for calls that pin nothing at all.
+    if sole_chain_entry_over_spec(kb, env.enclosing_frame_chain(), spec_sort).is_none() {
+        return false;
+    }
+    let enclosing_sort = env.enclosing_sort();
+    let enclosing_requires = env.enclosing_requires().to_vec();
+    if !pinned_spec && !enclosing_requires.is_empty() {
+        let sigma_ctx = SigmaCtx {
+            subst,
+            param_rigids: env.param_rigids(),
+        };
+        if let Some(path) = enclosing_sort
+            .and_then(|encl| find_requires_location(kb, subst, spec_sort, encl, Some(&sigma_ctx)))
+        {
+            // `path` is non-empty on `Some`. Head = direct frame slot; tail = projection
+            // path into its bundled value — the same encoding the body-less pre-check
+            // hands `CallClass::DeferToRequirement`.
+            let slot = path[0];
+            let proj_path: SmallVec<[usize; 2]> = path[1..].iter().copied().collect();
+            let resolved_spec = enclosing_requires[slot].clone();
+            classify(
+                kb,
+                occ,
+                CallClass::DeferToRequirement {
+                    spec_op_sym: fn_sym,
+                    op_short_sym,
+                    resolved_spec,
+                    slot,
+                    proj_path,
+                    enclosing_sort,
+                    enclosing_op: env.enclosing_op(),
+                },
+            );
+            return true;
+        }
+    }
+    defer_to_op_scoped_slot(
+        kb,
+        env,
+        occ,
+        subst,
+        spec_sort,
+        fn_sym,
+        op_short_sym,
+        enclosing_sort,
+        pinned_spec,
+    )
 }
 
 /// WI-822 LEG 1 — the frame slot of the enclosing OPERATION's OWN `requires` chain
@@ -45872,6 +46125,58 @@ fn enclosing_requires_licensing_clause(
     None
 }
 
+/// WI-20260918-R541X (A) / WI-20260919-H20YY — THE SOLE `requires` ENTRY OVER `spec` in
+/// the enclosing scope's COMPOSED chain (its sort's slots, then its operation's), or
+/// `None` when the chain holds none — or MORE THAN ONE.
+///
+/// "More than one" is a REFUSAL and not a tie-break, and it is the whole reason this is
+/// one function rather than four lines at each site. Nothing picks between
+/// `requires TypeTerm[T = P], TypeTerm[T = Q]` at a call that names neither, so taking
+/// the first written would make the answer depend on the ORDER two clauses appear in —
+/// the silent route-order choice WI-1010's family of refusals exists to prevent.
+/// [`carrier_from_declared_slot`] states the same rule for its own half ("TWO SLOTS THAT
+/// DISAGREE PIN NOTHING") and `wi_nr6fj_defect_b_slot_over_default_test::
+/// two_slots_that_disagree_pin_nothing` is the row holding it, since no corpus program
+/// writes two such slots.
+///
+/// THE TWO ASKERS want opposite things from the same answer and must not diverge about
+/// what "sole" means: [`bind_sort_params_from_sole_enclosing_requirement`] BINDS from the
+/// entry, and [`defer_defaulted_call_to_slot`] uses its existence as the licence to hand
+/// the call to that slot. Were the second looser than the first, a call could be
+/// dispatched through a clause the typer had refused to read bindings from.
+///
+/// DIRECT ENTRIES ONLY, stated because the deferral's own routes search wider: both
+/// [`find_requires_location`] and [`op_scoped_defer_location`] walk the requires TREE and
+/// can locate a spec nested inside a direct requirement. A transitively-required spec has
+/// no direct entry here, so this answers `None` and the deferral declines — conservative,
+/// and deliberately so: counting only what the author wrote is what makes "more than one"
+/// a statement about the PROGRAM rather than about how deep a walk happened to go.
+///
+/// ONE RESIDUAL DIVERGENCE, NAMED RATHER THAN LEFT SILENT. The count is over the WHOLE
+/// composed chain, so a spec required at BOTH the enclosing sort and the enclosing
+/// operation reads as two and the deferral declines. For a BODY-LESS op the same program
+/// resolves: the body-less block tries the sort half first and its op half is only the
+/// fallback ([`defer_to_op_scoped_slot`]'s ORDER note), so the sort's clause wins rather
+/// than refusing. Counting per half would match that precedence and still hold both
+/// refusals above — NOT DONE, because no fixture in the corpus writes that shape, and a
+/// gate split on a case nothing drives would pin a claim this ticket cannot measure. The
+/// cost of the conservative reading is a defaulted call falling back to its default where
+/// a body-less one dispatches; the cost of guessing wrong would be a silent wrong answer,
+/// which is the trade this whole family of refusals already makes.
+fn sole_chain_entry_over_spec(
+    kb: &KnowledgeBase,
+    chain: &DictChain,
+    spec: Symbol,
+) -> Option<RequiresEntry> {
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let mut over_spec = chain
+        .entries()
+        .iter()
+        .filter(|e| kb.canonical_sort_sym(e.required_sort) == spec_canon);
+    let entry = over_spec.next().cloned()?;
+    over_spec.next().is_none().then_some(entry)
+}
+
 /// WI-20260918-R541X (A) — bind a callee's STILL-FREE sort parameters from the ONE
 /// clause of the enclosing scope (its sort's `requires`, then its operation's) that
 /// requires the callee's own sort.
@@ -45907,17 +46212,9 @@ fn bind_sort_params_from_sole_enclosing_requirement(
     if chain.entries().is_empty() {
         return;
     }
-    let spec_canon = kb.canonical_sort_sym(spec);
-    let mut over_spec = chain
-        .entries()
-        .iter()
-        .filter(|e| kb.canonical_sort_sym(e.required_sort) == spec_canon);
-    let Some(entry) = over_spec.next().cloned() else {
+    let Some(entry) = sole_chain_entry_over_spec(kb, chain, spec) else {
         return;
     };
-    if over_spec.next().is_some() {
-        return;
-    }
     // THE CALL MUST SAY NOTHING ABOUT WHICH INSTANCE. One pinned parameter means the call
     // names an instance of its own, and the clause may be about a different one:
     // `FiniteCollection.collect(rest)` over a `rest : Mapped[…]` inside a sort that
