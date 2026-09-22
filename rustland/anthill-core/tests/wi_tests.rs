@@ -1819,3 +1819,6 @@ mod wi_159s9_op_scoped_entry_test;
 
 #[path = "include/wi_ee0ep_param_dictionary_test.rs"]
 mod wi_ee0ep_param_dictionary_test;
+
+#[path = "include/wi_6b67s_receiver_bound_requirement_test.rs"]
+mod wi_6b67s_receiver_bound_requirement_test;

@@ -1391,8 +1391,20 @@ impl TypeError {
                         kb.qualified_name_of(*op),
                     )
                 } else {
+                    // CHANNEL-NEUTRAL, and that is a correction (WI-20260911-6B67S).
+                    // This read "a call-site `[Spec = W]` on {op}", which was true while
+                    // the only producer was a written bracket. It is not: a selection is
+                    // equally made by a TYPE that carries the slot — an argument's
+                    // declared `s: SortedSet[T = Int64, O = NotOrd]`, with no bracket
+                    // anywhere in the author's file — and once
+                    // [`selections_from_slot_bindings`] runs check 1 that channel reaches
+                    // this arm too. Telling that author to fix a bracket on a stdlib
+                    // operation names syntax they never wrote, which is the same species
+                    // of false diagnostic this ticket exists to remove. `Spec = W` is
+                    // the SELECTION, which both channels really do make; the repair
+                    // clause is what stays actionable and is unchanged.
                     format!(
-                        "{} does not provide {} — a call-site `[{} = {}]` on {} must \
+                        "{} does not provide {} — a selection of `{} = {}` at {} must \
                          name a sort that declares `provides {1}[…]`",
                         kb.qualified_name_of(*witness),
                         spec_qn,
@@ -1987,10 +1999,13 @@ impl TypeError {
                 actual_type: self.format(kb),
                 span: self.span(kb),
             },
+            // `selection`, not `type_arg`, for the reason given at
+            // [`TypeError::WitnessDoesNotProvide`] above — WI-20260911-6B67S gave this
+            // refusal the same two channels.
             TypeError::SelectionValueNotASort { op, spec, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
-                field_name: "type_arg".to_string(),
+                field_name: "selection".to_string(),
                 expected_type: format!("a witness sort for {}", kb.qualified_name_of(*spec),),
                 actual_type: self.format(kb),
                 span: self.span(kb),
@@ -2023,10 +2038,17 @@ impl TypeError {
                 actual_type: self.format(kb),
                 span: self.span(kb),
             },
+            // WI-20260911-6B67S: `selection`, not `type_arg` — the SAME rule WI-844 states
+            // three arms down for `ConflictingSelection`, and for the same reason. Once
+            // `selections_from_slot_bindings` runs check 1, this refusal is reached by a
+            // selection carried in an ARGUMENT'S TYPE as well as by a written bracket, so
+            // `type_arg` named where it was written and got it wrong: MEASURED,
+            // `type mismatch in …SortedSet.toList.type_arg` on a program with no type arg
+            // anywhere. The field names WHAT is wrong.
             TypeError::WitnessDoesNotProvide { op, spec, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
-                field_name: "type_arg".to_string(),
+                field_name: "selection".to_string(),
                 expected_type: format!("a provider of {}", kb.qualified_name_of(*spec)),
                 actual_type: self.format(kb),
                 span: self.span(kb),
@@ -30156,16 +30178,36 @@ fn seed_receiver_type_args(
     // for a value with no sort head, and [`validate_instance_selection`]'s §3.5 checks —
     // and this leg runs neither. A receiver-bound slot still SELECTS, through the
     // type-carried producer [`selections_from_slot_bindings`] reading the parameter back
-    // out of σ; that producer `continue`s on a headless value and calls no validation, so
-    // `SortedSet[T = Int64, O = <not a sort>].empty()` is accepted with the slot quietly
-    // unselected where the callee spelling refuses it.
+    // out of σ.
     //
-    // PRE-EXISTING AND ONE SPELLING WIDER, not new: the asymmetry is between the BRACKET
-    // producer and the WI-844 TYPE producer, and an ARGUMENT carrying the same type has
-    // always reached the unvalidated one. Closing it means giving that producer the
-    // validations, which changes what an argument-carried selection is allowed to be —
-    // its own census. LATENT meanwhile: the delivery census found no form-(3) call in
-    // `stdlib/`, `examples/` or the loaded `anthill-todo` code at all.
+    // WI-20260911-6B67S CLOSED BOTH HALVES, at the producer rather than here, and
+    // corrected this comment's account of them — stated as one case and MEASURED as two:
+    //  * a value with NO SORT HEAD (`[O = (Int64, Int64)]`) is what "accepted with the
+    //    slot quietly unselected" describes. The reading was right and the consequence
+    //    understated: the written `O` was DROPPED and the requirement then answered by
+    //    an ordinary search, so the call did not merely lose its selection, it silently
+    //    got somebody else's.
+    //  * a value that IS a sort but provides NOTHING (`[O = NotOrd]`) was never
+    //    unselected at all. It was selected and refused — right verdict, wrong message,
+    //    since [`check_selection_bindings`] assumed a check 1 that had not run.
+    //
+    // BOTH are now refused by [`selections_from_slot_bindings`] itself, which is the ONE
+    // producer this leg's slot bindings reach; it raises `SelectionValueNotASort` and
+    // runs check 1, so the receiver spelling refuses exactly what the callee spelling
+    // does and this leg needs no check of its own. That is also why the fix is not here:
+    // the same producer is reached by an ARGUMENT whose TYPE carries the slot, with no
+    // bracket written anywhere, and a receiver-leg check could not have reached it.
+    //
+    // WHAT THIS LEG STILL DOES NOT DO: [`validate_instance_selection`]'s check 3
+    // (`ValueDirectedSelection` — naming a CONCRETE provider, whose values already
+    // direct dispatch). MEASURED at 6B67S: `SortedSet[T = String, O = ConcOrd].empty()`
+    // loads where the callee spelling refuses it. Check 3 refuses a SPELLING, so unlike
+    // check 1 it cannot move to the producer — the σ-read channel has no spelling, and a
+    // TYPE legitimately carries a concrete witness. It belongs to whichever channel the
+    // author wrote, which for this leg means here; left open because it is a verdict
+    // change on the receiver bracket with no measured victim. LATENT meanwhile: the
+    // delivery census found no form-(3) call in `stdlib/`, `examples/` or the loaded
+    // `anthill-todo` code at all.
     for (param, var_term) in sort_type_params_as_pairs(kb, parent).iter() {
         // BY SHORT NAME. The receiver's keys are bare interns of the written spelling
         // and the declared list is qualified — the same split [`BindingKeyMatch`] closes
@@ -30807,11 +30849,22 @@ fn push_selection(
 ///    O = O])` (§7.1) the slot is bound to a type PARAMETER, not a witness, and must
 ///    stay a FORWARD of the caller's dictionary. [`is_type_param_value`] is that test,
 ///    and it is the reason this cannot turn universal polymorphism into a wrong pin.
-///  * **No `validate_instance_selection`.** Its check 3 refuses a SPELLING — an
-///    explicit witness where a concrete provider's values already direct dispatch
-///    (§4.4) — and there is no spelling here; its check 1 (the witness provides the
-///    spec at all) is what [`check_selection_bindings`] decides more precisely, at
-///    this call's own bindings, on the very next line.
+///  * **Check 1 YES, check 3 no.** Check 3 refuses a SPELLING — an explicit witness
+///    where a concrete provider's values already direct dispatch (§4.4) — and there is
+///    no spelling here, so it stays [`seed_op_type_args`]'. Check 1 (the witness
+///    provides the spec at all) IS run, inline below.
+///
+///    WI-20260911-6B67S added it, and the shape of the bug is why it belongs here. This
+///    producer already ran check 1 on every NESTED slot witness
+///    ([`check_slot_witnesses_provide`]) and on no top-level one, and the gap was
+///    covered by a claim that [`check_selection_bindings`] "decides it more precisely,
+///    at this call's own bindings". It does not: it asks the NARROWER question, renders
+///    "provides the spec, but not at these bindings" from an invariant only the BRACKET
+///    producer establishes, and `continue`s entirely when the goal has no candidates.
+///    So a witness providing NOTHING was described as providing it — and on this
+///    function's OTHER caller (the eta path, typing.rs' `no check_selection_bindings
+///    here, unlike the direct call`) nothing asked at all. Running check 1 at the
+///    producer makes the consumer's assumption TRUE instead of making the consumer ask.
 fn selections_from_slot_bindings(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -30847,12 +30900,62 @@ fn selections_from_slot_bindings(
         // `sort_functor_of_view`'s `TermId` face — the SAME head read
         // `selection_witness_sym` gives a bracket value, and for the same reason: a
         // witness may carry type arguments (§4.5) and its BASE is what identifies it.
-        // `None` here is a slot bound to something with no sort head at all (an arrow,
-        // a tuple) — no witness to name, and `check_selection_bindings` has no goal to
-        // judge it against; the requirement's own route reports it.
+        // `None` here is a slot bound to something with no sort head at all — an arrow,
+        // a tuple, an effect row.
+        //
+        // WI-20260911-6B67S — LOUD for ONE of the two carriers that land here, where
+        // this used to `continue` for both. The skip was argued as "no witness to name,
+        // and `check_selection_bindings` has no goal to judge it against; the
+        // requirement's own route reports it", and the last clause was MEASURED FALSE:
+        // `SortedSet[T = Int64, O = (Int64, Int64)].empty()` LOADED CLEAN, the written
+        // `O` dropped and the requirement answered by an ordinary search. It only looks
+        // reported when two providers happen to tie, and then it is reported as an
+        // AMBIGUITY — never as the malformed binding it is. With one provider the
+        // author's text is silently replaced by the search's answer, which is the silent
+        // wrong answer the callee bracket has always refused (`SelectionValueNotASort`,
+        // [`seed_op_type_args`]).
+        //
+        // WHICH CARRIER IT IS, ASKED OF [`slot_binder_state`] AND NOT OF THE `None`.
+        // `sort_functor_of` answering `None` is TWO situations, and `is_type_param_value`
+        // one line up separates only part of them — it reads a flex var and a sort
+        // PARAMETER as abstract, and says nothing about a SKOLEM or the `s.O`
+        // [`UnwrittenFill::Projection`] an UNWRITTEN slot is filled with. Those are
+        // `Quantified`: the enclosing signature said "any", the dictionary must arrive
+        // from the caller's frame, and refusing them breaks §7.1 forwarding outright —
+        // MEASURED, 11 rows across `wi1094`, `wi844`, `wi_ee0ep` and `wi_r10kc`, every
+        // one of them an unwritten slot taking its argument's own comparator. Only
+        // [`SlotBinderState::NoWitnessReading`] — an arrow, a tuple, an effect row, a
+        // denoted value — is a carrier no `provides` can ever answer, and it alone is
+        // refused. That is also the enum's own reason for existing separately from
+        // `Decided`, now load-bearing rather than documentary.
         let Some(witness) = sort_functor_of(kb, bound) else {
+            if matches!(
+                slot_binder_state(kb, &TermIdView(bound)),
+                SlotBinderState::NoWitnessReading
+            ) {
+                return Err(TypeError::SelectionValueNotASort {
+                    span,
+                    op: fn_sym,
+                    spec: spec_sort,
+                });
+            }
             continue;
         };
+        // §4.4 CHECK 1, which this producer ran on a witness's NESTED slots
+        // (`witness_value_slot_selections` → `check_slot_witnesses_provide`, one line
+        // down) and on none of its TOP-LEVEL ones — inconsistent by exactly one level,
+        // and the whole of WI-20260911-6B67S. A nested `ListOrd[OE = NotOrd]` was
+        // refused by name while the `O = NotOrd` carrying it was passed on to be guessed
+        // about downstream.
+        //
+        // HERE RATHER THAN AT THE CONSUMER, because this is what makes
+        // [`check_selection_bindings`]' `at_bindings: true` TRUE rather than merely
+        // rendered: both of this function's callers now hand on a checked selection,
+        // including the eta one that runs no `check_selection_bindings` at all. The
+        // shared owner is what keeps the two producers' answer to "does it provide" one
+        // answer — [`seed_op_type_args`] reaches the same check through
+        // [`validate_instance_selection`].
+        check_witness_provides_spec(kb, fn_sym, spec_sort, witness, span)?;
         // WI-870: and the witness's OWN slot bindings, read out of the same type. A
         // named slot IS a type parameter (§4.7), so `SortedSet[T = List[P], O =
         // ListOrd[OE = LexFst]]` carries the nested selection in the ARGUMENT exactly
@@ -30893,12 +30996,19 @@ enum SlotBinderState {
     /// review) because the two skip for OPPOSITE reasons and calling this one "decided"
     /// asserts a witness that is not there.
     ///
-    /// Skipped all the same, and the sibling reader is why that is right rather than
-    /// lax: [`selections_from_slot_bindings`] reaches the identical situation through
-    /// `sort_functor_of` and records it as *"no witness to name, and
-    /// `check_selection_bindings` has no goal to judge it against; the requirement's own
-    /// route reports it"*. Refusing here instead would take that report away from the
-    /// route that can render it.
+    /// Skipped all the same, and the sibling reader is STILL why — but for the opposite
+    /// reason to the one recorded here until WI-20260911-6B67S. This used to cite
+    /// [`selections_from_slot_bindings`]' own skip and its claim that *"the requirement's
+    /// own route reports it"*, concluding that refusing here "would take that report away
+    /// from the route that can render it". MEASURED: no route reported it —
+    /// `SortedSet[T = Int64, O = (Int64, Int64)].empty()` loaded clean and the search
+    /// silently supplied a provider the author had not written.
+    ///
+    /// So the sibling now REFUSES (`SelectionValueNotASort`, at the producer, for both
+    /// the bracket and the type channel), and this arm skips because that refusal has
+    /// already happened upstream — there is nothing left here to report. The dependency
+    /// runs the other way now, and is load-bearing in that direction: if the producer's
+    /// refusal is ever relaxed, this arm silently goes back to dropping the binding.
     NoWitnessReading,
 }
 
@@ -32038,8 +32148,24 @@ fn check_selection_bindings(
                     op: fn_sym,
                     witness: sel.witness,
                     spec: sel.spec_sort,
-                    // Reached only past `validate_instance_selection`, which already
-                    // established that the witness provides the spec SOMEWHERE.
+                    // EVERY producer establishes this now, which is what makes the
+                    // literal honest. It used to read "reached only past
+                    // `validate_instance_selection`" and name that one caller — true of
+                    // the BRACKET producer and FALSE of the σ-READ one
+                    // ([`selections_from_slot_bindings`]), which ran check 1 on a
+                    // witness's NESTED slots and on none of its top-level ones.
+                    // WI-20260911-6B67S: a witness providing NOTHING was therefore told
+                    // it "provides WeakOrd, but not at the bindings this call needs",
+                    // through the RECEIVER bracket and — with no bracket written anywhere
+                    // — through an ARGUMENT whose type carries the slot.
+                    //
+                    // FIXED AT THE PRODUCER, not here. Making this rung ASK was tried and
+                    // is the worse shape: it leaves the invariant false and buys one
+                    // consumer a true message, while `selections_from_slot_bindings`'
+                    // OTHER caller (the eta path, which runs no `check_selection_bindings`
+                    // at all) keeps an unchecked selection. The producer now runs check 1
+                    // itself, so every selection reaching this loop has passed it and
+                    // `true` is the only thing this branch can mean.
                     at_bindings: true,
                 });
             }
