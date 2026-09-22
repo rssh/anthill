@@ -3,9 +3,9 @@
 - id: WI-20260921-EE0EP-pass-the-argument-s-own
 - created: 2026-09-21T19:01:33Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-21T19:01:33Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-22T14:54:06Z
 
 - acceptance: cargo-test
 
