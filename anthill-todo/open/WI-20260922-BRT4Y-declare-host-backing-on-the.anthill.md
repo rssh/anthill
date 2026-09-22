@@ -35,6 +35,8 @@ Today a body-less operation is three things wearing one face: a spec member awai
 
 NO NEW MACHINERY FOR THE MARKER ITSELF: operations already carry attributes (`OpInfoRecord.meta`, WI-087, read by `meta_has_flag`), the same channel `@[simp]`, `@[internal]` and `@[Profile: "cpp20-stl"]` ride.
 
+AND THE MARKER IS ABOUT BODY-LESSNESS, NOT ABOUT DICTIONARIES — measured, because the obvious extension is to declare a builtin's `requires` beside its arity (`HostFn { arity, f }`) and check the two agree. EXACTLY ONE builtin reads a dispatching dictionary: `type_value_of_self`, backing `anthill.reflect.TypeValue.type_value`, and it is the pure case — nullary, so the dictionary is not extra evidence but its ONLY evidence ("`type_value()` is nullary and the dictionary is its only evidence"). Every other host function answers from its arguments. A declaration channel for a population of one is machinery nothing drives, and that single case already fails loudly and specifically when the dictionary is absent, which is what the check would have bought. So this ticket stays about "is this operation body-less BY DESIGN"; revisit only if a second dictionary-reading builtin appears.
+
 WHAT TO DECIDE AT PICKUP.
  (a) THE LOAD CHECK, which is the point of the marker: declared host-implemented AND no binding in the loaded closure supplies it ⟹ a LOAD error naming the missing layer, not an eval death. And its converse — mapped but not declared — is the drift check.
  (b) ONE SOURCE OF TRUTH. The marker is the CLAIM, the binding layer is the EVIDENCE, and (a) is where they must agree. Two readers that can disagree is the failure this codebase keeps writing comments about; do not let `@[host_implemented]` become a second `is_host_mapped_op`.
