@@ -1060,6 +1060,33 @@ pub enum LoadError {
         provider: String,
         span: Span,
     },
+    /// WI-20260913-KXNEX — a written `provides` clause that leaves its spec's CARRIER
+    /// PARAMETER unbound, and so names no carrier. §5.1: "a `provides` clause names its
+    /// PROVIDER by WHERE it is written, and its CARRIER by its bindings".
+    ///
+    /// Raised by [`super::typing::check_provision_names_carrier`], which is where the
+    /// reasoning lives. Carries a `SourceSpan` and not a `Span`: it is raised by a
+    /// POST-LOAD pass over every file's clauses, so byte offsets alone would name the
+    /// wrong file — and `dedup_rendered_load_errors` keys on the rendering, which would
+    /// then collapse two files' refusals into one.
+    ProvisionNamesNoCarrier {
+        /// The spec the clause names, qualified.
+        spec: String,
+        /// The spec's carrier parameter, by short name (`C`).
+        carrier_param: String,
+        /// The sort whose body the clause stands in, qualified — its PROVIDER, and the
+        /// repair the message prescribes.
+        provider: String,
+        /// The clause's own `path:line:col`, PRE-RENDERED by [`render_decl_site`].
+        ///
+        /// Rendered rather than carried as a `Span`, which is what every POST-LOAD check
+        /// over more than one file's declarations does (`DuplicateOperationDeclaration`
+        /// and its neighbours). A bare `Span` is byte offsets with no source, so the
+        /// per-file `loc` the `Span`-bearing variants render against would name whichever
+        /// file happened to be rendering — and `dedup_rendered_load_errors` keys on the
+        /// rendering, so two files' refusals at equal offsets would collapse into one.
+        site: String,
+    },
     /// WI-851: a constructor's named argument names no DECLARED FIELD of the entity.
     /// The named twin of the positional over-arity refusal, and like it a loud case
     /// rather than a silent never-match: an unknown label rides into the hash-consed
@@ -3133,6 +3160,18 @@ impl LoadError {
                     provides_names_data_sort_message(spec, provider)
                 )
             }
+            LoadError::ProvisionNamesNoCarrier {
+                spec,
+                carrier_param,
+                provider,
+                site,
+            } => {
+                format!(
+                    "{}: {}",
+                    site,
+                    provision_names_no_carrier_message(spec, carrier_param, provider)
+                )
+            }
             LoadError::TypedPatternNotEnforced { rule, reason, span } => {
                 let msg = typed_pattern_refusal_detail(rule.as_deref(), *reason);
                 match span {
@@ -3471,6 +3510,19 @@ impl std::fmt::Display for LoadError {
                     provides_names_data_sort_message(spec, provider),
                     span.start,
                     span.end
+                )
+            }
+            LoadError::ProvisionNamesNoCarrier {
+                spec,
+                carrier_param,
+                provider,
+                site,
+            } => {
+                write!(
+                    f,
+                    "{} at {}",
+                    provision_names_no_carrier_message(spec, carrier_param, provider),
+                    site
                 )
             }
             LoadError::UnresolvedImport { path, span } => {
@@ -7016,6 +7068,37 @@ fn provides_names_data_sort_message(spec: &str, provider: &str) -> String {
          {spec}(…)`, which is a different statement and needs no clause here. (The \
          `fact {spec}[…]` spelling is classified as that data assertion rather than \
          refused, since it has both readings — this clause has only one.)"
+    )
+}
+
+/// WI-20260913-KXNEX — the sentence for [`LoadError::ProvisionNamesNoCarrier`]. One
+/// owner, for the reason [`provides_needs_sort_message`] states: two rendering paths,
+/// one of them under test.
+///
+/// It names the PARAMETER and spells the repair, because "this provision names no
+/// carrier" is not actionable on its own: which parameter carries a spec is read off the
+/// spec's operations (WI-1076) and is nowhere in the clause the author is looking at. The
+/// clause is quoted WITHOUT a bracket ellipsis for the same both-shapes reason: a bare
+/// `provides Harness` has no brackets, and `provides Harness[…]` misquotes it.
+///
+/// The repair is worded to fit BOTH refused shapes with no branch — the clause that binds
+/// a non-carrier parameter (`provides Llm[E = {External}]`) and the BARE one (`provides
+/// Harness`). An earlier wording ended "keeping the bindings already there", which tells
+/// the author of a bare clause to keep bindings it does not have.
+///
+/// And it says what the silence COST — the shape's whole history is that it loads clean and
+/// dies at a call site in another file, so a refusal that did not connect the two would
+/// read as the loader being newly fussy about a program that "worked".
+fn provision_names_no_carrier_message(spec: &str, carrier_param: &str, provider: &str) -> String {
+    format!(
+        "`provides {spec}` in '{provider}' binds nothing at '{spec}'s carrier \
+         parameter `{carrier_param}`, so it names no carrier — §5.1: a `provides` clause \
+         names its PROVIDER by where it is written, and its CARRIER by its bindings. The \
+         provision is not about '{provider}', and value-directed dispatch finds no \
+         provider for '{spec}'s operations: a call on a '{provider}' value fails \
+         `OperationBodyMissing` at run time, against a sort that implements it. Write the \
+         carrier into the clause — `provides {spec}[{carrier_param} = {provider}]` — \
+         alongside any bindings it already carries."
     )
 }
 
@@ -13282,6 +13365,33 @@ fn load_phase_inner(
     // Load-blocking.
     all_errors.extend(super::typing::check_provider_operations(kb));
     mark!("check_provider_operations");
+    // WI-20260913-KXNEX: a written `provides` clause must NAME A CARRIER — bind the
+    // spec's carrier parameter (§5.1). The clause that does not loaded clean and died
+    // `OperationBodyMissing` at the first call against a provider that implements the
+    // operation; see `check_provision_names_carrier` for the measurement and for what
+    // stays legal. Load-blocking, for the reason the two checks above are: the provision
+    // is unsound as recorded, and its only other outcome is a run-time failure in a file
+    // that did nothing wrong.
+    //
+    // HERE, beside the other two PROVIDER-side checks and after them, because it asks
+    // the same kind of question about the same declaration. Its own ordering constraint
+    // is only that every spec's OPERATIONS have loaded — `spec_carrier_param` reads the
+    // carrier parameter off them, and under cross-file mutual recursion (WI-321) a
+    // provision may load before the file declaring them. Anywhere in this post-load
+    // region satisfies that; standing after `check_provider_operations` means a program
+    // that is wrong BOTH ways reads the operation-coverage diagnostic first, which names
+    // the concrete missing member rather than the binding that would have found it.
+    //
+    // DRAINED HERE, not by the check: the drain is the caller's, the rule its WI-835
+    // neighbour is under, so that a `load_all` into a live KB judges only its own
+    // clauses. The drain stands BELOW the `run_typer: false` return above, which is what
+    // makes `restore_load_check_marks`' truncate a real restore rather than a no-op.
+    let written_provides = kb.take_written_provides_clauses();
+    all_errors.extend(super::typing::check_provision_names_carrier(
+        kb,
+        &written_provides,
+    ));
+    mark!("check_provision_names_carrier");
     // WI-664: derive composite Eq/NonEq classification. Builds the field-wise-eq
     // carrier set (`field_wise_noneq_carriers`, read by the resolver and
     // interpreter to compare a Float-containing composite FIELD-WISE) and asserts
@@ -17037,7 +17147,7 @@ fn check_duplicate_operation_declarations(kb: &KnowledgeBase) -> Vec<LoadError> 
 /// being dropped: a dropped site would leave the refusal naming fewer places than
 /// it counted. Unreachable today (`Loader::new` always registers the parsed text,
 /// and a file containing an `operation` is not empty), and kept total anyway.
-fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
+pub(crate) fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
     match kb.sources.provenance(site.source) {
         Some((path, text)) => {
             let at = LineIndex::new(&text).format_start(site.span);
@@ -34252,6 +34362,21 @@ impl<'a> Loader<'a> {
         };
         // Proposal 066 §7.5 — the clause, by CONTENT, for `provides_clause_count`.
         if let Some(spec_sym) = named_spec {
+            // WI-20260913-KXNEX — and the clause itself, for the post-load check that
+            // it names a carrier. A DIFFERENT registry from the count beside it and not
+            // a second use of it: that one is keyed by CONTENT and collapses two clauses
+            // writing the same row, which is right for "how many provisions is this" and
+            // wrong here — each written clause is a separate thing to fix and carries its
+            // own span. Recorded only when the spec NAME resolved: `provided_spec_symbol`
+            // has already reported a name that did not, and a second diagnostic about
+            // the carrier of a spec that is not there names the wrong repair.
+            self.kb
+                .record_written_provides_clause(crate::kb::WrittenProvidesClause {
+                    provider: domain,
+                    spec: spec_sym,
+                    spec_view: spec_value.clone(),
+                    span: SourceSpan::from_span(self.source_id, pc.span),
+                });
             self.kb.record_provides_clause(domain, spec_sym, conditions);
         }
         self.kb.assert_metadata_fact_carrier(

@@ -232,7 +232,13 @@ fn provider(spec_row: &str, impl_row: &str, impl_body: &str) -> String {
          import cbrsw.{{Model, GptModel, Fs, AdminFs, Gate, Oracle, SubOracle}}\n  \
          entity impl\n  \
          operation act(self: Impl) -> Unit\n    effects {impl_row} = {impl_body}\n  \
-         provides Gate\nend\n"
+         provides Gate[C = Impl]\nend\n"
+        // `C = Impl` — WI-20260913-KXNEX. This was a BARE `provides Gate`, which over
+        // a spec declaring `sort C = ?` names no carrier (§5.1) and is now refused at
+        // load. It is the same omission `examples/guardians` carried at `FileHarness
+        // provides Harness` until WI-20260830-7MK73 measured it faulting at run time;
+        // the row legs below are unaffected, which is the point of repairing it here
+        // rather than weakening the rule.
     )
 }
 

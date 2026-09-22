@@ -131,6 +131,13 @@ sort guardians.LiveLlm
   -- `llm.complete(p)` then had no carrier to dispatch at and died
   -- `OperationBodyMissing` on the spec's body-less `complete` — at run time only,
   -- since every caller in this example had merely been LOADED.
+  --
+  -- THE LOADER NOW REFUSES THE OMISSION (WI-20260913-KXNEX), so this note records why
+  -- the binding is here rather than a trap still to be fallen into. The census that
+  -- ticket ran found the same silent shape in four test fixtures, each of which had
+  -- likewise only ever been LOADED. `wi_kxnex_provision_names_carrier_test` re-runs the
+  -- measurement against THESE FILES: it strips the four `C =` bindings from a scratch
+  -- copy and asserts the refusal, so the paragraph above cannot go stale.
   provides Llm[C = LiveLlm, E = {External}]
 end
 

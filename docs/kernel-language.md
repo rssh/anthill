@@ -1400,6 +1400,34 @@ provider** as their carrier: `Stream`'s operations all receive on `Stream` itsel
 and its `T` appears only in return and callback types, so `sort List provides
 Stream[T, {}]` records `List`, and `List` `self_provides` `Stream`.
 
+**A written `provides` clause over a spec that HAS a carrier parameter must BIND
+it** (WI-20260913-KXNEX), and one that does not is a **load error**. By the rule
+two paragraphs up such a clause names no carrier at all, and the consequence was
+silent: `sort LiveLlm { operation complete(self: LiveLlm, …); provides Llm[E =
+{External}] }` loaded clean, and `llm.complete(p)` on a `LiveLlm` value failed
+`OperationBodyMissing` at the first call — against a sort that implements the
+operation. The reason it could load is that the two readers of a provision
+disagree about exactly this shape: the typer's reading is keyed on the PROVIDER
+and accepted it, while dispatch's is keyed on the CARRIER and found nothing, and
+the one function both ask answers `None` either way. The rule removes the shape
+rather than reconciling the readings. It is decided at the declaration, needs no
+call site, and the repair it prescribes is one binding (`C = <provider>`); a
+DEFAULT of the carrier parameter to the enclosing sort was weighed and rejected,
+because a provision that dispatches somewhere the author did not write is the
+same silence in the other direction.
+
+Three shapes stay legal and each for its own reason: a spec with **no** carrier
+parameter — the paragraph above — whose bare provision records its provider
+(`sort GithubForge provides Forge`); a **witness**, which binds the carrier
+explicitly and is the very thing the rule demands; and a carrier written as a view
+of the provider's **own type parameter** (`provides Ord[T = List[T = E]]`), which
+is a binding an author wrote, so the question is whether the parameter is bound at
+all and never whether it is bound to a bare sort. DERIVED rows — the conversions
+and the composed `Eq`/`NonEq` classifications — are not written clauses and are
+not asked. Enforced by `check_provision_names_carrier`, over the loader's registry
+of written clauses rather than the provision relation, so the rule cannot drift
+into the rows the loader itself derives.
+
 **"Takes" is the rule, not an approximation of one** (WI-1077). A narrower reading is
 imaginable — whether an operation **receives on** a parameter rather than merely
 **accepting** it — and the two part company in two shapes: a spec that takes its own

@@ -40308,6 +40308,142 @@ fn provision_binding_at_param(
         .map(|s| (val, s))
 }
 
+/// WI-20260913-KXNEX — A WRITTEN `provides` CLAUSE MUST NAME A CARRIER. For each
+/// clause the loader recorded, if the spec it names HAS a carrier parameter
+/// ([`spec_carrier_param`]) and the clause binds no value at that parameter, refuse.
+///
+/// WHAT IT IS FOR: value-directed dispatch reads a provision's carrier off its
+/// BINDINGS, so a clause that binds everything EXCEPT the carrier parameter names no
+/// carrier at all — and until this check that loaded clean and died at the first call.
+/// MEASURED (WI-20260830-7MK73): `sort LiveLlm { operation complete(self: LiveLlm, …);
+/// provides Llm[E = {External}] }` loaded, and a `summarize(llm, …)` whose body is
+/// `llm.complete(p)` failed `OperationBodyMissing { name: "guardians.Llm.complete" }`
+/// against a provider that implements `complete`. Writing `C = LiveLlm` fixed it with
+/// no other change, at four sites.
+///
+/// WHY IT WAS SILENT — TWO READERS, ONE `None`. The typer's provider-keyed reading
+/// accepted the clause (`LiveLlm`'s `E = {External}` reached callers' rows throughout);
+/// dispatch's carrier-keyed reading needs the carrier parameter bound and found
+/// nothing. [`provision_carrier_binding`] answers `None` for both, and its own doc
+/// audits the disagreement: the `dispatch_carrier` builtin mints the PROVIDER while the
+/// witness reader and the dot-call match DECLINE. This check does not reconcile those
+/// readings — it removes the shape that makes them differ for a clause an author wrote.
+///
+/// IT ASKS [`spec_carrier_param`] AND NOT [`spec_carrier_param_or_sole`], and that is
+/// load-bearing rather than incidental. The defect is exactly "dispatch reads `None`
+/// where the author meant a carrier", and dispatch reads through the FORMER. Asking the
+/// two-rung ladder would refuse clauses over specs whose sole parameter dispatch never
+/// treats as the carrier — a diagnostic about a reading nothing performs.
+///
+/// WHAT STAYS LEGAL, each for its own reason:
+///   * a spec with NO carrier parameter (§5.1's `sort List provides Stream[T, {}]`) —
+///     `spec_carrier_param` answers `None`, there is no parameter to demand, and the
+///     provision records its provider. This covers the self-representing specs
+///     (`Stream`, `FiniteStream`, `LogicalStream`) that WI-1076 is about.
+///   * a WITNESS (`sort WrapperNonEq { provides NonEq[T = Wrapper] }`) — it binds the
+///     carrier parameter explicitly, which is the very thing demanded here.
+///   * a provision binding the carrier to one of the PROVIDER'S OWN TYPE PARAMETERS
+///     (`sort List[T] { provides Ord[T = List[T = T]] }`). Hence "bound at all" and not
+///     [`provision_binding_at_param`]'s sort-like base: that filter answers `None` for a
+///     type-param binding too (WI-859 folds the shape into the self-provider kind), and
+///     reusing it here would refuse the stdlib.
+///   * DERIVED and composed rows — `eq_derive::run`'s, `derive_forwarded_provisions`' —
+///     which are not in this registry at all, because it holds what authors wrote.
+///
+/// Runs over the loader's drained registry rather than the provision relation, and
+/// [`crate::kb::WrittenProvidesClause`] says why.
+pub(crate) fn check_provision_names_carrier(
+    kb: &KnowledgeBase,
+    clauses: &[crate::kb::WrittenProvidesClause],
+) -> Vec<super::load::LoadError> {
+    let mut errors = Vec::new();
+    for clause in clauses {
+        let Some(carrier_param) = spec_carrier_param(kb, clause.spec) else {
+            continue;
+        };
+        if written_spec_binds_param(kb, clause.spec, &clause.spec_view, carrier_param) {
+            continue;
+        }
+        errors.push(super::load::LoadError::ProvisionNamesNoCarrier {
+            spec: kb.qualified_name_of(clause.spec).to_string(),
+            carrier_param: short_name_of(kb.local_name_of(carrier_param)).to_string(),
+            provider: kb.qualified_name_of(clause.provider).to_string(),
+            site: super::load::render_decl_site(kb, clause.span),
+        });
+    }
+    errors
+}
+
+/// WI-20260913-KXNEX — does a spec reference AS WRITTEN bind `param` to ANYTHING?
+///
+/// "To anything" is the question the carrier check needs, and no established reader
+/// answers it: [`provision_binding_at_param`] additionally filters the bound value to a
+/// sort-like base, which is right for "which sort is the carrier" and wrong for "did the
+/// author say" — a binding naming the provider's own type parameter fails that filter
+/// while being perfectly written down.
+///
+/// BOTH SPELLINGS OF A BINDING, because a clause may use either. Named args are matched
+/// on the parameter's own symbol and then on its short name, [`provision_binding_at_param`]'s
+/// two-rung ladder, for the same reason: the two sides reach here through different
+/// decoders and the short name is what both spell alike. POSITIONAL args are mapped onto
+/// the declared parameters not already bound by name — the mapping `check_provider_requires`
+/// performs over the same shape, and without it `provides VectorSpace[Vec3, Float]` would
+/// read as binding nothing and be refused for writing its carrier first. MEASURED both
+/// ways: with `C` declared first `provides Spec[Impl]` loads, and with the spec's OTHER
+/// parameter declared first the same clause is refused, naming `C`.
+///
+/// THE TWO BRANCHES ASK SLIGHTLY DIFFERENT QUESTIONS, which is deliberate and is the
+/// direction that cannot break a working program. The positional branch is restricted to
+/// DECLARED type parameters by construction (it walks them); the named branch asks only
+/// whether a binding carries that KEY, and does not additionally verify through
+/// [`is_type_param_binding`] that the key names a type parameter of this spec. Gating it
+/// was weighed and rejected: that helper resolves `<spec qn>.<name>`, so a provision
+/// naming its spec through an ALIAS could fail the lookup and have a written binding
+/// thrown away — a FALSE REFUSAL of a program that loads. What the looser reading can
+/// cost is the opposite and smaller: a non-type-param binding whose key happens to share
+/// the carrier parameter's short name would be read as the carrier, and the diagnostic
+/// would be missed rather than wrongly raised. That shape needs one spec to own two
+/// declarations at one qualified name, which the symbol table does not admit (WI-997).
+fn written_spec_binds_param(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    spec_view: &Value,
+    param: Symbol,
+) -> bool {
+    let want = short_name_of(kb.local_name_of(param));
+    let named: Vec<Symbol> = spec_view.named_keys(kb);
+    if named
+        .iter()
+        .any(|k| *k == param || short_name_of(kb.local_name_of(*k)) == want)
+    {
+        return true;
+    }
+    let ViewHead::Functor { pos_arity, .. } = spec_view.head(kb) else {
+        return false;
+    };
+    // A `SortView` wrapper carries the spec base in `pos_args[0]`; a bare parameterized
+    // term does not. The same skip `check_provider_requires` makes, on the same
+    // discriminant ([`view_is_sort_view`], the one owner of it).
+    let skip = usize::from(view_is_sort_view(kb, spec_view));
+    let positionals = pos_arity.saturating_sub(skip);
+    if positionals == 0 {
+        return false;
+    }
+    // Declaration order, minus whatever a named binding already pinned — so a mixed
+    // `Spec[V = Vec3, Float]` assigns its positional to the next FREE parameter, which is
+    // the rule the requires-coverage decoder applies to this same shape.
+    sort_type_params_as_pairs(kb, kb.canonical_sort_sym(spec_sort))
+        .iter()
+        .map(|(p, _)| short_name_of(kb.local_name_of(*p)))
+        .filter(|n| {
+            !named
+                .iter()
+                .any(|k| short_name_of(kb.local_name_of(*k)) == *n)
+        })
+        .take(positionals)
+        .any(|n| n == want)
+}
+
 /// WI-431: the OPERATION symbol an instance fact binds for `op_short` among a
 /// provision's `SortView` `bindings` (`pure = optionPure` ⇒ `optionPure`), or
 /// `None` if `op_short` is not bound to an operation. The op-valued binding IS

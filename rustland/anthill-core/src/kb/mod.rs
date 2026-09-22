@@ -703,6 +703,41 @@ pub(crate) struct ParameterizedSite {
     pub span: SourceSpan,
 }
 
+/// WI-20260913-KXNEX — one `provides` clause AS WRITTEN, recorded so the post-load
+/// carrier check can ask whether it names a carrier at all.
+///
+/// A SEPARATE REGISTRY FROM THE PROVISION RELATION, and that is the whole point: the
+/// relation holds DERIVED rows beside written ones (`eq_derive::run`'s `NonEq`,
+/// `derive_forwarded_provisions`' conversions) and a derived row binds whatever its
+/// deriver bound. The rule being enforced is about what an AUTHOR wrote, so the check
+/// reads the authors' clauses directly rather than filtering the relation by a
+/// growing list of "not this producer either" — the negative-filter shape that WI-838
+/// is the standing warning about.
+///
+/// IT IS EVERY WRITTEN PROVISION, not a subset, and that is a property of the surface
+/// rather than of this registry: WI-20260917-S8JYF made `provides` the ONLY spelling of
+/// a provision at both levels, so there is no `fact Spec[…]` route left to record. A
+/// `fact` is an ordinary fact wherever it stands, and a carrier with no body of its own
+/// writes its clause in a `namespace <Carrier>` SECONDARY ENTRY — which reaches this
+/// same recorder, because the loader takes the entry's address as the provider.
+#[derive(Clone, Debug)]
+pub(crate) struct WrittenProvidesClause {
+    /// The sort whose body the clause stands in — the PROVIDER, which a `provides`
+    /// clause names by WHERE it is written (§5.1).
+    pub provider: Symbol,
+    /// The spec base the clause names (`anthill.prelude.Stream`), when it resolves.
+    /// The check needs it to ask which parameter the spec's carrier goes in.
+    pub spec: Symbol,
+    /// The spec reference AS WRITTEN, lowered. Kept whole rather than pre-decoded
+    /// into a binding list: which parameter is the carrier is a question about the
+    /// spec's OPERATIONS, and under cross-file mutual recursion (WI-321) those need
+    /// not have loaded when this clause did. Record now, decide once the KB is whole.
+    pub spec_view: crate::eval::value::Value,
+    /// Where the clause was written, for a `path:line:col` diagnostic. Carries the
+    /// `SourceId`: byte offsets alone repeat across files.
+    pub span: SourceSpan,
+}
+
 /// WI-840/WI-841 (058 §4.7) — one NAMED requirement slot of an operation or a sort:
 /// `requires O: Ord[T = E]`. See [`KnowledgeBase::named_requirement_slots`] for the
 /// two lists `slot` indexes and why `spec_base` is recorded beside it rather than
@@ -1705,6 +1740,22 @@ pub struct KnowledgeBase {
     // whichever one drained would have left the other silently seeing nothing.
     parameterized_type_sites: Vec<ParameterizedSite>,
 
+    // WI-20260913-KXNEX — every `provides` clause this load has WRITTEN, for
+    // `typing::check_provision_names_carrier`. See [`WrittenProvidesClause`] for why
+    // the check reads authors' clauses rather than filtering the provision relation.
+    //
+    // RECORDED rather than checked in place, for the reason its WI-835 neighbour above
+    // is but a different one: not a relation that fills later, a DECLARATION that may.
+    // Which parameter is a spec's carrier is read off the spec's operations
+    // (`spec_carrier_param`), and cross-file mutual recursion (WI-321) lets a provision
+    // load before the file declaring those operations does — so deciding at the clause
+    // would answer "no carrier parameter" for a spec that has one and pass the very
+    // shape the check exists to refuse.
+    //
+    // Push-only WITHIN a load; drained ONCE by `load_phase_inner`, so a second
+    // `load_all` into the same KB re-checks only its own clauses.
+    written_provides_clauses: Vec<WrittenProvidesClause>,
+
     // SortRequiresInfo facts already finalized by resolve_requires_bindings.
     // Keyed by post-reassert RuleId. Lets incremental loads skip stdlib facts.
     resolved_requires_facts: HashSet<RuleId>,
@@ -2130,6 +2181,11 @@ pub struct KnowledgeBase {
 /// WRONGLY rather than not at all. A false refusal is worse than a missing one.
 pub(crate) struct LoadCheckMarks {
     parameterized_type_sites: usize,
+    /// WI-20260913-KXNEX — the written-`provides` registry, captured and truncated on
+    /// exactly the same terms and for exactly the same reason: it is push-only within a
+    /// load, drained BELOW the `run_typer: false` return, and leaving a partial load's
+    /// clauses behind hands the next batch a refusal about a file it was never given.
+    written_provides_clauses: usize,
 }
 
 /// WI-709: how a sort application's type arguments failed to fit the sort's declared
@@ -2306,6 +2362,7 @@ impl KnowledgeBase {
             derived_type_value_carriers: std::collections::HashSet::new(),
             entity_field_types: HashMap::new(),
             parameterized_type_sites: Vec::new(),
+            written_provides_clauses: Vec::new(),
             resolved_requires_facts: HashSet::new(),
             judged_row_binding_clauses: HashSet::new(),
             unbacked_derived_provisions: HashSet::new(),
@@ -2508,6 +2565,7 @@ impl KnowledgeBase {
     pub(crate) fn load_check_marks(&self) -> LoadCheckMarks {
         LoadCheckMarks {
             parameterized_type_sites: self.parameterized_type_sites.len(),
+            written_provides_clauses: self.written_provides_clauses.len(),
         }
     }
 
@@ -2515,6 +2573,7 @@ impl KnowledgeBase {
     pub(crate) fn restore_load_check_marks(&mut self, marks: LoadCheckMarks) {
         let LoadCheckMarks {
             parameterized_type_sites,
+            written_provides_clauses,
         } = marks;
         // TRUNCATE, not `clear`: the caller may have been handed a KB that already had
         // pending sites, and this restores what it found rather than what it wants.
@@ -2535,6 +2594,12 @@ impl KnowledgeBase {
         );
         self.parameterized_type_sites
             .truncate(parameterized_type_sites);
+        debug_assert!(
+            self.written_provides_clauses.len() >= written_provides_clauses,
+            "the written-`provides` registry shrank between capture and restore"
+        );
+        self.written_provides_clauses
+            .truncate(written_provides_clauses);
     }
 
     /// WI-20260901-EA6KS — the loader's declaration walk has just (re-)presented the
@@ -10745,6 +10810,20 @@ impl KnowledgeBase {
     /// of re-walking (and re-reporting) every batch loaded before it.
     pub(crate) fn take_parameterized_type_sites(&mut self) -> Vec<ParameterizedSite> {
         std::mem::take(&mut self.parameterized_type_sites)
+    }
+
+    /// WI-20260913-KXNEX — record one written `provides` clause, for the post-load
+    /// carrier check. Same record-now-decide-later split, and the same draining
+    /// ownership, as [`Self::record_parameterized_type_site`] above.
+    pub(crate) fn record_written_provides_clause(&mut self, clause: WrittenProvidesClause) {
+        self.written_provides_clauses.push(clause);
+    }
+
+    /// WI-20260913-KXNEX — take the recorded clauses, leaving the registry empty.
+    /// DRAINING, so a later `load_all` into this KB judges only its own clauses instead
+    /// of re-reporting every batch before it.
+    pub(crate) fn take_written_provides_clauses(&mut self) -> Vec<WrittenProvidesClause> {
+        std::mem::take(&mut self.written_provides_clauses)
     }
 
     /// Check if a functor symbol is a constructor (entity with a parent sort).
