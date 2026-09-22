@@ -433,11 +433,21 @@ fn two_unrelated_constraining_specs_declaring_one_member_are_refused_naming_both
 /// candidate set, and a genuine same-shape pair is still refused.
 #[test]
 fn a_candidate_the_call_cannot_reach_is_not_half_of_a_tie() {
+    // `LeafShow` supplies the `Show[S = Leaf]` the clause demands. WI-20260921-3G1YT
+    // added it: a declared `requires` is owed by the caller BECAUSE IT IS DECLARED, so
+    // `probe[Leaf](leaf())` must produce evidence for BOTH clauses. Deleting the `Show`
+    // one instead would have been the other repair and is not available here — the whole
+    // subject of this row is two constraining specs declaring one member name, and with
+    // one clause gone there is no pair to narrow.
     let src = with_instances(
         "wi1119.arity",
         r#"  sort Show
     sort S = ?
     operation describe(x: S, prefix: Int64) -> Int64
+  end
+  sort LeafShow
+    provides Show[S = Leaf]
+    operation describe(x: Leaf, prefix: Int64) -> Int64 = prefix
   end
   sort Holder
     operation probe[PT](x: PT) -> Int64 requires Desc[PT], Show[PT] = x.describe()

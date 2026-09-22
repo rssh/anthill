@@ -195,10 +195,12 @@ end
     )
 }
 
-/// (5c) THE OP HALF's eta, at the other predicate and the other park (WI-1102's
-/// use-site discharge, `SlotToRead::Op`). `probe`'s own `requires Desc[T = HT]` is read
-/// ONLY through the eta of a sibling whose op-scoped slot forwards it — the op-half
-/// twin of (5b), and the reason that predicate gained the same arm.
+/// (5c) THE OP HALF's eta, at the other park (WI-1102's use-site discharge). `probe`'s
+/// own `requires Desc[T = HT]` is read ONLY through the eta of a sibling whose op-scoped
+/// slot forwards it — the op-half twin of (5b), and the reason the predicate that once
+/// stood here gained the same arm. That predicate is gone (WI-20260921-3G1YT deleted both
+/// body walks); the SHAPE it was built to see is still this fixture's, and the refusal is
+/// now unconditional.
 fn op_half_eta_src(ns: &str, carrier: &str) -> String {
     format!(
         r#"

@@ -256,6 +256,14 @@ const MID: &str = r#"  sort Mid
     operation midop(x: Gem) -> Int64 = 50
   end"#;
 
+/// WI-20260921-3G1YT MOVED THE DRIVER INSIDE `Outer`, and the reason is this row's own
+/// subject read from the other side. A bare `requires Mid` names no instantiation, so
+/// NOTHING can ever fill that slot — which is exactly why the nested forward below is
+/// refused. Once a declared `requires` is owed BECAUSE IT IS DECLARED, the same fact
+/// refuses any CROSS-SORT call into `Outer`: the old `sort Driver` could not supply what
+/// no text can denote. A SAME-SORT call inherits the frame instead of building one, so
+/// `drive` states the subject without asking for a dictionary that cannot exist.
+///
 /// Finding 10 — the bindingless SLOT. `Outer requires Mid` with no bindings, so
 /// Strategy 2's one-level composition (`build_child_subst_map`) yields an EMPTY
 /// map and `Mid`'s sub-entry `Desc[T = Mid.MT2]` stays in SLOT space, where it
@@ -275,14 +283,12 @@ fn bindingless_slot_nested_forward_is_refused_and_constructed() {
   sort Outer
     requires Mid
     operation o(n: Int64) -> Int64 = BOps.b(gem())
-  end
-  sort Driver
-    operation drive(n: Int64) -> Int64 = Outer.o(0)
+    operation drive(n: Int64) -> Int64 = o(n)
   end"#
         ),
     );
     let mut interp = crate::common::interp_for(&src);
-    let got = interp.call("wi826.slot.Driver.drive", &[Value::Int(0)]);
+    let got = interp.call("wi826.slot.Outer.drive", &[Value::Int(0)]);
     assert!(
         matches!(got, Ok(Value::Int(5))),
         "expected Ok(Int(5)) = `Desc[T = Gem]` CONSTRUCTED, the nested forward \

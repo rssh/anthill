@@ -8,12 +8,16 @@
 //! not a `Raised` payload, so no handler sees it, and in a debug build an ABORT through
 //! `bridge_op_to_eval`'s `debug_assert`, from a program the typer accepted.
 //!
-//! THE REFUSAL IS A PARK, NOT A RAISE, and the two halves of the verdict are why:
-//! [`caller_rigid_carrier`] answers "nothing can ever fill this slot" from the call
-//! site's σ, and [`op_body_reads_op_requirement_slot`] answers "the callee needs it
-//! filled" from the callee's body, once every body is typed. Both are needed — see
-//! [`a_slot_the_callee_never_reads_still_loads_and_answers`], which is the same forward
-//! over a callee that declares the clause and ignores it, and which must keep working.
+//! THE REFUSAL IS A PARK, NOT A RAISE, and WI-20260921-3G1YT left that true for ONE
+//! reason where there were two. [`caller_rigid_carrier`] answers "nothing can ever fill
+//! this slot" from the call site's σ, which is alive only here; the refusal is REPORTED
+//! by `report_unsuppliable_requirements` once every body is typed, because an operation
+//! is routinely called before its own body is classified. What is GONE is the second
+//! half: the park is no longer decided against "does the callee's body read it?", so a
+//! declared clause is owed whether or not the callee currently uses it — see
+//! [`the_same_forward_is_refused_whichever_body_the_callee_has`], the two bodies side by
+//! side, and [`deleting_the_clause_the_body_never_uses_is_the_repair`], which is the way
+//! out for the callee that does not.
 //!
 //! BACK-OUTS — each a MUTATION RUN on its own over the whole `wi_tests` binary (4828
 //! rows), never a deletion and never a count guessed from reading:
@@ -28,16 +32,17 @@
 //!   refused_at_the_call`'s plain-spec half. Nothing else in the binary moves, which is
 //!   what says the rule refuses the population it was measured against and no other.
 //! * **the READ gate off** — `report_unsuppliable_requirements` reporting every parked
-//!   op-slot refusal without consulting the body: **5 red**, and the FOUR that are not
-//!   this ticket's are the point. Only
-//!   [`a_slot_the_callee_never_reads_still_loads_and_answers`] is new here; the others —
+//!   op-slot refusal without consulting the body: **5 red** when this file was written,
+//!   and WI-20260921-3G1YT then took that measurement as its instruction. The gate is
+//!   DELETED, and all five rows are repaired rather than protected: each was a callee
+//!   declaring a clause its body ignores, and the repair for such a callee is to delete
+//!   the clause. The four that were not this ticket's —
 //!   `wi1102…::control_a_body_that_never_reads_the_slot_still_runs`,
 //!   `wi1119…::a_candidate_the_call_cannot_reach_is_not_half_of_a_tie`,
 //!   `wi201…::bare_spec_member_param_infers_at_concrete_call` and
-//!   `wi855…::other_unresolvable_causes_still_enter_unsupplied` — are the gate's
-//!   PRE-EXISTING population. So "declared and never read must keep loading" is not a
-//!   rule this ticket invented to excuse itself: four rows already depended on it, and
-//!   this ticket's carrier gate is what keeps its own new population out of them.
+//!   `wi855…::other_unresolvable_causes_still_enter_unsupplied` — say so at their own
+//!   sites. So "declared and never read must keep loading" was never a rule: it was the
+//!   shape of the excuse, and four rows had been written against it.
 //! * **the sort-parameter half of [`caller_param_rigids`] off** (op brackets only):
 //!   **1 red**, [`the_corpus_instance_wi416_is_refused_and_the_clause_repairs_it`] — its
 //!   carrier is `Coll`'s own `T`, not an operation bracket, so the lookup misses, no
@@ -186,29 +191,74 @@ fn the_printed_repair_loads_and_answers() {
     assert_eq!(eval_type(&repaired, "test.xsvcs.fwd.viaMid"), "Boom");
 }
 
-/// THE CONTROL FOR THE READ GATE, and the reason the refusal is parked rather than
-/// raised.
+/// WI-20260921-3G1YT — **A CALLEE'S BODY NO LONGER DECIDES ITS CALLERS' OBLIGATIONS**,
+/// and this is the row that says so: ONE signature, TWO bodies, side by side, and `mid`
+/// is refused against BOTH.
 ///
-/// The same forward, the same undeclared rigid, the same unfillable slot — but `tyOf`'s
-/// body never reads it (`Boom` is a CONCRETE sort in value position, which 065 leaves
-/// alone). `build_op_scoped_dicts`' header records the population this protects: 29
-/// stdlib bodies that declare a chain and never read it. Refusing on the carrier alone
-/// would take every one of them.
+/// **THIS ROW INVERTED.** It read `a_slot_the_callee_never_reads_still_loads_and_answers`
+/// and asserted the second body LOADS — the control for a READ GATE that asked whether
+/// `tyOf`'s *present* body happens to touch its `TT` slot. That gate, and the two body
+/// walks behind it, are deleted. The two programs differ only in text inside `tyOf` that
+/// `mid`'s author does not own and cannot see from the call; admitting the caller on it
+/// means the caller breaks when the callee's body changes, with nothing at the call site
+/// having moved. That was the ticket's defect (1), and this file's own fixture was its
+/// sharpest statement.
 ///
-/// DRIVEN TO AN ANSWER, not to a load: a row that only asserted "no errors" would keep
-/// passing if the slot's absence had quietly cost the call its body.
+/// The verdict is identical to that of
+/// [`a_forward_of_the_callers_own_rigid_is_refused_at_the_call`] because it IS the same
+/// verdict: `mid[U](y: U) = tyOf(y)` forwards its own rigid into an operation that
+/// demands evidence about it, declaring none and holding none. Both halves are asserted
+/// here rather than by pointing at that row, because what this one measures is that the
+/// two bodies give the SAME answer.
 #[test]
-fn a_slot_the_callee_never_reads_still_loads_and_answers() {
+fn the_same_forward_is_refused_whichever_body_the_callee_has() {
     let never_read = FORWARD.replace(
         "operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()",
         "operation tyOf[B](x: B) -> Type requires TT[T = B] = Boom",
     );
-    assert_eq!(
-        load_errors(&never_read),
-        Vec::<String>::new(),
-        "a declared-and-never-read slot must still load"
+    assert_ne!(never_read, FORWARD, "the fixture edit must have applied");
+    for (which, src) in [("reads the slot", FORWARD), ("never reads it", &never_read)] {
+        let errs = load_errors(src);
+        assert_eq!(errs.len(), 1, "{which}: exactly one refusal, got {errs:#?}");
+        assert!(
+            errs[0].contains("cannot be supplied for call to `test.xsvcs.fwd.tyOf`")
+                && errs[0].contains("test.xsvcs.fwd.TT[T = U]"),
+            "{which}: the refusal must name the callee and the demand; got {:?}",
+            errs[0]
+        );
+    }
+}
+
+/// AND THE REPAIR FOR A CLAUSE THE BODY DOES NOT USE IS TO **DELETE IT**, not to weaken
+/// the rule — driven, because an acceptance that only asserts a new refusal leaves the
+/// author of such a callee with no way out.
+///
+/// This is the other half of the row above. A `tyOf` that answers a constant has no use
+/// for `TT` evidence; the clause was noise, and the walk that used to excuse it was the
+/// only thing making the noise free. With the clause gone the program loads and BOTH
+/// calls answer — `direct`, which was never the defect, and `viaMid`, which is the
+/// forward.
+///
+/// THE POPULATION THE WALKS EXISTED FOR IS NOT REPAIRED THIS WAY, and saying so is the
+/// point: their justification was 29 stdlib bodies that declare a chain and never read
+/// it, and not one of them needed an excuse. The stdlib loads clean with both walks gone
+/// ([`the_stdlib_still_loads`]) because those calls are DISCHARGED by route 4 —
+/// `scope_contract_covers_dep`, the caller holding a spec-typed value — rather than
+/// excused by a walk of someone else's body.
+#[test]
+fn deleting_the_clause_the_body_never_uses_is_the_repair() {
+    let repaired = FORWARD.replace(
+        "operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()",
+        "operation tyOf[B](x: B) -> Type = Boom",
     );
-    assert_eq!(eval_type(&never_read, "test.xsvcs.fwd.viaMid"), "Boom");
+    assert_ne!(repaired, FORWARD, "the fixture edit must have applied");
+    assert_eq!(
+        load_errors(&repaired),
+        Vec::<String>::new(),
+        "a callee that declares no evidence demands none, and its callers owe nothing"
+    );
+    assert_eq!(eval_type(&repaired, "test.xsvcs.fwd.direct"), "Boom");
+    assert_eq!(eval_type(&repaired, "test.xsvcs.fwd.viaMid"), "Boom");
 }
 
 /// THE INSTANCE NOBODY WROTE AS A TEST — found by the census this ticket's first step

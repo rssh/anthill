@@ -1763,6 +1763,8 @@ mod wi_7tn1q_occurs_check_sort_alias_test;
 #[path = "include/wi_wt8wg_domain_value_face_test.rs"]
 mod wi_wt8wg_domain_value_face_test;
 
+#[path = "include/wi_3g1yt_scope_contract_discharge_test.rs"]
+mod wi_3g1yt_scope_contract_discharge_test;
 #[path = "include/wi_5g28a_rule_head_type_variables_test.rs"]
 mod wi_5g28a_rule_head_type_variables_test;
 

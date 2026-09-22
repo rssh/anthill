@@ -70,15 +70,34 @@ fn with_store(ns: &str, rest: &str) -> String {
 /// like the explicit `[P](s: P) requires Store[State = P]` form.
 #[test]
 fn bare_spec_member_param_infers_at_concrete_call() {
+    // `WISStore` supplies the `Store[State = WIS]` the desugared clause demands, and
+    // WI-20260921-3G1YT is why it must: a declared `requires` is owed by the caller
+    // BECAUSE IT IS DECLARED, so a call that pins `P := WIS` must produce the evidence.
+    // Before that ticket the refusal was withheld here for a second reason — `useSugar`
+    // and `useExplicit` are BODY-LESS, and the walk that decided the verdict answered
+    // "reads nothing" for a callee with no body to walk. That is exactly the reading
+    // WI-20260921-28TAT found wrong for `Error.reify`, and the walk is now gone.
+    //
+    // Supplying the provider rather than dropping the clause keeps this row measuring
+    // what it is about: that the SUGAR and the EXPLICIT spelling infer `P` identically
+    // at a concrete call. With no evidence either spelling is refused, and the row would
+    // say nothing about the desugaring.
+    const WITNESS: &str = "  sort WISStore\n    \
+         provides Store[State = WIS]\n    \
+         operation peek(s: WIS) -> Bool = true\n  end\n";
     let sugar = with_store(
         "infer",
-        "  operation useSugar(s: Store.State) -> Int64\n  \
-         operation callIt(x: WIS) -> Int64 = useSugar(x)\n",
+        &format!(
+            "{WITNESS}  operation useSugar(s: Store.State) -> Int64\n  \
+             operation callIt(x: WIS) -> Int64 = useSugar(x)\n"
+        ),
     );
     let explicit = with_store(
         "infer_explicit",
-        "  operation useExplicit[P](s: P) -> Int64 requires Store[State = P]\n  \
-         operation callIt(x: WIS) -> Int64 = useExplicit(x)\n",
+        &format!(
+            "{WITNESS}  operation useExplicit[P](s: P) -> Int64 requires Store[State = P]\n  \
+             operation callIt(x: WIS) -> Int64 = useExplicit(x)\n"
+        ),
     );
     assert!(
         load_errors(&[&sugar]).is_empty(),

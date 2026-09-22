@@ -78,9 +78,11 @@
 //!    `F` in the holder's clause and the identical driver answers Vec3(2,4,6). It
 //!    passes with the change reverted, BY DESIGN — it says the fix is a refusal and
 //!    not a regression of the machinery.
-//!  - `control_a_callee_that_never_reads_the_slot` fails if
-//!    `op_body_reads_sort_requirement_slot` is dropped from the verdict (the program is
-//!    then refused although it runs). It passes with the whole change reverted.
+//!  - `a_callee_that_never_reads_the_slot_is_refused_too_and_the_clause_is_the_repair`
+//!    INVERTED at WI-20260921-3G1YT. It read `control_a_callee_that_never_reads_the_slot`
+//!    and failed if `op_body_reads_sort_requirement_slot` was dropped from the verdict;
+//!    that walk is now deleted, because a declared `requires` is owed BECAUSE IT IS
+//!    DECLARED, and the row drives the repair (delete the unused clause) instead.
 //!  - `control_a_rule_body_goal_is_supplied_by_the_bridge` fails if the
 //!    `enclosing_op` gate is dropped at the park. It passes with the whole change
 //!    reverted. wi625's `layerb_bridged_op_dispatches_user_spec_via_threaded_dict` is
@@ -218,8 +220,11 @@ fn sort_level_unconstrained_element_is_refused_at_load() {
 ///
 /// MEASURED before the transitive walk existed: this loaded CLEAN and raised
 /// `Internal(DeferToRequirement: … `__req_vectorspace` not bound … running
-/// `…HolderVS.inner`)`. It is the test that fails if
-/// `op_body_reads_sort_requirement_slot` stops following same-sort callees.
+/// `…HolderVS.inner`)`. It was the test that failed if
+/// `op_body_reads_sort_requirement_slot` stopped following same-sort callees — and it
+/// passes for a simpler reason since WI-20260921-3G1YT deleted that walk: the clause is
+/// declared, so the call owes it whichever body reads it and at whatever depth. The hop
+/// is kept because it is the shape the ticket reported.
 #[test]
 fn a_sibling_that_reads_the_slot_is_refused_too() {
     let src = format!(
@@ -328,19 +333,41 @@ fn control_the_pinned_element_still_dispatches() {
     );
 }
 
-/// CONTROL — the unpinned element, and a callee that never reads the slot. `twice`
-/// returns its argument, so entering it with no requirements channel costs nothing and
-/// the program runs. THE GATE: this is the class `test.wi508g.useNew` is in
-/// (`FiniteCollection.size` at an unpinned `Element`, answering 1), reproduced here at
-/// the subject's own shape so the reason is stated where the refusal lives.
+/// **THIS ROW INVERTED AT WI-20260921-3G1YT.** It read
+/// `control_a_callee_that_never_reads_the_slot` and asserted that this program RUNS:
+/// `twice` returns its argument, so — the argument went — entering it with no
+/// requirements channel costs nothing, and `op_body_reads_sort_requirement_slot` was what
+/// dropped the parked refusal.
+///
+/// That walk is deleted. `HolderVS` declares `requires VectorSpace[V, F]`, `Driver.drive`
+/// supplies nothing for `F`, and whether `twice`'s CURRENT body touches the slot is not
+/// something `drive`'s author can see from the call — a caller admitted on it breaks when
+/// that body changes, with nothing at the call site having moved.
+///
+/// THE REPAIR IS TO DELETE THE UNUSED CLAUSE, driven to the same three floats, because a
+/// row that only pinned the new refusal would leave the author of such a sort with no way
+/// out. Note it is the SORT's clause here, not an operation's: `HolderVS` has no other
+/// member wanting the ordering, so deleting it is available. Where a sibling does want it
+/// the repair is to forward it instead — `a_declared_slot_still_carries_it` in
+/// `wi456_no_scope_route_test` is that spelling.
 #[test]
-fn control_a_callee_that_never_reads_the_slot() {
+fn a_callee_that_never_reads_the_slot_is_refused_too_and_the_clause_is_the_repair() {
     let src = holder_program("test.wi945.unread", "requires VectorSpace[V, F]", "a");
+    let errs = crate::common::try_load_kb_with(&src)
+        .err()
+        .unwrap_or_else(|| panic!("expected a refusal, but this loaded clean:\n{src}"));
+    assert!(
+        errs.iter().any(|e| e.contains("VectorSpace")),
+        "the refusal must name the requirement nothing supplies; got {errs:?}"
+    );
+
+    // THE REPAIR: no clause, no obligation, and the identical driver answers.
+    let repaired = holder_program("test.wi945.unread2", "", "a");
     drive_123(
-        &src,
-        "test.wi945.unread",
+        &repaired,
+        "test.wi945.unread2",
         (1.0, 2.0, 3.0),
-        "a body that reads no `__req_*` must not be refused for a dictionary it never wants",
+        "deleting the clause the body never uses must leave the program running",
     );
 }
 

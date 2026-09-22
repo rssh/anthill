@@ -282,3 +282,76 @@ reported. That also kills the machinery behind it — `op_body_reads_sort_requir
 > that pins a receiver's sort parameters from the receiver's type") is not it either:
 > for `map`/`filter` those params come from the RETURN type. The real prerequisite is
 > route 4 plus the carrier-binding defect, both stated above.
+
+### DELIVERED 2026-09-22 — full workspace 7269 passed / 0 failed
+
+**BOTH BODY WALKS ARE GONE**, with `SlotToRead`, the `slot` field,
+`native_backing_reads_slots`, `dict_forwards_frame_slot` and the `if !reads { continue; }`
+gate — one contiguous 428-line block. Every parked refusal is now reported.
+
+**ROUTE 4 IS STRATEGY 2 WITH A DIFFERENT SLOT SOURCE**: the spec views the caller holds
+VALUES of, composed through the same `substitute_in_spec` and judged by the same key walk.
+Four pieces, each FORCED BY A MEASUREMENT rather than predicted:
+ - `held_view_subst_map` — a value's type wears the PLAIN applied spelling, not `SortView`,
+   so `build_child_subst_map` composed nothing and route 4 fired on NOTHING AT ALL,
+   silently;
+ - `carrier_normalized_bindings` — BLOCKER 2, confirmed exactly as this ticket described:
+   σ binds the callee's carrier param to the VIEW, the held contract names the CARRIER;
+ - `drop_unpinned_demand_keys` — σ's mixed-pair rule is right for a FORWARD and wrong for
+   a DISCHARGE;
+ - the PROVISION leg — for a holder whose own chain is empty (`List`), decided by a STATIC
+   RESOLUTION of the callee's goal with the carrier replaced by the value's type.
+
+**THE BUILTIN GATE WAS COMPLETED** on the sort half: the body walk had been doubling as an
+incomplete one, so `refusal.unprovided.is_none() || !is_builtin` never had to be right.
+
+**BLOCKER 2 IS FIXED**, not deferred.
+
+#### TWO MEASUREMENTS THIS TICKET GOT WRONG, corrected here
+
+ 1. "A rule body has no frame to declare a dictionary in" — FALSE, and proposal 060
+    (`require[X]`, WI-1040) already said so. DRIVEN:
+    `rule described[A](?x: A, ?n) :- Desc[A], item(?x), require[Desc[T = A]],
+    Desc.describe(?x, ?n)` answers at TWO different carriers in one query. The static
+    channel expresses the rule-body case; value-direction is not NECESSARY for it.
+ 2. "The static provider search is incomplete" — FALSE, and it nearly became WI-20260922-0DK3H's
+    stated prerequisite. `Iterable[C = List[T = Int64]]` answering `NoMatch` was an artifact
+    of a probe that bound the CARRIER ALONE; a `requires` clause is normalized by the loader
+    to name every parameter, so a candidate's `Element`/`E` had no key to match. With the
+    dep's full key set the same carrier RESOLVES. The ticket carries the retraction.
+
+#### WHAT /code-review FOUND — A SOUNDNESS BUG THIS TICKET INTRODUCED
+
+The provision leg replaced the dep's carrier with the holder's type UNCONDITIONALLY.
+MEASURED: `Holder.probe(mystery())` needing `Iterable[C = Mystery]`, which nothing
+provides, LOADED when the calling operation had an unused `xs: List[T = Int64]` parameter,
+and was correctly refused without it — a clean load that dies at eval on an unbound
+`__req_iterable`. THE SUITE WAS GREEN AT 7266 WHILE THE BUG EXISTED; it took an
+adversarial fixture to find it, which is the second time in this change a green suite hid
+a defect (the first was the body walk itself). Fixed: the swap is admitted only where the
+call pins NOTHING for the carrier, or pins the HOLDER'S OWN SORT (the bare-vs-applied
+refinement `wi508` needs). The chain leg was probed for the analogous hole and does NOT
+have it — its cover walk compares the pinned carrier and fails.
+
+#### FOLLOW-UPS FILED (with discussion, per CLAUDE.md)
+
+ - WI-20260922-0DK3H — remove runtime dispatch; "it is a runtime error instead of a
+   loading error" (user, 2026-09-22). Its remaining subject is deleting
+   `spec_has_value_directed_route` and `dep_has_searchable_pin`, the RULE-BODY pair.
+ - WI-20260922-QHDGC — `require[Spec[T = ?t]]` is refused although a logical variable is a
+   type in a bounding guard and as a head parameter type. 0DK3H depends on it.
+
+#### FIXTURES REPAIRED OR INVERTED, each saying so at its site
+
+`wi_xsvcs` (the `mid`-against-both-bodies row + the delete-the-clause repair), `wi1102`,
+`wi945`, `wi855`, `wi456`, `wi1119`, `wi201`, `wi826`, `wi999`. New file
+`wi_3g1yt_scope_contract_discharge_test.rs`: route 4 proper, the unrelated-value soundness
+row with its control, and the `SortedSet` carrier bound.
+
+#### NOT DONE, and stated rather than left to be discovered
+
+ - the efficiency of the provision leg is UNMEASURED: it runs a full SLD resolution per
+   holder per unprojected dep with no cheap pre-filter, and `held_spec_views` now keeps
+   every parameterised bound type. A `carrier_provides_spec` pre-filter would bound it
+   without changing a verdict. Reported by /code-review as PLAUSIBLE, not confirmed.
+ - scaland is NOT in scope — it has no typer (checked).

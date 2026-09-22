@@ -443,6 +443,14 @@ fn provider_override_is_not_refused() {
     // implements what it provides — 23 of the corpus's 61 shadowing declarations.
     // DRIVEN, not merely loaded: the override has to be the operation that answers.
     //
+    // WI-20260921-3G1YT DELETED `requires Show[T = Impl]` from this fixture. It was
+    // noise — a sort does not require the spec it provides — and it was UNSATISFIABLE:
+    // resolving `Show[T = Impl]` through the provision that needs it is CYCLIC, which
+    // `ResolutionResult` reports as such. The declaration survived only because the body
+    // walk excused it (`show` answers a constant and reads no slot); with the walk gone a
+    // declared `requires` is owed, and this one can never be met. Nothing about the
+    // SUBJECT moves: the provision, the own `show`, and the driven 42 are untouched.
+    //
     // PASSES EITHER WAY, BY DESIGN — the control that the check did not refuse
     // everything. It FAILS if `capture_is_excused` drops its `sort_provides` leg,
     // which is the refusal's most likely over-reach.
@@ -455,7 +463,6 @@ namespace wi999.prov
   end
   sort Impl
     entity impl(n: Int64)
-    requires Show[T = Impl]
     provides Show[T = Impl]
     operation show(x: Impl) -> Int64 = 42
   end
@@ -478,12 +485,26 @@ fn requires_shadow_is_not_refused() {
     //
     // PASSES EITHER WAY, BY DESIGN — under the narrow reading it would FAIL, which
     // is the measurement that chose 059's other stated option.
+    // WI-20260921-3G1YT added `IntRing`. `Poly` DECLARES `requires Ring[T = R]`, so a
+    // call that pins `R := Int64` owes `Ring[T = Int64]` — and owes it because the clause
+    // is declared, not because `Poly.add`'s body happens to read it. Nothing provided
+    // `Ring` at all, so before that ticket the program loaded on a walk of `add`'s body
+    // (which answers 7 and reads nothing) and would have died had the body ever changed.
+    //
+    // SUPPLYING THE EVIDENCE rather than deleting the clause, because the clause IS this
+    // row's subject: it measures a `requires` that binds the spec to a type PARAMETER
+    // beside a sort declaring its own same-named `add`. With the clause gone there is no
+    // shadow to not-refuse.
     let src = r#"
 namespace wi999.req
   import anthill.prelude.{Int64}
   sort Ring
     sort T = ?
     operation add(a: T, b: T) -> T
+  end
+  sort IntRing
+    provides Ring[T = Int64]
+    operation add(a: Int64, b: Int64) -> Int64 = a + b
   end
   sort Poly
     sort R = ?

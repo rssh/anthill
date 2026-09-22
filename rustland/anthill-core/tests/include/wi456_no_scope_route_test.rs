@@ -31,21 +31,23 @@
 //! — which names neither the requirement nor a repair, and is the message
 //! `eval/eval.rs`'s own WI-1102 note says one population should not be getting.
 //!
-//! **PARKED, NOT RAISED, and that is the whole safety of it.** The refusal goes through
-//! [`UnsuppliableRequirement`], which `report_unsuppliable_requirements` decides against
-//! `op_body_reads_sort_requirement_slot`. So it fires only where the CALLEE'S BODY reads
-//! the slot — exactly the programs that die at eval today. That distinction is not a
-//! nicety here: `SortedSet.collect` reaches this very site on the very programs where
-//! `SortedSet.insert` must not, because `collect`'s body (`toList`) reads no ordering.
-//! `a_callee_that_never_reads_the_slot_still_loads` is the arm that says so.
+//! **PARKED, NOT RAISED**, and since WI-20260921-3G1YT for one reason rather than two.
+//! The refusal goes through [`UnsuppliableRequirement`] because an operation is routinely
+//! called before its own body is classified, so the verdict waits for the pass that runs
+//! once every body is typed. What it no longer waits FOR is a walk of the callee's body:
+//! that walk is deleted, a declared `requires` is owed BECAUSE IT IS DECLARED, and the
+//! `SortedSet.collect` / `SortedSet.insert` distinction this header used to draw is gone
+//! with it — both are `SortedSet` members and both need the ordering forwarded. See
+//! `a_callee_that_never_reads_the_slot_is_refused_too_and_the_slot_is_the_repair`.
 //!
 //! **CONTROLS, per CLAUDE.md.**
 //!  * `a_declared_slot_still_carries_it` and `a_sort_level_slot_is_the_repair` PASS EITHER
 //!    WAY BY DESIGN — they are the working spellings, and they are here because the
 //!    refusal must not widen onto them. The second is also the repair the message names,
 //!    driven to a VALUE rather than to a load verdict.
-//!  * `a_callee_that_never_reads_the_slot_still_loads` fails if the refusal is raised at
-//!    the call instead of parked for the body pass.
+//!  * `a_callee_that_never_reads_the_slot_is_refused_too_and_the_slot_is_the_repair`
+//!    drives the WI-20260921-3G1YT verdict and its repair; it INVERTED there, and says so
+//!    at its site.
 //!  * `positive_control_a_broken_program_is_refused` guards the oracle.
 //!
 //! **BACK-OUT MATRIX, measured on this tree rather than reasoned — THREE separable
@@ -407,23 +409,47 @@ fn strategy_2b_declines_a_witness_provider() {
 
 // ── What must NOT be refused ─────────────────────────────────────────
 
-/// THE ARM THAT KEEPS THE REFUSAL HONEST. `collect`'s body is `toList(s)`, which reads no
-/// ordering — so the dictionary it could not be given is an IRRELEVANCE, and the parked
-/// refusal must be dropped by the body pass. Raising at the call instead of parking fails
-/// exactly here. (`FiniteCollection.size`'s default body is the stdlib shape this stands
-/// in for; WI-456's own comment records it as the measurement that needed the
-/// distinction.)
+/// **THIS ROW INVERTED AT WI-20260921-3G1YT.** It read
+/// `a_callee_that_never_reads_the_slot_still_loads` and was the arm that kept the refusal
+/// honest under the READ GATE: `toList`'s body reads no ordering, so the dictionary it
+/// could not be given was called an IRRELEVANCE and the parked refusal was dropped by the
+/// body pass.
+///
+/// That gate and the two body walks behind it are deleted. A declared `requires` is owed
+/// by the caller BECAUSE IT IS DECLARED, and `SortedSet`'s `requires O: WeakOrd[T]` is
+/// declared — `listOut` calls a `SortedSet` member while holding nothing for `O`, and
+/// whether THAT member currently touches the ordering is not something `listOut`'s author
+/// can see from the call.
+///
+/// AND THE REPAIR IS NOT "DELETE THE CLAUSE" HERE, which is what makes this row worth
+/// keeping beside the ones that are: `SortedSet.insert` genuinely needs the ordering, so
+/// the clause stays and the caller FORWARDS it — the same named-slot spelling
+/// [`a_sort_level_slot_is_the_repair`] drives to a value. Deleting is the repair only
+/// where no member of the declaring sort uses the evidence.
 #[test]
-fn a_callee_that_never_reads_the_slot_still_loads() {
+fn a_callee_that_never_reads_the_slot_is_refused_too_and_the_slot_is_the_repair() {
+    let unslotted = program(
+        "wi456nr.unread",
+        "  sort PolyE\n    \
+         operation listOut[T, O](s: SortedSet[T = T, O = O]) -> List[T = T] =\n      \
+         SortedSet.toList(s)\n  end",
+    );
+    assert_no_route(
+        &load_errs(&unslotted),
+        "a `SortedSet` member is called while the caller holds nothing for `O`",
+    );
+
+    // THE REPAIR: declare the slot, and the identical body loads.
     loads_clean(
         &program(
-            "wi456nr.unread",
+            "wi456nr.unread2",
             "  sort PolyE\n    \
-             operation listOut[T, O](s: SortedSet[T = T, O = O]) -> List[T = T] =\n      \
+             sort E = ?\n    \
+             requires OE: WeakOrd[E]\n    \
+             operation listOut(s: SortedSet[T = E, O = OE]) -> List[T = E] =\n      \
              SortedSet.toList(s)\n  end",
         ),
-        "`toList` reads no ordering, so a frame without one is not a defect — the \
-         refusal is parked for the body pass and dropped there",
+        "forwarding the ordering the callee's sort declares must discharge the call",
     );
 }
 

@@ -296,9 +296,17 @@ fn the_same_program_with_one_provider_still_computes_its_answer() {
 /// raises the SAME frame-naming error, and did so before WI-1091 as well. An unpinnable
 /// requirement is not an error for a body that ignores it and IS one for a body that
 /// reads it, on EITHER spelling; that is the rule, and it is what §5.2 states.
+///
+/// **AND WI-20260921-3G1YT INVERTED IT.** The row asserted that the declared-and-unread
+/// spelling RUNS, which was the READ GATE's verdict; that gate and the two body walks
+/// behind it are deleted, because a declared `requires` is owed by the caller BECAUSE IT
+/// IS DECLARED. What survives unchanged is the LINE this row was written for — the WI-855
+/// raise must stay inside the ambiguous case — and it is now measured the other way
+/// round: the unread clause is REFUSED, and deleting it (the repair) restores the answer.
 #[test]
-fn other_unresolvable_causes_still_enter_unsupplied() {
-    // A body that does NOT read the slot: enters unsupplied, runs.
+fn an_unread_clause_is_refused_too_and_deleting_it_restores_the_answer() {
+    // A body that does NOT read the slot. Declared, therefore owed — and the clause is
+    // the thing to delete, since `probe` answers a constant.
     const SILENT: &str = r#"
   sort Silent
     sort HT = ?
@@ -306,24 +314,41 @@ fn other_unresolvable_causes_still_enter_unsupplied() {
   end
 "#;
     let ns = "wi855.nomatch";
-    let src = format!(
-        r#"
+    let program = |body: &str| {
+        format!(
+            r#"
 namespace {ns}
   import anthill.prelude.{{Int64}}
-{INSTANCES}{QUIET}{SILENT}
+{INSTANCES}{QUIET}{body}
   sort Driver
     operation drive(n: Int64) -> Int64 = Silent.probe(box(mystery()))
   end
 end
 "#
+        )
+    };
+    let errs = crate::common::try_load_kb_with(&program(SILENT))
+        .err()
+        .unwrap_or_else(|| panic!("expected a refusal for the declared-and-unread clause"));
+    assert!(
+        errs.iter().any(|e| e.contains("Desc")),
+        "the refusal must name the requirement nothing supplies; got {errs:?}"
     );
-    let mut interp = crate::common::interp_for(&src);
+
+    // THE REPAIR, DRIVEN: delete the clause the body never uses and the same driver
+    // answers 5. Asserting the VALUE, not the load, is what says the slot's absence did
+    // not quietly cost the call its body.
+    const REPAIRED: &str = r#"
+  sort Silent
+    sort HT = ?
+    operation probe(x: HT) -> Int64 = 5
+  end
+"#;
+    let mut interp = crate::common::interp_for(&program(REPAIRED));
     let got = interp.call(&format!("{ns}.Driver.drive"), &[Value::Int(0)]);
     assert!(
         matches!(got, Ok(Value::Int(5))),
-        "expected Ok(Int(5)): the `Desc` chain resolves to NO provider at `Mystery`, \
-         which must still enter the frame unsupplied and run a body that never reads \
-         the slot (WI-822's measured behaviour); got {got:?}"
+        "expected Ok(Int(5)) once the unused clause is gone; got {got:?}"
     );
 }
 

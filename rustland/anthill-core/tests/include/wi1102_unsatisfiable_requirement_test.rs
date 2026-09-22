@@ -45,11 +45,17 @@
 //! `platform.needs_rebuild`'s `gt(?t_in, ?t_out)` compares two `Timestamp`s and
 //! `Ord[Timestamp]` has no provider anywhere.
 //!
-//! Backing out the READ gate (`op_body_reads_op_requirement_slot`, i.e. refusing every
-//! parked entry) fails `control_a_body_that_never_reads_the_slot_still_runs` here and
-//! `wi855_ambiguous_requirement_test::other_unresolvable_causes_still_enter_unsupplied`.
-//! That gate is WI-822 LEG 2's line — "has an unpinnable chain" and "needs it" are
-//! different questions — held one channel over.
+//! THE READ GATE IS GONE (WI-20260921-3G1YT), and this file's own row is where it was
+//! measured. Backing it out used to fail `control_a_body_that_never_reads_the_slot_still_
+//! runs` here and `wi855…::other_unresolvable_causes_still_enter_unsupplied`; the ticket
+//! took that as its instruction rather than as a constraint. Every parked entry is now
+//! reported, because a declared `requires` is owed by the caller BECAUSE IT IS DECLARED —
+//! admitting one on the strength of the callee's present body means it breaks when that
+//! body changes, with nothing at the call site having moved. WI-822 LEG 2's line ("has an
+//! unpinnable chain" and "needs it" are different questions) is not retracted; what is
+//! retracted is answering the second from a walk of someone else's body. The repair for a
+//! callee that ignores its own clause is to DELETE the clause —
+//! `a_body_that_never_reads_the_slot_is_refused_and_the_clause_is_the_repair` drives it.
 //!
 //! PASSES EITHER WAY BY DESIGN — controls, not this ticket's evidence:
 //! `control_a_derived_provision_still_loads_and_answers` (WI-1098's derivation, which
@@ -285,14 +291,24 @@ end
 
 // ── AXIS 2: the gates — each is a population the refusal must NOT reach ──────
 
-/// THE READ GATE. `Silent.probe` carries `requires Desc[T = HT]` and answers a constant,
-/// so entering it without the slot costs nothing. WI-822 LEG 2 measured this class as 29
-/// stdlib bodies; refusing here would take all of them.
+/// **THIS ROW INVERTED AT WI-20260921-3G1YT.** It read `control_a_body_that_never_reads_
+/// the_slot_still_runs` and was the READ GATE's own control: `Silent.probe` carries
+/// `requires Desc[T = HT]` and answers a constant, so — the argument went — entering it
+/// without the slot costs nothing, and WI-822 LEG 2's 29 stdlib bodies would all be
+/// refused if it were not excused.
 ///
-/// This is the WI-855 fixture verbatim, driven for the opposite verdict: it must still
-/// LOAD and still ANSWER 5.
+/// The gate is deleted and the row drives the repair instead. A declared `requires` is
+/// owed by the caller BECAUSE IT IS DECLARED: `Driver.drive` calls `Silent.probe` at
+/// `Mystery`, which provides no `Desc`, and whether `probe`'s CURRENT body happens to
+/// touch the slot is not something `drive`'s author can see from the call. The clause is
+/// noise, and the repair is to delete it — driven below, not asserted, because a row that
+/// only pinned the new refusal would leave the author of such a callee with no way out.
+///
+/// AND THE 29 DID NOT NEED THE EXCUSE: the stdlib loads clean with both walks gone,
+/// because those calls are DISCHARGED by route 4 (a caller holding a spec-typed value)
+/// rather than excused by a body walk.
 #[test]
-fn control_a_body_that_never_reads_the_slot_still_runs() {
+fn a_body_that_never_reads_the_slot_is_refused_and_the_clause_is_the_repair() {
     const SRC: &str = r#"
 namespace wi1102.silent
   import anthill.prelude.{Int64}
@@ -312,13 +328,21 @@ namespace wi1102.silent
   end
 end
 "#;
-    assert_eq!(
-        eval_int(SRC, "wi1102.silent.Driver.drive"),
-        5,
-        "a body that never reads the slot must still enter unsupplied and run — the \
-         `Desc` chain resolves to no provider at `Mystery`, exactly as in the three \
-         refused programs above, and the ONLY difference is that this body ignores it"
+    let text = refusal(SRC, "a declared-and-unread slot");
+    assert!(
+        text.contains("wi1102.silent.Desc"),
+        "the refusal must name the requirement nothing supplies; got {text:?}"
     );
+
+    // THE REPAIR, DRIVEN TO THE ANSWER: delete the clause the body never uses, and the
+    // program loads and still computes 5. Asserting the value rather than the load is
+    // what says the slot's absence did not quietly cost the call its body.
+    let repaired = SRC.replace(
+        "operation probe(x: HT) -> Int64 requires Desc[T = HT] = 5",
+        "operation probe(x: HT) -> Int64 = 5",
+    );
+    assert_ne!(repaired, SRC, "the fixture edit must have applied");
+    assert_eq!(eval_int(&repaired, "wi1102.silent.Driver.drive"), 5);
 }
 
 /// THE BUILTIN GATE. `PartialOrd.gt` is registered as a resolver builtin and resolves

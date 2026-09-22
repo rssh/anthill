@@ -3924,8 +3924,9 @@ impl Interpreter {
         // `None` STILL MEANS "CANNOT NARROW" HERE, but it is no longer how an
         // unevidenced call arrives: since WI-20260921-28TAT a `reify` whose `T1` has no
         // `ErrorTag` evidence is a LOAD ERROR naming the clause to add
-        // (`native_backing_reads_slots` — this operation is body-less and implemented by
-        // THIS function, so the parked refusal is reported rather than withheld). What
+        // (`Error.reify` is body-less and implemented by THIS function; since
+        // WI-20260921-3G1YT every parked refusal is reported, so there is no longer a
+        // body walk that could withhold this one for having no body to walk). What
         // reaches `None` now is a KB with no prelude, where there is no layer at all.
         // See `AwaitState::ReifyBoundary::payload`. The ROW is the guarantee either way.
         let payload = self

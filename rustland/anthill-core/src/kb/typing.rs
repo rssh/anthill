@@ -10298,6 +10298,9 @@ fn attach_eta_dispatch_dict(
         // The eta route's `Ok(None)` is ALREADY a load error (WI-420), so it has no use
         // for the rule-body verdict — see the parameter's own note.
         None,
+        // …and for the same reason no use for route 4: it cannot act on the verdict
+        // either way.
+        &[],
         &subst,
         parent,
         callee_provision,
@@ -10474,6 +10477,11 @@ fn eta_op_scoped_dicts(
         // either: the eta's own caller chain is what a forwarded slot reads, exactly as it
         // is for every other dep this path cannot pin.
         &HashMap::new(),
+        // WI-20260921-3G1YT — no route 4 on the ETA path, for the same reason it parks
+        // nothing here: the slot is read wherever the `OpRef` VALUE is finally applied,
+        // which is a frame this site cannot see, so the scope it CAN see is not the one
+        // whose contracts would discharge the dep.
+        &[],
         span,
         // The OPERATION owns an op-scoped clause, so it is what the refusal must name
         // as the declaration whose requirement could not be supplied — its parent sort
@@ -16319,6 +16327,7 @@ pub(crate) fn classify_pin_or_apply_within(
                 occ.span.source,
             ),
             ctx.param_arg_types,
+            ctx.held,
             Some(occ.span.span),
             false,
         )?;
@@ -16495,6 +16504,10 @@ pub(crate) struct OpSupplyCtx<'a> {
     /// grounds here needs nothing further, one that does not can only be forwarded, and
     /// forwarding is what this ticket does not build.
     pub(crate) param_arg_types: &'a HashMap<Symbol, Value>,
+    /// WI-20260921-3G1YT — ROUTE 4's slot source: the spec VIEWS the caller holds values
+    /// of ([`held_spec_views`]). Rides here for the same reason every field above does —
+    /// it is call-site information the op half's verdict needs and the dep cannot see.
+    pub(crate) held: &'a [HeldSpecView],
 }
 
 /// WI-606: the carrier's GENUINE self-receiver override of the spec op
@@ -19855,6 +19868,26 @@ fn check_apply_iter(
         // by exactly the check a written one is.
         let selections = selections_from_slot_bindings(kb, &subst, &op, fn_sym, selections, span)?;
 
+        // WI-20260921-3G1YT — ROUTE 4's slot source, for every classification block
+        // below: the spec VIEWS this caller holds values of ([`held_spec_views`]).
+        //
+        // HERE, and not at the top of this function, because this statement is the
+        // lowest point that dominates all of them — everything above returns before any
+        // dictionary is built, so a call that builds none pays nothing. Both halves read
+        // it: the SORT half through [`build_concrete_dispatch_dict`] and the OP half
+        // through [`OpSupplyCtx::held`].
+        // THE ARGUMENT TYPES OF THIS CALL, off the typed results rather than off
+        // `param_to_arg_type`: that map is populated only for a callee whose signature
+        // writes a PROJECTION (`needs_param_arg_types`), so for `MappedStream.map` — the
+        // shape route 4 needs it for — it is empty. `collect_arg_errors` ran at the top of
+        // this function, so every result here is `Ok`.
+        let arg_types: Vec<Value> = pos_results
+            .iter()
+            .chain(named_results.iter())
+            .filter_map(|r| r.as_ref().ok().map(|t| t.ty.clone()))
+            .collect();
+        let held_views = held_spec_views(kb, env, &arg_types);
+
         // WI-841 (058 §4.4 check 1, binding-precise half): judge every selection
         // against the GOAL it will be applied to, now that argument unification has
         // filled `subst`.
@@ -20186,6 +20219,7 @@ fn check_apply_iter(
                             selected: &selections,
                             enclosing_op: env.enclosing_op(),
                             param_arg_types: &param_to_arg_type,
+                            held: &held_views,
                         }),
                     )?;
                     return Ok(TypeResult {
@@ -20307,6 +20341,7 @@ fn check_apply_iter(
                             selected: &selections,
                             enclosing_op: env.enclosing_op(),
                             param_arg_types: &param_to_arg_type,
+                            held: &held_views,
                         }),
                     )?;
                     return Ok(TypeResult {
@@ -20455,6 +20490,7 @@ fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &param_to_arg_type,
+                                held: &held_views,
                                 }),
                         )?;
                     }
@@ -20871,6 +20907,7 @@ fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &param_to_arg_type,
+                                held: &held_views,
                                 }),
                         )?;
                         return Ok(TypeResult {
@@ -21245,6 +21282,7 @@ fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &param_to_arg_type,
+                                held: &held_views,
                                 }),
                         )?;
                     }
@@ -21453,6 +21491,7 @@ fn check_apply_iter(
                     &selections,
                     OpSlotParkSite::for_call(kb, fn_sym, env.enclosing_op(), span, occ.span.source),
                     &param_to_arg_type,
+                    &held_views,
                     span,
                     false,
                 )?;
@@ -21562,6 +21601,7 @@ fn check_apply_iter(
                         // machinery; a rule body can neither park (the queue is drained
                         // before rule bodies are typed) nor be value-rescued.
                         env.enclosing_op().is_none().then_some(fn_sym),
+                        &held_views,
                         &subst,
                         parent_sym,
                         callee_provision,
@@ -21635,20 +21675,35 @@ fn check_apply_iter(
                         });
                     }
                     if let Some(refusal) = unsuppliable {
-                        // WI-1102: the CARRIER signature takes the builtin gate as well
-                        // ([`OpSlotParkSite`]) — a spec op that resolves structurally
-                        // never consults the dictionary, so no `provides` line would
-                        // change its outcome. WI-945's unconstrained-element signature
-                        // does NOT take it: that one is about an element nothing pins,
-                        // which a structural resolution does not supply either.
-                        if refusal.unprovided.is_none() || !kb.is_builtin(fn_sym) {
+                        // THE BUILTIN GATE, and since WI-20260921-3G1YT it is the WHOLE
+                        // gate rather than the carrier signature's half of one. A spec op
+                        // registered as a RESOLVER BUILTIN resolves STRUCTURALLY: the
+                        // default body carrying the `requires` is never entered, so the
+                        // dictionary is never consulted and no supply — a `provides` line,
+                        // a pinned element, anything — would change its outcome. That is a
+                        // property of the callee's SIGNATURE (a registry lookup), not of
+                        // its body, which is what makes it a legitimate exemption under
+                        // this ticket's rule while a body walk is not.
+                        //
+                        // IT WAS `refusal.unprovided.is_none() || !kb.is_builtin(…)`, so
+                        // WI-945's unconstrained-element signature parked even at a
+                        // builtin. That reading survived only because the body walk then
+                        // dropped the entry anyway — a builtin's default body reads no
+                        // slot — so the carve-out never had to be right. With the walk
+                        // gone it is loud, and it is wrong: MEASURED, `Holder requires
+                        // Ord[T]` whose `atLeast(a: T, b: T) = gte(a, b)` reaches
+                        // `PartialOrd`'s own `requires PartialEq[T]` at a rigid, and
+                        // `wi1110 …a_converted_spec_lends_its_names` is refused although
+                        // `gte` never consults the slot. The harm the WI-945 signature
+                        // exists to prevent is an eval-time `__req_* not bound`, and a
+                        // structural resolution cannot produce one.
+                        if !kb.is_builtin(fn_sym) {
                             kb.unsuppliable_requirements.push(UnsuppliableRequirement {
                                 span,
                                 source: occ.span.source,
                                 callee_op: fn_sym,
                                 callee_sort: parent_sym,
                                 refusal,
-                                slot: SlotToRead::Sort,
                             });
                         }
                     }
@@ -21673,6 +21728,7 @@ fn check_apply_iter(
                             occ.span.source,
                         ),
                         &param_to_arg_type,
+                        &held_views,
                         span,
                         false,
                     )?;
@@ -23967,6 +24023,7 @@ fn build_dispatching_dict_direct(
         kb,
         // Diagnostic-only path (`require_complete = false`): it cannot act on an `Err`.
         None,
+        &[],
         callee_spec_sort,
         callee_provision,
         &callee_chain,
@@ -24382,15 +24439,18 @@ fn render_requires_entry(kb: &KnowledgeBase, entry: &RequiresEntry) -> String {
 ///    only inside the typer's call check and is gone by `req_insertion` (the same
 ///    reason [`build_concrete_dispatch_dict`] runs where it does). Hence the refusal
 ///    is BUILT here, fully rendered.
-///  - "the callee will actually miss it" needs the CALLEE's body, and an operation
-///    may be called before its own body has been classified. Hence the refusal is
-///    DECIDED later, against [`op_body_reads_sort_requirement_slot`].
+///  - "no route discharges it" needs the CALLEE, and an operation may be called before
+///    its own body has been classified. Hence the refusal is DECIDED later, in
+///    [`report_unsuppliable_requirements`].
 ///
-/// The second half is not a nicety: WI-822 LEG 2 measured the same distinction one
-/// channel over — "has an unpinnable chain" and "needs it" are different questions,
-/// and only the body answers the second. MEASURED here too, on the corpus:
-/// `test.wi508g.useNew` calls `FiniteCollection.size` with `Element` unpinned and
-/// answers 1, because `size`'s body reads no `__req_*` at all.
+/// WHAT THE SECOND HALF ASKS CHANGED, AND THE PARK DID NOT. It used to ask whether the
+/// callee's PRESENT BODY reads the slot, and dropped the refusal when it did not —
+/// WI-20260921-3G1YT deleted that question and the two walks behind it, because a
+/// declared `requires` is owed by the caller BECAUSE IT IS DECLARED. Every parked
+/// refusal is now reported; a dep some route discharges
+/// ([`scope_contract_covers_dep`] and the two rule-body rescues) never parks at all. The
+/// park itself survives for the reason above, which is about WHEN the answer exists and
+/// not about what the question is.
 #[derive(Clone)]
 pub(crate) struct UnsuppliableRequirement {
     /// The call, for the diagnostic's location. `source` rides beside `span` because
@@ -24403,438 +24463,6 @@ pub(crate) struct UnsuppliableRequirement {
     /// Its parent sort: the owner of the `requires` chain this dictionary would fill.
     pub(crate) callee_sort: Symbol,
     pub(crate) refusal: Box<RequirementRefusal>,
-    /// WI-1102 — WHICH slot the "will the callee miss it" half must ask about. The two
-    /// halves are filled from different channels and read by different predicates, so
-    /// the question cannot be inferred from `callee_op` alone.
-    pub(crate) slot: SlotToRead,
-}
-
-/// WI-1102 — the half of the callee's frame a parked refusal is about.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SlotToRead {
-    /// A SORT-half slot: the parent-bundle dictionary, filled by
-    /// [`build_concrete_dispatch_dict`] and read by
-    /// [`op_body_reads_sort_requirement_slot`]. Not per-index — the sort half is
-    /// all-or-nothing (`require_complete`), so one missing dep leaves the whole
-    /// dictionary absent and any sort-half read misses it.
-    Sort,
-    /// The OP-scoped slot at this index in `callee_op`'s own chain
-    /// (`op_dict_entries(callee_op).op_entries()[i]`), filled by
-    /// [`build_op_scoped_dicts`]. Per-index because that half is best-effort and
-    /// keyed by NAME: its other slots are supplied normally, so blaming the operation
-    /// for a read of a DIFFERENT slot would refuse a program that works.
-    Op(usize),
-}
-
-/// WI-945 — does `op`'s body read a SORT-level requirement slot, i.e. would entering it
-/// with no requirements channel leave a `__req_*` unbound? True iff some call in the
-/// body classified [`CallClass::DeferToRequirement`] against the sort half of the
-/// frame layout.
-///
-/// THE SORT HALF ONLY, and the index is what says so: an op-scoped defer is recorded in
-/// the COMPOSED chain's numbering with `sort_len` added ([`op_scoped_defer_location`]),
-/// and its slot is filled from a different channel entirely (`op_dicts`, built per call
-/// by [`build_op_scoped_dicts`]). Counting one would blame the parent-bundle dictionary
-/// for a slot it never fills.
-///
-/// This is the question [`op_reads_requirement_slots`]' NAME asks and its body does
-/// not — that one answers "does this sort HAVE slots" (`provider_dict_entries`
-/// non-empty), which is the right gate for "build a dictionary at all" and the wrong
-/// one for "will the callee miss it". Both names are kept because both questions are
-/// asked; see WI-822 LEG 2, which measured the same split on the op half.
-///
-/// FIVE WAYS A BODY READS THE FRAME, and the count is the point — it has been short
-/// twice. The first cut had two and let a program through that loads clean and dies at
-/// eval (found by /code-review, reproduced, pinned by
-/// `a_forwarded_slot_inside_a_built_dictionary_is_refused_too`); the three-way cut that
-/// replaced it was short by the two WI-1095 measured, each again a clean load that dies
-/// at eval. So the list is now the CLASSIFICATION's own, arm for arm — see the
-/// exhaustive `match` below, which has no `_` and makes a sixth [`CallClass`] a compile
-/// error rather than a silent `Nothing`:
-///  1. it DEFERS — a `DeferToRequirement` at a sort-half slot;
-///  2. it INHERITS — a same-sort call the typer gave no dictionary, which takes
-///     `start_apply_same_sort`'s `inherit` arm and reads whatever the sibling reads;
-///  3. it FORWARDS through `dispatch_dict` — a call the typer DID give a dictionary,
-///     one of whose slots is a `var_ref` into THIS frame ([`dict_forwards_frame_slot`]).
-///     "Got a dictionary" is not "needs nothing from me";
-///  4. it FORWARDS through `op_dicts` (WI-1095) — the SAME variant's op-scoped half,
-///     which [`build_op_scoped_dicts`] projects against the enclosing frame chain and
-///     which therefore reaches this frame by the same `var_ref`. Reading only
-///     `dispatch_dict` missed it, and missed it in the shape where `dispatch_dict` is
-///     `None` (a callee whose SORT requires nothing while its OPERATION does), which
-///     the `inherit` arm then swallowed as a cross-sort non-inherit;
-///  5. it ETAS (WI-1095) — `CallClass::EtaOpRef`, whose `dict` is
-///     `var_ref(__req_self)` for a same-sort eta and a `build_concrete_dispatch_dict`
-///     result (forwards included) for a cross-sort one, with `op_dicts` riding beside
-///     it. An eta never INHERITS, however same-sort it is: the `OpRef` escapes to a
-///     foreign apply frame, which is exactly why the typer mints it a `var_ref` here.
-///
-/// `__req_self` IS IN THE FRAME-SLOT SET for that last channel, and it is a second edit
-/// rather than a detail of the first: `sort_names` is `chain.names()`, the
-/// `__req_<spec>` list, and the sort half's own dictionary is not among them. Wiring the
-/// arm without it finds nothing and changes no verdict — MEASURED, by backing out this
-/// one line with the arm in place (`an_eta_of_a_same_sort_sibling_is_refused` alone
-/// fails, still `var_ref(__req_self) unbound`). It belongs there on the merits:
-/// `__req_self` IS the parent-bundle dictionary this park is about, so a body that reads
-/// it misses exactly what the call site could not supply. It has a SECOND reader beside
-/// the eta — [`build_dep_projection`]'s WI-1091 Strategy 0 forwards `var_ref(__req_self)`
-/// inside a BUILT dictionary — and the name earns its place for both.
-///
-/// WHAT IT DELIBERATELY DOES NOT FOLLOW, so the bound is stated rather than assumed: a
-/// same-sort `PinNow` (statically resolved to a concrete impl, which eval plain-applies
-/// rather than inheriting into), and a cross-sort callee's own body — that callee's
-/// call site builds, or parks, its own dictionary under its own σ. Answering `false`
-/// there is a REFUSAL WITHHELD, never a wrong value: the program keeps exactly the
-/// behaviour it had before WI-945, eval's own `not bound` raise included. Both
-/// exclusions are about a call whose frame is NOT this one; every read OF this frame is
-/// counted above.
-fn op_body_reads_sort_requirement_slot(kb: &mut KnowledgeBase, op: Symbol) -> bool {
-    /// What one classified call in the body contributes to the answer.
-    enum Step {
-        /// It reads a sort-half slot: the whole question is settled.
-        Reads,
-        /// A classified call, in the two ways it can still reach this frame — and both
-        /// can hold at once, which a `dispatch_dict.is_none()` either/or got wrong
-        /// (WI-1095 channel 4): `inherit` is the same-sort target that would take this
-        /// frame WHOLE (only where the typer built no sort-half dictionary), and `dicts`
-        /// is every dictionary the call does carry, each of which may still project a
-        /// `var_ref` into this frame.
-        Call {
-            inherit: Option<Symbol>,
-            dicts: SmallVec<[TermId; 2]>,
-        },
-        Nothing,
-    }
-    // TRANSITIVE OVER SAME-SORT CALLS, because those alone INHERIT this frame instead
-    // of building their own (`start_apply_same_sort`'s `inherit` arm, taken exactly
-    // when the typer supplied no dict). A sibling reached that way reads the SAME empty
-    // channel, so `twice(a) = inner(a)` with the read in `inner` is the subject one hop
-    // out — MEASURED as loading clean and dying at eval while the direct spelling was
-    // refused. Cross-sort calls are NOT followed: each builds, or parks, its own
-    // dictionary at its own site under its own σ.
-    let mut seen: HashSet<Symbol> = HashSet::new();
-    let mut queue: Vec<Symbol> = vec![op];
-    while let Some(cur) = queue.pop() {
-        if !seen.insert(cur) {
-            continue;
-        }
-        let Some(body) = kb.op_body_node(cur).map(Rc::clone) else {
-            // Body-less: nothing reads anything. (A body-less op is also not a target
-            // this route reaches — it dispatches through its carrier — but saying so
-            // costs one `None` arm and keeps the predicate total.)
-            continue;
-        };
-        let parent = impl_parent_of_op(kb, cur);
-        let chain = op_dict_entries(kb, cur);
-        let sort_len = chain.sort_len();
-        // The frame slots a WI-418 forward inside a built dictionary could name. The
-        // SORT half only, for the same reason `sort_len` gates the defer arm — plus
-        // `__req_self`, the sort half's OWN dictionary, which `names()` never lists and
-        // which a same-sort eta reads directly (WI-1095; see the doc above).
-        let mut sort_names: Vec<Symbol> = chain.names(kb).iter().copied().take(sort_len).collect();
-        sort_names.push(kb.intern("__req_self"));
-        let mut stack: Vec<Rc<NodeOccurrence>> = vec![body];
-        while let Some(occ) = stack.pop() {
-            let NodeKind::Expr {
-                expr,
-                classification,
-                ..
-            } = &occ.kind
-            else {
-                continue;
-            };
-            // The classification is read into a local BEFORE anything else runs: a
-            // `RefCell` borrow held as a `match` scrutinee outlives the arms, and the
-            // arms below call back into `kb`.
-            // EXHAUSTIVE OVER `CallClass`, no `_` arm: the count above has been short
-            // twice, and a variant added later must not join the list by silence.
-            let step = match classification.borrow().as_deref() {
-                // `slot < sort_len` is the sort-half test — see the doc above.
-                Some(CallClass::DeferToRequirement { slot, .. }) if *slot < sort_len => Step::Reads,
-                // An OP-SCOPED defer: a slot of a different channel, filled by
-                // `op_dicts` and asked about by [`op_body_reads_op_requirement_slot`].
-                Some(CallClass::DeferToRequirement { .. }) => Step::Nothing,
-                Some(CallClass::ConcreteApplyWithin {
-                    fn_target_sym,
-                    dispatch_dict,
-                    ..
-                }) => Step::Call {
-                    // The INHERIT arm is about the sort half alone: eval takes
-                    // `start_apply_same_sort`'s inherit path exactly when no sort-half
-                    // dictionary was built, whatever the op half carries.
-                    inherit: dispatch_dict.is_none().then_some(*fn_target_sym),
-                    dicts: dispatch_dict.iter().copied().collect(),
-                },
-                // WI-1095 channel 5. `inherit: None` is not an omission: an eta'd
-                // `OpRef` escapes to a foreign apply frame instead of inheriting this
-                // one, which is why a SAME-SORT eta carries `var_ref(__req_self)` at all.
-                Some(CallClass::EtaOpRef { dict, .. }) => Step::Call {
-                    inherit: None,
-                    dicts: dict.iter().copied().collect(),
-                },
-                // Carries no dictionary: a `PinNow` is plain-applied to a concrete impl
-                // whose parent has no `requires` (see the "does not follow" paragraph),
-                // and an `UnresolvedSpecOp` is an error tag `req_insertion` turns into
-                // `MissingRequiresForSpecOp` — neither reaches this frame.
-                Some(CallClass::PinNow { .. }) | Some(CallClass::UnresolvedSpecOp { .. }) => {
-                    Step::Nothing
-                }
-                // Not a classified call at all.
-                None => Step::Nothing,
-            };
-            // WI-20260921-28TAT — THE OP HALF, scanned for every class and for an
-            // UNCLASSIFIED call. It used to ride inside two of the arms above; it is a
-            // stamp on the occurrence now, which is the whole point — a call may owe its
-            // callee an op-scoped input without needing any dispatch rewrite, and this
-            // walker must see that dictionary wherever it hangs. Scanned before the
-            // `match` so no arm can forget it.
-            for d in occ.op_dicts().iter().flatten() {
-                if dict_forwards_frame_slot(kb, *d, &sort_names) {
-                    return true;
-                }
-            }
-            match step {
-                Step::Reads => return true,
-                Step::Call { inherit, dicts } => {
-                    if let Some(target) = inherit {
-                        if parent.is_some() && impl_parent_of_op(kb, target) == parent {
-                            queue.push(target);
-                        }
-                    }
-                    for d in dicts {
-                        if dict_forwards_frame_slot(kb, d, &sort_names) {
-                            return true;
-                        }
-                    }
-                }
-                Step::Nothing => {}
-            }
-            crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
-        }
-    }
-    false
-}
-
-/// WI-1102 — the OP-HALF twin of [`op_body_reads_sort_requirement_slot`]: does `op`'s
-/// body read the op-scoped slot at `op_index`, i.e. would entering it without that slot
-/// leave a `__req_*` unbound?
-///
-/// PER-INDEX, unlike the sort half, and that is the whole difference between the two
-/// predicates. The sort half is built all-or-nothing (`require_complete`), so one
-/// unprojectable dep costs the callee its ENTIRE dictionary and any sort-half read
-/// misses it. The op half is best-effort and NAME-keyed ([`build_op_scoped_dicts`]), so
-/// its other slots arrive intact and a body reading one of THOSE is not evidence about
-/// this one.
-///
-/// THREE CHANNELS COUNTED, and the count is stated because WI-945's own doc records what
-/// happens when it is guessed (its predicate shipped with two of five):
-///  1. it DEFERS — a `DeferToRequirement` whose slot is `sort_len + op_index` in the
-///     COMPOSED numbering ([`op_scoped_defer_location`]). This is the ticket's whole
-///     measured population: `List.contains`' body calls `PartialEq.eq(…)`, licensed by
-///     its own `requires Eq[T]`, and that call reads `__req_eq`.
-///  2. it FORWARDS — a nested call whose own dictionary projects one of ITS slots as a
-///     `var_ref` into THIS frame ([`dict_forwards_frame_slot`]), covering `op_dicts` as
-///     well as `dispatch_dict`.
-///  3. it ETAS (WI-1095) — `CallClass::EtaOpRef`, whose `op_dicts` [`build_op_scoped_dicts`]
-///     builds against the enclosing FRAME chain, exactly as at a written call site, so one
-///     of them can project a `var_ref` at THIS slot as in (2). Its `dict` cannot: the eta
-///     site hands [`build_concrete_dispatch_dict`] the `enclosing_dict_chain` — the sort
-///     half alone, because an instance dictionary must not forward an op slot
-///     ([`attach_eta_dispatch_dict`]'s own comment states the invariant and why). It is
-///     searched anyway, at the cost of walking a term that today cannot hold this name,
-///     so that this predicate's answer does not silently depend on an invariant declared
-///     somewhere else.
-///
-/// `__req_self` IS NOT IN THIS NAME SET, and that is the one place this predicate does
-/// NOT copy the sort half's WI-1095 edit: `__req_self` is the SORT half's dictionary, a
-/// different channel with a different supplier, and a body reading it says nothing about
-/// whether this op-scoped slot is owed. The op half is per-index for the same reason.
-///
-/// NOT FOLLOWED, deliberately: a same-sort callee's body. The sort half follows those
-/// because eval's `start_apply_same_sort` inherit arm hands the sibling the same
-/// dictionary; an op-scoped slot belongs to THIS operation's declaration and the sibling
-/// has its own chain, so following would ask about a slot with a different owner.
-///
-/// Answering `false` for an unfollowed callee is a REFUSAL WITHHELD, never a wrong
-/// value: the program keeps exactly the behaviour it has today, eval's own `not bound`
-/// raise included.
-/// WI-20260921-28TAT — is `op` a BODY-LESS operation whose NATIVE backing reads its
-/// requirement slots?
-///
-/// The one population is `anthill.prelude.Error.reify`, and the list is spelled out
-/// rather than inferred because there is nothing to infer it FROM: reify is body-less,
-/// is not a `BuiltinFn` (a builtin returns a value and cannot enter a closure — 047 §4),
-/// and has no carrier member, so every structural test for "is this implemented" answers
-/// no. It is nonetheless implemented, by `Interpreter::enter_reify_boundary`, which the
-/// dispatch arms reach by SYMBOL.
-///
-/// BY SYMBOL, resolved from the canonical name, exactly as `ErrorLayer` resolves the
-/// same operation (WI-897: an operation's meaning is its symbol, never its name). A KB
-/// without the prelude resolves nothing and answers `false`, which is right — such a
-/// program declares no `reify` to call.
-///
-/// The lookup is a string resolve, and it sits on a cold path: reached only for a
-/// BODY-LESS callee that already has a PARKED op-slot refusal, which is rare.
-fn native_backing_reads_slots(kb: &KnowledgeBase, op: Symbol) -> bool {
-    kb.try_resolve_symbol("anthill.prelude.Error.reify") == Some(op)
-}
-
-fn op_body_reads_op_requirement_slot(kb: &mut KnowledgeBase, op: Symbol, op_index: usize) -> bool {
-    // WI-20260921-28TAT — BODY-LESS IS NOT "READS NOTHING". This arm answered `false`
-    // with the comment "body-less: it dispatches through its carrier and reads nothing",
-    // and that premise is FALSE for an operation whose backing is not a carrier member:
-    // whatever implements it is INVISIBLE to this walk, so the walk cannot prove it does
-    // not read the slot. `Error.reify` is exactly that — body-less on purpose (the
-    // boundary is a FRAME the interpreter installs by symbol), so no member exists to
-    // check, and the interpreter reads its `requires ErrorTag[T = T1]` dictionary at
-    // `enter_reify_boundary` on every single call.
-    //
-    // MEASURED: while this answered `false`, an `ErrorTag` dep that could not be
-    // resolved was PARKED and then silently dropped — the boundary simply stopped
-    // narrowing, 23 call sites went unevidenced, and nothing was printed. That is the
-    // "prefer a loud error over a silent skip" rule with the sign flipped, and it is the
-    // same silent-absence class this whole ticket is about.
-    //
-    // NOT A BLANKET `true`, and the first cut WAS one — measured, it took
-    // `wi201_bare_spec_member_sugar_test` red. `operation useExplicit[P](s: P) requires
-    // Store[State = P]` is an ordinary body-less DECLARATION, and calling it with a
-    // carrier that provides no `Store` is a program kernel-language.md §8.7 decides the
-    // other way ON PURPOSE: "a requirement that is merely unpinnable at the argument
-    // types … is not an error at all — the call proceeds, and only a body that actually
-    // reads the missing slot fails" (WI-822/WI-855). Nothing implements `useExplicit`,
-    // so the call cannot run whatever this answers, and the withheld refusal costs
-    // nothing.
-    //
-    // WHAT SEPARATES THE TWO IS A BACKING THAT RUNS. `Error.reify` is body-less and
-    // IMPLEMENTED — by the interpreter, which installs the boundary by symbol and reads
-    // this very dictionary at `enter_reify_boundary` on every call. That backing is
-    // invisible to this walk, so the walk cannot prove it does not read, and withholding
-    // the refusal is what let 23 unevidenced call sites through in silence.
-    let Some(body) = kb.op_body_node(op).map(Rc::clone) else {
-        return native_backing_reads_slots(kb, op);
-    };
-    let chain = op_dict_entries(kb, op);
-    let want = chain.sort_len() + op_index;
-    let names = chain.names(kb);
-    let Some(&slot_name) = names.get(want) else {
-        return false;
-    };
-    /// What one classified call in the body contributes to the answer — read out of the
-    /// `RefCell` BEFORE anything calls back into `kb`, since a borrow held as a `match`
-    /// scrutinee outlives the arms.
-    enum Step {
-        Reads,
-        Forwards(SmallVec<[TermId; 2]>),
-        Nothing,
-    }
-    let this_slot = [slot_name];
-    let mut stack: Vec<Rc<NodeOccurrence>> = vec![body];
-    while let Some(occ) = stack.pop() {
-        let NodeKind::Expr {
-            expr,
-            classification,
-            ..
-        } = &occ.kind
-        else {
-            continue;
-        };
-        // EXHAUSTIVE OVER `CallClass`, no `_` arm — same reason as the sort half's.
-        let step = match classification.borrow().as_deref() {
-            Some(CallClass::DeferToRequirement { slot, .. }) if *slot == want => Step::Reads,
-            // A defer at some OTHER slot: this half is per-index (see the doc), so it is
-            // not evidence about `want`.
-            Some(CallClass::DeferToRequirement { .. }) => Step::Nothing,
-            Some(CallClass::ConcreteApplyWithin { dispatch_dict, .. }) => {
-                Step::Forwards(dispatch_dict.iter().copied().collect())
-            }
-            // WI-1095 channel 3 — the eta's sort-half dictionary. The OP half that can
-            // name this slot is the occurrence stamp, scanned below for every class;
-            // `dict` is searched too, though today it cannot name one (see the doc
-            // above), so the answer does not rest on an invariant declared elsewhere.
-            Some(CallClass::EtaOpRef { dict, .. }) => {
-                Step::Forwards(dict.iter().copied().collect())
-            }
-            // Carries no dictionary — see the sort half's arm of the same shape.
-            Some(CallClass::PinNow { .. }) | Some(CallClass::UnresolvedSpecOp { .. }) => {
-                Step::Nothing
-            }
-            None => Step::Nothing,
-        };
-        // WI-20260921-28TAT — the op half, off the occurrence stamp, for every class and
-        // for an unclassified call. See the sort half's walker for why it is scanned
-        // outside the `match`.
-        for d in occ.op_dicts().iter().flatten() {
-            if dict_forwards_frame_slot(kb, *d, &this_slot) {
-                return true;
-            }
-        }
-        match step {
-            Step::Reads => return true,
-            Step::Forwards(dicts) => {
-                for d in dicts {
-                    if dict_forwards_frame_slot(kb, d, &this_slot) {
-                        return true;
-                    }
-                }
-            }
-            Step::Nothing => {}
-        }
-        crate::kb::node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
-    }
-    false
-}
-
-/// WI-945 — does a built dispatching dictionary READ its builder's own frame, i.e. does
-/// it contain a `var_ref(name = <one of `frame_slots`>)`? That is the WI-418 forward:
-/// the dep stayed abstract and the enclosing sort's own `requires` covers it, so the
-/// slot is projected as a caller-frame read rather than constructed.
-///
-/// A DICTIONARY IS NOT SELF-CONTAINED, which is why the caller cannot stop at "this call
-/// got a dictionary, so it needs nothing from me". MEASURED: a `HolderVS` that requires
-/// both `VectorSpace[V, F]` and `Doubler[V]`, whose `twice` calls a cross-sort
-/// `Inner.innerOp` — `Inner`'s `Doubler` slot is filled by forwarding `HolderVS`'s own
-/// `__req_doubler`. With `F` unconstrained at `twice`'s call site the frame is empty and
-/// eval raises `var_ref(__req_doubler) unbound in requirement position`; the load was
-/// clean until this arm existed.
-///
-/// Walks the whole term, `var_ref` being nested arbitrarily deep inside
-/// `requirement_at_sort` projections and sub-dictionaries. A KB with no
-/// [`ProjectionSyms`] has no `var_ref` functor to find, so it answers `false`.
-fn dict_forwards_frame_slot(kb: &mut KnowledgeBase, dict: TermId, frame_slots: &[Symbol]) -> bool {
-    if frame_slots.is_empty() {
-        return false;
-    }
-    let Some(syms) = ProjectionSyms::resolve(kb) else {
-        return false;
-    };
-    let mut stack: Vec<TermId> = vec![dict];
-    let mut seen: HashSet<TermId> = HashSet::new();
-    while let Some(t) = stack.pop() {
-        if !seen.insert(t) {
-            continue;
-        }
-        let term = kb.get_term(t).clone();
-        if let Term::Fn {
-            functor,
-            named_args,
-            ..
-        } = &term
-        {
-            if *functor == syms.var_ref {
-                let named = named_args
-                    .iter()
-                    .find(|(k, _)| *k == syms.name)
-                    .map(|(_, v)| *v);
-                if let Some(Term::Ref(n)) = named.map(|v| kb.get_term(v)) {
-                    if frame_slots.contains(n) {
-                        return true;
-                    }
-                }
-            }
-        }
-        stack.extend(term.subterms());
-    }
-    false
 }
 
 /// WI-945 — the verdict on every call site [`build_concrete_dispatch_dict`] parked: a
@@ -24859,14 +24487,20 @@ fn report_unsuppliable_requirements(
     // the surrounding pass happens to be tagging.
     sources.resize(errors.len(), None);
     for entry in parked {
-        // WI-1102: the two halves are read by two predicates — see [`SlotToRead`].
-        let reads = match entry.slot {
-            SlotToRead::Sort => op_body_reads_sort_requirement_slot(kb, entry.callee_op),
-            SlotToRead::Op(i) => op_body_reads_op_requirement_slot(kb, entry.callee_op, i),
-        };
-        if !reads {
-            continue;
-        }
+        // WI-20260921-3G1YT — EVERY PARKED REFUSAL IS REPORTED. There was a gate here —
+        // `if !op_body_reads_…_requirement_slot(callee) { continue; }` — which asked
+        // whether the CALLEE'S PRESENT BODY happens to read the slot, and dropped the
+        // refusal when it did not. It is deleted, with both walks behind it, because a
+        // declared `requires` is OWED BY THE CALLER BECAUSE IT IS DECLARED: a caller
+        // admitted on the strength of a body it does not own breaks when that body
+        // changes, with nothing at the call site having moved.
+        //
+        // WHAT REPLACES IT IS NOT A LOOSER GATE BUT FOUR DISCHARGE ROUTES, all read at
+        // the call site from the signature: the caller's own `requires`
+        // ([`build_dep_projection`] Strategies 1/2), a spec-typed value in scope
+        // ([`scope_contract_covers_dep`]), and — at a RULE body, where the SLD bridge
+        // resolves dictionaries at fire time — [`spec_has_value_directed_route`] and
+        // [`dep_has_searchable_pin`]. A dep no route discharges never parks.
         errors.push(TypeError::UnsatisfiableRequirement {
             span: entry.span,
             op: entry.callee_op,
@@ -25085,6 +24719,9 @@ fn build_dispatching_dict_from_chain(
     // bodies are typed) nor be rescued by value-direction when the spec has no receiver.
     // See the use below.
     rule_body_callee: Option<Symbol>,
+    // WI-20260921-3G1YT — ROUTE 4's slot source; see [`build_concrete_dispatch_dict`]'s
+    // own note on this parameter.
+    held: &[HeldSpecView],
     callee_spec_sort: Symbol,
     // Proposal 066 §7 — the provision the called operation is a member of
     // ([`op_owner_provision`]): a parent bundle is the callee's FRAME, which is its
@@ -25170,6 +24807,24 @@ fn build_dispatching_dict_from_chain(
                         unprovided: None,
                     }));
                 }
+                // WI-20260921-3G1YT — ROUTE 4: THE OBLIGATION IS HELD, by a value in
+                // scope whose TYPE carries this dep. `total(c: FiniteCollection) =
+                // size(c)` owes `Iterable[…]`, and `c`'s type says it holds one.
+                //
+                // FIRST among the arms below, because it is a DISCHARGE and they are all
+                // verdicts on a dep nothing supplies. The outcome — falling to the silent
+                // `Ok(None)`, with eval reaching the provider from the value's own
+                // carrier — is exactly what these calls did before; what changes is that
+                // it is now reached because the obligation is MET rather than because a
+                // walk of the callee's body excused it.
+                //
+                // MEASURED as the population it answers for: it is what keeps the whole
+                // `x13yv` map/filter-chain family and `wi599
+                // …the_stdlib_combinators_are_general_over_any_iterable_source` green
+                // once the body walks are gone.
+                if scope_contract_covers_dep(kb, held, dep, disambig) {
+                    return Ok(None);
+                }
                 // WI-20260919-N31XX — A `TypeValue` DEP IS NEVER BENIGNLY UNFILLED,
                 // the SORT-half twin of the leg in `build_op_scoped_dicts`.
                 //
@@ -25217,7 +24872,6 @@ fn build_dispatching_dict_from_chain(
                 if let Some(callee_op) = rule_body_callee {
                     if !spec_has_value_directed_route(kb, dep.required_sort)
                         && !dep_has_searchable_pin(kb, dep)
-                        && op_body_reads_sort_requirement_slot(kb, callee_op)
                     {
                         let unconstrained = disambig
                             .map(|ctx| unconstrained_elements(kb, dep, ctx))
@@ -25453,6 +25107,11 @@ fn build_concrete_dispatch_dict(
     // bodies are typed) nor be rescued by value-direction when the spec has no receiver.
     // See the use below.
     rule_body_callee: Option<Symbol>,
+    // WI-20260921-3G1YT — ROUTE 4's slot source: the spec views the caller holds VALUES
+    // of ([`held_spec_views`]). Empty on the ETA and Direct paths, which have no
+    // environment to read one from; empty is simply "no route 4 here", never a wrong
+    // verdict, since both of those paths decide nothing this route could change.
+    held: &[HeldSpecView],
     subst: &Substitution,
     callee_spec_sort: Symbol,
     // Proposal 066 §7 — the provision the called operation is a member of
@@ -25535,6 +25194,7 @@ fn build_concrete_dispatch_dict(
     build_dispatching_dict_from_chain(
         kb,
         rule_body_callee,
+        held,
         callee_spec_sort,
         callee_provision,
         &concrete_chain,
@@ -25591,11 +25251,12 @@ fn build_concrete_dispatch_dict(
 /// AND SINCE WI-1102, a `NoMatch` at a FULLY-PINNED carrier is PARKED rather than silent
 /// — 058 §3.10's use-site discharge, "'provides nothing at all' stops being an accepting
 /// state". That does NOT reopen the paragraph above: "best-effort" still answers "could
-/// this call supply the slot?", and the parked refusal is decided against the second
-/// question (does the callee's body READ it?) by
-/// [`op_body_reads_op_requirement_slot`] in [`report_unsuppliable_requirements`], so a
-/// body that never reads still runs. See [`unprovided_provision`] for the three
-/// conditions and [`OpSlotParkSite`] for the two the caller supplies.
+/// this call supply the slot?", and the parked refusal is REPORTED by
+/// [`report_unsuppliable_requirements`]. Since WI-20260921-3G1YT it is reported
+/// unconditionally — the old "does the callee's body READ it?" gate is gone, and what
+/// keeps a legitimate call out of the park is a DISCHARGE ROUTE
+/// ([`scope_contract_covers_dep`]) rather than an excuse. See [`unprovided_provision`]
+/// for the three conditions and [`OpSlotParkSite`] for the two the caller supplies.
 // WI-20260909-S8CBV added the 8th parameter (`param_arg_types`). Allowed rather than
 // bundled: the seven that were here are each a distinct call-site fact this function
 // reads once, and a struct around them would be a carrier invented for a lint.
@@ -25629,6 +25290,8 @@ fn stamp_op_scoped_dicts(
     selected: &[InstanceSelection],
     park: Option<OpSlotParkSite>,
     param_arg_types: &HashMap<Symbol, Value>,
+    // WI-20260921-3G1YT — ROUTE 4's slot source; see [`build_op_scoped_dicts`].
+    held: &[HeldSpecView],
     span: Option<Span>,
     eta: bool,
 ) -> Result<(), TypeError> {
@@ -25641,6 +25304,7 @@ fn stamp_op_scoped_dicts(
         selected,
         park,
         param_arg_types,
+        held,
     )
     // WI-1091: a TIE in the op half is a load refusal, as the sort half's is.
     .map_err(|refusal| TypeError::UnsatisfiableRequirement {
@@ -25675,6 +25339,11 @@ fn build_op_scoped_dicts(
     // requirement written at a projection. Empty for every callee whose chain carries
     // none, which is all of them but this ticket's shape.
     param_arg_types: &HashMap<Symbol, Value>,
+    // WI-20260921-3G1YT — ROUTE 4's slot source, the OP half's copy of the sort half's
+    // parameter ([`held_spec_views`]). Both halves ask the one predicate
+    // [`scope_contract_covers_dep`], so a dep discharged on one cannot be refused on the
+    // other.
+    held: &[HeldSpecView],
 ) -> Result<SmallVec<[Option<TermId>; 2]>, Box<RequirementRefusal>> {
     // THE NORMALIZED entries, off the very chain whose slots these dictionaries fill
     // ([`op_dict_entries`]) — not the raw `op_requires_chain_rc`, whose bare-application
@@ -25702,7 +25371,12 @@ fn build_op_scoped_dicts(
     // gives one call site two errors. Truncated on the `Err` path below.
     let parked_mark = kb.unsuppliable_requirements.len();
     let mut out: SmallVec<[Option<TermId>; 2]> = SmallVec::new();
-    for (op_index, entry) in op_chain.iter().enumerate() {
+    // WI-20260921-3G1YT — NO LONGER ENUMERATED. The index existed for the READ
+    // question: a parked op-slot refusal recorded WHICH slot it was about (a
+    // `SlotToRead::Op(i)`) because this half is best-effort and name-keyed, so a body
+    // reading a DIFFERENT slot was no evidence about this one. Every parked refusal is
+    // now reported, so there is no per-slot question left to key.
+    for entry in op_chain.iter() {
         // Same substitution the sort half takes: a call-site-pinned element
         // (`Zeroable[HT]` at `HT := Pebble`) becomes concrete and Strategy 3
         // constructs it; one left abstract stays open for a Strategy-1/2 forward
@@ -25842,6 +25516,21 @@ fn build_op_scoped_dicts(
             rung_for_dep(kb, callee_op, dep.required_sort),
         );
         if projected.is_none() {
+            // WI-20260921-3G1YT — ROUTE 4: THE OBLIGATION IS HELD, by a value in scope
+            // whose TYPE carries this dep. The OP half's copy of the arm
+            // [`build_dispatching_dict_from_chain`] states in full; one predicate
+            // ([`scope_contract_covers_dep`]) serves both, so a dep discharged on one
+            // half cannot be refused on the other.
+            //
+            // THE SLOT STAYS ABSENT, which is this half's own `Ok(None)`: the op half
+            // is best-effort and NAME-keyed, so a discharged dep leaves its own slot
+            // empty and its siblings supplied — where the sort half, being
+            // all-or-nothing (`require_complete`), drops the whole dictionary. Both mean
+            // "no dictionary here; eval reaches the provider from the value's carrier".
+            if scope_contract_covers_dep(kb, held, &dep, Some(&disambig)) {
+                out.push(None);
+                continue;
+            }
             // WI-20260919-N31XX (proposal 065) — AN UNFILLED `TypeValue` SLOT IS NEVER
             // BENIGN, which is what takes it out of the silent-absence rule below.
             //
@@ -25939,12 +25628,12 @@ fn build_op_scoped_dicts(
             // other direction ("nothing may park after it"), and it cannot catch the case
             // because it runs before the offending push.
             //
-            // AND THE READ QUESTION IS ANSWERABLE HERE, which is what makes raising sound
-            // rather than blunt. Parking exists because a callee may be typed after its
-            // caller; a RULE body is typed after EVERY operation body, so
-            // [`op_body_reads_op_requirement_slot`] already has its answer. A callee that
-            // never reads the slot still loads — which is what keeps `test.xsvcs.fwd.TT`,
-            // `wi1102.witnessrow.Lawful` and `nx4fd_disc.Marked` green.
+            // AND IT IS THE THREE RESCUE ROUTES THAT BOUND IT, not a walk of the
+            // callee's body. This arm once carried a fourth conjunct asking whether that
+            // body reads the slot; WI-20260921-3G1YT deleted it with both walks, because
+            // a declared `requires` is owed BECAUSE IT IS DECLARED and a callee that
+            // ignores its own clause should DELETE it. The conjuncts left are the two
+            // above plus the site gate, and each says why at its own line.
             //
             // THIS IS N31XX's HARDCODE, GENERALIZED. That arm asked `dep.required_sort ==
             // anthill.reflect.TypeValue` and raised above this block, which is why one
@@ -25956,7 +25645,6 @@ fn build_op_scoped_dicts(
             if park.is_some_and(|s| s.enclosing_op.is_none())
                 && !spec_has_value_directed_route(kb, dep.required_sort)
                 && !dep_has_searchable_pin(kb, &dep)
-                && op_body_reads_op_requirement_slot(kb, callee_op, op_index)
             {
                 kb.unsuppliable_requirements.truncate(parked_mark);
                 let dep_text = render_requires_entry(kb, &dep);
@@ -26036,7 +25724,6 @@ fn build_op_scoped_dicts(
                         // requirement to a declaration that has none.
                         callee_sort: callee_op,
                         refusal: Box::new(refusal),
-                        slot: SlotToRead::Op(op_index),
                     });
                 }
             }
@@ -26107,6 +25794,521 @@ fn dep_has_searchable_pin(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> bool {
     })
 }
 
+/// WI-20260921-3G1YT — ROUTE 4: A SPEC-TYPED VALUE IN SCOPE CARRIES THAT SPEC'S
+/// `requires` CHAIN, by the spec's own contract. `total(c: FiniteCollection) = size(c)`
+/// OWES `Iterable[…]` and HOLDS it, because `c`'s type says so.
+///
+/// THE FOURTH ROUTE, and the one that lets both body walks go. The other three are
+/// route 1 (the caller's own `requires`, which [`build_dep_projection`]'s Strategies 1/2
+/// answer by FORWARDING a slot) and the two RULE-BODY rescues
+/// ([`spec_has_value_directed_route`], [`dep_has_searchable_pin`]). This one is neither a
+/// forward nor a rescue: it is a DISCHARGE. No dictionary is built here and none is
+/// needed — eval reaches the provider from the value's own carrier — but the obligation
+/// is MET, and met for a reason readable from the signature rather than excused by a walk
+/// of the callee's body.
+///
+/// IT IS STRATEGY 2 WITH A DIFFERENT SLOT SOURCE, and deliberately so: Strategy 2 walks
+/// `direct_requires_chain` of each spec the caller's frame holds a DICTIONARY for; this
+/// walks the same chain for each spec the caller holds a VALUE of. Same composition
+/// ([`build_child_subst_map`] + [`substitute_in_spec`]), same cover predicate
+/// ([`entries_cover`]), same σ. So "binding-aware" is not a property re-implemented here —
+/// it is the one the forwarding strategies already enforce, asked of a second source.
+///
+/// BINDING-AWARENESS IS LOAD-BEARING AND WAS MEASURED TO BE. A first probe matched on the
+/// spec SORT alone (`does anything in scope require an Ord at all?`), and two rows are
+/// exactly that looseness biting: `wi456 …an_undeclared_ordering_is_refused_at_load` and
+/// `…the_refusal_names_the_repair_and_not_a_witness_choice` hold an `Ord[T = X]` while the
+/// dep wants `Ord[T = Y]`, and the sort-only cover wrongly silenced both refusals. With
+/// [`entries_cover`] they stay refused.
+///
+/// ONE LEVEL, NOT TRANSITIVE, for Strategy 2's own reason: a value's dictionary bundles
+/// its spec's DIRECT sub-requires, and a dep reachable only past a second level is not
+/// something the carrier's provision necessarily carries. A deeper dep falls through and
+/// is refused, which is a refusal WITHHELD from nothing — it is the conservative half.
+fn scope_contract_covers_dep(
+    kb: &mut KnowledgeBase,
+    held: &[HeldSpecView],
+    dep: &RequiresEntry,
+    disambig: Option<&SigmaCtx>,
+) -> bool {
+    // The demand, decoded and carrier-normalized ONCE: it does not vary with the holder,
+    // and a dep whose spec does not decode is not a cover question for any of them.
+    let Some((_, demand)) = unwrap_spec_view_value(kb, &dep.spec) else {
+        return false;
+    };
+    let demand = carrier_normalized_bindings(kb, dep.required_sort, demand);
+    let demand = drop_unpinned_demand_keys(kb, demand, disambig);
+    let spec_qn = kb.qualified_name_of(dep.required_sort).to_string();
+    for holder in held {
+        // The same same-sort pre-filter Strategies 2 and 2b apply, and for the same
+        // reason: composition never changes `required_sort`, so a chain with no
+        // same-sort entry must cost a symbol compare rather than a `HashMap` plus a
+        // substitution walk. This runs per dep, per call, on the load-time path.
+        //
+        // IT GATES THE CHAIN LEG ONLY. The PROVISION leg below has its own source and its
+        // own emptiness test, and skipping the holder here would skip that too — which is
+        // the defect this shape had at first: `List`'s chain is EMPTY, so every `List`
+        // holder was dropped before the leg that reads its provisions ran, and `wi599` /
+        // `wi508` stayed refused with the evidence one line away.
+        let chain = direct_requires_chain(kb, holder.spec_sort);
+        let chain_may_cover = chain
+            .iter()
+            .any(|e| same_sort_canonical(kb, e.required_sort, dep.required_sort));
+        let map = held_view_subst_map(kb, holder.spec_sort, &holder.entry.spec);
+        for entry in chain.iter().filter(|_| chain_may_cover) {
+            if !same_sort_canonical(kb, entry.required_sort, dep.required_sort) {
+                continue;
+            }
+            let composed = RequiresEntry {
+                required_sort: entry.required_sort,
+                spec: substitute_in_spec(kb, &entry.spec, &map),
+                supply: entry.supply,
+            };
+            // BLOCKER 2's normalization is why this is not a plain [`entries_cover`]
+            // call; see [`carrier_normalized_bindings`]. The rest IS that function —
+            // its `same_sort_canonical` is already settled by the filter above, and
+            // [`supply_covers_demanded_keys`] is its key walk, asked here with the two
+            // sides normalized.
+            if !held_contract_is_obtainable(kb, holder.spec_sort, &composed, disambig) {
+                continue;
+            }
+            let Some((_, supply)) = unwrap_spec_view_value(kb, &composed.spec) else {
+                continue;
+            };
+            let supply = carrier_normalized_bindings(kb, dep.required_sort, supply);
+            if supply_covers_demanded_keys(
+                kb,
+                disambig,
+                &spec_qn,
+                Supply(&supply),
+                Demand(&demand),
+            ) {
+                return true;
+            }
+        }
+        // THE PROVISION LEG — THE HOLDER'S CARRIER ANSWERS THE DEP, decided by a STATIC
+        // RESOLUTION and by nothing else.
+        //
+        // The chain leg above is route 4 proper: the holder's TYPE says it holds the
+        // contract, because the spec it is typed at requires one. This leg is for the
+        // holder whose own chain is empty and whose evidence is its PROVISION — a
+        // `List` holds an `Iterable` because `List provides Stream provides Iterable`,
+        // not because `List` requires anything.
+        //
+        // THE GOAL IS THE DEP'S OWN, WITH ONLY THE CARRIER SWAPPED, and that is the whole
+        // trick. σ left the dep's carrier at a parameter the call cannot pin
+        // (`Iterable[C = FilteredStream.Source, …]`, `Source` coming from the RETURN
+        // type); the holder's type says what that carrier actually is. Every OTHER key the
+        // dep names is kept verbatim, so this asks the callee's own question at the one
+        // element the caller can answer.
+        //
+        // KEEPING THE OTHER KEYS IS NOT A DETAIL — MEASURED. A first cut built the goal
+        // from the carrier ALONE (`Iterable[C = List[T = Int64]]`) and got `NoMatch`,
+        // which was read as "the static provider search is incomplete" and nearly became a
+        // ticket's stated prerequisite. It was an artifact: a `requires` clause is
+        // NORMALIZED by the loader to name every parameter, so a candidate binding
+        // `Element`/`E` has no key to match against in a goal that names neither. With the
+        // dep's full key set the same carrier RESOLVES.
+        //
+        // AND A RESOLUTION IS WHAT MAKES IT SOUND, where "can a value name a provider"
+        // is not. [`ResolutionResult`] separates the three answers a discharge must keep
+        // apart: `Resolved` is evidence, `Ambiguous` is a TIE that must stay refused, and
+        // `NoMatch` is nothing. An earlier cut asked value-direction
+        // ([`spec_has_value_directed_route`]) instead — "a value CAN name a provider",
+        // which is true when there are TWO of them or when a conditional provision's
+        // condition fails — and silenced seven refusals across `wi855`, `wi1102`,
+        // `wi999` and `wi_ckd4j`, ties among them.
+        //
+        // AN EMPTY SCOPE, deliberately: a contract the caller's own frame could forward is
+        // route 1's business and was taken by Strategies 1/2 long before this.
+        let Some(carrier_param) = spec_carrier_param_or_sole(kb, dep.required_sort) else {
+            continue;
+        };
+        // ONLY WHERE THE CALL PINS NOTHING FOR THE CARRIER, and this gate is the whole
+        // soundness of the swap. `demand` is what SURVIVED
+        // [`drop_unpinned_demand_keys`], so a carrier key still in it is one the CALL
+        // NAMED — and replacing a named carrier with whatever happens to be in scope
+        // discharges a dep about a DIFFERENT carrier.
+        //
+        // MEASURED, on a fixture this review wrote: `Holder.probe(mystery())` needs
+        // `Iterable[C = Mystery]`, which nothing provides. With an UNRELATED
+        // `xs: List[T = Int64]` parameter in scope the swap resolved
+        // `Iterable[C = List[T = Int64], …]` and the program LOADED; with that parameter
+        // removed — the same call, the same missing provision — it was correctly refused.
+        // A value in scope that the call never mentions must not decide the call.
+        // A PIN THAT NAMES THE HOLDER'S OWN SORT IS NOT A SUBSTITUTION BUT A REFINEMENT,
+        // and that is the other half. `size(x)` at an `x: MutableStack` pins
+        // `C = MutableStack` — the holder's own sort, written BARE because the stdlib
+        // declares `operation new() -> MutableStack` — while the provision binds
+        // `MutableStack[T]`. Swapping there replaces a bare spelling with the applied one
+        // and names the same carrier; refusing it costs the two `wi508` rows and protects
+        // nothing.
+        if let Some(pinned) = binding_for_param(kb, &demand, carrier_param, BindingKeyMatch::Label)
+        {
+            let names_holder = unwrap_spec_view(kb, *pinned)
+                .is_some_and(|(base, _)| same_sort_canonical(kb, base, holder.spec_sort));
+            if !names_holder {
+                continue;
+            }
+        }
+        // A BARE PARAMETRIC CARRIER IS EXPANDED FIRST, through the one owner of that
+        // rule ([`expand_foreign_sort_application`], WI-20260911-RS2G4). The stdlib writes
+        // `operation new() -> MutableStack` bare, meaning the sort at its own parameters,
+        // while its provision binds `Iterable[C = MutableStack[T], …]` APPLIED — so a goal
+        // carrying the bare spelling matches nothing. MEASURED: without this, `size(x)`
+        // after `let x = MutableStack.new()` is refused although the program answers 1,
+        // and it is the two `wi508` rows that say so.
+        let holder_ty = expand_foreign_sort_application(kb, &holder.entry.spec, None)
+            .unwrap_or_else(|| holder.entry.spec.clone());
+        let Value::Term { id: carrier, .. } = holder_ty else {
+            continue;
+        };
+        let Some(mut goal) = goal_from_requires_entry(kb, dep) else {
+            continue;
+        };
+        let Some(i) =
+            binding_index_for_param(kb, &goal.bindings, carrier_param, BindingKeyMatch::Label)
+        else {
+            continue;
+        };
+        goal.bindings[i].1 = carrier;
+        let empty = DictChain::empty();
+        let scope = ResolutionScope {
+            available_requires: &empty,
+            sigma: None,
+            selected: &[],
+            sub_goal_requires: &[],
+        };
+        if matches!(
+            resolve_with_rung(kb, &goal, &scope, DefaultRung::Consult),
+            ResolutionResult::Resolved(_)
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+/// WI-20260921-3G1YT — DROP THE DEMAND KEYS THIS CALL PINS NOTHING FOR, so route 4 is
+/// judged on what the demand actually SAYS.
+///
+/// WHY ROUTE 4 NEEDS THIS AND THE FORWARDING STRATEGIES DO NOT. [`sigma_pair_precise`] —
+/// the σ-mode verdict [`supply_covers_demanded_keys`] applies — answers `false` for a
+/// MIXED pair (one side a type param, the other concrete), and that is exactly right
+/// where it was written: Strategies 1/2 FORWARD a dictionary, and forwarding one built
+/// for `A` at a call that means `Pebble` is a wrong runtime dispatch. Route 4 forwards
+/// NOTHING. It asks whether evidence EXISTS, and a demand element σ pins nothing for is
+/// the call saying nothing about it — while the supply, composed from the argument's own
+/// type, says what it is.
+///
+/// MEASURED on `xs.map(f).map(g)`: the dep is
+/// `Iterable[C = MappedStream.Source, Element = MappedStream.Src, E = MappedStream.ES]`,
+/// every element σ-unconstrained, and the receiver's type composes the contract to
+/// `Iterable[C = List[T = Row], Element = Row, E = {}]` — a goal `List provides Iterable`
+/// answers. Under the unmodified σ walk all three pairs are MIXED and the cover fails, so
+/// the whole `x13yv` chained-hop family and the capability matrix's chained rows stay
+/// refused although the evidence is right there in the type.
+///
+/// A RIGID IS NOT DROPPED, and that distinction is the whole safety of this. The two
+/// outcomes are [`sigma_class_terminal`]'s own second component, the same one WI-945's
+/// `unconstrained_elements` reads: `false` means the chase ended at an UNBOUND GLOBAL —
+/// nothing at this call determines it — and `true` means it ended at a RIGID, an
+/// enclosing-scope parameter that IS determined, just abstract. `SortedSet`'s
+/// `WeakOrd[T = <the caller's own rigid>]` is the second, stays in the demand, and is
+/// refused.
+///
+/// `None` σ (the diagnostic path) drops nothing: the coarse mode already treats a
+/// wildcard on either side as unconstrained, so there is nothing for this to add.
+fn drop_unpinned_demand_keys(
+    kb: &KnowledgeBase,
+    demand: SmallVec<[(Symbol, TermId); 2]>,
+    sigma: Option<&SigmaCtx>,
+) -> SmallVec<[(Symbol, TermId); 2]> {
+    let Some(ctx) = sigma else {
+        return demand;
+    };
+    demand
+        .into_iter()
+        .filter(|(_, v)| !matches!(sigma_class_terminal(kb, ctx, *v), Some((_, false))))
+        .collect()
+}
+
+/// WI-20260921-3G1YT — BLOCKER 2: **A SPEC VIEW IN A CARRIER POSITION DENOTES ITS OWN
+/// CARRIER**, and route 4's cover must read it that way or it never fires on the very
+/// shape the ticket is about.
+///
+/// THE MISMATCH, measured on `total(c: FiniteCollection) -> Int64 = size(c)`. `size`
+/// receives on `FiniteCollection`'s carrier parameter (`size(c: C)`), so the call's σ
+/// binds `C` to the ARGUMENT'S TYPE — which here is the spec VIEW
+/// `FiniteCollection[C = XC, …]`, `XC` being `ExprCarried[value = c, member = C]`. The dep
+/// is therefore `Iterable[C = FiniteCollection[C = XC, …], …]`. The contract `c`'s own type
+/// carries, instantiated at `c`'s bindings, is `Iterable[C = XC, …]`. The two name one
+/// obligation and do not match, so a binding-aware cover fails and every `n01py` /
+/// `x13yv` / `wi599` row that route 4 exists to discharge stays refused.
+///
+/// THEY ARE ONE BECAUSE A VALUE OF TYPE `S[C = κ, …]` IS A VALUE OF CARRIER `κ` — the view
+/// says "some carrier that provides `S`", and `κ` is the name it gives that carrier. So at
+/// the demanded spec's OWN carrier parameter a view is replaced by its carrier binding,
+/// once, before the key walk. NOWHERE ELSE: a non-carrier element is an ordinary type and
+/// a view written there means what it says, which is why this reads
+/// [`spec_carrier_param_or_sole`] — the WI-1102 owner of "WHICH type parameter of a spec
+/// is its carrier" — rather than unwrapping every binding it can.
+///
+/// APPLIED TO BOTH SIDES, because which side wears the view is decided by where the σ
+/// came from, not by which role the entry plays: normalizing only the demand would leave
+/// the mirror shape failing for the reason this function exists to remove.
+///
+/// NOT A FIX TO THE ADMISSION, and the difference is worth stating. Binding the callee's
+/// carrier parameter to the view rather than to the value's carrier is σ's own choice at
+/// the call, made in `check_apply`; changing it would move every downstream reader of that
+/// binding. This normalizes the COMPARISON, which is the only place the indirection is in
+/// the way, and leaves the representation alone.
+fn carrier_normalized_bindings(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    bindings: SmallVec<[(Symbol, TermId); 2]>,
+) -> SmallVec<[(Symbol, TermId); 2]> {
+    let Some(carrier_param) = spec_carrier_param_or_sole(kb, spec_sort) else {
+        return bindings;
+    };
+    let Some(i) = binding_index_for_param(kb, &bindings, carrier_param, BindingKeyMatch::Label)
+    else {
+        return bindings;
+    };
+    let Some(inner) = view_carrier_binding(kb, bindings[i].1) else {
+        return bindings;
+    };
+    let mut out = bindings;
+    out[i].1 = inner;
+    out
+}
+
+/// WI-20260921-3G1YT — the carrier a spec-view TERM denotes: `S[C = κ, …]` ↦ `κ`, where
+/// `C` is `S`'s own carrier parameter. `None` for anything that is not such a view —
+/// a bare sort reference, an ordinary applied type, a variable — each of which already
+/// denotes its carrier directly. See [`carrier_normalized_bindings`].
+fn view_carrier_binding(kb: &KnowledgeBase, tid: TermId) -> Option<TermId> {
+    // BOTH SPELLINGS A CARRIER POSITION CAN WEAR, and reading only one is what made the
+    // first cut of this a no-op: [`unwrap_spec_view`] decodes the `SortView(base, …)` a
+    // `requires` entry carries and answers "no bindings" for the PLAIN applied type
+    // `S[C = κ, …]`, which is what a call-site σ actually binds a carrier parameter to.
+    let (base, bindings) = match kb.get_term(tid) {
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
+            let qn = kb.qualified_name_of(*functor);
+            if qn == "anthill.reflect.SortView" || qn.ends_with(".SortView") {
+                let base = pos_args.first().copied().and_then(|t| match kb.get_term(t) {
+                    Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
+                        Some(*functor)
+                    }
+                    _ => None,
+                })?;
+                (base, named_args.clone())
+            } else {
+                (*functor, named_args.clone())
+            }
+        }
+        _ => return None,
+    };
+    if bindings.is_empty() {
+        return None;
+    }
+    // THE SPEC GATE IS NOT OPTIONAL HERE, and it is the same question
+    // [`held_spec_views`] asks, through the same owner. Without it this unwraps an
+    // ORDINARY CARRIER TYPE: `List`'s `cons(head: T, tail: List[T])` receives on `T`, so
+    // [`spec_carrier_param`] answers `T` for `List`, and `List[T = Int64]` would
+    // "denote" `Int64`. A type nothing provides is not a view of anything — it IS the
+    // carrier, and it denotes itself.
+    if !sort_is_a_provided_spec(kb, base) {
+        return None;
+    }
+    let carrier_param = spec_carrier_param_or_sole(kb, base)?;
+    binding_for_param(kb, &bindings, carrier_param, BindingKeyMatch::Label).copied()
+}
+
+/// WI-20260921-3G1YT — **CAN THE HELD CONTRACT ACTUALLY BE OBTAINED?** Route 4's whole
+/// soundness, and the question `entries_cover` cannot ask: the cover says the contract
+/// MATCHES the dep, this says the contract EXISTS.
+///
+/// TWO WAYS IT CAN, and they are routes 2 and 3 asked of the CONTRACT rather than of the
+/// dep — which is what makes this a bound on route 4 rather than a fourth rule:
+///
+///  * **THE HOLDER IS A SPEC** ([`sort_is_a_provided_spec`]). Then the value's RUNTIME
+///    CARRIER will have a provision of it, and a provision's dictionary contains that
+///    spec's whole `requires` chain: hold a `c: FiniteCollection`, at eval `c` is a
+///    `List`, `List provides FiniteCollection[…]`, and building THAT row already resolved
+///    its `Iterable[…]` slot. The carrier is abstract and a provision is what will name
+///    it, so the chain rides along.
+///  * **THE CONTRACT ITSELF RESOLVES.** Then it is an ordinary goal a provider fact
+///    answers, whoever holds it. `xs.map(f).map(g)` reaches `MappedStream.map`, whose
+///    sort requires `Iterable[C = Source, …]`; nothing at that call pins `Source`, but the
+///    RECEIVER's type does — the contract composes to `Iterable[C = List[T = Row], …]`,
+///    which `List provides Iterable` answers. Route 4 is supplying the binding σ lost,
+///    not inventing evidence.
+///
+/// **RESOLVED, NOT MERELY GROUND**, and the difference is a silent discharge. A first cut
+/// asked [`dep_has_searchable_pin`] — "does some element name a concrete type?" — which is
+/// the right question about a DEP (can the resolver even start?) and the wrong one about a
+/// CONTRACT (does the answer exist?). MEASURED: `wi999.req`'s `Poly requires Ring[T = R]`
+/// at `poly(c: 1)` composes to `Ring[T = Int64]`, perfectly ground and answered by
+/// NOTHING — nothing provides `Ring` in that program — so the ground test discharges an
+/// obligation no supply can meet. The resolution is the same one Strategy 3 runs
+/// ([`resolve_with_rung`]), against an EMPTY scope: a contract the caller's own frame
+/// could forward is route 1's business and was taken before this.
+///
+/// IT RUNS RARELY. Only for a dep that already failed to project, and only against a
+/// holder whose chain names that dep's spec — the same-sort pre-filter above.
+///
+/// AND `SortedSet` IS NEITHER, which is the case that makes both clauses load-bearing.
+/// It declares `requires O: WeakOrd[T]`, nothing provides it — it IS the carrier, so
+/// there is no provision row to hold the slot — and at
+/// `insertA[T, O](s: SortedSet[T = T, O = O], x: T) = SortedSet.insert(s, x)` the contract
+/// composes to `WeakOrd[T = <the caller's own rigid>]`, which no fact can match. The
+/// dictionary is a STATIC INPUT the caller owes. Before WI-456 that program loaded clean
+/// and died `Internal(… __req_weakord not bound … frame binds [])`; without this gate
+/// route 4 re-admits it, and `wi456 …an_undeclared_ordering_is_refused_at_load` plus
+/// `…the_refusal_names_the_repair_and_not_a_witness_choice` are the two rows that say so.
+fn held_contract_is_obtainable(
+    kb: &mut KnowledgeBase,
+    holder_sort: Symbol,
+    composed: &RequiresEntry,
+    disambig: Option<&SigmaCtx>,
+) -> bool {
+    if sort_is_a_provided_spec(kb, holder_sort) {
+        return true;
+    }
+    let Some(goal) = goal_from_requires_entry(kb, composed) else {
+        return false;
+    };
+    let empty = DictChain::empty();
+    let scope = ResolutionScope {
+        available_requires: &empty,
+        sigma: disambig,
+        selected: &[],
+        sub_goal_requires: &[],
+    };
+    matches!(
+        resolve_with_rung(kb, &goal, &scope, DefaultRung::Consult),
+        ResolutionResult::Resolved(_)
+    )
+}
+
+/// WI-20260921-3G1YT — IS `s` A SPEC, in the only sense route 4 needs: something a
+/// CARRIER provides, as opposed to something that IS a carrier.
+///
+/// ONE OWNER, because two readers ask it and a disagreement between them is a wrong
+/// verdict rather than a missing one — [`held_contract_is_obtainable`] asks it of the
+/// sort a value is typed at, and [`view_carrier_binding`] of a sort found in a carrier
+/// position. Each states at its own site what goes wrong when the answer is `true` too
+/// often, and the two failures are different: an unsound DISCHARGE there, an unsound
+/// unwrap here.
+///
+/// Both legs are cheap and the first is a pre-filter for the second: a sort with no type
+/// parameter has no carrier to dispatch on, so nothing could ever provide it
+/// ([`clause_is_dispatchable`], WI-20260921-28TAT).
+fn sort_is_a_provided_spec(kb: &KnowledgeBase, s: Symbol) -> bool {
+    clause_is_dispatchable(kb, s) && spec_has_any_providers(kb, s)
+}
+
+/// WI-20260921-3G1YT — the composition map for a HELD view: the spec's own type
+/// parameters ↦ what this value's type binds them to, so a chain entry written in the
+/// spec's vocabulary (`Iterable[C = FiniteCollection.C, …]`) is rewritten into the
+/// value's (`Iterable[C = XC, …]`).
+///
+/// NOT [`build_child_subst_map`], and the difference is the whole reason this exists.
+/// That one decodes through [`unwrap_spec_view_value`], which recognizes the
+/// `SortView(base, …)` term a `requires` entry carries and answers "NO BINDINGS" for the
+/// PLAIN applied type `S[C = κ, …]`. A value's TYPE wears the plain spelling — MEASURED,
+/// `c: FiniteCollection` arrives as `Fn{FiniteCollection, C: …, Element: …, E: …}` — so
+/// composing through that one produced an EMPTY map, left every binding at the spec's own
+/// formal (`Iterable[C = FiniteCollection.C]`), and no cover could ever match. Route 4
+/// fired on nothing at all, silently, which is exactly the shape of failure a discharge
+/// route must not have.
+///
+/// Read over [`TermView`] so the three carriers (`Value::Term` / `Entity` / `Node`) decode
+/// identically; a binding with no `TermId` is dropped, as every consumer of this map
+/// threads `TermId`s. Non-type-param keys (the auto-bound `iterator`, `find`, …) are
+/// harmless: they key on `<spec>.<name>`, and a chain entry's own op bindings name the
+/// REQUIRED spec's operations, which no key here can collide with.
+fn held_view_subst_map(kb: &KnowledgeBase, base: Symbol, ty: &Value) -> HashMap<Symbol, TermId> {
+    let mut map = HashMap::new();
+    let base_qn = kb.qualified_name_of(base).to_string();
+    for key in ty.named_keys(kb) {
+        let Some(v) = ty.named_arg(kb, key).and_then(|it| it.as_term_id()) else {
+            continue;
+        };
+        let qn = format!("{base_qn}.{}", kb.local_name_of(key));
+        if let Some(param) = kb.try_resolve_symbol(&qn) {
+            map.insert(param, v);
+        }
+    }
+    map
+}
+
+/// WI-20260921-3G1YT — one spec VIEW the caller holds a value of, as
+/// [`scope_contract_covers_dep`]'s slot source. `entry` is the view itself worn as a
+/// `RequiresEntry` so [`build_child_subst_map`] — which reads a spec view's bindings and
+/// nothing else — composes this exactly as it composes a real chain slot;
+/// `supply` is [`SupplySource::Requires`] because nothing downstream of the composition
+/// reads it (the cover walk compares `required_sort` and bindings), and inventing a
+/// third variant for "held by a value" would add a case to every `match` on it.
+#[derive(Clone)]
+pub(crate) struct HeldSpecView {
+    spec_sort: Symbol,
+    entry: RequiresEntry,
+}
+
+/// WI-20260921-3G1YT — the spec VIEWS every value in scope is typed at, for route 4.
+///
+/// EVERY BOUND TYPE, not only the parameters. `env.bound_types()` is both of the
+/// environment's maps, so a `let` bound to a spec-typed result carries its contract the
+/// same way a parameter does — the evidence is the VALUE's type, and where the value came
+/// from does not change what its type says.
+///
+/// AND THIS CALL'S OWN ARGUMENTS, which the environment does not hold and which are the
+/// case that matters most: a RECEIVER is usually a sub-EXPRESSION, not a bound name.
+/// MEASURED on `xs.map(f).map(g)` — the receiver of the second hop has type
+/// `MappedStream[Source = List[T = Row], …]`, nothing in the environment mentions it, and
+/// `MappedStream.map`'s `requires Iterable[C = Source, …]` is exactly what that type
+/// discharges. Without this source the whole `x13yv` chained-hop family and the
+/// capability matrix's chained rows stay refused.
+///
+/// WHETHER A HELD CONTRACT IS OBTAINABLE is NOT asked here — it needs the contract, which
+/// only exists once the chain entry is composed at this value's bindings. See
+/// [`held_contract_is_obtainable`]. This function's own filter is the cheap one:
+/// [`clause_is_dispatchable`], WI-20260921-28TAT's "a sort with no type parameter has no
+/// carrier to dispatch on".
+fn held_spec_views(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    arg_types: &[Value],
+) -> Vec<HeldSpecView> {
+    let views: Vec<(Symbol, Value)> = env
+        .bound_types()
+        .chain(arg_types.iter())
+        .filter_map(|t| sort_functor_of_view(kb, t).map(|s| (s, t.clone())))
+        .collect();
+    let mut out: Vec<HeldSpecView> = Vec::new();
+    for (spec_sort, ty) in views {
+        if !clause_is_dispatchable(kb, spec_sort) {
+            continue;
+        }
+
+        out.push(HeldSpecView {
+            spec_sort,
+            entry: RequiresEntry {
+                required_sort: spec_sort,
+                spec: ty,
+                supply: SupplySource::Required,
+            },
+        });
+    }
+    out
+}
+
 /// WI-20260921-3G1YT — CAN A RUNTIME VALUE EVER DIRECT DISPATCH TO `spec_sort`? True
 /// when at least one of its operations takes a receiver eval could classify a carrier
 /// from. FALSE for a spec whose every operation is nullary in its own carrier — and that
@@ -26130,9 +26332,11 @@ fn dep_has_searchable_pin(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> bool {
 ///
 /// NOT A VERDICT ON ITS OWN — that was this predicate's first, refuted use. Raising
 /// wherever it is false took 6 more rows (`test.xsvcs.fwd.TT`, `wi1102.witnessrow.Lawful`,
-/// `nx4fd_disc.Marked`), whose callees' bodies never read the evidence and which LOAD AND
-/// ANSWER. "No route" makes an unfilled slot UNRESCUABLE, not read; whether it is read is
-/// [`op_body_reads_op_requirement_slot`]'s question and is decided where it always was.
+/// `nx4fd_disc.Marked`), whose callees declare a clause they never use. "No route" makes
+/// an unfilled slot UNRESCUABLE, which is one conjunct of a rule-body verdict and never
+/// the whole of one. Those three fixtures are now REPAIRED rather than excused — the
+/// clause a body does not use is deleted (WI-20260921-3G1YT), which is why the walk that
+/// used to stand beside this predicate is gone.
 fn spec_has_value_directed_route(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
     let ops = super::op_requirements::operations_of_sort(kb, spec_sort);
     if ops.is_empty() {
@@ -26307,13 +26511,13 @@ pub(crate) struct CallerRigidCarrier {
 /// dies `EvalError::Internal` — not a `Raised`, so no handler sees it, and a debug build
 /// ABORTS through `bridge_op_to_eval`'s `debug_assert`.
 ///
-/// STILL PARKED, NOT RAISED, because the verdict this answers is only half of one.
-/// "Nothing can fill the slot" and "the callee needs it filled" are different questions
-/// and only the callee's BODY answers the second — [`build_op_scoped_dicts`]' own header
-/// records the measurement, 29 stdlib bodies that declare a chain and never read it. So
-/// the refusal is BUILT here, where the σ that proves the carrier is a caller rigid is
-/// alive, and DECIDED in [`report_unsuppliable_requirements`] against
-/// [`op_body_reads_op_requirement_slot`], once every body is typed.
+/// STILL PARKED, NOT RAISED, and since WI-20260921-3G1YT for ONE reason rather than two.
+/// The refusal is BUILT here, where the σ that proves the carrier is a caller rigid is
+/// alive, and REPORTED in [`report_unsuppliable_requirements`] once every body is typed —
+/// an operation is routinely called before its own body is classified, so raising at the
+/// call would answer from the sort-iteration order. What it is no longer DECIDED against
+/// is the callee's body: that walk, and the 29-stdlib-bodies measurement it rested on,
+/// are deleted. A body that declares a chain and never reads it is a clause to DELETE.
 ///
 /// THE CENSUS THAT CHOSE THIS GATE over "ask whether the body reads it and refuse every
 /// unfilled slot that does": instrumented at this site, a full workspace run yields 57
