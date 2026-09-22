@@ -3,9 +3,9 @@
 - id: WI-20260919-891QP-a-provider-s-or-witness-s-own
 - created: 2026-09-19T13:25:24Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-19T13:25:24Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-22T14:45:23Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -39,4 +39,18 @@ ACCEPTANCE: both fixtures DRIVEN to `Box(V: Boom)` / `Crate(W: Boom)`, through o
 ### 2026-09-19T14:54:42Z — feedback — user
 
 DIRECTION DECIDED (user, 2026-09-19): proposal 065 (docs/proposals/065-type-value-requirement.md), neither (i) nor (ii) as written. A rigid read as a value requires 'requires TypeValue[T = B]' in scope; TypeValue (anthill.reflect, member type_value, 055 §8's spelling) is DERIVED for every sort, CONDITIONAL for a parametric one. This ticket closes through the INSTANCE context: Box's derived 'provides TypeValue[T = Box[V = V]] requires TypeValue[T = V]' serves Box.V, filled by the dictionary builder from Box[V = Boom]. Projection paths are not needed for value reads (still the tool for the bridge's unify_types). Now step 4 of 065's order of work: it waits on the census, conditional derivation (with CKD4J) and the load rule + lowering. The fixture here uses TypeTermB; under 065 the provider's member needs no hand-written clause once derivation lands.
+
+### 2026-09-22T14:45:11Z — feedback — user
+
+CLOSED BY WI-20260919-N31XX WITH NO SEPARATE WORK (2026-09-22, on the user's acceptance of N31XX's five changed verdicts). Proposal 065 §4 predicted this and §7 step 4 now records it.
+
+WHAT THIS TICKET ASKED FOR: a member entered through a requirement slot could not read its PROVIDER'S or WITNESS'S own type parameters. 'Box provides TypeTermB[T = Box[V = V]]' with 'valueOfB() -> Type = Box[V = V]' reading Box's own V; likewise CrateTT's E through the DESC_INSTANCES witness idiom. R541X had already turned the silent wrong answers (Box(V: V) / Crate(W: E)) into the located fault EvalError::UnboundTypeParam.
+
+WHY IT NEEDED NO FIX OF ITS OWN. This ticket's framing was that a Dictionary is (impl, subs) and carries no type BINDINGS, so the selected member's frame could never learn its own sort's parameters -- and it asked for a design decision about giving the dictionary those bindings. N31XX's lowering dissolved the question instead of answering it: once a value read of a rigid IS a dispatch through 'requires TypeValue[T = V]', the answer no longer NEEDS a binding, because the evidence that selected the provision IS the type. The dictionary still carries no type bindings. Nothing was added to it.
+
+MEASURED, not predicted: wi_r541x_body_read_of_type_param_test's a_providers_own_param_answers_through_its_instance now answers Box(V: Boom) and a_witnesss_own_param_answers_through_its_instance answers Crate(W: Boom), both where they asserted UnboundTypeParam. Both rows carry their back-out at the site -- restore lower_rigid_read_to_slot's sort-half gate ('slot < chain.sort_len()' returns None) and both return to the fault this ticket described. Full workspace green at close: Rust 7287/0, scaland 614 total/0.
+
+ONE THING THIS DOES NOT CLOSE, recorded so it is not mistaken for dead code: R541X's (D) run-time fault is still LIVE and these two rows are what drive it in a KB built WITHOUT the typer, over which no load rule has passed. It is a backstop now, not a diagnostic an author meets. kernel-language.md says so at the paragraph.
+
+WI-20260919-H20YY, which depended on this, is unblocked.
 

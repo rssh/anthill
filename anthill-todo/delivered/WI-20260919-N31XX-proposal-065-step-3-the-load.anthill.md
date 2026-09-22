@@ -3,9 +3,9 @@
 - id: WI-20260919-N31XX-proposal-065-step-3-the-load
 - created: 2026-09-19T15:19:37Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-19T15:19:37Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-22T14:44:51Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -74,4 +74,20 @@ THE ARGUMENT AGAINST is that the acceptance says what it says, and three program
 NOTHING ELSE IS OUTSTANDING: the load rule (both the READ and the FORWARD half), the lowering for OP-level and SORT-level clauses, the census migration across five files, the §3 subset rows, kernel-language.md's R541X paragraph, and 055/065's statuses are all in. 891QP is closed by this and should be marked so once this is.
 
 SPUN OFF, neither blocking: WI-20260920-XSVCS (the general requirement-propagation gap this narrowly closed only for TypeValue) and WI-20260921-28TAT (remove the frame type-argument channel, now down to one reader).
+
+### 2026-09-22T14:44:25Z — feedback — user
+
+ACCEPTED BY THE USER (2026-09-22), and with it the one acceptance item that was not met as written. 'EVERY MIGRATED ROW STILL ANSWERING WHAT IT ANSWERED BEFORE' IS AMENDED: five rows changed verdict and all five stand, on the reading that 065's own claim is to make the unreachable cases UNWRITABLE rather than merely loud.
+
+THE FIVE, RE-READ ONE BY ONE BEFORE ASKING, because they are not alike and the ticket's earlier note flattened them into 'three refusals and two flips':
+
+ * TWO were LOAD-then-RUN-TIME-FAULT and are now LOAD refusals -- wi_r541x's an_ungrounded_receiver_is_now_refused_at_load (unbracketed SHold.f(), nothing pins E) and two_clauses_over_one_spec_are_refused_at_load (twoReq[P, Q], nothing picks which clause). Neither LOST anything: the same program is still rejected, now at load, naming the parameter and the repair instead of dying mid-body. These are strictly better verdicts, not accepted losses.
+ * ONE genuinely lost an answer -- wi_rs2g4's a_bracket_value_with_an_unwritten_slot_is_refused_where_it_is_read, which ANSWERED Box(T: List(T: ?var)). That answer carried a FREE VARIABLE: a Type the call only partially determined. It is the only row of the five where a program that produced a value no longer does, and it is the one the acceptance amendment actually costs.
+ * TWO GAINED answers -- 891QP's (C) rows, Box(V: Boom) and Crate(W: Boom), where they were EvalError::UnboundTypeParam.
+
+So the net is: two programs rejected earlier and better, one dubious answer lost, two real answers gained. No row lost a capability that was ever sound.
+
+RE-MEASURED AT THE MOMENT OF CLOSING, not quoted from the 09-21 note: Rust 7287 passed / 0 failed (rustland/scripts/test.sh, full workspace). Scaland 614 total / 0 failed (1 + 35 + 578 across root, anthillScalaGen/anthillSmtGen and core) -- and the 614 is worth a word, because a first run captured with 'tail -40' showed only the LAST subproject's 578 and read as a 36-test shortfall against the recorded 614. It was the capture, not the suite; CLAUDE.md's sbt-2 stale-server warning is about a real hazard and this was not it. The full log carries all three tallies.
+
+ALSO FIXED IN THE SAME PASS -- proposal 065's section 7 had drifted from its own status header in three places, all found while reading for this decision: step 3 still said 'THE LOWERING IS NOT' built, step 4 still read as pending work when the header says 891QP is closed by step 3, and the 'leg is deliberately NARROW' paragraph still said a plain-spec forward 'still loads' when WI-20260920-XSVCS has since made it refuse by the other arm. The status header also gained an explicit WHAT REMAINS: section 2's structural FORMERS, step 5 (H20YY), and open questions 3 and 4.
 
