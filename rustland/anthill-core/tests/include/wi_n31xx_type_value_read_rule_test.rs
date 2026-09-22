@@ -888,3 +888,262 @@ end
         "the control: a genuine value read in the same file, under its clause"
     );
 }
+
+// ── PROPOSAL 065 OPEN QUESTION 3 — A FORMER CARRIER ──────────────────────────────────
+
+/// A REQUIREMENT AT A STRUCTURAL FORMER IS REFUSED AT LOAD, where it used to load and
+/// PANIC — proposal 065 open question 3, fixed inline 2026-09-22.
+///
+/// §2's derivation is SORTS ONLY: a tuple or an arrow has no sort to carry a `provides`
+/// row, so no `TypeValue` instance names one. 065 predicted this shape needed "either an
+/// effect-row analogue or a refusal" and proposed refusing. What actually happened was
+/// neither. MEASURED before the fix, and it is why this is a defect and not a deferral:
+///
+/// ```text
+/// bridge_op_to_eval: internal evaluator error bridging `tyOf`:
+/// DeferToRequirement: requirement param `__req_typevalue` not bound in caller frame
+/// ```
+///
+/// — a PANIC, from a program that LOADED CLEAN. Both arms beside the new one answer
+/// `None` here and neither is wrong to: `unprovided_provision` bails at
+/// `sort_functor_of_view` (a former has no sort to name in a repair line) and
+/// `caller_rigid_carrier` bails because the carrier is ground, not a caller parameter.
+/// With both silent the slot fell through to the silent-absence rule, which exists for
+/// the 29 stdlib bodies that declare a chain and never read it — and this body reads it.
+///
+/// BACK-OUT: delete the `former_carrier` arm in `build_op_scoped_dicts` and this row is
+/// red BY PANIC, not by a wrong message — the abort is the pre-fix behaviour.
+#[test]
+fn a_requirement_at_a_former_is_refused_rather_than_aborting() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.former
+  import anthill.prelude.{Cell, Int64, Type}
+  import anthill.reflect.{TypeValue}
+
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = Cell[V = B]
+
+  operation ask() -> Type = tyOf((1, 2))
+end
+"#,
+    );
+    assert_eq!(errs.len(), 1, "exactly one refusal, got {errs:#?}");
+    let e = &errs[0];
+    for want in [
+        "anthill.reflect.TypeValue",
+        "test.n31xx.former.tyOf",
+        "a STRUCTURAL FORMER",
+        // THE REASON, not just the verdict: what the refusal says is that NOTHING
+        // PROVIDES the spec at this former — not that a former is unprovidable, which
+        // /code-review measured to be false (see
+        // [`control_a_former_carrier_with_a_provision_loads`]). A row asserting only
+        // "refused" would keep passing against a refusal that blamed the wrong thing,
+        // and these two strings are exactly what the first cut got wrong.
+        "nothing provides `anthill.reflect.TypeValue` at it",
+        // AND THE REPAIR THAT WORKS: the row an author could write. The superseded
+        // wording advised wrapping the former in a sort, which is a different program.
+        "Give some sort the row that names this former",
+    ] {
+        assert!(e.contains(want), "expected {want:?} in the refusal; got {e:?}");
+    }
+    // AT THE CALL (the fixture's eighth line), not at `tyOf`'s declaration on the sixth:
+    // `tyOf` is well-formed and it is this argument that cannot supply its clause.
+    assert!(
+        e.starts_with("8:"),
+        "the refusal belongs at the call that passes the former; got {e:?}"
+    );
+}
+
+/// CONTROL — THE SORT-LEVEL SPELLING WAS NEVER BROKEN, and that is why the fix is one
+/// arm in the OP half rather than a rule in both.
+///
+/// `build_dispatching_dict_from_chain` is all-or-nothing: `require_complete` drops an
+/// incomplete dictionary whole, so a former carrier there was already a load refusal.
+/// The op half is best-effort and PER-SLOT — a discharged dep leaves its own slot empty
+/// and its siblings supplied — which is exactly how one unfillable slot could stay
+/// silent. This row is GREEN EITHER WAY BY DESIGN; it fails only if the fix widened into
+/// the sort half and changed a verdict that was already right.
+#[test]
+fn control_a_former_under_a_sort_level_clause_was_already_refused() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.formersort
+  import anthill.prelude.{Cell, Int64, Type}
+  import anthill.reflect.{TypeValue}
+
+  sort Holder[U]
+    import anthill.prelude.Type
+    import anthill.reflect.{TypeValue}
+    requires TypeValue[T = U]
+    entity hold(u: U)
+    operation tyb() -> Type = Cell[V = U]
+  end
+
+  operation ask() -> Type = Holder[U = (Int64, Int64)].tyb()
+end
+"#,
+    );
+    assert_eq!(errs.len(), 1, "exactly one refusal, got {errs:#?}");
+    assert!(
+        errs[0].contains("anthill.reflect.TypeValue"),
+        "the sort half's own refusal, unchanged; got {:?}",
+        errs[0]
+    );
+}
+
+/// CONTROL — A SORT CARRIER KEEPS ITS OWN DIAGNOSTIC, which is the thing a new arm is
+/// most likely to steal.
+///
+/// `Plain` is a sort with no `TypeValue` provision. That is `unprovided_provision`'s
+/// case, and its message can name the declaration to repair — `provides` on the carrier
+/// — where the former arm's cannot, because a former has no declaration. The new arm is
+/// ordered LAST and guards on `sort_functor_of_view(...).is_none()` for exactly this;
+/// this row is what says the ordering holds.
+///
+/// BACK-OUT: ask `former_carrier` BEFORE the other two arms, or drop its sort-functor
+/// guard, and this row goes red with the former arm's wording on a carrier that has a
+/// perfectly good sort.
+#[test]
+fn control_a_sort_carrier_with_no_instance_keeps_its_own_message() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.plainsort
+  import anthill.prelude.{Cell, Int64, Type}
+
+  sort TT
+    import anthill.prelude.Type
+    sort T = ?
+    operation valueOf() -> Type
+  end
+
+  sort Plain
+    entity plain(n: Int64)
+  end
+
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+
+  operation ask() -> Type = tyOf(plain(1))
+end
+"#,
+    );
+    assert_eq!(errs.len(), 1, "exactly one refusal, got {errs:#?}");
+    let e = &errs[0];
+    assert!(
+        !e.contains("STRUCTURAL FORMER"),
+        "a SORT carrier must not be reported as a former; got {e:?}"
+    );
+    assert!(
+        e.contains("test.n31xx.plainsort.Plain") && e.contains("provides"),
+        "it keeps the repair that names the carrier's own declaration; got {e:?}"
+    );
+}
+
+/// CONTROL — THE POSITIVE SIDE, so the arm above is not passing against a rule that
+/// refuses every concrete carrier. A SORT with a derived `TypeValue` still answers
+/// through the same slot the former could not fill.
+#[test]
+fn control_a_sort_carrier_with_an_instance_still_answers() {
+    let src = r#"
+namespace test.n31xx.formerok
+  import anthill.prelude.{Cell, Int64, Type}
+  import anthill.reflect.{TypeValue}
+
+  operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = Cell[V = B]
+
+  operation ask() -> Type = tyOf(1)
+end
+"#;
+    assert_eq!(load_errors(src), Vec::<String>::new(), "the control must load");
+    assert_eq!(eval_type(src, "test.n31xx.formerok.ask"), "Cell(V: Int64)");
+}
+
+/// CONTROL — A BODY-LESS CALLEE IS EXEMPT, and this row is why the arm above carries a
+/// guard instead of refusing every former carrier.
+///
+/// `Error.reify` declares `requires ErrorTag[T = T1]` and has NO anthill body on purpose:
+/// the boundary is a frame the interpreter installs by symbol. A TUPLE payload is a live,
+/// correct program — the host NARROWS the caught payload when the evidence is there and
+/// catches WIDE when it is not, which is what every boundary did before narrowing
+/// existed. So the missing dictionary is the wide case, not a death.
+///
+/// MEASURED, AND IT IS THE COST OF LEARNING IT: without `former_carrier`'s
+/// `op_body_node` guard this program is refused, and with it 20 rows of
+/// `wi_9wvt7_error_reify_test` go red — the whole file, since its fixture loads as one
+/// program. That is the back-out, and it is a real corpus program rather than a fixture
+/// written to defend the guard.
+///
+/// THE DISTINCTION THE GUARD DRAWS is who interprets an absent slot, not whether the
+/// clause is owed. An anthill body has no fallback: 065 §1 lowers a value read to a
+/// dispatch through the slot, so an absent one aborts.
+#[test]
+fn control_a_body_less_callee_may_take_a_former_carrier() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.formerhost
+  import anthill.prelude.{Error, Int64, Result, String}
+
+  operation raisesTuple(n: Int64) -> Int64 effects {Error[(a: Int64, b: String)]} =
+    Error.raise((a: n, b: "neg"))
+
+  operation caughtTuple() -> Result[E = (a: Int64, b: String), T = Int64] =
+    Error.reify(lambda () -> raisesTuple(0 - 1))
+end
+"#,
+    );
+    assert_eq!(
+        errs,
+        Vec::<String>::new(),
+        "a body-less host-backed callee catches wide at a former payload; got {errs:#?}"
+    );
+}
+
+/// CONTROL — A FORMER CARRIER **WITH** A PROVISION STILL LOADS, which is what says the
+/// arm above refuses "nothing provides it" and not "a former".
+///
+/// FOUND BY /code-review, as a FALSE CLAIM in the first cut's own message: it said "no
+/// instance of `{spec}` can ever name it" and advised wrapping the former in a sort. A
+/// former cannot CARRY a provision — a `provides` row is written on a sort — but a SORT
+/// may carry one whose spec BINDING is a former, and that satisfies the requirement.
+/// The two are different things and the message had conflated them, so its repair sent
+/// the author to a different program from the one that works.
+///
+/// This row is the program that works. It never reaches `former_carrier` at all, because
+/// `build_dep_projection` finds `Wrapper`'s row — which is exactly the point: the arm
+/// fires on a failed SEARCH, and a widening of it to "a former is unprovidable" would
+/// take this row red.
+///
+/// BACK-OUT: drop the `build_dep_projection` result check and refuse on the carrier's
+/// shape alone, and this goes red while the refusal row above stays green — the pair is
+/// what distinguishes the two readings.
+#[test]
+fn control_a_former_carrier_with_a_provision_loads() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.formerprov
+  import anthill.prelude.{Int64, String, Type}
+
+  sort TT
+    import anthill.prelude.Type
+    sort T = ?
+    operation valueOf() -> Type
+  end
+
+  sort Wrapper
+    import anthill.prelude.{Int64, String, Type}
+    entity wrap(n: Int64)
+    provides TT[T = (a: Int64, b: String)]
+    operation valueOf() -> Type = Int64
+  end
+
+  operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()
+
+  operation ask() -> Type = tyOf((a: 1, b: "x"))
+end
+"#,
+    );
+    assert_eq!(
+        errs,
+        Vec::<String>::new(),
+        "a sort may provide a spec AT a former binding; got {errs:#?}"
+    );
+}

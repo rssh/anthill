@@ -25728,38 +25728,74 @@ fn build_op_scoped_dicts(
                     // of the CALLER, and the caller declared no `requires` that covers
                     // it. See [`caller_rigid_carrier`] for why that is a verdict and not
                     // a gap.
-                    None => site.enclosing_op.and_then(|enclosing_op| {
-                        caller_rigid_carrier(kb, &dep, &disambig, enclosing_op)
-                        .map(|c| RequirementRefusal {
-                            // RENDERED IN THE CALLER'S SPELLING, not `dep`'s. The entry
-                            // still names the CALLEE's formal (`tyOf.B`), and an author
-                            // told to declare `requires TT[T = tyOf.B]` would be copying
-                            // a parameter of a declaration that is not theirs. Same rule,
-                            // and the same reason, as the projection arm above.
-                            no_scope_route: false,
-                            construction_carries_repair: false,
-                            dep_text: c.clause.clone(),
-                            unconstrained: Vec::new(),
-                            refused_covers: Vec::new(),
-                            construction: format!(
-                                "its carrier is `{}`, a type parameter of the CALLING \
-                                 operation `{}`, which declares no `requires` that \
-                                 covers it — the caller's frame is the only thing that \
-                                 could ever fill this slot, and it holds nothing for \
-                                 `{}`. Declare `requires {}` on `{}` so the evidence is \
-                                 passed in, or call `{}` with a type whose provision is \
-                                 known here",
-                                c.carrier,
-                                kb.qualified_name_of(enclosing_op),
-                                c.carrier,
-                                c.clause,
-                                kb.qualified_name_of(c.declare_on),
-                                kb.qualified_name_of(callee_op),
-                            ),
-                            pinned: None,
-                            unprovided: None,
-                        })
-                    }),
+                    None => {
+                        let rigid = site.enclosing_op.and_then(|enclosing_op| {
+                            caller_rigid_carrier(kb, &dep, &disambig, enclosing_op)
+                            .map(|c| RequirementRefusal {
+                                // RENDERED IN THE CALLER'S SPELLING, not `dep`'s. The entry
+                                // still names the CALLEE's formal (`tyOf.B`), and an author
+                                // told to declare `requires TT[T = tyOf.B]` would be copying
+                                // a parameter of a declaration that is not theirs. Same rule,
+                                // and the same reason, as the projection arm above.
+                                no_scope_route: false,
+                                construction_carries_repair: false,
+                                dep_text: c.clause.clone(),
+                                unconstrained: Vec::new(),
+                                refused_covers: Vec::new(),
+                                construction: format!(
+                                    "its carrier is `{}`, a type parameter of the CALLING \
+                                     operation `{}`, which declares no `requires` that \
+                                     covers it — the caller's frame is the only thing that \
+                                     could ever fill this slot, and it holds nothing for \
+                                     `{}`. Declare `requires {}` on `{}` so the evidence is \
+                                     passed in, or call `{}` with a type whose provision is \
+                                     known here",
+                                    c.carrier,
+                                    kb.qualified_name_of(enclosing_op),
+                                    c.carrier,
+                                    c.clause,
+                                    kb.qualified_name_of(c.declare_on),
+                                    kb.qualified_name_of(callee_op),
+                                ),
+                                pinned: None,
+                                unprovided: None,
+                            })
+                        });
+                        // PROPOSAL 065 OPEN QUESTION 3 — LAST, because it is the arm for
+                        // a carrier the two above could not name, and asking it first
+                        // would take a SORT carrier's repair line ("declare `provides`
+                        // on …") away from [`unprovided_provision`], which can name the
+                        // declaration this one cannot. See [`former_carrier`].
+                        match rigid {
+                            Some(r) => Some(r),
+                            None => former_carrier(kb, &dep, callee_op).map(|former| RequirementRefusal {
+                                no_scope_route: false,
+                                // THE ACCOUNT CARRIES ITS OWN REPAIR — there is no
+                                // `provides` to suggest, so the generic "declare it on
+                                // the carrier" tail would name a declaration that cannot
+                                // exist. Same flag, same reason, as the tie arm above.
+                                construction_carries_repair: true,
+                                dep_text: render_requires_entry(kb, &dep),
+                                unconstrained: Vec::new(),
+                                refused_covers: Vec::new(),
+                                construction: format!(
+                                    "its carrier is `{former}`, a STRUCTURAL FORMER — a \
+                                     tuple or an arrow — and nothing provides `{spec}` \
+                                     at it. A former cannot CARRY a provision itself (a \
+                                     `provides` row is written on a sort), and the \
+                                     derived instances cover sorts only, so this slot \
+                                     stays empty and the call would load and then die \
+                                     reading a requirement the frame never bound. Give \
+                                     some sort the row that names this former — \
+                                     `provides {spec}[… = {former}]` — or pass a value \
+                                     whose type is a sort",
+                                    spec = kb.qualified_name_of(dep.required_sort),
+                                ),
+                                pinned: None,
+                                unprovided: None,
+                            }),
+                        }
+                    }
                 };
                 if let Some(refusal) = refusal {
                     kb.unsuppliable_requirements.push(UnsuppliableRequirement {
@@ -26607,6 +26643,107 @@ fn unprovided_provision(
         spec: dep.required_sort,
         has_a_row: carrier_has_provision_row(kb, carrier, dep.required_sort),
     })
+}
+
+/// PROPOSAL 065 OPEN QUESTION 3 — is this unfilled op slot's carrier a STRUCTURAL FORMER
+/// (a tuple, an arrow), which no `provides` row can ever name?
+///
+/// A VERDICT, not a gap: the dep is GROUND, so no later instantiation can change what it
+/// names, and the search for a provider has already failed by the time this is asked.
+///
+/// WHAT IT DOES NOT CLAIM, because the claim is FALSE and was measured so during review:
+/// that a former can never be provided. A former cannot CARRY a provision — a `provides`
+/// row is written on a sort — but a SORT may carry one whose spec binding IS a former,
+/// and that satisfies the requirement:
+///
+/// ```text
+/// sort Wrapper { entity wrap(n: Int64)  provides TT[T = (a: Int64, b: String)] … }
+/// tyOf((a: 1, b: "x"))    -- against `tyOf[B](x: B) requires TT[T = B]`: LOADS
+/// ```
+///
+/// Such a program never reaches here, because [`build_dep_projection`] finds that row.
+/// So this arm says only "nothing provides it", which is what was searched for, and its
+/// repair names the row an author could write. An earlier draft said "no instance can
+/// ever name it" and advised wrapping the former in a sort — a different program from
+/// the one that actually works.
+///
+/// WHY IT NEEDS ITS OWN ARM. The two arms beside it both answer `None` here and neither
+/// is wrong to. [`unprovided_provision`] asks the same question for a SORT carrier and
+/// bails at `sort_functor_of_view`, because a former has no declaration its repair line
+/// could name. [`caller_rigid_carrier`] bails because the carrier is GROUND, not a
+/// caller parameter. With both silent the slot fell through to the ordinary
+/// silent-absence rule — and MEASURED, that is not benign here:
+///
+/// ```text
+/// operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = Cell[V = B]
+/// operation ask() -> Type = tyOf((1, 2))
+/// ```
+///
+/// LOADED CLEAN and then died `DeferToRequirement: __req_typevalue not bound in caller
+/// frame`, an `EvalError::Internal` that `bridge_op_to_eval` raises as a PANIC. Loading
+/// clean and aborting is the worst outcome available, which is the verdict the
+/// projection arm in [`build_op_scoped_dicts`] already reaches for this same death.
+///
+/// NOT KEYED TO `TypeValue`, applying WI-20260921-3G1YT's lesson rather than re-learning
+/// it: that ticket deleted a `dep.required_sort == anthill.reflect.TypeValue` hardcode
+/// after measuring that a user typeclass of identical shape loaded clean while the
+/// `TypeValue` spelling was refused. The reason a former cannot be provided is about the
+/// CARRIER, so this arm is too.
+///
+/// THE SORT HALF NEEDS NONE OF IT, measured, and that is this arm's control: the same
+/// program with a sort-level `requires` is already refused, because
+/// `build_dispatching_dict_from_chain` is all-or-nothing (`require_complete` drops an
+/// incomplete dictionary whole) where this half is best-effort and per-slot.
+///
+/// 065 open question 3 proposed refusing "at the read, naming the row". This refuses at
+/// the CALL, which is where the carrier is known — a body reading `B` cannot see that
+/// some caller will pass a tuple. The former is named in the message either way.
+fn former_carrier(kb: &KnowledgeBase, dep: &RequiresEntry, callee_op: Symbol) -> Option<String> {
+    // A BODY-LESS CALLEE'S ABSENT DICTIONARY IS THE HOST'S TO INTERPRET, and this guard
+    // is the whole reason the arm is not simply "a former cannot be provided".
+    //
+    // MEASURED, and it cost 20 red rows to learn: `Error.reify` declares
+    // `requires ErrorTag[T = T1]` and is body-less ON PURPOSE — the boundary is a frame
+    // the interpreter installs by symbol — and a TUPLE payload is a LIVE, CORRECT corpus
+    // program. `wi_9wvt7_error_reify_test`'s fixture says so at its own line: "a tuple
+    // type's head is the ENTITY `TypeExtractor.NamedTuple`, which names no sort, so this
+    // boundary CANNOT be narrowed and must catch wide — as every boundary did before the
+    // narrowing existed". The host NARROWS when the evidence is there and catches WIDE
+    // when it is not, so the missing dictionary is not a death, it is the wide case.
+    //
+    // AN ANTHILL BODY HAS NO SUCH FALLBACK: 065 §1 lowers a value read to a dispatch
+    // through the slot, so an absent one is the `DeferToRequirement` abort this arm
+    // exists to prevent.
+    //
+    // THIS IS NOT THE BODY WALK WI-20260921-3G1YT DELETED. That one asked what a body
+    // CONTAINS — whether it reads the slot — and was deleted because a declared
+    // `requires` is owed because it is declared. This asks only whether an anthill body
+    // EXISTS, which decides WHO interprets the absence, not whether the clause is owed.
+    kb.op_body_node(callee_op)?;
+    let goal = goal_from_requires_entry(kb, dep)?;
+    // EVERY BINDING, not just the carrier one. `spec_carrier_param_or_sole` names the
+    // parameter a declared OPERATION receives on, which is the right question for
+    // [`unprovided_provision`]'s repair line ("declare `provides` on THAT sort") and the
+    // wrong one here: a former in ANY ground position makes the goal unmatchable, and
+    // reading only the carrier left a multi-parameter spec — a former in `U` while `T`
+    // is an ordinary sort — falling through to the silent absence this arm exists to
+    // close. Found by /code-review.
+    let former = goal.bindings.iter().find_map(|(_, v)| {
+        // GROUND FIRST. An element nothing has pinned is not a former — it is one of the
+        // open cases the arms beside this one own, and answering here would take their
+        // diagnostics away from them.
+        if !type_value_is_ground(kb, *v) {
+            return None;
+        }
+        // A SORT BINDING IS NOT THIS ARM'S: it has a symbol, so a provision COULD name
+        // it and [`unprovided_provision`] already said so. Stated as a guard rather than
+        // left to call order, so neither arm's verdict depends on which runs first.
+        if sort_functor_of_view(kb, &TermIdView(*v)).is_some() {
+            return None;
+        }
+        Some(*v)
+    })?;
+    Some(format_term_for_goal(kb, former))
 }
 
 /// WI-20260920-XSVCS — a dep whose carrier is the CALLER's own type parameter, written
