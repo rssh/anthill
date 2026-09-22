@@ -287,12 +287,12 @@ end
 /// silent-refusal shape as [`a_rule_body_forward_is_refused_too`], one channel over.
 /// /code-review caught it with this exact probe.
 ///
-/// WHY IT IS STILL SPELLED `TypeValue` AND NOT THE GENERAL RULE: the general rule needs
-/// the CALLEE'S OP to ask whether its body reads the slot, and
-/// `build_dispatching_dict_from_chain` is handed the callee's SORT. The op-level twin IS
-/// general ([`a_user_typeclass_of_the_same_shape_is_refused_too`]); this half is the
-/// remaining work, and its own gap is PRE-EXISTING — a sort-level `requires Stamp[T = U]`
-/// at a nullary user typeclass loads clean before and after this ticket.
+/// IT IS NO LONGER SPELLED `TypeValue`. An earlier cut of this ticket left the sort half
+/// hardcoded because the general rule needs the CALLEE'S OP to ask whether its body reads
+/// the slot, and `build_dispatching_dict_from_chain` was handed the callee's SORT.
+/// `rule_body_callee` now plumbs that op through, both hardcodes are deleted, and
+/// [`a_sort_level_user_typeclass_is_refused_too`] drives the general form — the gap this
+/// row's note previously recorded as PRE-EXISTING is closed with it.
 #[test]
 fn a_sort_level_rule_body_forward_is_refused_too() {
     let errs = load_errors(
@@ -319,6 +319,143 @@ end
     assert!(
         errs.iter().any(|e| e.contains("anthill.reflect.TypeValue")),
         "the refusal must name the evidence; got {errs:#?}"
+    );
+}
+
+/// WI-20260921-3G1YT — **THE SORT HALF, GENERAL.** The same shape as
+/// [`a_sort_level_rule_body_forward_is_refused_too`] with a USER typeclass in place of
+/// `TypeValue`, which is what says the sort-half rule is keyed on a spec's PROPERTY and
+/// not on one spec's name.
+///
+/// MEASURED AS A GAP THIS CLOSES, and it is older than this ticket: while the sort half
+/// asked `dep.required_sort == anthill.reflect.TypeValue`, this program LOADED CLEAN
+/// while the `TypeValue` spelling of it was refused. Both are refused now.
+///
+/// WHICH TESTS FAIL IF THE SORT-HALF RULE IS BACKED OUT: this one and
+/// [`a_sort_level_rule_body_forward_is_refused_too`], and no others.
+#[test]
+fn a_sort_level_user_typeclass_is_refused_too() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.sluser
+  import anthill.prelude.{Int64}
+
+  sort Stamp
+    sort T = ?
+    operation stamp() -> Int64
+  end
+
+  sort Holder
+    sort U = ?
+    requires Stamp[T = U]
+    operation get(x: U) -> Int64 = Stamp.stamp()
+  end
+
+  rule names(?x, ?n) :- ?n = Holder.get(?x)
+end
+"#,
+    );
+    assert!(
+        !errs.is_empty(),
+        "a SORT-level clause at a nullary USER typeclass, forwarded from a rule body, \
+         must be refused exactly as the `TypeValue` spelling is"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("test.n31xx.sluser.Stamp")
+            && e.contains("no value can")),
+        "the refusal must name the user spec and say why no value can supply it; \
+         got {errs:#?}"
+    );
+}
+
+/// WI-20260921-3G1YT — **CONTROL: A NULLARY SPEC WITH A PINNED ELEMENT STILL LOADS.**
+/// The third rescue route, and the counterexample that sharpened the rule. `Tag` declares
+/// only a NULLARY operation, so no value can name its carrier — but the call pins
+/// `M = Alpha` concretely, and the SLD bridge answers the goal from that element off
+/// `Alpha provides Tag[M = Alpha, N = Beta]`. "No value-directed route" is therefore not
+/// enough to refuse; the dep must also carry NOTHING searchable.
+///
+/// MEASURED: with `dep_has_searchable_pin` dropped, this row fails and so does
+/// `wi_nx4fd …a_completion_selects_the_provider_the_pinned_element_names` — which is the
+/// row that caught it, on the full workspace, after the narrower rule passed every
+/// targeted test.
+///
+/// THE CONTRAST WITH [`a_sort_level_user_typeclass_is_refused_too`] IS THE WHOLE RULE:
+/// there the element is the CALLER'S OWN RIGID, which is determined but abstract, so no
+/// provider fact can match it and nothing can ever supply the slot.
+#[test]
+fn a_nullary_spec_with_a_pinned_element_still_loads() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.pinned
+  import anthill.prelude.{Int64}
+
+  sort Tag
+    sort M = ?
+    sort N = ?
+    operation code() -> Int64
+  end
+
+  sort Alpha
+    entity alpha
+    provides Tag[M = Alpha, N = Beta]
+    operation code() -> Int64 = 11
+  end
+
+  sort Beta
+    entity beta
+    provides Tag[M = Beta, N = Alpha]
+    operation code() -> Int64 = 22
+  end
+
+  sort Ghost
+    sort GM = ?
+    sort GN = ?
+    requires Tag[M = GM, N = GN]
+    operation probe(x: GM) -> Int64 = Tag.code()
+  end
+
+  rule ra(?n) :- Ghost.probe(alpha(), ?n)
+end
+"#,
+    );
+    assert!(
+        errs.is_empty(),
+        "the call pins `M = Alpha`, so the resolver can complete the goal from a provider \
+         fact at fire time even though `Tag` has no receiver; got {errs:#?}"
+    );
+}
+
+/// CONTROL — the SORT-half peer of [`a_user_typeclass_with_a_receiver_still_loads`]: a
+/// spec whose operation receives on its carrier gives the bridge a value to classify, so
+/// the rule-body exemption stands and the program loads. It FAILS if
+/// [`spec_has_value_directed_route`] is made to answer `false` for everything.
+#[test]
+fn a_sort_level_user_typeclass_with_a_receiver_still_loads() {
+    let errs = load_errors(
+        r#"
+namespace test.n31xx.sluserrecv
+  import anthill.prelude.{Int64}
+
+  sort Shown
+    sort T = ?
+    operation shown(x: T) -> Int64
+  end
+
+  sort Holder
+    sort U = ?
+    requires Shown[T = U]
+    operation get(x: U) -> Int64 = Shown.shown(x)
+  end
+
+  rule names(?x, ?n) :- ?n = Holder.get(?x)
+end
+"#,
+    );
+    assert!(
+        errs.is_empty(),
+        "a spec whose operation receives on its carrier CAN be resolved from a value at \
+         fire time, so the rule-body exemption stands; got {errs:#?}"
     );
 }
 

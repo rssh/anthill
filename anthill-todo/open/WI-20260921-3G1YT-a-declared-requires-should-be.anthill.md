@@ -170,25 +170,34 @@ nothing to recover — it is a proof obligation. Without that arm, 42 rows fail 
 `wi_9wvt7_error_reify_test` rows on `ErrorTag[T = <tuple>]`, and
 `eval_test::m3_float_comparison_and_max` on an ordinary `Eq[T = Float]`).
 
-THE SORT HALF IS NOT DONE, and /code-review caught the attempt. Deleting its arm too is a
-REGRESSION: a SORT-level `requires TypeValue[T = U]` reached from a rule body is refused
-at HEAD and LOADS CLEAN without it, and the workspace stayed green at 7252/0 because no
-row covered that shape. The generic rule cannot be applied there yet — it needs the
-CALLEE'S OP to ask `op_body_reads_sort_requirement_slot`, and
-`build_dispatching_dict_from_chain` is handed the callee's SORT; raising on the spec
-property alone over-refuses (6 rows, measured at the op half). So ONE hardcode remains,
-with its own call-site note, and `wi_n31xx …a_sort_level_rule_body_forward_is_refused_too`
-pins it. The sort half's OWN generic gap is PRE-EXISTING: a sort-level
-`requires Stamp[T = U]` at a nullary user typeclass loads clean before and after.
+THE SORT HALF IS DONE TOO (2026-09-22). An earlier cut left it hardcoded because the
+general rule needs the CALLEE'S OP to ask `op_body_reads_sort_requirement_slot` and
+`build_dispatching_dict_from_chain` is handed the callee's SORT. A `rule_body_callee:
+Option<Symbol>` parameter now plumbs that op through — `Some` at a RULE-body site and
+`None` at the three that cannot act on the verdict (an operation-body site PARKS instead;
+the eta route's `Ok(None)` is already a load error; the Direct path is diagnostic-only).
+BOTH hardcodes are deleted and `type_value_forward_unsuppliable` is gone.
 
-REMAINING WORK, and it is the natural follow-up: plumb `callee_op` through
-`build_concrete_dispatch_dict` / `build_dispatching_dict_from_chain` so the sort half can
-ask the same two questions the op half now does, and delete the last hardcode.
+AND THE RULE NEEDED A THIRD CONDITION, which the FULL WORKSPACE caught after every
+targeted test passed. "No value-directed route" is not enough: the SLD bridge resolves a
+GOAL, and a goal can be answered from a pinned ELEMENT even where no value names a
+carrier. `nx4fd_disc.Marked` declares only the nullary `code()`, yet
+`Ghost.probe(alpha(), ?x)` pins `M = Alpha` and the resolver completes `N = Beta` off
+`Alpha provides Marked[M = Alpha, N = Beta]`. So the dep must ALSO carry nothing
+searchable — `dep_has_searchable_pin`, read at `rigid_ok = false`, because a `Var::Rigid`
+is determined but ABSTRACT and no provider fact can match it. That is precisely the
+contrast with `Stamp[T = B]` at the caller's own rigid, which nothing can ever supply.
 
-WHAT LANDED — full workspace **7253 passed / 0 failed**:
- - the OP half's `type_value_forward_unsuppliable` call site DELETED and replaced by the
-   general rule; `TypeValue` is an instance of it there. The SORT half's call site stays,
-   for the reason above;
+THE THREE RESCUE ROUTES, stated once: a value's carrier (value-direction), a pinned
+concrete element (resolver search), and the caller's declared `requires` (the ordinary
+forward). A rule-body site is refused only when ALL THREE are unavailable and the
+callee's body reads the slot.
+
+WHAT LANDED — full workspace **7265 passed / 0 failed**:
+ - `type_value_forward_unsuppliable` and BOTH its call sites DELETED; the rule is keyed
+   on a spec's shape in both halves, and `TypeValue` is an instance of it;
+ - `wi_n31xx …a_sort_level_user_typeclass_is_refused_too` + its receiver control, and
+   `…a_nullary_spec_with_a_pinned_element_still_loads` — the counterexample control;
  - `wi_n31xx …a_user_typeclass_of_the_same_shape_is_refused_too` — the generic row, and
    `…a_user_typeclass_with_a_receiver_still_loads` — its control, which fails if the
    predicate is made to answer `false` for everything;

@@ -10295,6 +10295,9 @@ fn attach_eta_dispatch_dict(
     let callee_provision = op_owner_provision(kb, sym);
     match build_concrete_dispatch_dict(
         kb,
+        // The eta route's `Ok(None)` is ALREADY a load error (WI-420), so it has no use
+        // for the rule-body verdict — see the parameter's own note.
+        None,
         &subst,
         parent,
         callee_provision,
@@ -21553,6 +21556,12 @@ fn check_apply_iter(
                     let mut unsuppliable: Option<Box<RequirementRefusal>> = None;
                     let dispatch_dict = build_concrete_dispatch_dict(
                         kb,
+                        // WI-20260921-3G1YT — a RULE-body site, and only then: an
+                        // operation-body site's unsuppliable deps are PARKED just below
+                        // and decided against the callee's body, which is the right
+                        // machinery; a rule body can neither park (the queue is drained
+                        // before rule bodies are typed) nor be value-rescued.
+                        env.enclosing_op().is_none().then_some(fn_sym),
                         &subst,
                         parent_sym,
                         callee_provision,
@@ -23956,6 +23965,8 @@ fn build_dispatching_dict_direct(
     let callee_chain = provider_dict_entries(kb, callee_spec_sort, callee_provision);
     build_dispatching_dict_from_chain(
         kb,
+        // Diagnostic-only path (`require_complete = false`): it cannot act on an `Err`.
+        None,
         callee_spec_sort,
         callee_provision,
         &callee_chain,
@@ -25060,6 +25071,20 @@ fn explain_dep_refusal(
 /// died `Internal(… __req_monoid not bound …)` at eval.
 fn build_dispatching_dict_from_chain(
     kb: &mut KnowledgeBase,
+    // WI-20260921-3G1YT — THE CALLEE OP, but ONLY when this call site is a RULE BODY and
+    // the general no-route rule may therefore apply. `None` everywhere else, and each
+    // caller's `None` says why:
+    //  * an OPERATION-body site passes `None` because its unsuppliable deps are PARKED
+    //    and decided by [`report_unsuppliable_requirements`], which is the right machinery
+    //    and already covers them;
+    //  * the ETA route and [`build_dispatching_dict_direct`] pass `None` because neither
+    //    can act on the verdict — the eta's `Ok(None)` is already a load error (WI-420)
+    //    and the Direct path is diagnostic-only (`require_complete = false`).
+    //
+    // A RULE BODY is the one site that can neither park (the queue is drained before rule
+    // bodies are typed) nor be rescued by value-direction when the spec has no receiver.
+    // See the use below.
+    rule_body_callee: Option<Symbol>,
     callee_spec_sort: Symbol,
     // Proposal 066 §7 — the provision the called operation is a member of
     // ([`op_owner_provision`]): a parent bundle is the callee's FRAME, which is its
@@ -25163,47 +25188,45 @@ fn build_dispatching_dict_from_chain(
                 // RAISED, not parked: the three signatures below defer because only the
                 // callee's body can say whether the slot is read, and here that question
                 // is already answered by the lowering.
-                // WI-20260919-N31XX / WI-20260921-3G1YT — THE SORT HALF'S LAST HARDCODE,
-                // and the only one left. The OP half's twin is gone: it is now the general
-                // rule "a rule-body goal at a spec no value can name is refused"
-                // ([`spec_has_value_directed_route`], in [`build_op_scoped_dicts`]), of
-                // which `TypeValue` is an instance.
+                // WI-20260921-3G1YT — A RULE-BODY GOAL AT A SPEC NO VALUE CAN NAME.
+                // The SORT-half twin of the rule in [`build_op_scoped_dicts`], and the
+                // last of N31XX's two hardcodes to go: this asked
+                // `dep.required_sort == anthill.reflect.TypeValue`, so one spec was
+                // guarded and no other. It now asks the property that made `TypeValue`
+                // need guarding, and `TypeValue` is an instance of it.
                 //
-                // IT STAYS HERE BECAUSE THIS FUNCTION CANNOT ASK THE GENERAL QUESTION YET.
-                // The rule needs the CALLEE'S OP to ask [`op_body_reads_sort_requirement_-
-                // slot`], and this function is handed `callee_spec_sort` — the SORT — so
-                // the read half is unavailable without plumbing the op down through both
-                // callers. Raising on the spec property ALONE would over-refuse, which is
-                // measured at the op half's own site (6 rows).
+                // THE THREE CONDITIONS, each doing work:
+                //  * a RULE BODY (`rule_body_callee` is `Some`) — an operation-body site
+                //    PARKS instead, and is decided against the callee's body by
+                //    [`report_unsuppliable_requirements`], which already covers it.
+                //    MEASURED: making this arm unconditional is not needed for the
+                //    operation-body shapes (`test.n31xx.twobad`, `test.rs2g4x`) — they
+                //    are refused by the park path either way, which is what let the
+                //    hardcode be deleted at all;
+                //  * NO VALUE-DIRECTED ROUTE — WI-945 exempts a rule-body site because
+                //    the SLD bridge resolves dictionaries from the CONCRETE ARGUMENT
+                //    VALUES at fire time. That premise fails where no value can name the
+                //    carrier, and there the bridge has nothing to resolve from;
+                //  * THE CALLEE'S BODY READS THE SLOT — asked here rather than parked,
+                //    and sound because a rule body is typed after EVERY operation body,
+                //    so the answer exists. A callee that never reads it still loads.
                 //
-                // WHAT IT COSTS TO LEAVE: only `TypeValue` is guarded here. MEASURED — a
-                // SORT-level `requires Stamp[T = U]` at a nullary user typeclass, reached
-                // from a rule body, LOADS CLEAN both before and after this ticket, so that
-                // gap is PRE-EXISTING and not this change's. Deleting this arm would turn
-                // the `TypeValue` spelling of the same program from refused into silent,
-                // which is a REGRESSION and is why it is still here (caught by
-                // /code-review, with that exact probe).
-                if type_value_forward_unsuppliable(kb, dep) {
-                    return Err(Box::new(RequirementRefusal {
-                        no_scope_route: false,
-                        construction_carries_repair: false,
-                        dep_text: render_requires_entry(kb, dep),
-                        unconstrained: disambig
+                // MEASURED as the gap this closes: a SORT-level `requires Stamp[T = U]`
+                // at a nullary user typeclass, reached from a rule body, LOADED CLEAN
+                // before this arm while the `TypeValue` spelling was refused.
+                if let Some(callee_op) = rule_body_callee {
+                    if !spec_has_value_directed_route(kb, dep.required_sort)
+                        && !dep_has_searchable_pin(kb, dep)
+                        && op_body_reads_sort_requirement_slot(kb, callee_op)
+                    {
+                        let unconstrained = disambig
                             .map(|ctx| unconstrained_elements(kb, dep, ctx))
-                            .unwrap_or_default(),
-                        refused_covers: Vec::new(),
-                        construction: "`TypeValue` is answered only by the dispatching \
-                                       dictionary, and since a value read of a rigid is a \
-                                       dispatch through that slot (proposal 065 §1) it \
-                                       cannot be left unfilled. Determine the type at \
-                                       this call — write the element rather than a bare \
-                                       parametric name — or declare the same `requires \
-                                       anthill.reflect.TypeValue[…]` so the evidence is \
-                                       passed in"
-                            .to_owned(),
-                        pinned: None,
-                        unprovided: None,
-                    }));
+                            .unwrap_or_default();
+                        let dep_text = render_requires_entry(kb, dep);
+                        return Err(Box::new(unrescuable_rule_body_refusal(
+                            kb, dep, dep_text, unconstrained, callee_op,
+                        )));
+                    }
                 }
                 // WI-828: with a σ in hand, a refusal-signature failure (a
                 // σ-refused cover / an Ambiguous construction of an
@@ -25416,6 +25439,20 @@ fn build_dispatching_dict_from_chain(
 /// loads clean and dies at eval.
 fn build_concrete_dispatch_dict(
     kb: &mut KnowledgeBase,
+    // WI-20260921-3G1YT — THE CALLEE OP, but ONLY when this call site is a RULE BODY and
+    // the general no-route rule may therefore apply. `None` everywhere else, and each
+    // caller's `None` says why:
+    //  * an OPERATION-body site passes `None` because its unsuppliable deps are PARKED
+    //    and decided by [`report_unsuppliable_requirements`], which is the right machinery
+    //    and already covers them;
+    //  * the ETA route and [`build_dispatching_dict_direct`] pass `None` because neither
+    //    can act on the verdict — the eta's `Ok(None)` is already a load error (WI-420)
+    //    and the Direct path is diagnostic-only (`require_complete = false`).
+    //
+    // A RULE BODY is the one site that can neither park (the queue is drained before rule
+    // bodies are typed) nor be rescued by value-direction when the spec has no receiver.
+    // See the use below.
+    rule_body_callee: Option<Symbol>,
     subst: &Substitution,
     callee_spec_sort: Symbol,
     // Proposal 066 §7 — the provision the called operation is a member of
@@ -25497,6 +25534,7 @@ fn build_concrete_dispatch_dict(
     };
     build_dispatching_dict_from_chain(
         kb,
+        rule_body_callee,
         callee_spec_sort,
         callee_provision,
         &concrete_chain,
@@ -25917,31 +25955,14 @@ fn build_op_scoped_dicts(
             // `TypeValue` spelling was refused.
             if park.is_some_and(|s| s.enclosing_op.is_none())
                 && !spec_has_value_directed_route(kb, dep.required_sort)
+                && !dep_has_searchable_pin(kb, &dep)
                 && op_body_reads_op_requirement_slot(kb, callee_op, op_index)
             {
                 kb.unsuppliable_requirements.truncate(parked_mark);
-                return Err(Box::new(RequirementRefusal {
-                    no_scope_route: false,
-                    construction_carries_repair: false,
-                    dep_text: render_requires_entry(kb, &dep),
-                    unconstrained: Vec::new(),
-                    refused_covers: Vec::new(),
-                    construction: format!(
-                        "this is a RULE-body goal, whose dictionaries the SLD bridge \
-                         resolves from the concrete argument values at fire time — but \
-                         `{}` declares no operation taking its own carrier, so no value can \
-                         ever name a provider for it and the bridge has nothing to read. \
-                         The dispatching dictionary is the only carrier of the answer, and \
-                         a rule body cannot declare one. Call `{}` from an operation that \
-                         declares the matching `requires`, or give `{}` an operation that \
-                         receives on its carrier",
-                        kb.qualified_name_of(dep.required_sort),
-                        kb.qualified_name_of(callee_op),
-                        kb.qualified_name_of(dep.required_sort),
-                    ),
-                    pinned: None,
-                    unprovided: None,
-                }));
+                let dep_text = render_requires_entry(kb, &dep);
+                return Err(Box::new(unrescuable_rule_body_refusal(
+                    kb, &dep, dep_text, Vec::new(), callee_op,
+                )));
             }
             if let Some(site) = park.filter(|s| s.enclosing_op.is_some()) {
                 // WI-1102 (058 §3.10) — the use-site discharge: this call PINNED a
@@ -26025,18 +26046,65 @@ fn build_op_scoped_dicts(
     Ok(out)
 }
 
-/// WI-20260919-N31XX — is this UNSUPPLIABLE dependency a `TypeValue` requirement?
+/// WI-20260921-3G1YT — the refusal a RULE-body goal gets at a dep NOTHING can supply.
+/// Written once because both halves raise it: [`build_dispatching_dict_from_chain`] for a
+/// SORT-level clause and [`build_op_scoped_dicts`] for an operation-level one. They differ
+/// only in which read predicate gates them (per-sort vs per-slot); the verdict and its
+/// wording are one thing, and a copy would let the two drift the way WI-456(b) records for
+/// the tie repairs.
+fn unrescuable_rule_body_refusal(
+    kb: &KnowledgeBase,
+    dep: &RequiresEntry,
+    dep_text: String,
+    unconstrained: Vec<String>,
+    callee_op: Symbol,
+) -> RequirementRefusal {
+    RequirementRefusal {
+        no_scope_route: false,
+        construction_carries_repair: false,
+        dep_text,
+        unconstrained,
+        refused_covers: Vec::new(),
+        construction: format!(
+            "this is a RULE-body goal, whose dictionaries the SLD bridge resolves from \
+             the concrete argument values at fire time — but `{spec}` declares no \
+             operation taking its own carrier, so no value can name a provider for it, \
+             and this call pins no element the resolver could search on either. The \
+             dispatching dictionary is the only carrier of the answer, and a rule body \
+             cannot declare one. Call `{callee}` from an operation that declares the \
+             matching `requires`, pin the element at this call, or give `{spec}` an \
+             operation that receives on its carrier",
+            spec = kb.qualified_name_of(dep.required_sort),
+            callee = kb.qualified_name_of(callee_op),
+        ),
+        pinned: None,
+        unprovided: None,
+    }
+}
+
+/// WI-20260921-3G1YT — DOES THIS DEP CARRY A CONCRETE ELEMENT THE RESOLVER COULD SEARCH
+/// ON? True when any binding mentions no type parameter, so a goal built from it has
+/// something to match a provider fact against.
 ///
-/// WI-20260921-3G1YT REDUCED IT TO ONE CALLER, the SORT half. The OP half's arm is gone,
-/// replaced by the general rule keyed on [`spec_has_value_directed_route`]; see that
-/// site for why `TypeValue` is an instance of it rather than a case, and see this
-/// function's remaining call site for why the sort half cannot ask the general question
-/// yet.
-fn type_value_forward_unsuppliable(kb: &KnowledgeBase, dep: &RequiresEntry) -> bool {
-    let Some(tv) = type_value_spec_sym(kb) else {
-        return false;
-    };
-    kb.canonical_sort_sym(dep.required_sort) == kb.canonical_sort_sym(tv)
+/// THE THIRD RESCUE ROUTE, and the one that refuted a narrower rule. The SLD bridge
+/// resolves a GOAL, and a goal can be answered from a pinned ELEMENT even where no value
+/// can name a carrier: `nx4fd_disc.Marked` declares only the nullary `code()`, so
+/// [`spec_has_value_directed_route`] is false for it, yet `Ghost.probe(alpha(), ?x)` pins
+/// `M = Alpha` and the resolver completes `N = Beta` off `Alpha provides Marked[M = Alpha,
+/// N = Beta]`. MEASURED: without this condition
+/// `wi_nx4fd …a_completion_selects_the_provider_the_pinned_element_names` is refused, and
+/// it is the ONE row in the workspace that says so.
+///
+/// `rigid_ok = false` IS THE POINT — see [`type_value_is_ground_g`]'s two readings. A
+/// `Var::Rigid` is the enclosing sort's parameter skolemized: determined, but ABSTRACT, so
+/// there is no fact to match it against. `Stamp[T = B]` at the caller's own rigid carries
+/// nothing searchable and is the case this must not excuse.
+fn dep_has_searchable_pin(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> bool {
+    goal_from_requires_entry(kb, dep).is_some_and(|g| {
+        g.bindings
+            .iter()
+            .any(|(_, v)| type_value_is_ground(kb, *v))
+    })
 }
 
 /// WI-20260921-3G1YT — CAN A RUNTIME VALUE EVER DIRECT DISPATCH TO `spec_sort`? True
@@ -26259,15 +26327,19 @@ pub(crate) struct CallerRigidCarrier {
 /// while `contains` declares `requires Eq[T]` and its body reads it. That fixture has
 /// loaded clean since WI-416 and would have died `Internal` had anything called it.
 ///
-/// DOES NOT SUBSUME [`type_value_forward_unsuppliable`]'s arm, and the arm stays ABOVE
-/// this one deliberately. That leg RAISES, unconditionally: `type_value()` is nullary,
-/// so no body holding the evidence can fail to read it, and there is nothing to wait for
-/// — parking it would make 065's rule depend on a body predicate that can only ever
-/// answer `true`. It also reaches deps this does not (a `TypeValue` over a carrier that
-/// is not a caller rigid) and sites this does not (`park` is `None` for a builtin callee
-/// and where the caller is not an operation body). The shape they share —
-/// `test.n31xx.twobad` — keeps 065's message, which names the proposal and the reason
-/// `TypeValue` is special, and that is the better message for it.
+/// IT NOW SUBSUMES N31XX's `TypeValue` ARM for every site it reaches. That leg was a
+/// hardcoded `dep.required_sort == anthill.reflect.TypeValue` raising above this one; both
+/// its call sites are deleted (WI-20260921-3G1YT), and the shape they shared —
+/// `test.n31xx.twobad` — is refused by THIS arm, whose wording says the same thing for any
+/// spec and additionally names where to declare the evidence.
+///
+/// WHAT IT DOES NOT REACH IS A RULE BODY, and that is the one case the hardcode was really
+/// carrying. This arm needs `enclosing_op` to say "the CALLER declared no `requires`", and
+/// a rule body has no operation to name — nor can it park, since
+/// [`report_unsuppliable_requirements`] drains the queue before rule bodies are typed. So
+/// that site RAISES at its own gate instead, on the general property
+/// [`spec_has_value_directed_route`]; see [`build_op_scoped_dicts`] and
+/// [`build_dispatching_dict_from_chain`] for the two halves.
 ///
 /// `None` for every other unfilled slot, which is the pre-existing behaviour those
 /// classes have and not a decision this ticket makes about them.
