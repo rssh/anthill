@@ -1968,21 +1968,25 @@ WI-868's stand-in hole, which this rule widens the reach of rather than creates;
 a host that must choose supplies the dictionary itself
 (`Interpreter::call_with_requirements`).
 
-Four cases keep the older **refusal**.  Three because there is no argument to read:
+Three cases keep the older **refusal**, each because there is no argument to read:
 a slot nothing spells (WI-1061's nested `List[T = SortedSet]`, which takes a fresh
 rigid rather than a projection), an existential **return** (WI-1063, whose opened
 skolem names no provider), and a slot some other entry of the frame already covers
 — an anonymous `requires` of the same spec, or a second parameter of the same
 carrier — where which dictionary the body means is not decidable and is refused
-rather than guessed.  The fourth is about the CHANNEL rather than the argument: an
-operation that writes **any** `requires` of its own gets none, because the widening
-that lets a body read a synthesized slot is chosen per call site and would forward
-the author's own op-scoped slots with it.  Each prints its own repair.  The repair differs by case and the
-diagnostic names it: for a collision, name the slot on the enclosing declaration and
-write that name in the parameter's type (`first(s: SortedSet[T = E, O = OE])` under
-`requires OE: Ord[E]`); for a nameless or existential slot, write it where the value is
-**produced** — a bracket at the consuming call pins only the parameter's type and leaves
-the argument's own slot a skolem.  (A **default** on a requirement slot would remove the
+rather than guessed.  The repair differs and the diagnostic names it: for a
+collision, name the slot on the enclosing declaration and write that name in the
+parameter's type (`first(s: SortedSet[T = E, O = OE])` under `requires OE: Ord[E]`);
+for a nameless or existential slot, write it where the value is **produced** — a
+bracket at the consuming call pins only the parameter's type and leaves the
+argument's own slot a skolem.  (The last two share one message: neither has an
+argument to read, and the repair is the same.)
+
+A fourth was listed here and is gone: an operation that writes its **own**
+`requires` used to get no channel, because the widening that lets a body read a
+synthesized slot was chosen per call site and would have forwarded the author's
+op-scoped slots with it.  WI-20260921-3G1YT made that widening unconditional, so
+the reason lapsed; such an operation now takes the channel like any other.  (A **default** on a requirement slot would remove the
 existential case entirely, since omission would then name one determinate provider on
 both sides; not built.)
 
