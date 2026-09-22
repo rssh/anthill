@@ -13,74 +13,93 @@
 
 ## Description
 
-**THE HEADLINE IS REFUTED. "A declared `requires` is owed by the caller because it is
-declared" IS NOT THE RULE — measured 2026-09-21, after the ticket was filed.** What
-survives is defect (1) alone, restated: the channel must stop being inferred from the
-callee's BODY. The proposed mechanism — delete the `if !reads { continue; }` gate — is
-wrong and must not be implemented.
+**THE ORIGINAL CLAIM STANDS: a declared `requires` IS owed by the caller because it is
+declared.** It was refuted twice on the way, and BOTH refutations were wrong; they are
+kept below because each looked decisive and a later reader will reach for them again. What
+is left is to implement the claim. Defects (2) and (3) of the original text are DELIVERED
+(see their section); defect (1) is what remains, and it dissolves under the rule rather
+than needing a language change.
 
-DEFECT (2) IS CLOSED (28TAT, no live site). **DEFECT (3) IS FIXED** — the per-spec
-exemption it named is deleted and replaced by a general rule, after two wrong attempts
-that are recorded in its section because each looked right. The original text is kept
-under THE ORIGINAL CLAIM so the refutation can be read against it.
+### The rule
 
-### The measurement that refutes it
+An obligation is DISCHARGED by any of FOUR routes, and every one is readable from the
+signature and the call site — none needs the callee's body:
 
-Gate removed on the current tree (28TAT and 159S9 have since landed): **6362 passed / 25
-FAILED**, not the 4808/21 the ticket recorded.
+ 1. **the caller's own `requires`** — the ordinary forward;
+ 2. **value-direction** — the spec has an operation taking its own carrier, so a runtime
+    value can name a provider ([`spec_has_value_directed_route`]);
+ 3. **resolver search** — the call pins a concrete element, so a goal built from it can
+    match a provider fact ([`dep_has_searchable_pin`]);
+ 4. **A SPEC-TYPED PARAMETER** — a parameter typed at a spec CARRIES that spec's `requires`
+    chain, by the spec's own contract. `operation total(c: FiniteCollection) = size(c)`
+    owes `Iterable[…]` and HOLDS it, because `c`'s type says so. NOT YET IMPLEMENTED.
 
-`report_unsuppliable_requirements` instrumented to dump every parked refusal, whole
-`anthill-core` suite, `--nocapture`: **142 parked, 100 dropped by the gate, 42 reported.**
-The 100 dropped are NOT one shape, and 84 of them are three stdlib operations:
+A call is refused when a clause is declared and NO route discharges it. No body walk, and
+no marker — see the two dead ends below.
 
-| callee | n | signature | slot |
-|---|---|---|---|
-| `anthill.prelude.FiniteCollection.size` | 37 | 35 construction + 2 unconstrained | Sort |
-| `anthill.prelude.MappedStream.map` | 31 | unconstrained | Sort |
-| `anthill.prelude.FilteredStream.filter` | 16 | unconstrained | Sort |
+### The body walk is an EXCUSE, not information
 
-The remaining 16 are singletons across fixtures, including one the new rule would catch
-CORRECTLY (`wi999.req.Poly.add` declares `requires Ring[T = R]` with no `Ring` provider
-anywhere) and one it would catch wrongly (`wi999.prov.Impl` both requires AND provides
-`Show[T = Impl]`; construction is reported cyclic).
+`op_body_reads_sort_requirement_slot` / `op_body_reads_op_requirement_slot` walk the
+CALLEE's body to decide whether THIS call is legal. The cost is stated exactly by
+`wi_xsvcs`'s own fixture, two bodies under ONE signature:
 
-### Why those 84 are not owed: no dictionary exists at that call
+```
+operation tyOf[B](x: B) -> Type requires TT[T = B] = TT.valueOf()   -- refused
+operation tyOf[B](x: B) -> Type requires TT[T = B] = Boom           -- loads, answers
+operation mid[U](y: U) -> Type = tyOf(y)                            -- the caller
+```
 
-TRACED, not assumed, on `operation total(c: FiniteCollection) -> Int64 = size(c)`:
+`mid` should be refused BOTH times. The second `tyOf` declares a clause it never uses; the
+repair is to DELETE the clause, and MEASURED, that repair loads clean (4237 facts, 433
+rules). The walk exists only to excuse that declaration, and its price is that a callee's
+body decides its callers' obligations — which is defect (1).
 
-  * the call classifies `ConcreteApplyWithin target=FiniteCollection.size dict=false`,
-    with `enclosing_sort = None` (a free operation);
-  * so eval's `start_apply_same_sort` takes `inherit = false`, `dispatch_dict = None`,
-    `op_dicts = []` and falls to `start_apply_with_op_slots`, which installs **no
-    requirements channel at all**;
-  * `size`'s body reaches `Iterable` by VALUE-DIRECTED dispatch — `collect(c)` and
-    `Iterable.iterator` both classify `UnresolvedSpecOp`.
+### What is measured, and what blocks it
 
-No dictionary is built, installed or read. The parked refusal is about a channel the
-call does not use. `map` and `filter` are the same picture and their bodies say so at a
-glance: `mapped(s, f)` and `filtered(s, p)`, single entity constructions
-(`combinators.anthill`).
+On `-p anthill-core`, from the delivered tree:
 
-### The two roles, which "declared ⇒ owed" collapses
+ - **both body walks removed, no fourth route — 28 FAILED.**
+ - **plus a LOOSE fourth route — 19 FAILED.** The whole `n01py` family and several
+   `x13yv` rows are DISCHARGED rather than excused, which is the shape of route 4 exactly.
 
-THE TICKET ALREADY CONTAINED THE CONTRADICTION. Its prescribed repair is "the repair for
-such a body is to delete the clause it does not use", and of this very clause it says
-"The clause is not noise — a mapped stream's source genuinely must be iterable — so it
-cannot be deleted." Both cannot hold.
+TWO KNOWN BLOCKERS, and the probe is in the scratchpad (`typing.fourthroute.rs`):
 
-A `requires` clause has TWO ROLES:
+ 1. **The cover must be BINDING-AWARE.** The probe matched on the spec SORT alone, and 2
+    of its 19 are that looseness biting — `wi456 …an_undeclared_ordering_is_refused_at_load`
+    and `…the_refusal_names_the_repair_and_not_a_witness_choice` are refusals it wrongly
+    silences. The contract must be shown to cover THIS dep, bindings included.
+ 2. **The dep's carrier binds to the SPEC VIEW, not to the value's carrier.** At `size(c)`
+    the dep reads `Iterable[C = FiniteCollection[C = XC, …], …]` where `XC` is
+    `ExprCarried[value = c, member = C]`. `FiniteCollection`'s own chain instantiated at
+    `c` is `Iterable[C = XC, …]`. They do not match, so even a binding-aware cover fails
+    until the admission of a spec-view value at its own carrier parameter binds `C` to the
+    value's carrier rather than to the view.
 
-  1. a STATIC CONSTRAINT that licenses the body's calls and types the value the body
-     constructs — `FiniteCollection requires Iterable` is what makes `collect(c)` inside
-     `size` well-typed, and `MappedStream requires Iterable` is what makes a `mapped(…)`
-     value readable by `MappedStreamFinite`;
-  2. a RUNTIME DICTIONARY the caller supplies and the callee reads by `__req_*`.
+### TWO REFUTATIONS THAT WERE THEMSELVES WRONG
 
-The read gate SEPARATES them and is therefore right about the 84: role 1 holds, role 2
-is absent. "Declared ⇒ owed" collapses them and refuses all 84, prescribing the deletion
-of three real constraints.
+**"The 84 dropped refusals prove declared ⇏ owed."** They do not. They are OWED AND HELD,
+by route 4 — the evidence is in the parameter's type and the search never looked. The
+census stands (143 parked, 100 dropped; `FiniteCollection.size` 37, `MappedStream.map` 31,
+`FilteredStream.filter` 16) but its reading was wrong.
 
-### Defect (2) closed, defect (3) FIXED; only (1) survives
+**"A `requires` has TWO ROLES — a static constraint and a runtime dictionary — and the gate
+separates them."** RETRACTED. That framing was built on the misreading above and on a trace
+showing no dictionary is installed at those calls. No dictionary is installed because
+value-direction supplies the capability, which is a route DISCHARGING the obligation, not
+evidence that none was owed.
+
+**AND A MARKER IS NOT NEEDED.** A signature-level marker distinguishing "consumed" from
+"constraint only" was designed and costed (26 sorts declare a sort-level clause, 3 consume
+it; 24 ops declare an op-level one, 7 consume it). It is unnecessary: the distinction it
+would draw exists ONLY because the body walk excuses unused clauses. Remove the excuse and
+there is nothing for a marker to say.
+
+### Defects (2) and (3): DELIVERED
+
+Both are done and committed; kept here because each was refuted once before it was fixed,
+and because (3)'s rule is the one route 4 completes. Defect (1) is NOT in this section —
+it dissolves under "the rule" above: once a caller's verdict follows from the four routes,
+a callee's body no longer decides it, and there is nothing left to declare.
 
 **(2) — a body-less callee answers "reads nothing" — IS CLOSED.** WI-20260921-28TAT fixed
 the OP half (`native_backing_reads_slots`, keyed on `Error.reify` exactly as the
@@ -212,54 +231,23 @@ WHAT LANDED — full workspace **7265 passed / 0 failed**:
    retired by WI-20260902-CZJ2N; injectivity unaffected) and an unused `witness: Symbol`
    parameter. `anthill-core` builds warning-free.
 
-### The restated change
+### ACCEPTANCE
 
-STOP DECIDING THE CHANNEL FROM THE BODY. "Is this requirement consumed as a dictionary?"
-must become a property of the DECLARATION, or be read off the call's already-computed
-`CallClass`, rather than recovered by walking the callee's body in
-`op_body_reads_sort_requirement_slot` / `op_body_reads_op_requirement_slot`. That is
-stable under body edits — which is defect (1) — and it does not refuse the 84, because a
-value-directed call is classified as one.
+ - route 4 is implemented with a BINDING-AWARE cover, and blocker 2 is either fixed or
+   stated as still open with its own row;
+ - both body walks are gone, and with them `SlotToRead`, `native_backing_reads_slots` and
+   the `if !reads { continue; }` gate;
+ - `mid` above is REFUSED against BOTH bodies — DRIVEN, in one test, with the two bodies
+   side by side, which is the row that says a callee's body no longer decides its callers;
+ - `wi_xsvcs …a_slot_the_callee_never_reads_still_loads_and_answers` is repaired by
+   DELETING its dead clause rather than by weakening the rule, and says so at its site;
+ - the rows that only change WORDING are named as such, each saying what it asserted
+   before;
+ - kernel-language.md §8.7 states the rule as the four routes;
+ - full workspace green via rustland/scripts/test.sh. Scaland is NOT in scope — it has no
+   typer, so none of this is mirrored there (checked).
 
-AND THEY ARE **NOT** WI-20260921-R10KC'S — MEASURED 2026-09-22, ON THE MERGED TREE.
-An earlier revision of this ticket predicted, from READING R10KC, that 37 of the 84
-(`FiniteCollection.size`) were its population and that its landing would make those
-bodies receive the dictionary. R10KC landed (`9e26b389`). RE-CENSUSED: **143 parked, 100
-dropped, 43 reported** — `size` 37, `map` 31, `filter` 16, every figure UNCHANGED (the
-+1 is this ticket's own new row). The prediction is refuted.
-
-WHY IT WAS WRONG, because the shapes look alike from outside. The match was on "a spec
-default body calling a body-less sibling", which IS true of `size` → `collect`
-(`collect` is declared body-less, `finite_collection.anthill`). R10KC's second half was
-missed, and its own header states it: the defect is at a call site "where the typer
-resolved `Searchable` AT `MySet`" — a CONCRETE provider the typer already knew, whose
-dictionary was built three times and handed to the reading frame zero times. Its
-`threads_instance` gate requires a `resolved_tree` with a concrete `impl_sort`.
-
-THE 84 ARE THE OPPOSITE CASE. `operation total(c: FiniteCollection) = size(c)` has an
-ABSTRACT SPEC-TYPED parameter — the carrier is `ExprCarried[value = c, member = C]` — so
-no provision resolves at the call, there is no `resolved_tree`, and R10KC's gate cannot
-fire. Nothing was built, so nothing was dropped.
-
-TWO DEFECTS, NOT ONE: *evidence exists and is discarded* (R10KC, delivered) versus
-*evidence cannot be determined at the call* (the 84, untouched and still this ticket's).
-The 47 `map` / `filter` rows were already excluded for a different reason — their bodies
-are `mapped(s, f)` / `filtered(s, p)`, entity constructions that read no dictionary and
-never will.
-
-ACCEPTANCE:
- - the decision is read from the declaration or the classification, not from a body walk,
-   and the two body-walk predicates are gone or reduced to that reading;
- - a callee whose body is EDITED to stop reading a slot does not silently admit callers
-   that were previously refused — DRIVEN, with the two bodies in one test;
- - its control: the same pair under today's rule, showing which verdict moved;
- - the 84 stdlib rows answer what they answer today, and the test says so by name;
- - the stale premise in the sort-half body-less arm's comment is corrected to what 28TAT
-   measured;
- - kernel-language.md §8.7 states the two roles and which one the check is about;
- - full workspace green via rustland/scripts/test.sh; scaland `sbt testFull`.
-
-### THE ORIGINAL CLAIM (refuted — kept for the record)
+### THE ORIGINAL CLAIM (VINDICATED — kept for the record)
 
 A DECLARED `requires` SHOULD BE OWED BY THE CALLER BECAUSE IT IS DECLARED, not because
 the callee currently reads it. Decided by the user, 2026-09-21, during WI-20260921-28TAT.
@@ -287,9 +275,10 @@ reported. That also kills the machinery behind it — `op_body_reads_sort_requir
 `op_body_reads_op_requirement_slot`, `SlotToRead`, and 28TAT's
 `native_backing_reads_slots` — roughly 250 lines.
 
-> Refuted above: defect (2) is closed, and deleting the gate refuses 84 calls that
-> consume no dictionary. The ticket's own reading of the blocker — "SO THIS DEPENDS ON
-> INFERENCE THAT PINS A RECEIVER'S SORT PARAMETERS FROM THE RECEIVER'S TYPE" — was also
-> wrong twice over: for `map`/`filter` the sort params are pinned by the RETURN type, not
-> the receiver's, and pinning them would not make the refusal right, because the callee
-> reads no dictionary either way.
+> The CLAIM above holds. What this ticket got wrong was its own blocker analysis: it
+> said the 84 refusals mean the clause "cannot be deleted", and read that as the rule
+> being too strong. The clause indeed cannot be deleted — it is owed — and the 84 are
+> DISCHARGED by route 4, not exempt from the rule. The named prerequisite ("inference
+> that pins a receiver's sort parameters from the receiver's type") is not it either:
+> for `map`/`filter` those params come from the RETURN type. The real prerequisite is
+> route 4 plus the carrier-binding defect, both stated above.
