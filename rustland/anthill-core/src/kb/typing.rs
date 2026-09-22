@@ -25922,36 +25922,44 @@ fn scope_contract_covers_dep(
         let chain_may_cover = chain
             .iter()
             .any(|e| same_sort_canonical(kb, e.required_sort, dep.required_sort));
-        let map = held_view_subst_map(kb, holder.spec_sort, &holder.entry.spec);
-        for entry in chain.iter().filter(|_| chain_may_cover) {
-            if !same_sort_canonical(kb, entry.required_sort, dep.required_sort) {
-                continue;
-            }
-            let composed = RequiresEntry {
-                required_sort: entry.required_sort,
-                spec: substitute_in_spec(kb, &entry.spec, &map),
-                supply: entry.supply,
-            };
-            // BLOCKER 2's normalization is why this is not a plain [`entries_cover`]
-            // call; see [`carrier_normalized_bindings`]. The rest IS that function —
-            // its `same_sort_canonical` is already settled by the filter above, and
-            // [`supply_covers_demanded_keys`] is its key walk, asked here with the two
-            // sides normalized.
-            if !held_contract_is_obtainable(kb, holder.spec_sort, &composed, disambig) {
-                continue;
-            }
-            let Some((_, supply)) = unwrap_spec_view_value(kb, &composed.spec) else {
-                continue;
-            };
-            let supply = carrier_normalized_bindings(kb, dep.required_sort, supply);
-            if supply_covers_demanded_keys(
-                kb,
-                disambig,
-                &spec_qn,
-                Supply(&supply),
-                Demand(&demand),
-            ) {
-                return true;
+        // AND THE FILTER'S OWN SAVING WAS BEING PAID AROUND. `map` is read at exactly one
+        // site — the `substitute_in_spec` below — so building it for a holder the filter
+        // has already rejected IS the "`HashMap` plus a substitution walk" the paragraph
+        // above says such a holder does not cost: a `to_string`, then a `format!` and a
+        // string-hash `try_resolve_symbol` PER NAMED KEY, per holder, per dep, per call
+        // site. Verdict-neutral by construction — nothing outside this block reads it.
+        if chain_may_cover {
+            let map = held_view_subst_map(kb, holder.spec_sort, &holder.entry.spec);
+            for entry in chain.iter() {
+                if !same_sort_canonical(kb, entry.required_sort, dep.required_sort) {
+                    continue;
+                }
+                let composed = RequiresEntry {
+                    required_sort: entry.required_sort,
+                    spec: substitute_in_spec(kb, &entry.spec, &map),
+                    supply: entry.supply,
+                };
+                // BLOCKER 2's normalization is why this is not a plain [`entries_cover`]
+                // call; see [`carrier_normalized_bindings`]. The rest IS that function —
+                // its `same_sort_canonical` is already settled by the filter above, and
+                // [`supply_covers_demanded_keys`] is its key walk, asked here with the two
+                // sides normalized.
+                if !held_contract_is_obtainable(kb, holder.spec_sort, &composed, disambig) {
+                    continue;
+                }
+                let Some((_, supply)) = unwrap_spec_view_value(kb, &composed.spec) else {
+                    continue;
+                };
+                let supply = carrier_normalized_bindings(kb, dep.required_sort, supply);
+                if supply_covers_demanded_keys(
+                    kb,
+                    disambig,
+                    &spec_qn,
+                    Supply(&supply),
+                    Demand(&demand),
+                ) {
+                    return true;
+                }
             }
         }
         // THE PROVISION LEG — THE HOLDER'S CARRIER ANSWERS THE DEP, decided by a STATIC
@@ -25989,6 +25997,52 @@ fn scope_contract_covers_dep(
         //
         // AN EMPTY SCOPE, deliberately: a contract the caller's own frame could forward is
         // route 1's business and was taken by Strategies 1/2 long before this.
+        //
+        // THIS LEG'S OWN PRE-FILTER, and it is a NECESSARY CONDITION of the goal below
+        // rather than a heuristic. That goal is `dep.required_sort[carrier = <holder>, …]`,
+        // which only a provision of that spec FOR that carrier can answer, and
+        // [`carrier_provides_spec`] is exactly that question asked of the provider index —
+        // both channels, a sort's own out-edges transitively ([`sort_provides`]) and a
+        // provision another sort declares for it ([`carrier_provided_by_witness`]). A
+        // holder supplying the spec by NEITHER cannot answer, so the resolution is dead
+        // work; `wi599`'s `Mapped provides Coll[C = Mapped, …]` and `wi508`'s bare
+        // parametric carriers are this leg's whole population and both are admitted.
+        //
+        // IT IS THE COUNTERPART OF THE CHAIN LEG'S same-sort filter, which deliberately
+        // does not gate this leg (see above) — so before this, EVERY holder reached a full
+        // SLD resolution, including the `require[…]`-bracket holders whose `spec_sort` is
+        // a spec rather than a carrier and which the chain leg already owns.
+        //
+        // AND THE COST IT REMOVES IS SMALL — SAID HERE BECAUSE THE SIZING WAS THE POINT.
+        // WI-20260921-3G1YT carried this as an open item on a /code-review finding that
+        // the leg "runs a full SLD resolution per holder per unprojected dep with no cheap
+        // pre-filter", reported PLAUSIBLE and never confirmed. MEASURED, on one full
+        // stdlib load: the leg is reached 94 times, this filter removes 48 of them, and 46
+        // resolutions survive. Forty-six is nothing, and the full workspace bears that out
+        // — 7287 passed either way, 744s against a 727s baseline, i.e. no effect outside
+        // noise. So the finding is NOT CONFIRMED as a performance defect, and this gate is
+        // kept for what it states rather than for what it saves: the leg's own necessary
+        // condition, written once, bounding a walk whose holder set grows with every
+        // parameterised bound type [`held_spec_views`] keeps.
+        //
+        // MEASURED, NOT ARGUED — and the risk it answers is that a provision derived by a
+        // RULE is not a `SortProvidesInfo` edge, so the index could deny what the resolver
+        // answers. A probe ran the resolution ANYWAY across `-p anthill-core` and panicked
+        // on any `resolved && !admits`: 6426 rows, ZERO divergences. The assertion is
+        // recorded here because a future rule-derived provision would reintroduce that gap.
+        //
+        // AND THE CONTROL IS NAMED, because this gate is verdict-neutral and so no row
+        // fails when it is backed OUT. What fails is a gate that over-rejects: forcing this
+        // `continue` unconditionally — i.e. disabling the leg — reds exactly THREE rows,
+        // which are therefore the leg's whole population and this filter's control:
+        // `wi508 …wi508_concrete_new_element_inferred_from_use`,
+        // `wi508 …wi508_concrete_new_unpinned_element_loads`, and
+        // `wi599 …the_stdlib_combinators_are_general_over_any_iterable_source`
+        // (6423 passed / 3 failed). They pass with the filter, which is what says it does
+        // not over-reject; every other row in the suite passes either way by design.
+        if !carrier_provides_spec(kb, holder.spec_sort, dep.required_sort) {
+            continue;
+        }
         let Some(carrier_param) = spec_carrier_param_or_sole(kb, dep.required_sort) else {
             continue;
         };

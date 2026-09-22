@@ -3,9 +3,9 @@
 - id: WI-20260921-3G1YT-a-declared-requires-should-be
 - created: 2026-09-21T14:16:49Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-21T14:16:49Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-22T12:59:15Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -348,10 +348,48 @@ have it — its cover walk compares the pinned carrier and fails.
 `wi_3g1yt_scope_contract_discharge_test.rs`: route 4 proper, the unrelated-value soundness
 row with its control, and the `SortedSet` carrier bound.
 
-#### NOT DONE, and stated rather than left to be discovered
+#### THE LAST OPEN ITEM — MEASURED 2026-09-22, AND THE FINDING DOES NOT SURVIVE IT
 
- - the efficiency of the provision leg is UNMEASURED: it runs a full SLD resolution per
-   holder per unprojected dep with no cheap pre-filter, and `held_spec_views` now keeps
-   every parameterised bound type. A `carrier_provides_spec` pre-filter would bound it
-   without changing a verdict. Reported by /code-review as PLAUSIBLE, not confirmed.
+The item read: "the efficiency of the provision leg is UNMEASURED: it runs a full SLD
+resolution per holder per unprojected dep with no cheap pre-filter, and `held_spec_views`
+now keeps every parameterised bound type. A `carrier_provides_spec` pre-filter would bound
+it without changing a verdict. Reported by /code-review as PLAUSIBLE, not confirmed."
+
+**IT IS NOW MEASURED, AND IT IS NOT CONFIRMED.** On one full stdlib load the leg is
+reached **94** times; the pre-filter removes **48**; **46** resolutions survive. Forty-six
+is nothing, and the full workspace agrees: **7287 passed either way**, 744s against a 727s
+baseline — no effect outside noise. The leg was never hot. Recorded at its own site so the
+next reader does not re-open it on the same suspicion.
+
+**THE PRE-FILTER IS KEPT ANYWAY**, on the user's decision (2026-09-22), for what it STATES
+rather than what it saves: it is the leg's own NECESSARY CONDITION — the goal is
+`dep.required_sort[carrier = <holder>, …]`, which only a provision of that spec for that
+carrier can answer — and it bounds a walk whose holder set grows with every parameterised
+bound type `held_spec_views` keeps. The stdlib is not the largest KB this will see.
+
+**VERDICT-NEUTRALITY WAS MEASURED, NOT ARGUED.** The risk was real and named: a provision
+derived by a RULE is not a `SortProvidesInfo` edge, so the index could deny what the
+resolver answers. A probe ran the resolution ANYWAY and panicked on any
+`resolved && !admits` — **6426 rows, ZERO divergences**.
+
+**AND THE CONTROL IS NAMED**, because a verdict-neutral gate fails NOTHING when backed out;
+what fails is one that OVER-rejects. Forcing the `continue` unconditionally reds exactly
+THREE rows, which are therefore the leg's whole population:
+`wi508 …wi508_concrete_new_element_inferred_from_use`,
+`wi508 …wi508_concrete_new_unpinned_element_loads`, and
+`wi599 …the_stdlib_combinators_are_general_over_any_iterable_source` (6423 / 3 failed).
+
+**A SECOND DEFECT FOUND ON THE WAY, and it is a strict win.** The CHAIN leg's same-sort
+pre-filter carries a comment saying a non-covering holder costs "a symbol compare rather
+than a `HashMap` plus a substitution walk" — but `held_view_subst_map` was built
+UNCONDITIONALLY, and it is exactly that HashMap: a `to_string`, then a `format!` and a
+string-hash `try_resolve_symbol` per named key, per holder, per dep, per call site. It is
+read at ONE site, inside the gated loop. Hoisted under the gate; verdict-neutral by
+construction, since `try_resolve_symbol` is a map lookup on `&self` and the map is pure.
+The code now does what its own comment already claimed.
+
+/code-review (high) over the change: no correctness findings; one low-severity efficiency
+finding, which is the "not confirmed" verdict above, raised and decided by the user.
+
  - scaland is NOT in scope — it has no typer (checked).
+
