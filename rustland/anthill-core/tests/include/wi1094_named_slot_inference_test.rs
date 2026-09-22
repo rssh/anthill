@@ -1,5 +1,15 @@
 //! WI-1094 (proposal 058 §3.4, §3.9; implementation notes §27) — **an omitted NAMED
-//! requirement slot is inferred INTO THE TYPE, and an ERASED one is refused.**
+//! requirement slot is inferred INTO THE TYPE, and an ERASED one is FORWARDED.**
+//!
+//! **THE SECOND HALF CHANGED HANDS AT WI-20260921-EE0EP**, and this file is kept as the
+//! record of both readings rather than rewritten as though the first never happened.
+//! WI-1094 shipped a REFUSAL for the erased slot, correctly, because §3.9's other repair
+//! — forward the value's own dictionary — had no channel: a dictionary rides in a FRAME,
+//! never in a value, and a signature declaring no slot had nothing to forward. EE0EP
+//! built that channel (a synthesized op-scoped slot filled from the ARGUMENT's type), so
+//! the rows that pinned the refusal now pin the forward, each driven by VALUE. What did
+//! NOT change is the property every one of them was written for: the body never PICKS a
+//! comparator. It used to say so by refusing; it now says so by forwarding.
 //!
 //! §3.4 has two halves and WI-861 delivered neither of them at a named slot. *"Omitting
 //! a named slot in type position means ANY"* — the accepting half — was already true
@@ -22,14 +32,20 @@
 //!     dictionary-only default could not do.
 //!   * a SKOLEM (a `Var::Rigid`, or the `s.O` projection a parameter's unwritten slot is
 //!     filled with) — *the enclosing signature said ANY*. The value flowing in already
-//!     chose; §3.9 leaves forwarding or refusal, and forwarding is unavailable by
-//!     construction (a dictionary rides in a FRAME, never in a value). So: refused.
+//!     chose, and §3.9 leaves forwarding or refusal. WI-1094 refused. Since
+//!     WI-20260921-EE0EP the `s.O` case FORWARDS: the projection names the parameter, the
+//!     caller reads the witness out of that argument's type, and the dictionary travels
+//!     in the frame as it always did. A skolem nothing spells — WI-1061's nested slot, or
+//!     an existential return's opened rigid — still has no receiver to read and is still
+//!     refused.
 //!   * a witness sort — already decided, unchanged since WI-844.
 //!
-//! **THE REFUSAL IS COUNT-INDEPENDENT, AND THAT IS THE POINT OF `a_sole_provider_does_
-//! not_excuse_the_erasure`.** Before this ticket the erasing shape was loud only when the
-//! providers happened to TIE; with one provider it loaded clean and constructed silently
-//! (WI-1094's own probe measurement). The tie was never the defect.
+//! **THE COUNT NEVER DECIDED ANYTHING, AND THAT IS THE POINT OF
+//! [`a_sole_provider_is_forwarded_like_any_other`].** Before WI-1094 the erasing shape was
+//! loud only when the providers happened to TIE; with one provider it loaded clean and
+//! CONSTRUCTED silently. WI-1094 refused it count-independently; EE0EP forwards it
+//! count-independently. Three verdicts, one invariant: the provider count is not what
+//! makes the answer right.
 //!
 //! **WHICH ARM MEASURES WHICH HALF**, so a back-out is attributable rather than a count.
 //! Reverting the `Unspoken` bind fails `a_bracketless_set_takes_the_ladders_answer`,
@@ -257,26 +273,34 @@ fn two_inferred_sets_agree_and_merge() {
 /// through the same two inserts runs and answers `7`, so what is refused is the erasure
 /// and not the pipeline.
 #[test]
-fn an_erased_named_slot_is_refused_not_reconstructed() {
-    let erasing = "  sort Any\n    \
-                   operation add(s: SortedSet[T = Int64], x: Int64) -> SortedSet[T = Int64] =\n      \
-                   SortedSet.insert(s, x)\n  end";
-    let errs = load_errs(&program(
+fn an_erased_named_slot_takes_the_arguments_own_dictionary() {
+    // The SAME erasing signature WI-1094 refused, now read back through a SCALAR return
+    // so the erased RETURN — a separate case, still refused (WI-1063) — cannot mask what
+    // the parameter channel does.
+    let erasing = program(
         "wi1094.erased",
         &format!("{DESCENDING}{DOUBLED}"),
-        erasing,
-    ));
-    assert!(
-        errs.iter().any(|e| {
-            e.contains("universally quantified")
-                && e.contains("`O: anthill.prelude.WeakOrd`")
-                && e.contains("anthill.prelude.SortedSet.insert")
-        }),
-        "a signature that omits `O` and then dispatches through it must be refused at \
-         that call — the value already chose and nothing here can recover the choice: \
-         {errs:?}"
+        &format!(
+            "  sort Any\n    \
+             operation addAndHead(s: SortedSet[T = Int64], x: Int64, dflt: Int64) -> Int64 =\n      \
+             match SortedSet.toList(SortedSet.insert(s, x))\n        \
+             case nil() -> dflt\n        \
+             case cons(h, t) -> h\n  end\n  \
+             sort Driver\n{HEAD}    \
+             operation run(n: Int64) -> Int64 =\n      \
+             let s = SortedSet.empty[T = Int64, O = Descending]()\n      \
+             Any.addAndHead(SortedSet.insert(s, 7), 3, -1)\n  end"
+        ),
     );
-    // THE CONTROL: the same two inserts with the slot KEPT read back descending.
+    assert_eq!(
+        eval_int(&erasing, "wi1094.erased.Driver.run", "the erasing route now forwards"),
+        7,
+        "the parameter's unwritten `O` receives the ARGUMENT's dictionary, so the body \
+         reads the order the construction site chose — 3 here would be the reconstructed \
+         ascending rival WI-861 measured"
+    );
+    // THE CONTROL: the slot KEPT, which is what the erased route used to disagree with.
+    // The two spellings must now agree, and that agreement IS the ticket.
     let kept = program(
         "wi1094.kept",
         &format!("{DESCENDING}{DOUBLED}"),
@@ -291,7 +315,7 @@ fn an_erased_named_slot_is_refused_not_reconstructed() {
         eval_int(&kept, "wi1094.kept.Driver.run", "the kept route must run"),
         7,
         "the slot-KEEPING route is what the erased one used to disagree with — WI-861 \
-         measured 3 against this 7"
+         measured 3 against this 7, and WI-20260921-EE0EP closed the gap"
     );
 }
 
@@ -303,21 +327,32 @@ fn an_erased_named_slot_is_refused_not_reconstructed() {
 ///
 /// This arm is the one that fails if the refusal is ever re-keyed on a candidate count.
 #[test]
-fn a_sole_provider_does_not_excuse_the_erasure() {
-    let errs = load_errs(&program(
+fn a_sole_provider_is_forwarded_like_any_other() {
+    // ONE provider in scope (the host's own ascending `Ord[Int64]`), no rival declared.
+    // Before WI-1094 this loaded and CONSTRUCTED silently; WI-1094 refused it
+    // count-independently; WI-20260921-EE0EP forwards it count-independently. The
+    // property that survived all three is that the count never decided anything.
+    let src = program(
         "wi1094.sole",
         "",
-        "  sort Any\n    \
-         operation add(s: SortedSet[T = Int64], x: Int64) -> SortedSet[T = Int64] =\n      \
-         SortedSet.insert(s, x)\n  end",
-    ));
-    assert!(
-        errs.iter().any(|e| {
-            e.contains("universally quantified") && e.contains("anthill.prelude.Int64")
-        }),
-        "with ONE provider the construction is right by luck, and the erasure is the \
-         same defect — the refusal must name the provider it would have taken without \
-         being conditional on there being two: {errs:?}"
+        &format!(
+            "  sort Any\n    \
+             operation addAndHead(s: SortedSet[T = Int64], x: Int64, dflt: Int64) -> Int64 =\n      \
+             match SortedSet.toList(SortedSet.insert(s, x))\n        \
+             case nil() -> dflt\n        \
+             case cons(h, t) -> h\n  end\n  \
+             sort Driver\n{HEAD}    \
+             operation run(n: Int64) -> Int64 =\n      \
+             let s = SortedSet.empty[T = Int64]()\n      \
+             Any.addAndHead(SortedSet.insert(s, 7), 3, -1)\n  end"
+        ),
+    );
+    assert_eq!(
+        eval_int(&src, "wi1094.sole.Driver.run", "the sole-provider route"),
+        3,
+        "with one ascending provider the argument's own dictionary IS the ascending one, \
+         so 3 is the value's own answer and not a lucky construction — the point is that \
+         this route is the same route as the two-provider one"
     );
 }
 
@@ -502,9 +537,13 @@ fn an_anonymous_caller_requirement_is_not_the_values_own_dictionary() {
          operation addAndCount(s: SortedSet[T = LT], x: LT) -> Int64 =\n      \
          SortedSet.toList(SortedSet.insert(s, x)).length()\n  end",
     ));
+    // WI-20260921-EE0EP re-worded this: the parameter channel APPLIES here and was
+    // DECLINED, because `Loose`'s anonymous `requires WeakOrd[LT]` already covers the
+    // goal and a body reads a goal rather than a parameter. So the message names the
+    // collision and the repair (name the slot), not the old shared sentence.
     assert!(
         errs.iter().any(|e| {
-            e.contains("universally quantified")
+            e.contains("already answers")
                 && e.contains("`O: anthill.prelude.WeakOrd`")
                 && e.contains("anthill.prelude.SortedSet.insert")
         }),
@@ -552,7 +591,7 @@ fn an_anonymous_caller_requirement_is_not_the_values_own_dictionary() {
 /// The second arm is the control that keeps this from being "any use of `Boxed` refuses":
 /// a CONSTRUCTION in the very same frame still infers and runs.
 #[test]
-fn a_nested_frame_supply_does_not_excuse_the_erasure() {
+fn a_nested_frame_supply_does_not_outrank_the_argument() {
     let boxed = "  sort Boxed\n    \
                  sort BT = ?\n    \
                  requires Ord[BT]\n    \
@@ -560,26 +599,37 @@ fn a_nested_frame_supply_does_not_excuse_the_erasure() {
                  sort BoxedInt\n    \
                  provides Boxed[BT = Int64]\n    \
                  operation tag(x: Int64) -> Int64 = 1\n  end\n";
-    let errs = load_errs(&program(
+    // The frame holds `Boxed[BT = Int64]`, whose OWN chain nests an `Ord[Int64]`.
+    // Strategy 2 could project it — and that projection is `Boxed`'s evidence, not the
+    // argument's order. The synthesized slot is a DIRECT cover of `WeakOrd[T = Int64]`
+    // and every direct cover is tried before Strategy 2's one-level chain walk, so the
+    // argument wins. That ordering is what this row measures; `7` is the argument's
+    // `Descending`, `3` would be `Boxed`'s ascending `Ord` reached through the nest.
+    let src = program(
         "wi1094.nested",
         DESCENDING,
         &format!(
             "{boxed}  sort User\n    \
              requires Boxed[BT = Int64]\n    \
-             operation size(s: SortedSet[T = Int64]) -> Int64 =\n      \
-             SortedSet.toList(s).length()\n  end"
+             operation headOf(s: SortedSet[T = Int64], dflt: Int64) -> Int64 =\n      \
+             match SortedSet.toList(s)\n        \
+             case nil() -> dflt\n        \
+             case cons(h, t) -> h\n  end\n  \
+             sort Driver\n    \
+             operation run(n: Int64) -> Int64 =\n      \
+             let s = SortedSet.empty[T = Int64, O = Descending]()\n      \
+             User.headOf(SortedSet.insert(SortedSet.insert(s, 7), 3), -1)\n  end"
         ),
-    ));
-    assert!(
-        errs.iter().any(|e| {
-            e.contains("universally quantified") && e.contains("anthill.prelude.SortedSet.toList")
-        }),
-        "a nested `Ord[Int64]` bundled inside the frame's `Boxed` slot is `Boxed`'s \
-         evidence, not the argument's order — Strategy 2 would project it silently: \
-         {errs:?}"
     );
-    // THE CONTROL: the same frame, a CONSTRUCTION instead of an erasure. Nothing about
-    // holding a `Boxed` slot stops a bracket-less `empty` from inferring.
+    assert_eq!(
+        eval_int(&src, "wi1094.nested.Driver.run", "the nested-frame route"),
+        7,
+        "a nested `Ord[Int64]` bundled inside the frame's `Boxed` slot is `Boxed`'s \
+         evidence; the argument's own order must outrank it"
+    );
+    // THE CONTROL, unchanged: the same frame with a CONSTRUCTION instead of an erasure.
+    // Nothing about holding a `Boxed` slot stops a bracket-less `empty` from inferring,
+    // and the ladder's answer there is the ascending one.
     let built = program(
         "wi1094.nested.built",
         DESCENDING,
@@ -596,8 +646,8 @@ fn a_nested_frame_supply_does_not_excuse_the_erasure() {
     assert_eq!(
         eval_int(&built, "wi1094.nested.built.Driver.go", "the construction control"),
         3,
-        "a construction site in the same frame still takes the ladder's answer — the \
-         refusal is about the slot being undeclared, not about the frame being non-empty"
+        "a construction site in the same frame still takes the ladder's answer — this \
+         row is about where the EVIDENCE comes from, not about the frame being non-empty"
     );
 }
 
@@ -632,18 +682,29 @@ fn the_dot_spelling_reads_the_same_decision() {
         "the inferred `O` rides in `s`'s type, so the DOT spelling reads it back exactly \
          as the qualified one does"
     );
-    let errs = load_errs(&program(
+    // …and the ERASURE forwards through the dot too, answering the argument's own order.
+    // A spelling that did NOT would be a silent wrong order for one of the two ways to
+    // write the call, which is what this pair exists to rule out (WI-20260921-EE0EP).
+    let erased = program(
         "wi1094.dot.erased",
         &format!("{DESCENDING}{DOUBLED}"),
-        "  sort Any\n    \
-         operation size(s: SortedSet[T = Int64]) -> Int64 = s.toList().length()\n  end",
-    ));
-    assert!(
-        errs.iter().any(|e| {
-            e.contains("universally quantified") && e.contains("anthill.prelude.SortedSet.toList")
-        }),
-        "…and the erasure is refused through the dot too — a spelling that escaped it \
-         would be a silent wrong order for one of the two ways to write the call: {errs:?}"
+        &format!(
+            "  sort Any\n    \
+             operation headOf(s: SortedSet[T = Int64], dflt: Int64) -> Int64 =\n      \
+             match s.toList()\n        \
+             case nil() -> dflt\n        \
+             case cons(h, t) -> h\n  end\n  \
+             sort Driver\n    \
+             operation run(n: Int64) -> Int64 =\n      \
+             let s = SortedSet.empty[T = Int64, O = Descending]()\n      \
+             Any.headOf(s.insert(7).insert(3), -1)\n  end"
+        ),
+    );
+    assert_eq!(
+        eval_int(&erased, "wi1094.dot.erased.Driver.run", "the dotted erasure"),
+        7,
+        "the dot reads the same decision as the qualified call on the FORWARDING half \
+         too — 3 would mean one spelling re-derives where the other forwards"
     );
 }
 

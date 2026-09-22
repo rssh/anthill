@@ -462,6 +462,13 @@ pub enum TypeError {
         /// available — the case whose wrong dictionary comes out of the caller's own
         /// chain rather than out of a search.
         provider: Option<Symbol>,
+        /// WI-20260921-EE0EP — which residue this is, and therefore which repair the
+        /// message names. See [`ErasedSlotReason`].
+        reason: ErasedSlotReason,
+        /// The operation whose BODY holds the call — named by the
+        /// [`ErasedSlotReason::ChannelClosedByOwnRequires`] message, since the `requires`
+        /// that closed the channel is that operation's and not the callee's.
+        enclosing: Option<Symbol>,
     },
     /// WI-841 (058 §4.4 check 1): `f[Spec = W](…)` named a witness that does not
     /// provide that spec at all — no `SortProvidesInfo(sort_ref = W, spec = Spec[…])`
@@ -1295,6 +1302,8 @@ impl TypeError {
                 binder,
                 spec,
                 provider,
+                reason,
+                enclosing,
                 ..
             } => {
                 let would_take = match provider {
@@ -1304,20 +1313,65 @@ impl TypeError {
                     ),
                     None => String::new(),
                 };
-                format!(
-                    "the call to {} leaves its named requirement slot `{}: {}` \
-                     universally quantified — the argument's type omits it, which means \
-                     ANY provider, and no slot of this signature supplies its \
-                     dictionary{}. Whatever is supplied here answers for this signature \
-                     and not for the value, which carries whichever provider its own \
-                     construction site chose. Write `{1}` in the parameter's type, or \
-                     declare a NAMED slot for it (`requires {1}: {2}[…]`) and write that \
-                     name there, so the caller supplies the value's own",
-                    kb.qualified_name_of(*op),
-                    kb.local_name_of(*binder),
-                    kb.qualified_name_of(*spec),
-                    would_take,
-                )
+                // WI-20260921-EE0EP — the common case is SUPPLIED now (a top-level
+                // unwritten slot on a parameter takes that argument's own dictionary), so
+                // these two arms are the residues, and each names the repair that exists.
+                match reason {
+                    ErasedSlotReason::AmbiguousWithFrame => format!(
+                        "the call to {0} reads the named requirement slot `{1}: {2}` off a \
+                         parameter whose type omits it — which would be supplied from \
+                         that argument's own type, except that something else in this \
+                         frame already answers `{2}` here (an anonymous `requires` of the \
+                         same spec, or a second parameter of the same carrier){3}. A body \
+                         reads a GOAL and not a parameter, so there is no way to say which \
+                         of them is meant, and answering from the wrong one is a silent \
+                         wrong order. Name the slot and write that name in the parameter's \
+                         type (`requires {1}: {2}[…]`, `… {1} = {1} …`) so the read is \
+                         unambiguous",
+                        kb.qualified_name_of(*op),
+                        kb.local_name_of(*binder),
+                        kb.qualified_name_of(*spec),
+                        would_take,
+                    ),
+                    ErasedSlotReason::ChannelClosedByOwnRequires => format!(
+                        "the call to {0} reads the named requirement slot `{1}: {2}` off a \
+                         parameter whose type omits it, which would be supplied from that \
+                         argument's own type — except that `{3}` writes its OWN `requires`, \
+                         and the channel is admitted only for an operation whose op-scoped \
+                         chain is entirely parameter-derived{4}. Widening it further would \
+                         forward the author's own op-scoped slots into every callee \
+                         dictionary this body builds, which several entry points never \
+                         fill. Write `{1}` in the parameter's type and declare a slot for \
+                         it (`requires {1}: {2}[…]`), so this operation supplies it the way \
+                         it supplies its others",
+                        kb.qualified_name_of(*op),
+                        kb.local_name_of(*binder),
+                        kb.qualified_name_of(*spec),
+                        enclosing.map_or_else(
+                            || "the calling operation".to_owned(),
+                            |e| format!("{}", kb.qualified_name_of(e))
+                        ),
+                        would_take,
+                    ),
+                    ErasedSlotReason::NoReceiver => format!(
+                        "the call to {0} leaves its named requirement slot `{1}: {2}` \
+                         universally quantified, and NOTHING HERE CAN SUPPLY IT: the \
+                         argument's type names no provider either, so there is no \
+                         dictionary to forward and any construction would answer for a \
+                         value that already chose{4}. A bracket at THIS call does not \
+                         reach it — `{3}[{1} = …]` and `{0}[{1} = …]` pin the PARAMETER's \
+                         type while the argument's own stays a skolem, which unifies with \
+                         nothing but itself. Write `{1}` where the value is PRODUCED: in \
+                         the return type of the operation that builds it \
+                         (`-> {3}[…, {1} = <witness>]`), or, for an element reached by a \
+                         pattern match, in the element type itself",
+                        kb.qualified_name_of(*op),
+                        kb.local_name_of(*binder),
+                        kb.qualified_name_of(*spec),
+                        short_name_of(kb.qualified_name_of(*op)),
+                        would_take,
+                    ),
+                }
             }
             TypeError::WitnessDoesNotProvide {
                 op,
@@ -18551,7 +18605,15 @@ fn check_apply_iter(
             .op_entries()
             .iter()
             .any(|e| value_contains_projection(kb, &e.spec));
-        let needs_param_arg_types = op_has_projection || requires_have_projection;
+        // WI-20260921-EE0EP — AND A PARAM-DERIVED SLOT, for the same reason S8CBV added the
+        // chain: this map IS the channel. A `FromParam` slot is filled by READING the
+        // argument's type ([`param_slot_witness`]), so an empty map here is not a slower
+        // path, it is no supply at all — and an unsupplied slot that still CONSTRUCTS is
+        // the silent rival WI-1094 refused. Measured as exactly that: the subject program
+        // loaded and answered `false` at BOTH rival orderings before this flag existed.
+        let needs_param_arg_types = op_has_projection
+            || requires_have_projection
+            || op_chain_is_only_param_derived(kb, fn_sym);
         // WI-714 / WI-727: does the RETURN type write a type constructor (`Concat`,
         // join's schema merge; `Without`, fix's schema drop)? A per-op gate (over the
         // declared signature, like `op_has_projection`) — ONE traversal for both — so only a
@@ -19852,6 +19914,7 @@ fn check_apply_iter(
             &env.enclosing_dict_chain().clone(),
             env.param_rigids(),
             &selections,
+            env.enclosing_op(),
             span,
         )?;
 
@@ -21620,6 +21683,22 @@ fn check_apply_iter(
                     // below — flipping that turned 59 unit tests red with `PartialOrd.lt`
                     // refused by a diagnostic aimed at calls it was never about. Only the
                     // CHAIN moved.
+                    //
+                    // MERGE NOTE (2026-09-22) — WI-20260921-EE0EP arrived on the same
+                    // line from the other direction, ADDING a disjunct to a conditional
+                    // `whole_frame` (`op_chain_is_only_param_derived`, for a caller
+                    // holding a param-derived slot) while this side DELETED the
+                    // conditional outright: WI-20260921-3G1YT found its `TypeValue` gate
+                    // `callee_chain_reads_type_value` unread and generalized the rule to
+                    // "always the whole frame chain".
+                    //
+                    // THE UNCONDITIONAL FORM SUBSUMES THE DISJUNCT — `whole_frame` is
+                    // now always true, so a param-derived slot takes the whole chain by
+                    // the general rule rather than by a case written for it. Taken this
+                    // way and not the other because EE0EP's branch calls a function this
+                    // side deleted, so it could not compile; and because a special case
+                    // subsumed by a general rule is the shape 3G1YT was closing. EE0EP's
+                    // own rows are what say the subsumption holds, and they are run.
                     let caller_requires = env.enclosing_frame_chain().clone();
                     // WI-828: a σ-refused requirement is a LOAD diagnostic —
                     // classifying `dispatch_dict: None` here loaded clean and
@@ -25365,6 +25444,152 @@ fn stamp_op_scoped_dicts(
     Ok(())
 }
 
+/// WI-20260921-EE0EP — WHY an erased named slot could not be supplied, so the diagnostic
+/// names the repair that exists rather than the one that used to.
+///
+/// Before this ticket there was one cause and one sentence. Now the common case — a
+/// top-level unwritten slot on a parameter — is SUPPLIED, and what is left are three
+/// residues with three different repairs. Printing the old shared sentence at them is
+/// actively misleading: it says *"write `O` in the parameter's type"* at a call whose
+/// argument is not a parameter at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErasedSlotReason {
+    /// The binder IS the projection `p.<slot>` off a parameter, so the channel applies —
+    /// but some other entry of the frame already covers this spec (an anonymous
+    /// `requires` of the same spec, or a second parameter of the same carrier), and the
+    /// body reads a GOAL rather than a parameter. Which dictionary it means is not
+    /// decidable, so no slot was synthesized. See [`param_derived_requires`]'s screen.
+    AmbiguousWithFrame,
+    /// The binder IS the projection `p.<slot>` off a parameter, and nothing else covers
+    /// the spec — but the enclosing operation writes its OWN `requires`, so no slot was
+    /// synthesized at all ([`op_requires_chain_rc`]'s early return, argued at
+    /// [`op_chain_is_only_param_derived`]). A different cause from
+    /// [`Self::AmbiguousWithFrame`] and a different repair, which is why it is its own
+    /// arm: review found the two collapsed, and the collapsed message told an author that
+    /// "something else in this frame already answers" a spec nothing in their frame
+    /// answered — `requires WeakOrd[T = Int64]` beside a needed `WeakOrd[T = String]`.
+    ChannelClosedByOwnRequires,
+    /// The binder is a skolem NOTHING SPELLS, so no argument's type can name a provider:
+    /// WI-1061's nested slot (`List[T = MySet]` takes a fresh rigid per slot) or
+    /// WI-1063's existential return, opened per use.
+    ///
+    /// MEASURED, and the message says it because an author will otherwise try the
+    /// obvious thing first: a bracket AT THIS CALL does not help. `MySet[O = ByLength]
+    /// .contains(mk(), x)` and `MySet.contains[O = ByLength](mk(), x)` both pin the
+    /// PARAMETER's type and leave the argument's own reading `?O`, a skolem that unifies
+    /// with nothing but itself — so both are refused at the argument, one step later and
+    /// less clearly. The choice has to be un-erased where the value is PRODUCED.
+    NoReceiver,
+}
+
+/// WI-20260921-EE0EP — the WITNESS a [`SupplySource::FromParam`] slot is filled at:
+/// the provider written for `binder` in the ARGUMENT's own type.
+///
+/// This is the whole of "receive the argument's dictionary". The callee's parameter type
+/// omits the slot, but the ARGUMENT's does not — WI-1059 leaves the call-side slot FLEX,
+/// so `s: MySet[T = String]` accepts a `MySet[T = String, O = ByLength]` and the binding
+/// rides in the argument's type where this reads it. No search, no construction, and so
+/// no rival: the provider named here is the one the value's own construction site chose.
+///
+/// `None` where the argument's type names no provider either — the caller is itself
+/// abstract over the slot, or the value came from an EXISTENTIAL RETURN (WI-1063), whose
+/// opened skolem names nothing. Both keep the pre-existing refusal, which is decision (c).
+fn param_slot_witness(
+    kb: &KnowledgeBase,
+    param_arg_types: &HashMap<Symbol, Value>,
+    param: Symbol,
+    binder: Symbol,
+) -> Option<(Symbol, Value)> {
+    let arg_ty = param_arg_types.get(&param)?;
+    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, arg_ty) else {
+        return None;
+    };
+    let (_, v) = bindings.iter().find(|(k, _)| *k == binder)?;
+    // THE BASE AND THE WHOLE VALUE, and the pair is what [`selections_from_slot_bindings`]
+    // reads for the same reason: a witness may carry type arguments (§4.5), its BASE is
+    // what identifies it, and its own named slots live in the rest
+    // (`O = ByInner[OI = ByLength]`, WI-870's shape). Returning only the base drops the
+    // nested binding, which that producer's doc calls out as "the very asymmetry WI-844
+    // built this producer to close" — so the caller re-reads the slots off this value.
+    sort_functor_of_view(kb, v).map(|base| (base, v.clone()))
+}
+
+/// WI-20260921-EE0EP — is `op`'s op-scoped chain non-empty and made ENTIRELY of slots
+/// filled from a parameter's argument ([`SupplySource::FromParam`])?
+///
+/// **ALL, NOT ANY, AND THAT IS THE WHOLE GATE.** The `whole_frame` widening this feeds
+/// swaps `enclosing_dict_chain()` (the sort half) for `enclosing_frame_chain()` (sort +
+/// op) for EVERY dep of EVERY call in the body — the chain is chosen per call site, not
+/// per dep. Asking `any` therefore also forwards the author's OWN op-scoped slots, which
+/// is precisely the exclusion `wi822_op_scoped_supply_test::the_instance_dictionary_
+/// channel_never_forwards_an_op_slot` pins and whose reason still stands: several routes
+/// into an operation fill no op slot (entry from the HOST seeds none), so a callee
+/// dictionary holding a `var_ref` into one dies at eval. A synthesized slot is exempt
+/// because it is minted WITH its fill at every anthill call site; an author-written one
+/// is not, and this ticket has no business widening it.
+///
+/// FILTERING THE CHAIN INSTEAD IS NOT AVAILABLE, which is why the gate is coarse:
+/// [`DictChain::names`] is memoized over the FULL op chain keyed by the operation, so a
+/// chain carrying a subset of the entries would take the full list's names and slot `i`
+/// would be named for a different slot — the positional drift WI-857 records.
+///
+/// THE COST, stated rather than hidden: an operation that writes its own `requires` AND
+/// takes a parameter with an unwritten named slot gets NO channel, so that call keeps
+/// WI-1094's refusal. It is a refusal, not a wrong answer, and it is what the program did
+/// before this ticket. [`a_mixed_chain_keeps_the_refusal`] drives it.
+///
+/// ONE OWNER FOR TWO READERS, which is the discipline this file states everywhere a
+/// derived channel has more than one producer: the `whole_frame` gate asks it of the
+/// ENCLOSING operation (whose frame carries the evidence) and the `param_arg_types` gate
+/// asks it of the CALLEE (whose slots need filling). Two spellings over the same list
+/// could drift, so there is one.
+fn op_chain_is_only_param_derived(kb: &mut KnowledgeBase, op: Symbol) -> bool {
+    let chain = op_requires_chain_rc(kb, op);
+    !chain.is_empty()
+        && chain
+            .iter()
+            .all(|e| matches!(e.supply, SupplySource::FromParam { .. }))
+}
+
+/// WI-20260921-EE0EP — is the unwritten named slot whose binder value is `bound` — the
+/// WI-1059 projection off one of `enclosing_op`'s parameters — carried by a `FromParam`
+/// slot of that operation's own chain?
+///
+/// TAKES NO SLOT NAME, and that is a claim rather than a shortcut: `bound` IS the binder
+/// value of the slot being asked about, and WI-1059 mints it from that slot's own short
+/// name, so the projection identifies the slot. An entry for a DIFFERENT slot of the same
+/// carrier does not match it (`s.P` against `FromParam { param: s, binder: O }` is
+/// `false`), which is the discrimination a separate name compare would have added.
+///
+/// The two halves must BOTH hold, and neither implies the other. The projection says
+/// which parameter the slot hangs off; the chain says a dictionary for it will actually
+/// arrive. [`param_derived_requires`] builds the entry from the same condition that mints
+/// the projection, so they normally agree — and this is written as a lookup rather than a
+/// shape test precisely so that a day they DISAGREE is a refusal kept, not a slot read
+/// out of an empty frame.
+fn param_supplied_slot(kb: &mut KnowledgeBase, enclosing_op: Option<Symbol>, bound: TermId) -> bool {
+    let Some(op) = enclosing_op else {
+        return false;
+    };
+    // The binder as the projection `p.<short>` — [`UnwrittenFill::Projection`]'s mint,
+    // read back by the same `ExprCarried` decode `is_self_projection_of` uses.
+    let bv = Value::term(bound);
+    // [`is_self_projection_of`] is this file's owner of "is `v` exactly `⟨recv⟩.<key>`",
+    // and asking it per entry is what keeps this from hand-rolling the same shape test a
+    // second time. It compares the member by SHORT name, which is what the WI-1059 mint
+    // produces, and that is also what discriminates two slots of one carrier: asked of a
+    // `FromParam { param: s, binder: O }` entry, the value `s.P` answers false.
+    //
+    op_requires_chain_rc(kb, op)
+        .iter()
+        .any(|e| match e.supply {
+            SupplySource::FromParam { param, binder: b } => {
+                is_self_projection_of(kb, &bv, param, b)
+            }
+            SupplySource::Required | SupplySource::SelfSupplied => false,
+        })
+}
+
 fn build_op_scoped_dicts(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -25542,6 +25767,74 @@ fn build_op_scoped_dicts(
         // discipline (and the same out-parameter) `build_dispatching_dict_from_chain`
         // uses on the sort half.
         let mut s3_failure: Option<ResolutionResult> = None;
+        // WI-20260921-EE0EP — A PARAM-DERIVED SLOT IS PINNED BY ITS ARGUMENT, and the pin
+        // REPLACES the call's selection list for this dep rather than joining it.
+        //
+        // It is a PIN rather than a separate construction so that everything downstream is
+        // the pipeline that already exists: Strategy 3 builds the dictionary, the tie and
+        // the refusal diagnostics stay the ones an author already reads, and a slot whose
+        // argument names no provider falls through to exactly today's verdict.
+        //
+        // AN `InstanceSelection` IS KEYED BY THE SPEC, which is the whole reason: as
+        // [`selections_from_slot_bindings`]' doc puts it, "a sort with two same-spec named
+        // slots carries two witnesses in one type … and first-matching would pin one onto
+        // both deps". `pinned_selection_for` is a `.find`, so a selection already in the
+        // list for this spec BASE wins over anything appended after it — and the two need
+        // not even agree on the element. MEASURED: a callee declaring
+        // `requires O: WeakOrd[String]` (whose `a: MySet[T = String, O = O]` derives
+        // `WeakOrd -> Alphabetical`) beside an unwritten `b: MySet[T = Int64]` answered
+        // `b`'s `WeakOrd[T = Int64]` dep with `Alphabetical` — loud here only by luck,
+        // because `Alphabetical` provides nothing at `Int64`; a witness that provided at
+        // both elements would have answered from the wrong parameter in silence.
+        //
+        // A ONE-ENTRY LIST LOSES NOTHING. Strategies 1 and 2 are skipped for a pinned dep
+        // by construction, and the call's other selections steer OTHER deps and this dep's
+        // sub-goals — which no bracket can reach here, since the callee declares no slot
+        // for it (058 §4.2). So the entries dropped are exactly the ones that must not
+        // answer this dep.
+        let mut pinned_by_arg: Vec<InstanceSelection> = Vec::new();
+        let selected: &[InstanceSelection] = match dep.supply {
+            SupplySource::FromParam { param, binder } => {
+                match param_slot_witness(kb, param_arg_types, param, binder) {
+                    Some((witness, witness_value)) => {
+                        // The witness's OWN named slots, off the same value — finding 6.
+                        // `Err` is §4.4 check 1 on a sub-slot and belongs to the author,
+                        // so it is raised rather than dropped to an empty `slots`.
+                        let slots = witness_value_slot_selections(
+                            kb,
+                            callee_op,
+                            witness,
+                            &witness_value,
+                            park.as_ref().and_then(|p| p.span),
+                        )
+                        .map_err(|e| {
+                            Box::new(RequirementRefusal {
+                                no_scope_route: false,
+                                construction_carries_repair: false,
+                                dep_text: render_requires_entry(kb, &dep),
+                                unconstrained: Vec::new(),
+                                refused_covers: Vec::new(),
+                                construction: format!(
+                                    "the witness this parameter's own type names carries a \
+                                     slot binding that does not check: {}",
+                                    e.format(kb)
+                                ),
+                                pinned: None,
+                                unprovided: None,
+                            })
+                        })?;
+                        pinned_by_arg.push(InstanceSelection {
+                            spec_sort: dep.required_sort,
+                            witness,
+                            slots,
+                        });
+                        pinned_by_arg.as_slice()
+                    }
+                    None => selected,
+                }
+            }
+            SupplySource::Required | SupplySource::SelfSupplied => selected,
+        };
         let projected = build_dep_projection(
             kb,
             &dep,
@@ -30652,6 +30945,9 @@ fn infer_named_slot_bindings(
     caller_requires: &DictChain,
     param_rigids: &[(VarId, TermId)],
     selected: &[InstanceSelection],
+    // WI-20260921-EE0EP — the operation whose BODY holds this call. Its chain is what
+    // says whether an unwritten slot now has a channel; see the `Quantified` arm.
+    enclosing_op: Option<Symbol>,
     span: Option<Span>,
 ) -> Result<(), TypeError> {
     if !names_any_requirement_slot(kb, fn_sym) {
@@ -30741,6 +31037,25 @@ fn infer_named_slot_bindings(
             {
                 continue
             }
+            // WI-20260921-EE0EP — SUPPLIED AFTER ALL: the binder is the WI-1059 projection
+            // `p.<slot>` off a PARAMETER, and the enclosing operation's chain carries a
+            // `FromParam` slot for exactly that pair. The caller fills it from the
+            // ARGUMENT's own type, so this is a forward and not the rival construction
+            // WI-1094 refused — the same `continue` §7.1's declared form takes above.
+            //
+            // ASKED OF THE CHAIN, NOT OF THE SHAPE, and the difference is the whole
+            // safety of this arm. The projection's shape and the synthesized entry are
+            // derived from one condition, so testing the shape alone would USUALLY agree
+            // — and on the day it did not, the refusal would stand down with no slot to
+            // read and the program would load clean and die at eval reading an unbound
+            // `__req_*`. That is the failure this file refuses everywhere else; so the
+            // question asked here is the one that matters, "is there a slot", and the
+            // shape is only how the slot is found.
+            SlotBinderState::Quantified
+                if param_supplied_slot(kb, enclosing_op, bound) =>
+            {
+                continue
+            }
             SlotBinderState::Unspoken(_) | SlotBinderState::Quantified => {}
         }
         // BEST-EFFORT, AND NOTHING BELOW MAY BE GATED ON IT. `goal_from_requires_entry`
@@ -30818,10 +31133,38 @@ fn infer_named_slot_bindings(
                         _ => None,
                     }
                 });
+                // WI-20260921-EE0EP — WHICH RESIDUE, read off the binder itself. A
+                // projection means the parameter channel APPLIES and was declined, which
+                // only the collision screen does ([`param_derived_requires`]); anything
+                // else is a skolem nothing spells, so no argument could have named a
+                // provider. `param_supplied_slot` has already answered `false` above, so
+                // a projection reaching here is necessarily the screened case.
+                // WHICH RESIDUE, and the THREE are told apart rather than two, because a
+                // message that names the wrong cause names the wrong repair. A projection
+                // binder means the parameter channel APPLIES and was declined — by the
+                // collision screen, or, if the enclosing operation writes its own
+                // `requires`, because `op_requires_chain_rc` synthesized nothing at all
+                // ([`op_chain_is_only_param_derived`]). Review found those two collapsed,
+                // and the collapsed sentence told an author that something in their frame
+                // "already answers" a spec nothing in it answered.
+                let reason = if !matches!(
+                    extract_type(kb, &Value::term(bound)),
+                    TypeExtractor::ExprCarried { .. }
+                ) {
+                    ErasedSlotReason::NoReceiver
+                } else if enclosing_op.is_some_and(|o| !op_requires_chain_rc(kb, o).is_empty())
+                    && !enclosing_op.is_some_and(|o| op_chain_is_only_param_derived(kb, o))
+                {
+                    ErasedSlotReason::ChannelClosedByOwnRequires
+                } else {
+                    ErasedSlotReason::AmbiguousWithFrame
+                };
                 return Err(TypeError::ErasedRequirementSlot {
                     span,
                     op: fn_sym,
                     binder: name,
+                    reason,
+                    enclosing: enclosing_op,
                     // The slot's spec off the ONE ladder above, not off the decoded entry:
                     // the message must not go missing with the decode.
                     spec: spec_sort,
@@ -65695,6 +66038,25 @@ pub enum SupplySource {
     Required,
     /// Written `provides` on a SPEC — the provider supplies it from itself.
     SelfSupplied,
+    /// WI-20260921-EE0EP — SYNTHESIZED, not written: a named requirement slot the
+    /// PARAMETER named here leaves unwritten (`s: MySet[T = String]` over
+    /// `enum MySet requires O: WeakOrd[T]`). The dictionary is the ARGUMENT'S OWN —
+    /// the caller holds the argument's type with the slot pinned, so this slot is
+    /// filled by READING that type, never by re-resolving the spec. §3.4's "omitting
+    /// a named slot means ANY provider" with the channel §3.9 leaves open.
+    ///
+    /// The `Symbol` is the PARAMETER, which is what makes the fill possible: at the
+    /// call site it keys `param_arg_types`, and two parameters of one carrier stay
+    /// apart (the coarse-gate defect [`build_op_scoped_dicts`] records for the
+    /// projection channel, where `b` and `c` could not be told apart).
+    FromParam {
+        /// The parameter whose argument type carries the witness.
+        param: Symbol,
+        /// The slot's BINDER on the carrier (`O`), which is the key to read in that
+        /// argument's type. Recorded rather than re-derived: the spec cannot name it —
+        /// one carrier may declare two slots of one spec (058 §3.3's `OA`/`OB`).
+        binder: Symbol,
+    },
 }
 
 /// A kb-free identity for a `RequiresEntry.spec`, so `RequiresEntry` can key the
@@ -66673,6 +67035,139 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
 /// `gt`'s ZERO type parameters, and 20 tests died on the resulting slot. The same
 /// filter, the same predicate, as [`callee_requirement_slots`]' — the other list of
 /// "what can a caller name".
+/// WI-20260921-EE0EP — the chain entries a PARAMETER's carrier leaves UNWRITTEN, so the
+/// caller can hand over the ARGUMENT's own dictionary instead of the call being refused.
+///
+/// THE DEFECT THIS CLOSES. `operation has(s: MySet[T = String], x: String) = MySet.contains(s, x)`
+/// over `enum MySet requires O: WeakOrd[T]` was a LOAD ERROR: the body's `contains` needs
+/// `MySet`'s `O` dictionary, the signature declares no slot to carry one, and WI-1094
+/// refused rather than construct a rival for a value that already chose
+/// (`ErasedRequirementSlot`). §3.9 left two repairs — forward the value's own dictionary,
+/// or refuse — and WI-1094 shipped the refusal because forwarding had no channel. This is
+/// the channel, and it is the ORDINARY op-scoped one: a synthesized entry per unwritten
+/// slot, in the op half, filled at the call from the argument's type.
+///
+/// WHY THE ARGUMENT'S TYPE IS ENOUGH, which is the measurement that makes this cheap
+/// rather than a new representation. WI-1059's `rigidify_unwritten_sort_params` mints the
+/// slot for the BODY as the projection `s.O` and leaves the call-side `OperationInfo`
+/// slot FLEXIBLE — so at every call the argument's own type binds it, with no bracket
+/// written. MEASURED (`probe_no_bracket_written_slot`): the same program with the slot
+/// DECLARED runs and the two rival orderings disagree, at no call-site bracket at all.
+/// So nothing has to be recovered from the VALUE, and nothing added to the dictionary's
+/// shape; the caller already holds what the callee is missing.
+///
+/// [`SupplySource::FromParam`] keys the entry to the PARAMETER rather than to the spec,
+/// and that is load-bearing in two directions: the fill reads that parameter's argument
+/// type, and two parameters over one carrier at different providers stay apart.
+///
+/// WHAT IS DELIBERATELY NOT HERE. A slot written CONCRETE, or written as one of this
+/// signature's own declared parameters (058 §7.1's form, which already forwards), is not
+/// an unwritten slot and gets no entry. An EXISTENTIAL RETURN is not reached at all: it is
+/// a return, not a parameter, so there is no argument whose type could name a provider —
+/// that one stays refused (WI-1063), which is WI-EE0EP decision (c).
+fn param_derived_requires(kb: &mut KnowledgeBase, op_sym: Symbol) -> Vec<RequiresEntry> {
+    let Some(rec) = super::op_info::lookup_operation_info(kb, op_sym) else {
+        return Vec::new();
+    };
+    let params: Vec<(Symbol, Value)> = rec.params.clone();
+    let mut out: Vec<RequiresEntry> = Vec::new();
+    for (pname, pty) in params {
+        // ONLY a type APPLICATION carries bindings to read; a bare `Ref(S)` leaves every
+        // slot unwritten and is handled by the same walk, through `Parameterized`'s empty
+        // binding list only when the loader materialized one. A bare reference that never
+        // materializes reaches `SortRef` and is skipped — its slots are unwritten too, but
+        // nothing here can say at WHAT bindings the spec should be demanded, and guessing
+        // is the construction this ticket exists to avoid.
+        let (carrier, written) = match extract_type(kb, &pty) {
+            TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+            _ => continue,
+        };
+        let slots = kb.named_requirement_slots(carrier).to_vec();
+        if slots.is_empty() {
+            continue;
+        }
+        // The carrier's own chain, whose INDEX is the slot's declaration position
+        // (`dict_chain_index_of_named_slot` argues that identity; this reads the same one).
+        let chain = provider_dict_entries(kb, carrier, None);
+        for slot in slots {
+            // WRITTEN? Two spellings count as written and neither may take an entry: a
+            // concrete or author-written binding, and 058 §7.1's own-parameter form. What
+            // is NOT written is an absent binding, or the WI-1059 PROJECTION the rigidify
+            // pass fills in — `s.O` is the slot's NAME, not a supply, which is exactly the
+            // asymmetry this ticket was filed on.
+            let unwritten = match written.iter().find(|(k, _)| *k == slot.binder) {
+                None => true,
+                Some((_, v)) => is_self_projection_of(kb, v, pname, slot.binder),
+            };
+            if !unwritten {
+                continue;
+            }
+            // THE VERIFIED INDEX, through this file's one owner of it. A raw
+            // `entries().get(slot.slot)` was the first cut and is exactly what
+            // [`dict_chain_index`]'s own doc refuses: the declaration order and the
+            // dictionary order coincide BY CONSTRUCTION, and where they drift, pinning the
+            // wrong slot "resolves a real goal with a real provider and computes the wrong
+            // answer". Here the damage would be a synthesized entry demanding some OTHER
+            // spec, under which `param_slot_witness` then pins the argument's witness — a
+            // wrong dictionary built out of a right reading. `None` skips (no channel, so
+            // the call keeps WI-1094's refusal) rather than raising: this runs while the
+            // CHAIN is being built, with no call site to report at, which is precisely the
+            // caller `dict_chain_index` exists for.
+            let Some(entry) = dict_chain_index(kb, carrier, &slot)
+                .and_then(|i| chain.entries().get(i).cloned())
+            else {
+                continue;
+            };
+            // The spec AT THE PARAMETER'S OWN BINDINGS: `WeakOrd[T = MySet.T]` under
+            // `s: MySet[T = String]` is `WeakOrd[T = String]`. Same composition
+            // [`build_child_subst_map`] does one level up, keyed off the CARRIER's
+            // qualified parameter names.
+            // A BINDING THAT DOES NOT LOWER DROPS THE WHOLE SLOT, not just that binding.
+            // `continue`ing the inner loop was the first cut and review MEASURED it wrong:
+            // control still reached `substitute_in_spec` and `out.push`, so the entry was
+            // synthesized with a PARTIALLY substituted spec still naming the carrier's own
+            // parameter (`WeakOrd[T = MySet.T]` where the call means `WeakOrd[T = String]`).
+            // That entry then feeds the collision screen and `param_slot_witness`'s pin
+            // under a spec the call never meant — a wrong dictionary built out of a right
+            // reading, which is the hazard the `dict_chain_index` paragraph above refuses.
+            let mut map: HashMap<Symbol, TermId> = HashMap::new();
+            let carrier_qn = kb.qualified_name_of(carrier).to_string();
+            let mut lowered_all = true;
+            for (short_sym, value) in &written {
+                let short = kb.local_name_of(*short_sym).to_string();
+                let Some(q) = kb.try_resolve_symbol(&format!("{carrier_qn}.{short}")) else {
+                    lowered_all = false;
+                    break;
+                };
+                // [`super::node_occurrence::value_to_term`], the faithful boundary — NOT
+                // `expect_term`, which panics on a denoted binding (`MySet[T = Modify[c]]`),
+                // and not `alloc_from_value`, which rejects every `Node`. Its `Err` residue
+                // is the opaque runtime handles, which cannot appear in a declared parameter
+                // type; an entry whose binding does not lower is dropped, and the slot then
+                // keeps today's refusal rather than being supplied at a guessed binding.
+                let Ok(t) = super::node_occurrence::value_to_term(kb, value) else {
+                    lowered_all = false;
+                    break;
+                };
+                map.insert(q, t);
+            }
+            if !lowered_all {
+                continue;
+            }
+            let spec = substitute_in_spec(kb, &entry.spec, &map);
+            out.push(RequiresEntry {
+                required_sort: entry.required_sort,
+                spec,
+                supply: SupplySource::FromParam {
+                    param: pname,
+                    binder: slot.binder,
+                },
+            });
+        }
+    }
+    out
+}
+
 pub(crate) fn op_requires_chain_rc(
     kb: &mut KnowledgeBase,
     op_sym: Symbol,
@@ -66687,11 +67182,99 @@ pub(crate) fn op_requires_chain_rc(
     // NORMALIZED HERE, once per operation, so the re-spelling is not redone at every
     // frame push and every call-site build: [`normalize_op_requires_entry`] allocates
     // a `SortView` term per entry, and this read is on the per-dispatch path.
-    let rc: Rc<Vec<RequiresEntry>> = Rc::new(
-        raw.iter()
-            .map(|e| normalize_op_requires_entry(kb, e))
-            .collect(),
-    );
+    let mut entries: Vec<RequiresEntry> = raw
+        .iter()
+        .map(|e| normalize_op_requires_entry(kb, e))
+        .collect();
+    // WI-20260921-EE0EP — the synthesized slots, AFTER the written ones and never among
+    // them: the order IS the frame's slot order, so an entry the author wrote keeps the
+    // index it had before this ticket and a synthesized one can only be appended.
+    //
+    // SCREENED AGAINST WHAT ALREADY COVERS, and this screen is the difference between a
+    // fix and a silent wrong answer. The body reads a GOAL (`WeakOrd[T = String]`), not a
+    // parameter: where a second entry covers the same goal, the forward takes the first
+    // and the call runs on a dictionary that is not this parameter's. MEASURED both ways —
+    // an author's own anonymous `requires WeakOrd[T = String]` beside `s: MySet[T = String]`
+    // read `false` where `s`'s `ByLength` says `true`, and two parameters of one carrier
+    // are the same collision between two synthesized slots. It is the coarse-gate defect
+    // [`build_op_scoped_dicts`] records for the projection channel (`b.E` answered out of
+    // `c`'s slot), reached from the other side.
+    //
+    // REFUSED RATHER THAN RANKED. Ranking would need the READ to say which parameter it
+    // means, which is decision (d) — the `s.O` spelling — and is a separate ticket.
+    // Dropping the entry leaves WI-1094's refusal exactly where it was
+    // ([`param_supplied_slot`] then finds no slot, so the call is refused rather than
+    // forwarded), and every such program was refused before this ticket too — so nothing
+    // that loads today stops loading.
+    //
+    // COMPARED AFTER NORMALIZATION, which is not a detail: a declared clause and a
+    // chain-derived one spell one spec differently (`normalize_op_requires_entry` is what
+    // makes them comparable), and screening before it MEASURED as missing the collision
+    // entirely — the anonymous-`requires` program loaded and answered wrong.
+    // THE SCREEN READS THE WHOLE FRAME, SORT HALF INCLUDED, and leaving the sort half out
+    // was MEASURED as re-opening the exact wrong answer WI-1094 closed: `Loose requires
+    // WeakOrd[LT]` is declared on the SORT, so an op-only screen added a second covering
+    // entry, the forward took the sort-level one — an anonymous dictionary that records
+    // nothing about the argument — and the program LOADED and answered **3** where the
+    // value's own `Descending` says **7**.
+    // AND NOT AT ALL WHERE THE AUTHOR WROTE THEIR OWN, which keeps the two halves of this
+    // channel from disagreeing. The `whole_frame` widening is per CALL SITE, so it can
+    // only be admitted for an operation whose op chain is ENTIRELY synthesized
+    // ([`op_chain_is_only_param_derived`] argues why). Synthesizing an entry that the
+    // widening will then refuse to expose leaves a slot that EXISTS and cannot be READ —
+    // `param_supplied_slot` answers "supplied", `infer_named_slot_bindings` stands down,
+    // and the refusal arrives later and less clearly from the dictionary build ("ambiguous
+    // among providers") instead of naming the slot. MEASURED as exactly that. Declining
+    // here makes the two agree by construction: no entry, so WI-1094's own refusal stands,
+    // which is both the better message and the behaviour the program had before.
+    if !entries.is_empty() {
+        return finish_op_requires_chain(kb, op_sym, entries);
+    }
+    // BELOW the early return: every operation that writes its own `requires` leaves two
+    // lines up without reading this, and `provider_dict_entries` is not free.
+    let sort_half: Vec<RequiresEntry> = match impl_parent_of_op(kb, op_sym) {
+        Some(parent) => {
+            let provision = op_owner_provision(kb, op_sym);
+            provider_dict_entries(kb, parent, provision).entries().to_vec()
+        }
+        None => Vec::new(),
+    };
+    for d in param_derived_requires(kb, op_sym) {
+        let dn = normalize_op_requires_entry(kb, &d);
+        // ASKED WITH THE PREDICATE THE FORWARD ITSELF USES, so the screen and the thing it
+        // screens for cannot drift. `views_structurally_equal` was the first cut and
+        // MEASURED WRONG: a declared clause and a chain-derived one for ONE spec are two
+        // distinct hash-consed terms that RENDER IDENTICALLY
+        // (`anthill.prelude.WeakOrd[T = anthill.prelude.String]` both, different `TermId`),
+        // so the compare said "different", the entry was appended, and the program loaded
+        // and answered out of the wrong slot. `requires_entry_covers_goal` is what
+        // [`resolve`] asks when it picks a forward — if it says an existing entry covers
+        // this goal, that entry is exactly what the body's read would take.
+        let collides = match goal_from_requires_entry(kb, &dn) {
+            Some(goal) => entries
+                .iter()
+                .chain(sort_half.iter())
+                .any(|e| requires_entry_covers_goal(kb, e, &goal, None)),
+            // No decodable goal: nothing can be said about a collision, so the
+            // conservative direction is to add no channel and keep today's refusal.
+            None => true,
+        };
+        if !collides {
+            entries.push(dn);
+        }
+    }
+    finish_op_requires_chain(kb, op_sym, entries)
+}
+
+/// WI-20260921-EE0EP — the shared tail of [`op_requires_chain_rc`]: memoize and hand back.
+/// Extracted only because the early return above must not skip the caching, which is what
+/// a second `Rc::new(...)` + insert pair would have invited.
+fn finish_op_requires_chain(
+    kb: &mut KnowledgeBase,
+    op_sym: Symbol,
+    entries: Vec<RequiresEntry>,
+) -> Rc<Vec<RequiresEntry>> {
+    let rc: Rc<Vec<RequiresEntry>> = Rc::new(entries);
     kb.op_requires_chain_cache
         .borrow_mut()
         .insert(op_sym, rc.clone());

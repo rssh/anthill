@@ -1811,3 +1811,6 @@ mod wi_r10kc_spec_default_body_dictionary_test;
 
 #[path = "include/wi_159s9_op_scoped_entry_test.rs"]
 mod wi_159s9_op_scoped_entry_test;
+
+#[path = "include/wi_ee0ep_param_dictionary_test.rs"]
+mod wi_ee0ep_param_dictionary_test;
