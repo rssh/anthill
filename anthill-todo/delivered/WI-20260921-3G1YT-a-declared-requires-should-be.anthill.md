@@ -23,16 +23,34 @@ than needing a language change.
 ### The rule
 
 An obligation is DISCHARGED by any of FOUR routes, and every one is readable from the
-signature and the call site — none needs the callee's body:
+signature and the call site — none needs the callee's body.
+
+> **AS DELIVERED, AND THE NUMBERING MOVED.** The list below is the one this ticket was
+> written with, and TWO of its routes no longer exist: WI-20260922-0DK3H deleted
+> `spec_has_value_directed_route` and `dep_has_searchable_pin` because both appealed to
+> what a value might name AT FIRE TIME, and a rule body's evidence is owed at LOAD. The
+> AUTHORITATIVE statement is kernel-language.md §8.7 ("discharged by any of four routes"),
+> which reads:
+>
+>  1. **the caller's own `requires`** — the ordinary forward, a read of a slot the
+>     caller's frame already holds;
+>  2. **a spec-typed value in scope** — route 4 of the original list, DELIVERED here as
+>     `scope_contract_covers_dep`;
+>  3. **a dictionary the CLAUSE declares** — a written `require[Spec[…]]` bracket, which
+>     reaches the same cover walk via `held_spec_views`;
+>  4. **provider facts that uniquely determine one** — `dep_completes_to_a_unique_provider`.
+>
+> The original text is kept below because the ticket's argument is stated against it.
 
  1. **the caller's own `requires`** — the ordinary forward;
  2. **value-direction** — the spec has an operation taking its own carrier, so a runtime
-    value can name a provider ([`spec_has_value_directed_route`]);
+    value can name a provider (`spec_has_value_directed_route` — SINCE DELETED, 0DK3H);
  3. **resolver search** — the call pins a concrete element, so a goal built from it can
-    match a provider fact ([`dep_has_searchable_pin`]);
+    match a provider fact (`dep_has_searchable_pin` — SINCE DELETED, 0DK3H);
  4. **A SPEC-TYPED PARAMETER** — a parameter typed at a spec CARRIES that spec's `requires`
     chain, by the spec's own contract. `operation total(c: FiniteCollection) = size(c)`
-    owes `Iterable[…]` and HOLDS it, because `c`'s type says so. NOT YET IMPLEMENTED.
+    owes `Iterable[…]` and HOLDS it, because `c`'s type says so. ~~NOT YET IMPLEMENTED~~ —
+    DELIVERED, and it is §8.7's route (2).
 
 A call is refused when a clause is declared and NO route discharges it. No body walk, and
 no marker — see the two dead ends below.

@@ -24528,11 +24528,19 @@ fn report_unsuppliable_requirements(
         // changes, with nothing at the call site having moved.
         //
         // WHAT REPLACES IT IS NOT A LOOSER GATE BUT FOUR DISCHARGE ROUTES, all read at
-        // the call site from the signature: the caller's own `requires`
-        // ([`build_dep_projection`] Strategies 1/2), a spec-typed value in scope
-        // ([`scope_contract_covers_dep`]), and — at a RULE body, where the SLD bridge
-        // resolves dictionaries at fire time — [`spec_has_value_directed_route`] and
-        // [`dep_has_searchable_pin`]. A dep no route discharges never parks.
+        // the call site from the signature, and stated in full at kernel-language.md §8.7:
+        // the caller's own `requires` ([`build_dep_projection`] Strategies 1/2); a
+        // spec-typed value in scope ([`scope_contract_covers_dep`]); a dictionary the
+        // CLAUSE declares, a written `require[Spec[…]]`, which reaches that same cover
+        // walk because [`held_spec_views`] collects it beside the values in scope; and
+        // provider facts that uniquely determine one
+        // ([`dep_completes_to_a_unique_provider`]). A dep no route discharges never parks.
+        //
+        // THE LAST TWO REPLACED A PAIR THAT APPEALED TO RUN TIME. Until WI-20260922-0DK3H
+        // the rule-body half read `spec_has_value_directed_route` ("some value can name a
+        // provider at fire time") and `dep_has_searchable_pin`. Both are DELETED, on the
+        // ground that ticket settled: a rule body's evidence is owed at LOAD, so the gate
+        // may ask only what load can see.
         errors.push(TypeError::UnsatisfiableRequirement {
             span: entry.span,
             op: entry.callee_op,
@@ -25623,10 +25631,15 @@ fn build_op_scoped_dicts(
             // resolves real provider dictionaries from the CONCRETE ARGUMENT VALUES and
             // suspends when it cannot, so an unpinned element is the ordinary case there.
             //
-            // THAT PREMISE IS A VALUE-DIRECTED ONE, and it fails exactly where no value
-            // can name the carrier — [`spec_has_value_directed_route`]. For such a spec the
-            // bridge has nothing to resolve FROM, so "it will sort itself out at fire time"
-            // is false and the slot is certain death.
+            // THAT PREMISE APPEALED TO RUN TIME, and WI-20260922-0DK3H WITHDREW THE
+            // APPEAL: a rule body's evidence is owed at LOAD. What survives of it asks
+            // only what load can see — one STRUCTURAL exemption, a MARKER spec
+            // ([`spec_is_a_marker`]), which declares no operations at all and so leaves
+            // its callers nothing to miss; and one question about the KB, whether the
+            // provider facts determine a dictionary
+            // ([`dep_completes_to_a_unique_provider`]). Neither asks what a value might
+            // name at fire time. The deleted `spec_has_value_directed_route` did, which
+            // is why it is gone rather than merely renamed.
             //
             // THIS IS WHAT N31XX's HARDCODE WAS, GENERALIZED. That arm asked
             // `dep.required_sort == anthill.reflect.TypeValue` and raised before this gate,
@@ -25649,9 +25662,11 @@ fn build_op_scoped_dicts(
             // such a goal reaches eval through the SLD bridge, which resolves provider
             // dictionaries from the CONCRETE ARGUMENT VALUES at fire time and suspends
             // when it cannot, so an unpinned element is the ordinary case there. That
-            // premise is a VALUE-DIRECTED one and it fails exactly where no value can name
-            // the carrier ([`spec_has_value_directed_route`]): the bridge has nothing to
-            // resolve FROM, so the slot is certain death rather than a deferred question.
+            // premise appealed to RUN TIME, and WI-20260922-0DK3H withdrew the appeal —
+            // a rule body's evidence is owed at LOAD — so the gate below asks only what
+            // load can see: is the spec a MARKER ([`spec_is_a_marker`]), and do the
+            // provider facts determine a dictionary
+            // ([`dep_completes_to_a_unique_provider`])?
             //
             // PARKING CANNOT SERVE IT. MEASURED, by widening the park gate and watching
             // the refusal vanish: `report_unsuppliable_requirements` runs BEFORE rule
@@ -25866,11 +25881,18 @@ fn dep_completes_to_a_unique_provider(
 /// `requires` CHAIN, by the spec's own contract. `total(c: FiniteCollection) = size(c)`
 /// OWES `Iterable[…]` and HOLDS it, because `c`'s type says so.
 ///
-/// THE FOURTH ROUTE, and the one that lets both body walks go. The other three are
-/// route 1 (the caller's own `requires`, which [`build_dep_projection`]'s Strategies 1/2
-/// answer by FORWARDING a slot) and the two RULE-BODY rescues
-/// ([`spec_has_value_directed_route`], [`dep_has_searchable_pin`]). This one is neither a
-/// forward nor a rescue: it is a DISCHARGE. No dictionary is built here and none is
+/// THE ROUTE THAT LETS BOTH BODY WALKS GO, and §8.7 numbers it (2). The others are the
+/// caller's own `requires` — (1), which [`build_dep_projection`]'s Strategies 1/2 answer
+/// by FORWARDING a slot — and, at a RULE body, the provider facts, (4)
+/// ([`dep_completes_to_a_unique_provider`]). This one is neither a forward nor a search:
+/// it is a DISCHARGE.
+///
+/// AND IT CARRIES ROUTE (3) TOO. Since WI-20260922-0DK3H a written `require[Spec[…]]` is
+/// collected by [`held_spec_views`] beside the values in scope, so the declared bracket is
+/// THIS cover walk asked of a contract the CLAUSE states rather than one a value's type
+/// states — one predicate, so the two cannot disagree. The two RULE-BODY rescues that used
+/// to be named here, `spec_has_value_directed_route` and `dep_has_searchable_pin`, are
+/// deleted: both appealed to what a value might name at fire time. No dictionary is built here and none is
 /// needed — eval reaches the provider from the value's own carrier — but the obligation
 /// is MET, and met for a reason readable from the signature rather than excused by a walk
 /// of the callee's body.
@@ -25990,7 +26012,8 @@ fn scope_contract_covers_dep(
         // is not. [`ResolutionResult`] separates the three answers a discharge must keep
         // apart: `Resolved` is evidence, `Ambiguous` is a TIE that must stay refused, and
         // `NoMatch` is nothing. An earlier cut asked value-direction
-        // ([`spec_has_value_directed_route`]) instead — "a value CAN name a provider",
+        // (`spec_has_value_directed_route`, since deleted by WI-20260922-0DK3H) instead
+        // — "a value CAN name a provider",
         // which is true when there are TWO of them or when a conditional provision's
         // condition fails — and silenced seven refusals across `wi855`, `wi1102`,
         // `wi999` and `wi_ckd4j`, ties among them.
@@ -26272,7 +26295,8 @@ fn view_carrier_binding(kb: &KnowledgeBase, tid: TermId) -> Option<TermId> {
 ///    not inventing evidence.
 ///
 /// **RESOLVED, NOT MERELY GROUND**, and the difference is a silent discharge. A first cut
-/// asked [`dep_has_searchable_pin`] — "does some element name a concrete type?" — which is
+/// asked `dep_has_searchable_pin` (since deleted by WI-20260922-0DK3H) — "does some
+/// element name a concrete type?" — which is
 /// the right question about a DEP (can the resolver even start?) and the wrong one about a
 /// CONTRACT (does the answer exist?). MEASURED: `wi999.req`'s `Poly requires Ring[T = R]`
 /// at `poly(c: 1)` composes to `Ring[T = Int64]`, perfectly ground and answered by
@@ -26651,9 +26675,11 @@ pub(crate) struct CallerRigidCarrier {
 /// carrying. This arm needs `enclosing_op` to say "the CALLER declared no `requires`", and
 /// a rule body has no operation to name — nor can it park, since
 /// [`report_unsuppliable_requirements`] drains the queue before rule bodies are typed. So
-/// that site RAISES at its own gate instead, on the general property
-/// [`spec_has_value_directed_route`]; see [`build_op_scoped_dicts`] and
-/// [`build_dispatching_dict_from_chain`] for the two halves.
+/// that site RAISES at its own gate instead, on the two properties LOAD can see —
+/// [`spec_is_a_marker`] and [`dep_completes_to_a_unique_provider`] (WI-20260922-0DK3H
+/// replaced the single `spec_has_value_directed_route` with that pair); see
+/// [`build_op_scoped_dicts`] and [`build_dispatching_dict_from_chain`] for the two
+/// halves.
 ///
 /// `None` for every other unfilled slot, which is the pre-existing behaviour those
 /// classes have and not a decision this ticket makes about them.

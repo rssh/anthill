@@ -235,14 +235,18 @@ end
 
 /// WI-20260921-3G1YT — **THE SAME DEFECT AT A USER TYPECLASS, WHICH IS WHY THE RULE IS
 /// NOT `TypeValue`'s.** `Stamp` is `TypeValue` in miniature and shares nothing with it but
-/// its SHAPE: one operation, nullary in its own carrier, so no value can ever be
-/// dispatched on to reach it and the SLD bridge has nothing to resolve a provider from.
+/// its SHAPE: it DECLARES an operation, so it is not a marker spec and its callers really
+/// would miss the slot, and nothing in the KB provides it, so the provider facts determine
+/// no dictionary. Both halves are readable at LOAD, which is the point.
 ///
 /// MEASURED BEFORE THE FIX: this program LOADED CLEAN while the byte-identical shape
 /// spelled `TypeValue` was refused — because N31XX's arm asked
 /// `dep.required_sort == anthill.reflect.TypeValue` and nothing asked the general
-/// question. That hardcode is deleted; the rule now keys on
-/// [`spec_has_value_directed_route`], and `TypeValue` is an instance of it.
+/// question. That hardcode is deleted; the rule keys on the spec's SHAPE and on the
+/// provider facts — `spec_is_a_marker` and `dep_completes_to_a_unique_provider` — and
+/// `TypeValue` is an instance of it like any other spec. (It keyed on
+/// `spec_has_value_directed_route` between WI-20260921-3G1YT and WI-20260922-0DK3H, which
+/// deleted that predicate for appealing to what a value might name at fire time.)
 ///
 /// WHICH TESTS FAIL IF THE RULE IS BACKED OUT: this one and
 /// [`a_rule_body_forward_is_refused_too`], the `TypeValue` spelling of the same site.
