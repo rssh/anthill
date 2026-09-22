@@ -212,19 +212,31 @@ must become a property of the DECLARATION, or be read off the call's already-com
 stable under body edits — which is defect (1) — and it does not refuse the 84, because a
 value-directed call is classified as one.
 
-AND 37 OF THE 84 ARE WI-20260921-R10KC'S, not this ticket's. R10KC — "a spec default body
-must receive its provision's dictionary, and must resolve a body-less sibling member by
-PROJECTION out of it rather than by value-directed dispatch" — names exactly the
-`FiniteCollection.size` population: `collect` is declared body-less ("Body-less; each
-carrier provides it", `finite_collection.anthill`) and `size(c: C) = List.length(collect(c))`
-is the spec default body calling it. R10KC's blast-radius paragraph says that route works
-today only where the rebuild has a unique answer, "not because evidence travelled". If it
-lands, those bodies receive the dictionary and this ticket must be RE-MEASURED: the 37
-either read a slot that is then suppliable, or stop being parked at all. PREDICTED from
-reading R10KC, NOT measured — it cannot be until R10KC lands.
-The remaining 47 (`MappedStream.map`, `FilteredStream.filter`) are NOT R10KC's: their
-bodies are `mapped(s, f)` / `filtered(s, p)`, entity constructions that read no
-dictionary and never will. That half is this ticket's own residue.
+AND THEY ARE **NOT** WI-20260921-R10KC'S — MEASURED 2026-09-22, ON THE MERGED TREE.
+An earlier revision of this ticket predicted, from READING R10KC, that 37 of the 84
+(`FiniteCollection.size`) were its population and that its landing would make those
+bodies receive the dictionary. R10KC landed (`9e26b389`). RE-CENSUSED: **143 parked, 100
+dropped, 43 reported** — `size` 37, `map` 31, `filter` 16, every figure UNCHANGED (the
++1 is this ticket's own new row). The prediction is refuted.
+
+WHY IT WAS WRONG, because the shapes look alike from outside. The match was on "a spec
+default body calling a body-less sibling", which IS true of `size` → `collect`
+(`collect` is declared body-less, `finite_collection.anthill`). R10KC's second half was
+missed, and its own header states it: the defect is at a call site "where the typer
+resolved `Searchable` AT `MySet`" — a CONCRETE provider the typer already knew, whose
+dictionary was built three times and handed to the reading frame zero times. Its
+`threads_instance` gate requires a `resolved_tree` with a concrete `impl_sort`.
+
+THE 84 ARE THE OPPOSITE CASE. `operation total(c: FiniteCollection) = size(c)` has an
+ABSTRACT SPEC-TYPED parameter — the carrier is `ExprCarried[value = c, member = C]` — so
+no provision resolves at the call, there is no `resolved_tree`, and R10KC's gate cannot
+fire. Nothing was built, so nothing was dropped.
+
+TWO DEFECTS, NOT ONE: *evidence exists and is discarded* (R10KC, delivered) versus
+*evidence cannot be determined at the call* (the 84, untouched and still this ticket's).
+The 47 `map` / `filter` rows were already excluded for a different reason — their bodies
+are `mapped(s, f)` / `filtered(s, p)`, entity constructions that read no dictionary and
+never will.
 
 ACCEPTANCE:
  - the decision is read from the declaration or the classification, not from a body walk,
