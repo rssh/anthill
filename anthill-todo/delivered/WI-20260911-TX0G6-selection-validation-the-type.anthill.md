@@ -189,3 +189,7 @@ receiver's duplicate check 1 (negligible).
 cargo-test: full workspace green via rustland/scripts/test.sh (every binary, 0 failures).
 scaland `sbt testFull`: 578/578 (it carries no instance-selection machinery).
 
+### 2026-09-23T09:02:00Z — feedback — user
+
+FOLLOW-UP (commit d18a3652). Finding 2 (the type channel forwards a PLAIN parameter and answers it with another same-spec slot's dictionary) was attempted inline with the brackets' own gate, "is the binder a slot", and REVERTED. On the type channel that gate breaks a correct shape: a plain parameter a REQUIREMENT mentions (PolyD, Strategy 2b), which runs at both orderings. It failed 4 rows of wi456_no_scope_route_test. The same gate on the brackets therefore refuses that shape too. Measured: the receiver spelling RAN it before this ticket; the callee always refused it; the bare call runs. Zero such brackets exist in the suite or the corpora. It is recorded as conservative at each site, pinned by a_plain_parameter_tied_to_a_requirement_is_refused_in_brackets_too, and the separating criterion is filed as WI-20260923-WN9P8. Full workspace green.
+
