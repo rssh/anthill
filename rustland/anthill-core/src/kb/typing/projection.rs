@@ -2323,14 +2323,6 @@ pub(super) fn normalize_spec_binding_type(kb: &mut KnowledgeBase, v: TermId) -> 
     Some(kb.alloc(Term::Ref(s)))
 }
 
-/// A loud [`TypeError`] for an ill-formed / unsupported type projection.
-/// WI-399: the error context is now THREADED (was hardcoded `OperationReturn`) so a
-/// projection eliminated at a non-call site reports the right place — a `let`-binding
-/// annotation (`LetBinding`), not a phantom operation return. The op-call callers
-/// (`check_apply_iter`) still pass `OperationReturn`, preserving their message.
-/// WI-510: `#[track_caller]` so the `here()` origin threads through to the real
-/// call site rather than collapsing all 10+ callers to this helper's own line.
-#[track_caller]
 /// WI-20260909-S8CBV — the sentence a FAILED δ contributes to a requirement refusal.
 ///
 /// Both projection-carrying sites (the bridge and [`build_op_scoped_dicts`]) let an
@@ -2348,6 +2340,19 @@ pub(super) fn delta_failure_text(e: &TypeError) -> String {
     }
 }
 
+/// A loud [`TypeError`] for an ill-formed / unsupported type projection.
+/// WI-399: the error context is now THREADED (was hardcoded `OperationReturn`) so a
+/// projection eliminated at a non-call site reports the right place — a `let`-binding
+/// annotation (`LetBinding`), not a phantom operation return. The op-call callers
+/// (`check_apply_iter`) still pass `OperationReturn`, preserving their message.
+/// WI-510: `#[track_caller]` so the `here()` origin threads through to the real
+/// call site rather than collapsing all 10+ callers to this helper's own line.
+///
+/// (This doc and the attribute sat above [`delta_failure_text`] from WI-20260909-S8CBV,
+/// which inserted that function between them and this one — so the attribute tracked a
+/// function that builds no error, and every projection error's origin was this helper's
+/// own line. `projection_error_origin_test` drives the attribute where it belongs.)
+#[track_caller]
 pub(super) fn projection_type_error(
     ctx: &TypeErrorContext,
     span: Option<Span>,

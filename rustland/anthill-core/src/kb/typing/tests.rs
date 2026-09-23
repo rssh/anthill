@@ -7001,3 +7001,39 @@ mod wi_n3w68_type_base_walk_tests {
         assert!(return_reducible_ctors(&kb, &Value::term(body))[concat_slot]);
     }
 }
+
+/// `projection_type_error`'s `#[track_caller]` — WI-510's construction-site origin must name
+/// the CALLER of the helper, which is the whole reason the attribute exists.
+#[cfg(test)]
+mod projection_error_origin_test {
+    //! THE CONTROL IS THE ATTRIBUTE'S PLACEMENT. From WI-20260909-S8CBV until the fix beside
+    //! this test, the attribute (and its doc) sat on `delta_failure_text`, a function
+    //! inserted between them and `projection_type_error`; with it there, the site below is
+    //! `kb/typing/projection.rs` — the helper's own line — and the assertion fails, MEASURED.
+    //! The site is a debugging origin, rendered only under `ANTHILL_DIAG_ORIGIN`, so no
+    //! verdict or message moves either way; `wi510_typeerror_origin_test`'s rows pass both
+    //! ways by design (they ask only that the site is in the typer's source).
+    use super::super::{projection_type_error, TypeError, TypeErrorContext};
+    use crate::kb::KnowledgeBase;
+
+    #[test]
+    fn a_projection_error_is_traced_to_the_code_that_raised_it() {
+        let mut kb = KnowledgeBase::new();
+        let op_name = kb.intern("f");
+        let err = projection_type_error(
+            &TypeErrorContext::OperationEffects { op_name },
+            None,
+            "a projection that cannot be eliminated",
+        );
+        let TypeError::Other { site, .. } = err else {
+            panic!("`projection_type_error` builds a `TypeError::Other`, got {err:?}");
+        };
+        let file = site.file().replace('\\', "/");
+        assert!(
+            file.ends_with("kb/typing/tests.rs"),
+            "the origin must be this call, not the helper: got {}:{}",
+            file,
+            site.line(),
+        );
+    }
+}
