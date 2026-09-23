@@ -745,8 +745,14 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // proposition — so the test is `impl_ret <: spec_ret`, the same
             // `types_compatible` direction the effects leg uses.
             //
-            // CONFIDENT-GROUND ONLY, FAIL-OPEN OTHERWISE — the same shape the
-            // effects leg below uses, and for the same reason. Refusing needs the
+            // DECIDABLE ONLY, FAIL-OPEN OTHERWISE — the same predicate the effects
+            // leg below uses, and for the same reason. (It used to be only the same
+            // SHAPE: this gate still read the CARRIER — `Value::Term` plus
+            // `!contains_type_param` — after WI-20260822-1TKN0 retired exactly that test
+            // from the effects leg, so a return type riding `Value::Node` because it
+            // carries a denoted, `Foo[T = Int64, N = 3]`, was skipped as undecidable
+            // and a mismatch over it loaded clean. Pinned by
+            // `a_denoted_return_type_mismatch_is_compared`.) Refusing needs the
             // two types to be KNOWN incompatible, and treating "cannot decide" as
             // "differs" would re-refuse providers the pass cannot judge. σ is what
             // makes the ordinary parametric case decidable: a spec returning its
@@ -773,8 +779,9 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                 );
                 if discharges {
                     let spec_ret = sigma_subst_effect(kb, &spec_info.return_type, &p.sigma);
-                    let is_ground = |kb: &KnowledgeBase, v: &Value| matches!(v, Value::Term { id: t, .. } if !contains_type_param(kb, *t));
-                    if is_ground(kb, &spec_ret) && is_ground(kb, &impl_info.return_type) {
+                    let decidable =
+                        |kb: &KnowledgeBase, v: &Value| !view_contains_type_param(kb, v);
+                    if decidable(kb, &spec_ret) && decidable(kb, &impl_info.return_type) {
                         let mut subst = Substitution::new();
                         if !types_compatible(kb, &mut subst, &impl_info.return_type, &spec_ret) {
                             ret_mismatch = Some((
