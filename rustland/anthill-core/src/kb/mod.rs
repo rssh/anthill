@@ -1300,7 +1300,13 @@ pub struct KnowledgeBase {
     /// pay much for that today (fewer than 5000 calls per test thread across the whole
     /// `wi_tests` binary, ~100 in the domain suites), so this is a shape fix rather than
     /// a measured win — recorded that way rather than dressed up as one.
-    type_param_canonical_vids: std::collections::HashSet<VarId>,
+    ///
+    /// WI-20260923-WN9P8 — a MAP, to the parameter the variable is canonical for, because
+    /// the typer asks the reverse question too: a body's rigid is found in its
+    /// `param_rigids` by canonical `VarId`, and [`Self::type_param_of_canonical_var`] turns
+    /// that into the DECLARATION, which is what says whether the parameter is a named
+    /// requirement slot and so where the frame holds its dictionary.
+    type_param_canonical_vids: HashMap<VarId, Symbol>,
 
     /// WI-743 (proposal 060 §2.2) — every sort `anthill.kernel.domain_member` has a
     /// clause for, keyed by [`Self::canonical_sort_sym`], mapped to that sort's declared
@@ -2330,7 +2336,7 @@ impl KnowledgeBase {
             rule_head_captures: HashMap::new(),
             named_requirement_slots: HashMap::new(),
             type_param_canonical_var: HashMap::new(),
-            type_param_canonical_vids: std::collections::HashSet::new(),
+            type_param_canonical_vids: HashMap::new(),
             domain_member_params: HashMap::new(),
             domain_member_jobs: Vec::new(),
             domain_member_declined: HashMap::new(),
@@ -2748,7 +2754,8 @@ impl KnowledgeBase {
         let tid = self.alloc(Term::Var(Var::Global(vid)));
         self.type_param_canonical_var.insert(param_sym, tid);
         // The `VarId`-keyed twin, written HERE and nowhere else — see the field's doc.
-        self.type_param_canonical_vids.insert(vid);
+        // First write wins here too, for the same re-load reason as the map above.
+        self.type_param_canonical_vids.entry(vid).or_insert(param_sym);
     }
 
     /// WI-954 — the canonical `Var::Global` TERM `param_sym` denotes, or `None` when
@@ -2781,7 +2788,14 @@ impl KnowledgeBase {
     /// bracket as a hidden head slot). Until that lands the pre-ticket representation
     /// stands here, unchanged.
     pub(crate) fn is_canonical_type_param_var(&self, vid: VarId) -> bool {
-        self.type_param_canonical_vids.contains(&vid)
+        self.type_param_canonical_vids.contains_key(&vid)
+    }
+
+    /// WI-20260923-WN9P8 — the type parameter `vid` is the canonical variable of, or
+    /// `None` when it is no parameter's. The reverse of [`Self::canonical_type_param_var`],
+    /// written by the same one writer, so the two cannot disagree.
+    pub(crate) fn type_param_of_canonical_var(&self, vid: VarId) -> Option<Symbol> {
+        self.type_param_canonical_vids.get(&vid).copied()
     }
 
     /// WI-743 — does `anthill.kernel.domain_member` have a clause for this sort? See

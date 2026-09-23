@@ -1829,3 +1829,6 @@ mod wi_6b67s_receiver_bound_requirement_test;
 
 #[path = "include/wi_tx0g6_selection_validation_test.rs"]
 mod wi_tx0g6_selection_validation_test;
+
+#[path = "include/wi_wn9p8_forward_soundness_test.rs"]
+mod wi_wn9p8_forward_soundness_test;

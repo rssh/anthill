@@ -113,7 +113,11 @@ end
 /// `Internal(… __req_weakord not bound … frame binds [])`; route 4 must not re-admit it.
 ///
 /// MEASURED: with the obtainability gate removed, this row and both `wi456_no_scope_route`
-/// refusals go green-to-red together.
+/// refusals went green-to-red together. Since WI-20260923-WN9P8 the program is refused
+/// first as a FORWARD of `insertA`'s own `O`, which the frame holds no dictionary for
+/// (`project_forwarded_slot`, before route 4 is asked). So the gate alone no longer
+/// reddens this row: it reddens with the gate and that forward rule backed out together,
+/// measured, and so do wi456's three no-route rows.
 #[test]
 fn a_carriers_own_requires_is_not_held_by_a_value_of_it() {
     const SRC: &str = r#"

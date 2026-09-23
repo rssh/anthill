@@ -10403,8 +10403,18 @@ fn attach_eta_dispatch_dict(
         });
         return Ok(());
     }
+    // WI-20260923-WN9P8 — and only where the capture IS the forward for every named slot
+    // of the sort; otherwise the cross-sort build below answers each slot by its binder.
     if env.enclosing_sort() == Some(parent)
         && frame_serves_callee(env.enclosing_dict_chain(), callee_frame_key(kb, sym))
+        && inherit_answers_every_forward(
+            kb,
+            parent,
+            &SigmaCtx {
+                subst: &subst,
+                param_rigids: env.param_rigids(),
+            },
+        )
     {
         // Same-sort eta: the op needs its OWN sort's dispatching dict. A DIRECT
         // same-sort call inherits the enclosing frame at eval, but an eta'd
@@ -24413,13 +24423,18 @@ pub struct RequirementRefusal {
     construction_carries_repair: bool,
     /// The enclosing scope offers NO ROUTE to this dep — no chain entry covers it, no
     /// sub-chain projection reaches it, construction found nothing, and none of the four
-    /// signatures above explains why. The plainest shape is a signature that QUANTIFIES a
+    /// signatures above explains why. The plainest shape was a signature that QUANTIFIES a
     /// type parameter and declares no `requires` to carry its dictionary
     /// (`f[T, O](s: SortedSet[T = T, O = O])`): [`carried_slot`] reads the binder as
     /// `Forwarded` because the signature declared it, but declaring a type PARAMETER is
     /// not declaring a SLOT, so the scope has nothing to forward. Before this, such a
     /// call took the silent `Ok(None)` and died at eval with `Internal(DeferToRequirement:
     /// __req_* not bound … frame binds [])`, naming neither the requirement nor a repair.
+    ///
+    /// WI-20260923-WN9P8 — that shape is a FORWARD, and [`Self::untied`] refuses it before
+    /// any strategy runs, with this arm's advice. What reaches this arm now is a dep that
+    /// forwards nothing: an anonymous requirement, or a slot no parameter binds (measured,
+    /// seven rows across the suite, e.g. `wi456 strategy_2b_declines_a_witness_provider`).
     ///
     /// It changes only the ADVICE. "Pin the element at the call site" is the repair for an
     /// UNCONSTRAINED element and is not this one: here the element is a rigid the caller
@@ -24442,6 +24457,13 @@ pub struct RequirementRefusal {
     /// nothing. The other fields describe why a dictionary could not be ASSEMBLED;
     /// this one says the program never had one to assemble.
     unprovided: Option<UnprovidedProvision>,
+    /// WI-20260923-WN9P8 — the dep FORWARDS a named slot bound to one of the enclosing
+    /// signature's own parameters, and the frame holds no dictionary for that parameter
+    /// ([`binder_frame_slot`]). What covers the goal by spec, if anything, is another
+    /// parameter's, so it is not forwarded and nothing is constructed in its place. It
+    /// replaces every tail below, as [`Self::unprovided`] does, because theirs are repairs
+    /// for a search and this dep never reaches one.
+    untied: Option<UntiedForward>,
 }
 
 /// WI-1102 — a fully-pinned requirement, and the CARRIER the call named for it.
@@ -24617,6 +24639,11 @@ impl RequirementRefusal {
         }
         if !self.construction.is_empty() {
             msg.push_str(&format!("; {}", self.construction));
+        }
+        if let Some(u) = &self.untied {
+            msg.push_str(": ");
+            msg.push_str(&u.render(kb));
+            return msg;
         }
         // WI-1102 — the carrier clause and its OWN advice, which replaces the generic
         // one below: "pin the element at the call site" is exactly the thing this
@@ -24987,6 +25014,7 @@ fn explain_dep_refusal(
         // WI-1102's carrier signature is the COMPLEMENT of this explainer's (every
         // element determined vs. one left open) and is built where that is known.
         unprovided: None,
+        untied: None,
     })
 }
 
@@ -25075,7 +25103,30 @@ fn build_dispatching_dict_from_chain(
         .map(|ar| direct_requires_chain(kb, ar.required_sort))
         .collect();
     let mut proj_terms: Vec<TermId> = Vec::with_capacity(chain.len());
-    for dep in chain {
+    for (j, dep) in chain.iter().enumerate() {
+        // WI-20260923-WN9P8 — A FORWARD IS ANSWERED BY ITS PARAMETER'S OWN DICTIONARY,
+        // before any strategy runs. `callee_spec_sort` owns this chain, so its named slot
+        // at `j` is the slot this dep fills; see [`project_forwarded_slot`].
+        if let Some(ctx) = disambig {
+            if let Some(slot) = named_slot_of_chain(kb, callee_spec_sort, j) {
+                match project_forwarded_slot(
+                    kb,
+                    callee_spec_sort,
+                    &slot,
+                    dep,
+                    caller_requires,
+                    ctx,
+                    syms,
+                ) {
+                    Some(Ok(t)) => {
+                        proj_terms.push(t);
+                        continue;
+                    }
+                    Some(Err(refusal)) => return Err(refusal),
+                    None => {}
+                }
+            }
+        }
         // WI-828: have Strategy 3 hand out its terminal failure so a refusal
         // is explained from what the search itself saw, not a re-run.
         // Requested only where the explanation has a consumer.
@@ -25123,6 +25174,7 @@ fn build_dispatching_dict_from_chain(
                         // An author who NAMED a witness is told about the witness, not
                         // sent to write a `provides` line on the carrier.
                         unprovided: None,
+                        untied: None,
                     }));
                 }
                 // WI-20260921-3G1YT — ROUTE 4: THE OBLIGATION IS HELD, by a value in
@@ -25248,6 +25300,7 @@ fn build_dispatching_dict_from_chain(
                                 .unwrap_or_default(),
                             pinned: None,
                             unprovided: None,
+                            untied: None,
                         }));
                     } else if let Some(nomatch @ ResolutionResult::NoMatch { .. }) = &s3_failure {
                         // WI-1102 — §5.2's unconstrained-element refusal and 058 §3.10's
@@ -25275,6 +25328,7 @@ fn build_dispatching_dict_from_chain(
                                 construction,
                                 pinned: None,
                                 unprovided: Some(unprovided),
+                                untied: None,
                             }));
                         }
                     }
@@ -25321,6 +25375,7 @@ fn build_dispatching_dict_from_chain(
                             construction,
                             pinned: None,
                             unprovided: None,
+                            untied: None,
                         }));
                     }
                 }
@@ -25480,6 +25535,14 @@ fn build_concrete_dispatch_dict(
     if caller_sort == Some(callee_spec_sort)
         && !pins_this_chain
         && frame_serves_callee(caller_requires, abstract_chain.provision())
+        && inherit_answers_every_forward(
+            kb,
+            callee_spec_sort,
+            &SigmaCtx {
+                subst,
+                param_rigids,
+            },
+        )
     {
         return Ok(None);
     }
@@ -25840,7 +25903,7 @@ fn build_op_scoped_dicts(
     // `SlotToRead::Op(i)`) because this half is best-effort and name-keyed, so a body
     // reading a DIFFERENT slot was no evidence about this one. Every parked refusal is
     // now reported, so there is no per-slot question left to key.
-    for entry in op_chain.iter() {
+    for (j, entry) in op_chain.iter().enumerate() {
         // Same substitution the sort half takes: a call-site-pinned element
         // (`Zeroable[HT]` at `HT := Pebble`) becomes concrete and Strategy 3
         // constructs it; one left abstract stays open for a Strategy-1/2 forward
@@ -25953,6 +26016,7 @@ fn build_op_scoped_dicts(
                     },
                     pinned: None,
                     unprovided: None,
+                    untied: None,
                 }));
             }
         }
@@ -25961,6 +26025,32 @@ fn build_op_scoped_dicts(
             spec: substitute_spec_via_subst(kb, &projected, subst),
             supply: entry.supply,
         };
+        // WI-20260923-WN9P8 — the sort half's forward rule, on the op half: a slot of the
+        // callee's OWN bound to one of the caller's parameters is that parameter's
+        // dictionary or a refusal. MEASURED without it: a set typed `O = P` passed into
+        // `add[E, OE](…) requires OE: WeakOrd[E]` got the caller's `OX` and inserted in
+        // its order.
+        if let Some(slot) = named_slot_of_chain(kb, callee_op, j) {
+            match project_forwarded_slot(
+                kb,
+                callee_op,
+                &slot,
+                &dep,
+                caller_requires,
+                &disambig,
+                &syms,
+            ) {
+                Some(Ok(t)) => {
+                    out.push(Some(t));
+                    continue;
+                }
+                Some(Err(refusal)) => {
+                    kb.unsuppliable_requirements.truncate(parked_mark);
+                    return Err(refusal);
+                }
+                None => {}
+            }
+        }
         // WI-1091: ask the search for its terminal outcome, so the tie below is the one
         // THIS search saw rather than a re-run that could disagree with it — the same
         // discipline (and the same out-parameter) `build_dispatching_dict_from_chain`
@@ -26020,6 +26110,7 @@ fn build_op_scoped_dicts(
                                 ),
                                 pinned: None,
                                 unprovided: None,
+                                untied: None,
                             })
                         })?;
                         pinned_by_arg.push(InstanceSelection {
@@ -26109,6 +26200,7 @@ fn build_op_scoped_dicts(
                     construction: describe_resolution_failure(kb, tie),
                     pinned: None,
                     unprovided: None,
+                    untied: None,
                 }));
             }
             // TWO PARKED VERDICTS, DECIDED BY ONE `match` so a slot cannot be reported
@@ -26215,6 +26307,7 @@ fn build_op_scoped_dicts(
                         construction,
                         pinned: None,
                         unprovided: Some(unprovided),
+                        untied: None,
                     }),
                     // WI-20260920-XSVCS — THE FORWARD: the carrier is a type parameter
                     // of the CALLER, and the caller declared no `requires` that covers
@@ -26251,6 +26344,7 @@ fn build_op_scoped_dicts(
                                 ),
                                 pinned: None,
                                 unprovided: None,
+                                untied: None,
                             })
                         });
                         // PROPOSAL 065 OPEN QUESTION 3 — LAST, because it is the arm for
@@ -26285,6 +26379,7 @@ fn build_op_scoped_dicts(
                                 ),
                                 pinned: None,
                                 unprovided: None,
+                                untied: None,
                             }),
                         }
                     }
@@ -26342,6 +26437,7 @@ fn unrescuable_rule_body_refusal(
         ),
         pinned: None,
         unprovided: None,
+        untied: None,
     }
 }
 
@@ -27873,32 +27969,7 @@ fn provider_half_projection(
 ) -> Option<TermId> {
     let entry = caller_requires[i].clone();
     let spec = entry.required_sort;
-    // WHICH parameter holds the carrier — the same two-rung ladder `unprovided_provision`
-    // reads, so the two cannot disagree about it.
-    let param = spec_carrier_param_or_sole(kb, spec)?;
-    let param_name = kb.local_name_of(param).to_string();
-    let goal = goal_from_requires_entry(kb, &entry)?;
-    let bound = goal
-        .bindings
-        .iter()
-        .find(|(k, _)| kb.local_name_of(*k) == param_name)
-        .map(|(_, v)| *v)?;
-    let view = TermIdView(bound);
-    let carrier = sort_functor_of_view(kb, &view)?;
-    if !carrier_is_its_own_sole_provider(kb, carrier, spec) {
-        return None;
-    }
-    // AND DECLINE `spec == carrier` OUTRIGHT (found by /code-review). There
-    // [`dict_layout`] folds the two halves into ONE list — `spec_len` becomes the WHOLE
-    // length and `provider_len` 0 — and the two sides would also be keyed by different
-    // provisions (`None` there, `Some(spec)` here), so no index computed from them is
-    // one this function can justify. A self-providing spec used as its own carrier is
-    // exotic and 2b has no measured need for it; declining falls through to Strategy 3
-    // and costs nothing, where guessing loaded clean and died
-    // `Internal(requirement_at_sort: index out of range)` at run time.
-    if same_sort_canonical(kb, spec, carrier) {
-        return None;
-    }
+    let (carrier, bound) = provider_half_carrier(kb, &entry)?;
     // THE PRE-FILTER FIRST, before any allocation (found by /code-review). Strategy 2
     // builds its composition map lazily and only for a same-sort candidate for exactly
     // this reason, and 2b runs for EVERY dep Strategies 0-2 miss — so a dep whose spec
@@ -27912,15 +27983,7 @@ fn provider_half_projection(
     {
         return None;
     }
-    let args: SmallVec<[(Symbol, TermId); 2]> = view
-        .named_keys(kb)
-        .into_iter()
-        .filter_map(|k| {
-            view.named_arg(kb, k)
-                .and_then(|it| it.as_term_id())
-                .map(|v| (k, v))
-        })
-        .collect();
+    let args = carrier_named_args(kb, bound);
     let carrier_params = impl_param_symbols(kb, carrier);
     let map: HashMap<Symbol, TermId> = align_by_short_name(kb, &args, &carrier_params)
         .into_iter()
@@ -27947,6 +28010,55 @@ fn provider_half_projection(
     let name = caller_requires.name_at(kb, i)?;
     let inner = build_req_var_ref(kb, syms, name);
     Some(build_req_at_sort(kb, syms, inner, base + k))
+}
+
+/// Strategy 2b's reading of one caller slot: the CARRIER its spec's carrier binding
+/// names, with that binding, when the carrier's own chain is what fills the slot
+/// dictionary's provider half. Shared by [`provider_half_projection`] and
+/// [`carried_named_frame_slot`] (WI-20260923-WN9P8), so the two cannot disagree about
+/// whose provider half a slot holds.
+fn provider_half_carrier(kb: &mut KnowledgeBase, entry: &RequiresEntry) -> Option<(Symbol, TermId)> {
+    let spec = entry.required_sort;
+    // WHICH parameter holds the carrier — the same two-rung ladder `unprovided_provision`
+    // reads, so the two cannot disagree about it.
+    let param = spec_carrier_param_or_sole(kb, spec)?;
+    let param_name = kb.local_name_of(param).to_string();
+    let goal = goal_from_requires_entry(kb, entry)?;
+    let bound = goal
+        .bindings
+        .iter()
+        .find(|(k, _)| kb.local_name_of(*k) == param_name)
+        .map(|(_, v)| *v)?;
+    let carrier = sort_functor_of_view(kb, &TermIdView(bound))?;
+    if !carrier_is_its_own_sole_provider(kb, carrier, spec) {
+        return None;
+    }
+    // AND DECLINE `spec == carrier` OUTRIGHT (found by /code-review). There
+    // [`dict_layout`] folds the two halves into ONE list — `spec_len` becomes the WHOLE
+    // length and `provider_len` 0 — and the two sides would also be keyed by different
+    // provisions (`None` there, `Some(spec)` here), so no index computed from them is
+    // one this function can justify. A self-providing spec used as its own carrier is
+    // exotic and 2b has no measured need for it; declining falls through to Strategy 3
+    // and costs nothing, where guessing loaded clean and died
+    // `Internal(requirement_at_sort: index out of range)` at run time.
+    if same_sort_canonical(kb, spec, carrier) {
+        return None;
+    }
+    Some((carrier, bound))
+}
+
+/// The named arguments of a carrier binding (`SortedSet[T = E, O = OE]`), as the pairs a
+/// provider-half entry is composed through ([`align_by_short_name`]).
+fn carrier_named_args(kb: &KnowledgeBase, carrier_value: TermId) -> SmallVec<[(Symbol, TermId); 2]> {
+    let view = TermIdView(carrier_value);
+    view.named_keys(kb)
+        .into_iter()
+        .filter_map(|k| {
+            view.named_arg(kb, k)
+                .and_then(|it| it.as_term_id())
+                .map(|v| (k, v))
+        })
+        .collect()
 }
 
 /// WI-226: binding-aware predicate for slot matching in
@@ -30618,49 +30730,544 @@ fn slot_selection_of(
     }))
 }
 
-/// WI-20260911-TX0G6 — does `v` NAME one of its declaring scope's own NAMED requirement
-/// slots, as `OE` does inside `sort R { requires OE: WeakOrd[E] }`? This is the one
-/// abstract value a WRITTEN slot binding may forward
-/// ([`validate_written_selection`]).
+/// WI-20260923-WN9P8 — the entries of a FRAME, in the one index space a
+/// [`ResolvedRequiresNode::FromScope`] and a caller-chain projection both count in: a
+/// [`ResolutionScope`]'s `available_requires` followed by its `sub_goal_requires`, or a
+/// whole [`DictChain`] with an empty tail.
+#[derive(Clone, Copy)]
+struct FrameEntries<'a> {
+    head: &'a [RequiresEntry],
+    tail: &'a [RequiresEntry],
+}
+
+impl<'a> FrameEntries<'a> {
+    fn of_chain(chain: &'a DictChain) -> Self {
+        FrameEntries {
+            head: chain.entries(),
+            tail: &[],
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.head.len() + self.tail.len()
+    }
+
+    fn get(&self, i: usize) -> Option<&'a RequiresEntry> {
+        match i.checked_sub(self.head.len()) {
+            None => self.head.get(i),
+            Some(j) => self.tail.get(j),
+        }
+    }
+}
+
+/// WI-20260923-WN9P8 — WHERE THE FRAME HOLDS THE DICTIONARY FOR ONE OF ITS OWN
+/// PARAMETERS: the answer to a FORWARD.
 ///
-/// NARROWER THAN [`view_is_abstract_type_param`], and the difference was MEASURED as a
-/// silent wrong answer. A forward hands the callee whatever dictionary the frame holds
-/// for the slot's GOAL. That goal is keyed by spec and bindings, not by the binder the
-/// type names. So `[O = P]`, with `P` a PLAIN parameter of `sort R2 { sort P = ?;
-/// requires OE: WeakOrd[E] }`, was answered by `OE`'s dictionary: at
-/// `R2.mk[E = String, P = ByLength, OE = RevLen]` the set's type said `O = ByLength`, and
-/// it ordered by `RevLen`. A slot binder is always a name the frame holds a dictionary
-/// under, so a slot binder forwards.
+/// A named requirement slot is a type parameter (058 §4.7). So a callee slot bound to a
+/// parameter `X` the enclosing signature DECLARED says "the provider `X` stands for": the
+/// value was built with it, and the dictionary the call needs is the one the enclosing
+/// declaration's own caller supplied FOR `X`. The frame holds that dictionary in exactly
+/// two places, and this finds it in one of them or answers `None`:
 ///
-/// CONSERVATIVE, and MEASURED to be: a plain parameter can ALSO be tied to a frame
-/// dictionary. In `sort PolyD { sort OE = ?; requires PersistentCollection[C =
-/// SortedSet[T = E, O = OE], …] }` the instance requirement mentions `OE`, and a forward
-/// is answered soundly out of it (Strategy 2b). Before WI-20260911-TX0G6 the receiver
-/// spelling ran that bracket correctly; this gate refuses it in both spellings (the
-/// callee spelling always did), and the bare spelling still runs. Telling the two
-/// shapes apart means asking whether the entry that ANSWERS the goal is tied to the
-/// binder, which is WI-20260923-WN9P8's question and not this gate's.
+///  * `X`'s OWN named slot. `sort R { requires OE: WeakOrd[E] }` with `X = OE`, or the
+///    operation-scoped `add[E, OE](…) requires OE: WeakOrd[E]`.
+///  * a named slot of a CARRIER that one of the frame's requirements binds to `X`.
+///    `requires PersistentCollection[C = SortedSet[T = E, O = OE], …]` holds
+///    `SortedSet`'s own `O` dictionary in its provider half, at `O = OE`. That is the
+///    shape Strategy 2b projects ([`provider_half_projection`]), under the same gates.
 ///
-/// Asked of the binder's DECLARING scope, so an operation's own slots (`requires plus:
-/// Monoid[T]`) answer exactly as a sort's do. A name no scope declares answers `false`:
-/// that is the loud direction, since the binding then goes on to check 1 and is
-/// refused. The declaring scope IS the enclosing declaration for every value that
-/// reaches here. MEASURED (found by `/code-review`): another sort's binder written from
-/// outside, `[O = R.OE]` inside `sort S`, is a non-manifest projection, refused at load
-/// in both spellings, and never gets here as a `SortRef`.
-fn names_a_declared_slot<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
-    let binder = match type_head(kb, v) {
-        TypeHead::TypeVar(s) => s,
-        TypeHead::SortRef(s) if is_sort_param_symbol(kb, s) => s,
-        _ => return false,
+/// NOTHING ELSE IS `X`'s, however well it covers the goal, and that is the whole
+/// ticket. The slot's goal is keyed by spec and bindings (`WeakOrd[T = E]`), and `X`
+/// appears in neither. So a spec-keyed answer handed `s: SortedSet[T = E, O = P]` the
+/// dictionary of `OE`, of an anonymous `requires WeakOrd[E]`, or of the provider half of
+/// a requirement about some other parameter. Each was MEASURED loading clean and
+/// inserting in the wrong order, on the direct call, through the spec
+/// (`PersistentCollection.insert`), eta'd, and into a callee's op-scoped slot. Asking
+/// "is this entry `X`'s" instead of "does it cover" is what tells those apart from the
+/// sound shapes, which reach the same goal through `X` itself.
+///
+/// The OWN slot is found by `X`'s DECLARATION, not by searching the frame, because two
+/// same-spec slots are otherwise indistinguishable (`requires A: WeakOrd[E]` and
+/// `requires B: WeakOrd[E]` are equal entries). The binder's rigid gives its canonical
+/// variable through `param_rigids`, that gives the parameter
+/// ([`KnowledgeBase::type_param_of_canonical_var`]), and the parameter's declaring scope
+/// gives the slot and its position in the frame. A frame that does not reach that
+/// position holds no slot for `X` (`own_out_of_reach`): that happens when a route reads
+/// only the sort half and `X` is an operation's slot, and it is a refusal, never a guess.
+///
+/// EVERY slot that is `X`'s, own first, and the caller takes the first that answers its
+/// demand (found by `/code-review`). Each is `X`'s dictionary, so any of them is a sound
+/// answer; stopping at the own slot would refuse a demand only a carrier's slot answers.
+fn binder_frame_slots(
+    kb: &mut KnowledgeBase,
+    frame: FrameEntries<'_>,
+    bound: TermId,
+    ctx: &SigmaCtx,
+) -> BinderSlots {
+    let (own, own_out_of_reach) = match own_named_frame_slot(kb, frame, bound, ctx) {
+        OwnSlot::Held(held) => (Some(held), false),
+        OwnSlot::OutOfReach => (None, true),
+        OwnSlot::NotASlot => (None, false),
     };
-    let Some(scope) = kb.symbols.declaring_scope(binder) else {
-        return false;
-    };
-    let short = kb.local_name_of(binder);
-    kb.named_requirement_slots(scope.owner())
+    let mut slots: Vec<BinderSlot> = own.into_iter().collect();
+    for i in 0..frame.len() {
+        slots.extend(carried_named_frame_slot(kb, frame, i, bound, ctx));
+    }
+    BinderSlots {
+        slots,
+        own_out_of_reach,
+    }
+}
+
+/// [`binder_frame_slots`]' answer: the slots that hold `X`'s dictionary, and whether `X`
+/// has a slot of its own that this frame does not reach.
+#[derive(Clone, Debug)]
+struct BinderSlots {
+    slots: Vec<BinderSlot>,
+    own_out_of_reach: bool,
+}
+
+impl BinderSlots {
+    /// The first slot whose dictionary answers a demand of `demand_spec` that `covers`
+    /// accepts, as `(scope_index, projection)`.
+    fn answer(
+        &self,
+        kb: &mut KnowledgeBase,
+        demand_spec: Symbol,
+        mut covers: impl FnMut(&mut KnowledgeBase, &RequiresEntry) -> bool,
+    ) -> Option<(usize, SmallVec<[usize; 2]>)> {
+        self.slots.iter().find_map(|b| {
+            binder_slot_path(kb, b, demand_spec, &mut covers).map(|p| (b.scope_index, p))
+        })
+    }
+}
+
+/// [`own_named_frame_slot`]'s three answers. The middle one is its own because its repair
+/// is different: the author declared the slot, and the route cannot read it.
+enum OwnSlot {
+    Held(BinderSlot),
+    OutOfReach,
+    NotASlot,
+}
+
+/// WI-20260923-WN9P8 — the parameter a body's rigid stands for: the rigid's canonical
+/// variable through `param_rigids`, and the declaration that variable is canonical for.
+/// `None` for a rigid that is none of this body's parameters.
+fn param_of_rigid(kb: &KnowledgeBase, bound: TermId, ctx: &SigmaCtx) -> Option<Symbol> {
+    let vid = ctx
+        .param_rigids
         .iter()
-        .any(|slot| kb.local_name_of(slot.binder) == short)
+        .find(|(_, rigid)| *rigid == bound)
+        .map(|(vid, _)| *vid)?;
+    kb.type_param_of_canonical_var(vid)
+}
+
+/// WI-20260923-WN9P8 — a frame slot that holds a parameter's dictionary, in
+/// [`ResolvedRequiresNode::FromScope`]'s own shape, plus WHAT it holds.
+#[derive(Clone, Debug)]
+struct BinderSlot {
+    /// The frame entry, in [`FrameEntries`]' index space.
+    scope_index: usize,
+    /// The path into that entry's dictionary. Empty for the parameter's own slot;
+    /// `[provider-half offset]` for a slot a carrier holds.
+    projection: SmallVec<[usize; 2]>,
+    /// The requirement the slot answers, in the ENCLOSING declaration's own parameters,
+    /// which is what a cover is asked of. For a carrier's slot it is the carrier's entry
+    /// composed through the carrier binding, as [`provider_half_projection`] composes it.
+    entry: RequiresEntry,
+}
+
+/// [`binder_frame_slot`]'s first place: `bound` is itself a named slot of the sort or the
+/// operation that declared it.
+fn own_named_frame_slot(
+    kb: &mut KnowledgeBase,
+    frame: FrameEntries<'_>,
+    bound: TermId,
+    ctx: &SigmaCtx,
+) -> OwnSlot {
+    let Some(param) = param_of_rigid(kb, bound, ctx) else {
+        return OwnSlot::NotASlot;
+    };
+    let Some(owner) = kb.symbols.declaring_scope(param).map(|s| s.owner()) else {
+        return OwnSlot::NotASlot;
+    };
+    let short = kb.local_name_of(param).to_string();
+    let Some(slot) = kb
+        .named_requirement_slots(owner)
+        .iter()
+        .find(|s| kb.local_name_of(s.binder) == short)
+        .copied()
+    else {
+        return OwnSlot::NotASlot;
+    };
+    // WHERE the owner's slots sit in the frame. A sort's are the frame's prefix: its
+    // declaration index IS its dictionary index ([`dict_chain_index_of_named_slot`]). An
+    // operation's follow its sort's chain, at their position in the op-scoped chain.
+    let index = if super::op_info::lookup_operation_info(kb, owner).is_some() {
+        match op_named_slot_chain_index(kb, owner, &slot) {
+            Some(j) => op_owner_dict_entries(kb, owner).len() + j,
+            None => return OwnSlot::OutOfReach,
+        }
+    } else {
+        slot.slot
+    };
+    let Some(entry) = frame.get(index) else {
+        return OwnSlot::OutOfReach;
+    };
+    // VERIFIED, as `dict_chain_index` verifies: a frame whose entry there demands another
+    // spec is not laid out the way the declaration says, and answering from it would be a
+    // real dictionary from the wrong slot.
+    if !slot
+        .spec_base
+        .is_some_and(|b| same_sort_canonical(kb, b, entry.required_sort))
+    {
+        return OwnSlot::OutOfReach;
+    }
+    OwnSlot::Held(BinderSlot {
+        scope_index: index,
+        projection: SmallVec::new(),
+        entry: entry.clone(),
+    })
+}
+
+/// [`binder_frame_slot`]'s second place: frame entry `i` requires a spec at a CARRIER
+/// that binds one of its own named slots to `bound`, so the entry's dictionary holds that
+/// slot's dictionary in its provider half.
+///
+/// The carrier and its gates are [`provider_half_carrier`]'s, the ones Strategy 2b
+/// projects under: the provider half is the carrier's own chain only where the carrier
+/// provides the spec itself and no witness rivals it.
+fn carried_named_frame_slot(
+    kb: &mut KnowledgeBase,
+    frame: FrameEntries<'_>,
+    i: usize,
+    bound: TermId,
+    ctx: &SigmaCtx,
+) -> Option<BinderSlot> {
+    let entry = frame.get(i)?;
+    let spec = entry.required_sort;
+    let (carrier, carrier_value) = provider_half_carrier(kb, entry)?;
+    let named = kb.named_requirement_slots(carrier).to_vec();
+    if named.is_empty() {
+        return None;
+    }
+    let args = carrier_named_args(kb, carrier_value);
+    let slot = named.into_iter().find(|ns| {
+        let binder = kb.local_name_of(ns.binder).to_string();
+        args.iter()
+            .any(|(k, v)| kb.local_name_of(*k) == binder && sigma_same(kb, ctx, *v, bound))
+    })?;
+    let entries = provider_dict_entries(kb, carrier, Some(spec)).entries_rc();
+    let carried = entries.get(slot.slot)?;
+    if !slot
+        .spec_base
+        .is_some_and(|b| same_sort_canonical(kb, b, carried.required_sort))
+    {
+        return None;
+    }
+    let base = dict_layout(kb, spec, carrier, None)
+        .slots_for(kb, carrier)?
+        .start;
+    let carrier_params = impl_param_symbols(kb, carrier);
+    let map: HashMap<Symbol, TermId> = align_by_short_name(kb, &args, &carrier_params)
+        .into_iter()
+        .collect();
+    Some(BinderSlot {
+        scope_index: i,
+        projection: SmallVec::from_elem(base + slot.slot, 1),
+        entry: RequiresEntry {
+            required_sort: carried.required_sort,
+            spec: substitute_in_spec(kb, &carried.spec, &map),
+            supply: carried.supply,
+        },
+    })
+}
+
+/// WI-20260923-WN9P8 — the position of an OPERATION's named slot in its op-scoped chain.
+///
+/// Not `slot.slot`, which counts every `requires` goal the operation wrote, value
+/// preconditions included, while the chain holds the spec goals only
+/// ([`op_requires_chain_rc`]). So the position is the count of spec goals before it.
+/// Verified against the goal it counts from, and `None` if that goal is not the slot's
+/// spec, which a caller reads as "no slot here" and refuses.
+fn op_named_slot_chain_index(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    slot: &crate::kb::NamedRequirementSlot,
+) -> Option<usize> {
+    let written = op_requires_entries(kb, op);
+    let goal = written.get(slot.slot)?;
+    if is_value_precondition_clause(kb, &goal.spec)
+        || !slot
+            .spec_base
+            .is_some_and(|b| same_sort_canonical(kb, b, goal.required_sort))
+    {
+        return None;
+    }
+    Some(
+        written[..slot.slot]
+            .iter()
+            .filter(|e| !is_value_precondition_clause(kb, &e.spec))
+            .count(),
+    )
+}
+
+/// WI-20260923-WN9P8 — the named slot of `owner`'s OWN chain at position `j`: a sort's
+/// dictionary chain, or an operation's op-scoped chain. [`named_slot_at`] for the first,
+/// [`op_named_slot_chain_index`] read backwards for the second.
+fn named_slot_of_chain(
+    kb: &mut KnowledgeBase,
+    owner: Symbol,
+    j: usize,
+) -> Option<crate::kb::NamedRequirementSlot> {
+    // Asked for EVERY dep of every dictionary built, and nearly every owner names no slot.
+    if kb.named_requirement_slots(owner).is_empty() {
+        return None;
+    }
+    if super::op_info::lookup_operation_info(kb, owner).is_none() {
+        return named_slot_at(kb, owner, j);
+    }
+    let slots = kb.named_requirement_slots(owner).to_vec();
+    slots
+        .into_iter()
+        .find(|s| op_named_slot_chain_index(kb, owner, s) == Some(j))
+}
+
+/// WI-20260923-WN9P8 — is `owner`'s named slot `slot` a FORWARD at this call, and of
+/// which parameter? `Some(bound)` exactly when the binder's value under `ctx` is one of
+/// the enclosing signature's own declared parameters, the `Quantified` binding that
+/// [`infer_named_slot_bindings`] and [`carried_slot`] accept as "declared here".
+///
+/// The binder is read through the callee's canonical parameter variable, walked and
+/// surfaced as [`infer_named_slot_bindings`] reads it, so the two cannot see two values.
+fn forwarded_binder(
+    kb: &mut KnowledgeBase,
+    owner: Symbol,
+    slot: &crate::kb::NamedRequirementSlot,
+    ctx: &SigmaCtx,
+) -> Option<TermId> {
+    let short = kb.local_name_of(slot.binder).to_string();
+    // A named slot's binder IS a type parameter of its owner (the loader splices it and
+    // publishes its variable), so a miss here is a loader invariant broken, and reading
+    // it as "not a forward" would hand the dep to the spec-keyed search in silence
+    // (found by `/code-review`).
+    let var = kb
+        .type_param_sym_of(owner, &short)
+        .and_then(|param| kb.canonical_type_param_var(param))
+        .unwrap_or_else(|| {
+            panic!(
+                "named slot `{short}` of `{}` has no canonical type-parameter variable — the \
+                 loader publishes one for every slot binder",
+                kb.qualified_name_of(owner)
+            )
+        });
+    let walked = walk_type_deep(kb, ctx.subst, var);
+    let bound = surface_node_binding_to_term(kb, ctx.subst, walked);
+    let declared = matches!(
+        slot_binder_state(kb, &TermIdView(bound)),
+        SlotBinderState::Quantified
+    ) && ctx.param_rigids.iter().any(|(_, rigid)| *rigid == bound);
+    declared.then_some(bound)
+}
+
+/// WI-20260923-WN9P8 — may a SAME-SORT call inherit its caller's frame? The inherit hands
+/// the callee the caller's own dictionary for each of the sort's named slots, which is the
+/// forward only where the call binds each slot to ITS OWN parameter. A bracket may bind it
+/// to another: `ins[OE = P](s, x)` inside the sort that declares `OE` and a plain `P`.
+/// MEASURED (found by `/code-review`): that inherited `OE`'s dictionary and inserted a
+/// set typed `O = P` in `OE`'s order, on all three spellings. Where this answers `false`
+/// the caller builds a dictionary instead, and the forward rule answers each slot
+/// ([`project_forwarded_slot`]) or refuses it.
+///
+/// A slot bound to a WITNESS is not asked about here: that is a selection, and the
+/// callers already decline the inherit for one (`pins_this_chain`).
+fn inherit_answers_every_forward(kb: &mut KnowledgeBase, sort: Symbol, ctx: &SigmaCtx) -> bool {
+    let slots = kb.named_requirement_slots(sort).to_vec();
+    slots.iter().all(|slot| match forwarded_binder(kb, sort, slot, ctx) {
+        None => true,
+        Some(bound) => {
+            let own = kb.type_param_sym_of(sort, kb.local_name_of(slot.binder));
+            own.is_some() && param_of_rigid(kb, bound, ctx) == own
+        }
+    })
+}
+
+/// WI-20260923-WN9P8 — the path into `slot` whose dictionary answers a demand of spec
+/// `demand_spec` that `covers` accepts. The slot itself, or, for a parameter's OWN slot,
+/// one level into it: `requires X: Ord[E]` answers `WeakOrd[T = E]` out of `X`'s own
+/// dictionary, Strategy 2's composition over [`build_child_subst_map`]. That is still
+/// `X`'s dictionary, which is what the forward asks for.
+fn binder_slot_path(
+    kb: &mut KnowledgeBase,
+    slot: &BinderSlot,
+    demand_spec: Symbol,
+    covers: &mut impl FnMut(&mut KnowledgeBase, &RequiresEntry) -> bool,
+) -> Option<SmallVec<[usize; 2]>> {
+    // SPEC FIRST, as every caller of the two cover predicates filters: a cover compares
+    // bindings key by key and assumes one spec on both sides.
+    if same_sort_canonical(kb, slot.entry.required_sort, demand_spec) && covers(kb, &slot.entry) {
+        return Some(slot.projection.clone());
+    }
+    if !slot.projection.is_empty() {
+        return None;
+    }
+    let chain = direct_requires_chain_rc(kb, slot.entry.required_sort);
+    let mut map: Option<HashMap<Symbol, TermId>> = None;
+    for (k, sub) in chain.iter().enumerate() {
+        if !same_sort_canonical(kb, sub.required_sort, demand_spec) {
+            continue;
+        }
+        let map = map.get_or_insert_with(|| build_child_subst_map(kb, &slot.entry));
+        let composed = RequiresEntry {
+            required_sort: sub.required_sort,
+            spec: substitute_in_spec(kb, &sub.spec, map),
+            supply: sub.supply,
+        };
+        if covers(kb, &composed) {
+            return Some(SmallVec::from_elem(k, 1));
+        }
+    }
+    None
+}
+
+/// WI-20260923-WN9P8 — THE DIRECT ROUTE's forward, for both halves of a callee's
+/// dictionary. `dep` fills `owner`'s named slot `slot`; when its binder is one of the
+/// enclosing signature's parameters, the dep is projected out of the frame's dictionary
+/// FOR that parameter ([`binder_frame_slot`]), or refused.
+///
+/// `None` when the dep is not a forward, and the ordinary strategies answer it. A
+/// forward never reaches them. Strategy 1 is first-match by spec, and Strategy 3 would
+/// construct a rival for a value that already chose.
+///
+/// REFUSED, not skipped, where the frame holds nothing for the parameter. A skipped dep
+/// falls into the fall-backs of its caller, and the measured outcomes there were a wrong
+/// order out of another slot's dictionary and an eval `Internal` out of none.
+fn project_forwarded_slot(
+    kb: &mut KnowledgeBase,
+    owner: Symbol,
+    slot: &crate::kb::NamedRequirementSlot,
+    dep: &RequiresEntry,
+    caller_requires: &DictChain,
+    ctx: &SigmaCtx,
+    syms: &ProjectionSyms,
+) -> Option<Result<TermId, Box<RequirementRefusal>>> {
+    let bound = forwarded_binder(kb, owner, slot, ctx)?;
+    let held = binder_frame_slots(kb, FrameEntries::of_chain(caller_requires), bound, ctx);
+    let path = held.answer(kb, dep.required_sort, |kb, e| {
+        entries_cover(kb, e, dep, Some(ctx))
+    });
+    let untied = |kb: &mut KnowledgeBase| {
+        Box::new(RequirementRefusal {
+            no_scope_route: false,
+            construction_carries_repair: false,
+            dep_text: render_requires_entry(kb, dep),
+            unconstrained: Vec::new(),
+            refused_covers: Vec::new(),
+            construction: String::new(),
+            pinned: None,
+            unprovided: None,
+            untied: Some(UntiedForward::of(kb, owner, slot.binder, bound, ctx, &held)),
+        })
+    };
+    let Some((index, path)) = path else {
+        return Some(Err(untied(kb)));
+    };
+    // A frame entry with no NAME is a chain that cannot name its slots
+    // ([`DictChain::unnamed`]). The slot was found by position, so this is the chain
+    // disagreeing with itself, and falling through to the spec-keyed strategies is the
+    // one thing a forward must not do.
+    let Some(name) = caller_requires.name_at(kb, index) else {
+        return Some(Err(untied(kb)));
+    };
+    let mut t = build_req_var_ref(kb, syms, name);
+    for k in path {
+        t = build_req_at_sort(kb, syms, t, k);
+    }
+    Some(Ok(t))
+}
+
+/// WI-20260923-WN9P8 — a FORWARD the frame cannot answer: `owner`'s named slot `binder`
+/// is bound to `param`, one of the enclosing signature's own parameters, and nothing in
+/// the frame holds a dictionary for it.
+#[derive(Clone, Debug)]
+pub struct UntiedForward {
+    owner: Symbol,
+    binder: Symbol,
+    /// The enclosing parameter, rendered (`probe.R3.P`).
+    param: String,
+    /// The requirement the frame DOES hold for the parameter, rendered, when there is one
+    /// and it does not answer this goal (`requires OE: WeakOrd[E]` asked for
+    /// `WeakOrd[T = F]`). `None` is the frame holding nothing for it at all.
+    held: Option<String>,
+    /// The parameter HAS a slot of its own, and this route does not read the half of the
+    /// frame it sits in: an operation's own slot, reached by a route that reads the sort's
+    /// slots only (an operation used as a function value). Found by `/code-review`: the
+    /// "nothing holds a dictionary for it" sentence was false there.
+    out_of_reach: bool,
+}
+
+impl UntiedForward {
+    fn of(
+        kb: &KnowledgeBase,
+        owner: Symbol,
+        binder: Symbol,
+        bound: TermId,
+        ctx: &SigmaCtx,
+        held: &BinderSlots,
+    ) -> Self {
+        // The parameter's own qualified name where the rigid maps back to one, which is
+        // every declared rigid; the rigid itself otherwise, which still names it.
+        let param = param_of_rigid(kb, bound, ctx)
+            .map(|p| kb.qualified_name_of(p).to_string())
+            .unwrap_or_else(|| format_term_for_goal(kb, bound));
+        UntiedForward {
+            owner,
+            binder,
+            param,
+            held: held.slots.first().map(|b| render_requires_entry(kb, &b.entry)),
+            out_of_reach: held.own_out_of_reach,
+        }
+    }
+
+    /// The sentence every channel says it in: the dictionary build's refusal, and
+    /// [`resolve_inner`]'s for the spec route, so the two read alike.
+    fn render(&self, kb: &KnowledgeBase) -> String {
+        let short = short_name_of(&self.param).to_string();
+        if self.out_of_reach {
+            return format!(
+                "named slot `{b}` of `{o}` is bound to `{p}`, whose dictionary is the enclosing \
+                 OPERATION's own requirement slot, and this route reads only the enclosing \
+                 SORT's slots, as an operation used as a function value does — declare the \
+                 slot for `{short}` on the enclosing SORT instead",
+                b = kb.local_name_of(self.binder),
+                o = kb.qualified_name_of(self.owner),
+                p = self.param,
+            );
+        }
+        if let Some(held) = &self.held {
+            return format!(
+                "named slot `{b}` of `{o}` is bound to `{p}`, and the enclosing scope's \
+                 dictionary for `{short}` (`requires {held}`) does not answer it — a \
+                 requirement answers for the parameter it is declared for, so nothing else \
+                 in the scope is forwarded in its place",
+                b = kb.local_name_of(self.binder),
+                o = kb.qualified_name_of(self.owner),
+                p = self.param,
+            );
+        }
+        format!(
+            "named slot `{b}` of `{o}` is bound to `{p}`, a type parameter of the enclosing \
+             declaration, and nothing in the enclosing scope holds a dictionary FOR `{short}` \
+             (a requirement answers for the parameter it is declared for, so a same-spec \
+             requirement of another parameter, or an anonymous one, is not `{short}`'s) — \
+             declare a requirement slot for `{short}` on the enclosing SORT or OPERATION, \
+             wherever `{short}` is declared (`requires {short}: <the spec above>`), or bind \
+             `{b}` to a parameter that already is one",
+            b = kb.local_name_of(self.binder),
+            o = kb.qualified_name_of(self.owner),
+            p = self.param,
+        )
+    }
 }
 
 /// WI-870 — [`is_type_param_value`] read through a view, so a `Value::Node`-carried
@@ -30692,8 +31299,18 @@ enum CarriedSlot {
     Pinned(SlotSelection),
     /// The binder is one of the enclosing signature's own declared parameters (058 §7.1,
     /// `first(s: SortedSet[T = E, O = OE])` under `requires OE: …`): the caller's slot
-    /// supplies the value's own dictionary, and the scope answers the sub-goal.
-    Forwarded,
+    /// supplies the value's own dictionary.
+    ///
+    /// WI-20260923-WN9P8 — and it carries WHICH slot: the one [`binder_frame_slot`] finds
+    /// for that parameter, which answers the sub-goal. It used to carry nothing, and the
+    /// scope then answered the sub-goal by its SPEC, which any same-spec entry of the
+    /// frame covers. `None` only without a σ (the eval bridge, the diagnostic
+    /// re-resolution), where there is no frame to ask and the sub-goal keeps its search.
+    Forwarded(Option<BinderSlots>),
+    /// WI-20260923-WN9P8 — declared by the enclosing signature, and the frame holds no
+    /// dictionary for it, so nothing may answer the sub-goal. What does cover it by spec
+    /// is some other parameter's.
+    Untied(UntiedForward),
     /// Quantified by a signature that never declared it (`s: SortedSet[T = String]`):
     /// WI-1094's erasure. The value chose at its construction and its choice is not
     /// recoverable, so the sub-goal must be REFUSED, not searched — whatever the
@@ -30725,6 +31342,9 @@ fn carried_slot(
     slot: crate::kb::NamedRequirementSlot,
     impl_subst: &[(Symbol, TermId)],
     sigma: Option<&SigmaCtx>,
+    // WI-20260923-WN9P8 — the frame the resolution's `FromScope` indices count in, where a
+    // forwarded binder's own dictionary is looked for.
+    frame: FrameEntries<'_>,
 ) -> CarriedSlot {
     // `impl_subst` is keyed by the owner's QUALIFIED parameter symbols
     // ([`impl_param_symbols`]) and the binder is a bare intern of the written name; within
@@ -30768,12 +31388,23 @@ fn carried_slot(
         // a binder the SIGNATURE declared forwards. Without a σ there are no declarations
         // to ask — the eval bridge and the diagnostic re-resolution, where a runtime value
         // never carries a quantified binder — and the sub-goal keeps its search.
+        //
+        // WI-20260923-WN9P8 — and it forwards ITS OWN dictionary or nothing. "Declared here"
+        // admits a plain parameter as well as a slot's binder, and the scope used to answer
+        // either by spec. MEASURED: `PersistentCollection.insert(s, x)` with `s:
+        // SortedSet[T = E, O = P]`, inside a sort that also `requires OE: WeakOrd[E]`,
+        // inserted in `OE`'s order.
         SlotBinderState::Quantified => match sigma {
             Some(s) if s.param_rigids.iter().any(|(_, rigid)| *rigid == bound) => {
-                CarriedSlot::Forwarded
+                let held = binder_frame_slots(kb, frame, bound, s);
+                if held.slots.is_empty() {
+                    CarriedSlot::Untied(UntiedForward::of(kb, owner, slot.binder, bound, s, &held))
+                } else {
+                    CarriedSlot::Forwarded(Some(held))
+                }
             }
             Some(_) => CarriedSlot::Erased,
-            None => CarriedSlot::Forwarded,
+            None => CarriedSlot::Forwarded(None),
         },
         SlotBinderState::Unspoken(_) => CarriedSlot::Unspoken,
         SlotBinderState::NoWitnessReading => CarriedSlot::NoWitness,
@@ -31394,18 +32025,18 @@ fn infer_named_slot_bindings(
             // question carrier-neutrally (resolve the binder to its canonical `VarId` and
             // match `param_rigids`' KEY), not to add a second carrier test.
             //
-            // A MEASURED GAP, recorded and NOT closed here (WI-20260911-TX0G6). "Declared
-            // here" admits a PLAIN parameter as well as a named slot's binder, and only a
-            // slot's binder is a name the frame holds a dictionary under. So in
-            // `sort R3 { sort P = ?; requires OE: WeakOrd[E] }`, a parameter typed
-            // `SortedSet[T = E, O = P]` forwards here, and the frame answers the goal with
-            // `OE`'s dictionary. At `R3.add[E = String, P = ByLength, OE = RevLen]`, a set
-            // typed `ByLength` was inserted into in `RevLen`'s order. The two WRITTEN
-            // channels refuse the same binding ([`names_a_declared_slot`]). NOT closed by
-            // asking "is the binder a slot" here: that was built and MEASURED to break a
-            // correct shape, a plain parameter tied to a requirement that mentions it
-            // (`wi456_no_scope_route_test`'s Strategy-2b rows). The criterion belongs where
-            // the goal is answered, and is WI-20260923-WN9P8.
+            // "DECLARED HERE" ADMITS A FORWARD, AND WHETHER IT IS SOUND IS DECIDED WHERE IT
+            // IS ANSWERED (WI-20260923-WN9P8). It admits a PLAIN parameter as well as a
+            // named slot's binder, and the dictionary build used to answer both by the
+            // slot's GOAL, keyed by spec. So in `sort R3 { sort P = ?; requires OE:
+            // WeakOrd[E] }` a parameter typed `SortedSet[T = E, O = P]` took `OE`'s
+            // dictionary, and a set typed `ByLength` was inserted into in `RevLen`'s order.
+            // The build now answers a forward out of the frame's dictionary FOR the
+            // parameter ([`project_forwarded_slot`] → [`binder_frame_slot`]), or refuses it.
+            // Asking "is the binder a slot" HERE instead was built at TX0G6 and reverted:
+            // it also refused a plain parameter that a requirement binds a carrier's slot
+            // to, which the frame does hold a dictionary for (`wi456_no_scope_route_test`'s
+            // Strategy-2b rows).
             SlotBinderState::Quantified
                 if param_rigids.iter().any(|(_, rigid)| *rigid == bound) =>
             {
@@ -31920,21 +32551,24 @@ fn push_slots(
 /// the same bytes.
 ///
 /// Returns the witness the binding SELECTS, or `None` when it selects nothing:
-///  * A VALUE NAMING ONE OF THE ENCLOSING DECLARATION'S OWN NAMED SLOTS FORWARDS
-///    (`None`). `[O = OE]` written inside a sort declaring `requires OE: WeakOrd[E]`
-///    says "whatever my caller's `OE` is", §7.1's form. The binding is also a TYPE
-///    ARGUMENT (`binds_a_parameter`), so the σ-read producer reads that same variable
-///    back and forwards it ([`is_type_param_value`]). MEASURED before: the callee
-///    spelling refused it with "R.OE does not provide WeakOrd", while the receiver
-///    spelling loaded and ran the caller's `ByLength` order.
-///    ONLY A SLOT, not any abstract value ([`names_a_declared_slot`] measured why). A
-///    PLAIN parameter goes on to check 1 and is refused in both spellings, which closes
-///    the receiver's silent wrong order. That is conservative: a plain parameter tied to
-///    a requirement that mentions it would forward soundly, and is refused too, pending
-///    WI-20260923-WN9P8. An ANONYMOUS slot
-///    (rung 2) binds no parameter, so nothing downstream reads its value. Forwarding
+///  * A VALUE NAMING ONE OF THE ENCLOSING DECLARATION'S PARAMETERS FORWARDS (`None`).
+///    `[O = OE]` written inside a sort declaring `requires OE: WeakOrd[E]` says "whatever
+///    my caller's `OE` is", §7.1's form. The binding is also a TYPE ARGUMENT
+///    (`binds_a_parameter`), so the σ-read producer reads that same variable back and
+///    forwards it ([`is_type_param_value`]). MEASURED before TX0G6: the callee spelling
+///    refused it with "R.OE does not provide WeakOrd", while the receiver spelling loaded
+///    and ran the caller's `ByLength` order.
+///    WHETHER THE FORWARD IS SOUND IS DECIDED WHERE IT IS ANSWERED, not here
+///    (WI-20260923-WN9P8). A forward is answered by the frame's dictionary FOR that
+///    parameter ([`binder_frame_slot`]): its own named slot, or a requirement that binds a
+///    carrier's slot to it. A parameter with neither is refused there, with the message the
+///    type channel gives for the same binding. TX0G6 gated this on "is the value a named
+///    slot", which was conservative in one direction. It also refused
+///    `SortedSet[T = E, O = OE]` inside a sort that `requires PersistentCollection[C =
+///    SortedSet[T = E, O = OE], …]`, a sound forward the bare spelling ran. An ANONYMOUS
+///    slot (rung 2) binds no parameter, so nothing downstream reads its value. Forwarding
 ///    there would DROP the written text and let the ordinary route answer, so it keeps
-///    check 1's refusal too.
+///    check 1's refusal.
 ///  * A value with NO SORT HEAD (a literal, an arrow, a tuple) names no provider, so it
 ///    is refused (`SelectionValueNotASort`) rather than dropped into the type-parameter
 ///    half with the slot called bound.
@@ -31956,7 +32590,7 @@ fn validate_written_selection(
     concrete: &mut Option<std::collections::HashSet<Symbol>>,
     span: Option<Span>,
 ) -> Result<Option<Symbol>, TypeError> {
-    if binds_a_parameter && names_a_declared_slot(kb, value) {
+    if binds_a_parameter && view_is_abstract_type_param(kb, value) {
         return Ok(None);
     }
     let witness = selection_witness_sym(kb, value).ok_or(TypeError::SelectionValueNotASort {
@@ -35037,8 +35671,12 @@ fn resolve_inner<'a>(
         let named = i
             .checked_sub(provider_half_start)
             .and_then(|j| named_slot_at(kb, chosen_impl_sort, j));
+        let frame = FrameEntries {
+            head: scope.available_requires,
+            tail: scope.sub_goal_requires,
+        };
         let carried = named.map(|slot| {
-            carried_slot(kb, chosen_impl_sort, slot, &chosen_impl_subst, scope.sigma)
+            carried_slot(kb, chosen_impl_sort, slot, &chosen_impl_subst, scope.sigma, frame)
         });
         let refuse = |kb: &mut KnowledgeBase, stack: &mut Vec<SortGoal>, hint: String| {
             stack.pop();
@@ -35050,6 +35688,48 @@ fn resolve_inner<'a>(
             }
         };
         let binder_name = |kb: &KnowledgeBase| named.map_or(String::new(), |s| kb.local_name_of(s.binder).to_string());
+        // WI-20260923-WN9P8 — A FORWARD IS ANSWERED FROM ITS PARAMETER'S OWN SLOT, and is
+        // never searched: the scope's spec-keyed lookup below would take any entry that
+        // covers the goal. A slot binding a bracket VALUE wrote (`written`) still
+        // outranks it, as it outranks every carried reading.
+        if written.is_none() {
+            match &carried {
+                Some(CarriedSlot::Forwarded(Some(held))) => {
+                    let answered = held.answer(kb, sg.spec_sort, |kb, e| {
+                        requires_entry_covers_goal(kb, e, sg, scope.sigma)
+                    });
+                    match answered {
+                        // Answered HERE, without the recursion below: the slot is the
+                        // caller's own dictionary, so there is no provider to choose and no
+                        // sub-goal of its own, as for the `EffectsRuntime` anchor above.
+                        Some((scope_index, projection)) => {
+                            sub_resolutions.push(ResolvedRequiresNode::FromScope {
+                                scope_index,
+                                spec_sort: sg.spec_sort,
+                                projection,
+                            });
+                            continue;
+                        }
+                        None => {
+                            let hint = format!(
+                                "the carrier's type binds named slot `{}` of `{}` to a \
+                                 parameter whose dictionary in the enclosing scope \
+                                 (`requires {}`) does not answer it",
+                                binder_name(kb),
+                                kb.qualified_name_of(chosen_impl_sort),
+                                render_requires_entry(kb, &held.slots[0].entry),
+                            );
+                            return refuse(kb, stack, hint);
+                        }
+                    }
+                }
+                Some(CarriedSlot::Untied(u)) => {
+                    let hint = format!("the carrier's type binds {}", u.render(kb));
+                    return refuse(kb, stack, hint);
+                }
+                _ => {}
+            }
+        }
         let sub_pin = match (&carried, written) {
             // Two producers of a slot pin, and like [`push_selection`]'s two they are not
             // ranked: they name the SAME instance — witness and nested selections alike —
@@ -35103,10 +35783,11 @@ fn resolve_inner<'a>(
                 );
                 return refuse(kb, stack, hint);
             }
-            // `Forwarded`: the scope answers. `Unspoken`: the search is the ladder, as at
-            // a construction site. `NoWitness`: the requirement's own route reports it. A
-            // witness sort's `NotInHead`: a bracket value or an enclosing selection writes
-            // it, and nothing did.
+            // `Forwarded(None)`: no σ, so the scope and the search answer, as they always
+            // did there. `Unspoken`: the search is the ladder, as at a construction site.
+            // `NoWitness`: the requirement's own route reports it. A witness sort's
+            // `NotInHead`: a bracket value or an enclosing selection writes it, and nothing
+            // did. (`Forwarded(Some)` and `Untied` were answered above.)
             _ => None,
         };
         // WI-861 — a sub-goal filling one of the CHOSEN PROVIDER's own NAMED slots is the

@@ -30,29 +30,28 @@
 //!    every later call reads it back through the producer. Check 3 there would refuse
 //!    the compiler's own inference. [`a_type_may_carry_a_concrete_witness_and_it_is_honoured`]
 //!    drives that boundary, and the census below counts what it protects.
-//!  * A VALUE NAMING ONE OF THE ENCLOSING DECLARATION'S OWN SLOTS forwards, in both
+//!  * A VALUE NAMING ONE OF THE ENCLOSING DECLARATION'S PARAMETERS forwards, in both
 //!    spellings. The binding is also a type argument, so the producer reads the same
-//!    variable back, and the frame holds a dictionary under exactly that name. A PLAIN
-//!    parameter does not forward. The frame answers a forward by the slot's GOAL, which
-//!    is keyed by spec, so `[O = P]` got `OE`'s dictionary: the fourth row. An
-//!    ANONYMOUS-slot key binds no parameter at all, so it keeps check 1's refusal even
-//!    for a slot-naming value. Forwarding there would drop the written text.
+//!    variable back. Whether the forward is SOUND is decided where it is answered
+//!    (WI-20260923-WN9P8): by the frame's dictionary FOR that parameter, or not at all. The
+//!    frame used to answer a forward by the slot's GOAL, keyed by spec, so `[O = P]` got
+//!    `OE`'s dictionary: the fourth row. An ANONYMOUS-slot key binds no parameter at all,
+//!    so it keeps check 1's refusal even for a slot-naming value. Forwarding there would
+//!    drop the written text.
 //!
-//!    THE SLOT TEST IS CONSERVATIVE, and its cost is measured and pinned. A plain
-//!    parameter that a REQUIREMENT of the declaration mentions is answered soundly out of
-//!    that requirement, and this gate refuses it in brackets too. The receiver spelling
-//!    ran that program before this ticket.
-//!    [`a_plain_parameter_tied_to_a_requirement_is_refused_in_brackets_too`] records it,
-//!    and WI-20260923-WN9P8 is the criterion that separates the two shapes, on the type
-//!    channel as well as here.
+//!    THIS TICKET GATED THE FORWARD ON "IS THE VALUE A NAMED SLOT", and that was
+//!    conservative: a plain parameter that a requirement binds into a carrier's slot is
+//!    answered soundly, and was refused in brackets. WN9P8 replaced the gate.
+//!    [`a_plain_parameter_tied_to_a_requirement_forwards_in_brackets_too`] is the row that
+//!    pinned the cost, now flipped, and [`a_plain_parameter_is_refused_in_both_spellings`]
+//!    the row it did not change the verdict of.
 //!
 //! **BACK-OUT, MEASURED ONE MECHANISM AT A TIME** (rows are this file's):
 //!
 //! | backed out | fails |
 //! |---|---|
-//! | (R) the receiver leg's `validate_written_selection` call | [`every_refusal_reads_the_same_in_both_spellings`], [`the_concrete_refusal_names_no_bracket_the_author_did_not_write`], [`a_plain_parameter_is_refused_in_both_spellings`], [`a_plain_parameter_tied_to_a_requirement_is_refused_in_brackets_too`] |
-//! | (F) the callee leg's forward (`binds_a_parameter = false` for every key) | [`an_abstract_slot_binding_forwards_in_both_spellings`] |
-//! | (N) the forward widened from a slot to ANY abstract value (`view_is_abstract_type_param`) | [`a_plain_parameter_is_refused_in_both_spellings`], [`a_plain_parameter_tied_to_a_requirement_is_refused_in_brackets_too`] |
+//! | (R) the receiver leg's `validate_written_selection` call | [`every_refusal_reads_the_same_in_both_spellings`], [`the_concrete_refusal_names_no_bracket_the_author_did_not_write`] |
+//! | (F) the callee leg's forward (`binds_a_parameter = false` for every key) | [`an_abstract_slot_binding_forwards_in_both_spellings`], [`a_plain_parameter_tied_to_a_requirement_forwards_in_brackets_too`] |
 //! | (W) the channel-neutral wording of `ValueDirectedSelection` | [`the_concrete_refusal_names_no_bracket_the_author_did_not_write`] |
 //! | (F) widened to every KEY (`binds_a_parameter = true`, rung-2 keys included) | [`an_abstract_value_at_a_spec_key_is_still_refused`] |
 //! | (P3) check 3 MOVED onto the σ-read producer, over the whole `wi_tests` binary | [`a_type_may_carry_a_concrete_witness_and_it_is_honoured`], plus three pre-existing tests (the census) |
@@ -85,6 +84,12 @@
 //!    witness, 24 of them CONCRETE, in 3 tests. Moving check 3 onto the producer fails
 //!    exactly those 3 (wi858's and wi869's inferred `O = Pair`, wi_r10kc's `MySet`) and
 //!    [`a_type_may_carry_a_concrete_witness_and_it_is_honoured`].
+//!
+//! (N), the forward widened from a slot to ANY abstract value, was a back-out row here and
+//! is now the implementation: WN9P8 made the dictionary build answer a forward by its
+//! parameter's own dictionary, which is what made widening sound. The (R) rows that
+//! named the plain-parameter refusals are gone with it, because that refusal is no longer
+//! the bracket leg's: it is the forward's, raised in the same words on every channel.
 //!
 //! REFERENCE: `validate_written_selection`, `seed_op_type_args`,
 //! `seed_receiver_type_args`, `selections_from_slot_bindings`,
@@ -332,20 +337,22 @@ fn an_abstract_slot_binding_forwards_in_both_spellings() {
     }
 }
 
-/// ONLY A SLOT FORWARDS, and a PLAIN parameter is refused in both spellings. A forward
-/// hands the callee whatever dictionary the frame holds for the slot's GOAL, and that
-/// goal is keyed by spec and bindings, not by the binder the type names. `R2` declares a
-/// plain `P` beside its slot `OE`, so `[O = P]` could only ever be answered by `OE`'s
-/// dictionary.
+/// A PLAIN parameter the frame holds no dictionary for is refused in both spellings. A
+/// forward used to hand the callee whatever dictionary the frame held for the slot's
+/// GOAL, and that goal is keyed by spec and bindings, not by the binder the type names.
+/// `R2` declares a plain `P` beside its slot `OE`, so `[O = P]` could only ever be
+/// answered by `OE`'s dictionary.
 ///
 /// MEASURED before this ticket: the receiver spelling LOADED, and at
 /// `R2.mk[E = String, P = ByLength, OE = RevLen]` a set whose TYPE said `O = ByLength`
 /// ordered by `RevLen` (`bbb,cc,a`). That is a silent wrong answer. The callee spelling
-/// refused, by check 1 on `P`. Both now refuse, with the same bytes (N).
+/// refused, by check 1 on `P`.
 ///
-/// NOT CLOSED ON THE TYPE CHANNEL. A parameter typed `SortedSet[T = E, O = P]` still
-/// forwards through WI-1094's inference, and was measured doing the same thing. That is
-/// WI-20260923-WN9P8, and the row below records what this gate costs meanwhile.
+/// WI-20260923-WN9P8 — THE VERDICT IS UNCHANGED AND THE REFUSAL MOVED. The bracket now
+/// forwards any parameter, and the forward is refused where it is answered: nothing in
+/// `R2`'s frame is `P`'s. The type channel says the same about the same binding,
+/// `wi_wn9p8_forward_soundness_test` drives it, and the message names the parameter
+/// instead of calling it a witness that provides nothing.
 #[test]
 fn a_plain_parameter_is_refused_in_both_spellings() {
     let r2 = |construct: &str| {
@@ -361,28 +368,30 @@ fn a_plain_parameter_is_refused_in_both_spellings() {
     let callee = sole_message(&r2("SortedSet.empty[T = E, O = P]()"));
     let recv = sole_message(&r2("SortedSet[T = E, O = P].empty()"));
     assert!(
-        callee.contains("probe.tx0g6.R2.P does not provide anthill.prelude.WeakOrd"),
-        "a plain parameter names no dictionary, so it is not a forward; got: {callee}"
+        callee.contains("is bound to `probe.tx0g6.R2.P`")
+            && callee.contains("nothing in the enclosing scope holds a dictionary FOR `P`"),
+        "the frame holds no dictionary for a plain parameter, so its forward is refused; \
+         got: {callee}"
     );
     assert_eq!(recv, callee, "one rule, two spellings");
 }
 
-/// THE COST OF THE SLOT TEST, PINNED SO IT IS NOT REDISCOVERED AS A SURPRISE. A plain
-/// parameter can be tied to a frame dictionary without being a slot: `PolyD` requires the
-/// COLLECTION INSTANCE at `O = OE`, and a forward of `OE` is answered soundly out of that
-/// instance (Strategy 2b, `wi456_no_scope_route_test`). The bare spelling runs, driven at
-/// two orderings below. The two bracket spellings are refused, because the gate asks "is
-/// `OE` a slot?" and cannot tell this shape from the wrong-answer one in the row above.
+/// A PLAIN PARAMETER TIED TO A REQUIREMENT FORWARDS, IN BOTH BRACKETS. `PolyD` requires
+/// the COLLECTION INSTANCE at `O = OE`, and that dictionary holds `SortedSet`'s own
+/// `WeakOrd` for `OE` in its provider half (Strategy 2b, `wi456_no_scope_route_test`).
 ///
-/// MEASURED: before this ticket the RECEIVER spelling ran this program correctly, and the
-/// callee spelling refused it, by the same check 1 that refuses it now. So this ticket
-/// traded one correct receiver program (none in the suite or the corpora) for closing a
-/// silent wrong answer. Telling the two apart is WI-20260923-WN9P8.
+/// THIS ROW USED TO PIN THE OPPOSITE, and said it would fail the day it flipped. This
+/// ticket first gated a bracket's forward on "is `OE` a slot", which could not tell this
+/// shape from the wrong-answer one in the row above, so both brackets were refused while
+/// the bare spelling ran. (The receiver spelling had run it before that gate; the callee
+/// spelling never had.)
 ///
-/// THE ASSERTION IS THE CURRENT BEHAVIOUR: it fails the day WN9P8 lets the brackets
-/// forward this shape, which makes that a recorded decision rather than a drift.
+/// FLIPPED BY WI-20260923-WN9P8, AS A DECISION: a bracket forwards any parameter, and the
+/// forward is answered by the frame's dictionary FOR it, which here is the requirement's
+/// provider half. All three spellings run, at two orderings. Backing out WN9P8's bracket
+/// gate reddens the two bracket rows, and (F) the callee one.
 #[test]
-fn a_plain_parameter_tied_to_a_requirement_is_refused_in_brackets_too() {
+fn a_plain_parameter_tied_to_a_requirement_forwards_in_brackets_too() {
     let body = |call: &str| {
         format!(
             "  import anthill.prelude.PersistentCollection\n  \
@@ -403,17 +412,15 @@ fn a_plain_parameter_tied_to_a_requirement_is_refused_in_brackets_too() {
             render_three_via("PolyD.insertD", "SortedSet.empty[T = String, O = RevLen]()"),
         )
     };
-    let bare = program(&body("SortedSet.insert(s, x)"));
-    assert_eq!(eval_str(&bare, "probe.tx0g6.byLength", "bare"), "a,cc,bbb,");
-    assert_eq!(eval_str(&bare, "probe.tx0g6.revLen", "bare"), "bbb,cc,a,");
-
-    let callee = sole_message(&body("SortedSet.insert[T = E, O = OE](s, x)"));
-    let recv = sole_message(&body("SortedSet[T = E, O = OE].insert(s, x)"));
-    assert!(
-        callee.contains("probe.tx0g6.PolyD.OE does not provide anthill.prelude.WeakOrd"),
-        "got: {callee}"
-    );
-    assert_eq!(recv, callee, "one rule, two spellings");
+    for (spelling, call) in [
+        ("bare", "SortedSet.insert(s, x)"),
+        ("callee", "SortedSet.insert[T = E, O = OE](s, x)"),
+        ("receiver", "SortedSet[T = E, O = OE].insert(s, x)"),
+    ] {
+        let src = program(&body(call));
+        assert_eq!(eval_str(&src, "probe.tx0g6.byLength", spelling), "a,cc,bbb,");
+        assert_eq!(eval_str(&src, "probe.tx0g6.revLen", spelling), "bbb,cc,a,");
+    }
 }
 
 /// THE FORWARD NEEDS A NAMED-SLOT KEY, and this is the row that keeps it scoped. A key
