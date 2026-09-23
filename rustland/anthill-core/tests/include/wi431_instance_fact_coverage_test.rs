@@ -510,6 +510,115 @@ end
     );
 }
 
+/// WI-20260923-Z1Q8B — `Sp.op` returns a type carrying a DENOTED (the literal `3`), which
+/// puts it on the occurrence carrier; `op = boundOp` binds a free operation whose return
+/// type is `bound_ret`. `runOp` calls the SPEC operation on a `Tag`, which only the
+/// instance fact's binding can back.
+fn denoted_binding_src(ns: &str, bound_ret: &str, bound_body: &str) -> String {
+    denoted_binding_src_spec(ns, "Foo[T = Int64, N = 3]", bound_ret, bound_body)
+}
+
+/// [`denoted_binding_src`] with the spec operation's return type written out.
+fn denoted_binding_src_spec(ns: &str, spec_ret: &str, bound_ret: &str, bound_body: &str) -> String {
+    format!(
+        r#"namespace test.wi431.{ns}
+  import anthill.prelude.{{Int64, String}}
+  import test.wi431.{ns}.Sp.{{op}}
+
+  sort Foo
+    sort T = ?
+    sort N = ?
+    entity foo(v: T)
+  end
+
+  sort Sp
+    sort T = ?
+    operation op(x: T) -> {spec_ret}
+  end
+
+  sort Tag
+    entity tag(n: Int64)
+  end
+  operation boundOp(x: Tag) -> {bound_ret} = {bound_body}
+  namespace Tag
+    provides Sp[T = Tag, op = boundOp]
+  end
+
+  operation runOp() -> Int64 =
+    match op(tag(n: 1))
+      case foo(v) -> v
+end
+"#
+    )
+}
+
+/// (B) REJECT, on the OCCURRENCE carrier (WI-20260923-Z1Q8B). The type comparison's
+/// gate answered "not confident" for any `Value::Node` — the carrier read where
+/// abstractness was meant — so a binding whose return type carries a denoted loaded
+/// clean whatever it returned. MEASURED at 87246ea2: this program loaded with zero
+/// errors, while `instance_fact_binding_wrong_return_type_is_loud` above, the same
+/// mismatch over hash-consed types, is refused.
+///
+/// BACK-OUT, MEASURED over all `anthill-core` tests: restore the carrier gate in
+/// `instance_binding_type_ok` and this row loads clean and fails — with the σ row below
+/// and the four `wi1magr_member_signature_test` refusal rows the same gate serves, and
+/// nothing else.
+/// Its control below passes either way by design.
+#[test]
+fn instance_fact_binding_denoted_return_type_is_compared() {
+    let errs = load_errors(&[&denoted_binding_src(
+        "sig_denoted",
+        "Foo[T = String, N = 3]",
+        "foo(v: \"s\")",
+    )]);
+    assert!(
+        errs.iter().any(|e| e.contains("signature-incompatible")
+            && e.contains("returns `Foo[T = String, N = 3]`")
+            && e.contains("spec return type `Foo[T = Int64, N = 3]`")),
+        "a bound op whose denoted-bearing return type does not fit must be loud: {errs:?}"
+    );
+}
+
+/// σ beneath the denoted, and the refusal NAMES THE TYPE IT COMPARED. The spec returns
+/// `Foo[T = T, N = 3]` and the fact binds `T = Tag`, so `Foo[T = Int64, N = 3]` does not
+/// fit — and the message says `Foo[T = Tag, N = 3]`: printing the declared
+/// `Foo[T = T, N = 3]` (as it did) reads as though `T = Int64` would satisfy it.
+///
+/// BOTH BACK-OUTS take it, measured: the carrier gate (G) never compares the pair, and σ
+/// passing the occurrence carrier through (S) leaves `T` in it, so it fails open.
+#[test]
+fn instance_fact_binding_names_the_spec_type_at_the_provisions_bindings() {
+    let errs = load_errors(&[&denoted_binding_src_spec(
+        "sig_denoted_sigma",
+        "Foo[T = T, N = 3]",
+        "Foo[T = Int64, N = 3]",
+        "foo(v: 1)",
+    )]);
+    assert!(
+        errs.iter().any(|e| e.contains("signature-incompatible")
+            && e.contains("returns `Foo[T = Int64, N = 3]`")
+            && e.contains("spec return type `Foo[T = Tag, N = 3]`")),
+        "the spec's return type must be σ-grounded, compared, and named as compared: {errs:?}"
+    );
+}
+
+/// The control, and it DRIVES: the same binding returning the spec's own type loads, and
+/// the spec operation called on a `Tag` dispatches through the instance fact to it
+/// (`41` ⇒ `boundOp` ran). Passes either way by design — the old gate skipped this pair,
+/// the new one compares it and finds it fits.
+#[test]
+fn instance_fact_binding_denoted_return_type_that_matches_dispatches() {
+    let src = denoted_binding_src("sig_denoted_ok", "Foo[T = Int64, N = 3]", "foo(v: 41)");
+    let mut interp = crate::common::interp_for(&src);
+    match interp.call("test.wi431.sig_denoted_ok.runOp", &[]) {
+        Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(
+            n, 41,
+            "`op(tag(n: 1))` must dispatch via the instance fact to `boundOp`; got {n}"
+        ),
+        other => panic!("`op(tag(n: 1))` should dispatch to `boundOp`; got {other:?}"),
+    }
+}
+
 /// (B) HIGHER-KINDED binding fails OPEN (deferred to WI-383): the §5.4 `CpsMonad`
 /// instance binds `pure`/`flatMap`, whose types stay parametric after σ
 /// (`F := Option` leaves `F[T = A]` ⇒ `Option[T = A]`, still containing the op's

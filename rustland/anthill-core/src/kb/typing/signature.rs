@@ -3,25 +3,6 @@
 
 use super::*;
 
-/// WI-347 — operation-override refinement check. A carrier's own operation
-/// that implements/overrides a spec operation (own-op-beats-inherited, §8.7)
-/// must REFINE the spec op: effects no wider, precondition no stronger,
-/// postcondition no weaker. The soundness twin of the provider/call-site
-/// checks — a caller programs against the SPEC's contract, so an override that
-/// raises an effect the spec doesn't cover (or strengthens a precondition /
-/// weakens a postcondition) would surprise it.
-///
-/// EFFECTS: `∀ ie ∈ impl_effects. ∃ se ∈ spec_effects[σ]. ie <: se`
-/// (`types_compatible`, the relation `spec-instance-dispatch.md §"Effect
-/// compatibility"` specifies). Enforced only when the comparison is
-/// *confident* — every impl and σ-substituted spec effect is a ground
-/// `Value::Term` (no unbound type-param, no `denoted` `Value::Node`).
-/// Otherwise the op's effect check is skipped (fail-open): parametric
-/// (`effects E`) / denoted (`Modify[c]`) effect refinement is deferred, which
-/// keeps the stdlib's polymorphic-effect providers from false-positiving while
-/// still catching a ground effect-widening (the doc's `Network`-vs-`Error`
-/// case). Contract (`requires`/`ensures`) refinement is added on this same
-/// pass next.
 /// WI-20260822-1MAGR — DOES THE CARRIER'S OWN MEMBER FIT THE SPEC OPERATION IT
 /// CLAIMS TO IMPLEMENT? Arity, parameter types (and so their ORDER), and the
 /// return type, with the provision's σ applied to the spec's declaration.
@@ -91,7 +72,10 @@ use super::*;
 ///     these needs the receiver-relative alignment WI-461/WI-474 do at a CALL, not
 ///     a σ over type parameters.
 ///   * A NON-GROUND PAIR — the fail-open [`instance_binding_type_ok`] already
-///     applies, so a higher-kinded or unbound parameter is not judged.
+///     applies, so a higher-kinded or unbound parameter is not judged. GROUND IS A
+///     PROPERTY OF THE TYPE, NOT OF ITS CARRIER: a type carrying a literal argument
+///     (`Foo[T = Int64, N = 3]`) rides the occurrence carrier and IS judged, with σ
+///     applied beneath it (WI-20260923-Z1Q8B — until then every such pair failed open).
 ///
 /// PARAMETER ORDER IS A PARTIAL CHECK AND SAYS SO. It is decidable only where the
 /// types differ: `f(a: Int64, b: Int64)` written in either order is the same
@@ -220,7 +204,7 @@ pub(super) fn check_member_signature(
         } else {
             let mut ps: Vec<String> = Vec::new();
             for &i in &bad {
-                let sub = sigma_subst_effect(kb, &spec_info.params[i].1, sigma);
+                let sub = sigma_subst_type(kb, &spec_info.params[i].1, sigma);
                 let want = type_display_name_value(kb, &sub);
                 let got = type_display_name_value(kb, &impl_info.params[i].1);
                 ps.push(format!(
@@ -249,7 +233,7 @@ pub(super) fn check_member_signature(
         && !value_contains_projection(kb, &spec_info.return_type)
         && !value_contains_projection(kb, &impl_info.return_type)
     {
-        let sub = sigma_subst_effect(kb, &spec_info.return_type, sigma);
+        let sub = sigma_subst_type(kb, &spec_info.return_type, sigma);
         let want = type_display_name_value(kb, &sub);
         let got = type_display_name_value(kb, &impl_info.return_type);
         let spec_sig = render_op_signature(kb, op_short, spec_info, sigma);
@@ -346,11 +330,11 @@ fn render_op_signature(
 ) -> String {
     let mut parts: Vec<String> = Vec::with_capacity(info.params.len());
     for (name, ty) in &info.params {
-        let sub = sigma_subst_effect(kb, ty, sigma);
+        let sub = sigma_subst_type(kb, ty, sigma);
         let n = kb.local_name_of(*name).to_string();
         parts.push(format!("{n}: {}", type_display_name_value(kb, &sub)));
     }
-    let ret = sigma_subst_effect(kb, &info.return_type, sigma);
+    let ret = sigma_subst_type(kb, &info.return_type, sigma);
     format!(
         "{short}({}) -> {}",
         parts.join(", "),
@@ -358,6 +342,25 @@ fn render_op_signature(
     )
 }
 
+/// WI-347 — operation-override refinement check. A carrier's own operation
+/// that implements/overrides a spec operation (own-op-beats-inherited, §8.7)
+/// must REFINE the spec op: effects no wider, precondition no stronger,
+/// postcondition no weaker. The soundness twin of the provider/call-site
+/// checks — a caller programs against the SPEC's contract, so an override that
+/// raises an effect the spec doesn't cover (or strengthens a precondition /
+/// weakens a postcondition) would surprise it.
+///
+/// EFFECTS: `∀ ie ∈ impl_effects. ∃ se ∈ spec_effects[σ]. ie <: se`
+/// (`types_compatible`, the relation `spec-instance-dispatch.md §"Effect
+/// compatibility"` specifies). Decided PER ATOM, wherever the atom is decidable —
+/// it mentions no type parameter, on either carrier (WI-20260822-1TKN0: a denoted
+/// `Modify[c]` names a place and is compared). A parametric atom (`effects E`)
+/// fails open alone, which keeps the stdlib's polymorphic-effect providers from
+/// false-positiving while still catching a ground effect-widening (the doc's
+/// `Network`-vs-`Error` case). σ grounds the spec row first, on either carrier
+/// ([`sigma_subst_type`], WI-20260923-Z1Q8B). The contract (`requires`/`ensures`)
+/// legs and the member-signature check ([`check_member_signature`]) run on this
+/// same pass.
 pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::LoadError> {
     use crate::kb::load::LoadError;
     let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
@@ -757,7 +760,11 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // "differs" would re-refuse providers the pass cannot judge. σ is what
             // makes the ordinary parametric case decidable: a spec returning its
             // own parameter (`op(x: T) -> T`) grounds to the provision's binding
-            // (`-> Carrier`) before the comparison. What still fails open is a
+            // (`-> Carrier`) before the comparison — on either carrier since
+            // WI-20260923-Z1Q8B, so `-> Foo[T = T, N = 3]` grounds to
+            // `Foo[T = Carrier, N = 3]` (`a_sigma_bound_denoted_return_type_mismatch_
+            // is_compared`); before it σ handed the occurrence carrier back untouched
+            // and that return type failed open here. What still fails open is a
             // return type σ does not ground — a parameter the provision binds
             // nothing to, or a higher-kinded one.
             let mut ret_mismatch: Option<(String, String)> = None;
@@ -778,7 +785,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                     &param_align,
                 );
                 if discharges {
-                    let spec_ret = sigma_subst_effect(kb, &spec_info.return_type, &p.sigma);
+                    let spec_ret = sigma_subst_type(kb, &spec_info.return_type, &p.sigma);
                     let decidable =
                         |kb: &KnowledgeBase, v: &Value| !view_contains_type_param(kb, v);
                     if decidable(kb, &spec_ret) && decidable(kb, &impl_info.return_type) {
@@ -800,7 +807,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             let spec_effs: Vec<Value> = spec_info
                 .effects
                 .iter()
-                .map(|se| sigma_subst_effect(kb, se, &p.sigma))
+                .map(|se| sigma_subst_type(kb, se, &p.sigma))
                 .collect();
 
             // WI-20260822-1TKN0 — DECIDABLE, WHICH IS NOT "HASH-CONSED".
@@ -2451,9 +2458,11 @@ fn classify_modify_target(
 /// binding) applied to the spec op's types: same param ARITY; each PARAM type
 /// contravariantly compatible (the bound op accepts the spec's arg type); the
 /// RETURN type covariantly compatible. Type comparisons are GROUND-GATED — only
-/// when the σ-substituted spec type and the bound type are both ground
-/// `Value::Term` — so a higher-kinded binding whose param stays parametric
-/// (`pure : F[T = A]`) fails open, deferred to WI-383. Arity is always checked.
+/// when neither the σ-substituted spec type nor the bound type mentions a type
+/// parameter, on either carrier — so a higher-kinded binding whose param stays
+/// parametric (`pure : F[T = A]`) fails open, deferred to WI-383. (Until
+/// WI-20260923-Z1Q8B the gate demanded two `Value::Term`s, which skipped every type
+/// carrying a denoted — see [`instance_binding_type_ok`].) Arity is always checked.
 /// A dedicated pass (not folded into [`check_override_refinement`]) because the two
 /// compare DIFFERENT things: this one an op-valued BINDING (`combine = wrongOp`),
 /// which names a free operation the author wrote out, and the other a carrier's own
@@ -2580,7 +2589,8 @@ pub fn check_instance_fact_op_signatures(
                 if instance_binding_type_ok(kb, spec_pty, bound_pty, &p.sigma, false) == Some(false)
                 {
                     let bound_disp = type_display_name_value(kb, bound_pty);
-                    let spec_disp = type_display_name_value(kb, spec_pty);
+                    let spec_sub = sigma_subst_type(kb, spec_pty, &p.sigma);
+                    let spec_disp = type_display_name_value(kb, &spec_sub);
                     errors.push(LoadError::IncompatibleInstanceBinding {
                         carrier: carrier_qn.clone(),
                         spec: spec_qn.clone(),
@@ -2602,7 +2612,11 @@ pub fn check_instance_fact_op_signatures(
             ) == Some(false)
             {
                 let bound_disp = type_display_name_value(kb, &bound_info.return_type);
-                let spec_disp = type_display_name_value(kb, &spec_info.return_type);
+                // At THIS provision's bindings, as the verdict compared it (and as the
+                // member-signature messages print it): `Foo[T = Tag, N = 3]`, not the
+                // declared `Foo[T = T, N = 3]` that `T = Int64` would seem to satisfy.
+                let spec_sub = sigma_subst_type(kb, &spec_info.return_type, &p.sigma);
+                let spec_disp = type_display_name_value(kb, &spec_sub);
                 errors.push(LoadError::IncompatibleInstanceBinding {
                     carrier: carrier_qn.clone(),
                     spec: spec_qn.clone(),
@@ -2618,11 +2632,30 @@ pub fn check_instance_fact_op_signatures(
 }
 
 /// WI-431 (B): compare one bound-op type against the σ-substituted spec-op type.
-/// `Some(true)` confidently compatible, `Some(false)` a confident GROUND mismatch
-/// (→ a loud error), `None` not confident (a non-ground / `Value::Node`
-/// parametric type — fail open, the higher-kinded case deferred to WI-383).
+/// `Some(true)` confidently compatible, `Some(false)` a confident mismatch (→ a loud
+/// error), `None` not confident — a type σ leaves PARAMETRIC, which fails open (the
+/// higher-kinded case, deferred to WI-383).
 /// `bound_is_subtype`: the return is covariant (`bound <: σ(spec)`), a param is
 /// contravariant (`σ(spec) <: bound` — the bound op must accept the spec's arg).
+///
+/// WI-20260923-Z1Q8B — DECIDABLE IS NOT "HASH-CONSED", the correction
+/// WI-20260822-1TKN0 made to the effects leg and 87246ea2 to the return leg of
+/// [`check_override_refinement`]. This answered `None` for ANY `Value::Node`, calling
+/// it "a non-ground / `Value::Node` parametric type" — the CARRIER read where
+/// ABSTRACTNESS was meant. A type rides the occurrence carrier because it carries a
+/// denoted, the literal `3` in `Foo[T = Int64, N = 3]`, not because it is parametric,
+/// so every caller — the WI-1MAGR member signature, its order search, and
+/// [`check_instance_fact_op_signatures`] — loaded a mismatch over one clean.
+/// MEASURED: a member returning `Foo[T = String, N = 3]` for a body-less spec op
+/// returning `Foo[T = Int64, N = 3]` loaded with zero errors, while the same program
+/// over `Int64` / `Bool` was refused.
+///
+/// Both halves now read the type as a `Value`: σ through [`sigma_subst_type`], the one
+/// Value-level σ (this function used to run its own `TermId`-only σ, so a spec parameter
+/// beneath a denoted — `Foo[T = T, N = 3]` — could not have grounded behind any gate),
+/// and the gate through [`view_contains_type_param`], which on the term carrier decides
+/// arm for arm what `contains_type_param` did. Two hash-consed types still meet in
+/// `types_compatible`'s term dispatch, so the verdict on that carrier cannot move.
 fn instance_binding_type_ok(
     kb: &mut KnowledgeBase,
     spec_ty: &Value,
@@ -2630,28 +2663,16 @@ fn instance_binding_type_ok(
     sigma: &[(Symbol, TermId)],
     bound_is_subtype: bool,
 ) -> Option<bool> {
-    let Value::Term { id: spec_t, .. } = spec_ty else {
-        return None;
-    };
-    let Value::Term { id: bound_t, .. } = bound_ty else {
-        return None;
-    };
-    let spec_sub = if sigma.is_empty() {
-        *spec_t
-    } else {
-        substitute_impl_params_alloc(kb, *spec_t, sigma)
-    };
-    // Confident only when both sides are ground — no spec/op type parameter left.
-    if contains_type_param(kb, spec_sub) || contains_type_param(kb, *bound_t) {
+    let spec_sub = sigma_subst_type(kb, spec_ty, sigma);
+    // Confident only when neither side mentions a type parameter.
+    if view_contains_type_param(kb, &spec_sub) || view_contains_type_param(kb, bound_ty) {
         return None;
     }
-    let spec_v = Value::term(spec_sub);
-    let bound_v = Value::term(*bound_t);
     let mut subst = Substitution::new();
     Some(if bound_is_subtype {
-        types_compatible(kb, &mut subst, &bound_v, &spec_v)
+        types_compatible(kb, &mut subst, bound_ty, &spec_sub)
     } else {
-        types_compatible(kb, &mut subst, &spec_v, &bound_v)
+        types_compatible(kb, &mut subst, &spec_sub, bound_ty)
     })
 }
 
