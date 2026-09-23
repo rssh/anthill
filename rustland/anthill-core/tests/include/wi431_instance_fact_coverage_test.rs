@@ -544,9 +544,7 @@ fn denoted_binding_src_spec(ns: &str, spec_ret: &str, bound_ret: &str, bound_bod
     provides Sp[T = Tag, op = boundOp]
   end
 
-  operation runOp() -> Int64 =
-    match op(tag(n: 1))
-      case foo(v) -> v
+  operation runOp() -> Int64 = op(tag(n: 1)).v
 end
 "#
     )

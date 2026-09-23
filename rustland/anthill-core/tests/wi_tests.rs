@@ -1835,3 +1835,6 @@ mod wi_wn9p8_forward_soundness_test;
 
 #[path = "include/wi_brt4y_host_implemented_test.rs"]
 mod wi_brt4y_host_implemented_test;
+
+#[path = "include/wi_z1q8b_occurrence_bound_type_param_test.rs"]
+mod wi_z1q8b_occurrence_bound_type_param_test;

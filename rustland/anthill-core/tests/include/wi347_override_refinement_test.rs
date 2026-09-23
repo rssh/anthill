@@ -907,8 +907,7 @@ fn a_denoted_return_type_that_matches_still_loads() {
 
 /// `Sp.op` returns `Foo[T = T, N = 3]` with `ensures total(result)` and a DEFAULT BODY;
 /// `Carrier.op` restates the clause over its own return type. `probe` reads the `id` of
-/// the carrier `op(c(id: 7))` wraps — through a `match`, since `.v` on a denoted-bearing
-/// type does not type (see `wi1magr_member_signature_test`'s `PROBE_V`).
+/// the carrier `op(c(id: 7))` wraps.
 fn denoted_sigma_ret_src(ns: &str, impl_t: &str, impl_body: &str) -> String {
     format!(
         r#"
@@ -928,10 +927,7 @@ fn denoted_sigma_ret_src(ns: &str, impl_t: &str, impl_body: &str) -> String {
             entity c(id: Int64)
             provides Sp[T = Carrier]
             operation op(x: Carrier) -> Foo[T = {impl_t}, N = 3] ensures total(result) = {impl_body}
-            operation probe() -> Int64 =
-              match op(c(id: 7))
-                case foo(v) -> match v
-                  case c(id) -> id
+            operation probe() -> Int64 = op(c(id: 7)).v.id
           end
         end
     "#

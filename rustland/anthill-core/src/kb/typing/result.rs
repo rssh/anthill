@@ -261,6 +261,9 @@ pub(super) fn named_tuple_value(
 /// occurrence referring to a parameter, as in `Modify[c]`. A LITERAL carries none, and a
 /// binding to a Node is unreadable by a term-backed callee: the `TermId` deep σ-walk that
 /// resolves a return type mentioning the parameter stops at a non-`Term` binding (WI-394).
+/// (The `Value`-level walk the apply resolves the return through now SPLICES such a binding
+/// back — [`splice_non_term_bindings`] — so that stop no longer strands it; the re-grounding
+/// is kept, and dropping it is unmeasured.)
 /// [`synthesize_field_access`] already builds its own `Name` argument ground for that
 /// reason; this gives the surface channel the same shape, so a call a person writes binds
 /// where the compiler's own rewrite does.
@@ -594,7 +597,13 @@ pub(super) fn walk_type_deep_value_g(
     ground: bool,
 ) -> Value {
     match e {
-        Value::Term { id: t, .. } => Value::term(walk_type_deep_g(kb, subst, *t, ground)),
+        // The term walk first — byte-identical wherever every binding it meets is a term —
+        // then the bindings it cannot hold; see [`splice_non_term_bindings`].
+        Value::Term { id: t, .. } => {
+            let walked = walk_type_deep_g(kb, subst, *t, ground);
+            splice_non_term_bindings(kb, subst, walked, ground)
+                .unwrap_or_else(|| Value::term(walked))
+        }
         // WI-441: a NODE-carried type DOES carry type-param vars — a callback
         // arrow's effect-row tail (`@ {EffP, -Modify[x]}`) is a GROUND child
         // Var inside the occurrence tree. The old "Nodes carry Refs, not
@@ -669,6 +678,97 @@ pub(super) fn walk_type_deep_value_g(
     }
 }
 
+/// THE BINDINGS THE TERM WALK CANNOT HOLD. [`walk_type_deep_g`] is `TermId` in and out, so
+/// a variable bound to a non-`Term` carrier comes back from it as the bare variable —
+/// `walk_type` "deliberately STOPS" there (WI-394) — and a bare variable in a RESOLVED type
+/// is a wildcard. A type rides the occurrence carrier whenever it carries a denoted, so an
+/// operation's own type parameter bound to `Foo[T = Int64, N = 3]` was dropped from every
+/// return type that names it. MEASURED, each loading with ZERO errors while its hash-consed
+/// twin (`Foo[T = Int64]` against `Foo[T = String]`) is refused:
+///
+///   * `idf[A](x: A) -> A` returning `Foo[T = Int64, N = 3]` where the caller declares
+///     `Foo[T = String, N = 3]` — the identity function, a WRONG ACCEPT;
+///   * `wrap[A](x: A) -> Option[T = A]`, the same one level down;
+///   * and a field projection on such a value refused outright: `field_access`'s declared
+///     `-> FieldOf[T = R, Name = Name]` kept `R` a variable, so the reduction saw an
+///     abstract operand and `mk(1).v` stayed `FieldOf[T = ?R, Name = "v"]`.
+///
+/// So each such variable is replaced by its binding, walked on ITS carrier, and the spine
+/// above it is rebuilt through [`KnowledgeBase::fn_value`] — the one owner of the
+/// term-versus-entity decision, which hash-conses an application whose children are all
+/// leaves and builds a `Value::Entity` otherwise, read through `TermView` exactly like its
+/// term twin. `None` when nothing needed splicing, so the common case keeps its term.
+/// [`rewrite_type_occ_deep`] asks the same of an occurrence's interned children, and places
+/// the answer with [`spliced_type_child`].
+///
+/// THE SAME TWO STOPS AS THE TERM WALK, for the same reasons: a NEUTRAL head
+/// (`RigidProjection` / `ExprCarried`) is an identity slot and is not descended, and a
+/// variable whose chain ends UNBOUND stays the variable it was. One more is this walk's
+/// own: a binding that is a VALUE-world occurrence (an expression, not a `Type` /
+/// `EffectExpression` one) is not a type, and is left as the variable rather than spliced
+/// into a type position — the answer the term walk always gave it.
+fn splice_non_term_bindings(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    t: TermId,
+    ground: bool,
+) -> Option<Value> {
+    match kb.get_term(t).clone() {
+        Term::Var(Var::Global(vid)) => {
+            let bound = subst.resolve_as_value(vid)?;
+            if matches!(bound, Value::Term { .. }) {
+                return None; // `walk_type` already followed it
+            }
+            let bound = bound.clone();
+            match walk_type_deep_value_g(kb, subst, &bound, ground) {
+                // A chain ending at a VARIABLE, on either spelling — `TypeNode::Var` is a
+                // variable's NESTED spelling and must not escape into value position
+                // (WI-20260904-02ERR) — leaves the term walk's answer: nothing to splice.
+                Value::Var(_) => None,
+                Value::Node(occ) if matches!(occ.as_type(), Some(TypeNode::Var(_))) => None,
+                Value::Node(occ) if occ.as_type().is_none() && occ.as_effect_expr().is_none() => {
+                    None
+                }
+                Value::Term { id, .. } if id == t => None,
+                // A LEAF (a value-in-type literal reaching the variable as `Value::Int(3)`) is
+                // held as its term, the lowering `fn_value` gives the same leaf one level down
+                // — so one type does not take two carriers depending on its depth.
+                leaf if leaf.lowers_to_leaf_term() => {
+                    kb.alloc_from_value(&leaf).ok().map(Value::term)
+                }
+                spliced => Some(spliced),
+            }
+        }
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
+            if matches!(
+                type_head(kb, &TermIdView(t)),
+                TypeHead::RigidProjection | TypeHead::ExprCarried
+            ) {
+                return None;
+            }
+            let mut changed = false;
+            let mut pos = Vec::with_capacity(pos_args.len());
+            for c in pos_args {
+                let s = splice_non_term_bindings(kb, subst, c, ground);
+                changed |= s.is_some();
+                pos.push(s.unwrap_or_else(|| Value::term(c)));
+            }
+            let mut named = Vec::with_capacity(named_args.len());
+            for (k, c) in named_args {
+                let s = splice_non_term_bindings(kb, subst, c, ground);
+                changed |= s.is_some();
+                named.push((k, s.unwrap_or_else(|| Value::term(c))));
+            }
+            changed.then(|| kb.fn_value(functor, pos, named))
+        }
+        _ => None,
+    }
+}
+
 /// WI-441: deep-resolve vars inside a NODE-carried type occurrence by
 /// rebuilding it with every `TypeChild::Interned` mapped through
 /// [`walk_type_deep`] and every `TypeChild::Node` recursed. Share-preserving:
@@ -695,6 +795,27 @@ pub(super) fn rewrite_type_occ_deep(
         match c {
             TypeChild::Interned(t) => {
                 let w = walk_type_deep_g(kb, subst, *t, ground);
+                // The bindings the term walk cannot hold, as in `walk_type_deep_value_g`'s
+                // `Value::Term` arm — the SAME drop on this carrier: `Two[L = A, R = Foo[T =
+                // Int64, N = 3]]` with `A` bound to an occurrence-carried type kept `A` a
+                // wildcard (MEASURED: a wrong `L` loaded clean). Placed by
+                // [`spliced_type_child`].
+                if let Some(spliced) = splice_non_term_bindings(kb, subst, w, ground) {
+                    match spliced_type_child(kb, &spliced) {
+                        Some(c) => {
+                            *changed = true;
+                            return c;
+                        }
+                        // A spliced type this carrier has no child form for. Loud in a
+                        // debug build; a release keeps the term walk's answer, which is no
+                        // worse than before the splice existed.
+                        None => debug_assert!(
+                            false,
+                            "rewrite_type_occ_deep: no occurrence child for the spliced \
+                             type {spliced:?}"
+                        ),
+                    }
+                }
                 if w != *t {
                     *changed = true;
                 }
@@ -869,6 +990,21 @@ pub(super) fn rewrite_type_occ_deep(
             owner: occ.owner,
         }),
         _ => Rc::clone(occ),
+    }
+}
+
+/// A type [`splice_non_term_bindings`] produced, placed as a child of a type occurrence. A
+/// term and an occurrence are children as they are — an occurrence-carried binding stays
+/// one, UNINTERNED. An application rebuilt around one (a `Value::Entity`: `Option[T = A]`
+/// with `A` bound to `Foo[T = Int64, N = 3]`) has no child form of its own, and is LOWERED
+/// to the type term it is — `value_to_term`, lossless for an occurrence (WI-390) — which is
+/// the answer [`rewrite_type_occ_deep`]'s own `TypeNode::Var` arm already gives a bound
+/// variable: the type it denotes, interned. `None` only when it does not lower.
+fn spliced_type_child(kb: &mut KnowledgeBase, v: &Value) -> Option<TypeChild> {
+    match v {
+        Value::Term { id, .. } => Some(TypeChild::Interned(*id)),
+        Value::Node(occ) => Some(TypeChild::Node(Rc::clone(occ))),
+        other => value_to_term(kb, other).ok().map(TypeChild::Interned),
     }
 }
 

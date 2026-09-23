@@ -529,17 +529,6 @@ end
 // The CONTROLS pass either way BY DESIGN — each pins that the wider gate COMPARES rather
 // than refusing what it used to skip — and each says so at its own site.
 
-/// Reads the `v` of what `op(c(id: 1))` returns.
-///
-/// THROUGH A `match`, NOT `.v`, and that is a measured workaround rather than style: a
-/// field access on a value typed `Foo[T = Int64, N = 3]` does not type — it stays an
-/// unresolved `FieldOf[T = ?R, Name = "v"]` and the load is REFUSED — while the same
-/// access on `Foo[T = Int64]` types as `Int64`. The same carrier-vs-abstractness class
-/// as this block, in field typing, which this ticket does not touch.
-const PROBE_V: &str = "    operation probe() -> Int64 =
-      match op(c(id: 1))
-        case foo(v) -> v";
-
 /// `Sp.op` is body-less, so the carrier's own `op` is its only backing; `spec` and
 /// `member` are the two operations' signatures written out after the name, the member's
 /// with its body. `extra` is spliced into `Carrier` as further members.
@@ -603,7 +592,7 @@ fn a_denoted_return_type_that_matches_loads_and_runs() {
         "denoted_ret_ok",
         "(x: T) -> Foo[T = Int64, N = 3]",
         "(x: Carrier) -> Foo[T = Int64, N = 3] = foo(v: 7)",
-        PROBE_V,
+        "    operation probe() -> Int64 = op(c(id: 1)).v",
     );
     let mut interp = common::interp_for(&src);
     let out = interp
@@ -675,9 +664,7 @@ fn two_denoted_parameters_of_the_same_type_swapped_are_still_not_decidable() {
     let src = denoted_src(
         "denoted_sametype",
         "(x: T, a: Foo[T = Int64, N = 3], b: Foo[T = Int64, N = 3]) -> Int64",
-        "(x: Carrier, b: Foo[T = Int64, N = 3], a: Foo[T = Int64, N = 3]) -> Int64 =
-      match a
-        case foo(v) -> v",
+        "(x: Carrier, b: Foo[T = Int64, N = 3], a: Foo[T = Int64, N = 3]) -> Int64 = a.v",
         "    operation probe() -> Int64 = op(c(id: 1), foo(v: 1), foo(v: 2))",
     );
     let mut interp = common::interp_for(&src);
@@ -731,10 +718,7 @@ fn a_spec_parameter_beneath_a_denoted_grounds_to_the_carrier_and_loads() {
         "denoted_sigma_ok",
         "(x: T) -> Foo[T = T, N = 3]",
         "(x: Carrier) -> Foo[T = Carrier, N = 3] = foo(v: x)",
-        "    operation probe() -> Int64 =
-      match op(c(id: 7))
-        case foo(v) -> match v
-          case c(id) -> id",
+        "    operation probe() -> Int64 = op(c(id: 7)).v.id",
     );
     let mut interp = common::interp_for(&src);
     let out = interp
