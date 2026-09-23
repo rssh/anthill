@@ -495,3 +495,237 @@ end
         "the message must say WHY the host mapping does not count; got: {errs:#?}"
     );
 }
+
+// ── a type on the OCCURRENCE carrier is compared too (WI-20260923-Z1Q8B) ─────
+//
+// A type rides `Value::Node` when it carries a DENOTED — the literal `3` in
+// `Foo[T = Int64, N = 3]` is what makes the loader mint the occurrence carrier — and
+// `instance_binding_type_ok` answered "not confident" for ANY `Value::Node`: the CARRIER
+// read where ABSTRACTNESS was meant, the conflation WI-20260822-1TKN0 removed from the
+// effects leg and 87246ea2 from the override return leg. So every caller loaded a
+// mismatch over such a type clean. MEASURED at 87246ea2: the return-type row below
+// loaded with ZERO errors, while its twin over `Int64` / `Bool` (`a_wrong_return_with_no_
+// spec_default_is_refused` above) is refused.
+//
+// TWO BACK-OUTS, each MEASURED over all 6532 `anthill-core` tests, and each list below
+// is the whole of what failed:
+//   G  restore the carrier gate (`instance_binding_type_ok` returns `None` unless BOTH
+//      types are `Value::Term`) → 6 fail: the four REFUSAL rows here —
+//      `a_denoted_return_type_mismatch_is_refused`,
+//      `a_denoted_parameter_type_mismatch_is_refused`,
+//      `denoted_parameters_swapped_are_reported_as_an_order_mistake` and
+//      `a_spec_parameter_beneath_a_denoted_is_grounded_before_the_comparison` — and
+//      the gate's third caller's two, `wi431_instance_fact_coverage_test::instance_fact_
+//      binding_denoted_return_type_is_compared` and `…::instance_fact_binding_names_the_
+//      spec_type_at_the_provisions_bindings`.
+//   S  restore σ's pass-through of the occurrence carrier (`sigma_subst_type` returning a
+//      non-`Value::Term` type unsubstituted, as `sigma_subst_effect` did) → 4 fail, the
+//      rows that need σ beneath a denoted, one per reader: `a_spec_parameter_beneath_a_denoted_is_
+//      grounded_before_the_comparison` here, and in `wi347_override_refinement_test`
+//      `a_sigma_bound_denoted_return_type_mismatch_is_compared` (the return leg) and
+//      `a_sigma_bound_denoted_effect_label_widening_is_refused` (the effects leg), plus
+//      `wi431_instance_fact_coverage_test::instance_fact_binding_names_the_spec_type_at_
+//      the_provisions_bindings`.
+// The CONTROLS pass either way BY DESIGN — each pins that the wider gate COMPARES rather
+// than refusing what it used to skip — and each says so at its own site.
+
+/// `Sp.op` is body-less, so the carrier's own `op` is its only backing; `spec` and
+/// `member` are the two operations' signatures written out after the name, the member's
+/// with its body. `extra` is spliced into `Carrier` as further members.
+fn denoted_src(ns: &str, spec: &str, member: &str, extra: &str) -> String {
+    format!(
+        r#"
+namespace wi1magr.{ns}
+  import anthill.prelude.{{Int64, String}}
+
+  sort Foo
+    sort T = ?
+    sort N = ?
+    entity foo(v: T)
+  end
+
+  sort Sp
+    sort T = ?
+    operation op{spec}
+  end
+
+  sort Carrier
+    entity c(id: Int64)
+    provides Sp[T = Carrier]
+    operation op{member}
+{extra}
+  end
+end
+"#
+    )
+}
+
+#[test]
+fn a_denoted_return_type_mismatch_is_refused() {
+    // THE TICKET'S MEASURED PROGRAM, verbatim. BACK-OUT G takes it.
+    let errs = signature_refusals(&denoted_src(
+        "denoted_ret",
+        "(x: T) -> Foo[T = Int64, N = 3]",
+        "(x: Carrier) -> Foo[T = String, N = 3] = foo(v: \"s\")",
+        "",
+    ));
+    assert_eq!(
+        errs.len(),
+        1,
+        "a return type carrying a denoted must be compared, not skipped as undecidable; \
+         got: {errs:#?}"
+    );
+    assert!(
+        errs[0].contains("returns `Foo[T = String, N = 3]`")
+            && errs[0].contains("spec's `Foo[T = Int64, N = 3]`"),
+        "naming both return types; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_denoted_return_type_that_matches_loads_and_runs() {
+    // THE CONTROL, and it DRIVES: the refusal above differs from this program only in
+    // the member's `T`, so if this were refused too the row above would be measuring the
+    // fixture. Passes either way by design — the old gate skipped it, the new one
+    // compares it and finds it fits.
+    let src = denoted_src(
+        "denoted_ret_ok",
+        "(x: T) -> Foo[T = Int64, N = 3]",
+        "(x: Carrier) -> Foo[T = Int64, N = 3] = foo(v: 7)",
+        "    operation probe() -> Int64 = op(c(id: 1)).v",
+    );
+    let mut interp = common::interp_for(&src);
+    let out = interp
+        .call("wi1magr.denoted_ret_ok.Carrier.probe", &[])
+        .expect("the conforming member must RUN, not merely load");
+    assert!(
+        matches!(out, Value::Int(7)),
+        "the carrier's own `op` ran and returned `foo(v: 7)`; got: {out:?}"
+    );
+}
+
+#[test]
+fn a_denoted_parameter_type_mismatch_is_refused() {
+    // THE PARAMETER-POSITION TWIN — contravariant, so it is the other direction of
+    // `types_compatible` on the occurrence carrier. BACK-OUT G takes it.
+    let errs = signature_refusals(&denoted_src(
+        "denoted_param",
+        "(x: T, f: Foo[T = Int64, N = 3]) -> Int64",
+        "(x: Carrier, f: Foo[T = String, N = 3]) -> Int64 = 1",
+        "",
+    ));
+    assert_eq!(
+        errs.len(),
+        1,
+        "a parameter type carrying a denoted must be compared; got: {errs:#?}"
+    );
+    assert!(
+        errs[0].contains(
+            "parameter 2 is `Foo[T = String, N = 3]` where the spec's is `Foo[T = Int64, N = 3]`"
+        ),
+        "naming the position and both types; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn denoted_parameters_swapped_are_reported_as_an_order_mistake() {
+    // THE ORDER SEARCH ON THE OCCURRENCE CARRIER. `member_params_are_a_permutation` asks
+    // the same `instance_binding_type_ok`, so before this ticket it could not see these
+    // types at all — and neither could the positional pass that reaches it, so the swap
+    // loaded clean rather than being reported as two type mismatches. BACK-OUT G takes it.
+    //
+    // THE SAME-TYPE BOUNDARY SURVIVES THE WIDER GATE, and the next row drives it: the
+    // order search is reached only from positions that ALREADY compared as incompatible,
+    // so where both parameters are the same type nothing is ever flagged and no claim
+    // about order can be made — on this carrier exactly as on the term one.
+    let errs = signature_refusals(&denoted_src(
+        "denoted_order",
+        "(x: T, a: Foo[T = Int64, N = 3], b: Foo[T = String, N = 3]) -> Int64",
+        "(x: Carrier, b: Foo[T = String, N = 3], a: Foo[T = Int64, N = 3]) -> Int64 = 1",
+        "",
+    ));
+    assert_eq!(errs.len(), 1, "one refusal for the swap; got: {errs:#?}");
+    assert!(
+        errs[0].contains("different ORDER"),
+        "a permutation that WOULD fit is an order mistake and must be named as one; \
+         got: {errs:#?}"
+    );
+}
+
+#[test]
+fn two_denoted_parameters_of_the_same_type_swapped_are_still_not_decidable() {
+    // `two_parameters_of_the_same_type_swapped_are_not_decidable`, on the occurrence
+    // carrier — the ticket's question (b): does the wider gate turn a same-type swap into
+    // a refusal or a false ORDER claim? It does not, and this DRIVES the member to show
+    // the swap is real: it reads its SECOND argument where the spec's first is `a`.
+    //
+    // PASSES EITHER WAY, like its term twin: the old gate never compared these types,
+    // and the new one compares `Foo[T = Int64, N = 3]` against itself at both positions.
+    let src = denoted_src(
+        "denoted_sametype",
+        "(x: T, a: Foo[T = Int64, N = 3], b: Foo[T = Int64, N = 3]) -> Int64",
+        "(x: Carrier, b: Foo[T = Int64, N = 3], a: Foo[T = Int64, N = 3]) -> Int64 = a.v",
+        "    operation probe() -> Int64 = op(c(id: 1), foo(v: 1), foo(v: 2))",
+    );
+    let mut interp = common::interp_for(&src);
+    let out = interp
+        .call("wi1magr.denoted_sametype.Carrier.probe", &[])
+        .expect("the swapped-but-indistinguishable member must load and run");
+    assert!(
+        matches!(out, Value::Int(2)),
+        "the member reads its SECOND argument — the swap is real and nothing here can \
+         see it; got: {out:?}"
+    );
+}
+
+#[test]
+fn a_spec_parameter_beneath_a_denoted_is_grounded_before_the_comparison() {
+    // σ OVER THE OCCURRENCE CARRIER. The spec returns `Foo[T = T, N = 3]` and the
+    // provision binds `T = Carrier`, so the honest comparison is against
+    // `Foo[T = Carrier, N = 3]` — and `Int64` is not `Carrier`. The σ this check used
+    // was a `TermId` walk kept beside the Value-level one, and that one passed a
+    // `Value::Node` through untouched, so `T` stayed a parameter and the pair failed open
+    // even behind a wider gate. It now substitutes through the view.
+    //
+    // BACK-OUT G takes it (the gate), and so does BACK-OUT S (σ) — the only row here
+    // that needs both. The refusal also names the spec's type at THIS provision's
+    // bindings, which is the rendering σ gives every other message on this rule.
+    let errs = signature_refusals(&denoted_src(
+        "denoted_sigma",
+        "(x: T) -> Foo[T = T, N = 3]",
+        "(x: Carrier) -> Foo[T = Int64, N = 3] = foo(v: 1)",
+        "",
+    ));
+    assert_eq!(
+        errs.len(),
+        1,
+        "a spec parameter beneath a denoted must be grounded, then compared; got: {errs:#?}"
+    );
+    assert!(
+        errs[0].contains("returns `Foo[T = Int64, N = 3]`")
+            && errs[0].contains("spec's `Foo[T = Carrier, N = 3]`"),
+        "naming the member's type and the spec's AT THIS PROVISION'S BINDINGS; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_spec_parameter_beneath_a_denoted_grounds_to_the_carrier_and_loads() {
+    // THE σ CONTROL, and the half that proves σ substituted rather than the gate simply
+    // refusing a parametric type: the member returns exactly what σ grounds the spec's
+    // `Foo[T = T, N = 3]` to, so it is accepted — and it RUNS. Passes either way by
+    // design (under BACK-OUT S the spec side stays parametric and fails open).
+    let src = denoted_src(
+        "denoted_sigma_ok",
+        "(x: T) -> Foo[T = T, N = 3]",
+        "(x: Carrier) -> Foo[T = Carrier, N = 3] = foo(v: x)",
+        "    operation probe() -> Int64 = op(c(id: 7)).v.id",
+    );
+    let mut interp = common::interp_for(&src);
+    let out = interp
+        .call("wi1magr.denoted_sigma_ok.Carrier.probe", &[])
+        .expect("the member σ grounds the spec to must load and RUN");
+    assert!(
+        matches!(out, Value::Int(7)),
+        "`op(c(id: 7))` returned `foo(v: c(id: 7))`; got: {out:?}"
+    );
+}

@@ -106,6 +106,9 @@ pub(super) fn synthesize_field_access(
     // the return type is term-backed, so the type param binding is resolved by the
     // `TermId` deep σ-walk, which STOPS at a non-`Term` binding (WI-394) and would leave
     // `Name` an unresolved var — reducing `FieldOf` to a residual on every projection.
+    // (The `Value`-level walk the apply resolves a return type through now SPLICES such a
+    // binding back — `splice_non_term_bindings` — so that stop no longer strands it; ground
+    // is kept for the sharing reason above, and dropping it is unmeasured.)
     let name_term = kb.alloc(Term::Const(Literal::String(field_name.to_string())));
     let name_denoted = Value::term(kb.make_denoted(name_term));
     let pass = crate::kb::simp_rewrite::simp_pass(kb);

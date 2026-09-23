@@ -162,7 +162,10 @@ pub(super) fn seed_op_type_args(
             // return type a residual (`FieldOf[T = P, Name = ?Name]`) for every spelling a
             // caller can write. `synthesize_field_access` already grounds its own `Name`
             // argument for exactly this reason and says so at that site; this is the same
-            // fix for the channel a PERSON writes, which had no route to it at all.
+            // fix for the channel a PERSON writes, which had no route to it at all. (The
+            // `Value`-level walk the apply resolves a return type through now SPLICES such a
+            // binding back — `splice_non_term_bindings` — so that stop no longer strands it;
+            // the re-grounding is kept, and dropping it is unmeasured.)
             //
             // ONLY A CLOSED LITERAL, and the narrowness is the point. The carrier rule
             // (`Loader::type_expr_to_value`) mints a denoted-bearing type as a

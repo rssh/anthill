@@ -884,6 +884,153 @@ fn a_denoted_return_type_that_matches_still_loads() {
     );
 }
 
+// ── …and a spec PARAMETER beneath the denoted is grounded first (WI-20260923-Z1Q8B) ──
+//
+// 87246ea2 fixed the gate above and said what it left open: σ. `sigma_subst_effect`
+// rewrote a `Value::Term` and handed a `Value::Node` back UNSUBSTITUTED, so a spec
+// returning `Foo[T = T, N = 3]` kept its `T`, `!view_contains_type_param` saw it, and the
+// comparison failed open — safely, but a mismatch against the provision's binding loaded.
+// σ is now one Value-level walk that reads through the view, so the spec grounds to
+// `Foo[T = Carrier, N = 3]` here exactly as it does for the signature rule
+// (`wi1magr_member_signature_test::a_spec_parameter_beneath_a_denoted_is_grounded_…`).
+//
+// THE SPEC OPERATION HAS A DEFAULT BODY, which is what isolates THIS rule: the signature
+// rule stands down beside an executable spec operation, so the only refusal left to make
+// is the discharge rule's. (Without the body both refuse — the fixture above now trips
+// both, which is why its assertion is on `discharge_refusals`.)
+//
+// BACK-OUT S (restore σ's pass-through of the occurrence carrier), MEASURED over all
+// `anthill-core` tests, takes `a_sigma_bound_denoted_return_type_mismatch_is_compared` here,
+// the effects-leg row below, and the σ rows of the signature rule and the instance-fact
+// pass — 4 of 6532, and nothing else. Its control
+// `a_sigma_bound_denoted_return_type_that_matches_still_runs` passes either way by design.
+
+/// `Sp.op` returns `Foo[T = T, N = 3]` with `ensures total(result)` and a DEFAULT BODY;
+/// `Carrier.op` restates the clause over its own return type. `probe` reads the `id` of
+/// the carrier `op(c(id: 7))` wraps.
+fn denoted_sigma_ret_src(ns: &str, impl_t: &str, impl_body: &str) -> String {
+    format!(
+        r#"
+        namespace wi347.{ns}
+          import anthill.prelude.{{Int64, String}}
+          rule total(?f)
+          sort Foo
+            sort T = ?
+            sort N = ?
+            entity foo(v: T)
+          end
+          sort Sp
+            sort T = ?
+            operation op(x: T) -> Foo[T = T, N = 3] ensures total(result) = foo(v: x)
+          end
+          sort Carrier
+            entity c(id: Int64)
+            provides Sp[T = Carrier]
+            operation op(x: Carrier) -> Foo[T = {impl_t}, N = 3] ensures total(result) = {impl_body}
+            operation probe() -> Int64 = op(c(id: 7)).v.id
+          end
+        end
+    "#
+    )
+}
+
+#[test]
+fn a_sigma_bound_denoted_return_type_mismatch_is_compared() {
+    let errs = load_errors(&denoted_sigma_ret_src(
+        "result_ret_denoted_sigma",
+        "Int64",
+        "foo(v: 2)",
+    ));
+    assert!(
+        discharge_refusals(&errs)
+            .iter()
+            .any(|e| e.contains("wi347.result_ret_denoted_sigma.Carrier")
+                && e.contains("returns `Foo[T = Int64, N = 3]`")
+                && e.contains("returns `Foo[T = Carrier, N = 3]`")),
+        "the spec's `Foo[T = T, N = 3]` must be σ-grounded to the provision's binding and \
+         then compared; got: {errs:?}"
+    );
+    assert!(
+        signature_refusals(&errs).is_empty(),
+        "the spec default body stands the signature rule down, so the discharge rule is \
+         the one measured here; got: {errs:?}"
+    );
+}
+
+#[test]
+fn a_sigma_bound_denoted_return_type_that_matches_still_runs() {
+    // THE CONTROL, and it DRIVES: the override is accepted AND it is what runs for the
+    // carrier (the spec default would answer `foo(v: x)` too, so the probe reads the
+    // carrier's own `id` back through both layers).
+    let src = denoted_sigma_ret_src("result_ret_denoted_sigma_ok", "Carrier", "foo(v: x)");
+    let mut interp = crate::common::interp_for(&src);
+    let out = interp
+        .call("wi347.result_ret_denoted_sigma_ok.Carrier.probe", &[])
+        .expect("an override returning exactly what σ grounds the spec's return type to \
+                 must load and run");
+    assert!(
+        matches!(out, anthill_core::eval::Value::Int(7)),
+        "`op(c(id: 7))` returned `foo(v: c(id: 7))`; got: {out:?}"
+    );
+}
+
+// ── …and in the EFFECTS leg, σ's third reader (WI-20260923-Z1Q8B /code-review) ──
+//
+// A spec effect label carrying a denoted rides the occurrence carrier too, and the old σ
+// handed it back with its parameter still in it — so the spec ROW read as parametric and
+// the whole leg stood down (its premise is a fully known spec row). MEASURED at
+// 87246ea2: the widening below loaded clean. σ now grounds `Tagged[T = T, N = 3]` to
+// `Tagged[T = Carrier, N = 3]`, and the override's `Tagged[T = Int64, N = 3]` is judged.
+//
+// BACK-OUT S takes `a_sigma_bound_denoted_effect_label_widening_is_refused` and not its
+// control, which passes either way by design.
+
+fn denoted_sigma_effect_src(ns: &str, impl_t: &str) -> String {
+    format!(
+        r#"
+        namespace wi347.{ns}
+          import anthill.prelude.{{Effect, Int64}}
+          sort Tagged
+            sort T = ?
+            sort N = ?
+          end
+          namespace Tagged
+            provides Effect[T = Tagged[?]]
+          end
+          sort Sp
+            sort T = ?
+            operation op(x: T) -> Int64 effects {{Tagged[T = T, N = 3]}}
+          end
+          sort Carrier
+            entity c(id: Int64)
+            provides Sp[T = Carrier]
+            operation op(x: Carrier) -> Int64 effects {{Tagged[T = {impl_t}, N = 3]}} = 1
+          end
+        end
+    "#
+    )
+}
+
+#[test]
+fn a_sigma_bound_denoted_effect_label_widening_is_refused() {
+    let errs = load_errors(&denoted_sigma_effect_src("eff_denoted_sigma", "Int64"));
+    let w = widening_refusals(&errs);
+    assert!(
+        w.len() == 1 && w[0].contains("effect `Tagged[T = Int64, N = 3]`"),
+        "the spec's `Tagged[T = T, N = 3]` must be σ-grounded, so the override's \
+         `Tagged[T = Int64, N = 3]` is a widening; got: {errs:#?}"
+    );
+}
+
+#[test]
+fn a_sigma_bound_denoted_effect_label_that_matches_still_loads() {
+    let errs = load_errors(&denoted_sigma_effect_src("eff_denoted_sigma_ok", "Carrier"));
+    assert!(
+        errs.is_empty(),
+        "restating the spec's row at this provision's binding is no widening; got: {errs:#?}"
+    );
+}
+
 // ── contract clauses resolve their predicate names (WI-20260822-59CDQ) ──
 //
 // A `requires` / `ensures` clause is a goal written on a DECLARATION, so neither

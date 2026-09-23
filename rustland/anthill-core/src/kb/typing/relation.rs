@@ -991,7 +991,10 @@ pub(super) fn project_schema_type(
 /// return type is term-backed, so the type-param binding resolves through the `TermId` deep
 /// σ-walk, which STOPS at a non-`Term` binding (WI-394) and would leave `Keep` an unresolved
 /// var — reducing `Project` to a residual on every projection. A keep spec is closed ground
-/// data, which is what hash-consing is for.
+/// data, which is what hash-consing is for. (The `Value`-level walk the apply resolves a
+/// return type through now SPLICES such a binding back — `splice_non_term_bindings` — so
+/// that stop no longer strands it; ground is kept for the sharing reason, and dropping it is
+/// unmeasured.)
 ///
 /// `None` when this is not a projection at all — the receiver is not a `Relation`, or a source
 /// names no column — so the caller falls through (dot dispatch → `DotDispatchNoMatch`; the

@@ -1235,7 +1235,7 @@ pub(super) fn substitute_clause(
     subst: &[(Symbol, TermId)],
 ) -> Value {
     match clause {
-        // Empty-subst guard like [`sigma_subst_effect`]'s: same-named params
+        // Empty-subst guard like [`sigma_subst_type`]'s: same-named params
         // need no rewrite, and the deep walk re-allocs every node.
         Value::Term { id: t, .. } if !subst.is_empty() => {
             Value::term(substitute_impl_params_alloc(kb, *t, subst))
@@ -1315,23 +1315,108 @@ pub(super) fn result_binder_discharges(
     false
 }
 
-/// Apply a provision's σ (spec param symbol → binding) to a spec operation's
-/// effect label. A ground `Value::Term` is rewritten via
-/// [`substitute_impl_params_alloc`]; a `denoted` `Value::Node` (e.g.
-/// `Modify[c]`) is returned verbatim — its σ-instantiation is part of the
-/// deferred parametric-effect handling, and the caller's confidence gate skips
-/// any op whose effects stay non-ground.
-pub(super) fn sigma_subst_effect(
+/// Apply a provision's σ (spec param symbol → binding) to a spec operation's DECLARED
+/// TYPE — a parameter type, the return type or an effect label — on whatever carrier
+/// it rides.
+///
+/// WI-20260923-Z1Q8B — THE ONE VALUE-LEVEL σ, and it reads the type through
+/// [`TermView`]. Until this ticket it was `sigma_subst_effect`, which rewrote a
+/// `Value::Term` and handed a `Value::Node` back UNSUBSTITUTED as "deferred
+/// parametric-effect handling". A type rides the occurrence carrier whenever it
+/// carries a denoted — the literal `3` in `Foo[T = T, N = 3]` — which says nothing about
+/// whether it is parametric, so a spec parameter beneath one was never grounded and
+/// every reader failed open on it: [`check_override_refinement`]'s return leg, its
+/// effects leg, and [`instance_binding_type_ok`], which kept a `TermId`-only copy of
+/// this σ beside it and read `Value::Node` as "not confident" outright.
+///
+/// A hash-consed subtree stays in the term world: [`substitute_impl_params_alloc`],
+/// hash-consed result, the path a `Value::Term` always took. Anything else is read
+/// through the view, where a bare name σ binds is a LEAF — replaced, never descended —
+/// by the same [`view_ref_symbol`] reading the term walk uses, and ONLY THE SPINE ABOVE
+/// A REPLACED LEAF IS REBUILT: as a `Value::Entity`, or a `Value::Tuple` for a
+/// functor-less aggregate, which reads through `TermView` exactly as the occurrence it
+/// replaces did (WI-361 — the two carriers are indistinguishable through the view).
+/// A subtree σ does not touch comes back as the value it was, carrier and all, so a type
+/// with nothing to substitute — `Modify[c]` — is returned unchanged. A head the view
+/// cannot present (`Opaque` — a `Parameterized` whose base is itself an occurrence) is
+/// returned unchanged too, and fails open downstream rather than being compared
+/// unsubstituted: [`view_contains_type_param`] reads `Opaque` as abstract.
+///
+/// [`substitute_ref_terms`]' SHAPE, AND DELIBERATELY NOT THAT FUNCTION. It σ-applies a
+/// GOAL, so it replaces a `var_ref` binder whole and rebuilds every application it passes
+/// through; a spec type must keep an untouched subtree on its own carrier, and must read
+/// the nullary-`Fn` spelling of a parameter as the name it is — which that function's
+/// term arm does not (a `Term::Fn` there only maps its children).
+pub(super) fn sigma_subst_type(
     kb: &mut KnowledgeBase,
-    eff: &Value,
+    ty: &Value,
     sigma: &[(Symbol, TermId)],
 ) -> Value {
-    match eff {
-        Value::Term { id: t, .. } if !sigma.is_empty() => {
-            Value::term(substitute_impl_params_alloc(kb, *t, sigma))
-        }
-        other => other.clone(),
+    if sigma.is_empty() {
+        return ty.clone();
     }
+    sigma_subst_view(kb, ty, sigma).unwrap_or_else(|| ty.clone())
+}
+
+/// [`sigma_subst_type`]'s walk. `None` when σ changes nothing at or beneath `v`, which
+/// is what lets an untouched subtree keep its own carrier.
+fn sigma_subst_view(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    sigma: &[(Symbol, TermId)],
+) -> Option<Value> {
+    if let Value::Term { id, .. } = v {
+        let t = substitute_impl_params_alloc(kb, *id, sigma);
+        return (t != *id).then(|| Value::term(t));
+    }
+    if let Some(s) = view_ref_symbol(kb, v) {
+        return sigma
+            .iter()
+            .find(|(k, _)| *k == s)
+            .map(|(_, t)| Value::term(*t));
+    }
+    // A variable, a literal, `⊥` or an opaque head names nothing σ binds.
+    let ViewHead::Functor {
+        functor, pos_arity, ..
+    } = v.head(kb)
+    else {
+        return None;
+    };
+    // `.to_value()` owns each child, ending the view's borrow of `kb` before the
+    // `&mut kb` recursion — the borrow shape `subst_view_pos` uses.
+    let mut changed = false;
+    let mut pos = Vec::with_capacity(pos_arity);
+    for i in 0..pos_arity {
+        let child = v.pos_arg(kb, i).expect("pos_arg within arity").to_value();
+        let new = sigma_subst_view(kb, &child, sigma);
+        changed |= new.is_some();
+        pos.push(new.unwrap_or(child));
+    }
+    let keys = v.named_keys(kb);
+    let mut named = Vec::with_capacity(keys.len());
+    for k in keys {
+        let child = v.named_arg(kb, k).expect("named key present").to_value();
+        let new = sigma_subst_view(kb, &child, sigma);
+        changed |= new.is_some();
+        named.push((k, new.unwrap_or(child)));
+    }
+    if !changed {
+        return None;
+    }
+    Some(match functor {
+        Some(f) => {
+            kb.canonicalize_record_named_args(f, &mut named);
+            Value::Entity {
+                functor: f,
+                pos: Rc::from(pos),
+                named: Rc::from(named),
+            }
+        }
+        None => Value::Tuple {
+            pos: Rc::from(pos),
+            named: Rc::from(named),
+        },
+    })
 }
 
 /// Replace every `Ref(p)` / `Ident(p)` / nullary `Fn(p, [], [])` in
