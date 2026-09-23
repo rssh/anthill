@@ -110,19 +110,81 @@ fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool)
             if functor.is_some_and(|f| is_sort_param_symbol(kb, f)) {
                 return false;
             }
-            (0..pos_arity).all(|i| {
-                v.pos_arg(kb, i)
-                    .is_some_and(|c| type_view_is_ground_g(kb, &c, rigid_ok))
-            }) && v.named_keys(kb).iter().all(|k| {
-                v.named_arg(kb, *k)
-                    .is_some_and(|c| type_view_is_ground_g(kb, &c, rigid_ok))
-            })
+            view_all_children(kb, v, pos_arity, |c| type_view_is_ground_g(kb, c, rigid_ok))
         }
         // A carrier with no structure to read — a closure, a stream, a `ParseAux`. It is not
         // a type and cannot be judged one; `false` withholds the verdict, which is what the
         // term walk's `ParseAux` arm already answered.
         ViewHead::Opaque => false,
     }
+}
+
+/// WI-20260923-32XFQ — does `t`, or any term beneath it, satisfy `hit`? Pre-order over the
+/// hash-consed `Term::Fn` spine — the node itself, then its positional arguments, then its
+/// named ones — stopping at the first hit. `hit` is asked of EVERY node, interior ones
+/// included, and is handed the node's `Term` so it need not fetch it again; a question
+/// that is only a leaf's answers `false` for an interior node ([`occurs_in`]).
+///
+/// The one child walk under the `TermId` "does this type mention X" predicates, which each
+/// spelled it with only the leaf test differing: [`term_contains_callable`],
+/// `term_mentions_an_entity`, `type_term_has_variable`, `declared_type_mentions_param`,
+/// [`type_term_mentions_type_var`], `type_term_mentions_op_tp`, `term_contains_functor`,
+/// [`occurs_in`]. A `TermId` walk rather than a [`TermView`] one on purpose: the view's
+/// `named_keys` allocates per node, and [`occurs_in`] runs for every hash-consed binding.
+pub(super) fn term_any_subterm(
+    kb: &KnowledgeBase,
+    t: TermId,
+    hit: &impl Fn(TermId, &Term) -> bool,
+) -> bool {
+    let term = kb.get_term(t);
+    if hit(t, term) {
+        return true;
+    }
+    match term {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            pos_args.iter().any(|&a| term_any_subterm(kb, a, hit))
+                || named_args
+                    .iter()
+                    .any(|&(_, a)| term_any_subterm(kb, a, hit))
+        }
+        _ => false,
+    }
+}
+
+/// WI-20260923-32XFQ — does any CHILD of `v` satisfy `f`: its positional arguments in order
+/// (`pos_arity` of them, read off the head the caller already matched), then its named ones?
+/// The child loop the [`TermView`] walkers' functor arm spelled each for itself; everything
+/// around it — which heads are leaves, what a variable answers — stays theirs, and differs.
+///
+/// A child the view names and cannot hand out counts as NO hit here and as a FAILURE in
+/// [`view_all_children`], which is what each walker's `is_some_and` answered.
+pub(super) fn view_any_child<V: TermView>(
+    kb: &KnowledgeBase,
+    v: &V,
+    pos_arity: usize,
+    mut f: impl FnMut(&ViewItem<'_>) -> bool,
+) -> bool {
+    (0..pos_arity).any(|i| v.pos_arg(kb, i).is_some_and(|c| f(&c)))
+        || v.named_keys(kb)
+            .into_iter()
+            .any(|k| v.named_arg(kb, k).is_some_and(|c| f(&c)))
+}
+
+/// [`view_any_child`]'s universal twin: does EVERY child of `v` satisfy `f`?
+pub(super) fn view_all_children<V: TermView>(
+    kb: &KnowledgeBase,
+    v: &V,
+    pos_arity: usize,
+    mut f: impl FnMut(&ViewItem<'_>) -> bool,
+) -> bool {
+    (0..pos_arity).all(|i| v.pos_arg(kb, i).is_some_and(|c| f(&c)))
+        && v.named_keys(kb)
+            .into_iter()
+            .all(|k| v.named_arg(kb, k).is_some_and(|c| f(&c)))
 }
 
 /// WI-385: groundness of a substitution-RESOLVED type `Value` — the gate for
@@ -413,33 +475,10 @@ pub(super) fn type_mentions_flex_var<V: TermView>(kb: &KnowledgeBase, ty: &V) ->
     if bindable_type_var(kb, ty).is_some() {
         return true;
     }
-    let ViewHead::Functor {
-        pos_arity,
-        named_arity,
-        ..
-    } = ty.head(kb)
-    else {
+    let ViewHead::Functor { pos_arity, .. } = ty.head(kb) else {
         return false;
     };
-    for i in 0..pos_arity {
-        if ty
-            .pos_arg(kb, i)
-            .is_some_and(|a| type_mentions_flex_var(kb, &a))
-        {
-            return true;
-        }
-    }
-    if named_arity > 0 {
-        for key in ty.named_keys(kb) {
-            if ty
-                .named_arg(kb, key)
-                .is_some_and(|a| type_mentions_flex_var(kb, &a))
-            {
-                return true;
-            }
-        }
-    }
-    false
+    view_any_child(kb, ty, pos_arity, |a| type_mentions_flex_var(kb, a))
 }
 
 /// WI-722: is this resolved type EXACTLY an occurrence type — a bare

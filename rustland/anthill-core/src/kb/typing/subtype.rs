@@ -2339,14 +2339,13 @@ pub(super) fn witness_provides_admissibly(
         return false;
     }
     let actual_canon = kb.canonical_sort_sym(actual_base);
-    let rows: Vec<SmallVec<[(Symbol, TermId); 2]>> =
-        provides_rows_of_spec_in(kb, spec_canon, rids)
-            .filter_map(|row| {
-                witness_dispatch_carrier(kb, expected_spec, row.provider, row.spec_view)
-                    .filter(|c| *c == actual_canon)
-                    .map(|_| row.bindings)
-            })
-            .collect();
+    let rows: Vec<SmallVec<[(Symbol, TermId); 2]>> = provides_rows_of_spec_in(kb, spec_canon, rids)
+        .filter_map(|row| {
+            witness_dispatch_carrier(kb, expected_spec, row.provider, row.spec_view)
+                .filter(|c| *c == actual_canon)
+                .map(|_| row.bindings)
+        })
+        .collect();
     if rows.is_empty() {
         return false;
     }

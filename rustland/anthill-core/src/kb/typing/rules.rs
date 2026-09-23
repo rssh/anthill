@@ -228,25 +228,11 @@ pub(super) fn occurrence_contains_functor(occ: &Rc<NodeOccurrence>, target: Symb
 /// Check if a term (or any subterm) contains the given functor. Still used for
 /// the rule HEAD (a hash-consed term); the body uses [`occurrence_contains_functor`].
 fn term_contains_functor(kb: &KnowledgeBase, term: TermId, target_functor: Symbol) -> bool {
-    match kb.get_term(term) {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-            ..
-        } => {
-            if *functor == target_functor {
-                return true;
-            }
-            pos_args
-                .iter()
-                .any(|a| term_contains_functor(kb, *a, target_functor))
-                || named_args
-                    .iter()
-                    .any(|(_, a)| term_contains_functor(kb, *a, target_functor))
-        }
-        _ => false,
-    }
+    term_any_subterm(
+        kb,
+        term,
+        &|_, t| matches!(t, Term::Fn { functor, .. } if *functor == target_functor),
+    )
 }
 
 // ── Rule type checking ─────────────────────────────────────────

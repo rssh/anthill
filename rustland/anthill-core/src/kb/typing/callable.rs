@@ -91,22 +91,7 @@ pub(super) fn type_contains_callable(kb: &KnowledgeBase, v: &Value) -> bool {
 /// argument's. Structurally the dual of [`type_value_is_ground`], which walks the same
 /// spine for the other predicate this gate reads.
 pub(super) fn term_contains_callable(kb: &KnowledgeBase, tid: TermId) -> bool {
-    if type_head_is_callable(kb, &TermIdView(tid)) {
-        return true;
-    }
-    match kb.get_term(tid) {
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => {
-            let pos: SmallVec<[TermId; 4]> = pos_args.iter().copied().collect();
-            let named: SmallVec<[TermId; 4]> = named_args.iter().map(|(_, a)| *a).collect();
-            pos.iter().any(|a| term_contains_callable(kb, *a))
-                || named.iter().any(|a| term_contains_callable(kb, *a))
-        }
-        _ => false,
-    }
+    term_any_subterm(kb, tid, &|t, _| type_head_is_callable(kb, &TermIdView(t)))
 }
 
 /// [`type_contains_callable`] over an occurrence-carried type, walking the same

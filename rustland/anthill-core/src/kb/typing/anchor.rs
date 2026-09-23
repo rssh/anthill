@@ -900,9 +900,8 @@ pub(super) fn anchor_grounding(
     // neither — it is a member of that bound, and the two are equal only by accident.
     let sort_carrier_checks = projection_anchor.is_none();
     if let (Some(p), false, true) = (carrier_param, bound_is_the_spec, sort_carrier_checks) {
-        let row = provides_rows_of_spec(kb, spec_canon).find(|row| {
-            kb.canonical_sort_sym(row.provider) == kb.canonical_sort_sym(anchor_bound)
-        });
+        let row = provides_rows_of_spec(kb, spec_canon)
+            .find(|row| kb.canonical_sort_sym(row.provider) == kb.canonical_sort_sym(anchor_bound));
         if let Some(ProvidesRow { bindings, .. }) = row {
             let pins_the_carrier = bindings.iter().any(|(k, v)| {
                 same_label(kb, *k, p)

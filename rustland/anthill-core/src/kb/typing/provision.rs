@@ -1168,42 +1168,13 @@ fn map_requires_name(
         .map_or(orig, |(_, val)| *val)
 }
 
-/// True iff `value` mentions any abstract type-parameter anywhere in its
-/// structure — a `Var`, a `Ref`/`Ident` to a `sort T = ?` param, or that
-/// param as a nullary `Fn` functor (the `make_name_term` shape the loader
-/// emits for a bare name, e.g. the unbound `E` left by `requires
-/// Iterable[…, E = Effect]`). Used to decide whether a σ-instantiated
-/// `requires` goal is concrete enough to resolve precisely against ground
-/// facts, vs. falling back to the base-level existence check (WI-356).
-pub(super) fn contains_type_param(kb: &KnowledgeBase, value: TermId) -> bool {
-    if is_type_param_value(kb, value) {
-        return true;
-    }
-    match kb.get_term(value) {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => {
-            // A `Fn` functor that is itself a param (`Fn{Effect}` nullary, or a
-            // param used as a head) makes the value abstract.
-            if is_sort_param_symbol(kb, *functor) {
-                return true;
-            }
-            let pos: SmallVec<[TermId; 4]> = pos_args.clone();
-            let named: SmallVec<[(Symbol, TermId); 2]> = named_args.clone();
-            pos.iter().any(|t| contains_type_param(kb, *t))
-                || named.iter().any(|(_, t)| contains_type_param(kb, *t))
-        }
-        _ => false,
-    }
-}
-
-/// WI-20260822-1TKN0 — the carrier-neutral twin of [`contains_type_param`], for a
-/// reader that holds an effect label rather than a `TermId`.
+/// WI-20260822-1TKN0 — "does this mention a type parameter", for a reader that holds an
+/// effect label rather than a `TermId`. The `TermId` question is `!`[`type_value_is_ground`]
+/// (the CONCRETE reading); `contains_type_param` was a second spelling of that walk, arm for
+/// arm, until WI-20260923-32XFQ folded it in.
 ///
-/// NOT A CONVENIENCE WRAPPER. [`contains_type_param`] takes a `TermId`, so its
-/// callers reach it through `matches!(v, Value::Term { .. })` — a CARRIER test
+/// NOT A CONVENIENCE WRAPPER. The `TermId` question takes a `TermId`, so its
+/// callers reached it through `matches!(v, Value::Term { .. })` — a CARRIER test
 /// standing in for an ABSTRACTNESS test. The two questions are not the same one:
 /// a denoted effect label (`Modify[c]`) rides a `Value::Node` because it carries
 /// an occurrence, not because it is parametric, and the override-refinement
@@ -1214,10 +1185,10 @@ pub(super) fn contains_type_param(kb: &KnowledgeBase, value: TermId) -> bool {
 ///
 /// Mirrors [`TermView::bears_opaque`]'s shape for the same reason it exists: a
 /// reader that asks the structure cannot drift when a carrier is added.
-/// On the `TermId` carrier this decides exactly what [`contains_type_param`]
-/// decides, arm for arm — `Var` ⇒ abstract, `Ref`/`Ident` ⇒
-/// [`is_sort_param_symbol`], a functor head that is itself a param ⇒ abstract
-/// (which subsumes the nullary-`Fn` name shape), else recurse.
+/// On the `TermId` carrier this decides exactly what `!type_value_is_ground` decides,
+/// arm for arm — `Var` ⇒ abstract, `Ref`/`Ident` ⇒ [`is_sort_param_symbol`], a functor
+/// head that is itself a param ⇒ abstract (which subsumes the nullary-`Fn` name shape),
+/// else recurse.
 ///
 /// An `Opaque` head answers ABSTRACT: it presents no structure, so nothing here
 /// can establish it is concrete, and "cannot decide" is the fail-open direction
@@ -1232,13 +1203,7 @@ pub(super) fn view_contains_type_param<V: TermView>(kb: &KnowledgeBase, v: &V) -
             if functor.is_some_and(|f| is_sort_param_symbol(kb, f)) {
                 return true;
             }
-            (0..pos_arity).any(|i| {
-                v.pos_arg(kb, i)
-                    .is_some_and(|a| view_contains_type_param(kb, &a))
-            }) || v.named_keys(kb).into_iter().any(|k| {
-                v.named_arg(kb, k)
-                    .is_some_and(|a| view_contains_type_param(kb, &a))
-            })
+            view_any_child(kb, v, pos_arity, |a| view_contains_type_param(kb, a))
         }
         ViewHead::Opaque => true,
         ViewHead::Const(_) | ViewHead::Bottom => false,
@@ -1275,11 +1240,7 @@ pub(super) fn view_bears_denoted<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool
     }
     match v.head(kb) {
         ViewHead::Functor { pos_arity, .. } => {
-            (0..pos_arity).any(|i| v.pos_arg(kb, i).is_some_and(|a| view_bears_denoted(kb, &a)))
-                || v.named_keys(kb).into_iter().any(|k| {
-                    v.named_arg(kb, k)
-                        .is_some_and(|a| view_bears_denoted(kb, &a))
-                })
+            view_any_child(kb, v, pos_arity, |a| view_bears_denoted(kb, a))
         }
         _ => false,
     }

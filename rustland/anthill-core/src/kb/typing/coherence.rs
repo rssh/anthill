@@ -354,7 +354,7 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
             let concrete = goal
                 .bindings
                 .iter()
-                .all(|(_, v)| !contains_type_param(kb, *v));
+                .all(|(_, v)| type_value_is_ground(kb, *v));
             // WI-644: SELF-CARRIER provision — every required binding is the CARRIER
             // itself (`Set provides Eq[T = Set]` ⇒ required `PartialEq[T = Set]`). The
             // strict `spec_resolves_at_bindings` can't discharge the carrier's OWN
@@ -735,7 +735,7 @@ pub(crate) fn check_use_site_requires_eq(
             .collect();
         for (gi, goal) in goals.iter().enumerate() {
             for (bi, (key, val)) in goal.bindings.iter().enumerate() {
-                if contains_type_param(kb, *val) {
+                if !type_value_is_ground(kb, *val) {
                     continue; // abstract binding: defer (not a concrete carrier)
                 }
                 let carrier = match kb.get_term(*val) {
@@ -1208,8 +1208,7 @@ pub fn provider_coherence_candidates(
     let own_ops: HashMap<Symbol, Vec<Symbol>> =
         crate::kb::load::sorts_and_own_ops(kb).into_iter().collect();
     let concrete = crate::kb::load::sorts_with_constructors(kb);
-    let groups =
-        provider_coherence_groups_with(kb, &collect_provisions(kb), &own_ops, &concrete);
+    let groups = provider_coherence_groups_with(kb, &collect_provisions(kb), &own_ops, &concrete);
     groups
         .iter()
         .find(|g| {

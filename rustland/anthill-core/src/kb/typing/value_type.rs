@@ -145,22 +145,9 @@ pub(super) fn type_mentions_an_entity(kb: &KnowledgeBase, v: &Value) -> bool {
 /// [`type_mentions_an_entity`] over a hash-consed type term — this node's head, else any
 /// argument's. The same spine [`term_contains_callable`] walks, for the same reason.
 fn term_mentions_an_entity(kb: &KnowledgeBase, tid: TermId) -> bool {
-    if type_head_names_an_entity(kb, &TermIdView(tid)) {
-        return true;
-    }
-    match kb.get_term(tid) {
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => {
-            let pos: SmallVec<[TermId; 4]> = pos_args.iter().copied().collect();
-            let named: SmallVec<[TermId; 4]> = named_args.iter().map(|(_, a)| *a).collect();
-            pos.iter().any(|a| term_mentions_an_entity(kb, *a))
-                || named.iter().any(|a| term_mentions_an_entity(kb, *a))
-        }
-        _ => false,
-    }
+    term_any_subterm(kb, tid, &|t, _| {
+        type_head_names_an_entity(kb, &TermIdView(t))
+    })
 }
 
 /// WI-20260826-JSFHG — the hint one COMPONENT of a tuple literal takes from the tuple's own
@@ -2563,22 +2550,7 @@ fn type_term_has_variable(kb: &KnowledgeBase, t: TermId) -> bool {
     // withheld and the two rows this ticket exists to fix went back to suspending. What
     // a child must not be is a WILDCARD — the thing that makes `types_compatible` answer
     // `true` about everything — and that is a variable.
-    if is_type_variable(kb, &TermIdView(t)) {
-        return true;
-    }
-    match kb.get_term(t) {
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => {
-            pos_args.iter().any(|&a| type_term_has_variable(kb, a))
-                || named_args
-                    .iter()
-                    .any(|&(_, a)| type_term_has_variable(kb, a))
-        }
-        _ => false,
-    }
+    term_any_subterm(kb, t, &|t, _| is_type_variable(kb, &TermIdView(t)))
 }
 
 /// named_tuple(fields: [...]) <: named_tuple(fields: [...])

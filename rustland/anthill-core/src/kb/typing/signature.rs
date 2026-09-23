@@ -2450,7 +2450,10 @@ pub fn check_instance_fact_op_signatures(
                 .filter(|(k, _)| !is_type_param_binding(kb, *k, spec_qn))
                 .filter_map(|(k, v)| {
                     let bound_op = binding_op_symbol(kb, *v)?;
-                    Some((short_name_of(kb.qualified_name_of(*k)).to_string(), bound_op))
+                    Some((
+                        short_name_of(kb.qualified_name_of(*k)).to_string(),
+                        bound_op,
+                    ))
                 })
                 .collect();
             if ops.is_empty() {

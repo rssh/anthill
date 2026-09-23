@@ -983,13 +983,7 @@ fn view_references_any<V: TermView>(kb: &KnowledgeBase, view: &V, syms: &[Symbol
             named_arity: 0,
         } => syms.contains(&s),
         ViewHead::Functor { pos_arity, .. } => {
-            (0..pos_arity).any(|i| {
-                view.pos_arg(kb, i)
-                    .is_some_and(|c| view_references_any(kb, &c, syms))
-            }) || view.named_keys(kb).iter().any(|&k| {
-                view.named_arg(kb, k)
-                    .is_some_and(|c| view_references_any(kb, &c, syms))
-            })
+            view_any_child(kb, view, pos_arity, |c| view_references_any(kb, c, syms))
         }
         _ => false,
     }
@@ -1077,13 +1071,7 @@ fn view_carries_undecided_var<V: TermView>(kb: &KnowledgeBase, view: &V) -> bool
     match view.head(kb) {
         ViewHead::Var(v) => !v.is_rigid(),
         ViewHead::Functor { pos_arity, .. } => {
-            (0..pos_arity).any(|i| {
-                view.pos_arg(kb, i)
-                    .is_some_and(|c| view_carries_undecided_var(kb, &c))
-            }) || view.named_keys(kb).iter().any(|&k| {
-                view.named_arg(kb, k)
-                    .is_some_and(|c| view_carries_undecided_var(kb, &c))
-            })
+            view_any_child(kb, view, pos_arity, |c| view_carries_undecided_var(kb, c))
         }
         _ => false,
     }

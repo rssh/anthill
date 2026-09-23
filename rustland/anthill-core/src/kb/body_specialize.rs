@@ -1388,9 +1388,9 @@ impl KnowledgeBase {
     /// `ExprCarried` projection here is parametric by construction; there is no
     /// concrete-receiver case to exclude.
     ///
-    /// NOT a deep `contains_type_param` walk, deliberately: that would classify
-    /// `Modify[c]` and `Error[T = P]` as parametric because a parameter appears
-    /// somewhere INSIDE them. Those are concrete effects applied to arguments —
+    /// NOT a deep "mentions a type parameter" walk (`!type_value_is_ground`), deliberately:
+    /// that would classify `Modify[c]` and `Error[T = P]` as parametric because a parameter
+    /// appears somewhere INSIDE them. Those are concrete effects applied to arguments —
     /// the effect is `Modify`, whichever cell it names. The question is only ever
     /// about the row member's HEAD.
     pub(crate) fn effect_member_is_parametric(&self, e: &crate::eval::value::Value) -> bool {

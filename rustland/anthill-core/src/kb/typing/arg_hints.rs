@@ -530,20 +530,9 @@ fn type_mentions_op_tp(kb: &KnowledgeBase, ty: &Value, tp_vars: &[VarId]) -> boo
 
 /// The `TermId` walk under [`type_mentions_op_tp`].
 fn type_term_mentions_op_tp(kb: &KnowledgeBase, tid: TermId, tp_vars: &[VarId]) -> bool {
-    if elem_var_step(kb, tid).is_some_and(|(v, _)| tp_vars.contains(&v)) {
-        return true;
-    }
-    match kb.get_term(tid) {
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => pos_args
-            .iter()
-            .chain(named_args.iter().map(|(_, t)| t))
-            .any(|c| type_term_mentions_op_tp(kb, *c, tp_vars)),
-        _ => false,
-    }
+    term_any_subterm(kb, tid, &|t, _| {
+        elem_var_step(kb, t).is_some_and(|(v, _)| tp_vars.contains(&v))
+    })
 }
 
 /// WI-821: the substitution that instantiates a hof param type's callee type
@@ -839,20 +828,10 @@ fn eliminate_callback_hint_projection(
 /// complement of [`type_value_is_ground`], which catches logic vars and
 /// SORT-param refs but keys its functor test on sort-param symbols only.
 pub(super) fn type_term_mentions_type_var(kb: &KnowledgeBase, tid: TermId) -> bool {
-    match kb.get_term(tid) {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => {
-            kb.qualified_name_of(*functor) == "anthill.prelude.TypeExtractor.TypeVar"
-                || pos_args.iter().any(|a| type_term_mentions_type_var(kb, *a))
-                || named_args
-                    .iter()
-                    .any(|(_, a)| type_term_mentions_type_var(kb, *a))
-        }
-        _ => false,
-    }
+    term_any_subterm(kb, tid, &|_, term| {
+        matches!(term, Term::Fn { functor, .. }
+            if kb.qualified_name_of(*functor) == "anthill.prelude.TypeExtractor.TypeVar")
+    })
 }
 
 /// WI-427: the expected-type hint for a nested-call argument — the

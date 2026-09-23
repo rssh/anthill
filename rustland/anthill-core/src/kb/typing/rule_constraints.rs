@@ -98,24 +98,7 @@ pub(super) fn denoted_type_param_var(kb: &KnowledgeBase, t: TermId) -> Option<Va
 /// itself. Measured on a full stdlib load, the large majority of declared parameter /
 /// field types mention no parameter at all (`String`, `Int64`, `List[Term]`).
 fn declared_type_mentions_param(kb: &KnowledgeBase, t: TermId) -> bool {
-    if denoted_type_param_var(kb, t).is_some() {
-        return true;
-    }
-    match kb.get_term(t) {
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => {
-            pos_args
-                .iter()
-                .any(|&a| declared_type_mentions_param(kb, a))
-                || named_args
-                    .iter()
-                    .any(|&(_, a)| declared_type_mentions_param(kb, a))
-        }
-        _ => false,
-    }
+    term_any_subterm(kb, t, &|t, _| denoted_type_param_var(kb, t).is_some())
 }
 
 /// WI-9C2PZ — the fresh variable `inst` stands `canonical` up as, minted on first use.

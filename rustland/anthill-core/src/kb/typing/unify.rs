@@ -1225,21 +1225,7 @@ pub(super) fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) 
             if pos_arity == 0 && named_arity == 0 {
                 return bare_head_is_param_var(kb, &head, vid);
             }
-            for i in 0..pos_arity {
-                if let Some(c) = v.pos_arg(kb, i) {
-                    if occurs_in_view(kb, vid, &c) {
-                        return true;
-                    }
-                }
-            }
-            for k in v.named_keys(kb) {
-                if let Some(c) = v.named_arg(kb, k) {
-                    if occurs_in_view(kb, vid, &c) {
-                        return true;
-                    }
-                }
-            }
-            false
+            view_any_child(kb, v, pos_arity, |c| occurs_in_view(kb, vid, c))
         }
         _ => false,
     }
@@ -1604,19 +1590,17 @@ pub(super) fn bind_or_refine_member_param(
 /// question WI-20260923-N3W68 (#4) found them answering two ways — and that is one
 /// predicate.
 pub(super) fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
-    match kb.get_term(term) {
+    term_any_subterm(kb, term, &|t, node| match node {
         Term::Var(Var::Global(v)) => *v == vid,
+        // An interior node is not an occurrence itself; the walk descends it.
         Term::Fn {
             pos_args,
             named_args,
             ..
-        } if !pos_args.is_empty() || !named_args.is_empty() => {
-            pos_args.iter().any(|t| occurs_in(kb, vid, *t))
-                || named_args.iter().any(|(_, t)| occurs_in(kb, vid, *t))
-        }
+        } if !pos_args.is_empty() || !named_args.is_empty() => false,
         // A leaf: `Ref(p)`, the nullary `Fn{p}`, an `Ident`, a literal, a non-flex var.
-        _ => bare_head_is_param_var(kb, &TermIdView(term).head(kb), vid),
-    }
+        _ => bare_head_is_param_var(kb, &TermIdView(t).head(kb), vid),
+    })
 }
 
 /// WI-20260923-N3W68 (#4) — is this view head a BARE head naming the sort-level type
