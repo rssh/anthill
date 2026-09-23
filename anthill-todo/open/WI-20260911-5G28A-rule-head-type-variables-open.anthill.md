@@ -961,3 +961,23 @@ channel and the claim that NAR1X's `ResolveConfig` carrier could not serve. One 
 needs no channel at all — `?d` for the tail, `sub(?d, 0)` for the element, both ordinary σ
 bindings.
 
+### 2026-09-23T04:46:40Z — feedback — user
+
+L3 DELIVERED (060-implementation §7.3 defects (1) and (3)) — the PAREN-LESS bracketed citation `Sort[…].rel`. The ticket stays OPEN: defect (2) and the type-domains direction are untouched.
+
+WHAT SHIPS. ONE site, the converter: `convert_paren_less_citation` lowers a `field_access` over an `application` to the very term the applied `Sort[…].rel()` builds (`Fn{Sort.rel}`, no arguments, the bracket on `recv_type` — now built by one shared `recv_type_arg`, so the two spellings are one term by construction), and `is_value_receiver` stops at that node, so `Sort[…].rel.takeN(5)` / `.head.x` dispatch on the citation instead of flattening the chain with the bracket ERASED. The loader's applied path validates the bracket (`Wrap[W = Colour].tag` is refused like its applied twin). In an operation or const body a marked node whose functor RESOLVES to something other than a rule is refused, `LoadError::ParenLessCitationOfNonRule` (its own variant: the bracket is fine, the `()` or the member is not), sharing its rule-ish predicate with the bare `Sort.m` citation (`is_paren_less_citation_target`).
+
+MEASURED AGAINST A BASELINE CLI built from HEAD, 30+ probes, verdicts and answers:
+  * CLOSED, silent: `:- Wrap[T = Colour].holds` and `:- Box[T = Bool].flag` answered NO SOLUTIONS (a `field_access` goal heading no clause); now `true`, as bare and applied.
+  * CHANGED, silent, PINNED: a rule-body DATA slot `?y <=> Box[T = Int64].zero` bound the data term `zero`, now the call's 0 — as the applied spelling and §5.4's one-segment `zero`; the bare DOTTED `Box.zero` still binds `zero` there (pre-existing, not this ticket's).
+  * CHANGED, loud, empty corpus population: `Outer[T = Int64].Inner.op()` LOADED with the bracket erased, now refused; a paren-less bracketed entity in a rule body (WI-20260902-2NXAC's "NOT COVERED" `Bx[T = Int64].nada`, note updated), a bracket in a `fact` data slot and a paren-less bracketed rule head now meet the W6JH0 sweep, as their applied spellings always did.
+  * FIXED, pre-existing crash widened by L3: a bracket in a CLI QUERY pattern panicked `convert_query_term` (applied and call-site spellings on every tree; L3 made the paren-less one a third). `query_bracket_errors` refuses all three by name at the query scan.
+
+/code-review (high), 6 findings: 4 fixed (the query panic; a rule's COMPOUND expression reached the op-body refusal, so one rule body gave one spelling two verdicts; the data-slot change was unpinned; the rule-head change was undocumented), 2 measured false (an `internal` member resolves to a bare intern and is already skipped; the hash probe is free on an empty set). My own probes found two more before it, both fixed: the first cut refused an UNRESOLVED member too (a typo drew a second, garbled error), and told a nested sort / type parameter to "call it `Sort[…].Inner()`".
+
+CENSUS, dynamic (instrumented converter, removed): 0 paren-less bracketed citations in stdlib, examples/{classic-mini, github-todo, guardians, sql-store, webots-modelling} and rustland/anthill-todo/anthill; guardians' error list byte-identical to baseline.
+
+ROWS: `wi_5g28a_paren_less_citation_test.rs` (10) and anthill-cli `wi_5g28a_query_bracket_test.rs` (4). BACK-OUT, run per axis: [C] converter 7 red; [U] unresolved skip 1; [R] refusal 2; [G] rule-compound gate 1; [Q] query refusal 3 (exit 101). Controls named at their sites.
+
+ACCEPTANCE: full workspace via rustland/scripts/test.sh — exit 0, 36 binaries, 7341 passed, 0 failed; scaland `sbt testFull` 578/578 (no twin — a no-regression check).
+

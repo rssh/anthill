@@ -1821,6 +1821,28 @@ pub enum LoadError {
         position: CallTypeArgsPosition,
         span: Span,
     },
+    /// WI-20260911-5G28A (L3) — a PAREN-LESS bracketed `Sort[…].m` in an operation or
+    /// const body whose `m` resolves, and not to a rule. The paren-less spelling is the
+    /// RULE citation (`Wrap[T = Colour].tag`); the bare `Sort.m` cites nothing else
+    /// either, and without this the converter's lowering — the zero-argument call the
+    /// applied `Sort[…].m()` builds — would make `Box[T = Int64].zero` a call the author
+    /// did not write, which the typer accepts for a nullary operation.
+    ///
+    /// Its OWN variant, not [`Self::InvalidTypeArgument`]: the bracket may be perfectly
+    /// valid — it is the missing `()` or the member that is wrong, and a message that
+    /// opens "invalid type argument" sends the author to the one part they wrote right.
+    ParenLessCitationOfNonRule {
+        /// The sort AS WRITTEN (`Box`, `..ns.Box`), so the repair quotes the source.
+        sort: String,
+        /// The member as written (`zero`).
+        member: String,
+        /// Whether `member` is an operation — the one case with a spelling that reads
+        /// the bracket (`Sort[…].m()`). Anything else (a nested sort, a const, a type
+        /// parameter) has none: a bracket before a dot is read by a rule citation or an
+        /// operation call and by nothing else.
+        is_operation: bool,
+        span: Span,
+    },
     /// WI-840 (proposal 058 §4.2) — an operation declares a type parameter whose name
     /// already denotes something else in the ONE bracket list that binds it, so a
     /// written `op[N = …]` would have two possible targets. Refused at the
@@ -1988,6 +2010,26 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
              dropped. The applicative spelling `Sort.{callee}[…](…)` is the form that \
              can carry one"
         ),
+    }
+}
+
+/// WI-20260911-5G28A (L3): the one wording of [`LoadError::ParenLessCitationOfNonRule`],
+/// shared by the two renderings so they cannot drift (WI-852). Only an operation has a
+/// repair that keeps the bracket; for anything else the bracket reads nothing, and
+/// dropping it is what the bare spelling already means.
+fn paren_less_citation_detail(sort: &str, member: &str, is_operation: bool) -> String {
+    if is_operation {
+        format!(
+            "`{sort}[…].{member}` without parentheses is a RULE citation, and `{member}` is \
+             an operation — call it `{sort}[…].{member}()`"
+        )
+    } else {
+        format!(
+            "`{sort}[…].{member}` without parentheses is a RULE citation, and `{member}` \
+             names no rule — a type bracket before a dot is read by a rule citation or an \
+             operation call and by nothing else, so here it would bind nothing; drop it \
+             (`{sort}.{member}`)"
+        )
     }
 }
 
@@ -2217,6 +2259,7 @@ impl LoadError {
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
+            | LoadError::ParenLessCitationOfNonRule { span, .. }
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
             | LoadError::MacroRejected { span, .. }
@@ -3059,6 +3102,18 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     call_type_args_unsupported_detail(callee, *position),
+                )
+            }
+            LoadError::ParenLessCitationOfNonRule {
+                sort,
+                member,
+                is_operation,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    paren_less_citation_detail(sort, member, *is_operation),
                 )
             }
             LoadError::TypeParamShadowsSlot {
@@ -4217,6 +4272,20 @@ impl std::fmt::Display for LoadError {
                     span.end,
                 )
             }
+            LoadError::ParenLessCitationOfNonRule {
+                sort,
+                member,
+                is_operation,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    paren_less_citation_detail(sort, member, *is_operation),
+                    span.start,
+                    span.end,
+                )
+            }
             LoadError::TypeParamShadowsSlot {
                 op,
                 param,
@@ -5201,9 +5270,69 @@ pub fn scan_definitions_with_sources(
     // the converter now names each target outright (`crate::parse::desugar_target`),
     // so there is no reserved name at all — dissolving both that rung and the
     // collision blocklist WI-476 needed.
+    if role == SourceRole::Query {
+        for file in files {
+            errors.extend(query_bracket_errors(file));
+        }
+    }
     // WI-995 — the scan is over; nothing after it asks on one file's behalf until
     // the per-file declaration/load loops set it again.
     kb.symbols.set_asking_file(None);
+    errors
+}
+
+/// A query pattern's parse-only BRACKETS, refused before [`convert_query_term`] meets
+/// them. That walk reads neither channel — a call-site `f[T = X](…)` (`type_args`) nor a
+/// companion receiver `Sort[…].m` / `Sort[…].m()` (`recv_type`) — and its
+/// `Term::ParseAux` arm is `unreachable!` for both, so each PANICKED the CLI, where a
+/// program's own sweeps (`check_unconsumed_call_type_args`, `check_unconsumed_recv_types`)
+/// refuse the same bracket by name. WI-20260911-5G28A made the paren-less `Sort[…].m`
+/// the second spelling to reach it: it used to answer `no solutions` as a
+/// `field_access` pattern heading no clause, which was a silent wrong answer rather than
+/// a crash, and is neither now.
+///
+/// Keyed on the two reserved keys AND a `ParseAux` value, which is the same pair the
+/// sweeps key on: a user's own `recv_type: 1` argument is not a bracket, and an
+/// effect-row binding value (`Spec[E = {}]`) rides under its parameter's name and is
+/// lowered by that arm.
+fn query_bracket_errors(file: &ParsedFile) -> Vec<LoadError> {
+    let key = |name: &str| file.symbols.lookup(name);
+    let (type_args_key, recv_type_key) = (key("type_args"), key("recv_type"));
+    let mut errors = Vec::new();
+    for i in 0..file.terms.len() {
+        let id = TermId::from_raw(i as u32);
+        let Term::Fn {
+            functor,
+            named_args,
+            ..
+        } = file.terms.get(id)
+        else {
+            continue;
+        };
+        let callee = file.symbols.local_name(*functor);
+        let span = file.terms.span(id);
+        for &(k, v) in named_args.iter() {
+            if !matches!(file.terms.get(v), Term::ParseAux(_)) {
+                continue;
+            }
+            if Some(k) == type_args_key {
+                errors.push(LoadError::CallTypeArgsNotSupportedHere {
+                    callee: callee.to_string(),
+                    position: CallTypeArgsPosition::NoChannel,
+                    span,
+                });
+            } else if Some(k) == recv_type_key {
+                errors.push(LoadError::InvalidTypeArgument {
+                    detail: format!(
+                        "a companion receiver's type bracket is not read in a query pattern \
+                         — nothing lowers it on `{callee}` here, so the binding would be \
+                         parsed and then dropped; query `{callee}` without it"
+                    ),
+                    span: Some(span),
+                });
+            }
+        }
+    }
     errors
 }
 
@@ -25093,12 +25222,72 @@ impl<'a> Loader<'a> {
         let ResolveResult::Found(sym) = resolved else {
             return None;
         };
+        self.is_paren_less_citation_target(sym).then_some(sym)
+    }
+
+    /// What a PAREN-LESS dotted name cites in this walk (an operation or const body): a
+    /// rule-ish `Goal` head functor or `Rule` label — or an `EquationFunctor`, which
+    /// collapses too, for the reason [`Self::resolve_qualified_rule_readonly`] gives. ONE
+    /// predicate for the bare `Sort.m` and the bracketed `Sort[…].m`
+    /// ([`Self::refuse_paren_less_non_rule`]), so the two spellings cannot admit
+    /// different members.
+    fn is_paren_less_citation_target(&self, sym: Symbol) -> bool {
         // Per-role `has_kind` (WI-925), not the declaration's opening keyword: whether
         // a dotted name is a rule-ish citation is a membership question.
-        (self.kb.has_kind(sym, SymbolKind::Goal)
+        self.kb.has_kind(sym, SymbolKind::Goal)
             || self.kb.has_kind(sym, SymbolKind::Rule)
-            || self.kb.has_kind(sym, SymbolKind::EquationFunctor))
-        .then_some(sym)
+            || self.kb.has_kind(sym, SymbolKind::EquationFunctor)
+    }
+
+    /// WI-20260911-5G28A (L3): refuse a paren-less `Sort[…].m` in an operation or const
+    /// body whose `m` resolves to something the bare `Sort.m` would not cite —
+    /// [`LoadError::ParenLessCitationOfNonRule`]. Without it the converter's lowering
+    /// (the zero-argument call the applied `Sort[…].m()` builds) made `Box[T =
+    /// Int64].zero` a call to a nullary operation, which the typer accepts, where the
+    /// bare `Box.zero` names nothing.
+    ///
+    /// AN UNRESOLVED `m` IS NOT REFUSED HERE. It has no kind to be "not a rule", and the
+    /// typer reports the name as an unknown functor; refusing it as well put a second
+    /// error on every typo, quoting the unresolved dotted name as the member (`Sort[…].
+    /// Wrap.tagg`). An AMBIGUOUS name and a hidden `internal` one are the same case:
+    /// their resolution reported them and handed back a bare intern, which has no kind.
+    ///
+    /// THE TYPER STILL SPEAKS AFTER THIS, and that is left on purpose: the node stays the
+    /// zero-argument call, so a member with parameters draws the arity error and a
+    /// non-callable one the unknown-functor error — the verdict the applied `Sort[…].m()`
+    /// draws. Suppressing them would mean substituting a recovery leaf (WI-605's
+    /// `expr_body_bottom_recovery`), which the rule-compound walk that also reaches this
+    /// frame does not honour.
+    ///
+    /// RULE BODIES ARE NOT THIS SITE. There the bare dotted name DOES reach an
+    /// operation (the goal `:- ns.flag` is its call, WI-20260902-VNWAW), so the marked
+    /// node keeps the applied reading the converter gave it. That includes a rule's
+    /// COMPOUND expression (`?y <=> (if c then Box[T = Int64].zero else 1)`), which this
+    /// walk lowers on the rule's behalf (`lowering_rule_compound_expr`): refused there,
+    /// one rule body gave the spelling two verdicts, a call in a data slot and a load
+    /// error one `if` deeper.
+    fn refuse_paren_less_non_rule(
+        &mut self,
+        parse_functor: Symbol,
+        kb_functor: Symbol,
+        parse_id: TermId,
+    ) {
+        let def = self.kb.symbols.get(kb_functor);
+        if def.kinds().is_empty() || self.is_paren_less_citation_target(kb_functor) {
+            return;
+        }
+        let is_operation = def.has_kind(SymbolKind::Operation);
+        let written = self.parsed.symbols.local_name(parse_functor);
+        let (sort, member) = written
+            .rsplit_once('.')
+            .expect("a paren-less citation's functor joins the bracket's sort and the member");
+        let (sort, member) = (sort.to_string(), member.to_string());
+        self.errors.push(LoadError::ParenLessCitationOfNonRule {
+            sort,
+            member,
+            is_operation,
+            span: self.parsed.terms.span(parse_id),
+        });
     }
 
     /// WI-304: push the native leaf `NodeOccurrence` for a just-built leaf
@@ -25574,6 +25763,20 @@ impl<'a> Loader<'a> {
                 let is_type_value = !is_entity
                     && self.parsed.terms.is_type_application(outer_parse_id)
                     && self.kb.has_kind(kb_functor, SymbolKind::Sort);
+
+                // WI-20260911-5G28A (L3): the paren-less `Sort[…].m` reaches here as the
+                // zero-argument call the applied `Sort[…].m()` builds, so a RULE citation
+                // takes the one lowering below either way — and anything else is refused
+                // rather than read as a call the author did not write. An entity keeps its
+                // own route: its arm leaves the bracket unread and the end-of-file sweep
+                // reports it, as it does for the applied spelling.
+                // A rule's compound expression is a RULE BODY — see the refusal's doc.
+                if !is_entity
+                    && !self.lowering_rule_compound_expr
+                    && self.parsed.terms.is_paren_less_citation(outer_parse_id)
+                {
+                    self.refuse_paren_less_non_rule(parse_functor, kb_functor, outer_parse_id);
+                }
 
                 let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::with_capacity(total);
                 for i in 0..pos_count {

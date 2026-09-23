@@ -1,0 +1,9 @@
+namespace q5g28a
+  sort Colour
+    entity red
+  end
+  sort Wrap[T]
+    entity wrap(v: T)
+    rule holds :- true
+  end
+end

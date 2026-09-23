@@ -1236,6 +1236,11 @@ impl<'a> Converter<'a> {
             }
             "infix_term" => self.push_infix(node, work),
             "prefix_term" => self.push_prefix(node, work, results),
+            "field_access"
+                if self.field(node, "object").is_some_and(|o| o.kind() == "application") =>
+            {
+                results.push(self.convert_paren_less_citation(node));
+            }
             "field_access" => self.push_field_access(node, work),
             "distributive_projection" => self.push_distributive_projection(node, work),
             "set_literal" => self.push_set_literal(node, work),
@@ -1666,11 +1671,23 @@ impl<'a> Converter<'a> {
     /// value otherwise (`?x`, a call result like `xs.map(f)`, a literal, …).
     /// WI-278; the chain walk is what lets `?x.y.z` and `?xs.map(?f).filter(?p)`
     /// route every level to `dot_apply` rather than dropping the receiver.
+    ///
+    /// One shape stops the walk before the root: a `field_access` directly over an
+    /// `application` — `Sort[…].m`, the receiver of `Sort[…].m.takeN(5)` — is a
+    /// paren-less rule CITATION, and so a value (WI-20260911-5G28A). The application
+    /// alone as the receiver (`Map[K=…]` in `Map[K=…].empty()`) is still a name.
     fn is_value_receiver(&self, node: Node) -> bool {
         let mut cur = node;
         loop {
             match cur.kind() {
+                // WI-20260911-5G28A: `Sort[…].m` is a paren-less CITATION — a value
+                // ([`Self::convert_paren_less_citation`]) — so a member read or dot call
+                // on it (`Sort[…].m.takeN(5)`, `Sort[…].m.head`) dispatches on that value
+                // instead of flattening the chain to the name `Sort.m.…` and erasing the
+                // bracket. The application ITSELF as receiver (`Map[…].empty()`, form
+                // (3)) stays a name — it answers `false` at the arm below.
                 "field_access" => match self.field(cur, "object") {
+                    Some(o) if o.kind() == "application" => return true,
                     Some(o) => cur = o,
                     None => return false,
                 },
@@ -1682,6 +1699,50 @@ impl<'a> Converter<'a> {
                 _ => return true,
             }
         }
+    }
+
+    /// WI-20260911-5G28A (L3): a paren-less bracketed citation `Sort[…].m` lowers to the
+    /// SAME term as the applied `Sort[…].m()` — `Fn{Sort.m}` with no arguments and the
+    /// bracket on the `recv_type` channel — so the loader validates the bracket and
+    /// builds one citation for both spellings. It used to be a `field_access` over the
+    /// instantiation term, which no citation reader recognised (they want a name-rooted
+    /// chain), and as a dot-call receiver `collect_field_access_segments` flattened it to
+    /// `Sort.m.…` with the bindings ERASED: `Wrap[W = Colour].dom` (no such parameter)
+    /// loaded clean where `Wrap[W = Colour].dom()` is refused.
+    ///
+    /// The node is marked, because in an operation or const body paren-less is the
+    /// rule-citation spelling only — a bare `Sort.op` names no operation there — and it
+    /// is the loader, which knows what `m` resolves to, that refuses the non-rule case
+    /// (`Loader::refuse_paren_less_non_rule`).
+    fn convert_paren_less_citation(&mut self, node: Node) -> TermId {
+        let span = self.span(node);
+        let object = self
+            .field(node, "object")
+            .expect("paren-less citation: guarded on an `application` object");
+        let recv_type = self.convert_type(object);
+        let name = self.convert_name(node);
+        let functor = self.intern_name(&name);
+        let recv_type_arg = self.recv_type_arg(recv_type, span);
+        let tid = self.terms.alloc(
+            Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_slice(&[recv_type_arg]),
+            },
+            span,
+        );
+        self.terms.mark_paren_less_citation(tid);
+        tid
+    }
+
+    /// WI-20260829-W6JH0: a companion receiver's bracket as the `recv_type` named
+    /// argument its call carries. ONE builder for the applied `Sort[…].m(…)` and the
+    /// paren-less `Sort[…].m` (WI-20260911-5G28A), so the two spellings build one term by
+    /// construction rather than by two copies agreeing.
+    fn recv_type_arg(&mut self, recv_type: TypeExpr, span: Span) -> (Symbol, TermId) {
+        let aux = Term::ParseAux(Box::new(super::ir::ParseAux::TypeExpr(recv_type)));
+        let aux_tid = self.terms.alloc(aux, span);
+        (self.intern("recv_type"), aux_tid)
     }
 
     fn push_field_access<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
@@ -2323,10 +2384,7 @@ impl<'a> Converter<'a> {
                 // `let m: T = …` annotation rides, because under form (3) it means the
                 // same thing about the same expression.
                 if let Some(recv_type) = recv_type {
-                    let aux = Term::ParseAux(Box::new(super::ir::ParseAux::TypeExpr(recv_type)));
-                    let aux_tid = self.terms.alloc(aux, span);
-                    let recv_type_key = self.intern("recv_type");
-                    named_args.push((recv_type_key, aux_tid));
+                    named_args.push(self.recv_type_arg(recv_type, span));
                 }
                 let tid = self.terms.alloc(
                     Term::Fn {

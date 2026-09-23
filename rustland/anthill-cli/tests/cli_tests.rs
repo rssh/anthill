@@ -123,3 +123,6 @@ mod wi987_domain_sentinel_test;
 
 #[path = "include/wi_2yhz3_answer_line_test.rs"]
 mod wi_2yhz3_answer_line_test;
+
+#[path = "include/wi_5g28a_query_bracket_test.rs"]
+mod wi_5g28a_query_bracket_test;

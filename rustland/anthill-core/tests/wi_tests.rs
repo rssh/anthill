@@ -1775,6 +1775,8 @@ mod wi_wt8wg_domain_value_face_test;
 mod wi_3g1yt_scope_contract_discharge_test;
 #[path = "include/wi_5g28a_rule_head_type_variables_test.rs"]
 mod wi_5g28a_rule_head_type_variables_test;
+#[path = "include/wi_5g28a_paren_less_citation_test.rs"]
+mod wi_5g28a_paren_less_citation_test;
 
 #[path = "include/nar1x_carrier_less_spec_op_test.rs"]
 mod nar1x_carrier_less_spec_op_test;
