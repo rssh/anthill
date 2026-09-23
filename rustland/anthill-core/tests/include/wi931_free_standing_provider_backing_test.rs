@@ -186,15 +186,49 @@ fn the_file_backends_provide_their_store_traits() {
     }
 }
 
-/// SUBJECT — a stdlib-only load declares NO store provision, which is the other
+/// SUBJECT — the stdlib's own files declare NO store provision, which is the other
 /// half of the placement rule and the half that a stdlib+bindings test cannot
 /// see. Nothing backs `retract` without a host, so a provision standing in
 /// `stdlib/anthill/persistence/` would be unsound exactly there.
+///
+/// WI-20260922-BRT4Y — the stdlib alone no longer LOADS: its host-backed operations
+/// (the store's six among them) are declared `@[host_implemented]`, and nothing in a
+/// binding-less load supplies them. So the provisions are read off the KB that refused
+/// load, and the refusal itself is pinned to be exactly that — unsupplied claims and
+/// nothing else — so a KB that stopped loading for another reason cannot answer "no
+/// provision" vacuously.
 #[test]
 fn stdlib_alone_declares_no_store_provision() {
-    // `load_stdlib_kb` is the shared binding-free load and it `expect`s a clean
-    // one, so "the stdlib alone still loads" is asserted by calling it at all.
-    let provs = provisions(&crate::common::load_stdlib_kb());
+    let parsed: Vec<_> = crate::common::collect_anthill_files(&crate::common::stdlib_dir())
+        .iter()
+        .map(|p| {
+            let src =
+                std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+            anthill_core::parse::parse(&src)
+                .unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
+        })
+        .collect();
+    let refs: Vec<_> = parsed.iter().collect();
+    let mut kb = KnowledgeBase::new();
+    let errs: Vec<String> = match anthill_core::kb::load::load_all(
+        &mut kb,
+        &refs,
+        &anthill_core::kb::load::NullResolver,
+    ) {
+        Ok(_) => panic!("the stdlib without its binding layer must be refused (BRT4Y)"),
+        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
+    };
+    assert!(
+        errs.iter()
+            .all(|e| e.contains("is declared `@[host_implemented]`, but no binding block")),
+        "the stdlib-only load must fail for its unsupplied host claims ONLY: {errs:#?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("`anthill.persistence.NonMonotonicStore.retract`")),
+        "…and `retract` is one of them — nothing backs it without a host: {errs:#?}"
+    );
+    let provs = provisions(&kb);
     for spec in ["NonMonotonicStore", "QueryableStore"] {
         assert!(
             !provs.iter().any(|(_, s)| s == spec),

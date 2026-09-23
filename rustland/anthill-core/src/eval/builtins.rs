@@ -41,242 +41,41 @@ use crate::kb::resolve::TermUnification;
 use crate::kb::term_view::TermView;
 use crate::parse::desugar_target as dt;
 
-/// Register the standard-library builtins. Symbols that don't resolve in the
-/// current KB (stdlib partially loaded, e.g. a minimal test harness) are
-/// skipped — every other error is propagated.
+/// Register the standard-library builtins: every host implementation this runtime
+/// realizes, read from the loaded binding blocks' `operation_map` / `const_map` clauses.
+///
+/// WI-20260922-BRT4Y — THERE IS NO HARDCODED HALF ANY MORE. The last 46 registrations by
+/// qualified name — `PartialEq.eq`/`neq`, `anthill.kernel.struct_eq`, `Map.*`,
+/// `Relation.*`, `LogicalStream.splitFirst`, `Time.now`, `Console.*`, `ModifyRuntime.*`,
+/// `Error.raise`, `Cell.*`, `TypeValue.type_value`, `Dictionary.*` and `OpRef.*` — are
+/// [`HOST_FNS`] entries named by binding blocks in `rustland/anthill-stl/anthill/`, where
+/// WI-880 and WI-931 had moved everything else. They answered correctly from an operation
+/// body and were INVISIBLE to every reader of "is this operation host-backed": those
+/// readers count an `operation_map` entry, not a hardcoded registration (WI-884's split).
+///
+/// And each was registered only IF ITS NAME RESOLVED, so a KB loaded without the
+/// declaring file silently lost it. The stdlib now declares every one of them
+/// `@[host_implemented]`, and a declared host operation no loaded binding supplies is a
+/// LOAD error — so the KB that used to lose them no longer loads, and a registration here
+/// has nothing left to skip.
 pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalError> {
-    // WI-880 — `Additive.add`/`sub`/`neg` and `Multiplicative.mul` are NOT REGISTERED
-    // HERE. They were, keyed by the SPEC op, which is WI-876's defect A stated for the
-    // arithmetic family: one host-scalar implementation was the backing for every
-    // carrier that never wrote its own, and `op_backed`'s `kb.is_builtin` leg certified
-    // it as backed for all of them. Each carrier names its own in its binding block's
-    // `operation_map` (`int_add` / `float_add` / `bigint_add`, …); `Additive.sub` gains
-    // the DEFAULT BODY that `arithmetic.anthill`'s `sub_def` law always stated, which is
-    // what a structural carrier inherits now that nothing shadows it.
+    // WI-880 — `Additive.add`/`sub`/`neg` and `Multiplicative.mul` are NOT registered on
+    // the SPEC op. They were, which is WI-876's defect A stated for the arithmetic family:
+    // one host-scalar implementation was the backing for every carrier that never wrote
+    // its own, and `op_backed`'s `kb.is_builtin` leg certified it as backed for all of
+    // them. Each carrier names its own in its binding block's `operation_map` (`int_add` /
+    // `float_add` / `bigint_add`, …); `Additive.sub` gains the DEFAULT BODY that
+    // `arithmetic.anthill`'s `sub_def` law always stated, which is what a structural
+    // carrier inherits now that nothing shadows it. The same holds for the ordering
+    // family (WI-876): each total scalar carrier maps its own `compare`/`gt`/…/`max`/`min`.
     //
-    // WI-20260825-1WBZT put the declarations on the OPERATOR'S OWN CATEGORY
-    // (`stdlib/anthill/prelude/arithmetic.anthill`), which `Numeric` reaches by
-    // `provides`; that is the address the carriers' declarations now shadow per carrier.
-
-    // WI-644 / proposal 004: eq/neq live on the PartialEq base (Eq is the lawful
-    // marker). The semantic `eq`/`neq` are IEEE for Float operands (below),
-    // structural otherwise.
-    //
-    // WI-880 — THE ONE SPEC-OP REGISTRATION THAT STAYS, and the ticket that removed the
-    // others is where the reason is argued. `builtin_eq` is not the defect shape its
-    // siblings were: it does not decide by testing its operands and then answer wrongly
-    // for a carrier it cannot handle — it DISPATCHES, through `semantic_equal`, to the
-    // head carrier's own `eq` before deciding anything structurally, which is exactly
-    // why `eq` already worked on a structural carrier when `compare` did not (WI-876's
-    // asymmetry).
-    //
-    // AND IT CANNOT SIMPLY BE RE-KEYED, which is the part that makes this a design and
-    // not a leftover. Equality fires from UNIFICATION as well as from a call — an `=`
-    // goal in a rule body reaches `sem_eq_dispatch` (kb/resolve.rs), where there is no
-    // call site and therefore no requirement dictionary to select a provider with
-    // (058 §3.7). A value-directed step has to exist for that path whatever the
-    // registration says, so keying `eq` per carrier would ADD a channel rather than
-    // replace one. It would also cost each scalar carrier a declared `eq` member, and
-    // every one of them imports `PartialEq.{eq}` for its own laws and constraints —
-    // which 059 R4 then refuses as a capture (measured on `Float.mul`, this ticket).
-    //
-    // A dispatching builtin is still a workaround for a missing key rather than a
-    // design, and WI-880's own note says so. What would retire it is a value-directed
-    // entry that is not spelled as a spec-op registration; nothing owns that yet.
-    register_if_present(interp, "anthill.prelude.PartialEq.eq", builtin_eq)?;
-    register_if_present(interp, "anthill.prelude.PartialEq.neq", builtin_neq)?;
-    // WI-615 / proposal 051: `===` (structural identity) is a Bool-returning TEST
-    // like `eq` — usable in operation bodies (evaluated), not just rule-body goals.
-    // WI-644: it uses the PURELY STRUCTURAL `builtin_struct_eq`, NOT the semantic
-    // `builtin_eq` (which is IEEE for a Float pair) — `nan === nan` must stay true.
-    register_if_present(interp, "anthill.kernel.struct_eq", builtin_struct_eq)?;
-
-    // WI-644 / proposal 004: gt/lt/gte/lte are the PartialOrd comparison surface
-    // (IEEE for Float — a NaN operand answers false); compare/max/min are the total
-    // `Ord` surface.
-    //
-    // WI-876 — NOT REGISTERED HERE. This family is the one whose host
-    // implementations are keyed PER CARRIER, from the `operation_map` clause of
-    // each `provides <carrier> language rust` block (see
-    // [`register_operation_mappings`]). Registered on the SPEC op, one host-scalar
-    // implementation served every carrier that never wrote its own — so a
-    // STRUCTURAL `Ord` provider was intercepted by code that could not compare
-    // its values, on a program that LOADED CLEAN, and the spec's own default bodies
-    // could never run. `max`/`min` are in the family too: they are DECLARED on
-    // `Ord` (with the default bodies that derive them from `gte`/`lte`), and each
-    // total scalar carrier maps them to `ordered_max`/`ordered_min` so the derivation
-    // costs no interpreter frame where the host answers in one call. WI-881 — `Float`
-    // maps its OWN `max`/`min` to the IEEE pair; the argument is beside `float_max`.
-
-    register_if_present(interp, "anthill.prelude.Bool.not", bool_not)?;
-    register_if_present(interp, "anthill.prelude.Bool.and", bool_and)?;
-    register_if_present(interp, "anthill.prelude.Bool.or", bool_or)?;
-
-    // WI-884 FOUND HALF OF `String`'S AND `Int64`'S HOST SURFACE REGISTERED HERE BY
-    // HARDCODED QUALIFIED NAME AND HALF IN ITS BINDING BLOCK. WI-880 MIGRATED THE
-    // REST, and the whole block is gone: `concat`/`length`/`startsWith`/`endsWith`/
-    // `substring`/`toUpper`/`toLower`/`repeat`, `Int64`'s `abs`/`mod`/`rem`/`div`/
-    // `divExact`/`sign`/`to_float`/`to_string`, `Float`'s `div`/`isNaN`/`isInfinite`/
-    // `isFinite` and `BigInt`'s three conversions are all `operation_map` entries now.
-    //
-    // THESE WERE NEVER THE SPEC-OP DEFECT — they are the CARRIER's own operations, so
-    // the qualified name already keyed them per carrier and they answered correctly.
-    // The cost was that THE TWO HALVES WERE NOT EQUIVALENT TO THEIR READERS, and each
-    // of the three is closed by the move: `op_is_interpretable` (kb/typing.rs) counts
-    // a host MAPPING and not a hardcoded registration, so `String.contains` read as
-    // backed while `String.concat` did not though one interpreter ran both;
-    // `kb.host_op_mappings()` — what WI-886 wants a second backend to consume — saw
-    // six of `String`'s fourteen; and only the mapped half had its arity checked
-    // against the anthill declaration. kernel-language.md §8.7 recorded the first as a
-    // SOUNDNESS gap rather than an incompleteness: `:- String.concat("a", "b") = "ab"`
-    // answered 0 as a rule-body goal, DECIDED false rather than suspended, so `not(…)`
-    // over it answered 1.
-
-    // WI-532 / proposal 039: special IEEE values exposed as host-supplied term-level
-    // constants (`SymbolKind::Const`). WI-889 — these are NO LONGER keyed here by
-    // hardcoded qualified name. They reach eval as DATA now: the `const_map` clause of
-    // `provides Float language rust` emits `ConstMapping` facts, and
-    // `register_const_mappings` (below, via `register_operation_mappings`' sibling
-    // call) registers each against its const symbol from `HOST_FNS`. A const's value
-    // source is still this same builtin map — `force_const` reads `self.builtins.get`
-    // and invokes with no args — the registration channel is what changed.
-
-    register_if_present(interp, "anthill.prelude.Map.empty", map_empty)?;
-    register_if_present(interp, "anthill.prelude.Map.put", map_put)?;
-    register_if_present(interp, "anthill.prelude.Map.get", map_get)?;
-    register_if_present(interp, "anthill.prelude.Map.contains", map_contains)?;
-    register_if_present(interp, "anthill.prelude.Map.remove", map_remove)?;
-    register_if_present(interp, "anthill.prelude.Map.keys", map_keys)?;
-    register_if_present(interp, "anthill.prelude.Map.values", map_values)?;
-    register_if_present(interp, "anthill.prelude.Map.entries", map_entries)?;
-    register_if_present(interp, "anthill.prelude.Map.size", map_size)?;
-
-    register_if_present(
-        interp,
-        "anthill.prelude.LogicalStream.splitFirst",
-        logical_stream_split_first,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.prelude.Relation.splitFirst",
-        relation_split_first,
-    )?;
-    register_if_present(interp, "anthill.prelude.Relation.negate", relation_negate)?;
-    register_if_present(interp, "anthill.prelude.Relation.union", relation_union)?;
-    register_if_present(
-        interp,
-        "anthill.prelude.Relation.where_run",
-        relation_where_run,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.prelude.Relation.guarded_of",
-        relation_guarded_of,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.prelude.Relation.join_run",
-        relation_join_run,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.prelude.Relation.conjoin_of",
-        relation_conjoin_of,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.prelude.Relation.project_run",
-        relation_project_run,
-    )?;
-    register_if_present(interp, "anthill.prelude.Relation.fix", relation_fix)?;
-    register_if_present(interp, "anthill.prelude.Relation.rename", relation_rename)?;
-
-    register_if_present(interp, "anthill.prelude.Time.now", time_now)?;
-
-    // Persistence (proposal 007) is NOT here — WI-931 moved its six operations to
-    // `HOST_FNS` + the `operation_map` clauses in
-    // `rustland/anthill-stl/anthill/persistence.anthill`, so the backing they
-    // always had is DECLARED and the load-time provision check can see it. See
-    // the `store_*` entries below.
-
-    register_if_present(interp, "anthill.prelude.Console.print", console_print)?;
-    register_if_present(interp, "anthill.prelude.Console.println", console_println)?;
-    register_if_present(interp, "anthill.prelude.Console.eprint", console_eprint)?;
-    register_if_present(interp, "anthill.prelude.Console.eprintln", console_eprintln)?;
-    register_if_present(
-        interp,
-        "anthill.prelude.Console.read_line",
-        console_read_line,
-    )?;
-
-    register_if_present(interp, "anthill.prelude.ModifyRuntime.get", modify_get)?;
-    register_if_present(interp, "anthill.prelude.ModifyRuntime.set", modify_set)?;
-    register_if_present(interp, "anthill.prelude.Error.raise", error_raise)?;
-    register_if_present(interp, "anthill.prelude.Cell.new", cell_new)?;
-    register_if_present(interp, "anthill.prelude.Cell.get", cell_get)?;
-    register_if_present(interp, "anthill.prelude.Cell.set", cell_set)?;
-
-    // WI-20260919-HXGXF — `TypeValue`'s sole implementation, which reads a requirement
-    // dictionary as DATA. Beside the dictionary readers below because it reads the same
-    // value, though it is reached from a spec op's default body rather than called on one.
-    register_if_present(interp, "anthill.reflect.TypeValue.type_value", type_value_of_self)?;
-
-    // WI-577 — first-class runtime dispatch values: the anthill face of a
-    // requirement dictionary (a resolved spec impl) and `Value::OpRef` (a resolved
-    // operation reference). Native readers over the values themselves (WI-1045).
-    register_if_present(
-        interp,
-        "anthill.realization.runtime.Dictionary.impl",
-        dict_impl,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.realization.runtime.Dictionary.arity",
-        dict_arity,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.realization.runtime.Dictionary.sub",
-        dict_sub,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.realization.runtime.Dictionary.resolveOp",
-        dict_resolve_op,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.realization.runtime.Dictionary.ops",
-        dict_ops,
-    )?;
-    register_if_present(interp, "anthill.realization.runtime.OpRef.op", opref_op)?;
-    register_if_present(interp, "anthill.realization.runtime.OpRef.dict", opref_dict)?;
-    register_if_present(
-        interp,
-        "anthill.realization.runtime.OpRef.named",
-        opref_named,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.realization.runtime.OpRef.spreadLabels",
-        opref_spread_labels,
-    )?;
-    register_if_present(
-        interp,
-        "anthill.realization.runtime.OpRef.opRequirements",
-        opref_op_requirements,
-    )?;
-
-    // WI-876 — last, because it is the KB-DRIVEN half: everything above is a
-    // hardcoded qualified name, this reads what the loaded binding blocks asked
-    // for. Registered after, so a mapping and a hardcoded entry naming the same
-    // operation resolve to the mapping (nothing does today; the ordering family
-    // moved out of the list above entirely).
+    // `PartialEq.eq`/`neq` ARE keyed to the spec op, and that is a design, not a leftover
+    // — see `rustland/anthill-stl/anthill/eq.anthill` for why a dispatching implementation
+    // cannot simply be re-keyed per carrier.
     register_operation_mappings(interp)?;
     // WI-889 — the const-level peer: register the `const_map` value sources (the Float
     // IEEE specials) against their const symbols, from the same `HOST_FNS` registry.
     register_const_mappings(interp)?;
-
     Ok(())
 }
 
@@ -412,16 +211,9 @@ const HOST_FNS: &[(
     ("string_to_lower", 1, string_to_lower),
     ("string_repeat", 2, string_repeat),
     // WI-20260826-VPEWK — `Bool`'s three under their MAPPED spelling, so that the
-    // readers of `is_interpreter_mapped_op` can see them. They keep their hardcoded
-    // `register_if_present` registration below as well, and that is deliberate: the
-    // mapping is declared in `rustland/anthill-stl/anthill/bool.anthill`, so a KB
-    // loaded from `stdlib/` ALONE has no `operation_map` clause to register from and
-    // would otherwise lose `and`/`or`/`not` entirely. `register_builtin` inserts, so
-    // the two registrations are the same function under the same symbol.
-    //
-    // This is WI-884's split closing for ONE sort, not the whole migration WI-880
-    // owns: the eight `String`/`Int64` hardcoded names above are still unmapped, and
-    // `String.concat("a", "b") = "ab"` still answers 0 at an operand for that reason.
+    // readers of `is_interpreter_mapped_op` can see them. They kept a hardcoded twin
+    // registration for a KB loaded from `stdlib/` alone, which had no `operation_map` to
+    // register from; WI-20260922-BRT4Y deleted it, because that KB no longer loads.
     ("bool_and", 2, bool_and),
     ("bool_or", 2, bool_or),
     ("bool_not", 1, bool_not),
@@ -512,6 +304,73 @@ const HOST_FNS: &[(
     ("store_retract", 2, persistence_retract),
     ("store_update", 3, persistence_update),
     ("store_retrieve", 2, persistence_retrieve),
+    // WI-20260922-BRT4Y — THE LAST HARDCODED REGISTRATIONS, keyed through the same channel
+    // as everything above. Each binding block records what its operations reach that no
+    // anthill body can; the functions themselves did not change.
+    //
+    // `PartialEq`'s pair is keyed to the SPEC op (`rustland/anthill-stl/anthill/eq.anthill`
+    // says why): the function dispatches, through `semantic_equal`, to the head carrier's
+    // own `eq` before deciding anything structurally.
+    ("partial_eq_eq", 2, builtin_eq),
+    ("partial_eq_neq", 2, builtin_neq),
+    // `===`, the one kernel operation an operation body evaluates (`kernel.anthill`).
+    // WI-615 / proposal 051: a Bool-returning TEST like `eq`. WI-644: PURELY STRUCTURAL,
+    // not the semantic `builtin_eq` above (IEEE for a Float pair) — `nan === nan` must
+    // stay true.
+    ("kernel_struct_eq", 2, builtin_struct_eq),
+    // `Map` — the interpreter's map arena (`map.anthill`).
+    ("map_empty", 0, map_empty),
+    ("map_put", 3, map_put),
+    ("map_get", 2, map_get),
+    ("map_contains", 2, map_contains),
+    ("map_remove", 2, map_remove),
+    ("map_keys", 1, map_keys),
+    ("map_values", 1, map_values),
+    ("map_entries", 1, map_entries),
+    ("map_size", 1, map_size),
+    // The relational-algebra surface and the stream it pumps (`relation.anthill`).
+    ("logical_stream_split_first", 1, logical_stream_split_first),
+    ("relation_split_first", 1, relation_split_first),
+    ("relation_negate", 1, relation_negate),
+    ("relation_union", 2, relation_union),
+    ("relation_where_run", 3, relation_where_run),
+    ("relation_guarded_of", 2, relation_guarded_of),
+    ("relation_join_run", 4, relation_join_run),
+    ("relation_conjoin_of", 3, relation_conjoin_of),
+    ("relation_project_run", 2, relation_project_run),
+    ("relation_fix", 2, relation_fix),
+    ("relation_rename", 2, relation_rename),
+    // The runtime-effect surface (`effects.anthill`): the clock, the registered effect
+    // handlers, the error channel, the cell arena.
+    ("time_now", 0, time_now),
+    ("console_print", 2, console_print),
+    ("console_println", 2, console_println),
+    ("console_eprint", 2, console_eprint),
+    ("console_eprintln", 2, console_eprintln),
+    ("console_read_line", 1, console_read_line),
+    ("modify_runtime_get", 1, modify_get),
+    ("modify_runtime_set", 2, modify_set),
+    ("error_raise", 1, error_raise),
+    ("cell_new", 1, cell_new),
+    ("cell_get", 1, cell_get),
+    ("cell_set", 2, cell_set),
+    // `TypeValue`'s sole implementation (WI-20260919-HXGXF), which reads the dispatching
+    // requirement dictionary as DATA — beside the dictionary readers below because it
+    // reads the same value, though it is reached from a spec op's slot rather than called
+    // on one (`reflect.anthill`).
+    ("type_value_of_self", 0, type_value_of_self),
+    // WI-577 — the readers over the first-class runtime dispatch values: a requirement
+    // dictionary and a resolved operation reference (WI-1045) (`runtime.anthill`).
+    ("dict_impl", 1, dict_impl),
+    ("dict_arity", 1, dict_arity),
+    ("dict_sub", 2, dict_sub),
+    ("dict_resolve_op", 2, dict_resolve_op),
+    ("dict_ops", 1, dict_ops),
+    ("opref_op", 1, opref_op),
+    ("opref_dict", 1, opref_dict),
+    ("opref_named", 1, opref_named),
+    ("opref_spread_labels", 1, opref_spread_labels),
+    ("opref_op_requirements", 1, opref_op_requirements),
 ];
 
 /// The function `key` names, from EITHER half of the registry: this runtime's own
@@ -730,10 +589,17 @@ fn register_const_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
     Ok(())
 }
 
-/// Register a builtin if its qualified name resolves in the KB; silently
-/// skip `UnknownOperation` so partial-stdlib test harnesses keep loading.
-/// Exposed for downstream crates (e.g. `anthill-stl`) that register their
-/// own builtin sets with the same policy.
+/// Register a builtin if its qualified name resolves in the KB, and silently skip one
+/// that does not (`UnknownOperation`).
+///
+/// WI-20260922-BRT4Y — NO LONGER CALLED IN THIS MODULE: every host implementation the
+/// core runtime ships is an [`HOST_FNS`] entry named by a binding block, visible to
+/// `is_interpreter_mapped_op` and held to the declaration's `@[host_implemented]` claim.
+/// `anthill-stl`'s reflect set (`register_reflect_builtins`) is the remaining caller, and
+/// it is the known gap: those registrations are invisible to both, their operations are
+/// unmarked, and a KB missing their declarations skips them silently. Its functions close
+/// over resolved reflect symbols and live outside this crate, so they cannot become
+/// `HOST_FNS` rows as they stand.
 pub fn register_if_present<F>(interp: &mut Interpreter, qname: &str, f: F) -> Result<(), EvalError>
 where
     F: Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError> + 'static,
@@ -6441,7 +6307,7 @@ fn map_put(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         other => return Err(type_mismatch("Map", &other, None)),
     };
     let key = map_key(&mut interp.kb, &k_arg)?;
-    let mut body = interp.maps.clone_body(&handle);
+    let mut body = handle.clone_body();
     body.insert(key, v_arg);
     let new_handle = interp.alloc_map(body);
     Ok(Value::Map(new_handle))
@@ -6457,7 +6323,7 @@ fn map_get(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         other => return Err(type_mismatch("Map", &other, None)),
     };
     let key = map_key(&mut interp.kb, &k_arg)?;
-    let found: Option<Value> = interp.maps.with_body(&handle, |b| b.get(&key).cloned());
+    let found: Option<Value> = handle.with_body(|b| b.get(&key).cloned());
     Ok(match found {
         Some(v) => option_some(some_sym, value_key, v),
         None => option_none(none_sym),
@@ -6471,7 +6337,7 @@ fn map_contains(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
         other => return Err(type_mismatch("Map", &other, None)),
     };
     let key = map_key(&mut interp.kb, &k_arg)?;
-    let present = interp.maps.with_body(&handle, |b| b.contains_key(&key));
+    let present = handle.with_body(|b| b.contains_key(&key));
     Ok(Value::Bool(present))
 }
 
@@ -6482,7 +6348,7 @@ fn map_remove(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         other => return Err(type_mismatch("Map", &other, None)),
     };
     let key = map_key(&mut interp.kb, &k_arg)?;
-    let mut body = interp.maps.clone_body(&handle);
+    let mut body = handle.clone_body();
     // `shift_remove` preserves the order of the remaining entries — matches
     // anthill's user-visible semantics that iteration order reflects insertion
     // order (and stays stable across removals).
@@ -6497,9 +6363,7 @@ fn map_keys(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let elements: Vec<Value> = interp
-        .maps
-        .with_body(&handle, |b| b.keys().map(|k| k.to_value()).collect());
+    let elements: Vec<Value> = handle.with_body(|b| b.keys().map(|k| k.to_value()).collect());
     interp.build_list_value(elements, &[])
 }
 
@@ -6509,9 +6373,7 @@ fn map_values(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let elements: Vec<Value> = interp
-        .maps
-        .with_body(&handle, |b| b.values().cloned().collect());
+    let elements: Vec<Value> = handle.with_body(|b| b.values().cloned().collect());
     interp.build_list_value(elements, &[])
 }
 
@@ -6524,7 +6386,7 @@ fn map_entries(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     let pair_sym = require_symbol(interp, "anthill.prelude.Pair.pair", "pair")?;
     let fst_key = interp.kb.intern("fst");
     let snd_key = interp.kb.intern("snd");
-    let elements: Vec<Value> = interp.maps.with_body(&handle, |b| {
+    let elements: Vec<Value> = handle.with_body(|b| {
         b.iter()
             .map(|(k, v)| Value::Entity {
                 functor: pair_sym,
@@ -6536,13 +6398,13 @@ fn map_entries(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     interp.build_list_value(elements, &[])
 }
 
-fn map_size(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+fn map_size(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [m_arg] = expect_args::<1>("Map.size", args)?;
     let handle = match m_arg {
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let n = interp.maps.with_body(&handle, |b| b.len());
+    let n = handle.with_body(|b| b.len());
     Ok(Value::Int(n as i64))
 }
 

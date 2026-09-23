@@ -99,7 +99,7 @@ fn program(ns: &str, entry: &str) -> String {
         "\nnamespace {ns}\n  \
          sort Widget\n    import anthill.prelude.{{Int64}}\n    \
          entity widget(v: Int64)\n    \
-         operation answer(v: Int64) -> Int64\n  end\n  \
+         operation answer(v: Int64) -> Int64 @[host_implemented]\n  end\n  \
          provides Widget language rust\n    artifact \"nowhere.rs\"\n    \
          operation_map {{ {entry} }}\n  end\n  \
          sort Driver\n    import anthill.prelude.{{Int64}}\n    \

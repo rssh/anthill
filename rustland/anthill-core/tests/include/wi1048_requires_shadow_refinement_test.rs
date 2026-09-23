@@ -35,8 +35,7 @@ use anthill_core::parse;
 /// not the loader's verdict on this source, and a test reading it would assert
 /// over checks that never ran.
 fn load_stdlib_with(extra: &str) -> Result<Vec<String>, Vec<String>> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

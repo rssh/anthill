@@ -57,10 +57,11 @@
 //!       — green in every state above, because the mint site IS the constant they
 //!       compare against. What they measure is stated at their own site.
 //!
-//! THE TWO HALVES LOAD DIFFERENTLY, ON PURPOSE. The cut rows use `common::load_kb_with`
-//! (stdlib + Rust host bindings); the guard rows use `common::load_stdlib_kb_with_source`
-//! (stdlib only), because with host bindings present the requirement guard stops
-//! discriminating by carrier and every guard row answers 1. Measured — see
+//! BOTH HALVES LOAD THE FULL CLOSURE (`common::load_kb_with`, stdlib + Rust host
+//! bindings). The guard rows used to load the stdlib ALONE, because with host bindings
+//! present their `Noeq(v: Int64)` stopped discriminating by carrier and every guard row
+//! answered 1 (WI-20260831-QF5JT); WI-20260922-BRT4Y made that load a refusal, and the
+//! guard fixture's `Noeq` now carries a field no closure gives `PartialEq`. Measured — see
 //! [`load_guard_kb`], which carries the control pair.
 //!
 //! THE RIVAL MUST BE A DECLARATION, NOT A RULE, and the first cut of this file got that
@@ -79,7 +80,7 @@ use anthill_core::parse::desugar_target as dt;
 use anthill_core::parse::pratt;
 use smallvec::SmallVec;
 
-use crate::common::{definite_unary, load_kb_with, load_kb_with_stdlib_only};
+use crate::common::{definite_unary, load_kb_with};
 
 /// Every PARSE-level functor spelling in `src` that is `short` or the address ending in
 /// it, in allocation order.
@@ -474,7 +475,7 @@ fn a_goal_position_let_binds_through_the_kernel_primitive() {
 /// tested something.
 #[test]
 fn a_query_pattern_connective_is_not_captured_by_an_invocation_import() {
-    let mut kb = load_kb_with_stdlib_only(
+    let mut kb = load_kb_with(
         "namespace test.w909.qp\n  \
          fact p909(1)\n\
          end\n",
@@ -548,8 +549,10 @@ fn guard_src(rival: &str) -> String {
       sort Witheq
         entity we(v: Int64)
       end
+      sort Opaque
+      end
       sort Noeq
-        entity ne(v: Int64)
+        entity ne(v: Opaque)
       end
       namespace Witheq
         provides PartialEq[T = Witheq]
@@ -562,27 +565,22 @@ fn guard_src(rival: &str) -> String {
     )
 }
 
-/// Load the guard fixture. STDLIB ONLY — not `load_kb_with`, and the difference is
-/// measured rather than stylistic.
+/// Load the guard fixture — through `load_kb_with`, the full closure, like every other
+/// row here.
 ///
-/// `load_kb_with` also loads the Rust host bindings, and with those present this
-/// fixture's guard STOPS DISCRIMINATING BY CARRIER: `Noeq`, which provides nothing,
-/// answers 1 exactly as `Witheq` does. Measured as a control pair in one suite run —
-/// `wi300_rule_body_requires_test::guard_blocks_when_carrier_has_no_provider`, whose
-/// fixture this reduces and which loads stdlib only, asserts 0 and passes in the same
-/// run where this row asserted 0 and got 1.
-///
-/// THAT IS NOT THIS CHANGE'S DEFECT and it is not fixed here: these rows are about
-/// whether a same-spelled declaration captures the `requires(X)` MINT, and they need a
-/// KB where the guard discriminates at all. Filed as `WI-20260831-QF5JT`.
-///
-/// NOR IS `load_stdlib_kb_with_source` THE ANSWER, though it also drops the bindings:
-/// it loads the user file in a SECOND pass, and driven that way this fixture answers 0
-/// for EVERY carrier — the positive arm dies too, so the rows go quiet instead of
-/// discriminating. One `load_all` over stdlib + source is the recipe that works, which
-/// is what `load_kb_with_stdlib_only` is.
+/// `Noeq`'s field is typed by `Opaque`, a sort that provides NOTHING, and that is what
+/// keeps this fixture discriminating. With the field typed `Int64` (the shape
+/// `wi300_rule_body_requires_test` reduces from), the guard STOPS DISCRIMINATING BY
+/// CARRIER once the Rust host bindings load — `Noeq` answers 1 exactly as `Witheq` does —
+/// which is `WI-20260831-QF5JT`, not this file's subject. These rows ask whether a
+/// same-spelled declaration captures the `requires(X)` MINT and need a guard that
+/// discriminates at all. They used to get one by loading the stdlib WITHOUT its binding
+/// layer (`Int64` then provides no `PartialEq`); WI-20260922-BRT4Y made that load a
+/// refusal, since the stdlib's host-backed operations are declared
+/// `@[host_implemented]`. MEASURED under the full closure: `Noeq(v: Int64)` answers 1
+/// and `Noeq(v: Opaque)` answers 0, with `Witheq` answering 1 in both.
 fn load_guard_kb(rival: &str) -> KnowledgeBase {
-    load_kb_with_stdlib_only(&guard_src(rival))
+    load_kb_with(&guard_src(rival))
 }
 
 /// `related909(c(v: 1), c(v: 1))` — the DEFINITE solutions only.

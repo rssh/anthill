@@ -68,9 +68,12 @@ pub fn rust_stl_dir() -> PathBuf {
 }
 
 /// Collect all .anthill files from stdlib + the Rust host bindings — the FULL library
-/// closure, and what a test that evaluates anything wants.
+/// closure, and the only one that LOADS.
 ///
-/// Use this in place of `collect_anthill_files(&stdlib_dir())`. The original reason was
+/// WI-20260922-BRT4Y made that literal: the stdlib declares its host-backed operations
+/// `@[host_implemented]`, and a declared-but-unsupplied one is a LOAD error, so
+/// `collect_anthill_files(&stdlib_dir())` alone is refused with one error per host
+/// operation. Before that the history below is why a test wanted this. The original reason was
 /// the `fact Spec[Carrier]` records the rustland `provides Carrier language rust` blocks
 /// emit; WI-880 made it much wider, because those blocks now also carry the
 /// `operation_map` clauses that register EVERY host implementation — the arithmetic, the
@@ -85,6 +88,58 @@ pub fn collect_stdlib_and_rust_bindings() -> Vec<PathBuf> {
     files.extend(collect_anthill_files(&rust_stl_dir()));
     files.sort();
     files
+}
+
+/// WI-20260922-BRT4Y — anthill-todo's `Forge` DECLARATION and its rust BINDING, which
+/// load together or not at all.
+///
+/// `coordination.anthill` declares `Forge`'s five operations `@[host_implemented]`, and a
+/// declared operation no loaded `operation_map` supplies is a load error — so the
+/// declaration no longer loads without `coordination_rust.anthill`. WI-1117 had split the
+/// two so that a fixture could take the declaration and leave the binding; that split is
+/// exactly the "loads clean, dies at the first call" shape BRT4Y refuses. Pair with
+/// [`register_forge_host_stand_ins`]: the binding names host functions only the
+/// anthill-todo binary registers.
+#[allow(dead_code)]
+pub fn anthill_todo_coordination_files() -> [PathBuf; 2] {
+    let dir = workspace_root().join("rustland/anthill-todo/anthill");
+    [
+        dir.join("coordination.anthill"),
+        dir.join("coordination_rust.anthill"),
+    ]
+}
+
+/// The five `forge_*` keys `coordination_rust.anthill` names, with the arity each
+/// declared operation takes — the SAME table `anthill-todo`'s `forge::register` writes,
+/// which this crate cannot link.
+const FORGE_HOST_FNS: [(&str, usize); 5] = [
+    ("forge_target_name", 1),
+    ("forge_create_entry", 3),
+    ("forge_update_entry", 4),
+    ("forge_list_entries", 1),
+    ("forge_entry_comments", 2),
+];
+
+/// WI-20260922-BRT4Y — register STAND-INS for the anthill-todo host functions the
+/// `Forge` binding names, on a fresh KB, BEFORE load (WI-1122 refuses a later entry).
+///
+/// A stand-in is not a fallback: it is this test crate playing the embedder, with the
+/// embedder's keys and arities, and each one refuses LOUDLY if it is ever called. The
+/// fixtures that load anthill-todo's domain type-check it; none of them reaches a forge.
+/// A wrong arity is caught the way a real entry's is — at interpreter build, against the
+/// declaration (`register_operation_mappings`).
+#[allow(dead_code)]
+pub fn register_forge_host_stand_ins(kb: &mut KnowledgeBase) {
+    for (key, arity) in FORGE_HOST_FNS {
+        kb.register_host_fn(key, arity, move |_: &mut Interpreter, _: &[eval::Value]| {
+            Err(eval::EvalError::Internal(format!(
+                "`{key}` is an anthill-core TEST STAND-IN for the anthill-todo host \
+                 function of that name; it exists so anthill-todo's domain loads, and \
+                 must never be called"
+            )))
+        })
+        .unwrap_or_else(|e| panic!("register the `{key}` stand-in: {e:?}"));
+    }
 }
 
 /// Path to anthill-testcases/ relative to the anthill-core crate root.
@@ -327,57 +382,6 @@ fn try_load_kb_named_prepared_with(
     }
 }
 
-/// The stdlib WITHOUT the Rust host bindings, parsed once — the peer of
-/// [`STDLIB_PARSED`] for the configuration that must not see `anthill-stl`'s bindings.
-static STDLIB_ONLY_PARSED: std::sync::LazyLock<Vec<parse::ir::ParsedFile>> =
-    std::sync::LazyLock::new(|| {
-        let files = collect_anthill_files(&stdlib_dir());
-        assert!(!files.is_empty(), "stdlib empty");
-        files
-            .iter()
-            .map(|p| {
-                let src = std::fs::read_to_string(p)
-                    .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-                parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", p.display()))
-            })
-            .collect()
-    });
-
-/// [`load_kb_with`] MINUS the Rust host bindings: the stdlib files and `source`, in ONE
-/// `load_all`.
-///
-/// WHY THIS EXISTS AS ITS OWN RECIPE, since two neighbours nearly serve and neither
-/// does. `load_kb_with` also loads `rustland/anthill-stl/anthill/*.anthill`, and for a
-/// fixture that turns on which carriers provide a spec that is not a superset but a
-/// different world — measured at `WI-20260831-QF5JT`, where a `requires(PartialEq[T])`
-/// guard stops discriminating by carrier once those bindings are present.
-/// `load_stdlib_kb_with_source` drops the bindings but loads the user file in a SECOND
-/// pass (`load_stdlib`, then `load`), which is not the same as one `load_all` over both:
-/// driven, the same guard fixture answers 0 for EVERY carrier that way, i.e. the fixture
-/// goes dead rather than discriminating.
-///
-/// `wi300_rule_body_requires_test` and `cut_test` each hand-roll exactly this sequence;
-/// they are left as found, and a new caller should use this instead of adding a fourth
-/// copy.
-#[allow(dead_code)]
-pub fn load_kb_with_stdlib_only(source: &str) -> KnowledgeBase {
-    expect_loaded(try_load_kb_with_stdlib_only(source))
-}
-
-/// [`load_kb_with_stdlib_only`]'s `try_` twin, for a fixture whose refusal IS the
-/// assertion — in particular one that holds only where the stl host bindings are
-/// absent (`Int64` then provides no `PartialEq`/`PartialOrd`).
-#[allow(dead_code)]
-pub fn try_load_kb_with_stdlib_only(source: &str) -> Result<KnowledgeBase, Vec<String>> {
-    let user = parse::parse(source).expect("parse user source");
-    let mut refs: Vec<&parse::ir::ParsedFile> = STDLIB_ONLY_PARSED.iter().collect();
-    refs.push(&user);
-    let mut kb = KnowledgeBase::new();
-    load::load_all(&mut kb, &refs, &NullResolver)
-        .map_err(|errs| errs.iter().map(|e| e.to_string()).collect::<Vec<_>>())?;
-    Ok(kb)
-}
-
 /// Load the stdlib plus each `(name, source)` as a file that KNOWS ITS PATH.
 ///
 /// [`try_load_kb_with_files`]'s sources are path-less, so a diagnostic that NAMES the
@@ -517,8 +521,9 @@ pub fn register_modify_handler(interp: &mut Interpreter) {
         .expect("register Modify handler");
 }
 
-/// The stdlib-only KB the re-type suites build on: parse + `load_stdlib` (which
-/// bootstraps — WI-967), with NO user source. WI-732 lifted this here
+/// The library KB (stdlib + the Rust host bindings, [`collect_stdlib_and_rust_bindings`])
+/// the re-type suites build on: parse + `load_all` (which bootstraps — WI-967), with NO user
+/// source. It was the stdlib ALONE until WI-20260922-BRT4Y, which made that load a refusal. WI-732 lifted this here
 /// after finding six verbatim copies across the test tree (typing_test, incremental_load_test,
 /// wi211, wi219, wi759, and its own) — a change to the load sequence otherwise has to land in
 /// every one, and the copy that misses it fails as though the code under test were broken.
@@ -529,7 +534,7 @@ pub fn register_modify_handler(interp: &mut Interpreter) {
 /// is what this and [`load_stdlib_kb_with_source`] provide.
 #[allow(dead_code)]
 pub fn load_stdlib_kb() -> KnowledgeBase {
-    let files = collect_anthill_files(&stdlib_dir());
+    let files = collect_stdlib_and_rust_bindings();
     assert!(!files.is_empty(), "no stdlib files found");
     let parsed: Vec<_> = files
         .iter()

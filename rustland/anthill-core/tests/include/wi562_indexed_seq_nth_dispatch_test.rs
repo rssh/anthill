@@ -30,8 +30,7 @@ use anthill_core::parse;
 /// `load_all`'s finalize runs the full check pipeline (`type_check_sorts` plus
 /// `req_insertion`), mirroring `anthill check`.
 fn type_check_user(extra: &str) -> Vec<LoadError> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

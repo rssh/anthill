@@ -1577,11 +1577,6 @@ impl Interpreter {
         self.maps.alloc(body)
     }
 
-    /// Run `f` with a shared reference to the map body behind `h`.
-    pub fn with_map<R>(&self, h: &value::MapHandle, f: impl FnOnce(&map_arena::MapBody) -> R) -> R {
-        self.maps.with_body(h, f)
-    }
-
     /// Clone the map-arena handle. Same rationale as `subst_arena()`.
     pub fn map_arena(&self) -> MapArenaRef {
         self.maps.clone()
@@ -1698,12 +1693,13 @@ impl Interpreter {
 
     /// Snapshot the value held in `h`.
     pub fn read_cell(&self, h: &value::CellHandle) -> Value {
-        self.cells.read(h)
+        // The HANDLE's arena, not `self.cells` — see `CellHandle::read`.
+        h.read()
     }
 
     /// Replace the value in `h`; returns the prior value.
     pub fn write_cell(&self, h: &value::CellHandle, new: Value) -> Value {
-        self.cells.write(h, new)
+        h.write(new)
     }
 
     /// Clone the cell-arena handle (cheap `Rc` bump). Same rationale as

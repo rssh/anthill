@@ -127,8 +127,8 @@ namespace anthill.prelude
     import anthill.prelude.{Unit}
     sort T = ?
     sort V = ?
-    operation get(target: T) -> V
-    operation set(target: T, value: V) -> Unit effects Modify[target]
+    operation get(target: T) -> V @[host_implemented]
+    operation set(target: T, value: V) -> Unit effects Modify[target] @[host_implemented]
   end
 
   -- ErrorTag[T]: the EVIDENCE a reify boundary discharges its payload sort with —
@@ -152,7 +152,7 @@ namespace anthill.prelude
     sort T = ?
     provides Effect[T = Error[?]]
     provides ErrorTag[T = T] :- TypeValue[T = T]
-    operation raise(error: T) -> Nothing effects Error[T]
+    operation raise(error: T) -> Nothing effects Error[T] @[host_implemented]
 
     -- THE BOUNDARY. Runs `body`; a raise inside it aborts HERE and becomes
     -- `err(payload)`, a normal return becomes `ok(value)`.

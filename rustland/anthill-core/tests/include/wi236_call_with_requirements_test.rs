@@ -43,12 +43,11 @@ fn load_with_driver() -> KnowledgeBase {
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
     );
     // WI-1117: and coordination.anthill for `MirrorEntry`, which store.anthill
-    // imports for the delete cascade. The DECLARATION only — its rust binding is a
-    // separate file, and loading that here would demand host functions only the
-    // anthill-todo binary registers.
-    files.push(
-        crate::common::workspace_root().join("rustland/anthill-todo/anthill/coordination.anthill"),
-    );
+    // imports for the delete cascade — WITH its rust binding, which WI-20260922-BRT4Y
+    // makes the declaration's condition of loading (its `Forge` operations are
+    // `@[host_implemented]`), and so with stand-ins for the host functions that binding
+    // names, registered on the KB before load.
+    files.extend(crate::common::anthill_todo_coordination_files());
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
 
     let mut parsed: Vec<_> = files
@@ -63,6 +62,7 @@ fn load_with_driver() -> KnowledgeBase {
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
+    crate::common::register_forge_host_stand_ins(&mut kb);
     load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
         for e in &errs {
             eprintln!("{}", e);
@@ -251,12 +251,11 @@ fn nested_op_dispatches_spec_call_via_inherited_requires() {
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
     );
     // WI-1117: and coordination.anthill for `MirrorEntry`, which store.anthill
-    // imports for the delete cascade. The DECLARATION only — its rust binding is a
-    // separate file, and loading that here would demand host functions only the
-    // anthill-todo binary registers.
-    files.push(
-        crate::common::workspace_root().join("rustland/anthill-todo/anthill/coordination.anthill"),
-    );
+    // imports for the delete cascade — WITH its rust binding, which WI-20260922-BRT4Y
+    // makes the declaration's condition of loading (its `Forge` operations are
+    // `@[host_implemented]`), and so with stand-ins for the host functions that binding
+    // names, registered on the KB before load.
+    files.extend(crate::common::anthill_todo_coordination_files());
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
 
     let mut parsed: Vec<_> = files
@@ -271,6 +270,7 @@ fn nested_op_dispatches_spec_call_via_inherited_requires() {
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
+    crate::common::register_forge_host_stand_ins(&mut kb);
     load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
         for e in &errs {
             eprintln!("{}", e);

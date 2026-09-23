@@ -20,8 +20,7 @@ use anthill_core::parse;
 fn load_ok(source: &str) -> KnowledgeBase {
     let parsed = parse::parse(source).expect("parse");
     let mut kb = KnowledgeBase::new();
-    let stdlib_dir = crate::common::stdlib_dir();
-    let stdlib_files = crate::common::collect_anthill_files(&stdlib_dir);
+    let stdlib_files = crate::common::collect_stdlib_and_rust_bindings();
     let stdlib_parsed: Vec<_> = stdlib_files
         .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).expect("stdlib parse"))

@@ -9,7 +9,7 @@
 //! # Snapshot, not persistent structures
 //!
 //! The ticket left "persistent-vs-high-water-mark" open and asked for a measurement.
-//! Measured on a debug build against `load_stdlib_and_stl` (the whole stdlib plus the
+//! Measured on a debug build against `load_stdlib` (the whole stdlib plus the
 //! Rust host bindings, 1722 ms): a FULL deep clone of everything a layer must scope is
 //! **2.7 ms — 0.16 % of one load**. Of that, `by_qualified_name` + `scopes` is 2.0 ms and
 //! every clause-side index together is 0.12 ms; [`crate::kb::discrim::SubstTree`] needs
@@ -574,7 +574,7 @@ namespace wi880.layerpoison
   sort Widget3
     import anthill.prelude.{Int64}
     entity widget3(id: Int64)
-    operation squish(a: Widget3) -> Int64
+    operation squish(a: Widget3) -> Int64 @[host_implemented]
   end
 
   provides Widget3 language rust

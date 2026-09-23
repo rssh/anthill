@@ -341,7 +341,7 @@ fn re_presenting_the_same_files_is_not_a_duplicate() {
 
     let src = "namespace wi1049dup.reload\n  sort Z\n    entity z\n  end\nend\n";
     let mut kb = crate::common::load_kb_with(src);
-    let files = crate::common::collect_anthill_files(&crate::common::stdlib_dir());
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())

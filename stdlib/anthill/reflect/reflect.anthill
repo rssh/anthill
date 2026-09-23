@@ -168,17 +168,17 @@ namespace anthill.reflect
        The builtin reconstructs the `Type` from the dictionary that selected it:
        `Dictionary(sub₀ … subₙ₋₁, impl: S)` names the head in `impl` and carries one sub per
        type parameter, so the type is a walk of its own evidence — GHC's `Typeable`. >}
-    operation type_value() -> Type
+    operation type_value() -> Type @[host_implemented]
   end
 
 
   sort NodeOccurrence = ?
 
   -- Builtin operations on occurrences
-  operation occurrence_term(occ: NodeOccurrence) -> Term
+  operation occurrence_term(occ: NodeOccurrence) -> Term @[host_implemented]
   operation occurrence_span(occ: NodeOccurrence) -> SourceSpan
   operation occurrence_owner(occ: NodeOccurrence) -> Symbol
-  operation sub_occurrences(occ: NodeOccurrence) -> List[NodeOccurrence]
+  operation sub_occurrences(occ: NodeOccurrence) -> List[NodeOccurrence] @[host_implemented]
 
   -- WI-1129 (proposal 056 §2.3): the COMPONENT NAMES of those same children, in the
   -- same order and of the same length — `sub_occurrences` and this are read as a
@@ -191,12 +191,12 @@ namespace anthill.reflect
   -- ask `term_field` for. `sub_occurrences` gives the children without their names;
   -- `term_field` gives one component by a name you already have; this gives the
   -- names.
-  operation sub_occurrence_labels(occ: NodeOccurrence) -> List[T = String]
+  operation sub_occurrence_labels(occ: NodeOccurrence) -> List[T = String] @[host_implemented]
 
   -- WI-722 (043.1): the typer-stamped inferred type of an occurrence (None if
   -- untyped). A compile-time macro reads an argument's type through this — e.g.
   -- where/join read a relation argument's schema, which lives in its type.
-  operation occurrence_type(occ: NodeOccurrence) -> Option[T = Type]
+  operation occurrence_type(occ: NodeOccurrence) -> Option[T = Type] @[host_implemented]
 
   -- Find occurrences owned by a symbol (operation body, fact head, rule head/body).
   -- Returns all NodeOccurrences registered under this owner during loading.
@@ -290,7 +290,7 @@ namespace anthill.reflect
   -- true everywhere. The read resolution itself filters with, and it reads the mark
   -- the declaration set at parse, never a fact — reflect reports visibility, it does
   -- not grant it.
-  operation visible_from(s: Symbol, scope: Symbol) -> Bool
+  operation visible_from(s: Symbol, scope: Symbol) -> Bool @[host_implemented]
 
   -- The kernel's readers of a `meta(key: value, …)` term — a DeclarationMeta row's
   -- `meta`, `OperationInfo.meta`, a clause's metadata. `meta_has_flag` is presence:
@@ -298,8 +298,8 @@ namespace anthill.reflect
   -- `none()` for a flag-form key or an absent one. Either refuses a term that is not
   -- a `meta(…)`. `meta_has_flag(m, "internal")` says the DECLARATION was marked; ask
   -- `visible_from` whether a scope may name it.
-  operation meta_has_flag(meta: Term, key: String) -> Bool
-  operation meta_value(meta: Term, key: String) -> Option[T = Term]
+  operation meta_has_flag(meta: Term, key: String) -> Bool @[host_implemented]
+  operation meta_value(meta: Term, key: String) -> Option[T = Term] @[host_implemented]
 
   -- Field access (dot projection): extract a field from a value.
   -- `?x.y` desugars to `field_access[Name = "y"](?x, "y")`.
@@ -321,7 +321,7 @@ namespace anthill.reflect
   -- are no singleton types, so the value argument types as plain `String` and
   -- cannot carry the name into the return type. Evaluation, resolution and code
   -- generation read only `field`.
-  operation field_access[R, Name](object: R, field: String) -> FieldOf[T = R, Name = Name]
+  operation field_access[R, Name](object: R, field: String) -> FieldOf[T = R, Name = Name] @[host_implemented]
 
   -- Inspect a term's structure by name. These bypass `field_access` /
   -- `lookup_symbol` (which require Symbol values that anthill code can't
@@ -331,7 +331,7 @@ namespace anthill.reflect
   -- Functor short name of a Fn or Ref term (e.g. "WorkItem", "Open",
   -- "Claimed"). Returns none() for literals, variables, or unstructured
   -- terms.
-  operation term_functor_name(t: Term) -> Option[T = String]
+  operation term_functor_name(t: Term) -> Option[T = String] @[host_implemented]
 
   -- Extract a named field from a Fn term by short name. Mirrors
   -- `field_access(t, intern(name))` but with String input. Returns none()
@@ -340,22 +340,22 @@ namespace anthill.reflect
   -- simply has no named args. A value that is no term at all — an opaque runtime
   -- handle, a functor-less aggregate, an operation reference — RAISES instead, so
   -- an unrecognised carrier is never spelled as `none()` (WI-20260827-W1YKH).
-  operation term_field(t: Term, name: String) -> Option[T = Term]
+  operation term_field(t: Term, name: String) -> Option[T = Term] @[host_implemented]
 
   -- Extract a String literal value from a term. Returns none() unless the
   -- term is exactly `Const(StringLiteral(_))`.
-  operation term_as_string(t: Term) -> Option[T = String]
+  operation term_as_string(t: Term) -> Option[T = String] @[host_implemented]
 
   -- Extract an Int64 literal value from a term. Returns none() unless the
   -- term is exactly `Const(IntLiteral(_))`. The int-literal partner to
   -- `term_as_string`, with the same carrier handling.
-  operation term_as_int(t: Term) -> Option[T = Int64]
+  operation term_as_int(t: Term) -> Option[T = Int64] @[host_implemented]
 
   -- The canonical printed text of a term — the TermPrinter rendering the
   -- persistence layer writes. Total over TERMS, on any carrier; a value that is no
   -- term at all (an opaque runtime handle) raises rather than printing as something
   -- it is not (WI-20260827-W1YKH).
-  operation term_to_string(t: Term) -> String
+  operation term_to_string(t: Term) -> String @[host_implemented]
 
   -- The element terms of a cons/nil list term, on any carrier, tolerating both
   -- the named (`cons(head: …, tail: …)`) and positional (`cons(…, …)`) encodings.
@@ -363,7 +363,7 @@ namespace anthill.reflect
   -- opaque runtime handle, a functor-less aggregate, an operation reference —
   -- RAISES instead, on the same receiver rule as `term_field`, so an unrecognised
   -- carrier is never spelled as `[]` (WI-20260827-W1YKH).
-  operation term_list_items(t: Term) -> List[T = Term]
+  operation term_list_items(t: Term) -> List[T = Term] @[host_implemented]
 
   -- Materialize a `Term::Fn` whose functor is a known constructor into a
   -- typed `Value::Entity`, using the KB's `entity_field_types` index to
@@ -381,7 +381,7 @@ namespace anthill.reflect
   -- caller's `match` against constructor patterns acts as the run-time
   -- guard. Companion of `term_as_sort` (sort decoder) and
   -- `term_as_string` (string-literal decoder).
-  operation term_as_entity[E](t: Term) -> Option[T = E]
+  operation term_as_entity[E](t: Term) -> Option[T = E] @[host_implemented]
 
   -- Reflect a value to its `Term` representation — the TOTAL value→Term
   -- crossing, and the explicit partner to `term_as_entity` (the partial
@@ -393,7 +393,7 @@ namespace anthill.reflect
   -- already let a `Value::Entity` inhabit `Term` (see `term_as_entity`, which
   -- accepts both), so this is the value-level identity made explicit and typed.
   -- The limited-API precursor to WI-189's `↑`/`quote` staging bracket.
-  operation as_term[E](e: E) -> Term
+  operation as_term[E](e: E) -> Term @[host_implemented]
 
   -- Allocate a fresh logical variable of sort `T`. Used to construct pattern
   -- queries (`claimable(?id, ?desc)`) from anthill code: pass the result as a
@@ -410,7 +410,7 @@ namespace anthill.reflect
   -- Two `fresh_var[T](name)` calls with the same name return distinct VarIds —
   -- the display name carries through for `lookup`, but the resolver's variable
   -- identity is the id, not the name.
-  operation fresh_var[T](name: String) -> T
+  operation fresh_var[T](name: String) -> T @[host_implemented]
 
   -- Build a Term::Fn whose functor is resolved exactly the way `lookup_symbol`
   -- resolves one — the same host-name ladder, same readings (WI-913); see its
@@ -421,7 +421,7 @@ namespace anthill.reflect
   -- `make_fn("anthill.stage0.workflow.claimable", cons(id, cons(desc, nil())))`
   -- is the bridge: the resolver looks up the symbol by name and constructs
   -- the goal term you can hand to `pattern_query` / `execute`.
-  operation make_fn(name: String, args: List[Term]) -> Term
+  operation make_fn(name: String, args: List[Term]) -> Term @[host_implemented]
 
   -- WI-722 (proposal 043.1) — the occurrence-BUILD side of a compile-time macro.
   -- Build a spliceable `apply` OCCURRENCE (not a flat `Term`, as `make_fn` does):
@@ -431,13 +431,13 @@ namespace anthill.reflect
   -- macro (an occurrence-returning op in a `@[simp]` RHS) constructs its result
   -- through this rather than `make_fn`, because a result that carries child
   -- occurrences — a reused argument, a lambda body — cannot be a `Term`.
-  operation make_apply(name: String, args: List[NodeOccurrence], from: NodeOccurrence) -> NodeOccurrence
+  operation make_apply(name: String, args: List[NodeOccurrence], from: NodeOccurrence) -> NodeOccurrence @[host_implemented]
 
   -- Return a fresh Term::Fn cloned from `t` with the named arg whose
   -- short name matches `name` replaced by `value`. Used by status-
   -- transition commands to swap one field on a WorkItem (e.g. `status`)
   -- without re-stating every other field on the anthill side.
-  operation replace_named_arg(t: Term, name: String, value: Term) -> Term
+  operation replace_named_arg(t: Term, name: String, value: Term) -> Term @[host_implemented]
 
   -- WI-206: whether `t` is a modifiable resource — i.e. whether some
   -- `Modifiable[T = S]` fact names t's head sort, the marker proposal 037
@@ -450,7 +450,7 @@ namespace anthill.reflect
   -- Use it to introspect what the kernel typer enforces: defensive code that only
   -- mutates a modifiable argument, and reflection-driven listings of the modifiable
   -- resources in scope.
-  operation is_modifiable(t: Type) -> Bool
+  operation is_modifiable(t: Type) -> Bool @[host_implemented]
 
   -- Meta-level primitives: inspect a value's instantiation state. One name and
   -- one arity in both phases (WI-982).
@@ -513,7 +513,7 @@ namespace anthill.reflect
   -- Total — a non-type term classifies as `Error`. Computes the structural form;
   -- it is NOT stored. Pattern-match the result:
   --   case extract(t) { SortRef(s) -> .., Parameterized(base, binds) -> .., Error(_) -> .. }
-  operation extract(t: Term) -> TypeExtractor
+  operation extract(t: Term) -> TypeExtractor @[host_implemented]
 
   -- ================================================================
   -- KB: the knowledge base
@@ -589,7 +589,7 @@ namespace anthill.reflect
     -- one ambient KB per interpreter instance, which the runtime supplies; the
     -- type checker accepts `KB.execute(kb(), q)` without surfacing an abstract
     -- sort.
-    operation kb() -> KB
+    operation kb() -> KB @[host_implemented]
 
     -- WI-SPGBP — a SCOPED LOAD. Each element of `sources` is anthill source text;
     -- the result is a KB value that is a LAYER over the ambient one.
@@ -627,7 +627,7 @@ namespace anthill.reflect
     -- and `LoadFailed` is named in that file's `emit_only` closure for the reason its
     -- own comment gives about `LayerSymbol` / `LayerClause`.
     operation loaded(sources: List[T = String]) -> KB
-      effects Error[LoadFailed]
+      effects Error[LoadFailed] @[host_implemented]
 
     -- KB admits Modify[kb]: assert / retract / add_guard mutate the
     -- KB's internal indexes. Required by proposal 037 Rule 8.
@@ -643,8 +643,8 @@ namespace anthill.reflect
     -- would be measured against a knowledge base the inner layer has changed).
     --
     -- OPERATIONS AND NOT FACTS, deliberately: see `LayerSymbol` above.
-    operation layer_symbols(kb: KB) -> List[T = LayerSymbol]
-    operation layer_clauses(kb: KB) -> List[T = LayerClause]
+    operation layer_symbols(kb: KB) -> List[T = LayerSymbol] @[host_implemented]
+    operation layer_clauses(kb: KB) -> List[T = LayerClause] @[host_implemented]
 
     -- Query operations (KB introspection)
     operation sorts(kb: KB, namespace: Option[T = String]) -> List[T = SortInfo]
@@ -677,7 +677,7 @@ namespace anthill.reflect
     -- `Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure>`.
     operation execute(kb: KB, query: LogicalQuery)
       -> Stream[T = Solution, E = Error[ResolveStreamFailure]]
-      effects Error[ResolveStreamFailure]
+      effects Error[ResolveStreamFailure] @[host_implemented]
 
     -- Direct enumeration of asserted facts whose head functor is the given
     -- entity. The entity is passed by reference (e.g. `facts_of(kb(),
@@ -687,13 +687,13 @@ namespace anthill.reflect
     -- per-field constraint and just wants the fact terms. Returns opaque
     -- `Term` values; use `term_field` / `term_as_string` / `term_functor_name`
     -- to inspect them.
-    operation facts_of(kb: KB, sort: Type) -> List[T = Term]
+    operation facts_of(kb: KB, sort: Type) -> List[T = Term] @[host_implemented]
 
     -- Capability-carrying companion to `facts_of`: enumerate stored rows as
     -- their visible terms paired with opaque session references. Use this only
     -- when a selected row will be retracted or updated; ordinary readers use
     -- `facts_of` and never retain mutation authority.
-    operation stored_facts_of(kb: KB, sort: Type) -> List[T = StoredRef[T = Term]]
+    operation stored_facts_of(kb: KB, sort: Type) -> List[T = StoredRef[T = Term]] @[host_implemented]
 
     -- Extract a sort's fact template as a query. The sort is passed by
     -- reference (e.g. `sort_template(kb(), WorkItem)`), resolved to its
@@ -1138,7 +1138,7 @@ namespace anthill.reflect
     -- No KB parameter — the substitution carries each VarId's name, so
     -- lookup is a pure read; only `apply` / `compose` need kb (term-store
     -- walks).
-    operation lookup(s: Substitution, name: String) -> Option[T = Term]
+    operation lookup(s: Substitution, name: String) -> Option[T = Term] @[host_implemented]
 
     -- Enumerate the substitution as (variable, value) pairs — the dual of
     -- `lookup`'s single by-name read. The variable rides as a `Term` (a var
@@ -1155,7 +1155,7 @@ namespace anthill.reflect
   -- `<=>` is its object-level face (it installs σ into the resolver frame
   -- instead of returning it); this face is for reflection and the self-hosted
   -- type resolver (WI-010), which run over raw terms with no typing in scope.
-  operation unify(a: Term, b: Term, kb: KB) -> Option[T = Substitution]
+  operation unify(a: Term, b: Term, kb: KB) -> Option[T = Substitution] @[host_implemented]
 
   -- ================================================================
   -- Solution: one answer from KB.execute (proposal 049 / WI-531)

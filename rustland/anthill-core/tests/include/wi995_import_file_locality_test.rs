@@ -259,7 +259,8 @@ end
             .iter()
             .map(|s| parse::parse(s).expect("fixture parses"))
             .collect();
-        let stdlib = crate::common::collect_anthill_files(&root().join("stdlib/anthill"));
+        // The full closure: since WI-20260922-BRT4Y the stdlib alone does not load.
+        let stdlib = crate::common::collect_stdlib_and_rust_bindings();
         let stdlib_parsed: Vec<_> = stdlib
             .iter()
             .map(|p| {
@@ -396,8 +397,10 @@ fn wi995_measure_import_file_locality_cost() {
     let with =
         |extra: &str| -> Vec<PathBuf> { base.iter().cloned().chain(files_under(extra)).collect() };
 
+    // No "stdlib alone" group: since WI-20260922-BRT4Y that set does not load (its host
+    // operations are `@[host_implemented]` and nothing supplies them), and a group that
+    // does not load measures nothing.
     let groups: Vec<(&str, Vec<PathBuf>)> = vec![
-        ("stdlib alone", stdlib.clone()),
         (
             "stdlib + rust host bindings (the suite's baseline)",
             base.clone(),
@@ -454,8 +457,8 @@ fn wi995_measure_import_file_locality_cost() {
 /// which has happened twice (`Provision`, WI-20260825-N2865, 0 → 11; `Requirement`,
 /// WI-20260906-6BX85, 0 → 24/28). It does NOT red the other way: if
 /// `import_record_counts` stopped counting import parent edges AT ALL — the predicate made
-/// unsatisfiable, or the `import_parent_origin` write dropped — all six corpus groups still
-/// report 0 and every row stays green, and the audit would deliver a verdict while
+/// unsatisfiable, or the `import_parent_origin` write dropped — every corpus group still
+/// reports 0 and every row stays green, and the audit would deliver a verdict while
 /// measuring nothing. That is the precise failure mode this file exists to guard against,
 /// and it was the only half not covered, because the corpus writes no wildcard import for
 /// the denominator to be built from.

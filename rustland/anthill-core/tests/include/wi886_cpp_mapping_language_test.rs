@@ -75,7 +75,7 @@ namespace wi886.cpponly
             case box(bv) -> WeakOrd.compare(av, bv)
 
     -- Declared and body-less: its implementation is the C++ one named below.
-    operation max(a: Box, b: Box) -> Box
+    operation max(a: Box, b: Box) -> Box @[host_implemented]
   end
 
   provides Box language cpp

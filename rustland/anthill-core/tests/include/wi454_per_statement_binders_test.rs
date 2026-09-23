@@ -218,8 +218,7 @@ end
 // ── Load equivalence: the per-statement form rides WI-452/453 end-to-end ──────
 
 fn load_errors(extra: &str) -> Vec<String> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

@@ -27,7 +27,7 @@ use anthill_core::parse;
 use anthill_core::parse::desugar_target as dt;
 use anthill_core::parse::ir::*;
 
-use crate::common::{collect_anthill_files, stdlib_dir};
+use crate::common::{collect_anthill_files, collect_stdlib_and_rust_bindings, stdlib_dir};
 use anthill_core::kb::ClauseKind;
 
 /// The `fmt_ir_term` rendering of a desugar target's application: the MARKED address
@@ -1846,8 +1846,7 @@ fn stdlib_parse_all_files() {
 
 #[test]
 fn stdlib_load_all_into_kb() {
-    let dir = stdlib_dir();
-    let files = collect_anthill_files(&dir);
+    let files = collect_stdlib_and_rust_bindings();
     assert!(!files.is_empty());
 
     let parsed: Vec<_> = files
@@ -1913,8 +1912,7 @@ fn nested_namespace_sees_outer_imports() {
     );
 
     // Also load stdlib prelude so that List, String, Bool are available
-    let stdlib_dir = crate::common::stdlib_dir();
-    let mut all_files = crate::common::collect_anthill_files(&stdlib_dir);
+    let mut all_files = crate::common::collect_stdlib_and_rust_bindings();
     all_files.extend(files);
 
     let parsed: Vec<_> = all_files
@@ -5226,8 +5224,7 @@ fn load_with_stdlib(extra_source: &str) -> KnowledgeBase {
 fn try_load_with_stdlib(
     extra_source: &str,
 ) -> Result<KnowledgeBase, Vec<anthill_core::kb::load::LoadError>> {
-    let dir = stdlib_dir();
-    let files = collect_anthill_files(&dir);
+    let files = collect_stdlib_and_rust_bindings();
     let mut all_parsed: Vec<_> = files
         .iter()
         .map(|path| {

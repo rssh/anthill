@@ -114,8 +114,7 @@ fn load_kb() -> KnowledgeBase {
 }
 
 fn load_src(src: &str) -> KnowledgeBase {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

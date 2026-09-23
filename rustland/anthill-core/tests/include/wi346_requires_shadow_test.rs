@@ -18,8 +18,7 @@ use anthill_core::parse;
 /// Load the stdlib plus `extra`, expecting a clean load (warnings are
 /// non-fatal), and return the warning strings.
 fn load_warnings(extra: &str) -> Vec<String> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

@@ -11,8 +11,7 @@ use anthill_core::parse;
 
 /// Load stdlib + ring-polynom testcase into a fresh KB.
 fn load_ring_polynom_kb() -> KnowledgeBase {
-    let stdlib_dir = crate::common::stdlib_dir();
-    let mut files = crate::common::collect_anthill_files(&stdlib_dir);
+    let mut files = crate::common::collect_stdlib_and_rust_bindings();
 
     let testcases_dir = crate::common::testcases_dir();
     let ring_path = testcases_dir.join("ring-polynom/ring.anthill");

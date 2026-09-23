@@ -382,22 +382,6 @@ impl MapArenaRef {
         }
     }
 
-    /// Borrow the underlying `MapBody` for a read-only callback.
-    pub fn with_body<R>(&self, h: &MapHandle, f: impl FnOnce(&MapBody) -> R) -> R {
-        let arena = self.0.borrow();
-        let slot = &arena.slots[h.raw as usize];
-        let body = slot.body.as_ref().expect("map arena slot missing body");
-        f(body)
-    }
-
-    /// Clone the underlying `MapBody` — used by `put`/`remove` to derive a
-    /// fresh, independent map without touching the original. `MapBody` is
-    /// persistent, so this clone is O(1) structural sharing; the subsequent
-    /// single-key edit copies only the touched path (O(log N)).
-    pub fn clone_body(&self, h: &MapHandle) -> MapBody {
-        self.with_body(h, |b| b.clone())
-    }
-
     /// Number of live map slots (diagnostic for refcount tests).
     pub fn live(&self) -> usize {
         self.0.borrow().live()
@@ -420,6 +404,35 @@ pub struct MapHandle {
 impl MapHandle {
     pub fn raw(&self) -> u32 {
         self.raw
+    }
+
+    /// Borrow the underlying `MapBody` for a read-only callback — from THIS HANDLE'S
+    /// OWN arena.
+    ///
+    /// WI-20260922-BRT4Y — a method on the handle, not on an arena that is handed the
+    /// handle. The arena form (`interp.maps.with_body(&h, …)`) indexed the RECEIVER's
+    /// arena with `h.raw`, and nothing tied the two together: a handle minted by one
+    /// interpreter and read by another indexed a slot table it did not belong to —
+    /// out of bounds (a panic, measured), or, worse, some OTHER map that sat at the same
+    /// index. It became reachable when `Map`'s operations became visible to the rule-body
+    /// operand gate: `Map.size(Map.put(Map.empty(), "a", 1)) = 1` reduces each call in its
+    /// own scratch bridge interpreter, so the inner call's map reached the outer call
+    /// from another arena. The handle already carries its arena (for its refcount), so
+    /// reading through it cannot pick the wrong one.
+    pub fn with_body<R>(&self, f: impl FnOnce(&MapBody) -> R) -> R {
+        let arena = self.arena.0.borrow();
+        let slot = &arena.slots[self.raw as usize];
+        let body = slot.body.as_ref().expect("map arena slot missing body");
+        f(body)
+    }
+
+    /// Clone the underlying `MapBody` — used by `put`/`remove` to derive a
+    /// fresh, independent map without touching the original. `MapBody` is
+    /// persistent, so this clone is O(1) structural sharing; the subsequent
+    /// single-key edit copies only the touched path (O(log N)). Reads this
+    /// handle's own arena, for [`Self::with_body`]'s reason.
+    pub fn clone_body(&self) -> MapBody {
+        self.with_body(|b| b.clone())
     }
     #[allow(dead_code)] // arena handle accessor; kept for future map ops
     pub(crate) fn arena(&self) -> &MapArenaRef {

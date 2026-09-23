@@ -70,12 +70,8 @@ sort anthill.prelude.Map
   -- Map provides FiniteCollection (WI-585): a Map is finite, so it can be fully
   -- consumed. `collect` materializes the entries as a List (which is the
   -- finiteness primitive's List form); `size`/`foldLeft`/`foldRight` come from
-  -- the FiniteCollection defaults. NOTE: `FiniteCollection.size(m)` runs the
-  -- default O(N) walk `List.length(collect(m))`, NOT Map's own O(1) `size`
-  -- (below), because Map's `size` is body-less (law-backed) and the WI-444 carrier
-  -- override only fires for a RUNNABLE-bodied own op (see the `size` note below;
-  -- closing that gap is WI-444). Same answer either way; a concrete Map impl with a
-  -- runnable `size` body gets the O(1).
+  -- the FiniteCollection defaults — except `size`, which Map supplies itself: see the
+  -- `size` note below.
   provides FiniteCollection[C = Map, Element = Pair[A = K, B = V], E = {}]
   operation collect(m: Map) -> List[T = Pair[A = K, B = V]] = entries(m)
 
@@ -87,28 +83,29 @@ sort anthill.prelude.Map
   -- combinator's finiteness witness requires of the source (WI-590).
 
   -- Construction
-  operation empty() -> Map
-  operation put(m: Map, key: K, value: V) -> Map
+  operation empty() -> Map @[host_implemented]
+  operation put(m: Map, key: K, value: V) -> Map @[host_implemented]
 
   -- Lookup
-  operation get(m: Map, key: K) -> Option[V]
-  operation contains(m: Map, key: K) -> Bool
+  operation get(m: Map, key: K) -> Option[V] @[host_implemented]
+  operation contains(m: Map, key: K) -> Bool @[host_implemented]
 
   -- Removal
-  operation remove(m: Map, key: K) -> Map
+  operation remove(m: Map, key: K) -> Map @[host_implemented]
 
   -- Projections
-  operation keys(m: Map) -> List[T = K]
-  operation values(m: Map) -> List[T = V]
-  operation entries(m: Map) -> List[T = Pair[A = K, B = V]]
+  operation keys(m: Map) -> List[T = K] @[host_implemented]
+  operation values(m: Map) -> List[T = V] @[host_implemented]
+  operation entries(m: Map) -> List[T = Pair[A = K, B = V]] @[host_implemented]
   -- Map's OWN O(1) size. Note (WI-444): now that Map provides FiniteCollection,
   -- the inherited `FiniteCollection.size` default (an O(N) `List.length(collect(m))`
-  -- walk) shares this short name. A dot call `m.size()` resolves to THIS own op; a
-  -- spec-op call `FiniteCollection.size(m)` runs the default walk, because the carrier
-  -- override (WI-444) only fires for a RUNNABLE-bodied own op and this one is
-  -- law-backed (body-less). Same answer either way; a concrete Map impl with a
-  -- runnable `size` body gets the O(1) override. Closing the body-less gap is WI-444.
-  operation size(m: Map) -> Int64
+  -- walk) shares this short name. The carrier override (WI-444) takes an own op the
+  -- interpreter can RUN (`op_is_interpretable`), and since WI-20260922-BRT4Y this one is
+  -- a declared host operation with a rust `operation_map` entry — it was registered by
+  -- hardcoded name before, invisible to that gate, so the spec-op call ran the default
+  -- walk. MEASURED after the move: `FiniteCollection.size(m)` and `Map.size(m)` both run
+  -- this host `size`. Same answer either way; the difference is O(1) against O(N).
+  operation size(m: Map) -> Int64 @[host_implemented]
 
   -- Laws (algebraic specification). The genuinely-reducing laws are tagged @[simp] so
   -- the type-directed rewriter fires them once the redex's carrier is known to provide

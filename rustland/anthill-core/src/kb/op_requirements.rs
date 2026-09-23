@@ -235,7 +235,7 @@ mod tests {
     use super::*;
 
     fn load_with_src(src: &str) -> KnowledgeBase {
-        crate::kb::test_support::load_stdlib_and_stl(Some(src))
+        crate::kb::test_support::load_stdlib(Some(src))
     }
 
     #[test]

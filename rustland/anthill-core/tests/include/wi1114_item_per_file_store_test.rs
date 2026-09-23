@@ -93,7 +93,7 @@ impl Fixture {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().to_path_buf();
 
-        let stdlib = crate::common::collect_anthill_files(&crate::common::stdlib_dir());
+        let stdlib = crate::common::collect_stdlib_and_rust_bindings();
         let mut sources: Vec<String> = stdlib
             .iter()
             .map(|p| std::fs::read_to_string(p).expect("read stdlib file"))

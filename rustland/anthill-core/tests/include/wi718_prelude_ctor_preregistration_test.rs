@@ -78,7 +78,7 @@ const PROJECT_SRC: &str = r#"
 /// documents. Pass 1 defines every name across every file first, so the
 /// project's `Option`/`some`/`none` still resolve.
 fn load_facts_first() -> KnowledgeBase {
-    let stdlib = crate::common::collect_anthill_files(&crate::common::stdlib_dir());
+    let stdlib = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed = vec![parse::parse(PROJECT_SRC).expect("parse project src")];
     for p in &stdlib {
         let src = std::fs::read_to_string(p).unwrap();

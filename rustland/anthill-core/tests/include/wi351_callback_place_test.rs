@@ -18,8 +18,7 @@ use anthill_core::parse;
 
 /// Load stdlib + a user source together (the path the effect check runs on).
 fn load_with(source: &str) -> KnowledgeBase {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())

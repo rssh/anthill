@@ -135,28 +135,28 @@ namespace anthill.stage0
     -- The target's OWN name for itself, as `MirrorEntry.target` records it.
     -- Only the carrier can answer: two GitHub repos are two targets, and what
     -- distinguishes them is a GitHub parameter.
-    operation target_name(f: Forge) -> String
+    operation target_name(f: Forge) -> String @[host_implemented]
 
     -- Create an entry, and answer the handle it got. The handle is opaque: this
     -- side stores it and hands it back, and never parses it.
     operation create_entry(f: Forge, title: String, body: String) -> String
-      effects {External, Error}
+      effects {External, Error} @[host_implemented]
 
     -- Overwrite an entry's title and body. UNCONDITIONALLY — export is
     -- tracker-wins, so there is nothing to compare against and nothing to merge.
     operation update_entry(f: Forge, entry: String, title: String,
                            body: String) -> Unit
-      effects {External, Error}
+      effects {External, Error} @[host_implemented]
 
     -- Every entry the target holds, newest first. What ADOPTION reads (§7.1):
     -- an item whose `MirrorEntry` is missing but whose entry is already there
     -- under the `WI-<id>: ` title prefix is linked rather than duplicated.
     operation list_entries(f: Forge) -> List[T = ForgeEntry]
-      effects {External, Error}
+      effects {External, Error} @[host_implemented]
 
     -- One entry's comments, oldest first. The return channel `import` reads.
     operation entry_comments(f: Forge, entry: String) -> List[T = ForgeComment]
-      effects {External, Error}
+      effects {External, Error} @[host_implemented]
   }
 end
 

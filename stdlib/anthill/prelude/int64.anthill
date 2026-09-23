@@ -32,13 +32,13 @@ sort anthill.prelude.Int64
   -- host call, and it gives the default body a floor to bottom out on (it reads
   -- `Int64.gt` on `compare`'s result).
   operation {
-    compare(a: Int64, b: Int64) -> Int64   -- -1 | 0 | 1
-    gt(a: Int64, b: Int64) -> Bool         -- >
-    gte(a: Int64, b: Int64) -> Bool        -- >=
-    lt(a: Int64, b: Int64) -> Bool         -- <
-    lte(a: Int64, b: Int64) -> Bool        -- <=
-    max(a: Int64, b: Int64) -> Int64       -- the greater
-    min(a: Int64, b: Int64) -> Int64       -- the lesser
+    compare(a: Int64, b: Int64) -> Int64 @[host_implemented]   -- -1 | 0 | 1
+    gt(a: Int64, b: Int64) -> Bool @[host_implemented]         -- >
+    gte(a: Int64, b: Int64) -> Bool @[host_implemented]        -- >=
+    lt(a: Int64, b: Int64) -> Bool @[host_implemented]         -- <
+    lte(a: Int64, b: Int64) -> Bool @[host_implemented]        -- <=
+    max(a: Int64, b: Int64) -> Int64 @[host_implemented]       -- the greater
+    min(a: Int64, b: Int64) -> Int64 @[host_implemented]       -- the lesser
   }
 
   -- Bounds: Int64 is finite (platform-dependent, e.g. i64)
@@ -63,8 +63,8 @@ sort anthill.prelude.Int64
   -- assertion and no call site it could be checked at. It was also inert, like every
   -- plain denial (§8.4), so it stated nothing that fired. "Every Int64 is within
   -- bounds" is true by construction of the carrier, not a claim the KB can discharge.
-  operation minValue() -> Int64
-  operation maxValue() -> Int64
+  operation minValue() -> Int64 @[host_implemented]
+  operation maxValue() -> Int64 @[host_implemented]
 
   -- WI-880: `Int64`'s ARITHMETIC, declared here for the same reason the ordering above
   -- is — a host implementation has to have a carrier to be keyed to. `Additive.add` /
@@ -81,22 +81,22 @@ sort anthill.prelude.Int64
   -- to carry is gone — it would have been shadowed by these declarations, and a
   -- shadowed import is a claim that reads as live.
   operation {
-    add(a: Int64, b: Int64) -> Int64        -- +, checked
-    sub(a: Int64, b: Int64) -> Int64        -- - (binary), checked
-    mul(a: Int64, b: Int64) -> Int64        -- *, checked
+    add(a: Int64, b: Int64) -> Int64 @[host_implemented]        -- +, checked
+    sub(a: Int64, b: Int64) -> Int64 @[host_implemented]        -- - (binary), checked
+    mul(a: Int64, b: Int64) -> Int64 @[host_implemented]        -- *, checked
   }
 
   -- Operations beyond what Numeric provides
   operation {
-    abs(a: Int64) -> Int64                  -- |a|
-    neg(a: Int64) -> Int64                  -- -a
-    mod(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) }      -- a mod b (always non-negative); partial: b ≠ 0
-    rem(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) }      -- a rem b (sign follows dividend); partial: b ≠ 0
-    div(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) }      -- truncated integer division; also `/` infix; partial: b ≠ 0
-    divExact(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) } -- integer division (truncated); alias of div; partial: b ≠ 0
-    sign(a: Int64) -> Int64                 -- -1, 0, or 1
-    to_float(n: Int64) -> Float           -- exact for |n| < 2^53; rounds otherwise
-    to_string(n: Int64) -> String         -- decimal representation, no padding
+    abs(a: Int64) -> Int64 @[host_implemented]                  -- |a|
+    neg(a: Int64) -> Int64 @[host_implemented]                  -- -a
+    mod(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) } @[host_implemented]      -- a mod b (always non-negative); partial: b ≠ 0
+    rem(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) } @[host_implemented]      -- a rem b (sign follows dividend); partial: b ≠ 0
+    div(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) } @[host_implemented]      -- truncated integer division; also `/` infix; partial: b ≠ 0
+    divExact(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) } @[host_implemented] -- integer division (truncated); alias of div; partial: b ≠ 0
+    sign(a: Int64) -> Int64 @[host_implemented]                 -- -1, 0, or 1
+    to_float(n: Int64) -> Float @[host_implemented]           -- exact for |n| < 2^53; rounds otherwise
+    to_string(n: Int64) -> String @[host_implemented]         -- decimal representation, no padding
   }
 
   -- Laws

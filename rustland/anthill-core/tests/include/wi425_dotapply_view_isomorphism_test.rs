@@ -31,8 +31,7 @@ use smallvec::SmallVec;
 /// A KB with the full stdlib loaded — every reflect / prelude symbol the
 /// dot_apply encoding uses is resolved, exactly as in any loader-built KB.
 fn stdlib_kb() -> KnowledgeBase {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {

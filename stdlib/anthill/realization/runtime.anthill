@@ -41,29 +41,29 @@ namespace anthill.realization.runtime
     sort S = ?
 
     -- The resolved impl identity (the `impl` named child).
-    operation impl(d: Dictionary) -> Symbol
+    operation impl(d: Dictionary) -> Symbol @[host_implemented]
 
     -- Number of sub-requirement dicts.
-    operation arity(d: Dictionary) -> Int64
+    operation arity(d: Dictionary) -> Int64 @[host_implemented]
 
     -- Project the i-th sub-requirement — positional child i, no copy (the
     -- child rides an Rc). Its denoted type is the i-th `requires` of S's impl; that
     -- value-dependent refinement is deferred, so the view returns bare
     -- `Dictionary` (existential) for now.
-    operation sub(d: Dictionary, i: Int64) -> Dictionary
+    operation sub(d: Dictionary, i: Int64) -> Dictionary @[host_implemented]
 
     -- RESOLVE a spec operation against this dict's impl sort, as a callable
     -- handle: the impl op plus this dict as its dispatch environment. Keyed by
     -- the SPEC OP SYMBOL (e.g. `Eq.eq`) — the same key the interpreter
     -- dispatches on. The reflect face of `dispatch_via_sort_ops_table`.
-    operation resolveOp(d: Dictionary, specOp: Symbol) -> OpRef
+    operation resolveOp(d: Dictionary, specOp: Symbol) -> OpRef @[host_implemented]
 
     -- BULK view: all this dict's operations as a finite iterable of callable
     -- OpRefs (over the impl's SortOpsTable slice) — the enumeration face to
     -- resolveOp's keyed-lookup face. Each is resolved the same way resolveOp
     -- resolves one. (The runtime backs this with an eager List today; a lazy
     -- carrier is a follow-on.)
-    operation ops(d: Dictionary) -> FiniteStream[T = OpRef]
+    operation ops(d: Dictionary) -> FiniteStream[T = OpRef] @[host_implemented]
   end
 
   -- A resolved operation reference: a fully-qualified op symbol plus — only
@@ -80,11 +80,11 @@ namespace anthill.realization.runtime
     -- The resolved operation's identity — a Symbol with a fully-qualified name.
     -- Enough for "which impl did this resolve to"; to CALL it you need the whole
     -- OpRef (the dict threads the op's own sub-requirements).
-    operation op(r: OpRef) -> Symbol
+    operation op(r: OpRef) -> Symbol @[host_implemented]
 
     -- The captured dispatching dictionary — none() only for a requires-free op
     -- (enclosing sort has no `requires`) or a namespace-level op.
-    operation dict(r: OpRef) -> Option[T = Dictionary]
+    operation dict(r: OpRef) -> Option[T = Dictionary] @[host_implemented]
 
     -- The op the CALL NAMED, when that differs from the resolved `op` (WI-857).
     -- none() means "the same" — an eta'd reference, whose captured dict is its own
@@ -96,7 +96,7 @@ namespace anthill.realization.runtime
     -- Declared because it is part of the value's IDENTITY: two OpRefs agreeing on
     -- `op` and `dict` but not on this are different values (WI-1019). Without it
     -- the accessor set did not, in fact, expose everything the value holds.
-    operation named(r: OpRef) -> Option[T = Symbol]
+    operation named(r: OpRef) -> Option[T = Symbol] @[host_implemented]
 
     -- The eta-site PARAMETER MAPPING: `A`'s component labels in the order the
     -- `Function[A = ...]` slot this reference was lifted into declares them, so
@@ -110,7 +110,7 @@ namespace anthill.realization.runtime
     -- and at `Function[A = (x, acc)]` answer DIFFERENTLY from the same argument, so a
     -- representation omitting it would merge two distinct values — and that
     -- representation feeds fact dedup, where merging DROPS A FACT (WI-815, WI-1088).
-    operation spreadLabels(r: OpRef) -> Option[T = List[T = Symbol]]
+    operation spreadLabels(r: OpRef) -> Option[T = List[T = Symbol]] @[host_implemented]
 
     -- The OPERATION'S OWN `requires` slots (WI-1091) — the tail of the op's
     -- dictionary chain, after its parent sort's, in CHAIN ORDER. A separate
@@ -124,6 +124,6 @@ namespace anthill.realization.runtime
     -- that MOST needs declaring: for an eta of an operation whose SORT requires
     -- nothing (`List.member` is exactly that), `dict` is none() on every such
     -- reference, so this channel is the ONLY thing telling two of them apart.
-    operation opRequirements(r: OpRef) -> Option[T = List[T = Option[T = Dictionary]]]
+    operation opRequirements(r: OpRef) -> Option[T = List[T = Option[T = Dictionary]]] @[host_implemented]
   end
 end

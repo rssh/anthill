@@ -8,8 +8,7 @@ use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
 fn load_with(extra: &str) -> KnowledgeBase {
-    let stdlib = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&stdlib);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {
@@ -89,8 +88,7 @@ fn induction_registration_is_idempotent_across_loads() {
         .filter(|r| r.contains("test.induction_idem.Mode.induction"))
         .count();
     // Re-load: idempotence must dedupe.
-    let stdlib = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&stdlib);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

@@ -42,8 +42,7 @@ use anthill_core::span::{SourceId, SourceSpan};
 /// `ParsedFile` is not publicly nameable, so the parse list is built inline —
 /// the same shape every other loader-driven test in this suite uses.
 fn load_with(extras: &[&str]) -> Result<KnowledgeBase, Vec<String>> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

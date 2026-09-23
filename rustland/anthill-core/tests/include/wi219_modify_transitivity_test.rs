@@ -11,32 +11,40 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_stdlib_kb() -> KnowledgeBase {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    load_stdlib_into(KnowledgeBase::new())
+}
+
+/// The library load, into a KB the caller may have PREPARED — an embedder's host
+/// functions must be registered before the first load (WI-1122 seals the table there).
+fn load_stdlib_into(mut kb: KnowledgeBase) -> KnowledgeBase {
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let parsed: Vec<_> = files
         .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
         .collect();
     let refs: Vec<_> = parsed.iter().collect();
-    let mut kb = KnowledgeBase::new();
     load::load_all(&mut kb, &refs, &NullResolver).expect("stdlib load");
     kb
 }
 
 fn load_stdlib_and_project_kb() -> KnowledgeBase {
-    let mut kb = load_stdlib_kb();
+    // The `Forge` stand-ins go on the FRESH KB, before the library phase seals the table
+    // — see the coordination note below.
+    let mut fresh = KnowledgeBase::new();
+    crate::common::register_forge_host_stand_ins(&mut fresh);
+    let mut kb = load_stdlib_into(fresh);
     // Load anthill-todo's domain.anthill to get stage0 / WorkItem / WorkStatus,
     // plus version.anthill for the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — without it store.anthill's import is unresolved.
     // WI-1117: and coordination.anthill for `MirrorEntry`, which store.anthill
-    // imports for the delete cascade. The DECLARATION only — its rust binding is a
-    // separate file, and loading that here would demand host functions only the
-    // anthill-todo binary registers.
-    let project_files = vec![
+    // imports for the delete cascade — WITH its rust binding, which WI-20260922-BRT4Y
+    // makes the declaration's condition of loading (its `Forge` operations are
+    // `@[host_implemented]`).
+    let mut project_files = vec![
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/domain.anthill"),
         crate::common::workspace_root().join("rustland/anthill-todo/anthill/version.anthill"),
-        crate::common::workspace_root().join("rustland/anthill-todo/anthill/coordination.anthill"),
     ];
+    project_files.extend(crate::common::anthill_todo_coordination_files());
     let parsed: Vec<_> = project_files
         .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())

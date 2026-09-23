@@ -16,8 +16,7 @@ use smallvec::SmallVec;
 
 /// Load stdlib + typing rules into a fresh KB with builtins registered.
 fn load_stdlib_kb() -> KnowledgeBase {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     assert!(!files.is_empty(), "no stdlib files found");
 
     let parsed: Vec<_> = files
@@ -2187,8 +2186,7 @@ fn wi305_operation_body_discriminates_some_vs_none() {
 
 /// Helper: load only stdlib, returning both KB and LoadResult (all stdlib sorts).
 fn load_stdlib_kb_with_result() -> (KnowledgeBase, LoadResult) {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     assert!(!files.is_empty(), "no stdlib files found");
 
     let parsed: Vec<_> = files
@@ -6285,8 +6283,7 @@ end
 #[test]
 fn rule_typing_stdlib_no_spurious_errors() {
     let (mut kb, result) = {
-        let dir = crate::common::stdlib_dir();
-        let files = crate::common::collect_anthill_files(&dir);
+        let files = crate::common::collect_stdlib_and_rust_bindings();
         let parsed: Vec<_> = files
             .iter()
             .map(|path| {
@@ -6349,8 +6346,7 @@ end
 fn pattern_fragment_stdlib_valid() {
     // stdlib should have no pattern fragment violations
     let (mut kb, result) = {
-        let dir = crate::common::stdlib_dir();
-        let files = crate::common::collect_anthill_files(&dir);
+        let files = crate::common::collect_stdlib_and_rust_bindings();
         let parsed: Vec<_> = files
             .iter()
             .map(|path| {
@@ -6387,8 +6383,7 @@ fn pattern_fragment_stdlib_valid() {
 fn effect_scoping_stdlib_no_spurious_errors() {
     // Stdlib operations should produce no effect scoping errors
     let (mut kb, result) = {
-        let dir = crate::common::stdlib_dir();
-        let files = crate::common::collect_anthill_files(&dir);
+        let files = crate::common::collect_stdlib_and_rust_bindings();
         let parsed: Vec<_> = files
             .iter()
             .map(|path| {

@@ -15118,7 +15118,7 @@ mod wi913_host_name_ladder_tests {
     /// count would fail for the wrong reason. The claim is the CLASSIFICATION.
     #[test]
     fn wi913_every_dotted_name_is_reachable_or_explained() {
-        let mut kb = crate::kb::test_support::load_stdlib_and_stl(None);
+        let mut kb = crate::kb::test_support::load_stdlib(None);
         let global = kb.global_scope();
         let dotted: Vec<(String, Symbol)> = kb
             .symbols

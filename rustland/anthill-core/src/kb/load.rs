@@ -1186,6 +1186,57 @@ pub enum LoadError {
         /// Always at least one — its non-emptiness IS the verdict.
         clause_sites: Vec<String>,
     },
+    /// WI-20260922-BRT4Y — an operation declared `@[host_implemented]` that no binding
+    /// block in the loaded program realizes: no `operation_map` entry, in any language,
+    /// names it. Without this the program loaded clean and died `OperationBodyMissing`
+    /// at the first call, which is the eval death the marker exists to move to load.
+    HostImplementedUnsupplied {
+        /// The operation, qualified.
+        op: String,
+        /// The scope that owns it, qualified — the `<owner>` a supplying
+        /// `provides <owner> language …` block names.
+        owner: String,
+        /// The operation's own name — the key its `operation_map` entry spells.
+        name: String,
+        /// Where the operation is declared.
+        span: Span,
+    },
+    /// WI-20260922-BRT4Y — `@[host_implemented]` on an operation that carries a BODY. The
+    /// attribute says body-less by design; the two are a contradiction the builtin map's
+    /// precedence would otherwise resolve silently.
+    HostImplementedWithBody {
+        /// The operation, qualified.
+        op: String,
+        /// Where the operation is declared.
+        span: Span,
+    },
+    /// WI-20260922-BRT4Y — the drift check: an `operation_map` entry realizes an
+    /// operation whose declaration does not claim `@[host_implemented]`.
+    HostMappingUnclaimed {
+        /// The mapped operation, as the mapping spells it (`<carrier>.<operation>`).
+        op: String,
+        /// The host function the mapping names.
+        host_fn: String,
+        /// The mapping's host language.
+        lang: String,
+        /// Where the operation is declared, when THIS load phase declared it. A mapping
+        /// loaded in a later phase than its operation has no declaration site in hand.
+        span: Option<Span>,
+    },
+    /// WI-20260922-BRT4Y — an `operation_map` entry realizes an operation that HAS a body.
+    /// Not the drift check's missing attribute: claiming it would only trade this for
+    /// [`Self::HostImplementedWithBody`]. The anthill body already defines the operation,
+    /// and a host function beside it is a second definition.
+    HostMappingOnBodiedOperation {
+        /// The mapped operation, as the mapping spells it (`<carrier>.<operation>`).
+        op: String,
+        /// The host function the mapping names.
+        host_fn: String,
+        /// The mapping's host language.
+        lang: String,
+        /// Where the operation is declared, when THIS load phase declared it.
+        span: Option<Span>,
+    },
     /// WI-999 / proposal 059 R4 clause 3 — A DECLARATION MAY NOT CAPTURE A NAME IT
     /// DOES NOT OVERRIDE. A name can already mean something in a sort's scope
     /// without being a member of it — reached by an `import`, by an enclosing
@@ -2266,6 +2317,8 @@ impl LoadError {
             | LoadError::UndefinedAfterDefinePass { span, .. }
             | LoadError::UndefinedRuleBodyGoal { span, .. }
             | LoadError::UndefinedContractGoal { span, .. }
+            | LoadError::HostImplementedUnsupplied { span, .. }
+            | LoadError::HostImplementedWithBody { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::UndefinedHeadArgument { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
@@ -2291,6 +2344,8 @@ impl LoadError {
             | LoadError::AmbiguousSpecOpDispatch { span, .. }
             | LoadError::TypedPatternNotEnforced { span, .. }
             | LoadError::NonDefiningConnectiveHead { span, .. }
+            | LoadError::HostMappingUnclaimed { span, .. }
+            | LoadError::HostMappingOnBodiedOperation { span, .. }
             | LoadError::InvalidTypeArgument { span, .. } => *span,
             LoadError::Located { inner, .. } => inner.user_span(),
             _ => None,
@@ -2573,6 +2628,45 @@ impl LoadError {
                     loc.format_start(*span),
                     undefined_contract_goal_message(functor, op, clause)
                 )
+            }
+            LoadError::HostImplementedUnsupplied {
+                op,
+                owner,
+                name,
+                span,
+            } => format!(
+                "{}: {}",
+                loc.format_start(*span),
+                host_implemented_unsupplied_message(op, owner, name)
+            ),
+            LoadError::HostImplementedWithBody { op, span } => format!(
+                "{}: {}",
+                loc.format_start(*span),
+                host_implemented_with_body_message(op)
+            ),
+            LoadError::HostMappingUnclaimed {
+                op,
+                host_fn,
+                lang,
+                span,
+            } => {
+                let msg = host_mapping_unclaimed_message(op, host_fn, lang);
+                match span {
+                    Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
+                    None => msg,
+                }
+            }
+            LoadError::HostMappingOnBodiedOperation {
+                op,
+                host_fn,
+                lang,
+                span,
+            } => {
+                let msg = host_mapping_on_bodied_operation_message(op, host_fn, lang);
+                match span {
+                    Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
+                    None => msg,
+                }
             }
             LoadError::ConstantInGoalPosition { literal, span } => {
                 format!(
@@ -3763,6 +3857,49 @@ impl std::fmt::Display for LoadError {
                     span.start,
                     span.end
                 )
+            }
+            LoadError::HostImplementedUnsupplied {
+                op,
+                owner,
+                name,
+                span,
+            } => write!(
+                f,
+                "{} at {}..{}",
+                host_implemented_unsupplied_message(op, owner, name),
+                span.start,
+                span.end
+            ),
+            LoadError::HostImplementedWithBody { op, span } => write!(
+                f,
+                "{} at {}..{}",
+                host_implemented_with_body_message(op),
+                span.start,
+                span.end
+            ),
+            LoadError::HostMappingUnclaimed {
+                op,
+                host_fn,
+                lang,
+                span,
+            } => {
+                let msg = host_mapping_unclaimed_message(op, host_fn, lang);
+                match span {
+                    Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
+                    None => write!(f, "{}", msg),
+                }
+            }
+            LoadError::HostMappingOnBodiedOperation {
+                op,
+                host_fn,
+                lang,
+                span,
+            } => {
+                let msg = host_mapping_on_bodied_operation_message(op, host_fn, lang);
+                match span {
+                    Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
+                    None => write!(f, "{}", msg),
+                }
             }
             LoadError::UndefinedRuleBodyTerm { functor, span } => {
                 write!(
@@ -12455,6 +12592,52 @@ fn undefined_contract_goal_message(functor: &str, op: &str, clause: &str) -> Str
     )
 }
 
+/// WI-20260922-BRT4Y — the ONE wording of [`LoadError::HostImplementedUnsupplied`]. It
+/// names the missing LAYER in the only form the loader can know it: the `provides`
+/// block and `operation_map` key that would supply the operation. Which file ships that
+/// block is the host's business (rustland's is `rustland/anthill-stl/anthill/`).
+fn host_implemented_unsupplied_message(op: &str, owner: &str, name: &str) -> String {
+    format!(
+        "operation `{op}` is declared `@[host_implemented]`, but no binding block in the \
+         loaded program realizes it: no `provides {owner} language …` block maps `{name}` \
+         in its `operation_map`. The host binding layer for `{owner}` is missing from the \
+         load — without it every call to `{op}` dies at eval with no implementation. Load \
+         the layer (for the rust runtime, `rustland/anthill-stl/anthill/`), or, if `{op}` \
+         is meant to have an anthill definition, give it a body and drop the attribute."
+    )
+}
+
+/// WI-20260922-BRT4Y — the ONE wording of [`LoadError::HostImplementedWithBody`].
+fn host_implemented_with_body_message(op: &str) -> String {
+    format!(
+        "operation `{op}` is declared `@[host_implemented]` and also has a body. The \
+         attribute says the operation is body-less by design — a host function supplies \
+         it — so the two cannot both be its definition. Drop the body and let the host's \
+         `operation_map` supply it, or drop the attribute and let the body define it."
+    )
+}
+
+/// WI-20260922-BRT4Y — the ONE wording of [`LoadError::HostMappingUnclaimed`].
+fn host_mapping_unclaimed_message(op: &str, host_fn: &str, lang: &str) -> String {
+    format!(
+        "`operation_map` (language {lang}) realizes `{op}` with host function {host_fn:?}, \
+         but the declaration of `{op}` does not claim host backing. Mark it \
+         `@[host_implemented]` so that reading the declaration answers whether it is \
+         body-less on purpose; a mapping for an operation that is not meant to be \
+         host-implemented is a binding against the wrong declaration."
+    )
+}
+
+/// WI-20260922-BRT4Y — the ONE wording of [`LoadError::HostMappingOnBodiedOperation`].
+fn host_mapping_on_bodied_operation_message(op: &str, host_fn: &str, lang: &str) -> String {
+    format!(
+        "`operation_map` (language {lang}) realizes `{op}` with host function {host_fn:?}, \
+         but `{op}` has an anthill BODY, which already defines it — a host function beside \
+         it is a second definition. Drop the mapping, or drop the body and declare the \
+         operation `@[host_implemented]`."
+    )
+}
+
 /// WI-1058 — the ONE wording of [`LoadError::UndefinedRuleBodyTerm`], the ARGUMENT-position
 /// twin of [`undefined_rule_body_goal_message`] (WI-895's remaining half). Same head test
 /// ([`KnowledgeBase::undefined_functor`]), different CONSEQUENCE, so a different sentence:
@@ -13043,6 +13226,10 @@ fn load_phase_inner(
     // already-loaded files reads two declarations of every operation and refuses
     // the lot.
     kb.op_decl_sites.clear();
+    // WI-20260922-BRT4Y — the first rule slot this phase can assert. The rule table only
+    // grows, so a fact at or past it is this phase's: the drift check's scope for the
+    // `OperationMapping` facts, which carry no declaration site of their own.
+    let phase_first_rule = kb.rules.len();
     // WI-660 — same reset for the SortProvidesInfo (provider) index, same reason:
     // it is rebuilt at this phase's type-check (`build_provides_index`), and the
     // dispatch/coherence consumers use it with no fallback-on-miss (a `Some` index
@@ -13243,6 +13430,13 @@ fn load_phase_inner(
     // so the mapped operation's own declaration is resolvable.
     all_errors.extend(build_host_op_mappings(kb));
     mark!("build_host_op_mappings");
+    // WI-20260922-BRT4Y — the `@[host_implemented]` claim against the mappings just
+    // built. Immediately after them because they are its evidence, and ABOVE the
+    // `run_typer` gate because it judges declarations against binding layers and reads
+    // nothing the typer produces — a partial load leaving out a binding layer is the
+    // very shape it exists to refuse.
+    all_errors.extend(check_host_implemented_claims(kb, phase_first_rule));
+    mark!("check_host_implemented_claims");
     // WI-889 — the const-level peer, read for the same reason and at the same point:
     // the mapped const's own declaration must be resolvable.
     all_errors.extend(build_host_const_mappings(kb));
@@ -15285,6 +15479,10 @@ pub struct HostOperationMapping {
     pub op_qn: String,
     pub host_fn: String,
     pub lang: String,
+    /// The `OperationMapping` fact this entry was read from. WI-20260922-BRT4Y — the
+    /// drift check's phase scope: a fact at or past the phase's first rule is one this
+    /// phase asserted.
+    pub fact: super::RuleId,
 }
 
 /// WI-886 — the `lang` this crate's interpreter registers mappings for. ONE OWNER of
@@ -15408,9 +15606,137 @@ pub fn build_host_op_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             op_qn,
             host_fn,
             lang,
+            fact: rid,
         });
     }
     kb.set_host_op_mappings(out);
+    errors
+}
+
+/// WI-20260922-BRT4Y — the attribute that DECLARES an operation body-less BY DESIGN:
+/// `operation compare(a: Int64, b: Int64) -> Int64 @[host_implemented]`. Its
+/// implementation is a host function that some binding block's `operation_map` names.
+///
+/// Before it, a body-less operation was three things wearing one face — a spec member
+/// awaiting dispatch, a host-backed operation, and an unfinished mistake — and the
+/// loader told them apart only by whether some binding block happened to map it. So
+/// `stdlib/` alone LOADED CLEAN and died `OperationBodyMissing` at eval.
+pub const HOST_IMPLEMENTED_ATTR: &str = "host_implemented";
+
+/// WI-20260922-BRT4Y — hold the CLAIM (`@[host_implemented]`) and the EVIDENCE (an
+/// `operation_map` entry, in any language) to each other. Three refusals:
+///
+///   * CLAIMED AND UNSUPPLIED — the operation says a host implements it and nothing in
+///     the loaded program does. This is the point of the marker: the load names the
+///     missing binding layer instead of eval dying `OperationBodyMissing` at the first
+///     call, in whichever program first reaches it.
+///   * CLAIMED AND BODIED — "body-less by design" beside a body is a contradiction, not
+///     a preference; which one ran would be decided by the builtin map's precedence.
+///   * SUPPLIED AND UNCLAIMED — the drift check. A binding block realizes an operation
+///     whose declaration does not say it is host-backed, so reading the declaration no
+///     longer answers "is this body-less on purpose?".
+///
+/// THE EVIDENCE IS LANGUAGE-AGNOSTIC, matching [`KnowledgeBase::is_host_mapped_op`]:
+/// the question is about the PROGRAM. A cpp-only mapping is an implementation, and
+/// whether THIS runtime can call it is `is_interpreter_mapped_op`'s question, asked at
+/// eval. And the check is the claim's ONLY reader (see
+/// [`super::op_info::host_implemented_operations`]): dispatch keeps asking the evidence.
+///
+/// PER PHASE, like [`check_contract_clause_goals`]: the first two judge the operations
+/// THIS phase declared ([`KnowledgeBase::op_decl_sites_iter`]), which is also where their
+/// span comes from, so a `load_all` into a live KB does not re-report an earlier batch.
+/// That carries the same promise: a binding that only a LATER phase loads does not exist
+/// for this one. The drift check judges the mappings whose FACT this phase asserted or
+/// whose operation this phase declared, and is located only in the second case — a
+/// mapping has no declaration site of its own. A mapping over a BODIED operation is its
+/// own refusal ([`LoadError::HostMappingOnBodiedOperation`]): the claim would not fix it.
+fn check_host_implemented_claims(kb: &KnowledgeBase, phase_first_rule: usize) -> Vec<LoadError> {
+    let claimed = super::op_info::host_implemented_operations(kb);
+    let mut errors = Vec::new();
+    // SORTED, because `op_decl_sites` is a `HashMap`: two runs over one program must
+    // report in one order.
+    let mut sites: Vec<(Symbol, crate::span::SourceSpan)> = kb.op_decl_sites_iter().collect();
+    sites.sort_by_key(|(_, site)| (site.source.raw(), site.span.start, site.span.end));
+    for &(op, site) in &sites {
+        // CANONICAL on both sides of the comparison: the claim set is keyed by it, and
+        // `is_host_mapped_op` indexes a mapping's own symbol AND its canonical twin, so
+        // the canonical spelling is the one both halves are guaranteed to hold — a
+        // declaration site recorded under a third interning of the name still matches.
+        let canon = kb.canonical_sym(op);
+        if !claimed.contains(&canon) {
+            continue;
+        }
+        let qn = kb.qualified_name_of(op).to_string();
+        let error = if kb.op_body_node(op).is_some() {
+            LoadError::HostImplementedWithBody {
+                op: qn,
+                span: site.span,
+            }
+        } else if !kb.is_host_mapped_op(canon) {
+            LoadError::HostImplementedUnsupplied {
+                op: qn,
+                // An operation is declared inside a scope by construction, so the owner
+                // is total here; the fallback names the operation itself rather than
+                // dropping the refusal.
+                owner: kb
+                    .declaring_scope_symbol(op)
+                    .map_or_else(|| kb.qualified_name_of(op), |s| kb.qualified_name_of(s))
+                    .to_string(),
+                name: kb.local_name_of(op).to_string(),
+                span: site.span,
+            }
+        } else {
+            continue;
+        };
+        errors.push(error.located_in_kb_source(kb, site.source));
+    }
+    // THE DRIFT HALF, scoped to this phase too: a mapping whose FACT this phase asserted
+    // (a later batch loading a binding layer for earlier declarations is exactly that),
+    // or one whose operation this phase declared. A mapping an earlier phase already
+    // judged is not re-reported — unlocated — against every later batch. A re-presented
+    // file's mapping dedups onto its original fact, so a clean re-load stays clean.
+    let site_of: std::collections::HashMap<Symbol, crate::span::SourceSpan> = sites
+        .iter()
+        .map(|&(s, site)| (kb.canonical_sym(s), site))
+        .collect();
+    // One refusal per OPERATION, not per mapping: an operation mapped in rust and in cpp
+    // is one edit for the author.
+    let mut reported = std::collections::HashSet::new();
+    for m in kb.host_op_mappings() {
+        // `None` is an operation the mapping names but no declaration supplies, which
+        // `build_host_op_mappings` has already refused.
+        let Some(op) = m.op else { continue };
+        let canon = kb.canonical_sym(op);
+        let site = site_of.get(&canon).copied();
+        if m.fact.index() < phase_first_rule && site.is_none() {
+            continue;
+        }
+        if claimed.contains(&canon) || !reported.insert(canon) {
+            continue;
+        }
+        // A mapping over a BODIED operation is not a missing attribute: adding the claim
+        // only trades this refusal for `HostImplementedWithBody`. It is a binding against
+        // an operation the anthill side already defines, and says so.
+        let error = if kb.op_body_node(op).is_some() {
+            LoadError::HostMappingOnBodiedOperation {
+                op: m.op_qn.clone(),
+                host_fn: m.host_fn.clone(),
+                lang: m.lang.clone(),
+                span: site.map(|s| s.span),
+            }
+        } else {
+            LoadError::HostMappingUnclaimed {
+                op: m.op_qn.clone(),
+                host_fn: m.host_fn.clone(),
+                lang: m.lang.clone(),
+                span: site.map(|s| s.span),
+            }
+        };
+        errors.push(match site {
+            Some(s) => error.located_in_kb_source(kb, s.source),
+            None => error,
+        });
+    }
     errors
 }
 

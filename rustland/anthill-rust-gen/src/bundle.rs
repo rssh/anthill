@@ -78,19 +78,21 @@ pub struct BundleOptions {
     /// Path to the RUST HOST BINDINGS (`rustland/anthill-stl/anthill/`), vendored
     /// beside the stdlib and loaded after it.
     ///
-    /// WI-880 — REQUIRED IN PRACTICE, and `Option` only so an embedder with no
-    /// bindings can still bundle. `stdlib/` carries the language-agnostic
-    /// declarations; these blocks carry the `operation_map` clauses that say WHICH
-    /// HOST FUNCTION realizes each one. A bundle without them has no `Int64.add`, no
-    /// `String.concat`, and none of the 26 `anthill.reflect` accessors — so `x.f` in
-    /// an operation body (which lowers to `field_access`) does not run.
+    /// WI-880 — `stdlib/` carries the language-agnostic declarations; these blocks
+    /// carry the `operation_map` clauses that say WHICH HOST FUNCTION realizes each one.
     ///
     /// It was absent, and invisible, while those were registered by hardcoded
     /// qualified name in `eval/builtins.rs`: the generated `main.rs` calls
     /// `register_standard_builtins`, which used to bind them regardless of what the
     /// bundle vendored. Found by /code-review on the reflect migration; the
     /// arithmetic migration had already opened it one family earlier.
-    pub bindings_dir: Option<PathBuf>,
+    ///
+    /// WI-20260922-BRT4Y — REQUIRED, where it was `Option` "so an embedder with no
+    /// bindings can still bundle". Such a bundle cannot load any more: the stdlib
+    /// declares its host-backed operations `@[host_implemented]`, and one that no loaded
+    /// `operation_map` supplies is a load error. The `None` it used to accept produced a
+    /// bundle that failed at its first start.
+    pub bindings_dir: PathBuf,
     /// How the generated `Cargo.toml` references `anthill-core`. See
     /// [`CoreDep`] for the trade-offs between path / git / registry.
     pub anthill_core_dep: CoreDep,
@@ -147,16 +149,14 @@ pub fn generate_bundle(opts: &BundleOptions, output_dir: &Path) -> Result<(), Bu
     // both). AFTER, because the order matters exactly as it does for the embedded set:
     // a binding refines declarations the stdlib made, so it must load second.
     // See [`BundleOptions::bindings_dir`] for what a bundle without them loses.
-    if let Some(bindings) = &opts.bindings_dir {
-        let mut binding_rel: Vec<String> = Vec::new();
-        copy_anthill_tree(
-            bindings,
-            &spec_stdlib.join("host-rust"),
-            &PathBuf::new(),
-            &mut binding_rel,
-        )?;
-        stdlib_rel_paths.extend(binding_rel.into_iter().map(|r| format!("host-rust/{r}")));
-    }
+    let mut binding_rel: Vec<String> = Vec::new();
+    copy_anthill_tree(
+        &opts.bindings_dir,
+        &spec_stdlib.join("host-rust"),
+        &PathBuf::new(),
+        &mut binding_rel,
+    )?;
+    stdlib_rel_paths.extend(binding_rel.into_iter().map(|r| format!("host-rust/{r}")));
 
     let core_dep = render_core_dep(&opts.anthill_core_dep);
     let desc_line = match &opts.description {

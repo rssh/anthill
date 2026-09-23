@@ -164,7 +164,7 @@ fn euclidean_mod_accepts_a_negative_divisor() {
 /// answer is a suspension and must never be counted as a decision.
 #[test]
 fn the_resolver_agrees_with_eval_on_a_negative_divisor() {
-    let mut kb = crate::common::load_kb_with_stdlib_only(RESOLVER_DRIVER);
+    let mut kb = crate::common::load_kb_with(RESOLVER_DRIVER);
     for (goal, want) in [
         ("wi882.resolver.modNeg", 2),
         ("wi882.resolver.modNegOne", 0),

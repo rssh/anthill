@@ -28,8 +28,7 @@ use anthill_core::span::{SourceId, SourceSpan};
 /// Stdlib + a two-sort source (`Foo` the required spec, `Carrier` the requiring
 /// sort) → the loaded KB.
 fn load_kb() -> KnowledgeBase {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let src = r#"
 namespace test.wi662
   import anthill.prelude.{Int64}
@@ -160,8 +159,7 @@ fn ground_sort_requires_still_rides_as_term() {
 /// preserving the denoted `E` binding (a `Value::Node` a `TermId` can't carry).
 #[test]
 fn denoted_child_spec_type_binding_is_root_scoped() {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     // `Parent requires Middle[T = Int64]` loads via natural syntax (a ground
     // SortView fact); the denoted `Middle requires Foo[...]` is asserted directly
     // (no surface syntax produces a value-fact requires — see the module note).

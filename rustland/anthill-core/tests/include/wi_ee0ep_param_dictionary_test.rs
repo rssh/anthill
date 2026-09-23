@@ -480,42 +480,54 @@ fn a_rival_selection_for_one_spec_does_not_capture_this_dep() {
     );
 }
 
-/// **AN OP THAT WRITES ITS OWN `requires` GETS NO CHANNEL** (review finding 3), and this
-/// row exists so that bound is measured rather than assumed.
+/// **AN OP THAT WRITES ITS OWN `requires` TAKES THE CHANNEL TOO** — and this row is the
+/// inverse of what it asserted when EE0EP landed, which is the point of keeping it.
 ///
-/// The `whole_frame` widening is chosen per CALL SITE, not per dep, so admitting it for
-/// an operation whose op chain also holds AUTHOR-written slots would forward those too —
-/// the exclusion `wi822_op_scoped_supply_test::the_instance_dictionary_channel_never_
-/// forwards_an_op_slot` pins, and whose reason (a host entry fills no op slot) this
-/// ticket does not touch. Filtering the chain is unavailable: [`DictChain::names`] is
-/// memoized over the full op chain, so a subset would take the wrong names.
+/// It was a refusal, for a reason that has since dissolved. While `whole_frame` was
+/// CONDITIONAL, admitting the widening for an operation whose chain also held
+/// AUTHOR-written slots would have forwarded those into every callee dictionary the body
+/// builds — the exclusion `wi822_op_scoped_supply_test` pinned — so the channel was
+/// withheld from a mixed chain, and `op_requires_chain_rc` declined to synthesize into
+/// one so the two halves agreed.
 ///
-/// So the gate is `all`, not `any`, and the cost is this: a refusal where the channel
-/// could in principle have served. A refusal, not a wrong answer, and the same one the
-/// program got before this ticket.
+/// WI-20260921-3G1YT deleted the conditional: every call takes the whole frame chain by
+/// the general rule now. MEASURED AFTER THAT MERGE, in two steps, because the two halves
+/// had to be relaxed together — with only the synthesis re-enabled the program loads and
+/// reads `false` at BOTH orderings (the `param_arg_types` gate was still `all`, so the
+/// witness was never read and the slot was filled by construction); with the gate at
+/// `any` as well it reads `true`/`false`. One answer twice is what says the first step
+/// alone is not the fix.
+///
+/// BACKED OUT, and the TWO HALVES FAIL DIFFERENTLY — which is why the note names each.
+/// Restoring the `op_requires_chain_rc` early return refuses (no slot is synthesized, so
+/// WI-1094's refusal stands, as when the ticket shipped). Restoring only
+/// `op_has_param_derived_slot`'s `all` form does NOT refuse: the slot exists and
+/// `param_arg_types` is never populated for it, so the witness is not read and the
+/// dictionary is CONSTRUCTED — `false` at both orderings, measured. The dangerous half is
+/// the quiet one, and a note that called both "refuses" would have said the opposite.
 #[test]
-fn a_mixed_chain_keeps_the_refusal() {
-    let errs = load_errs(&program(
+fn a_mixed_chain_takes_the_channel_too() {
+    let src = program(
         "ee0ep.mixed",
-        "  sort Bulk\n    \
-         operation has(s: MySet[T = String], x: String) -> Bool\n      \
-         requires WeakOrd[T = Int64]\n      \
-         = MySet.contains(s, x)\n  end",
-    ));
-    // WI-1094's OWN refusal, naming the slot — not the later dictionary-build one. The
-    // difference is the point: synthesizing an entry the widening then refuses to expose
-    // would leave a slot that exists and cannot be read, and the author would get
-    // "ambiguous among providers" from a site that has nothing to do with their mistake.
-    // PINS THE CAUSE, not merely a refusal. The first cut accepted either message with
-    // an `||`, and review showed that let the WRONG one through: this frame contains a
-    // `WeakOrd[T = Int64]` and the needed spec is `WeakOrd[T = String]`, so "something
-    // else in this frame already answers it" is simply untrue here. The reason the
-    // channel is closed is that `Bulk.has` writes a `requires` of its own.
-    assert!(
-        errs.iter().any(|e| e.contains("writes its OWN `requires`")
-            && e.contains("named requirement slot `O")),
-        "an author-written op slot closes the widening, and the message must say THAT \
-         rather than blaming a collision that did not happen: {errs:?}"
+        &format!(
+            "  sort Bulk\n    \
+             operation has(s: MySet[T = String], x: String) -> Bool\n      \
+             requires WeakOrd[T = Int64]\n      \
+             = MySet.contains(s, x)\n  end\n  \
+             sort Driver\n    \
+             operation byLength(n: Int64) -> Bool = Bulk.has({}, \"aa\")\n    \
+             operation alphabetical(n: Int64) -> Bool = Bulk.has({}, \"aa\")\n  end",
+            set_at("ByLength"),
+            set_at("Alphabetical"),
+        ),
+    );
+    assert_discriminates(
+        &src,
+        "ee0ep.mixed.Driver.byLength",
+        "ee0ep.mixed.Driver.alphabetical",
+        "an author-written op slot beside a param-derived one no longer closes the \
+         channel — the unrelated `WeakOrd[T = Int64]` must not stop `s`'s own comparator \
+         reaching the body",
     );
 }
 

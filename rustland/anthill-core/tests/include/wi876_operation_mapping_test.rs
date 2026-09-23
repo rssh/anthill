@@ -424,7 +424,7 @@ fn mapping_program(ns: &str, entry: &str) -> String {
         "\nnamespace {ns}\n  \
          sort Widget\n    import anthill.prelude.{{Int64}}\n  import anthill.prelude.PartialOrd.{{gt}}\n    \
          entity widget(v: Int64)\n    \
-         operation squish(a: Widget, b: Widget) -> Int64\n  end\n  \
+         operation squish(a: Widget, b: Widget) -> Int64 @[host_implemented]\n  end\n  \
          provides Widget language rust\n    artifact \"nowhere.rs\"\n    \
          operation_map {{ {entry} }}\n  end\nend\n"
     )
@@ -512,7 +512,7 @@ fn a_mapping_over_a_non_operation_is_refused_at_load() {
 fn a_host_function_of_the_wrong_arity_is_loud() {
     let src = "\nnamespace wi876.arity\n  \
         sort Widget\n    import anthill.prelude.{Int64}\n    \
-        entity widget(v: Int64)\n    operation squish(a: Widget) -> Int64\n  end\n  \
+        entity widget(v: Int64)\n    operation squish(a: Widget) -> Int64 @[host_implemented]\n  end\n  \
         provides Widget language rust\n    artifact \"nowhere.rs\"\n    \
         operation_map { squish: \"ordered_compare\" }\n  end\nend\n";
     let err = registration_err(src);

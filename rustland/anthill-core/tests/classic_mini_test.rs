@@ -22,7 +22,7 @@ use anthill_core::parse;
 use smallvec::SmallVec;
 
 fn load_example(name: &str) -> KnowledgeBase {
-    let mut files = common::collect_anthill_files(&common::stdlib_dir());
+    let mut files = common::collect_stdlib_and_rust_bindings();
     files.extend(common::collect_anthill_files(
         &common::examples_dir().join("classic-mini").join(name),
     ));

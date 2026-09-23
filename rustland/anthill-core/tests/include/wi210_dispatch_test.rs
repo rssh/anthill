@@ -24,10 +24,26 @@ fn load_with(extra: &str) -> KnowledgeBase {
     load_capturing_errors(extra).0
 }
 
+/// [`load_with`] over anthill-todo bundle sources that include `coordination.anthill`:
+/// the same load, on a KB carrying the stand-ins for the `Forge` host functions its
+/// binding names (WI-20260922-BRT4Y — see [`bundle_sources`]).
+fn load_with_forge_stand_ins(extra: &str) -> KnowledgeBase {
+    load_capturing_errors_prepared(extra, crate::common::register_forge_host_stand_ins).0
+}
+
 /// Phase 3 helper: returns errors so dispatch-failure diagnostics
 /// can be asserted directly. The WI-210 dispatch-failure marker
 /// surfaces as a LoadError via load_phase_inner's all_errors.
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, LoadResult, Vec<load::LoadError>) {
+    load_capturing_errors_prepared(extra, |_| {})
+}
+
+/// [`load_capturing_errors`] with a hook on the FRESH KB, for the embedder seams that
+/// must be mounted before load (`register_host_fn`).
+fn load_capturing_errors_prepared(
+    extra: &str,
+    prepare: impl FnOnce(&mut KnowledgeBase),
+) -> (KnowledgeBase, LoadResult, Vec<load::LoadError>) {
     let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
@@ -41,6 +57,7 @@ fn load_capturing_errors(extra: &str) -> (KnowledgeBase, LoadResult, Vec<load::L
     let refs: Vec<_> = parsed.iter().collect();
 
     let mut kb = KnowledgeBase::new();
+    prepare(&mut kb);
     match load::load_all(&mut kb, &refs, &NullResolver) {
         Ok(r) => (kb, r, vec![]),
         Err(errs) => (kb, LoadResult::default(), errs),
@@ -312,13 +329,19 @@ fn subst_with_t(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> Subs
 /// Read `rustland/anthill-todo/anthill/store.anthill` and load it on top of stdlib + rustland
 /// bindings. Used by the WorkItemStore dispatch tests below.
 fn load_with_store() -> KnowledgeBase {
-    load_with(&bundle_sources(&["coordination.anthill", "store.anthill"]))
+    load_with_forge_stand_ins(&bundle_sources(&[
+        "coordination.anthill",
+        "coordination_rust.anthill",
+        "store.anthill",
+    ]))
 }
 
 /// The named bundle assets, concatenated. WI-1117: `store.anthill` imports
-/// `MirrorEntry` from `coordination.anthill`, so the two travel together — the
-/// DECLARATION only, since its rust binding names host functions only the
-/// anthill-todo binary registers.
+/// `MirrorEntry` from `coordination.anthill`, so the two travel together — and since
+/// WI-20260922-BRT4Y with `coordination_rust.anthill` as well, because the declaration's
+/// `Forge` operations are `@[host_implemented]` and do not load without their binding.
+/// The binding names host functions only the anthill-todo binary registers, so a load
+/// of these goes through [`load_with_forge_stand_ins`].
 fn bundle_sources(names: &[&str]) -> String {
     names
         .iter()
@@ -747,10 +770,11 @@ fn dispatch_commit_s_w_type_checks_via_workitemstore_satisfaction() {
     let combined = bundle_sources(&[
         "domain.anthill",
         "coordination.anthill",
+        "coordination_rust.anthill",
         "store.anthill",
     ]);
 
-    let mut kb = load_with(&combined);
+    let mut kb = load_with_forge_stand_ins(&combined);
     let commit_sym = kb
         .try_resolve_symbol("anthill.todo.store.WorkItemStore.commit")
         .expect("WorkItemStore.commit registered");

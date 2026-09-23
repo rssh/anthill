@@ -28,8 +28,7 @@ fn fresh_var_term(kb: &mut KnowledgeBase, name: &str) -> TermId {
 }
 
 fn load_capturing_errors(extra: &str) -> (KnowledgeBase, Vec<LoadError>) {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

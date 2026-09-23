@@ -49,3 +49,7 @@ THAT ALSO REFUTES A SECOND DEAD END: the top row is not simply "more providers m
 
 WHERE THE RECIPE NOW LIVES: `common::load_kb_with_stdlib_only` (rustland/anthill-core/tests/common/mod.rs) — stdlib without `anthill-stl`'s bindings, parsed once, one `load_all`. Its doc carries both traps and points here. `wi300_rule_body_requires_test` and `cut_test` hand-roll the same sequence and were left as found.
 
+### 2026-09-23T11:16:41Z — feedback — user
+
+BRT4Y (2026-09-23) made the stdlib-only load a refusal, so this ticket's stdlib-only control arm no longer exists; kernel_mint_address_test and wi300_rule_body_requires_test now load the full closure and type Noeq's field by a local sort Opaque that provides nothing. MEASURED under the full closure: Noeq(v: Int64) answers 1 (the guard does not discriminate), Noeq(v: Opaque) answers 0, Witheq answers 1 in both — consistent with Noeq getting a DERIVED PartialEq from its Int64 field once Int64 provides PartialEq (eq_derive), not verified by name.
+

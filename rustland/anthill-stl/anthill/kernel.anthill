@@ -1,0 +1,20 @@
+-- Rust binding for anthill.kernel. Proposal 038.
+--
+-- WI-20260922-BRT4Y: `struct_eq` (`===`) is the one kernel operation an OPERATION BODY
+-- evaluates, so it is the one with an eval-side host function; registered by hardcoded
+-- qualified name in `eval/builtins.rs` until this ticket. The kernel's other body-less
+-- declarations (`unify`, `not`, `push_choice`, `domain_member`, …) are RESOLVER
+-- primitives the bootstrap supplies (`register_prelude`), not host functions, so they
+-- have no `operation_map` entry and claim no `@[host_implemented]`.
+--
+-- NAMESPACE-LEVEL, like most of `anthill.reflect`'s surface: see that binding for why a
+-- namespace is a legitimate `operation_map` target (the clause says which host function
+-- REALIZES a declared operation; §8.7's rule about provision backing is not in play).
+namespace anthill.kernel
+  provides anthill.kernel language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      struct_eq: "kernel_struct_eq"
+    }
+  end
+end

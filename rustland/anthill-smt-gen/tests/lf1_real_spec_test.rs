@@ -35,9 +35,7 @@ use anthill_smt_gen::emit_satisfiability_check;
 fn lf1_kb() -> KnowledgeBase {
     let lf1_root =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/webots-modelling/lf1");
-    let stdlib_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
-
-    let mut all_files = collect_anthill_files(&stdlib_root);
+    let mut all_files = common::collect_stdlib_and_rust_bindings();
     all_files.extend(collect_anthill_files(&lf1_root));
 
     let parsed: Vec<ParsedFile> = all_files

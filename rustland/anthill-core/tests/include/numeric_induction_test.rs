@@ -16,8 +16,7 @@ use anthill_core::parse;
 use anthill_core::persistence::print::TermPrinter;
 
 fn load_stdlib() -> KnowledgeBase {
-    let stdlib = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&stdlib);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {

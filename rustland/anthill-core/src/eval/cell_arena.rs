@@ -95,52 +95,6 @@ impl CellArenaRef {
         }
     }
 
-    /// Read the held value via a scoped borrow. The callback runs while
-    /// the arena's `borrow` is held — it must not trigger further arena
-    /// operations on the same arena (no allocs / writes / drops within).
-    pub fn with_value<R>(&self, h: &CellHandle, f: impl FnOnce(&Value) -> R) -> R {
-        let arena = self.0.borrow();
-        let slot = &arena.slots[h.raw as usize];
-        let v = slot.value.as_ref().expect("cell arena slot missing value");
-        f(v)
-    }
-
-    /// Snapshot the held value. Briefly takes the slot's value out under
-    /// `borrow_mut`, clones it with no borrow held, then puts the original
-    /// back. Pattern from `ClosureArenaRef::clone_env`: avoids holding a
-    /// borrow across the recursive `Value::clone` (which may bump
-    /// refcounts on nested arena handles, requiring its own
-    /// `borrow_mut`). A Cell holding another Cell handle (either today,
-    /// before the cycle-prevention typer rule lands, or under the
-    /// chain-aware rule which accepts `Cell[Cell[Int]]` since it can't
-    /// cycle) would re-enter `borrow_mut` on the same arena under a
-    /// plain borrow + clone — hence the swap-out.
-    pub fn read(&self, h: &CellHandle) -> Value {
-        let stolen = {
-            let mut arena = self.0.borrow_mut();
-            let slot = &mut arena.slots[h.raw as usize];
-            slot.value.take().expect("cell arena slot missing value")
-        };
-        let cloned = stolen.clone();
-        {
-            let mut arena = self.0.borrow_mut();
-            arena.slots[h.raw as usize].value = Some(stolen);
-        }
-        cloned
-    }
-
-    /// Replace the slot's value with `new`. Returns the prior value so the
-    /// caller can drop it after releasing the arena borrow (avoids the
-    /// recursive-drop reborrow problem; same constraint as
-    /// `release_and_take`).
-    pub fn write(&self, h: &CellHandle, new: Value) -> Value {
-        let mut arena = self.0.borrow_mut();
-        let slot = &mut arena.slots[h.raw as usize];
-        let prev = slot.value.take().expect("cell arena slot missing value");
-        slot.value = Some(new);
-        prev
-    }
-
     /// Live-slot count — diagnostic for refcount tests.
     pub fn live(&self) -> usize {
         self.0.borrow().live()
@@ -164,6 +118,57 @@ pub struct CellHandle {
 impl CellHandle {
     pub fn raw(&self) -> u32 {
         self.raw
+    }
+
+    // WI-20260922-BRT4Y — the value accessors are methods on the HANDLE, reading the arena
+    // it carries, for `MapHandle::with_body`'s reason: an arena handed a handle it did not
+    // mint indexes the wrong slot table. `Cell.get` became visible to the rule-body operand
+    // gate with that ticket, which reduces calls in scratch bridge interpreters.
+
+    /// Read the held value via a scoped borrow. The callback runs while
+    /// the arena's `borrow` is held — it must not trigger further arena
+    /// operations on the same arena (no allocs / writes / drops within).
+    pub fn with_value<R>(&self, f: impl FnOnce(&Value) -> R) -> R {
+        let arena = self.arena.0.borrow();
+        let slot = &arena.slots[self.raw as usize];
+        let v = slot.value.as_ref().expect("cell arena slot missing value");
+        f(v)
+    }
+
+    /// Snapshot the held value. Briefly takes the slot's value out under
+    /// `borrow_mut`, clones it with no borrow held, then puts the original
+    /// back. Pattern from `ClosureArenaRef::clone_env`: avoids holding a
+    /// borrow across the recursive `Value::clone` (which may bump
+    /// refcounts on nested arena handles, requiring its own
+    /// `borrow_mut`). A Cell holding another Cell handle (either today,
+    /// before the cycle-prevention typer rule lands, or under the
+    /// chain-aware rule which accepts `Cell[Cell[Int]]` since it can't
+    /// cycle) would re-enter `borrow_mut` on the same arena under a
+    /// plain borrow + clone — hence the swap-out.
+    pub fn read(&self) -> Value {
+        let stolen = {
+            let mut arena = self.arena.0.borrow_mut();
+            let slot = &mut arena.slots[self.raw as usize];
+            slot.value.take().expect("cell arena slot missing value")
+        };
+        let cloned = stolen.clone();
+        {
+            let mut arena = self.arena.0.borrow_mut();
+            arena.slots[self.raw as usize].value = Some(stolen);
+        }
+        cloned
+    }
+
+    /// Replace the slot's value with `new`. Returns the prior value so the
+    /// caller can drop it after releasing the arena borrow (avoids the
+    /// recursive-drop reborrow problem; same constraint as
+    /// `release_and_take`).
+    pub fn write(&self, new: Value) -> Value {
+        let mut arena = self.arena.0.borrow_mut();
+        let slot = &mut arena.slots[self.raw as usize];
+        let prev = slot.value.take().expect("cell arena slot missing value");
+        slot.value = Some(new);
+        prev
     }
 }
 
@@ -246,9 +251,26 @@ mod tests {
         let kb = crate::kb::KnowledgeBase::new();
         let arena = CellArenaRef::new();
         let h = arena.alloc(Value::Int(1));
-        let prev = arena.write(&h, Value::Int(42));
+        let prev = h.write(Value::Int(42));
         assert_eq!(prev.literal_int64(&kb), Some(1));
-        assert_eq!(arena.read(&h).literal_int64(&kb), Some(42));
+        assert_eq!(h.read().literal_int64(&kb), Some(42));
+    }
+
+    /// WI-20260922-BRT4Y — a handle reads the arena that MINTED it. Two arenas each hold
+    /// a value at slot 0; the handle from `a` must answer `a`'s. The arena-receiver form
+    /// this replaced (`arena.read(&h)`) indexed whichever arena it was called on, and
+    /// would have answered 7 here — the bridge-interpreter shape, where a value minted by
+    /// one interpreter is read by another.
+    #[test]
+    fn a_handle_reads_the_arena_that_minted_it() {
+        let kb = crate::kb::KnowledgeBase::new();
+        let a = CellArenaRef::new();
+        let b = CellArenaRef::new();
+        let _in_b = b.alloc(Value::Int(7));
+        let in_a = a.alloc(Value::Int(1));
+        assert_eq!(in_a.raw(), _in_b.raw(), "both at slot 0 — the case that aliases");
+        assert_eq!(in_a.read().literal_int64(&kb), Some(1));
+        in_a.with_value(|v| assert_eq!(v.literal_int64(&kb), Some(1)));
     }
 
     #[test]
