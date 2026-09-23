@@ -10,33 +10,8 @@ use super::*;
 pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
     let mut out: Vec<Symbol> = Vec::new();
     let spec_canon = kb.canonical_sort_sym(spec_sort);
-    // WI-660: the spec-base bucket (built index) or the full scan (pre-build); the
-    // `canonical_sort_sym` filter below is a no-op for the bucket (already keyed by
-    // canonical spec-base) and the real filter for the scan — one loop body serves both.
-    for rid in provides_rids_by_spec(kb, spec_canon) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(head_named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sort_ref_tid) = get_named_arg(kb, &head_named, "sort_ref") else {
-            continue;
-        };
-        let Some(spec_view_tid) = get_named_arg(kb, &head_named, "spec") else {
-            continue;
-        };
-        let Some((view_base_sym, _)) = unwrap_spec_view(kb, spec_view_tid) else {
-            continue;
-        };
-        if kb.canonical_sort_sym(view_base_sym) != spec_canon {
-            continue;
-        }
-        let impl_sort = match kb.get_term(sort_ref_tid) {
-            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
-            _ => continue,
-        };
-        let carrier = kb.canonical_sort_sym(impl_sort);
+    for row in provides_rows_of_spec_in(kb, spec_canon, provides_rids_by_spec(kb, spec_canon)) {
+        let carrier = kb.canonical_sort_sym(row.sort_ref_head(kb));
         if carrier != spec_canon && !out.contains(&carrier) {
             out.push(carrier);
         }
@@ -208,11 +183,10 @@ pub(super) fn collect_provides_candidates(
     // concrete) not its surface spelling. `None` keeps the head-only match.
     sigma: Option<&SigmaCtx>,
 ) -> Vec<Candidate> {
-    let spec_canon = kb.canonical_sort_sym(goal.spec_sort);
-    // WI-660: the spec-base bucket (built index) or the full scan. The bucket keys on
-    // `canonical_sort_sym(base)`, and the filter below compares canonically too — see
-    // there. Owned `Vec` — the loop below borrows `kb` mutably.
-    let candidates = provides_rids_by_spec(kb, spec_canon);
+    // WI-660: the spec-base bucket (built index) or the full scan, re-filtered BY CANONICAL
+    // SORT (WI-20260923-N3W68 #10 — see [`provides_rows_of_spec_in`]). Collected — the loop
+    // below borrows `kb` mutably.
+    let candidates: Vec<ProvidesRow> = provides_rows_of_spec(kb, goal.spec_sort).collect();
     // Spec's type-param short names — hoisted out of the candidate
     // loop so the inner binding-walk just does a string membership
     // check instead of format!+resolve+sort-alias per binding.
@@ -233,44 +207,14 @@ pub(super) fn collect_provides_candidates(
         .is_some_and(|c| provider_spec_view_bindings(kb, c.sort, goal.spec_sort).is_some());
 
     let mut out: Vec<Candidate> = Vec::new();
-    for rid in candidates {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped from
-        // dispatch-candidate collection; occurrence-based dispatch is gated
-        // effect-expressions-as-types work (avoid the term-only `rule_head`
-        // panic on a value head).
-        let Some(head_named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let sort_ref_tid = match get_named_arg(kb, &head_named, "sort_ref") {
-            Some(t) => t,
-            None => continue,
-        };
-        let spec_view_tid = match get_named_arg(kb, &head_named, "spec") {
-            Some(t) => t,
-            None => continue,
-        };
-        let impl_sort = match kb.get_term(sort_ref_tid) {
-            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
-            _ => continue,
-        };
-        let Some((view_base_sym, view_bindings)) = unwrap_spec_view(kb, spec_view_tid) else {
-            continue;
-        };
-        // BY CANONICAL SORT, not raw symbol (WI-20260923-N3W68 #10). The raw `!=` this was
-        // justified itself in one direction only — raw-equal ⟹ canonical-equal ⟹ in the
-        // bucket, so no provider is missed BY THE BUCKET — and said nothing of the other: a
-        // provision whose `SortView` base was resolved in another import scope is in the
-        // canonical bucket and was then dropped HERE, the silent no-op
-        // `provider_spec_view_bindings` warns a raw `==` makes. MEASURED unreachable before
-        // the change (a probe on "canonical-equal, raw-different" fired zero times across
-        // the workspace suite), so this is the reader agreeing with its bucket and with
-        // `provider_spec_view_bindings`, not a program newly served.
-        if !same_sort_canonical(kb, view_base_sym, goal.spec_sort) {
-            continue;
-        }
+    for row in candidates {
+        let impl_sort = row.sort_ref_head(kb);
+        let ProvidesRow {
+            rid,
+            spec_base: view_base_sym,
+            bindings: view_bindings,
+            ..
+        } = row;
         // WI-1110 — A CONVERSION IS NOT A PROVIDER. `Ord provides WeakOrd[T = T]` says
         // "hold an `Ord[T]` and you can obtain a `WeakOrd[T]`"; it does not say anything
         // has type `Ord`, and nothing ever will. Offering it here made `Ord` an answer to

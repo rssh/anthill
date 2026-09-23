@@ -1118,8 +1118,8 @@ pub(super) fn carrier_provided_by_witness(
     carrier: Symbol,
 ) -> bool {
     let carrier_canon = kb.canonical_sort_sym(carrier);
-    provisions_of_spec(kb, spec_sort).any(|(provider, spec_t, _)| {
-        witness_dispatch_carrier(kb, spec_sort, provider, spec_t) == Some(carrier_canon)
+    provides_rows_of_spec(kb, spec_sort).any(|row| {
+        witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view) == Some(carrier_canon)
     })
 }
 

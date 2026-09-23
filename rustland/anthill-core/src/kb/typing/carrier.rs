@@ -322,11 +322,12 @@ pub(super) fn provision_binds_param_to_carrier(
     // the carrier param to it identically, that being what makes it a provision for
     // this carrier at all. Taking "the first witness" also answered `None` when the
     // first bound no matching param and a second did.
-    provisions_of_spec(kb, spec_sort)
-        .filter(|(provider, spec_t, _)| {
-            witness_dispatch_carrier(kb, spec_sort, *provider, *spec_t) == Some(carrier_canon)
+    provides_rows_of_spec(kb, spec_sort)
+        .filter(|row| {
+            witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view)
+                == Some(carrier_canon)
         })
-        .map(|(_, _, view)| view)
+        .map(|row| row.bindings)
         .find(|view| binds_pvid_to_carrier(view))
 }
 
@@ -347,21 +348,21 @@ fn witness_provider_for(
     // `spec_sort` at this carrier — σ must come from the binder the VIEW came from.
     // `provider != carrier` is the additivity guard: a provider that IS the carrier is the
     // case that function's FIRST arm already answered, so reaching here means it declined.
-    provisions_of_spec(kb, spec_sort)
-        .filter(|(provider, spec_t, _)| {
-            kb.canonical_sort_sym(*provider) != carrier_canon
-                && witness_dispatch_carrier(kb, spec_sort, *provider, *spec_t)
+    provides_rows_of_spec(kb, spec_sort)
+        .filter(|row| {
+            kb.canonical_sort_sym(row.provider) != carrier_canon
+                && witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view)
                     == Some(carrier_canon)
         })
-        .find(|(_, _, view)| {
-            view.iter().any(|(sp_sym, sp_val)| {
+        .find(|row| {
+            row.bindings.iter().any(|(sp_sym, sp_val)| {
                 type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(pvid)
                     && crate::kb::load::provides_spec_base_sym(kb, *sp_val)
                         .map(|b| kb.canonical_sort_sym(b))
                         == Some(carrier_canon)
             })
         })
-        .map(|(provider, _, _)| provider)
+        .map(|row| row.provider)
 }
 
 /// WI-20260828-57MRM — instantiate a WITNESS provision against the receiver: the σ that
@@ -530,32 +531,9 @@ pub(crate) fn directly_provided_specs(
     carrier_sym: Symbol,
 ) -> SmallVec<[Symbol; 4]> {
     let mut out: SmallVec<[Symbol; 4]> = SmallVec::new();
-    // WI-660/WI-672: the canonical-carrier bucket (built index) or the full scan; the
-    // `canonical_sort_sym` filter below is the exact match for both.
-    for rid in provides_rids_by_carrier(kb, carrier_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        // WI-672: canonical sort identity, not `same_symbol`. A provider's carrier is the
-        // enclosing sort's resolved functor (`build_provides_index` `debug_assert`s it is
-        // not an unresolved bare reference), so this no longer conflates a top-level
-        // `sort Foo` with a qualified `x.y.Foo`.
-        if !same_sort_canonical(kb, carrier, carrier_sym) {
-            continue;
-        }
-        let Some(spec_t) = get_named_arg(kb, &named, "spec") else {
-            continue;
-        };
-        let Some(spec_sym) = crate::kb::load::provides_spec_base_sym(kb, spec_t) else {
+    for row in provides_rows_of_provider(kb, carrier_sym) {
+        // `provides_spec_base_sym`, not `row.spec_base` — see [`ProvidesRow`].
+        let Some(spec_sym) = crate::kb::load::provides_spec_base_sym(kb, row.spec_view) else {
             continue;
         };
         if !out.iter().any(|&s| same_sort_canonical(kb, s, spec_sym)) {
@@ -2463,44 +2441,20 @@ pub(super) fn provider_spec_view_bindings(
     carrier_sym: Symbol,
     spec_sort: Symbol,
 ) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
-    // WI-660/WI-672: the canonical-carrier bucket (built index) or the full scan; the
-    // `same_sort_canonical` re-filter below is the exact match for both. (An unresolved
-    // `SortProvidesInfo` symbol yields an empty candidate list, and the tail returns
+    // (An unresolved `SortProvidesInfo` symbol yields no rows, and the tail returns
     // `None` — identical to the old `?` early return.)
     let mut merged: Option<SmallVec<[(Symbol, TermId); 2]>> = None;
-    for rid in provides_rids_by_carrier(kb, carrier_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped;
-        // occurrence-based provides lookup is gated effect-expressions-as-types
-        // work (avoid the term-only `rule_head` panic on a value head).
-        let Some(head_named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &head_named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        if !same_sort_canonical(kb, carrier, carrier_sym) {
-            continue;
-        }
-        let Some(spec_t) = get_named_arg(kb, &head_named, "spec") else {
-            continue;
-        };
-        let Some((base, bindings)) = unwrap_spec_view(kb, spec_t) else {
-            continue;
-        };
+    for row in provides_rows_of_provider(kb, carrier_sym) {
         // Canonicalize both sides — the spec base in the provider fact's
         // `SortView` is resolved in the carrier's import scope and may be a
         // different `Symbol` id than `spec_sort` (resolved in the caller's
         // scope) even for the same logical sort. Matches the carrier compare
-        // above; a raw `==` would silently no-op this binding.
-        if kb.canonical_sort_sym(base) != kb.canonical_sort_sym(spec_sort) {
+        // inside `provides_rows_of_provider`; a raw `==` would silently no-op
+        // this binding.
+        if kb.canonical_sort_sym(row.spec_base) != kb.canonical_sort_sym(spec_sort) {
             continue;
         }
+        let bindings = row.bindings;
         match &mut merged {
             // The overwhelmingly common case: one provision, returned as it was
             // read, with no merge allocation.

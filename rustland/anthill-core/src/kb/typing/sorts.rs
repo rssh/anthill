@@ -1487,30 +1487,13 @@ pub(super) fn provides_out_edges(kb: &KnowledgeBase, node_canon: Symbol) -> Smal
             .unwrap_or_default();
     }
     // No index (the load-time windows where the relation is being written): decode live.
-    // This is the definition the memo above is built from.
+    // This is the definition the memo above is built from. A row is a FACT, as
+    // `build_provides_index` buckets only facts; and the base is `provides_spec_base_sym`'s,
+    // the memo's own — every row [`ProvidesRow`]'s own base decode refuses, that one refuses
+    // too, so the rows the memo files and the rows this reads are the same rows.
     let mut out: SmallVec<[Symbol; 4]> = SmallVec::new();
-    for rid in provides_rids_by_carrier_canon(kb, node_canon) {
-        // Match `build_provides_index`, which only buckets facts: a non-fact rule with a
-        // `SortProvidesInfo` head is not a provider edge. Can't arise today (provides are
-        // only ever asserted as facts), but keeps the indexed and scan paths identical —
-        // the other carrier consumers already filter `is_fact` here.
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(c) = get_named_arg(kb, &named, "sort_ref")
-            .and_then(|t| crate::kb::load::sort_ref_functor(kb, t))
-        else {
-            continue;
-        };
-        if kb.canonical_sort_sym(c) != node_canon {
-            continue;
-        }
-        let Some(s) = get_named_arg(kb, &named, "spec")
-            .and_then(|t| crate::kb::load::provides_spec_base_sym(kb, t))
-        else {
+    for row in provides_rows_of_provider_canon(kb, node_canon) {
+        let Some(s) = crate::kb::load::provides_spec_base_sym(kb, row.spec_view) else {
             continue;
         };
         // CANONICAL out-edges: the sole caller compares them canonically and recurses on

@@ -2450,38 +2450,14 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
     // provision relation is the largest in the KB, so the raw scan is O(sorts x
     // provisions). MEASURED: the scanning form took a stdlib load from 0.10 s to 0.18 s,
     // an 80 % regression on the whole load. `rids_or_scan` still falls back to the scan
-    // when `provides_index` is `None`, which is the state during the derivation pass.
-    for rid in provides_rids_by_carrier(kb, sort_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // WI-660/WI-672 — THE PER-FACT CARRIER RE-FILTER, which
-        // [`provides_rids_by_carrier`]'s doc calls load-bearing and which every sibling
-        // consumer performs (see [`directly_provided_specs`]). Without it this reads a row
-        // belonging to ANOTHER carrier as if it were this sort's own — live in exactly the
-        // no-index window the comment above names, where `rids_or_scan` returns EVERY
-        // provides fact in the KB, so `Ord provides WeakOrd[T = T]` read while querying an
-        // unrelated `Foo` would hand `Foo` a self-supplied slot it never declared.
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        if !same_sort_canonical(kb, carrier, sort_sym) {
-            continue;
-        }
-        let head = kb.rule_head_value(rid);
-        let Some(spec_value) = crate::kb::op_info::head_field_value(kb, head, "spec") else {
-            continue;
-        };
-        let Some((base, bindings)) = unwrap_spec_view_value(kb, &spec_value) else {
-            continue;
-        };
-        if !provision_is_conversion(kb, sort_sym, base, &bindings) {
+    // when `provides_index` is `None`, which is the state during the derivation pass —
+    // and in that window its per-fact carrier RE-FILTER (inside
+    // [`provides_rows_of_provider`]) is what keeps a row belonging to ANOTHER carrier
+    // out: without it `Ord provides WeakOrd[T = T]`, read while querying an unrelated
+    // `Foo`, handed `Foo` a self-supplied slot it never declared (WI-660/WI-672).
+    for row in provides_rows_of_provider(kb, sort_sym) {
+        let (base, bindings) = (row.spec_base, &row.bindings);
+        if !provision_is_conversion(kb, sort_sym, base, bindings) {
             continue;
         }
         // Decoded lazily: the overwhelming majority of sorts have no conversion at all,
@@ -2504,12 +2480,12 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
         // `synth_req_names` and every projection path through `A`. `mark_derived_provision`
         // records exactly which rows the pass minted (WI-1109's provenance channel), so
         // this asks it rather than guessing from the shape.
-        if kb.derived_provision_origin_of(rid).is_some() {
+        if kb.derived_provision_origin_of(row.rid).is_some() {
             continue;
         }
         out.push(RequiresEntry {
             required_sort: base,
-            spec: spec_value,
+            spec: Value::term(row.spec_view),
             supply: SupplySource::SelfSupplied,
         });
     }

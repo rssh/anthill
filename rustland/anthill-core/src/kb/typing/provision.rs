@@ -541,70 +541,16 @@ pub(crate) fn instance_fact_op_binding(
 /// explicitly witnessed as non-reflexive — and `check_eq_noneq_exclusive` could not see
 /// the contradiction either, because it groups by `sort_ref` too.
 pub(crate) fn provision_carriers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
-    provisions_of_spec(kb, spec_sort)
-        .map(|(provider, spec_t, _)| {
+    provides_rows_of_spec(kb, spec_sort)
+        .map(|row| {
             // `None` = the provision's carrier IS the provider (a self-provision, an
             // instance fact, or a bare one naming no other sort) — that function's own
             // documented contract.
-            witness_dispatch_carrier(kb, spec_sort, provider, spec_t).unwrap_or(provider)
+            witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view)
+                .unwrap_or(row.provider)
         })
         .map(|c| kb.canonical_sort_sym(c))
         .collect()
-}
-
-/// Every `SortProvidesInfo` provision OF `spec_sort`, decoded once into
-/// `(provider sort, the provision's `SortView` term, its type-param bindings)`.
-///
-/// The shared substrate of the multi-candidate walks
-/// ([`collect_spec_op_suppliers_by_carrier`], [`spec_op_suppliers_for_carrier`]),
-/// which differ only in whether they bucket every carrier or filter to one. It used
-/// to be spelled twice — eleven identical lines — which is the shape that produced
-/// WI-838's cross-kind blind spot in the first place (two copies of one criterion,
-/// kept in step by hand).
-///
-/// Reads the WI-660 `by_spec_base` bucket via [`provides_rids_by_spec`] rather than
-/// every provision fact, and keeps the per-fact canonical re-filter that bucket's
-/// contract requires (its no-index fallback returns EVERY provides fact, which is
-/// what both readers see today — `build_eq_dispatch_index` runs before
-/// `build_provides_index`, and `eq_derive::run`'s caller nulls the index first).
-pub(super) fn provisions_of_spec(
-    kb: &KnowledgeBase,
-    spec_sort: Symbol,
-) -> impl Iterator<Item = (Symbol, TermId, SmallVec<[(Symbol, TermId); 2]>)> + '_ {
-    let spec_canon = kb.canonical_sort_sym(spec_sort);
-    provisions_from_rids(kb, spec_canon, provides_rids_by_spec(kb, spec_canon))
-}
-
-/// WI-20260829-K0E8T — the DECODE half of [`provisions_of_spec`], over rids the caller
-/// has already fetched with [`provides_rids_by_spec`].
-///
-/// Split out for the one caller that must SEE the bucket before it decides to walk it:
-/// [`witness_provides_admissibly`]'s gate, which is entered on the failure path of every
-/// bare↔bare compatibility check and whose bucket is empty at 1263 of 1267 stdlib-load
-/// entries. Going through [`provisions_of_spec`] would make it canonicalize the spec a
-/// second time (an FQN string hash — that function's own first statement) and
-/// canonicalize the ACTUAL before it knows there is anything to compare it against. One
-/// decoder still, not two: this IS the body, and `provisions_of_spec` is now the
-/// canonicalize-and-fetch wrapper around it.
-pub(super) fn provisions_from_rids(
-    kb: &KnowledgeBase,
-    spec_canon: Symbol,
-    rids: Vec<crate::kb::RuleId>,
-) -> impl Iterator<Item = (Symbol, TermId, SmallVec<[(Symbol, TermId); 2]>)> + '_ {
-    rids.into_iter().filter_map(move |rid| {
-        if !kb.is_fact(rid) {
-            return None;
-        }
-        // A value-fact `SortProvidesInfo` (denoted-bearing spec) is skipped:
-        // occurrence-based provides lookup is gated effect-expressions-as-types
-        // work, and `fact_head_named_args` is `None` rather than panicking on it.
-        let named = kb.fact_head_named_args(rid)?;
-        let sr = get_named_arg(kb, &named, "sort_ref")?;
-        let provider = crate::kb::load::sort_ref_functor(kb, sr)?;
-        let spec_t = get_named_arg(kb, &named, "spec")?;
-        let (base, bindings) = unwrap_spec_view(kb, spec_t)?;
-        (kb.canonical_sort_sym(base) == spec_canon).then_some((provider, spec_t, bindings))
-    })
 }
 
 /// WI-837 — how a spec op's impl reaches a carrier. The three routes are written in
@@ -745,15 +691,15 @@ pub(crate) fn collect_spec_op_suppliers_by_carrier(
     op_short_sym: Symbol,
     out: &mut std::collections::HashMap<Symbol, SmallVec<[SpecOpSupplier; 2]>>,
 ) {
-    for (provider, spec_t, bindings) in provisions_of_spec(kb, spec_sort) {
+    for row in provides_rows_of_spec(kb, spec_sort) {
         let Some((carrier_canon, supplier)) = provision_supplier(
             kb,
             spec_sort,
             spec_op,
             op_short_sym,
-            provider,
-            spec_t,
-            &bindings,
+            row.provider,
+            row.spec_view,
+            &row.bindings,
         ) else {
             continue;
         };
@@ -885,15 +831,15 @@ pub(crate) fn spec_op_suppliers_for_carrier(
         });
     }
     // ROUTES 2 and 3 — a provision supplies it (instance fact / witness sort).
-    for (provider, spec_t, bindings) in provisions_of_spec(kb, spec_sort) {
+    for row in provides_rows_of_spec(kb, spec_sort) {
         let Some((c, supplier)) = provision_supplier(
             kb,
             spec_sort,
             spec_op,
             op_short_sym,
-            provider,
-            spec_t,
-            &bindings,
+            row.provider,
+            row.spec_view,
+            &row.bindings,
         ) else {
             continue;
         };
@@ -1382,4 +1328,35 @@ pub(super) fn type_param_sym_of_binding(
     let qn = format!("{spec_qn}.{}", kb.local_name_of(short));
     let s = kb.try_resolve_symbol(&qn)?;
     resolve_sort_alias(kb, s).map(|_| s)
+}
+
+/// σ from a spec view's `bindings` to `spec`'s own type parameters: each binding whose key
+/// names one, keyed by the RESOLVED parameter symbol ([`type_param_sym_of_binding`]);
+/// op-valued and unknown keys are dropped. One builder for the three σ readers —
+/// [`check_override_refinement`], [`check_instance_fact_op_signatures`] and
+/// [`requires_shadow_is_confusable`] (WI-20260923-32XFQ).
+///
+/// The resolved symbol and NOT the raw binding key, which is a different `Symbol` copy
+/// resolved in the provision's scope: `substitute_impl_params_alloc` matches by `Symbol`
+/// equality, so a σ keyed on the raw copy makes every substitution a SILENT NO-OP —
+/// MEASURED on `provides Sp[T = Carrier]`, where the key was `Symbol(2626)` and the spec's
+/// return type held `Symbol(2563)`. A σ reader then fails open: an effects leg sees a
+/// still-parametric row and skips, and a return-type guard cannot decide a spec returning
+/// its own parameter, which is the ordinary case. WI-431 (B) made this correction at two of
+/// the three sites; `check_override_refinement` was the outlier until it followed.
+///
+/// The CALLER picks `bindings`, and the three pick differently on purpose: the override
+/// check reads the view's raw named arguments (so a bare `Spec[T = X]` application keeps
+/// its bindings), the other two [`unwrap_spec_view`]'s. None of them pairs a POSITIONAL
+/// binding; [`check_provider_requires`] does, for its own short-name-keyed σ.
+pub(super) fn spec_param_sigma(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    bindings: &[(Symbol, TermId)],
+) -> Vec<(Symbol, TermId)> {
+    let spec_qn = kb.qualified_name_of(spec);
+    bindings
+        .iter()
+        .filter_map(|(k, v)| type_param_sym_of_binding(kb, *k, spec_qn).map(|p| (p, *v)))
+        .collect()
 }

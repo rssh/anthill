@@ -304,14 +304,14 @@ pub(super) fn carrier_is_its_own_sole_provider(
 ) -> bool {
     let carrier_param = spec_carrier_param_or_sole(kb, spec);
     let mut saw_self = false;
-    for (provider, spec_t, _) in provisions_of_spec(kb, spec) {
+    for row in provides_rows_of_spec(kb, spec) {
         let dispatch_carrier = carrier_param
-            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(spec_t)))
-            .map_or(provider, |(_, base)| base);
+            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(row.spec_view)))
+            .map_or(row.provider, |(_, base)| base);
         if !same_sort_canonical(kb, dispatch_carrier, carrier) {
             continue;
         }
-        if same_sort_canonical(kb, provider, carrier) {
+        if same_sort_canonical(kb, row.provider, carrier) {
             saw_self = true;
         } else {
             // A witness dispatching at this carrier: the slot may hold ITS dictionary.
@@ -323,13 +323,13 @@ pub(super) fn carrier_is_its_own_sole_provider(
 
 pub(super) fn carrier_has_provision_row(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
     let carrier_param = spec_carrier_param_or_sole(kb, spec);
-    provisions_of_spec(kb, spec).any(|(provider, spec_t, _)| {
+    provides_rows_of_spec(kb, spec).any(|row| {
         // No carrier parameter to read ⇒ the provision's dispatch carrier IS the
         // provider (a self-provision, an instance fact, or a row that names no other
         // sort) — the same default `witness_dispatch_carrier`'s `None` stands for.
         let dispatch_carrier = carrier_param
-            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(spec_t)))
-            .map_or(provider, |(_, base)| base);
+            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(row.spec_view)))
+            .map_or(row.provider, |(_, base)| base);
         same_sort_canonical(kb, dispatch_carrier, carrier)
     })
 }

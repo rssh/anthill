@@ -226,9 +226,6 @@ fn binding_map(kb: &KnowledgeBase, spec: &Value) -> Vec<(String, u32)> {
 /// by a carrier `fact`.
 pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::LoadError> {
     use crate::kb::load::LoadError;
-    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
-        return Vec::new();
-    };
     let effects_runtime = effects_runtime_sym(kb);
 
     // Snapshot each provision before the requires walk, which mutates `kb`
@@ -253,36 +250,16 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
         rid: crate::kb::RuleId,
     }
     let mut provisions: Vec<Provision> = Vec::new();
-    for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped from
-        // ops-coverage checking; occurrence-based coverage is gated effect-
-        // expressions-as-types work (avoid the term-only `rule_head` panic).
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        let Some(spec_view) = get_named_arg(kb, &named, "spec") else {
-            continue;
-        };
-        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else {
-            continue;
-        };
-
+    for row in provides_rows(kb) {
+        let spec_base = row.spec_base;
         let spec_qn = kb.qualified_name_of(spec_base).to_string();
         let mut sigma: SmallVec<[(String, TermId); 2]> = SmallVec::new();
+        // The view's RAW arguments, not `row.bindings`: σ takes its positionals too.
         if let Term::Fn {
             functor,
             pos_args,
             named_args,
-        } = kb.get_term(spec_view).clone()
+        } = kb.get_term(row.spec_view).clone()
         {
             // Named bindings (`F = Float`, `C = List[T]`).
             for (k, v) in &named_args {
@@ -326,10 +303,10 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
             }
         }
         provisions.push(Provision {
-            carrier,
+            carrier: row.provider,
             spec: spec_base,
             sigma,
-            rid,
+            rid: row.rid,
         });
     }
 
@@ -529,9 +506,6 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
 /// level accounting `provides_clause_count` would have to be made exact for first.
 pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::LoadError> {
     use crate::kb::load::LoadError;
-    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
-        return Vec::new();
-    };
     let (Some(eq_sym), Some(noneq_sym)) = (
         kb.try_resolve_symbol("anthill.prelude.Eq"),
         kb.try_resolve_symbol("anthill.prelude.NonEq"),
@@ -545,28 +519,10 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::
     // canonical carrier symbol → (provides Eq, provides NonEq)
     let mut seen: std::collections::HashMap<Symbol, (bool, bool)> =
         std::collections::HashMap::new();
-    for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        let Some(spec_view) = get_named_arg(kb, &named, "spec") else {
-            continue;
-        };
-        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else {
-            continue;
-        };
-        let spec_canon = kb.canonical_sort_sym(spec_base);
+    for row in provides_rows(kb) {
+        let spec_canon = kb.canonical_sort_sym(row.spec_base);
         let entry = seen
-            .entry(kb.canonical_sort_sym(carrier))
+            .entry(kb.canonical_sort_sym(row.provider))
             .or_insert((false, false));
         if spec_canon == eq_canon {
             entry.0 = true;
@@ -912,9 +868,14 @@ pub(crate) fn check_use_site_requires_eq(
 /// `stdlib/anthill/persistence/store.anthill`'s header.)
 pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::LoadError> {
     use crate::kb::load::LoadError;
-    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
+    // Not merely an empty relation: `check_member_blocks_have_one_clause` below runs
+    // whatever the provisions are, and a KB with no `SortProvidesInfo` skips it too.
+    if kb
+        .try_resolve_symbol("anthill.reflect.SortProvidesInfo")
+        .is_none()
+    {
         return Vec::new();
-    };
+    }
     let effects_runtime = effects_runtime_sym(kb);
 
     // Host-realized carriers (`Implementation.target` QNs) — a carrier whose
@@ -975,7 +936,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
     // Snapshot the provisions before the per-op walk (which interns short names,
     // mutating `kb` — can't overlap the `rules_by_functor` borrow). See
     // [`Provision`] for what each field is.
-    let provisions = collect_provisions(kb, provides_sym);
+    let provisions = collect_provisions(kb);
 
     let mut errors = Vec::new();
     check_member_blocks_have_one_clause(kb, &mut errors);
@@ -1191,35 +1152,19 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
 }
 
 /// Every `anthill.reflect.SortProvidesInfo` fact, as [`Provision`] rows.
-fn collect_provisions(kb: &KnowledgeBase, provides_sym: Symbol) -> Vec<Provision> {
-    let mut provisions: Vec<Provision> = Vec::new();
-    for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        let Some(spec_view) = get_named_arg(kb, &named, "spec") else {
-            continue;
-        };
-        let Some(spec) = crate::kb::load::provides_spec_base_sym(kb, spec_view) else {
-            continue;
-        };
-        provisions.push(Provision {
-            carrier,
-            spec,
-            spec_view,
-            rid,
-        });
-    }
-    provisions
+fn collect_provisions(kb: &KnowledgeBase) -> Vec<Provision> {
+    provides_rows(kb)
+        .filter_map(|row| {
+            // `provides_spec_base_sym`, not `row.spec_base` — see [`ProvidesRow`].
+            let spec = crate::kb::load::provides_spec_base_sym(kb, row.spec_view)?;
+            Some(Provision {
+                carrier: row.provider,
+                spec,
+                spec_view: row.spec_view,
+                rid: row.rid,
+            })
+        })
+        .collect()
 }
 
 /// One coherence group: everything that supplies a dictionary for one
@@ -1251,7 +1196,7 @@ struct ProviderGroup {
 /// POLICY — the op-less-spec exemption drops a self-provision whose spec declares no
 /// ops, and the concrete-provider exemption reshapes the witness leg — and a defaults
 /// relation must inherit none of it; `witness_dispatch_carrier` over
-/// [`provisions_of_spec`] is the policy-free classifier for that.
+/// [`provides_rows_of_spec`] is the policy-free classifier for that.
 ///
 /// COST: two full `SortInfo` scans, so this is a probe entry point, not a load-path
 /// one. `check_provider_operations` has both in hand and calls the grouping directly.
@@ -1260,18 +1205,11 @@ pub fn provider_coherence_candidates(
     spec_qn: &str,
     carrier_qn: &str,
 ) -> Vec<String> {
-    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
-        return Vec::new();
-    };
     let own_ops: HashMap<Symbol, Vec<Symbol>> =
         crate::kb::load::sorts_and_own_ops(kb).into_iter().collect();
     let concrete = crate::kb::load::sorts_with_constructors(kb);
-    let groups = provider_coherence_groups_with(
-        kb,
-        &collect_provisions(kb, provides_sym),
-        &own_ops,
-        &concrete,
-    );
+    let groups =
+        provider_coherence_groups_with(kb, &collect_provisions(kb), &own_ops, &concrete);
     groups
         .iter()
         .find(|g| {
@@ -1946,10 +1884,7 @@ pub(super) fn carrier_view_parts(
 /// A thin wrapper over [`collect_provisions`] so the defaults pass walks the provision
 /// relation through THIS module's decoder rather than spelling a fourth one.
 pub(crate) fn all_provisions(kb: &KnowledgeBase) -> Vec<ProvisionRow> {
-    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
-        return Vec::new();
-    };
-    collect_provisions(kb, provides_sym)
+    collect_provisions(kb)
         .into_iter()
         .map(|p| ProvisionRow {
             provider: p.carrier,

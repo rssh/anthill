@@ -1678,7 +1678,11 @@ fn project_via_provided_spec(
     recv_sort: Symbol,
     member: &str,
 ) -> Option<Result<ProjResult, TypeError>> {
-    for spec in provided_spec_base_syms(kb, recv_sort) {
+    // `directly_provided_specs` dedups CANONICALLY, where this walk's own copy used to dedup
+    // raw — and drops nothing this loop could reach: every step below reads `spec`
+    // canonically (`type_params_of_sort`, `provider_spec_view_bindings`), so a second,
+    // raw-different copy of a spec already tried answers exactly as the first did.
+    for spec in directly_provided_specs(kb, recv_sort) {
         if !kb
             .type_params_of_sort(spec)
             .iter()
@@ -2317,42 +2321,6 @@ pub(super) fn normalize_spec_binding_type(kb: &mut KnowledgeBase, v: TermId) -> 
         return Some(v);
     }
     Some(kb.alloc(Term::Ref(s)))
-}
-
-/// WI-376: the base sort symbols of every spec a sort PROVIDES (`fact Spec[…]` /
-/// `provides Spec[…]` → a `SortProvidesInfo` fact). Snapshot (the caller mutates `kb`), so
-/// it returns owned symbols. Mirrors the provider-snapshot loop in
-/// [`find_spec_op_for_provided_sort`].
-fn provided_spec_base_syms(kb: &KnowledgeBase, recv_sort: Symbol) -> Vec<Symbol> {
-    let mut specs: Vec<Symbol> = Vec::new();
-    // WI-660/WI-672: the canonical-carrier bucket (built index) or the full scan; the
-    // `same_sort_canonical` filter below is the exact match for both.
-    for rid in provides_rids_by_carrier(kb, recv_sort) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        if !same_sort_canonical(kb, carrier, recv_sort) {
-            continue;
-        }
-        let Some(spec_t) = get_named_arg(kb, &named, "spec") else {
-            continue;
-        };
-        if let Some(spec_sym) = crate::kb::load::provides_spec_base_sym(kb, spec_t) {
-            if !specs.contains(&spec_sym) {
-                specs.push(spec_sym);
-            }
-        }
-    }
-    specs
 }
 
 /// A loud [`TypeError`] for an ill-formed / unsupported type projection.
