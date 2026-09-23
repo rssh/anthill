@@ -3322,63 +3322,22 @@ fn caller_param_rigids(
 /// `resolve_sort_alias` + the live `subst` (no precomputed qualified-name
 /// map, so it makes no assumption about how the param symbol is spelled). A
 /// param left abstract (`is_type_param_value`) or unbound is preserved.
+///
+/// A denoted spec is walked carrier-faithfully ([`rewrite_spec_value`], WI-662): a
+/// co-carried type-param binding (`Foo[T = ParentT, E = Modify[c]]`) must still be
+/// root-scoped so the concrete call type reaches the `SortGoal`, and a denoted
+/// `Value::Node` child is kept verbatim, mirroring the op-level `substitute_clause`.
 pub(super) fn substitute_spec_via_subst(
     kb: &mut KnowledgeBase,
     spec: &Value,
     subst: &Substitution,
 ) -> Value {
-    match spec {
-        Value::Term { id, .. } => Value::term(substitute_spec_via_subst_term(kb, *id, subst)),
-        // WI-662: carrier-faithful walk of a denoted spec. Substitute the
-        // term-representable children — a co-carried type-param binding
-        // (`Foo[T = ParentT, E = Modify[c]]`) must still be root-scoped so the
-        // concrete call type reaches the `SortGoal` — and preserve a denoted
-        // `Value::Node` child verbatim (its Expr-occurrence σ is the deferred
-        // parametric-effect handling, mirroring the op-level `substitute_clause`).
-        Value::Entity {
-            functor,
-            pos,
-            named,
-        } => {
-            let new_pos: Vec<Value> = pos
-                .iter()
-                .map(|v| substitute_spec_via_subst(kb, v, subst))
-                .collect();
-            let new_named: Vec<(Symbol, Value)> = named
-                .iter()
-                .map(|(k, v)| (*k, substitute_spec_via_subst(kb, v, subst)))
-                .collect();
-            Value::Entity {
-                functor: *functor,
-                pos: new_pos.into(),
-                named: new_named.into(),
-            }
-        }
-        other => other.clone(),
-    }
-}
-
-/// WI-662: the ground TermId walk under [`substitute_spec_via_subst`].
-fn substitute_spec_via_subst_term(
-    kb: &mut KnowledgeBase,
-    spec: TermId,
-    subst: &Substitution,
-) -> TermId {
-    match kb.get_term(spec).clone() {
-        Term::Ref(s) => resolve_param_value_via_subst(kb, s, subst).unwrap_or(spec),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => {
-            // Nullary Fn — the loader's alternative encoding for a bare name.
-            resolve_param_value_via_subst(kb, functor, subst).unwrap_or(spec)
-        }
-        Term::Fn { .. } => kb.map_fn_children(spec, |kb, child| {
-            substitute_spec_via_subst_term(kb, child, subst)
-        }),
-        _ => spec,
-    }
+    rewrite_spec_value(kb, spec, &|kb, t| {
+        rewrite_term_leaves(kb, t, &|kb, t| {
+            let s = ref_or_nullary_name(kb.get_term(t))?;
+            Some(resolve_param_value_via_subst(kb, s, subst).unwrap_or(t))
+        })
+    })
 }
 
 /// WI-415: the concrete type a sort-parameter symbol's logical variable is

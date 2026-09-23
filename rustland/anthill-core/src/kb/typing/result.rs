@@ -520,10 +520,11 @@ fn substitute_ref_syms_rec(
     map: &HashMap<Symbol, Symbol>,
     var_ref_sym: Symbol,
 ) -> TermId {
-    match kb.get_term(term).clone() {
-        Term::Ref(s) => map
-            .get(&s)
-            .map_or(term, |&new_sym| kb.alloc(Term::Ref(new_sym))),
+    rewrite_term_leaves(kb, term, &|kb, t| match *kb.get_term(t) {
+        Term::Ref(s) => Some(
+            map.get(&s)
+                .map_or(t, |&new_sym| kb.alloc(Term::Ref(new_sym))),
+        ),
         // WI-592: a `var_ref(name: Ref(b))` is a binder VARIABLE reference, not a
         // bare param-name occurrence to rename. Leave it intact — recursing would
         // rewrite the binder's `name` child, corrupting `var_ref(name: c)` into
@@ -535,12 +536,9 @@ fn substitute_ref_syms_rec(
         // pass touches only the bare `Ref` spine of effect LABELS (`Modify[c]` →
         // `Modify[s]`, WI-209). The same recurse-corruption WI-552 fixed in
         // `substitute_ref_terms`, here for the param-name rename.
-        Term::Fn { functor, .. } if functor == var_ref_sym => term,
-        Term::Fn { .. } => kb.map_fn_children(term, |kb, child| {
-            substitute_ref_syms_rec(kb, child, map, var_ref_sym)
-        }),
-        _ => term,
-    }
+        Term::Fn { functor, .. } if functor == var_ref_sym => Some(t),
+        _ => None,
+    })
 }
 
 /// WI-342 effects-vertical: param-name `Ref` substitution over a carrier-agnostic

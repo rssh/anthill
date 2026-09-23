@@ -1147,10 +1147,10 @@ pub(super) fn provider_requires_subgoals(
 /// leave anything σ doesn't ground unchanged. Recurses through `Fn`
 /// children (`List[T]`, `Pair[A, B]`).
 fn subst_requires_value(kb: &mut KnowledgeBase, v: TermId, sigma: &[(String, TermId)]) -> TermId {
-    if let Some(s) = view_ref_symbol(kb, &TermIdView(v)) {
-        return map_requires_name(kb, s, v, sigma);
-    }
-    kb.map_fn_children(v, |kb, t| subst_requires_value(kb, t, sigma))
+    rewrite_term_leaves(kb, v, &|kb, t| {
+        let s = view_ref_symbol(kb, &TermIdView(t))?;
+        Some(map_requires_name(kb, s, t, sigma))
+    })
 }
 
 /// σ-ground a bare name in a `requires` value by short name; otherwise keep

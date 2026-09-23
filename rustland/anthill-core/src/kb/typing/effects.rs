@@ -666,34 +666,29 @@ fn substitute_ref_terms_rec(
     map: &HashMap<Symbol, TermId>,
     var_ref_sym: Symbol,
 ) -> TermId {
-    match kb.get_term(term).clone() {
-        Term::Ref(s) | Term::Ident(s) => map.get(&s).copied().unwrap_or(term),
+    rewrite_term_leaves(kb, term, &|kb, t| match kb.get_term(t) {
+        Term::Ref(s) | Term::Ident(s) => Some(map.get(s).copied().unwrap_or(t)),
         Term::Fn {
             functor,
             named_args,
             ..
-        } if functor == var_ref_sym => {
-            match var_ref_name_symbol(kb, &named_args) {
-                Some(s) => map.get(&s).copied().unwrap_or(term),
-                // A `var_ref`'s `name` child is always `Ref(sym)` by construction
-                // ([`KnowledgeBase::make_var_ref_term`]). A `None` here means a
-                // malformed binder reached σ — surface it loudly rather than
-                // silently leaving an un-substitutable node (repo principle: loud
-                // error over silent skip). Release keeps the conservative `term`.
-                None => {
-                    debug_assert!(
-                        false,
-                        "substitute_ref_terms: var_ref with a non-symbol `name` child"
-                    );
-                    term
-                }
+        } if *functor == var_ref_sym => Some(match var_ref_name_symbol(kb, named_args) {
+            Some(s) => map.get(&s).copied().unwrap_or(t),
+            // A `var_ref`'s `name` child is always `Ref(sym)` by construction
+            // ([`KnowledgeBase::make_var_ref_term`]). A `None` here means a
+            // malformed binder reached σ — surface it loudly rather than
+            // silently leaving an un-substitutable node (repo principle: loud
+            // error over silent skip). Release keeps the conservative `term`.
+            None => {
+                debug_assert!(
+                    false,
+                    "substitute_ref_terms: var_ref with a non-symbol `name` child"
+                );
+                t
             }
-        }
-        Term::Fn { .. } => kb.map_fn_children(term, |kb, child| {
-            substitute_ref_terms_rec(kb, child, map, var_ref_sym)
         }),
-        _ => term,
-    }
+        _ => None,
+    })
 }
 
 /// Read the binder symbol `s` from a `var_ref(name: Ref(s))` term's `name` child.

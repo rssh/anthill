@@ -1416,14 +1416,14 @@ pub(super) fn substitute_impl_params_alloc(
     impl_subst: &[(Symbol, TermId)],
 ) -> TermId {
     // A bare name is a LEAF — replaced when σ binds it, kept otherwise, never descended.
-    if let Some(s) = view_ref_symbol(kb, &TermIdView(term)) {
-        return impl_subst
-            .iter()
-            .find(|(k, _)| *k == s)
-            .map_or(term, |(_, v)| *v);
-    }
-    kb.map_fn_children(term, |kb, t| {
-        substitute_impl_params_alloc(kb, t, impl_subst)
+    rewrite_term_leaves(kb, term, &|kb, t| {
+        let s = view_ref_symbol(kb, &TermIdView(t))?;
+        Some(
+            impl_subst
+                .iter()
+                .find(|(k, _)| *k == s)
+                .map_or(t, |(_, v)| *v),
+        )
     })
 }
 

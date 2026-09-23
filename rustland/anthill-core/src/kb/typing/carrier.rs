@@ -394,7 +394,7 @@ pub(super) fn witness_instantiation(
     carrier_pvid: VarId,
     view_bindings: &[(Symbol, TermId)],
     recv_bindings: &[(VarId, TermId)],
-) -> Option<(Symbol, Vec<(Symbol, TermId)>, Vec<(VarId, TermId)>)> {
+) -> Option<(Vec<(Symbol, TermId)>, Vec<(VarId, TermId)>)> {
     // CHEAP GATE FIRST — the carrier binding being an APPLICATION of the carrier is the
     // witness signature (an ordinary `provides` writes a bare reference). Every ordinary
     // dispatch answers here, before the provider scan below runs at all.
@@ -446,7 +446,7 @@ pub(super) fn witness_instantiation(
             Some((wvid, arg))
         })
         .collect();
-    (!subst.is_empty()).then_some((witness, witness_params, subst))
+    (!subst.is_empty()).then_some((witness_params, subst))
 }
 
 /// WI-20260828-57MRM — the WITNESS parameter a head occurrence denotes, in either spelling:
@@ -493,25 +493,20 @@ fn witness_param_vid_of_occurrence(
 
 /// WI-20260828-57MRM — apply [`witness_instantiation`]'s σ to one head binding, replacing
 /// each witness-parameter occurrence (in either spelling) by the receiver's type-arg.
+///
+/// The `witness: Symbol` parameter is gone for the reason WI-20260921-3G1YT dropped it from
+/// [`witness_param_vid_of_occurrence`]: it was only ever passed down the recursion, and
+/// `witness_params` already IS that witness's parameter list.
 fn apply_witness_instantiation(
     kb: &mut KnowledgeBase,
     tid: TermId,
-    witness: Symbol,
     witness_params: &[(Symbol, TermId)],
     subst: &[(VarId, TermId)],
 ) -> TermId {
-    if let Some(v) = witness_param_vid_of_occurrence(kb, tid, witness_params) {
-        if let Some((_, bound)) = subst.iter().find(|(w, _)| *w == v) {
-            return *bound;
-        }
-    }
-    if matches!(kb.get_term(tid), Term::Fn { .. }) {
-        kb.map_fn_children(tid, |kb, child| {
-            apply_witness_instantiation(kb, child, witness, witness_params, subst)
-        })
-    } else {
-        tid
-    }
+    rewrite_term_leaves(kb, tid, &|kb, t| {
+        let v = witness_param_vid_of_occurrence(kb, t, witness_params)?;
+        subst.iter().find(|(w, _)| *w == v).map(|(_, bound)| *bound)
+    })
 }
 
 /// WI-492 — the specs a carrier sort DIRECTLY provides (base symbols), read
@@ -1823,14 +1818,9 @@ pub(super) fn bind_spec_params_from_carrier_param(
         // accepted where the witness pins `Element = Int64`, which the un-instantiated read
         // had refused. A rewritten value that is GROUND is already the answer; bind it.
         let carrier_value = match &instantiation {
-            Some((witness, witness_params, wsubst)) => {
-                let rewritten = apply_witness_instantiation(
-                    kb,
-                    carrier_value,
-                    *witness,
-                    witness_params,
-                    wsubst,
-                );
+            Some((witness_params, wsubst)) => {
+                let rewritten =
+                    apply_witness_instantiation(kb, carrier_value, witness_params, wsubst);
                 if rewritten != carrier_value && type_value_is_ground(kb, rewritten) {
                     if let Some(spec_vid) = spec_vid {
                         if subst.resolve_as_value(spec_vid).is_none()
@@ -1948,11 +1938,25 @@ pub(super) fn substitute_carrier_params(
     carrier_sym: Symbol,
     recv_bindings: &[(VarId, TermId)],
 ) -> TermId {
+    rewrite_term_leaves(kb, tid, &|kb, t| {
+        carrier_param_leaf_binding(kb, t, carrier_sym, recv_bindings)
+    })
+}
+
+/// [`substitute_carrier_params`]' leaf set: the receiver's type-arg for a carrier-parameter
+/// occurrence, in either of its two spellings; `None` for anything else, which the walk
+/// descends ([`rewrite_term_leaves`]) — any other compound keeps its functor.
+fn carrier_param_leaf_binding(
+    kb: &KnowledgeBase,
+    tid: TermId,
+    carrier_sym: Symbol,
+    recv_bindings: &[(VarId, TermId)],
+) -> Option<TermId> {
     // (1) A carrier-param leaf (`K`) → the receiver's type-arg, keyed by the
     //     carrier sort's canonical param VarId.
     if let Some(vid) = typaram_ref_vid(kb, tid, carrier_sym) {
         if let Some((_, bound)) = recv_bindings.iter().find(|e| e.0 == vid) {
-            return *bound;
+            return Some(*bound);
         }
     }
     // (1b) WI-590 — the same leaf in its OTHER SPELLING. A carrier parameter is a
@@ -1972,20 +1976,9 @@ pub(super) fn substitute_carrier_params(
     //      only this read was missing. It went unnoticed while every route to such a call
     //      arrived with the intermediate's static type, which is a ONE-hop provision whose
     //      binding is a plain `Ref`.
-    if let Term::Var(Var::Global(v)) = kb.get_term(tid) {
-        let v = *v;
-        if let Some((_, bound)) = recv_bindings.iter().find(|e| e.0 == v) {
-            return *bound;
-        }
-    }
-    // (2) Any other compound: recurse into children, preserving the functor. The
-    //     `matches!` discriminant drops the immutable borrow before the `&mut` rebuild.
-    if matches!(kb.get_term(tid), Term::Fn { .. }) {
-        kb.map_fn_children(tid, |kb, child| {
-            substitute_carrier_params(kb, child, carrier_sym, recv_bindings)
-        })
-    } else {
-        tid
+    match kb.get_term(tid) {
+        Term::Var(Var::Global(v)) => recv_bindings.iter().find(|e| e.0 == *v).map(|e| e.1),
+        _ => None,
     }
 }
 

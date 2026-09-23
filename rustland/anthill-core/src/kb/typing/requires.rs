@@ -2492,37 +2492,61 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
     out
 }
 
-/// WI-230 internal: substitution-aware deep walk. Replaces both
-/// `Term::Ref(s)` AND nullary `Term::Fn(s, [], [])` (the loader's
-/// alternative encoding for a bare name reference; see WI-224's
-/// `substitute_impl_params_alloc`) where `s` is in `map` with the
-/// mapped TermId. Recurses into non-nullary `Term::Fn` children.
-/// Allocates fresh `Term::Fn` nodes only when a child was actually
-/// rewritten (preserves hash-cons identity for unchanged sub-terms).
-pub(super) fn substitute_in_spec(
+/// WI-20260923-32XFQ — rewrite `t`'s LEAVES. `leaf` answers `Some(new)` for a term it
+/// rewrites — `Some(t)` keeps one whole and stops the descent there — and `None` to descend:
+/// a `Fn` is rebuilt through [`KnowledgeBase::map_fn_children`] (hash-cons identity kept when
+/// nothing below changed), anything else is kept.
+///
+/// The one walk under the term-level σ substitutions, each of which spelled it. `leaf`
+/// carries the site's LEAF SET, and the sets differ on purpose: {`Ref`, nullary `Fn`} for
+/// [`substitute_in_spec`] and [`substitute_spec_via_subst`]; those plus `Ident` where the
+/// leaf is read through [`view_ref_symbol`] (`substitute_impl_params_alloc`,
+/// `subst_requires_value`); a bare `Ref` (and `Ident`) beside a `var_ref` wrapper that is
+/// kept or replaced WHOLE, never descended, in the two binder-aware passes
+/// (`substitute_ref_syms`, [`substitute_ref_terms`]). Merging ACROSS two sets changes an
+/// answer unless `Ident` is shown absent from what the narrower one reads; this owns only
+/// the walk.
+pub(super) fn rewrite_term_leaves(
+    kb: &mut KnowledgeBase,
+    t: TermId,
+    leaf: &impl Fn(&mut KnowledgeBase, TermId) -> Option<TermId>,
+) -> TermId {
+    if let Some(new) = leaf(kb, t) {
+        return new;
+    }
+    // A declined non-`Fn` is kept as it is. Asked here and not left to `map_fn_children`,
+    // which clones the term before it looks — a `String` literal's allocation per leaf.
+    if !matches!(kb.get_term(t), Term::Fn { .. }) {
+        return t;
+    }
+    kb.map_fn_children(t, |kb, child| rewrite_term_leaves(kb, child, leaf))
+}
+
+/// WI-20260923-32XFQ — [`rewrite_term_leaves`]' carrier-faithful spec walk (WI-662): a
+/// ground `Value::Term` spec is rewritten by `term`; a denoted `Value::Entity` spec is
+/// rebuilt with each child walked the same way, so a co-carried type binding (`Foo[T =
+/// ParentT, E = Modify[c]]`) is still rewritten; anything else — a denoted `Value::Node`
+/// child — is kept verbatim (its Expr-occurrence σ is the deferred parametric-effect
+/// handling). The walk [`substitute_in_spec`] and [`substitute_spec_via_subst`] each spelled.
+pub(super) fn rewrite_spec_value(
     kb: &mut KnowledgeBase,
     spec: &Value,
-    map: &HashMap<Symbol, TermId>,
+    term: &impl Fn(&mut KnowledgeBase, TermId) -> TermId,
 ) -> Value {
-    if map.is_empty() {
-        return spec.clone();
-    }
     match spec {
-        Value::Term { id, .. } => Value::term(substitute_in_spec_term(kb, *id, map)),
-        // WI-662: carrier-faithful walk of a denoted spec (WI-230 root-scope
-        // composition) — substitute the term-representable children (a co-carried
-        // `T = ParentT` type binding is re-scoped top-down) and preserve a denoted
-        // `Value::Node` child verbatim (deferred parametric-effect handling). See
-        // `substitute_spec_via_subst` for the per-call-subst twin.
+        Value::Term { id, .. } => Value::term(term(kb, *id)),
         Value::Entity {
             functor,
             pos,
             named,
         } => {
-            let new_pos: Vec<Value> = pos.iter().map(|v| substitute_in_spec(kb, v, map)).collect();
+            let new_pos: Vec<Value> = pos
+                .iter()
+                .map(|v| rewrite_spec_value(kb, v, term))
+                .collect();
             let new_named: Vec<(Symbol, Value)> = named
                 .iter()
-                .map(|(k, v)| (*k, substitute_in_spec(kb, v, map)))
+                .map(|(k, v)| (*k, rewrite_spec_value(kb, v, term)))
                 .collect();
             Value::Entity {
                 functor: *functor,
@@ -2534,30 +2558,45 @@ pub(super) fn substitute_in_spec(
     }
 }
 
-/// WI-662: the ground TermId walk under [`substitute_in_spec`].
-fn substitute_in_spec_term(
-    kb: &mut KnowledgeBase,
-    spec: TermId,
-    map: &HashMap<Symbol, TermId>,
-) -> TermId {
-    if map.is_empty() {
-        return spec;
-    }
-    match kb.get_term(spec).clone() {
-        Term::Ref(s) => map.get(&s).copied().unwrap_or(spec),
+/// The bare-name symbol of a `Ref(s)` or the nullary `Fn{s}` — the loader's alternative
+/// encoding for a bare name (see WI-224's `substitute_impl_params_alloc`) — and NOT of an
+/// `Ident`: the {`Ref`, nullary `Fn`} LEAF SET the two spec substitutions read (see
+/// [`rewrite_term_leaves`] for why that set is theirs and not [`view_ref_symbol`]'s).
+pub(super) fn ref_or_nullary_name(term: &Term) -> Option<Symbol> {
+    match term {
+        Term::Ref(s) => Some(*s),
         Term::Fn {
             functor,
             pos_args,
             named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => {
-            // Nullary Fn — treat as a name reference.
-            map.get(&functor).copied().unwrap_or(spec)
-        }
-        Term::Fn { .. } => {
-            kb.map_fn_children(spec, |kb, child| substitute_in_spec_term(kb, child, map))
-        }
-        _ => spec,
+        } if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
+        _ => None,
     }
+}
+
+/// WI-230 internal: substitution-aware deep walk. Replaces both
+/// `Term::Ref(s)` AND nullary `Term::Fn(s, [], [])` (the loader's
+/// alternative encoding for a bare name reference; see WI-224's
+/// `substitute_impl_params_alloc`) where `s` is in `map` with the
+/// mapped TermId. Recurses into non-nullary `Term::Fn` children.
+/// Allocates fresh `Term::Fn` nodes only when a child was actually
+/// rewritten (preserves hash-cons identity for unchanged sub-terms).
+/// A denoted spec is walked carrier-faithfully ([`rewrite_spec_value`], WI-662 — the
+/// WI-230 root-scope composition); `substitute_spec_via_subst` is the per-call-subst twin.
+pub(super) fn substitute_in_spec(
+    kb: &mut KnowledgeBase,
+    spec: &Value,
+    map: &HashMap<Symbol, TermId>,
+) -> Value {
+    if map.is_empty() {
+        return spec.clone();
+    }
+    rewrite_spec_value(kb, spec, &|kb, t| {
+        rewrite_term_leaves(kb, t, &|kb, t| {
+            let s = ref_or_nullary_name(kb.get_term(t))?;
+            Some(map.get(&s).copied().unwrap_or(t))
+        })
+    })
 }
 
 /// WI-230 internal: from an entry whose spec has already been
