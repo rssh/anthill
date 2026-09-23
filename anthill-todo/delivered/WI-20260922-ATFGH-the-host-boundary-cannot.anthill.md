@@ -3,9 +3,9 @@
 - id: WI-20260922-ATFGH-the-host-boundary-cannot
 - created: 2026-09-22T14:51:56Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-22T14:51:56Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-23T18:40:59Z
 
 - acceptance: cargo-test
 
@@ -35,4 +35,10 @@ WHAT TO DECIDE AT PICKUP.
 ACCEPTANCE: the two routes above AGREE, driven at both rival orderings, or the host route REFUSES naming the slot — never one answer twice; EE0EP's pinned row flips from asserting `false` to asserting the agreement, and says what it asserted before; WI-868's three stand-in measurements still hold, each named; full workspace green via rustland/scripts/test.sh.
 
 REFERENCE: `Interpreter::call_with_requirements` and `seed_entry_requirements` (eval/mod.rs), `wi_r10kc_spec_default_body_dictionary_test::the_host_entry_route_answers_by_value_direction`, docs/design/path-dependent-types.md §5.5, docs/design/operation-call-model.md §"Host-to-entry-op boundary", 058 §4.7.
+
+## Changes
+
+### 2026-09-23T18:40:44Z — feedback — user
+
+Delivered in ed275a04 (merged ab0ae241). The mechanism was NOT value-direction: resolve_bridge_requirements CONSTRUCTED the slot — rung_for_dep(op, …) answered Consult (an operation declares no named slots) and 058 §3.2's default broke the ByLength/Alphabetical/String tie toward String. Fix: a type-carried slot resolves under DefaultRung::Unranked (neither default nor specificity) on value-only routes — one provider is exact, a tie or an under-determined goal is the ParamSlotNotCarried marker refused at the read naming s.O; the SLD bridge keeps the tie and delays. Host spelling: Interpreter::call_with_witnesses(op, args, &[SlotWitness { param, slot, witness }]). EE0EP's pinned row flipped to the_host_entry_names_the_witness_or_is_refused. WI-868's stand-in (sort half) untouched, per (d).
 
