@@ -144,7 +144,7 @@ fn type_mismatch_tag(origin: &Option<TypeMismatchOrigin>) -> String {
 }
 
 /// WI-510: the opt-in construction-site trace appended to a rendered
-/// `TypeMismatch`, e.g. ` [Other @ kb/typing.rs:14028]`. Gated on the
+/// `TypeMismatch`, e.g. ` [TypeMismatch @ kb/typing/callable.rs:633]`. Gated on the
 /// `ANTHILL_DIAG_ORIGIN` env var so normal diagnostics stay clean; a developer
 /// tracing a mismatch to its origin sets the var and re-runs. Empty otherwise.
 fn type_mismatch_origin_suffix(origin: &Option<TypeMismatchOrigin>) -> String {

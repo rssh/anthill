@@ -35,6 +35,15 @@ fn try_load(extra: &str) -> Vec<load::LoadError> {
         .unwrap_or_default()
 }
 
+/// Whether a construction site (`Location::file()`) lies in the typer's source: the
+/// module file `kb/typing.rs` or any file under `kb/typing/`, which is where the typer's
+/// code lives since it was split by topic. Separator-agnostic, since `file()` is the path
+/// as rustc was given it. A site in any OTHER module (`load.rs`, `resolve.rs`, …) is not.
+fn in_typer_source(file: &str) -> bool {
+    let f = file.replace('\\', "/");
+    f.ends_with("kb/typing.rs") || f.contains("kb/typing/")
+}
+
 /// The first `TypeMismatch` carrying a typer origin.
 fn first_origin_mismatch(errs: &[LoadError]) -> &LoadError {
     errs.iter()
@@ -76,7 +85,7 @@ end
     );
     // (1) it is traceable to the construction site inside the typer.
     assert!(
-        o.site.file().contains("typing.rs"),
+        in_typer_source(o.site.file()),
         "the origin site must point into the typer source, got {}:{}",
         o.site.file(),
         o.site.line(),
@@ -115,7 +124,7 @@ end
         "an entity-field mismatch must carry the entity-field context tag: {o:?}"
     );
     assert!(
-        o.site.file().contains("typing.rs"),
+        in_typer_source(o.site.file()),
         "the origin site must point into the typer source, got {}:{}",
         o.site.file(),
         o.site.line(),
