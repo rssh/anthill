@@ -1826,3 +1826,6 @@ mod wi_ee0ep_param_dictionary_test;
 
 #[path = "include/wi_6b67s_receiver_bound_requirement_test.rs"]
 mod wi_6b67s_receiver_bound_requirement_test;
+
+#[path = "include/wi_tx0g6_selection_validation_test.rs"]
+mod wi_tx0g6_selection_validation_test;

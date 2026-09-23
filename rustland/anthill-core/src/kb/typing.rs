@@ -1417,10 +1417,14 @@ impl TypeError {
             TypeError::ValueDirectedSelection {
                 op, witness, spec, ..
             } => {
+                // CHANNEL-NEUTRAL, for the reason the arm above gives (WI-20260911-TX0G6).
+                // This read "an explicit `[Spec = W]`", which names a bracket neither
+                // spelling of a NAMED slot writes: the callee writes `[O = W]` and the
+                // receiver writes `SortedSet[…, O = W]`, and both now reach this arm.
                 format!(
                     "{} is a CONCRETE provider of {} — its values carry their own sort, \
                      so the dispatch at {} is already directed by the value and an \
-                     explicit `[{} = {}]` cannot change it",
+                     explicit selection of `{} = {}` cannot change it",
                     kb.qualified_name_of(*witness),
                     kb.qualified_name_of(*spec),
                     kb.qualified_name_of(*op),
@@ -2053,10 +2057,13 @@ impl TypeError {
                 actual_type: self.format(kb),
                 span: self.span(kb),
             },
+            // WI-20260911-TX0G6: `selection`, the rule the two arms above follow. The
+            // receiver spelling reaches this refusal too, and its three refusals of one
+            // written selection should name one field.
             TypeError::ValueDirectedSelection { op, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
-                field_name: "type_arg".to_string(),
+                field_name: "selection".to_string(),
                 expected_type: "no explicit witness — this dispatch is value-directed".to_string(),
                 actual_type: self.format(kb),
                 span: self.span(kb),
@@ -30082,20 +30089,23 @@ fn seed_op_type_args(
         let Some(spec_sort) = target.slot_spec() else {
             continue;
         };
-        // A slot binding's VALUE names a witness SORT, so it must be readable as one.
-        // A binding that is not (a literal, an arrow) has no provider to check and no
-        // impl to pin — refuse it rather than drop it into the type-parameter half
-        // and call the slot bound.
-        let witness =
-            selection_witness_sym(kb, value).ok_or(TypeError::SelectionValueNotASort {
-                span,
-                op: fn_sym,
-                spec: spec_sort,
-            })?;
-        // Built at the FIRST slot binding, not per binding: the §1.1 set is a scan of
-        // every `SortInfo` fact, and a bracket may bind several slots.
-        let concrete = concrete.get_or_insert_with(|| super::load::sorts_with_constructors(kb));
-        validate_instance_selection(kb, fn_sym, spec_sort, witness, concrete, span)?;
+        // WI-20260911-TX0G6: the written binding's checks have ONE owner, shared with the
+        // receiver spelling ([`seed_receiver_type_args`]). A NAMED slot's binding is also
+        // a type argument (`target.param()` is its binder), which is what lets a value
+        // naming an enclosing slot forward; an ANONYMOUS one binds no parameter and may
+        // not.
+        let Some(witness) = validate_written_selection(
+            kb,
+            fn_sym,
+            spec_sort,
+            value,
+            target.param().is_some(),
+            &mut concrete,
+            span,
+        )?
+        else {
+            continue;
+        };
         // WI-870: and what the value's OWN bracket bound on that witness (§3.3).
         let slots = witness_value_slot_selections(kb, fn_sym, witness, value, span)?;
         push_selection(kb, &mut selections, spec_sort, witness, slots, fn_sym, span)?;
@@ -30211,42 +30221,28 @@ fn seed_receiver_type_args(
     if !same_sort_canonical(kb, recv_base, parent) {
         return Ok(());
     }
-    // WHAT THIS LEG DOES NOT DO, stated because "one rule, two spellings" would
-    // otherwise overclaim (found by `/code-review`). [`seed_op_type_args`] runs TWO
-    // extra checks on a binding that names a REQUIREMENT SLOT — `SelectionValueNotASort`
-    // for a value with no sort head, and [`validate_instance_selection`]'s §3.5 checks —
-    // and this leg runs neither. A receiver-bound slot still SELECTS, through the
-    // type-carried producer [`selections_from_slot_bindings`] reading the parameter back
-    // out of σ.
+    // A BINDING THAT NAMES A REQUIREMENT SLOT IS VALIDATED HERE, by the callee leg's own
+    // owner ([`validate_written_selection`]), so the two spellings refuse the same
+    // bindings with the same bytes (WI-20260911-TX0G6). The σ-read producer
+    // [`selections_from_slot_bindings`] still SELECTS the witness, reading the parameter
+    // back out of σ, and re-runs check 1 on it. For a witness written here that second
+    // check reads the same sort and agrees. It is the check an ARGUMENT's type reaches,
+    // with no bracket written anywhere.
     //
-    // WI-20260911-6B67S CLOSED BOTH HALVES, at the producer rather than here, and
-    // corrected this comment's account of them — stated as one case and MEASURED as two:
-    //  * a value with NO SORT HEAD (`[O = (Int64, Int64)]`) is what "accepted with the
-    //    slot quietly unselected" describes. The reading was right and the consequence
-    //    understated: the written `O` was DROPPED and the requirement then answered by
-    //    an ordinary search, so the call did not merely lose its selection, it silently
-    //    got somebody else's.
-    //  * a value that IS a sort but provides NOTHING (`[O = NotOrd]`) was never
-    //    unselected at all. It was selected and refused — right verdict, wrong message,
-    //    since [`check_selection_bindings`] assumed a check 1 that had not run.
+    // THE HISTORY, one measured step at a time. RS2G4 left this leg with no checks at
+    // all. WI-20260911-6B67S then refused two of the resulting silent shapes AT THE
+    // PRODUCER: a value with no sort head (`[O = (Int64, Int64)]`, whose written `O` was
+    // dropped and answered by a search) and a sort that provides nothing (`[O = NotOrd]`,
+    // refused under a message claiming it provided). It left CHECK 3 open: `[O = ConcOrd]`,
+    // a CONCRETE provider, loaded here and was refused by the callee. Its reason for not
+    // closing that at the producer was that check 3 refuses a SPELLING, so it belongs to
+    // the channel the author wrote. That reason holds, and this leg is such a channel. So
+    // all three checks now run here, in the callee's order, and check 3 still does not run
+    // at the producer.
     //
-    // BOTH are now refused by [`selections_from_slot_bindings`] itself, which is the ONE
-    // producer this leg's slot bindings reach; it raises `SelectionValueNotASort` and
-    // runs check 1, so the receiver spelling refuses exactly what the callee spelling
-    // does and this leg needs no check of its own. That is also why the fix is not here:
-    // the same producer is reached by an ARGUMENT whose TYPE carries the slot, with no
-    // bracket written anywhere, and a receiver-leg check could not have reached it.
-    //
-    // WHAT THIS LEG STILL DOES NOT DO: [`validate_instance_selection`]'s check 3
-    // (`ValueDirectedSelection` — naming a CONCRETE provider, whose values already
-    // direct dispatch). MEASURED at 6B67S: `SortedSet[T = String, O = ConcOrd].empty()`
-    // loads where the callee spelling refuses it. Check 3 refuses a SPELLING, so unlike
-    // check 1 it cannot move to the producer — the σ-read channel has no spelling, and a
-    // TYPE legitimately carries a concrete witness. It belongs to whichever channel the
-    // author wrote, which for this leg means here; left open because it is a verdict
-    // change on the receiver bracket with no measured victim. LATENT meanwhile: the
-    // delivery census found no form-(3) call in `stdlib/`, `examples/` or the loaded
-    // `anthill-todo` code at all.
+    // `concrete`: the §1.1 set, built lazily, so a receiver bracket that binds no slot
+    // never pays for the scan. (The three corpora write no form-(3) call at all.)
+    let mut concrete: Option<std::collections::HashSet<Symbol>> = None;
     for (param, var_term) in sort_type_params_as_pairs(kb, parent).iter() {
         // BY SHORT NAME. The receiver's keys are bare interns of the written spelling
         // and the declared list is qualified — the same split [`BindingKeyMatch`] closes
@@ -30261,11 +30257,15 @@ fn seed_receiver_type_args(
         // The receiver channel's own spelling of "does this key name a PROVIDER SLOT" —
         // see [`expand_written_bracket_value`] for the rule both channels obey. By NAME,
         // because the declared list is qualified and a slot's binder is a bare intern,
-        // exactly as the key match one line above.
-        let binds_slot = kb
+        // exactly as the key match one line above. The SPEC is read off the same record,
+        // which is the record the callee's `named_slot_spec` reads, so a validation
+        // failure below names the spec the callee spelling would.
+        let slot = kb
             .named_requirement_slots(parent)
             .iter()
-            .any(|slot| kb.local_name_of(slot.binder) == short);
+            .find(|slot| kb.local_name_of(slot.binder) == short)
+            .copied();
+        let binds_slot = slot.is_some();
         let expanded = expand_written_bracket_value(kb, &written_value, binds_slot);
         let value = expanded.unwrap_or_else(|| written_value.clone());
         // READ BEFORE THE UNIFY, because it is what decides WHICH fault a `false` is.
@@ -30303,37 +30303,61 @@ fn seed_receiver_type_args(
             // AS WRITTEN, not as expanded: `[T = List]` is what the author typed, and
             // telling them their `List` disagrees with `List[T = ?T]` names a variable
             // this pass minted.
-            let Some(prior) = prior else {
-                if !mentions {
-                    // FREE, refused, and the value does NOT mention the parameter: the
-                    // sticky flag above. NOT a silent skip — the conflicting re-bind that
-                    // set it also recorded a `contradiction_details` entry, and
-                    // [`enforce_member_tie`] renders that as its own
-                    // `OperationTypeParams` refusal naming the REAL disagreeing pair. This
-                    // leg staying quiet is what lets that message be the one the author
-                    // sees, instead of a second, wrong one about a cycle.
-                    continue;
+            match prior {
+                // FREE, refused, and the value does NOT mention the parameter: the sticky
+                // flag above. NOT a silent skip — the conflicting re-bind that set it also
+                // recorded a `contradiction_details` entry, and [`enforce_member_tie`]
+                // renders that as its own `OperationTypeParams` refusal naming the REAL
+                // disagreeing pair. This leg adds no cycle message, which is what lets that
+                // one be the one the author sees, instead of a second, wrong one.
+                //
+                // It FALLS THROUGH to the written binding's validation below rather than
+                // `continue`ing past it (WI-20260911-TX0G6, found by `/code-review`): that
+                // validation reads only the WRITTEN value, never σ, and the callee leg runs
+                // it on the same verdict. No known program reaches this state (see
+                // `wi_7tn1q_occurs_check_sort_alias_test`'s header), so this is reasoned,
+                // not measured.
+                None if !mentions => {}
+                None => {
+                    // WI-20260911-7TN1Q: the same bytes as the callee bracket's, one noun
+                    // over — [`bracket_binding_mentions_its_parameter`].
+                    let param_name = kb.local_name_of(*param).to_string();
+                    return Err(bracket_binding_mentions_its_parameter(
+                        kb,
+                        "a receiver binding",
+                        &param_name,
+                        &written_value,
+                        fn_sym,
+                        span,
+                    ));
                 }
-                // WI-20260911-7TN1Q: the same bytes as the callee bracket's, one noun over
-                // — [`bracket_binding_mentions_its_parameter`].
-                let param_name = kb.local_name_of(*param).to_string();
-                return Err(bracket_binding_mentions_its_parameter(
-                    kb,
-                    "a receiver binding",
-                    &param_name,
-                    &written_value,
-                    fn_sym,
-                    span,
-                ));
-            };
-            let callee = walk_type_deep_value(kb, subst, &prior);
-            return Err(TypeError::ReceiverBracketConflict {
+                Some(prior) => {
+                    let callee = walk_type_deep_value(kb, subst, &prior);
+                    return Err(TypeError::ReceiverBracketConflict {
+                        span,
+                        op: fn_sym,
+                        param: *param,
+                        receiver: written_value,
+                        callee,
+                    });
+                }
+            }
+        }
+        // AFTER the unify, as at the callee leg, whatever its verdict when it did not
+        // return above. A written slot binding is always a type argument here (a receiver
+        // key names one of the sort's parameters), so a value naming an enclosing slot
+        // forwards. The selection itself is the σ-read producer's to push; this only
+        // refuses what the callee spelling refuses.
+        if let Some(spec_sort) = slot.and_then(|s| s.spec_base) {
+            validate_written_selection(
+                kb,
+                fn_sym,
+                spec_sort,
+                &written_value,
+                true,
+                &mut concrete,
                 span,
-                op: fn_sym,
-                param: *param,
-                receiver: written_value,
-                callee,
-            });
+            )?;
         }
     }
     Ok(())
@@ -30581,6 +30605,42 @@ fn slot_selection_of(
             slots: nested,
         },
     }))
+}
+
+/// WI-20260911-TX0G6 — does `v` NAME one of its declaring scope's own NAMED requirement
+/// slots, as `OE` does inside `sort R { requires OE: WeakOrd[E] }`? This is the one
+/// abstract value a WRITTEN slot binding may forward
+/// ([`validate_written_selection`]).
+///
+/// NARROWER THAN [`view_is_abstract_type_param`], and the difference was MEASURED as a
+/// silent wrong answer. A forward hands the callee whatever dictionary the frame holds
+/// for the slot's GOAL. That goal is keyed by spec and bindings, not by the binder the
+/// type names. So `[O = P]`, with `P` a PLAIN parameter of `sort R2 { sort P = ?;
+/// requires OE: WeakOrd[E] }`, was answered by `OE`'s dictionary: at
+/// `R2.mk[E = String, P = ByLength, OE = RevLen]` the set's type said `O = ByLength`, and
+/// it ordered by `RevLen`. Only a slot binder is a name the frame holds a dictionary
+/// under, so only a slot binder forwards.
+///
+/// Asked of the binder's DECLARING scope, so an operation's own slots (`requires plus:
+/// Monoid[T]`) answer exactly as a sort's do. A name no scope declares answers `false`:
+/// that is the loud direction, since the binding then goes on to check 1 and is
+/// refused. The declaring scope IS the enclosing declaration for every value that
+/// reaches here. MEASURED (found by `/code-review`): another sort's binder written from
+/// outside, `[O = R.OE]` inside `sort S`, is a non-manifest projection, refused at load
+/// in both spellings, and never gets here as a `SortRef`.
+fn names_a_declared_slot<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
+    let binder = match type_head(kb, v) {
+        TypeHead::TypeVar(s) => s,
+        TypeHead::SortRef(s) if is_sort_param_symbol(kb, s) => s,
+        _ => return false,
+    };
+    let Some(scope) = kb.symbols.declaring_scope(binder) else {
+        return false;
+    };
+    let short = kb.local_name_of(binder);
+    kb.named_requirement_slots(scope.owner())
+        .iter()
+        .any(|slot| kb.local_name_of(slot.binder) == short)
 }
 
 /// WI-870 — [`is_type_param_value`] read through a view, so a `Value::Node`-carried
@@ -30890,11 +30950,23 @@ fn push_selection(
 ///    and it is the reason this cannot turn universal polymorphism into a wrong pin.
 ///  * **Check 1 YES, check 3 no.** Check 3 refuses a SPELLING — an explicit witness
 ///    where a concrete provider's values already direct dispatch (§4.4) — and there is
-///    no spelling here, so it stays [`seed_op_type_args`]'. Check 1 (the witness
-///    provides the spec at all) IS run, inline below.
+///    no spelling here. It runs where a selection is WRITTEN, at both call-site
+///    spellings, through [`validate_written_selection`]. Check 1 (the witness provides
+///    the spec at all) IS run, inline below.
 ///
-///    WI-20260911-6B67S added it, and the shape of the bug is why it belongs here. This
-///    producer already ran check 1 on every NESTED slot witness
+///    DECIDED, NOT LEFT OVER (WI-20260911-TX0G6): a TYPE legitimately carries a
+///    concrete witness. WI-1094's inference WRITES one:
+///    `SortedSet.empty[T = Pair[Int64, Int64]]()` types as `O = Pair`, the prelude's own
+///    pair order, and every later call reads that back here. A result, a parameter, a
+///    `let` and an eta arrow typed `O = ConcOrd` all load and RUN in `ConcOrd`'s order.
+///    Check 3 here would refuse the compiler's own inference. MEASURED by moving it
+///    here: exactly three pre-existing tests fail. They are wi858's and wi869's
+///    bracket-less `SortedSet`s of pairs, which carry the inferred `O = Pair`, and
+///    wi_r10kc's consumer typed with a concrete `MySet`. The only other failure is
+///    TX0G6's own boundary row. The three corpora read no concrete witness here at all.
+///
+///    WI-20260911-6B67S added CHECK 1 here, and the shape of the bug is why it belongs
+///    here. This producer already ran check 1 on every NESTED slot witness
 ///    ([`check_slot_witnesses_provide`]) and on no top-level one, and the gap was
 ///    covered by a claim that [`check_selection_bindings`] "decides it more precisely,
 ///    at this call's own bindings". It does not: it asks the NARROWER question, renders
@@ -31301,6 +31373,17 @@ fn infer_named_slot_bindings(
             // whole arm exists to stop. If one ever surfaces, the fix is to ask the
             // question carrier-neutrally (resolve the binder to its canonical `VarId` and
             // match `param_rigids`' KEY), not to add a second carrier test.
+            //
+            // A MEASURED GAP, recorded and NOT closed here (WI-20260911-TX0G6). "Declared
+            // here" admits a PLAIN parameter as well as a named slot's binder, and only a
+            // slot's binder is a name the frame holds a dictionary under. So in
+            // `sort R3 { sort P = ?; requires OE: WeakOrd[E] }`, a parameter typed
+            // `SortedSet[T = E, O = P]` forwards here, and the frame answers the goal with
+            // `OE`'s dictionary. At `R3.add[E = String, P = ByLength, OE = RevLen]`, a set
+            // typed `ByLength` was inserted into in `RevLen`'s order. The two WRITTEN
+            // channels refuse the same binding ([`names_a_declared_slot`]). Closing this
+            // arm is a verdict change on the type channel with its own population, so it
+            // was left open and raised as its own question.
             SlotBinderState::Quantified
                 if param_rigids.iter().any(|(_, rigid)| *rigid == bound) =>
             {
@@ -31801,6 +31884,67 @@ fn push_slots(
     }
 }
 
+/// WI-20260911-TX0G6 — validate ONE WRITTEN requirement-slot binding at the site that
+/// wrote it: 058 §3.5's call-site checks, with one owner for BOTH of proposal 035's
+/// bracket spellings — the callee's (`SortedSet.empty[O = W]()`, [`seed_op_type_args`])
+/// and the companion receiver's (`SortedSet[O = W].empty()`, [`seed_receiver_type_args`]).
+///
+/// ONE OWNER, because the two spellings are one call and were given two verdicts.
+/// Only the callee leg ran these checks; the receiver leg left check 1 and the
+/// no-sort-head refusal to the σ-read producer (WI-20260911-6B67S) and had no check 3
+/// anywhere. MEASURED before this: `SortedSet[T = String, O = ConcOrd].empty()` loaded
+/// where `SortedSet.empty[T = String, O = ConcOrd]()` was refused. Both legs now call
+/// this, so they agree by construction, not because two mechanisms happen to render
+/// the same bytes.
+///
+/// Returns the witness the binding SELECTS, or `None` when it selects nothing:
+///  * A VALUE NAMING ONE OF THE ENCLOSING DECLARATION'S OWN NAMED SLOTS FORWARDS
+///    (`None`). `[O = OE]` written inside a sort declaring `requires OE: WeakOrd[E]`
+///    says "whatever my caller's `OE` is", §7.1's form. The binding is also a TYPE
+///    ARGUMENT (`binds_a_parameter`), so the σ-read producer reads that same variable
+///    back and forwards it ([`is_type_param_value`]). MEASURED before: the callee
+///    spelling refused it with "R.OE does not provide WeakOrd", while the receiver
+///    spelling loaded and ran the caller's `ByLength` order.
+///    ONLY A SLOT, not any abstract value ([`names_a_declared_slot`] measured why). A
+///    PLAIN parameter names no dictionary, so it goes on to check 1 and is refused in
+///    both spellings, which closes the receiver's silent wrong order. An ANONYMOUS slot
+///    (rung 2) binds no parameter, so nothing downstream reads its value. Forwarding
+///    there would DROP the written text and let the ordinary route answer, so it keeps
+///    check 1's refusal too.
+///  * A value with NO SORT HEAD (a literal, an arrow, a tuple) names no provider, so it
+///    is refused (`SelectionValueNotASort`) rather than dropped into the type-parameter
+///    half with the slot called bound.
+///  * A WITNESS gets [`validate_instance_selection`], which owns the order of checks 1
+///    and 3.
+///
+/// NOT THE TYPE CHANNEL. A slot bound in a parameter's, a result's or a `let`'s TYPE
+/// reaches [`selections_from_slot_bindings`] with no spelling here, and runs check 1
+/// only. Its doc records why check 3 is not a type's.
+///
+/// `concrete` is the §1.1 set, built at the FIRST witness and reused: it is a scan of
+/// every `SortInfo` fact, and one bracket may bind several slots.
+fn validate_written_selection(
+    kb: &mut KnowledgeBase,
+    fn_sym: Symbol,
+    spec_sort: Symbol,
+    value: &Value,
+    binds_a_parameter: bool,
+    concrete: &mut Option<std::collections::HashSet<Symbol>>,
+    span: Option<Span>,
+) -> Result<Option<Symbol>, TypeError> {
+    if binds_a_parameter && names_a_declared_slot(kb, value) {
+        return Ok(None);
+    }
+    let witness = selection_witness_sym(kb, value).ok_or(TypeError::SelectionValueNotASort {
+        span,
+        op: fn_sym,
+        spec: spec_sort,
+    })?;
+    let concrete = concrete.get_or_insert_with(|| super::load::sorts_with_constructors(kb));
+    validate_instance_selection(kb, fn_sym, spec_sort, witness, concrete, span)?;
+    Ok(Some(witness))
+}
+
 /// WI-841 (058 §4.4) — validate one explicit selection at the site that wrote it.
 ///
 /// Check 3 first, because it is a refusal of the WHOLE spelling rather than a
@@ -31838,6 +31982,19 @@ fn push_slots(
 ///
 /// Check 2 ("the slot exists on the callee") is [`resolve_call_type_arg_targets`] —
 /// a key that names no slot never becomes a selection.
+///
+/// A MEASURED LIMIT OF CHECK 3's CRITERION, recorded rather than changed
+/// (WI-20260911-TX0G6), because the kernel spec states the rule for every call-site
+/// selection (§5.4) and narrowing it is a spec decision. The criterion is "the witness
+/// has constructors". The reason given for it is that the VALUE directs the dispatch, so
+/// an explicit witness cannot change it. That reason holds where the witness IS its
+/// provision's carrier: `[WeakOrd = Pair]` on two pairs answers what the bare call
+/// answers. It fails for a concrete witness of ANOTHER carrier, which no value of the
+/// call ever is. Measured with this check switched off, `[WeakOrd = ConcOrd]` on two
+/// `String`s answers ConcOrd's order and not the bare call's, and a NAMED slot bound to
+/// `ConcOrd` orders by it. The type channel, which never runs this check, already
+/// honours `O = ConcOrd` that way. So "cannot change it" is false there, and the refusal
+/// stands only as a rule about what may be WRITTEN.
 fn validate_instance_selection(
     kb: &mut KnowledgeBase,
     fn_sym: Symbol,

@@ -41,6 +41,15 @@
 //! routes a bracket-less channel into that arm at all. Backing out (M3) ALONE is what
 //! isolates it, and that is the run recorded above.
 //!
+//! **(M1)'s FIRST ROW NO LONGER ISOLATES IT, since WI-20260911-TX0G6.** The receiver
+//! spelling now runs check 1 at its OWN leg, through the callee's owner
+//! (`validate_written_selection`). So
+//! [`a_witness_that_provides_nothing_says_so_in_every_spelling`], which writes a bracket
+//! in both of its spellings, is refused at a bracket leg whether or not the producer
+//! checks. MEASURED after TX0G6: backing out (M1) alone reddens the other three rows in
+//! its list and leaves that one green. Each of those three has an ARGUMENT spelling,
+//! which reaches the producer with no bracket at all, so they are what (M1) still owns.
+//!
 //! THE LAST TABLE ROW IS NOT HYPOTHETICAL, AND ITS ROWS ARE NOT HERE ON PURPOSE. (M2)
 //! keyed on "no sort head" was written, measured against this file — which stayed
 //! GREEN — and broke §7.1 forwarding in four other files: an UNWRITTEN slot is filled
@@ -66,9 +75,11 @@
 //!    (M1) and (M2) are new REFUSALS, so the thing most worth proving is what they do
 //!    not refuse.
 //!
-//! STILL OPEN, MEASURED, AND PINNED:
-//! [`a_concrete_provider_is_still_accepted_by_the_receiver_bracket`]. See its site —
-//! check 3 is the one check that cannot move to the producer.
+//! LEFT OPEN HERE, CLOSED BY WI-20260911-TX0G6: §4.4 check 3 on the receiver bracket.
+//! Check 3 is the one check that cannot move to the producer. The receiver leg now
+//! validates a written selection through the callee's own owner, so
+//! `wi_tx0g6_selection_validation_test` owns that row, and also the back-out effect
+//! TX0G6 had on the table above (recorded at this file's M1 row).
 //!
 //! REFERENCE: `selections_from_slot_bindings`, `check_witness_provides_spec`,
 //! `check_selection_bindings`, `seed_receiver_type_args` (typing.rs);
@@ -371,40 +382,13 @@ fn a_correct_selection_still_loads_and_runs() {
     }
 }
 
-/// STILL OPEN, MEASURED HERE SO IT IS NOT REDISCOVERED AS A SURPRISE.
-///
-/// §4.4 CHECK 3 (`ValueDirectedSelection`) is the one check that did NOT move to the
-/// producer. `ConcOrd` has a constructor, so its values direct dispatch themselves and
-/// an explicit witness can only agree redundantly or contradict silently — which the
-/// callee bracket refuses and the receiver bracket accepts.
-///
-/// NOT CLOSED WITH THE OTHERS, and the reason is structural rather than budgetary: check
-/// 3 refuses a SPELLING, so unlike check 1 it cannot live at the σ-read producer — that
-/// channel has no spelling, and a TYPE may legitimately carry a concrete witness. It
-/// belongs to whichever channel the author wrote, which means `seed_receiver_type_args`
-/// needs its own copy. Left open as a verdict change with no measured victim.
-///
-/// THE ASSERTION IS THE CURRENT BEHAVIOUR, deliberately: it fails the day the gap is
-/// closed, which makes closing it a recorded decision rather than a drift.
-#[test]
-fn a_concrete_provider_is_still_accepted_by_the_receiver_bracket() {
-    assert_eq!(
-        load_errors(
-            "  operation c3Recv() -> SortedSet[T = String] =\n    \
-             SortedSet[T = String, O = ConcOrd].empty()"
-        ),
-        Vec::<String>::new(),
-        "OPEN GAP (check 3, receiver spelling). If this now reports \
-         `ValueDirectedSelection`, the gap was closed — update this row and the \
-         `seed_receiver_type_args` comment together."
-    );
-
-    let callee = sole_message(
-        "  operation c3Callee() -> SortedSet[T = String] =\n    \
-         SortedSet.empty[T = String, O = ConcOrd]()",
-    );
-    assert!(
-        callee.contains("is a CONCRETE provider of"),
-        "the callee spelling is what makes the receiver one's silence a gap; got: {callee}"
-    );
-}
+// CLOSED BY WI-20260911-TX0G6. A row here pinned the one check this delivery left
+// open: §4.4 CHECK 3 (`ValueDirectedSelection`), under which
+// `SortedSet[T = String, O = ConcOrd].empty()` loaded while the callee spelling refused
+// it. It asserted the open behaviour so that closing the gap would fail it and be a
+// recorded decision rather than a drift. It failed as designed, and the decision is
+// `wi_tx0g6_selection_validation_test`'s: the receiver leg now validates a written
+// selection through the callee's own owner (`validate_written_selection`), and check 3
+// still does not run at the producer, because a TYPE may legitimately carry a concrete
+// witness. The closed behaviour is asserted there, byte for byte against the callee
+// spelling.
