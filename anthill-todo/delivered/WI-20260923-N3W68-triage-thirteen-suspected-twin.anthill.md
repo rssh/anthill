@@ -125,3 +125,7 @@ FOUND, NOT THIS TICKET:
   * `scan_sort_carrier_bindings`' `provides` branch is dead: `sort_inst_to_value` returns a SortView-headed term, which its `kind_of == Sort` gate skips, so the bare-spec sugar never narrows from a `provides` clause.
   * (unverified) nested term-form type applications in rule/contract bodies keep their positionals unpaired, and `term_backed_bindings` reads named args only.
 
+### 2026-09-23T20:45:28Z — feedback — user
+
+FOLLOW-UPS FILED (approved): WI-20260923-KCNA0 — a rule-body call whose requirement no provider covers, at a projection the call grounds or a structural former, loads clean and aborts a debug build. WI-20260923-ZBWMC — scan_sort_carrier_bindings' provides arm is dead, so the bare-spec sugar never narrows from a provides clause.
+
