@@ -41,7 +41,8 @@
 //! the same for both spellings — the bracket is read and validated, not yet pinned.
 //! A RULE-BODY DATA SLOT takes the applied reading too: `?y <=> Box[T = Int64].zero` binds
 //! the call's 0, as `Box[T = Int64].zero()` and a bare one-segment `zero` do (§5.4), where
-//! it used to bind the data term `zero` the bare DOTTED `Box.zero` still binds there.
+//! it used to bind the data term `zero`. The bare DOTTED `Box.zero` binds 0 there too since
+//! `dotted_nullary_op_call_test`; before it, it was the one spelling left binding the name.
 
 use anthill_core::persistence::print::TermPrinter;
 
@@ -175,7 +176,8 @@ fn a_rule_body_data_slot_takes_the_applied_reading() {
     // The ONE silent answer change of the delivery, pinned so it cannot move unseen. In a
     // rule-body DATA slot the marked node is the applied call, so a nullary operation is
     // CALLED — as `Box[T = Int64].zero()` and §5.4's bare one-segment `zero` are — where
-    // it used to bind the data term `zero` (which the bare DOTTED `Box.zero` still binds).
+    // it used to bind the data term `zero` (as the bare DOTTED `Box.zero` did until
+    // `dotted_nullary_op_call_test`).
     //
     // And a rule's COMPOUND expression is a rule body too: `refuse_paren_less_non_rule`
     // is skipped under `lowering_rule_compound_expr`, so the `if` below loads. With that

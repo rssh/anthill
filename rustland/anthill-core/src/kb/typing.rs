@@ -8346,6 +8346,17 @@ fn dotted_citation_relation(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Opt
     kb.cites_a_relation(sym).then_some(sym)
 }
 
+/// The NULLARY OPERATION a dotted paren-less name in a rule-body value slot calls
+/// (`Box.zero`), or `None` — [`dotted_citation_relation`]'s twin for the one other kind
+/// that has a value reading there. The resolver makes the call where it reduces the chain
+/// as an operand (`reduce_dot_value`); this is the typer's half of the same reading, so
+/// `0 = Box.zero` types as `0 = seven` does instead of walking into its segments.
+fn dotted_citation_nullary_op(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
+    let name = loader_chain_dotted_name(kb, occ)?;
+    let sym = kb.try_resolve_symbol(&name)?;
+    super::op_info::is_nullary_operation(kb, sym).then_some(sym)
+}
+
 /// WI-714 (proposal 052) — the APPLIED citation position: a rule NAME applied to
 /// arguments (`queens(board)`, `queryTwoParams(x: 3)`). Each supplied argument
 /// **binds** a COLUMN — a positional arg by column ordinal (arg `i` ↦ the i-th
@@ -13282,6 +13293,34 @@ fn visit_type(
                         .map(|ty| TypeResult::pure_value(ty, unwrap_env(env), Rc::clone(&occ)));
                     results.push(r);
                     return;
+                }
+                // A dotted name of a NULLARY OPERATION in a RULE BODY is that operation's
+                // CALL — the reading `seven` gets there from the loader, and the one the
+                // resolver gives the chain when it reduces it (`reduce_dot_value`). Typed
+                // through `check_bare_ref`'s zero-argument-call arm with NO expected type:
+                // the resolver calls the chain whatever slot it sits in, so a hint here
+                // could eta-lift `Box.zero` to a function value the resolver never
+                // produces, and the two must give the name one reading. The node stays
+                // the chain — the term the fact side stores — exactly as the relation rung
+                // above leaves it.
+                //
+                // RULE BODIES ONLY. In an operation body the bare `Box.zero` names no
+                // operation, and `Box[T = …].zero` is refused on that premise
+                // (`ParenLessCitationOfNonRule`), so this reading stops where the
+                // rule-body elaboration it mirrors stops. MEASURED REDUNDANT TODAY, and
+                // kept as the statement of that scope: `loader_chain_dotted_name` needs
+                // the written-dot flag, and only the rule-body walk (and the materializer
+                // it falls back on) sets it, so with this gate removed an operation body
+                // is still refused — no row can drive it. It becomes load-bearing the day
+                // an operation-body producer marks its dots too.
+                if env.in_rule_body() {
+                    if let Some(op) = dotted_citation_nullary_op(kb, &occ) {
+                        let r = check_bare_ref(
+                            kb, &*env, &env.flow, op, occ_span, &occ, None, solving,
+                        );
+                        results.push(r);
+                        return;
+                    }
                 }
             }
             let functor = *functor;

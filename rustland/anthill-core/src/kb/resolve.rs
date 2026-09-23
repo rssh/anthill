@@ -9784,12 +9784,7 @@ impl KnowledgeBase {
             return None;
         }
         // Dispatch 2: sort component access — resolve `functor_qname.field`.
-        let functor_qname = match self.symbols.get(functor) {
-            crate::intern::SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
-            _ => return None,
-        };
-        let target_qname = format!("{}.{}", functor_qname, field_name);
-        let resolved_sym = *self.symbols.by_qualified_name.get(&target_qname)?;
+        let resolved_sym = self.sort_component(functor, field_name)?;
         // A sort/entity component is a nullary name term; anything else a Ref.
         //
         // This branch MINTS rather than projects, so there is no incoming carrier
@@ -9806,6 +9801,19 @@ impl KnowledgeBase {
             _ => self.alloc(Term::Ref(resolved_sym)),
         };
         Some(Value::term(term))
+    }
+
+    /// [`Self::project_field`]'s Dispatch 2 — the component `field_name` of the scope
+    /// `functor` names, by qualified name (`Box` + `zero` → `Box.zero`). One resolution
+    /// for the two readers that need it: the projection, which mints the component's name
+    /// term, and [`Self::reduce_dot_value`], which CALLS a nullary operation.
+    fn sort_component(&self, functor: Symbol, field_name: &str) -> Option<Symbol> {
+        let functor_qname = match self.symbols.get(functor) {
+            crate::intern::SymbolDef::Resolved { qualified_name, .. } => qualified_name,
+            _ => return None,
+        };
+        let target_qname = format!("{}.{}", functor_qname, field_name);
+        self.symbols.by_qualified_name.get(&target_qname).copied()
     }
 
     /// WI-482: reduce a σ-walked operand `Value` that is a dispatched dot
@@ -9846,6 +9854,33 @@ impl KnowledgeBase {
         let Some(field_name) = self.field_name_from_value(&field) else {
             return v;
         };
+        // A NULLARY OPERATION NAMED THROUGH ITS SORT IS ITS CALL — `?y <=> Box.zero` binds
+        // what `?y <=> seven` and `?y <=> Box.zero()` bind, the value, and not the
+        // operation's name. The one-segment spelling gets there at LOAD: the rule-body walk
+        // builds `seven` as `Expr::Apply` (`nullary_op_call_or_ref`, WI-20260902-CZJ2N),
+        // which the fold that follows this reduction runs. The dotted spelling cannot be
+        // built that way — in a data slot it must stay the `field_access` chain, the term
+        // `fact f(Box.zero)` stores, or a rule-body goal stops matching its fact
+        // (WI-20260902-4NEKZ, 719FJ) — so the call is made HERE, where the chain is reduced
+        // as an operand, and handed to the same fold as the same node: whatever `seven`
+        // does next (fold, host bridge, delay on a complex body), `Box.zero` does too.
+        //
+        // TWO GATES. `is_dot_chain` — the author WROTE the dot (WI-20260901-92VA4: a
+        // hand-written `field_access(Box, zero)` is a call to that operation, not this
+        // desugaring). And sort-component access only — an ENTITY receiver's field is data
+        // (Dispatch 1), and a stored name read back through σ is never re-reduced, the
+        // rule `factN(?y), ?y === 7` already follows for a term-carried `seven`.
+        if occ.is_dot_chain() {
+            if let Some(op) = self.nullary_op_component(&recv, &field_name) {
+                return Value::Node(occ.rebuilt_expr(Expr::Apply {
+                    recv_type: None,
+                    functor: op,
+                    pos_args: Vec::new(),
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                }));
+            }
+        }
         // A scalar receiver has no functor, so `project_field` answers `None` and
         // the operand is left unreduced — the same outcome the `carrier_term`
         // gate here used to produce, now decided by CONTENT (has this value a
@@ -9856,6 +9891,18 @@ impl KnowledgeBase {
             Some(val) => val,
             None => v,
         }
+    }
+
+    /// The nullary OPERATION a sort-component access `recv.field` names (`Box.zero`), or
+    /// `None` — an entity receiver (its fields are Dispatch 1's, and data), a component
+    /// that is not an operation, or one that takes arguments.
+    fn nullary_op_component(&self, recv: &Value, field_name: &str) -> Option<Symbol> {
+        let functor = recv.head(self).functor_sym()?;
+        if self.entity_fields.contains_key(&functor) {
+            return None;
+        }
+        let op = self.sort_component(functor, field_name)?;
+        super::op_info::is_nullary_operation(self, op).then_some(op)
     }
 
     /// WI-1044 — classify a spec-op call THE TYPER NEVER CLASSIFIED, from the values

@@ -552,8 +552,8 @@ no operation either). A RULE BODY takes the applied reading with no refusal, and
 a silent wrong answer there: `:- Wrap[T = Colour].holds` answered nothing where the bare
 goal answers. In a rule-body DATA slot the applied reading calls a nullary operation —
 `?y <=> Box[T = Int64].zero` binds 0, as the applied spelling and §5.4's bare one-segment
-`zero` do, where it bound the data term `zero` (which the bare DOTTED `Box.zero` still binds
-there). The LOUD verdict changes, over an empty corpus population: `Outer[T =
+`zero` do, where it bound the data term `zero` (as the bare DOTTED `Box.zero` did until the
+follow-up that made a dotted nullary operation its call in a rule body). The LOUD verdict changes, over an empty corpus population: `Outer[T =
 Int64].Inner.op()` is refused (it loaded, the bracket erased on the way to `Outer.Inner.op`);
 a bracketed paren-less entity in a rule body, a bracketed citation in a `fact` data slot, and
 a bracketed paren-less rule HEAD (`rule Wrap[T = Colour].holds :- true`) now meet the W6JH0
