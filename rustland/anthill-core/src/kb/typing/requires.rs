@@ -969,6 +969,73 @@ pub fn op_dict_entries(kb: &mut KnowledgeBase, op_sym: Symbol) -> DictChain {
     }
 }
 
+/// WI-20260923-32XFQ — the bindings an op-scoped `requires` entry's BARE APPLICATION
+/// writes (`Desc[MT]`, `Monoid[T = HT]` — the shape `push_op_requires_clause_term`
+/// stores): its NAMED type-parameter bindings, keyed as written, and each POSITIONAL
+/// paired with the SHORT NAME of the declared parameter it fills. The one decode under
+/// [`goal_from_op_requires_entry`] and [`normalize_op_requires_entry`], which spelled it
+/// line for line and differ only in how they key a positional — a bare interned short name
+/// for the goal, the spec's registered parameter symbol for the `SortView`.
+///
+/// Positionals fill the parameters no named binding took, in declaration order —
+/// `KnowledgeBase::positional_param_slots`, the rule's one owner. `None`, and the caller
+/// decodes nothing, in the two cases a pairing would be FABRICATED:
+///   * a positional this cannot read (a denoted `Value::Node` carrier, WI-662). ABORT,
+///     never skip: pairing is by POSITION, so dropping an unreadable positional would
+///     shift every later value onto the wrong parameter — for the goal, a pin judged
+///     against a binding nobody wrote, i.e. a false refusal of a correct call;
+///   * MORE positionals than the spec has free parameters: not a spec application at
+///     all. Reached from real source, so not a `debug_assert` — MEASURED on
+///     `wi840_named_requires_slot_test`'s `operation div[neq](…) requires neq(b, 0)`,
+///     where a type parameter named `neq` CAPTURES the head of the operation's own value
+///     precondition, so [`is_value_precondition_clause`] sees a `Sort`-kinded functor
+///     and does not filter the clause. That program is refused at load by WI-840's own
+///     collision check (and an over-applied spec clause by the op-contract gate in
+///     `convert_term`).
+///
+/// A third copy, in `check_provider_requires`, reads the view's raw term and keys σ by
+/// short name — it reads a provision's `SortView`, not an op clause, and stays its own.
+#[allow(clippy::type_complexity)]
+pub(super) fn op_requires_application_bindings(
+    kb: &KnowledgeBase,
+    entry: &RequiresEntry,
+) -> Option<(SmallVec<[(Symbol, TermId); 2]>, Vec<(String, TermId)>)> {
+    let spec_qn = kb.qualified_name_of(entry.required_sort);
+    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for key in entry.spec.named_keys(kb) {
+        if !is_type_param_binding(kb, key, spec_qn) {
+            continue;
+        }
+        if let Some(v) = entry.spec.named_arg(kb, key).and_then(|it| it.as_term_id()) {
+            bindings.push((key, v));
+        }
+    }
+    let pos_arity = match entry.spec.head(kb) {
+        ViewHead::Functor { pos_arity, .. } => pos_arity,
+        _ => 0,
+    };
+    let mut positional: Vec<(String, TermId)> = Vec::new();
+    if pos_arity > 0 {
+        let declared = kb.type_params_of_sort(entry.required_sort);
+        let slots = KnowledgeBase::positional_param_slots(
+            &declared,
+            |d| bindings.iter().any(|(k, _)| kb.local_name_of(*k) == d),
+            pos_arity,
+        );
+        let mut vals: Vec<TermId> = Vec::with_capacity(pos_arity);
+        for i in 0..pos_arity {
+            vals.push(entry.spec.pos_arg(kb, i).and_then(|it| it.as_term_id())?);
+        }
+        let slots = slots.into_iter().collect::<Option<Vec<usize>>>()?;
+        positional = vals
+            .into_iter()
+            .zip(slots)
+            .map(|(val, i)| (declared[i].clone(), val))
+            .collect();
+    }
+    Some((bindings, positional))
+}
+
 /// WI-822 LEG 1 — re-spell an OP-SCOPED `requires` entry in the SORT-level shape, so
 /// the composed chain has ONE entry shape and every chain predicate reads it.
 ///
@@ -1015,61 +1082,25 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
     ) {
         return entry.clone();
     }
-    let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
-    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    for key in entry.spec.named_keys(kb) {
-        if !is_type_param_binding(kb, key, &spec_qn) {
-            continue;
-        }
-        if let Some(v) = entry.spec.named_arg(kb, key).and_then(|it| it.as_term_id()) {
-            bindings.push((key, v));
-        }
-    }
-    let pos_arity = match entry.spec.head(kb) {
-        ViewHead::Functor { pos_arity, .. } => pos_arity,
-        _ => 0,
+    // Undecodable (see [`op_requires_application_bindings`]): leave it as written rather
+    // than pair positionals with the WRONG parameter names, which would be a fabricated
+    // binding.
+    let Some((mut bindings, positional)) = op_requires_application_bindings(kb, entry) else {
+        return entry.clone();
     };
-    if pos_arity > 0 {
-        let declared = kb.type_params_of_sort(entry.required_sort);
-        let slots = KnowledgeBase::positional_param_slots(
-            &declared,
-            |d| bindings.iter().any(|(k, _)| kb.local_name_of(*k) == d),
-            pos_arity,
-        );
-        let mut vals: Vec<TermId> = Vec::with_capacity(pos_arity);
-        for i in 0..pos_arity {
-            match entry.spec.pos_arg(kb, i).and_then(|it| it.as_term_id()) {
-                Some(v) => vals.push(v),
-                // See the doc: leave it as written rather than pair positionals with
-                // the WRONG parameter names, which would be a fabricated binding.
-                None => return entry.clone(),
-            }
-        }
-        // MORE positionals than the spec has free parameters: not a spec application
-        // at all. Reached from real source, so NOT a `debug_assert` — MEASURED on
-        // `wi840_named_requires_slot_test`'s `operation div[neq](…) requires neq(b, 0)`,
-        // where a type parameter named `neq` CAPTURES the head of the operation's own
-        // value precondition, so [`is_value_precondition_clause`] sees a `Sort`-kinded
-        // functor and does not filter the clause. That program is refused at load by
-        // WI-840's own collision check; this leaves its entry as written in the
-        // meantime rather than aborting the typer on the way to that refusal.
-        let Some(slots) = slots.into_iter().collect::<Option<Vec<usize>>>() else {
+    let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
+    for (name, val) in positional {
+        // The spec's OWN parameter symbol, which is what a `SortView`'s named args
+        // are keyed by and what `substitute_impl_params_alloc` matches on. A BARE
+        // `intern` is not a substitute for it — an interned name is not the
+        // registered qualified one, so such a key matches nothing in
+        // `is_type_param_binding` and the binding would be silently inert. If the
+        // spec's parameter cannot be named, leave the entry as written, which is
+        // what every other undecodable case here does.
+        let Some(key) = kb.try_resolve_symbol(&format!("{spec_qn}.{name}")) else {
             return entry.clone();
         };
-        for (val, i) in vals.into_iter().zip(slots) {
-            let name = &declared[i];
-            // The spec's OWN parameter symbol, which is what a `SortView`'s named args
-            // are keyed by and what `substitute_impl_params_alloc` matches on. A BARE
-            // `intern` is not a substitute for it — an interned name is not the
-            // registered qualified one, so such a key matches nothing in
-            // `is_type_param_binding` and the binding would be silently inert. If the
-            // spec's parameter cannot be named, leave the entry as written, which is
-            // what every other undecodable case here does.
-            let Some(key) = kb.try_resolve_symbol(&format!("{spec_qn}.{name}")) else {
-                return entry.clone();
-            };
-            bindings.push((key, val));
-        }
+        bindings.push((key, val));
     }
     let base_ref = kb.alloc(Term::Ref(entry.required_sort));
     let spec = kb.alloc(Term::Fn {
@@ -1330,6 +1361,55 @@ pub(crate) fn op_requires_chain_rc(
     rc
 }
 
+/// `__req_<spec short name, lowercased>` — a requirement slot's BASE name, before any
+/// disambiguating suffix. See [`name_slots`].
+fn req_slot_base(kb: &KnowledgeBase, required_sort: Symbol) -> String {
+    let mut s = String::from("__req_");
+    push_short_lc(kb, required_sort, &mut s);
+    s
+}
+
+/// WI-20260923-32XFQ — name one run of requirement slots, the rule all three namers
+/// (the sort level, a provision's conditions, an operation's own chain) spelled for
+/// themselves. Each entry's base ([`req_slot_base`]) is counted into `counts` — which may
+/// already hold the bases of the slots named BEFORE this run, and the run then yields to
+/// them — and a base counted more than once is suffixed: `_<marker><hash-cons id>` for a
+/// ground spec, `_<marker>d<idx_offset + position>` for a denoted one (WI-662: no
+/// hash-cons id; the chain position is stable across the typer and eval passes, which
+/// both come through these cached namers).
+///
+/// THE STRINGS ARE AN ABI: eval frames read slots BY THESE NAMES, so the three markers
+/// (`""`, `"c"`, `"o"`) and the two formats reproduce exactly what each namer wrote.
+/// Interned in slot order, as before.
+fn name_slots(
+    kb: &mut KnowledgeBase,
+    entries: &[RequiresEntry],
+    counts: &mut HashMap<String, usize>,
+    marker: &str,
+    idx_offset: usize,
+) -> Vec<Symbol> {
+    let bases: Vec<String> = entries
+        .iter()
+        .map(|e| req_slot_base(kb, e.required_sort))
+        .collect();
+    for b in &bases {
+        *counts.entry(b.clone()).or_default() += 1;
+    }
+    let mut out: Vec<Symbol> = Vec::with_capacity(entries.len());
+    for (k, (entry, base)) in entries.iter().zip(bases.iter()).enumerate() {
+        let name = if counts[base.as_str()] > 1 {
+            match &entry.spec {
+                Value::Term { id, .. } => format!("{base}_{marker}{}", id.raw()),
+                _ => format!("{base}_{marker}d{}", idx_offset + k),
+            }
+        } else {
+            base.clone()
+        };
+        out.push(kb.intern(&name));
+    }
+    out
+}
+
 /// WI-822 LEG 1 — the `__req_<spec>` names of the slots `op_sym`'s OWN chain
 /// contributes, in chain order. The CONTINUATION of `synth_req_names_of(parent)`,
 /// never a replacement for it.
@@ -1353,53 +1433,35 @@ fn synth_op_req_names_of(kb: &mut KnowledgeBase, op_sym: Symbol) -> Rc<Vec<Symbo
     if impl_parent_of_op(kb, op_sym).is_some() {
         let sort_chain = op_owner_dict_entries(kb, op_sym);
         for entry in sort_chain.entries() {
-            let mut s = String::from("__req_");
-            push_short_lc(kb, entry.required_sort, &mut s);
-            *counts.entry(s).or_default() += 1;
+            *counts
+                .entry(req_slot_base(kb, entry.required_sort))
+                .or_default() += 1;
         }
     }
-    let mut bases: Vec<String> = Vec::with_capacity(op_entries.len());
-    for entry in op_entries.iter() {
-        let mut s = String::from("__req_");
-        push_short_lc(kb, entry.required_sort, &mut s);
-        *counts.entry(s.clone()).or_default() += 1;
-        bases.push(s);
-    }
-    let mut out: Vec<Symbol> = Vec::with_capacity(op_entries.len());
-    for (idx, (entry, base)) in op_entries.iter().zip(bases.iter()).enumerate() {
-        let name = if counts[base.as_str()] > 1 {
-            // MARKED `_o`, where the sort half's namer writes the bare id. Without the
-            // marker an op slot could mint a name the sort half ALREADY minted: the sort
-            // namer suffixes by hash-cons id whenever its own chain has two same-base
-            // entries, and an op-scoped clause normalizes to a `SortView` that may hash-
-            // cons to the very same `TermId` (`requires Desc[T = HT]` written on the sort
-            // and on one of its members). Two slots under one name, and `find_requirement`
-            // takes the first — silently the other instance's dictionary.
-            //
-            // THE `_o<id>` FORM IS NOT ITSELF COLLISION-FREE, and stays that way on
-            // purpose (asked of it by the WI-1092 review, then re-derived): two OP
-            // entries can mint this same name, but only by sharing a base AND a
-            // hash-cons id — and a shared id IS structural identity, i.e. the same
-            // requirement written twice. Identical entries substitute to one concrete
-            // goal, hence one resolved tree and one dictionary, so first-wins hands the
-            // second slot exactly what resolving it again would have produced. What
-            // makes two slots want DIFFERENT dictionaries is a difference in the spec
-            // term — another type-param binding, an operation binding — and every such
-            // difference is a different `TermId`, which this suffix already separates.
-            // Position would separate the names without separating anything real.
-            match &entry.spec {
-                Value::Term { id, .. } => format!("{base}_o{}", id.raw()),
-                // WI-662: a denoted spec has no hash-cons id — the op-chain position is
-                // stable and deterministic across the typer and eval passes, which both
-                // come through this one cached function. `_od` and not `_o`, so a
-                // position cannot collide with a `TermId` of the same numeric value.
-                _ => format!("{base}_od{idx}"),
-            }
-        } else {
-            base.clone()
-        };
-        out.push(kb.intern(&name));
-    }
+    // MARKED `_o`, where the sort half's namer writes the bare id. Without the
+    // marker an op slot could mint a name the sort half ALREADY minted: the sort
+    // namer suffixes by hash-cons id whenever its own chain has two same-base
+    // entries, and an op-scoped clause normalizes to a `SortView` that may hash-
+    // cons to the very same `TermId` (`requires Desc[T = HT]` written on the sort
+    // and on one of its members). Two slots under one name, and `find_requirement`
+    // takes the first — silently the other instance's dictionary.
+    //
+    // THE `_o<id>` FORM IS NOT ITSELF COLLISION-FREE, and stays that way on
+    // purpose (asked of it by the WI-1092 review, then re-derived): two OP
+    // entries can mint this same name, but only by sharing a base AND a
+    // hash-cons id — and a shared id IS structural identity, i.e. the same
+    // requirement written twice. Identical entries substitute to one concrete
+    // goal, hence one resolved tree and one dictionary, so first-wins hands the
+    // second slot exactly what resolving it again would have produced. What
+    // makes two slots want DIFFERENT dictionaries is a difference in the spec
+    // term — another type-param binding, an operation binding — and every such
+    // difference is a different `TermId`, which this suffix already separates.
+    // Position would separate the names without separating anything real.
+    //
+    // A denoted spec (WI-662) has no hash-cons id, so it takes its op-chain position,
+    // `_od` and not `_o`, so a position cannot collide with a `TermId` of the same
+    // numeric value.
+    let out = name_slots(kb, &op_entries, &mut counts, "o", 0);
     let rc = Rc::new(out);
     kb.synth_op_req_names_cache
         .borrow_mut()
@@ -1466,55 +1528,22 @@ fn synth_req_names_of(
     // a member calling a helper) is read by name, and a sort-level slot that renamed
     // itself per provision would vanish from the reader's view.
     let sort_level = direct_requires_chain_rc(kb, parent_sort);
-    let mut bases: Vec<String> = Vec::with_capacity(sort_level.len());
-    for entry in sort_level.iter() {
-        let mut s = String::from("__req_");
-        push_short_lc(kb, entry.required_sort, &mut s);
-        bases.push(s);
-    }
+    // A ground spec takes its hash-cons id, unchanged from the pre-WI-662 field; a
+    // denoted one (WI-662) its chain position.
     let mut counts: HashMap<String, usize> = HashMap::new();
-    for b in &bases {
-        *counts.entry(b.clone()).or_default() += 1;
-    }
-    let mut out: Vec<Symbol> = Vec::new();
-    for (idx, (entry, base)) in sort_level.iter().zip(bases.iter()).enumerate() {
-        let name = if counts[base] > 1 {
-            match &entry.spec {
-                // Ground: the hash-cons id, unchanged from the pre-WI-662 field.
-                Value::Term { id, .. } => format!("{base}_{}", id.raw()),
-                // WI-662: a denoted spec has no hash-cons id — disambiguate by chain
-                // position (stable and deterministic across the typer/eval passes,
-                // which both derive names through this one cached function).
-                _ => format!("{base}_d{idx}"),
-            }
-        } else {
-            base.clone()
-        };
-        out.push(kb.intern(&name));
-    }
+    let mut out = name_slots(kb, &sort_level, &mut counts, "", 0);
     // THE PROVISION'S CONDITIONS, named after it — so a collision is resolved on THEIR
     // side, as the op half resolves one ([`synth_op_req_names_of`]). Marked `_c` so a
     // condition can never mint a name the sort-level namer minted by its own suffix rule.
     let full = provider_dict_chain(kb, parent_sort, provision);
     let conditions = &full[sort_level.len()..];
-    let mut cond_bases: Vec<String> = Vec::with_capacity(conditions.len());
-    for entry in conditions {
-        let mut s = String::from("__req_");
-        push_short_lc(kb, entry.required_sort, &mut s);
-        *counts.entry(s.clone()).or_default() += 1;
-        cond_bases.push(s);
-    }
-    for (k, (entry, base)) in conditions.iter().zip(cond_bases.iter()).enumerate() {
-        let name = if counts[base] > 1 {
-            match &entry.spec {
-                Value::Term { id, .. } => format!("{base}_c{}", id.raw()),
-                _ => format!("{base}_cd{}", sort_level.len() + k),
-            }
-        } else {
-            base.clone()
-        };
-        out.push(kb.intern(&name));
-    }
+    out.extend(name_slots(
+        kb,
+        conditions,
+        &mut counts,
+        "c",
+        sort_level.len(),
+    ));
     let rc = Rc::new(out);
     kb.synth_req_names_cache
         .borrow_mut()

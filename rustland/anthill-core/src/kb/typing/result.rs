@@ -206,20 +206,44 @@ pub(super) fn parameterized_value(
     // arrow→effect-row spine is what this migration moves to occurrence-primary, not
     // `List[T]`. (Flipping closed parameterizeds to `Node` added erasure risk at every
     // `.as_term()` consumer for no payoff — reverted.)
-    if bindings.iter().any(|(_, v)| type_value_needs_occurrence(v)) {
-        let mut children: Vec<(Symbol, TypeChild)> = Vec::with_capacity(bindings.len());
-        for (s, v) in bindings {
+    match type_children(kb, bindings, span, owner) {
+        TypeChildren::Occurrence(children) => {
+            Value::Node(kb.make_parameterized_occ(TypeChild::Interned(base), children, span, owner))
+        }
+        TypeChildren::Terms(terms) => Value::term(kb.make_parameterized_type(base, &terms)),
+    }
+}
+
+/// WI-20260923-32XFQ — a type's children on the carrier they need, the choice
+/// [`parameterized_value`] and [`named_tuple_value`] each made the same way: an OCCURRENCE
+/// child list the moment any child needs one ([`type_value_needs_occurrence`] — a
+/// `Value::Node`, or a `Value::Var` whose variable must stay one), else the hash-consed
+/// `TermId`s every child then is.
+enum TypeChildren {
+    Occurrence(Vec<(Symbol, TypeChild)>),
+    Terms(Vec<(Symbol, TermId)>),
+}
+
+fn type_children(
+    kb: &mut KnowledgeBase,
+    items: &[(Symbol, Value)],
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> TypeChildren {
+    if items.iter().any(|(_, v)| type_value_needs_occurrence(v)) {
+        let mut children: Vec<(Symbol, TypeChild)> = Vec::with_capacity(items.len());
+        for (s, v) in items {
             children.push((*s, value_to_type_child_at(kb, v, span, owner)));
         }
-        Value::Node(kb.make_parameterized_occ(TypeChild::Interned(base), children, span, owner))
+        TypeChildren::Occurrence(children)
     } else {
-        // Closed: no binding is a `Value::Node` OR a `Value::Var` (checked above), so
-        // every one is a `Value::Term` — hash-consed.
-        let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
-        for (s, v) in bindings {
+        // Closed: no child is a `Value::Node` OR a `Value::Var` (checked above), so every
+        // one is a `Value::Term` — hash-consed.
+        let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(items.len());
+        for (s, v) in items {
             terms.push((*s, v.expect_term()));
         }
-        Value::term(kb.make_parameterized_type(base, &terms))
+        TypeChildren::Terms(terms)
     }
 }
 
@@ -235,20 +259,11 @@ pub(super) fn named_tuple_value(
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Value {
-    if fields.iter().any(|(_, v)| type_value_needs_occurrence(v)) {
-        let mut children: Vec<(Symbol, TypeChild)> = Vec::with_capacity(fields.len());
-        for (s, v) in fields {
-            children.push((*s, value_to_type_child_at(kb, v, span, owner)));
+    match type_children(kb, fields, span, owner) {
+        TypeChildren::Occurrence(children) => {
+            Value::Node(kb.make_named_tuple_occ(children, span, owner))
         }
-        Value::Node(kb.make_named_tuple_occ(children, span, owner))
-    } else {
-        // Ground branch: no field is a `Value::Node` OR a `Value::Var` (checked above),
-        // so every value is a `Value::Term` — unwrap it for the hash-consed builder.
-        let mut terms: Vec<(Symbol, TermId)> = Vec::with_capacity(fields.len());
-        for (s, v) in fields {
-            terms.push((*s, v.expect_term()));
-        }
-        Value::term(kb.make_named_tuple_type(&terms))
+        TypeChildren::Terms(terms) => Value::term(kb.make_named_tuple_type(&terms)),
     }
 }
 

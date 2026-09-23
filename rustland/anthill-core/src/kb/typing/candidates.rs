@@ -1917,56 +1917,10 @@ fn instantiate_provider_entries(
     chain: &[RequiresEntry],
     impl_subst: &[(Symbol, TermId)],
 ) -> Vec<SortGoal> {
-    let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
-    for entry in chain.iter() {
-        let required_sort = entry.required_sort;
-        // WI-857: the synthetic `requires EffectsRuntime[E]` that every effect-row
-        // param (`effects ES = ?`) contributes KEEPS ITS SLOT, and `resolve_inner`
-        // places a structural leaf in it without resolving — `EffectsRuntime` is the
-        // effect-runtime kind-anchor, never a resolvable dispatch provider, so
-        // resolving it would fail with a spurious `no impl provides EffectsRuntime`
-        // (WI-590's witness over an effect-row-parameterized carrier). It used to be
-        // SKIPPED here, which made the dictionary shorter than the chain it is
-        // indexed by — see [`effects_runtime_sym`] for the measurement. The
-        // parent-bundle producer (`build_dep_projection`) already emitted the same
-        // structural leaf; now both agree.
-        let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
-            // A `requires` spec with no readable head cannot become a goal. Keep the
-            // SLOT anyway so the halves stay positionally exact — and see the twin in
-            // `provider_requires_subgoals` for why the bindings-free goal is a GUESS
-            // and why this is asserted rather than merely commented. Measured
-            // unreachable there and here.
-            debug_assert!(
-                false,
-                "WI-857: `requires {}` has no readable spec head — the dictionary slot \
-                 for it is a bindings-free guess",
-                kb.qualified_name_of(required_sort),
-            );
-            out.push(SortGoal {
-                spec_sort: required_sort,
-                bindings: SmallVec::new(),
-                carrier: None,
-            });
-            continue;
-        };
-        let spec_qn = kb.qualified_name_of(required_sort).to_string();
-        let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        for (k, v) in &entry_bindings {
-            // Op-bindings (auto-bound `eq`, `neq`, …) don't constrain
-            // resolution — skip.
-            if !is_type_param_binding(kb, *k, &spec_qn) {
-                continue;
-            }
-            let substituted = substitute_impl_params_alloc(kb, *v, impl_subst);
-            bindings.push((*k, substituted));
-        }
-        out.push(SortGoal {
-            spec_sort: required_sort,
-            bindings,
-            // Transitive `requires` sub-goals resolve by binding; the
-            // receiver carrier discriminates only the top-level call (WI-350).
-            carrier: None,
-        });
-    }
-    out
+    // The resolver's impl-side template: σ keyed by SYMBOL, since these entries' values
+    // reference the impl's OWN parameters (see [`provider_requires_subgoals`] for the
+    // by-name keying the spec half needs instead).
+    requires_chain_goals(kb, chain, &|kb, v| {
+        substitute_impl_params_alloc(kb, v, impl_subst)
+    })
 }

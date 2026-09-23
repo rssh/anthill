@@ -675,21 +675,69 @@ pub(super) fn transitive_provision_view(
     carrier_sym: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
 ) -> Option<(SmallVec<[(Symbol, TermId); 2]>, bool)> {
-    if visited
-        .iter()
-        .any(|&v| same_sort_canonical(kb, v, carrier_sym))
-    {
-        return None;
-    }
-    visited.push(carrier_sym);
     // Direct: the carrier itself provides spec_sort binding the carrier param.
-    if let Some(view) = provision_binds_param_to_carrier(kb, spec_sort, pvid, carrier_sym) {
+    compose_through_provision_chain(kb, carrier_sym, visited, VisitOrder::VisitedFirst, &|c| {
+        provision_binds_param_to_carrier(kb, spec_sort, pvid, c)
+    })
+}
+
+/// WI-20260923-32XFQ — where the chain walk marks a carrier visited, relative to asking
+/// the direct question of it. The ONE thing the two chain walks did differently, kept as
+/// they had it.
+///
+/// It is not a formality, though every current answer agrees. A carrier is pushed only
+/// after its direct question failed under `DirectFirst`, so a revisit fails the same way
+/// either order; but under `VisitedFirst` a carrier whose direct question SUCCEEDED is in
+/// `visited` too, and if the hop above it then cannot compose (no carrier→intermediate
+/// view) a sibling path reaching the same carrier answers `None` where `DirectFirst`
+/// answers its view. Choosing one order for both is an answer changing, not a merge.
+#[derive(Clone, Copy)]
+enum VisitOrder {
+    /// Mark the carrier visited, then ask the direct question — [`transitive_provision_view`].
+    VisitedFirst,
+    /// Ask the direct question, then mark — [`transitive_provider_spec_view_bindings`].
+    DirectFirst,
+}
+
+/// WI-20260923-32XFQ — a provision view of `carrier_sym`: `direct`'s own answer for it,
+/// else an intermediate spec it DIRECTLY provides that (transitively) answers, composed
+/// back through the carrier→intermediate hop via [`compose_provision_views`]. The flag is
+/// `true` iff the view came through a hop at THIS level. `visited` guards a cyclic
+/// `provides` chain, placed per `order`.
+///
+/// The one recursion under the two transitive readers, which spelled it twice with
+/// different direct questions and different visit orders.
+fn compose_through_provision_chain(
+    kb: &KnowledgeBase,
+    carrier_sym: Symbol,
+    visited: &mut SmallVec<[Symbol; 8]>,
+    order: VisitOrder,
+    direct: &impl Fn(Symbol) -> Option<SmallVec<[(Symbol, TermId); 2]>>,
+) -> Option<(SmallVec<[(Symbol, TermId); 2]>, bool)> {
+    let seen = |visited: &SmallVec<[Symbol; 8]>| {
+        visited
+            .iter()
+            .any(|&v| same_sort_canonical(kb, v, carrier_sym))
+    };
+    if matches!(order, VisitOrder::VisitedFirst) {
+        if seen(visited) {
+            return None;
+        }
+        visited.push(carrier_sym);
+    }
+    if let Some(view) = direct(carrier_sym) {
         return Some((view, false));
     }
-    // Transitive: an intermediate spec the carrier provides owns spec_sort.
+    if matches!(order, VisitOrder::DirectFirst) {
+        if seen(visited) {
+            return None;
+        }
+        visited.push(carrier_sym);
+    }
+    // Transitive: an intermediate spec the carrier provides answers.
     for intermediate in directly_provided_specs(kb, carrier_sym) {
         let Some((outer_view, _)) =
-            transitive_provision_view(kb, spec_sort, pvid, intermediate, visited)
+            compose_through_provision_chain(kb, intermediate, visited, order, direct)
         else {
             continue;
         };
@@ -754,20 +802,7 @@ pub(crate) fn carrier_param_receiver_for_values(
     spec_sort: Symbol,
     carrier_of: &dyn Fn(usize) -> Option<Symbol>,
 ) -> Option<(usize, Symbol)> {
-    let spec_params = sort_type_params_as_pairs(kb, spec_sort);
-    if spec_params.is_empty() {
-        return None;
-    }
-    for (i, (_, pty)) in params.iter().enumerate() {
-        let Some(pvid) = declared_type_param_vid(kb, pty) else {
-            continue;
-        };
-        if !spec_params
-            .iter()
-            .any(|(_, t)| matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == pvid))
-        {
-            continue;
-        }
+    for (i, _, pvid) in spec_param_typed_params(kb, params, spec_sort)? {
         let Some(carrier_sym) = carrier_of(i) else {
             continue;
         };
@@ -1000,6 +1035,20 @@ pub(super) fn spec_carrier_param_candidates(
     fn_sym: Symbol,
 ) -> Option<(Symbol, SmallVec<[(usize, Symbol, VarId); 2]>)> {
     let spec_sort = impl_parent_of_op(kb, fn_sym)?;
+    Some((spec_sort, spec_param_typed_params(kb, params, spec_sort)?))
+}
+
+/// WI-20260923-32XFQ — the operation parameters DECLARED at one of `spec_sort`'s own type
+/// parameters (`c: C` in `Iterable.iterator(c: C)`): `(index, name, the parameter's
+/// VarId)`, in declaration order; `None` when the spec declares no type parameter at all.
+/// The recognizer [`spec_carrier_param_candidates`] (the typer's staging question) and
+/// [`carrier_param_receiver_for_values`] (eval's value-directed dual) shared verbatim —
+/// sharing it is what keeps "which parameter is the carrier" a single answer.
+fn spec_param_typed_params(
+    kb: &KnowledgeBase,
+    params: &[(Symbol, Value)],
+    spec_sort: Symbol,
+) -> Option<SmallVec<[(usize, Symbol, VarId); 2]>> {
     let spec_params = sort_type_params_as_pairs(kb, spec_sort);
     if spec_params.is_empty() {
         return None;
@@ -1017,7 +1066,7 @@ pub(super) fn spec_carrier_param_candidates(
         }
         out.push((i, *pname, pvid));
     }
-    Some((spec_sort, out))
+    Some(out)
 }
 
 /// The INFERRED TYPE of the argument supplied for the parameter at index `i`, named `pname`
@@ -2104,34 +2153,10 @@ fn transitive_provider_spec_view_bindings(
     spec_sort: Symbol,
     visited: &mut SmallVec<[Symbol; 8]>,
 ) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
-    if let Some(view) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) {
-        return Some(view);
-    }
-    if visited
-        .iter()
-        .any(|&v| same_sort_canonical(kb, v, carrier_sym))
-    {
-        return None;
-    }
-    visited.push(carrier_sym);
-    for intermediate in directly_provided_specs(kb, carrier_sym) {
-        let Some(outer_view) =
-            transitive_provider_spec_view_bindings(kb, intermediate, spec_sort, visited)
-        else {
-            continue;
-        };
-        // The carrier→intermediate bindings, to eliminate the intermediate's params.
-        let Some(inner_view) = provider_spec_view_bindings(kb, carrier_sym, intermediate) else {
-            continue;
-        };
-        return Some(compose_provision_views(
-            kb,
-            intermediate,
-            &outer_view,
-            &inner_view,
-        ));
-    }
-    None
+    compose_through_provision_chain(kb, carrier_sym, visited, VisitOrder::DirectFirst, &|c| {
+        provider_spec_view_bindings(kb, c, spec_sort)
+    })
+    .map(|(view, _)| view)
 }
 
 /// WI-20260829-GNPG7 — the provider view for the SUBTYPE relation: direct, else composed

@@ -902,12 +902,7 @@ fn bindings_cover_named(
     covering: &[(Symbol, TermId)],
     asked: &[(String, TermId)],
 ) -> bool {
-    asked.iter().all(|(an, av)| {
-        let ak = binding_key_named(kb, an.as_str(), *av);
-        covering
-            .iter()
-            .any(|(cn, cv)| binding_key(kb, *cn, *cv) == ak)
-    })
+    bindings_cover(covering, asked, kb, |(n, v)| binding_key(kb, *n, *v))
 }
 
 /// [`bindings_cover_named`] with BOTH sides keyed by local name — comparing two pending
@@ -917,11 +912,21 @@ fn bindings_cover_named_pairs(
     covering: &[(String, TermId)],
     asked: &[(String, TermId)],
 ) -> bool {
+    bindings_cover(covering, asked, kb, |(n, v)| binding_key_named(kb, n, *v))
+}
+
+/// The coverage test both of those ask — every `asked` binding's key is among the
+/// `covering` side's — with the covering side's key read by `key`, the only thing the
+/// two differed in.
+fn bindings_cover<C>(
+    covering: &[C],
+    asked: &[(String, TermId)],
+    kb: &KnowledgeBase,
+    key: impl Fn(&C) -> (String, String),
+) -> bool {
     asked.iter().all(|(an, av)| {
         let ak = binding_key_named(kb, an.as_str(), *av);
-        covering
-            .iter()
-            .any(|(cn, cv)| binding_key_named(kb, cn.as_str(), *cv) == ak)
+        covering.iter().any(|c| key(c) == ak)
     })
 }
 

@@ -103,14 +103,9 @@ pub(super) fn check_ho_apply_pattern_occ(
     // (Apply/Constructor/Instantiation) — the occurrence analogue of `Term::Fn`.
     // `ho_apply` materializes to `Expr::Apply`, but match all three for parity
     // with the term-walker's functor check.
-    let ho_pos_args = match expr {
-        Expr::Apply {
-            functor, pos_args, ..
-        } if *functor == ho_apply_sym => Some(pos_args),
-        Expr::Constructor { name, pos_args, .. } if *name == ho_apply_sym => Some(pos_args),
-        Expr::Instantiation { name, pos_args, .. } if *name == ho_apply_sym => Some(pos_args),
-        _ => None,
-    };
+    let ho_pos_args = expr_call_parts(expr)
+        .filter(|(f, _, _)| *f == ho_apply_sym)
+        .map(|(_, pos_args, _)| pos_args);
 
     if let Some(pos_args) = ho_pos_args {
         if !pos_args.is_empty() {
@@ -192,12 +187,7 @@ pub(super) fn occurrence_contains_functor(occ: &Rc<NodeOccurrence>, target: Symb
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(o) = stack.pop() {
         if let Some(expr) = o.as_expr() {
-            let functor = match expr {
-                Expr::Apply { functor, .. } => Some(*functor),
-                Expr::Constructor { name, .. } | Expr::Instantiation { name, .. } => Some(*name),
-                _ => None,
-            };
-            if functor == Some(target) {
+            if expr_call_parts(expr).is_some_and(|(f, _, _)| f == target) {
                 return true;
             }
             for_each_child(expr, |c| stack.push(Rc::clone(c)));

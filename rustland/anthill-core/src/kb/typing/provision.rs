@@ -1093,25 +1093,41 @@ pub(super) fn provider_requires_subgoals(
     sigma: &[(String, TermId)],
 ) -> Vec<SortGoal> {
     let chain = direct_requires_chain(kb, spec);
+    requires_chain_goals(kb, &chain, &|kb, v| subst_requires_value(kb, v, sigma))
+}
+
+/// WI-20260923-32XFQ — a `requires` chain as the sub-goals it asks: one [`SortGoal`] per
+/// entry, IN CHAIN ORDER, each type-parameter binding's value rewritten by `substitute`
+/// (op-bindings — the auto-bound `eq`, `neq`, … — constrain no resolution and are
+/// dropped). The one decode under the provider's two sub-goal walks, which differed only
+/// in the chain they read and the σ they apply: [`provider_requires_subgoals`] (the spec's
+/// direct chain, σ by short NAME) and `instantiate_provider_entries` (the provider's
+/// chain, σ by SYMBOL). The carrier never discriminates a by-binding sub-goal (WI-350).
+///
+/// WI-857: THE WALK IS POSITIONAL, because it produces a dictionary's halves and not only
+/// a load check's goals, so an entry is never dropped — dropping one would shift every
+/// later slot into it. That includes the synthetic `requires EffectsRuntime[E]` an
+/// effect-row parameter contributes, which `resolve_inner` fills with a structural leaf
+/// rather than resolving ([`effects_runtime_sym`] has the measurement).
+///
+/// An entry whose spec has no readable head KEEPS ITS SLOT too, and the slot is a GUESS: a
+/// bindings-free goal is one every provider matches, so it is RESOLVABLE, and resolving is
+/// the concern — not indexing. In `check_provider_requires` empty bindings make `concrete`
+/// vacuously true, so a previously-skipped entry would be resolved and could raise a load
+/// error; in the provider half an unresolvable one fails the whole dispatch. MEASURED
+/// UNREACHABLE: a probe on this branch across the `anthill-core` suite hit it ZERO times —
+/// a `requires` clause's spec is always a `SortView`, a bare ref or an ident. The assert
+/// says so, and fires if that ever stops being true, rather than letting a guessed goal
+/// decide a load.
+pub(super) fn requires_chain_goals(
+    kb: &mut KnowledgeBase,
+    chain: &[RequiresEntry],
+    substitute: &impl Fn(&mut KnowledgeBase, TermId) -> TermId,
+) -> Vec<SortGoal> {
     let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
-    for entry in &chain {
+    for entry in chain {
         let required = entry.required_sort;
         let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
-            // WI-857: KEEP THE SLOT, exactly as `candidate_provider_sub_goals` does —
-            // this walk is now positional (it produces the dictionary's spec half, not
-            // only the load check's goals), so dropping an entry would shift every
-            // later slot into it.
-            //
-            // But the slot is a GUESS: a bindings-free goal is one every provider
-            // matches, so it is RESOLVABLE, and resolving is the concern — not
-            // indexing. In `check_provider_requires` (which shares this walk) empty
-            // bindings make `concrete` vacuously true, so a previously-skipped entry
-            // would now be resolved and could raise a load error; in the provider half
-            // an unresolvable one fails the whole dispatch. MEASURED UNREACHABLE: a
-            // probe on this branch across the `anthill-core` suite hit it ZERO times —
-            // a `requires` clause's spec is always a `SortView`, a bare ref or an
-            // ident. The assert says so, and fires if that ever stops being true,
-            // rather than letting a guessed goal decide a load.
             debug_assert!(
                 false,
                 "WI-857: `requires {}` has no readable spec head — the dictionary slot \
@@ -1125,14 +1141,14 @@ pub(super) fn provider_requires_subgoals(
             });
             continue;
         };
-        let r_qn = kb.qualified_name_of(required).to_string();
+        let spec_qn = kb.qualified_name_of(required).to_string();
         let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         for (k, v) in &entry_bindings {
-            if !is_type_param_binding(kb, *k, &r_qn) {
+            if !is_type_param_binding(kb, *k, &spec_qn) {
                 continue;
             }
-            let nv = subst_requires_value(kb, *v, sigma);
-            bindings.push((*k, nv));
+            let substituted = substitute(kb, *v);
+            bindings.push((*k, substituted));
         }
         out.push(SortGoal {
             spec_sort: required,

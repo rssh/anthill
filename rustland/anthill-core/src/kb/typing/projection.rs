@@ -23,39 +23,60 @@ use super::*;
 /// [`TypeExtractor::Skolem`] the arm below IS the answer, on both carriers and at every depth,
 /// and the duplicate is gone. It is the smallest demonstration of what the ticket is for.
 pub(super) fn value_contains_rigid(kb: &KnowledgeBase, ty: &Value) -> bool {
-    match extract_type(kb, ty) {
-        TypeExtractor::Skolem { .. } => true,
-        TypeExtractor::Parameterized { bindings, .. } => {
-            bindings.iter().any(|(_, v)| value_contains_rigid(kb, v))
-        }
+    // A FLEX variable is the other half of the distinction this predicate turns on: it is
+    // not a skolem, it is what a skolem is minted INSTEAD of, and a stored tree holding one
+    // is fine — [`type_any_part`] answers `false` for it, as for every leaf.
+    type_any_part(kb, ty, &|te| {
+        matches!(te, TypeExtractor::Skolem { .. }).then_some(true)
+    })
+}
+
+/// WI-20260923-32XFQ — does any PART of type `ty` answer yes? The one walk under the
+/// "does this type carry X" predicates read through [`extract_type`] — so a
+/// `Value::Node` type is walked exactly as a term is — which each spelled for itself:
+/// [`value_contains_rigid`] and [`contains_projection`].
+///
+/// `probe` is asked of every node FIRST: `Some(answer)` is the answer and STOPS the
+/// descent there, `None` descends. The children are every type position a node has —
+/// parameterized bindings; an arrow's parameter, result and effects; named-tuple fields;
+/// an effect row's inner expression; an expression-carried projection's value; a rigid
+/// projection's subject; a ∀'s body AND its context (WI-1083: its binders are flexible by
+/// construction, so they are not; WI-20260904-50B2K (c): a constraint is a type, so it
+/// is). Every other form is a leaf and answers `false`.
+///
+/// THE STOP IS WHAT LETS ONE WALK SERVE BOTH, and it is not a formality: the projection
+/// walk answers the two projection forms at the node — `x.E` always, `P.Key` per its
+/// flag — and so never reaches their children, where the rigid walk (whose probe answers
+/// only a skolem) descends through both. Asked through `None`, a projection question
+/// would newly look inside a `P.Key`'s subject: an answer changing, which WI-20260923-
+/// N3W68 #6 settled by measurement the other way.
+pub(super) fn type_any_part(
+    kb: &KnowledgeBase,
+    ty: &Value,
+    probe: &impl Fn(&TypeExtractor) -> Option<bool>,
+) -> bool {
+    let te = extract_type(kb, ty);
+    if let Some(answer) = probe(&te) {
+        return answer;
+    }
+    let within = |v: &Value| type_any_part(kb, v, probe);
+    match te {
+        TypeExtractor::Parameterized { bindings, .. } => bindings.iter().any(|(_, v)| within(v)),
         TypeExtractor::Arrow {
             param,
             result,
             effects,
             arity: _,
-        } => {
-            value_contains_rigid(kb, &param)
-                || value_contains_rigid(kb, &result)
-                || value_contains_rigid(kb, &effects)
-        }
-        TypeExtractor::NamedTuple(fields) => {
-            fields.iter().any(|(_, v)| value_contains_rigid(kb, v))
-        }
-        TypeExtractor::EffectsRows(e) => value_contains_rigid(kb, &e),
-        TypeExtractor::ExprCarried { value, .. } => value_contains_rigid(kb, &value),
-        TypeExtractor::RigidTypeProjection { subject, .. } => value_contains_rigid(kb, &subject),
-        // WI-1083: a ∀'s binders are flexible by construction (a binder is what gets
-        // INSTANTIATED, never skolemized), so only the body can hold a rigid.
-        // WI-20260904-50B2K part (c): the CONTEXT counts too. A constraint is a type, so a
-        // rigid inside one is a skolem written into a stored tree exactly as a rigid in the
-        // body would be — and this predicate's whole job is to catch that. /code-review.
+        } => within(&param) || within(&result) || within(&effects),
+        TypeExtractor::NamedTuple(fields) => fields.iter().any(|(_, v)| within(v)),
+        TypeExtractor::EffectsRows(e) => within(&e),
+        TypeExtractor::ExprCarried { value, .. } => within(&value),
+        TypeExtractor::RigidTypeProjection { subject, .. } => within(&subject),
         TypeExtractor::PolyType { context, body, .. } => {
-            value_contains_rigid(kb, &body) || context.iter().any(|c| value_contains_rigid(kb, c))
+            within(&body) || context.iter().any(within)
         }
-        // A FLEX variable is the other half of the distinction this predicate turns on: it is
-        // not a skolem, it is what a skolem is minted INSTEAD of, and a stored tree holding one
-        // is fine.
-        TypeExtractor::FlexVar { .. }
+        TypeExtractor::Skolem { .. }
+        | TypeExtractor::FlexVar { .. }
         | TypeExtractor::Denoted(_)
         | TypeExtractor::SortRef(_)
         | TypeExtractor::TypeVar(_)
@@ -107,40 +128,20 @@ pub(super) fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool 
 
 /// The one walk behind [`value_contains_projection`] (`rigid_counts`) and
 /// [`value_contains_expr_carried`] (not) — see each for its question.
+///
+/// Both projection forms are answered AT THE NODE, and neither is descended into (see
+/// [`type_any_part`]'s stop). The ∀ is walked body and context: an eta'd member's ∀ body
+/// carries its receiver projections (`mapElems(xs: List, f: (x: xs.T) -> Dst)`, WI-1083),
+/// and this reader DECIDES whether `eliminate_node_projections` is asked to rewrite the
+/// node, so a projection hiding in a constraint (WI-20260904-50B2K (c)) would never be
+/// eliminated — the assert guarding that path is debug-only. A logical variable of either
+/// kind is a leaf: no children to hide a projection in, and not one.
 fn contains_projection(kb: &KnowledgeBase, ty: &Value, rigid_counts: bool) -> bool {
-    let within = |v: &Value| contains_projection(kb, v, rigid_counts);
-    match extract_type(kb, ty) {
-        TypeExtractor::ExprCarried { .. } => true,
-        TypeExtractor::RigidTypeProjection { .. } => rigid_counts,
-        TypeExtractor::Parameterized { bindings, .. } => bindings.iter().any(|(_, v)| within(v)),
-        TypeExtractor::Arrow {
-            param,
-            result,
-            effects,
-            arity: _,
-        } => within(&param) || within(&result) || within(&effects),
-        TypeExtractor::NamedTuple(fields) => fields.iter().any(|(_, v)| within(v)),
-        TypeExtractor::EffectsRows(e) => within(&e),
-        // WI-1083: an eta'd member's ∀ body carries its receiver projections
-        // (`mapElems(xs: List, f: (x: xs.T) -> Dst)`), so the body IS walked — this
-        // gate is what routes it to the elimination that rebuilds the ∀.
-        // WI-20260904-50B2K part (c): the CONTEXT counts too, and this reader is the one
-        // that DECIDES whether `eliminate_node_projections` is asked to rewrite the node —
-        // so a projection hiding in a constraint would never be eliminated, and the assert
-        // guarding that path is debug-only. /code-review.
-        TypeExtractor::PolyType { context, body, .. } => {
-            within(&body) || context.iter().any(within)
-        }
-        // A logical variable of either kind is a LEAF: it has no children to hide a
-        // projection in, and it is not one.
-        TypeExtractor::FlexVar { .. }
-        | TypeExtractor::Skolem { .. }
-        | TypeExtractor::Denoted(_)
-        | TypeExtractor::SortRef(_)
-        | TypeExtractor::TypeVar(_)
-        | TypeExtractor::Nothing
-        | TypeExtractor::Error => false,
-    }
+    type_any_part(kb, ty, &|te| match te {
+        TypeExtractor::ExprCarried { .. } => Some(true),
+        TypeExtractor::RigidTypeProjection { .. } => Some(rigid_counts),
+        _ => None,
+    })
 }
 
 /// WI-398: the head parameter symbol of an expression-carried projection's RECEIVER
@@ -191,11 +192,12 @@ pub(super) fn stable_receiver_path(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
 ) -> Option<Vec<Symbol>> {
+    // A value reference is an `Expr::VarRef` (an unqualified let/lambda/param binder
+    // read) or a `Ref`/`Ident` (a resolved reference); all denote a stable name.
+    if let Some(name) = leaf_var_ref(occ) {
+        return Some(vec![name]);
+    }
     match occ.as_expr()? {
-        // A value reference is an `Expr::VarRef` (an unqualified let/lambda/param binder
-        // read) or a `Ref`/`Ident` (a resolved reference); all denote a stable name.
-        Expr::VarRef { name } => Some(vec![*name]),
-        Expr::Ref(s) | Expr::Ident(s) => Some(vec![*s]),
         Expr::DotApply {
             receiver,
             name,
@@ -512,12 +514,10 @@ pub(super) fn term_place_head_sym(kb: &KnowledgeBase, id: TermId) -> Option<Symb
 
 /// The head symbol of an occurrence-carried place path. See [`denoted_place_head_sym`].
 fn occ_place_head_sym(occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
-    match occ.as_expr()? {
-        Expr::Ref(s) | Expr::Ident(s) => Some(*s),
-        Expr::VarRef { name } => Some(*name),
+    leaf_var_ref(occ).or_else(|| match occ.as_expr()? {
         Expr::DotApply { receiver, .. } => occ_place_head_sym(receiver),
         _ => None,
-    }
+    })
 }
 
 /// WI-20260823-4GBQV — the constructor symbol of a NULLARY constructor application

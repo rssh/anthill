@@ -589,14 +589,8 @@ pub(super) fn check_rule_body_goal_readings(
 /// was materialized from a term (`forall_impl` names no operation) — the point
 /// `assumed_body_functors` makes about its own head test.
 fn proved_goal_children(kb: &KnowledgeBase, expr: &Expr) -> Vec<Rc<NodeOccurrence>> {
-    let (functor, pos_args) = match expr {
-        Expr::Apply {
-            functor, pos_args, ..
-        } => (*functor, pos_args),
-        Expr::Constructor { name, pos_args, .. } | Expr::Instantiation { name, pos_args, .. } => {
-            (*name, pos_args)
-        }
-        _ => return Vec::new(),
+    let Some((functor, pos_args, _)) = expr_call_parts(expr) else {
+        return Vec::new();
     };
     let mut out = Vec::new();
     for slot in kb.goal_slot_readings(functor, pos_args.len()) {
@@ -624,17 +618,11 @@ fn tuple_goal_children_occ(
     kb: &KnowledgeBase,
     body: &Rc<NodeOccurrence>,
 ) -> Vec<Rc<NodeOccurrence>> {
-    let wrapper_args = body.as_expr().and_then(|e| match e {
-        Expr::Apply {
-            functor, pos_args, ..
-        } if kb.local_name_of(*functor) == "tuple" => Some(pos_args),
-        Expr::Constructor { name, pos_args, .. } | Expr::Instantiation { name, pos_args, .. }
-            if kb.local_name_of(*name) == "tuple" =>
-        {
-            Some(pos_args)
-        }
-        _ => None,
-    });
+    let wrapper_args = body
+        .as_expr()
+        .and_then(expr_call_parts)
+        .filter(|(f, _, _)| kb.local_name_of(*f) == "tuple")
+        .map(|(_, pos_args, _)| pos_args);
     match wrapper_args {
         Some(args) => args.iter().map(Rc::clone).collect(),
         None => vec![Rc::clone(body)],
@@ -684,49 +672,35 @@ fn check_goal_atom_reading(
         // actually runs, and costs nothing on a plain atom — whose arguments are DATA,
         // so the table answers empty.
         stack.extend(proved_goal_children(kb, expr));
-        let (f, provided) = match expr {
-            Expr::Apply {
-                functor,
-                pos_args,
-                named_args,
-                ..
-            } => (*functor, pos_args.len() + named_args.len()),
-            Expr::Constructor {
-                name,
-                pos_args,
-                named_args,
-                ..
-            }
-            | Expr::Instantiation {
-                name,
-                pos_args,
-                named_args,
-                ..
-            } => (*name, pos_args.len() + named_args.len()),
-            Expr::Ref(s) | Expr::Ident(s) => (*s, 0), // a nullary reference
-            // WI-20260822-J38JE item 4 — a CONSTANT goal. The BOOLEAN one has a
-            // reading and is not this pass's business: `true` succeeds and `false`
-            // fails, at every goal position, answered in `SearchStream::step_init`.
-            // Every other constant has no reading, and before this had no diagnostic
-            // either — the goal-position gates all key on a FUNCTOR (this pass's op
-            // record, WI-1034's `undefined_functor`), and a constant has none.
-            Expr::Const(lit) => {
-                if !matches!(lit, Literal::Bool(_)) {
-                    errors.push((
-                        TypeError::ConstantInGoalPosition {
-                            span: Some(o.span.span),
-                            literal: {
-                                let mut buf = String::new();
-                                crate::persistence::print::write_literal(lit, &mut buf);
-                                buf
+        let (f, provided) = if let Some((f, pos, named)) = expr_call_parts(expr) {
+            (f, pos.len() + named.len())
+        } else {
+            match expr {
+                Expr::Ref(s) | Expr::Ident(s) => (*s, 0), // a nullary reference
+                // WI-20260822-J38JE item 4 — a CONSTANT goal. The BOOLEAN one has a
+                // reading and is not this pass's business: `true` succeeds and `false`
+                // fails, at every goal position, answered in `SearchStream::step_init`.
+                // Every other constant has no reading, and before this had no diagnostic
+                // either — the goal-position gates all key on a FUNCTOR (this pass's op
+                // record, WI-1034's `undefined_functor`), and a constant has none.
+                Expr::Const(lit) => {
+                    if !matches!(lit, Literal::Bool(_)) {
+                        errors.push((
+                            TypeError::ConstantInGoalPosition {
+                                span: Some(o.span.span),
+                                literal: {
+                                    let mut buf = String::new();
+                                    crate::persistence::print::write_literal(lit, &mut buf);
+                                    buf
+                                },
                             },
-                        },
-                        Some(o.span.source),
-                    ));
+                            Some(o.span.source),
+                        ));
+                    }
+                    continue;
                 }
-                continue;
+                _ => continue,
             }
-            _ => continue,
         };
         // A resolver builtin (`eq`/`neq`/`gt`/`find_dictionary`/…) has its own
         // goal semantics — skip. We deliberately do NOT recurse into its value
@@ -826,6 +800,21 @@ pub(super) fn collect_declared_spec_views(
     fd_sym: Symbol,
     out: &mut Vec<Value>,
 ) {
+    for_each_find_dictionary_instance(occ, fd_sym, |instance| {
+        out.push(Value::Node(Rc::clone(instance)));
+    });
+}
+
+/// WI-20260923-32XFQ — every in-body `find_dictionary(instance, …)` goal under `occ`,
+/// handed its slot-0 INSTANCE, in the walk's order — the one walk
+/// [`collect_declared_spec_views`] and [`collect_find_dictionary_bases`] each spelled, and
+/// which differ only in what they keep of the instance. Iterative (explicit stack) so a
+/// deeply-nested body cannot overflow the host stack.
+fn for_each_find_dictionary_instance(
+    occ: &Rc<NodeOccurrence>,
+    fd_sym: Symbol,
+    mut visit: impl FnMut(&Rc<NodeOccurrence>),
+) {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(o) = stack.pop() {
         let Some(expr) = o.as_expr() else { continue };
@@ -835,7 +824,7 @@ pub(super) fn collect_declared_spec_views(
         {
             if *functor == fd_sym {
                 if let Some(instance) = pos_args.first() {
-                    out.push(Value::Node(Rc::clone(instance)));
+                    visit(instance);
                 }
             }
         }
@@ -854,24 +843,14 @@ fn collect_find_dictionary_bases(
     fd_sym: Symbol,
     out: &mut SmallVec<[Symbol; 2]>,
 ) {
-    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
-    while let Some(o) = stack.pop() {
-        let Some(expr) = o.as_expr() else { continue };
-        if let Expr::Apply {
-            functor, pos_args, ..
-        } = expr
-        {
-            if *functor == fd_sym {
-                if let Some(base) = pos_args.first().and_then(|a| occ_head_symbol(a)) {
-                    let canon = kb.canonical_sort_sym(base);
-                    if !out.contains(&canon) {
-                        out.push(canon);
-                    }
-                }
+    for_each_find_dictionary_instance(occ, fd_sym, |instance| {
+        if let Some(base) = occ_head_symbol(instance) {
+            let canon = kb.canonical_sort_sym(base);
+            if !out.contains(&canon) {
+                out.push(canon);
             }
         }
-        for_each_child(expr, |c| stack.push(Rc::clone(c)));
-    }
+    });
 }
 
 /// Walk `occ` for spec-op Apply calls and push a `MissingRequiresForSpecOp` for
@@ -893,28 +872,7 @@ fn check_occ_spec_op_requirements(
         // (Apply, plus a Constructor/Instantiation that materialized a spec-op head).
         // `find_dictionary` is itself a builtin goal (its args carry the witness
         // `Ref(op)` and carrier vars, not a call) — never a spec op, so skip it.
-        let call = match expr {
-            Expr::Apply {
-                functor,
-                pos_args,
-                named_args,
-                ..
-            } => Some((*functor, pos_args, named_args)),
-            Expr::Constructor {
-                name,
-                pos_args,
-                named_args,
-                ..
-            }
-            | Expr::Instantiation {
-                name,
-                pos_args,
-                named_args,
-                ..
-            } => Some((*name, pos_args, named_args)),
-            _ => None,
-        };
-        if let Some((functor, pos_args, named_args)) = call {
+        if let Some((functor, pos_args, named_args)) = expr_call_parts(expr) {
             if Some(functor) != fd_sym {
                 if let Some(spec_sort) = lookup_spec_op_dispatch(kb, functor) {
                     check_one_spec_op_requirement(
@@ -1480,28 +1438,7 @@ fn check_occ_eq_override_backing(
         // A functor-bearing form, in any of the three shapes `occ_head_symbol`
         // recognizes (Apply, plus a Constructor/Instantiation that materialized a
         // spec-op head).
-        let call = match expr {
-            Expr::Apply {
-                functor,
-                pos_args,
-                named_args,
-                ..
-            } => Some((*functor, pos_args, named_args)),
-            Expr::Constructor {
-                name,
-                pos_args,
-                named_args,
-                ..
-            }
-            | Expr::Instantiation {
-                name,
-                pos_args,
-                named_args,
-                ..
-            } => Some((*name, pos_args, named_args)),
-            _ => None,
-        };
-        if let Some((functor, pos_args, named_args)) = call {
+        if let Some((functor, pos_args, named_args)) = expr_call_parts(expr) {
             // (B) dot-form / direct own-op call: carrier read off the functor.
             if let Some(carrier) = own_eq_op_carrier(kb, functor, syms, eq_defined, memo) {
                 errors.push(TypeError::EqOverrideUnbacked {
@@ -1577,11 +1514,7 @@ fn unbacked_eq_carrier(
 /// builds. `None` for a var leaf / literal / abstract-headed result (the latter
 /// correctly left unflagged — the abstract `T` open gap).
 fn operand_head_result_carrier(kb: &KnowledgeBase, operand: &Rc<NodeOccurrence>) -> Option<Symbol> {
-    let head = match operand.as_expr()? {
-        Expr::Apply { functor, .. } => *functor,
-        Expr::Constructor { name, .. } | Expr::Instantiation { name, .. } => *name,
-        _ => return None,
-    };
+    let (head, _, _) = expr_call_parts(operand.as_expr()?)?;
     head_result_carrier(kb, head)
 }
 

@@ -3090,9 +3090,12 @@ fn project_type_component(kb: &KnowledgeBase, ty: &Value, sel: &LeafSelector) ->
     }
 }
 
-/// The variable a tail leaf references, if it is a bare value reference (the forms
-/// `value_references` enumerates: `Ident` / `Ref` / `VarRef`).
-fn leaf_var_ref(node: &Rc<NodeOccurrence>) -> Option<Symbol> {
+/// The name a BARE VALUE REFERENCE occurrence names — `Ident` / `Ref` / `VarRef`, the
+/// forms `value_references` enumerates — else `None`. WI-20260923-32XFQ: the one reading of
+/// "is this argument a simple reference, and to what", which eight sites spelled as a
+/// three-arm match (a dot-call receiver, a relation reference, a constructor field's
+/// receiver, a stable receiver path's head, …).
+pub(super) fn leaf_var_ref(node: &Rc<NodeOccurrence>) -> Option<Symbol> {
     match node.as_expr() {
         Some(Expr::Ident(s)) | Some(Expr::Ref(s)) => Some(*s),
         Some(Expr::VarRef { name }) => Some(*name),

@@ -32,46 +32,38 @@ pub(super) fn varref_arg_env_type(
     env: &TypingEnv,
     arg: &Rc<NodeOccurrence>,
 ) -> Option<Value> {
-    if let NodeKind::Expr { expr, .. } = &arg.kind {
-        let name = match expr {
-            Expr::VarRef { name } => *name,
-            Expr::Ref(name) | Expr::Ident(name) => *name,
-            _ => return None,
-        };
-        // WI-723: a dot-call receiver reference already TYPED in an earlier frame
-        // (`r.where(λ)` synthesizes `where(r, λ)` with `r` pre-typed + stamped) carries
-        // its type on the node — but a RULE reference (a `Relation[T]` value, WI-714) is
-        // not bound in the value env, so `lookup_var` misses it. Read the stamped
-        // `inferred_type` as a fallback so the receiver's schema still eliminates a
-        // sibling callback param's projection (`(c: r.T) -> Bool`) at hint time — the
-        // same threading a let-local receiver gets for free through the env. Env first:
-        // a still-flexible env binding is the live one; the stamp is only a fallback for
-        // a reference the env doesn't carry.
-        // WI-20260904-50B2K part (c), step 2 — NO SCHEMA THROUGH THE HINT CHANNEL. This is
-        // the THIRD reader of `env.lookup_var`, and unlike the other two it computes a HINT
-        // rather than a verdict: it has no walk to hand an obligation to and no `Result` to
-        // refuse with. A ∀ pushed down as an `expected` would be a hint no consumer can read
-        // — so it answers `None` here, which is the pre-(c) behaviour for a name the env
-        // does not carry, and the real elimination happens at the reader that types the
-        // reference. /code-review named this site with the two it drove.
-        //
-        // NO ROW HOLDS THIS, MEASURED: backing it out leaves all 27 rows of
-        // `wi_50b2k_binder_inference_test` green, because this helper is only reached for a
-        // DOT-CALL RECEIVER (`projection_receiver_type` is its sole caller) and a lambda has
-        // no members to dot into. It is kept as the third reader of one channel being made
-        // to agree with the other two, and is recorded as having no witness rather than
-        // being credited with one.
-        // THE FALLBACK IS FILTERED TOO, and the first cut filtered only the env hit — which
-        // the fallback then defeated: `set_inferred_type` stamps the lambda's own type onto
-        // its occurrence, so a `VarRef` to a let-bound generalized lambda reaches the SAME
-        // schema through `inferred_type()`. A guard whose bypass is the next line of the
-        // same expression is not a guard. /code-review found it.
-        return env
-            .lookup_var(name)
-            .or_else(|| arg.inferred_type())
-            .filter(|t| !matches!(type_head(kb, t), TypeHead::PolyType));
-    }
-    None
+    let name = leaf_var_ref(arg)?;
+    // WI-723: a dot-call receiver reference already TYPED in an earlier frame
+    // (`r.where(λ)` synthesizes `where(r, λ)` with `r` pre-typed + stamped) carries
+    // its type on the node — but a RULE reference (a `Relation[T]` value, WI-714) is
+    // not bound in the value env, so `lookup_var` misses it. Read the stamped
+    // `inferred_type` as a fallback so the receiver's schema still eliminates a
+    // sibling callback param's projection (`(c: r.T) -> Bool`) at hint time — the
+    // same threading a let-local receiver gets for free through the env. Env first:
+    // a still-flexible env binding is the live one; the stamp is only a fallback for
+    // a reference the env doesn't carry.
+    // WI-20260904-50B2K part (c), step 2 — NO SCHEMA THROUGH THE HINT CHANNEL. This is
+    // the THIRD reader of `env.lookup_var`, and unlike the other two it computes a HINT
+    // rather than a verdict: it has no walk to hand an obligation to and no `Result` to
+    // refuse with. A ∀ pushed down as an `expected` would be a hint no consumer can read
+    // — so it answers `None` here, which is the pre-(c) behaviour for a name the env
+    // does not carry, and the real elimination happens at the reader that types the
+    // reference. /code-review named this site with the two it drove.
+    //
+    // NO ROW HOLDS THIS, MEASURED: backing it out leaves all 27 rows of
+    // `wi_50b2k_binder_inference_test` green, because this helper is only reached for a
+    // DOT-CALL RECEIVER (`projection_receiver_type` is its sole caller) and a lambda has
+    // no members to dot into. It is kept as the third reader of one channel being made
+    // to agree with the other two, and is recorded as having no witness rather than
+    // being credited with one.
+    // THE FALLBACK IS FILTERED TOO, and the first cut filtered only the env hit — which
+    // the fallback then defeated: `set_inferred_type` stamps the lambda's own type onto
+    // its occurrence, so a `VarRef` to a let-bound generalized lambda reaches the SAME
+    // schema through `inferred_type()`. A guard whose bypass is the next line of the
+    // same expression is not a guard. /code-review found it.
+    env.lookup_var(name)
+        .or_else(|| arg.inferred_type())
+        .filter(|t| !matches!(type_head(kb, t), TypeHead::PolyType))
 }
 
 /// WI-714: the `Relation[T]` type of an argument occurrence that is a bare RULE
@@ -104,21 +96,7 @@ pub(super) fn relation_ref_arg_type(
     kb: &mut KnowledgeBase,
     arg: &Rc<NodeOccurrence>,
 ) -> Option<Value> {
-    let name = match &arg.kind {
-        NodeKind::Expr {
-            expr: Expr::VarRef { name },
-            ..
-        }
-        | NodeKind::Expr {
-            expr: Expr::Ref(name),
-            ..
-        }
-        | NodeKind::Expr {
-            expr: Expr::Ident(name),
-            ..
-        } => *name,
-        _ => return None,
-    };
+    let name = leaf_var_ref(arg)?;
     if !kb.cites_a_relation(name) {
         return None;
     }
@@ -1023,22 +1001,11 @@ pub(super) fn arg_is_constructor_application(kb: &KnowledgeBase, arg: &Rc<NodeOc
 /// O(1) — a pattern match plus a `kind_of` read — because it runs for every argument
 /// of every call and constructor the typer visits.
 pub(super) fn arg_names_sort(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
-    let head = match &arg.kind {
-        NodeKind::Expr {
-            expr: Expr::Ref(s) | Expr::Ident(s),
-            ..
-        } => *s,
-        NodeKind::Expr {
-            expr: Expr::VarRef { name },
-            ..
-        } => *name,
-        NodeKind::Expr {
-            expr: Expr::Apply { functor, .. },
-            ..
-        } => *functor,
-        _ => return false,
-    };
-    kb.kind_of(head) == Some(crate::intern::SymbolKind::Sort)
+    let head = leaf_var_ref(arg).or_else(|| match arg.as_expr() {
+        Some(Expr::Apply { functor, .. }) => Some(*functor),
+        _ => None,
+    });
+    head.is_some_and(|h| kb.kind_of(h) == Some(crate::intern::SymbolKind::Sort))
 }
 
 /// WI-20260828-8Q0Q5: is `arg` a BARE OPERATION NAME — the spelling that eta-lifts?
@@ -1047,18 +1014,8 @@ pub(super) fn arg_names_sort(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bo
 /// `Expr::Apply` is excluded. `inc` is a name the reader may lift to a function value;
 /// `inc(x)` is a call and already carries its own type.
 pub(super) fn arg_is_bare_operation_name(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
-    let head = match &arg.kind {
-        NodeKind::Expr {
-            expr: Expr::Ref(s) | Expr::Ident(s),
-            ..
-        } => *s,
-        NodeKind::Expr {
-            expr: Expr::VarRef { name },
-            ..
-        } => *name,
-        _ => return false,
-    };
-    kb.kind_of(head) == Some(crate::intern::SymbolKind::Operation)
+    leaf_var_ref(arg)
+        .is_some_and(|head| kb.kind_of(head) == Some(crate::intern::SymbolKind::Operation))
 }
 
 /// WI-20260828-8Q0Q5: the hint an ARROW-typed constructor FIELD pushes down to a bare
