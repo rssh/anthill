@@ -1960,13 +1960,21 @@ slot is the projection `s.O` (§"How the slot is named"), so it names the
 parameter, and the *caller* reads the provider out of that argument's type, where
 it is written.  The call therefore answers with the comparator the value's own
 construction site chose, so at **a typed call site** writing `O` and leaving it out
-mean the same thing at run time.  They do **not** at the host boundary: `interp.call`
-is handed values and no types, a runtime value carries none of its type arguments
-(§4.7), and the unfilled slot falls to value-direction — which recovers the element
-type and cannot recover the witness, so both orderings answer alike.  That is
-WI-868's stand-in hole, which this rule widens the reach of rather than creates;
-a host that must choose supplies the dictionary itself
-(`Interpreter::call_with_requirements`).
+mean the same thing at run time.  A route with **no types** cannot read it:
+`interp.call` is handed values, and a runtime value carries none of its type
+arguments (§4.7).  Such a route takes the slot's spec's provider only when there
+is exactly **one** — the argument's construction had to choose a provider of that
+goal, so a unique one is exact — and never by a ranking among several (neither
+specificity nor §3.2's default rung), which answers "which provider wins" rather
+than "which one built this value" (WI-20260922-ATFGH).  Where there are several, the slot is a recorded
+absence, and a body that reads it is **refused at the read**, naming the slot as
+`s.O`; a body that never reads it runs.  The same holds for value-directed
+dispatch, while a rule body reaching the operation through the resolver delays on
+the tie instead.  A host that knows the witness **names** it —
+`Interpreter::call_with_witnesses(op, args, &[SlotWitness { param: "s", slot:
+"O", witness: "pkg.ByLength" }])` — and the call then answers as the typed call
+site does; the host names the provider, never a type, because the provider is the
+only thing the type was being read for.
 
 Three cases keep the older **refusal**, each because there is no argument to read:
 a slot nothing spells (WI-1061's nested `List[T = SortedSet]`, which takes a fresh

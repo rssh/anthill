@@ -36,6 +36,21 @@ use effects::EffectRegistry;
 use map_arena::MapArenaRef;
 use stream::StreamArenaRef;
 
+/// WI-20260922-ATFGH — a host's WITNESS for one op-half slot whose evidence lives in a
+/// parameter's type ([`Interpreter::call_with_witnesses`]): the argument passed for
+/// `param` was built with its carrier's named slot `slot` (the `O` of
+/// `requires O: WeakOrd[T]`) bound to the provider sort `witness`, a qualified name.
+///
+/// THREE FIELDS, NOT THE `"s.O"` SPELLING the body sees and the refusal prints: a
+/// struct cannot be malformed, where a string could be `"O"` or `"s."` and would need
+/// a runtime refusal to say so (found by /code-review).
+#[derive(Clone, Copy, Debug)]
+pub struct SlotWitness<'a> {
+    pub param: &'a str,
+    pub slot: &'a str,
+    pub witness: &'a str,
+}
+
 /// Runtime resource limits. Each cap is optional so different embeddings
 /// can trade safety against throughput independently.
 ///
@@ -705,21 +720,123 @@ impl Interpreter {
                 name: qualified_name.to_string(),
             }
         })?;
-        self.call_op_sym(sym, args)
+        self.call_op_sym(sym, args, &[])
     }
 
-    /// Symbol-keyed body of [`Self::call`]: dispatch to a registered builtin,
-    /// else seed the entry op's `requires` chain with self-referential
-    /// placeholders and invoke it. Private — host callers use `call` (by name);
-    /// the resolver bridge uses [`Self::call_op_bridged`] (which does NOT seed
+    /// WI-20260922-ATFGH — [`Self::call`] with a WITNESS named for each op-half slot whose
+    /// evidence lives in a parameter's type: `SlotWitness { param: "s", slot: "O",
+    /// witness: "pkg.ByLength" }` says the argument passed for `s` was built with
+    /// `O = ByLength`.
+    ///
+    /// THE SLOT THIS SPELLS. `operation has(s: MySet[T = String], x: String)` over
+    /// `enum MySet requires O: WeakOrd[T]` leaves `O` unwritten, so the dictionary `has`'s
+    /// body reads is the ARGUMENT's own (EE0EP). A typed call site reads it out of the
+    /// argument's type; [`Self::call`] has only the value, which carries its sort and
+    /// none of its type arguments, so where more than one provider could have been
+    /// chosen the slot is a marker that refuses at the read and names `s.O`. Naming the
+    /// witness is what a host CAN produce — it is the only thing the type was being read
+    /// for — and it is built into the dictionary by the same selection the typed fill
+    /// makes ([`crate::kb::typing::resolve_param_witnesses`]). Not by passing types,
+    /// which would import a compile-time artifact into a runtime boundary: runtime needs
+    /// the dictionary, and the type is only where a typed call reads the witness from.
+    ///
+    /// Everything else is [`Self::call`]'s — one preamble, [`Self::call_op_sym`]: the
+    /// sort half keeps WI-868's stand-ins, and the rest of the op half is resolved from
+    /// the arguments. A slot left unnamed keeps its marker, since a body that never reads
+    /// it must still run. Every mismatch — an unknown witness, a slot the operation does
+    /// not have, a slot named twice, a witness that does not answer the slot's goal, an
+    /// operation with no body of its own to enter — is refused here, at the entry.
+    ///
+    /// NOT COMBINED WITH [`Self::call_with_requirements`]: an entry whose parent sort
+    /// needs host-built cross-sort dictionaries AND whose parameter leaves a slot
+    /// unwritten has no single host spelling yet. Nothing in tree is both; the two are
+    /// separate entries until something is.
+    pub fn call_with_witnesses(
+        &mut self,
+        qualified_name: &str,
+        args: &[Value],
+        witnesses: &[SlotWitness<'_>],
+    ) -> Result<Value, EvalError> {
+        let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
+            EvalError::UnknownOperation {
+                name: qualified_name.to_string(),
+            }
+        })?;
+        self.call_op_sym(sym, args, witnesses)
+    }
+
+    /// Symbol-keyed body of [`Self::call`] and [`Self::call_with_witnesses`]: dispatch to
+    /// a registered builtin, else seed the entry op's `requires` chain — the sort half
+    /// with self-referential placeholders, the op half resolved from the arguments — lay
+    /// the host's witnesses over it, and invoke. Private — host callers use `call` (by
+    /// name); the resolver bridge uses [`Self::call_op_bridged`] (which does NOT seed
     /// placeholders — see there for why).
-    fn call_op_sym(&mut self, sym: Symbol, args: &[Value]) -> Result<Value, EvalError> {
+    fn call_op_sym(
+        &mut self,
+        sym: Symbol,
+        args: &[Value],
+        witnesses: &[SlotWitness<'_>],
+    ) -> Result<Value, EvalError> {
+        let refuse = |kb: &crate::kb::KnowledgeBase, why: String| {
+            EvalError::Internal(format!(
+                "call_with_witnesses({}): {why}",
+                kb.qualified_name_of(sym)
+            ))
+        };
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
+            // A builtin enters no frame, so there is no slot a witness could fill —
+            // naming one is a host error, not a no-op.
+            if let Some(w) = witnesses.first() {
+                return Err(refuse(
+                    &self.kb,
+                    format!(
+                        "the operation is host-implemented and has no slot `{}.{}`",
+                        w.param, w.slot
+                    ),
+                ));
+            }
             return (builtin)(self, args);
         }
+        // A BODY-LESS operation is entered by value-directed dispatch to a provider's,
+        // and `invoke_op_with_requirements` builds THAT frame from the provider's own
+        // chain, discarding the one seeded here (its WI-1057 arm). A witness laid over
+        // this frame would be dropped in silence, so it is refused, naming the repair.
+        // Found by /code-review.
+        if !witnesses.is_empty() && self.cached_operation_body(sym).is_none() {
+            return Err(refuse(
+                &self.kb,
+                "the operation has no body of its own — it is dispatched by value to a \
+                 provider's, whose frame is built from that provider's chain — so a \
+                 witness here would be discarded. Name it on the provider's operation"
+                    .to_string(),
+            ));
+        }
         let mut requirements = self.seed_entry_requirements(sym)?;
-        // WI-1091: the OP-SCOPED half, RESOLVED at the concrete argument types rather
-        // than stood in for. See `seed_entry_op_requirements`.
+        // WI-20260922-ATFGH — the host's witnesses FIRST, so a mismatch is refused before
+        // anything else runs and the op-half resolution below skips the slots they fill
+        // (a tie there is not a verdict about a slot the host has already answered —
+        // found by /code-review).
+        if !witnesses.is_empty() {
+            let named =
+                crate::kb::typing::resolve_param_witnesses(&mut self.kb, sym, args, witnesses)
+                    .map_err(|why| refuse(&self.kb, why))?;
+            for (name, tree) in named {
+                // `None` names the KB, not the slot: the resolution ran with an empty
+                // scope, so the tree holds no `FromScope`, and the one other `None` is a
+                // KB that never loaded the dictionary sort (WI-1045 keeps them apart).
+                let dict = self.port_resolved_tree(&tree).ok_or_else(|| {
+                    refuse(
+                        &self.kb,
+                        "cannot build a witness's dictionary: this KB never loaded \
+                         `anthill.realization.runtime.Dictionary`"
+                            .to_string(),
+                    )
+                })?;
+                requirements.push((name, dict));
+            }
+        }
+        // WI-1091: the rest of the OP-SCOPED half, RESOLVED at the concrete argument
+        // types rather than stood in for. See `seed_entry_op_requirements`.
         self.seed_entry_op_requirements(sym, args, &mut requirements)?;
         self.invoke_op_with_requirements(sym, args, requirements)
     }
@@ -975,11 +1092,15 @@ impl Interpreter {
     /// See `docs/design/operation-call-model.md` §"Host-to-entry-op boundary".
     ///
     /// WI-822 LEG 1: the count is the PARENT SORT's chain, not the entry op's composed
-    /// one — an op-scoped `requires` has no host-boundary spelling, for the reason
+    /// one — an op-scoped `requires` has no host-boundary spelling HERE, for the reason
     /// [`Self::seed_entry_requirements`] records, and widening this would ask every
-    /// host for handles it has no way to build. Nothing in tree declares an entry op
-    /// with its own `requires`; if one ever does, its slots stay unfilled here and the
-    /// body's own read is what says so.
+    /// host for handles it has no way to build. Its slots stay unfilled here — unlike
+    /// [`Self::call`], which resolves them from the arguments — and the body's own read
+    /// is what says so, as `not bound`, naming the frame rather than the slot.
+    ///
+    /// WI-20260922-ATFGH — the one op-half kind a host CAN name is EE0EP's synthesized
+    /// slot, whose witness lives in a parameter's type: [`Self::call_with_witnesses`]
+    /// spells it by naming the provider.
     pub fn call_with_requirements(
         &mut self,
         qualified_name: &str,
@@ -1344,6 +1465,13 @@ impl Interpreter {
     /// half is taken out of the resolution — the sort half's stand-ins are already in
     /// `out`, and replacing them with resolved dictionaries would change what a
     /// requires-carrying entry op has always been given.
+    ///
+    /// WI-20260922-ATFGH — the arguments pin an op-scoped requirement's ELEMENT, never a
+    /// witness chosen inside a type. A slot whose evidence is written in a parameter's
+    /// type (EE0EP's unwritten named slot) therefore comes back from the resolution as
+    /// the dictionary of the ONE provider its goal has, when it has one — the value's
+    /// construction had to choose it — and otherwise as a marker that refuses at the
+    /// read and names `s.O`. [`Self::call_with_witnesses`] is the entry that fills it.
     fn seed_entry_op_requirements(
         &mut self,
         op_sym: Symbol,
@@ -1358,14 +1486,27 @@ impl Interpreter {
             // No op half — the universal case, and not even a resolution.
             return Ok(());
         }
-        let op_names: std::collections::HashSet<Symbol> =
-            names[sort_len..].iter().copied().collect();
+        // WI-20260922-ATFGH — only the slots `out` does not already hold: a host witness
+        // (`call_op_sym`) is laid in FIRST, and a tie or failure at a slot it filled is
+        // not this resolution's to report.
+        let op_names: std::collections::HashSet<Symbol> = names[sort_len..]
+            .iter()
+            .copied()
+            .filter(|n| !out.iter().any(|(m, _)| m == n))
+            .collect();
+        if op_names.is_empty() {
+            return Ok(());
+        }
         let (parent, trees) =
             match crate::kb::typing::resolve_bridge_requirements(
                 &mut self.kb,
                 op_sym,
                 args,
-                crate::kb::typing::NamedSlotTies::Raise,
+                // WI-20260922-ATFGH — `HostEntry`, not the bridge's `Raise`: a tie at a
+                // slot whose witness is in a parameter's type comes back as the marker
+                // naming `s.O` (the host's repair is `call_with_witnesses`), while every
+                // other tie is reported exactly as before.
+                crate::kb::typing::NamedSlotTies::HostEntry,
             ) {
                 BridgeRequirements::Resolved(parent, trees) => (parent, trees),
                 // WI-1091 — A TIE IS RAISED, not entered-unsupplied, and this is the same

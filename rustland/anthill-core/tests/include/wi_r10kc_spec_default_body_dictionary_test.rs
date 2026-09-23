@@ -386,6 +386,15 @@ fn a_generic_consumer_over_a_list_keeps_each_elements_ordering() {
 //     the dictionary VALUE, which is the half of this ticket's original framing that is
 //     still live.
 //
+//     THE SORT HALF ONLY. The OP-half twin — EE0EP's `has(s: MySet[T = String], …)`,
+//     whose slot `s.O` is op-scoped — was closed by WI-20260922-ATFGH without touching
+//     the stand-in: that slot is a marker whose read is refused at `interp.call`, and
+//     `Interpreter::call_with_witnesses` names its witness
+//     (`wi_ee0ep_param_dictionary_test::the_host_entry_names_the_witness_or_is_refused`).
+//     This row's slot is the SORT's own `O`, one of the dictionaries
+//     `call_with_requirements` takes from a host, and WI-868's stand-in decision is what
+//     keeps plain `interp.call` as it is.
+//
 //  2. THE SLD BRIDGE from a rule body (`call_op_bridged`) — SUSPENDS. It resolves the
 //     callee's chain from the ARGUMENT TYPES and passes `NamedSlotTies::Raise`, so a
 //     named-slot tie is an `Ambiguous` verdict rather than a recorded absence, and the

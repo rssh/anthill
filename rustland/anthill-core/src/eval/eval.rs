@@ -3636,6 +3636,12 @@ impl Interpreter {
     /// are different questions and only the body answers the second — the rule measured
     /// against the stdlib at WI-822 LEG 2 and unchanged here.
     ///
+    /// WI-20260922-ATFGH — ONE KIND OF SLOT IS NOT LEFT ABSENT: an EE0EP slot whose
+    /// witness is in a parameter's type, when its goal has several providers. It comes
+    /// back as a marker naming `s.O`, where 058's default rung used to BUILD one — the
+    /// canonical provider, whatever the argument's construction chose. With one provider
+    /// it is still filled.
+    ///
     /// COSTS ONE CACHED `is_empty()` on the universal path: an operation that writes no
     /// `requires` of its own returns at the first test, off `op_requires_chain_rc`'s
     /// per-op cache.
