@@ -38,13 +38,21 @@
 //!    ANONYMOUS-slot key binds no parameter at all, so it keeps check 1's refusal even
 //!    for a slot-naming value. Forwarding there would drop the written text.
 //!
+//!    THE SLOT TEST IS CONSERVATIVE, and its cost is measured and pinned. A plain
+//!    parameter that a REQUIREMENT of the declaration mentions is answered soundly out of
+//!    that requirement, and this gate refuses it in brackets too. The receiver spelling
+//!    ran that program before this ticket.
+//!    [`a_plain_parameter_tied_to_a_requirement_is_refused_in_brackets_too`] records it,
+//!    and WI-20260923-WN9P8 is the criterion that separates the two shapes, on the type
+//!    channel as well as here.
+//!
 //! **BACK-OUT, MEASURED ONE MECHANISM AT A TIME** (rows are this file's):
 //!
 //! | backed out | fails |
 //! |---|---|
-//! | (R) the receiver leg's `validate_written_selection` call | [`every_refusal_reads_the_same_in_both_spellings`], [`the_concrete_refusal_names_no_bracket_the_author_did_not_write`], [`a_plain_parameter_is_refused_in_both_spellings`] |
+//! | (R) the receiver leg's `validate_written_selection` call | [`every_refusal_reads_the_same_in_both_spellings`], [`the_concrete_refusal_names_no_bracket_the_author_did_not_write`], [`a_plain_parameter_is_refused_in_both_spellings`], [`a_plain_parameter_tied_to_a_requirement_is_refused_in_brackets_too`] |
 //! | (F) the callee leg's forward (`binds_a_parameter = false` for every key) | [`an_abstract_slot_binding_forwards_in_both_spellings`] |
-//! | (N) the forward widened from a slot to ANY abstract value (`view_is_abstract_type_param`) | [`a_plain_parameter_is_refused_in_both_spellings`] |
+//! | (N) the forward widened from a slot to ANY abstract value (`view_is_abstract_type_param`) | [`a_plain_parameter_is_refused_in_both_spellings`], [`a_plain_parameter_tied_to_a_requirement_is_refused_in_brackets_too`] |
 //! | (W) the channel-neutral wording of `ValueDirectedSelection` | [`the_concrete_refusal_names_no_bracket_the_author_did_not_write`] |
 //! | (F) widened to every KEY (`binds_a_parameter = true`, rung-2 keys included) | [`an_abstract_value_at_a_spec_key_is_still_refused`] |
 //! | (P3) check 3 MOVED onto the σ-read producer, over the whole `wi_tests` binary | [`a_type_may_carry_a_concrete_witness_and_it_is_honoured`], plus three pre-existing tests (the census) |
@@ -180,9 +188,15 @@ fn eval_str(src: &str, entry: &str, what: &str) -> String {
 /// Insert three strings whose three orders all differ, and render the set's order. By
 /// alphabet `a,bbb,cc`; by length `a,cc,bbb`; by reverse length `bbb,cc,a`.
 fn render_three(set: &str) -> String {
+    render_three_via("SortedSet.insert", set)
+}
+
+/// [`render_three`] with the three inserts made through `insert` instead of
+/// `SortedSet.insert`.
+fn render_three_via(insert: &str, set: &str) -> String {
     format!(
-        "Show.join(SortedSet.toList(SortedSet.insert(SortedSet.insert(SortedSet.insert(\
-         {set}, \"a\"), \"bbb\"), \"cc\")))"
+        "Show.join(SortedSet.toList({insert}({insert}({insert}({set}, \"a\"), \"bbb\"), \
+         \"cc\")))"
     )
 }
 
@@ -322,8 +336,8 @@ fn an_abstract_slot_binding_forwards_in_both_spellings() {
 /// refused, by check 1 on `P`. Both now refuse, with the same bytes (N).
 ///
 /// NOT CLOSED ON THE TYPE CHANNEL. A parameter typed `SortedSet[T = E, O = P]` still
-/// forwards through WI-1094's inference, and was measured doing the same thing. That arm
-/// records the gap at its site in `infer_named_slot_bindings`.
+/// forwards through WI-1094's inference, and was measured doing the same thing. That is
+/// WI-20260923-WN9P8, and the row below records what this gate costs meanwhile.
 #[test]
 fn a_plain_parameter_is_refused_in_both_spellings() {
     let r2 = |construct: &str| {
@@ -341,6 +355,55 @@ fn a_plain_parameter_is_refused_in_both_spellings() {
     assert!(
         callee.contains("probe.tx0g6.R2.P does not provide anthill.prelude.WeakOrd"),
         "a plain parameter names no dictionary, so it is not a forward; got: {callee}"
+    );
+    assert_eq!(recv, callee, "one rule, two spellings");
+}
+
+/// THE COST OF THE SLOT TEST, PINNED SO IT IS NOT REDISCOVERED AS A SURPRISE. A plain
+/// parameter can be tied to a frame dictionary without being a slot: `PolyD` requires the
+/// COLLECTION INSTANCE at `O = OE`, and a forward of `OE` is answered soundly out of that
+/// instance (Strategy 2b, `wi456_no_scope_route_test`). The bare spelling runs, driven at
+/// two orderings below. The two bracket spellings are refused, because the gate asks "is
+/// `OE` a slot?" and cannot tell this shape from the wrong-answer one in the row above.
+///
+/// MEASURED: before this ticket the RECEIVER spelling ran this program correctly, and the
+/// callee spelling refused it, by the same check 1 that refuses it now. So this ticket
+/// traded one correct receiver program (none in the suite or the corpora) for closing a
+/// silent wrong answer. Telling the two apart is WI-20260923-WN9P8.
+///
+/// THE ASSERTION IS THE CURRENT BEHAVIOUR: it fails the day WN9P8 lets the brackets
+/// forward this shape, which makes that a recorded decision rather than a drift.
+#[test]
+fn a_plain_parameter_tied_to_a_requirement_is_refused_in_brackets_too() {
+    let body = |call: &str| {
+        format!(
+            "  import anthill.prelude.PersistentCollection\n  \
+             sort PolyD\n    \
+               sort E = ?\n    \
+               sort OE = ?\n    \
+               requires PersistentCollection[C = SortedSet[T = E, O = OE], Element = E]\n    \
+               operation insertD(s: SortedSet[T = E, O = OE], x: E) \
+             -> SortedSet[T = E, O = OE] =\n      \
+               {call}\n  \
+             end\n  \
+             operation byLength(n: Int64) -> String =\n    {}\n  \
+             operation revLen(n: Int64) -> String =\n    {}",
+            render_three_via(
+                "PolyD.insertD",
+                "SortedSet.empty[T = String, O = ByLength]()"
+            ),
+            render_three_via("PolyD.insertD", "SortedSet.empty[T = String, O = RevLen]()"),
+        )
+    };
+    let bare = program(&body("SortedSet.insert(s, x)"));
+    assert_eq!(eval_str(&bare, "probe.tx0g6.byLength", "bare"), "a,cc,bbb,");
+    assert_eq!(eval_str(&bare, "probe.tx0g6.revLen", "bare"), "bbb,cc,a,");
+
+    let callee = sole_message(&body("SortedSet.insert[T = E, O = OE](s, x)"));
+    let recv = sole_message(&body("SortedSet[T = E, O = OE].insert(s, x)"));
+    assert!(
+        callee.contains("probe.tx0g6.PolyD.OE does not provide anthill.prelude.WeakOrd"),
+        "got: {callee}"
     );
     assert_eq!(recv, callee, "one rule, two spellings");
 }

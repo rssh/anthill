@@ -30618,8 +30618,17 @@ fn slot_selection_of(
 /// type names. So `[O = P]`, with `P` a PLAIN parameter of `sort R2 { sort P = ?;
 /// requires OE: WeakOrd[E] }`, was answered by `OE`'s dictionary: at
 /// `R2.mk[E = String, P = ByLength, OE = RevLen]` the set's type said `O = ByLength`, and
-/// it ordered by `RevLen`. Only a slot binder is a name the frame holds a dictionary
-/// under, so only a slot binder forwards.
+/// it ordered by `RevLen`. A slot binder is always a name the frame holds a dictionary
+/// under, so a slot binder forwards.
+///
+/// CONSERVATIVE, and MEASURED to be: a plain parameter can ALSO be tied to a frame
+/// dictionary. In `sort PolyD { sort OE = ?; requires PersistentCollection[C =
+/// SortedSet[T = E, O = OE], …] }` the instance requirement mentions `OE`, and a forward
+/// is answered soundly out of it (Strategy 2b). Before WI-20260911-TX0G6 the receiver
+/// spelling ran that bracket correctly; this gate refuses it in both spellings (the
+/// callee spelling always did), and the bare spelling still runs. Telling the two
+/// shapes apart means asking whether the entry that ANSWERS the goal is tied to the
+/// binder, which is WI-20260923-WN9P8's question and not this gate's.
 ///
 /// Asked of the binder's DECLARING scope, so an operation's own slots (`requires plus:
 /// Monoid[T]`) answer exactly as a sort's do. A name no scope declares answers `false`:
@@ -31381,9 +31390,11 @@ fn infer_named_slot_bindings(
             // `SortedSet[T = E, O = P]` forwards here, and the frame answers the goal with
             // `OE`'s dictionary. At `R3.add[E = String, P = ByLength, OE = RevLen]`, a set
             // typed `ByLength` was inserted into in `RevLen`'s order. The two WRITTEN
-            // channels refuse the same binding ([`names_a_declared_slot`]). Closing this
-            // arm is a verdict change on the type channel with its own population, so it
-            // was left open and raised as its own question.
+            // channels refuse the same binding ([`names_a_declared_slot`]). NOT closed by
+            // asking "is the binder a slot" here: that was built and MEASURED to break a
+            // correct shape, a plain parameter tied to a requirement that mentions it
+            // (`wi456_no_scope_route_test`'s Strategy-2b rows). The criterion belongs where
+            // the goal is answered, and is WI-20260923-WN9P8.
             SlotBinderState::Quantified
                 if param_rigids.iter().any(|(_, rigid)| *rigid == bound) =>
             {
@@ -31906,8 +31917,10 @@ fn push_slots(
 ///    spelling refused it with "R.OE does not provide WeakOrd", while the receiver
 ///    spelling loaded and ran the caller's `ByLength` order.
 ///    ONLY A SLOT, not any abstract value ([`names_a_declared_slot`] measured why). A
-///    PLAIN parameter names no dictionary, so it goes on to check 1 and is refused in
-///    both spellings, which closes the receiver's silent wrong order. An ANONYMOUS slot
+///    PLAIN parameter goes on to check 1 and is refused in both spellings, which closes
+///    the receiver's silent wrong order. That is conservative: a plain parameter tied to
+///    a requirement that mentions it would forward soundly, and is refused too, pending
+///    WI-20260923-WN9P8. An ANONYMOUS slot
 ///    (rung 2) binds no parameter, so nothing downstream reads its value. Forwarding
 ///    there would DROP the written text and let the ordinary route answer, so it keeps
 ///    check 1's refusal too.
