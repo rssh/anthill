@@ -74,7 +74,9 @@ An anonymous slot fixes nothing about the type: `List[T = Int64]` is one type no
 
 ### 3.5 Validation at the selection site
 
-`f[Spec = W](…)` requires: `W` provides `Spec` at the call's bindings (else loud, naming both); the slot exists on the callee; and the dispatch is not value-directed on a concrete carrier — there the value decides, and an explicit witness is **refused**, not preferred.
+`f[Spec = W](…)` requires: `W` provides `Spec` at the call's bindings (else loud, naming both); the slot exists on the callee; and `W` is not a concrete provider (a sort with constructors) — where its values are the arguments, the value decides, and an explicit witness is **refused**, not preferred.
+
+*(Decided 2026-09-23, WI-20260911-TX0G6.)* The third requirement is a property of the NAMED SORT, not of the dispatch, and it is kept that way on purpose: an author can read it off the declaration. So a sort with constructors is refused even where none of its values takes part in the call. That was measured for an ordering of `String` declaring an entity of its own, which the type channel does honour when a type names it. This section once worded the requirement as "the dispatch is not value-directed on a concrete carrier", which would have admitted that case. The adopted rule is stated in [`kernel-language.md` §5.4](../kernel-language.md).
 
 ### 3.6 Defaults — one relation, one inference rule *(delivered, with §3.2's rung 2a as their consumer)*
 

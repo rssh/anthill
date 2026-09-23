@@ -485,11 +485,13 @@ pub enum TypeError {
         /// never named the bindings, which are the whole content of the mismatch.
         at_bindings: bool,
     },
-    /// WI-841 (058 §4.4 check 3): `f[Spec = W](…)` where `W` is a CONCRETE provider
-    /// — a sort with constructors, whose values carry their own sort. There the
-    /// VALUE decides the dispatch (§1.1, the same exemption the witness-coherence
-    /// check applies), so an explicit witness could only agree redundantly or
-    /// contradict silently. Refuse, do not prefer.
+    /// WI-841 (058 §4.4 check 3, now §3.5): `f[Spec = W](…)` where `W` is a CONCRETE
+    /// provider — a sort with constructors, whose values carry their own sort. Where
+    /// those values are the arguments the VALUE decides the dispatch (§1.1, the same
+    /// exemption the witness-coherence check applies), so an explicit witness could only
+    /// agree redundantly or contradict silently. Refuse, do not prefer. The test is the
+    /// SORT's, so it also refuses a concrete provider whose values are not the
+    /// arguments; that is decided, see [`validate_instance_selection`].
     ValueDirectedSelection {
         span: Option<Span>,
         op: Symbol,
@@ -1421,10 +1423,19 @@ impl TypeError {
                 // This read "an explicit `[Spec = W]`", which names a bracket neither
                 // spelling of a NAMED slot writes: the callee writes `[O = W]` and the
                 // receiver writes `SortedSet[…, O = W]`, and both now reach this arm.
+                //
+                // AND IT STATES THE RULE, NOT A CLAIM ABOUT THIS CALL. It used to say the
+                // dispatch "is already directed by the value" and the selection "cannot
+                // change it". That is true where the provider's values are the arguments,
+                // and MEASURED false where they are not: `[WeakOrd = ConcOrd]` on two
+                // `String`s answers ConcOrd's order when admitted. The rule is kept as a
+                // property of the named sort (see [`validate_instance_selection`]), so the
+                // message gives its reason conditionally.
                 format!(
-                    "{} is a CONCRETE provider of {} — its values carry their own sort, \
-                     so the dispatch at {} is already directed by the value and an \
-                     explicit selection of `{} = {}` cannot change it",
+                    "{} is a CONCRETE provider of {} (a sort with constructors), and a call \
+                     may not select one: its values carry their own sort, so where they are \
+                     the arguments of {} they already direct the dispatch, and an explicit \
+                     selection of `{} = {}` is refused rather than preferred",
                     kb.qualified_name_of(*witness),
                     kb.qualified_name_of(*spec),
                     kb.qualified_name_of(*op),
@@ -2064,7 +2075,7 @@ impl TypeError {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "selection".to_string(),
-                expected_type: "no explicit witness — this dispatch is value-directed".to_string(),
+                expected_type: "no explicit selection of a concrete provider".to_string(),
                 actual_type: self.format(kb),
                 span: self.span(kb),
             },
@@ -31996,18 +32007,21 @@ fn validate_written_selection(
 /// Check 2 ("the slot exists on the callee") is [`resolve_call_type_arg_targets`] —
 /// a key that names no slot never becomes a selection.
 ///
-/// A MEASURED LIMIT OF CHECK 3's CRITERION, recorded rather than changed
-/// (WI-20260911-TX0G6), because the kernel spec states the rule for every call-site
-/// selection (§5.4) and narrowing it is a spec decision. The criterion is "the witness
-/// has constructors". The reason given for it is that the VALUE directs the dispatch, so
-/// an explicit witness cannot change it. That reason holds where the witness IS its
-/// provision's carrier: `[WeakOrd = Pair]` on two pairs answers what the bare call
-/// answers. It fails for a concrete witness of ANOTHER carrier, which no value of the
-/// call ever is. Measured with this check switched off, `[WeakOrd = ConcOrd]` on two
-/// `String`s answers ConcOrd's order and not the bare call's, and a NAMED slot bound to
-/// `ConcOrd` orders by it. The type channel, which never runs this check, already
-/// honours `O = ConcOrd` that way. So "cannot change it" is false there, and the refusal
-/// stands only as a rule about what may be WRITTEN.
+/// CHECK 3's CRITERION IS THE NAMED SORT'S, and that is DECIDED rather than inherited
+/// (WI-20260911-TX0G6, 2026-09-23; kernel-language §5.4, proposal 058 §3.5). The test is
+/// "the witness has constructors". The reason for it — the VALUE directs the dispatch —
+/// holds where the witness IS its provision's carrier: `[WeakOrd = Pair]` on two pairs
+/// answers what the bare call answers. It does not hold for a concrete witness of ANOTHER
+/// carrier, which no argument ever is. Measured with this check switched off,
+/// `[WeakOrd = ConcOrd]` on two `String`s answers ConcOrd's order and not the bare
+/// call's, and a NAMED slot bound to `ConcOrd` orders by it. The type channel, which
+/// never runs this check, honours `O = ConcOrd` the same way.
+///
+/// Narrowing the test to "is the witness the arguments' own sort" was offered and
+/// DECLINED: the rule is kept readable off the declaration, and such a sort is made
+/// selectable by declaring it without constructors. So for that shape the refusal is a
+/// rule about what may be WRITTEN, and [`TypeError::ValueDirectedSelection`]'s message
+/// gives its reason conditionally rather than claiming the selection is redundant.
 fn validate_instance_selection(
     kb: &mut KnowledgeBase,
     fn_sym: Symbol,

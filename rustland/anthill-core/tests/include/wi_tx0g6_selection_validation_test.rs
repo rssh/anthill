@@ -263,6 +263,12 @@ fn every_refusal_reads_the_same_in_both_spellings() {
 /// false for a program with no call bracket at all. It is now the channel-neutral
 /// "selection of `WeakOrd = ConcOrd`", the convention 6B67S set for check 1's refusal.
 /// (W), and (R) reddens it too, since without (R) the receiver spelling is not refused.
+///
+/// It also states the RULE now, not "cannot change it". For this very program that claim
+/// is false: `ConcOrd`'s values are not the arguments, and a type naming `O = ConcOrd` is
+/// honoured (`a_type_may_carry_a_concrete_witness_and_it_is_honoured`). The rule is kept
+/// as a property of the named sort (decided 2026-09-23), so the message gives its reason
+/// conditionally.
 /// Its last assertion pins the field name, `selection`, which the sibling refusals use.
 #[test]
 fn the_concrete_refusal_names_no_bracket_the_author_did_not_write() {
@@ -274,7 +280,9 @@ fn the_concrete_refusal_names_no_bracket_the_author_did_not_write() {
         "the author wrote no `[WeakOrd = …]` bracket; got: {recv}"
     );
     assert!(
-        recv.contains("an explicit selection of `WeakOrd = ConcOrd` cannot change it"),
+        recv.contains(
+            "an explicit selection of `WeakOrd = ConcOrd` is refused rather than preferred"
+        ),
         "got: {recv}"
     );
     // …and it names the FIELD the other selection refusals name, not `type_arg`.
