@@ -3,9 +3,9 @@
 - id: WI-20260922-BRT4Y-declare-host-backing-on-the
 - created: 2026-09-22T14:52:44Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-22T14:52:44Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-23T11:16:44Z
 
 - acceptance: cargo-test
 
@@ -46,4 +46,10 @@ WHAT TO DECIDE AT PICKUP.
 ACCEPTANCE: the marker parses and reaches `OpInfoRecord.meta`, DRIVEN; a declared-but-unsupplied operation is a LOAD error naming it, with its control — the same program with the binding layer loaded runs; a mapped-but-undeclared one is reported too, or (b) is re-justified; the 33 migrate and `is_interpreter_mapped_op` covers them, measured by a count before and after; full workspace green via rustland/scripts/test.sh.
 
 REFERENCE: `KnowledgeBase::is_host_mapped_op` / `is_interpreter_mapped_op` (kb/mod.rs, WI-876/WI-886), `eval::builtins::register_standard_builtins` and `register_operation_mappings` (WI-880), `OpInfoRecord.meta` (WI-087), `common::collect_stdlib_and_rust_bindings`, proposal 038.
+
+## Changes
+
+### 2026-09-23T11:16:39Z — feedback — user
+
+Delivered (2026-09-23). Decisions: STRICT check chosen by the user — the stdlib alone no longer loads; every harness loads stdlib + rustland/anthill-stl/anthill; the WI-1117 'declaration without binding' split is reversed (anthill-core fixtures load coordination_rust.anthill + forge_* test stand-ins). Drift check kept as an error; a mapping over a BODIED op is its own refusal. Attribute refused off operations and with a value (converter). Measured: 137 -> 183 rust-mapped ops, 46 -> 0 registered builtins invisible to is_interpreter_mapped_op. Visibility consequences pinned: Map.size(...) = 1 now DECIDES at a rule-body operand (it suspended), FiniteCollection.size(m) runs Map's host size; reducing Map calls across bridge interpreters exposed a latent arena bug (handle read against another interpreter's slot table: panic, or a silent read of another map) — map/cell bodies are now read through the handle's own arena. KNOWN GAP: anthill-stl's reflect set (register_reflect_builtins, closures over ReflectSyms) still registers by qualified name; its operations are unmarked and invisible. The Substitution arena keeps the receiver-arena read shape.
 

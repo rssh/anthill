@@ -140,8 +140,7 @@ end
 //    loads identically to the body form. ──────────────────────────────────────
 
 fn load_errors(extra: &str) -> Vec<String> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

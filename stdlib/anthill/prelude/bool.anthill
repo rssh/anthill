@@ -7,9 +7,9 @@ sort anthill.prelude.Bool
   -- Every operation declared here is backed by a host builtin. `ite` is NOT declared
   -- as one — see its own rule block below.
   operation {
-    and(a: Bool, b: Bool) -> Bool
-    or(a: Bool, b: Bool) -> Bool
-    not(a: Bool) -> Bool
+    and(a: Bool, b: Bool) -> Bool @[host_implemented]
+    or(a: Bool, b: Bool) -> Bool @[host_implemented]
+    not(a: Bool) -> Bool @[host_implemented]
   }
 
   -- Laws: Boolean algebra

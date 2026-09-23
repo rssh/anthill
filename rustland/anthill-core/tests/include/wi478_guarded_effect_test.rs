@@ -20,8 +20,7 @@ use anthill_core::persistence::print::TermPrinter;
 /// surface load errors as strings rather than panicking. Mirrors the WI-377
 /// effect-row harness.
 fn load_result(source: &str) -> Result<(), Vec<String>> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())
@@ -169,8 +168,7 @@ fn ground_guarded_effect_renders_with_guard_not_dropped() {
     // round-trip data loss). Build `effects_rows(merge(guarded(Boom, [g]), …))`
     // directly and render it through the public `print_term` path
     // (EffectsRows → write_effect_row → collect_effect_atoms).
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let parsed: Vec<_> = files
         .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())

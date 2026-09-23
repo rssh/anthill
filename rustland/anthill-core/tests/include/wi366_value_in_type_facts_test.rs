@@ -32,8 +32,7 @@ use anthill_core::parse;
 /// the load-error strings. A panic here is itself a test failure — it would mean
 /// a fact reader hit the term-only `rule_head` on a value head.
 fn load_kb(extras: &[&str]) -> (KnowledgeBase, Vec<String>) {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

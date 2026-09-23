@@ -62,8 +62,7 @@ use anthill_core::parse;
 /// loading, so a DISCHARGED call lets the caller omit the effect and load
 /// clean, and an undischarged one surfaces it as undeclared.
 fn load_result(source: &str) -> Result<(), Vec<String>> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())

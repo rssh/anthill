@@ -19,8 +19,26 @@ pub fn stdlib_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill")
 }
 
+/// `rustland/anthill-stl/anthill/` — the Rust host binding layer.
+pub fn rust_stl_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../anthill-stl/anthill")
+}
+
+/// The stdlib AND its Rust host binding layer — the closure every other front end loads.
+///
+/// WI-20260922-BRT4Y: the stdlib declares its host-backed operations
+/// `@[host_implemented]`, and a declared operation no loaded `operation_map` supplies is a
+/// LOAD error, so the stdlib alone no longer loads. SMT generation never calls a host
+/// function, but it translates the same program the CLI loads (`anthill::stdlib::SOURCES`
+/// ends with these same binding files), so it loads the same closure.
+pub fn collect_stdlib_and_rust_bindings() -> Vec<PathBuf> {
+    let mut files = collect_anthill_files(&stdlib_dir());
+    files.extend(collect_anthill_files(&rust_stl_dir()));
+    files
+}
+
 static STDLIB_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
-    let files = collect_anthill_files(&stdlib_dir());
+    let files = collect_stdlib_and_rust_bindings();
     files
         .iter()
         .map(|p| {

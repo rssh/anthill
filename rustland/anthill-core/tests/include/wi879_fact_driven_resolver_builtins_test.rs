@@ -305,7 +305,11 @@ fn the_mirror_declines_three_members_it_must_not_tag() {
 /// that are appear in the derivation control above.
 #[test]
 fn a_new_carriers_binding_block_is_enough() {
-    let program = |entry: &str| {
+    // WI-20260922-BRT4Y: the CLAIM travels with the mapping. `lt` is `@[host_implemented]`
+    // in the mapped arm; the control arm drops the mapping, and a claim no binding
+    // supplies is a load error, so it drops the claim with it — the program is otherwise
+    // the same, which is what keeps the arm a control.
+    let program = |entry: &str, claim: &str| {
         format!(
             r#"namespace wi879.newc
   import anthill.prelude.{{Int64, Bool, PartialOrd, PartialEq, WeakOrd, Ord}}
@@ -316,7 +320,7 @@ fn a_new_carriers_binding_block_is_enough() {
     entity tick(v: Int64)
     operation eq(a: Tick, b: Tick) -> Bool = true
     -- BODY-LESS: its implementation is the host's, named below and nowhere else.
-    operation lt(a: Tick, b: Tick) -> Bool
+    operation lt(a: Tick, b: Tick) -> Bool{claim}
     provides PartialEq[T = Tick]
     provides PartialOrd[T = Tick]
   end
@@ -331,18 +335,18 @@ end
 "#
         )
     };
-    let rows = |entry: &str| {
-        let mut kb = crate::common::load_kb_with(&program(entry));
+    let rows = |entry: &str, claim: &str| {
+        let mut kb = crate::common::load_kb_with(&program(entry, claim));
         rows_of(&mut kb, "wi879.newc.answer")
     };
     assert_eq!(
-        rows("operation_map { lt: \"ordered_lt\" }"),
+        rows("operation_map { lt: \"ordered_lt\" }", " @[host_implemented]"),
         "UNDECIDED",
         "the mapping alone routes `Tick.lt` to the resolver's comparison primitive, which \
          then withholds an answer for two entities — one row, `definite = false`",
     );
     assert_eq!(
-        rows("carrier { Tick: \"i64\" }"),
+        rows("carrier { Tick: \"i64\" }", ""),
         "[]",
         "CONTROL: the same program with no `operation_map` derives no tag, so the \
          three-place goal has no clauses and answers nothing",

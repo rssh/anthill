@@ -12,8 +12,7 @@ use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 
 fn load_stdlib_result() -> Result<LoadResult, Vec<LoadError>> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {

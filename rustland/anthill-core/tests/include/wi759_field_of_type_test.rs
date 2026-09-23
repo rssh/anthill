@@ -30,7 +30,7 @@ use anthill_core::parse;
 use crate::common::try_load_kb_with;
 
 fn load_stdlib_kb() -> KnowledgeBase {
-    let files = crate::common::collect_anthill_files(&crate::common::stdlib_dir());
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     assert!(!files.is_empty(), "no stdlib files found");
     let parsed: Vec<_> = files
         .iter()

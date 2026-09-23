@@ -1272,6 +1272,11 @@ mod tests {
     /// exercises a path that depends on the reflect stdlib being present — e.g.
     /// a quantified `constraint`, whose loader lowering + guard trigger-sort
     /// extraction resolve `anthill.reflect.LogicalQuery.*` symbols.
+    ///
+    /// The stdlib AND this crate's own binding layer (`anthill/`): since
+    /// WI-20260922-BRT4Y the stdlib declares its host-backed operations
+    /// `@[host_implemented]`, and one that no loaded `operation_map` supplies is a load
+    /// error, so the stdlib alone does not load.
     fn load_source_bridge_with_stdlib(source: &str) -> KbBridge {
         fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for e in std::fs::read_dir(dir).expect("read stdlib dir").flatten() {
@@ -1283,10 +1288,10 @@ mod tests {
                 }
             }
         }
-        let stdlib_dir =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/anthill");
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();
-        collect(&stdlib_dir, &mut files);
+        collect(&root.join("../../stdlib/anthill"), &mut files);
+        collect(&root.join("anthill"), &mut files);
         assert!(!files.is_empty(), "stdlib empty");
         let mut parsed: Vec<_> = files
             .iter()

@@ -14,8 +14,7 @@ use anthill_core::parse;
 /// Full stdlib (reflect sorts etc.) + builtins — the op-body loader resolves
 /// `anthill.reflect.Expr.*` functor symbols, so the reflect stdlib must load.
 fn stdlib_kb() -> KnowledgeBase {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     assert!(!files.is_empty(), "no stdlib files found");
     let parsed: Vec<_> = files
         .iter()

@@ -22,8 +22,7 @@ use anthill_core::parse;
 /// Load stdlib + user source together; surface load errors as strings.
 /// Identical harness to `wi067_guard_discharge_test::load_result`.
 fn load_result(source: &str) -> Result<(), Vec<String>> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())

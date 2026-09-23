@@ -26,13 +26,14 @@ static STL_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
     parse_dir(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../anthill-stl/anthill"))
 });
 
-/// The stdlib, plus an optional fixture source loaded alongside it.
+/// The stdlib and the `anthill-stl` host bindings, plus an optional fixture source
+/// loaded alongside them.
+///
+/// BOTH, and there is no stdlib-only variant any more: WI-20260922-BRT4Y made the stdlib
+/// declare its host-backed operations `@[host_implemented]`, and a declared operation
+/// that no loaded binding block supplies is a LOAD error. The stdlib without its binding
+/// layer used to load clean and then die `OperationBodyMissing` at the first host call.
 pub(crate) fn load_stdlib(extra: Option<&str>) -> KnowledgeBase {
-    load_libraries(&[&STDLIB_PARSED], extra)
-}
-
-/// [`load_stdlib`] plus the `anthill-stl` host bindings.
-pub(crate) fn load_stdlib_and_stl(extra: Option<&str>) -> KnowledgeBase {
     load_libraries(&[&STDLIB_PARSED, &STL_PARSED], extra)
 }
 

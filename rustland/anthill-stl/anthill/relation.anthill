@@ -1,0 +1,34 @@
+-- Rust binding for anthill.prelude.Relation and anthill.prelude.LogicalStream.
+-- Proposal 038.
+--
+-- WI-20260922-BRT4Y: the RELATIONAL-ALGEBRA surface (proposal 052), registered by
+-- hardcoded qualified name in `eval/builtins.rs` until this ticket and therefore
+-- invisible to every reader of "is this operation host-backed". Every one of them
+-- drives the resolver or the interpreter's stream arena — a `splitFirst` pumps a live
+-- search, `where_run` / `join_run` / `project_run` / `fix` / `rename` run a query over
+-- the KB, and the two `_of` builders splice occurrences — so no anthill body can stand
+-- in for any of them.
+namespace anthill.prelude
+  provides Relation language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      splitFirst: "relation_split_first",
+      negate: "relation_negate",
+      union: "relation_union",
+      where_run: "relation_where_run",
+      guarded_of: "relation_guarded_of",
+      join_run: "relation_join_run",
+      conjoin_of: "relation_conjoin_of",
+      project_run: "relation_project_run",
+      fix: "relation_fix",
+      rename: "relation_rename"
+    }
+  end
+
+  provides LogicalStream language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      splitFirst: "logical_stream_split_first"
+    }
+  end
+end

@@ -390,6 +390,29 @@ pub static SOURCES: &[(&str, &str)] = &[
         "rustland/anthill-stl/persistence",
         include_str!("../anthill/persistence.anthill"),
     ),
+    // WI-20260922-BRT4Y: the LAST hardcoded registrations' bindings — `PartialEq`'s
+    // dispatching pair, `anthill.kernel.struct_eq`, `Map`, the relational algebra, the
+    // runtime-effect surface and the dispatch-value readers. Load-bearing twice over: a
+    // bundle without them has none of those operations, and since this ticket the stdlib
+    // declares them `@[host_implemented]`, so it does not even LOAD without them.
+    ("rustland/anthill-stl/eq", include_str!("../anthill/eq.anthill")),
+    (
+        "rustland/anthill-stl/kernel",
+        include_str!("../anthill/kernel.anthill"),
+    ),
+    ("rustland/anthill-stl/map", include_str!("../anthill/map.anthill")),
+    (
+        "rustland/anthill-stl/relation",
+        include_str!("../anthill/relation.anthill"),
+    ),
+    (
+        "rustland/anthill-stl/effects",
+        include_str!("../anthill/effects.anthill"),
+    ),
+    (
+        "rustland/anthill-stl/runtime",
+        include_str!("../anthill/runtime.anthill"),
+    ),
 ];
 
 // Build-time tripwire: a fully-empty embedded set means the layout moved or the

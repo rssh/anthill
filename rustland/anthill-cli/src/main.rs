@@ -843,22 +843,25 @@ fn run_codegen_bundle(args: &BundleArgs) -> Result<(), i32> {
     // WI-880 — the RUST HOST BINDINGS, beside the stdlib. Derived from `stdlib_dir`
     // rather than located separately: the two are fixed siblings in the workspace
     // (`stdlib/anthill` and `rustland/anthill-stl/anthill`), and a second locator would
-    // be a second thing that can disagree. `None` if it is not there, which
-    // `generate_bundle` treats as "this embedder ships no bindings" — see
-    // `BundleOptions::bindings_dir` for what such a bundle loses.
-    let bindings_dir = stdlib_dir
+    // be a second thing that can disagree.
+    //
+    // WI-20260922-BRT4Y — an ERROR when absent, where it was a warning: the stdlib's
+    // host-backed operations are declared `@[host_implemented]`, so a bundle without its
+    // binding layer does not load at all (see `BundleOptions::bindings_dir`).
+    let Some(bindings_dir) = stdlib_dir
         .parent()
         .and_then(|p| p.parent())
         .map(|root| root.join("rustland/anthill-stl/anthill"))
-        .filter(|p| p.is_dir());
-    if bindings_dir.is_none() {
+        .filter(|p| p.is_dir())
+    else {
         eprintln!(
-            "warning: rust host bindings not found beside {} — the bundle will have no \
-             host implementations (no Int64.add, no String.concat, no reflection \
-             accessors)",
+            "error: rust host bindings not found beside {} — a bundle without them does \
+             not load: the stdlib's host-backed operations are declared \
+             `@[host_implemented]` and nothing would supply them",
             stdlib_dir.display()
         );
-    }
+        return Err(1);
+    };
 
     let opts = anthill_rust_gen::BundleOptions {
         project_name: args.project_name.clone(),

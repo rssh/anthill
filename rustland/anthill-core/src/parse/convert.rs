@@ -3349,12 +3349,14 @@ impl<'a> Converter<'a> {
     fn convert_declaration_attributes(
         &mut self,
         node: Node,
+        host_claim: HostClaimSite,
     ) -> (Option<Visibility>, Option<MetaBlock>) {
         // Each child resolved ONCE and passed down: this runs per declaration, and the
         // first draft asked the tree for `visibility` twice and for `meta_block` three
         // times (/code-review).
         let modifier = self.child_by_kind(node, "visibility");
         let block = self.child_by_kind(node, "meta_block");
+        self.check_host_implemented(block, host_claim);
         let mut visibility = self.convert_visibility(node);
         let mut meta = self.convert_meta_block(node);
         // The spelling that decided `visibility`, for a contradiction's message. A
@@ -3435,6 +3437,7 @@ impl<'a> Converter<'a> {
     /// could not be withdrawn. `@[public]` is refused beside it — it would do nothing.
     fn convert_clause_meta_block(&mut self, node: Node, what: &str) -> Option<MetaBlock> {
         let block = self.child_by_kind(node, "meta_block");
+        self.check_host_implemented(block, HostClaimSite::Refused(what));
         for (flag, entry, _) in self.visibility_flags(block) {
             let word = visibility_word(flag);
             self.err(
@@ -3447,6 +3450,56 @@ impl<'a> Converter<'a> {
             );
         }
         self.convert_meta_block(node)
+    }
+
+    /// WI-20260922-BRT4Y — `@[host_implemented]` is CHECKED where it may be written and
+    /// REFUSED everywhere else, like `internal`. It declares an OPERATION body-less by
+    /// design, and the load holds exactly that claim against the binding layer
+    /// (`load::check_host_implemented_claims`, which reads operations only) — so on any
+    /// other declaration it would be accepted and read by nothing, the silent skip this
+    /// codebase refuses. And it is a FLAG: the check reads presence (`meta_has_flag`), so
+    /// `@[host_implemented: false]` would be a claim that reads as a retraction.
+    ///
+    /// Keyed by the LAST segment, as the loader stores a key (`visibility_flags`' rule).
+    fn check_host_implemented(&mut self, block: Option<Node>, site: HostClaimSite) {
+        let Some(block) = block else {
+            return;
+        };
+        for entry in self.children_by_kind(block, "meta_entry") {
+            let is_claim = self.field(entry, "key").is_some_and(|key| {
+                self.text(key).rsplit('.').next() == Some(crate::kb::load::HOST_IMPLEMENTED_ATTR)
+            });
+            if !is_claim {
+                continue;
+            }
+            match site {
+                HostClaimSite::Operation => {
+                    if self.field(entry, "value").is_some() {
+                        self.err(
+                            "`@[host_implemented]` takes no value: it is a flag, and its \
+                             presence IS the claim — write `@[host_implemented]`, or drop \
+                             it"
+                                .to_string(),
+                            entry,
+                        );
+                    }
+                }
+                HostClaimSite::Refused(what) => self.err(
+                    format!(
+                        "`@[host_implemented]` on {what}: the attribute declares an \
+                         OPERATION body-less by design, and only an operation's claim is \
+                         checked against the loaded binding layer — here it would be read \
+                         by nothing{}",
+                        if what == "a const" {
+                            ". A const's host value is supplied by a `const_map` clause"
+                        } else {
+                            ""
+                        }
+                    ),
+                    entry,
+                ),
+            }
+        }
     }
 
     /// The `internal` / `public` entries of `block`: each entry's flag, its node, and
@@ -3934,7 +3987,7 @@ impl<'a> Converter<'a> {
 
     fn convert_abstract_sort(&mut self, node: Node) -> Option<AbstractSort> {
         let name = self.field(node, "name").map(|n| self.convert_name(n))?;
-        let (visibility, meta) = self.convert_declaration_attributes(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node, HostClaimSite::Refused("a sort"));
         let span = self.span(node);
 
         let definition = self
@@ -3995,7 +4048,7 @@ impl<'a> Converter<'a> {
             self.err("effects_sort_item missing required `name` field", node);
             return Vec::new();
         };
-        let (visibility, meta) = self.convert_declaration_attributes(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node, HostClaimSite::Refused("an effects sort"));
         let span = self.span(node);
 
         let definition = self
@@ -4066,7 +4119,13 @@ impl<'a> Converter<'a> {
 
     fn convert_sort_like(&mut self, node: Node, kind: SortDeclKind) -> Option<SortWithBody> {
         let name = self.field(node, "name").map(|n| self.convert_name(n))?;
-        let (visibility, meta) = self.convert_declaration_attributes(node);
+        let (visibility, meta) = self.convert_declaration_attributes(
+            node,
+            HostClaimSite::Refused(match kind {
+                SortDeclKind::Sort => "a sort",
+                SortDeclKind::Enum => "an enum",
+            }),
+        );
         let span = self.span(node);
 
         let descriptions: Vec<String> = self
@@ -4193,7 +4252,7 @@ impl<'a> Converter<'a> {
             }
             items
         });
-        let (visibility, meta) = self.convert_declaration_attributes(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node, HostClaimSite::Refused("a type parameter"));
         Some(self.make_type_param_item(name, members, visibility, meta, span))
     }
 
@@ -4690,7 +4749,7 @@ impl<'a> Converter<'a> {
         // declaration like every other declaration's. The `meta [...]` clause is gone,
         // and with it the two-spelling merge that let a clause silently shadow a
         // trailing block.
-        let (visibility, meta) = self.convert_declaration_attributes(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node, HostClaimSite::Operation);
 
         Some(Operation {
             visibility,
@@ -4722,7 +4781,7 @@ impl<'a> Converter<'a> {
         let value = self.field(node, "value").map(|v| self.convert_expr_body(v));
         // WI-1070 — the same read as `convert_operation`'s, for the same reason.
         let descriptions = self.declaration_descriptions(node);
-        let (visibility, meta) = self.convert_declaration_attributes(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node, HostClaimSite::Refused("a const"));
         Some(Const {
             visibility,
             name,
@@ -4916,7 +4975,7 @@ impl<'a> Converter<'a> {
             fields.push(decl);
         }
 
-        let (visibility, meta) = self.convert_declaration_attributes(node);
+        let (visibility, meta) = self.convert_declaration_attributes(node, HostClaimSite::Refused("an entity"));
 
         Some(Entity {
             visibility,
@@ -5951,6 +6010,16 @@ fn is_pattern_kind(kind: &str) -> bool {
 }
 
 /// The keyword a [`Visibility`] is written as — as a modifier and as a block flag.
+/// WI-20260922-BRT4Y — where a declaration's block may carry `@[host_implemented]`
+/// (see `Converter::check_host_implemented`).
+#[derive(Clone, Copy)]
+enum HostClaimSite<'a> {
+    /// An operation — the attribute's one legal site, as a bare flag.
+    Operation,
+    /// Any other declaration or clause, named for the refusal.
+    Refused(&'a str),
+}
+
 fn visibility_word(v: Visibility) -> &'static str {
     match v {
         Visibility::Internal => "internal",

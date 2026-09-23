@@ -48,9 +48,9 @@ namespace test.w2858g
     import anthill.prelude.{Int64, Error}
     import test.w2858g.{Boom}
     entity host
-    operation bounce(n: Int64) -> Int64
-    operation bounceTwice(n: Int64) -> Int64
-    operation bounceRaising(n: Int64) -> Int64 effects {Error[Boom]}
+    operation bounce(n: Int64) -> Int64 @[host_implemented]
+    operation bounceTwice(n: Int64) -> Int64 @[host_implemented]
+    operation bounceRaising(n: Int64) -> Int64 effects {Error[Boom]} @[host_implemented]
   end
 
   provides Host language rust

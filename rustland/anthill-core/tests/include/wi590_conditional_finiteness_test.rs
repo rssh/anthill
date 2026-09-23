@@ -79,8 +79,7 @@ use anthill_core::parse;
 /// `extra` on top of an already-loaded stdlib KB is not the loader's verdict on
 /// this source, and a test reading it would assert over checks that never ran.
 fn stdlib_plus_source_errors(extra: &str) -> Vec<String> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

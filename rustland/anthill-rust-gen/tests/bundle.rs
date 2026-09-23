@@ -47,14 +47,12 @@ end
         // implementations at all. `emitted_bundle_compiles` is the only thing in the
         // tree that compiles what this ships, so if the emitted crate is ever RUN this
         // is what makes `x.f` work in it.
-        bindings_dir: Some(
-            stdlib_dir()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("rustland/anthill-stl/anthill"),
-        ),
+        bindings_dir: stdlib_dir()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("rustland/anthill-stl/anthill"),
         anthill_core_dep: CoreDep::Path(anthill_core_dir()),
     }
 }

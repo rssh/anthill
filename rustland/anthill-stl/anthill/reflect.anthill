@@ -85,4 +85,15 @@ namespace anthill.reflect
     artifact "rustland/anthill-core/src/eval/builtins.rs"
     operation_map { lookup: "subst_lookup" }
   end
+
+  -- WI-20260922-BRT4Y: `TypeValue`'s sole implementation, registered by hardcoded
+  -- qualified name until this ticket. Keyed to the SPEC op for the reason
+  -- `stdlib/anthill/reflect/reflect.anthill` gives beside the declaration: `type_value()`
+  -- is nullary, so the dispatching dictionary is its only evidence and no per-carrier
+  -- function could be written. The load-time backing of the body-less spec op is still
+  -- the resolver tag (`BuiltinTag::TypeValueOf`); this mapping is what EVAL runs.
+  provides TypeValue language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map { type_value: "type_value_of_self" }
+  end
 end

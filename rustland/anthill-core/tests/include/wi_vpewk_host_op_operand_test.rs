@@ -362,8 +362,8 @@ fn an_effectful_host_op_does_not_run_at_an_operand() {
     let mut kb = crate::common::load_kb_with(
         "namespace vpewkf\n  import anthill.prelude.{String}\n  \
          sort MyS\n    \
-           operation trimIt(s: String) -> String\n    \
-           operation trimFx(s: String) -> String\n      effects {Error}\n  end\n  \
+           operation trimIt(s: String) -> String @[host_implemented]\n    \
+           operation trimFx(s: String) -> String\n      effects {Error} @[host_implemented]\n  end\n  \
          provides MyS language rust\n    artifact \"scratch\"\n    \
            carrier { MyS: \"String\" }\n    \
            operation_map {\n      trimIt: \"string_trim\",\n      trimFx: \"string_trim\"\n    }\n  end\n  \

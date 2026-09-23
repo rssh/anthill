@@ -268,9 +268,9 @@ sort guardians.FileHarness
   operation render_task(self: FileHarness, spec: Symbol, tools: List[T = String],
                         feedback: List[T = String],
                         previous: Option[T = Source]) -> Prompt[Trusted]
-    effects {Error, Permission[Vouch]}
+    effects {Error, Permission[Vouch]} @[host_implemented]
   operation generate(self: FileHarness, llm: Llm, p: Prompt[Trusted]) -> Source
-    effects {llm.E, Error}
+    effects {llm.E, Error} @[host_implemented]
   -- `C = FileHarness`, and `C = LoadChecker` below, for the reason `LiveLlm` gives in
   -- lib/llm.anthill: a bare `provides Harness` names no carrier to dispatch at.
   provides Harness[C = FileHarness]
@@ -282,7 +282,7 @@ sort guardians.LoadChecker
   import guardians.{Checker, Source, CheckResult, Llm}
   entity load_checker
   operation check(self: LoadChecker, src: Source, spec: Symbol) -> CheckResult
-    effects {External, Error, -Permission[Llm]}
+    effects {External, Error, -Permission[Llm]} @[host_implemented]
   provides Checker[C = LoadChecker]
 end
 

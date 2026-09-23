@@ -1,0 +1,32 @@
+-- Rust binding for anthill.prelude.PartialEq's own `eq` / `neq`. Proposal 038.
+--
+-- WI-20260922-BRT4Y: THE SPEC-OP REGISTRATION WI-880 KEPT, now declared rather than
+-- hardcoded. It stays keyed to the SPEC op, and WI-880's argument for that is unchanged
+-- (see `register_standard_builtins`): the host function does not decide by testing its
+-- operands and answering wrongly for a carrier it cannot handle — it DISPATCHES, through
+-- `semantic_equal`, to the head carrier's own `eq` before deciding anything structurally;
+-- and equality also fires from UNIFICATION, where there is no call site to select a
+-- provider with (058 §3.7), so a value-directed step has to exist whatever the key —
+-- keying `eq` per carrier would ADD a channel rather than replace one. It would also
+-- cost each scalar carrier a declared `eq` member, and every one of them imports
+-- `PartialEq.{eq}` for its own laws and constraints, which 059 R4 then refuses as a
+-- capture (measured on `Float.mul`, WI-880). A dispatching host function is still a
+-- workaround for a missing key rather than a design, and WI-880 said so: what would
+-- retire it is a value-directed entry not spelled as a spec-op registration.
+--
+-- What changes is only that the registration is DECLARED: `is_host_mapped_op` /
+-- `is_interpreter_mapped_op` can see it, and `stdlib/anthill/prelude/eq.anthill` can say
+-- `@[host_implemented]` of the two members with a binding the load holds it to.
+--
+-- A spec-level mapping does NOT certify any carrier of `PartialEq` (WI-876 / WI-931,
+-- `typing::op_backed`). The carriers are backed by the resolver builtin on the spec op,
+-- as before.
+namespace anthill.prelude
+  provides PartialEq language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      eq: "partial_eq_eq",
+      neq: "partial_eq_neq"
+    }
+  end
+end

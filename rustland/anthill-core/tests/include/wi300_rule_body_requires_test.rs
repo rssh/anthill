@@ -19,8 +19,7 @@ use anthill_core::parse;
 use smallvec::SmallVec;
 
 fn load_with(extra: &str) -> KnowledgeBase {
-    let stdlib = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&stdlib);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let parsed_extra = parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}"));
     let mut parsed: Vec<_> = files
         .iter()
@@ -46,8 +45,7 @@ fn load_with(extra: &str) -> KnowledgeBase {
 
 /// Like [`load_with`] but returns the load errors instead of panicking.
 fn try_load_with(extra: &str) -> Result<KnowledgeBase, Vec<String>> {
-    let stdlib = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&stdlib);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let parsed_extra = parse::parse(extra).unwrap_or_else(|e| panic!("parse extra: {e:?}"));
     let mut parsed: Vec<_> = files
         .iter()
@@ -76,9 +74,16 @@ const SRC: &str = r#"
       sort Witheq
         entity we(v: Int64)
       end
-      -- … and one that does not.
+      -- … and one that does not. Its field is typed by `Opaque`, a sort that provides
+      -- nothing: typed `Int64`, the guard stops discriminating by carrier once the Rust
+      -- host bindings load (WI-20260831-QF5JT) — and since WI-20260922-BRT4Y they
+      -- always load, because the stdlib's host operations are `@[host_implemented]`
+      -- and do not load without their binding layer. MEASURED under the full closure:
+      -- `Noeq(v: Int64)` answers 1 here, `Noeq(v: Opaque)` answers 0.
+      sort Opaque
+      end
       sort Noeq
-        entity ne(v: Int64)
+        entity ne(v: Opaque)
       end
       namespace Witheq
         provides PartialEq[T = Witheq]

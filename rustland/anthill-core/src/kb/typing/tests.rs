@@ -3216,7 +3216,7 @@ mod wi958_one_op_parent_tests {
         impl_parent_of_op, lookup_operation_info_full, self_receiver_spec_sort, spec_op_parent_sort,
     };
     use crate::intern::SymbolKind;
-    use crate::kb::test_support::load_stdlib_and_stl;
+    use crate::kb::test_support::load_stdlib;
     use crate::kb::{KnowledgeBase, Symbol};
 
     /// The four shapes the three readers must tell apart, in one namespace:
@@ -3280,7 +3280,7 @@ end
     /// since all three copies of the split agreed.
     #[test]
     fn each_reader_narrows_the_one_before_it() {
-        let kb = load_stdlib_and_stl(Some(SRC));
+        let kb = load_stdlib(Some(SRC));
         let spec = "test.wi958.Spec";
 
         assert_eq!(
@@ -3323,7 +3323,7 @@ end
     /// and passes either way by design.
     #[test]
     fn the_split_and_the_scope_link_agree_on_operations_only() {
-        let kb = load_stdlib_and_stl(None);
+        let kb = load_stdlib(None);
         // By SYMBOL, read through `qualified_name_of` — the same string
         // `impl_parent_of_op` splits. Walking `by_qualified_name`'s KEYS instead would
         // measure the wrong thing: one symbol can be registered under several (`BigInt`
@@ -3410,7 +3410,7 @@ mod wi956_kind_gate_tests {
         sort_type_params_as_pairs,
     };
     use crate::intern::SymbolKind;
-    use crate::kb::test_support::load_stdlib_and_stl;
+    use crate::kb::test_support::load_stdlib;
     use crate::kb::{KnowledgeBase, Symbol};
 
     /// `Rec` is a sort whose symbol was registered under ANOTHER KIND FIRST, so
@@ -3471,7 +3471,7 @@ end
     /// others would then be passing over a fixture that no longer poses the question.
     #[test]
     fn a_sort_can_be_registered_under_another_kind_first() {
-        let kb = load_stdlib_and_stl(Some(SRC));
+        let kb = load_stdlib(Some(SRC));
         let rec = sym(&kb, "test.wi956.Rec");
         assert_eq!(
             kb.symbols.get(rec).kinds(),
@@ -3509,7 +3509,7 @@ end
     /// the divergence survived two tickets that both looked at it.
     #[test]
     fn an_operation_sees_its_sorts_type_params_whichever_way_the_sort_was_declared() {
-        let mut kb = load_stdlib_and_stl(Some(SRC));
+        let mut kb = load_stdlib(Some(SRC));
         let scopes = |kb: &mut KnowledgeBase, op_qn: &str| -> Vec<String> {
             let op = sym(kb, op_qn);
             let info = lookup_operation_info_full(kb, op)
@@ -3545,7 +3545,7 @@ end
     /// let a NAMESPACE through and only this row would notice.
     #[test]
     fn the_parent_sort_gate_admits_a_sort_and_refuses_a_namespace() {
-        let kb = load_stdlib_and_stl(Some(SRC));
+        let kb = load_stdlib(Some(SRC));
         let row = |op_qn: &str| -> (Option<String>, Option<String>) {
             let op = sym(&kb, op_qn);
             let name = |s: Option<Symbol>| s.map(|s| kb.qualified_name_of(s).to_string());
@@ -3590,7 +3590,7 @@ end
     /// names the reason, instead of surfacing as a missing type param somewhere else.
     #[test]
     fn on_the_libraries_the_two_spellings_still_agree() {
-        let mut kb = load_stdlib_and_stl(None);
+        let mut kb = load_stdlib(None);
         let mut seen: std::collections::HashSet<Symbol> = Default::default();
         let mut syms: Vec<Symbol> = Vec::new();
         for &s in kb.symbols.by_qualified_name.values() {
@@ -3663,7 +3663,7 @@ end
 mod wi956_alias_identity_tests {
     use super::super::{resolve_sort_alias, type_param_global_var};
     use crate::kb::term::{Term, Var};
-    use crate::kb::test_support::load_stdlib_and_stl;
+    use crate::kb::test_support::load_stdlib;
     use crate::kb::KnowledgeBase;
 
     /// Three declarations sharing ONE local name, `Wi956T`, in three different scopes:
@@ -3704,7 +3704,7 @@ end
     /// they are what says the deletion did not simply break the reader.
     #[test]
     fn an_alias_is_found_only_by_its_own_symbol() {
-        let kb = load_stdlib_and_stl(Some(SRC));
+        let kb = load_stdlib(Some(SRC));
         let sym = |qn: &str| {
             kb.try_resolve_symbol(qn)
                 .unwrap_or_else(|| panic!("resolve {qn}"))
@@ -3747,7 +3747,7 @@ end
     /// the reader cannot be mistaken for the fix.
     #[test]
     fn a_type_param_reader_answers_nothing_rather_than_someone_elses_var() {
-        let kb = load_stdlib_and_stl(Some(SRC));
+        let kb = load_stdlib(Some(SRC));
         let sym = |qn: &str| {
             kb.try_resolve_symbol(qn)
                 .unwrap_or_else(|| panic!("resolve {qn}"))
@@ -4935,7 +4935,7 @@ end
 #[cfg(test)]
 mod wi866_dict_layout_agreement_tests {
     use super::super::{dict_layout, DictLayout};
-    use crate::kb::test_support::load_stdlib_and_stl;
+    use crate::kb::test_support::load_stdlib;
     use crate::kb::{KnowledgeBase, Symbol};
 
     /// Two sorts with DIFFERENT `requires` chain lengths, so a swapped split is a
@@ -4976,7 +4976,7 @@ end
     /// `agrees`/`wrong_total` pass — which is the whole finding.
     #[test]
     fn wi866_a_swapped_split_is_a_divergence() {
-        let mut kb = load_stdlib_and_stl(Some(SRC));
+        let mut kb = load_stdlib(Some(SRC));
         let holder = sym(&kb, "test.wi866.Holder");
         let int64 = sym(&kb, "anthill.prelude.Int64");
 
@@ -5038,7 +5038,7 @@ end
     /// the two encodings are one list.
     #[test]
     fn wi866_the_self_case_folds_to_one_list() {
-        let mut kb = load_stdlib_and_stl(Some(SRC));
+        let mut kb = load_stdlib(Some(SRC));
         let holder = sym(&kb, "test.wi866.Holder");
 
         let predicted = dict_layout(&mut kb, holder, holder, None);

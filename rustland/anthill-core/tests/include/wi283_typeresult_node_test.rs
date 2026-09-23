@@ -23,8 +23,7 @@ use anthill_core::span::{SourceId, SourceSpan};
 
 /// stdlib only — these cases need just the prelude sorts.
 fn load_kb() -> KnowledgeBase {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     assert!(!files.is_empty(), "no stdlib files found");
     let parsed: Vec<_> = files
         .iter()

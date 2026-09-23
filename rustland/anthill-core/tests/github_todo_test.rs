@@ -16,10 +16,9 @@ use smallvec::SmallVec;
 // ── KB loader ───────────────────────────────────────────────────
 
 fn load_github_todo_kb() -> KnowledgeBase {
-    let stdlib_dir = common::stdlib_dir();
     let example_dir = common::examples_dir().join("github-todo");
 
-    let mut files = common::collect_anthill_files(&stdlib_dir);
+    let mut files = common::collect_stdlib_and_rust_bindings();
     files.extend(common::collect_anthill_files(&example_dir));
 
     let parsed: Vec<_> = files
@@ -46,10 +45,9 @@ fn load_github_todo_kb() -> KnowledgeBase {
 /// `anthill.stage0` facts). Used by the WI-433 coverage test to add a dependent
 /// whose deps are Verified without mutating the shared example fixture.
 fn load_github_todo_kb_with_extra(extra: &str) -> KnowledgeBase {
-    let stdlib_dir = common::stdlib_dir();
     let example_dir = common::examples_dir().join("github-todo");
 
-    let mut files = common::collect_anthill_files(&stdlib_dir);
+    let mut files = common::collect_stdlib_and_rust_bindings();
     files.extend(common::collect_anthill_files(&example_dir));
 
     let mut parsed: Vec<_> = files

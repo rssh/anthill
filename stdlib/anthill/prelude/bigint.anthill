@@ -15,13 +15,13 @@ sort anthill.prelude.BigInt
   -- `int64.anthill`'s note for why a host-backed operation must still be DECLARED
   -- on its carrier.
   operation {
-    compare(a: BigInt, b: BigInt) -> Int64  -- -1 | 0 | 1
-    gt(a: BigInt, b: BigInt) -> Bool        -- >
-    gte(a: BigInt, b: BigInt) -> Bool       -- >=
-    lt(a: BigInt, b: BigInt) -> Bool        -- <
-    lte(a: BigInt, b: BigInt) -> Bool       -- <=
-    max(a: BigInt, b: BigInt) -> BigInt     -- the greater
-    min(a: BigInt, b: BigInt) -> BigInt     -- the lesser
+    compare(a: BigInt, b: BigInt) -> Int64 @[host_implemented]  -- -1 | 0 | 1
+    gt(a: BigInt, b: BigInt) -> Bool @[host_implemented]        -- >
+    gte(a: BigInt, b: BigInt) -> Bool @[host_implemented]       -- >=
+    lt(a: BigInt, b: BigInt) -> Bool @[host_implemented]        -- <
+    lte(a: BigInt, b: BigInt) -> Bool @[host_implemented]       -- <=
+    max(a: BigInt, b: BigInt) -> BigInt @[host_implemented]     -- the greater
+    min(a: BigInt, b: BigInt) -> BigInt @[host_implemented]     -- the lesser
   }
 
   -- WI-20260824-VT8CF: `BigInt`'s DIVISION WITH REMAINDER, the surface that makes
@@ -34,9 +34,9 @@ sort anthill.prelude.BigInt
   -- ONLY THE ZERO DIVISOR IS PARTIAL: `BigInt` is unbounded, so there is no
   -- `Int64.div`-style overflow arm. The guarded effect is the one `Int64` writes.
   operation {
-    div(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) }  -- truncated quotient; partial: b ≠ 0
-    mod(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) }  -- Euclidean remainder, never negative; partial: b ≠ 0
-    rem(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) }  -- truncated remainder, sign follows the dividend; partial: b ≠ 0
+    div(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } @[host_implemented]  -- truncated quotient; partial: b ≠ 0
+    mod(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } @[host_implemented]  -- Euclidean remainder, never negative; partial: b ≠ 0
+    rem(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } @[host_implemented]  -- truncated remainder, sign follows the dividend; partial: b ≠ 0
   }
 
   -- WI-880: `BigInt`'s ARITHMETIC, host-backed and named in this carrier's
@@ -55,19 +55,19 @@ sort anthill.prelude.BigInt
   -- `import anthill.prelude.Additive.{sub}` this sort carried is gone: these
   -- declarations would have shadowed it.
   operation {
-    add(a: BigInt, b: BigInt) -> BigInt   -- +, unbounded
-    sub(a: BigInt, b: BigInt) -> BigInt   -- - (binary), unbounded
-    mul(a: BigInt, b: BigInt) -> BigInt   -- *, unbounded
-    neg(a: BigInt) -> BigInt              -- - (prefix), unbounded
+    add(a: BigInt, b: BigInt) -> BigInt @[host_implemented]   -- +, unbounded
+    sub(a: BigInt, b: BigInt) -> BigInt @[host_implemented]   -- - (binary), unbounded
+    mul(a: BigInt, b: BigInt) -> BigInt @[host_implemented]   -- *, unbounded
+    neg(a: BigInt) -> BigInt @[host_implemented]              -- - (prefix), unbounded
   }
 
   -- Conversion operations
-  operation to_bigint(n: Int64) -> BigInt
-  operation to_int(n: BigInt) -> Option[Int64]
+  operation to_bigint(n: Int64) -> BigInt @[host_implemented]
+  operation to_int(n: BigInt) -> Option[Int64] @[host_implemented]
   -- BigInt → Float. Lossy for values beyond f64's precision (~2^53) —
   -- rounds to nearest representable Float, may saturate to Infinity.
   -- Total function: all inputs produce a defined Float (possibly Inf).
-  operation to_float(n: BigInt) -> Float
+  operation to_float(n: BigInt) -> Float @[host_implemented]
 
   -- Strong induction on non-negative BigInt. Proposal 025 §Auto-generated
   -- induction rules. ?P holds for all n ≥ 0 if it holds at 0 and is

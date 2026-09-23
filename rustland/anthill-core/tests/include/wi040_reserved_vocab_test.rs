@@ -34,8 +34,7 @@ use anthill_core::parse::desugar_target as dt;
 use crate::common::query_pattern_functor_qn;
 
 fn load_stdlib_kb() -> KnowledgeBase {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let parsed: Vec<_> = files
         .iter()
         .map(|p| {

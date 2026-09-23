@@ -15,8 +15,7 @@ use smallvec::SmallVec;
 
 /// Load stdlib + test files into a fresh KB with builtins registered.
 fn load_monoid_kb() -> KnowledgeBase {
-    let stdlib_dir = crate::common::stdlib_dir();
-    let mut files = crate::common::collect_anthill_files(&stdlib_dir);
+    let mut files = crate::common::collect_stdlib_and_rust_bindings();
 
     let testcases_dir = crate::common::testcases_dir();
     let monoid_path = testcases_dir.join("fact-substitution/monoid.anthill");

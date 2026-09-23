@@ -551,7 +551,7 @@ namespace wi880.widget
           case widget(y) -> PartialEq.eq(x, y)
 
     -- Declared and body-less. Whether anything implements it is exactly the question.
-    operation compare(a: Widget, b: Widget) -> Int64
+    operation compare(a: Widget, b: Widget) -> Int64 @[host_implemented]
   end
 
   provides Widget language rust

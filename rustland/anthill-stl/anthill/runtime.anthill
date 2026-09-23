@@ -1,0 +1,30 @@
+-- Rust binding for anthill.realization.runtime. Proposal 038.
+--
+-- WI-20260922-BRT4Y: the readers over the two first-class runtime dispatch values
+-- (WI-577 / WI-1045) — a requirement dictionary and a resolved operation reference —
+-- registered by hardcoded qualified name in `eval/builtins.rs` until this ticket. Both
+-- values exist only inside the interpreter (`Value::Dictionary`, `Value::OpRef`), so
+-- every reader is the host's.
+namespace anthill.realization.runtime
+  provides Dictionary language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      impl: "dict_impl",
+      arity: "dict_arity",
+      sub: "dict_sub",
+      resolveOp: "dict_resolve_op",
+      ops: "dict_ops"
+    }
+  end
+
+  provides OpRef language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      op: "opref_op",
+      dict: "opref_dict",
+      named: "opref_named",
+      spreadLabels: "opref_spread_labels",
+      opRequirements: "opref_op_requirements"
+    }
+  end
+end

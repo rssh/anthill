@@ -18,16 +18,16 @@ sort anthill.prelude.Cell
   -- enclosing op's boundary when the cell does not escape (WI-314), so it
   -- is not viral: only ops that actually return a fresh cell carry it.
   operation new(v: V) -> Cell
-    effects Modify[result]
+    effects Modify[result] @[host_implemented]
 
   -- Read the current value.
-  operation get(c: Cell) -> V
+  operation get(c: Cell) -> V @[host_implemented]
 
   -- Replace the current value. Mutation is the cell's contract; the
   -- effect annotation is `Modify[c]` per proposal 037's parameter-name
   -- convention.
   operation set(c: Cell, value: V) -> Unit
-    effects Modify[c]
+    effects Modify[c] @[host_implemented]
 
   -- Cell satisfies Modifiable for any V.
   provides Modifiable[T = Cell]

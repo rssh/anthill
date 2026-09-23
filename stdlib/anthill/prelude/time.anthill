@@ -19,5 +19,5 @@ sort anthill.prelude.Time
   -- granularity, `Z` suffix). Format matches the legacy anthill-todo
   -- timestamps so the printed `at:` field round-trips byte-for-byte.
   operation now() -> String
-    effects Clock
+    effects Clock @[host_implemented]
 end

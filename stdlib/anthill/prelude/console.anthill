@@ -38,19 +38,19 @@ sort anthill.prelude.Console
 
   -- stdout
   operation print(c: Console, s: String) -> Unit
-    effects ConsoleOutput
+    effects ConsoleOutput @[host_implemented]
 
   operation println(c: Console, s: String) -> Unit
-    effects ConsoleOutput
+    effects ConsoleOutput @[host_implemented]
 
   -- stderr
   operation eprint(c: Console, s: String) -> Unit
-    effects ConsoleError
+    effects ConsoleError @[host_implemented]
 
   operation eprintln(c: Console, s: String) -> Unit
-    effects ConsoleError
+    effects ConsoleError @[host_implemented]
 
   -- stdin
   operation read_line(c: Console) -> String
-    effects ConsoleInput
+    effects ConsoleInput @[host_implemented]
 end

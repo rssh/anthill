@@ -1,9 +1,14 @@
 //! WI-20260918-CKD4J (prerequisite, fixed inline) — an unrelated `requires` in scope
 //! must not turn a CONCRETE dependency's failed construction into a WI-821 refusal.
 //!
-//! `gt(i, 0)` needs `PartialOrd[Int64]`, and through `PartialOrd`'s own chain
-//! `PartialEq[Int64]`. On a stdlib loaded WITHOUT the stl host bindings `Int64`
-//! provides neither, so that dependency cannot be constructed. With nothing in scope the
+//! `gt(i, i)` over an `Opaque` operand needs `PartialOrd[Opaque]`, and through
+//! `PartialOrd`'s own chain `PartialEq[Opaque]`. `Opaque` provides neither, so that
+//! dependency cannot be constructed. (The fixture used `Int64` and relied on a stdlib
+//! loaded WITHOUT the stl host bindings, where `Int64` provides neither; WI-20260922-BRT4Y
+//! made that load a refusal. Under the full closure `Int64` provides both, so the
+//! dependency constructs and there is no refusal for the guard below to decide — a sort
+//! that provides nothing in ANY closure keeps the rows measuring. Re-measured on the
+//! `Opaque` fixture: the back-out below fails the row as stated.) With nothing in scope the
 //! call loads (the verdict belongs to the arms after the σ-refusal one). With a
 //! `requires PartialEq[T]` in scope — sort-level, or a conditional provision's
 //! `:- PartialEq[T]` — `explain_dep_refusal` counted that entry as a "σ-refused cover"
@@ -27,11 +32,13 @@ const SORT_LEVEL: &str = r#"
 namespace wickd4j.cover.sortlevel
   import anthill.prelude.{Bool, Int64, PartialEq}
   import anthill.prelude.PartialOrd.{gt}
+  sort Opaque
+  end
   sort Bag
     sort T = ?
     requires PartialEq[T]
     entity bag(v: T)
-    operation pos(b: Bag, i: Int64) -> Bool = gt(i, 0)
+    operation pos(b: Bag, i: Opaque) -> Bool = gt(i, i)
   end
 end
 "#;
@@ -40,11 +47,13 @@ const CONDITIONAL: &str = r#"
 namespace wickd4j.cover.conditional
   import anthill.prelude.{Bool, Int64, PartialEq}
   import anthill.prelude.PartialOrd.{gt}
+  sort Opaque
+  end
   sort Bag
     sort T = ?
     entity bag(v: T)
     provides PartialEq[Bag] :- PartialEq[T]
-    operation pos(b: Bag, i: Int64) -> Bool = gt(i, 0)
+    operation pos(b: Bag, i: Opaque) -> Bool = gt(i, i)
   end
 end
 "#;
@@ -53,16 +62,18 @@ const NOTHING_IN_SCOPE: &str = r#"
 namespace wickd4j.cover.none
   import anthill.prelude.{Bool, Int64}
   import anthill.prelude.PartialOrd.{gt}
+  sort Opaque
+  end
   sort Bag
     sort T = ?
     entity bag(v: T)
-    operation pos(b: Bag, i: Int64) -> Bool = gt(i, 0)
+    operation pos(b: Bag, i: Opaque) -> Bool = gt(i, i)
   end
 end
 "#;
 
 fn refusals(src: &str) -> Vec<String> {
-    crate::common::try_load_kb_with_stdlib_only(src)
+    crate::common::try_load_kb_with(src)
         .err()
         .unwrap_or_default()
 }

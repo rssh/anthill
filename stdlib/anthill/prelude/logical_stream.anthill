@@ -54,7 +54,7 @@ sort anthill.prelude.LogicalStream
   -- `Stream` (e.g. `execute`'s `Stream[Solution]`) splits via `Stream.splitFirst`.
   operation splitFirst(s: LogicalStream)
     -> Option[Pair[A = s.T, B = LogicalStream[T = s.T, E = s.E]]]
-    effects s.E
+    effects s.E @[host_implemented]
 
   -- ================================================================
   -- Logic-specific construction

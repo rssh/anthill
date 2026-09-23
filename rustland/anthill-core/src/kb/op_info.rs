@@ -672,6 +672,39 @@ pub fn build_op_signatures(kb: &mut KnowledgeBase) -> Vec<(Symbol, Value)> {
     malformed
 }
 
+/// WI-20260922-BRT4Y — every operation whose declaration carries the
+/// `@[host_implemented]` attribute ([`crate::kb::load::HOST_IMPLEMENTED_ATTR`]), keyed
+/// by CANONICAL symbol, in one walk over the `OperationInfo` facts.
+///
+/// A value the load check computes and drops, NOT an index on the KB, and that is the
+/// ticket's point (b). The attribute is the CLAIM, a binding block's `operation_map` is
+/// the EVIDENCE, and the one reader allowed to consult the claim is the check that holds
+/// the two together (`load::check_host_implemented_claims`). Every "is this operation
+/// host-backed?" question keeps asking the evidence — `is_host_mapped_op` /
+/// `is_interpreter_mapped_op` — and a cached claim set would be a second reader that can
+/// disagree with them, which is the failure this codebase keeps writing comments about.
+///
+/// The `meta` field is read the way [`build_op_signatures`] reads it
+/// (`head_field_term`), so the marker checked here is the one `OperationInfo.meta` and
+/// its reflect readers see. EVERY fact rather than the first per name: a re-presented
+/// file banks a second fact for a type-parameterized operation (see
+/// [`operation_info_fact_counts`]), and both carry the same block.
+pub(crate) fn host_implemented_operations(
+    kb: &KnowledgeBase,
+) -> std::collections::HashSet<Symbol> {
+    operation_info_fact_heads(kb)
+        .into_iter()
+        .filter(|(_, head)| {
+            crate::kb::load::meta_has_flag(
+                kb,
+                head_field_term(kb, head, "meta"),
+                crate::kb::load::HOST_IMPLEMENTED_ATTR,
+            )
+        })
+        .map(|(op_sym, _)| kb.canonical_sym(op_sym))
+        .collect()
+}
+
 /// WI-087: a `meta(...)` term carries attributes iff it has at least one named
 /// arg. An empty `meta()` (the no-attributes default the loader always emits)
 /// reports as having none, so `OpInfoRecord::meta` is `None` for it.

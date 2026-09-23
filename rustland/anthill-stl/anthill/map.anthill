@@ -1,0 +1,29 @@
+-- Rust binding for anthill.prelude.Map. Proposal 038.
+--
+-- WI-20260922-BRT4Y: `Map`'s nine host operations, registered by hardcoded qualified
+-- name in `eval/builtins.rs` until this ticket. They answered correctly from an
+-- operation body and were INVISIBLE to every reader of "is this operation host-backed"
+-- (`is_host_mapped_op` / `is_interpreter_mapped_op`), because those readers count an
+-- `operation_map` entry and not a hardcoded registration — WI-884's split, which WI-880
+-- closed for the scalar carriers and the reflection surface and left open here.
+--
+-- A map is an INTERPRETER ARENA value (`Value::Map`), so these are genuinely the
+-- host's: no anthill body can reach the arena. `Map.eq` is NOT here — it is the
+-- WI-350/WI-444 override slot no host implements (see `stdlib/anthill/prelude/map.anthill`),
+-- which is exactly why it carries no `@[host_implemented]`.
+namespace anthill.prelude
+  provides Map language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      empty: "map_empty",
+      put: "map_put",
+      get: "map_get",
+      contains: "map_contains",
+      remove: "map_remove",
+      keys: "map_keys",
+      values: "map_values",
+      entries: "map_entries",
+      size: "map_size"
+    }
+  end
+end

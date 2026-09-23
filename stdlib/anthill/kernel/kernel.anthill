@@ -106,7 +106,7 @@ namespace anthill.kernel
   -- spec's own param, bound per-call by spec-op dispatch), `struct_eq` is not a
   -- spec op, so it carries an OPERATION-LEVEL type parameter `[T]` (proposal 042)
   -- the typer binds per call — letting `a === b` type-check in an operation body.
-  operation struct_eq[T](a: T, b: T) -> Bool
+  operation struct_eq[T](a: T, b: T) -> Bool @[host_implemented]
 
   -- Cut (`!`). Commits to the current rule invocation: discards the other
   -- clauses of the rule whose body the `!` appears in, and every choice point

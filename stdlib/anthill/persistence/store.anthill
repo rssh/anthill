@@ -38,18 +38,18 @@ namespace anthill.persistence
     -- Persist a fact to its backing store. Permitted iff the fact's functor
     -- is not `constant` (proposal 053).
     operation persist(store: Store, fact: Term, meta: Meta) -> StoredRef[T = Term]
-      effects {Modify[store], Error}
+      effects {Modify[store], Error} @[host_implemented]
 
     -- Flush KB delta (new/changed/retracted facts) back to store
     operation flush(store: Store, delta: List[T = Term]) -> Bool
-      effects {Modify[store], Error}
+      effects {Modify[store], Error} @[host_implemented]
 
     -- Write POLICY (proposal 053) of a functor this store owns: which write
     -- operations are permitted for it — constant (none), monotone (persist
     -- only), non_monotone (persist + retract). A QUERY: the system reads it to
     -- plan (persist iff != constant, retract iff non_monotone), NEVER by
     -- attempting a write and catching the failure.
-    operation monotonicity(store: Store, functor: Symbol) -> Monotonicity
+    operation monotonicity(store: Store, functor: Symbol) -> Monotonicity @[host_implemented]
   }
 
   -- ================================================================
@@ -108,14 +108,14 @@ namespace anthill.persistence
     -- non_monotone retract fails loudly at the write via the Error effect,
     -- not a static load check.
     operation retract(store: NonMonotonicStore, reference: FactRef) -> Bool
-      effects {Modify[store], Error}
+      effects {Modify[store], Error} @[host_implemented]
 
     -- Atomically replace the row named by `reference`. A successful update
     -- returns the replacement's fresh reference; failure leaves the old row
     -- observable. It is not exposed as retract-then-persist.
     operation update(store: NonMonotonicStore, reference: FactRef, new: Term)
       -> Option[T = StoredRef[T = Term]]
-      effects {Modify[store], Error}
+      effects {Modify[store], Error} @[host_implemented]
   }
 
   -- ================================================================
@@ -137,7 +137,7 @@ namespace anthill.persistence
     -- WI-589) and does NOT apply to a plain query `Stream`, which carries no
     -- finiteness guarantee.
     operation retrieve(store: QueryableStore, pattern: Term) -> Stream[Term, Error]
-      effects Error
+      effects Error @[host_implemented]
   }
 
 end

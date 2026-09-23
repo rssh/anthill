@@ -273,7 +273,7 @@ fn refuse_binding(ns: &str, params: &str, template: &str) -> String {
           import anthill.prelude.{{Int64}}
           sort Widget
             entity w(v: Int64)
-            operation squish({params}) -> Int64
+            operation squish({params}) -> Int64 @[host_implemented]
           end
           provides Widget language cpp
             operation_map {{ squish: "{template}" }}

@@ -18,7 +18,7 @@ use anthill_core::parse;
 use smallvec::SmallVec;
 
 fn load_with(extra: &str) -> KnowledgeBase {
-    let files = crate::common::collect_anthill_files(&crate::common::stdlib_dir());
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| {

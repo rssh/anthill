@@ -124,7 +124,7 @@ sort guardians.LiveLlm
       live_llm(endpoint: endpoint, model: "frontier")
 
   operation complete(self: LiveLlm, p: Prompt) -> Text[Untrusted]
-    effects {External, Error}
+    effects {External, Error} @[host_implemented]
   -- `C = LiveLlm` IS NOT REDUNDANT, and it was missing (WI-20260830-7MK73). A
   -- provision names its CARRIER by its bindings (kernel-language.md §5.1), so
   -- `provides Llm[E = {External}]` loaded and named none: `summarize`'s
@@ -149,7 +149,7 @@ sort guardians.FakeLlm
     effects {Permission[Llm]} = fake_llm(fixture: fixture)
 
   operation complete(self: FakeLlm, p: Prompt) -> Text[Untrusted]
-    effects {Error}
+    effects {Error} @[host_implemented]
   -- `C = FakeLlm` for the reason `LiveLlm` gives.
   provides Llm[C = FakeLlm, E = {}]
 end
@@ -164,7 +164,7 @@ namespace guardians
   -- machinery. An n-point lattice would need the general join; variance IS
   -- declarable and would give it (measured: docs/design/measured.md C4).
   operation prompt_with(instruction : Text[Trusted],
-                        content     : Text[?t]) -> Prompt[?t]
+                        content     : Text[?t]) -> Prompt[?t] @[host_implemented]
 
   -- CONCATENATION IS UNTRUSTED-ONLY, AND IT USED TO BE LABEL-POLYMORPHIC
   -- (`List[T = Text[?t]] -> Text[?t]`, "preserves the label of its parts"). That
@@ -181,7 +181,7 @@ namespace guardians
   -- rejected/generate_from_content.anthill are the only ones. A trusted-text
   -- concatenation is a reasonable operation and can come back the day something
   -- needs it — with a caller, and with the `nil` case decided rather than inferred.
-  operation join_texts(parts: List[T = Text[Untrusted]]) -> Text[Untrusted]
+  operation join_texts(parts: List[T = Text[Untrusted]]) -> Text[Untrusted] @[host_implemented]
 
   -- ONE host function for the whole model surface, keyed per carrier.
   provides LiveLlm language rust

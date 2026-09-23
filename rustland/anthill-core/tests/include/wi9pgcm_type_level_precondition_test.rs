@@ -107,8 +107,7 @@ use anthill_core::parse;
 /// harness to `wi539_call_site_contracts_test::load_result`, whose call-site
 /// contract check this exercises through its type-level half.
 fn load_result(source: &str) -> Result<(), Vec<String>> {
-    let dir = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&dir);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())

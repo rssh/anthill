@@ -45,12 +45,12 @@ sort anthill.prelude.Float
   -- a spec that owns "has a max" independent of totality, or 058 §3.8's per-provision
   -- conditions so `Ord`'s derivation can be conditioned rather than inherited.
   operation {
-    gt(a: Float, b: Float) -> Bool         -- >, false if either operand is NaN
-    gte(a: Float, b: Float) -> Bool        -- >=, false if either operand is NaN
-    lt(a: Float, b: Float) -> Bool         -- <, false if either operand is NaN
-    lte(a: Float, b: Float) -> Bool        -- <=, false if either operand is NaN
-    max(a: Float, b: Float) -> Float       -- IEEE maxNum: max(nan, x) = x
-    min(a: Float, b: Float) -> Float       -- IEEE minNum: min(nan, x) = x
+    gt(a: Float, b: Float) -> Bool @[host_implemented]         -- >, false if either operand is NaN
+    gte(a: Float, b: Float) -> Bool @[host_implemented]        -- >=, false if either operand is NaN
+    lt(a: Float, b: Float) -> Bool @[host_implemented]         -- <, false if either operand is NaN
+    lte(a: Float, b: Float) -> Bool @[host_implemented]        -- <=, false if either operand is NaN
+    max(a: Float, b: Float) -> Float @[host_implemented]       -- IEEE maxNum: max(nan, x) = x
+    min(a: Float, b: Float) -> Float @[host_implemented]       -- IEEE minNum: min(nan, x) = x
   }
 
   -- Operations beyond what Numeric provides.
@@ -78,47 +78,47 @@ sort anthill.prelude.Float
     -- (`float_add` / `float_sub` / `float_mul` in this carrier's `operation_map`), and
     -- "Float's arithmetic is IEEE" sits beside "Float's order is IEEE" in the same
     -- binding block rather than inside a shared builtin's match.
-    add(a: Float, b: Float) -> Float      -- +, IEEE
-    sub(a: Float, b: Float) -> Float      -- - (binary), IEEE
-    mul(a: Float, b: Float) -> Float      -- *, IEEE
-    abs(a: Float) -> Float                -- |a|; clears the sign bit (abs(-0.0) = 0.0)
-    neg(a: Float) -> Float                -- -a; flips the sign bit (neg(0.0) = -0.0)
-    div(a: Float, b: Float) -> Float      -- IEEE division; also `/` infix
-    floor(a: Float) -> Int64                -- round toward negative infinity; partial
-    ceil(a: Float) -> Int64                 -- round toward positive infinity; partial
-    round(a: Float) -> Int64                -- round to nearest, half away from zero; partial
+    add(a: Float, b: Float) -> Float @[host_implemented]      -- +, IEEE
+    sub(a: Float, b: Float) -> Float @[host_implemented]      -- - (binary), IEEE
+    mul(a: Float, b: Float) -> Float @[host_implemented]      -- *, IEEE
+    abs(a: Float) -> Float @[host_implemented]                -- |a|; clears the sign bit (abs(-0.0) = 0.0)
+    neg(a: Float) -> Float @[host_implemented]                -- -a; flips the sign bit (neg(0.0) = -0.0)
+    div(a: Float, b: Float) -> Float @[host_implemented]      -- IEEE division; also `/` infix
+    floor(a: Float) -> Int64 @[host_implemented]                -- round toward negative infinity; partial
+    ceil(a: Float) -> Int64 @[host_implemented]                 -- round toward positive infinity; partial
+    round(a: Float) -> Int64 @[host_implemented]                -- round to nearest, half away from zero; partial
     recip(a: Float) -> Float              -- 1/a
     -- IEEE 754 predicates: needed because Float.eq returns false for NaN
     -- (NaN != NaN in IEEE), so users can't detect NaN via equality.
-    isNaN(a: Float) -> Bool               -- true iff a is NaN
-    isInfinite(a: Float) -> Bool          -- true iff a is +Inf or -Inf
-    isFinite(a: Float) -> Bool            -- true iff a is neither NaN nor infinite
+    isNaN(a: Float) -> Bool @[host_implemented]               -- true iff a is NaN
+    isInfinite(a: Float) -> Bool @[host_implemented]          -- true iff a is +Inf or -Inf
+    isFinite(a: Float) -> Bool @[host_implemented]            -- true iff a is neither NaN nor infinite
 
     -- Power / roots
-    sqrt(a: Float) -> Float               -- principal square root; IEEE, NaN for a < 0
-    hypot(a: Float, b: Float) -> Float    -- sqrt(a*a + b*b), avoids overflow
-    fmod(a: Float, b: Float) -> Float     -- IEEE remainder (sign follows a)
-    pow(base: Float, exp: Float) -> Float -- base ^ exp
+    sqrt(a: Float) -> Float @[host_implemented]               -- principal square root; IEEE, NaN for a < 0
+    hypot(a: Float, b: Float) -> Float @[host_implemented]    -- sqrt(a*a + b*b), avoids overflow
+    fmod(a: Float, b: Float) -> Float @[host_implemented]     -- IEEE remainder (sign follows a)
+    pow(base: Float, exp: Float) -> Float @[host_implemented] -- base ^ exp
 
     -- Trig (arguments in radians)
-    sin(a: Float) -> Float
-    cos(a: Float) -> Float
-    tan(a: Float) -> Float
-    asin(a: Float) -> Float               -- result in [-pi/2, pi/2]
-    acos(a: Float) -> Float               -- result in [0, pi]
-    atan(a: Float) -> Float               -- result in (-pi/2, pi/2)
-    atan2(y: Float, x: Float) -> Float    -- 2-arg arctan, result in (-pi, pi]
+    sin(a: Float) -> Float @[host_implemented]
+    cos(a: Float) -> Float @[host_implemented]
+    tan(a: Float) -> Float @[host_implemented]
+    asin(a: Float) -> Float @[host_implemented]               -- result in [-pi/2, pi/2]
+    acos(a: Float) -> Float @[host_implemented]               -- result in [0, pi]
+    atan(a: Float) -> Float @[host_implemented]               -- result in (-pi/2, pi/2)
+    atan2(y: Float, x: Float) -> Float @[host_implemented]    -- 2-arg arctan, result in (-pi, pi]
 
     -- Exponential / logarithm
-    exp(a: Float) -> Float                -- e^a
-    log(a: Float) -> Float                -- natural log; IEEE, -inf at 0.0, NaN for a < 0
-    log10(a: Float) -> Float              -- base-10 log; IEEE, -inf at 0.0, NaN for a < 0
-    log2(a: Float) -> Float               -- base-2 log; IEEE, -inf at 0.0, NaN for a < 0
+    exp(a: Float) -> Float @[host_implemented]                -- e^a
+    log(a: Float) -> Float @[host_implemented]                -- natural log; IEEE, -inf at 0.0, NaN for a < 0
+    log10(a: Float) -> Float @[host_implemented]              -- base-10 log; IEEE, -inf at 0.0, NaN for a < 0
+    log2(a: Float) -> Float @[host_implemented]               -- base-2 log; IEEE, -inf at 0.0, NaN for a < 0
 
     -- Constants (nullary operations — invoked as `pi`, `e`, etc.)
-    pi() -> Float                         -- π = 3.14159…
-    e() -> Float                          -- e = 2.71828…
-    tau() -> Float                        -- τ = 2π = 6.28318…
+    pi() -> Float @[host_implemented]                         -- π = 3.14159…
+    e() -> Float @[host_implemented]                          -- e = 2.71828…
+    tau() -> Float @[host_implemented]                        -- τ = 2π = 6.28318…
   }
 
   -- Special IEEE 754 values as term-level constants (WI-084 / proposal 039).

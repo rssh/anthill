@@ -28,8 +28,7 @@ end
 "#;
 
 fn load_reduce() -> KnowledgeBase {
-    let stdlib = crate::common::stdlib_dir();
-    let files = crate::common::collect_anthill_files(&stdlib);
+    let files = crate::common::collect_stdlib_and_rust_bindings();
     let mut parsed: Vec<_> = files
         .iter()
         .map(|p| parse::parse(&std::fs::read_to_string(p).unwrap()).unwrap())

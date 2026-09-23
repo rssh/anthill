@@ -939,8 +939,7 @@ end
     for (half, offender, expected_in_batch_one) in
         [("clause", clauses, 2usize), ("site", site, 0usize)]
     {
-        let dir = crate::common::stdlib_dir();
-        let mut parsed: Vec<_> = crate::common::collect_anthill_files(&dir)
+        let mut parsed: Vec<_> = crate::common::collect_stdlib_and_rust_bindings()
             .iter()
             .map(|p| {
                 parse::parse(&std::fs::read_to_string(p).expect("read stdlib"))
@@ -1106,8 +1105,7 @@ namespace test.v25n3.inc2
   end
 end
 "#;
-    let dir = crate::common::stdlib_dir();
-    let mut parsed: Vec<_> = crate::common::collect_anthill_files(&dir)
+    let mut parsed: Vec<_> = crate::common::collect_stdlib_and_rust_bindings()
         .iter()
         .map(|p| {
             parse::parse(&std::fs::read_to_string(p).expect("read stdlib")).expect("parse stdlib")
@@ -1299,8 +1297,7 @@ end
 
     // Batch 1: the stdlib and the spec, WITHOUT the offender — that is the whole
     // difference from the test above, and it is what makes batch 2's clauses fresh.
-    let dir = crate::common::stdlib_dir();
-    let mut parsed: Vec<_> = crate::common::collect_anthill_files(&dir)
+    let mut parsed: Vec<_> = crate::common::collect_stdlib_and_rust_bindings()
         .iter()
         .map(|p| {
             parse::parse(&std::fs::read_to_string(p).expect("read stdlib")).expect("parse stdlib")
@@ -1493,8 +1490,7 @@ end
         }
     };
     let base = || {
-        let dir = crate::common::stdlib_dir();
-        let mut parsed: Vec<_> = crate::common::collect_anthill_files(&dir)
+        let mut parsed: Vec<_> = crate::common::collect_stdlib_and_rust_bindings()
             .iter()
             .map(|p| parse::parse(&std::fs::read_to_string(p).expect("read")).expect("parse"))
             .collect();

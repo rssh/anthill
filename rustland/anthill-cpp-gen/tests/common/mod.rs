@@ -87,6 +87,29 @@ static STDLIB_MINUS_CPP_PROFILE_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::ne
     parse_files(&files)
 });
 
+/// Path to `rustland/anthill-stl/anthill/` — the RUST host binding layer.
+pub fn rust_bindings_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../anthill-stl/anthill")
+}
+
+/// Parsed RUST host bindings, computed once per test binary.
+///
+/// A cpp harness loads them because the CLI's cpp codegen does
+/// (`load_kb_for_cpp_codegen`: `anthill::stdlib::SOURCES`, whose tail IS these files,
+/// then the cpp bindings), and because since WI-20260922-BRT4Y the stdlib does not load
+/// without a binding layer: its host-backed operations are declared
+/// `@[host_implemented]`, and one that no loaded `operation_map` supplies — the cpp layer
+/// maps only the scalar carriers — is a LOAD error.
+static RUST_BINDINGS_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
+    let files = collect_anthill_files(&rust_bindings_dir());
+    assert!(
+        !files.is_empty(),
+        "rust bindings must be loadable from {}",
+        rust_bindings_dir().display()
+    );
+    parse_files(&files)
+});
+
 /// Parsed cpp host bindings, computed once per test binary.
 static CPP_BINDINGS_PARSED: LazyLock<Vec<ParsedFile>> = LazyLock::new(|| {
     let files = collect_anthill_files(&cpp_bindings_dir());
@@ -154,6 +177,7 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
     let extras = parse_files(extra_paths);
 
     let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
+    refs.extend(RUST_BINDINGS_PARSED.iter());
     refs.extend(CPP_BINDINGS_PARSED.iter());
     refs.extend(extras.iter());
     refs.push(&user);
@@ -184,6 +208,7 @@ pub fn load_kb_with_extras(source: &str, extra_paths: &[PathBuf]) -> KnowledgeBa
 pub fn load_kb_without_cpp_profile(source: &str) -> KnowledgeBase {
     let user = parse::parse(source).expect("parse user source");
     let mut refs: Vec<&ParsedFile> = STDLIB_MINUS_CPP_PROFILE_PARSED.iter().collect();
+    refs.extend(RUST_BINDINGS_PARSED.iter());
     refs.extend(CPP_BINDINGS_PARSED.iter());
     refs.push(&user);
 
@@ -215,6 +240,7 @@ pub fn load_kb_without_cpp_profile(source: &str) -> KnowledgeBase {
 pub fn load_kb_with_lenient(source: &str) -> KnowledgeBase {
     let user = parse::parse(source).expect("parse user source");
     let mut refs: Vec<&ParsedFile> = STDLIB_PARSED.iter().collect();
+    refs.extend(RUST_BINDINGS_PARSED.iter());
     refs.extend(CPP_BINDINGS_PARSED.iter());
     refs.push(&user);
     let mut kb = KnowledgeBase::new();

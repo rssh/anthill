@@ -1,0 +1,60 @@
+-- Rust binding for the prelude's RUNTIME-EFFECT surface: `Console`, `Time`, `Cell`,
+-- `ModifyRuntime` and `Error`. Proposal 038.
+--
+-- WI-20260922-BRT4Y: registered by hardcoded qualified name in `eval/builtins.rs` until
+-- this ticket, and invisible to every reader of "is this operation host-backed". They
+-- are one file because they are one kind of thing — each reaches state only the
+-- interpreter holds: a registered effect HANDLER (`Console.*`, `ModifyRuntime.*`), the
+-- cell ARENA (`Cell.*`), the error channel (`Error.raise`), the wall clock (`Time.now`).
+--
+-- Being mapped does NOT make them callable from a rule body. The rule-body gate
+-- (`host_op_reducible_at_a_value`, kb/resolve.rs) also asks for an EMPTY effect row,
+-- and every one here that performs an effect declares it.
+--
+-- `Error.reify` is NOT here, deliberately: it is a FRAME the interpreter installs by
+-- symbol (`Interpreter::enter_reify_boundary`), not a function — a builtin returns a
+-- value and cannot enter a closure — so it is body-less for a different reason and
+-- claims no host function.
+namespace anthill.prelude
+  provides Console language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      print: "console_print",
+      println: "console_println",
+      eprint: "console_eprint",
+      eprintln: "console_eprintln",
+      read_line: "console_read_line"
+    }
+  end
+
+  provides Time language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      now: "time_now"
+    }
+  end
+
+  provides Cell language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      new: "cell_new",
+      get: "cell_get",
+      set: "cell_set"
+    }
+  end
+
+  provides ModifyRuntime language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      get: "modify_runtime_get",
+      set: "modify_runtime_set"
+    }
+  end
+
+  provides Error language rust
+    artifact "rustland/anthill-core/src/eval/builtins.rs"
+    operation_map {
+      raise: "error_raise"
+    }
+  end
+end
