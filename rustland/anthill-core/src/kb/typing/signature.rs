@@ -2842,7 +2842,7 @@ fn types_definitely_differ(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
 ///
 /// The `Ref`/`Ident`/nullary-`Fn` collapse is load-bearing beyond the elision
 /// case: it is the same equivalence [`substitute_impl_params_alloc`] rewrites
-/// between (see [`requires_bare_name_sym`], its owner on the `requires`-binding
+/// between (see [`view_ref_symbol`], its owner on the `requires`-binding
 /// side), so a σ-substituted spec type compares equal to the identical type the
 /// loader built directly. Without it the two `*_is_silent` tests in
 /// `wi1048_requires_shadow_refinement_test` go undecided — measured, they are

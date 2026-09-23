@@ -64,13 +64,6 @@ pub(super) fn value_contains_rigid(kb: &KnowledgeBase, ty: &Value) -> bool {
     }
 }
 
-/// WI-376: does a type [`Value`] contain an expression-carried projection
-/// (`ExprCarried`) anywhere in its structure? Carrier-agnostic (reads via
-/// [`extract_type`], so a `Value::Node` parameterized type is walked too). Used both
-/// to GATE the per-call elimination (skip the work for the >99% of signatures with no
-/// projection) and to DETECT a projection nested inside a denoted-bearing `Value::Node`
-/// — which the Node-carrier rewrite does not yet handle, so it is a loud error rather
-/// than a silent leak.
 /// WI-20260909-S8CBV — does this type carry an EXPRESSION-CARRIED projection (`x.E`)
 /// specifically, as opposed to any projection?
 ///
@@ -95,6 +88,16 @@ pub(super) fn value_contains_expr_carried(kb: &KnowledgeBase, ty: &Value) -> boo
     }
 }
 
+/// WI-376: does a type [`Value`] contain an expression-carried projection
+/// (`ExprCarried`) anywhere in its structure? Carrier-agnostic (reads via
+/// [`extract_type`], so a `Value::Node` parameterized type is walked too). Used both
+/// to GATE the per-call elimination (skip the work for the >99% of signatures with no
+/// projection) and to DETECT a projection nested inside a denoted-bearing `Value::Node`
+/// — which the Node-carrier rewrite does not yet handle, so it is a loud error rather
+/// than a silent leak.
+///
+/// A `RigidTypeProjection` (`P.Key`, WI-428) answers `true` too; the narrower
+/// [`value_contains_expr_carried`] is the question that excludes it.
 pub(super) fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool {
     match extract_type(kb, ty) {
         TypeExtractor::ExprCarried { .. } | TypeExtractor::RigidTypeProjection { .. } => true,
@@ -142,25 +145,11 @@ pub(super) fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool 
 /// path. A single value reference `Ref(s)` is `s`; a field-access chain `s.f.g` bottoms
 /// out in `Ref(s)`, so the head is `s`. Any other shape (not a value-reference path) is
 /// `None`. Mirrors the descent in [`resolve_receiver_path_type`], returning the path's
-/// bottom symbol rather than its type.
+/// bottom symbol rather than its type — the first of [`receiver_path_segs`], which
+/// walks the same descent.
 fn receiver_path_head_sym(kb: &KnowledgeBase, receiver: &Value) -> Option<Symbol> {
-    if let Some(head) = extract_sort_ref_sym(kb, receiver) {
-        return Some(head);
-    }
-    if let Value::Node(occ) = receiver {
-        if let Some(Expr::DotApply {
-            receiver: base,
-            pos_args,
-            named_args,
-            ..
-        }) = occ.as_expr()
-        {
-            if pos_args.is_empty() && named_args.is_empty() {
-                return receiver_path_head_sym(kb, &Value::Node(std::rc::Rc::clone(base)));
-            }
-        }
-    }
-    None
+    // A path is never empty when present: its base case is `[head]`.
+    receiver_path_segs(kb, receiver).map(|segs| segs[0])
 }
 
 /// WI-400 increment C: the full receiver-path SEGMENTS of a projection receiver value, in

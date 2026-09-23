@@ -169,11 +169,6 @@ pub(super) fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChil
     }
 }
 
-/// WI-342: build `parameterized(base, bindings)` carrier-agnostically. When any
-/// binding value is a `Value::Node` (e.g. a `List` whose element type is a
-/// lambda-arrow carrying `Modify[c]`), mint a `Value::Node` via
-/// [`KnowledgeBase::make_parameterized_occ`] so the poisoned child is CARRIED,
-/// not re-grounded; otherwise the hash-consed [`KnowledgeBase::make_parameterized_type`].
 /// WI-20260904-02ERR: does this type value force the OCCURRENCE carrier for its container?
 ///
 /// Two forms cannot ride a hash-consed container. A `Value::Node` is the original one — a
@@ -189,6 +184,11 @@ fn type_value_needs_occurrence(v: &Value) -> bool {
     matches!(v, Value::Node(_) | Value::Var(_))
 }
 
+/// WI-342: build `parameterized(base, bindings)` carrier-agnostically. When any
+/// binding value is a `Value::Node` (e.g. a `List` whose element type is a
+/// lambda-arrow carrying `Modify[c]`), mint a `Value::Node` via
+/// [`KnowledgeBase::make_parameterized_occ`] so the poisoned child is CARRIED,
+/// not re-grounded; otherwise the hash-consed [`KnowledgeBase::make_parameterized_type`].
 /// `base` is the ground `sort_ref` (`List`/`Set`/…); `span`/`owner` stamp the new
 /// occurrence when Node-carried.
 pub(super) fn parameterized_value(

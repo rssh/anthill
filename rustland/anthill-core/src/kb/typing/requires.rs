@@ -2636,61 +2636,14 @@ pub fn check_obligations(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<MissingObl
     missing
 }
 
-/// Get operation names defined in a sort (from SortInfo.operations).
+/// Get operation names defined in a sort (from SortInfo.operations): the `operations`
+/// half of [`find_sort_info`], by local name — one SortInfo reader, not two.
 fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
-    // WI-671/WI-672 — the SortInfo canonical-sort bucket (or a live scan pre-index); the
-    // re-filter below compares by `canonical_sort_sym` (WI-672, was `same_symbol`).
-    for rid in sort_info_rids_by_sort(kb, sort_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(head) = kb.fact_head_term(rid) else {
-            continue;
-        };
-        let named_args = match kb.get_term(head) {
-            Term::Fn { named_args, .. } => named_args,
-            _ => continue,
-        };
-
-        // Match sort by name field (may be Ref(sym) or Fn { functor: sym })
-        let name_tid = match named_args
-            .iter()
-            .find(|(s, _)| kb.local_name_of(*s) == "name")
-            .map(|(_, v)| *v)
-        {
-            Some(t) => t,
-            None => continue,
-        };
-        let name_sym = match kb.get_term(name_tid) {
-            Term::Fn { functor, .. } => *functor,
-            Term::Ref(s) => *s,
-            _ => continue,
-        };
-        if !same_sort_canonical(kb, name_sym, sort_sym) {
-            continue;
-        }
-
-        // Extract operations list
-        let ops_tid = match named_args
-            .iter()
-            .find(|(s, _)| kb.local_name_of(*s) == "operations")
-            .map(|(_, v)| *v)
-        {
-            Some(t) => t,
-            None => return Vec::new(),
-        };
-
-        return list_to_vec(kb, ops_tid)
-            .iter()
-            .filter_map(|op_ref| match kb.get_term(*op_ref) {
-                Term::Ref(s) => Some(kb.local_name_of(*s).to_string()),
-                Term::Fn { functor, .. } => Some(kb.local_name_of(*functor).to_string()),
-                _ => None,
-            })
-            .collect();
-    }
-
-    Vec::new()
+    find_sort_info(kb, sort_sym).map_or_else(Vec::new, |(_, ops)| {
+        ops.iter()
+            .map(|op| kb.local_name_of(*op).to_string())
+            .collect()
+    })
 }
 
 /// Extract the sort symbol from a sort_ref(name: Ref(sym)) term.

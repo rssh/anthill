@@ -2115,11 +2115,6 @@ pub(super) fn parameterized_vid_bindings(
         .collect()
 }
 
-/// The spec-view bindings of the `SortProvidesInfo` fact recording that
-/// `carrier_sym` provides `spec_sort` — `(spec param symbol, carrier-side
-/// value)` pairs (`fact Stream[T = T]` on `List` ⇒ `[(Stream.T, List.T)]`).
-/// First matching provider wins. `None` when the carrier declares no such
-/// provision.
 /// WI-714 (proposal 052) — the FULL provider view of `carrier_sym` for `spec_sort`
 /// (every spec param ↦ a carrier-side value), DIRECT or composed through TRANSITIVE
 /// provision. The self-receiver companion to [`transitive_provision_view`] (which
@@ -2450,6 +2445,11 @@ fn provision_route_views(
     Some(out)
 }
 
+/// The spec-view bindings of the `SortProvidesInfo` facts recording that
+/// `carrier_sym` provides `spec_sort` — `(spec param symbol, carrier-side
+/// value)` pairs (`fact Stream[T = T]` on `List` ⇒ `[(Stream.T, List.T)]`).
+/// `None` when the carrier declares no such provision.
+///
 /// WI-842 (proposal 058 §4.9) — every carrier-keyed provision of `spec_sort` for
 /// `carrier_sym` is read, and their bindings MERGED, rather than returning the first
 /// provision's view.

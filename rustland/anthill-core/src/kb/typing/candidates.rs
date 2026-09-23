@@ -3,6 +3,10 @@
 
 use super::*;
 
+/// WI-508: distinct carrier sorts that `provides` `spec_sort` (canonical,
+/// deduped, the spec sort itself excluded). Used to resolve a nullary
+/// carrier-only-in-result spec op (`new()`) from a UNIQUE provider when the call
+/// site pins no carrier. Mirrors `spec_has_any_providers`' indexed walk.
 pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
     let mut out: Vec<Symbol> = Vec::new();
     let spec_canon = kb.canonical_sort_sym(spec_sort);

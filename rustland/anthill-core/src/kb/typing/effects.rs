@@ -1782,55 +1782,12 @@ fn pair_present_labels(
     a_present: &[Value],
     b_present: &[Value],
 ) -> (Vec<Value>, Vec<Value>) {
-    // WI-338 F11: each unify_types attempt may bind variables in `subst`
-    // *before* it determines it can't complete the unification (partial
-    // structural success that fails on a downstream sub-term). Snapshot
-    // the substitution before each attempt and roll back on failure so
-    // failed pairings don't leak bindings into the substitution. Required
-    // for callers that share `subst` with downstream reasoning
-    // (`unify_effect_rows` from inside `unify_arrow` does — its subst
-    // propagates into the typer's main state).
-    //
-    // WI-338 F8: the pre-WI-338 implementation rejected pairings whose
-    // functors differed (sort_ref vs parameterized) before calling
-    // `unify_types`. That rejected legitimate cross-functor compatible
-    // labels (a bare sort vs its instantiation). The pre-filter
-    // existed to limit subst pollution from doomed attempts — now
-    // unnecessary with the per-attempt snapshot/restore — and is
-    // removed. `unify_types`' return value is authoritative.
-    let mut b_matched = vec![false; b_present.len()];
-    let mut only_a: Vec<Value> = Vec::new();
-    for al in a_present {
-        let mut paired = false;
-        for (i, bl) in b_present.iter().enumerate() {
-            if b_matched[i] {
-                continue;
-            }
-            let snapshot = subst.clone();
-            if unify_types(kb, subst, al, bl) {
-                b_matched[i] = true;
-                paired = true;
-                break;
-            }
-            // Restore — discard partial bindings from the failed attempt.
-            *subst = snapshot;
-        }
-        if !paired {
-            only_a.push(al.clone());
-        }
-    }
-    let only_b: Vec<Value> = b_present
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !b_matched[*i])
-        .map(|(_, t)| t.clone())
-        .collect();
-    (only_a, only_b)
+    match_present_labels(kb, subst, a_present, b_present, true)
 }
 
 /// WI-326 subtype variant of [`pair_present_labels`] — existential
 /// covering instead of 1-to-1 pairing. A single expected label can cover
-/// multiple actuals (set-with-subtyping semantics), so `b_covered[i]` is
+/// multiple actuals (set-with-subtyping semantics), so a covered `b` label is
 /// recorded for the `only_b` computation but NEVER excludes a later
 /// pairing attempt.
 ///
@@ -1858,22 +1815,51 @@ pub(super) fn cover_present_labels(
     a_present: &[Value],
     b_present: &[Value],
 ) -> (Vec<Value>, Vec<Value>) {
-    // WI-338 F11: snapshot/restore around each unify_types attempt to
-    // avoid partial-bind leakage on failed pairings. WI-338 F8: dropped
-    // the pre-WI-338 functor-name pre-filter so cross-arm
-    // (sort_ref vs parameterized) pairings unify_types can decide.
-    // See `pair_present_labels` above for the soundness argument.
-    let mut b_covered = vec![false; b_present.len()];
+    match_present_labels(kb, subst, a_present, b_present, false)
+}
+
+/// The one greedy walk behind [`pair_present_labels`] and [`cover_present_labels`].
+/// `one_to_one` decides exactly one thing: whether a `b` label that has already been
+/// matched may be tried again — never, for unification's 1-to-1 pairing; always, for
+/// WI-326's existential covering.
+fn match_present_labels(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a_present: &[Value],
+    b_present: &[Value],
+    one_to_one: bool,
+) -> (Vec<Value>, Vec<Value>) {
+    // WI-338 F11: each unify_types attempt may bind variables in `subst`
+    // *before* it determines it can't complete the unification (partial
+    // structural success that fails on a downstream sub-term). Snapshot
+    // the substitution before each attempt and roll back on failure so
+    // failed pairings don't leak bindings into the substitution. Required
+    // for callers that share `subst` with downstream reasoning
+    // (`unify_effect_rows` from inside `unify_arrow` does — its subst
+    // propagates into the typer's main state).
+    //
+    // WI-338 F8: the pre-WI-338 implementation rejected pairings whose
+    // functors differed (sort_ref vs parameterized) before calling
+    // `unify_types`. That rejected legitimate cross-functor compatible
+    // labels (a bare sort vs its instantiation). The pre-filter
+    // existed to limit subst pollution from doomed attempts — now
+    // unnecessary with the per-attempt snapshot/restore — and is
+    // removed. `unify_types`' return value is authoritative.
+    let mut b_matched = vec![false; b_present.len()];
     let mut only_a: Vec<Value> = Vec::new();
     for al in a_present {
         let mut paired = false;
         for (i, bl) in b_present.iter().enumerate() {
+            if one_to_one && b_matched[i] {
+                continue;
+            }
             let snapshot = subst.clone();
             if unify_types(kb, subst, al, bl) {
-                b_covered[i] = true;
+                b_matched[i] = true;
                 paired = true;
                 break;
             }
+            // Restore — discard partial bindings from the failed attempt.
             *subst = snapshot;
         }
         if !paired {
@@ -1883,7 +1869,7 @@ pub(super) fn cover_present_labels(
     let only_b: Vec<Value> = b_present
         .iter()
         .enumerate()
-        .filter(|(i, _)| !b_covered[*i])
+        .filter(|(i, _)| !b_matched[*i])
         .map(|(_, t)| t.clone())
         .collect();
     (only_a, only_b)

@@ -632,10 +632,6 @@ pub(super) fn carrier_is_abstract_spec(kb: &KnowledgeBase, carrier_sym: Symbol) 
     !kb.sort_has_constructors(canon) && spec_has_any_providers(kb, canon)
 }
 
-/// WI-508: distinct carrier sorts that `provides` `spec_sort` (canonical,
-/// deduped, the spec sort itself excluded). Used to resolve a nullary
-/// carrier-only-in-result spec op (`new()`) from a UNIQUE provider when the call
-/// site pins no carrier. Mirrors `spec_has_any_providers`' indexed walk.
 /// WI-1109 — a kb-free comparable key for ONE provision/requires binding, so the sites
 /// that must ask "the same bindings?" cannot drift into asking it three ways. The key is
 /// the parameter's LOCAL name (spec parameters are named per spec, and the identity

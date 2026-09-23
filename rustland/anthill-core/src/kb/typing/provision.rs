@@ -1195,78 +1195,14 @@ pub(super) fn provider_requires_subgoals(
     out
 }
 
-/// The term shapes a `requires`-clause binding value uses to spell a bare NAME:
-/// the canonical `Ref(S)` / `Ident(S)`, and the nullary `Fn{S}` that `convert_term`
-/// emits for a bare name. ONE owner, because two readers must agree on it —
-/// [`subst_requires_value`], which substitutes σ at exactly these shapes, and
-/// `check_use_site_requires_eq`, which reads the RAW (unsubstituted) binding back to
-/// name the container parameter in its diagnostic. If they disagreed, the diagnostic
-/// would silently fall back to naming the spec's parameter instead of the
-/// container's. The WI-511 `Fn{c}` → `Ref(c)` flip is exactly the kind of change
-/// that would otherwise have to be applied to both by hand.
-///
-/// [`type_ctor_view`] (WI-1048) reads the same equivalence and then some — it also
-/// admits an APPLIED `Fn`, because there a bare name and an application of it are
-/// the same constructor with one side eliding its arguments. It is deliberately not
-/// expressed in terms of this function: the question there is "which constructor",
-/// not "is this a bare name".
-pub(super) fn requires_bare_name_sym(kb: &KnowledgeBase, v: TermId) -> Option<Symbol> {
-    match kb.get_term(v) {
-        Term::Ref(s) | Term::Ident(s) => Some(*s),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
-        _ => None,
-    }
-}
-
 /// Substitute σ into one `requires`-clause binding value (by short name);
 /// leave anything σ doesn't ground unchanged. Recurses through `Fn`
 /// children (`List[T]`, `Pair[A, B]`).
 fn subst_requires_value(kb: &mut KnowledgeBase, v: TermId, sigma: &[(String, TermId)]) -> TermId {
-    if let Some(s) = requires_bare_name_sym(kb, v) {
+    if let Some(s) = view_ref_symbol(kb, &TermIdView(v)) {
         return map_requires_name(kb, s, v, sigma);
     }
-    match kb.get_term(v).clone() {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => {
-            let mut changed = false;
-            let new_pos: SmallVec<[TermId; 4]> = pos_args
-                .iter()
-                .map(|t| {
-                    let nt = subst_requires_value(kb, *t, sigma);
-                    if nt != *t {
-                        changed = true;
-                    }
-                    nt
-                })
-                .collect();
-            let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
-                .iter()
-                .map(|(k, t)| {
-                    let nt = subst_requires_value(kb, *t, sigma);
-                    if nt != *t {
-                        changed = true;
-                    }
-                    (*k, nt)
-                })
-                .collect();
-            if !changed {
-                return v;
-            }
-            kb.alloc(Term::Fn {
-                functor,
-                pos_args: new_pos,
-                named_args: new_named,
-            })
-        }
-        _ => v,
-    }
+    kb.map_fn_children(v, |kb, t| subst_requires_value(kb, t, sigma))
 }
 
 /// σ-ground a bare name in a `requires` value by short name; otherwise keep

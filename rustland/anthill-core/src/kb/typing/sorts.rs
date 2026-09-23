@@ -847,7 +847,10 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
 /// anthill-stl spec-fact embedding, bundle effect declarations, and
 /// `op_has_runnable_body` guarding WI-218 from rewriting spec ops to
 /// body-less impl symbols. Diagnostic: `wi237_diag_test.rs`.
-fn find_sort_info(kb: &KnowledgeBase, sort_functor: Symbol) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
+pub(super) fn find_sort_info(
+    kb: &KnowledgeBase,
+    sort_functor: Symbol,
+) -> Option<(Vec<Symbol>, Vec<Symbol>)> {
     // WI-671/WI-672 — the SortInfo canonical-sort bucket (or a live scan pre-index).
     // Called once PER SORT in `type_check_sorts_typed`, so the index turns an O(sorts²)
     // scan into O(sorts). The re-filter below compares by `canonical_sort_sym` (WI-672,

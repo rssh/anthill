@@ -918,8 +918,6 @@ pub(crate) fn record_apply_within_concrete(
     caller_requires: &DictChain,
     resolved_tree: Option<&ResolvedRequiresNode>,
 ) -> bool {
-    use smallvec::SmallVec;
-
     if kb.dispatch_rewrite_at(site).is_some() {
         return false;
     }
@@ -953,33 +951,59 @@ pub(crate) fn record_apply_within_concrete(
     };
     let requirements_list = wrap_dispatch_channel(kb, dict_term);
 
-    let fn_ref = kb.alloc(Term::Ref(fn_target_sym));
+    mint_apply_within(
+        kb,
+        site,
+        aw_sym,
+        fn_target_sym,
+        orig_args_tid,
+        requirements_list,
+        spec_op_sym,
+    );
+    true
+}
+
+/// Mint the `apply_within(fn = Ref(fn_sym), args, requirements)` a call site is rewritten
+/// to, and record it — the ONE producer of that term, for the concrete rewrite
+/// ([`record_apply_within_concrete`]) and the deferred one ([`record_apply_within_rewrite`])
+/// alike. They were two copies until FDPJ8's canon (below) reached only the first; one
+/// minter is what keeps the next change from doing the same.
+///
+/// WI-20260910-FDPJ8 — THE ENTITY'S OWN CANONICAL CONSTRUCTOR FORM, and both halves
+/// of that are a change.
+///
+/// NO POSITIONAL CHANNEL. `anthill.reflect.Expr.apply_within` declares three named
+/// fields and no positionals, so a positional channel described a shape the schema has
+/// not got. It was also DEAD: `materialize_apply` (req_insertion.rs) is the only
+/// producer of the `ClassifiedApply` both callers read, and it hardcodes
+/// `pos_args: SmallVec::new()`. Dropping it removes a divergence between what this
+/// writes and what `visit_fn`'s reader / the view head can see, at no cost to any
+/// value ever produced — and the PARAMETER went with it from both callers, so a future
+/// caller cannot hand them positionals to discard in silence.
+///
+/// AND THROUGH `canonicalize_record_named_args`, not a hand-ordered `from_slice`.
+/// The key order here happened to match the declared field order, so this is not a
+/// bug fix — it is what stops the next field (or a reordered declaration) from
+/// silently minting a term the discrim tree keys differently from every other
+/// `apply_within`. One canon, asked of the functor, exactly as every other record
+/// producer asks it.
+fn mint_apply_within(
+    kb: &mut KnowledgeBase,
+    site: crate::kb::CallSite,
+    aw_sym: Symbol,
+    fn_sym: Symbol,
+    args: TermId,
+    requirements: TermId,
+    spec_op_sym: Symbol,
+) {
+    let fn_ref = kb.alloc(Term::Ref(fn_sym));
     let fn_field = kb.intern("fn");
     let args_field = kb.intern("args");
     let reqs_field = kb.intern("requirements");
-
-    // WI-20260910-FDPJ8 — THE ENTITY'S OWN CANONICAL CONSTRUCTOR FORM, and both halves
-    // of that are a change.
-    //
-    // NO POSITIONAL CHANNEL. `anthill.reflect.Expr.apply_within` declares three named
-    // fields and no positionals, so `pos_args` described a shape the schema has not
-    // got. It was also DEAD: `materialize_apply` (req_insertion.rs) is the only
-    // producer of the `ClassifiedApply` this reads, and it hardcodes
-    // `pos_args: SmallVec::new()`. Dropping it removes a divergence between what this
-    // writes and what `visit_fn`'s reader / the view head can see, at no cost to any
-    // value ever produced — and the PARAMETER goes with it, so a future caller cannot
-    // hand this function positionals for it to discard in silence.
-    //
-    // AND THROUGH `canonicalize_record_named_args`, not a hand-ordered `from_slice`.
-    // The key order here happened to match the declared field order, so this is not a
-    // bug fix — it is what stops the next field (or a reordered declaration) from
-    // silently minting a term the discrim tree keys differently from every other
-    // `apply_within`. One canon, asked of the functor, exactly as every other record
-    // producer asks it.
     let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::from_slice(&[
         (fn_field, fn_ref),
-        (args_field, orig_args_tid),
-        (reqs_field, requirements_list),
+        (args_field, args),
+        (reqs_field, requirements),
     ]);
     kb.canonicalize_record_named_args(aw_sym, &mut named);
     let rewritten = kb.alloc(Term::Fn {
@@ -988,7 +1012,6 @@ pub(crate) fn record_apply_within_concrete(
         named_args: named,
     });
     kb.record_dispatch_rewrite(site, rewritten, spec_op_sym);
-    true
 }
 
 /// WI-222 Phase C+D / WI-237 (names model) / WI-239: defer-to-requirement
@@ -1010,7 +1033,6 @@ pub(crate) fn record_apply_within_rewrite(
     kb: &mut KnowledgeBase,
     site: crate::kb::CallSite,
     named_args: &SmallVec<[(Symbol, TermId); 2]>,
-    pos_args: &SmallVec<[TermId; 4]>,
     spec_op_sym: Symbol,
     enclosing_sort: Option<Symbol>,
     // WI-822 LEG 1: the operation whose frame `slot` indexes — its sort's slots then
@@ -1021,8 +1043,6 @@ pub(crate) fn record_apply_within_rewrite(
     slot: usize,
     proj_path: &[usize],
 ) -> bool {
-    use smallvec::SmallVec;
-
     if kb.dispatch_rewrite_at(site).is_some() {
         return false;
     }
@@ -1067,20 +1087,14 @@ pub(crate) fn record_apply_within_rewrite(
     }
     let requirements_list = wrap_dispatch_channel(kb, dict_expr);
 
-    let fn_ref = kb.alloc(Term::Ref(spec_op_sym));
-    let fn_field = kb.intern("fn");
-    let args_field = kb.intern("args");
-    let reqs_field = kb.intern("requirements");
-
-    let rewritten = kb.alloc(Term::Fn {
-        functor: aw_sym,
-        pos_args: pos_args.clone(),
-        named_args: SmallVec::from_slice(&[
-            (fn_field, fn_ref),
-            (args_field, orig_args_tid),
-            (reqs_field, requirements_list),
-        ]),
-    });
-    kb.record_dispatch_rewrite(site, rewritten, spec_op_sym);
+    mint_apply_within(
+        kb,
+        site,
+        aw_sym,
+        spec_op_sym,
+        orig_args_tid,
+        requirements_list,
+        spec_op_sym,
+    );
     true
 }

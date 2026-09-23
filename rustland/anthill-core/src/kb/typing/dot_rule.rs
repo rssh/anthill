@@ -741,7 +741,7 @@ fn match_dot_rule_lhs(
     let args_t = get_named_arg(kb, &la, "args")?;
     // Member name — compared by short name, robust to interning differences
     // between the rule's `name:` field and the occurrence's member symbol.
-    let rule_name = dot_member_sym(kb, name_t)?;
+    let rule_name = view_ref_symbol(kb, &TermIdView(name_t))?;
     if short_name_of(kb.local_name_of(rule_name)) != short_name_of(kb.local_name_of(member)) {
         return None;
     }
@@ -780,20 +780,6 @@ fn bind_var_pattern_to_node(
             subst.bind_value(kb, *vid, Value::Node(Rc::clone(occ)));
             Some(())
         }
-        _ => None,
-    }
-}
-
-/// The member symbol of a dot rule's `name:` field (a `Ref` / `Ident`, or a
-/// nullary `Fn` functor).
-fn dot_member_sym(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
-    match kb.get_term(t) {
-        Term::Ref(s) | Term::Ident(s) => Some(*s),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
         _ => None,
     }
 }

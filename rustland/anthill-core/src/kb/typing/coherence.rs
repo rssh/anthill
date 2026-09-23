@@ -799,7 +799,7 @@ pub(crate) fn check_use_site_requires_eq(
                 let param = raw
                     // The same "is this a bare name" rule σ-substitution applied, so
                     // the parameter reported is the one that carried the carrier in.
-                    .and_then(|raw| requires_bare_name_sym(kb, raw))
+                    .and_then(|raw| view_ref_symbol(kb, &TermIdView(raw)))
                     // Accept the raw name only when it is the one σ actually
                     // substituted — the SAME comparison `map_requires_name` makes
                     // (bare `local_name_of` against the σ key), so the parameter

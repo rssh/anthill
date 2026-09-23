@@ -1330,62 +1330,16 @@ pub(super) fn substitute_impl_params_alloc(
     term: TermId,
     impl_subst: &[(Symbol, TermId)],
 ) -> TermId {
-    match kb.get_term(term).clone() {
-        Term::Ref(s) | Term::Ident(s) => {
-            if let Some((_, v)) = impl_subst.iter().find(|(k, _)| *k == s) {
-                *v
-            } else {
-                term
-            }
-        }
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => {
-            // Nullary Fn — treat as a name reference.
-            if let Some((_, v)) = impl_subst.iter().find(|(k, _)| *k == functor) {
-                return *v;
-            }
-            term
-        }
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => {
-            let mut changed = false;
-            let new_pos: SmallVec<[TermId; 4]> = pos_args
-                .iter()
-                .map(|t| {
-                    let nt = substitute_impl_params_alloc(kb, *t, impl_subst);
-                    if nt != *t {
-                        changed = true;
-                    }
-                    nt
-                })
-                .collect();
-            let new_named: SmallVec<[(Symbol, TermId); 2]> = named_args
-                .iter()
-                .map(|(k, t)| {
-                    let nt = substitute_impl_params_alloc(kb, *t, impl_subst);
-                    if nt != *t {
-                        changed = true;
-                    }
-                    (*k, nt)
-                })
-                .collect();
-            if !changed {
-                return term;
-            }
-            kb.alloc(Term::Fn {
-                functor,
-                pos_args: new_pos,
-                named_args: new_named,
-            })
-        }
-        _ => term,
+    // A bare name is a LEAF — replaced when σ binds it, kept otherwise, never descended.
+    if let Some(s) = view_ref_symbol(kb, &TermIdView(term)) {
+        return impl_subst
+            .iter()
+            .find(|(k, _)| *k == s)
+            .map_or(term, |(_, v)| *v);
     }
+    kb.map_fn_children(term, |kb, t| {
+        substitute_impl_params_alloc(kb, t, impl_subst)
+    })
 }
 
 /// True iff `entry`'s bindings cover `goal`. Used at the

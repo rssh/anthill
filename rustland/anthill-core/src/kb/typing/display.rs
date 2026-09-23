@@ -765,7 +765,24 @@ fn type_display_name_item(kb: &KnowledgeBase, item: &ViewItem<'_>) -> String {
 /// The symbol a view names, when it names one: a bare reference (`Ref` / nullary
 /// application) or an unresolved `Ident`. The carrier-neutral face of the
 /// `extract_ref_field` this replaced, which read `Term::Ref`/`Term::Ident` only.
-fn view_ref_symbol<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symbol> {
+///
+/// THE ONE "is this a bare name" reader, because its readers must agree on it. On a
+/// `requires`-clause binding that is `subst_requires_value` and
+/// [`substitute_impl_params_alloc`], which substitute σ at exactly these shapes, and
+/// `check_use_site_requires_eq`, which reads the RAW (unsubstituted) binding back to
+/// name the container parameter in its diagnostic — if they disagreed, the diagnostic
+/// would silently fall back to naming the spec's parameter instead of the container's.
+/// A dot rule's `name:` field (`match_dot_rule_lhs`) is read the same way. Two
+/// byte-identical `TermId` copies of this match (`requires_bare_name_sym`,
+/// `dot_member_sym`) used to stand in for it; the WI-511 `Fn{c}` → `Ref(c)` flip is the
+/// kind of change that would otherwise have to be applied to each by hand.
+///
+/// [`type_ctor_view`] (WI-1048) reads the same equivalence and then some — it also
+/// admits an APPLIED `Fn`, because there a bare name and an application of it are
+/// the same constructor with one side eliding its arguments. It is deliberately not
+/// expressed in terms of this function: the question there is "which constructor",
+/// not "is this a bare name".
+pub(super) fn view_ref_symbol<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symbol> {
     match v.head(kb) {
         ViewHead::Ident(s) => Some(s),
         ViewHead::Functor {

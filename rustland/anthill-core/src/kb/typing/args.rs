@@ -1917,14 +1917,7 @@ pub(super) fn explode_incurred_effect_row(
     kb: &mut KnowledgeBase,
     effect: &Value,
 ) -> Option<Vec<Value>> {
-    let row = effect_value_as_row(kb, effect)?;
-    let subst = Substitution::new();
-    let (present, tails, _absent) = decompose_effect_row(kb, &subst, &row)?;
-    let mut atoms = present;
-    for t in tails {
-        atoms.push(Value::term(t));
-    }
-    Some(atoms)
+    explode_declared_effect_row(kb, effect).map(|(atoms, _absent)| atoms)
 }
 
 /// IS THIS EFFECT VALUE A ROW, and if so what is it as a canonical `effects_rows(…)`?
