@@ -19,6 +19,11 @@
 //! call-graph community (3.3% of call edges cross), and the six boundaries WI-009H2 proposed
 //! overlap 79-100% in transitive reach, with 273 functions reachable from every one of them.
 //! There is no semantic seam here to cut along; a further split would be arbitrary layering.
+//!
+//! SUPERSEDED IN PART (2026-09-23): at 84096 lines the typer was split into topical files
+//! under `typing/` for NAVIGATION — see `typing.rs`'s module doc. The finding above still
+//! holds: those files share one namespace (`use super::*`) and are not encapsulation
+//! boundaries. These tests still reach the typer through `super::super::`, unchanged.
 
 /// WI-20260829-K0E8T — the witness leg's GATE must not allocate before it refuses.
 #[cfg(test)]
@@ -298,7 +303,7 @@ mod wi_1ssxm_surviving_dot_backstop_tests {
 
 #[cfg(test)]
 mod wi323_pattern_type_ann_walker_tests {
-    //! WI-323: the two typing.rs pattern-fragment walkers
+    //! WI-323: the two typer pattern-fragment walkers in `typing/rules.rs`
     //! (`check_ho_apply_pattern_occ` and `occurrence_contains_functor`)
     //! early-returned on a Pattern-kind occurrence via `as_expr()`, so an
     //! `ho_apply` smuggled into a `Pattern.Var.type_ann` Expr child evaded the
@@ -2586,7 +2591,7 @@ mod wi802_function_spec_owner_tests {
                 panic!(
                     "the stdlib declares no `{FUNCTION_SPEC_QNAME}` — if the sort was \
                     renamed or moved, update FUNCTION_SPEC_QNAME, which is the ONE \
-                    place kb/typing.rs spells it"
+                    place kb::typing spells it"
                 )
             });
         assert_eq!(kb.kind_of(f), Some(SymbolKind::Sort), "it must be a SORT");

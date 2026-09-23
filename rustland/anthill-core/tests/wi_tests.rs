@@ -1634,6 +1634,9 @@ mod wi_x9pb4_require_dictionary_element_test;
 #[path = "include/wi_rsrp5_effect_label_routes_test.rs"]
 mod wi_rsrp5_effect_label_routes_test;
 
+#[path = "include/wi_kxnex_provision_names_carrier_test.rs"]
+mod wi_kxnex_provision_names_carrier_test;
+
 #[path = "include/wi_pyns2_written_row_type_argument_test.rs"]
 mod wi_pyns2_written_row_type_argument_test;
 
@@ -1772,6 +1775,10 @@ mod wi_wt8wg_domain_value_face_test;
 mod wi_3g1yt_scope_contract_discharge_test;
 #[path = "include/wi_5g28a_rule_head_type_variables_test.rs"]
 mod wi_5g28a_rule_head_type_variables_test;
+#[path = "include/wi_5g28a_paren_less_citation_test.rs"]
+mod wi_5g28a_paren_less_citation_test;
+#[path = "include/dotted_nullary_op_call_test.rs"]
+mod dotted_nullary_op_call_test;
 
 #[path = "include/nar1x_carrier_less_spec_op_test.rs"]
 mod nar1x_carrier_less_spec_op_test;
@@ -1816,6 +1823,15 @@ mod wi_159s9_op_scoped_entry_test;
 
 #[path = "include/wi_ee0ep_param_dictionary_test.rs"]
 mod wi_ee0ep_param_dictionary_test;
+
+#[path = "include/wi_6b67s_receiver_bound_requirement_test.rs"]
+mod wi_6b67s_receiver_bound_requirement_test;
+
+#[path = "include/wi_tx0g6_selection_validation_test.rs"]
+mod wi_tx0g6_selection_validation_test;
+
+#[path = "include/wi_wn9p8_forward_soundness_test.rs"]
+mod wi_wn9p8_forward_soundness_test;
 
 #[path = "include/wi_brt4y_host_implemented_test.rs"]
 mod wi_brt4y_host_implemented_test;

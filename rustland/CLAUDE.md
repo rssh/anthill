@@ -50,6 +50,7 @@ runners).
 | `kb/resolve.rs` | SLD resolution: `SearchStream`, builtins, NAF, delay |
 | `kb/discrim.rs` | `SubstTree`: discrimination tree for structural matching |
 | `kb/subst.rs` | `Substitution` with `bind_compressed` (path compression) |
+| `kb/typing.rs` + `kb/typing/` | The typer: one module split by topic into ~50 files that share one namespace (`use super::*`, glob re-exports). `typing.rs`'s module doc maps where things live |
 | `codegen/rust.rs` | Generate Rust trait/struct/enum from anthill specs |
 | `persistence/print.rs` | `TermPrinter`: render terms as `.anthill` text |
 

@@ -330,7 +330,7 @@ impl Interpreter {
                 // impl op; ConcreteApplyWithin similarly redirects (the
                 // requirements channel is empty for the bare-apply
                 // form). Read the classification off the NodeOccurrence's
-                // RefCell — written by `kb/typing.rs::classify` during
+                // RefCell — written by `kb::typing::classify` (`kb/typing/build.rs`) during
                 // type-checking.
                 // WI-204 phase B1: DeferToRequirement classifications
                 // resolve at runtime — pull the dispatching dict from
@@ -1592,7 +1592,7 @@ impl Interpreter {
     ) -> Result<StepOutcome, EvalError> {
         // WI-218: if this apply's functor has a typer-recorded dispatch
         // rewrite via the legacy term-keyed map, redirect to the impl op.
-        // The rewrite map is populated by `kb/typing.rs::record_apply_*`
+        // The rewrite map is populated by `kb::typing::record_apply_*`
         // during requirement-insertion; while the post-WI-247 substrate
         // keeps the same map, the eval looks up by the apply's functor
         // for now via `dispatch_call`'s callee resolution path.

@@ -810,6 +810,80 @@ fn an_impl_only_ensures_over_result_is_not_the_discharge_rules_business() {
     );
 }
 
+// ── a return type on the OCCURRENCE carrier is compared too ────────────
+//
+// The ground gate above read `matches!(v, Value::Term { .. }) && !contains_type_param(..)`
+// — the CARRIER test WI-20260822-1TKN0 retired from the effects leg, where it is recorded
+// as "a CARRIER test where an ABSTRACTNESS test was meant". The return leg's comment
+// claimed "the same shape the effects leg below uses" while it still read the carrier. A
+// return type rides `Value::Node` when it carries a DENOTED — the literal `3` in
+// `Foo[T = Int64, N = 3]` is what makes the loader mint the occurrence carrier — so it
+// read as "cannot decide" and the comparison was skipped. MEASURED: the mismatch below
+// loaded with ZERO errors, while the same program over ordinary types is refused.
+//
+// BACK-OUT: restore the carrier gate → `a_denoted_return_type_mismatch_is_compared`
+// loads clean and fails. Its control `a_denoted_return_type_that_matches_still_loads`
+// passes either way by design: it pins that the fix COMPARES the two types rather than
+// refusing whatever the gate used to skip.
+
+/// `Sp.op` returns a denoted-bearing `Foo[T = Int64, N = 3]` and promises
+/// `ensures total(result)`; `Carrier.op` restates that clause over its own return type.
+fn denoted_ret_src(ns: &str, impl_t: &str, impl_body: &str) -> String {
+    format!(
+        r#"
+        namespace wi347.{ns}
+          import anthill.prelude.{{Int64, String}}
+          rule total(?f)
+          sort Foo
+            sort T = ?
+            sort N = ?
+            entity foo(v: T)
+          end
+          sort Sp
+            sort T = ?
+            operation op(x: T) -> Foo[T = Int64, N = 3] ensures total(result)
+          end
+          sort Carrier
+            entity c(id: Int64)
+            provides Sp[T = Carrier]
+            operation op(x: Carrier) -> Foo[T = {impl_t}, N = 3] ensures total(result) = {impl_body}
+          end
+        end
+    "#
+    )
+}
+
+#[test]
+fn a_denoted_return_type_mismatch_is_compared() {
+    let errs = load_errors(&denoted_ret_src(
+        "result_ret_denoted",
+        "String",
+        "foo(v: \"s\")",
+    ));
+    assert!(
+        discharge_refusals(&errs)
+            .iter()
+            .any(|e| e.contains("wi347.result_ret_denoted.Carrier")
+                && e.contains("returns `Foo[T = String, N = 3]`")
+                && e.contains("returns `Foo[T = Int64, N = 3]`")),
+        "a return type on the occurrence carrier must be compared, not skipped as \
+         undecidable; got: {errs:?}"
+    );
+}
+
+#[test]
+fn a_denoted_return_type_that_matches_still_loads() {
+    let errs = load_errors(&denoted_ret_src(
+        "result_ret_denoted_ok",
+        "Int64",
+        "foo(v: 2)",
+    ));
+    assert!(
+        errs.is_empty(),
+        "a faithful override over a denoted-bearing return type must load; got: {errs:?}"
+    );
+}
+
 // ── contract clauses resolve their predicate names (WI-20260822-59CDQ) ──
 //
 // A `requires` / `ensures` clause is a goal written on a DECLARATION, so neither

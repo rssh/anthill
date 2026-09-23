@@ -152,7 +152,12 @@ namespace test.pyns2.provided
     entity carrier3(t: String)
     operation go(self: Carrier3, p: String) -> Out
       effects {External, Error} = out(v: p)
-    provides Spec3[E = {External}]
+    -- `C = Carrier3` IS NOT DECORATION (WI-20260913-KXNEX). This fixture is about
+    -- the written ROW, so it bound only `E` — and a provision names its CARRIER by
+    -- its bindings (§5.1), so it named none. That loaded clean, which is exactly why
+    -- a fixture that only ever LOADS could carry it; the same omission in
+    -- `examples/guardians` died `OperationBodyMissing` at the first call.
+    provides Spec3[C = Carrier3, E = {External}]
   end
 end
 "#;

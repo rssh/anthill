@@ -31,6 +31,12 @@
 //! — which names neither the requirement nor a repair, and is the message
 //! `eval/eval.rs`'s own WI-1102 note says one population should not be getting.
 //!
+//! WI-20260923-WN9P8 REFUSES THIS SHAPE FIRST, as a forward. `O` is a parameter the
+//! signature declared, so the slot bound to it forwards, and a forward is answered by the
+//! frame's dictionary FOR `O` or refused (`project_forwarded_slot`). There is none here.
+//! The verdict, and the wording these rows assert, are unchanged; the parked refusal below
+//! now stands behind that one for this shape (see the back-out matrix).
+//!
 //! **PARKED, NOT RAISED**, and since WI-20260921-3G1YT for one reason rather than two.
 //! The refusal goes through [`UnsuppliableRequirement`] because an operation is routinely
 //! called before its own body is classified, so the verdict waits for the pass that runs
@@ -53,9 +59,15 @@
 //! **BACK-OUT MATRIX, measured on this tree rather than reasoned — THREE separable
 //! changes, three disjoint failure sets.**
 //!
-//!  * the parked `no_scope_route` refusal → `an_undeclared_ordering_is_refused_at_load`
-//!    and `the_refusal_names_the_repair_and_not_a_witness_choice` (2), each going back
-//!    to loading clean and dying at eval. (It was 3 until WI-20260921-159S9 inverted the
+//!  * the parked `no_scope_route` refusal → `strategy_2b_declines_a_witness_provider`
+//!    alone (1), MEASURED at WI-20260923-WN9P8. It used to redden
+//!    `an_undeclared_ordering_is_refused_at_load` and
+//!    `the_refusal_names_the_repair_and_not_a_witness_choice` too, each going back to
+//!    loading clean and dying at eval. Those two, and
+//!    `a_callee_that_never_reads_the_slot_is_refused_too_and_the_slot_is_the_repair`, are
+//!    FORWARDS of an operation's type parameter the frame holds no dictionary for, and
+//!    WN9P8's forward rule refuses them before any strategy runs. So they redden only with
+//!    both refusals backed out. (The count was 3 until WI-20260921-159S9 inverted the
 //!    op-scoped arm, which no longer measures the refusal at all.)
 //!  * the tail advice ALONE → `the_refusal_names_the_repair_and_not_a_witness_choice`
 //!    alone (1). The other two assert the VERDICT and say nothing about the wording,

@@ -144,7 +144,7 @@ fn type_mismatch_tag(origin: &Option<TypeMismatchOrigin>) -> String {
 }
 
 /// WI-510: the opt-in construction-site trace appended to a rendered
-/// `TypeMismatch`, e.g. ` [Other @ kb/typing.rs:14028]`. Gated on the
+/// `TypeMismatch`, e.g. ` [TypeMismatch @ kb/typing/callable.rs:633]`. Gated on the
 /// `ANTHILL_DIAG_ORIGIN` env var so normal diagnostics stay clean; a developer
 /// tracing a mismatch to its origin sets the var and re-runs. Empty otherwise.
 fn type_mismatch_origin_suffix(origin: &Option<TypeMismatchOrigin>) -> String {
@@ -1060,6 +1060,33 @@ pub enum LoadError {
         provider: String,
         span: Span,
     },
+    /// WI-20260913-KXNEX — a written `provides` clause that leaves its spec's CARRIER
+    /// PARAMETER unbound, and so names no carrier. §5.1: "a `provides` clause names its
+    /// PROVIDER by WHERE it is written, and its CARRIER by its bindings".
+    ///
+    /// Raised by [`super::typing::check_provision_names_carrier`], which is where the
+    /// reasoning lives. Carries a `SourceSpan` and not a `Span`: it is raised by a
+    /// POST-LOAD pass over every file's clauses, so byte offsets alone would name the
+    /// wrong file — and `dedup_rendered_load_errors` keys on the rendering, which would
+    /// then collapse two files' refusals into one.
+    ProvisionNamesNoCarrier {
+        /// The spec the clause names, qualified.
+        spec: String,
+        /// The spec's carrier parameter, by short name (`C`).
+        carrier_param: String,
+        /// The sort whose body the clause stands in, qualified — its PROVIDER, and the
+        /// repair the message prescribes.
+        provider: String,
+        /// The clause's own `path:line:col`, PRE-RENDERED by [`render_decl_site`].
+        ///
+        /// Rendered rather than carried as a `Span`, which is what every POST-LOAD check
+        /// over more than one file's declarations does (`DuplicateOperationDeclaration`
+        /// and its neighbours). A bare `Span` is byte offsets with no source, so the
+        /// per-file `loc` the `Span`-bearing variants render against would name whichever
+        /// file happened to be rendering — and `dedup_rendered_load_errors` keys on the
+        /// rendering, so two files' refusals at equal offsets would collapse into one.
+        site: String,
+    },
     /// WI-851: a constructor's named argument names no DECLARED FIELD of the entity.
     /// The named twin of the positional over-arity refusal, and like it a loud case
     /// rather than a silent never-match: an unknown label rides into the hash-consed
@@ -1845,6 +1872,28 @@ pub enum LoadError {
         position: CallTypeArgsPosition,
         span: Span,
     },
+    /// WI-20260911-5G28A (L3) — a PAREN-LESS bracketed `Sort[…].m` in an operation or
+    /// const body whose `m` resolves, and not to a rule. The paren-less spelling is the
+    /// RULE citation (`Wrap[T = Colour].tag`); the bare `Sort.m` cites nothing else
+    /// either, and without this the converter's lowering — the zero-argument call the
+    /// applied `Sort[…].m()` builds — would make `Box[T = Int64].zero` a call the author
+    /// did not write, which the typer accepts for a nullary operation.
+    ///
+    /// Its OWN variant, not [`Self::InvalidTypeArgument`]: the bracket may be perfectly
+    /// valid — it is the missing `()` or the member that is wrong, and a message that
+    /// opens "invalid type argument" sends the author to the one part they wrote right.
+    ParenLessCitationOfNonRule {
+        /// The sort AS WRITTEN (`Box`, `..ns.Box`), so the repair quotes the source.
+        sort: String,
+        /// The member as written (`zero`).
+        member: String,
+        /// Whether `member` is an operation — the one case with a spelling that reads
+        /// the bracket (`Sort[…].m()`). Anything else (a nested sort, a const, a type
+        /// parameter) has none: a bracket before a dot is read by a rule citation or an
+        /// operation call and by nothing else.
+        is_operation: bool,
+        span: Span,
+    },
     /// WI-840 (proposal 058 §4.2) — an operation declares a type parameter whose name
     /// already denotes something else in the ONE bracket list that binds it, so a
     /// written `op[N = …]` would have two possible targets. Refused at the
@@ -2012,6 +2061,26 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
              dropped. The applicative spelling `Sort.{callee}[…](…)` is the form that \
              can carry one"
         ),
+    }
+}
+
+/// WI-20260911-5G28A (L3): the one wording of [`LoadError::ParenLessCitationOfNonRule`],
+/// shared by the two renderings so they cannot drift (WI-852). Only an operation has a
+/// repair that keeps the bracket; for anything else the bracket reads nothing, and
+/// dropping it is what the bare spelling already means.
+fn paren_less_citation_detail(sort: &str, member: &str, is_operation: bool) -> String {
+    if is_operation {
+        format!(
+            "`{sort}[…].{member}` without parentheses is a RULE citation, and `{member}` is \
+             an operation — call it `{sort}[…].{member}()`"
+        )
+    } else {
+        format!(
+            "`{sort}[…].{member}` without parentheses is a RULE citation, and `{member}` \
+             names no rule — a type bracket before a dot is read by a rule citation or an \
+             operation call and by nothing else, so here it would bind nothing; drop it \
+             (`{sort}.{member}`)"
+        )
     }
 }
 
@@ -2241,6 +2310,7 @@ impl LoadError {
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
+            | LoadError::ParenLessCitationOfNonRule { span, .. }
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
             | LoadError::MacroRejected { span, .. }
@@ -3128,6 +3198,18 @@ impl LoadError {
                     call_type_args_unsupported_detail(callee, *position),
                 )
             }
+            LoadError::ParenLessCitationOfNonRule {
+                sort,
+                member,
+                is_operation,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    paren_less_citation_detail(sort, member, *is_operation),
+                )
+            }
             LoadError::TypeParamShadowsSlot {
                 op,
                 param,
@@ -3225,6 +3307,18 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     provides_names_data_sort_message(spec, provider)
+                )
+            }
+            LoadError::ProvisionNamesNoCarrier {
+                spec,
+                carrier_param,
+                provider,
+                site,
+            } => {
+                format!(
+                    "{}: {}",
+                    site,
+                    provision_names_no_carrier_message(spec, carrier_param, provider)
                 )
             }
             LoadError::TypedPatternNotEnforced { rule, reason, span } => {
@@ -3565,6 +3659,19 @@ impl std::fmt::Display for LoadError {
                     provides_names_data_sort_message(spec, provider),
                     span.start,
                     span.end
+                )
+            }
+            LoadError::ProvisionNamesNoCarrier {
+                spec,
+                carrier_param,
+                provider,
+                site,
+            } => {
+                write!(
+                    f,
+                    "{} at {}",
+                    provision_names_no_carrier_message(spec, carrier_param, provider),
+                    site
                 )
             }
             LoadError::UnresolvedImport { path, span } => {
@@ -4298,6 +4405,20 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     call_type_args_unsupported_detail(callee, *position),
+                    span.start,
+                    span.end,
+                )
+            }
+            LoadError::ParenLessCitationOfNonRule {
+                sort,
+                member,
+                is_operation,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    paren_less_citation_detail(sort, member, *is_operation),
                     span.start,
                     span.end,
                 )
@@ -5286,9 +5407,69 @@ pub fn scan_definitions_with_sources(
     // the converter now names each target outright (`crate::parse::desugar_target`),
     // so there is no reserved name at all — dissolving both that rung and the
     // collision blocklist WI-476 needed.
+    if role == SourceRole::Query {
+        for file in files {
+            errors.extend(query_bracket_errors(file));
+        }
+    }
     // WI-995 — the scan is over; nothing after it asks on one file's behalf until
     // the per-file declaration/load loops set it again.
     kb.symbols.set_asking_file(None);
+    errors
+}
+
+/// A query pattern's parse-only BRACKETS, refused before [`convert_query_term`] meets
+/// them. That walk reads neither channel — a call-site `f[T = X](…)` (`type_args`) nor a
+/// companion receiver `Sort[…].m` / `Sort[…].m()` (`recv_type`) — and its
+/// `Term::ParseAux` arm is `unreachable!` for both, so each PANICKED the CLI, where a
+/// program's own sweeps (`check_unconsumed_call_type_args`, `check_unconsumed_recv_types`)
+/// refuse the same bracket by name. WI-20260911-5G28A made the paren-less `Sort[…].m`
+/// the second spelling to reach it: it used to answer `no solutions` as a
+/// `field_access` pattern heading no clause, which was a silent wrong answer rather than
+/// a crash, and is neither now.
+///
+/// Keyed on the two reserved keys AND a `ParseAux` value, which is the same pair the
+/// sweeps key on: a user's own `recv_type: 1` argument is not a bracket, and an
+/// effect-row binding value (`Spec[E = {}]`) rides under its parameter's name and is
+/// lowered by that arm.
+fn query_bracket_errors(file: &ParsedFile) -> Vec<LoadError> {
+    let key = |name: &str| file.symbols.lookup(name);
+    let (type_args_key, recv_type_key) = (key("type_args"), key("recv_type"));
+    let mut errors = Vec::new();
+    for i in 0..file.terms.len() {
+        let id = TermId::from_raw(i as u32);
+        let Term::Fn {
+            functor,
+            named_args,
+            ..
+        } = file.terms.get(id)
+        else {
+            continue;
+        };
+        let callee = file.symbols.local_name(*functor);
+        let span = file.terms.span(id);
+        for &(k, v) in named_args.iter() {
+            if !matches!(file.terms.get(v), Term::ParseAux(_)) {
+                continue;
+            }
+            if Some(k) == type_args_key {
+                errors.push(LoadError::CallTypeArgsNotSupportedHere {
+                    callee: callee.to_string(),
+                    position: CallTypeArgsPosition::NoChannel,
+                    span,
+                });
+            } else if Some(k) == recv_type_key {
+                errors.push(LoadError::InvalidTypeArgument {
+                    detail: format!(
+                        "a companion receiver's type bracket is not read in a query pattern \
+                         — nothing lowers it on `{callee}` here, so the binding would be \
+                         parsed and then dropped; query `{callee}` without it"
+                    ),
+                    span: Some(span),
+                });
+            }
+        }
+    }
     errors
 }
 
@@ -7153,6 +7334,37 @@ fn provides_names_data_sort_message(spec: &str, provider: &str) -> String {
          {spec}(…)`, which is a different statement and needs no clause here. (The \
          `fact {spec}[…]` spelling is classified as that data assertion rather than \
          refused, since it has both readings — this clause has only one.)"
+    )
+}
+
+/// WI-20260913-KXNEX — the sentence for [`LoadError::ProvisionNamesNoCarrier`]. One
+/// owner, for the reason [`provides_needs_sort_message`] states: two rendering paths,
+/// one of them under test.
+///
+/// It names the PARAMETER and spells the repair, because "this provision names no
+/// carrier" is not actionable on its own: which parameter carries a spec is read off the
+/// spec's operations (WI-1076) and is nowhere in the clause the author is looking at. The
+/// clause is quoted WITHOUT a bracket ellipsis for the same both-shapes reason: a bare
+/// `provides Harness` has no brackets, and `provides Harness[…]` misquotes it.
+///
+/// The repair is worded to fit BOTH refused shapes with no branch — the clause that binds
+/// a non-carrier parameter (`provides Llm[E = {External}]`) and the BARE one (`provides
+/// Harness`). An earlier wording ended "keeping the bindings already there", which tells
+/// the author of a bare clause to keep bindings it does not have.
+///
+/// And it says what the silence COST — the shape's whole history is that it loads clean and
+/// dies at a call site in another file, so a refusal that did not connect the two would
+/// read as the loader being newly fussy about a program that "worked".
+fn provision_names_no_carrier_message(spec: &str, carrier_param: &str, provider: &str) -> String {
+    format!(
+        "`provides {spec}` in '{provider}' binds nothing at '{spec}'s carrier \
+         parameter `{carrier_param}`, so it names no carrier — §5.1: a `provides` clause \
+         names its PROVIDER by where it is written, and its CARRIER by its bindings. The \
+         provision is not about '{provider}', and value-directed dispatch finds no \
+         provider for '{spec}'s operations: a call on a '{provider}' value fails \
+         `OperationBodyMissing` at run time, against a sort that implements it. Write the \
+         carrier into the clause — `provides {spec}[{carrier_param} = {provider}]` — \
+         alongside any bindings it already carries."
     )
 }
 
@@ -13476,6 +13688,33 @@ fn load_phase_inner(
     // Load-blocking.
     all_errors.extend(super::typing::check_provider_operations(kb));
     mark!("check_provider_operations");
+    // WI-20260913-KXNEX: a written `provides` clause must NAME A CARRIER — bind the
+    // spec's carrier parameter (§5.1). The clause that does not loaded clean and died
+    // `OperationBodyMissing` at the first call against a provider that implements the
+    // operation; see `check_provision_names_carrier` for the measurement and for what
+    // stays legal. Load-blocking, for the reason the two checks above are: the provision
+    // is unsound as recorded, and its only other outcome is a run-time failure in a file
+    // that did nothing wrong.
+    //
+    // HERE, beside the other two PROVIDER-side checks and after them, because it asks
+    // the same kind of question about the same declaration. Its own ordering constraint
+    // is only that every spec's OPERATIONS have loaded — `spec_carrier_param` reads the
+    // carrier parameter off them, and under cross-file mutual recursion (WI-321) a
+    // provision may load before the file declaring them. Anywhere in this post-load
+    // region satisfies that; standing after `check_provider_operations` means a program
+    // that is wrong BOTH ways reads the operation-coverage diagnostic first, which names
+    // the concrete missing member rather than the binding that would have found it.
+    //
+    // DRAINED HERE, not by the check: the drain is the caller's, the rule its WI-835
+    // neighbour is under, so that a `load_all` into a live KB judges only its own
+    // clauses. The drain stands BELOW the `run_typer: false` return above, which is what
+    // makes `restore_load_check_marks`' truncate a real restore rather than a no-op.
+    let written_provides = kb.take_written_provides_clauses();
+    all_errors.extend(super::typing::check_provision_names_carrier(
+        kb,
+        &written_provides,
+    ));
+    mark!("check_provision_names_carrier");
     // WI-664: derive composite Eq/NonEq classification. Builds the field-wise-eq
     // carrier set (`field_wise_noneq_carriers`, read by the resolver and
     // interpreter to compare a Float-containing composite FIELD-WISE) and asserts
@@ -17363,7 +17602,7 @@ fn check_duplicate_operation_declarations(kb: &KnowledgeBase) -> Vec<LoadError> 
 /// being dropped: a dropped site would leave the refusal naming fewer places than
 /// it counted. Unreachable today (`Loader::new` always registers the parsed text,
 /// and a file containing an `operation` is not empty), and kept total anyway.
-fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
+pub(crate) fn render_decl_site(kb: &KnowledgeBase, site: SourceSpan) -> String {
     match kb.sources.provenance(site.source) {
         Some((path, text)) => {
             let at = LineIndex::new(&text).format_start(site.span);
@@ -25309,12 +25548,72 @@ impl<'a> Loader<'a> {
         let ResolveResult::Found(sym) = resolved else {
             return None;
         };
+        self.is_paren_less_citation_target(sym).then_some(sym)
+    }
+
+    /// What a PAREN-LESS dotted name cites in this walk (an operation or const body): a
+    /// rule-ish `Goal` head functor or `Rule` label — or an `EquationFunctor`, which
+    /// collapses too, for the reason [`Self::resolve_qualified_rule_readonly`] gives. ONE
+    /// predicate for the bare `Sort.m` and the bracketed `Sort[…].m`
+    /// ([`Self::refuse_paren_less_non_rule`]), so the two spellings cannot admit
+    /// different members.
+    fn is_paren_less_citation_target(&self, sym: Symbol) -> bool {
         // Per-role `has_kind` (WI-925), not the declaration's opening keyword: whether
         // a dotted name is a rule-ish citation is a membership question.
-        (self.kb.has_kind(sym, SymbolKind::Goal)
+        self.kb.has_kind(sym, SymbolKind::Goal)
             || self.kb.has_kind(sym, SymbolKind::Rule)
-            || self.kb.has_kind(sym, SymbolKind::EquationFunctor))
-        .then_some(sym)
+            || self.kb.has_kind(sym, SymbolKind::EquationFunctor)
+    }
+
+    /// WI-20260911-5G28A (L3): refuse a paren-less `Sort[…].m` in an operation or const
+    /// body whose `m` resolves to something the bare `Sort.m` would not cite —
+    /// [`LoadError::ParenLessCitationOfNonRule`]. Without it the converter's lowering
+    /// (the zero-argument call the applied `Sort[…].m()` builds) made `Box[T =
+    /// Int64].zero` a call to a nullary operation, which the typer accepts, where the
+    /// bare `Box.zero` names nothing.
+    ///
+    /// AN UNRESOLVED `m` IS NOT REFUSED HERE. It has no kind to be "not a rule", and the
+    /// typer reports the name as an unknown functor; refusing it as well put a second
+    /// error on every typo, quoting the unresolved dotted name as the member (`Sort[…].
+    /// Wrap.tagg`). An AMBIGUOUS name and a hidden `internal` one are the same case:
+    /// their resolution reported them and handed back a bare intern, which has no kind.
+    ///
+    /// THE TYPER STILL SPEAKS AFTER THIS, and that is left on purpose: the node stays the
+    /// zero-argument call, so a member with parameters draws the arity error and a
+    /// non-callable one the unknown-functor error — the verdict the applied `Sort[…].m()`
+    /// draws. Suppressing them would mean substituting a recovery leaf (WI-605's
+    /// `expr_body_bottom_recovery`), which the rule-compound walk that also reaches this
+    /// frame does not honour.
+    ///
+    /// RULE BODIES ARE NOT THIS SITE. There the bare dotted name DOES reach an
+    /// operation (the goal `:- ns.flag` is its call, WI-20260902-VNWAW), so the marked
+    /// node keeps the applied reading the converter gave it. That includes a rule's
+    /// COMPOUND expression (`?y <=> (if c then Box[T = Int64].zero else 1)`), which this
+    /// walk lowers on the rule's behalf (`lowering_rule_compound_expr`): refused there,
+    /// one rule body gave the spelling two verdicts, a call in a data slot and a load
+    /// error one `if` deeper.
+    fn refuse_paren_less_non_rule(
+        &mut self,
+        parse_functor: Symbol,
+        kb_functor: Symbol,
+        parse_id: TermId,
+    ) {
+        let def = self.kb.symbols.get(kb_functor);
+        if def.kinds().is_empty() || self.is_paren_less_citation_target(kb_functor) {
+            return;
+        }
+        let is_operation = def.has_kind(SymbolKind::Operation);
+        let written = self.parsed.symbols.local_name(parse_functor);
+        let (sort, member) = written
+            .rsplit_once('.')
+            .expect("a paren-less citation's functor joins the bracket's sort and the member");
+        let (sort, member) = (sort.to_string(), member.to_string());
+        self.errors.push(LoadError::ParenLessCitationOfNonRule {
+            sort,
+            member,
+            is_operation,
+            span: self.parsed.terms.span(parse_id),
+        });
     }
 
     /// WI-304: push the native leaf `NodeOccurrence` for a just-built leaf
@@ -25790,6 +26089,20 @@ impl<'a> Loader<'a> {
                 let is_type_value = !is_entity
                     && self.parsed.terms.is_type_application(outer_parse_id)
                     && self.kb.has_kind(kb_functor, SymbolKind::Sort);
+
+                // WI-20260911-5G28A (L3): the paren-less `Sort[…].m` reaches here as the
+                // zero-argument call the applied `Sort[…].m()` builds, so a RULE citation
+                // takes the one lowering below either way — and anything else is refused
+                // rather than read as a call the author did not write. An entity keeps its
+                // own route: its arm leaves the bracket unread and the end-of-file sweep
+                // reports it, as it does for the applied spelling.
+                // A rule's compound expression is a RULE BODY — see the refusal's doc.
+                if !is_entity
+                    && !self.lowering_rule_compound_expr
+                    && self.parsed.terms.is_paren_less_citation(outer_parse_id)
+                {
+                    self.refuse_paren_less_non_rule(parse_functor, kb_functor, outer_parse_id);
+                }
 
                 let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::with_capacity(total);
                 for i in 0..pos_count {
@@ -34578,6 +34891,21 @@ impl<'a> Loader<'a> {
         };
         // Proposal 066 §7.5 — the clause, by CONTENT, for `provides_clause_count`.
         if let Some(spec_sym) = named_spec {
+            // WI-20260913-KXNEX — and the clause itself, for the post-load check that
+            // it names a carrier. A DIFFERENT registry from the count beside it and not
+            // a second use of it: that one is keyed by CONTENT and collapses two clauses
+            // writing the same row, which is right for "how many provisions is this" and
+            // wrong here — each written clause is a separate thing to fix and carries its
+            // own span. Recorded only when the spec NAME resolved: `provided_spec_symbol`
+            // has already reported a name that did not, and a second diagnostic about
+            // the carrier of a spec that is not there names the wrong repair.
+            self.kb
+                .record_written_provides_clause(crate::kb::WrittenProvidesClause {
+                    provider: domain,
+                    spec: spec_sym,
+                    spec_view: spec_value.clone(),
+                    span: SourceSpan::from_span(self.source_id, pc.span),
+                });
             self.kb.record_provides_clause(domain, spec_sym, conditions);
         }
         self.kb.assert_metadata_fact_carrier(

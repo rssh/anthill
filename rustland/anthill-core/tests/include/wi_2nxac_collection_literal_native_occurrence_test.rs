@@ -431,11 +431,12 @@ fn a_form_three_receiver_type_under_a_literal_is_not_refused() {
 /// through the generic arm; the bracket here sits on `bx`, a CONSTRUCTOR. Reading the two
 /// as one channel is what produced the acceptance.
 ///
-/// NOT COVERED, and pre-existing rather than 2SZ88's: a form-(3) bracket on a ZERO-FIELD
-/// constructor (`Bx[T = Int64].nada`) loads clean on EVERY tree including the baseline —
-/// the bare name never carries the bracket to the sweep at all. Measured, and left alone
-/// because it is not this ticket's regression; the row below would have to assert a
-/// refusal that has never existed.
+/// A form-(3) bracket on a ZERO-FIELD constructor written PAREN-LESS (`Bx[T =
+/// Int64].nada`) loaded clean on every tree up to WI-20260911-5G28A: the paren-less
+/// spelling was a `field_access` chain and never carried the bracket to the sweep. L3
+/// lowers it to the applied term, so it is refused as `Bx[T = Int64].nada()` always was —
+/// pinned by `wi_5g28a_paren_less_citation_test::a_bracket_on_a_zero_field_constructor_
+/// meets_the_sweep`, not here, because that ticket is what made the refusal exist.
 #[test]
 fn a_form_three_receiver_on_a_constructor_is_refused() {
     let src = "namespace zz2nx.rt\n  import anthill.prelude.Int64\n  \

@@ -400,7 +400,10 @@ namespace test.rsrp5.pl
     import test.rsrp5.pl.{Clock2}
     import test.rsrp5.pl.Clock2.{clock2}
     entity cpl(t: String)
-    provides Spec[E = {Modify[clock2]}]
+    -- `C = CPlace` for the reason `wi_pyns2_written_row_type_argument_test` gives:
+    -- a row-binding fixture that binds ONLY the row names no carrier (§5.1), and
+    -- WI-20260913-KXNEX refuses that at load. The subject here is still `E`.
+    provides Spec[C = CPlace, E = {Modify[clock2]}]
   end
 end
 "#;

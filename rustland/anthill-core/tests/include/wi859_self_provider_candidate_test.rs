@@ -286,21 +286,35 @@ end
     );
 }
 
-/// DEDUP, and the BARE provision — two claims in one program, because one shape
-/// drives both.
+/// DEDUP — two DISTINCT provisions of one spec by one carrier, and ONE candidate.
 ///
-/// `provides Desc[T = Leaf]` and a bare `provides Desc` are two distinct provisions
-/// (two spec views, two `SortProvidesInfo` facts) and ONE candidate: the dictionary
-/// is the carrier's member set, and a carrier has one of those however many ways it
-/// says it provides. That the candidate's identity is the CARRIER — not the provision
-/// — is what makes the collapse right rather than lossy.
+/// `provides Desc[T = Leaf]` and `provides Desc[T = Leaf, U = Int64]` are two distinct
+/// provisions (two spec views, two `SortProvidesInfo` facts) and one candidate: the
+/// dictionary is the carrier's member set, and a carrier has one of those however many
+/// ways it says it provides. That the candidate's identity is the CARRIER — not the
+/// provision — is what makes the collapse right rather than lossy. `U` is an inert
+/// second parameter, present only so the two views DIFFER; the carrier question is
+/// answered identically by both.
 ///
-/// The bare provision is the second claim: it names no carrier at all, so
-/// `witness_dispatch_carrier` answers `None` for it exactly as it does for the
-/// explicit self-provision, and the self kind must take it. Grouping it anywhere else
-/// would disagree with `provision_supplier`, which keys a carrier-less provision at
-/// its provider — the load check and the dispatch reader answering different carriers
-/// is the WI-838 shape.
+/// THAT THEY REALLY ARE TWO IS MEASURED, not assumed, because a pair that collapsed at
+/// the FACT layer would leave this test asserting "one candidate" about one provision —
+/// green, and evidence of nothing. Loading the fixture with the second clause present
+/// reports 4226 facts against 4225 without it: the views differ, so the second
+/// `SortProvidesInfo` is a distinct hash-consed fact, and the collapse being asserted
+/// below is the GROUPING's. (The predecessor fixture rested on the same property and
+/// stated it without measuring it; `provides_clause_count` cannot stand in — it keys on
+/// carrier, spec and conditions, so it answers 1 for both fixtures by design.)
+///
+/// THE SECOND CLAIM USED TO BE A BARE `provides Desc`, and WI-20260913-KXNEX retired
+/// that spelling over a spec with a carrier parameter — it binds nothing at `T`, so by
+/// §5.1 it names no carrier, and it is now a load error. The sentence this doc used to
+/// carry ("the self kind must take it, because `witness_dispatch_carrier` answers
+/// `None` for it exactly as it does for the explicit self-provision") was true of the
+/// GROUPING and false of DISPATCH, which is the whole of that ticket: the two readers
+/// disagreed about one provision, and the same omission in `examples/guardians` loaded
+/// clean and died `OperationBodyMissing` at the first call. The grouping claim is
+/// unchanged and still driven — both views here answer carrier = provider, so the self
+/// kind still takes them, and `provision_supplier` still keys them at the provider.
 #[test]
 fn two_self_provisions_of_one_carrier_are_one_candidate() {
     let src = r#"namespace test.wi859.dedup
@@ -308,13 +322,15 @@ fn two_self_provisions_of_one_carrier_are_one_candidate() {
 
   sort Desc
     sort T = ?
+    sort U = ?
     operation describe(x: T) -> Int64
   end
 
   sort Leaf
+    import anthill.prelude.Int64
     entity leaf
     provides Desc[T = Leaf]
-    provides Desc
+    provides Desc[T = Leaf, U = Int64]
     operation describe(x: Leaf) -> Int64 = 1
   end
 end
@@ -327,8 +343,8 @@ end
     assert_eq!(
         provider_coherence_candidates(&kb, "test.wi859.dedup.Desc", "test.wi859.dedup.Leaf"),
         vec!["self:test.wi859.dedup.Leaf".to_string()],
-        "one carrier, one member set, ONE self-provider candidate — and the BARE \
-         provision lands in the same group as the explicit one"
+        "one carrier, one member set, ONE self-provider candidate — and the SECOND \
+         provision lands in the same group as the first"
     );
 }
 

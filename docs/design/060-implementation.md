@@ -539,6 +539,31 @@ rightly refuses to pin from one value, so the goal delays and the drain flounder
    at all**: `field_access_dotted_name_of` needs a `Term::Ident` root and 4NEKZ's
    `loader_chain_dotted_name` an `Expr::Ref` root, and a type application is neither.
 
+**(1) AND (3) ARE CLOSED — L3, DELIVERED 2026-09-23.** Both at ONE site, the converter,
+rather than the two the step list below names: `convert_paren_less_citation` lowers a
+`field_access` whose object is an `application` to the very term the applied spelling
+builds (`Fn{Sort.rel}`, no arguments, the bracket on `recv_type`), and `is_value_receiver`
+treats that node as a value, so `Sort[…].rel.takeN(5)` and `Sort[…].rel.head.x` dispatch on
+the citation instead of flattening the chain. The loader then needs no new rung — its
+applied path validates the bracket through `build_recv_type` — only a refusal, in an
+operation or const body, for a paren-less node whose functor RESOLVES and is not rule-ish
+(`LoadError::ParenLessCitationOfNonRule`: `Box[T = Int64].zero`; the bare `Box.zero` names
+no operation either). A RULE BODY takes the applied reading with no refusal, and that closed
+a silent wrong answer there: `:- Wrap[T = Colour].holds` answered nothing where the bare
+goal answers. In a rule-body DATA slot the applied reading calls a nullary operation —
+`?y <=> Box[T = Int64].zero` binds 0, as the applied spelling and §5.4's bare one-segment
+`zero` do, where it bound the data term `zero` (as the bare DOTTED `Box.zero` did until the
+follow-up that made a dotted nullary operation its call in a rule body). The LOUD verdict changes, over an empty corpus population: `Outer[T =
+Int64].Inner.op()` is refused (it loaded, the bracket erased on the way to `Outer.Inner.op`);
+a bracketed paren-less entity in a rule body, a bracketed citation in a `fact` data slot, and
+a bracketed paren-less rule HEAD (`rule Wrap[T = Colour].holds :- true`) now meet the W6JH0
+unread-bracket sweep, as their applied spellings always did; and a query pattern refuses
+every bracket by name (`query_bracket_errors`), where the applied and call-site spellings
+PANICKED `convert_query_term` on every tree and the paren-less one would have joined them.
+Defect (2) is untouched and now reads the same for both spellings: `Wrap[T =
+Colour].dom.head.x -> Wrap[T = Colour]` is refused `got Wrap[T = ?T]`. Rows:
+`wi_5g28a_paren_less_citation_test.rs`.
+
 ### Why the type rides beside the goal and not as an extra head argument
 
 The alternative — one trailing positional per enclosing-sort type parameter, appended to
@@ -601,7 +626,7 @@ at the TYPER, where the column types are.
 | **R0** | `ResolverFrame` | a type-argument channel, keyed by (sort, parameter symbol), inherited on push the way `assumed_facts` is |
 | **R1** | `step_choice_point`, at `with_fresh_vars` | open the clause's stored bounds against the fresh frame (`term_from_debruijn`, as `typed_pattern_bounds_hold` already does) and `pin_type_vars` the caller's type against each, binding into σ |
 | **E1** | `eval::build_relation_value` | attach the citation's types to the query, each walked through `Frame::type_args` FIRST so a rigid becomes the caller's real type |
-| **L3** | `visit_load`'s `field_access` ladder, and `convert.rs`'s dot-call receiver path | lower a paren-less `Sort[…].rel` as the zero-argument APPLIED citation both engines already take, so defects (1) and (3) close together and the bracket is validated once |
+| **L3** — DELIVERED | `convert.rs` (`convert_paren_less_citation`, `is_value_receiver`); see "(1) and (3) are closed" above | lower a paren-less `Sort[…].rel` as the zero-argument APPLIED citation both engines already take, so defects (1) and (3) close together and the bracket is validated once |
 | **T1/T2** | `relation_clause_columns`, `relation_reference_type_applied` | pin the bracket per citation and write it to `resolved_type_args`; a RIGID pin is left OFF that channel deliberately, for E1 to resolve from the frame |
 | **W1** | `emit_domain_value_face`, `domain_value_face_refusal` | delete the parameterised arm; a parameterised sort derives its value face like any other |
 

@@ -161,6 +161,17 @@ pub struct SimpleTermStore {
     /// Governed by the `TermId`-stability caveat stated on [`Self::minted`], like its
     /// three siblings.
     arg_order: HashMap<TermId, SmallVec<[ArgSlot; 4]>>,
+
+    /// WI-20260911-5G28A (L3): the zero-argument call `Fn{Sort.m, recv_type: …}` the
+    /// converter lowers a PAREN-LESS bracketed citation `Sort[…].m` into — the same term
+    /// the applied `Sort[…].m()` builds, so both spellings reach one lowering and the
+    /// bracket is validated either way. Only the surface tells them apart, and the
+    /// loader needs it: in an operation or const body paren-less is the RULE-citation
+    /// spelling (a bare `Sort.op` names no operation value there), so a marked node whose
+    /// functor resolves to anything else is refused rather than silently read as a call
+    /// (`Loader::refuse_paren_less_non_rule`). Recorded like its siblings, for their
+    /// reason.
+    paren_less_citations: HashSet<TermId>,
 }
 
 impl SimpleTermStore {
@@ -232,6 +243,17 @@ impl SimpleTermStore {
     /// only this bit tells them apart.
     pub fn is_projection(&self, id: TermId) -> bool {
         self.projections.contains(&id)
+    }
+
+    /// WI-20260911-5G28A: record that `id` was written as the paren-less citation
+    /// `Sort[…].m`, lowered to the zero-argument call — see [`Self::paren_less_citations`].
+    pub fn mark_paren_less_citation(&mut self, id: TermId) {
+        self.paren_less_citations.insert(id);
+    }
+
+    /// WI-20260911-5G28A: was this call written paren-less, as `Sort[…].m`?
+    pub fn is_paren_less_citation(&self, id: TermId) -> bool {
+        self.paren_less_citations.contains(&id)
     }
 
     /// WI-1099: record that `id` was written as the bracket surface `[a, b]`, not as a
