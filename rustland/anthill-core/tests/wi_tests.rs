@@ -1838,3 +1838,6 @@ mod wi_brt4y_host_implemented_test;
 
 #[path = "include/wi_z1q8b_occurrence_bound_type_param_test.rs"]
 mod wi_z1q8b_occurrence_bound_type_param_test;
+
+#[path = "include/wi_n3w68_twin_divergence_test.rs"]
+mod wi_n3w68_twin_divergence_test;

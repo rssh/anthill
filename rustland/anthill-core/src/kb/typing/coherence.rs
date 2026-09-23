@@ -284,7 +284,6 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
             named_args,
         } = kb.get_term(spec_view).clone()
         {
-            let is_sortview = kb.qualified_name_of(functor).ends_with("SortView");
             // Named bindings (`F = Float`, `C = List[T]`).
             for (k, v) in &named_args {
                 if is_type_param_binding(kb, *k, &spec_qn) {
@@ -292,20 +291,37 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
                 }
             }
             // Positional bindings (`VectorSpace[Vec3, Float]`): `unwrap_spec_view`
-            // keeps only named args, so map the view's positional args to the
-            // spec's params by declaration order. A `SortView` wrapper carries
-            // the spec base in `pos_args[0]`; a bare parameterized term does not.
-            // Fill only params not already pinned by a named binding, so a mixed
-            // `Spec[V = Vec3, Float]` assigns the positional to the next free param.
-            let skip = if is_sortview { 1 } else { 0 };
+            // keeps only named args, so the view's positionals are paired here, by the
+            // language's rule — `KnowledgeBase::positional_param_slots`: the next param no
+            // named binding took. A `SortView` wrapper carries the spec base in
+            // `pos_args[0]`; a bare parameterized term does not.
+            //
+            // WI-20260923-N3W68 (#9) — this was the THIRD copy of that fill, and the one
+            // that TRUNCATED: a `zip` against the free params dropped a positional past them
+            // without a word, where its siblings refuse (`goal_from_op_requires_entry`) or
+            // keep the entry as written (`normalize_op_requires_entry`). A positional with
+            // no slot is now one of two things, neither of them a binding: the WI-407
+            // CARRIER slot of a spec with no parameters (`NonMonotonicStore[FileStore]` —
+            // the only shape a census found reaching here), or an over-application the
+            // loader REFUSES where it is written (`sort_inst_to_value`, the op-contract
+            // gate in `convert_term`). The `SortView` test was also the dotless
+            // `ends_with("SortView")`; it is [`is_sort_view_functor`] now.
+            let skip = if is_sort_view_functor(kb, functor) { 1 } else { 0 };
             if pos_args.len() > skip {
-                let unbound: Vec<String> = kb
-                    .type_params_of_sort(spec_base)
-                    .into_iter()
-                    .filter(|p| !sigma.iter().any(|(n, _)| n == p))
-                    .collect();
-                for (val, name) in pos_args.iter().skip(skip).zip(unbound.iter()) {
-                    sigma.push((name.clone(), *val));
+                let declared = kb.type_params_of_sort(spec_base);
+                let slots = KnowledgeBase::positional_param_slots(
+                    &declared,
+                    |d| sigma.iter().any(|(n, _)| n == d),
+                    pos_args.len() - skip,
+                );
+                for (val, slot) in pos_args.iter().skip(skip).zip(slots) {
+                    // No slot: the carrier slot of a parameterless spec, or an over-application
+                    // the loader has ALREADY REPORTED for this very load — the refused
+                    // provision is still in the relation when this pass runs, so the two
+                    // cannot be told apart here, and neither is a binding.
+                    if let Some(i) = slot {
+                        sigma.push((declared[i].clone(), *val));
+                    }
                 }
             }
         }
@@ -1608,19 +1624,33 @@ pub(super) fn check_provision_binding_agreement(
 
 /// WI-842 — do two provision bindings name the SAME type? Hash-consed identity
 /// first (structurally identical type views share one `TermId`), then the one
-/// divergence that is not a real difference: a bare sort name interned under two
-/// Symbols. Anything else answers `false` — see
+/// divergence that is not a real difference: a BARE sort name interned under two
+/// Symbols. Anything else answers `false` — a parameterized type, an arrow, a row, a
+/// tuple or a literal agrees by identity or not at all — see
 /// [`check_provision_binding_agreement`] on why the conservative direction is the
 /// safe one here.
-fn provision_bindings_agree(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
+///
+/// The ONE owner of the question: [`subtype_provider_view`]'s route merge asks it too,
+/// of two routes' values for one spec param — and that caller is why the bare-name arm
+/// exists at all: a spec bound to one sort through two import scopes carries two
+/// `TermId`s for one type, and reading those as a disagreement discards a legitimate
+/// merged view (found by /code-review at the merge).
+///
+/// WI-20260923-N3W68 (#3) — "bare" is the word that was missing. Both copies of this
+/// predicate compared the HEAD sort of any sort-headed type (`sort_functor_of_view`
+/// here, `load::sort_ref_functor` in the route merge — which also answers the functor of
+/// ANY `Term::Fn`), so `List[T = Int64]` agreed with `List[T = String]`, and in the
+/// route merge any two arrows agreed. MEASURED before the fix, both copies: one carrier
+/// providing `Iter[Self = C, Element = List[T = Int64]]` and `[…, Element = List[T =
+/// String]]` loaded clean or was refused depending only on which line came first, and so
+/// did a carrier reaching one spec through two intermediates binding `P` to those two
+/// types, or to `(Int64) -> Int64` and `(String) -> String`.
+pub(super) fn provision_bindings_agree(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
     if a == b {
         return true;
     }
-    match (
-        sort_functor_of_view(kb, &Value::term(a)),
-        sort_functor_of_view(kb, &Value::term(b)),
-    ) {
-        (Some(x), Some(y)) => same_sort_canonical(kb, x, y),
+    match (type_head(kb, &TermIdView(a)), type_head(kb, &TermIdView(b))) {
+        (TypeHead::SortRef(x), TypeHead::SortRef(y)) => same_sort_canonical(kb, x, y),
         _ => false,
     }
 }

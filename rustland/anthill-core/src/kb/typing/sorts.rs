@@ -1228,13 +1228,11 @@ fn declared_type_goal_bindings(
 }
 
 /// WI-274: rewrite a field-type type term into the canonical shape the
-/// instance resolver matches against. Field types encode sort
-/// references as `sort_ref(name: Ref(S))`, whereas the resolver's
-/// candidate side (from `SortProvidesInfo` / `requires` clauses) uses
-/// bare sort refs. Unwrap every `sort_ref` to its bare `Ref(S)` —
-/// recursing through `parameterized(base, bindings)` so nested element
-/// types (`List[T = Int]`) expose their real base and value sorts to
-/// `parametric_value_parts`.
+/// instance resolver matches against: every BARE sort to `Ref(S)` — the nullary `Fn{S}`
+/// spelling included, which [`extract_sort_ref_sym`] reads too — recursing through
+/// parameterized types so nested element types (`List[T = Int]`) expose their real base
+/// and value sorts to `parametric_value_parts`. (Written when field types still carried
+/// the deep `sort_ref(name: Ref(S))` wrapper; since WI-361 nothing mints that.)
 fn canonicalize_goal_value(kb: &mut KnowledgeBase, value: TermId) -> TermId {
     if let Some(s) = extract_sort_ref_sym(kb, &TermIdView(value)) {
         return kb.alloc(Term::Ref(s));

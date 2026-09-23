@@ -1214,21 +1214,16 @@ pub(super) fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) 
         // head is a distinct constant/binder and never occurs as `vid` (it would
         // formerly have read as `Opaque` and fallen through to `false`).
         ViewHead::Var(x) => x.as_global() == Some(vid),
-        ViewHead::Functor {
-            functor,
+        head @ ViewHead::Functor {
             pos_arity,
             named_arity,
+            ..
         } => {
-            // WI-20260911-7TN1Q: the exact twin of [`occurs_in`]'s `Term::Ref` leaf — a
-            // BARE (nullary) head naming a sort-level type parameter IS an occurrence of
-            // that parameter's variable. Nullary because that is what a `Term::Ref`
-            // reads as through the view, and because the deep spelling of a
-            // param-HEADED application (`F[X = Int64]`) carries its `F` as a child
-            // `sort_ref`, which this walk reaches on its own.
-            if let (Some(s), 0, 0) = (functor, pos_arity, named_arity) {
-                if sort_param_ref_is_var(kb, s, vid) {
-                    return true;
-                }
+            // WI-20260911-7TN1Q: a BARE head naming a sort-level type parameter IS an
+            // occurrence of that parameter's variable — [`bare_head_is_param_var`], the one
+            // predicate [`occurs_in`] asks too.
+            if pos_arity == 0 && named_arity == 0 {
+                return bare_head_is_param_var(kb, &head, vid);
             }
             for i in 0..pos_arity {
                 if let Some(c) = v.pos_arg(kb, i) {
@@ -1598,30 +1593,63 @@ pub(super) fn bind_or_refine_member_param(
 
 /// Occurs check: does `vid` appear anywhere inside `term`?
 ///
-/// WI-20260911-7TN1Q: "appear" includes a `Term::Ref` NAMING the variable's parameter —
+/// WI-20260911-7TN1Q: "appear" includes a BARE head NAMING the variable's parameter —
 /// the spelling a written `T` inside `sort Box[T]` actually lowers to. See
-/// [`sort_param_ref_is_var`] for why that is the walk's own rule and not a widening.
+/// [`sort_param_ref_is_var`] for why that is the walk's own rule and not a widening, and
+/// [`bare_head_is_param_var`] for which heads are bare.
+///
+/// The children are walked on the term directly rather than through [`occurs_in_view`]:
+/// this is the check every hash-consed binding in [`bind_resolved`] pays, and the view's
+/// `named_keys` allocates per node. What the two must not differ on is the LEAF — the
+/// question WI-20260923-N3W68 (#4) found them answering two ways — and that is one
+/// predicate.
 pub(super) fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
     match kb.get_term(term) {
         Term::Var(Var::Global(v)) => *v == vid,
-        // WI-20260911-7TN1Q: a `Ref` to a sort-level type parameter is an occurrence of
-        // that parameter's variable — see [`sort_param_ref_is_var`].
-        Term::Ref(s) => sort_param_ref_is_var(kb, *s, vid),
         Term::Fn {
             pos_args,
             named_args,
             ..
-        } => {
+        } if !pos_args.is_empty() || !named_args.is_empty() => {
             pos_args.iter().any(|t| occurs_in(kb, vid, *t))
                 || named_args.iter().any(|(_, t)| occurs_in(kb, vid, *t))
         }
-        _ => false,
+        // A leaf: `Ref(p)`, the nullary `Fn{p}`, an `Ident`, a literal, a non-flex var.
+        _ => bare_head_is_param_var(kb, &TermIdView(term).head(kb), vid),
     }
 }
 
+/// WI-20260923-N3W68 (#4) — is this view head a BARE head naming the sort-level type
+/// parameter whose variable is `vid`? The leaf question of BOTH occurs checks, asked of the
+/// view head so they cannot disagree about which spellings are bare.
+///
+/// They did. [`occurs_in`] matched `Term::Ref` alone while [`occurs_in_view`] matched any
+/// nullary functor head, which on a `TermId` also covers the WI-359 nullary `Fn{p}` — the
+/// spelling a `SymbolKind::Sort` name KEEPS under the WI-20260902-CZJ2N canon
+/// (`nullary_name_canons_to_ref`), and that `make_name_term_from_sym` mints for a sort
+/// parameter. [`walk_type`]'s alias hop reads its subject through `extract_sort_ref_sym`
+/// → [`type_head`], where both spellings are one nullary head, so it chased the `Fn`
+/// spelling while the `TermId` occurs check did not see it: a binding
+/// `?T := Opt[T = Fn{Box.T}]` passed the check and was cyclic through the alias — the
+/// WI-7TN1Q stack overflow, one spelling over. An `Ident` is NOT bare here, and is not in
+/// `walk_type`'s hop either: [`type_head`] reads a `ViewHead::Ident` as `Error`.
+///
+/// MEASURED, and the reason the fix ships with a unit row rather than a program: across
+/// `stdlib/`, `examples/github-todo`, `rustland/anthill-todo/anthill` and the workspace
+/// suite (7410 tests), a temporary probe on the missed arm fired ZERO times, and none on
+/// the `Fn` spelling reaching `walk_type`'s hop either. No source spelling brings the `Fn`
+/// form to a binding today, so the widening refuses nothing any corpus writes.
+fn bare_head_is_param_var(kb: &KnowledgeBase, head: &ViewHead, vid: VarId) -> bool {
+    matches!(
+        head,
+        ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 }
+            if sort_param_ref_is_var(kb, *s, vid)
+    )
+}
+
 /// WI-20260911-7TN1Q — is `sym` a sort-level type PARAMETER whose `SortAlias` target is
-/// `Var::Global(vid)`? The alias-aware half of the occurs check, asked by [`occurs_in`]'s
-/// `Term::Ref` arm and by [`occurs_in_view`]'s bare-head one.
+/// `Var::Global(vid)`? The alias-aware half of the occurs check, asked of a bare head by
+/// [`bare_head_is_param_var`] for both [`occurs_in`] and [`occurs_in_view`].
 ///
 /// MIRRORS [`walk_type`]'S ALIAS HOP EXACTLY — the same `is_sort_param_symbol` gate and
 /// the same `resolve_sort_alias` read — and that correspondence is the whole
@@ -1975,9 +2003,9 @@ pub(super) fn walk_type(kb: &KnowledgeBase, subst: &Substitution, ty: TermId) ->
                 _ => return ty,
             }
         }
-        // WI-361: a bare sort is `Ref(S)` (term backing) or `sort_ref(name: Ref(S))`
-        // (deep); `extract_sort_ref_sym` recognizes both. Any other shape (a
-        // parameterized / arrow / non-type term) is left unchanged.
+        // WI-361: a bare sort — `Ref(S)`, or the nullary `Fn{S}` a sort name keeps (CZJ2N);
+        // `extract_sort_ref_sym` reads both. Any other shape (a parameterized / arrow /
+        // non-type term) is left unchanged.
         let sym = match extract_sort_ref_sym(kb, &TermIdView(ty)) {
             Some(s) => s,
             None => return ty,

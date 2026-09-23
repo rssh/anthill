@@ -231,7 +231,7 @@ pub fn flatten_requires_tree(nodes: &[RequiresNode]) -> Vec<RequiresEntry> {
 /// Takes `&mut KnowledgeBase` because substitution composition may
 /// allocate freshly-substituted `Term::Fn` nodes. Consumers that only
 /// read `required_sort` (and never compare bindings) should use
-/// `requires_chain_flat` instead — it doesn't substitute and so
+/// [`transitive_required_sorts`] instead — it doesn't substitute and so
 /// preserves the `&KnowledgeBase` signature.
 pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let tree = requires_tree(kb, sort_sym);
@@ -254,7 +254,7 @@ pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresE
 ///
 /// Consumers that must remain transitive (resolution-tree subgoals are
 /// recursive per-level, obligation checks, the `sort_refines` reach
-/// relation) use `requires_chain` / `requires_chain_flat` instead.
+/// relation) use `requires_chain` / `transitive_required_sorts` instead.
 pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     (*direct_requires_chain_rc(kb, sort_sym)).clone()
 }
@@ -274,7 +274,7 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 /// written `requires X` on a sort and both ride the same `SortRequiresInfo` fact:
 ///
 ///   `sort Narrow requires Boom`   `Narrow <: Boom` — a REFINEMENT. It is read by
-///                                 [`sort_refines`], through `requires_chain_flat`,
+///                                 [`sort_refines`], through `transitive_required_sorts`,
 ///                                 and that is the whole of its meaning.
 ///   `sort C requires Eq[T]`       a SPEC DEMAND — an inbound dictionary slot the
 ///                                 caller fills, read by every dispatch site.
@@ -296,7 +296,7 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 /// to the diagnostic: an unresolved op-scoped dep is a SILENTLY absent slot, so the
 /// boundary simply stopped narrowing.
 ///
-/// FILTERED HERE, on the DICTIONARY side alone. `requires_chain_flat` — which
+/// FILTERED HERE, on the DICTIONARY side alone. `transitive_required_sorts` — which
 /// [`sort_refines`] and [`check_obligations`] read — is built from the tree by its own
 /// path and is deliberately left whole, so `Narrow` still refines `Boom` and the
 /// subsumption a boundary written at `Boom` performs on a `Narrow` payload is unchanged.
@@ -1011,7 +1011,7 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
     // fix `goal_from_op_requires_entry`'s doc names) passes straight through here.
     if matches!(
         entry.spec.head(kb),
-        ViewHead::Functor { functor: Some(f), .. } if same_sort_canonical(kb, f, sort_view)
+        ViewHead::Functor { functor: Some(f), .. } if is_sort_view_functor(kb, f)
     ) {
         return entry.clone();
     }
@@ -1030,11 +1030,12 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
         _ => 0,
     };
     if pos_arity > 0 {
-        let unbound: Vec<String> = kb
-            .type_params_of_sort(entry.required_sort)
-            .into_iter()
-            .filter(|p| !bindings.iter().any(|(k, _)| kb.local_name_of(*k) == p))
-            .collect();
+        let declared = kb.type_params_of_sort(entry.required_sort);
+        let slots = KnowledgeBase::positional_param_slots(
+            &declared,
+            |d| bindings.iter().any(|(k, _)| kb.local_name_of(*k) == d),
+            pos_arity,
+        );
         let mut vals: Vec<TermId> = Vec::with_capacity(pos_arity);
         for i in 0..pos_arity {
             match entry.spec.pos_arg(kb, i).and_then(|it| it.as_term_id()) {
@@ -1052,10 +1053,11 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
         // functor and does not filter the clause. That program is refused at load by
         // WI-840's own collision check; this leaves its entry as written in the
         // meantime rather than aborting the typer on the way to that refusal.
-        if vals.len() > unbound.len() {
+        let Some(slots) = slots.into_iter().collect::<Option<Vec<usize>>>() else {
             return entry.clone();
-        }
-        for (name, val) in unbound.iter().zip(vals) {
+        };
+        for (val, i) in vals.into_iter().zip(slots) {
+            let name = &declared[i];
             // The spec's OWN parameter symbol, which is what a `SortView`'s named args
             // are keyed by and what `substitute_impl_params_alloc` matches on. A BARE
             // `intern` is not a substitute for it — an interned name is not the
@@ -1869,45 +1871,56 @@ fn push_short_lc(kb: &KnowledgeBase, sym: Symbol, out: &mut String) {
     }
 }
 
-/// WI-230 — pre-WI-230 flat chain (no substitution composition). Used
-/// by consumers that only filter on `required_sort` and don't read the
-/// spec bindings — `sort_refines`, `check_obligations`,
-/// `seed_entry_requirements`, etc.
+/// Every sort `sort_sym` reaches through `requires`, transitively — each ONCE, in
+/// first-reached depth-first order. The reader for the questions that are about WHICH
+/// specs a sort refines: [`sort_refines`], [`check_obligations`], requirement coverage
+/// (`op_requirements`), the loader's `capture_is_excused`. None of them reads a binding; a
+/// reader that needs the bindings wants [`requires_chain`], whose entries are substituted
+/// into `sort_sym`'s own scope.
 ///
-/// WI-326 / WI-339: takes `&KnowledgeBase` because this function does
-/// no mutation. The `types_compatible` chain moved to `&mut
-/// KnowledgeBase` for row subtyping, but this site is independent of
-/// that chain and reads the cached `requires_tree` immutably. Pre-WI-326
-/// the doc-comment argued for `&KB` "so callers up the types_compatible
-/// chain don't need to convert to &mut"; that rationale is stale now
-/// that the chain is &mut everywhere — keeping & here is justified
-/// purely on "the function is read-only".
+/// WI-20260923-N3W68 (#8) — THIS WAS `requires_chain_flat`, and it returned
+/// [`RequiresEntry`]s computed TWO WAYS, chosen by whether [`requires_tree`] had already run
+/// for `sort_sym`: the flattened tree (bindings substituted; a sort reached along two paths
+/// walked, and listed, once per PATH) or an unsubstituted walk with a global visited set
+/// (raw bindings; a shared sub-requirement's subtree walked once). One question, two
+/// answers, decided by cache warmth. MEASURED with a probe comparing the two lengths
+/// wherever the cache was warm: they differed 14072 times across the workspace suite, and
+/// `check_obligations`, which reported one obligation per ENTRY, grew with the cache.
+/// Every source consumer read `required_sort` alone, which is why nothing else noticed.
+/// Returning the sorts, deduplicated, makes the two paths one answer by construction: both
+/// are a depth-first pre-order over the same `direct_requires` lists, and they differ only
+/// in how far a REVISIT is re-walked — which adds nothing a first visit had not.
 ///
-/// Memoized on the same `requires_tree_cache` as `requires_tree` since
-/// the flat shape can be derived by flattening the tree. The
-/// substituted bindings in the tree are dropped in the flatten step
-/// (consumers of the flat form ignore bindings anyway).
-pub fn requires_chain_flat(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+/// `&KnowledgeBase` because the function is read-only (WI-326 / WI-339): the tree cache is
+/// the fast path when warm, and without it the walk reads `direct_requires` itself and
+/// leaves the cache alone.
+pub fn transitive_required_sorts(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
+    let mut out: Vec<Symbol> = Vec::new();
     if let Some(cached) = kb.requires_tree_cache.borrow().get(&sort_sym) {
-        return flatten_requires_tree(&cached);
+        collect_tree_sorts(cached, &mut out);
+        return out;
     }
-    // No cache yet — build the flat chain directly (without substitution)
-    // and skip the tree-cache write (we don't have &mut). Subsequent
-    // calls on a populated tree cache hit the fast path above.
-    let mut result = Vec::new();
     let mut visited: Vec<Symbol> = Vec::new();
-    collect_requires_unsubstituted(kb, sort_sym, &mut result, &mut visited);
-    result
+    collect_required_sorts(kb, sort_sym, &mut out, &mut visited);
+    out
 }
 
-/// WI-230 internal: the pre-WI-230 transitive walk, without
-/// substitution composition. Equivalent to the old `collect_requires`.
-/// Used as a fallback by `requires_chain_flat` when the tree cache
-/// isn't yet populated for the queried sort.
-fn collect_requires_unsubstituted(
+/// [`transitive_required_sorts`]' warm path: the cached tree's sorts, pre-order, deduplicated.
+fn collect_tree_sorts(nodes: &[RequiresNode], out: &mut Vec<Symbol>) {
+    for node in nodes {
+        if !out.contains(&node.entry.required_sort) {
+            out.push(node.entry.required_sort);
+        }
+        collect_tree_sorts(&node.sub_requires, out);
+    }
+}
+
+/// [`transitive_required_sorts`]' cold path: the walk over `direct_requires`, each sort's
+/// own requirements read once.
+fn collect_required_sorts(
     kb: &KnowledgeBase,
     sort_sym: Symbol,
-    result: &mut Vec<RequiresEntry>,
+    out: &mut Vec<Symbol>,
     visited: &mut Vec<Symbol>,
 ) {
     if visited.contains(&sort_sym) {
@@ -1915,8 +1928,10 @@ fn collect_requires_unsubstituted(
     }
     visited.push(sort_sym);
     for entry in direct_requires(kb, sort_sym) {
-        result.push(entry.clone());
-        collect_requires_unsubstituted(kb, entry.required_sort, result, visited);
+        if !out.contains(&entry.required_sort) {
+            out.push(entry.required_sort);
+        }
+        collect_required_sorts(kb, entry.required_sort, out, visited);
     }
 }
 
@@ -2088,14 +2103,22 @@ pub(super) fn collect_sort_requires(
         let Some(sort_ref_tid) = crate::kb::op_info::head_field_term(kb, head, "sort_ref") else {
             continue;
         };
-        let Term::Fn {
-            functor: sr_functor,
-            ..
-        } = kb.get_term(sort_ref_tid)
-        else {
+        // WI-20260923-N3W68 (#11) — decoded by `sort_ref_functor`, as every provides-side
+        // reader decodes the same field, and NOT by a `Term::Fn` shape test. The field is
+        // `make_name_term_from_sym(owner)`, which applies the WI-511 / CZJ2N canon: `Fn` for
+        // a `SymbolKind::Sort` owner, `Ref` for any other — so the shape test was an unnamed
+        // "is the owner a sort" read (the convention in `rustland/CLAUDE.md`). And the owner
+        // need not be one: a `requires` in a NAMESPACE body is legal (kernel-language.md,
+        // "Requires declaration") and emits its fact scoped to the namespace, whose `Ref`
+        // this scan and `build_requires_index` both skipped — a declared requirement no
+        // reader could see, with no diagnostic. MEASURED: `namespace N … requires
+        // Spec[T = Int64] … end` loaded clean and `direct_requires(N)` answered nothing.
+        // No corpus writes one (a probe on the skip fired zero times across the workspace
+        // suite).
+        let Some(sr_functor) = crate::kb::load::sort_ref_functor(kb, sort_ref_tid) else {
             continue;
         };
-        if !same_sort_canonical(kb, *sr_functor, sort_sym) {
+        if !same_sort_canonical(kb, sr_functor, sort_sym) {
             continue;
         }
 
@@ -2588,10 +2611,9 @@ pub(super) fn build_child_subst_map(
 
 /// Check if sort A refines sort B via `requires` chain.
 pub(super) fn sort_refines(kb: &KnowledgeBase, a_sym: Symbol, b_sym: Symbol) -> bool {
-    let chain = requires_chain_flat(kb, a_sym);
-    chain
-        .iter()
-        .any(|entry| same_sort_canonical(kb, entry.required_sort, b_sym))
+    transitive_required_sorts(kb, a_sym)
+        .into_iter()
+        .any(|required| same_sort_canonical(kb, required, b_sym))
 }
 
 // ── Obligation checking ────────────────────────────────────────
@@ -2612,15 +2634,17 @@ pub struct MissingObligation {
 pub fn check_obligations(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<MissingObligation> {
     let mut missing = Vec::new();
     let sort_name = kb.local_name_of(sort_sym).to_string();
-    let chain = requires_chain_flat(kb, sort_sym);
+    // One obligation per (required sort, operation): the sorts come deduplicated
+    // (WI-20260923-N3W68 #8 — per chain ENTRY, the report's length followed cache warmth).
+    let required = transitive_required_sorts(kb, sort_sym);
 
     // Collect operations provided by this sort
     let provided_ops = sort_operation_names(kb, sort_sym);
 
-    for entry in &chain {
+    for required_sort in required {
         // Get operations required by the spec sort
-        let required_ops = sort_operation_names(kb, entry.required_sort);
-        let required_sort_name = kb.local_name_of(entry.required_sort).to_string();
+        let required_ops = sort_operation_names(kb, required_sort);
+        let required_sort_name = kb.local_name_of(required_sort).to_string();
 
         for op in &required_ops {
             if !provided_ops.iter().any(|p| p == op) {
@@ -2646,12 +2670,16 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
     })
 }
 
-/// Extract the sort symbol from a sort_ref(name: Ref(sym)) term.
-/// Returns None if the term is not a sort_ref.
+/// The sort symbol of a BARE sort type — a nullary head, `Ref(S)` or the `Fn{S}` a
+/// `SymbolKind::Sort` name keeps under the CZJ2N canon, both classified
+/// [`TypeHead::SortRef`] by [`type_head`]. `None` for anything else: a parameterized or
+/// structural type, a meta-constructor (`Nothing`), a variable.
+///
+/// NOT the deep `sort_ref(name: Ref(S))` wrapper, which this doc used to name and a comment
+/// here claimed [`type_head`] reads as `SortRef` (WI-20260923-N3W68, stale docs): it reads
+/// as `Parameterized { base: sort_ref }`, and nothing mints the form since the WI-361
+/// producer flip (`KnowledgeBase::make_sort_ref` builds `Ref(S)`).
 pub fn extract_sort_ref_sym<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
-    // WI-361 stage 2: a bare sort is `Ref(S)` (term backing) or `sort_ref(name:
-    // Ref(S))` (deep) — `type_head` classifies both as `SortRef`. Parameterized /
-    // structural variants are not bare sorts → `None` (unchanged).
     // WI-342: carrier-agnostic over `TermView` (input principle) so a `Value`
     // sort type reads identically without re-grounding.
     match type_head(kb, ty) {

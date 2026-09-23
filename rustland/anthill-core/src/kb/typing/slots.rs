@@ -3217,12 +3217,14 @@ pub(super) fn goal_from_op_requires_entry(
         _ => 0,
     };
     if pos_arity > 0 {
-        // The params a named binding did not already take, in declaration order.
-        let unbound: Vec<String> = kb
-            .type_params_of_sort(entry.required_sort)
-            .into_iter()
-            .filter(|p| !bindings.iter().any(|(k, _)| kb.local_name_of(*k) == p))
-            .collect();
+        // Each positional binds the next param no named binding took —
+        // `KnowledgeBase::positional_param_slots`, the rule's one owner.
+        let declared = kb.type_params_of_sort(entry.required_sort);
+        let slots = KnowledgeBase::positional_param_slots(
+            &declared,
+            |d| bindings.iter().any(|(k, _)| kb.local_name_of(*k) == d),
+            pos_arity,
+        );
         // ABORT, never skip: `zip` pairs by POSITION, so dropping an unreadable
         // positional would shift every later value onto the wrong parameter name and
         // the check would then judge the pin against a FABRICATED binding — a false
@@ -3236,11 +3238,11 @@ pub(super) fn goal_from_op_requires_entry(
                 None => return None,
             }
         }
-        // More positionals than free params is a malformed clause, not a goal.
-        if vals.len() > unbound.len() {
-            return None;
-        }
-        for (name, val) in unbound.iter().zip(vals) {
+        // More positionals than free params is a malformed clause, not a goal — refused
+        // at load where it is written (the op-contract gate in `convert_term`).
+        let slots = slots.into_iter().collect::<Option<Vec<usize>>>()?;
+        for (val, i) in vals.into_iter().zip(slots) {
+            let name = &declared[i];
             // The BARE short name: `goal_binding_value` matches a goal key against a
             // candidate's by RESOLVED SHORT NAME (with a symbol-identity fast path),
             // so the two need only render alike.

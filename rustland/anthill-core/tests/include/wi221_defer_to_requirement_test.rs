@@ -13,7 +13,7 @@
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::typing::{
-    find_unique_impl_op, lookup_spec_op_dispatch, requires_chain_flat, DispatchOutcome,
+    find_unique_impl_op, lookup_spec_op_dispatch, requires_chain, DispatchOutcome,
 };
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
@@ -121,7 +121,7 @@ fn dispatch_defers_when_call_reaches_spec_via_requires() {
 
     // WI-221 patch: with Wi221Box as enclosing sort (whose `requires`
     // chain covers Eq[T=Int64]), dispatch must defer.
-    let chain = requires_chain_flat(&kb, enclosing);
+    let chain = requires_chain(&mut kb, enclosing);
     let deferred = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
     assert_eq!(
         deferred,
@@ -162,7 +162,7 @@ fn dispatch_pins_when_enclosing_sort_does_not_require_spec() {
     let enclosing = kb
         .try_resolve_symbol("test.wi221.no_require.Wi221Plain")
         .expect("Wi221Plain registered");
-    let chain = requires_chain_flat(&kb, enclosing);
+    let chain = requires_chain(&mut kb, enclosing);
 
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
     assert!(
@@ -206,7 +206,7 @@ fn dispatch_defers_when_requires_uses_open_param() {
     let enclosing = kb
         .try_resolve_symbol("test.wi221.open_t.Wi221Generic")
         .expect("Wi221Generic registered");
-    let chain = requires_chain_flat(&kb, enclosing);
+    let chain = requires_chain(&mut kb, enclosing);
 
     let outcome = find_unique_impl_op(&mut kb, &subst, spec_sort, op_short, &chain);
     assert_eq!(

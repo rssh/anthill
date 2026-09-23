@@ -2328,7 +2328,7 @@ pub(super) fn subtype_provider_view(
                 }
             }
             match merged.iter().find(|(mp, _)| same_label(kb, *mp, *param)) {
-                Some((_, seen)) if !provision_values_agree(kb, *seen, *value) => return None,
+                Some((_, seen)) if !provision_bindings_agree(kb, *seen, *value) => return None,
                 Some(_) => {}
                 None => merged.push((*param, *value)),
             }
@@ -2382,29 +2382,6 @@ pub(super) fn subtype_provider_view(
 pub(super) fn composed_self_reference(kb: &KnowledgeBase, owner: Symbol, value: TermId) -> bool {
     crate::kb::load::provides_spec_base_sym(kb, value)
         .is_some_and(|base| same_sort_canonical(kb, base, owner))
-}
-
-/// Whether two routes' values for ONE spec param are the same binding.
-///
-/// `TermId` equality FIRST, which is the answer for every pair that came from one interned
-/// store — and then the canonical sort compare, because a spec bound to the same sort
-/// through two import scopes carries two `TermId`s for one type. Reading those as a
-/// disagreement would discard a legitimate merged view in exactly the multi-route shape
-/// this reader exists for (found by /code-review; the file's own `same_sort_canonical`
-/// comment at `parameterized_compatible_view` names the two-interned-copies case).
-/// Non-sort-ref values (a written row, a literal) fall back to `TermId` equality, which
-/// for hash-consed terms is structural.
-fn provision_values_agree(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
-    if a == b {
-        return true;
-    }
-    match (
-        crate::kb::load::sort_ref_functor(kb, a),
-        crate::kb::load::sort_ref_functor(kb, b),
-    ) {
-        (Some(sa), Some(sb)) => same_sort_canonical(kb, sa, sb),
-        _ => false,
-    }
 }
 
 /// Every composed provider view of `spec` reachable from `carrier`, one per DIRECT
@@ -2803,26 +2780,27 @@ pub(super) fn dispatched_impl_effects(
 }
 
 /// The name symbol carried by a type-parameter reference in any of the shapes a
-/// provider fact / receiver type stores it in — a bare sort `Ref` (or the deep
-/// `sort_ref(name: S)` residual, via [`extract_sort_ref_sym`]), an `Ident`, a
-/// nullary `Fn{param}` (the `make_name_term` shape), or a `Var::Global`/`Var::Rigid`
-/// (`v.name()`). `None` for anything else.
+/// provider fact / receiver type stores it in — a bare sort, `Ref(p)` or the nullary
+/// `Fn{p}` (the `make_name_term` shape), both through [`extract_sort_ref_sym`]; an
+/// `Ident`; or a `Var::Global`/`Var::Rigid` (`v.name()`). `None` for anything else.
+///
+/// WI-20260923-N3W68 (#12) — the nullary-`Fn` arm this function also had is gone. It could
+/// fire only where [`extract_sort_ref_sym`] had already declined — on a meta-constructor
+/// [`type_head`] classifies apart, `Nothing` — and there it answered `Some` for the `Fn`
+/// spelling while the `Ref` spelling answered `None`: one nullary term, two answers
+/// (WI-20260902-CZJ2N). Neither spelling names a type parameter. A probe on the arm fired
+/// zero times across the workspace suite, so no answer any corpus reads changes.
 ///
 /// WI-599: a `Var::Rigid` counts too — an op's own type params are Skolemized while
 /// its body is checked, so a bare carrier argument `c : C` arrives as a rigid var
 /// carrying the param's name.
-fn typaram_occurrence_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
+pub(super) fn typaram_occurrence_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
     if let Some(s) = extract_sort_ref_sym(kb, &TermIdView(tid)) {
         return Some(s);
     }
     match kb.get_term(tid) {
-        // bare `Ref` handled above via `extract_sort_ref_sym` (WI-361); `Ident` here.
+        // A bare sort is answered above via `extract_sort_ref_sym` (WI-361); `Ident` here.
         Term::Ident(s) => Some(*s),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
         Term::Var(Var::Global(v)) | Term::Var(Var::Rigid(v)) => Some(v.name()),
         _ => None,
     }
@@ -3168,15 +3146,25 @@ pub(super) fn resolve_at_goal(
     }
 }
 
-/// WI-210 — compare a per-call subst's binding (a typer-side Type term,
-/// e.g. `sort_ref(name: Ref(X))`) against a candidate's `SortView`
-/// binding value (typically a bare `Ref(X)` from the loader's
-/// `convert_term`). The two shapes carry the same nominal sort but
-/// differ in wrapping; `types_lesseq` doesn't bridge them. We
-/// extract the underlying sort symbol from each side and compare.
-/// Falls through to `types_lesseq` for the same-shape case so that
-/// future work (parameterized values, entity-of-sort subtyping in
-/// binding values) keeps working as the relation grows.
+/// WI-210 — does a per-call binding value match a candidate's binding value, for
+/// DISPATCH? [`types_lesseq`] first; failing that, a coarse HEAD match through
+/// [`sort_sym_of_term`] — two bare sorts by symbol, and two STRUCTURED values by their
+/// functor ALONE: `List[T = Int64]` matches `List[T = String]`, and any two effect rows
+/// match whatever their labels.
+///
+/// COARSE BY DESIGN, and load-bearing (WI-20260923-N3W68 #7, which found this doc
+/// describing only the bare-sort case, as two spellings of one nominal sort — the deep
+/// `sort_ref(name: …)` wrapper it named is retired, WI-361). MEASURED with a probe on the
+/// structured case of the fallback: it answered `true` 337 times across the workspace
+/// suite, in about fifty tests — effect rows (`{{}} vs {?_, ?_}`) in the stream-combinator
+/// dispatch, and same-base applications whose bindings differ by a flex vs a rigid
+/// variable (`Wrap[A = ?DT] vs Wrap[A = DT]`) in the σ deferral cover. The finer verdicts
+/// are layered ON TOP where they matter — [`entry_sigma_verdict`] for the deferral cover
+/// (WI-613), [`match_impl_param`] for slot reconciliation (WI-827), and a PARAMETERIZED
+/// candidate never reaches this match from [`match_candidate_against_goal`], whose arm (2)
+/// recurses into its bindings — so a `true` here is not binding-level agreement, and a
+/// caller that needs that must not read it as such. Tightening the structured arm is a
+/// design change with that census as its blast radius, not a correction of this one.
 pub(super) fn dispatch_values_match(
     kb: &mut KnowledgeBase,
     per_call_value: TermId,

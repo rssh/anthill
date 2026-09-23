@@ -241,7 +241,7 @@ fn requires_chain_does_not_collide_on_short_name() {
     // different namespaces both local_name_of to "Main", so the chain
     // walk for `inner.Main` would pick up `outer.Main`'s requires —
     // and vice versa during the recursive descent — doubling the
-    // chain. Pin that `requires_chain_flat` keys on the resolved
+    // chain. Pin that `requires_chain` keys on the resolved
     // Symbol / qualified name, not the short name.
     let src = r#"
 namespace test.collide.outer

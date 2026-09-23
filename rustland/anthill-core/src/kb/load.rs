@@ -14642,32 +14642,37 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
                     };
 
                     if let Some(ss) = spec_sym {
-                        // WI-359: capture positional bindings too. `requires
-                        // Ring[F]` stores `pos_args = [Ring-base, <F>]` with
-                        // no named args; map each positional (after the base)
-                        // to the spec's param in declaration order so it
-                        // reaches the slot-fill loop below as a named binding
-                        // — otherwise the slot falls back to the self-ref
-                        // default and the cross-param link is lost.
+                        // WI-359: capture positional bindings too — each positional
+                        // after the base binds the spec's next param NO NAMED binding
+                        // took (`KnowledgeBase::positional_param_slots`), so it reaches
+                        // the slot-fill loop below as a named binding; otherwise the slot
+                        // falls back to the self-ref default and the cross-param link is
+                        // lost.
+                        //
+                        // WI-20260923-N3W68 (#9): this paired by RAW INDEX and DROPPED a
+                        // positional whose index a name had claimed. Unreached today, and
+                        // the WI-359 shape it was written for (`requires Ring[F]` stored as
+                        // `pos_args = [Ring-base, <F>]`) is gone: `sort_inst_to_value` now
+                        // names every positional that has a parameter, and refuses one
+                        // that has none. What can still arrive here is a fact nobody's
+                        // lowering produced — which is why it keeps the rule rather than
+                        // being deleted.
                         let mut bindings = inst_named.clone();
                         if pos_args.len() > 1 {
                             let params = kb.type_params_of_sort(ss);
-                            let named_shorts: Vec<String> = bindings
-                                .iter()
-                                .map(|(k, _)| {
-                                    kb.local_name_of(*k)
-                                        .rsplit('.')
-                                        .next()
-                                        .unwrap_or("")
-                                        .to_string()
-                                })
-                                .collect();
-                            for (i, pv) in pos_args.iter().skip(1).enumerate() {
-                                if let Some(pname) = params.get(i) {
-                                    if !named_shorts.iter().any(|s| s == pname) {
-                                        let key = kb.intern(pname);
-                                        bindings.push((key, *pv));
-                                    }
+                            let slots = KnowledgeBase::positional_param_slots(
+                                &params,
+                                |d| {
+                                    bindings.iter().any(|(k, _)| {
+                                        crate::kb::typing::short_name_of(kb.local_name_of(*k)) == d
+                                    })
+                                },
+                                pos_args.len() - 1,
+                            );
+                            for (pv, slot) in pos_args.iter().skip(1).zip(slots) {
+                                if let Some(i) = slot {
+                                    let key = kb.intern(&params[i]);
+                                    bindings.push((key, *pv));
                                 }
                             }
                         }
@@ -18077,9 +18082,7 @@ fn capture_is_excused(kb: &KnowledgeBase, sort: Symbol, captured: Symbol) -> boo
         return false;
     };
     super::typing::sort_provides(kb, sort, spec)
-        || super::typing::requires_chain_flat(kb, sort)
-            .iter()
-            .any(|e| e.required_sort == spec)
+        || super::typing::transitive_required_sorts(kb, sort).contains(&spec)
 }
 
 // WI-20260825-KD9SW DELETED `check_rival_spec_operations` HERE, and with it
@@ -22770,12 +22773,9 @@ impl<'a> Loader<'a> {
         let base = self
             .require_spec_binding_sort(parse_id)
             .unwrap_or_else(|| self.remap_symbol_strict(functor, raw_span));
-        // POSITIONALS ARE PAIRED WITH THE SPEC'S DECLARED PARAMS BY INDEX, and then ride
-        // as NAMED bindings. That is the language's own rule for a positional type
-        // argument — `canonicalize_fact_binding_value` maps `pos_val` onto
-        // `params.get(positional_index)`, and `op_requires_entry_carrier_map` "pairs
-        // positionally against the spec's declared params" — applied here rather than
-        // re-derived.
+        // POSITIONALS ARE PAIRED WITH THE SPEC'S DECLARED PARAMS, and then ride as NAMED
+        // bindings. That is the language's own rule for a positional type argument —
+        // `KnowledgeBase::positional_param_slots` — applied here rather than re-derived.
         //
         // IT IS ALSO WHAT MAKES THE DROP SOUND, and that is the reason it is not left to
         // the reader (S2). Keeping positionals AS POSITIONALS meant a dropped one
@@ -22837,30 +22837,25 @@ impl<'a> Loader<'a> {
         }
         let mut pos: Vec<Rc<NodeOccurrence>> = Vec::new();
         let mut overflow = 0usize;
-        let mut next_free = 0usize;
+        // THE SLOTS ARE CLAIMED BEFORE ANY VALUE IS JUDGED, and that ordering is the whole
+        // correctness of the drop. A positional's parameter is decided by WHERE THE AUTHOR
+        // WROTE IT; deciding it after the drop let a dropped argument yield its slot to the
+        // next one, so `Desc[Zork, Leaf]` bound `Leaf` — written SECOND — to `T`.
+        //
+        // NAMED FIRST, because a POSITIONAL binds the next declared param NOT ALREADY BOUND
+        // BY NAME — the language's own rule, owned by `KnowledgeBase::positional_param_slots`
+        // since WI-20260923-N3W68 (this site spelled it itself, correctly). Pairing by raw
+        // index instead paired the positional in `requires(Desc[T = Leaf, Leaf])` with `T`,
+        // which the named arg already claims, and the load was REFUSED as "binds 'T' more
+        // than once" — a VALID program rejected.
+        let mut slots = KnowledgeBase::positional_param_slots(
+            &declared,
+            |d| claimed_by_name.iter().any(|c| c == d),
+            pos_args.len(),
+        )
+        .into_iter();
         for &v in pos_args.iter() {
-            // THE SLOT IS CLAIMED BEFORE THE VALUE IS JUDGED, and that ordering is the
-            // whole correctness of the drop. A positional's parameter is decided by WHERE
-            // THE AUTHOR WROTE IT; deciding it after the drop let a dropped argument yield
-            // its slot to the next one, so `Desc[Zork, Leaf]` bound `Leaf` — written
-            // SECOND — to `T`.
-            //
-            // NAMED FIRST, because a POSITIONAL binds the next declared param NOT ALREADY
-            // BOUND BY NAME — the language's own rule, at `type_expr_to_child_inner`'s
-            // `positional_index` loop and in `check_sort_type_args`'s `free` count.
-            // Pairing by raw index instead paired the positional in `requires(Desc[T =
-            // Leaf, Leaf])` with `T`, which the named arg already claims, and the load was
-            // REFUSED as "binds 'T' more than once" — a VALID program rejected.
-            while declared
-                .get(next_free)
-                .is_some_and(|n| claimed_by_name.iter().any(|c| c == n))
-            {
-                next_free += 1;
-            }
-            let slot = declared.get(next_free).cloned();
-            if slot.is_some() {
-                next_free += 1;
-            }
+            let slot = slots.next().flatten().map(|i| declared[i].clone());
             // The effect-row arm belongs on BOTH loops. It was on the named one only, so
             // `requires(Walk[Src, {}])` dropped the row while `requires(Walk[C = Src, E =
             // {}])` kept it, and `sort_goal_with_wildcards` skips effect-row params so
@@ -24255,6 +24250,45 @@ impl<'a> Loader<'a> {
                         let detail = problem.describe(&self.kb, new_functor);
                         self.errors.push(LoadError::InvalidTypeArgument {
                             detail,
+                            span: Some(self.parsed.terms.span(parse_id)),
+                        });
+                    }
+                } else if self.term_depth == 1
+                    && self.in_op_contract_clause
+                    && is_type_app
+                    && self.kb.has_kind(new_functor, SymbolKind::Sort)
+                {
+                    // WI-20260923-N3W68 (#9) — AN OPERATION'S `requires` SPEC APPLICATION,
+                    // which the depth gate above exempts as a top-level term. Only its
+                    // POSITIONAL arity is checked — the clause may bind OPERATIONS by name,
+                    // which the full check would call undeclared parameters — and only on a
+                    // spec that has parameters (`KnowledgeBase::excess_positional`). MEASURED
+                    // before: `operation g(x: C) -> Int64 requires Spec2[C, String, Bool]`
+                    // loaded clean, and every reader of the op-scoped entry dropped `Bool`
+                    // (`goal_from_op_requires_entry` calls such a clause malformed and answers
+                    // no goal at all).
+                    //
+                    // THE REST OF THE TOP LEVEL IS NOT CHECKED, and was measured wrong to: a
+                    // leftover positional there can be the instance's CARRIER. An `ensures`
+                    // clause names it FIRST (`-> C ensures KVStore[C, K = String, V = String]`,
+                    // WI-402 — `C` has no parameter left because `K` and `V` are named), and an
+                    // instance claim on a parameterless spec names it as its only positional
+                    // (WI-407). A first cut gating every top-level application refused all of
+                    // WI-402's existential returns (`wi402_existential_return_test`,
+                    // `wi954_published_type_param_var_test`). `in_op_contract_clause` is set
+                    // for `requires` alone, never for `ensures`.
+                    //
+                    // `has_kind`, as `check_sort_type_args` asks (WI-20260824-Q0093): `kind_of`
+                    // answers "not a sort" for a sort whose ENTITY role registered first.
+                    let declared = self.kb.type_params_of_sort(new_functor);
+                    let slots = KnowledgeBase::positional_param_slots(
+                        &declared,
+                        |d| new_named.iter().any(|(s, _)| self.kb.local_name_of(*s) == d),
+                        new_pos.len(),
+                    );
+                    if let Some(problem) = KnowledgeBase::excess_positional(&declared, &slots) {
+                        self.errors.push(LoadError::InvalidTypeArgument {
+                            detail: problem.describe(&self.kb, new_functor),
                             span: Some(self.parsed.terms.span(parse_id)),
                         });
                     }
@@ -29532,17 +29566,23 @@ impl<'a> Loader<'a> {
             {
                 continue;
             }
-            // Translate positional bindings to the spec's declared parameter order, so
-            // `Spec[WIS]` and `Spec[Member = WIS]` record the same carrier; a named
-            // binding for a slot wins over the positional one.
+            // Translate positional bindings to the spec's declared parameters, so
+            // `Spec[WIS]` and `Spec[Member = WIS]` record the same carrier: each positional
+            // binds the next parameter NO NAMED binding took
+            // (`KnowledgeBase::positional_param_slots`). WI-20260923-N3W68 (#9): this paired
+            // by RAW INDEX and dropped a positional whose index a name had claimed, so
+            // `fact Spec[A = X, WIS]` recorded no carrier for the second parameter.
             let params = self.kb.type_params_of_sort(functor);
             let mut bindings: SmallVec<[(Symbol, TermId); 2]> = named_args.clone();
-            for (i, val) in pos_args.iter().enumerate() {
-                if let Some(name) = params.get(i) {
-                    let key = self.kb.intern(name);
-                    if !bindings.iter().any(|(s, _)| *s == key) {
-                        bindings.push((key, *val));
-                    }
+            let slots = KnowledgeBase::positional_param_slots(
+                &params,
+                |d| bindings.iter().any(|(s, _)| self.kb.local_name_of(*s) == d),
+                pos_args.len(),
+            );
+            for (val, slot) in pos_args.iter().zip(slots) {
+                if let Some(i) = slot {
+                    let key = self.kb.intern(&params[i]);
+                    bindings.push((key, *val));
                 }
             }
             for (key, val) in bindings {
@@ -29707,7 +29747,18 @@ impl<'a> Loader<'a> {
                     });
                 }
                 let mut child_bindings: Vec<(Symbol, node_occurrence::TypeChild)> = Vec::new();
-                let mut positional_index: usize = 0;
+                // A positional binds the next declared param NOT already given by name —
+                // `KnowledgeBase::positional_param_slots`, the rule's one owner, so
+                // `Map[K = K1, V1]` binds `V` rather than re-binding `K` to a second value
+                // (which would build a duplicate-key type term, a shape the evaluated
+                // spelling of the same type never produces). Over-applied — already
+                // reported above.
+                let mut slots = KnowledgeBase::positional_param_slots(
+                    &declared_params,
+                    |d| named_syms.iter().any(|n| self.kb.local_name_of(*n) == d),
+                    positional_count,
+                )
+                .into_iter();
                 let mut any_node = false;
                 // WI-20260823-4GBQV: is this `Modify`'s own target slot? Read ONCE, above
                 // the loop, since it is a property of the head, not of a binding.
@@ -29722,28 +29773,12 @@ impl<'a> Loader<'a> {
                     if matches!(bound_child, node_occurrence::TypeChild::Node(_)) {
                         any_node = true;
                     }
-                    let param_sym = if let Some(p) = &b.param {
-                        Some(self.reintern(p.last()))
-                    } else {
-                        // A positional binds the next declared param NOT already given by
-                        // name — eval's rule (`finish_sort_type`), so `Map[K = K1, V1]`
-                        // binds `V` rather than re-binding `K` to a second value (which
-                        // would build a duplicate-key type term, a shape the evaluated
-                        // spelling of the same type never produces).
-                        loop {
-                            match declared_params.get(positional_index) {
-                                Some(param_name) => {
-                                    let param_name = param_name.clone();
-                                    positional_index += 1;
-                                    let sym = self.kb.intern(&param_name);
-                                    if !named_syms.contains(&sym) {
-                                        break Some(sym);
-                                    }
-                                }
-                                // Over-applied — already reported above.
-                                None => break None,
-                            }
-                        }
+                    let param_sym = match &b.param {
+                        Some(p) => Some(self.reintern(p.last())),
+                        None => slots
+                            .next()
+                            .flatten()
+                            .map(|i| self.kb.intern(&declared_params[i])),
                     };
                     if let Some(sym) = param_sym {
                         child_bindings.push((sym, bound_child));
@@ -30160,19 +30195,16 @@ impl<'a> Loader<'a> {
             // (the dispatch matcher's `impl_param_ref` wildcard contract, WI-387).
             // A denoted-bearing child (a value-in-type) can't ride a hash-consed
             // `Fn`, so that exotic case keeps the faithful `SortView` `Value::Entity`
-            // carrier via `assemble_sort_view_value` — matching this fn's twin,
-            // `canonicalize_fact_binding_value`, so the fact / provides emissions
-            // stay byte-identical (WI-449).
+            // carrier via `assemble_sort_view_value`. (The `fact` twin this matched,
+            // `canonicalize_fact_binding_value`, went with the `fact` spelling of a
+            // provision, WI-20260917-S8JYF.)
             TypeExpr::Parameterized { name, bindings } => {
                 let base_sym = self.remap_name(name);
                 let declared_params = self.kb.type_params_of_sort(base_sym);
-                // Explicit named bindings first, then positionals mapped onto the
-                // declared params in order — matching `canonicalize_fact_binding_value`
-                // (its input `Fn` lists named_args before pos_args), so the fact and
-                // provides emissions stay byte-identical (WI-449). A double-bind or an
-                // overflow positional diverts to `pos`, which `assemble_binding_value`
-                // preserves (via the `SortView` carrier) rather than dropping — the
-                // loud-over-silent rule.
+                // Explicit named bindings first, then each positional onto the next
+                // declared param no name took. An OVERFLOW positional diverts to `pos`,
+                // which `assemble_binding_value` preserves (via the `SortView` carrier)
+                // rather than dropping — and which the arity check below reports.
                 let mut named: Vec<(Symbol, Value)> = Vec::new();
                 let mut positionals: Vec<Value> = Vec::new();
                 for b in bindings {
@@ -30182,18 +30214,41 @@ impl<'a> Loader<'a> {
                         None => positionals.push(bound),
                     }
                 }
+                // WI-20260923-N3W68 (#9) — a positional binds the next declared param NOT
+                // already bound by name (`KnowledgeBase::positional_param_slots`). This arm
+                // paired by RAW INDEX and diverted a positional whose index a name had
+                // claimed, so `Spec[T = Map[K = Int64, String]]` kept `String` out of the
+                // bindings and the provision read as `Map[K = Int64]` — MEASURED: a use at
+                // `Map[K = Int64, V = String]` was refused — where the same `Map` in a type
+                // position binds `V`. And the same written type obeys the same argument rule
+                // here as there — WI-709's `check_sort_type_args` whole: an overflow
+                // positional (still carried in `pos`), and also an undeclared or duplicated
+                // parameter name, are now reported. A binding VALUE is a type, never an
+                // instance claim, so it has no operation bindings the full check would misread.
+                let named_syms: SmallVec<[Symbol; 2]> = named.iter().map(|(s, _)| *s).collect();
+                if let Err(problem) = self.kb.check_sort_type_args(
+                    base_sym,
+                    &declared_params,
+                    &named_syms,
+                    positionals.len(),
+                ) {
+                    let detail = problem.describe(&self.kb, base_sym);
+                    self.errors.push(LoadError::InvalidTypeArgument {
+                        detail,
+                        span: Some(self.type_expr_span(ty).span),
+                    });
+                }
+                let slots = KnowledgeBase::positional_param_slots(
+                    &declared_params,
+                    |d| named_syms.iter().any(|n| self.kb.local_name_of(*n) == d),
+                    positionals.len(),
+                );
                 let mut pos: Vec<Value> = Vec::new();
-                let mut positional_index: usize = 0;
-                for bound in positionals {
-                    match declared_params.get(positional_index) {
-                        Some(pn) => {
-                            positional_index += 1;
-                            let sym = self.kb.intern(pn);
-                            if named.iter().any(|(s, _)| *s == sym) {
-                                pos.push(bound);
-                            } else {
-                                named.push((sym, bound));
-                            }
+                for (bound, slot) in positionals.into_iter().zip(slots) {
+                    match slot {
+                        Some(i) => {
+                            let sym = self.kb.intern(&declared_params[i]);
+                            named.push((sym, bound));
                         }
                         None => pos.push(bound),
                     }
@@ -30277,17 +30332,46 @@ impl<'a> Loader<'a> {
                 // as the spec).
                 let base_sym = self.remap_name(name);
                 let declared_params = self.kb.type_params_of_sort(base_sym);
-                let mut positional_index: usize = 0;
+                // WI-20260923-N3W68 (#9) — NAMED FIRST: a positional binds the next declared
+                // param not already bound by name (`KnowledgeBase::positional_param_slots`).
+                // This paired by RAW INDEX, so `provides Spec2[T = C, String]` bound `T`
+                // twice and `U` never — MEASURED: a use at `Spec2[T = C, U = String]` was
+                // refused as a mismatch — while the `require[…]` bracket and a type position
+                // read the same spelling as `U = String`.
+                let named_syms: SmallVec<[Symbol; 2]> = bindings
+                    .iter()
+                    .filter_map(|b| b.param.as_ref().map(|p| self.reintern(p.last())))
+                    .collect();
+                let positional_count = bindings.len() - named_syms.len();
+                let slots = KnowledgeBase::positional_param_slots(
+                    &declared_params,
+                    |d| named_syms.iter().any(|n| self.kb.local_name_of(*n) == d),
+                    positional_count,
+                );
+                // AN OVER-APPLIED PARAMETRIC SPEC IS REFUSED HERE, where it is written. The
+                // overflow was carried as a `SortView` positional and then dropped by every
+                // reader — `check_provider_requires` zipped it away — so `provides
+                // Spec2[C, String, Bool]` LOADED CLEAN with `Bool` gone (MEASURED). Only the
+                // positional arity, not `check_sort_type_args` whole: a clause may also bind
+                // OPERATIONS by name, which that check would call undeclared parameters. And
+                // only for a spec that HAS parameters: on one without, a positional is the
+                // WI-407 carrier slot (`NonMonotonicStore[FileStore]`), which is legal and
+                // carried as it always was.
+                if let Some(problem) = KnowledgeBase::excess_positional(&declared_params, &slots) {
+                    self.errors.push(LoadError::InvalidTypeArgument {
+                        detail: problem.describe(&self.kb, base_sym),
+                        span: Some(self.type_expr_span(ty).span),
+                    });
+                }
+                let mut slots = slots.into_iter();
                 for b in bindings {
                     let bound = self.sort_binding_to_value(&b.bound);
                     let param_sym = match &b.param {
                         Some(p) => Some(self.reintern(p.last())),
-                        None if positional_index < declared_params.len() => {
-                            let param_name = declared_params[positional_index].clone();
-                            positional_index += 1;
-                            Some(self.kb.intern(&param_name))
-                        }
-                        None => None,
+                        None => slots
+                            .next()
+                            .flatten()
+                            .map(|i| self.kb.intern(&declared_params[i])),
                     };
                     match param_sym {
                         Some(sym) => named.push((sym, bound)),
@@ -30305,10 +30389,10 @@ impl<'a> Loader<'a> {
     /// choosing the faithful representation: a `Value::Entity` when ANY binding
     /// carries a non-`Term` value (a denoted `Node`, a nested value `SortView` —
     /// information a hash-consed `Term` cannot hold), else the all-ground
-    /// hash-consed `Value::Term(SortView…)`. The single decision point shared by
-    /// [`sort_inst_to_value`] (the `provides` / `requires` path) and
-    /// [`canonicalize_fact_binding_value`] (the fact path), so the two emit
-    /// BYTE-IDENTICAL specs and a binding's value is never silently dropped.
+    /// hash-consed `Value::Term(SortView…)`. The single decision point of
+    /// [`sort_inst_to_value`] (the `provides` / `requires` path), so a binding's value is
+    /// never silently dropped. (It was shared with the `fact` path's
+    /// `canonicalize_fact_binding_value` until WI-20260917-S8JYF retired that spelling.)
     fn assemble_sort_view_value(
         &mut self,
         pos: Vec<crate::eval::value::Value>,
@@ -31790,15 +31874,15 @@ impl<'a> Loader<'a> {
     /// remains, else the `reflect.SortView` `Value::Entity` carrier (a denoted child
     /// — value-in-type — a stray/overflow positional, or a double-bind can't ride a
     /// hash-consed `Fn`; a `SortView` Entity carries them faithfully rather than
-    /// silently dropping, per the repo's loud-over-silent rule). The single decision
-    /// point shared by [`sort_binding_to_value`] (the `provides` path) and
-    /// [`canonicalize_fact_binding_value`] (the `fact` path), so the two emit
-    /// BYTE-IDENTICAL specs for every input (WI-449) — the plain `Fn` only replaces
-    /// the former nested `SortView` for the clean, well-formed case, exactly where
+    /// silently dropping, per the repo's loud-over-silent rule). The decision point of
+    /// [`sort_binding_to_value`] (the `provides` path; its `fact` twin
+    /// `canonicalize_fact_binding_value` went with WI-20260917-S8JYF) — the plain `Fn` only
+    /// replaces the former nested `SortView` for the clean, well-formed case, exactly where
     /// carrier grounding compares it against a user-written `Pair[…]` (also a plain
-    /// `Fn`) with no SortView→Fn rebuild. `pos` holds only the stray positionals
-    /// (overflow / double-bind); the base name term is prepended for the SortView
-    /// subject slot, mirroring the outer spec view.
+    /// `Fn`) with no SortView→Fn rebuild. `pos` holds only the OVERFLOW positionals (a
+    /// positional never double-binds: it takes the next parameter no name took,
+    /// WI-20260923-N3W68); the base name term is prepended for the SortView subject slot,
+    /// mirroring the outer spec view.
     fn assemble_binding_value(
         &mut self,
         base_sym: Symbol,

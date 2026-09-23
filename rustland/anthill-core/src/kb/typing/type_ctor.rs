@@ -176,34 +176,12 @@ fn concat_named_tuple_types(
 
 /// WI-714 / WI-727 — does a type mention the sort `sort_sym` as a HEAD ANYWHERE? The
 /// reducer's `_`-arm guard so a type-constructor (`Concat` / `Without`) nested in an
-/// unsupported carrier is surfaced loudly rather than cloned through un-reduced. Recurses
-/// through EVERY carrier — parameterized bindings, arrow parts, named-tuple fields, effect
-/// rows — mirroring [`value_contains_projection`].
-fn type_mentions_sort(kb: &KnowledgeBase, ty: &Value, sort_sym: Symbol) -> bool {
-    match extract_type(kb, ty) {
-        TypeExtractor::Parameterized { base, bindings } => {
-            base == sort_sym
-                || bindings
-                    .iter()
-                    .any(|(_, v)| type_mentions_sort(kb, v, sort_sym))
-        }
-        // WI-791: `arity` is a COUNT, not a type — no sort can hide in it.
-        TypeExtractor::Arrow {
-            param,
-            result,
-            effects,
-            arity: _,
-        } => {
-            type_mentions_sort(kb, &param, sort_sym)
-                || type_mentions_sort(kb, &result, sort_sym)
-                || type_mentions_sort(kb, &effects, sort_sym)
-        }
-        TypeExtractor::NamedTuple(fields) => fields
-            .iter()
-            .any(|(_, v)| type_mentions_sort(kb, v, sort_sym)),
-        TypeExtractor::EffectsRows(e) => type_mentions_sort(kb, &e, sort_sym),
-        _ => false,
-    }
+/// unsupported carrier is surfaced loudly rather than cloned through un-reduced. Walks
+/// [`for_each_type_base`], which see.
+pub(super) fn type_mentions_sort(kb: &KnowledgeBase, ty: &Value, sort_sym: Symbol) -> bool {
+    let mut found = false;
+    for_each_type_base(kb, ty, &mut |base| found |= base == sort_sym);
+    found
 }
 
 /// WI-714 / WI-727 — the per-op reduction gate: which type constructors a return
@@ -218,43 +196,72 @@ fn type_mentions_sort(kb: &KnowledgeBase, ty: &Value, sort_sym: Symbol) -> bool 
 /// silently never reduce instead of failing to compile.
 pub(super) fn return_reducible_ctors(kb: &KnowledgeBase, ty: &Value) -> [bool; TYPE_CTORS.len()] {
     let syms = resolved_ctor_family(kb);
-    fn walk(
-        kb: &KnowledgeBase,
-        ty: &Value,
-        syms: &[Option<Symbol>; TYPE_CTORS.len()],
-        out: &mut [bool; TYPE_CTORS.len()],
-    ) {
-        match extract_type(kb, ty) {
-            TypeExtractor::Parameterized { base, bindings } => {
-                for (i, s) in syms.iter().enumerate() {
-                    out[i] |= Some(base) == *s;
-                }
-                for (_, v) in &bindings {
-                    walk(kb, v, syms, out);
-                }
-            }
-            TypeExtractor::Arrow {
-                param,
-                result,
-                effects,
-                arity: _,
-            } => {
-                walk(kb, &param, syms, out);
-                walk(kb, &result, syms, out);
-                walk(kb, &effects, syms, out);
-            }
-            TypeExtractor::NamedTuple(fields) => {
-                for (_, v) in &fields {
-                    walk(kb, v, syms, out);
-                }
-            }
-            TypeExtractor::EffectsRows(e) => walk(kb, &e, syms, out),
-            _ => {}
-        }
-    }
     let mut out = [false; TYPE_CTORS.len()];
-    walk(kb, ty, &syms, &mut out);
+    for_each_type_base(kb, ty, &mut |base| {
+        for (i, s) in syms.iter().enumerate() {
+            out[i] |= Some(base) == *s;
+        }
+    });
     out
+}
+
+/// Every parameterized-type BASE a type mentions, through every carrier a type can nest
+/// in: parameterized bindings, an arrow's parts, named-tuple fields, effect rows, and a ∀'s
+/// body and context — the carriers [`value_contains_projection`] walks.
+///
+/// WI-20260923-N3W68 (#14) — ONE WALK for [`type_mentions_sort`] and
+/// [`return_reducible_ctors`]. They were two copies of it, and both lacked the ∀ while
+/// the first's doc claimed to mirror `value_contains_projection` "through EVERY carrier":
+/// a `Concat` under a `PolyType` was neither reduced nor loudly refused. MEASURED
+/// unreachable — a probe on both walks saw a `PolyType` zero times across the workspace
+/// suite: a declared return type is written, and only an eta'd VALUE is a ∀. The arm is
+/// there so the guard's claim is true, not because a program needed it.
+///
+/// An `ExprCarried` (`x.E`) and a `RigidTypeProjection` (`P.Key`) are LEAVES here, where
+/// the projection walk answers `true` for them: their children are a receiver EXPRESSION and
+/// a type-parameter SUBJECT, neither of which can hold a type constructor. The probe saw
+/// both (18 and 8 times), always as leaves.
+fn for_each_type_base(kb: &KnowledgeBase, ty: &Value, visit: &mut impl FnMut(Symbol)) {
+    match extract_type(kb, ty) {
+        TypeExtractor::Parameterized { base, bindings } => {
+            visit(base);
+            for (_, v) in &bindings {
+                for_each_type_base(kb, v, visit);
+            }
+        }
+        // WI-791: `arity` is a COUNT, not a type — no sort can hide in it.
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity: _,
+        } => {
+            for_each_type_base(kb, &param, visit);
+            for_each_type_base(kb, &result, visit);
+            for_each_type_base(kb, &effects, visit);
+        }
+        TypeExtractor::NamedTuple(fields) => {
+            for (_, v) in &fields {
+                for_each_type_base(kb, v, visit);
+            }
+        }
+        TypeExtractor::EffectsRows(e) => for_each_type_base(kb, &e, visit),
+        TypeExtractor::PolyType { context, body, .. } => {
+            for_each_type_base(kb, &body, visit);
+            for c in &context {
+                for_each_type_base(kb, c, visit);
+            }
+        }
+        TypeExtractor::ExprCarried { .. }
+        | TypeExtractor::RigidTypeProjection { .. }
+        | TypeExtractor::FlexVar { .. }
+        | TypeExtractor::Skolem { .. }
+        | TypeExtractor::Denoted(_)
+        | TypeExtractor::SortRef(_)
+        | TypeExtractor::TypeVar(_)
+        | TypeExtractor::Nothing
+        | TypeExtractor::Error => {}
+    }
 }
 
 /// WI-714 / WI-727 — a type constructor (`Concat[A, B]`, `Without[T, Drop]`,

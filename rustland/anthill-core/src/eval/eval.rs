@@ -4684,26 +4684,25 @@ impl Interpreter {
             bindings.push((*n, self.expect_type_arg(sort_sym, v)?));
         }
 
-        let mut next_param = 0usize;
-        for v in &pos {
+        // Each positional binds the next declared param not already given by name —
+        // `KnowledgeBase::positional_param_slots`, the loader's rule, so `Cell[V = Int64]`
+        // and `Cell[Int64]` agree. The check above admitted this many positionals, so every
+        // one has a slot.
+        let slots = crate::kb::KnowledgeBase::positional_param_slots(
+            &declared,
+            |d| named.iter().any(|(n, _)| self.kb.local_name_of(*n) == d),
+            pos.len(),
+        );
+        for (v, slot) in pos.iter().zip(slots) {
             let term = self.expect_type_arg(sort_sym, v)?;
-            // Bind the next declared param not already given by name — the loader's
-            // rule, so `Cell[V = Int64]` and `Cell[Int64]` agree. The check above admitted
-            // this many positionals, so a free param is guaranteed to be there.
-            let param = loop {
-                let Some(name) = declared.get(next_param) else {
-                    return Err(EvalError::Internal(format!(
-                        "finish_sort_type: `{}` ran out of declared type params for a \
-                         positional that `check_sort_type_args` admitted",
-                        self.kb.qualified_name_of(sort_sym),
-                    )));
-                };
-                next_param += 1;
-                let sym = self.kb.intern(name);
-                if !bindings.iter().any(|(s, _)| *s == sym) {
-                    break sym;
-                }
+            let Some(i) = slot else {
+                return Err(EvalError::Internal(format!(
+                    "finish_sort_type: `{}` ran out of declared type params for a \
+                     positional that `check_sort_type_args` admitted",
+                    self.kb.qualified_name_of(sort_sym),
+                )));
             };
+            let param = self.kb.intern(&declared[i]);
             bindings.push((param, term));
         }
 

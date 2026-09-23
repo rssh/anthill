@@ -3490,6 +3490,68 @@ impl KnowledgeBase {
             .collect()
     }
 
+    /// WI-20260923-N3W68 (#9) — which DECLARED type parameter each POSITIONAL argument of one
+    /// application binds: `slots[i]` is the index in `declared` the i-th positional binds, or
+    /// `None` past the free parameters (an over-application). `bound_by_name` answers, by
+    /// SHORT name, whether the application also binds a declared parameter by name.
+    ///
+    /// THE LANGUAGE'S RULE, AND ITS ONE OWNER: a positional binds the next declared
+    /// parameter NOT ALREADY BOUND BY NAME, in declaration order — `Spec2[T = C, String]`
+    /// binds `U = String`, never `T` a second time. [`Self::check_sort_type_args`] decides
+    /// arity by it.
+    ///
+    /// Before this, every site that paired positionals spelled the rule itself — twelve of
+    /// them — and the spellings disagreed. Seven skipped the named parameters: the loader's
+    /// type-position lowering and its `require[…]` bracket, eval's `finish_sort_type`,
+    /// `check_provider_requires`, `normalize_op_requires_entry`,
+    /// `goal_from_op_requires_entry` and `written_spec_binds_param`. Five paired by RAW
+    /// INDEX: the `provides` / `requires` clause lowering (`sort_inst_to_value`), the
+    /// binding-value lowering (`sort_binding_to_value`), `op_requires_entry_carrier_map`,
+    /// the WI-359 capture in `resolve_requires_bindings`, and `scan_sort_carrier_bindings`.
+    /// MEASURED on the raw-index side: `provides Spec2[T = C, String]` stored `T` twice and
+    /// no `U`, and `provides Spec[T = Map[K = Int64, String]]` diverted the `String` out of
+    /// the bindings — both then REFUSED a correct use as a type mismatch — while the same
+    /// spellings in a type position meant `U = String` and `V = String`. All twelve ask this
+    /// now. The one pairing that does not is the typer's `resolve_call_type_arg_targets`:
+    /// the same rule over a different list — an operation's OWN bracket parameters, up to a
+    /// positional limit, with occupancy tracked by index — and its own excess error.
+    pub fn positional_param_slots(
+        declared: &[String],
+        bound_by_name: impl Fn(&str) -> bool,
+        positional_count: usize,
+    ) -> Vec<Option<usize>> {
+        let mut slots = Vec::with_capacity(positional_count);
+        let mut next = 0usize;
+        for _ in 0..positional_count {
+            while next < declared.len() && bound_by_name(&declared[next]) {
+                next += 1;
+            }
+            if next < declared.len() {
+                slots.push(Some(next));
+                next += 1;
+            } else {
+                slots.push(None);
+            }
+        }
+        slots
+    }
+
+    /// WI-20260923-N3W68 (#9) — the POSITIONAL half of [`Self::check_sort_type_args`], for the
+    /// positions whose argument grammar is richer than a type's: a `provides` / `requires`
+    /// clause, an operation's `requires`, an instance claim. They may bind OPERATIONS by
+    /// name, which the full check would call undeclared parameters, and on a spec with NO
+    /// parameters a positional is the WI-407 carrier slot, not an argument. So: an
+    /// over-application of a spec that HAS parameters, given the [`Self::positional_param_slots`]
+    /// of the application, or `None`.
+    pub fn excess_positional(declared: &[String], slots: &[Option<usize>]) -> Option<TypeArgProblem> {
+        (!declared.is_empty() && slots.iter().any(Option::is_none)).then(|| {
+            TypeArgProblem::ExcessPositional {
+                given: slots.len(),
+                free: slots.iter().flatten().count(),
+            }
+        })
+    }
+
     /// WI-709: check a sort APPLICATION's type arguments against the sort's DECLARED
     /// type params — the ONE rule both positions a type can be written in must obey.
     ///
@@ -3558,17 +3620,18 @@ impl KnowledgeBase {
                 });
             }
         }
-        // Each positional binds the next declared param NOT already given by name, so
-        // the params still free is what bounds the positional count — the same rule
-        // `finish_sort_type` and the loader bind by.
-        let free = declared
-            .iter()
-            .filter(|d| !named.iter().any(|n| self.local_name_of(*n) == d.as_str()))
-            .count();
-        if positional_count > free {
+        // Each positional binds the next declared param NOT already given by name
+        // ([`Self::positional_param_slots`], the rule's one owner), so an over-application
+        // is a positional it finds no slot for.
+        let slots = Self::positional_param_slots(
+            declared,
+            |d| named.iter().any(|n| self.local_name_of(*n) == d),
+            positional_count,
+        );
+        if slots.iter().any(Option::is_none) {
             return Err(TypeArgProblem::ExcessPositional {
                 given: positional_count,
-                free,
+                free: slots.iter().flatten().count(),
             });
         }
         Ok(())
@@ -9662,13 +9725,13 @@ impl KnowledgeBase {
 
     // ── Type term constructors (anthill.prelude.Type entities) ───
 
-    /// `sort_ref(name: <sym>)` — reference to a named sort.
+    /// A reference to a named sort: the bare term `Ref(S)`.
     pub fn make_sort_ref(&mut self, sort_sym: Symbol) -> TermId {
         // WI-361 producer flip: a bare sort is the term `Ref(S)` itself — no
         // `sort_ref(name: Ref(S))` wrapper. The sort symbol IS the functor for
-        // discrimination (`rules_by_functor`, discrim top-edge); dual-form readers
-        // (`extract_sort_ref_sym` / `type_head`) still recognize the deep
-        // `sort_ref` shape for any residual/reflect terms.
+        // discrimination (`rules_by_functor`, discrim top-edge). The deep wrapper has
+        // no reader either: `type_head` reads it as `Parameterized { base: sort_ref }`,
+        // not as a bare sort — this comment claimed otherwise until WI-20260923-N3W68.
         self.alloc(Term::Ref(sort_sym))
     }
 

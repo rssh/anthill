@@ -1057,6 +1057,8 @@ sort C = SPair[B, A]     -- SPair[A = B, B = A] — positional, swaps params
 
 Note that `Eq[T]` inside a scope where `T` is a sort parameter works because `T` is positionally bound to `Eq`'s first parameter — which happens to be named `T`. This is a positional coincidence, not name-based punning.
 
+**"The next unfilled parameter" means not bound BY NAME, in every position** (WI-20260923-N3W68). A positional written after a name skips the parameter that name bound — `Spec2[T = C, String]` is `Spec2[T = C, U = String]` — and the rule is the same wherever the application is written: a type, a binding value inside a clause, a sort's `provides` / `requires` clause, an operation's `requires`. In those positions a positional left with no unfilled parameter is a **load error** (`… is over-applied`) — except on a spec that declares **no** type parameters, where a positional is the instance's **carrier**. Two positions read a leftover positional as the carrier on any spec, and are not refused: an operation's `ensures` names its existential carrier first (`-> C ensures KVStore[C, K = String, V = String]`, WI-402), and an instance claim names its carrier (`fact NonMonotonicStore[FileStore]`). (Until WI-20260923-N3W68 the `provides` / `requires` clause lowering paired by raw index — binding `T` twice in the example above — and an over-applied clause loaded with the extra argument silently dropped.)
+
 A sort binding can also be a **logical variable** (`?` or `?name`). This is used to express existential quantification over type parameters — "for any instantiation":
 
 ```

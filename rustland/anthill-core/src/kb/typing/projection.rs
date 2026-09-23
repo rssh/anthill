@@ -75,17 +75,20 @@ pub(super) fn value_contains_rigid(kb: &KnowledgeBase, ty: &Value) -> bool {
 /// wider predicate under both, where it would have taken away a sort-half supply that
 /// used to work. So the REFUSALS ask this and the δ eliminations ask the wide one — they
 /// are different questions and the narrow one belongs only to the new verdicts.
+///
+/// NARROW IN WHAT IT COUNTS, NOT IN WHERE IT LOOKS (WI-20260923-N3W68 #6). This predicate
+/// used to be its own walk, and it descended only `Parameterized` and `NamedTuple` while
+/// the wide one had since learned `Arrow`, `EffectsRows` and `PolyType` (WI-1083, 50B2K).
+/// The exclusion above justifies dropping the `RigidTypeProjection` ANSWER, never a
+/// shallower walk, and the shallower walk was reachable: `requires Desc[T = {x.E}]` hides
+/// its `x.E` in an effect row, so both refusals looked straight past it. MEASURED before
+/// the fix — a caller forwarding that requirement (`requires Desc[T = {b.E}] = pick(b)`)
+/// and a rule body calling `pick` each LOADED CLEAN and then aborted a debug build with
+/// `DeferToRequirement: __req_desc not bound in caller frame`, the exact outcome the two
+/// refusals exist to prevent. One walk now answers both questions; they differ in the
+/// one arm the exclusion names.
 pub(super) fn value_contains_expr_carried(kb: &KnowledgeBase, ty: &Value) -> bool {
-    match extract_type(kb, ty) {
-        TypeExtractor::ExprCarried { .. } => true,
-        TypeExtractor::Parameterized { bindings, .. } => bindings
-            .iter()
-            .any(|(_, v)| value_contains_expr_carried(kb, v)),
-        TypeExtractor::NamedTuple(fields) => fields
-            .iter()
-            .any(|(_, v)| value_contains_expr_carried(kb, v)),
-        _ => false,
-    }
+    contains_projection(kb, ty, false)
 }
 
 /// WI-376: does a type [`Value`] contain an expression-carried projection
@@ -99,25 +102,25 @@ pub(super) fn value_contains_expr_carried(kb: &KnowledgeBase, ty: &Value) -> boo
 /// A `RigidTypeProjection` (`P.Key`, WI-428) answers `true` too; the narrower
 /// [`value_contains_expr_carried`] is the question that excludes it.
 pub(super) fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool {
+    contains_projection(kb, ty, true)
+}
+
+/// The one walk behind [`value_contains_projection`] (`rigid_counts`) and
+/// [`value_contains_expr_carried`] (not) — see each for its question.
+fn contains_projection(kb: &KnowledgeBase, ty: &Value, rigid_counts: bool) -> bool {
+    let within = |v: &Value| contains_projection(kb, v, rigid_counts);
     match extract_type(kb, ty) {
-        TypeExtractor::ExprCarried { .. } | TypeExtractor::RigidTypeProjection { .. } => true,
-        TypeExtractor::Parameterized { bindings, .. } => bindings
-            .iter()
-            .any(|(_, v)| value_contains_projection(kb, v)),
+        TypeExtractor::ExprCarried { .. } => true,
+        TypeExtractor::RigidTypeProjection { .. } => rigid_counts,
+        TypeExtractor::Parameterized { bindings, .. } => bindings.iter().any(|(_, v)| within(v)),
         TypeExtractor::Arrow {
             param,
             result,
             effects,
             arity: _,
-        } => {
-            value_contains_projection(kb, &param)
-                || value_contains_projection(kb, &result)
-                || value_contains_projection(kb, &effects)
-        }
-        TypeExtractor::NamedTuple(fields) => {
-            fields.iter().any(|(_, v)| value_contains_projection(kb, v))
-        }
-        TypeExtractor::EffectsRows(e) => value_contains_projection(kb, &e),
+        } => within(&param) || within(&result) || within(&effects),
+        TypeExtractor::NamedTuple(fields) => fields.iter().any(|(_, v)| within(v)),
+        TypeExtractor::EffectsRows(e) => within(&e),
         // WI-1083: an eta'd member's ∀ body carries its receiver projections
         // (`mapElems(xs: List, f: (x: xs.T) -> Dst)`), so the body IS walked — this
         // gate is what routes it to the elimination that rebuilds the ∀.
@@ -126,8 +129,7 @@ pub(super) fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool 
         // so a projection hiding in a constraint would never be eliminated, and the assert
         // guarding that path is debug-only. /code-review.
         TypeExtractor::PolyType { context, body, .. } => {
-            value_contains_projection(kb, &body)
-                || context.iter().any(|c| value_contains_projection(kb, c))
+            within(&body) || context.iter().any(within)
         }
         // A logical variable of either kind is a LEAF: it has no children to hide a
         // projection in, and it is not one.
@@ -468,8 +470,9 @@ fn denoted_place_head_sym<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symb
     }
 }
 
-/// The head symbol of a term-carried place path — `Ref(c)`, or a `field_access` chain
-/// rooted at one. See [`denoted_place_head_sym`].
+/// The head symbol of a term-carried place path — `Ref(c)` / `Ident(c)`, the binder
+/// reference `var_ref(name: Ref(c))`, or a `field_access` chain rooted at one. See
+/// [`denoted_place_head_sym`].
 ///
 /// NAMES THE FUNCTOR rather than descending into any application's first argument, which
 /// is the same gate [`stable_receiver_path`] puts on its own `.field` descent. Ungated,
@@ -478,15 +481,30 @@ fn denoted_place_head_sym<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symb
 /// an arg-0 head that is not a parameter. No fixture reaches it (a `denoted` target should
 /// only ever be a place path), so this is the loud-over-silent direction rather than a
 /// live bug; `/code-review` raised it.
-fn term_place_head_sym(kb: &KnowledgeBase, id: TermId) -> Option<Symbol> {
+///
+/// WI-20260923-N3W68 (#15) — THE SAME HEADS AS ITS OCCURRENCE TWIN [`occ_place_head_sym`],
+/// which reads `Ident` and `VarRef` too; this read a `Ref` alone. The `var_ref` arm is that
+/// twin's `Expr::VarRef` in its term spelling ([`KnowledgeBase::make_var_ref_term`], the
+/// shape WI-552 emits for a binder). A head this declines is SKIPPED by
+/// [`unrekeyed_modify_argument`] — "not a place at all" — so a gap here is a silent pass,
+/// not a refusal. MEASURED unreachable before the arms: a probe on the declined shapes and
+/// on the consumer's skip fired zero times across the workspace suite.
+pub(super) fn term_place_head_sym(kb: &KnowledgeBase, id: TermId) -> Option<Symbol> {
     match kb.get_term(id) {
-        Term::Ref(s) => Some(*s),
+        Term::Ref(s) | Term::Ident(s) => Some(*s),
         Term::Fn {
             functor, pos_args, ..
         } if !pos_args.is_empty()
             && kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS)) == Some(*functor) =>
         {
             term_place_head_sym(kb, pos_args[0])
+        }
+        Term::Fn {
+            functor,
+            named_args,
+            ..
+        } if kb.try_resolve_symbol("anthill.reflect.Expr.var_ref") == Some(*functor) => {
+            var_ref_name_symbol(kb, named_args)
         }
         _ => None,
     }
@@ -2250,21 +2268,21 @@ pub(super) fn spec_mentions_key(kb: &KnowledgeBase, spec: &Value, key: SubjectKe
     })
 }
 
-/// The head symbol of a `requires`-application binding VALUE leaf, across the shapes
-/// the loader stores: `Ref(s)` (a type-param binding, `make_sort_ref`), a NULLARY
-/// `Fn{s}` (a plain sort name via `name_to_sort_term`), or the deep
-/// `sort_ref(name: Ref(s))`. A structured binding (a nested application) is not a
-/// leaf → `None`.
+/// The head symbol of a `requires`-application binding VALUE leaf — `Ref(s)` (a
+/// type-param binding, `make_sort_ref`), a NULLARY `Fn{s}` (a plain sort name via
+/// `name_to_sort_term`), or an `Ident(s)`: [`view_ref_symbol`], the one bare-name reader
+/// since c1872e94. A structured binding (a nested application) is not a leaf → `None`.
+///
+/// WI-20260923-N3W68 (#13) — this was its own match, and it differed from
+/// [`view_ref_symbol`] twice: it did not read an `Ident`, and it fell back to
+/// [`extract_sort_ref_sym`] for "the deep `sort_ref(name: Ref(s))`", a form [`type_head`]
+/// does not recognize (it reads as `Parameterized { base: sort_ref }`, and nothing mints
+/// it since WI-361) — so the fallback answered `None` for every term the arms above had
+/// not. MEASURED, neither difference was reachable: a probe on both fired zero times
+/// across the workspace suite. The delegation removes the second reader, not a behaviour
+/// any corpus sees.
 pub(super) fn spec_binding_head_sym(kb: &KnowledgeBase, v: TermId) -> Option<Symbol> {
-    match kb.get_term(v) {
-        Term::Ref(s) => Some(*s),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
-        _ => extract_sort_ref_sym(kb, &TermIdView(v)),
-    }
+    view_ref_symbol(kb, &TermIdView(v))
 }
 
 /// The binding VALUE a `requires` application carries for `member`, when bound

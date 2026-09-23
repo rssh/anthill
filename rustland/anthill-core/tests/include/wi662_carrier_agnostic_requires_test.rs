@@ -19,7 +19,7 @@ use anthill_core::intern::Symbol;
 use anthill_core::kb::load::{self, NullResolver};
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::{Literal, Term};
-use anthill_core::kb::typing::{requires_chain_flat, requires_tree};
+use anthill_core::kb::typing::{requires_chain, requires_tree};
 use anthill_core::kb::ClauseKind;
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
@@ -112,7 +112,7 @@ fn carrier_requires_foo_spec(kb: &mut KnowledgeBase) -> Option<Value> {
         .expect("Carrier");
     let foo = kb.try_resolve_symbol("test.wi662.Foo").expect("Foo");
     kb.invalidate_requires_chain_cache();
-    requires_chain_flat(kb, carrier)
+    requires_chain(kb, carrier)
         .into_iter()
         .find(|e| e.required_sort == foo)
         .map(|e| e.spec)

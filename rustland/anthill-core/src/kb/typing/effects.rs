@@ -699,7 +699,7 @@ fn substitute_ref_terms_rec(
 /// Read the binder symbol `s` from a `var_ref(name: Ref(s))` term's `name` child.
 /// Returns `None` for a malformed / absent `name` (the caller then leaves the
 /// `var_ref` intact rather than substituting).
-fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> Option<Symbol> {
+pub(super) fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> Option<Symbol> {
     let name_key = kb.lookup_symbol("name")?;
     let child = named_args
         .iter()
@@ -1609,7 +1609,20 @@ fn row_inner_value(
 /// A row-tail [`TermId`] if `node` resolves to a logic var, else `None`. A
 /// `TermId`-carried var (any flavor — Global/Rigid/DeBruijn) returns its own
 /// hash-consed id (preserving the pre-P4 tail classification); a `Value::Var`
-/// materializes to a hash-consed `Term::Var` (row tails are plain vars).
+/// or an occurrence-carried `TypeNode::Var` materializes to a hash-consed
+/// `Term::Var` (row tails are plain vars).
+///
+/// WI-20260923-N3W68 (#5) — THE OCCURRENCE ARM, the third spelling of a variable
+/// WI-20260904-02ERR gave [`resolved_var`] and [`walk_value_to_resolved`] and not this
+/// reader. Without it an unbound `TypeNode::Var` at the TOP of a row decomposed as the
+/// EMPTY row — a closed `{}` where an open tail stood, silently. (Inside the algebra the
+/// same variable is read through `named_child_value`, which hands it back as a plain
+/// variable, so only the top-level read was affected.) A producer exists
+/// (`value_to_type_child` mints this carrier for a `Value::Var` in a type slot, e.g. the
+/// arrow rebuild in `rigidify_unwritten_sort_params`), but MEASURED, nothing brings one
+/// here: a temporary probe fired zero times across the stdlib, both example corpora and
+/// the 7410-test workspace suite. The arm is the twin's, not a response to a failing
+/// program.
 fn row_tail_termid(kb: &mut KnowledgeBase, node: &Value) -> Option<TermId> {
     match node {
         Value::Term { id: t, .. } => match kb.get_term(*t) {
@@ -1617,6 +1630,10 @@ fn row_tail_termid(kb: &mut KnowledgeBase, node: &Value) -> Option<TermId> {
             _ => None,
         },
         Value::Var(v) => Some(kb.alloc(Term::Var(*v))),
+        Value::Node(occ) => match occ.as_type() {
+            Some(TypeNode::Var(v)) => Some(kb.alloc(Term::Var(*v))),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -2296,9 +2313,14 @@ pub(super) fn unify_effect_rows<EA: TermView, EB: TermView>(
 ///   accommodates either side's extras; once both rows extend through it,
 ///   the sub relation holds.
 ///
-/// The `subst` argument is intended to be a **local scratch** substitution
-/// (allocated by [`arrow_compatible_view`]) — bindings are reasoning witnesses,
-/// not committed into the caller's typing context.
+/// The `subst` argument is the caller's THREADED substitution, not a scratch: since
+/// WI-335 [`arrow_compatible_view`] and [`types_compatible`] pass their own, so a row
+/// variable bound here is visible to the sibling param / result / effects checks of the
+/// same comparison (a local scratch let each reason in isolation and accept arrows whose
+/// shared row variable had no consistent binding). A caller whose question must not
+/// commit bindings passes a σ of its own — the lattice checks allocate a fresh one per
+/// direction. This doc said "a local scratch, allocated by `arrow_compatible_view`" until
+/// WI-20260923-N3W68.
 pub(super) fn subtype_effect_rows<EA: TermView, EB: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,

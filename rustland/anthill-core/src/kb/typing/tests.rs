@@ -6615,3 +6615,389 @@ end
         );
     }
 }
+
+/// WI-20260923-N3W68 (#4) — the two occurs checks ask ONE leaf question.
+#[cfg(test)]
+mod wi_n3w68_occurs_bare_head_tests {
+    //! [`super::super::occurs_in`] matched a `Term::Ref` leaf alone, while
+    //! [`super::super::occurs_in_view`] matched any nullary functor head — which on a `TermId`
+    //! is also the WI-359 nullary `Fn{p}` a sort parameter keeps under the CZJ2N canon. The σ
+    //! walk chases BOTH spellings, so the `TermId` check let a binding through that
+    //! `walk_type` then followed round the alias. Both checks now ask
+    //! `bare_head_is_param_var` of the view head.
+    //!
+    //! A UNIT ROW, because no program reaches it: a temporary probe on the missed arm fired
+    //! zero times across the stdlib, both example corpora and the 7410-test workspace suite.
+    //! The terms here are the ones the canon would mint for a written parameter, built
+    //! directly.
+    //!
+    //! BACK-OUT, MEASURED: restoring `occurs_in`'s `Term::Ref`-only leaf fails
+    //! [`the_nullary_fn_spelling_of_a_parameter_occurs`] and only it — at the `occurs_in`
+    //! assertion, with `occurs_in_view` still answering `true` beside it, which is the
+    //! divergence itself. The two controls pass either way.
+    use super::super::{bind_resolved, occurs_in, occurs_in_view, resolve_sort_alias, walk_type};
+    use crate::eval::value::Value;
+    use crate::intern::Symbol;
+    use crate::kb::load::{self, NullResolver};
+    use crate::kb::subst::Substitution;
+    use crate::kb::term::{Term, TermId, Var, VarId};
+    use crate::kb::term_view::TermIdView;
+    use crate::kb::KnowledgeBase;
+    use smallvec::SmallVec;
+
+    const SRC: &str = r#"
+namespace n3w68u
+  sort Box[T]
+    entity box(v: T)
+  end
+  sort Opt[T]
+    entity none
+    entity some(value: T)
+  end
+end
+"#;
+
+    fn kb() -> KnowledgeBase {
+        let parsed = crate::parse::parse(SRC).expect("parse");
+        let mut kb = KnowledgeBase::new();
+        if let Err(errs) = load::load_all(&mut kb, &[&parsed], &NullResolver) {
+            panic!(
+                "fixture must load:\n{}",
+                errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n")
+            );
+        }
+        kb
+    }
+
+    /// A sort's parameter symbol and the canonical variable its `SortAlias` names.
+    fn param(kb: &KnowledgeBase, qn: &str) -> (Symbol, VarId) {
+        let sym = kb.resolve_symbol(qn);
+        let alias = resolve_sort_alias(kb, sym).expect("a sort parameter has a SortAlias");
+        let Term::Var(Var::Global(vid)) = kb.get_term(alias) else {
+            panic!("`{qn}`'s alias is not a flex variable: {:?}", kb.get_term(alias));
+        };
+        (sym, *vid)
+    }
+
+    /// `Opt[T = leaf]` — the leaf as a CHILD, the WI-7TN1Q shape
+    /// `?T_Box := Option[T = Ref(Box.T)]`.
+    fn opt_of(kb: &mut KnowledgeBase, leaf: TermId) -> TermId {
+        let opt = kb.resolve_symbol("n3w68u.Opt");
+        let t = kb.resolve_symbol("n3w68u.Opt.T");
+        kb.alloc(Term::Fn {
+            functor: opt,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_elem((t, leaf), 1),
+        })
+    }
+
+    #[test]
+    fn the_nullary_fn_spelling_of_a_parameter_occurs() {
+        let mut kb = kb();
+        let (sym, vid) = param(&kb, "n3w68u.Box.T");
+        let leaf = kb.make_name_term_from_sym(sym);
+        assert!(
+            matches!(kb.get_term(leaf), Term::Fn { .. }),
+            "a Sort-kind name keeps the nullary `Fn` spelling under the CZJ2N canon — without \
+             it this row measures the `Ref` spelling: {:?}",
+            kb.get_term(leaf)
+        );
+        // WHY THE CHECK MUST SEE IT: the σ walk chases this spelling to the variable.
+        let alias = resolve_sort_alias(&kb, sym).expect("alias");
+        assert_eq!(walk_type(&kb, &Substitution::new(), leaf), alias);
+        let wrapped = opt_of(&mut kb, leaf);
+        assert!(
+            occurs_in_view(&kb, vid, &TermIdView(wrapped)),
+            "the view twin sees the parameter"
+        );
+        assert!(
+            occurs_in(&kb, vid, wrapped),
+            "the `TermId` occurs check must see what the view twin sees and what `walk_type` \
+             chases — else `?T := Opt[T = Fn{{Box.T}}]` is admitted and cyclic"
+        );
+        assert!(
+            !bind_resolved(&mut kb, &mut Substitution::new(), vid, Value::term(wrapped)),
+            "the binding the occurs check exists to refuse"
+        );
+    }
+
+    /// CONTROL — the `Ref` spelling, which both checks always saw. Passes either way.
+    #[test]
+    fn the_ref_spelling_of_a_parameter_occurs() {
+        let mut kb = kb();
+        let (sym, vid) = param(&kb, "n3w68u.Box.T");
+        let leaf = kb.alloc(Term::Ref(sym));
+        let wrapped = opt_of(&mut kb, leaf);
+        assert!(occurs_in(&kb, vid, wrapped));
+        assert!(occurs_in_view(&kb, vid, &TermIdView(wrapped)));
+    }
+
+    /// CONTROL — ANOTHER sort's parameter, in the widened spelling, is not an occurrence of
+    /// this one: the vid comparison WI-7TN1Q measured as the load-bearing half of
+    /// `sort_param_ref_is_var`. Passes either way.
+    #[test]
+    fn another_sorts_parameter_does_not_occur() {
+        let mut kb = kb();
+        let (_, box_vid) = param(&kb, "n3w68u.Box.T");
+        let (opt_t, _) = param(&kb, "n3w68u.Opt.T");
+        let leaf = kb.make_name_term_from_sym(opt_t);
+        let wrapped = opt_of(&mut kb, leaf);
+        assert!(!occurs_in(&kb, box_vid, wrapped));
+        assert!(!occurs_in_view(&kb, box_vid, &TermIdView(wrapped)));
+    }
+}
+
+/// WI-20260923-N3W68 (#5) — an occurrence-carried row variable is a row TAIL.
+#[cfg(test)]
+mod wi_n3w68_row_tail_node_var_tests {
+    //! `row_tail_termid` read a `TermId` var and a `Value::Var` as a row tail and answered
+    //! `None` for the third spelling, `TypeNode::Var` — the carrier WI-20260904-02ERR gave
+    //! `resolved_var` and `walk_value_to_resolved`. So `decompose_effect_row_raw` read an
+    //! unbound one at the top of a row as the CLOSED empty row.
+    //!
+    //! A UNIT ROW, because no program reaches it — a temporary probe fired zero times across
+    //! the stdlib, both example corpora and the 7410-test workspace suite.
+    //!
+    //! BACK-OUT, MEASURED: removing the `Value::Node` arm fails the first row alone — it
+    //! decomposes to `([], [], [])`. The second passes either way, and it is the CONTROL:
+    //! the review predicted a hard reject inside the algebra, but `open`'s tail reaches the
+    //! reader through `named_child_value`, which hands the child back as a plain variable,
+    //! so only the top-level read ever saw the occurrence carrier.
+    use super::super::decompose_effect_row_raw;
+    use crate::eval::value::Value;
+    use crate::kb::load::register_prelude;
+    use crate::kb::node_occurrence::{empty_span, TypeChild};
+    use crate::kb::subst::Substitution;
+    use crate::kb::term::{Term, Var, VarId};
+    use crate::kb::KnowledgeBase;
+
+    fn setup() -> (KnowledgeBase, VarId, Value) {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let rho = kb.intern("rho");
+        let vid = kb.fresh_var(rho);
+        let occ = kb.make_type_var_occ(Var::Global(vid), empty_span(), None);
+        (kb, vid, Value::Node(occ))
+    }
+
+    fn is_tail(kb: &KnowledgeBase, tails: &[crate::kb::term::TermId], vid: VarId) -> bool {
+        matches!(tails, [t] if matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == vid))
+    }
+
+    #[test]
+    fn a_bare_occurrence_carried_row_variable_is_an_open_row() {
+        let (mut kb, vid, row) = setup();
+        let (present, tails, absent) =
+            decompose_effect_row_raw(&mut kb, &Substitution::new(), &row)
+                .expect("a row variable is a well-formed row");
+        assert!(
+            present.is_empty() && absent.is_empty() && is_tail(&kb, &tails, vid),
+            "an unbound row variable is an OPEN row with that variable as its tail, not the \
+             closed `{{}}`: present={present:?} tails={tails:?} absent={absent:?}"
+        );
+    }
+
+    #[test]
+    fn an_occurrence_carried_row_variable_under_open_is_its_tail() {
+        let (mut kb, vid, row) = setup();
+        let Value::Node(var_occ) = row else { unreachable!() };
+        let open = kb.make_open_occ(TypeChild::Node(var_occ), empty_span(), None);
+        let wrapped = Value::Node(kb.make_effects_rows_occ(TypeChild::Node(open), empty_span(), None));
+        let (present, tails, absent) =
+            decompose_effect_row_raw(&mut kb, &Substitution::new(), &wrapped)
+                .expect("`{open(?rho)}` is a well-formed row, not an unknown functor");
+        assert!(
+            present.is_empty() && absent.is_empty() && is_tail(&kb, &tails, vid),
+            "present={present:?} tails={tails:?} absent={absent:?}"
+        );
+    }
+}
+
+/// WI-20260923-N3W68 (#12) — one nullary term, one answer.
+#[cfg(test)]
+mod wi_n3w68_nullary_meta_ctor_tests {
+    //! `sort_sym_of_term` and `typaram_occurrence_sym` each answered the two spellings of
+    //! `Nothing` differently: `Ref(Nothing)` fell through `extract_sort_ref_sym` (which reads
+    //! it as `TypeHead::Nothing`, not a sort ref) to `None`, while `Fn{Nothing}` hit a
+    //! nullary-`Fn` arm and answered `Some`. The CZJ2N canon makes those one term for every
+    //! type reader; these two now agree with it.
+    //!
+    //! A UNIT ROW: only the `Ref` spelling reaches either function in any corpus (2074 times
+    //! across the workspace suite, all `anthill.prelude.Nothing`, and never the `Fn` one).
+    //!
+    //! BACK-OUT, MEASURED: restoring either function's nullary-`Fn` answer fails this row at
+    //! that function's `Fn`-spelling assertion.
+    use super::super::{sort_sym_of_term, typaram_occurrence_sym};
+    use crate::kb::term::Term;
+    use crate::kb::test_support::load_stdlib;
+
+    #[test]
+    fn both_spellings_of_nothing_answer_alike() {
+        let mut kb = load_stdlib(None);
+        let nothing = kb.resolve_symbol("anthill.prelude.Nothing");
+        let fn_spelling = kb.make_name_term_from_sym(nothing);
+        assert!(
+            matches!(kb.get_term(fn_spelling), Term::Fn { .. }),
+            "`anthill.prelude.Nothing` is a Sort, so its nullary application keeps the `Fn` \
+             spelling — without it this row compares a term with itself: {:?}",
+            kb.get_term(fn_spelling)
+        );
+        let ref_spelling = kb.alloc(Term::Ref(nothing));
+        assert_eq!(sort_sym_of_term(&kb, ref_spelling), None);
+        assert_eq!(
+            sort_sym_of_term(&kb, fn_spelling),
+            None,
+            "the `Fn` spelling of `Nothing` must answer as its `Ref` spelling does"
+        );
+        assert_eq!(typaram_occurrence_sym(&kb, ref_spelling), None);
+        assert_eq!(
+            typaram_occurrence_sym(&kb, fn_spelling),
+            None,
+            "`Nothing` names no type parameter, in either spelling"
+        );
+    }
+}
+
+/// WI-20260923-N3W68 (#13, #15) — bare-name and place-head readers answer as their twins.
+#[cfg(test)]
+mod wi_n3w68_bare_name_reader_tests {
+    //! #13 — `spec_binding_head_sym` now delegates to `view_ref_symbol`, the one bare-name
+    //! reader; its own match did not read an `Ident`. #15 — `term_place_head_sym` now reads
+    //! the heads its occurrence twin `occ_place_head_sym` reads: `Ident`, and the binder
+    //! reference `var_ref(name: Ref(c))` (the term spelling of `Expr::VarRef`).
+    //!
+    //! UNIT ROWS: a probe on each missed shape fired zero times across the workspace suite —
+    //! in particular a guarded `Modify[c]` label rides the OCCURRENCE carrier, so its place
+    //! reaches the twin that already read it.
+    //!
+    //! BACK-OUTS, MEASURED: #13's own match restored fails the `Ident` assertion of the first
+    //! row; #15's `Ref`-only arm restored fails the second row at `var_ref`. The `Ref`
+    //! assertions in each are controls and pass either way.
+    use super::super::{spec_binding_head_sym, term_place_head_sym};
+    use crate::kb::load::register_prelude;
+    use crate::kb::term::Term;
+    use crate::kb::KnowledgeBase;
+    use crate::parse::desugar_target as dt;
+    use smallvec::SmallVec;
+
+    fn kb() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        kb
+    }
+
+    #[test]
+    fn a_requires_binding_leaf_reads_every_bare_spelling() {
+        let mut kb = kb();
+        let s = kb.intern("n3w68.Leaf");
+        let r = kb.alloc(Term::Ref(s));
+        let i = kb.alloc(Term::Ident(s));
+        assert_eq!(spec_binding_head_sym(&kb, r), Some(s));
+        assert_eq!(
+            spec_binding_head_sym(&kb, i),
+            Some(s),
+            "an `Ident` is a bare name to `view_ref_symbol`, and this reader is that one"
+        );
+    }
+
+    #[test]
+    fn a_term_place_reads_the_heads_its_occurrence_twin_reads() {
+        let mut kb = kb();
+        let c = kb.intern("n3w68.op.c");
+        let r = kb.alloc(Term::Ref(c));
+        assert_eq!(term_place_head_sym(&kb, r), Some(c));
+        let var_ref = kb.make_var_ref_term(c);
+        assert_eq!(
+            term_place_head_sym(&kb, var_ref),
+            Some(c),
+            "`var_ref(name: Ref(c))` is the binder `c` — the term twin of `Expr::VarRef`"
+        );
+        let ident = kb.alloc(Term::Ident(c));
+        assert_eq!(term_place_head_sym(&kb, ident), Some(c));
+        let fa = kb
+            .try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS))
+            .expect("the prelude registers `field_access`");
+        let field = kb.intern("contents");
+        let field_ref = kb.alloc(Term::Ref(field));
+        let path = kb.alloc(Term::Fn {
+            functor: fa,
+            pos_args: SmallVec::from_slice(&[var_ref, field_ref]),
+            named_args: SmallVec::new(),
+        });
+        assert_eq!(
+            term_place_head_sym(&kb, path),
+            Some(c),
+            "a field path rooted at a binder reference is rooted at the binder"
+        );
+    }
+}
+
+/// WI-20260923-N3W68 (#14) — the return-type ctor walk sees under a ∀.
+#[cfg(test)]
+mod wi_n3w68_type_base_walk_tests {
+    //! `type_mentions_sort` and `return_reducible_ctors` were two copies of one walk, and
+    //! neither descended a `PolyType`, although the first's doc claimed to mirror
+    //! `value_contains_projection` through every carrier. They now share
+    //! `for_each_type_base`, which walks the ∀'s body.
+    //!
+    //! A UNIT ROW: a declared return type is never a ∀ (only an eta'd value is), and a probe
+    //! saw a `PolyType` on neither walk across the workspace suite. The ∀ here is built the
+    //! way the eta lift builds one (`make_poly_type_occ` over one flex binder and an empty
+    //! context), around a body that mentions `Concat`.
+    //!
+    //! BACK-OUT, MEASURED: the `PolyType` arm removed from `for_each_type_base` fails the row
+    //! at its first assertion; the bare-body assertions are the CONTROL and pass either way.
+    use super::super::{return_reducible_ctors, type_mentions_sort, TYPE_CTORS};
+    use crate::eval::value::Value;
+    use crate::kb::node_occurrence::{empty_span, TypeChild};
+    use crate::kb::term::{Term, Var};
+    use crate::kb::test_support::load_stdlib;
+    use smallvec::SmallVec;
+
+    #[test]
+    fn a_ctor_under_a_forall_is_seen_by_both_readers() {
+        let mut kb = load_stdlib(None);
+        let concat = kb.resolve_symbol("anthill.prelude.Concat");
+        let relation = kb.resolve_symbol("anthill.prelude.Relation");
+        let int = kb.make_sort_ref_by_name("anthill.prelude.Int64");
+        let (a, b, t) = (kb.intern("A"), kb.intern("B"), kb.intern("T"));
+        let ctor = kb.alloc(Term::Fn {
+            functor: concat,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(a, int), (b, int)]),
+        });
+        let body = kb.alloc(Term::Fn {
+            functor: relation,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_elem((t, ctor), 1),
+        });
+        // ONE binder: a ∀ with none is malformed, and `extract_type` reads it as `Error`.
+        let x = kb.intern("X");
+        let x_var = kb.fresh_var(x);
+        let binder = kb.alloc(Term::Var(Var::Global(x_var)));
+        let binders = crate::kb::load::build_value_list(&mut kb, vec![Value::term(binder)]);
+        let context = crate::kb::load::build_value_list(&mut kb, Vec::new());
+        let poly = Value::Node(kb.make_poly_type_occ(
+            binders,
+            context,
+            TypeChild::Interned(body),
+            empty_span(),
+            None,
+        ));
+        let concat_slot = TYPE_CTORS
+            .iter()
+            .position(|c| c.qn == "anthill.prelude.Concat")
+            .expect("`Concat` is in the reduction family");
+        assert!(
+            type_mentions_sort(&kb, &poly, concat),
+            "the loud-refusal guard must see a `Concat` under a ∀"
+        );
+        assert!(
+            return_reducible_ctors(&kb, &poly)[concat_slot],
+            "the reduction gate must flag a `Concat` under a ∀"
+        );
+        // CONTROL: the same body with no ∀ around it — both walks always saw this.
+        assert!(type_mentions_sort(&kb, &Value::term(body), concat));
+        assert!(return_reducible_ctors(&kb, &Value::term(body))[concat_slot]);
+    }
+}

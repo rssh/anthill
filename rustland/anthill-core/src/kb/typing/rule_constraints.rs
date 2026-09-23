@@ -30,6 +30,11 @@ pub(super) type ParamBackedVars = HashSet<u32>;
 /// WI-9C2PZ — the canonical type-parameter VARIABLE a declared-type node denotes, if it
 /// denotes one.
 ///
+/// Named `declared_type_param_var` until WI-20260923-N3W68, which is also the name of
+/// [`crate::kb::op_info::declared_type_param_var`] — a DIFFERENT question (the variable an
+/// operation's own bracket declares, by short name) asked of different arguments. Two
+/// functions, one name, in one crate.
+///
 /// The question is NOT "does this look like a type parameter" but "is this a VARIABLE
 /// that [`walk_type`] collapses into one canonical identity KB-wide" — because that
 /// collapse is exactly the conflation being repaired, so its set is exactly the set to
@@ -70,7 +75,7 @@ pub(super) type ParamBackedVars = HashSet<u32>;
 /// test accepts and the map does not answer for would be a residual conflation, so it was
 /// counted: instrumented across the whole `wi_tests` corpus (3151 tests, full stdlib plus
 /// every fixture), ZERO names diverged.
-pub(super) fn declared_type_param_var(kb: &KnowledgeBase, t: TermId) -> Option<VarId> {
+pub(super) fn denoted_type_param_var(kb: &KnowledgeBase, t: TermId) -> Option<VarId> {
     match kb.get_term(t) {
         Term::Var(Var::Global(v)) => Some(*v),
         Term::Ref(sym) | Term::Ident(sym) => type_param_global_var(kb, *sym),
@@ -93,7 +98,7 @@ pub(super) fn declared_type_param_var(kb: &KnowledgeBase, t: TermId) -> Option<V
 /// itself. Measured on a full stdlib load, the large majority of declared parameter /
 /// field types mention no parameter at all (`String`, `Int64`, `List[Term]`).
 fn declared_type_mentions_param(kb: &KnowledgeBase, t: TermId) -> bool {
-    if declared_type_param_var(kb, t).is_some() {
+    if denoted_type_param_var(kb, t).is_some() {
         return true;
     }
     match kb.get_term(t) {
@@ -138,7 +143,7 @@ fn instantiate_declared_term(
     t: TermId,
     inst: &mut ParamInstantiation,
 ) -> TermId {
-    if let Some(canonical) = declared_type_param_var(kb, t) {
+    if let Some(canonical) = denoted_type_param_var(kb, t) {
         return instantiated_param_var(kb, canonical, inst);
     }
     let Term::Fn {

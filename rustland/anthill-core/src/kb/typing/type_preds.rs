@@ -128,14 +128,14 @@ fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool)
 /// WI-385: groundness of a substitution-RESOLVED type `Value` — the gate for
 /// argument / field type validation. Only a fully-concrete declared type
 /// checked against a fully-concrete actual type may fail; a type-parameter
-/// position (`T`), an unresolved inference var (`?_` / `Value::Var`), or a
-/// carrier whose groundness the term predicate can't read stays UNCHECKED.
-/// This is what keeps the validation from false-positiving on the pervasive
-/// polymorphic signatures (`add(a: T, b: T)`, `some(value: T)`, `cons(head: T,
-/// …)`): those param/field types resolve to a sort-param or a still-free var,
-/// whose conformance the spec-op dispatch / return-conformance path settles, not
-/// this check. Conservative by design — a non-`Term` carrier returns `false`
-/// (skip) rather than risk an unsound pass or a false reject.
+/// position (`T`) or an unresolved inference var (`?_` / `Value::Var`) stays
+/// UNCHECKED. This is what keeps the validation from false-positiving on the
+/// pervasive polymorphic signatures (`add(a: T, b: T)`, `some(value: T)`,
+/// `cons(head: T, …)`): those param/field types resolve to a sort-param or a
+/// still-free var, whose conformance the spec-op dispatch / return-conformance
+/// path settles, not this check. EVERY carrier is judged — see
+/// [`resolved_type_is_ground_g`]; this doc used to promise that a non-`Term`
+/// carrier returned `false` (skip), which stopped being true at WI-470.
 pub(super) fn resolved_type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
     resolved_type_is_ground_g(kb, v, false)
 }
@@ -147,6 +147,13 @@ pub(super) fn resolved_type_is_determined(kb: &KnowledgeBase, v: &Value) -> bool
     resolved_type_is_ground_g(kb, v, true)
 }
 
+/// The shared body of [`resolved_type_is_ground`] (`rigid_ok = false`, CONCRETE) and
+/// [`resolved_type_is_determined`] (`rigid_ok = true`, DETERMINED) — the two readings
+/// [`type_value_is_ground_g`] documents. Three arms, by carrier: a hash-consed type through
+/// [`type_value_is_ground_g`]; an occurrence through [`node_type_is_ground_g`], which keeps
+/// its own arm for the type-specific judgments it names; and every other carrier through
+/// the shared view walk [`type_view_is_ground_g`] (which is where the old `_ => false`
+/// went — one type, one answer, whatever carrier it rides in on).
 fn resolved_type_is_ground_g(kb: &KnowledgeBase, v: &Value, rigid_ok: bool) -> bool {
     match v {
         Value::Term { id: t, .. } => type_value_is_ground_g(kb, *t, rigid_ok),

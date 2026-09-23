@@ -479,14 +479,12 @@ pub(crate) fn build_requires_index(kb: &mut KnowledgeBase) {
         let Some(sort_ref_tid) = crate::kb::op_info::head_field_term(kb, head, "sort_ref") else {
             continue;
         };
-        let Term::Fn {
-            functor: sr_functor,
-            ..
-        } = kb.get_term(sort_ref_tid)
-        else {
+        // `sort_ref_functor`, the provides side's decoder — see `collect_sort_requires`,
+        // the scan this bucket must agree with, for why not a `Term::Fn` shape test.
+        let Some(sr_functor) = crate::kb::load::sort_ref_functor(kb, sort_ref_tid) else {
             continue;
         };
-        index.insert(kb.canonical_sort_sym(*sr_functor), rid);
+        index.insert(kb.canonical_sort_sym(sr_functor), rid);
     }
     kb.requires_index = Some(index);
 }

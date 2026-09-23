@@ -1123,14 +1123,12 @@ pub(super) fn carrier_provided_by_witness(
     })
 }
 
-/// Is `spec` a `SortView` wrapper? Same discriminant [`unwrap_spec_view`] uses
-/// (`anthill.reflect.SortView` or any `.SortView` re-export), factored out so the
-/// witness-gate helper and the unwrapper cannot disagree on what counts as a view.
-/// Carrier-agnostic (WI-662): one discriminant for a ground `Value::Term` spec and
-/// a denoted `Value::Entity` spec carrier alike.
+/// Is `spec` a `SortView` wrapper? [`is_sort_view_functor`] of its head, so the witness-gate
+/// helper and the unwrapper cannot disagree on what counts as a view. Carrier-agnostic
+/// (WI-662): one discriminant for a ground `Value::Term` spec and a denoted `Value::Entity`
+/// spec carrier alike.
 pub(super) fn view_is_sort_view(kb: &KnowledgeBase, spec: &impl TermView) -> bool {
-    matches!(spec.head(kb), ViewHead::Functor { functor: Some(f), .. }
-        if { let q = kb.qualified_name_of(f); q == "anthill.reflect.SortView" || q.ends_with(".SortView") })
+    matches!(spec.head(kb), ViewHead::Functor { functor: Some(f), .. } if is_sort_view_functor(kb, f))
 }
 
 /// The head symbol NAME of a type-argument term (`Ref(T)` / `Ident(T)` / `T[…]` → `"T"`).

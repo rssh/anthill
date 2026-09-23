@@ -2585,9 +2585,23 @@ fn callback_actual_subject(kb: &KnowledgeBase, actual_src: &CallbackActual) -> S
     }
 }
 
-/// Extract the underlying sort symbol from a term in any of the
-/// shapes a binding value may take: `sort_ref(name: Ref(X))`,
-/// bare `Ref(X)` / `Ident(X)`, or a nullary `Fn { functor: X, … }`.
+/// The HEAD symbol of a binding value: a bare sort (`Ref(X)` or the nullary `Fn{X}`, both
+/// answered by [`extract_sort_ref_sym`]), an `Ident(X)`, or the FUNCTOR of a STRUCTURED
+/// term — a parameterized type's base, an effect row's or an arrow's type-extractor
+/// functor.
+///
+/// ANY ARITY, and deliberately (WI-20260923-N3W68 #7, which found this doc promising a
+/// nullary `Fn` only). [`dispatch_values_match`] compares these heads as its coarse
+/// fallback, and that fallback is load-bearing for structured values — its doc has the
+/// measurement.
+///
+/// A NULLARY `Fn` that reaches the match below is NOT a bare sort — [`extract_sort_ref_sym`]
+/// answered every one of those — but a meta-constructor [`type_head`] classifies apart,
+/// in practice `Nothing`. It answers `None`, as its `Ref` spelling does (there is no `Ref`
+/// arm below): one nullary term, one answer (WI-20260902-CZJ2N). It used to answer
+/// `Some(Nothing)` for the `Fn` spelling alone — WI-20260923-N3W68 #12. MEASURED, only the
+/// `Ref` spelling reaches here (2074 times across the workspace suite, all
+/// `anthill.prelude.Nothing`), so the alignment changes no answer any corpus asks for.
 pub(super) fn sort_sym_of_term(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
     if let Some(s) = extract_sort_ref_sym(kb, &TermIdView(t)) {
         return Some(s);
@@ -2595,7 +2609,11 @@ pub(super) fn sort_sym_of_term(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> 
     match kb.get_term(t) {
         // bare `Ref` handled above via `extract_sort_ref_sym` (WI-361); `Ident` here.
         Term::Ident(s) => Some(*s),
-        Term::Fn { functor, .. } => Some(*functor),
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if !pos_args.is_empty() || !named_args.is_empty() => Some(*functor),
         _ => None,
     }
 }

@@ -414,19 +414,21 @@ fn written_spec_binds_param(
     if positionals == 0 {
         return false;
     }
-    // Declaration order, minus whatever a named binding already pinned — so a mixed
-    // `Spec[V = Vec3, Float]` assigns its positional to the next FREE parameter, which is
-    // the rule the requires-coverage decoder applies to this same shape.
-    sort_type_params_as_pairs(kb, kb.canonical_sort_sym(spec_sort))
+    // Each positional binds the next parameter no named binding pinned — so a mixed
+    // `Spec[V = Vec3, Float]` assigns its positional to the next FREE parameter:
+    // `KnowledgeBase::positional_param_slots`, the rule's one owner.
+    let params: Vec<String> = sort_type_params_as_pairs(kb, kb.canonical_sort_sym(spec_sort))
         .iter()
-        .map(|(p, _)| short_name_of(kb.local_name_of(*p)))
-        .filter(|n| {
-            !named
-                .iter()
-                .any(|k| short_name_of(kb.local_name_of(*k)) == *n)
-        })
-        .take(positionals)
-        .any(|n| n == want)
+        .map(|(p, _)| short_name_of(kb.local_name_of(*p)).to_string())
+        .collect();
+    KnowledgeBase::positional_param_slots(
+        &params,
+        |d| named.iter().any(|k| short_name_of(kb.local_name_of(*k)) == d),
+        positionals,
+    )
+    .into_iter()
+    .flatten()
+    .any(|i| params[i] == want)
 }
 
 /// WI-431: the OPERATION symbol an instance fact binds for `op_short` among a

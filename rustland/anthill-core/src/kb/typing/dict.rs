@@ -2658,8 +2658,7 @@ fn view_carrier_binding(kb: &KnowledgeBase, tid: TermId) -> Option<TermId> {
             pos_args,
             named_args,
         } => {
-            let qn = kb.qualified_name_of(*functor);
-            if qn == "anthill.reflect.SortView" || qn.ends_with(".SortView") {
+            if is_sort_view_functor(kb, *functor) {
                 let base = pos_args
                     .first()
                     .copied()
