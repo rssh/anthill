@@ -252,10 +252,14 @@ fn the_full_closure_loads() {
 /// fails here. The 46 are pinned by name as well, because "0 invisible" alone would also
 /// hold if they were registered nowhere.
 ///
-/// NOT COVERED, and said here rather than implied: `anthill-stl`'s reflect set
-/// (`register_reflect_builtins`) still registers by qualified name — its functions close
-/// over resolved reflect symbols and live outside anthill-core — so its operations are
-/// neither mapped nor claimed, and a registration added there is invisible to this test.
+/// THE WHOLE RUNTIME REGISTRY since WI-20260923-9R5HN. BRT4Y could not reach
+/// anthill-stl's reflect set (`register_reflect_builtins`, which `runner::register_runtime`
+/// ran after the standard set), so this test covered one of two registries. That set is
+/// `HOST_FNS` rows now and `register_runtime` calls `register_standard_builtins` alone —
+/// so what this test registers IS what every CLI run and embedder registers. MEASURED on
+/// the full closure with both registrars, before: 183 rust-mapped, 24 registered and
+/// invisible (exactly [`REFLECT_SET`]); after: 207 mapped, 0 invisible. The 24 are pinned
+/// by name, and as CLAIMED, for the same reason the 46 are.
 #[test]
 fn every_operation_the_interpreter_registers_is_interpreter_mapped() {
     let kb = crate::common::load_kb_with("namespace brt4y.registry\nend\n");
@@ -296,7 +300,57 @@ fn every_operation_the_interpreter_registers_is_interpreter_mapped() {
             "{qn} must still be REGISTERED — mapped and not registered would be worse"
         );
     }
+    for qn in REFLECT_SET {
+        let sym = kb
+            .try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("{qn} resolves"));
+        assert!(
+            mapped_rust.contains(&sym) && kb.is_interpreter_mapped_op(sym),
+            "{qn} was anthill-stl's registration by qualified name; it must now be a rust \
+             `operation_map` entry"
+        );
+        assert!(
+            registered.contains(&sym),
+            "{qn} must be REGISTERED by the standard set"
+        );
+        let info = op_info::lookup_operation_info(kb, sym)
+            .unwrap_or_else(|| panic!("{qn} has an OperationInfo record"));
+        assert!(
+            meta_has_flag(kb, info.meta, "host_implemented"),
+            "{qn} must be declared `@[host_implemented]`"
+        );
+    }
 }
+
+/// WI-20260923-9R5HN — the 24 operations anthill-stl's `register_reflect_builtins`
+/// registered by qualified name, each now an `operation_map` entry
+/// (`rustland/anthill-stl/anthill/reflect.anthill`, `kernel.anthill`).
+const REFLECT_SET: [&str; 24] = [
+    "anthill.reflect.KB.sorts",
+    "anthill.reflect.KB.operations",
+    "anthill.reflect.KB.constructors",
+    "anthill.reflect.KB.fields",
+    "anthill.reflect.KB.rules",
+    "anthill.reflect.KB.descriptions",
+    "anthill.reflect.KB.sort_template",
+    "anthill.reflect.KB.reify",
+    "anthill.reflect.KB.reflect",
+    "anthill.reflect.qualified_name",
+    "anthill.reflect.short_name",
+    "anthill.reflect.lookup_symbol",
+    "anthill.reflect.scope",
+    "anthill.reflect.kind",
+    "anthill.reflect.nonvar",
+    "anthill.reflect.ground",
+    "anthill.reflect.sort_as_term",
+    "anthill.reflect.can_be_sort",
+    "anthill.reflect.term_as_sort",
+    "anthill.reflect.resolve_sort_instantiation_param",
+    "anthill.reflect.Substitution.apply",
+    "anthill.reflect.Substitution.compose",
+    "anthill.reflect.Substitution.bindings",
+    "anthill.kernel.not",
+];
 
 /// The 46 registrations `register_standard_builtins` made by hardcoded qualified name
 /// before this ticket (`register_if_present`), each now an `operation_map` entry.
@@ -489,4 +543,79 @@ fn a_drift_is_reported_by_the_phase_that_loaded_it_and_no_later_one() {
         &["does not claim host backing"],
     );
     crate::common::expect_loaded(load_into(&mut kb, &["namespace brt4y.phase3\nend\n"]));
+}
+
+/// A SECOND binding for `Gauge.reading` in the same language, naming another function.
+const BINDING_AGAIN: &str = r#"
+namespace brt4y.claim
+  provides Gauge language rust
+    artifact "brt4y-test-again"
+    operation_map { reading: "brt4y_reading_again" }
+  end
+end
+"#;
+
+/// WI-20260923-9R5HN — ONE OPERATION, TWO MAPPINGS IN ONE LANGUAGE, is refused at load.
+/// An interpreter registers every rust mapping into one builtin map, last insert wins,
+/// so the program would silently run whichever block loaded second. This is the hazard
+/// anthill-stl's second registrar had one level up (it ran after the standard set and
+/// shadowed any name the two shared — WI-759 found `field_access` shadowed that way);
+/// folding it into the mappings moved the hazard here, where it is a refusal.
+///
+/// CONTROL, MEASURED on the pre-ticket loader, which had no duplicate half in
+/// `check_host_implemented_claims`: a program with two such blocks loaded clean
+/// (`anthill load`). The row below (one mapping per language) and
+/// `the_same_mapping_over_the_claim_loads` pass either way by design.
+#[test]
+fn a_second_mapping_of_one_operation_in_one_language_is_a_load_error() {
+    crate::common::expect_load_errors(
+        load(&[CLAIM, BINDING, BINDING_AGAIN]),
+        &["`brt4y.claim.Gauge.reading` is realized by two `operation_map` entries in \
+           language rust — host key \"brt4y_reading\", then \"brt4y_reading_again\""],
+    );
+}
+
+/// CONTROL: the same operation mapped once in EACH of two languages loads — two runtimes,
+/// one implementation each, which is what a binding layer per host is for.
+#[test]
+fn one_mapping_per_language_loads() {
+    crate::common::expect_loaded(load(&[
+        CLAIM,
+        BINDING,
+        "namespace brt4y.claim\n  provides Gauge language cpp\n    artifact \"brt4y.hpp\"\n    \
+         operation_map { reading: \"brt4y_reading\" }\n  end\nend\n",
+    ]));
+}
+
+/// The `const_map` peer of the duplicate refusal: the same last-insert-wins registration
+/// (`register_const_mappings`), so the same refusal. CONTROL, MEASURED like the operation
+/// row: the pre-ticket loader had no such check. `one_const_mapping_loads` is the row that
+/// passes either way.
+#[test]
+fn a_second_const_mapping_in_one_language_is_a_load_error() {
+    const DECL: &str = "namespace brt4y.cdup\n  import anthill.prelude.{Int64}\n  sort Dial\n    \
+                        entity dial(v: Int64)\n    const top: Int64\n  end\nend\n";
+    let block = |key: &str| {
+        format!(
+            "namespace brt4y.cdup\n  provides Dial language rust\n    artifact \"{key}\"\n    \
+             const_map {{ top: \"{key}\" }}\n  end\nend\n"
+        )
+    };
+    let (max, min) = (block("int_max_value"), block("int_min_value"));
+    crate::common::expect_load_errors(
+        load(&[DECL, &max, &min]),
+        &["`brt4y.cdup.Dial.top` is realized by two `const_map` entries in language rust — \
+           host key \"int_max_value\", then \"int_min_value\""],
+    );
+}
+
+/// CONTROL for the row above.
+#[test]
+fn one_const_mapping_loads() {
+    crate::common::expect_loaded(load(&[
+        "namespace brt4y.cdup\n  import anthill.prelude.{Int64}\n  sort Dial\n    \
+         entity dial(v: Int64)\n    const top: Int64\n  end\nend\n",
+        "namespace brt4y.cdup\n  provides Dial language rust\n    artifact \"x\"\n    \
+         const_map { top: \"int_max_value\" }\n  end\nend\n",
+    ]));
 }

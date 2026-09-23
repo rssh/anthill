@@ -1237,6 +1237,27 @@ pub enum LoadError {
         /// Where the operation is declared, when THIS load phase declared it.
         span: Option<Span>,
     },
+    /// WI-20260923-9R5HN — one operation (or const) realized by TWO `operation_map` (or
+    /// `const_map`) entries in the same language. A runtime registers every mapping of its
+    /// language into one builtin map, last insert wins, so the program would run whichever
+    /// block happened to load second — silently. anthill-stl's second registrar had the
+    /// same shape one level up (it ran after the standard set and shadowed any name the two
+    /// shared), and a test intersecting the two registries was what kept it honest; folding
+    /// that registrar into the mappings moves the hazard here, where it is refused at load.
+    HostMappingDuplicate {
+        /// The operation or const, as the mappings spell it (`<carrier>.<member>`).
+        member: String,
+        /// Which clause both entries are — `operation_map` or `const_map`.
+        clause: &'static str,
+        /// The language both mappings name.
+        lang: String,
+        /// The host key the earlier mapping names.
+        first: String,
+        /// The host key the later mapping names.
+        second: String,
+        /// Where the operation is declared, when THIS load phase declared it.
+        span: Option<Span>,
+    },
     /// WI-999 / proposal 059 R4 clause 3 — A DECLARATION MAY NOT CAPTURE A NAME IT
     /// DOES NOT OVERRIDE. A name can already mean something in a sort's scope
     /// without being a member of it — reached by an `import`, by an enclosing
@@ -2346,6 +2367,7 @@ impl LoadError {
             | LoadError::NonDefiningConnectiveHead { span, .. }
             | LoadError::HostMappingUnclaimed { span, .. }
             | LoadError::HostMappingOnBodiedOperation { span, .. }
+            | LoadError::HostMappingDuplicate { span, .. }
             | LoadError::InvalidTypeArgument { span, .. } => *span,
             LoadError::Located { inner, .. } => inner.user_span(),
             _ => None,
@@ -2663,6 +2685,20 @@ impl LoadError {
                 span,
             } => {
                 let msg = host_mapping_on_bodied_operation_message(op, host_fn, lang);
+                match span {
+                    Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
+                    None => msg,
+                }
+            }
+            LoadError::HostMappingDuplicate {
+                member,
+                clause,
+                lang,
+                first,
+                second,
+                span,
+            } => {
+                let msg = host_mapping_duplicate_message(member, clause, lang, first, second);
                 match span {
                     Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
                     None => msg,
@@ -3896,6 +3932,20 @@ impl std::fmt::Display for LoadError {
                 span,
             } => {
                 let msg = host_mapping_on_bodied_operation_message(op, host_fn, lang);
+                match span {
+                    Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
+                    None => write!(f, "{}", msg),
+                }
+            }
+            LoadError::HostMappingDuplicate {
+                member,
+                clause,
+                lang,
+                first,
+                second,
+                span,
+            } => {
+                let msg = host_mapping_duplicate_message(member, clause, lang, first, second);
                 match span {
                     Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
                     None => write!(f, "{}", msg),
@@ -12638,6 +12688,21 @@ fn host_mapping_on_bodied_operation_message(op: &str, host_fn: &str, lang: &str)
     )
 }
 
+/// WI-20260923-9R5HN — the ONE wording of [`LoadError::HostMappingDuplicate`].
+fn host_mapping_duplicate_message(
+    member: &str,
+    clause: &str,
+    lang: &str,
+    first: &str,
+    second: &str,
+) -> String {
+    format!(
+        "`{member}` is realized by two `{clause}` entries in language {lang} — host key \
+         {first:?}, then {second:?}. A runtime registers one implementation per member, so \
+         it would run whichever binding block loaded last. Keep one mapping."
+    )
+}
+
 /// WI-1058 — the ONE wording of [`LoadError::UndefinedRuleBodyTerm`], the ARGUMENT-position
 /// twin of [`undefined_rule_body_goal_message`] (WI-895's remaining half). Same head test
 /// ([`KnowledgeBase::undefined_functor`]), different CONSEQUENCE, so a different sentence:
@@ -13441,6 +13506,9 @@ fn load_phase_inner(
     // the mapped const's own declaration must be resolvable.
     all_errors.extend(build_host_const_mappings(kb));
     mark!("build_host_const_mappings");
+    // WI-20260923-9R5HN — one member, two mappings in one language: after BOTH caches.
+    all_errors.extend(check_host_mapping_duplicates(kb, phase_first_rule));
+    mark!("check_host_mapping_duplicates");
     // WI-616 — the semantic-eq dispatch index, off the table just built. WI-837:
     // it refuses two distinct `eq` impls for one carrier, because it has no later
     // site to complain from — equality dispatches from unification (058 §4.9).
@@ -15650,6 +15718,8 @@ pub const HOST_IMPLEMENTED_ATTR: &str = "host_implemented";
 /// whose operation this phase declared, and is located only in the second case — a
 /// mapping has no declaration site of its own. A mapping over a BODIED operation is its
 /// own refusal ([`LoadError::HostMappingOnBodiedOperation`]): the claim would not fix it.
+/// One operation mapped TWICE in one language is not a claim question and is
+/// [`check_host_mapping_duplicates`]'s, which also covers `const_map`.
 fn check_host_implemented_claims(kb: &KnowledgeBase, phase_first_rule: usize) -> Vec<LoadError> {
     let claimed = super::op_info::host_implemented_operations(kb);
     let mut errors = Vec::new();
@@ -15735,6 +15805,73 @@ fn check_host_implemented_claims(kb: &KnowledgeBase, phase_first_rule: usize) ->
         errors.push(match site {
             Some(s) => error.located_in_kb_source(kb, s.source),
             None => error,
+        });
+    }
+    errors
+}
+
+/// WI-20260923-9R5HN — refuse a member realized TWICE in one language: two
+/// `operation_map` entries for one operation, or two `const_map` entries for one const
+/// ([`LoadError::HostMappingDuplicate`]). A runtime registers every mapping of its
+/// language into one builtin map, last insert wins, so either would run whichever
+/// binding block loaded last.
+///
+/// Keyed by the CANONICAL member, as the claim check is. PHASE-SCOPED like its drift
+/// half: reported when this phase asserted the LATER mapping — or, for an operation,
+/// declared it — so a duplicate an earlier phase refused is not re-reported against a
+/// later batch. Runs after BOTH caches are built (`build_host_op_mappings`,
+/// `build_host_const_mappings`).
+fn check_host_mapping_duplicates(kb: &KnowledgeBase, phase_first_rule: usize) -> Vec<LoadError> {
+    let mut errors = Vec::new();
+    let op_sites: std::collections::HashMap<Symbol, crate::span::SourceSpan> = kb
+        .op_decl_sites_iter()
+        .map(|(s, site)| (kb.canonical_sym(s), site))
+        .collect();
+    let mut first_op: std::collections::HashMap<(Symbol, &str), &HostOperationMapping> =
+        std::collections::HashMap::new();
+    for m in kb.host_op_mappings() {
+        let Some(op) = m.op else { continue };
+        let canon = kb.canonical_sym(op);
+        let Some(first) = first_op.get(&(canon, m.lang.as_str())).copied() else {
+            first_op.insert((canon, m.lang.as_str()), m);
+            continue;
+        };
+        let site = op_sites.get(&canon).copied();
+        if m.fact.index() < phase_first_rule && site.is_none() {
+            continue;
+        }
+        let error = LoadError::HostMappingDuplicate {
+            member: m.op_qn.clone(),
+            clause: "operation_map",
+            lang: m.lang.clone(),
+            first: first.host_fn.clone(),
+            second: m.host_fn.clone(),
+            span: site.map(|s| s.span),
+        };
+        errors.push(match site {
+            Some(s) => error.located_in_kb_source(kb, s.source),
+            None => error,
+        });
+    }
+    let mut first_const: std::collections::HashMap<(Symbol, &str), &HostConstMapping> =
+        std::collections::HashMap::new();
+    for m in kb.host_const_mappings() {
+        let Some(c) = m.const_sym else { continue };
+        let canon = kb.canonical_sym(c);
+        let Some(first) = first_const.get(&(canon, m.lang.as_str())).copied() else {
+            first_const.insert((canon, m.lang.as_str()), m);
+            continue;
+        };
+        if m.fact.index() < phase_first_rule {
+            continue;
+        }
+        errors.push(LoadError::HostMappingDuplicate {
+            member: m.const_qn.clone(),
+            clause: "const_map",
+            lang: m.lang.clone(),
+            first: first.host_fn.clone(),
+            second: m.host_fn.clone(),
+            span: None,
         });
     }
     errors
@@ -16805,6 +16942,9 @@ pub struct HostConstMapping {
     pub const_qn: String,
     pub host_fn: String,
     pub lang: String,
+    /// The `ConstMapping` fact this entry was read from — the duplicate check's phase
+    /// scope, as [`HostOperationMapping::fact`] is the drift check's.
+    pub fact: super::RuleId,
 }
 
 /// WI-889 — read every `anthill.realization.ConstMapping` fact and cache the result on
@@ -16888,6 +17028,7 @@ pub fn build_host_const_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             const_qn,
             host_fn,
             lang,
+            fact: rid,
         });
     }
     kb.set_host_const_mappings(out);

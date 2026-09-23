@@ -2429,8 +2429,8 @@ pub type Interner = SymbolTable;
 /// both directions through one pair makes such a divergence a compile-time
 /// impossibility rather than a silent textual one.
 ///
-/// NOT this convention, despite the spelling: `anthill-stl`'s
-/// `reflect/reader.rs` renders a de Bruijn VARIABLE as `_{n}` — 0-based, a
+/// NOT this convention, despite the spelling: `kb/reflect_reader.rs`
+/// renders a de Bruijn VARIABLE as `_{n}` — 0-based, a
 /// variable rather than a field label, and deliberately left alone. A `format!
 /// ("_{`  sweep finds it; it is not a survivor.
 pub fn positional_label(index: usize) -> String {

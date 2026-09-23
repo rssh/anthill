@@ -17,6 +17,7 @@ pub mod op_info;
 pub mod op_requirements;
 pub(crate) mod persist_subst;
 pub mod proof_verify;
+pub mod reflect_reader;
 pub(crate) mod region;
 pub mod req_insertion;
 pub mod resolve;

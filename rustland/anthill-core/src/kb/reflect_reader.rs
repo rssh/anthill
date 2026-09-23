@@ -2,10 +2,10 @@
 //! (WI-551 gap-5 part (a)).
 //!
 //! There are two realizations of `anthill.reflect.KB.*`: the interpreter
-//! eval-time builtins ([`super::builtins`], producing dynamically-typed `Value`
-//! cons-lists) and the host-Rust bridge ([`super::bridge`], producing the
-//! statically-typed `SortInfo` / `OperationInfo` / `FieldInfo` / `DescriptionInfo`
-//! structs). They answer the SAME questions over the SAME KB facts — and had
+//! eval-time builtins ([`crate::eval::reflect_builtins`], producing
+//! dynamically-typed `Value` cons-lists) and the host-Rust bridge (anthill-stl's
+//! `reflect::bridge`, producing the statically-typed `SortInfo` / `OperationInfo` /
+//! `FieldInfo` / `DescriptionInfo` structs). They answer the SAME questions over the SAME KB facts — and had
 //! independently re-walked them, drifting per-op (the WI-545 / WI-548 parity
 //! tax). This module is the one walk for the *introspection record ops*: each
 //! `read_*` returns a neutral record of `TermId`s / carrier-agnostic `Value`s,
@@ -18,6 +18,12 @@
 //! in-band name carrier (a `Ref` term vs a `Symbol`) at that single boundary.
 //! The per-parameter `FieldInfo` decode is the one remaining per-realization
 //! reader.
+//!
+//! IN ANTHILL-CORE, NOT BESIDE THE BRIDGE (WI-20260923-9R5HN). It lived in anthill-stl
+//! while both realizations did; the eval builtins moved here to become `HOST_FNS` rows
+//! named by `rustland/anthill-stl/anthill/reflect.anthill`'s binding blocks, and the
+//! crate they moved from depends on this one, not the reverse — so the one walk moved
+//! with them and the bridge reads it across the crate boundary.
 //!
 //! Carrier-faithful, both ways. A value-fact head (an `OperationInfo` with a
 //! `denoted` effect `Modify[c]`, an entity with a value-in-type field) is a
@@ -33,24 +39,24 @@
 //! limitation, shared by both, is that an op whose `name` or `return_type` is
 //! itself `denoted` (not a ground `TermId`) is skipped — see [`read_operations`].
 
-use anthill_core::eval::Value;
-use anthill_core::intern::Symbol;
-use anthill_core::kb::op_info;
-use anthill_core::kb::term::{Literal, Term as CoreTerm, TermId, Var};
-use anthill_core::kb::term_view::{TermView, ViewHead};
-use anthill_core::kb::ClauseKind;
-use anthill_core::kb::KnowledgeBase;
+use crate::eval::Value;
+use crate::intern::Symbol;
+use crate::kb::op_info;
+use crate::kb::term::{Literal, Term as CoreTerm, TermId, Var};
+use crate::kb::term_view::{TermView, ViewHead};
+use crate::kb::ClauseKind;
+use crate::kb::KnowledgeBase;
 
 // ── Leaf helpers ────────────────────────────────────────────────
 
 /// The short (last dotted segment) of a qualified name.
-pub(crate) fn short_of(qualified: &str) -> &str {
+pub fn short_of(qualified: &str) -> &str {
     qualified.rsplit('.').next().unwrap_or(qualified)
 }
 
 /// A displayable name for any `TermId` — the head symbol of a `Ref`/`Ident`/
 /// `Fn`, the rendering of a literal, or a sigil'd var.
-pub(crate) fn term_display_name(kb: &KnowledgeBase, id: TermId) -> String {
+pub fn term_display_name(kb: &KnowledgeBase, id: TermId) -> String {
     match kb.get_term(id) {
         CoreTerm::Ref(sym) | CoreTerm::Ident(sym) => kb.local_name_of(*sym).to_string(),
         CoreTerm::Fn { functor, .. } => kb.local_name_of(*functor).to_string(),
@@ -67,25 +73,11 @@ pub(crate) fn term_display_name(kb: &KnowledgeBase, id: TermId) -> String {
     }
 }
 
-/// The head functor / ident / ref symbol of a `TermId` — the by-reference peer
-/// of [`term_display_name`] (it covers the same `Ref`/`Ident`/`Fn` name-bearing
-/// arms, so a domain that `term_display_name` matched by string this matches by
-/// symbol). Used to match a fact's domain or a `Member`'s parent against an
-/// already-resolved sort symbol (WI-632). `None` for a literal, variable, or `⊥`
-/// (they name no functor). The anthill-stl analog of core's `pub(crate)`
-/// `KnowledgeBase::head_functor`, unreachable from this crate.
-pub(crate) fn term_head_sym(kb: &KnowledgeBase, id: TermId) -> Option<Symbol> {
-    match kb.get_term(id) {
-        CoreTerm::Ref(s) | CoreTerm::Ident(s) | CoreTerm::Fn { functor: s, .. } => Some(*s),
-        _ => None,
-    }
-}
-
 /// Walk a prelude `cons(head:_, tail:_)` chain ending in `nil` and collect the
 /// head elements as `TermId`s. Cells are matched by their short functor name
 /// (`cons`/`nil`) and `head`/`tail` field names — the only such constructors in
 /// a loaded KB are the prelude `List` ones.
-pub(crate) fn collect_list_terms(kb: &KnowledgeBase, list_tid: TermId) -> Vec<TermId> {
+fn collect_list_terms(kb: &KnowledgeBase, list_tid: TermId) -> Vec<TermId> {
     let mut results = vec![];
     let mut current = list_tid;
     loop {
@@ -126,7 +118,7 @@ pub(crate) fn collect_list_terms(kb: &KnowledgeBase, list_tid: TermId) -> Vec<Te
 /// Named args of a fact head, read carrier-agnostically via [`TermView`]. A
 /// non-`Term` field (none of the ground reflect schemas have one) has no
 /// `TermId` and is omitted.
-pub(crate) fn term_named_args(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, TermId)> {
+fn term_named_args(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, TermId)> {
     head.named_keys(kb)
         .into_iter()
         .filter_map(|k| {
@@ -145,22 +137,14 @@ fn facts_by_functor(kb: &KnowledgeBase, qualified_functor: &str, reader: &str) -
     let Some(functor) = kb.try_resolve_symbol(qualified_functor) else {
         return Vec::new();
     };
-    kb.read_facts(
-        functor,
-        &[],
-        anthill_core::kb::extent::BodiedRulePolicy::Refuse,
-    )
-    .unwrap_or_else(|e| panic!("reflect {reader} read: {e}"))
+    kb.read_facts(functor, &[], crate::kb::extent::BodiedRulePolicy::Refuse)
+        .unwrap_or_else(|e| panic!("reflect {reader} read: {e}"))
 }
 
 /// Collect the names of every `MemberInfo` of a given `kind` (`Constructor`,
 /// `Operation`, …) whose parent is the resolved sort `parent_sym` (WI-632:
 /// matched by functor symbol, not by display-name string).
-pub(crate) fn members_of_kind(
-    kb: &mut KnowledgeBase,
-    parent_sym: Symbol,
-    kind: &str,
-) -> Vec<String> {
+pub fn members_of_kind(kb: &mut KnowledgeBase, parent_sym: Symbol, kind: &str) -> Vec<String> {
     let name_field = kb.intern("name");
     let kind_field = kb.intern("kind");
     let parent_field = kb.intern("parent");
@@ -179,7 +163,7 @@ pub(crate) fn members_of_kind(
             continue;
         };
         let member_kind = term_display_name(kb, member_kind);
-        if short_of(&member_kind) == kind && term_head_sym(kb, parent) == Some(parent_sym) {
+        if short_of(&member_kind) == kind && kb.head_functor(parent) == Some(parent_sym) {
             results.push(term_display_name(kb, name));
         }
     }
@@ -190,7 +174,7 @@ pub(crate) fn members_of_kind(
 
 /// One `SortInfo` fact, decoded to its field `TermId`s. `SortInfo` heads are
 /// ground by design, so every field is a hash-consed `TermId`.
-pub(crate) struct SortRecord {
+pub struct SortRecord {
     pub name: TermId,
     pub definition: TermId,
     pub kind: Option<TermId>,
@@ -200,20 +184,17 @@ pub(crate) struct SortRecord {
     pub requires: Vec<TermId>,
 }
 
-/// Read every `SortInfo` fact (optionally namespace-prefix filtered). Queried by
+/// Read every `SortInfo` fact — optionally only the sorts declared in namespace `ns` or
+/// beneath it (qualified name `ns.…`). Queried by
 /// the `SortInfo` functor so the value-in-type `SortAlias`, which shares the
 /// `"Sort"` bucket (WI-366), is not picked up. A fact missing `name` or
 /// `definition` is skipped (incomplete record).
-pub(crate) fn read_sort_infos(kb: &mut KnowledgeBase, namespace: Option<&str>) -> Vec<SortRecord> {
+pub fn read_sort_infos(kb: &mut KnowledgeBase, namespace: Option<&str>) -> Vec<SortRecord> {
     let Some(sort_info) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
         return Vec::new();
     };
     let facts = kb
-        .read_facts(
-            sort_info,
-            &[],
-            anthill_core::kb::extent::BodiedRulePolicy::Refuse,
-        )
+        .read_facts(sort_info, &[], crate::kb::extent::BodiedRulePolicy::Refuse)
         .unwrap_or_else(|e| panic!("reflect SortInfo read: {e}"));
     let f_name = kb.intern("name");
     let f_definition = kb.intern("definition");
@@ -236,8 +217,19 @@ pub(crate) fn read_sort_infos(kb: &mut KnowledgeBase, namespace: Option<&str>) -
             Some(t) => t,
             None => continue,
         };
+        // WI-20260923-9R5HN — the sort's QUALIFIED name, at a namespace boundary. This
+        // compared `ns` against `term_display_name`, i.e. the sort's SHORT name, so a
+        // namespace never matched and a short-name prefix did: MEASURED (/code-review),
+        // `sorts(kb, some("fx"))` over `namespace fx { sort Color }` answered `[]` and
+        // `some("Colo")` answered Color. `fx` must not match `fxy.Color` either, so the
+        // prefix is `ns` plus the separator.
         if let Some(ns) = namespace {
-            if !term_display_name(kb, name).starts_with(ns) {
+            let in_ns = kb.head_functor(name).is_some_and(|s| {
+                kb.qualified_name_of(s)
+                    .strip_prefix(ns)
+                    .is_some_and(|r| r.starts_with('.'))
+            });
+            if !in_ns {
                 continue;
             }
         }
@@ -265,7 +257,7 @@ pub(crate) fn read_sort_infos(kb: &mut KnowledgeBase, namespace: Option<&str>) -
 /// carrier-agnostic `Value`s (a `denoted` label rides as a `Value::Node`). An op
 /// whose `name` or `return_type` is itself `denoted` (not a ground `TermId`) is
 /// skipped — mirrors the interpreter's prior loop.
-pub(crate) struct OperationRecord {
+pub struct OperationRecord {
     pub name: TermId,
     pub return_type: TermId,
     pub params: Vec<TermId>,
@@ -280,7 +272,7 @@ pub(crate) struct OperationRecord {
 
 /// Read the `OperationInfo` facts whose domain is the resolved sort `sort_sym`
 /// (WI-632: matched by functor symbol, not by display-name string).
-pub(crate) fn read_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<OperationRecord> {
+pub fn read_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<OperationRecord> {
     let meta_default_sym = kb.intern("meta");
     let mut out = Vec::new();
     for head in facts_by_functor(kb, "anthill.reflect.OperationInfo", "OperationInfo") {
@@ -330,7 +322,7 @@ pub(crate) fn read_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<O
 
 /// One `DescriptionInfo(target, content, index)` fact. The index is the stored
 /// 0-based per-target index (WI-438), not a global enumeration.
-pub(crate) struct DescriptionRecord {
+pub struct DescriptionRecord {
     pub target: TermId,
     pub content: String,
     pub index: i64,
@@ -338,10 +330,7 @@ pub(crate) struct DescriptionRecord {
 
 /// Read every `DescriptionInfo` fact, optionally filtered to `target` (full or
 /// short name). A malformed or incomplete record is skipped.
-pub(crate) fn read_descriptions(
-    kb: &mut KnowledgeBase,
-    target: Option<&str>,
-) -> Vec<DescriptionRecord> {
+pub fn read_descriptions(kb: &mut KnowledgeBase, target: Option<&str>) -> Vec<DescriptionRecord> {
     let target_field = kb.intern("target");
     let content_field = kb.intern("content");
     let index_field = kb.intern("index");
@@ -389,7 +378,7 @@ pub(crate) fn read_descriptions(
 /// `Rule`-keyed clause KB-wide through the retired `by_sort` index and then
 /// discard all but one domain's. The set is unchanged: that index's entity-child
 /// union could never contribute here, `Rule` being a kind, not a sort.
-pub(crate) fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Value> {
+pub fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Value> {
     kb.program_clauses_by_domain(sort_sym)
         .into_iter()
         .filter(|clause| clause.clause_kind == ClauseKind::Rule)
@@ -401,10 +390,11 @@ pub(crate) fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_sym: Symbol) -> V
 //
 // The forward `reify` (a KB term → a flat term-repr) and inverse `reflect`
 // (a term-repr → a KB term) each had a realization per caller: the interpreter
-// builds `Value::Entity` `TermRepr` trees ([`super::builtins`]), the host bridge
-// the generated `TermRepr` enum ([`super::bridge`]). Both are the SAME recursion
-// over the `Const`/`Var`/`Ref`/`Fn`/`Bottom` structure — differing only in the
-// output carrier and in the in-band NAME carrier (a `Ref` term vs a `Symbol`).
+// builds `Value::Entity` `TermRepr` trees (`eval::reflect_builtins`), the host
+// bridge (anthill-stl's `reflect::bridge`) the generated `TermRepr` enum. Both are
+// the SAME recursion over the `Const`/`Var`/`Ref`/`Fn`/`Bottom` structure — differing
+// only in the output carrier and in the in-band NAME carrier (a `Ref` term vs a
+// `Symbol`).
 // [`reify_walk`] / [`reflect_walk`] are the one walk each way; a realization
 // supplies a [`ReifyBuilder`] / [`ReflectReader`] that maps the neutral leaves
 // to its carrier, reconciling the name representation at that single boundary.
@@ -412,7 +402,7 @@ pub(crate) fn rule_heads_for_sort(kb: &mut KnowledgeBase, sort_sym: Symbol) -> V
 /// The display name of a var of any kind, in the spelling both reify
 /// realizations use: a bare name for a flex `Global`, `!name` for a `Rigid`
 /// skolem, `_n` for a bound `DeBruijn`.
-pub(crate) fn var_repr_name(kb: &KnowledgeBase, var: Var) -> String {
+fn var_repr_name(kb: &KnowledgeBase, var: Var) -> String {
     match var {
         Var::Global(vid) => kb.local_name_of(vid.name()).to_string(),
         Var::Rigid(vid) => format!("!{}", kb.local_name_of(vid.name())),
@@ -425,7 +415,7 @@ pub(crate) fn var_repr_name(kb: &KnowledgeBase, var: Var) -> String {
 /// decides the carrier (a `Value::Entity` tree vs the generated `TermRepr`
 /// enum) and how a `Ref`/`Fn` name rides (a `Ref` term vs a `Symbol`). `kb` is
 /// threaded so a realization can allocate an in-band name term.
-pub(crate) trait ReifyBuilder {
+pub trait ReifyBuilder {
     type Repr;
     fn on_literal(&mut self, kb: &mut KnowledgeBase, lit: Literal) -> Self::Repr;
     fn on_var(&mut self, kb: &mut KnowledgeBase, name: String) -> Self::Repr;
@@ -444,7 +434,7 @@ pub(crate) trait ReifyBuilder {
 /// occurrence, or a `Value::Entity` all produce the same shape. A `⊥` reifies as
 /// a `Ref` named `"⊥"` (both realizations' prior behavior); a functor-less
 /// aggregate or opaque value in a term slot panics loudly.
-pub(crate) fn reify_walk<V: TermView, B: ReifyBuilder>(
+pub fn reify_walk<V: TermView, B: ReifyBuilder>(
     kb: &mut KnowledgeBase,
     view: &V,
     builder: &mut B,
@@ -535,7 +525,7 @@ pub(crate) fn reify_walk<V: TermView, B: ReifyBuilder>(
 /// recurses carrier-agnostically. A `⊥` and a `QuotedRepr` have no dedicated
 /// shape: the former decodes to a `Ref`, the latter to a `Const` string (both
 /// resolved inside a realization's [`ReflectReader::classify`]).
-pub(crate) enum ReflectShape<R> {
+pub enum ReflectShape<R> {
     Const(Literal),
     Var(String),
     Ref(Symbol),
@@ -547,7 +537,7 @@ pub(crate) enum ReflectShape<R> {
 /// the bridge a `Symbol`), so [`reflect_walk`] sees only neutral leaves. The
 /// associated `Error` lets the dynamically-typed interpreter reader signal a
 /// malformed repr while the closed-enum bridge reader stays `Infallible`.
-pub(crate) trait ReflectReader: Sized {
+pub trait ReflectReader: Sized {
     type Error;
     fn classify(self, kb: &KnowledgeBase) -> Result<ReflectShape<Self>, Self::Error>;
 }
@@ -557,10 +547,7 @@ pub(crate) trait ReflectReader: Sized {
 /// term (`Const` / `Var` / `Ref` / `Fn`) lives here, so a realization only
 /// decodes leaves. A `VarRepr` mints a fresh `Global` (mirrors both prior
 /// realizations).
-pub(crate) fn reflect_walk<R: ReflectReader>(
-    kb: &mut KnowledgeBase,
-    repr: R,
-) -> Result<TermId, R::Error> {
+pub fn reflect_walk<R: ReflectReader>(kb: &mut KnowledgeBase, repr: R) -> Result<TermId, R::Error> {
     match repr.classify(kb)? {
         ReflectShape::Const(lit) => Ok(kb.alloc(CoreTerm::Const(lit))),
         ReflectShape::Var(name) => {

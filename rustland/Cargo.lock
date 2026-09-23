@@ -90,7 +90,6 @@ dependencies = [
 name = "anthill-core"
 version = "0.1.0"
 dependencies = [
- "anthill-stl",
  "chrono",
  "imbl",
  "indexmap",

@@ -15,6 +15,7 @@ pub mod frame;
 pub mod layer_arena;
 pub mod map_arena;
 pub mod pattern;
+pub(crate) mod reflect_builtins;
 pub mod stream;
 pub mod subst_arena;
 pub mod value;
@@ -1718,7 +1719,8 @@ impl Interpreter {
         self.maps.alloc(body)
     }
 
-    /// Clone the map-arena handle. Same rationale as `subst_arena()`.
+    /// Clone the map-arena handle (cheap `Rc` bump), so a caller can hold it while
+    /// `&mut self` on the interpreter is in flight.
     pub fn map_arena(&self) -> MapArenaRef {
         self.maps.clone()
     }
@@ -1843,8 +1845,7 @@ impl Interpreter {
         h.write(new)
     }
 
-    /// Clone the cell-arena handle (cheap `Rc` bump). Same rationale as
-    /// `subst_arena()`: lets a caller hold a borrow on the arena while
+    /// Clone the cell-arena handle (cheap `Rc` bump), so a caller can hold it while
     /// `&mut self` on the interpreter is in flight.
     pub fn cell_arena(&self) -> CellArenaRef {
         self.cells.clone()
@@ -1855,52 +1856,24 @@ impl Interpreter {
         self.substs.alloc(s)
     }
 
-    /// Run `f` with a shared reference to the substitution behind `h`.
-    pub fn with_subst<R>(
-        &self,
-        h: &value::SubstHandle,
-        f: impl FnOnce(&crate::kb::subst::Substitution) -> R,
-    ) -> R {
-        self.substs.with_subst(h, f)
-    }
-
-    /// Clone the substitution-arena handle. Useful when a caller needs to
-    /// borrow a substitution through the arena while also mutably borrowing
-    /// `kb`; both fields are independent, so the cloned `Rc` decouples the
-    /// arena borrow from any `&mut self` on the interpreter.
-    pub fn subst_arena(&self) -> subst_arena::SubstArenaRef {
-        self.substs.clone()
-    }
+    // No `with_subst` / `subst_arena` here (WI-20260923-9R5HN): a substitution is read
+    // through its HANDLE (`SubstHandle::with_subst`), which carries the arena that minted
+    // it. An interpreter-side reader indexed `self.substs` with a handle another
+    // interpreter may have minted — see that method.
 
     /// Allocate a stream source, returning an owning handle.
     pub fn alloc_stream(&self, src: stream::StreamSource) -> value::StreamHandle {
         self.streams.alloc(src)
     }
 
-    /// Pump a stream by one step. Returns `Some((value, continuation))` for
-    /// a yielded element, or `None` on exhaustion. The continuation is a
-    /// fresh handle sharing the underlying arena slot(s) — for `Resolver`
-    /// it's the same slot advanced in place; for `MPlus` with `left`
-    /// exhausted, it's the `right` child's handle.
-    ///
-    /// Resolver yields land as a reflect `Solution` value (WI-531) —
-    /// `definite(subst)` or `undecided(subst, residual)` — built by
-    /// [`Self::make_solution_value`]. `subst` is a `Value::Substitution`
-    /// handle into the per-interpreter arena (read via `Substitution.lookup` /
-    /// `.apply`); the floundered `undecided` case additionally carries the
-    /// undischarged goals as a `List[Term]`, so the residual is no longer
-    /// silently dropped here.
     /// The symbols currently bound to a host builtin.
     ///
-    /// Exposed so a driver that installs TWO registries can assert they are DISJOINT.
-    /// [`Self::register_builtin`] is a plain map insert — LAST WINS — so an overlap
-    /// silently replaces one implementation with the other. That is not hypothetical:
-    /// WI-759 found `anthill.reflect.field_access` bound in both `anthill-core`'s
-    /// standard set (the production implementation every desugared `x.f` runs through)
-    /// and `anthill-stl`'s reflect set (a declared-but-never-live shape that would reject
-    /// every projection the typer synthesizes). It was harmless only because nothing but
-    /// its own tests ever called `register_reflect_builtins` — the condition WI-SPGBP
-    /// ends. So the disjointness is CHECKED rather than assumed.
+    /// Exposed so a test can hold the registry to the mapping index: every operation
+    /// registered here must be one `is_interpreter_mapped_op` can see
+    /// (`wi_brt4y_host_implemented_test`). It was exposed first to check that TWO
+    /// registries stayed disjoint — [`Self::register_builtin`] is a plain map insert,
+    /// LAST WINS, and WI-759 found `field_access` shadowed by anthill-stl's second set —
+    /// until WI-20260923-9R5HN folded that set into the one.
     pub fn registered_builtin_symbols(&self) -> Vec<Symbol> {
         self.builtins.keys().copied().collect()
     }
@@ -1968,6 +1941,19 @@ impl Interpreter {
         self.stack.depth()
     }
 
+    /// Pump a stream by one step. Returns `Some((value, continuation))` for
+    /// a yielded element, or `None` on exhaustion. The continuation is a
+    /// fresh handle sharing the underlying arena slot(s) — for `Resolver`
+    /// it's the same slot advanced in place; for `MPlus` with `left`
+    /// exhausted, it's the `right` child's handle.
+    ///
+    /// Resolver yields land as a reflect `Solution` value (WI-531) —
+    /// `definite(subst)` or `undecided(subst, residual)` — built by
+    /// [`Self::make_solution_value`]. `subst` is a `Value::Substitution`
+    /// handle into this interpreter's arena, read through the handle wherever it
+    /// travels (`Substitution.lookup` / `.apply`, WI-20260923-9R5HN); the floundered
+    /// `undecided` case additionally carries the undischarged goals as a
+    /// `List[Term]`, so the residual is no longer silently dropped here.
     pub fn stream_split_first(
         &mut self,
         handle: &value::StreamHandle,

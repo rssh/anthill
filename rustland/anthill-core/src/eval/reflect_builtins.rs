@@ -1,11 +1,32 @@
-//! Eval-time builtins for `anthill.reflect.KB.*` introspection operations.
+//! Eval-time builtins for the `anthill.reflect` introspection surface —
+//! `KB.sorts` / `operations` / `constructors` / `fields` / `rules` /
+//! `descriptions` / `sort_template` / `reify` / `reflect`, the namespace-level
+//! symbol and term-shape ops, `Substitution.apply` / `compose` / `bindings` — and
+//! `anthill.kernel.not`'s eval face.
 //!
 //! Scripts call `KB.sort_template`, `KB.sorts`, `KB.operations`, … and get
 //! `Value`-typed results whose shapes match the sort declarations in
-//! `stdlib/anthill/reflect/reflect.anthill`. The heavy lifting — walking KB
-//! facts, extracting named args, collecting cons-lists — is inline here over
-//! `&mut KnowledgeBase`. The sibling `bridge.rs` does the same for host-Rust
-//! callers; consolidating the two paths is tracked separately.
+//! `stdlib/anthill/reflect/reflect.anthill`. The KB walks are the shared
+//! [`reader`] (`kb::reflect_reader`), which anthill-stl's host-Rust bridge maps to
+//! its typed structs.
+//!
+//! WI-20260923-9R5HN — `HOST_FNS` ROWS, NAMED BY BINDING BLOCKS. This module was
+//! anthill-stl's `reflect::builtins`, whose `register_reflect_builtins` bound these
+//! 24 operations by qualified name through the silent-skip `register_if_present`:
+//! INVISIBLE to `is_interpreter_mapped_op` (so a rule body could not reduce them —
+//! and `not(KB.constructors(kb(), Color) = [..])` answered 1 DEFINITE out of a call
+//! that never ran, kernel-language.md §5.2's decided-false decline), unclaimed by
+//! their declarations, and silently absent from a KB missing them. They are keyed
+//! through `rustland/anthill-stl/anthill/reflect.anthill` and `kernel.anthill` like
+//! the rest of the reflection surface (WI-880), and their declarations carry
+//! `@[host_implemented]`.
+//!
+//! Two things had kept them out, both answered by the move. The functions lived in
+//! the wrong CRATE — `HOST_FNS` is anthill-core's, and a binding block naming
+//! anthill-stl functions breaks every interpreter built without that crate. And
+//! eleven closed over symbols resolved from the KB after load, which WI-1122's
+//! embedder table (sealed at load) cannot take; [`ReflectSyms`] is now resolved at
+//! each call instead, from the KB the call runs against.
 //!
 //! A HANDFUL ARE NOT `KB` MEMBERS, and the difference is not cosmetic: an
 //! operation whose question is about a KB (`sorts`, `rules`, `facts_of`) takes
@@ -16,21 +37,21 @@
 //! goal, this module must not re-derive it: it calls the resolver's own
 //! predicate, so the two phases cannot drift.
 
-use std::rc::Rc;
+use super::builtins::{expect_args, require_symbol, resolve_host_name};
+use super::{EvalError, Interpreter, Value};
+use crate::intern::Symbol;
+use crate::kb::reflect_reader as reader;
+use crate::kb::resolve::ResolveConfig;
+use crate::kb::term::{Literal, Term as CoreTerm, TermId, Var};
+use crate::kb::KnowledgeBase;
 
-use anthill_core::eval::builtins::{
-    expect_args, register_if_present, require_symbol, resolve_host_name,
-};
-use anthill_core::eval::{EvalError, Interpreter, Value};
-use anthill_core::intern::Symbol;
-use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Literal, Term as CoreTerm, TermId, Var};
-use anthill_core::kb::KnowledgeBase;
-
-use crate::reflect::reader;
-
-/// Symbols the reflect builtins need at runtime. Resolved once at registration
-/// so per-call paths compare `Symbol`s instead of scanning strings.
+/// Symbols the reflect builtins need at runtime, resolved from the KB the call
+/// runs against so per-call paths compare `Symbol`s instead of scanning strings.
+///
+/// PER CALL, not once at registration (WI-20260923-9R5HN): a `HOST_FNS` row is a
+/// plain `fn`, with nowhere to hold state resolved after load. The cost is a few
+/// dozen name lookups against a walk over the KB's facts, and only the eleven
+/// functions that build reflect records pay it.
 #[derive(Debug)]
 struct ReflectSyms {
     // List primitives
@@ -87,9 +108,10 @@ struct ReflectSyms {
 }
 
 impl ReflectSyms {
-    /// Resolve every reflect symbol. Fails if the stdlib isn't loaded —
-    /// surfacing as `EvalError::Internal` so the caller at `register_reflect_builtins`
-    /// sees a clear single-point error rather than deferred per-builtin failures.
+    /// Resolve every reflect symbol. Each one is declared in (or imported by)
+    /// `stdlib/anthill/reflect/reflect.anthill`, the file that declares the
+    /// operation being called — so a miss is a KB that could not have dispatched the
+    /// call, and it is an `EvalError::Internal` naming the symbol, never a skip.
     fn resolve(kb: &mut KnowledgeBase) -> Result<Self, EvalError> {
         fn req(kb: &KnowledgeBase, qname: &'static str) -> Result<Symbol, EvalError> {
             kb.try_resolve_symbol(qname).ok_or_else(|| {
@@ -145,126 +167,6 @@ impl ReflectSyms {
     }
 }
 
-/// Register every reflect builtin whose qualified name resolves in the KB.
-/// Missing symbols (partial stdlib load) fail at resolve time, so callers
-/// either have a full reflect stdlib or see one clear error.
-pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalError> {
-    // If reflect symbols aren't present at all, skip registration silently —
-    // matches `register_if_present` policy for partial-stdlib harnesses.
-    //
-    // WI-SPGBP — WHY ONE SYMBOL IS A SOUND GATE FOR THE ~17 `ReflectSyms::resolve` GOES
-    // ON TO REQUIRE, now that `runner::register_runtime` calls this on every CLI run and
-    // a resolve failure is `EXIT_RUNTIME` rather than a test-only panic. MEASURED over
-    // the required set: 14 of the 17 are declared in `reflect/reflect.anthill`, the same
-    // file as `SortInfo` — so if `SortInfo` resolved, that file loaded and they all
-    // resolve with it. The other three are `List.cons` / `List.nil` / `Pair.pair`, which
-    // `reflect.anthill` IMPORTS at its namespace head and therefore cannot load without.
-    //
-    // So the "partial stdlib" that would slip past this gate and then fail the resolve is
-    // one that cannot load in the first place. If some future arrangement makes it
-    // reachable, the resolve's `EvalError::Internal` NAMES the missing symbol — which is
-    // the right outcome anyway: half the reflect surface silently unbound is the
-    // pre-WI-SPGBP state this ticket exists to end.
-    if interp
-        .kb()
-        .try_resolve_symbol("anthill.reflect.SortInfo")
-        .is_none()
-    {
-        return Ok(());
-    }
-    let syms = Rc::new(ReflectSyms::resolve(interp.kb_mut())?);
-
-    let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.sort_template", move |i, a| {
-        kb_sort_template(i, a, &s)
-    })?;
-    let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.sorts", move |i, a| {
-        kb_sorts(i, a, &s)
-    })?;
-    let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.operations", move |i, a| {
-        kb_operations(i, a, &s)
-    })?;
-    let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.constructors", move |i, a| {
-        kb_constructors(i, a, &s)
-    })?;
-    let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.fields", move |i, a| {
-        kb_fields(i, a, &s)
-    })?;
-    let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.rules", move |i, a| {
-        kb_rules(i, a, &s)
-    })?;
-    let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.descriptions", move |i, a| {
-        kb_descriptions(i, a, &s)
-    })?;
-    let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.reify", move |i, a| {
-        kb_reify(i, a, &s)
-    })?;
-    let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.KB.reflect", move |i, a| {
-        kb_reflect(i, a, &s)
-    })?;
-
-    // Namespace-level symbol ops (no cached syms needed beyond `_kb` sentinel).
-    register_if_present(interp, "anthill.reflect.qualified_name", qualified_name)?;
-    register_if_present(interp, "anthill.reflect.short_name", short_name_op)?;
-    register_if_present(interp, "anthill.reflect.lookup_symbol", lookup_symbol_op)?;
-    register_if_present(interp, "anthill.reflect.scope", scope_op)?;
-    register_if_present(interp, "anthill.reflect.kind", kind_op)?;
-
-    // WI-982 — namespace-level and 1-ary, the SAME name and arity the resolver
-    // dispatches as a goal. The `KB.nonvar(kb, x)` / `KB.ground(kb, x)` members
-    // these replace took a receiver the implementation discarded.
-    register_if_present(interp, "anthill.reflect.nonvar", nonvar_op)?;
-    register_if_present(interp, "anthill.reflect.ground", ground_op)?;
-
-    register_if_present(interp, "anthill.reflect.sort_as_term", sort_as_term)?;
-    register_if_present(interp, "anthill.reflect.can_be_sort", can_be_sort)?;
-    let s = syms.clone();
-    register_if_present(interp, "anthill.reflect.term_as_sort", move |i, a| {
-        term_as_sort(i, a, &s)
-    })?;
-
-    // NO `anthill.reflect.field_access` here — deliberately (WI-759). `anthill-core`'s
-    // `register_standard_builtins` already binds that QN to the production implementation
-    // (`eval::builtins::reflect_field_access`), the one every desugared `x.f` runs through.
-    // This module used to bind it too, to the DECLARED-but-never-live shape
-    // (`expect_term` + `expect_symbol`), which would reject every projection the typer
-    // synthesizes — a `Value::Entity` / `Value::Tuple` receiver and a `String` selector.
-    // `register_builtin` is a plain map insert, LAST WINS, and this module registers after
-    // the standard set, so wiring these reflect builtins into any real driver would have
-    // silently shadowed the working implementation with a broken one. It was harmless only
-    // because nothing but this file's own tests ever called `register_reflect_builtins`.
-    register_if_present(
-        interp,
-        "anthill.reflect.resolve_sort_instantiation_param",
-        resolve_sort_instantiation_param,
-    )?;
-
-    register_if_present(interp, "anthill.reflect.Substitution.apply", subst_apply)?;
-    register_if_present(
-        interp,
-        "anthill.reflect.Substitution.compose",
-        subst_compose,
-    )?;
-    let s = syms.clone();
-    register_if_present(
-        interp,
-        "anthill.reflect.Substitution.bindings",
-        move |i, a| subst_bindings(i, a, &s),
-    )?;
-
-    register_if_present(interp, "anthill.kernel.not", kernel_not)?;
-
-    Ok(())
-}
-
 // ── KB introspection helpers ────────────────────────────────────
 //
 // The carrier-agnostic KB walks — `facts_by_sort_name`, `term_named_args`,
@@ -283,8 +185,8 @@ pub fn register_reflect_builtins(interp: &mut Interpreter) -> Result<(), EvalErr
 /// `Value::Node` for one bound in a rule body (WI-246). Asking
 /// [`TermView::literal_string`] is the same question with no carrier list to keep in
 /// step — the core-side `eval::builtins::str_operand` is its twin.
-fn str_arg(kb: &anthill_core::kb::KnowledgeBase, v: Value) -> Result<String, EvalError> {
-    use anthill_core::kb::term_view::TermView;
+fn str_arg(kb: &crate::kb::KnowledgeBase, v: Value) -> Result<String, EvalError> {
+    use crate::kb::term_view::TermView;
     v.literal_string(kb).ok_or_else(|| EvalError::TypeMismatch {
         expected: "String",
         got: v.type_name().to_string(),
@@ -298,7 +200,7 @@ fn str_arg(kb: &anthill_core::kb::KnowledgeBase, v: Value) -> Result<String, Eva
 /// `facts_of` precedent), loud on a non-reference. The interpreter twin of the
 /// bridge's `value_functor(&kb, type.value())`.
 fn sort_ref_functor(interp: &Interpreter, sort: &Value) -> Result<Symbol, EvalError> {
-    anthill_core::eval::value_functor(interp.kb(), sort).ok_or_else(|| EvalError::TypeMismatch {
+    crate::eval::value_functor(interp.kb(), sort).ok_or_else(|| EvalError::TypeMismatch {
         expected: "Type (entity/sort reference)",
         got: sort.type_name().to_string(),
     })
@@ -314,11 +216,8 @@ fn sort_ref_functor(interp: &Interpreter, sort: &Value) -> Result<Symbol, EvalEr
 /// been taught to accept (found by /code-review). `Value::Entity`, `Value::Term` and
 /// `Value::Node` all present `ViewHead::Functor`, so ONE read serves all three: a
 /// nullary head is `none()`, a head with one child is `some(x)`.
-fn option_string_arg(
-    kb: &anthill_core::kb::KnowledgeBase,
-    v: Value,
-) -> Result<Option<String>, EvalError> {
-    use anthill_core::kb::term_view::{TermView, ViewHead};
+fn option_string_arg(kb: &crate::kb::KnowledgeBase, v: Value) -> Result<Option<String>, EvalError> {
+    use crate::kb::term_view::{TermView, ViewHead};
     match v.head(kb) {
         // `none()` — a nullary constructor, on whichever spelling its carrier uses
         // (one nullary head since WI-20260902-CZJ2N).
@@ -390,12 +289,12 @@ fn make_entity(kb: &KnowledgeBase, functor: Symbol, mut named: Vec<(Symbol, Valu
 
 // ── Builtin handlers ───────────────────────────────────────────
 
-fn kb_sort_template(
+pub(super) fn kb_sort_template(
     interp: &mut Interpreter,
     args: &[Value],
-    syms: &ReflectSyms,
 ) -> Result<Value, EvalError> {
     let [_kb, sort] = expect_args::<2>("KB.sort_template", args)?;
+    let syms = &ReflectSyms::resolve(interp.kb_mut())?;
     // WI-632: the sort is passed BY REFERENCE (e.g. `sort_template(kb(),
     // WorkItem)`) — a `Value::Term(Ref)` / `Value::Entity` already resolved to
     // its qualified functor at the caller's write site. Validate it names a
@@ -409,12 +308,9 @@ fn kb_sort_template(
     })
 }
 
-fn kb_sorts(
-    interp: &mut Interpreter,
-    args: &[Value],
-    syms: &ReflectSyms,
-) -> Result<Value, EvalError> {
+pub(super) fn kb_sorts(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb, ns] = expect_args::<2>("KB.sorts", args)?;
+    let syms = &ReflectSyms::resolve(interp.kb_mut())?;
     let namespace = option_string_arg(interp.kb(), ns)?;
     let kb = interp.kb_mut();
 
@@ -438,12 +334,9 @@ fn kb_sorts(
     Ok(build_list_value(syms, entries))
 }
 
-fn kb_operations(
-    interp: &mut Interpreter,
-    args: &[Value],
-    syms: &ReflectSyms,
-) -> Result<Value, EvalError> {
+pub(super) fn kb_operations(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb, sort] = expect_args::<2>("KB.operations", args)?;
+    let syms = &ReflectSyms::resolve(interp.kb_mut())?;
     let sort_sym = sort_ref_functor(interp, &sort)?;
     let kb = interp.kb_mut();
 
@@ -486,12 +379,12 @@ fn kb_operations(
     Ok(build_list_value(syms, entries))
 }
 
-fn kb_constructors(
+pub(super) fn kb_constructors(
     interp: &mut Interpreter,
     args: &[Value],
-    syms: &ReflectSyms,
 ) -> Result<Value, EvalError> {
     let [_kb, sort] = expect_args::<2>("KB.constructors", args)?;
+    let syms = &ReflectSyms::resolve(interp.kb_mut())?;
     let sort_sym = sort_ref_functor(interp, &sort)?;
     let kb = interp.kb_mut();
     let items: Vec<Value> = reader::members_of_kind(kb, sort_sym, "Constructor")
@@ -501,12 +394,9 @@ fn kb_constructors(
     Ok(build_list_value(syms, items))
 }
 
-fn kb_fields(
-    interp: &mut Interpreter,
-    args: &[Value],
-    syms: &ReflectSyms,
-) -> Result<Value, EvalError> {
+pub(super) fn kb_fields(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb, entity] = expect_args::<2>("KB.fields", args)?;
+    let syms = &ReflectSyms::resolve(interp.kb_mut())?;
     // WI-632: the entity is passed BY REFERENCE (e.g. `fields(kb(), WorkItem)`) —
     // a `Value::Term(Ref)` / `Value::Entity` already resolved to its qualified
     // functor at the caller's write site. Extract that functor via the shared
@@ -532,12 +422,9 @@ fn kb_fields(
     Ok(build_list_value(syms, items))
 }
 
-fn kb_rules(
-    interp: &mut Interpreter,
-    args: &[Value],
-    syms: &ReflectSyms,
-) -> Result<Value, EvalError> {
+pub(super) fn kb_rules(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb, sort] = expect_args::<2>("KB.rules", args)?;
+    let syms = &ReflectSyms::resolve(interp.kb_mut())?;
     let sort_sym = sort_ref_functor(interp, &sort)?;
     let kb = interp.kb_mut();
 
@@ -552,12 +439,12 @@ fn kb_rules(
     Ok(build_list_value(syms, items))
 }
 
-fn kb_descriptions(
+pub(super) fn kb_descriptions(
     interp: &mut Interpreter,
     args: &[Value],
-    syms: &ReflectSyms,
 ) -> Result<Value, EvalError> {
     let [_kb, target] = expect_args::<2>("KB.descriptions", args)?;
+    let syms = &ReflectSyms::resolve(interp.kb_mut())?;
     let target = option_string_arg(interp.kb(), target)?;
     let kb = interp.kb_mut();
 
@@ -575,21 +462,12 @@ fn kb_descriptions(
     Ok(build_list_value(syms, items))
 }
 
-fn kb_reify(
-    interp: &mut Interpreter,
-    args: &[Value],
-    syms: &ReflectSyms,
-) -> Result<Value, EvalError> {
+pub(super) fn kb_reify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb, t] = expect_args::<2>("KB.reify", args)?;
-    let tid = match t {
-        Value::Term { id: tid, .. } => tid,
-        other => {
-            return Err(EvalError::TypeMismatch {
-                expected: "Term",
-                got: other.type_name().to_string(),
-            })
-        }
-    };
+    let syms = &ReflectSyms::resolve(interp.kb_mut())?;
+    // LOWERED, not read through the view: `reify_walk` is total over terms and panics on
+    // a non-term child, which a `Value::Node` operand can carry below its head.
+    let tid = expect_term(interp.kb_mut(), &t, "KB.reify")?;
     Ok(reify_term_to_value(interp.kb_mut(), syms, tid))
 }
 
@@ -671,14 +549,51 @@ impl reader::ReifyBuilder for ValueReprBuilder<'_> {
 /// `KB.reflect(kb: KB, r: TermRepr) -> Term` — inverse of `reify`. Walks a
 /// `TermRepr` `Value::Entity` tree and allocates the corresponding hash-consed
 /// `TermId`, returned as `Value::Term`.
-fn kb_reflect(
-    interp: &mut Interpreter,
-    args: &[Value],
-    syms: &ReflectSyms,
-) -> Result<Value, EvalError> {
+pub(super) fn kb_reflect(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [_kb, repr] = expect_args::<2>("KB.reflect", args)?;
+    let syms = &ReflectSyms::resolve(interp.kb_mut())?;
     let tid = reader::reflect_walk(interp.kb_mut(), ValueRepr { value: repr, syms })?;
     Ok(Value::term(tid))
+}
+
+/// The constructor of a reflect record (`TermRepr` / `LiteralRepr`), on whatever
+/// carrier it rides.
+///
+/// WI-20260923-9R5HN — read through [`TermView`](crate::kb::term_view::TermView), with
+/// [`repr_field`] and `view_list_items` for the rest of the record. The decoder matched
+/// `Value::Entity` alone, which is what `KB.reify` builds and NOT what a rule body
+/// writes: made interpreter-mapped, `KB.reflect` reduces at a rule-body operand, where
+/// `ConstRepr(value: IntLiteral(value: 7))` is a `Value::Node` — MEASURED (/code-review),
+/// "expected TermRepr, got Node" on every such call.
+fn repr_functor(
+    kb: &KnowledgeBase,
+    v: &Value,
+    expected: &'static str,
+) -> Result<Symbol, EvalError> {
+    use crate::kb::term_view::{TermView, ViewHead};
+    match v.head(kb) {
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } => Ok(f),
+        _ => Err(EvalError::TypeMismatch {
+            expected,
+            got: v.type_name().to_string(),
+        }),
+    }
+}
+
+/// A field of a reflect record: by the field's NAME — compared as a local name, since an
+/// occurrence may carry the loader's qualified field symbol where `KB.reify` wrote the
+/// bare one — and else at its declared POSITION, for a record written positionally.
+fn repr_field(kb: &KnowledgeBase, v: &Value, key: Symbol, index: usize) -> Option<Value> {
+    use crate::kb::term_view::TermView;
+    let name = kb.local_name_of(key);
+    v.named_keys(kb)
+        .into_iter()
+        .find(|k| kb.local_name_of(*k) == name)
+        .and_then(|k| v.named_arg(kb, k))
+        .or_else(|| v.pos_arg(kb, index))
+        .map(|c| c.to_value())
 }
 
 /// Interpreter realization of [`reader::ReflectReader`]: decodes a `TermRepr`
@@ -694,43 +609,35 @@ impl reader::ReflectReader for ValueRepr<'_> {
 
     fn classify(self, kb: &KnowledgeBase) -> Result<reader::ReflectShape<Self>, EvalError> {
         let syms = self.syms;
-        let (functor, named) = match self.value {
-            Value::Entity { functor, named, .. } => (functor, named),
-            other => {
-                return Err(EvalError::TypeMismatch {
-                    expected: "TermRepr",
-                    got: other.type_name().to_string(),
-                })
-            }
-        };
-        let lookup = |key: Symbol| -> Option<Value> {
-            named
-                .iter()
-                .find(|(s, _)| *s == key)
-                .map(|(_, v)| v.clone())
-        };
+        let functor = repr_functor(kb, &self.value, "TermRepr")?;
+        // `TermRepr`'s constructors are one field or `name` + `args`, in that order.
+        let lookup = |key: Symbol, index: usize| repr_field(kb, &self.value, key, index);
 
         if functor == syms.const_repr {
-            let inner = lookup(syms.f_value)
+            let inner = lookup(syms.f_value, 0)
                 .ok_or_else(|| EvalError::Internal("ConstRepr: missing `value`".into()))?;
             Ok(reader::ReflectShape::Const(decode_literal_repr(
                 kb, syms, inner,
             )?))
         } else if functor == syms.var_repr {
-            let name = lookup(syms.f_name)
+            let name = lookup(syms.f_name, 0)
                 .ok_or_else(|| EvalError::Internal("VarRepr: missing `name`".into()))?;
             Ok(reader::ReflectShape::Var(str_arg(kb, name)?))
         } else if functor == syms.ref_repr {
-            let name = lookup(syms.f_name)
+            let name = lookup(syms.f_name, 0)
                 .ok_or_else(|| EvalError::Internal("RefRepr: missing `name`".into()))?;
             Ok(reader::ReflectShape::Ref(ref_repr_symbol(kb, name)?))
         } else if functor == syms.fn_repr {
-            let name = lookup(syms.f_name)
+            let name = lookup(syms.f_name, 0)
                 .ok_or_else(|| EvalError::Internal("FnRepr: missing `name`".into()))?;
             let functor_sym = ref_repr_symbol(kb, name)?;
-            let args_list = lookup(syms.f_args)
+            let args_list = lookup(syms.f_args, 1)
                 .ok_or_else(|| EvalError::Internal("FnRepr: missing `args`".into()))?;
-            let children = collect_repr_list(kb, syms, args_list)?
+            let children = super::builtins::view_list_items(kb, &args_list)
+                .ok_or_else(|| EvalError::TypeMismatch {
+                    expected: "FnRepr.args: a cons-list",
+                    got: args_list.type_name().to_string(),
+                })?
                 .into_iter()
                 .map(|v| ValueRepr { value: v, syms })
                 .collect();
@@ -752,22 +659,9 @@ fn decode_literal_repr(
     syms: &ReflectSyms,
     inner: Value,
 ) -> Result<Literal, EvalError> {
-    let (lit_ctor, lit_val) = match inner {
-        Value::Entity { functor, named, .. } => {
-            let v = named
-                .iter()
-                .find(|(s, _)| *s == syms.f_value)
-                .map(|(_, v)| v.clone())
-                .ok_or_else(|| EvalError::Internal("LiteralRepr: missing `value`".into()))?;
-            (functor, v)
-        }
-        other => {
-            return Err(EvalError::TypeMismatch {
-                expected: "LiteralRepr",
-                got: other.type_name().to_string(),
-            })
-        }
-    };
+    let lit_ctor = repr_functor(kb, &inner, "LiteralRepr")?;
+    let lit_val = repr_field(kb, &inner, syms.f_value, 0)
+        .ok_or_else(|| EvalError::Internal("LiteralRepr: missing `value`".into()))?;
     // WI-20260827-3ZNBC — the PAYLOAD reads through the carrier-neutral view, like
     // the constructor above it (`Value::Entity`'s functor) already did. Which
     // `LiteralRepr` constructor was written still decides which core `Literal` this
@@ -781,7 +675,7 @@ fn decode_literal_repr(
         got: lit_val.type_name().to_string(),
     };
     let denoted = {
-        use anthill_core::kb::term_view::TermView;
+        use crate::kb::term_view::TermView;
         lit_val.as_literal(kb)
     };
     if lit_ctor == syms.int_lit {
@@ -833,54 +727,6 @@ fn ref_repr_symbol(kb: &KnowledgeBase, name: Value) -> Result<Symbol, EvalError>
     expect_symbol(kb, name, "TermRepr name")
 }
 
-/// Collect the head `Value`s of a `FnRepr.args` prelude cons-list (a `List` of
-/// `TermRepr`); each head is decoded lazily by [`reader::reflect_walk`]'s
-/// recursion over the returned [`ValueRepr`]s.
-fn collect_repr_list(
-    kb: &KnowledgeBase,
-    syms: &ReflectSyms,
-    args_list: Value,
-) -> Result<Vec<Value>, EvalError> {
-    let mut out = Vec::new();
-    let mut cur = args_list;
-    loop {
-        match cur {
-            Value::Entity {
-                functor: f, named, ..
-            } => {
-                if f == syms.nil {
-                    break;
-                }
-                if f != syms.cons {
-                    return Err(EvalError::Internal(format!(
-                        "FnRepr.args: expected cons-list, got {}",
-                        kb.local_name_of(f)
-                    )));
-                }
-                let head = named
-                    .iter()
-                    .find(|(s, _)| *s == syms.head)
-                    .map(|(_, v)| v.clone())
-                    .ok_or_else(|| EvalError::Internal("cons: missing head".into()))?;
-                let tail = named
-                    .iter()
-                    .find(|(s, _)| *s == syms.tail)
-                    .map(|(_, v)| v.clone())
-                    .ok_or_else(|| EvalError::Internal("cons: missing tail".into()))?;
-                out.push(head);
-                cur = tail;
-            }
-            other => {
-                return Err(EvalError::TypeMismatch {
-                    expected: "cons-list",
-                    got: other.type_name().to_string(),
-                })
-            }
-        }
-    }
-    Ok(out)
-}
-
 // ── Symbol ops (namespace-level) ─────────────────────────────────
 
 /// The symbol a reflect `Symbol` argument names — read by CONTENT, through the
@@ -906,13 +752,13 @@ fn expect_symbol(kb: &KnowledgeBase, v: Value, _op: &'static str) -> Result<Symb
     })
 }
 
-fn qualified_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+pub(super) fn qualified_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s] = expect_args::<1>("qualified_name", args)?;
     let sym = expect_symbol(interp.kb(), s, "qualified_name")?;
     Ok(Value::Str(interp.kb().qualified_name_of(sym).to_string()))
 }
 
-fn short_name_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+pub(super) fn short_name_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s] = expect_args::<1>("short_name", args)?;
     let sym = expect_symbol(interp.kb(), s, "short_name")?;
     Ok(Value::Str(interp.kb().local_name_of(sym).to_string()))
@@ -926,14 +772,17 @@ fn short_name_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 /// also what the SLD-side backing of this SAME declared operation
 /// (`KnowledgeBase::builtin_lookup_symbol`) reads — one operation, one question, the
 /// WI-984 rule.
-fn lookup_symbol_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+pub(super) fn lookup_symbol_op(
+    interp: &mut Interpreter,
+    args: &[Value],
+) -> Result<Value, EvalError> {
     let [name] = expect_args::<1>("lookup_symbol", args)?;
     let name_str = str_arg(interp.kb(), name)?;
     let sym = resolve_host_name(interp, "lookup_symbol", &name_str)?;
     Ok(Value::term(interp.kb_mut().alloc(CoreTerm::Ref(sym))))
 }
 
-fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+pub(super) fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s] = expect_args::<1>("scope", args)?;
     let sym = expect_symbol(interp.kb(), s, "scope")?;
     // WI-984 — THE DECLARED CONTRACT, which this did not implement: `reflect.anthill`
@@ -953,17 +802,10 @@ fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
         .kb()
         .declaring_scope_symbol(sym)
         .filter(|&owner| owner != global.owner());
-    // Lookup Option.some / Option.none every call — not hot path; keeping
-    // these out of ReflectSyms because this op is reachable even with a
-    // stripped reflect stdlib (it's a namespace-level op, not a KB method).
-    let some_sym = interp
-        .kb()
-        .try_resolve_symbol("anthill.prelude.Option.some")
-        .ok_or_else(|| EvalError::Internal("anthill.prelude.Option.some not in scope".into()))?;
-    let none_sym = interp
-        .kb()
-        .try_resolve_symbol("anthill.prelude.Option.none")
-        .ok_or_else(|| EvalError::Internal("anthill.prelude.Option.none not in scope".into()))?;
+    // Option.some / Option.none per call — not a hot path, and `ReflectSyms` would
+    // resolve far more than this op reads.
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_field = interp.kb_mut().intern("value");
     Ok(match scope_sym {
         Some(sym) => {
@@ -982,8 +824,8 @@ fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
     })
 }
 
-fn kind_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    use anthill_core::intern::SymbolKind;
+pub(super) fn kind_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::intern::SymbolKind;
     let [s] = expect_args::<1>("kind", args)?;
     let sym = expect_symbol(interp.kb(), s, "kind")?;
     // WI-898: the kind→string table lives on `SymbolKind` itself, shared with the
@@ -997,14 +839,32 @@ fn kind_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
 
 // ── Term-shape predicates (eval-side, no DELAY) ─────────────────
 
-fn expect_term(v: Value, op: &'static str) -> Result<TermId, EvalError> {
-    match v {
-        Value::Term { id: tid, .. } => Ok(tid),
-        other => Err(EvalError::TypeMismatch {
-            expected: "Term",
-            got: format!("{} for {op}", other.type_name()),
-        }),
-    }
+/// The `TermId` a `Term`-typed argument DENOTES, on whatever carrier it rides.
+///
+/// WI-20260923-9R5HN — BY CONTENT, through the one faithful `Value → Term` boundary
+/// ([`crate::kb::node_occurrence::value_to_term`]). It matched `Value::Term` alone: a
+/// by-CARRIER answer to a by-content question, since `as_term` is the identity and a
+/// `Term` is whatever carrier its value rides. That held up while these operations
+/// ran only from an operation body, where such an argument is usually interned. Made
+/// interpreter-mapped, they reduce at a rule-body operand, and there the argument is
+/// a `Value::Node` occurrence — MEASURED, `can_be_sort(as_term(Color))` in a rule
+/// refused "expected Term, got Node" on every call. A carrier with no term form (a
+/// closure, a stream, a runtime handle) is still a loud type error.
+///
+/// IT INTERNS, so it is for an operation that needs a `TermId` — one that builds a goal
+/// (`kernel.not`), unifies terms (`reflect.unify`), or walks one totally (`KB.reify`).
+/// A read that only needs the argument's SHAPE goes through [`TermView`] and leaves a
+/// transient operand un-interned (CLAUDE.md: the term store is for persistent,
+/// shared structure).
+pub(super) fn expect_term(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    op: &'static str,
+) -> Result<TermId, EvalError> {
+    crate::kb::node_occurrence::value_to_term(kb, v).map_err(|_| EvalError::TypeMismatch {
+        expected: "Term",
+        got: format!("{} for {op}", v.type_name()),
+    })
 }
 
 /// `nonvar(x: Term) -> Bool` — the EVAL-time reading of the resolver's
@@ -1019,7 +879,7 @@ fn expect_term(v: Value, op: &'static str) -> Result<TermId, EvalError> {
 /// `TypeMismatch` here and a variable to the resolver. The delay the resolver
 /// adds is a RESOLUTION concern — a goal can be re-asked once something binds it
 /// — and there is nothing to re-ask at eval time, so `Bool` is the whole answer.
-fn nonvar_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+pub(super) fn nonvar_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [x] = expect_args::<1>("nonvar", args)?;
     Ok(Value::Bool(!interp.kb().value_is_unbound_var(&x)))
 }
@@ -1028,66 +888,77 @@ fn nonvar_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErro
 /// `ground(?x)` builtin, answered by [`KnowledgeBase::value_is_ground_no_subst`].
 /// See [`nonvar_op`] for why it is two-valued and what the TermId-only
 /// derivation it replaces got wrong.
-fn ground_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+pub(super) fn ground_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [x] = expect_args::<1>("ground", args)?;
     Ok(Value::Bool(interp.kb().value_is_ground_no_subst(&x)))
 }
 
 // ── Sort ↔ Term (identity passthroughs — Types ARE Terms) ────────
 
+/// Can the term `v` DENOTES stand in type position? Every term can but a literal and
+/// `⊥` — read off its head through [`TermView`], on whatever carrier it rides and
+/// without interning it (WI-20260923-9R5HN). The one predicate `can_be_sort` and
+/// `term_as_sort` both answer by.
+///
+/// An OPAQUE head is the one case the view cannot settle: a runtime handle (no term
+/// form — a loud type error) and a non-application occurrence (a lambda, say — a term,
+/// and so a candidate sort) both read that way, and [`expect_term`] tells them apart.
+fn denotes_a_sort_candidate(
+    kb: &mut KnowledgeBase,
+    v: &Value,
+    op: &'static str,
+) -> Result<bool, EvalError> {
+    use crate::kb::term_view::{TermView, ViewHead};
+    if v.index_var(kb).is_some() {
+        return Ok(true);
+    }
+    match v.head(kb) {
+        ViewHead::Const(_) | ViewHead::Bottom => Ok(false),
+        ViewHead::Opaque | ViewHead::Functor { functor: None, .. } => {
+            let tid = expect_term(kb, v, op)?;
+            Ok(!matches!(
+                kb.get_term(tid),
+                CoreTerm::Const(_) | CoreTerm::Bottom
+            ))
+        }
+        ViewHead::Var(_) | ViewHead::Ident(_) | ViewHead::Functor { .. } => Ok(true),
+    }
+}
+
 /// `sort_as_term(s: Type) -> Term` — Type and Term are both `TermId` in the
 /// kernel (see memory `project_sort_data_distinction` / architecture note).
-/// The operation exists for documentation and API symmetry.
-fn sort_as_term(_interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+/// The operation exists for documentation and API symmetry: the argument comes back
+/// on the carrier it arrived on, once it is known to have a term form.
+pub(super) fn sort_as_term(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s] = expect_args::<1>("sort_as_term", args)?;
-    // Accept any Value::Term — the user wrote it in a sort/type position.
-    match s {
-        Value::Term { .. } => Ok(s),
-        other => Err(EvalError::TypeMismatch {
-            expected: "Type (Term handle)",
-            got: other.type_name().to_string(),
-        }),
-    }
+    denotes_a_sort_candidate(interp.kb_mut(), &s, "sort_as_term")?;
+    Ok(s)
 }
 
 /// `can_be_sort(t: Term) -> Bool` — every well-formed `Term` can stand in
 /// type position (sorts are terms). Literals and `Bottom` are rejected.
-fn can_be_sort(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+pub(super) fn can_be_sort(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [t] = expect_args::<1>("can_be_sort", args)?;
-    let tid = expect_term(t, "can_be_sort")?;
-    let ok = !matches!(
-        interp.kb().get_term(tid),
-        CoreTerm::Const(_) | CoreTerm::Bottom
-    );
-    Ok(Value::Bool(ok))
+    Ok(Value::Bool(denotes_a_sort_candidate(
+        interp.kb_mut(),
+        &t,
+        "can_be_sort",
+    )?))
 }
 
 /// `term_as_sort(t: Term) -> Option[T = Type]` — `some(t)` if `t` can be a
-/// sort, `none` otherwise. Leverages `can_be_sort`.
-fn term_as_sort(
-    interp: &mut Interpreter,
-    args: &[Value],
-    syms: &ReflectSyms,
-) -> Result<Value, EvalError> {
+/// sort (the `can_be_sort` predicate), `none` otherwise; `t` on its own carrier.
+pub(super) fn term_as_sort(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [t] = expect_args::<1>("term_as_sort", args)?;
-    let tid = expect_term(t, "term_as_sort")?;
-    let ok = !matches!(
-        interp.kb().get_term(tid),
-        CoreTerm::Const(_) | CoreTerm::Bottom
-    );
-    let some_sym = interp
-        .kb()
-        .try_resolve_symbol("anthill.prelude.Option.some")
-        .ok_or_else(|| EvalError::Internal("Option.some not in scope".into()))?;
-    let none_sym = interp
-        .kb()
-        .try_resolve_symbol("anthill.prelude.Option.none")
-        .ok_or_else(|| EvalError::Internal("Option.none not in scope".into()))?;
+    let ok = denotes_a_sort_candidate(interp.kb_mut(), &t, "term_as_sort")?;
+    let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
+    let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
+    let value_field = interp.kb_mut().intern("value");
     if ok {
         Ok(Value::Entity {
             functor: some_sym,
             pos: Vec::new().into(),
-            named: vec![(syms.f_value, Value::term(tid))].into(),
+            named: vec![(value_field, t)].into(),
         })
     } else {
         Ok(Value::Entity {
@@ -1104,19 +975,22 @@ fn term_as_sort(
 /// given a `SortView(sort, param1=val1, …)` term and a `Ref(param)` term,
 /// return the bound value. Currently implemented as a named-arg lookup
 /// over the SortView's named args.
-fn resolve_sort_instantiation_param(
+pub(super) fn resolve_sort_instantiation_param(
     interp: &mut Interpreter,
     args: &[Value],
 ) -> Result<Value, EvalError> {
+    use crate::kb::term_view::{TermView, ViewHead};
     let [inst, param] = expect_args::<2>("resolve_sort_instantiation_param", args)?;
-    let inst_tid = expect_term(inst, "resolve_sort_instantiation_param")?;
     let param_sym = expect_symbol(interp.kb(), param, "resolve_sort_instantiation_param")?;
     let kb = interp.kb();
-    match kb.get_term(inst_tid) {
-        CoreTerm::Fn { named_args, .. } => named_args
-            .iter()
-            .find(|(s, _)| *s == param_sym)
-            .map(|(_, tid)| Value::term(*tid))
+    // The SortView's named args, read through the view on whatever carrier it rides
+    // (WI-20260923-9R5HN) — it read a hash-consed `Term::Fn` only.
+    match inst.head(kb) {
+        ViewHead::Functor {
+            functor: Some(_), ..
+        } => inst
+            .named_arg(kb, param_sym)
+            .map(|c| c.to_value())
             .ok_or_else(|| {
                 EvalError::Internal(format!(
                     "resolve_sort_instantiation_param: '{}' not bound",
@@ -1125,32 +999,46 @@ fn resolve_sort_instantiation_param(
             }),
         _ => Err(EvalError::TypeMismatch {
             expected: "SortView Term",
-            got: "other Term".into(),
+            got: inst.type_name().to_string(),
         }),
     }
 }
 
 // ── Substitution.apply / .compose ───────────────────────────────
 
+/// The substitution handle a `Substitution` argument carries, READ THROUGH any
+/// `Node(Spliced(…))` wrapper ([`Value::carried`], WI-1025).
+///
+/// WI-20260923-9R5HN — a rule body reaches these operations now, and there a
+/// substitution bound by `<=>` arrives σ-walked into the call as a SPLICED
+/// occurrence, not as the bare `Value::Substitution` an operation body passes.
+/// MEASURED: `mk() <=> some(?s), Substitution.lookup(?s, "x") <=> none()` refused
+/// "expected Substitution, got Node". Shared by all four `Substitution` operations,
+/// `lookup` included (`builtins::subst_lookup`).
+pub(super) fn expect_subst(
+    v: &Value,
+    op: &'static str,
+) -> Result<super::value::SubstHandle, EvalError> {
+    match v.carried() {
+        Value::Substitution(h) => Ok(h.clone()),
+        other => Err(EvalError::TypeMismatch {
+            expected: "Substitution",
+            got: format!("{} for {op}", other.type_name()),
+        }),
+    }
+}
+
 /// `Substitution.apply(s: Substitution, t: Term, kb: KB) -> Term`.
 /// Rewrites `t` by walking every variable binding in `s`. Borrows the
 /// substitution through the arena — no clone of `s`.
-fn subst_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+pub(super) fn subst_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s, t, _kb] = expect_args::<3>("Substitution.apply", args)?;
-    let handle = match s {
-        Value::Substitution(h) => h,
-        other => {
-            return Err(EvalError::TypeMismatch {
-                expected: "Substitution",
-                got: other.type_name().to_string(),
-            })
-        }
-    };
-    let tid = expect_term(t, "Substitution.apply")?;
-    // The arena is on `interp.substs`; the KB on `interp.kb`. These are
-    // independent fields, so we can hold a shared borrow on the arena
-    // (via the cloned Rc) while mutably borrowing the KB.
-    let arena = interp.subst_arena();
+    let handle = expect_subst(&s, "Substitution.apply")?;
+
+    // Read through the HANDLE, which carries the arena that minted it — not
+    // `interp`'s, which a bridge interpreter reducing this call did not mint the
+    // substitution in (`SubstHandle::with_subst`, WI-20260923-9R5HN). The handle's
+    // borrow is also independent of `interp.kb`, so the KB can be borrowed mutably.
     let kb = interp.kb_mut();
     // Carrier-neutral σ-application (WI-20260905-N20EZ): an answer link is a
     // `Value::Var` alias or an `Entity` spine, which the term-world `apply_subst`
@@ -1158,9 +1046,14 @@ fn subst_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
     // result is typed `Term`, so the reified value lowers to one here: this is a
     // genuine KB boundary, where interning is the point. A carrier with no term
     // form is a loud error, not a silently kept variable.
-    let applied = arena.with_subst(&handle, |s| kb.reify(tid, s));
-    let lowered = anthill_core::kb::node_occurrence::value_to_term(kb, &applied)
-        .map_err(|e| EvalError::Internal(format!("Substitution.apply: the result has no term form: {e:?}")))?;
+    // The TERM is σ-applied on its own carrier (`reify_value`), so a transient operand
+    // is not interned; the RESULT is lowered below, at the declared `Term` boundary.
+    let applied = handle.with_subst(|s| kb.reify_value(&t, s));
+    let lowered = crate::kb::node_occurrence::value_to_term(kb, &applied).map_err(|e| {
+        EvalError::Internal(format!(
+            "Substitution.apply: the result has no term form: {e:?}"
+        ))
+    })?;
     Ok(Value::term(lowered))
 }
 
@@ -1168,32 +1061,17 @@ fn subst_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
 /// Produces a new substitution: s2 applied to every Term-valued binding of
 /// s1, extended by s2's bindings where the variable doesn't already appear
 /// in s1. Borrows both substitutions through the arena — no full clones.
-fn subst_compose(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+pub(super) fn subst_compose(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [s1, s2, _kb] = expect_args::<3>("Substitution.compose", args)?;
-    let h1 = match s1 {
-        Value::Substitution(h) => h,
-        other => {
-            return Err(EvalError::TypeMismatch {
-                expected: "Substitution",
-                got: other.type_name().to_string(),
-            })
-        }
-    };
-    let h2 = match s2 {
-        Value::Substitution(h) => h,
-        other => {
-            return Err(EvalError::TypeMismatch {
-                expected: "Substitution",
-                got: other.type_name().to_string(),
-            })
-        }
-    };
+    let h1 = expect_subst(&s1, "Substitution.compose")?;
+    let h2 = expect_subst(&s2, "Substitution.compose")?;
 
-    let arena = interp.subst_arena();
+    // Each operand read through its own handle — the two may even come from
+    // different arenas (`SubstHandle::with_subst`).
     let kb = interp.kb_mut();
-    let composed = arena.with_subst(&h1, |s1| {
-        arena.with_subst(&h2, |s2| {
-            let mut result = anthill_core::kb::subst::Substitution::new();
+    let composed = h1.with_subst(|s1| {
+        h2.with_subst(|s2| {
+            let mut result = crate::kb::subst::Substitution::new();
             // (WI-569: `bindings` is an `imbl::HashMap` — persistent, no `reserve`.)
             for (var, val) in s1.bindings.iter() {
                 // s2 applied on EVERY carrier (N20EZ): a `Term` binding through the
@@ -1228,23 +1106,12 @@ fn subst_compose(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eval
 /// full-walk dual of `lookup`'s single by-name read). Lets the host bridge's
 /// `compose` merge by variable across the `&dyn Substitution` boundary, but is
 /// a first-class reflect op.
-fn subst_bindings(
-    interp: &mut Interpreter,
-    args: &[Value],
-    syms: &ReflectSyms,
-) -> Result<Value, EvalError> {
+pub(super) fn subst_bindings(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [subst_val] = expect_args::<1>("Substitution.bindings", args)?;
-    let handle = match subst_val {
-        Value::Substitution(h) => h,
-        other => {
-            return Err(EvalError::TypeMismatch {
-                expected: "Substitution",
-                got: other.type_name().to_string(),
-            })
-        }
-    };
-    let arena = interp.subst_arena();
-    let entries: Vec<_> = arena.with_subst(&handle, |s| {
+    let syms = &ReflectSyms::resolve(interp.kb_mut())?;
+    let handle = expect_subst(&subst_val, "Substitution.bindings")?;
+    // Through the handle (`SubstHandle::with_subst`).
+    let entries: Vec<_> = handle.with_subst(|s| {
         s.iter()
             .map(|(vid, val)| (*vid, val.clone()))
             .collect::<Vec<_>>()
@@ -1257,7 +1124,7 @@ fn subst_bindings(
         // boundary (N20EZ — an unbound answer rides `Value::Var`, a compound link an
         // `Entity` spine; both have a term form). A carrier with none is a loud
         // error here rather than a `TypeMismatch` at the first `Term` op downstream.
-        let snd = anthill_core::kb::node_occurrence::value_to_term(kb, &val).map_err(|e| {
+        let snd = crate::kb::node_occurrence::value_to_term(kb, &val).map_err(|e| {
             EvalError::Internal(format!(
                 "Substitution.bindings: a binding has no term form: {e:?}"
             ))
@@ -1265,7 +1132,10 @@ fn subst_bindings(
         pairs.push(make_entity(
             kb,
             syms.pair,
-            vec![(syms.f_fst, Value::term(var_tid)), (syms.f_snd, Value::term(snd))],
+            vec![
+                (syms.f_fst, Value::term(var_tid)),
+                (syms.f_snd, Value::term(snd)),
+            ],
         ));
     }
     Ok(build_list_value(syms, pairs))
@@ -1273,21 +1143,22 @@ fn subst_bindings(
 
 // ── kernel.not (WI-080) ────────────────────────────────────────
 //
-// The one non-`anthill.reflect` binding in this file, since WI-20260820-MH90F moved
-// `not` to `anthill.kernel` where the rest of the resolver primitives live. It stays
-// HERE rather than moving with its namespace: what it binds is an eval-time face over a
-// reified `Term`, so it needs this module's `expect_term` / `require_symbol` substrate
-// and shares its registration pass — and `anthill.kernel`'s other members have no
-// eval-side binding at all for it to sit beside.
+// The one non-`anthill.reflect` function in this file, since WI-20260820-MH90F moved
+// `not` to `anthill.kernel` where the rest of the resolver primitives live. Its MAPPING
+// sits with its namespace — beside `struct_eq`'s in `rustland/anthill-stl/anthill/
+// kernel.anthill`, the other kernel operation with an eval face (WI-20260923-9R5HN) —
+// while the function stays here, because what it binds is an eval-time face over a
+// reified `Term` and it needs this module's `expect_term` substrate. The resolver
+// primitive (`BuiltinTag::Not`, the NAF a rule-body goal runs) is untouched by either.
 
 /// `kernel.not(query: Term) -> Bool` — eval-time negation-as-failure.
 /// Wraps `query` in a resolver `not(...)` goal and runs a fresh one-shot
 /// SLD search. If the resolver surfaces a residual (floundering: query
 /// has unbound variables), raises an error — NAF is unsound on ungrounded
 /// goals and the eval context has no outer frame to resume on.
-fn kernel_not(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+pub(super) fn kernel_not(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [q] = expect_args::<1>("kernel.not", args)?;
-    let goal_tid = expect_term(q, "kernel.not")?;
+    let goal_tid = expect_term(interp.kb_mut(), &q, "kernel.not")?;
     let not_sym = require_symbol(interp, "anthill.kernel.not", "not")?;
     let not_goal = interp.kb_mut().alloc(CoreTerm::Fn {
         functor: not_sym,
@@ -1325,67 +1196,18 @@ fn kernel_not(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    use anthill_core::eval::{self, Interpreter, Value};
-    use anthill_core::kb::load::{self, NullResolver};
-    use anthill_core::kb::term_view::TermView;
-    use anthill_core::kb::KnowledgeBase;
-    use anthill_core::parse;
-    use anthill_core::parse::desugar_target as dt;
+    use crate::eval::{self, Interpreter, Value};
+    use crate::kb::term_view::TermView;
 
-    // WI-747: the walk is the shared `anthill_core::fs_util`.
-    fn collect_anthill_files(dir: &std::path::Path) -> Vec<PathBuf> {
-        anthill_core::fs_util::collect_files(dir, &["anthill"]).expect("collect stdlib")
-    }
-
-    /// The stdlib, read and parsed ONCE per test binary.
-    ///
-    /// `load_stdlib_and_source` has ~23 callers in this module and used to re-walk,
-    /// re-read and re-parse every stdlib file at each one. The parsed files are
-    /// immutable inputs to `load_all`, so sharing them is safe — the same shape
-    /// `anthill-core/tests/common/mod.rs`'s `STDLIB_PARSED` already uses.
-    static STDLIB_PARSED: std::sync::LazyLock<Vec<parse::ir::ParsedFile>> =
-        std::sync::LazyLock::new(|| {
-            // WI-880 — THE FULL CLOSURE, and it was `stdlib/anthill` ALONE until then.
-            // `stdlib/` carries the language-agnostic declarations; the `provides …
-            // language rust` blocks that say WHICH HOST FUNCTION realizes each operation
-            // live in this crate's own `anthill/` tree, so a KB built from `stdlib/`
-            // alone has no `operation_map` to register from. Invisible while the reflect
-            // surface was registered by hardcoded qualified name in `eval/builtins.rs` —
-            // with it keyed per operation, `field_access` and `splitFirst`'s accessors
-            // are unimplemented here and both tests below died `OperationBodyMissing`.
-            // Same call `wi483_rule_body_method_eval_test` and WI-1103's
-            // `incremental_load_test` made: a fixture that loads half the library
-            // measures half the language.
-            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let mut files = collect_anthill_files(&root.join("../../stdlib/anthill"));
-            assert!(!files.is_empty(), "stdlib empty");
-            files.extend(collect_anthill_files(&root.join("anthill")));
-            files
-                .iter()
-                .map(|f| {
-                    let src = std::fs::read_to_string(f).expect("read stdlib");
-                    parse::parse(&src).unwrap_or_else(|e| panic!("parse {}: {e:?}", f.display()))
-                })
-                .collect()
-        });
-
+    /// The full closure — the stdlib plus anthill-stl's binding blocks, which is what
+    /// NAMES these functions now (WI-20260923-9R5HN) — and `source`, with the standard
+    /// builtins registered. `test_support::load_stdlib` is the crate's one fixture for
+    /// it; this module carried its own copy while it lived in anthill-stl.
     fn load_stdlib_and_source(source: &str) -> Interpreter {
-        let user = parse::parse(source).expect("parse user source");
-        let refs: Vec<_> = STDLIB_PARSED.iter().chain(std::iter::once(&user)).collect();
-
-        let mut kb = KnowledgeBase::new();
-        load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
-            for e in load::LoadError::render_all(&errs) {
-                eprintln!("{e}");
-            }
-            panic!("load failed");
-        });
-
+        let kb = crate::kb::test_support::load_stdlib(Some(source));
         let mut interp = Interpreter::new(kb);
-        eval::builtins::register_standard_builtins(&mut interp).expect("register core builtins");
-        register_reflect_builtins(&mut interp).expect("register reflect builtins");
+        eval::builtins::register_standard_builtins(&mut interp).expect("register builtins");
         interp
     }
 
@@ -1422,7 +1244,7 @@ end
                 // its functor the SAME symbol the qualified name resolves to.
                 let field_name = interp.kb().local_name_of(named[0].0).to_string();
                 assert_eq!(field_name, "sort");
-                let sort_sym = anthill_core::eval::value_functor(interp.kb(), &named[0].1)
+                let sort_sym = crate::eval::value_functor(interp.kb(), &named[0].1)
                     .expect("sort payload names a functor");
                 let expected = interp
                     .kb()
@@ -1492,6 +1314,62 @@ end
             count >= 2,
             "expected at least 2 sorts (Color + Shape), got {count}"
         );
+    }
+
+    /// WI-20260923-9R5HN — `sorts(kb, some(ns))` keeps the sorts declared in `ns` or
+    /// beneath it, at a namespace boundary. The filter compared `ns` against each sort's
+    /// SHORT name, so a namespace matched nothing and a short-name prefix matched.
+    ///
+    /// CONTROL, MEASURED with the old filter restored: the first row fails, `t9r.fx`
+    /// answering `[]`; /code-review measured a short-name prefix (`Colo`) answering the
+    /// sort through the CLI. The `t9r.fx.Col` row passes either way; it pins the
+    /// boundary, as `t9r.fx` not reaching `t9r.fxy` does.
+    #[test]
+    fn kb_sorts_filters_by_namespace() {
+        let mut interp = load_stdlib_and_source(
+            "namespace t9r.fx\n  sort Color\n    entity red\n  end\nend\n\
+             namespace t9r.fxy\n  sort Shape\n    entity circle\n  end\nend\n",
+        );
+        let some_sym = interp
+            .kb()
+            .try_resolve_symbol("anthill.prelude.Option.some")
+            .expect("Option.some");
+        let value_field = interp.kb_mut().intern("value");
+        let mut sorts_in = |ns: &str| -> Vec<String> {
+            let arg = Value::Entity {
+                functor: some_sym,
+                pos: Vec::new().into(),
+                named: vec![(value_field, Value::Str(ns.to_string()))].into(),
+            };
+            let listed = interp
+                .call("anthill.reflect.KB.sorts", &[Value::Unit, arg])
+                .expect("sorts");
+            let mut names: Vec<String> = list_values(&interp, listed)
+                .iter()
+                .map(|info| {
+                    let name = entity_field(&interp, info, "name").expect("SortInfo.name");
+                    let sym = interp.kb().value_symbol(&name).expect("a sort reference");
+                    interp.kb().qualified_name_of(sym).to_string()
+                })
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(
+            sorts_in("t9r.fx"),
+            vec!["t9r.fx.Color"],
+            "the namespace, not its sibling"
+        );
+        assert_eq!(
+            sorts_in("t9r"),
+            vec!["t9r.fx.Color", "t9r.fxy.Shape"],
+            "beneath the namespace too"
+        );
+        assert!(
+            sorts_in("t9r.fx.Col").is_empty(),
+            "a name prefix is not a namespace"
+        );
+        assert!(sorts_in("Colo").is_empty(), "nor is a SHORT-name prefix");
     }
 
     #[test]
@@ -1650,8 +1528,8 @@ end
     /// divergence was found.
     #[test]
     fn nonvar_and_ground_answer_by_content_not_carrier() {
-        use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
-        use anthill_core::span::{SourceId, SourceSpan};
+        use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+        use crate::span::{SourceId, SourceSpan};
 
         let mut interp = load_stdlib_and_source(
             r#"
@@ -1728,7 +1606,7 @@ end
             (
                 "Value::Node literal occurrence",
                 Value::Node(NodeOccurrence::new_expr(
-                    Expr::Const(anthill_core::kb::term::Literal::Int(7)),
+                    Expr::Const(crate::kb::term::Literal::Int(7)),
                     span,
                     None,
                 )),
@@ -1814,125 +1692,14 @@ end
         );
     }
 
-    /// WI-SPGBP — the two builtin registries must stay DISJOINT.
-    ///
-    /// `register_reflect_builtins` had ZERO callers outside this module's own tests until
-    /// WI-SPGBP wired it into `runner::register_runtime`, which is what makes an overlap
-    /// matter now. [`Interpreter::register_builtin`] is a plain map insert — LAST WINS —
-    /// and this module registers AFTER the standard set, so any qualified name bound by
-    /// both would have `anthill-core`'s production implementation silently replaced by
-    /// this module's. WI-759 found exactly that for `anthill.reflect.field_access` and
-    /// removed it from here; the comment at that removal says the arrangement "was
-    /// harmless only because nothing but this file's own tests ever called
-    /// `register_reflect_builtins`" — the condition this ticket ends.
-    ///
-    /// So the property is MEASURED rather than asserted: each registry is installed on
-    /// its own interpreter and the two key sets are intersected. A newly added builtin
-    /// that collides fails here by NAME, before it can shadow anything.
-    ///
-    /// WHAT FAILS WHEN BACKED OUT: re-add `field_access` to
-    /// [`register_reflect_builtins`] and this test names it.
-    #[test]
-    fn the_two_builtin_registries_are_disjoint() {
-        use std::collections::HashSet;
-
-        // Compared by QUALIFIED NAME, not by `Symbol`, and that is what makes two
-        // separately-built KBs safe here. A `Symbol` is an index into ONE table, so
-        // intersecting symbols minted by two `KnowledgeBase::new()`s would answer from
-        // whatever the indices happened to collide on — empty or not, for a reason that
-        // has nothing to do with the question. The name is the identity both registries
-        // actually key on (`register_if_present` takes a `&str`), so it is the identity
-        // the disjointness is stated in.
-        let core_only = {
-            let mut i = load_stdlib_bare();
-            eval::builtins::register_standard_builtins(&mut i).expect("core builtins");
-            i.registered_builtin_symbols()
-                .into_iter()
-                .map(|s| i.kb().qualified_name_of(s).to_string())
-                .collect::<HashSet<_>>()
-        };
-        let reflect_only = {
-            let mut i = load_stdlib_bare();
-            register_reflect_builtins(&mut i).expect("reflect builtins");
-            i.registered_builtin_symbols()
-                .into_iter()
-                .map(|s| i.kb().qualified_name_of(s).to_string())
-                .collect::<HashSet<_>>()
-        };
-
-        assert!(
-            !core_only.is_empty() && !reflect_only.is_empty(),
-            "both registries must actually register something, or the intersection is \
-             empty for the wrong reason (core {}, reflect {})",
-            core_only.len(),
-            reflect_only.len()
-        );
-
-        let mut overlap: Vec<&String> = core_only.intersection(&reflect_only).collect();
-        overlap.sort();
-        assert!(
-            overlap.is_empty(),
-            "these qualified names are bound by BOTH registries, and `register_runtime` \
-             installs the reflect set second, so each would silently replace \
-             anthill-core's implementation: {overlap:?}"
-        );
-    }
-
-    /// The stdlib on a fresh interpreter with NO builtins registered — the starting
-    /// point for measuring one registry in isolation.
-    fn load_stdlib_bare() -> Interpreter {
-        let refs: Vec<_> = STDLIB_PARSED.iter().collect();
-        let mut kb = KnowledgeBase::new();
-        load::load_all(&mut kb, &refs, &NullResolver).unwrap_or_else(|errs| {
-            for e in load::LoadError::render_all(&errs) {
-                eprintln!("{e}");
-            }
-            panic!("load failed");
-        });
-        Interpreter::new(kb)
-    }
-
-    /// WI-759 — this module must NOT re-register `anthill.reflect.field_access`.
-    /// `register_builtin` is a plain map insert (LAST WINS) and `register_reflect_builtins`
-    /// runs after the standard set, so a duplicate here silently shadows the production
-    /// implementation for any driver that installs both. This test installs both in that
-    /// order — the exact configuration that would have been shadowed — and asserts the
-    /// PRODUCTION contract still answers: a `Value::Entity` receiver and a `String`
-    /// selector, which the retired duplicate (`expect_term` + `expect_symbol`) rejected on
-    /// both counts.
-    #[test]
-    fn field_access_is_not_shadowed_by_this_module() {
-        let mut interp = load_stdlib_and_source(
-            r#"
-namespace test.reflect_field
-  sort Point
-    entity pt(x: Int64, y: Int64)
-  end
-end
-"#,
-        );
-        let pt_sym = interp
-            .kb()
-            .try_resolve_symbol("test.reflect_field.Point.pt")
-            .expect("pt symbol");
-        let x_sym = interp.kb_mut().intern("x");
-        let y_sym = interp.kb_mut().intern("y");
-        let pt = Value::Entity {
-            functor: pt_sym,
-            pos: Vec::new().into(),
-            named: vec![(x_sym, Value::Int(1)), (y_sym, Value::Int(2))].into(),
-        };
-        let result = interp
-            .call(
-                dt::qualified(dt::FIELD_ACCESS),
-                &[pt, Value::Str("x".to_string())],
-            )
-            .expect("field_access must still route to the production implementation");
-        assert!(
-            matches!(result, Value::Int(1)),
-            "expected the projected field value 1, got {result:?}",
-        );
-    }
+    // WI-SPGBP's `the_two_builtin_registries_are_disjoint` and WI-759's
+    // `field_access_is_not_shadowed_by_this_module` guarded a SECOND registrar
+    // (`register_reflect_builtins`) that ran after the standard set, LAST WINS, and so
+    // shadowed any qualified name the two shared. WI-20260923-9R5HN folded that registrar
+    // into the `operation_map` registrations, so there is one registry and nothing runs
+    // second; the hazard's remaining form — two mappings of one operation in one language
+    // — is refused at LOAD (`LoadError::HostMappingDuplicate`), driven in
+    // `wi_brt4y_host_implemented_test`.
 
     #[test]
     fn sort_passthrough_ops_work() {
@@ -2087,7 +1854,7 @@ end
             .call("anthill.reflect.scope", &[sym_val.clone()])
             .expect("scope must answer on a minted Symbol");
         assert_eq!(
-            anthill_core::eval::value_functor(interp.kb(), &scope_answer)
+            crate::eval::value_functor(interp.kb(), &scope_answer)
                 .map(|f| interp.kb().local_name_of(f).to_string()),
             Some("some".to_string()),
         );
@@ -2096,7 +1863,7 @@ end
             other => panic!("expected `some(value: …)`, got {other:?}"),
         };
         assert_eq!(
-            anthill_core::eval::value_functor(interp.kb(), &inner)
+            crate::eval::value_functor(interp.kb(), &inner)
                 .map(|f| interp.kb().qualified_name_of(f).to_string()),
             Some("test.wi1016_seam".to_string()),
             "`scope` answers the DECLARING scope, not a sibling",
@@ -2394,7 +2161,7 @@ end
 
     #[test]
     fn substitution_apply_rewrites_term() {
-        use anthill_core::kb::subst::Substitution;
+        use crate::kb::subst::Substitution;
         let mut interp = load_stdlib_and_source(
             r#"
 namespace test.subst_apply
@@ -2434,7 +2201,7 @@ end
 
     #[test]
     fn substitution_bindings_enumerates_pairs() {
-        use anthill_core::kb::subst::Substitution;
+        use crate::kb::subst::Substitution;
         let mut interp = load_stdlib_and_source(
             r#"
 namespace test.subst_bindings
@@ -2496,7 +2263,7 @@ end
 
     #[test]
     fn subst_compose_chases_bare_value_var() {
-        use anthill_core::kb::subst::Substitution;
+        use crate::kb::subst::Substitution;
         let mut interp = load_stdlib_and_source(
             r#"
 namespace test.compose_var
@@ -2534,8 +2301,7 @@ end
             Value::Substitution(h) => h,
             other => panic!("expected Value::Substitution, got {other:?}"),
         };
-        let arena = interp.subst_arena();
-        let z_binding = arena.with_subst(&handle, |s| s.bindings.get(&vid_z).cloned());
+        let z_binding = handle.with_subst(|s| s.bindings.get(&vid_z).cloned());
         match z_binding.expect("z should be bound") {
             Value::Term { id: t, .. } => assert!(
                 matches!(interp.kb().get_term(t), CoreTerm::Const(Literal::Int(7))),
@@ -2546,6 +2312,123 @@ end
                 panic!("z should chase through w to 7, got {other:?} (bare Var = unfixed bug)")
             }
         }
+    }
+
+    /// WI-20260923-9R5HN — A SUBSTITUTION IS READ IN THE ARENA THAT MINTED IT, whichever
+    /// interpreter asks. This is the BRIDGE shape: the resolver reduces each rule-body
+    /// host call in its own scratch interpreter over the one KB (`run_in_bridge_interp`
+    /// takes the KB and builds a fresh interpreter), so a `Substitution` produced by one
+    /// call reaches the next in a handle minted by an interpreter that is gone. Driven
+    /// here directly: `a` mints `{?x → 7}`, the KB moves to `b`, and `b` — which holds a
+    /// DIFFERENT substitution, `{?x → 1}`, in the same slot — runs all four
+    /// `Substitution` operations on `a`'s handle.
+    ///
+    /// CONTROL, MEASURED on the pre-ticket code for `lookup` (the one of the four that was
+    /// already interpreter-mapped, reading `interp.subst_arena().with_subst(&h, …)`): it
+    /// answered `some(1)` — `b`'s binding, silently — and, with `b`'s arena left empty,
+    /// panicked `index out of bounds`. The other three read the same way, from anthill-stl.
+    #[test]
+    fn a_substitution_is_read_in_the_arena_that_minted_it() {
+        use crate::kb::subst::Substitution;
+        let mut a = load_stdlib_and_source("namespace test.subst_cross\nend\n");
+        let x = {
+            let kb = a.kb_mut();
+            let name = kb.intern("x");
+            kb.fresh_var(name)
+        };
+        let bound_to = |interp: &mut Interpreter, n: i64| {
+            let t = interp.kb_mut().alloc(CoreTerm::Const(Literal::Int(n)));
+            let mut s = Substitution::new();
+            s.bindings.insert(x, Value::term(t));
+            s
+        };
+        let from_a = bound_to(&mut a, 7);
+        let h = a.alloc_subst(from_a);
+
+        let mut b = Interpreter::new(std::mem::take(a.kb_mut()));
+        eval::builtins::register_standard_builtins(&mut b).expect("register builtins");
+        let decoy = bound_to(&mut b, 1);
+        let in_b = b.alloc_subst(decoy);
+        assert_eq!(
+            in_b.raw(),
+            h.raw(),
+            "both at slot 0 — the case that aliases"
+        );
+        drop(a);
+
+        let int_of = |b: &Interpreter, v: &Value| v.literal_int64(b.kb());
+        let payload = |b: &Interpreter, v: &Value, field: &str| -> Value {
+            let kb = b.kb();
+            v.named_keys(kb)
+                .into_iter()
+                .find(|k| kb.local_name_of(*k) == field)
+                .and_then(|k| v.named_arg(kb, k))
+                .map(|c| c.to_value())
+                .unwrap_or_else(|| panic!("no `{field}` in {v:?}"))
+        };
+
+        // lookup — `some(7)`, a's binding.
+        let looked = b
+            .call(
+                "anthill.reflect.Substitution.lookup",
+                &[Value::Substitution(h.clone()), Value::Str("x".into())],
+            )
+            .expect("lookup");
+        assert_eq!(
+            int_of(&b, &payload(&b, &looked, "value")),
+            Some(7),
+            "lookup read {looked:?}"
+        );
+
+        // apply — `?x` under a's σ is 7.
+        let x_term = b.kb_mut().alloc(CoreTerm::Var(Var::Global(x)));
+        let applied = b
+            .call(
+                "anthill.reflect.Substitution.apply",
+                &[
+                    Value::Substitution(h.clone()),
+                    Value::term(x_term),
+                    Value::Unit,
+                ],
+            )
+            .expect("apply");
+        assert_eq!(int_of(&b, &applied), Some(7), "apply read {applied:?}");
+
+        // bindings — one pair, `snd` = 7.
+        let listed = b
+            .call(
+                "anthill.reflect.Substitution.bindings",
+                &[Value::Substitution(h.clone())],
+            )
+            .expect("bindings");
+        let pair = payload(&b, &listed, "head");
+        assert_eq!(
+            int_of(&b, &payload(&b, &pair, "snd")),
+            Some(7),
+            "bindings read {listed:?}"
+        );
+
+        // compose — `a`'s σ with `b`'s own: `?x` keeps a's 7 (s1 wins where both bind),
+        // so each operand was read from its own arena.
+        let composed = b
+            .call(
+                "anthill.reflect.Substitution.compose",
+                &[
+                    Value::Substitution(h),
+                    Value::Substitution(in_b),
+                    Value::Unit,
+                ],
+            )
+            .expect("compose");
+        let x_after = match &composed {
+            Value::Substitution(c) => c.with_subst(|s| s.bindings.get(&x).cloned()),
+            other => panic!("compose answered {other:?}"),
+        };
+        assert_eq!(
+            x_after.as_ref().and_then(|v| int_of(&b, v)),
+            Some(7),
+            "compose read {x_after:?}"
+        );
     }
 
     #[test]
@@ -2563,7 +2446,7 @@ end
         );
         assert_eq!(interp.subst_arena_live_count(), 0);
 
-        use anthill_core::kb::subst::Substitution;
+        use crate::kb::subst::Substitution;
         let h = interp.alloc_subst(Substitution::new());
         assert_eq!(interp.subst_arena_live_count(), 1);
         drop(h);

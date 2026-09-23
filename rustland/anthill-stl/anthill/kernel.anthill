@@ -1,11 +1,14 @@
 -- Rust binding for anthill.kernel. Proposal 038.
 --
--- WI-20260922-BRT4Y: `struct_eq` (`===`) is the one kernel operation an OPERATION BODY
--- evaluates, so it is the one with an eval-side host function; registered by hardcoded
--- qualified name in `eval/builtins.rs` until this ticket. The kernel's other body-less
--- declarations (`unify`, `not`, `push_choice`, `domain_member`, …) are RESOLVER
--- primitives the bootstrap supplies (`register_prelude`), not host functions, so they
--- have no `operation_map` entry and claim no `@[host_implemented]`.
+-- WI-20260922-BRT4Y: `struct_eq` (`===`) is a kernel operation an OPERATION BODY
+-- evaluates, so it has an eval-side host function; registered by hardcoded qualified
+-- name in `eval/builtins.rs` until that ticket. `not` is the other (WI-20260923-9R5HN):
+-- `anthill.kernel.not(q)` over a reified goal runs a one-shot NAF search, registered by
+-- qualified name in anthill-stl until this block named it. Both keep their RESOLVER
+-- primitive — the goal reading, `BuiltinTag::Eq` / `BuiltinTag::Not` — which this
+-- mapping does not touch. The kernel's remaining body-less declarations (`unify`,
+-- `push_choice`, `domain_member`, …) are resolver primitives only, with no eval face, so
+-- they have no `operation_map` entry and claim no `@[host_implemented]`.
 --
 -- NAMESPACE-LEVEL, like most of `anthill.reflect`'s surface: see that binding for why a
 -- namespace is a legitimate `operation_map` target (the clause says which host function
@@ -15,6 +18,12 @@ namespace anthill.kernel
     artifact "rustland/anthill-core/src/eval/builtins.rs"
     operation_map {
       struct_eq: "kernel_struct_eq"
+    }
+  end
+  provides anthill.kernel language rust
+    artifact "rustland/anthill-core/src/eval/reflect_builtins.rs"
+    operation_map {
+      not: "kernel_not"
     }
   end
 end

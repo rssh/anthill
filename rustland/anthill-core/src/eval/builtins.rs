@@ -33,6 +33,7 @@
 
 use std::rc::Rc;
 
+use super::reflect_builtins as rb;
 use super::value::Dictionary;
 use super::{EvalError, Interpreter, Value};
 use crate::kb::resolve::TermUnification;
@@ -371,6 +372,46 @@ const HOST_FNS: &[(
     ("opref_named", 1, opref_named),
     ("opref_spread_labels", 1, opref_spread_labels),
     ("opref_op_requirements", 1, opref_op_requirements),
+    // WI-20260923-9R5HN — THE REFLECT SET anthill-stl registered by qualified name
+    // (`register_reflect_builtins`), the registrar BRT4Y could not reach: its functions
+    // lived in that crate and closed over symbols resolved after load. They live in
+    // `reflect_builtins` now and resolve those symbols per call; the binding blocks are
+    // `rustland/anthill-stl/anthill/reflect.anthill` and `kernel.anthill`.
+    //
+    // The namespace-level symbol and term-shape ops. Eight of them also carry a resolver
+    // `BuiltinTag` (their GOAL reading); these are the VALUE reading, as for `struct_eq`.
+    ("reflect_qualified_name", 1, rb::qualified_name),
+    ("reflect_short_name", 1, rb::short_name_op),
+    ("reflect_lookup_symbol", 1, rb::lookup_symbol_op),
+    ("reflect_scope", 1, rb::scope_op),
+    ("reflect_kind", 1, rb::kind_op),
+    ("reflect_nonvar", 1, rb::nonvar_op),
+    ("reflect_ground", 1, rb::ground_op),
+    ("reflect_sort_as_term", 1, rb::sort_as_term),
+    ("reflect_can_be_sort", 1, rb::can_be_sort),
+    ("reflect_term_as_sort", 1, rb::term_as_sort),
+    (
+        "reflect_resolve_sort_instantiation_param",
+        2,
+        rb::resolve_sort_instantiation_param,
+    ),
+    // `KB`'s introspection readers and the term <-> `TermRepr` bridge.
+    ("kb_sorts", 2, rb::kb_sorts),
+    ("kb_operations", 2, rb::kb_operations),
+    ("kb_constructors", 2, rb::kb_constructors),
+    ("kb_fields", 2, rb::kb_fields),
+    ("kb_rules", 2, rb::kb_rules),
+    ("kb_descriptions", 2, rb::kb_descriptions),
+    ("kb_sort_template", 2, rb::kb_sort_template),
+    ("kb_reify", 2, rb::kb_reify),
+    ("kb_reflect", 2, rb::kb_reflect),
+    // `Substitution`'s other three, beside `subst_lookup` above.
+    ("subst_apply", 3, rb::subst_apply),
+    ("subst_compose", 3, rb::subst_compose),
+    ("subst_bindings", 1, rb::subst_bindings),
+    // `anthill.kernel.not`'s EVAL face — a reified goal, answered by a one-shot NAF
+    // search. The rule-body `not(...)` is the resolver primitive and never reaches it.
+    ("kernel_not", 1, rb::kernel_not),
 ];
 
 /// The function `key` names, from EITHER half of the registry: this runtime's own
@@ -589,27 +630,12 @@ fn register_const_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
     Ok(())
 }
 
-/// Register a builtin if its qualified name resolves in the KB, and silently skip one
-/// that does not (`UnknownOperation`).
-///
-/// WI-20260922-BRT4Y — NO LONGER CALLED IN THIS MODULE: every host implementation the
-/// core runtime ships is an [`HOST_FNS`] entry named by a binding block, visible to
-/// `is_interpreter_mapped_op` and held to the declaration's `@[host_implemented]` claim.
-/// `anthill-stl`'s reflect set (`register_reflect_builtins`) is the remaining caller, and
-/// it is the known gap: those registrations are invisible to both, their operations are
-/// unmarked, and a KB missing their declarations skips them silently. Its functions close
-/// over resolved reflect symbols and live outside this crate, so they cannot become
-/// `HOST_FNS` rows as they stand.
-pub fn register_if_present<F>(interp: &mut Interpreter, qname: &str, f: F) -> Result<(), EvalError>
-where
-    F: Fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError> + 'static,
-{
-    match interp.register_builtin(qname, f) {
-        Ok(()) => Ok(()),
-        Err(EvalError::UnknownOperation { .. }) => Ok(()),
-        Err(other) => Err(other),
-    }
-}
+// WI-20260923-9R5HN — `register_if_present` (register a builtin if its qualified name
+// resolves, silently skip it if not) is GONE. Its last caller was anthill-stl's reflect
+// set; those functions are `HOST_FNS` rows now, so every host implementation this
+// runtime ships is named by a binding block, visible to `is_interpreter_mapped_op`, and
+// held to its declaration's `@[host_implemented]` claim — and there is no registration
+// path left whose failure mode is silence.
 
 /// WI-279 INC1b: eval-side `field_access` — the runtime twin of the SLD
 /// `field_access` builtin (`BuiltinTag::FieldAccess`). The typer rewrites a
@@ -4635,7 +4661,7 @@ fn reads_as_term(kb: &crate::kb::KnowledgeBase, v: &Value) -> bool {
 /// keep rather than an omission: `Ref(nil)` and a stored `Fn{nil,[],[]}` are two
 /// spellings of one thing (WI-511 / WI-20260902-CZJ2N) and `ViewHead::nullary` already
 /// collapses them, so the terminator needs one test here and two there.
-fn view_list_items(kb: &crate::kb::KnowledgeBase, v: &Value) -> Option<Vec<Value>> {
+pub(super) fn view_list_items(kb: &crate::kb::KnowledgeBase, v: &Value) -> Option<Vec<Value>> {
     use crate::kb::term_view::ViewHead;
     let mut items: Vec<Value> = Vec::new();
     let mut cur = v.clone();
@@ -5304,10 +5330,10 @@ fn reflect_make_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
 /// Precondition: the reflect meta-constructors (`Expr.dot_apply`, `ListLiteral`,
 /// `Pattern.*`, …) `try_occurrence_to_term` resolves must be interned — the same
 /// prelude-loaded-KB precondition its existing callers rely on
-/// (`node_occurrence.rs`). This holds whenever the builtin is reachable:
-/// `register_if_present` only registers it once `anthill.reflect.occurrence_term`
-/// resolves, and that name is scanned together with its sibling constructors from
-/// the one `reflect.anthill` module.
+/// (`node_occurrence.rs`). This holds whenever the builtin is reachable: it is
+/// registered only against a loaded `operation_map` entry for
+/// `anthill.reflect.occurrence_term`, and that name is scanned together with its
+/// sibling constructors from the one `reflect.anthill` module.
 fn reflect_occurrence_term(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     use crate::kb::term::Term;
     let [occ_arg] = expect_args::<1>("occurrence_term", args)?;
@@ -5740,10 +5766,7 @@ fn reflect_meta_value(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
 /// substitution. `apply` / `compose` still need kb (term-store walks).
 fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [subst_val, name_val] = expect_args::<2>("Substitution.lookup", args)?;
-    let handle = match subst_val {
-        Value::Substitution(h) => h,
-        other => return Err(type_mismatch("Substitution", &other, None)),
-    };
+    let handle = rb::expect_subst(&subst_val, "Substitution.lookup")?;
     let name = str_operand(interp.kb(), &name_val)?.into_owned();
 
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
@@ -5755,8 +5778,8 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
     // truncated exactly as `print_solutions` did: a var bound by a rule-body
     // BUILTIN sits behind an uncompressed link, so anthill code asking for a field
     // binding got back `some(<an unbound var>)` — a `some` that looks like an
-    // answer. `subst_arena()` exists for this shape (its doc: borrow a
-    // substitution through the arena "while also mutably borrowing `kb`").
+    // answer. The HANDLE carries its arena, so the borrow is decoupled from
+    // `interp.kb` without a detour through the interpreter.
     //
     // KNOWN, PRE-EXISTING, AND NOT WIDENED HERE: the NAME scan is `s.iter()`,
     // which is this level's bindings only, while `answer_binding`'s read walks the
@@ -5765,14 +5788,17 @@ fn subst_lookup(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
     // doc above already records that it resolves loosely (first match, hash order).
     // Making the scan walk parents would change which binding a live consumer
     // (anthill-todo's `pattern_query`) finds, and that wants its own measurement.
-    let arena = interp.subst_arena();
-    let found: Option<crate::kb::term::VarId> = arena.with_subst(&handle, |s| {
+    //
+    // WI-20260923-9R5HN — read through the HANDLE, not `interp`'s arena: this
+    // operation is interpreter-mapped, so a rule-body operand reduces it in a scratch
+    // bridge interpreter that did not mint the substitution (`SubstHandle::with_subst`).
+    let found: Option<crate::kb::term::VarId> = handle.with_subst(|s| {
         s.iter()
             .find(|(vid, _)| interp.kb.local_name_of(vid.name()) == name)
             .map(|(vid, _)| *vid)
     });
     let bound: Option<Value> =
-        found.and_then(|vid| arena.with_subst(&handle, |s| interp.kb_mut().answer_binding(vid, s)));
+        found.and_then(|vid| handle.with_subst(|s| interp.kb_mut().answer_binding(vid, s)));
 
     match bound {
         Some(value) => Ok(Value::Entity {
@@ -6182,16 +6208,16 @@ fn opref_op_requirements(interp: &mut Interpreter, args: &[Value]) -> Result<Val
 /// (the `KB.execute` convention) — unification runs on the interpreter's KB.
 fn reflect_unify(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a_val, b_val, _kb_arg] = expect_args::<3>("reflect.unify", args)?;
-    // A reflect `Term` rides as `Value::Term(TermId)`; a non-`Term` carrier is a
-    // type error here (loud, not a silent mismatch).
-    let a = match &a_val {
-        Value::Term { id: t, .. } => *t,
-        _ => return Err(type_mismatch("Term", &a_val, None)),
-    };
-    let b = match &b_val {
-        Value::Term { id: t, .. } => *t,
-        _ => return Err(type_mismatch("Term", &b_val, None)),
-    };
+    // WI-20260923-9R5HN — each operand BY CONTENT, through the one faithful
+    // `Value → Term` boundary. It matched `Value::Term` alone, and `as_term` is the
+    // identity, so the operation refused the `Term` its own sibling hands it: MEASURED,
+    // `unify(as_term(7), as_term(7), kb())` died "expected Term, got Int64" in an
+    // operation body and "got Node" at a rule-body operand — which made `unify`, the one
+    // producer of a `Substitution`, unreachable from a rule. A carrier with no term form
+    // (a closure, a runtime handle) is still a loud type error. Lowered — interned —
+    // because unification is over terms: the substitution it returns binds into them.
+    let a = rb::expect_term(&mut interp.kb, &a_val, "reflect.unify")?;
+    let b = rb::expect_term(&mut interp.kb, &b_val, "reflect.unify")?;
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");

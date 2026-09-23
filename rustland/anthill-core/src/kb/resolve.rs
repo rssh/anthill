@@ -6395,7 +6395,7 @@ impl KnowledgeBase {
     /// both read through [`TermView`] — no reify.
     ///
     /// WI-913: THE OTHER BACKING of `anthill.reflect.lookup_symbol`. The eval side
-    /// (`anthill-stl/src/reflect/builtins.rs::lookup_symbol_op`) answers the same
+    /// (`eval/reflect_builtins.rs::lookup_symbol_op`) answers the same
     /// declared operation for a caller in expression position, so the two must ask
     /// one question — the WI-984 rule, learned when `scope` had two backings and no
     /// shared answer. Both now read [`KnowledgeBase::resolve_name_in_global`], where

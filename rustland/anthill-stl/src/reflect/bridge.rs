@@ -8,8 +8,8 @@ use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 
 use crate::prelude::{Modifiable, Stream, Type};
-use crate::reflect::reader;
 use crate::reflect::*;
+use anthill_core::kb::reflect_reader as reader;
 
 // ── Boundary helpers (WI-540) ───────────────────────────────────
 //
@@ -1865,7 +1865,7 @@ sort Store {
         }
         // WI-982: the `Value::Var` rows this test used to carry
         // (`bridge.nonvar` / `bridge.ground`) moved to
-        // `builtins::tests::nonvar_and_ground_answer_by_content_not_carrier`,
+        // anthill-core's `eval::reflect_builtins::tests::nonvar_and_ground_answer_by_content_not_carrier`,
         // which drives the ONE owner through the registered host op. The bridge
         // no longer answers those two questions at all.
     }
