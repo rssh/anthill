@@ -995,7 +995,7 @@ use the kernel but are neither additional native constructs nor §6 sugar.
 
 The unit of encapsulation and independent evolution. A namespace scopes sorts, entities, operations, and rules. Namespaces can be nested.
 
-**Dotted names desugar to nested namespaces.** When any declaration (`sort`, `namespace`, `entity`, `operation`) uses a dotted name, each dot-separated prefix segment becomes an implicit namespace if one does not already exist. The item itself is defined by its last segment (short name) in the innermost scope.
+Dotted names desugar to nested namespaces. When any declaration (`sort`, `namespace`, `entity`, `operation`) uses a dotted name, each dot-separated prefix segment becomes an implicit namespace if one does not already exist. The item itself is defined by its last segment (short name) in the innermost scope.
 
 ```
 -- This declaration:
