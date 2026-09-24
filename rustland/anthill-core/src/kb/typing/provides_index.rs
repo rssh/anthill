@@ -125,9 +125,9 @@ pub(crate) struct ProvidesIndex {
     /// base)` edges out of it, which is what [`provides_out_edges`] recomputes per hop of
     /// every transitive `sort_provides` walk. Two other buckets over the same facts would
     /// be redundant; this is not, because the cost it removes is the DECODE
-    /// (`fact_head_named_args` + two `get_named_arg`s + `sort_ref_functor` +
-    /// `provides_spec_base_sym` + two `canonical_sym` string hashes per fact), not the
-    /// bucket lookup. Built in the SAME pass, by calling the very decode
+    /// (the [`ProvidesRow`] decode — `fact_head_named_args`, two `get_named_arg`s,
+    /// `sort_ref_functor`, the spec view's base — and two `canonical_sym` string hashes per
+    /// fact), not the bucket lookup. Built in the SAME pass, by calling the very decode
     /// `provides_out_edges` uses, so the memo is that function computed once rather than a
     /// second spelling of it that could drift.
     ///
@@ -226,14 +226,15 @@ pub(super) fn provides_rids_by_carrier_canon(
 /// has no term head and is not a row, as it was no row to any reader before: occurrence-
 /// based provides lookup is gated effect-expressions-as-types work.
 ///
-/// TWO DECODES STAY APART, because merging either one changes an answer:
+/// ONE DECODE STAYS APART, because merging it changes an answer:
 ///   * [`Self::provider`] is `sort_ref_functor`'s, which prefers a `sort_ref(name: …)` child;
 ///     two dispatch readers read the bare head instead — [`Self::sort_ref_head`].
-///   * [`Self::spec_base`] is [`unwrap_spec_view`]'s. `crate::kb::load::provides_spec_base_sym`
-///     also reads a DOTLESS `SortView` functor (a top-level `sort SortView`) as the view
-///     wrapper, so its readers keep re-decoding the base from [`Self::spec_view`]. Every row
-///     `unwrap_spec_view` refuses, that decode refuses too (the dotted-suffix test is one
-///     half of its last-segment test), so such a reader skips exactly the rows it skipped.
+///
+/// The SPEC BASE was the other until WI-20260923-32XFQ: `crate::kb::load::provides_spec_base_sym`
+/// took a user sort named `SortView` for the reflect wrapper by its last segment, where
+/// [`unwrap_spec_view`] took `anything.SortView` by its suffix, and four readers re-decoded
+/// the base to keep the difference. Both now ask [`is_sort_view_functor`], which asks by
+/// identity, so [`Self::spec_base`] is the base every reader reads.
 #[derive(Clone, Debug)]
 pub(super) struct ProvidesRow {
     pub(super) rid: crate::kb::RuleId,
@@ -516,18 +517,17 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
                 );
                 let carrier_canon = kb.canonical_sort_sym(carrier);
                 by_carrier.insert(carrier_canon, rid);
-                // WI-864: the out-edge, decoded once. `provides_spec_base_sym` and NOT the
-                // `unwrap_spec_view` above, because this memoizes `provides_out_edges` —
-                // whose spec decode is that one. The two agree on every shape the loader
-                // emits, but "agree today" is not the invariant a memo may rest on: using
-                // the consumer's own decode makes the memo the function, not a lookalike.
-                if let Some(dst) = get_named_arg(kb, &named, "spec")
-                    .and_then(|t| crate::kb::load::provides_spec_base_sym(kb, t))
-                {
+                // WI-864: the out-edge, decoded once — and through the ROW decoder
+                // `provides_out_edges`' live arm reads ([`ProvidesRow`]), because a memo
+                // built from the consumer's own decode is that function computed once, not a
+                // lookalike of it that could drift. (Until WI-20260923-32XFQ the two read the
+                // spec base through two decoders that disagreed about a user sort named
+                // `SortView`; there is one now, and this reads it.)
+                if let Some(row) = decode_provides_row(kb, rid, |_| true) {
                     carrier_edges
                         .entry(carrier_canon)
                         .or_default()
-                        .push((rid, kb.canonical_sort_sym(dst)));
+                        .push((rid, kb.canonical_sort_sym(row.spec_base)));
                 }
             }
         }

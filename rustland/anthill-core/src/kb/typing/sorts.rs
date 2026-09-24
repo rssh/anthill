@@ -1487,19 +1487,14 @@ pub(super) fn provides_out_edges(kb: &KnowledgeBase, node_canon: Symbol) -> Smal
             .unwrap_or_default();
     }
     // No index (the load-time windows where the relation is being written): decode live.
-    // This is the definition the memo above is built from. A row is a FACT, as
-    // `build_provides_index` buckets only facts; and the base is `provides_spec_base_sym`'s,
-    // the memo's own — every row [`ProvidesRow`]'s own base decode refuses, that one refuses
-    // too, so the rows the memo files and the rows this reads are the same rows.
+    // This is the definition the memo above is built from — a provision ROW ([`ProvidesRow`]),
+    // as `build_provides_index` files the memo from the same decode.
     let mut out: SmallVec<[Symbol; 4]> = SmallVec::new();
     for row in provides_rows_of_provider_canon(kb, node_canon) {
-        let Some(s) = crate::kb::load::provides_spec_base_sym(kb, row.spec_view) else {
-            continue;
-        };
         // CANONICAL out-edges: the sole caller compares them canonically and recurses on
         // them (where the recursion would canonicalize anyway), so canonicalizing at the
         // producer is the same relation with the conversion done once.
-        out.push(kb.canonical_sort_sym(s));
+        out.push(kb.canonical_sort_sym(row.spec_base));
     }
     out
 }

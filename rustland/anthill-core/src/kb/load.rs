@@ -18236,14 +18236,15 @@ pub(crate) fn sort_ref_functor(kb: &KnowledgeBase, term: TermId) -> Option<Symbo
 }
 
 /// Extract the spec sort symbol from a `SortProvidesInfo.spec` term:
-/// the base of a `SortView(Spec, …)` wrapper, or a bare spec ref.
+/// the base of a `SortView(Spec, …)` wrapper, or a bare spec ref. The wrapper is the reflect
+/// one BY IDENTITY ([`super::typing::is_sort_view_functor`]) — a user sort named `SortView`
+/// is a spec like any other.
 pub(crate) fn provides_spec_base_sym(kb: &KnowledgeBase, spec: TermId) -> Option<Symbol> {
     match kb.get_term(spec) {
         Term::Fn {
             functor, pos_args, ..
         } => {
-            let f_short = last_segment(kb.qualified_name_of(*functor));
-            if f_short == "SortView" {
+            if super::typing::is_sort_view_functor(kb, *functor) {
                 let base = pos_args.first().copied()?;
                 match kb.get_term(base) {
                     Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => {
@@ -18281,7 +18282,7 @@ fn resolve_provides_spec(
             functor,
             named_args,
             ..
-        } if last_segment(kb.qualified_name_of(*functor)) == "SortView" => {
+        } if super::typing::is_sort_view_functor(kb, *functor) => {
             sort_view_substitution(kb, named_args)
         }
         _ => Vec::new(),
@@ -18523,9 +18524,9 @@ pub fn flatten_spec(kb: &KnowledgeBase, term: TermId) -> Option<String> {
         } => (*functor, pos_args.clone(), named_args.clone()),
         _ => return None,
     };
-    let functor_name = kb.local_name_of(functor);
-    let functor_short = functor_name.rsplit('.').next().unwrap_or(functor_name);
-    if functor_short != "SortView" {
+    if !super::typing::is_sort_view_functor(kb, functor) {
+        let functor_name = kb.local_name_of(functor);
+        let functor_short = functor_name.rsplit('.').next().unwrap_or(functor_name);
         return Some(functor_short.to_owned());
     }
     let base_short = match pos_args.first().map(|t| kb.get_term(*t)) {

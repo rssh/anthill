@@ -527,12 +527,11 @@ pub(crate) fn directly_provided_specs(
 ) -> SmallVec<[Symbol; 4]> {
     let mut out: SmallVec<[Symbol; 4]> = SmallVec::new();
     for row in provides_rows_of_provider(kb, carrier_sym) {
-        // `provides_spec_base_sym`, not `row.spec_base` — see [`ProvidesRow`].
-        let Some(spec_sym) = crate::kb::load::provides_spec_base_sym(kb, row.spec_view) else {
-            continue;
-        };
-        if !out.iter().any(|&s| same_sort_canonical(kb, s, spec_sym)) {
-            out.push(spec_sym);
+        if !out
+            .iter()
+            .any(|&s| same_sort_canonical(kb, s, row.spec_base))
+        {
+            out.push(row.spec_base);
         }
     }
     out

@@ -147,10 +147,7 @@ pub(super) fn find_spec_op_for_provided_sort(
     // bucket — the carrier index's `by_carrier` bucket for `recv_sort` would drop it. Nor is it spec-keyed
     // (it collects EVERY spec `recv_sort` provides). So the full scan is required.
     for row in provides_rows(kb) {
-        // `provides_spec_base_sym`, not `row.spec_base` — see [`ProvidesRow`].
-        let Some(spec_sym) = crate::kb::load::provides_spec_base_sym(kb, row.spec_view) else {
-            continue;
-        };
+        let spec_sym = row.spec_base;
         // Carrier-keyed: the receiver's sort IS the provider — `(3).min(5)` →
         // `Ord.min` via `fact Ord[Int]`. WI-672: canonical sort identity (see
         // `same_sort_canonical`), not `same_symbol`'s last-segment bridge.

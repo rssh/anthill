@@ -1154,15 +1154,11 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
 /// Every `anthill.reflect.SortProvidesInfo` fact, as [`Provision`] rows.
 fn collect_provisions(kb: &KnowledgeBase) -> Vec<Provision> {
     provides_rows(kb)
-        .filter_map(|row| {
-            // `provides_spec_base_sym`, not `row.spec_base` — see [`ProvidesRow`].
-            let spec = crate::kb::load::provides_spec_base_sym(kb, row.spec_view)?;
-            Some(Provision {
-                carrier: row.provider,
-                spec,
-                spec_view: row.spec_view,
-                rid: row.rid,
-            })
+        .map(|row| Provision {
+            carrier: row.provider,
+            spec: row.spec_base,
+            spec_view: row.spec_view,
+            rid: row.rid,
         })
         .collect()
 }

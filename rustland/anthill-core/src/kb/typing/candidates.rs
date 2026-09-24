@@ -694,20 +694,31 @@ fn provision_path_subst(
     None
 }
 
-/// Is `functor` the `SortView` wrapper — `anthill.reflect.SortView`, or a `.SortView`
-/// re-export of it? The ONE discriminant for "this spec term is a view, whose positional 0
-/// is the base" (WI-20260923-N3W68 #9).
+/// Is `functor` THE reflect view wrapper `anthill.reflect.SortView`? The ONE discriminant
+/// for "this stored spec term is a view, whose positional 0 is the base" (WI-20260923-N3W68
+/// #9) — for the typer and the loader's provision decoders (`provides_spec_base_sym`,
+/// `flatten_spec`, `resolve_provides_spec`) alike.
 ///
-/// It was spelled at each site that asked: this exact-or-dotted-suffix test inline at five
-/// sites and again inside [`view_is_sort_view`]; a dotless `ends_with("SortView")` in
-/// `check_provider_requires`, which a spec named `MySortView` also passes — its first
-/// positional would then be skipped as the "base"; and the canonical-symbol compare
-/// `normalize_op_requires_entry` made. A census of the dotless outlier found no program
-/// reaching it (every provision's spec view is the loader's own `SortView`), so unifying
-/// changes no answer a corpus reads.
-pub(super) fn is_sort_view_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
-    let qn = kb.qualified_name_of(functor);
-    qn == "anthill.reflect.SortView" || qn.ends_with(".SortView")
+/// NOT for the reflect builtins that read an instance a PROGRAM builds
+/// (`extract_sort_ref`, `resolve_sort_instantiation_param`): they keep reading the LOCAL
+/// NAME, because their input is a reflective value whose author may spell the wrapper
+/// unqualified — `SortView(Eq, T = Int64)` interned bare, which is how their own tests
+/// build it. The provision relation's `spec` field is minted by the loader with the reflect
+/// symbol itself, so for it identity is exact.
+///
+/// BY IDENTITY, NOT BY NAME (WI-20260923-32XFQ). The qualified name compared EXACTLY, so a
+/// copy of the symbol interned in another scope still answers — and a USER sort that
+/// happens to be called `SortView` does not. It used to be asked by name at every site: a
+/// dotted suffix here (`anything.SortView`, admitted as a "re-export" nothing writes), the
+/// last segment in the loader (which also takes a top-level `SortView`), the local name in
+/// the builtins. A spec its author called `SortView` was then read as the wrapper, its
+/// "base" looked for in a positional slot a bare spec has none of, and its provision
+/// decoded as NOTHING — MEASURED, `Widget provides SortView` hid a defaulted member from
+/// `widget(n: 1).describe()`, namespaced or not (`wi_32xfq_found_divergences_test`). N3W68
+/// had already unified the typer's five spellings on the suffix; the census it ran could not
+/// see this, because no corpus names a sort `SortView`.
+pub(crate) fn is_sort_view_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    kb.qualified_name_of(functor) == "anthill.reflect.SortView"
 }
 
 /// Unwrap a `SortView(base, …named)` term into `(base_sort_sym,
