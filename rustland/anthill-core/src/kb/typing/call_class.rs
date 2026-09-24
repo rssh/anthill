@@ -386,6 +386,31 @@ pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), 
                      than one could have been. Reach the operation through a typed call \
                      whose carrier type writes the slot, where the typer pins it."
                 ),
+                // WI-20260922-ATFGH — recorded only at its own slot, and by every
+                // value-only route, so the sentence names all three rather than guessing
+                // which one this was.
+                UnavailableWhy::ParamSlotNotCarried { param, binder } => {
+                    let slot = format!(
+                        "{}.{}",
+                        kb.local_name_of(*param),
+                        kb.local_name_of(*binder),
+                    );
+                    format!(
+                        "this is the `{slot_qn}` slot `{slot}`: parameter `{p}`'s type \
+                         leaves `{b}` unwritten, so its dictionary is the ARGUMENT's own. This \
+                         operation was entered with argument VALUES only (a host entry, a \
+                         rule body, or a value-directed dispatch), and a value carries its \
+                         sort but none of its type arguments — so the provider the \
+                         argument's construction chose for `{b}` cannot be read here, and \
+                         the arguments fix no single provider of its goal, so picking one \
+                         would answer for this signature rather than for the value. A host \
+                         that knows it names the witness: `call_with_witnesses` with \
+                         `SlotWitness {{ param: \"{p}\", slot: \"{b}\", witness: \
+                         <provider> }}`; otherwise reach the operation through a typed call.",
+                        p = kb.local_name_of(*param),
+                        b = kb.local_name_of(*binder),
+                    )
+                }
             }
         }
     };

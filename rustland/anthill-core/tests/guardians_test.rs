@@ -2119,29 +2119,26 @@ fn corroborators_are_derived_from_data_not_asserted() {
 // it — over a candidate program and assert the VERDICT. Repo CLAUDE.md: "a test
 // for a capability must DRIVE the capability".
 
-/// The interpreter the checker runs in: the trusted base, both builtin registries.
+/// The interpreter the checker runs in: the trusted base and the runtime registry.
 ///
-/// `register_reflect_builtins` is not optional and not test scaffolding — it is what
-/// `anthill-stl`'s `runner::register_runtime` calls in the CLI and in every embedder
-/// (WI-SPGBP). `lib/gate.anthill` calls `qualified_name`, which lives only there, so an
-/// interpreter without it would run this example against a SMALLER reflect surface than
-/// production has and the gate would die `OperationBodyMissing`.
+/// `lib/gate.anthill` calls `qualified_name`. That used to live only in anthill-stl's
+/// second registrar (`register_reflect_builtins`, WI-SPGBP), so this helper installed both
+/// to match production. WI-20260923-9R5HN made the reflect set `HOST_FNS` rows named by
+/// binding blocks: `register_standard_builtins` is the whole registry, and it is what
+/// `runner::register_runtime` calls.
 fn checker_interp() -> anthill_core::eval::Interpreter {
     let kb = try_load_with_agent(None, register_pipeline)
         .unwrap_or_else(|e| panic!("the trusted base must load: {e:#?}"));
     interp_over(kb)
 }
 
-/// BOTH REGISTRIES ON ONE KB — the sentence above, as the single place that spells the
-/// set. A second copy is how one caller ends up running against a smaller reflect
-/// surface than production has, which is exactly what that sentence warns about
-/// (/code-review, WI-20260914-Z73FX).
+/// THE RUNTIME REGISTRY ON ONE KB — the single place that spells it. When it was two
+/// registries, a second copy of this is how one caller ended up running against a
+/// smaller reflect surface than production had (/code-review, WI-20260914-Z73FX).
 fn interp_over(kb: KnowledgeBase) -> anthill_core::eval::Interpreter {
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp)
         .expect("register standard eval builtins");
-    anthill::reflect::builtins::register_reflect_builtins(&mut interp)
-        .expect("register reflect builtins");
     interp
 }
 
@@ -3575,9 +3572,10 @@ fn a_candidates_view_leaves_out_what_it_may_not_name() {
 /// THE SECOND ACCEPTANCE ROW: `term_as_sort` RUNS, against the note in
 /// `stdlib/anthill/reflect/reflect.anthill` that said it "runs NOWHERE".
 ///
-/// The note was right that `operation_map` does not name it and wrong that nothing can
-/// call it: `register_reflect_builtins` binds it, which is what the CLI and every
-/// embedder register. Driven the way a renderer would: take the type term of
+/// The note was right that `operation_map` did not name it and wrong that nothing could
+/// call it: anthill-stl's `register_reflect_builtins` bound it, which is what the CLI and
+/// every embedder registered. (WI-20260923-9R5HN since mapped it with the rest of that
+/// set.) Driven the way a renderer would: take the type term of
 /// `Email.send`'s `body` parameter out of its `OperationInfo`, decode it to a `Type`,
 /// and ask the KB what that sort offers.
 #[test]

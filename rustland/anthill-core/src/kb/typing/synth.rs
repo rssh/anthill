@@ -436,6 +436,17 @@ pub enum DefaultRung {
     Consult,
     /// The goal fills a NAMED requirement slot whose binding is not in hand.
     Withhold,
+    /// WI-20260922-ATFGH — the goal fills a named slot whose binding a VALUE already
+    /// chose and does not carry (an EE0EP slot reached with argument values only), so NO
+    /// ranking may choose: not the default, and not specificity either. `Withhold` still
+    /// lets a strictly-more-specific candidate win silently, which is 058's coherence
+    /// rule for a goal nobody chose — and wrong here, where a value built with a GENERIC
+    /// witness (`O = Rev`, `Rev provides WeakOrd[T = X]`) would be handed the more
+    /// specific `String` ordering (found by /code-review). Only a goal whose candidates
+    /// are ONE provider answers: the value's construction had to choose a provider of
+    /// this goal, and there is one. Applies to the goal it is passed for; a sub-goal
+    /// derives its own rung.
+    Unranked,
 }
 
 /// WI-861 — [`DefaultRung`] for one dependency of `owner`'s requirement chain.
@@ -774,11 +785,16 @@ pub(super) fn resolve_inner<'a>(
     // a fallback, not a competitor" — and writing it as a fallback of this `match` is what
     // makes it unstateable the other way round. `rung` is [`DefaultRung::Withhold`] where
     // the goal fills a NAMED slot, which is not silence at all.
-    let chosen = match pick_most_specific(kb, &candidates).or_else(|| {
-        (rung == DefaultRung::Consult)
-            .then(|| default_among_candidates(kb, goal, &candidates))
-            .flatten()
-    }) {
+    let ranked = if rung == DefaultRung::Unranked {
+        sole_provider(kb, &candidates)
+    } else {
+        pick_most_specific(kb, &candidates).or_else(|| {
+            (rung == DefaultRung::Consult)
+                .then(|| default_among_candidates(kb, goal, &candidates))
+                .flatten()
+        })
+    };
+    let chosen = match ranked {
         Some(idx) => &candidates[idx],
         None => {
             stack.pop();

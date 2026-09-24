@@ -1990,13 +1990,21 @@ slot is the projection `s.O` (§"How the slot is named"), so it names the
 parameter, and the *caller* reads the provider out of that argument's type, where
 it is written.  The call therefore answers with the comparator the value's own
 construction site chose, so at **a typed call site** writing `O` and leaving it out
-mean the same thing at run time.  They do **not** at the host boundary: `interp.call`
-is handed values and no types, a runtime value carries none of its type arguments
-(§4.7), and the unfilled slot falls to value-direction — which recovers the element
-type and cannot recover the witness, so both orderings answer alike.  That is
-WI-868's stand-in hole, which this rule widens the reach of rather than creates;
-a host that must choose supplies the dictionary itself
-(`Interpreter::call_with_requirements`).
+mean the same thing at run time.  A route with **no types** cannot read it:
+`interp.call` is handed values, and a runtime value carries none of its type
+arguments (§4.7).  Such a route takes the slot's spec's provider only when there
+is exactly **one** — the argument's construction had to choose a provider of that
+goal, so a unique one is exact — and never by a ranking among several (neither
+specificity nor §3.2's default rung), which answers "which provider wins" rather
+than "which one built this value" (WI-20260922-ATFGH).  Where there are several, the slot is a recorded
+absence, and a body that reads it is **refused at the read**, naming the slot as
+`s.O`; a body that never reads it runs.  The same holds for value-directed
+dispatch, while a rule body reaching the operation through the resolver delays on
+the tie instead.  A host that knows the witness **names** it —
+`Interpreter::call_with_witnesses(op, args, &[SlotWitness { param: "s", slot:
+"O", witness: "pkg.ByLength" }])` — and the call then answers as the typed call
+site does; the host names the provider, never a type, because the provider is the
+only thing the type was being read for.
 
 Three cases keep the older **refusal**, each because there is no argument to read:
 a slot nothing spells (WI-1061's nested `List[T = SortedSet]`, which takes a fresh
@@ -3696,7 +3704,7 @@ occurrence head — answered all along. The remaining limit here is the BINDING 
 already recorded in §5.3: `= ?v` suspends because `eq` never binds, which is
 WI-20260822-F0HHB's question about the connective, not this one about carriers.
 
-**`host_implemented` is a checked key too (WI-20260922-BRT4Y).** `@[host_implemented]` on an operation declares it body-less by design — its implementation is a host function some binding block's `operation_map` names — and the load holds the declaration to that: claimed with no mapping in the loaded program, mapped without the claim, and claimed beside a body are each a load error (§10.2). It is admitted on an operation only and only as a bare flag — elsewhere, or with a value, it is refused at conversion. It is an ordinary flag in every other respect (it rides `OperationInfo.meta`, and `meta_has_flag` reads it), and it is deliberately NOT a second answer to "is this operation host-backed": nothing but that load check reads it.
+**`host_implemented` is a checked key too (WI-20260922-BRT4Y).** `@[host_implemented]` on an operation declares it body-less by design — its implementation is a host function some binding block's `operation_map` names — and the load holds the declaration to that: claimed with no mapping in the loaded program, mapped without the claim, claimed beside a body, and mapped twice in one language are each a load error (§10.2). It is admitted on an operation only and only as a bare flag — elsewhere, or with a value, it is refused at conversion. It is an ordinary flag in every other respect (it rides `OperationInfo.meta`, and `meta_has_flag` reads it), and it is deliberately NOT a second answer to "is this operation host-backed": nothing but that load check reads it.
 
 **One key is not an attribute: `internal`.** It is the visibility modifier's other
 spelling (§8.6), so it is decided at parse rather than left for a consumer to interpret:
@@ -6153,11 +6161,12 @@ Without it a body-less operation is three things wearing one face — a spec mem
 
 * **claimed and unsupplied** — `@[host_implemented]` and no `operation_map` entry in the loaded program, in *any* language, realizes it: a load error naming the operation and the `provides <owner> language …` block that would supply it. The binding layer is part of the program; leaving it out is refused at load rather than at the first call;
 * **supplied and unclaimed** — an `operation_map` entry realizes an operation whose declaration does not carry the attribute: a load error (the drift check), so reading the declaration keeps answering the question;
-* **claimed and bodied** — the attribute beside a body is a contradiction, and a load error; and so is **supplied and bodied**, a mapping for an operation an anthill body already defines, which the attribute would not fix.
+* **claimed and bodied** — the attribute beside a body is a contradiction, and a load error; and so is **supplied and bodied**, a mapping for an operation an anthill body already defines, which the attribute would not fix;
+* **supplied twice** — two `operation_map` entries in ONE language realizing the same operation are a load error (WI-20260923-9R5HN). A runtime registers one implementation per operation, so it would otherwise run whichever binding block happened to load last. One mapping per language is the shape: a `language rust` and a `language cpp` entry for one operation are two hosts, not a conflict.
 
-All three judge what the current load phase declared or asserted, so a later `load_all` into the same KB does not re-report an earlier batch. The attribute is a bare flag, admitted on an operation only: a value (`@[host_implemented: false]`) and any other declaration or clause are refused at conversion, since nothing would read them (a const's host value is `const_map`'s).
+All four judge what the current load phase declared or asserted, so a later `load_all` into the same KB does not re-report an earlier batch. The attribute is a bare flag, admitted on an operation only: a value (`@[host_implemented: false]`) and any other declaration or clause are refused at conversion, since nothing would read them (a const's host value is `const_map`'s).
 
-The evidence is language-agnostic, like every *load* question about host backing (a `language cpp` mapping is an implementation). The attribute has no other reader: dispatch, the typer's backing check and the rule-body gate keep asking the mappings (`is_host_mapped_op` / `is_interpreter_mapped_op`), so the claim can never become a second, disagreeing answer to "is this host-backed". Two body-less shapes stay unmarked because no host FUNCTION backs them: a resolver primitive the kernel bootstrap supplies (`anthill.kernel.unify`, `not`, `domain_member`, …) and a frame the interpreter installs by symbol (`Error.reify`).
+The evidence is language-agnostic, like every *load* question about host backing (a `language cpp` mapping is an implementation). The attribute has no other reader: dispatch, the typer's backing check and the rule-body gate keep asking the mappings (`is_host_mapped_op` / `is_interpreter_mapped_op`), so the claim can never become a second, disagreeing answer to "is this host-backed". Two body-less shapes stay unmarked because no host FUNCTION backs them: a resolver primitive the kernel bootstrap supplies (`anthill.kernel.unify`, `push_choice`, `domain_member`, …) and a frame the interpreter installs by symbol (`Error.reify`). A primitive that ALSO has an eval face is marked and mapped like any host operation — `struct_eq` (`===`) and `not` (a reified goal, answered by a one-shot NAF search) — and its resolver primitive, the goal reading, is untouched by the mapping.
 
 A mapping counts as *executable* backing for §8.7's check, **and only for the carrier that wrote it**. That path is live since **WI-880**, which retired the coarser exemption it used to hide behind: the check skipped any host-realized carrier *wholesale* — "it is a host carrier, so assume every operation is backed", a claim about the carrier answering a question asked about an operation — so a `provides Widget language rust` carrier with a body-less, unmapped, unimplemented `compare` plus a `provides Ord[Widget]` loaded clean (measured). Backing is now asked per operation there, and being host-realized buys a carrier exactly one thing the general rule withholds: a mapping written on the **spec's** own member counts for it. That leg has a carrier dimension the flat mapping index lacks — the `Implementation` fact naming this carrier — and it is what a genuinely polymorphic host implementation needs, where one function serves every carrier of a spec and there is nothing per-carrier to name (the filesystem stores' `retract`/`update`/`retrieve`). A carrier with no such fact is still refused, which is the measurement that made `op_backed` drop the spec-op mapping leg in the first place. The exemption carries **no language filter**, deliberately: a load check asks whether the *program* declares an implementation, which a `language cpp` mapping answers, while eval asks whether *this runtime* can call it and reads the rust-only index instead (§ below). That per-carrier keying is the point of the clause: without it a host implementation has nowhere to live but the **spec** operation, where one implementation serves every carrier that never wrote its own — including carriers it cannot handle. The ordering surface was exactly that: `Ord.compare` and `PartialOrd.gt`/`gte`/`lt`/`lte` compared host scalars only, yet backed every provider, so a structural `Ord` carrier loaded clean and died at eval. Keyed per carrier, the spec's own default bodies are no longer shadowed and a structural carrier needs only `compare` — `PartialOrd` derives the four comparisons from it and `Ord` derives `max`/`min`. It also lets one spec operation have genuinely different host implementations per carrier: `Float`'s comparisons are IEEE (a `NaN` operand answers false), the other scalars' are total, and each names its own function in its own binding.
 

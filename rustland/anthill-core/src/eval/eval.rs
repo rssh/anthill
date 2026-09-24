@@ -3636,6 +3636,12 @@ impl Interpreter {
     /// are different questions and only the body answers the second — the rule measured
     /// against the stdlib at WI-822 LEG 2 and unchanged here.
     ///
+    /// WI-20260922-ATFGH — ONE KIND OF SLOT IS NOT LEFT ABSENT: an EE0EP slot whose
+    /// witness is in a parameter's type, when its goal has several providers. It comes
+    /// back as a marker naming `s.O`, where 058's default rung used to BUILD one — the
+    /// canonical provider, whatever the argument's construction chose. With one provider
+    /// it is still filled.
+    ///
     /// COSTS ONE CACHED `is_empty()` on the universal path: an operation that writes no
     /// `requires` of its own returns at the first test, off `op_requires_chain_rc`'s
     /// per-op cache.
@@ -3877,7 +3883,7 @@ impl Interpreter {
         // inline size 1 (most lambdas need 0–1 reqs/type-args), the
         // frame-side has 2; collect across the size boundary. Single
         // arena borrow grabs param/body/both channels at once.
-        let (param_pattern, body, requirements) = self.closures.with(&handle, |c| {
+        let (param_pattern, body, requirements) = handle.with(|c| {
             let reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
                 c.requirements.iter().cloned().collect();
             (c.param_pattern.clone(), c.body.clone(), reqs)
@@ -3890,7 +3896,7 @@ impl Interpreter {
             // the closure's parameter pattern, scrutinee the argument value.
             None => return Err(self.raise_match_failed(param_pattern.clone(), arg.clone())),
         };
-        let mut locals: SmallVec<[(Symbol, Value); 4]> = self.closures.clone_env(&handle);
+        let mut locals: SmallVec<[(Symbol, Value); 4]> = handle.clone_env();
         for (sym, v) in bindings {
             locals.push((sym, v));
         }

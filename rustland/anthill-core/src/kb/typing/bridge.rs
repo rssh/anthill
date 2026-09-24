@@ -97,8 +97,15 @@ pub(crate) enum BridgeRequirements {
 pub(crate) enum NamedSlotTies {
     /// Value-directed dispatch: record the slot absent and enter; a read is refused.
     RecordAbsent,
-    /// The SLD bridge and the host entry: report the tie as before (WI-855) — the bridge
-    /// delays on it, which a marker's read would turn into a fault.
+    /// The host entry: a SORT-half named tie is reported as under [`Self::Raise`] (the
+    /// host serves that half with WI-868's stand-ins and discards what the resolution
+    /// says of it), while a TYPE-CARRIED op slot's tie is recorded absent as under
+    /// [`Self::RecordAbsent`] — WI-20260922-ATFGH: the host has a spelling for that slot
+    /// (`Interpreter::call_with_witnesses`), the marker names it, and a body that never
+    /// reads the slot must still run.
+    HostEntry,
+    /// The SLD bridge: report the tie as before (WI-855) — the bridge delays on it,
+    /// which a marker's read would turn into a fault.
     Raise,
 }
 
@@ -169,9 +176,6 @@ pub(crate) fn resolve_bridge_requirements(
             ),
         };
     };
-    let params = rec.params;
-    let mut subst = Substitution::new();
-    let empty = Substitution::new();
     // WI-20260909-S8CBV — each parameter's ARGUMENT TYPE, kept alongside the unification,
     // so a requirement written at a PROJECTION off a parameter (`requires Desc[T = x.E]`)
     // can be δ-grounded below. This is `requirement-channel.md` §10 item 4's site: the
@@ -183,16 +187,9 @@ pub(crate) fn resolve_bridge_requirements(
     // no call-site classification at all — has to build the map itself, from the very
     // types the pinning loop already computes. Two readers of one rule; a second spelling
     // of the discharge would drift from it.
-    let mut param_arg_types: HashMap<Symbol, Value> = HashMap::new();
     let entries_have_projection = chain.iter().any(|e| value_contains_projection(kb, &e.spec));
-    for (i, (pname, ptype)) in params.iter().enumerate() {
-        let Some(arg) = args.get(i) else { continue };
-        let arg_ty = value_type_term(kb, &empty, arg);
-        if entries_have_projection {
-            param_arg_types.insert(*pname, arg_ty.clone());
-        }
-        unify_types(kb, &mut subst, &arg_ty, ptype);
-    }
+    let (subst, param_arg_types) =
+        pin_params_from_args(kb, &rec.params, args, entries_have_projection);
     // One resolved tree per requires slot, keyed by the frame requirement-param name.
     let names = chain.names(kb);
     // WI-822 LEG 1 — where the OP half starts. A failure in the SORT half aborts the
@@ -249,45 +246,12 @@ pub(crate) fn resolve_bridge_requirements(
             ));
             continue;
         }
-        // WI-20260909-S8CBV — δ BEFORE σ, the same order and the same fallback as
-        // [`build_op_scoped_dicts`]: a projection names a member of the RECEIVER's type,
-        // which a substitution over type VARIABLES cannot reach, so σ alone leaves the
-        // dep un-pinned and the slot silently absent. On a failed elimination the
-        // UN-eliminated spec rides on, so the outcome is whatever this slot's ordinary
-        // unpinnable path already gives (the sort half's `all_pinned` gate, the op half's
-        // skip) rather than a dictionary built from a guess.
-        // WI-20260909-S8CBV — THE δ ERROR IS KEPT, not swallowed. An elimination that
-        // FAILS (a member the receiver's sort does not declare) and one that leaves a
-        // NEUTRAL (an abstract receiver) both arrive below as "still a projection", and
-        // reporting them with one sentence tells the author the arguments are at fault
-        // when the requirement itself may be. `/code-review` drove it. The un-eliminated
-        // spec still rides on — the outcome is unchanged — but the message now says which
-        // of the two happened.
-        let mut delta_error: Option<String> = None;
-        let projected_spec = if param_arg_types.is_empty()
-            || !value_contains_projection(kb, &entry.spec)
-        {
-            entry.spec.clone()
-        } else {
-            let ctx = TypeErrorContext::OperationReturn {
-                op_name: op,
-                surface: None,
-            };
-            match eliminate_type_projections(kb, &entry.spec, &param_arg_types, None, &ctx, None) {
-                Ok(v) => v,
-                Err(e) => {
-                    delta_error = Some(delta_failure_text(&e));
-                    entry.spec.clone()
-                }
-            }
-        };
-        let concrete_spec = substitute_spec_via_subst(kb, &projected_spec, &subst);
         // WI-20260909-S8CBV — A PROJECTION THAT DID NOT GROUND IS A DELAY, NOT A SKIP.
         //
-        // δ above turns `Desc[T = x.E]` into the argument's actual member when the
-        // receiver's type is known at this call. When it is NOT — the caller handed
-        // `pick` its own abstract parameter, so the receiver is still a variable — the
-        // spec rides on with the projection intact and pins nothing.
+        // δ turns `Desc[T = x.E]` into the argument's actual member when the receiver's
+        // type is known at this call ([`ground_entry_spec`]). When it is NOT — the caller
+        // handed `pick` its own abstract parameter, so the receiver is still a variable —
+        // the spec rides on with the projection intact and pins nothing.
         //
         // THE OP HALF'S ORDINARY ANSWER TO AN UNPINNED SLOT IS TO SKIP IT (see the
         // `op_half` arms below), and that is right for a slot the callee's BODY may never
@@ -315,22 +279,10 @@ pub(crate) fn resolve_bridge_requirements(
         // of this chain from doing. That is acceptable ONLY because the shape it fires on
         // could not be written before this ticket — an argument that is false for a
         // `RigidTypeProjection`, and `/code-review` drove it.
-        if value_contains_expr_carried(kb, &concrete_spec) {
-            return BridgeRequirements::Unresolvable {
-                detail: format!(
-                    "`{}`'s `requires {}` names a projection these arguments do not \
-                     ground{}",
-                    kb.qualified_name_of(op),
-                    render_requires_entry(kb, entry),
-                    match &delta_error {
-                        Some(d) => format!(" — projecting it failed: {d}"),
-                        None => "; forwarding a projection-carried dictionary from the \
-                                 caller's own requirement is not yet supported"
-                            .to_owned(),
-                    },
-                ),
-            };
-        }
+        let concrete_spec = match ground_entry_spec(kb, op, entry, &param_arg_types, &subst) {
+            Ok(v) => v,
+            Err(detail) => return BridgeRequirements::Unresolvable { detail },
+        };
         let concrete = RequiresEntry {
             required_sort: entry.required_sort,
             spec: concrete_spec,
@@ -366,12 +318,7 @@ pub(crate) fn resolve_bridge_requirements(
         // measures the OUTER guard: to be unpinnable a requirement must range over a
         // type-param the parameters do not mention, which then fails to cover the
         // body's own dictionary read, so WI-325 refuses the program at LOAD).
-        let spec_tparams = kb.type_params_of_sort(goal.spec_sort);
-        let all_pinned = spec_tparams.iter().all(|tp| {
-            goal.bindings
-                .iter()
-                .any(|(k, v)| kb.local_name_of(*k) == tp && type_value_is_ground(kb, *v))
-        });
+        let all_pinned = goal_is_fully_pinned(kb, &goal);
         // WI-1091 — THE OP HALF RESOLVES AN OPEN ELEMENT ANYWAY, and accepts only a
         // UNIQUE answer. The soundness argument above is about a WRONG dictionary being
         // built where the wildcard admits SEVERAL providers; where it admits exactly
@@ -454,13 +401,37 @@ pub(crate) fn resolve_bridge_requirements(
         // slots then the operation's, so the named-slot question is asked of whichever
         // half `i` falls in. Asking `parent` for an op-half slot would read the wrong
         // declaration's slot list.
-        let rung = rung_for_dep(kb, if op_half { op } else { parent }, goal.spec_sort);
+        //
+        // WI-20260922-ATFGH — …EXCEPT A SLOT WHOSE WITNESS IS IN A TYPE, which is a named
+        // slot of the PARAMETER's carrier (`MySet.O`) and not of either owner. Asking the
+        // operation answered `Consult` — an operation declares no named slots — so 058
+        // §3.2's default rung broke the tie between `ByLength`, `Alphabetical` and
+        // `String`'s own ordering in favour of the last, and the host entry built
+        // `String`'s dictionary for a set constructed at `ByLength`: one answer at both
+        // rival orderings, in silence. That was the whole of the defect. UNRANKED, the
+        // search answers only when ONE provider exists, which is exact — the value's
+        // construction had to choose a provider of this goal, and there is one — and a
+        // tie is the genuine "not carried" case, handled at the arms below. Not merely
+        // `Withhold`: specificity is a ranking too ([`DefaultRung::Unranked`]).
+        let type_carried = entry.supply.witness_in_argument_type();
+        let ranked = rung_for_dep(kb, if op_half { op } else { parent }, goal.spec_sort);
+        let rung = if type_carried.is_some() {
+            DefaultRung::Unranked
+        } else {
+            ranked
+        };
         // WI-1091 — the OP HALF's open element, COMPLETED FROM THE PROVIDERS when they
         // leave exactly one possibility. See [`unique_provider_completion`].
         let goal = if all_pinned {
             goal
         } else {
-            match unique_provider_completion(kb, &goal, &scope, rung) {
+            // COUNTED AT THE RANKED RUNG, even for a type-carried slot: a completion is a
+            // candidate ELEMENT, and one whose goal has several providers is still a
+            // candidate. Counting it under `Unranked` would read its tie as "does not
+            // answer" and let a single-provider element win by elimination — a
+            // dictionary for an element the arguments never named (found by
+            // /code-review). The completed goal is then resolved unranked below.
+            match unique_provider_completion(kb, &goal, &scope, ranked) {
                 Some(completed) => completed,
                 // WI-20260830-NX4FD — THE SORT HALF KEEPS ITS SLOT, AS A RECORDED
                 // ABSENCE, where it used to abort the whole call. The soundness
@@ -530,10 +501,45 @@ pub(crate) fn resolve_bridge_requirements(
                     ));
                     continue;
                 }
-                None => continue,
+                // WI-20260922-ATFGH — a type-carried slot the arguments leave
+                // under-determined keeps the slot as its own absence, on every route —
+                // the sort half's NX4FD answer one arm up, with the sentence that names
+                // `s.O`. A skip would leave the read to die `not bound`, naming nothing.
+                // The SLD bridge included, exactly as for NX4FD's sort-half marker: a
+                // body that reads it faults, named, where the skip it replaces faulted
+                // unnamed — and a body that never reads it answers, as it did.
+                None => {
+                    if let Some((param, binder)) = type_carried {
+                        trees.push((*name, param_slot_marker(goal.spec_sort, param, binder)));
+                    }
+                    continue;
+                }
             }
         };
-        match resolve_with_rung(kb, &goal, &scope, rung) {
+        let result = resolve_with_rung(kb, &goal, &scope, rung);
+        // WI-20260922-ATFGH — A TIE AT A TYPE-CARRIED SLOT IS WI-456'S CASE, NOT WI-855'S:
+        // several providers answer the goal, and the value carries no type argument to
+        // say which one its construction chose, so the tie says only that the arguments
+        // did not pin it. Recorded as the absence that names `s.O`, for every route that
+        // ENTERS a frame whose body may never read the slot — value-directed dispatch,
+        // the eval gate, and the host entry, whose repair is
+        // `Interpreter::call_with_witnesses`.
+        //
+        // THE SLD BRIDGE KEEPS THE TIE (`NamedSlotTies::Raise`) and reaches the ordinary
+        // tie arm below: it delays on it, where a marker's read would be a `Fault`
+        // (`EvalError::bridge_disposition`) — WI-456 keeps the sort half's named ties for
+        // the bridge for the same reason, and before this ticket the bridge got the
+        // default's WRONG dictionary here. A FORWARDED tie is a coherence verdict about
+        // the chosen provider's own condition, and stays WI-855's.
+        if let (ResolutionResult::Ambiguous { forwarded: false, .. }, Some((param, binder))) =
+            (&result, type_carried)
+        {
+            if named_slot_ties != NamedSlotTies::Raise {
+                trees.push((*name, param_slot_marker(goal.spec_sort, param, binder)));
+                continue;
+            }
+        }
+        match result {
             ResolutionResult::Resolved(tree) => trees.push((*name, tree)),
             // WI-456 — EXCEPT, ON VALUE-DIRECTED DISPATCH, A TIE AT ONE OF THE SORT'S NAMED
             // SLOTS, which is not a coherence verdict at all: it is the NX4FD
@@ -654,6 +660,246 @@ pub(crate) fn resolve_bridge_requirements(
         return BridgeRequirements::NoneNeeded;
     }
     BridgeRequirements::Resolved(parent, trees)
+}
+
+/// The substitution that pins an operation's type parameters from GROUND argument
+/// values — each argument's inferred type unified with its declared parameter type —
+/// and, when `keep_arg_types`, each parameter's argument type keyed by parameter.
+///
+/// A parameter typed with the parent sort (`b: Box`) binds `Box`'s params from the
+/// arg's type-args (`Box[T = Tag]` ⇒ `Box.T := Tag`); a parameter typed with a
+/// sort-param directly (`x: T`) binds it from the arg's own type. One owner for the two
+/// value-only readers, [`resolve_bridge_requirements`] and [`resolve_param_witnesses`], so
+/// a witness is resolved at exactly the bindings the rest of the frame was.
+fn pin_params_from_args(
+    kb: &mut KnowledgeBase,
+    params: &[(Symbol, Value)],
+    args: &[Value],
+    keep_arg_types: bool,
+) -> (Substitution, HashMap<Symbol, Value>) {
+    let mut subst = Substitution::new();
+    let empty = Substitution::new();
+    let mut param_arg_types: HashMap<Symbol, Value> = HashMap::new();
+    for (i, (pname, ptype)) in params.iter().enumerate() {
+        let Some(arg) = args.get(i) else { continue };
+        let arg_ty = value_type_term(kb, &empty, arg);
+        if keep_arg_types {
+            param_arg_types.insert(*pname, arg_ty.clone());
+        }
+        unify_types(kb, &mut subst, &arg_ty, ptype);
+    }
+    (subst, param_arg_types)
+}
+
+/// `entry`'s spec at a call's arguments: δ BEFORE σ, then `Err` if a projection
+/// survived. The one grounding for the two value-only readers,
+/// [`resolve_bridge_requirements`] and [`resolve_param_witnesses`].
+///
+/// WI-20260909-S8CBV — δ BEFORE σ, the same order and the same fallback as
+/// [`build_op_scoped_dicts`]: a projection names a member of the RECEIVER's type,
+/// which a substitution over type VARIABLES cannot reach, so σ alone leaves the
+/// dep un-pinned and the slot silently absent. On a failed elimination the
+/// UN-eliminated spec rides on: an `ExprCarried` survivor is refused here, and anything
+/// else reaches the caller's ordinary unpinnable path, so no dictionary is built from a
+/// guess.
+///
+/// THE δ ERROR IS KEPT, not swallowed. An elimination that FAILS (a member the
+/// receiver's sort does not declare) and one that leaves a NEUTRAL (an abstract
+/// receiver) both arrive as "still a projection", and reporting them with one sentence
+/// tells the author the arguments are at fault when the requirement itself may be.
+/// `/code-review` drove it.
+fn ground_entry_spec(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    entry: &RequiresEntry,
+    param_arg_types: &HashMap<Symbol, Value>,
+    subst: &Substitution,
+) -> Result<Value, String> {
+    let mut delta_error: Option<String> = None;
+    let projected_spec =
+        if param_arg_types.is_empty() || !value_contains_projection(kb, &entry.spec) {
+            entry.spec.clone()
+        } else {
+            let ctx = TypeErrorContext::OperationReturn {
+                op_name: op,
+                surface: None,
+            };
+            match eliminate_type_projections(kb, &entry.spec, param_arg_types, None, &ctx, None) {
+                Ok(v) => v,
+                Err(e) => {
+                    delta_error = Some(delta_failure_text(&e));
+                    entry.spec.clone()
+                }
+            }
+        };
+    let concrete_spec = substitute_spec_via_subst(kb, &projected_spec, subst);
+    if value_contains_expr_carried(kb, &concrete_spec) {
+        return Err(format!(
+            "`{}`'s `requires {}` names a projection these arguments do not ground{}",
+            kb.qualified_name_of(op),
+            render_requires_entry(kb, entry),
+            match &delta_error {
+                Some(d) => format!(" — projecting it failed: {d}"),
+                None => "; forwarding a projection-carried dictionary from the \
+                         caller's own requirement is not yet supported"
+                    .to_owned(),
+            },
+        ));
+    }
+    Ok(concrete_spec)
+}
+
+/// WI-20260922-ATFGH — the recorded absence for a type-carried slot `param.binder`
+/// ([`UnavailableWhy::ParamSlotNotCarried`]), at its own level. One spelling for its
+/// producers.
+fn param_slot_marker(spec_sort: Symbol, param: Symbol, binder: Symbol) -> ResolvedRequiresNode {
+    ResolvedRequiresNode::Unavailable {
+        spec_sort,
+        why: UnavailableWhy::ParamSlotNotCarried { param, binder },
+        below: false,
+    }
+}
+
+/// Every one of `goal`'s spec type-parameters bound to a fully GROUND type — the gate
+/// before a σ-less resolution, which treats an abstract binding as a wildcard matching
+/// ANY provider (see the SOUNDNESS note in [`resolve_bridge_requirements`]).
+fn goal_is_fully_pinned(kb: &KnowledgeBase, goal: &SortGoal) -> bool {
+    kb.type_params_of_sort(goal.spec_sort).iter().all(|tp| {
+        goal.bindings
+            .iter()
+            .any(|(k, v)| kb.local_name_of(*k) == tp && type_value_is_ground(kb, *v))
+    })
+}
+
+/// WI-20260922-ATFGH — the dictionaries for `op`'s type-carried slots
+/// ([`SupplySource::witness_in_argument_type`]), built from the witnesses a HOST names.
+/// `Ok` pairs each frame slot's name with its tree; `Err` is the sentence.
+///
+/// THE HOST SPELLING OF WHAT THE TYPED ROUTE READS. At a typed call the witness is read
+/// out of the argument's TYPE ([`param_slot_witness`]) and pinned as a selection; a host
+/// has no types to hand over, but it can NAME the provider, and that is the only thing
+/// the type was being read for. So each witness becomes the same bare
+/// [`InstanceSelection`] a typed call builds for a bare witness, and the ordinary
+/// resolution does the rest — the witness's own conditions and named slots resolve as
+/// its sub-goals, none of them chosen by the host. NOT BY PASSING TYPES: the dictionary is
+/// what runtime needs, and the type is only where a typed call site reads the witness
+/// from.
+///
+/// THE SAME BINDINGS AS THE REST OF THE FRAME: one σ for the call
+/// ([`pin_params_from_args`]) and the bridge's own δ-then-σ grounding
+/// ([`ground_entry_spec`]), so a witness is checked at exactly the goal the op-half
+/// resolution asked.
+///
+/// LOUD ON EVERY MISMATCH, since a host that names a witness has said what it means: a
+/// slot `op` does not have, a slot named twice, an unknown witness, a goal the arguments
+/// do not pin — where the resolution's wildcard would accept any provider as the
+/// witness, e.g. a generic `size[T](s: MySet[T = T])` whose set VALUE names no `T` — and
+/// a witness that does not answer the goal are each refused here, at the entry.
+pub(crate) fn resolve_param_witnesses(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    args: &[Value],
+    witnesses: &[crate::eval::SlotWitness<'_>],
+) -> Result<Vec<(Symbol, ResolvedRequiresNode)>, String> {
+    let chain = op_dict_entries(kb, op);
+    let names = chain.names(kb);
+    let sort_len = chain.sort_len();
+    // The slots a witness can name, as `(frame name, entry, param, binder)`.
+    let carried: Vec<(Symbol, RequiresEntry, Symbol, Symbol)> = chain
+        .iter()
+        .zip(names.iter())
+        .skip(sort_len)
+        .filter_map(|(entry, name)| {
+            let (p, b) = entry.supply.witness_in_argument_type()?;
+            Some((*name, entry.clone(), p, b))
+        })
+        .collect();
+    let op_qn = kb.qualified_name_of(op).to_string();
+    // Every check that needs no resolution first, so a malformed request costs none.
+    let mut matched: Vec<(Symbol, RequiresEntry, Symbol, String)> =
+        Vec::with_capacity(witnesses.len());
+    for w in witnesses {
+        let spelled = format!("{}.{}", w.param, w.slot);
+        let Some((name, entry, _, _)) = carried
+            .iter()
+            .find(|(_, _, p, b)| kb.local_name_of(*p) == w.param && kb.local_name_of(*b) == w.slot)
+        else {
+            let have: Vec<String> = carried
+                .iter()
+                .map(|(_, _, p, b)| format!("`{}.{}`", kb.local_name_of(*p), kb.local_name_of(*b)))
+                .collect();
+            return Err(format!(
+                "`{op_qn}` has no slot `{spelled}` whose witness an argument type carries; {}",
+                if have.is_empty() {
+                    "it has none".to_string()
+                } else {
+                    format!("its slots of that kind are {}", have.join(", "))
+                },
+            ));
+        };
+        if matched.iter().any(|(.., sp)| *sp == spelled) {
+            return Err(format!("`{spelled}` is named twice"));
+        }
+        let witness = kb
+            .try_resolve_symbol(w.witness)
+            .ok_or_else(|| format!("unknown witness `{}` for `{spelled}`", w.witness))?;
+        matched.push((*name, entry.clone(), witness, spelled));
+    }
+    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, op) else {
+        return Err(format!(
+            "`{op_qn}` has no recorded signature, so its arguments cannot pin its slots"
+        ));
+    };
+    let keep_arg_types = matched
+        .iter()
+        .any(|(_, e, ..)| value_contains_projection(kb, &e.spec));
+    let (subst, param_arg_types) = pin_params_from_args(kb, &rec.params, args, keep_arg_types);
+    let mut out = Vec::with_capacity(matched.len());
+    for (name, entry, witness, spelled) in matched {
+        let concrete = RequiresEntry {
+            required_sort: entry.required_sort,
+            spec: ground_entry_spec(kb, op, &entry, &param_arg_types, &subst)?,
+            supply: entry.supply,
+        };
+        let Some(goal) = goal_from_requires_entry(kb, &concrete) else {
+            return Err(format!(
+                "`{op_qn}`'s slot `{spelled}` carries no readable spec bindings"
+            ));
+        };
+        if !goal_is_fully_pinned(kb, &goal) {
+            return Err(format!(
+                "the arguments do not pin `{spelled}`'s goal `{}` — the values name no \
+                 element type for it — so no witness can be checked against it",
+                format_goal(kb, &goal),
+            ));
+        }
+        let selected = [InstanceSelection {
+            spec_sort: entry.required_sort,
+            witness,
+            slots: Vec::new(),
+        }];
+        let scope = ResolutionScope {
+            available_requires: &[],
+            sigma: None,
+            selected: &selected,
+            sub_goal_requires: &[],
+        };
+        // Unranked for the reason `resolve_bridge_requirements` gives. The rung decides
+        // only the top goal, which the selection has already restricted to the witness.
+        match resolve_with_rung(kb, &goal, &scope, DefaultRung::Unranked) {
+            ResolutionResult::Resolved(tree) => out.push((name, tree)),
+            other => {
+                return Err(format!(
+                    "the witness `{}` does not answer `{spelled}`'s goal `{}` at these \
+                     arguments: {}",
+                    kb.qualified_name_of(witness),
+                    format_goal(kb, &goal),
+                    describe_resolution_failure(kb, &other),
+                ))
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// WI-1091 — does the instance dictionary for `spec` at `provider` carry the requirement

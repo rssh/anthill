@@ -987,6 +987,25 @@ pub enum UnavailableWhy {
     ///    [`NamedSlotTies::Raise`] keeps the tie a verdict, and the bridge residualizes
     ///    rather than entering on a recorded absence.
     NamedSlotNotCarried,
+    /// WI-20260922-ATFGH — an OP-HALF slot whose witness is written in a PARAMETER's
+    /// argument type ([`SupplySource::witness_in_argument_type`], today EE0EP's
+    /// `FromParam`), reached by a route that has the argument VALUES only.
+    ///
+    /// NamedSlotNotCarried's sibling one half over, and kept apart from it because the
+    /// two differ in both what they can name and what repairs them. This one knows the
+    /// PARAMETER (`param`) and the carrier's BINDER (`binder`), so the sentence names the
+    /// slot as the body sees it, `s.O`; and it has a host spelling
+    /// (`Interpreter::call_with_witnesses`), which the sort half's value-directed absence
+    /// has not.
+    ///
+    /// Recorded where the goal has SEVERAL providers (a tie under
+    /// [`DefaultRung::Unranked`]) or the arguments leave it under-determined — where any
+    /// dictionary would
+    /// be a construction for the signature rather than the value's own witness, the rival
+    /// WI-1094 refused. A goal with ONE provider is not recorded: the value's
+    /// construction had to choose it (see `witness_in_argument_type`). The SLD bridge
+    /// keeps a tie instead, and delays on it.
+    ParamSlotNotCarried { param: Symbol, binder: Symbol },
 }
 
 /// WI-865 — the absence a `NoProvider` marker symbol records. Filed on the KB by
@@ -1080,6 +1099,13 @@ pub(crate) fn absence_marker_sym(kb: &mut KnowledgeBase, rec: AbsenceRecord) -> 
                 // The name already leads with `spec_qn`, which IS this absence's goal.
                 UnavailableWhy::UnderDetermined => " unpinned".to_string(),
                 UnavailableWhy::NamedSlotNotCarried => " named slot not carried".to_string(),
+                // Qualified, so two parameters of one short name on different
+                // operations mint distinct markers.
+                UnavailableWhy::ParamSlotNotCarried { param, binder } => format!(
+                    " param slot not carried {} {}",
+                    kb.qualified_name_of(*param),
+                    kb.qualified_name_of(*binder),
+                ),
             };
             format!("{NO_PROVIDER_NAME}[{spec_qn}{depth}{detail}]")
         }

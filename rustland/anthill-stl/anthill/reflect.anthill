@@ -66,8 +66,31 @@ namespace anthill.reflect
     }
   end
 
-  -- `KB` and `Substitution` ARE carriers, so these six are the ordinary
-  -- carrier-owned shape — the same one `Int64` and `String` take.
+  -- WI-20260923-9R5HN — the symbol ops, the term-shape predicates and the
+  -- sort <-> term passthroughs, which anthill-stl registered by qualified name
+  -- (`register_reflect_builtins`) until this ticket; the functions moved to
+  -- anthill-core with it. Eight of them also have a resolver `BuiltinTag`, which is
+  -- their GOAL reading; these are the VALUE reading an operation body evaluates. The
+  -- same for `KB`'s and `Substitution`'s blocks below.
+  provides anthill.reflect language rust
+    artifact "rustland/anthill-core/src/eval/reflect_builtins.rs"
+    operation_map {
+      qualified_name: "reflect_qualified_name",
+      short_name: "reflect_short_name",
+      lookup_symbol: "reflect_lookup_symbol",
+      scope: "reflect_scope",
+      kind: "reflect_kind",
+      nonvar: "reflect_nonvar",
+      ground: "reflect_ground",
+      resolve_sort_instantiation_param: "reflect_resolve_sort_instantiation_param",
+      sort_as_term: "reflect_sort_as_term",
+      term_as_sort: "reflect_term_as_sort",
+      can_be_sort: "reflect_can_be_sort"
+    }
+  end
+
+  -- `KB` and `Substitution` ARE carriers, so these are the ordinary carrier-owned
+  -- shape — the same one `Int64` and `String` take.
   provides KB language rust
     artifact "rustland/anthill-core/src/eval/builtins.rs"
     operation_map {
@@ -81,9 +104,34 @@ namespace anthill.reflect
     }
   end
 
+  -- The introspection readers and the term <-> `TermRepr` bridge.
+  provides KB language rust
+    artifact "rustland/anthill-core/src/eval/reflect_builtins.rs"
+    operation_map {
+      sorts: "kb_sorts",
+      operations: "kb_operations",
+      constructors: "kb_constructors",
+      fields: "kb_fields",
+      rules: "kb_rules",
+      descriptions: "kb_descriptions",
+      sort_template: "kb_sort_template",
+      reify: "kb_reify",
+      reflect: "kb_reflect"
+    }
+  end
+
   provides Substitution language rust
     artifact "rustland/anthill-core/src/eval/builtins.rs"
     operation_map { lookup: "subst_lookup" }
+  end
+
+  provides Substitution language rust
+    artifact "rustland/anthill-core/src/eval/reflect_builtins.rs"
+    operation_map {
+      apply: "subst_apply",
+      compose: "subst_compose",
+      bindings: "subst_bindings"
+    }
   end
 
   -- WI-20260922-BRT4Y: `TypeValue`'s sole implementation, registered by hardcoded

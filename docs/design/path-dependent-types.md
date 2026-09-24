@@ -1256,12 +1256,15 @@ out, the discipline is:
 * an **unwritten** slot at the TOP LEVEL of a parameter's type is the projection `s.O`,
   which NAMES the parameter — so the caller reads the provider out of that argument's
   type and the dictionary is forwarded like any other (WI-20260921-EE0EP). Writing `O`
-  and omitting it mean the same thing **at a typed call site**, and measurably not at the
-  host boundary: `interp.call` passes values and no types, so the slot is unfilled and
-  value-direction answers alike for rival orderings (pinned by
-  `wi_ee0ep_param_dictionary_test::the_host_entry_does_not_receive_the_parameters_dictionary`).
+  and omitting it mean the same thing **at a typed call site**. The host boundary passes
+  values and no types, so there the slot takes a provider only when its goal has exactly
+  one, and otherwise is a recorded absence whose READ is refused, naming `s.O` — never a
+  ranking (specificity or 058 §3.2's default, which built `String`'s own ordering for a
+  `ByLength` set until WI-20260922-ATFGH) — and a host that knows the witness names it
+  (`Interpreter::call_with_witnesses`, driven by
+  `wi_ee0ep_param_dictionary_test::the_host_entry_names_the_witness_or_is_refused`).
   That is the same §5.5 fence one step out — the channel reads a TYPE, so it reaches
-  exactly as far as types do.
+  exactly as far as types do, and past it the evidence must be NAMED.
 * an unwritten slot with **no name** still has no channel and is refused: WI-1061's
   nested slot (`List[T = SortedSet]`) takes a fresh rigid nothing spells, and an
   existential return's opened skolem (WI-1063) names no provider at all. For the return

@@ -253,6 +253,15 @@ pub enum EvalError {
         param: String,
         running: String,
     },
+    /// WI-20260923-9R5HN — a reflect KB reader (`KB.sorts`, `KB.descriptions`,
+    /// `KB.stored_facts_of`, …) asked the extent seam for a relation's FACTS and the seam
+    /// refused — the program asserts a BODIED rule under that functor (`rule
+    /// DescriptionInfo(…) :- …`) — or a mounted source failed. The program's data or its
+    /// backend, not an evaluator invariant, so not [`Self::Internal`], which the SLD
+    /// bridge asserts against. MEASURED before it existed: the refusal was a PANIC in the
+    /// reader, and `stored_facts_of`'s was `Internal`, each reachable from inside
+    /// resolution once the readers became reducible at a rule-body operand.
+    KbReadFailed(crate::kb::reflect_reader::ReflectReadError),
     Internal(String),
 }
 
@@ -324,17 +333,20 @@ impl EvalError {
             // still cross (WI-628).
             EvalError::Suspended { truncated: false, .. } => BridgeDisposition::Schedule,
             EvalError::Suspended { truncated: true, .. } => BridgeDisposition::Truncation,
-            // A CAPABILITY GAP IN THE SCRATCH INTERPRETER, not a defect in the program:
-            // the reflect builtins live in the downstream `anthill-stl` crate and are
-            // registered nowhere the bridge can see (`bridge_op_to_eval`'s own closing
-            // note), so a body that dispatches to one is body-less HERE and runnable in
-            // the very next process. The same op reached from a rule the CLI runs
-            // answers; reporting a fault would name the wrong thing.
+            // A CAPABILITY GAP IN THE SCRATCH INTERPRETER, not a defect in the program —
+            // THAT WAS THE READING while anthill-stl's reflect builtins were registered
+            // only by the CLI's runtime, so a body dispatching to one was body-less HERE
+            // and runnable in the very next process. WI-20260923-9R5HN made them
+            // `HOST_FNS` rows every bridge interpreter registers, so that population is
+            // gone; the classification is left as it was, since changing it moves the
+            // answer of every goal that reaches it.
             //
-            // WI-1092's population — an operation an author declared and defined
-            // nowhere — lands here too and IS a defect, and this site cannot tell the
-            // two apart. It is reported where it can be: the typer refuses the call,
-            // and a top-level eval entry surfaces the error with its backtrace.
+            // WHAT STILL LANDS HERE IS A DEFECT, delayed in silence: an operation an
+            // author declared and defined nowhere (WI-1092's population). This used to
+            // say the typer refuses the call; MEASURED 2026-09-24, it does not —
+            // `operation undef(n: Int64) -> Int64` with `wrap(n) = undef(n)` loads clean,
+            // and `wrap(1) = 1` in a rule suspends here with no warning. Refusing that
+            // population at LOAD, and then this arm, is WI-20260909-M8QWJ.
             EvalError::OperationBodyMissing { .. } => BridgeDisposition::Schedule,
             // Proposal 039 / WI-084: the const type-checks and only its runtime VALUE
             // is absent from this build. The same spec-only-vs-codegen axis as above.
@@ -373,6 +385,7 @@ impl EvalError {
             | EvalError::AmbiguousSpecOpDispatch { .. }
             | EvalError::MacroRejected { .. }
             | EvalError::UnboundTypeParam { .. }
+            | EvalError::KbReadFailed(_)
             | EvalError::Internal(_) => BridgeDisposition::Fault,
         }
     }
@@ -573,6 +586,7 @@ impl std::fmt::Display for EvalError {
                  a body read of a type parameter needs the call site to have bound it, \
                  and this call route did not; a parameter with no binding is not a type"
             ),
+            EvalError::KbReadFailed(e) => write!(f, "{e}"),
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }

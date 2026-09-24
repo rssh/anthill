@@ -4,6 +4,15 @@
 
 ## Tracks: WI-551 (part (a): shared record readers — delivered), WI-555 (shared term reify/reflect walks — delivered), WI-554 (gap (c): single impl object — **this note is its deliverable**)
 
+> **Update (WI-20260923-9R5HN).** The interpreter's introspection builtins and the
+> shared reader (`reader.rs`) moved from anthill-stl to anthill-core
+> (`eval/reflect_builtins.rs`, `kb/reflect_reader.rs`) to become `HOST_FNS` rows named
+> by binding blocks. So the interpreter's reflect surface is no longer split across two
+> crates — it is all in anthill-core — while `KbBridge` stays in anthill-stl and reads
+> the reader across the crate boundary. The wall in §2 still stands (the dependency
+> still runs `anthill-stl → anthill-core`); the paths below describe the layout when
+> this note was written.
+
 ## The question
 
 `anthill.reflect.KB.*` has two realizations:

@@ -3,9 +3,9 @@
 - id: WI-20260923-9R5HN-move-anthill-stl-s-reflect-set
 - created: 2026-09-23T11:45:42Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-23T11:45:42Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-23T23:05:58Z
 
 - acceptance: cargo-test
 
@@ -30,4 +30,10 @@ WHAT TO DECIDE AT PICKUP.
 ACCEPTANCE: the 24 are `HOST_FNS` (or equivalently checked) rows named by binding-block entries and their declarations carry `@[host_implemented]`; `every_operation_the_interpreter_registers_is_interpreter_mapped` covers the whole runtime registry (the reflect set merged into the standard registration, or the test extended), with a count before/after; `register_if_present` deleted if no caller remains; the substitution arena reads through the handle, driven by a cross-arena test; the rule-body consequences of (d) measured and pinned; full workspace green via rustland/scripts/test.sh.
 
 REFERENCE: `anthill-stl/src/reflect/builtins.rs` (`register_reflect_builtins`, `ReflectSyms`), `anthill-stl/src/runner.rs` (`register_runtime`), `eval/builtins.rs` (`HOST_FNS`, `register_if_present`'s doc), `kb/host_fns.rs` (WI-1122 seal), `eval/map_arena.rs` / `eval/cell_arena.rs` (the handle-read shape), WI-20260922-BRT4Y.
+
+## Changes
+
+### 2026-09-23T23:05:43Z — feedback — user
+
+Delivered (2026-09-24, 38102d2e). Decision (a): the functions MOVED to anthill-core (eval/reflect_builtins.rs; the shared reader to kb/reflect_reader.rs, which anthill-stl's bridge now reads across the crate boundary) as 24 HOST_FNS rows; ReflectSyms resolved per call. (b) kernel.not mapped in its own kernel.anthill block (artifact reflect_builtins.rs), resolver NAF untouched. (c) SubstHandle::with_subst reads the minting arena; slots hold Rc<Substitution> so no borrow is held during a read. Measured pre-ticket: cross-interpreter lookup answered some(1) for 7 (silent) or panicked; with the receiver read restored the rule-body chain panics the CLI. register_reflect_builtins and register_if_present deleted; anthill-core drops its anthill-stl dev-dep. Counts on the full runtime registry: 183 -> 207 rust-mapped, 24 -> 0 invisible (pinned by name + claimed in wi_brt4y). (d) wi_9r5hn_reflect_set_test pins before/after at a rule-body operand: not(KB.constructors(..)=[..]) and not(can_be_sort(Color)) were 1 DEFINITE (unsound), now 0; positives 0 -> 1, wrong-value rows 0. Needed by-content reads: TermView for shape-only Term args, TermRepr decoder through the view, substitution operands via Value::carried; reflect.unify lowers by content. Also fixed: KB.sorts namespace filter compared the SHORT name (wrong answer everywhere). New load refusal HostMappingDuplicate: two operation_map/const_map entries for one member in one language (loaded clean, last-wins). NOT fixed, reported: closure/stream arenas still read via the receiver interpreter (enter_closure, stream_split_first); Map/Cell ops match by carrier (a <=>-bound Map suspends at Map.size); Substitution.apply(..) cannot be written in a rule body (typer reads 'apply' as the reflect form; pre-existing); reader read_facts failures panic inside a bridge. Workspace 7421/0 across 36 binaries; scaland 614/0.
 

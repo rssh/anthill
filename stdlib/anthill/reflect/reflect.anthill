@@ -266,9 +266,9 @@ namespace anthill.reflect
   -- ================================================================
 
   -- Symbol → full qualified name string
-  operation qualified_name(s: Symbol) -> String
+  operation qualified_name(s: Symbol) -> String @[host_implemented]
   -- Symbol → last segment (short name)
-  operation short_name(s: Symbol) -> String
+  operation short_name(s: Symbol) -> String @[host_implemented]
   -- Find the symbol a name DENOTES at the global scope (fails if none).
   -- WI-913: the name takes the host-name ladder (§8.6 at `<global>`) — a
   -- dotted path read RELATIVELY (its head segment must be in scope there),
@@ -277,11 +277,11 @@ namespace anthill.reflect
   -- loader's qualified-only kernel names (`..Member`, `..meta`), which are
   -- delocalized so that ordinary resolution cannot surface them.
   -- A FIELD is never nameable by path, in any reading.
-  operation lookup_symbol(name: String) -> Symbol
+  operation lookup_symbol(name: String) -> Symbol @[host_implemented]
   -- Symbol → enclosing scope symbol (None for top-level)
-  operation scope(s: Symbol) -> Option[T = Symbol]
+  operation scope(s: Symbol) -> Option[T = Symbol] @[host_implemented]
   -- Symbol → kind string ("Sort", "Entity", "Operation", "Field", etc.)
-  operation kind(s: Symbol) -> String
+  operation kind(s: Symbol) -> String @[host_implemented]
 
   -- WI-20260914-Z73FX — may code in `scope` name `s`? `internal` (§8.6) hides a name
   -- from every scope but its declaring one and that scope's lexical descendants, so
@@ -464,48 +464,35 @@ namespace anthill.reflect
   -- no substitution and nothing will bind later, so there is nothing to re-ask:
   -- the same question answers `Bool`, and the delayed reading is `false`. The
   -- answer is by CONTENT and holds for every carrier, not only for a term.
-  operation nonvar(x: Term) -> Bool
-  operation ground(x: Term) -> Bool
+  operation nonvar(x: Term) -> Bool @[host_implemented]
+  operation ground(x: Term) -> Bool @[host_implemented]
 
   -- Extract a named binding from a SortView instantiation term.
   -- Given spec = SortView(Monoid(), T=Int64(), combine=Ref(add)),
   -- resolve_sort_instantiation_param(spec, Ref(T), ?val) binds ?val to Int64().
-  operation resolve_sort_instantiation_param(inst: Term, param: Term) -> Term
+  operation resolve_sort_instantiation_param(inst: Term, param: Term) -> Term @[host_implemented]
 
   -- ================================================================
-  -- Sort <-> Term conversion — REGISTERED, BUT NOT MAPPED
+  -- Sort <-> Term conversion
   -- ================================================================
   --
-  -- WI-880 migrated this namespace's other 26 operations off their hardcoded
-  -- registrations and onto `rustland/anthill-stl/anthill/reflect.anthill`'s
-  -- `operation_map`. These three were NOT part of that, and the difference is worth
-  -- stating rather than leaving to be rediscovered: they have no `operation_map` entry,
-  -- so every load-time and resolver-time reader of "is this operation host-backed"
-  -- counts them as unbacked, and a rule body cannot reduce them (WI-884's split).
-  --
-  -- THEY DO RUN FROM AN OPERATION BODY. `anthill-stl`'s `register_reflect_builtins`
-  -- binds all three by qualified name, and that function is what `runner::register_runtime`
-  -- calls on every CLI run and in every embedder. WI-20260914-Z73FX corrected this note,
-  -- which said they "run NOWHERE … a call dies `OperationBodyMissing`": MEASURED by
-  -- `guardians_test`'s `a_type_term_out_of_operation_info_decodes_to_its_sort`, which
-  -- takes the type term of `Email.send`'s `body` parameter out of its `OperationInfo`,
-  -- decodes it with `term_as_sort` from an anthill body, and reads the sort's own
-  -- operations back. The header above said "(builtins)", and on that point it was right.
-  --
-  -- They also escape the load-time backing check, and legitimately: WI-880 narrowed that
-  -- check to a per-OPERATION question, but it walks PROVISIONS, and a namespace-level
-  -- operation discharges none — §8.7's "a namespace-level operation is not backing" is
-  -- the same rule seen from the other side. So nothing refuses them today.
-  -- `wi880_reflect_mapping_test` uses `sort_as_term` as its CONTROL for exactly this
-  -- reason: it is the one name in this namespace that must read as un-MAPPED — which is
-  -- a different question from whether it runs, and the one that test asks.
+  -- WI-880 migrated this namespace's other 26 operations onto
+  -- `rustland/anthill-stl/anthill/reflect.anthill`'s `operation_map` and left these
+  -- three — with the symbol ops above, `nonvar` / `ground`, the `KB` readers and three
+  -- of `Substitution`'s four — registered by qualified name in anthill-stl
+  -- (`register_reflect_builtins`). They RAN from an operation body (WI-20260914-Z73FX
+  -- measured `term_as_sort` doing so, `guardians_test`'s
+  -- `a_type_term_out_of_operation_info_decodes_to_its_sort`), and were INVISIBLE to
+  -- every reader of "is this operation host-backed": a rule body could not reduce them,
+  -- and nothing on the declaration said they were body-less on purpose.
+  -- WI-20260923-9R5HN keyed all 24 through the binding blocks, and marked them.
 
   -- Convert a Type value to its Term representation
-  operation sort_as_term(s: Type) -> Term
+  operation sort_as_term(s: Type) -> Term @[host_implemented]
   -- Try to interpret a Term as a Type (None if not a valid sort)
-  operation term_as_sort(t: Term) -> Option[T = Type]
+  operation term_as_sort(t: Term) -> Option[T = Type] @[host_implemented]
   -- Check whether a Term represents a valid sort
-  operation can_be_sort(t: Term) -> Bool
+  operation can_be_sort(t: Term) -> Bool @[host_implemented]
 
   -- Reify a type's deep structure on demand — the one reflection entry point for
   -- type introspection. A type is term-backed, so `extract` takes the `Term`; a
@@ -634,8 +621,8 @@ namespace anthill.reflect
     provides Modifiable[T = KB]
 
     -- Bridge: opaque Term ↔ structural TermRepr
-    operation reify(kb: KB, t: Term) -> TermRepr
-    operation reflect(kb: KB, r: TermRepr) -> Term
+    operation reify(kb: KB, t: Term) -> TermRepr @[host_implemented]
+    operation reflect(kb: KB, r: TermRepr) -> Term @[host_implemented]
 
     -- WI-5XBBQ — WHAT A SCOPED LOAD CONTRIBUTED. Both take the value
     -- `loaded(sources)` returned; the ambient `kb()` names no layer and is
@@ -647,15 +634,15 @@ namespace anthill.reflect
     operation layer_clauses(kb: KB) -> List[T = LayerClause] @[host_implemented]
 
     -- Query operations (KB introspection)
-    operation sorts(kb: KB, namespace: Option[T = String]) -> List[T = SortInfo]
+    operation sorts(kb: KB, namespace: Option[T = String]) -> List[T = SortInfo] @[host_implemented]
     -- The sort/entity is passed by reference (e.g. `operations(kb(), WorkItem)`),
     -- resolved to its qualified functor via the caller's import — no name-string
     -- resolution (the `facts_of` precedent; WI-632).
-    operation operations(kb: KB, sort: Type) -> List[T = OperationInfo]
-    operation constructors(kb: KB, sort: Type) -> List[T = String]
-    operation fields(kb: KB, entity: Type) -> List[T = FieldInfo]
-    operation rules(kb: KB, sort: Type) -> List[T = TermRepr]
-    operation descriptions(kb: KB, target: Option[T = String]) -> List[T = DescriptionInfo]
+    operation operations(kb: KB, sort: Type) -> List[T = OperationInfo] @[host_implemented]
+    operation constructors(kb: KB, sort: Type) -> List[T = String] @[host_implemented]
+    operation fields(kb: KB, entity: Type) -> List[T = FieldInfo] @[host_implemented]
+    operation rules(kb: KB, sort: Type) -> List[T = TermRepr] @[host_implemented]
+    operation descriptions(kb: KB, target: Option[T = String]) -> List[T = DescriptionInfo] @[host_implemented]
 
     -- `nonvar` / `ground` are NOT members: their question is about a value, not
     -- about a KB, so they are namespace-level (above). A receiver no answer
@@ -699,7 +686,7 @@ namespace anthill.reflect
     -- reference (e.g. `sort_template(kb(), WorkItem)`), resolved to its
     -- qualified symbol via the caller's import — no name-string resolution
     -- (the `facts_of` precedent; WI-632).
-    operation sort_template(kb: KB, sort: Type) -> LogicalQuery
+    operation sort_template(kb: KB, sort: Type) -> LogicalQuery @[host_implemented]
 
     -- Mutation: assert a fact and check registered constraints.
     -- If a constraint is violated, returns none.
@@ -1127,8 +1114,8 @@ namespace anthill.reflect
   -- A substitution maps variable names to terms: {?x → t1, ?y → t2, ...}
   -- Not a Map alias — has its own structure (parent chain, contradiction tracking).
   sort Substitution
-    operation apply(s: Substitution, t: Term, kb: KB) -> Term
-    operation compose(s1: Substitution, s2: Substitution, kb: KB) -> Substitution
+    operation apply(s: Substitution, t: Term, kb: KB) -> Term @[host_implemented]
+    operation compose(s1: Substitution, s2: Substitution, kb: KB) -> Substitution @[host_implemented]
 
     -- Look up a logical variable's binding by short name. Returns the bound
     -- value when the substitution contains a binding for any variable whose
@@ -1146,7 +1133,7 @@ namespace anthill.reflect
     -- IDENTITY — e.g. `compose`'s full union over a `&dyn Substitution`, whose
     -- internal variable identities are otherwise opaque across the trait
     -- boundary — can recover which variable each binding is for.
-    operation bindings(s: Substitution) -> List[T = Pair[A = Term, B = Term]]
+    operation bindings(s: Substitution) -> List[T = Pair[A = Term, B = Term]] @[host_implemented]
   end
 
   -- Term-level structural unification (proposal 049). The "honest signature"

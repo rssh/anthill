@@ -8,8 +8,8 @@
 //! nothing else:
 //!
 //!   * `anthill.reflect.lookup_symbol` — BOTH of its backings: the eval-side host fn
-//!     (`anthill-stl/src/reflect/builtins.rs::lookup_symbol_op`, driven by that
-//!     crate's own `lookup_symbol_reads_the_implicit_tier`) and the SLD-side
+//!     (`eval/reflect_builtins.rs::lookup_symbol_op`, anthill-stl's until
+//!     WI-20260923-9R5HN, driven by its own unit tests) and the SLD-side
 //!     `KnowledgeBase::builtin_lookup_symbol`. One operation, two backings — the
 //!     WI-984 shape, and the reason the ticket's four positions are five.
 //!   * `anthill.reflect.make_fn` / `make_apply` — a functor named by a `Value::Str`

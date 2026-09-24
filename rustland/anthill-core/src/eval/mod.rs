@@ -15,6 +15,7 @@ pub mod frame;
 pub mod layer_arena;
 pub mod map_arena;
 pub mod pattern;
+pub(crate) mod reflect_builtins;
 pub mod stream;
 pub mod subst_arena;
 pub mod value;
@@ -35,6 +36,21 @@ use closure::ClosureArenaRef;
 use effects::EffectRegistry;
 use map_arena::MapArenaRef;
 use stream::StreamArenaRef;
+
+/// WI-20260922-ATFGH — a host's WITNESS for one op-half slot whose evidence lives in a
+/// parameter's type ([`Interpreter::call_with_witnesses`]): the argument passed for
+/// `param` was built with its carrier's named slot `slot` (the `O` of
+/// `requires O: WeakOrd[T]`) bound to the provider sort `witness`, a qualified name.
+///
+/// THREE FIELDS, NOT THE `"s.O"` SPELLING the body sees and the refusal prints: a
+/// struct cannot be malformed, where a string could be `"O"` or `"s."` and would need
+/// a runtime refusal to say so (found by /code-review).
+#[derive(Clone, Copy, Debug)]
+pub struct SlotWitness<'a> {
+    pub param: &'a str,
+    pub slot: &'a str,
+    pub witness: &'a str,
+}
 
 /// Runtime resource limits. Each cap is optional so different embeddings
 /// can trade safety against throughput independently.
@@ -705,21 +721,123 @@ impl Interpreter {
                 name: qualified_name.to_string(),
             }
         })?;
-        self.call_op_sym(sym, args)
+        self.call_op_sym(sym, args, &[])
     }
 
-    /// Symbol-keyed body of [`Self::call`]: dispatch to a registered builtin,
-    /// else seed the entry op's `requires` chain with self-referential
-    /// placeholders and invoke it. Private — host callers use `call` (by name);
-    /// the resolver bridge uses [`Self::call_op_bridged`] (which does NOT seed
+    /// WI-20260922-ATFGH — [`Self::call`] with a WITNESS named for each op-half slot whose
+    /// evidence lives in a parameter's type: `SlotWitness { param: "s", slot: "O",
+    /// witness: "pkg.ByLength" }` says the argument passed for `s` was built with
+    /// `O = ByLength`.
+    ///
+    /// THE SLOT THIS SPELLS. `operation has(s: MySet[T = String], x: String)` over
+    /// `enum MySet requires O: WeakOrd[T]` leaves `O` unwritten, so the dictionary `has`'s
+    /// body reads is the ARGUMENT's own (EE0EP). A typed call site reads it out of the
+    /// argument's type; [`Self::call`] has only the value, which carries its sort and
+    /// none of its type arguments, so where more than one provider could have been
+    /// chosen the slot is a marker that refuses at the read and names `s.O`. Naming the
+    /// witness is what a host CAN produce — it is the only thing the type was being read
+    /// for — and it is built into the dictionary by the same selection the typed fill
+    /// makes ([`crate::kb::typing::resolve_param_witnesses`]). Not by passing types,
+    /// which would import a compile-time artifact into a runtime boundary: runtime needs
+    /// the dictionary, and the type is only where a typed call reads the witness from.
+    ///
+    /// Everything else is [`Self::call`]'s — one preamble, [`Self::call_op_sym`]: the
+    /// sort half keeps WI-868's stand-ins, and the rest of the op half is resolved from
+    /// the arguments. A slot left unnamed keeps its marker, since a body that never reads
+    /// it must still run. Every mismatch — an unknown witness, a slot the operation does
+    /// not have, a slot named twice, a witness that does not answer the slot's goal, an
+    /// operation with no body of its own to enter — is refused here, at the entry.
+    ///
+    /// NOT COMBINED WITH [`Self::call_with_requirements`]: an entry whose parent sort
+    /// needs host-built cross-sort dictionaries AND whose parameter leaves a slot
+    /// unwritten has no single host spelling yet. Nothing in tree is both; the two are
+    /// separate entries until something is.
+    pub fn call_with_witnesses(
+        &mut self,
+        qualified_name: &str,
+        args: &[Value],
+        witnesses: &[SlotWitness<'_>],
+    ) -> Result<Value, EvalError> {
+        let sym = self.kb.try_resolve_symbol(qualified_name).ok_or_else(|| {
+            EvalError::UnknownOperation {
+                name: qualified_name.to_string(),
+            }
+        })?;
+        self.call_op_sym(sym, args, witnesses)
+    }
+
+    /// Symbol-keyed body of [`Self::call`] and [`Self::call_with_witnesses`]: dispatch to
+    /// a registered builtin, else seed the entry op's `requires` chain — the sort half
+    /// with self-referential placeholders, the op half resolved from the arguments — lay
+    /// the host's witnesses over it, and invoke. Private — host callers use `call` (by
+    /// name); the resolver bridge uses [`Self::call_op_bridged`] (which does NOT seed
     /// placeholders — see there for why).
-    fn call_op_sym(&mut self, sym: Symbol, args: &[Value]) -> Result<Value, EvalError> {
+    fn call_op_sym(
+        &mut self,
+        sym: Symbol,
+        args: &[Value],
+        witnesses: &[SlotWitness<'_>],
+    ) -> Result<Value, EvalError> {
+        let refuse = |kb: &crate::kb::KnowledgeBase, why: String| {
+            EvalError::Internal(format!(
+                "call_with_witnesses({}): {why}",
+                kb.qualified_name_of(sym)
+            ))
+        };
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
+            // A builtin enters no frame, so there is no slot a witness could fill —
+            // naming one is a host error, not a no-op.
+            if let Some(w) = witnesses.first() {
+                return Err(refuse(
+                    &self.kb,
+                    format!(
+                        "the operation is host-implemented and has no slot `{}.{}`",
+                        w.param, w.slot
+                    ),
+                ));
+            }
             return (builtin)(self, args);
         }
+        // A BODY-LESS operation is entered by value-directed dispatch to a provider's,
+        // and `invoke_op_with_requirements` builds THAT frame from the provider's own
+        // chain, discarding the one seeded here (its WI-1057 arm). A witness laid over
+        // this frame would be dropped in silence, so it is refused, naming the repair.
+        // Found by /code-review.
+        if !witnesses.is_empty() && self.cached_operation_body(sym).is_none() {
+            return Err(refuse(
+                &self.kb,
+                "the operation has no body of its own — it is dispatched by value to a \
+                 provider's, whose frame is built from that provider's chain — so a \
+                 witness here would be discarded. Name it on the provider's operation"
+                    .to_string(),
+            ));
+        }
         let mut requirements = self.seed_entry_requirements(sym)?;
-        // WI-1091: the OP-SCOPED half, RESOLVED at the concrete argument types rather
-        // than stood in for. See `seed_entry_op_requirements`.
+        // WI-20260922-ATFGH — the host's witnesses FIRST, so a mismatch is refused before
+        // anything else runs and the op-half resolution below skips the slots they fill
+        // (a tie there is not a verdict about a slot the host has already answered —
+        // found by /code-review).
+        if !witnesses.is_empty() {
+            let named =
+                crate::kb::typing::resolve_param_witnesses(&mut self.kb, sym, args, witnesses)
+                    .map_err(|why| refuse(&self.kb, why))?;
+            for (name, tree) in named {
+                // `None` names the KB, not the slot: the resolution ran with an empty
+                // scope, so the tree holds no `FromScope`, and the one other `None` is a
+                // KB that never loaded the dictionary sort (WI-1045 keeps them apart).
+                let dict = self.port_resolved_tree(&tree).ok_or_else(|| {
+                    refuse(
+                        &self.kb,
+                        "cannot build a witness's dictionary: this KB never loaded \
+                         `anthill.realization.runtime.Dictionary`"
+                            .to_string(),
+                    )
+                })?;
+                requirements.push((name, dict));
+            }
+        }
+        // WI-1091: the rest of the OP-SCOPED half, RESOLVED at the concrete argument
+        // types rather than stood in for. See `seed_entry_op_requirements`.
         self.seed_entry_op_requirements(sym, args, &mut requirements)?;
         self.invoke_op_with_requirements(sym, args, requirements)
     }
@@ -750,6 +868,23 @@ impl Interpreter {
         args: &[Value],
         dispatched_through: Option<(Symbol, &value::Dictionary)>,
     ) -> Result<Value, EvalError> {
+        // WI-20260923-9R5HN — THE RESOLVER→EVAL BOUNDARY CANCELS A SPLICED WRAPPER. A
+        // runtime value bound in σ (a closure, a map, a substitution) reaches the next
+        // rule-body call σ-applied INTO the goal occurrence, so the argument arrives as
+        // `Node(Spliced(v))`; eval reads those values by carrier, and they refused it —
+        // MEASURED, `adder(10) <=> ?f, apply1(?f, 1) = 11` bound the parameter to a node
+        // ("unknown operation: …apply1.f") and `Map.put(..) <=> ?m, Map.size(?m) = 1`
+        // refused its receiver, both SUSPENDED. Cancelled here and not upstream in the
+        // σ-walk: the resolver's own builtins (the occurrence readers) are handed the
+        // carrier the goal holds, and read it as such. `Value::carried` strips every
+        // wrapper layer, whichever path the argument came by.
+        let unwrapped: Vec<Value>;
+        let args = if args.iter().any(|a| !std::ptr::eq(a.carried(), a)) {
+            unwrapped = args.iter().map(|a| a.carried().clone()).collect();
+            &unwrapped[..]
+        } else {
+            args
+        };
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
         }
@@ -975,11 +1110,15 @@ impl Interpreter {
     /// See `docs/design/operation-call-model.md` §"Host-to-entry-op boundary".
     ///
     /// WI-822 LEG 1: the count is the PARENT SORT's chain, not the entry op's composed
-    /// one — an op-scoped `requires` has no host-boundary spelling, for the reason
+    /// one — an op-scoped `requires` has no host-boundary spelling HERE, for the reason
     /// [`Self::seed_entry_requirements`] records, and widening this would ask every
-    /// host for handles it has no way to build. Nothing in tree declares an entry op
-    /// with its own `requires`; if one ever does, its slots stay unfilled here and the
-    /// body's own read is what says so.
+    /// host for handles it has no way to build. Its slots stay unfilled here — unlike
+    /// [`Self::call`], which resolves them from the arguments — and the body's own read
+    /// is what says so, as `not bound`, naming the frame rather than the slot.
+    ///
+    /// WI-20260922-ATFGH — the one op-half kind a host CAN name is EE0EP's synthesized
+    /// slot, whose witness lives in a parameter's type: [`Self::call_with_witnesses`]
+    /// spells it by naming the provider.
     pub fn call_with_requirements(
         &mut self,
         qualified_name: &str,
@@ -1344,6 +1483,13 @@ impl Interpreter {
     /// half is taken out of the resolution — the sort half's stand-ins are already in
     /// `out`, and replacing them with resolved dictionaries would change what a
     /// requires-carrying entry op has always been given.
+    ///
+    /// WI-20260922-ATFGH — the arguments pin an op-scoped requirement's ELEMENT, never a
+    /// witness chosen inside a type. A slot whose evidence is written in a parameter's
+    /// type (EE0EP's unwritten named slot) therefore comes back from the resolution as
+    /// the dictionary of the ONE provider its goal has, when it has one — the value's
+    /// construction had to choose it — and otherwise as a marker that refuses at the
+    /// read and names `s.O`. [`Self::call_with_witnesses`] is the entry that fills it.
     fn seed_entry_op_requirements(
         &mut self,
         op_sym: Symbol,
@@ -1358,14 +1504,27 @@ impl Interpreter {
             // No op half — the universal case, and not even a resolution.
             return Ok(());
         }
-        let op_names: std::collections::HashSet<Symbol> =
-            names[sort_len..].iter().copied().collect();
+        // WI-20260922-ATFGH — only the slots `out` does not already hold: a host witness
+        // (`call_op_sym`) is laid in FIRST, and a tie or failure at a slot it filled is
+        // not this resolution's to report.
+        let op_names: std::collections::HashSet<Symbol> = names[sort_len..]
+            .iter()
+            .copied()
+            .filter(|n| !out.iter().any(|(m, _)| m == n))
+            .collect();
+        if op_names.is_empty() {
+            return Ok(());
+        }
         let (parent, trees) =
             match crate::kb::typing::resolve_bridge_requirements(
                 &mut self.kb,
                 op_sym,
                 args,
-                crate::kb::typing::NamedSlotTies::Raise,
+                // WI-20260922-ATFGH — `HostEntry`, not the bridge's `Raise`: a tie at a
+                // slot whose witness is in a parameter's type comes back as the marker
+                // naming `s.O` (the host's repair is `call_with_witnesses`), while every
+                // other tie is reported exactly as before.
+                crate::kb::typing::NamedSlotTies::HostEntry,
             ) {
                 BridgeRequirements::Resolved(parent, trees) => (parent, trees),
                 // WI-1091 — A TIE IS RAISED, not entered-unsupplied, and this is the same
@@ -1577,7 +1736,8 @@ impl Interpreter {
         self.maps.alloc(body)
     }
 
-    /// Clone the map-arena handle. Same rationale as `subst_arena()`.
+    /// Clone the map-arena handle (cheap `Rc` bump), so a caller can hold it while
+    /// `&mut self` on the interpreter is in flight.
     pub fn map_arena(&self) -> MapArenaRef {
         self.maps.clone()
     }
@@ -1652,7 +1812,7 @@ impl Interpreter {
         &self,
         h: &value::ClosureHandle,
     ) -> smallvec::SmallVec<[(Symbol, value::Dictionary); 1]> {
-        self.closures.with(h, |c| c.requirements.clone())
+        h.with(|c| c.requirements.clone())
     }
 
 
@@ -1702,8 +1862,7 @@ impl Interpreter {
         h.write(new)
     }
 
-    /// Clone the cell-arena handle (cheap `Rc` bump). Same rationale as
-    /// `subst_arena()`: lets a caller hold a borrow on the arena while
+    /// Clone the cell-arena handle (cheap `Rc` bump), so a caller can hold it while
     /// `&mut self` on the interpreter is in flight.
     pub fn cell_arena(&self) -> CellArenaRef {
         self.cells.clone()
@@ -1714,52 +1873,24 @@ impl Interpreter {
         self.substs.alloc(s)
     }
 
-    /// Run `f` with a shared reference to the substitution behind `h`.
-    pub fn with_subst<R>(
-        &self,
-        h: &value::SubstHandle,
-        f: impl FnOnce(&crate::kb::subst::Substitution) -> R,
-    ) -> R {
-        self.substs.with_subst(h, f)
-    }
-
-    /// Clone the substitution-arena handle. Useful when a caller needs to
-    /// borrow a substitution through the arena while also mutably borrowing
-    /// `kb`; both fields are independent, so the cloned `Rc` decouples the
-    /// arena borrow from any `&mut self` on the interpreter.
-    pub fn subst_arena(&self) -> subst_arena::SubstArenaRef {
-        self.substs.clone()
-    }
+    // No `with_subst` / `subst_arena` here (WI-20260923-9R5HN): a substitution is read
+    // through its HANDLE (`SubstHandle::with_subst`), which carries the arena that minted
+    // it. An interpreter-side reader indexed `self.substs` with a handle another
+    // interpreter may have minted — see that method.
 
     /// Allocate a stream source, returning an owning handle.
     pub fn alloc_stream(&self, src: stream::StreamSource) -> value::StreamHandle {
         self.streams.alloc(src)
     }
 
-    /// Pump a stream by one step. Returns `Some((value, continuation))` for
-    /// a yielded element, or `None` on exhaustion. The continuation is a
-    /// fresh handle sharing the underlying arena slot(s) — for `Resolver`
-    /// it's the same slot advanced in place; for `MPlus` with `left`
-    /// exhausted, it's the `right` child's handle.
-    ///
-    /// Resolver yields land as a reflect `Solution` value (WI-531) —
-    /// `definite(subst)` or `undecided(subst, residual)` — built by
-    /// [`Self::make_solution_value`]. `subst` is a `Value::Substitution`
-    /// handle into the per-interpreter arena (read via `Substitution.lookup` /
-    /// `.apply`); the floundered `undecided` case additionally carries the
-    /// undischarged goals as a `List[Term]`, so the residual is no longer
-    /// silently dropped here.
     /// The symbols currently bound to a host builtin.
     ///
-    /// Exposed so a driver that installs TWO registries can assert they are DISJOINT.
-    /// [`Self::register_builtin`] is a plain map insert — LAST WINS — so an overlap
-    /// silently replaces one implementation with the other. That is not hypothetical:
-    /// WI-759 found `anthill.reflect.field_access` bound in both `anthill-core`'s
-    /// standard set (the production implementation every desugared `x.f` runs through)
-    /// and `anthill-stl`'s reflect set (a declared-but-never-live shape that would reject
-    /// every projection the typer synthesizes). It was harmless only because nothing but
-    /// its own tests ever called `register_reflect_builtins` — the condition WI-SPGBP
-    /// ends. So the disjointness is CHECKED rather than assumed.
+    /// Exposed so a test can hold the registry to the mapping index: every operation
+    /// registered here must be one `is_interpreter_mapped_op` can see
+    /// (`wi_brt4y_host_implemented_test`). It was exposed first to check that TWO
+    /// registries stayed disjoint — [`Self::register_builtin`] is a plain map insert,
+    /// LAST WINS, and WI-759 found `field_access` shadowed by anthill-stl's second set —
+    /// until WI-20260923-9R5HN folded that set into the one.
     pub fn registered_builtin_symbols(&self) -> Vec<Symbol> {
         self.builtins.keys().copied().collect()
     }
@@ -1827,6 +1958,19 @@ impl Interpreter {
         self.stack.depth()
     }
 
+    /// Pump a stream by one step. Returns `Some((value, continuation))` for
+    /// a yielded element, or `None` on exhaustion. The continuation is a
+    /// fresh handle sharing the underlying arena slot(s) — for `Resolver`
+    /// it's the same slot advanced in place; for `MPlus` with `left`
+    /// exhausted, it's the `right` child's handle.
+    ///
+    /// Resolver yields land as a reflect `Solution` value (WI-531) —
+    /// `definite(subst)` or `undecided(subst, residual)` — built by
+    /// [`Self::make_solution_value`]. `subst` is a `Value::Substitution`
+    /// handle into this interpreter's arena, read through the handle wherever it
+    /// travels (`Substitution.lookup` / `.apply`, WI-20260923-9R5HN); the floundered
+    /// `undecided` case additionally carries the undischarged goals as a
+    /// `List[Term]`, so the residual is no longer silently dropped here.
     pub fn stream_split_first(
         &mut self,
         handle: &value::StreamHandle,
@@ -1850,8 +1994,8 @@ impl Interpreter {
             Faulted,
         }
 
-        let arena = self.streams.clone();
-        let action = arena.with_source_mut(handle, |src| match src {
+        // Through the HANDLE's arena (`StreamHandle::with_source_mut`, WI-20260923-9R5HN).
+        let action = handle.with_source_mut(|src| match src {
             StreamSource::Empty => (StreamSource::Empty, Action::Done),
             StreamSource::Faulted => (StreamSource::Faulted, Action::Faulted),
             StreamSource::Resolver {
@@ -1933,11 +2077,10 @@ impl Interpreter {
             Action::YieldSelf(v) => Ok(Some((v, handle.clone()))),
             Action::PumpResolver(stream) => {
                 let result = stream.split_first(&mut self.kb);
-                let stream_arena = self.streams.clone();
                 match result {
                     Err(fault) => Err(self.fault_stream(handle, fault)),
                     Ok(Some((sol, rest))) => {
-                        stream_arena.with_source_mut(handle, |prev| {
+                        handle.with_source_mut(|prev| {
                             // Carry the layer forward onto the continuation — the
                             // rest of the search reads the same scoped KB.
                             let layer = match prev {
@@ -1958,7 +2101,7 @@ impl Interpreter {
                         Ok(Some((solution, handle.clone())))
                     }
                     Ok(None) => {
-                        stream_arena.with_source_mut(handle, |_| (StreamSource::Empty, ()));
+                        handle.with_source_mut(|_| (StreamSource::Empty, ()));
                         Ok(None)
                     }
                 }
@@ -1968,7 +2111,6 @@ impl Interpreter {
                 // the relation's free variables (`columns`) — the one place a
                 // relation solution becomes a value row.
                 let result = search.split_first(&mut self.kb);
-                let stream_arena = self.streams.clone();
                 match result {
                     // WI-20260911-8Y5BE — the RELATION face takes the same fault arm. It
                     // used to raise `relation_floundered` for a faulted goal (which
@@ -1978,7 +2120,7 @@ impl Interpreter {
                     Err(fault) => Err(self.fault_stream(handle, fault)),
                     Ok(Some((sol, rest))) => {
                         let cols = columns.clone();
-                        stream_arena.with_source_mut(handle, move |_| {
+                        handle.with_source_mut(move |_| {
                             (
                                 StreamSource::MaterializedResolver {
                                     search: Some(rest),
@@ -1991,15 +2133,14 @@ impl Interpreter {
                         Ok(Some((row, handle.clone())))
                     }
                     Ok(None) => {
-                        stream_arena.with_source_mut(handle, |_| (StreamSource::Empty, ()));
+                        handle.with_source_mut(|_| (StreamSource::Empty, ()));
                         Ok(None)
                     }
                 }
             }
             Action::PumpLeft { left, right } => match self.stream_split_first(&left)? {
                 Some((v, left_rest)) => {
-                    let arena = self.streams.clone();
-                    arena.with_source_mut(handle, |_| {
+                    handle.with_source_mut(|_| {
                         (
                             StreamSource::MPlus {
                                 left: left_rest,
@@ -2030,9 +2171,7 @@ impl Interpreter {
         handle: &value::StreamHandle,
         fault: crate::kb::resolve::SearchFault,
     ) -> EvalError {
-        self.streams
-            .clone()
-            .with_source_mut(handle, |_| (stream::StreamSource::Faulted, ()));
+        handle.with_source_mut(|_| (stream::StreamSource::Faulted, ()));
         self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at)
     }
 

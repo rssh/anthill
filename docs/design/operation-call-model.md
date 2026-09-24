@@ -972,10 +972,25 @@ The host API is value-level only; the **typer** doesn't see the caller's intent.
 
 `Interpreter::alloc_dictionary_unchecked` builds a dictionary of any shape and is NOT the host constructor: it exists for fixtures that drive the value carrier (a projection reading slot `k`, `Dictionary.impl` reading a symbol back), where the pair is not a claim about any spec.
 
+### A parameter's unwritten named slot → `Interpreter::call_with_witnesses(qname, args, witnesses)`
+
+`operation has(s: MySet[T = String], x: String)` over `enum MySet requires O: WeakOrd[T]` leaves `O` unwritten, so the op-scoped slot EE0EP synthesizes for it holds the ARGUMENT's own dictionary — read, at a typed call site, out of the argument's type. A host has only the value, which carries its sort and none of its type arguments. `interp.call` fills the slot only when `WeakOrd[T = String]` has exactly one provider (the value's construction had to choose it); with several, the slot is a recorded absence, and a body that reads it is refused naming `s.O` (WI-20260922-ATFGH). It is never filled by a ranking — specificity or 058 §3.2's default — which answers "which provider wins", not "which one built this value"; the default measurably built `String`'s own ordering for a `ByLength` set.
+
+The host spelling names the WITNESS per slot:
+
+```rust
+interp.call_with_witnesses("pkg.Bulk.has",
+                           &[set, Value::Str("aa".into())],
+                           &[SlotWitness { param: "s", slot: "O", witness: "pkg.ByLength" }])?;
+```
+
+The witness becomes the same bare instance selection a typed call makes for a bare witness, and its own conditions resolve as its sub-goals. A slot the op does not have, a slot named twice, an unknown witness, a goal the arguments do not pin, a witness that does not answer the goal, and an op with no body of its own (entered by value-directed dispatch, which would discard the witness) are each refused at the entry. Everything else is `interp.call`'s. Not by passing types: the dictionary is what runtime needs, and the type is only where a typed call reads the witness from. An entry needing both `call_with_requirements`' cross-sort dictionaries and a witness has no single spelling yet; nothing in tree is both.
+
 ### When to pick which
 
 - `interp.call` is the default. Use it for any op whose parent sort declares only same-sort `requires`, or no `requires` at all. The seeded placeholders sit unused by such bodies and cost nothing.
 - `interp.call_with_requirements` is mandatory when the entry op's parent sort declares cross-sort `requires`. Without it, dispatch through those slots fails at runtime.
+- `interp.call_with_witnesses` is needed when the entry op has a parameter that leaves a named requirement slot unwritten, its body reads that slot, and the slot's goal has more than one provider. Without it, the read is refused naming the slot.
 
 Inference of the right dictionary from the value-level args (e.g. peek at the `wis(...)` functor inside a `Cell[?S]` argument to deduce `State = WIS` and select FileBasedWorkitemStore) is a future direction — `call_with_requirements` is the explicit-impl baseline that ships first.
 

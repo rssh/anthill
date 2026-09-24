@@ -58,7 +58,7 @@ namespace anthill.kernel
   -- rule-body goal means this one, an operation-body expression means `Bool.not`
   -- — and the reason it must be by position rather than by proposal 052's uniform
   -- `eq(op(args), true)` routing is written up in 052 §Open questions 7.
-  operation not(query: Term) -> Bool
+  operation not(query: Term) -> Bool @[host_implemented]
 
   -- Structural unification (proposal 049). The object-level face of `<=>`
   -- (and `let ?v = e`): resolver-implemented, carrier-agnostic, binding via a

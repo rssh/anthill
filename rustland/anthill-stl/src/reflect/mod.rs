@@ -1,8 +1,10 @@
 #![allow(unused_imports)]
 
 pub mod bridge;
-pub mod builtins;
-pub(crate) mod reader;
+// The eval-time builtins and the shared KB reader moved to anthill-core
+// (WI-20260923-9R5HN): `eval::reflect_builtins` and `kb::reflect_reader`. The
+// builtins are `HOST_FNS` rows named by this crate's `anthill/reflect.anthill`
+// binding blocks, which a closed registry can only do from the crate that owns it.
 
 use anthill_core::eval::Value;
 use anthill_core::intern::Symbol as CoreSymbol;

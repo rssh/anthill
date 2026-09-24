@@ -195,11 +195,14 @@ fn a_namespace_level_mapping_is_registered_and_reduces() {
     );
     // THE CONTROL: an operation of this namespace that is NOT mapped stays unmapped, so
     // the assertions above are not passing off a predicate that answers true for
-    // anything. `sort_as_term` is declared and implemented NOWHERE — the "worse case"
-    // the WI-880 feedback separates from the split this ticket owns.
+    // anything. `occurrence_span` is namespace-level like the four above and has no eval
+    // face at all — it is a resolver primitive (`BuiltinTag::OccurrenceSpan`) — so no
+    // binding block maps it. This row read `sort_as_term`, declared and implemented
+    // nowhere at WI-880; WI-20260923-9R5HN mapped that one with the rest of anthill-stl's
+    // reflect set.
     assert!(
-        !kb.is_host_mapped_op(sym("anthill.reflect.sort_as_term")),
-        "the control: a declared-but-unimplemented reflect operation is not host-mapped"
+        !kb.is_host_mapped_op(sym("anthill.reflect.occurrence_span")),
+        "the control: a reflect operation no binding block maps is not host-mapped"
     );
 }
 

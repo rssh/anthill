@@ -5950,7 +5950,7 @@ impl KnowledgeBase {
     /// leaf. The delay test for `nonvar`/`cmp`/`arith`.
     ///
     /// WI-982 — THE ONE OWNER of "is this a variable?", for every phase. The
-    /// reflect host op `anthill.reflect.nonvar` (anthill-stl `nonvar_op`) is its
+    /// reflect host op `anthill.reflect.nonvar` (`eval::reflect_builtins::nonvar_op`) is its
     /// eval-time reading, so `pub`. It had a second, TermId-only derivation
     /// (`matches!(get_term(tid), Term::Var(_))` behind an `expect_term` that hard-
     /// rejected every other carrier), which answered BY CARRIER rather than by
@@ -6395,7 +6395,7 @@ impl KnowledgeBase {
     /// both read through [`TermView`] — no reify.
     ///
     /// WI-913: THE OTHER BACKING of `anthill.reflect.lookup_symbol`. The eval side
-    /// (`anthill-stl/src/reflect/builtins.rs::lookup_symbol_op`) answers the same
+    /// (`eval/reflect_builtins.rs::lookup_symbol_op`) answers the same
     /// declared operation for a caller in expression position, so the two must ask
     /// one question — the WI-984 rule, learned when `scope` had two backings and no
     /// shared answer. Both now read [`KnowledgeBase::resolve_name_in_global`], where
@@ -9535,8 +9535,9 @@ impl KnowledgeBase {
         // plays several roles (§6.3) still shows the one it was written as.
         //
         // WI-898: through the shared `reflect_name` table, so this reader and the
-        // `anthill-stl` eval bridge cannot answer differently — they each carried
-        // their own exhaustive copy, and a new kind meant editing both.
+        // eval-side `kind` (`eval::reflect_builtins::kind_op`) cannot answer
+        // differently — they each carried their own exhaustive copy, and a new kind
+        // meant editing both.
         let kind_str = match self.symbols.get(sym).primary_kind() {
             Some(kind) => kind.reflect_name(),
             _ => return BuiltinResult::Failure,
@@ -10832,20 +10833,30 @@ impl KnowledgeBase {
     ///   answered here rather than merely delayed.
     /// - **pure** — effects are contained by construction: the scratch
     ///   interpreter's effect registry is EMPTY (an effect → unhandled → error →
-    ///   residualize) and its arenas (`Cell`/`Map`/…) are fresh and DROPPED with
-    ///   it, so a bridged body cannot mutate resolver-visible state; the only
-    ///   shared store is the KB's monotonic term interner. So re-running the
-    ///   bridge on a resolver backtrack is idempotent.
+    ///   residualize), and a host callee reduces here only if it declares NO
+    ///   effect row ([`Self::host_op_reducible_at_a_value`]), so a bridged body
+    ///   cannot mutate resolver-visible state; the only shared store is the KB's
+    ///   monotonic term interner. So re-running the bridge on a resolver backtrack
+    ///   is idempotent.
+    ///
+    ///   The arenas are fresh, but NOT everything minted in them dies with the
+    ///   interpreter (WI-20260923-9R5HN): a handle the bridge returns (a closure, a
+    ///   map, a substitution) carries its arena and lives on in σ, and the next
+    ///   rule-body call reads it from another scratch interpreter — through the
+    ///   HANDLE, never the reader's own arena. That is only READING: a `Map` is
+    ///   persistent, a closure and a substitution are immutable, and the operations
+    ///   that would write through a σ-bound handle (`Cell.set`, a stream pull —
+    ///   `splitFirst`'s `effects s.E`) declare effects, which is what keeps them out.
     /// - **suspend** — the scratch interpreter runs in `bridge_mode`, so a
     ///   semantic comparison that reaches an undecided point (truncation, or a
     ///   buried override) raises [`EvalError::Suspended`] → residualize, so an
     ///   undecided body delays rather than injecting a wrong definite answer.
     ///
     /// Returns `Some(value)` only when the interpreter DECIDED a concrete value.
-    /// Note the reflect builtins (`anthill.reflect.*`) live in the downstream
-    /// `anthill-stl` crate and are NOT registered here, so a body dispatching to
-    /// one hits the dispatch fall-through — `OperationBodyMissing` for these
-    /// declared ops since WI-818 — → residualize (a benign capability gap).
+    /// The reflect builtins ARE registered here since WI-20260923-9R5HN — they are
+    /// `HOST_FNS` rows like every other host implementation. (They lived in the
+    /// downstream `anthill-stl` crate before, so a body dispatching to one fell through
+    /// to `OperationBodyMissing` → residualize.)
     ///
     /// WI-20260911-0V0F7 — `None` NO LONGER MEANS ONE THING. It still means "do not
     /// reduce this operand", which is all a caller can act on; what the caller is TOLD
@@ -10959,10 +10970,12 @@ impl KnowledgeBase {
     /// (resolution + its bridged evals run on one thread), so it survives the
     /// `mem::take` of `self`.
     ///
-    /// The scratch interpreter's effect registry is EMPTY and its arenas
-    /// (`Cell`/`Map`/…) are fresh and dropped with it, so a bridged run cannot
-    /// mutate resolver-visible state — re-running on a resolver backtrack is
-    /// idempotent; the only shared store is the KB's monotonic term interner.
+    /// The scratch interpreter's effect registry is EMPTY and its arenas are fresh,
+    /// so a bridged run cannot mutate resolver-visible state — re-running on a
+    /// resolver backtrack is idempotent; the only shared store is the KB's monotonic
+    /// term interner. A HANDLE it returns outlives it in σ and is read later from
+    /// another scratch interpreter; see [`Self::bridge_op_to_eval`]'s "pure" for why
+    /// that stays read-only.
     /// Re-registering the builtins per call is the simple-correct choice (the
     /// interpreter owns the lent KB, so they can't persist across calls); a
     /// registration failure surfaces as `Some(Err(_))`, which callers residualize.

@@ -1291,6 +1291,19 @@ pub(super) fn values_structurally_equal(kb: &KnowledgeBase, a: TermId, b: TermId
     }
 }
 
+/// WI-20260922-ATFGH — [`DefaultRung::Unranked`]'s choice: the candidate when every
+/// candidate is ONE provider (a provider may contribute several rows — a written
+/// provision and a derived one — and those are one choice, not a tie), else `None`.
+/// Among one provider's rows the most specific is taken, then the first.
+pub(super) fn sole_provider(kb: &KnowledgeBase, candidates: &[Candidate]) -> Option<usize> {
+    let first = candidates.first()?.impl_sort;
+    let canon = kb.canonical_sort_sym(first);
+    candidates
+        .iter()
+        .all(|c| c.impl_sort == first || kb.canonical_sort_sym(c.impl_sort) == canon)
+        .then(|| pick_most_specific(kb, candidates).unwrap_or(0))
+}
+
 /// Coherence-by-specificity. Picks the candidate with the strictly-
 /// highest `head_specificity` count. Returns `None` if no unique
 /// winner (multiple candidates tied at the max).

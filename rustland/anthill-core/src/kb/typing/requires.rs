@@ -115,6 +115,33 @@ pub enum SupplySource {
     },
 }
 
+impl SupplySource {
+    /// WI-20260922-ATFGH — the `(parameter, binder)` whose ARGUMENT TYPE carries this
+    /// slot's witness, for a slot whose evidence exists ONLY in a type. `None` for a slot
+    /// that is answered by resolving its spec.
+    ///
+    /// THE QUESTION A ROUTE WITH NO TYPES MUST ASK FIRST. The host entry, the SLD bridge
+    /// and value-directed dispatch all fill a frame from ground argument VALUES
+    /// ([`resolve_bridge_requirements`]), and a value carries its sort and none of its
+    /// type arguments (058 §4.7). For a slot this answers `Some` for, the search at those
+    /// values may answer only when it has ONE answer — the value's construction had to
+    /// choose a provider of the goal, so a unique one is exact — and never by a RANKING
+    /// among several ([`DefaultRung::Unranked`]: neither 058 §3.2's default nor
+    /// specificity): "which provider does the search prefer" is not "which one did this
+    /// value's construction choose". MEASURED: with the default consulted, the host entry
+    /// built `String`'s own ordering for a set constructed at `ByLength`.
+    ///
+    /// EXHAUSTIVE ON PURPOSE. The property is "the witness lives in a type", not "the
+    /// slot was synthesized": a match on the variant would let the next supply kind that
+    /// reads a type inherit the default in silence, which is the hole this closes.
+    pub(crate) fn witness_in_argument_type(self) -> Option<(Symbol, Symbol)> {
+        match self {
+            SupplySource::FromParam { param, binder } => Some((param, binder)),
+            SupplySource::Required | SupplySource::SelfSupplied => None,
+        }
+    }
+}
+
 /// A kb-free identity for a `RequiresEntry.spec`, so `RequiresEntry` can key the
 /// `resolve_cache` scope (mod.rs) without `Value` gaining a structural `Eq`/`Hash`
 /// (WI-486 deliberately routes value equality through `views_structurally_equal`,
