@@ -26,7 +26,9 @@
 //! ~30 sites — [`Dictionary::impl_sort`], [`Dictionary::arity`],
 //! [`Dictionary::sub`] — are **total**, with the one shape check paid at the
 //! boundary where a `Value` of unknown provenance arrives
-//! ([`Dictionary::from_value`], which validates the WHOLE tree). That is the
+//! ([`Dictionary::from_value`], which validates the WHOLE tree, and its
+//! carrier-neutral twin [`Dictionary::from_view`] for a dictionary on another
+//! carrier — the reflect face's `expect_dictionary` tries both). That is the
 //! repo's make-illegal-states-unrepresentable rule applied to a carrier that,
 //! by §9, must not be a variant of its own.
 //!
@@ -139,11 +141,14 @@ impl Dictionary {
     /// `dictionary_dispatch_target` as `Value::Node(Expr::Dictionary { .. })`, and
     /// `from_value` answers `None` for it.
     ///
-    /// **NOT MERGED INTO `from_value`, and the reason is a census I did not take.** That
-    /// function is documented as THE ONE boundary check and is read on eval's hot paths;
-    /// widening it would widen every one of its callers at once, and its fast path
-    /// (wrap the value that was handed in, allocating nothing) is a property this
-    /// rebuild cannot keep. So the two are kept apart, and what stops them drifting is
+    /// **NOT MERGED INTO `from_value`, because the fast path is the difference.**
+    /// `from_value` wraps the value it was handed and allocates nothing; this rebuilds.
+    /// Its one production caller, the reflect face's `expect_dictionary`
+    /// (`eval/builtins.rs`), tries it FIRST and falls back here — WI-20260911-5G28A
+    /// measured a head-passed dictionary reaching `Dictionary.sub` on the occurrence
+    /// carrier and being refused before it did. A new reader of a dictionary of unknown
+    /// provenance goes through that function, not `from_value` alone. So the two are
+    /// kept apart, and what stops them drifting is
     /// that they answer the same question about the same three carriers: any change to
     /// the SHAPE — the functor, the single `impl` child, sub-dictionaries positional —
     /// must land in both, and each names the other.

@@ -18,12 +18,12 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §2.2 a sort defines its `domain` | mode-(out) enumeration | WI-743 | **delivered** — §7 |
 | §2.2 the VALUE face `<Sort>.domain` | the domain cited as a `Relation` | **WI-20260911-WT8WG** | **delivered** for a sort with no type parameters — §7.1; the parameterised half waits on §7.3 |
 | §2.2 / §8.1 rule-head type VARIABLES | a bound's variable is a clause variable | **WI-20260911-5G28A** | **delivered** except the citation bracket — §7.2 |
-| §2.2 / §8.1 the citation BRACKET | which instance a citation means | **WI-20260911-5G28A** | **design settled, not built** — §7.3 |
+| §2.2 / §8.1 the citation BRACKET | which instance a citation means | **WI-20260911-5G28A** | **redesigned 2026-09-24 onto the requirement channel** — §7.3: L3 and the projection gate delivered, S1–S7 planned |
 | §3 anchor (requirement half) | covered body call grounds the spec | WI-1040 | delivered |
 | §3 anchor (typed-head half) | `?x: T` grounds the spec | WI-20260909-QMFC5 | **delivered** — §8, mechanism at §8.2–§8.6 |
 | channel §10 item 1 | retain the spec's type-args | WI-20260909-51W18 | **delivered** — §8.6 |
 | §3 anchor, CHECK tier | `requires(X)` under an anchor | **WI-20260909-QMFC5** | **delivered** — emits the same goal as the bind tier, §8.8 |
-| channel §10 item 3 | op→rule dictionary channel (polytypes) | WI-20260909-NAR1X | **delivered** — the ground edge; the GENERATIVE one is nobody's, §8.10 |
+| channel §10 item 3 | op→rule dictionary channel (polytypes) | WI-20260909-NAR1X | **delivered** — the ground edge; the GENERATIVE one (a citation) is planned as §7.3's S2 |
 | channel §10 item 4 | a requirement written at a path projection | WI-20260909-S8CBV | **delivered** for both surfaces — operation `requires` and the rule-body bracket, §8.5; the ATTRIBUTION by root is **not built** |
 | §3 anchor, MULTI-PARAMETER specs | the fetch reads the written bracket | **WI-20260913-J38VE** | **delivered** — §8.6; the bracket rides slot 0 to the fetch on BOTH producers |
 | §4 determinism | fetch, never choose | WI-855/857/860 | delivered (058) |
@@ -489,165 +489,191 @@ pre-ticket representation, and reaching it from a citation is the half below.
 a clause variable. `Wrap[T = Colour].dom` and bare `Wrap.dom` are still indistinguishable,
 and `List[T = Letter].domain` keeps §7.1's load error. Its design is §7.3.
 
-## 7.3 The CITATION BRACKET — `Wrap[T = Colour].dom` — WI-20260911-5G28A
+## 7.3 The CITATION — which instance a rule citation means, carried by the REQUIREMENT CHANNEL — WI-20260911-5G28A
 
-§7.2 made a bound's type variable a clause variable. This is the other end of it: how a
-CITATION says which instance it means, so that variable is decided rather than left free.
+**REWRITTEN 2026-09-24.** The version this replaces carried the citation's TYPE beside the
+goal and resolved a rigid through `Frame::type_args`. That channel no longer exists
+(WI-20260921-28TAT deleted it with the typer's `set_resolved_type_args` stamp), and a type
+could not have carried what the case needs anyway: the caller's CHOICE of provider. The
+citation's instance now travels as EVIDENCE — dictionaries — through the requirement channel
+of [`op-to-rule-requirement-channel.md`](./op-to-rule-requirement-channel.md), and
+[`060-typedomains-implementation.md`](./060-typedomains-implementation.md) is how a DOMAIN
+becomes such evidence. What the old version measured and delivered is kept below, marked.
 
-The equation, and the whole of the design:
-
-```
-Wrap[T = Colour].dom(?x)   ==   dom(?x)        -- the goal keeps the shape the author wrote
-                                Wrap.T := Colour  -- riding BESIDE it, resolved at evaluation
-```
-
-**THE TYPE IS NOT AN ARGUMENT.** The goal reaching SLD is the one the head declares; the
-type travels next to it, the way a requirement dictionary travels in `Frame::requirements`
-rather than as an extra parameter. The resolver reads it when it opens the clause and binds
-the clause's own bound variable from it. Nothing that counts arguments sees it — not the
-arity checks, not the discrimination index, not a body goal, not the spec-op dispatch
-bridge.
-
-### What is wrong today
-
-MEASURED 2026-09-12 on `575683e5`, with `sort Wrap[T] { entity wrap(v: T); rule dom(?x:
-Wrap[T = T]) :- true }` beside `sort Colour { red green blue }`:
-
-| citation, in an operation body | load | eval |
-|---|---|---|
-| `Wrap[T = Colour].dom.takeN(5).length()` | clean | RAISES |
-| `Wrap[W = Colour].dom.takeN(5)` — bogus `W`, paren-less | clean | — |
-| `Wrap[W = Colour].dom().takeN(5)` — bogus `W`, applied | refused: "has no type parameter named 'W'" | — |
-| `Wrap.dom.takeN(5).length()` — no bracket at all | clean | RAISES |
-| `List[T = Letter].domain.takeN(5)` | refused, naming 5G28A (§7.1's arm) | — |
-
-RAISES is `Err(Raised …)` at the first row, `takeN(1)` included: the appended member goal
-carries `Wrap[T = ?T]` with `?T` the clause's own variable, which `bindable_type_var`
-rightly refuses to pin from one value, so the goal delays and the drain flounders.
-
-**THREE DEFECTS, and they are not one:**
-
-1. **The paren-less bracket is ERASED before any validation** — `convert.rs`'s
-   `collect_field_access_segments` `application` arm ("bindings erased") for a dot CALL's
-   receiver chain. The APPLIED spelling reaches `build_recv_type` and IS validated, then
-   dropped by the typer. So the same mistake is loud in one spelling and silent in the other.
-2. **The citation types the columns at the clause's own variable**, which is neither a
-   wildcard nor pinnable, so the AGREEING instance is refused with the same message as the
-   wrong one — a false refusal of a correct program, in every position that reads a column
-   type.
-3. **A paren-less bracketed chain followed by a projection is not recognised as a citation
-   at all**: `field_access_dotted_name_of` needs a `Term::Ident` root and 4NEKZ's
-   `loader_chain_dotted_name` an `Expr::Ref` root, and a type application is neither.
-
-**(1) AND (3) ARE CLOSED — L3, DELIVERED 2026-09-23.** Both at ONE site, the converter,
-rather than the two the step list below names: `convert_paren_less_citation` lowers a
-`field_access` whose object is an `application` to the very term the applied spelling
-builds (`Fn{Sort.rel}`, no arguments, the bracket on `recv_type`), and `is_value_receiver`
-treats that node as a value, so `Sort[…].rel.takeN(5)` and `Sort[…].rel.head.x` dispatch on
-the citation instead of flattening the chain. The loader then needs no new rung — its
-applied path validates the bracket through `build_recv_type` — only a refusal, in an
-operation or const body, for a paren-less node whose functor RESOLVES and is not rule-ish
-(`LoadError::ParenLessCitationOfNonRule`: `Box[T = Int64].zero`; the bare `Box.zero` names
-no operation either). A RULE BODY takes the applied reading with no refusal, and that closed
-a silent wrong answer there: `:- Wrap[T = Colour].holds` answered nothing where the bare
-goal answers. In a rule-body DATA slot the applied reading calls a nullary operation —
-`?y <=> Box[T = Int64].zero` binds 0, as the applied spelling and §5.4's bare one-segment
-`zero` do, where it bound the data term `zero` (as the bare DOTTED `Box.zero` did until the
-follow-up that made a dotted nullary operation its call in a rule body). The LOUD verdict changes, over an empty corpus population: `Outer[T =
-Int64].Inner.op()` is refused (it loaded, the bracket erased on the way to `Outer.Inner.op`);
-a bracketed paren-less entity in a rule body, a bracketed citation in a `fact` data slot, and
-a bracketed paren-less rule HEAD (`rule Wrap[T = Colour].holds :- true`) now meet the W6JH0
-unread-bracket sweep, as their applied spellings always did; and a query pattern refuses
-every bracket by name (`query_bracket_errors`), where the applied and call-site spellings
-PANICKED `convert_query_term` on every tree and the paren-less one would have joined them.
-Defect (2) is untouched and now reads the same for both spellings: `Wrap[T =
-Colour].dom.head.x -> Wrap[T = Colour]` is refused `got Wrap[T = ?T]`. Rows:
-`wi_5g28a_paren_less_citation_test.rs`.
-
-### Why the type rides beside the goal and not as an extra head argument
-
-The alternative — one trailing positional per enclosing-sort type parameter, appended to
-the stored head, excluded from `rule_head_var_slots` so it is not a column — was designed,
-BUILT, and measured. Two measurements rejected it.
-
-**THE CORPUS IS NOT EMPTY, and the population is the wrong one.** An earlier text census
-reported zero relational rules declared inside a parameterised sort body. MEASURED instead,
-by building the append and instrumenting it on a stdlib load: seven clauses under four
-predicates — `Set.eq` (1), `Set.subset` (2), `Set.contains` (2), and `Lattice.less` (2,
-written in `BoundedLattice`) — plus `Stack.is_full` and `Mid.rel` in the fixtures. **Not
-one of them carries a head bound**, so the argument would be a channel their clauses never
-read. 13 tests went red, and the group that names the reach is `wi616`/`wi625`/`wi939`:
-they drive `Set.eq` through the SPEC-OP DISPATCH BRIDGE, which builds its goal at the
-WRITTEN arity. An argument changes arity, so every such site must be found and fixed.
-
-**AND THE TYPER IS THE WRONG PASS TO FILL IT.** This is the measurement that decides, and
-it is about WHEN the type is known, not about cost. With the type as a head argument, the
-typer is what pins it — so inside
+The equation, on the case that drives it (demo2, `wi_5g28a_rule_dictionary_test.rs` §3):
 
 ```anthill
-operation g[T]() -> Int64 = List[T = T].domain.takeN(5).length()
+sort Wrap[T]
+  entity wrap(v: T)
+  rule top(?x: Wrap[T = T]) :- ?d = require[Score[T]], ?x <=> wrap(?v), Score.score(?v, 3)
+end
+
+operation topAt[X]() -> Wrap[T = X] requires Score[T = X], <domain of X> =
+  Wrap[T = X].top.head.x           -- the CITATION
 ```
 
-the argument is pinned to `g`'s **rigid** `T`, and the goal reaching the resolver carries a
-rigid. A rigid has no constructors, so the member goal cannot enumerate: it delays, and a
-CORRECT program gets the RAISES column above. The real type is known only at `g[Colour]()`,
-at RUN time — which is exactly where `Frame::type_args` holds it (WI-272,
-`(declared-param-name, resolved-type-term)`) and where `inherit_enclosing_sort_type_args`
-already carries a sort's parameters into a sibling's frame. Reading the frame at evaluation
-is native to the beside-the-goal shape and bolted onto the argument one.
+`top` has IMPLICIT PARAMETERS — the requirement reads of its clauses — and the citation fills
+them from `topAt`'s own requirement slots:
 
-**THE PREMISE OF THE ARGUMENT SHAPE WAS THE CODEBASE'S OWN KNOWN-FALSE CLAIM.** It rested
-on "a rule has no frame channel — its head is its only interface". `resolve.rs`'s
-`ResolverFrame` documents that sentence as a defect: the claim "a rule has no caller to
-thread a dictionary into a frame" is *"written in `kb/typing.rs` and in
-`docs/design/requirement-dictionaries.md`, and FALSE … What this frame lacks is a
-requirement channel; it has callers, and it already threads a caller-inherited environment
-in `assumed_facts`."* The narrower measurement behind it stands — `eval::build_relation_value`
-does build the query from the head alone — but that is a fact about one code path, not
-about what a rule can have.
-
-**WHAT THE COMPARISON WITH THE REQUIREMENT CHANNEL SETTLES.** Read at its sites, that
-channel has four properties: its shape is DECLARED and never inferred (`dict_layout` is a
-structural recursion over `requires` declarations — there is no fixpoint over the call
-graph anywhere in it); EVERY member carries it, read or not; a nested call gets it by
-PROJECTING a subtree (`Frame::child_context` clones it, `dict.sub(k)` descends); and the
-two ends are checked against ONE predicted shape (`dict_layout` vs `DictLayout::from_halves`,
-compared by `divergence_from`). The type channel is the same kind of thing and is built the
-same way. In particular **there is no rule about which predicates "have" the channel** —
-that question only existed because an argument changes a head's shape and every clause of a
-predicate must agree. A clause whose bound mentions the receiver's parameter is pinned; one
-whose bound does not has nothing to pin, and whether its bracket means anything is decided
-at the TYPER, where the column types are.
-
-### The sites
-
-| step | site | what |
+| `top`'s implicit parameter | read in the clause by | filled at the citation with |
 |---|---|---|
-| **R0** | `ResolverFrame` | a type-argument channel, keyed by (sort, parameter symbol), inherited on push the way `assumed_facts` is |
-| **R1** | `step_choice_point`, at `with_fresh_vars` | open the clause's stored bounds against the fresh frame (`term_from_debruijn`, as `typed_pattern_bounds_hold` already does) and `pin_type_vars` the caller's type against each, binding into σ |
-| **E1** | `eval::build_relation_value` | attach the citation's types to the query, each walked through `Frame::type_args` FIRST so a rigid becomes the caller's real type |
-| **L3** — DELIVERED | `convert.rs` (`convert_paren_less_citation`, `is_value_receiver`); see "(1) and (3) are closed" above | lower a paren-less `Sort[…].rel` as the zero-argument APPLIED citation both engines already take, so defects (1) and (3) close together and the bracket is validated once |
-| **T1/T2** | `relation_clause_columns`, `relation_reference_type_applied` | pin the bracket per citation and write it to `resolved_type_args`; a RIGID pin is left OFF that channel deliberately, for E1 to resolve from the frame |
-| **W1** | `emit_domain_value_face`, `domain_value_face_refusal` | delete the parameterised arm; a parameterised sort derives its value face like any other |
+| the domain of `Wrap[T = T]` — generated for the typed column (S3) | `apply_domain(?xd, ?x)` | `Dictionary(<topAt's domain slot for X>, impl: Wrap)` — a provision over `topAt`'s slot |
+| `Score[T]` — written | `?d = require[Score[T]]` | `<topAt's Score[X] slot>` — `FromScope` |
 
-**R1 AND E1 DO NOT DEPEND ON R0**, which is why it is listed first but built last: a
-citation whose own clause carries the bound is pinned without any inheritance.
+**NO TYPE TRAVELS.** The typer reads the bracket to get the edge's σ (`T := X`), resolves each
+implicit parameter under it against `topAt`'s `requires` ∪ provisions, and writes ROUTES. Eval
+evaluates the routes in `topAt`'s frame when it builds the relation value. The resolver binds
+them to the clause's read variables when it opens the clause. The rigid `X` is never replaced
+by a type: the dictionary `topAt` was handed is the answer (proposal 065: "the evidence that
+selected the provision IS the type").
 
-### Not settled
+### Why the instance must be THREADED — the RIGID type variable
 
-**Whether the channel is INHERITED by a clause's body goals.** It decides one row:
-`rule again(?y) :- dom(?y)` inside `Wrap`, cited as `Wrap[T = Colour].again`. `again`
-carries no bound, so there is nothing on it to pin; inheritance (R0, the
-`Frame::child_context` analogue) makes the row answer, and a body goal writing its own
-bracket shadows it. The alternative is lexical — `again` must write
-`rule again(?y: Wrap[T = T]) :- dom(?y)` to be pinnable — which is one spelling the author
-must know and no dynamic scoping to explain. Inheritance is the requirement channel's
-answer to the same question; that is an argument for it, not a proof.
+**THE REASON IS THE RIGID, and it is why the channel exists at all** (060-typedomains §1: a
+type mentioned in a clause is resolved by the pass that types the clause). At a CONCRETE
+citation nothing has to be threaded: in `Wrap[T = Colour].dom` the typer knows the instance,
+so the edge check BUILDS `Dictionary(Dictionary(impl: Colour), impl: Wrap)` from provisions
+(op-to-rule §4's construction arm) and no caller slot is read. Inside `countAt[X]` it cannot:
+`X` is rigid, the body is typed once for every instantiation, and the instance exists only at
+`countAt[X = Colour]()` — in the caller's frame, as the dictionary its `requires` slot holds.
+A domain involves no CHOICE (a sort has one), so for the domain the rigid is the WHOLE reason
+it is threaded. This is also why the old version's route could not work: a type carried
+beside the goal is fixed by the typer, and for a rigid that is a name, not an instance.
 
-**Whether `Set[T = Int64].eq` is refused or is a no-op.** `Set.eq`'s clause never mentions
-`T`, so the bracket cannot change a single row. Refusing it is loud and honest; accepting
-it as a no-op is what an argument-shaped design would have done silently. The decision
-belongs at the typer, with the column types in hand, and is not made here.
+**A SECOND REASON, for the requirements a clause reads besides the domain: a CHOICE among
+providers.** Where rivals provide one spec, the caller's dictionary is the only thing that
+says which one — kernel-language.md's requires section: "a named slot is never recovered from
+a value", "the provider is the only thing the type was being read for". MEASURED on HEAD,
+with two rival `Ord[Int64]` witnesses beside `Int64`'s own
+(`wi_5g28a_rule_dictionary_test.rs` §1):
+
+| call, `compare(1, 5)` | answer | right |
+|---|---|---|
+| `direct[A = Int64, WeakOrd = Descending]` — operation → operation | `4` | yes |
+| `direct[… Ascending]` | `-4` | yes |
+| `viaRule[… Descending]` — operation → RULE citation | `-1` | **no** — `Int64`'s own |
+| `viaRule[… Ascending]` | `-1` | **no** |
+
+`viaRule[A]`'s citation is at a RIGID `A` too, so both reasons meet in this row: the typer
+cannot build `WeakOrd[A]`, and the caller's selection lives only in its dictionary. The
+citation drops that dictionary and the clause's `require` re-derives at the value's type,
+where 058 §3.2's default rung takes the carrier's own provision. A rule body cannot select a
+provider itself — the loader refuses a bracket there, "call an operation whose body carries
+the bracket" — so the passed dictionary is the only route a caller's choice has into a rule.
+
+**THE HEAD-ARGUMENT ALTERNATIVE STAYS REJECTED** (measured 2026-09-12, unchanged): one trailing
+head slot per enclosing-sort type parameter took 13 tests red — seven stdlib clauses under
+`Set.eq`, `Set.subset`, `Set.contains` and `Lattice.less`, none with a head bound, and the
+spec-op dispatch bridge builds its goals at the WRITTEN arity. Implicit arguments ride BESIDE
+the goal term (op-to-rule §6), so no arity, discrimination key or goal builder changes.
+
+### What is wrong today — measured
+
+On `sort Wrap[T] { entity wrap(v: T); rule dom(?x: Wrap[T = T]) :- true }` beside
+`sort Colour { red green blue }`, and the two drivers above:
+
+| program | today | right |
+|---|---|---|
+| `Wrap[T = Colour].dom.takeN(5).length()` | loads, then `relation_floundered` at run time | `3` |
+| `Wrap[T = Colour].dom.head.x`, returned as `Wrap[T = Colour]` | refused: `got Wrap[T = ?T]` | `wrap(red())` |
+| `Wrap.dom(wrap(red())).takeN(5).length()` | refused: "argument binding column `x` has an incompatible type" | `1` |
+| `Wrap.dom.takeN(5).length()` — nothing names `T` | loads, then flounders | refused at load, naming `T` |
+| `List[T = Letter].domain.takeN(5)` | refused, naming 5G28A (§7.1's arm) | 5 rows |
+| `viaRule[A = Int64, WeakOrd = Descending](1, 5)` | `-1`, silently | `4` |
+| demo2 `countAt[X = Colour, Score = ByHeat]()` | `0`, silently | `1` |
+| demo2 `topAt[X]()`'s body `Wrap[T = X].top.head.x` | refused: `expected Wrap[T = ?X], got Wrap[T = ?T]` | `wrap(red())` / `wrap(blue())` by provider |
+
+The false refusals are the old version's defect (2): the citation types a column at the
+clause's own `T` — `Wrap`'s canonical parameter, neither a wildcard nor pinnable — instead of
+at the bracket's. Its defects (1) and (3) — the paren-less bracket erased before validation,
+and a bracketed chain followed by a projection not recognised as a citation — are CLOSED by
+L3 (2026-09-23): `convert_paren_less_citation` lowers `Sort[…].rel` to the very term the
+applied `Sort[…].rel()` builds, so both spellings reach one lowering and the bracket is
+validated either way (`wi_5g28a_paren_less_citation_test.rs`).
+
+**TWO MORE DEFECTS, found driving demo2, neither 5G28A's own but both on its path:**
+
+| probe | today |
+|---|---|
+| `?x <=> wrap(?v), Score.score(?v, 3)` — the call's argument still unbound | no solutions, SILENTLY (bound first: `3`) — **WI-20260924-35E14** |
+| `?d = require[Score[T]], Score.score(red(), ?r)` — the only provider a WITNESS sort | no solutions, SILENTLY (no `require`: `3`; a carrier providing its own spec: answers) — **WI-20260924-DG57J** |
+
+The first is why demo2 answers `0`: the typed head's generator is APPENDED (§7), so the body's
+`Score.score(?v, 3)` runs before anything binds `?v`. It needs no witness to show: `rule
+late(x: Colour) :- Score.score(x, 3)`, with `Colour` providing `Score` itself, answers nothing
+where the generator-first twin answers `blue`. kernel-language.md's `Bool`-view passage records
+the same fall-through ("making that case *delay* instead is open follow-up work"). The second
+fails in the check-only form too — `requires(Score[T])` answers nothing — so it is the
+rule-body resolution missing a witness provision, not the read.
+
+### Delivered 2026-09-24 — a dictionary is an ordinary rule argument, and its subtree projects
+
+The gate the ticket set on 2026-09-12 ("if a dictionary cannot ride a generative rule call and
+be projected, nothing else matters"). A dictionary DERIVED in one clause rides a GENERATIVE
+call as an ordinary head argument, intact — `Dictionary(Dictionary(impl: Sum), impl: Wrap)` —
+and `Dictionary.sub(?d, 0)` projects the element's. The projection FAILED on HEAD ("expected
+Dictionary, got Node"): the reflect `Dictionary.*` operations read a dictionary through
+`Dictionary::from_value`, which matches the value carrier only, and a head-passed dictionary
+arrives on the occurrence carrier — the gap NAR1X closed for DISPATCH
+(`dictionary_dispatch_target` reads through `from_view`) and not here. `expect_dictionary`
+now tries `from_value`, then `from_view`. The projection then crosses a second head and is
+read and CHECKED (WI-860) like any other dictionary. Rows and the measured back-out:
+`wi_5g28a_rule_dictionary_test.rs` §2.
+
+### The plan
+
+Each step names the pinned row it flips. S1–S3 are the channel; S4 lifts WT8WG; S5 is the
+two defects above, which demo2 needs and 5G28A does not own; S7 is the channel's general
+case.
+
+| step | what | where | flips |
+|---|---|---|---|
+| **S1** | THE TYPER READS THE BRACKET. Per citation, the enclosing sort's parameters in the clause's bounds open as fresh variables (as `relation_clause_columns` already opens clause variables); the bracket seeds them BY SHORT NAME, the helper shared with `seed_receiver_type_args`; the expected type and an applied argument reach them through σ. A parameter still free when the walk ends is refused with WI-270's message (`check_unconstrained_type_params`), held to the walk's end the way 50B2K's deferral is, because the pin may arrive from a consumer ABOVE the citation (`.head.x` against the return). S1's σ is also what S2's edge check resolves under. | `kb/typing/relation.rs` (`relation_clause_columns`, `relation_reference_type(_applied)`) | the three false refusals in the table (demo2's `topAt` among them); `Wrap.dom.takeN(5)` becomes a load error. The generative ones still flounder, pinned, until S3 |
+| **S2** | CROSSING 2 FOR REQUIREMENT READS (op-to-rule §7 steps 1 and 4, at the citation edge). (a) A predicate's implicit-parameter SEQUENCE: its clauses' `require[X]` reads over the head's column types, with each clause's read-variable index. (b) THE EDGE CHECK at a citation in an operation body: under S1's σ, resolve each entry against the caller's `requires` ∪ provisions — `FromScope`, a construction, or a refusal (≥ 2 covering; a declared type with no answer) — and write the routes on the citation occurrence. (c) CAPTURE at `build_relation_value`: evaluate the routes in the current frame (`FromScope(k)` is `frame.requirements[k]`) into a third `Value::Relation` field, because a relation outlives the frame that built it. (d) BIND at the first activation: `execute_logical_query` attaches them to the initial goal; opening a clause binds its read variables to them, and the read runs in CHECK mode (D2). | `typing/relation.rs`, `eval/eval.rs` (`build_relation_value`), `eval/value.rs`, `kb/resolve.rs` | `a_rule_citation_drops_the_callers_dictionary`: `(-1, -1)` → `(4, -4)` |
+| **S3** | THE DOMAIN AS EVIDENCE. (a) The kernel spec whose MEMBER IS `domain` (proposal 060 §2.2, last bullet), provided by every sort that has a domain — conditional for a parameterised one; HXGXF's `TypeValue` derivation is the template for the pass. (b) `apply_domain(?d, ?x)`: runs the provider's `domain` with `?d`'s sub-dictionaries as its IMPLICIT arguments — never as head arguments (060 §5: "the dictionary never becomes a head argument"), which rules out 060-typedomains §4.1's `member(?x, ?d)` shape. (c) The typed-head sweep generates a domain READ plus `apply_domain` for a bound that mentions a VARIABLE — the enclosing sort's parameter or a clause type variable — so the read joins S2's sequence and the citation fills it; a GROUND bound keeps `domain_member(?x, <bound>)`, which answers the same and needs no dictionary. (d) A RELATIONAL clause's enclosing-sort parameter becomes a per-activation clause variable (`is_canonical_type_param_var` keeps excluding it for EQUATIONS — pw9a0's `a_guard_whose_functor_is_a_type_parameter_lowers_as_that_parameter` is the control). REASONED, not yet measured: without it the prepended conformance goal cannot pin `Wrap`'s shared parameter (`bindable_type_var` refuses a canonical one), and each enumerated row would come back conditional. | `typing/rules.rs` (`install_typed_head_domain_goals`), `kb/load.rs`, `kb/resolve.rs` | CONCRETE — `Wrap[T = Colour].dom.takeN(5)` = 3, the dictionary built at the edge; RIGID — `countAt[X] requires <domain spec>[T = X]` with `X = Colour` / `Letter` = 3 / 2, the dictionary THREADED from the caller's slot: two instances, two counts, so a fill with the wrong instance cannot pass |
+| **S4** | W1 — WT8WG's parameterised value face: `emit_domain_value_face` derives `<Sort>.domain` for a parameterised sort; `domain_value_face_refusal` loses its parameterised arm. | `kb/load.rs`, `typing/relation.rs` | `List[T = Letter].domain.takeN(5)` = 5; bare `List.domain` refused by S1's rule |
+| **S5** | THE TWO DEFECTS ABOVE, filed 2026-09-24 and not 5G28A's: a rule-body operation call whose argument is unbound WAITS (delays) instead of answering nothing — **WI-20260924-35E14**; a clause's `require` whose only provider is a witness sort is found — **WI-20260924-DG57J**. | `kb/resolve.rs` | demo2 needs both |
+| **S6** | demo2 end to end. | — | `demo2_the_count_answers_zero` → `1`; `demo2_the_projected_spelling_is_refused_at_load` → `wrap(red())` under `ByHeat`, `wrap(blue())` under `ByName` |
+| **S7** | RULE → RULE implicit arguments (op-to-rule §7 step 2): every goal carries its implicit arguments through the seven goal-list constructions, written by the typer at the body edge. The 06:17 plan's row (g) — `rule again(?y) :- dom(?y)` inside `Wrap`, cited as `Wrap[T = Colour].again` — and op-to-rule §1's `a(3, nil())`. | `kb/resolve.rs`, `typing/` | — |
+
+S1 is independent of the rest and goes first. S2 needs S1's σ. S3 needs S2 to carry the
+domain's dictionary. S6 needs S2, S3 and S5.
+
+### Decisions open
+
+- **D1 — ANSWERED BY PROPOSAL 060 §2.2, not a decision.** Its last bullet: an abstract `T`
+  enumerates only if "`domain` [is] the member of a kernel finiteness spec AND a dictionary
+  channel … carries a RELATION". So a generic operation that lets a rule list `X`'s values
+  requires that spec at `X`, and the dictionary it hands over carries `X`'s own `domain` — the
+  relation `Colour.domain` already is, derived or hand-written. The promise is "`X` has a
+  domain" — finite or not: 060 §2.2's finiteness bullet says finiteness decides only whether
+  the stream ENDS. `String`'s domain EXISTS and is infinite (user, 2026-09-24), but nothing
+  derives it today — MEASURED, `domain_member(?x, String)` and `…Int64` each answer one
+  conditional row with `domain_leaf(?_, String)` / `…Int64` in the residual, and there is no
+  `String.domain` — so until a primitive's domain is provided (as WI-20260910-5TK6B does for
+  `Bool`), a `String` instantiation cannot meet the requirement. A `TypeValue[T = X]` shortcut
+  was considered on 2026-09-24 and withdrawn: it promises only that `X` is known at run time,
+  not that anything can list its values.
+- **D2 — ANSWERED BY PROPOSAL 060 §4; what is left is the implementation.** "A supplied `?d`
+  and a unique local row must agree (WI-860) … a supplied dictionary decides only where the
+  local row cannot (`Unresolvable`/`Ambiguous`, WI-855 — the 058 §3.3 named-instance case)."
+  The Ord example IS that case — rival witnesses, one named by the caller — so the supplied
+  `Descending` decides and the answer is `4`. What must change: today the local derivation
+  reports 058 §3.2's DEFAULT pick as a definite row (measured: `?d`'s impl is `Int64`,
+  definite), which S2's check would read as unique and refuse `Descending` against. Where
+  rivals exist, the default is a ranking, not a unique row (WI-20260922-ATFGH's reading).
+- **D3 — HOW FAR S2's CARRIER GOES.** S2 needs implicit arguments on the INITIAL goal of a
+  captured query only. They can ride a narrow form for that goal, or the general per-goal
+  carrier op-to-rule §1 describes and S7 needs anyway. The general one owes the hot-path
+  measurement op-to-rule §8 names first.
+- **D4 — A BRACKET THAT FILLS NOTHING** (the old version's `Set[T = Int64].eq`): `Set.eq`'s
+  clauses read no requirement and their bounds do not mention `T`, so the edge check finds
+  nothing to fill. Refused (loud) or accepted as a no-op — decided at S1, where the column
+  types are.
+
+The old version's other open question — whether a clause's body goals INHERIT the channel —
+is answered by the model rather than decided: the channel is REPLACED at every call, never
+inherited (op-to-rule §1). A body goal gets what the typer writes at the body edge (S7).
 
 ## 8. §3 — the typed head as the second anchor — DESIGN SETTLED, NOT BUILT
 
