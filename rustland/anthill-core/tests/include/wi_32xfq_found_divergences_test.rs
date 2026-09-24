@@ -4,8 +4,9 @@
 //! The consolidation kept two decodes apart that it could not prove equal: the provision
 //! relation's SPEC-BASE decode and its CARRIER decode each had a second spelling. Both
 //! second spellings reproduced as silent wrong answers — a provision that every reader
-//! should see went invisible to the dot-member resolver — and both are fixed. Each test
-//! states its back-out at its own site.
+//! should see went invisible to the dot-member resolver — and both are fixed; the third
+//! suspicion (positional bindings missing from the symbol-keyed σ) did not reproduce,
+//! and its section pins why. Each test states its back-out at its own site.
 
 use crate::common::{assert_refused_naming, interp_for, try_load_kb_with};
 use anthill_core::eval::Value;
@@ -200,4 +201,80 @@ fn a_carrier_applied_at_a_parameter_called_name_is_still_the_carrier() {
 #[test]
 fn the_same_written_provision_under_another_parameter_name_is_the_baseline() {
     assert_eq!(go_written("wi32xfq.srctl", "nm"), 7);
+}
+
+// ── Positional bindings and the symbol-keyed σ — did NOT reproduce ─────────────────────
+//
+// Three σ builders keyed by the spec's parameter symbol (`check_override_refinement`,
+// `check_instance_fact_op_signatures`, `requires_shadow_is_confusable`) read only a view's
+// NAMED bindings, where `check_provider_requires` also pairs its positionals — so a
+// provision written positionally looked as if it would fail open. It does not: since
+// WI-20260923-N3W68 #9 the loader stores a positional TYPE-PARAMETER binding as the named
+// binding of the parameter it fills (`KnowledgeBase::positional_param_slots`), so no stored
+// view hands these builders one. These rows pin that, and pass either way by design — no
+// code changed for them; they fail if storage ever stops normalizing, which is when the
+// three builders would need the pairing after all.
+
+/// `provides Sp[Int64]` is refused like `provides Sp[T = Int64]`: the override check reads
+/// `T = Int64` either way.
+#[test]
+fn a_positional_provision_is_held_to_its_members_like_a_named_one() {
+    for (ns, clause) in [
+        ("wi32xfq.pos.named", "Sp[T = Int64]"),
+        ("wi32xfq.pos.positional", "Sp[Int64]"),
+    ] {
+        let src = format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64, String}}
+  sort Sp
+    sort T = ?
+    operation get(x: Sp) -> T
+  end
+  sort Carrier provides {clause}
+    entity carrier(n: Int64)
+    operation get(x: Carrier) -> String = "no"
+  end
+end
+"#
+        );
+        let errs = try_load_kb_with(&src).err().unwrap_or_default();
+        assert_refused_naming(
+            &errs,
+            &["does not fit", "the member returns `String`", "Int64"],
+            &format!("`provides {clause}` with a `String`-returning `get`"),
+        );
+    }
+}
+
+/// `provides Comb[Thing, combine = wrongOp]` is refused like its named spelling: the
+/// instance-binding check substitutes `T = Thing` either way.
+#[test]
+fn a_positional_instance_binding_is_checked_like_a_named_one() {
+    for (ns, clause) in [
+        ("wi32xfq.ib.named", "Comb[T = Thing, combine = wrongOp]"),
+        ("wi32xfq.ib.positional", "Comb[Thing, combine = wrongOp]"),
+    ] {
+        let src = format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64, String}}
+  sort Comb
+    sort T = ?
+    operation combine(a: T, b: T) -> T
+  end
+  operation wrongOp(a: String, b: String) -> String = a
+  sort Thing provides {clause}
+    entity thing(n: Int64)
+  end
+end
+"#
+        );
+        let errs = try_load_kb_with(&src).err().unwrap_or_default();
+        assert_refused_naming(
+            &errs,
+            &["signature-incompatible", "`String`", "`Thing`"],
+            &format!("`provides {clause}` binding a `String` operation"),
+        );
+    }
 }

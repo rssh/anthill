@@ -1324,8 +1324,16 @@ pub(super) fn type_param_sym_of_binding(
 ///
 /// The CALLER picks `bindings`, and the three pick differently on purpose: the override
 /// check reads the view's raw named arguments (so a bare `Spec[T = X]` application keeps
-/// its bindings), the other two [`unwrap_spec_view`]'s. None of them pairs a POSITIONAL
-/// binding; [`check_provider_requires`] does, for its own short-name-keyed σ.
+/// its bindings), the other two [`unwrap_spec_view`]'s.
+///
+/// No POSITIONAL binding reaches σ, and none needs to: since WI-20260923-N3W68 #9 the loader
+/// stores a positional type-parameter binding as the NAMED binding of the parameter it
+/// fills, so a stored view carries none. MEASURED (WI-20260923-32XFQ, where this looked
+/// like a fail-open): `provides Sp[Int64]` and `provides Comb[Thing, combine = …]` are
+/// refused exactly as their named spellings (`wi_32xfq_found_divergences_test`). The only
+/// positional left in a stored view is the WI-407 carrier slot of a parameterless spec,
+/// which binds no parameter — [`check_provider_requires`], which reads the raw view and
+/// pairs positionals itself, drops it for that reason.
 pub(super) fn spec_param_sigma(
     kb: &KnowledgeBase,
     spec: Symbol,
