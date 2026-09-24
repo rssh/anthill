@@ -104,3 +104,78 @@ fn ignores_smt_document_and_tactic() {
     // the same digest, and the helper has no other inputs to depend on.
     assert_eq!(h, state_hash(&kb, &visited));
 }
+
+/// A bodied operation, visited on its own — as the emitter records an operation
+/// a proof called. No visited RULE here: a rule calling `f` would reference `eq`,
+/// and `f`'s defining `eq` fact would then carry the body change into the hash by
+/// itself, so the op-body test below would pass without the code it tests.
+const OP_SRC: &str = r#"
+    namespace test.cache.op
+      operation f(x: Int64) -> Int64 = x + 1
+    end
+"#;
+
+fn op_visited() -> BTreeSet<String> {
+    std::iter::once("test.cache.op.f".to_string()).collect()
+}
+
+/// A visited operation's BODY is part of the slice: a proof that went through
+/// `f` depends on what `f` computes. Fails without the `op_body_node` arm of
+/// `walk_visited` — a loaded op has no clauses under its own functor, so the
+/// two hashes were equal.
+#[test]
+fn changes_on_visited_operation_body_change() {
+    let modified = OP_SRC.replace("= x + 1", "= x + 2");
+    assert_ne!(OP_SRC, modified);
+    let kb1 = common::load_kb_with(OP_SRC);
+    let kb2 = common::load_kb_with(&modified);
+    assert_ne!(
+        state_hash(&kb1, &op_visited()),
+        state_hash(&kb2, &op_visited())
+    );
+}
+
+/// The hash covers the KB AS LOADED. `anthill prove` synthesizes a defining
+/// rule under a bodied operation's own functor when a proof calls it
+/// (WI-669/687), so a later record of the same run saw a clause under `f` that
+/// the freshly loaded KB `anthill check` hashes does not have — every such
+/// record read as stale (measured: 9 of lf1's 14 proofs). Fails without the
+/// `is_loaded_rule` filter in `walk_visited`.
+#[test]
+fn ignores_a_defining_rule_synthesized_after_load() {
+    let mut kb = common::load_kb_with(OP_SRC);
+    let before = state_hash(&kb, &op_visited());
+
+    let f = kb.try_resolve_symbol("test.cache.op.f").expect("f resolves");
+    let rid = kb
+        .synthesize_op_defining_rule(f)
+        .expect("f's body yields a defining rule");
+    assert!(
+        kb.rules_by_functor(f).contains(&rid),
+        "the synthesized rule sits under `f`, where the walk looks"
+    );
+
+    assert_eq!(before, state_hash(&kb, &op_visited()));
+}
+
+/// A LABELED rule's clause sits under its head's functor (`gte`), not under its
+/// label — a cited `-:` lemma is the common case. Found the way `using` finds
+/// it, label first. Fails when the walk looks up by functor only: the label
+/// owns no clauses there, so the edit went unseen.
+#[test]
+fn changes_on_labeled_rule_body_change() {
+    let src = r#"
+        namespace test.cache.labeled
+          import anthill.prelude.PartialOrd.{gte}
+          rule lemma: gte(?x, 3.0) :- gte(?x, 5.0)
+        end
+    "#;
+    let modified = src.replace("gte(?x, 5.0)", "gte(?x, 6.0)");
+    assert_ne!(src, modified);
+    let visited: BTreeSet<String> =
+        std::iter::once("test.cache.labeled.lemma".to_string()).collect();
+    assert_ne!(
+        state_hash(&common::load_kb_with(src), &visited),
+        state_hash(&common::load_kb_with(&modified), &visited)
+    );
+}

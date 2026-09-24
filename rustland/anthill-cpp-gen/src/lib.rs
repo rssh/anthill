@@ -11,7 +11,7 @@
 //! with `{name}` slots filled via `.replace`. Upgrade to askama/tera
 //! when conditional/nested logic outgrows flat substitution.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// WI-886 — this crate's `anthill/` tree of C++ host bindings, embedded so that a
 /// SHIPPED BINARY can load them. `(label, source)`, in load order; the label is the
@@ -668,6 +668,14 @@ pub struct CodegenContext {
     /// run-time (e.g. `<tl/expected.hpp>` for Error-effect ops). Merged
     /// into the rendered include set when emitting a header.
     pub requested_includes: std::cell::RefCell<std::collections::BTreeSet<String>>,
+    /// WI-20260823-ZW6N5: every OTHER anthill namespace the header being emitted
+    /// names a declaration of. Written only by `qualify_cross_namespace` and
+    /// `const_ref_cpp` — the sites that print a `::other::ns::X` path — so a
+    /// qualified reference and its dependency cannot drift apart. The emitter
+    /// renders each as `#include "<header_filename_for_namespace>"`, and
+    /// `emit_namespace_header_closure` follows them to the headers a project
+    /// layout must ship.
+    pub referenced_namespaces: std::cell::RefCell<std::collections::BTreeSet<String>>,
     /// Lexical stack of in-scope type parameters. Each frame holds
     /// the params introduced by one enclosing sort; lookup walks from
     /// top to bottom so an inner sort still sees an outer sort's
@@ -744,6 +752,7 @@ impl CodegenContext {
             host_consts: HostConstTable::from_kb(kb),
             profile,
             requested_includes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            referenced_namespaces: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             type_params: std::cell::RefCell::new(Vec::new()),
             value_bindings: std::cell::RefCell::new(Vec::new()),
             emitting_namespace: std::cell::RefCell::new(None),
@@ -893,7 +902,7 @@ impl CodegenContext {
     /// block. Returns a RAII guard that restores the previous value
     /// on drop, so early-returns through `?` don't leave the cell
     /// in the wrong state. Read by `qualify_cross_namespace` and
-    /// `register_cross_namespace_include`.
+    /// `const_ref_cpp`.
     pub fn enter_namespace(&self, namespace: &str) -> NamespaceGuard<'_> {
         let prev = self
             .emitting_namespace
@@ -1056,46 +1065,51 @@ pub fn header_filename_for_namespace(namespace: &str) -> String {
     format!("{stem}.hpp")
 }
 
-/// Register an `#include "<other_namespace>.hpp"` when emitting a
-/// reference to an entity in another anthill namespace. The
-/// project-layout writer drops these files alongside the current
-/// namespace's header, so the include resolves at compile time. No-op
-/// when the reference is intra-namespace or no surrounding namespace
-/// context is set.
-fn register_cross_namespace_include(ctx: &CodegenContext, entity_qn: &str) {
-    let current_ns = ctx.emitting_namespace.borrow();
-    let Some(current) = current_ns.as_deref() else {
-        return;
-    };
-    let Some(entity_ns) = parent_namespace_of(entity_qn) else {
-        return;
-    };
-    if entity_ns == current {
-        return;
+/// The anthill namespace whose C++ block holds the declaration `qn`: its nearest
+/// ancestor that is not a sort. A sum constructor `ns.Shape.Circle` is emitted
+/// beside `using Shape = std::variant<…>` in `ns` — `Shape` is no C++ namespace, so
+/// reading the constructor's plain parent printed `::ns::Shape::Circle` and, once
+/// that parent was recorded as a dependency, shipped a bogus `ns_Shape.hpp`.
+fn declaring_namespace_of<'a>(kb: &KnowledgeBase, qn: &'a str) -> Option<&'a str> {
+    let mut namespace = parent_namespace_of(qn)?;
+    while kb
+        .try_resolve_symbol(namespace)
+        .is_some_and(|s| kb.has_kind(s, SymbolKind::Sort))
+    {
+        namespace = parent_namespace_of(namespace)?;
     }
-    let header = header_filename_for_namespace(entity_ns);
-    ctx.requested_includes
-        .borrow_mut()
-        .insert(format!("#include \"{header}\""));
+    Some(namespace)
 }
 
-/// If a namespace block is being emitted and `entity_qn` belongs to
+/// If a namespace block is being emitted and `entity_qn` is declared in
 /// a *different* anthill namespace, return the C++ fully-qualified
 /// path (`::anthill::geometry::Vec3`) so the reference compiles
-/// inside the current `namespace foo::bar { ... }` block. Same
-/// namespace, or no namespace context (direct `emit_traits_struct`
-/// callers), fall back to the short name.
-fn qualify_cross_namespace(ctx: &CodegenContext, entity_qn: &str, short: &str) -> String {
+/// inside the current `namespace foo::bar { ... }` block, and record
+/// that namespace in `ctx.referenced_namespaces` — the header then
+/// includes `anthill_geometry.hpp`, and a project layout ships it. One
+/// function for both, so no qualified path is printed without its
+/// include (the constructor-literal site used to qualify only).
+/// Same namespace, or no namespace context (direct
+/// `emit_traits_struct` callers), fall back to the short name.
+fn qualify_cross_namespace(
+    kb: &KnowledgeBase,
+    ctx: &CodegenContext,
+    entity_qn: &str,
+    short: &str,
+) -> String {
     let short = cpp_identifier(short);
     let current_ns = ctx.emitting_namespace.borrow();
     let Some(current) = current_ns.as_deref() else {
         return short;
     };
-    let entity_ns = parent_namespace_of(entity_qn);
-    match entity_ns {
-        Some(ens) if ens == current => short,
-        Some(_) => format!("::{}", cpp_namespace(entity_qn)),
-        None => short,
+    match declaring_namespace_of(kb, entity_qn) {
+        Some(ens) if ens != current => {
+            ctx.referenced_namespaces
+                .borrow_mut()
+                .insert(ens.to_string());
+            format!("::{}::{short}", cpp_namespace(ens))
+        }
+        _ => short,
     }
 }
 
@@ -1512,11 +1526,9 @@ fn const_ref_cpp(kb: &mut KnowledgeBase, ctx: &CodegenContext, sym: Symbol) -> S
         Some(cur) if cur == decl_ns => in_ns,
         _ => {
             if !decl_ns.is_empty() {
-                let header = header_filename_for_namespace(&decl_ns);
-                ctx.requested_includes
-                    .borrow_mut()
-                    .insert(format!("#include \"{header}\""));
-                format!("::{}::{}", cpp_namespace(&decl_ns), in_ns)
+                let path = format!("::{}::{}", cpp_namespace(&decl_ns), in_ns);
+                ctx.referenced_namespaces.borrow_mut().insert(decl_ns);
+                path
             } else {
                 format!("::{in_ns}")
             }
@@ -2499,6 +2511,78 @@ pub fn emit_optional_namespace_header_with_profile(
     emit_namespace_header_in(kb, &ctx, namespace)
 }
 
+/// One header of an [`emit_namespace_header_closure`]: the anthill namespace, the
+/// file name every generated `#include` of it spells
+/// ([`header_filename_for_namespace`]), and its text.
+#[derive(Debug, Clone)]
+pub struct NamespaceHeader {
+    pub namespace: String,
+    pub filename: String,
+    pub text: String,
+}
+
+/// WI-20260823-ZW6N5: the header for `root` PLUS every header it includes,
+/// transitively — the set a project layout must ship for `root` to compile. A
+/// header includes another namespace's header exactly when it names a declaration
+/// there (`referenced_namespaces`), so the closure follows the code, not the
+/// source tree: a spec split into `lf1.leader` / `lf1.follower_gps` gets
+/// `follower_gps`, `leader` (for `Pose`) and `anthill.geometry` (for `Vec3`), and
+/// never the proof-only `lf1.safety_*` namespaces beside them.
+///
+/// `root` is REQUIRED (nothing emittable is the WI-761 empty-namespace error), and
+/// so is every namespace reached: a header that includes one emitting nothing would
+/// not compile, so it is an error naming the includer. Sorted by namespace. Two
+/// namespaces whose headers would share a file name (`a.b_c` / `a_b.c`) are refused
+/// — one would overwrite the other in the output directory.
+pub fn emit_namespace_header_closure(
+    kb: &mut KnowledgeBase,
+    root: &str,
+    profile: Option<String>,
+) -> Result<Vec<NamespaceHeader>, CppCodegenError> {
+    let mut done: BTreeMap<String, NamespaceHeader> = BTreeMap::new();
+    // (namespace, the namespace whose header includes it — None for `root`)
+    let mut pending: Vec<(String, Option<String>)> = vec![(root.to_string(), None)];
+    while let Some((namespace, included_by)) = pending.pop() {
+        if done.contains_key(&namespace) {
+            continue;
+        }
+        // A fresh context per header: `requested_includes` accumulates per context.
+        let ctx = CodegenContext::with_profile(kb, profile.clone())?;
+        let text =
+            emit_namespace_header_in(kb, &ctx, &namespace)?.ok_or_else(|| match &included_by {
+                None => empty_namespace_error(&namespace),
+                Some(by) => CppCodegenError {
+                    message: format!(
+                        "the header for namespace '{by}' includes the one for '{namespace}', \
+                         which emits nothing"
+                    ),
+                },
+            })?;
+        for dep in ctx.referenced_namespaces.borrow().iter() {
+            pending.push((dep.clone(), Some(namespace.clone())));
+        }
+        let filename = header_filename_for_namespace(&namespace);
+        if let Some(other) = done.values().find(|h| h.filename == filename) {
+            return Err(CppCodegenError {
+                message: format!(
+                    "namespaces '{}' and '{namespace}' both map to the header file name \
+                     '{filename}'",
+                    other.namespace
+                ),
+            });
+        }
+        done.insert(
+            namespace.clone(),
+            NamespaceHeader {
+                namespace,
+                filename,
+                text,
+            },
+        );
+    }
+    Ok(done.into_values().collect())
+}
+
 /// Like `emit_namespace_header` but reuses an existing context.
 /// Prefer this when emitting multiple namespaces in one run.
 ///
@@ -2525,6 +2609,9 @@ pub fn emit_namespace_header_in(
     // entity must render as `::anthill::geometry::Vec3`). The guard
     // restores the previous value on every exit path.
     let _ns_guard = ctx.enter_namespace(namespace);
+    // The set describes THIS header: a context reused across namespaces must not
+    // carry the previous one's dependencies (or, at worst, this namespace itself).
+    ctx.referenced_namespaces.borrow_mut().clear();
     let (entities, sums, traits) = classify_namespace(kb, ctx, namespace)?;
     // Namespace-level term-level constants (WI-533) declared directly under
     // this namespace (not inside a sort body — those emit as struct members),
@@ -2635,6 +2722,12 @@ pub fn emit_namespace_header_in(
     // fold them in here.
     for inc in ctx.requested_includes.borrow().iter() {
         needs.add_directive(inc);
+    }
+    for ns in ctx.referenced_namespaces.borrow().iter() {
+        needs.add_directive(&format!(
+            "#include \"{}\"",
+            header_filename_for_namespace(ns)
+        ));
     }
 
     let ns_cpp = cpp_namespace(namespace);
@@ -4415,7 +4508,7 @@ fn lower_constructor_literal_node(
     use std::collections::HashMap;
     let qn = kb.qualified_name_of(entity_sym).to_string();
     let short = short_name_of(&qn);
-    let short_name = qualify_cross_namespace(ctx, &qn, short);
+    let short_name = qualify_cross_namespace(kb, ctx, &qn, short);
     // WI-760: own the field list — lowering each argument threads `&mut` on
     // the KB, so a borrowed slice can't stay live across the loops below.
     let fields = kb
@@ -5182,13 +5275,8 @@ fn sort_to_cpp(
     // sits (e.g. `anthill.geometry.Vec3` referenced from inside an
     // `anthill.examples.lf1` entity must render as
     // `::anthill::geometry::Vec3`).
-    if kb.entity_field_types(sym).is_some() {
-        register_cross_namespace_include(ctx, &qualified);
-        return Ok(qualify_cross_namespace(ctx, &qualified, short));
-    }
-    if !constructors_of(kb, sym).is_empty() {
-        register_cross_namespace_include(ctx, &qualified);
-        return Ok(qualify_cross_namespace(ctx, &qualified, short));
+    if kb.entity_field_types(sym).is_some() || !constructors_of(kb, sym).is_empty() {
+        return Ok(qualify_cross_namespace(kb, ctx, &qualified, short));
     }
     Err(CppCodegenError {
         message: format!(

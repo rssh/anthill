@@ -83,7 +83,7 @@ Widget     → Widget
 
 This normalization applies at every C++ identifier producer and its matching reference: namespace segments, sorts, entities and sum constructors, fields, operations, parameters, constants, template parameters, and expression-local binders. A kind-specific host convention composes after normalization. In particular, a carrier dispatch under the `snake_case` → `camelCase` convention maps Anthill `get-value` through `get_value` to host method `getValue`; the emitted Anthill traits method itself remains `get_value`.
 
-Header filenames use the same per-segment rule, then join a dotted namespace with `_`: `test.hy-phen` → `test_hy_phen.hpp`. The CLI's short namespace header follows the same rule (`hy-phen` → `hy_phen.hpp`).
+Header filenames use the same per-segment rule, then join a dotted namespace with `_`: `test.hy-phen` → `test_hy_phen.hpp`. That is the only header name: every cross-namespace `#include` a generated header carries spells it, and `anthill codegen cpp` / `cpp-project` write each header under it, shipping a namespace's header together with every header it includes, transitively (`emit_namespace_header_closure`). Two namespaces whose headers would share a file name (`a.b_c` / `a_b.c`) are refused. (Until WI-20260823-ZW6N5 the CLI wrote the requested namespace under its LAST segment, `hy_phen.hpp`, which no include ever named.)
 
 Normalization is many-to-one. If two distinct Anthill spellings in one emitted C++ scope normalize to the same identifier, such as `foo-bar` and `foo_bar`, cpp-gen refuses emission with a collision diagnostic naming both spellings. It never emits two declarations and leaves a C++ compiler to discover that information was lost.
 

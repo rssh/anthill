@@ -11,15 +11,33 @@
 //!
 //! Lives alongside `proofs/` and `blobs/` under the same per-project
 //! root so cleanup of one project doesn't disturb another.
+//!
+//! A sidecar is evidence about the KB AS IT WAS when `prove` wrote it. It
+//! records the rule set the discharge consulted and the `state_hash` of that
+//! slice, so a reader holding the current KB can tell whether the evidence
+//! still applies ([`WitnessSidecar::stale_state_hash`]). Replaying the stored
+//! SMT document cannot tell: it re-proves the OLD obligation, which stays
+//! unsat however the rules it was emitted from have changed since.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use anthill_core::kb::KnowledgeBase;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::key::CACHE_FORMAT_VERSION;
+use super::key::state_hash;
+
+/// Sidecar schema version — the `v<N>` directory component. Its own counter,
+/// not `CACHE_FORMAT_VERSION`: that one keys proof entries and blobs, whose
+/// format a sidecar schema change does not touch.
+///
+/// v3: `visited_rules` recorded, so `state_hash` can be recomputed against the
+/// current KB. Starts at 3 because the v2 directories were written under the
+/// shared counter and hold sidecars without it, which could never be checked.
+pub const WITNESS_FORMAT_VERSION: u32 = 3;
 
 /// Per-project witness sidecar directory.
 pub fn witness_subdir(cache_root: &Path, repo_root: &Path) -> PathBuf {
@@ -34,7 +52,7 @@ pub fn witness_subdir(cache_root: &Path, repo_root: &Path) -> PathBuf {
         .join("projects")
         .join(repo_hash)
         .join("witnesses")
-        .join(format!("v{CACHE_FORMAT_VERSION}"))
+        .join(format!("v{WITNESS_FORMAT_VERSION}"))
 }
 
 /// Sanitise a rule QN into a filesystem-safe filename.
@@ -62,8 +80,23 @@ pub struct WitnessSidecar {
     pub rule_qn: String,
     pub verdict_label: String,
     pub witness: WitnessShape,
+    /// The rules the discharge consulted — the slice `state_hash` covers.
+    /// Empty for a discharge that read no KB state (`by trust`).
+    pub visited_rules: BTreeSet<String>,
+    /// `state_hash(kb, &visited_rules)` over the KB the witness was produced from.
     pub state_hash: String,
     pub written_at: String,
+}
+
+impl WitnessSidecar {
+    /// The state hash of the recorded slice in `kb` NOW, when it differs from
+    /// the recorded one — i.e. the rules or facts this witness was produced
+    /// from have changed, and the witness no longer speaks for the current KB.
+    /// `None` when the slice is unchanged.
+    pub fn stale_state_hash(&self, kb: &KnowledgeBase) -> Option<String> {
+        let current = state_hash(kb, &self.visited_rules);
+        (current != self.state_hash).then_some(current)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +184,7 @@ mod tests {
                 verdict: SmtVerdictDto::Unsat,
                 core: None,
             },
+            visited_rules: BTreeSet::new(),
             state_hash: "cd".repeat(32),
             written_at: "@1234567890".into(),
         }

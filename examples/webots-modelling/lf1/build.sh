@@ -40,7 +40,8 @@ cat <<EOF
 Scaffolded $OUT_DIR.
 
 Next steps:
-  export WEBOTS_HOME=/Applications/Webots.app/Contents          # macOS
+  export WEBOTS_HOME=/Applications/Webots.app                   # macOS —
+  export WEBOTS_HOME_PATH=/Applications/Webots.app/Contents     #   its Makefiles live under Contents/
   # or:  WEBOTS_HOME=/usr/local/webots                          # Linux
 
   (cd "$OUT_DIR/controllers/LeaderController"   && make)

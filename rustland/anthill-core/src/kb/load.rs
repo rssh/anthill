@@ -13863,6 +13863,8 @@ fn load_phase_inner(
             kb.restore_load_check_marks(marks);
         }
         super::typing::claim_written_row_bindings(kb);
+        // A partial load is still the load: what it produced is "as loaded".
+        kb.mark_loaded();
         return if all_errors.is_empty() {
             Ok((
                 LoadResult {
@@ -14155,6 +14157,9 @@ fn load_phase_inner(
         }
     }
     mark!("check_all_guards");
+    // After the guards: their resolution may synthesize rules, and those are as much
+    // a product of loading these sources as anything above.
+    kb.mark_loaded();
     if all_errors.is_empty() {
         Ok((
             LoadResult {

@@ -11,14 +11,16 @@ use std::collections::BTreeSet;
 use anthill_core::intern::Symbol;
 use anthill_core::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence};
 use anthill_core::kb::term::Var;
-use anthill_core::kb::KnowledgeBase;
+use anthill_core::kb::{KnowledgeBase, RuleId};
 use anthill_core::persistence::print::TermPrinter;
 use sha2::{Digest, Sha256};
 
 // v2 (WI-246): rule bodies are hashed from their occurrence form
 // (`rule_body_nodes`) rather than the term body — a different byte stream, so
 // pre-WI-246 cached keys must not false-hit.
-pub const CACHE_FORMAT_VERSION: u32 = 2;
+// v3: `walk_visited` changed its byte stream (a name's clauses label-first plus
+// head-functor, loaded rules only, a visited operation's body).
+pub const CACHE_FORMAT_VERSION: u32 = 3;
 
 // ASCII control codes used as framing separators in the hash input
 // stream. Naming makes the structure of `build_key` explicit.
@@ -69,7 +71,10 @@ pub fn build_key(kb: &KnowledgeBase, inputs: &KeyInputs<'_>) -> String {
 /// Format version for `state_hash`. Bumping this invalidates every
 /// recorded `ProofRecord.state_hash` — do so on changes to the input
 /// envelope (label strings, framing bytes, included fields).
-pub const STATE_HASH_FORMAT_VERSION: u32 = 2;
+///
+/// v3: a visited name's clauses are its labeled rules and those it heads, only rules the load
+/// produced are hashed, and a visited operation's body is (see `walk_visited`).
+pub const STATE_HASH_FORMAT_VERSION: u32 = 3;
 
 /// Per-`ProofRecord` state hash (proposal 030 phase α.4): canonical
 /// hash of the kb-state slice a discharge depended on. Composed of
@@ -102,6 +107,24 @@ fn field(h: &mut Sha256, label: &[u8], value: &[u8]) {
 /// collect every functor referenced by any body atom. Returns the rolled-up
 /// rule hash and the referenced-functor set (consumed by `fact_dep_hash_from`).
 ///
+/// A visited name's clauses are BOTH the rules labeled with it and the clauses
+/// headed by it ([`visited_clauses`]). By functor alone, a LABELED rule —
+/// `rule lemma: gte(?x, 3.0) :- …`, whose clause sits under `gte` — contributed
+/// nothing, so editing a cited lemma left the hash of every proof that visited
+/// it unchanged; by label alone (`clause_ids_of`), a name that is both a label
+/// and a head functor would lose its unlabeled clauses, which the emitter
+/// consumes by functor.
+///
+/// Only rules the load produced count ([`KnowledgeBase::is_loaded_rule`]).
+/// What is asserted afterwards depends on what the process ran before this
+/// walk — a defining rule the emitter synthesized for an operation a PREVIOUS
+/// proof called (WI-669/687) sits under that operation's functor — so hashing
+/// it made the result depend on dispatch order, and `anthill check`, which
+/// hashes the KB as loaded, could never reproduce it. Such a rule is derived
+/// from an operation's body, so a visited operation's BODY is hashed instead:
+/// it is the source the rule was derived from, and it is there whether or
+/// not anything has been synthesized from it yet.
+///
 /// One pass over `visited` does both the rule_dep_hash content walk and
 /// the fact_dep_hash functor collection. Functor set is keyed by
 /// `Symbol::index()` (Symbol itself isn't Ord) — canonical sorted order
@@ -118,7 +141,12 @@ fn walk_visited(kb: &KnowledgeBase, visited: &BTreeSet<String>) -> (String, BTre
             h.update([GROUP_SEP]);
             continue;
         };
-        for rid in kb.rules_by_functor(sym) {
+        if let Some(body) = kb.op_body_node(sym) {
+            h.update(b"op-body:");
+            hash_occurrence(kb, body, &mut h, &mut referenced);
+            h.update([FIELD_SEP]);
+        }
+        for rid in visited_clauses(kb, sym) {
             // Head stays a hash-consed term (searched in the discrim tree).
             let head = kb.rule_head(rid);
             h.update(printer.print_term(head).as_bytes());
@@ -136,6 +164,20 @@ fn walk_visited(kb: &KnowledgeBase, visited: &BTreeSet<String>) -> (String, BTre
     (hex::encode(h.finalize()), referenced)
 }
 
+/// The loaded clauses a visited name stands for: its labeled rules (first, as
+/// `using` fans out over them), then those headed by it that are not already
+/// listed. Retracted rules are in neither index.
+fn visited_clauses(kb: &KnowledgeBase, sym: Symbol) -> Vec<RuleId> {
+    let mut ids = kb.clause_ids_of(sym);
+    for rid in kb.rules_by_functor_iter(sym) {
+        if !ids.contains(&rid) {
+            ids.push(rid);
+        }
+    }
+    ids.retain(|&r| kb.is_loaded_rule(r));
+    ids
+}
+
 fn fact_dep_hash_from(kb: &KnowledgeBase, referenced: &BTreeSet<u32>) -> String {
     let mut h = Sha256::new();
     let printer = TermPrinter::new(kb);
@@ -143,8 +185,8 @@ fn fact_dep_hash_from(kb: &KnowledgeBase, referenced: &BTreeSet<u32>) -> String 
         let functor = Symbol::from_raw(raw);
         h.update(kb.qualified_name_of(functor).as_bytes());
         h.update([ITEM_SEP]);
-        for rid in kb.rules_by_functor(functor) {
-            if !kb.is_fact(rid) {
+        for rid in kb.rules_by_functor_iter(functor) {
+            if !kb.is_fact(rid) || !kb.is_loaded_rule(rid) {
                 continue;
             }
             let head = kb.rule_head(rid);

@@ -159,6 +159,7 @@ fn stale_domain_does_not_cascade_into_unresolved_imports() {
 fn init_scaffolds_no_domain_or_rules() {
     let tmp = tempfile::tempdir().unwrap();
     let proj = tmp.path().to_path_buf();
+    crate::common::plant_cargo_toml(&proj);
 
     let init = Command::new(ANTHILL_TODO_BIN)
         .args(["init", "demo"])

@@ -595,7 +595,7 @@ This is granular, sound, and matches user intuition: editing a definition invali
 - α.1 ✓ — Schema: `ProofWitness` (with `SmtDischarge`, `SldDerivation`, `MetaCompose`, `ScopeAxiom`, `Specialization`, `TrustedAxiom`), `SmtVerdict`, `SortBinding` declared in `stdlib/anthill/realization/witness.anthill`. (Note: `MetaTacticContract` deferred to β.3 follow-up.)
 - α.2 ✓ — `ProofRecord` extended with `witness`, `state_hash`, `parametric_context`. Loader writes placeholders for legacy records.
 - α.3 ✓ — Dispatch paths refactored to `DispatchOutcome { verdict, witness, visited_rules }`.
-- α.4 ✓ — `state_hash(kb, visited)` in `cache::key`; computed per-ProofRecord in `run_prove` after dispatch.
+- α.4 ✓ — `state_hash(kb, visited)` in `cache::key`; computed per-ProofRecord in `run_prove` after dispatch. Since 2026-09-24 the witness sidecar records `visited_rules` beside it (sidecar format v3), so the hash can be recomputed against a later KB — before that it was written and never read. The hash covers the KB *as loaded* (`KnowledgeBase::is_loaded_rule`): a defining rule the emitter synthesizes for an operation mid-run is excluded and the operation's body hashed instead, so `prove` and a fresh `check` agree. A visited name's clauses are found label-first, as `using` finds them — a labeled lemma contributed nothing before.
 - α.5 ✓ — Content-addressed blob storage in `cache::blob`. SMT documents and sat models persist via `store_blob`; witnesses carry real `document_hash` / `model_hash`.
 - α.6 ✓ — `register_requires_axiom_witnesses` walks `SortRequiresInfo` facts at load and emits ScopeAxiom-witnessed ProofRecords.
 - α.7 ✓ — `register_induction_axiom_witnesses` walks `SortInfo` facts; v0 covers `kind = "enum"` sorts. Recursive ADTs (kind = "sort" with self-referential constructor fields) deferred.
@@ -613,6 +613,7 @@ This phase delivers: `prove` writes augmented ProofRecords. No new user-visible 
 - β.4 ✓ — `check_scope_axiom_witness` re-reads `SortInfo` / `SortRequiresInfo` facts and dispatches on `aspect`. Encoding parity with α.6's `flatten_spec` is enforced by direct reuse of the same helper.
 - β.5 ✓ — `check_specialization_witness` validates substitution well-formedness + parametric ProofRecord existence. v0 instance-list always empty (per α.8 v0), so coverage is structural; full per-law coverage check pending α.8 instance-list population.
 - β.6 ✓ — `aggregate_meta_outcomes` combines sub-witness statuses with priority Failed > Skipped > Trusted > Pass. Trust reasons aggregate across the full subtree.
+- β.8 ✓ (2026-09-24) — Staleness. Before replaying a sidecar, `check` recomputes its state hash over the current KB; on a mismatch the record is reported `STALE` and not replayed — replay re-proves the *recorded* document, which stays unsat however the source changed since, so it used to print `✓` for a proof the edit had made false. Stale is reported, not counted as failed: the discharge pass `check` chains (WI-564) decides whether the current obligation holds. `--report-stale` lists these (it matched nothing before).
 - β.7 ✓ — Multi-layered tamper detection: blob content sha256 re-check at load (catches manual file edits); verdict-replay (catches sidecar lying about its document); the `lying_sidecar_verdict_fails` and `tampered_blob_fails_content_hash_check` unit tests pin these properties.
 
 ### Phase γ — `using` consults the registry
@@ -620,7 +621,7 @@ This phase delivers: `prove` writes augmented ProofRecords. No new user-visible 
 **Goal:** citations are ProofRecord-mediated and gated on Discharged status with valid state-hash.
 
 - γ.1 ✓ — `lift_rule_to_implication_clause` retained as the lift primitive; the caller-side `cite_status` gate enforces the Discharged precondition. Pending / Failed / NotFound surface as hard `EmitError` on the consumer's discharge.
-- γ.2 ✓ — `cite_status(kb, cited_qn, cli, discharged_this_run)` consults: (1) in-memory discharged-this-run set; (2) KB ProofRecord witness shape (ScopeAxiom + Specialization → discharged-by-construction; non-placeholder TrustedAxiom → Trusted); (3) on-disk witness sidecar. Each cite either resolves or surfaces a per-rule error message.
+- γ.2 ✓ — `cite_status(kb, cited_qn, cli, discharged_this_run)` consults: (1) in-memory discharged-this-run set; (2) KB ProofRecord witness shape (ScopeAxiom + Specialization → discharged-by-construction; non-placeholder TrustedAxiom → Trusted); (3) on-disk witness sidecar — only while its state hash matches the current KB (β.8); a stale one refuses the cite. The "re-discharge first" of §`using` semantics is not automated: the error names the cited rule to re-prove. Each cite either resolves or surfaces a per-rule error message.
 - γ.3 ✓ — Kahn's topological sort over the `using` graph in `topo_sort_by_using`. Cycles emit a stderr warning and append the cyclic members to the order's tail; per-rule cite-resolution then surfaces the ambiguity.
 - γ.4 ✓ — `implicit_cites_for(rule_qn, kb)` walks parent QN segments outer-to-inner and collects every `<scope>.requires.<flat>` ProofRecord as an implicit citation. `dispatch_z3` builds `effective = explicit + implicit` and passes it to `render_cited_lemmas`.
 
@@ -658,7 +659,7 @@ The trust base after phase α + β + γ + WI-124 + ε:
 | **The kernel's loader, term store, and resolver** | yes | Standard "language implementation" trust base. Tampering at this level would also defeat the witness machinery. |
 | **Source declarations (sort / requires / induction / provides clauses)** | yes (read-only) | β.4 verifies a `ScopeAxiom` witness by re-reading the cited declaration in the current KB. The declaration *constitutes* the proof; the kernel mechanically checks the structural fact ("the clause is present with this shape"). Editing the source invalidates the witness on next access. |
 | **Content-addressed blob store (cache::blob)** | partial | Tamper detection is sha256-strong: a manually-edited blob fails the content-hash re-check at load time (β.7). An attacker who replaces both the blob and the corresponding hash in a sidecar must also produce a document Z3 accepts with the claimed verdict — i.e. actually prove the property. |
-| **Witness sidecar JSON** (`cache::witness`) | not trusted alone | A sidecar pointing at a forged blob fails as above. A sidecar that lies about the verdict (claims Unsat for a Sat document) fails the replay step. |
+| **Witness sidecar JSON** (`cache::witness`) | not trusted alone | A sidecar pointing at a forged blob fails as above. A sidecar that lies about the verdict (claims Unsat for a Sat document) fails the replay step. A sidecar whose KB slice has changed since it was written is stale (β.8): not replayed, and refused as a cite. The hash covers the visited clauses, a visited operation's body, and every fact of a functor those reference — coarse (an edit to any operation body stales every proof that references `eq`, whose facts include each operation's defining equation), and not complete: a `const`'s value and a body-less operation's `<=>` equation reach it only through such a functor's facts. Staleness is a check on the recorded evidence, not a substitute for the discharge pass. |
 | **TrustedAxiom witnesses** | yes — explicit user opt-in | Surfaced through every containing witness via β.6's aggregation. Users see the trust dependency in CLI output; `anthill check --report-trust` lists them. |
 | **MetaCompose composition** | not trusted alone | β.3 + β.6 recurse on each sub-witness; the overall outcome is the worst of the per-sub outcomes. |
 | **Specialization composition** | not trusted alone | β.5 verifies substitution well-formedness + parametric ProofRecord existence. The parametric's own check transitively guards soundness. |
@@ -676,7 +677,7 @@ Phase coverage at a glance (see commits referenced inline):
 | Phase | Status |
 |---|---|
 | α — witness schema, ProofRecord ext, dispatch refactor, state hash, blob storage, auto-registration | **8/8 landed** |
-| β — kernel-side certificate checking | **6/7 landed** (β.2 SldDerivation deferred; no current consumer) |
+| β — kernel-side certificate checking | **7/8 landed** (β.2 SldDerivation deferred; no current consumer) |
 | γ — `using` consults the registry | **4/4 landed** |
 | δ — per-predicate translation policy | **schema + lookup + source-fact override landed** (δ.4 smt-gen call-site integration + δ.5 logic-fragment selection deferred) |
 | ε — migration and cleanup | **CLI flag set + cleanup landed** (ε.1, ε.4, ε.5 done; ε.2/ε.3 done during the lf1 work that motivated 030) |

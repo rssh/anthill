@@ -24,7 +24,13 @@ The whole reference is ~275 lines. The anthill spec replaces the *outer loop* (t
 **Codegen track: end-to-end through clang.** Running `./build.sh`
 produces a self-contained Webots project tree at `./build/` whose
 generated headers + hand-authored shims compile cleanly under
-`clang++ -std=c++17 -fsyntax-only -Wall -Wextra`. To actually fly
+`clang++ -std=c++20 -fsyntax-only -Wall -Wextra` (the standard the
+generated Makefile builds with) — driven by
+`rustland/anthill-cli/tests/include/wi_zw6n5_lf1_scaffold_test.rs`,
+because this track once sat broken for four months with nothing
+noticing (WI-20260823-ZW6N5). Each controller folder gets the header
+of the namespace declaring it (`anthill_examples_lf1_leader.hpp`, …)
+plus every header that one includes. To actually fly
 the drones in Webots, link the controllers against `libController`
 via `make` (see "Building" below) and open the generated
 `multirotor_leader_follower1.wbt`.
@@ -68,7 +74,8 @@ evaluator (proposal 026 follow-up).
 ```bash
 ./build.sh                        # scaffolds ./build/ from .anthill specs + cpp/ + worlds/
 
-export WEBOTS_HOME=/Applications/Webots.app/Contents   # macOS
+export WEBOTS_HOME=/Applications/Webots.app              # macOS: Webots appends
+export WEBOTS_HOME_PATH=/Applications/Webots.app/Contents #   /Contents to WEBOTS_HOME
 # or:  WEBOTS_HOME=/usr/local/webots                   # Linux
 
 (cd build/controllers/LeaderController   && make)

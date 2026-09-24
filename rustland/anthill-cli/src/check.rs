@@ -44,6 +44,11 @@ pub enum CheckStatus {
     Failed(String),
     /// Witness contains TrustedAxiom — surfaced for visibility.
     Trusted(String),
+    /// The sidecar witness was produced from a KB slice that has changed
+    /// since: it is evidence about a KB that no longer exists, so it is not
+    /// replayed. Not a failure — `anthill prove` (which `check` chains) is
+    /// what decides whether the CURRENT obligation holds.
+    Stale(String),
 }
 
 /// Per-invocation options for `anthill check`. Mirrors the CLI
@@ -134,8 +139,7 @@ fn filter_keeps(o: &CheckOutcome, opts: &CheckOpts) -> bool {
         return matches!(o.status, CheckStatus::Trusted(_));
     }
     if opts.report_stale_only {
-        return matches!(&o.status, CheckStatus::Failed(msg)
-            if msg.contains("state-hash") || msg.contains("stale"));
+        return matches!(o.status, CheckStatus::Stale(_));
     }
     true
 }
@@ -194,13 +198,30 @@ fn check_one_record_with(
         Some(s) => s,
         None => return None,
     };
+    // `--report-stale` promises no witness replay; it only needs staleness.
+    let shallow = opts.shallow || opts.report_stale_only;
+    // `--report-trust` asks what a witness tree TRUSTS, which a stale sidecar still
+    // records; judging it stale first would drop it from that inventory.
+    let judge_staleness = !opts.report_trust_only;
     // Witness sidecar (WI-124) takes precedence over the in-source
     // placeholder when one exists for this rule QN — the sidecar
     // carries the discharged witness from the most recent prove
     // run. Falling back to the source witness preserves α.6/α.7
     // ScopeAxiom records (auto-registered, no sidecar needed).
     if let Some(sidecar) = load_witness(witness_dir, &rule_qn) {
-        let status = if opts.shallow {
+        // Staleness first: replaying a stale SMT document re-proves the OLD
+        // obligation, which stays unsat however the rules have changed since.
+        let stale = judge_staleness
+            .then(|| sidecar.stale_state_hash(kb))
+            .flatten();
+        let status = if let Some(current) = stale {
+            CheckStatus::Stale(format!(
+                "the rules or facts it was proved from changed since — state hash \
+                 {} recorded, {} now",
+                short_hash(&sidecar.state_hash),
+                short_hash(&current)
+            ))
+        } else if shallow {
             check_witness_sidecar_shallow(&sidecar)
         } else {
             check_witness_sidecar(&sidecar, blob_dir, solver)
@@ -208,12 +229,16 @@ fn check_one_record_with(
         return Some(CheckOutcome { rule_qn, status });
     }
     let witness_tid = get_named_arg(kb, named, "witness")?;
-    let status = if opts.shallow {
+    let status = if shallow {
         check_witness_term_shallow(kb, witness_tid)
     } else {
         check_witness_term(kb, witness_tid, blob_dir, solver)
     };
     Some(CheckOutcome { rule_qn, status })
+}
+
+fn short_hash(h: &str) -> &str {
+    h.get(..12).unwrap_or(h)
 }
 
 /// Shallow check: structural integrity only. ScopeAxiom records
@@ -394,8 +419,10 @@ fn check_meta_compose_witness(
 }
 
 /// Phase β.6: combine sub-witness outcomes into the MetaCompose's
-/// own outcome with priority Failed > Skipped > Trusted > Pass.
-/// Failed short-circuits to surface the breakage; Skipped surfaces
+/// own outcome with priority Failed > Stale > Skipped > Trusted > Pass.
+/// Failed short-circuits to surface the breakage; Stale outranks the
+/// rest because a stale part is unverified evidence (staleness is decided
+/// per record today, so no sub-witness reports it yet); Skipped surfaces
 /// when no failures exist (incomplete checking is honest, not
 /// silent); Trusted aggregates *all* trust reasons across the
 /// subtree so the user sees every axiom dependency, not just the
@@ -407,15 +434,20 @@ fn check_meta_compose_witness(
 fn aggregate_meta_outcomes(tactic_name: &str, outcomes: &[CheckStatus]) -> CheckStatus {
     let mut trust_reasons: Vec<String> = Vec::new();
     let mut skipped_reasons: Vec<String> = Vec::new();
+    let mut stale_reasons: Vec<String> = Vec::new();
     for (i, status) in outcomes.iter().enumerate() {
         match status {
             CheckStatus::Pass => {}
             CheckStatus::Trusted(r) => trust_reasons.push(format!("[{i}] {r}")),
             CheckStatus::Skipped(r) => skipped_reasons.push(format!("[{i}] {r}")),
+            CheckStatus::Stale(r) => stale_reasons.push(format!("[{i}] {r}")),
             CheckStatus::Failed(r) => {
                 return CheckStatus::Failed(format!("{tactic_name}[{i}]: {r}"))
             }
         }
+    }
+    if !stale_reasons.is_empty() {
+        return CheckStatus::Stale(format!("{tactic_name}: {}", stale_reasons.join("; ")));
     }
     if !skipped_reasons.is_empty() {
         return CheckStatus::Skipped(format!("{tactic_name}: {}", skipped_reasons.join("; ")));
@@ -1075,12 +1107,14 @@ mod tests {
 }
 
 /// Pretty-print a check summary; returns the count of failed
-/// outcomes (callers can return non-zero exit when > 0).
+/// outcomes (callers can return non-zero exit when > 0). Stale outcomes
+/// are reported but not counted as failed — see [`CheckStatus::Stale`].
 pub fn print_summary(outcomes: &[CheckOutcome]) -> usize {
     let mut pass = 0;
     let mut skipped = 0;
     let mut failed = 0;
     let mut trusted = 0;
+    let mut stale = 0;
     for o in outcomes {
         match &o.status {
             CheckStatus::Pass => {
@@ -1099,10 +1133,15 @@ pub fn print_summary(outcomes: &[CheckOutcome]) -> usize {
                 trusted += 1;
                 println!("⚠ {}: trusted axiom ({reason})", o.rule_qn);
             }
+            CheckStatus::Stale(why) => {
+                stale += 1;
+                println!("~ {}: STALE ({why})", o.rule_qn);
+            }
         }
     }
     println!(
-        "\nsummary: {pass} pass, {failed} failed, {skipped} skipped, {trusted} trusted, {} total",
+        "\nsummary: {pass} pass, {failed} failed, {stale} stale, {skipped} skipped, \
+         {trusted} trusted, {} total",
         outcomes.len()
     );
     failed

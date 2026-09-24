@@ -41,7 +41,12 @@ anthill-todo -d "$PWD" $ARGS
 
 When invoked as `/anthill-todo`, run the CLI with the user's arguments. If no arguments, show the list.
 
-If the project has no `anthill-todo/` directory yet, run `init` first.
+If the project has no `anthill-todo/` directory yet, run `init` first. It reads the
+language, build and default acceptance tool off the ONE build file in the project
+(`init --help` lists which files it knows); `--language L`, `--build B` and
+`--tool T` (repeatable) override them field by field, and are needed where no such
+file is. A tool name is a free-form label anthill-todo does not run: `add` without
+`--acceptance` gives the new item one `ToolPasses` per `Project.tools` entry.
 
 ## Commands
 
@@ -63,7 +68,7 @@ anthill-todo -d "$PWD" add-dependency WI-A WI-B          # Make WI-A depend on W
 anthill-todo -d "$PWD" remove-dependency WI-A WI-B       # Drop WI-A's dependency on WI-B
 anthill-todo -d "$PWD" status                            # Show status counts
 anthill-todo -d "$PWD" graph                             # Show dependency graph
-anthill-todo -d "$PWD" init                              # Initialize anthill-todo/ in project
+anthill-todo -d "$PWD" init [--language L --build B --tool T]  # Initialize anthill-todo/ in project
 ```
 
 ### Referring to a work item
@@ -1492,23 +1497,50 @@ fn run_fsck(
     }
 }
 
-/// `anthill-todo init [<name>]` — the one host-served command that takes a NAME,
-/// which is why it needed its own refusal for a mistyped flag. Sits beside
-/// [`FSCK_USAGE`] and `MIGRATE_USAGE`: the three host-served commands that accept
-/// arguments each carry their own usage text, because none of them is reachable
-/// from the bundle's `OperationSpec` registry that renders every other command's.
-/// (WI-1124 gap (2) is to remove that split, not to grow it.)
-const INIT_USAGE: &str = "\
-usage: anthill-todo [-d <DIR>] init [<name>]
-       anthill-todo [-d <DIR>] init --name <name>
+/// `anthill-todo init [<name>] [--language L] [--build B] [--tool T]…` — the one
+/// host-served command that takes a NAME, which is why it needed its own refusal for a
+/// mistyped flag. Sits beside [`FSCK_USAGE`] and `MIGRATE_USAGE`: the three host-served
+/// commands that accept arguments each carry their own usage text, because none of them
+/// is reachable from the bundle's `OperationSpec` registry that renders every other
+/// command's. (WI-1124 gap (2) is to remove that split, not to grow it.)
+///
+/// A function rather than a `const` only so the marker list is read off
+/// [`BUILD_MARKERS`] — the text that promises what a build file yields cannot drift from
+/// the table that yields it.
+fn init_usage() -> String {
+    let markers = BUILD_MARKERS
+        .iter()
+        .map(|m| format!("    {:<12} {}, {}, {}\n", m.file, m.language, m.build, m.tool))
+        .collect::<String>();
+    format!(
+        "\
+usage: anthill-todo [-d <DIR>] init [<name>] [--language <L>] [--build <B>] [--tool <T>]...
+       anthill-todo [-d <DIR>] init --name <name> ...
 
 Scaffold anthill-todo/ in the project directory: project.anthill (its
 configuration) and store_format.anthill (the data format its items are
 written in). No work items are created.
 
-  <name>  the project's name. Defaults to the directory's own name.
-  -d <DIR>  scaffold under DIR instead of the current directory. It must
-            already exist.";
+  <name>          the project's name. Defaults to the directory's own name.
+  --language <L>  the project's language, e.g. rust, scala.
+  --build <B>     its build tool, e.g. cargo, sbt.
+  --tool <T>      a default acceptance tool (repeatable).
+  -d <DIR>        scaffold under DIR instead of the current directory. It must
+                  already exist.
+
+Each flag overrides its own field; a field no flag gives is read from the one
+build file in the directory:
+{markers}A build file is read only when it is the build in effect: under a --build
+naming another build, its language and tool are not. With nothing to read,
+--language and --build may be left out but --tool may not. More than one
+build file is an error unless all three are given.
+
+A tool name is a free-form LABEL, not a command: anthill-todo neither resolves
+nor runs it, so any name without a `,` is accepted. `add` without --acceptance
+gives the new item one ToolPasses(<tool>) per tool — the checks whoever
+delivers it must see pass."
+    )
+}
 
 const FSCK_USAGE: &str = "\
 usage: anthill-todo fsck [--fix] [--renumber [<id>]]
@@ -4252,6 +4284,284 @@ fn declared_field_values(
 
 // ── Init command ────────────────────────────────────────────────
 
+/// A build file that PINS a project's language, build and test tool on its own
+/// (WI-20260924-EJMW4). `init` used to write `rust`/`cargo`/`cargo-test` into every
+/// project whatever it was — measured on a Scala/sbt tree — with no flag to say
+/// otherwise.
+///
+/// A file is listed only when it pins all three: `Cargo.toml` is cargo is rust. A
+/// `package.json` or a `pyproject.toml` does not (javascript or typescript; npm, yarn
+/// or pnpm; poetry, uv or hatch), and a guess written into `project.anthill` is the
+/// defect this table replaces — so those projects say it with flags.
+///
+/// The tool is `<build>-test` by convention only: a tool name is a free-form label
+/// that nothing resolves (see [`init_usage`]).
+struct BuildMarker {
+    file: &'static str,
+    language: &'static str,
+    build: &'static str,
+    tool: &'static str,
+}
+
+const BUILD_MARKERS: &[BuildMarker] = &[
+    BuildMarker { file: "Cargo.toml", language: "rust", build: "cargo", tool: "cargo-test" },
+    BuildMarker { file: "build.sbt", language: "scala", build: "sbt", tool: "sbt-test" },
+    BuildMarker { file: "go.mod", language: "go", build: "go", tool: "go-test" },
+];
+
+/// A project's tools — AT LEAST ONE. `tools` is `add`'s default acceptance, and an
+/// empty list makes every `add` without `--acceptance` fail; the domain would take `[]`,
+/// so the type refuses it here instead.
+struct Tools {
+    first: String,
+    rest: Vec<String>,
+}
+
+impl Tools {
+    fn from_vec(tools: Vec<String>) -> Option<Tools> {
+        let mut it = tools.into_iter();
+        it.next().map(|first| Tools { first, rest: it.collect() })
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &String> {
+        std::iter::once(&self.first).chain(&self.rest)
+    }
+}
+
+/// What `init` writes into the `Project` fact beside its name. `language` and `build`
+/// are `Option` in the domain: a project with no build file and no flag for them
+/// leaves them out.
+struct ProjectConfig {
+    language: Option<String>,
+    build: Option<String>,
+    tools: Tools,
+    /// Where it came from, for the success message — so a detection nobody expected
+    /// is visible.
+    origin: String,
+}
+
+/// The configuration flags as given; each one OVERRIDES the build file's value for its
+/// field, and a field no flag gives is read from the build file (see
+/// [`project_config`]).
+#[derive(Default)]
+struct ConfigFlags {
+    language: Option<String>,
+    build: Option<String>,
+    tools: Vec<String>,
+}
+
+struct InitArgs {
+    name: Option<String>,
+    flags: ConfigFlags,
+}
+
+enum InitRequest {
+    Help,
+    Scaffold(InitArgs),
+}
+
+/// `init`'s value-taking flags. One enum, matched once to read the flag and once to
+/// file its value, so a flag added to the first match and not the second is a compile
+/// error rather than a value silently filed under the wrong field.
+#[derive(Clone, Copy)]
+enum InitFlag {
+    Name,
+    Language,
+    Build,
+    Tool,
+}
+
+impl InitFlag {
+    fn noun(self) -> &'static str {
+        match self {
+            InitFlag::Name => "a project name",
+            InitFlag::Language => "a language",
+            InitFlag::Build => "a build tool",
+            InitFlag::Tool => "a tool name",
+        }
+    }
+}
+
+/// Parse `init`'s own argv (everything after `init`; the global `-d` is already gone).
+///
+/// THE NAME IS POSITIONAL, so before WI-1124's census every dash-led token read as one:
+/// `anthill-todo init --help` in a fresh directory SCAFFOLDED A PROJECT CALLED `--help`,
+/// wrote it into `project.anthill`, and exited 0. `init` is host-served — it runs before
+/// any KB exists — so the bundle's spec-driven argument reporter, which would have
+/// refused the flag, never sees it. So a `-`-led token is a known flag or an error, never
+/// a name or a value, in either spelling (`--name --help`, `--name=--help`); and a token
+/// no slot takes is refused rather than dropped.
+fn parse_init_argv(argv: &[String]) -> Result<InitRequest, String> {
+    let mut name: Option<String> = None;
+    let mut flags = ConfigFlags::default();
+
+    let mut iter = argv.iter();
+    while let Some(tok) = iter.next() {
+        // `--flag value` and `--flag=value`, as the global `-d`/`--agent` accept.
+        let (spelling, inline) = match tok.split_once('=') {
+            Some((f, v)) if f.starts_with("--") => (f, Some(v.to_string())),
+            _ => (tok.as_str(), None),
+        };
+        let flag = match spelling {
+            "--help" | "-h" => return Ok(InitRequest::Help),
+            "--name" => InitFlag::Name,
+            "--language" => InitFlag::Language,
+            "--build" => InitFlag::Build,
+            "--tool" => InitFlag::Tool,
+            f if f.starts_with('-') => return Err(format!("`init` has no flag `{f}`")),
+            _ => {
+                if name.is_some() {
+                    return Err(format!("`init` takes one project name; `{tok}` is unexpected"));
+                }
+                if tok.is_empty() {
+                    return Err("`init` expects a project name, and it was empty".to_string());
+                }
+                name = Some(tok.clone());
+                continue;
+            }
+        };
+        let noun = flag.noun();
+        // A value-less flag used to fall through to a default — `init --name` scaffolded
+        // under the directory's name, which the caller never chose.
+        let value = match inline.or_else(|| iter.next().cloned()) {
+            None => return Err(format!("`init {spelling}` expects {noun}, and none was given")),
+            Some(v) if v.starts_with('-') => {
+                return Err(format!("`init {spelling}` expects {noun}, got the flag `{v}`"))
+            }
+            Some(v) if v.is_empty() => {
+                return Err(format!("`init {spelling}` expects {noun}, and it was empty"))
+            }
+            Some(v) => v,
+        };
+        let slot = match flag {
+            InitFlag::Name => &mut name,
+            InitFlag::Language => &mut flags.language,
+            InitFlag::Build => &mut flags.build,
+            InitFlag::Tool => {
+                // `, ` is how a tool list is written back — in `add`'s `- acceptance:`
+                // line and in init's own summary — so a label holding one reads as two.
+                if value.contains(',') {
+                    return Err(format!("`init --tool` {value:?}: a tool name cannot hold `,`"));
+                }
+                if flags.tools.contains(&value) {
+                    return Err(format!("`init` was given the tool `{value}` twice"));
+                }
+                flags.tools.push(value);
+                continue;
+            }
+        };
+        if slot.is_some() {
+            return Err(format!("`init` was given {noun} twice"));
+        }
+        *slot = Some(value);
+    }
+    Ok(InitRequest::Scaffold(InitArgs { name, flags }))
+}
+
+/// The ONE build file in `dir` (see [`BUILD_MARKERS`]), `None` when it holds none. More
+/// than one is an error: which one the project "is" would be a guess. So is a marker
+/// name that is there but is not a readable file — a dangling symlink, a directory —
+/// rather than being quietly counted out.
+fn detect_build_marker(dir: &Path) -> Result<Option<&'static BuildMarker>, String> {
+    let mut found = Vec::new();
+    for marker in BUILD_MARKERS {
+        let path = dir.join(marker.file);
+        match fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+            Ok(_) => {}
+        }
+        match fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => found.push(marker),
+            Ok(_) => return Err(format!("{} is there but is not a file", path.display())),
+            Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+        }
+    }
+    match found.as_slice() {
+        [] => Ok(None),
+        [m] => Ok(Some(m)),
+        many => Err(format!(
+            "{} holds more than one build file ({}), so what the flags leave open cannot \
+             be read from it.\n  {INIT_CONFIG_FLAGS}",
+            dir.display(),
+            many.iter().map(|m| m.file).collect::<Vec<_>>().join(", "),
+        )),
+    }
+}
+
+const INIT_CONFIG_FLAGS: &str = "Say it with flags: `init --language <L> --build <B> --tool <T>` \
+     (--tool repeatable; --language and --build may be left out).";
+
+/// Each field from its flag, else from the one build file in `dir` — and the file is
+/// read only while it IS the build in effect: under a `--build` naming another build,
+/// its language and tool describe a different project (`--build sbt` beside a
+/// `Cargo.toml` must not default to `cargo-test`, the defect this whole path replaces).
+/// Nothing is read when all three flags are given, so a directory with two build files
+/// is fine then. A field left open with nothing to read it from is left out — except
+/// the tools, which `init` refuses to guess.
+fn project_config(dir: &Path, flags: ConfigFlags) -> Result<ProjectConfig, String> {
+    let complete = flags.language.is_some() && flags.build.is_some() && !flags.tools.is_empty();
+    let found = if complete { None } else { detect_build_marker(dir)? };
+    let marker = found.filter(|m| flags.build.as_deref().is_none_or(|b| b == m.build));
+    let any_flag = flags.language.is_some() || flags.build.is_some() || !flags.tools.is_empty();
+    let tools = match (Tools::from_vec(flags.tools), marker) {
+        (Some(tools), _) => tools,
+        (None, Some(m)) => Tools { first: m.tool.to_string(), rest: Vec::new() },
+        (None, None) => {
+            let files = BUILD_MARKERS.iter().map(|m| m.file).collect::<Vec<_>>().join(", ");
+            return Err(match (found, &flags.build) {
+                (Some(m), Some(b)) => format!(
+                    "`init` needs a --tool: `--build {b}` is not {}'s {}, so no tool is read \
+                     from it",
+                    m.file, m.build
+                ),
+                _ if any_flag => format!(
+                    "`init` needs a --tool: {} holds none of {files} to read one from",
+                    dir.display()
+                ),
+                _ => format!(
+                    "cannot tell the language, build and tools of {}: it holds none of \
+                     {files}.\n  {INIT_CONFIG_FLAGS}",
+                    dir.display()
+                ),
+            });
+        }
+    };
+    let origin = match (marker, any_flag) {
+        (Some(m), false) => format!("read from {}", m.file),
+        (Some(m), true) => format!("read from {}, overridden by the flags", m.file),
+        (None, _) => "as given".to_string(),
+    };
+    Ok(ProjectConfig {
+        language: flags.language.or_else(|| marker.map(|m| m.language.to_string())),
+        build: flags.build.or_else(|| marker.map(|m| m.build.to_string())),
+        tools,
+        origin,
+    })
+}
+
+/// The `Project` fact, with a slot left out rather than written empty when neither a
+/// flag nor the build file gave it (`language`/`build` are `Option` in the domain).
+/// Every value goes through the store's own string-literal writer, so a `"` or `\` the
+/// user typed is escaped rather than breaking the file.
+fn project_fact(name: &str, config: &ProjectConfig) -> String {
+    let literal = |s: &str| {
+        let mut buf = String::new();
+        print::write_anthill_string(s, &mut buf);
+        buf
+    };
+    let mut slots = vec![format!("name: {}", literal(name))];
+    if let Some(l) = &config.language {
+        slots.push(format!("language: {}", literal(l)));
+    }
+    if let Some(b) = &config.build {
+        slots.push(format!("build: {}", literal(b)));
+    }
+    let tools = config.tools.iter().map(|t| literal(t)).collect::<Vec<_>>();
+    slots.push(format!("tools: [{}]", tools.join(", ")));
+    format!("fact Project(\n  {})", slots.join(",\n  "))
+}
+
 /// Scaffold a fresh project's `anthill-todo/` directory.
 ///
 /// `base_dir` is the explicit `-d <dir>` when given, else `None` (⇒ cwd). WI-748:
@@ -4261,7 +4571,7 @@ fn declared_field_values(
 /// dropped the scaffold wherever the user stood, and the success message named
 /// no path to reveal it. Returns the process exit code (loud, non-zero, on the
 /// refusal guards).
-fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
+fn run_init(base_dir: Option<&Path>, args: InitArgs) -> i32 {
     let cwd = std::env::current_dir().expect("cannot determine current directory");
     let base = base_dir.unwrap_or(cwd.as_path());
 
@@ -4355,29 +4665,42 @@ fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
         }
     }
 
-    let name = project_name.map(str::to_string).unwrap_or_else(|| {
-        abs_base
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("my-project")
-            .to_string()
-    });
-
     // THE NAME GOES INTO A STRING LITERAL, and a project file that does not parse is only
     // a WARNING — so a name carrying `"` or `\` would write a `project.anthill` whose
     // `ExtentBinding` is silently dropped, and the project would run on the single-file
     // default instead of the layout it was just scaffolded for (found in review; before
-    // the scaffold carried the layout this was cosmetic). Refused rather than escaped:
-    // the default name is a DIRECTORY BASENAME nobody chose for this purpose, so the
-    // honest answer is to say so and let the user name the project themselves.
-    if name.contains('"') || name.contains('\\') {
-        eprintln!(
-            "error: project name {name:?} cannot be written to project.anthill — a name \
-             carrying `\"` or `\\` would not parse, and the store binding under it would be \
-             silently dropped. Name the project explicitly: `anthill-todo init <name>`"
-        );
-        return runner::EXIT_RUNTIME;
-    }
+    // the scaffold carried the layout this was cosmetic). Refused rather than escaped —
+    // for the DEFAULT only, a DIRECTORY BASENAME nobody chose for this purpose, so the
+    // honest answer is to say so and let the user name the project themselves. A name
+    // they GIVE is escaped by `project_fact`, like every other value they give.
+    let name = match args.name {
+        Some(name) => name,
+        None => {
+            let default = abs_base
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("my-project")
+                .to_string();
+            if default.contains('"') || default.contains('\\') {
+                eprintln!(
+                    "error: project name {default:?} cannot be written to project.anthill — a \
+                     name carrying `\"` or `\\` would not parse, and the store binding under it \
+                     would be silently dropped. Name the project explicitly: \
+                     `anthill-todo init <name>`"
+                );
+                return runner::EXIT_RUNTIME;
+            }
+            default
+        }
+    };
+
+    let config = match project_config(&abs_base, args.flags) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return runner::EXIT_RUNTIME;
+        }
+    };
 
     fs::create_dir_all(&dir).expect("cannot create anthill-todo/");
 
@@ -4419,12 +4742,19 @@ fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
         .map(|(name, _)| short_name(name))
         .collect();
     let project = format!(
-        "-- Project configuration\n\nfact Project(\n  name: \"{name}\",\n  language: \"rust\",\n  build: \"cargo\",\n  tools: [\"cargo-test\"])\n\n\
+        "-- Project configuration\n\
+         --\n\
+         -- `tools` is the default acceptance: `anthill-todo add` without `--acceptance`\n\
+         -- gives the new item one `ToolPasses(<tool>)` per entry. A tool name is a\n\
+         -- free-form LABEL for a check whoever delivers the item must see pass;\n\
+         -- anthill-todo neither resolves nor runs it, so any name is accepted.\n\n\
+         {project_fact}\n\n\
          -- Which store holds these work items, and in which role (proposal 057).\n\
          -- `mirror`: every file here is loaded at startup and the KB answers reads, with\n\
          -- the store as the write-through durability leg. `root: \".\"` is this directory.\n\
          -- One file per item, under a directory named for the item's status.\n\
          {binding}\n",
+        project_fact = project_fact(&name, &config),
         binding = item_per_file_binding(&covers)
     );
     // `StoreFormat` carries neither an id nor an item reference, so `ItemPerFileStore`
@@ -4455,6 +4785,13 @@ fn run_init(base_dir: Option<&Path>, project_name: Option<&str>) -> i32 {
     // and so could not have revealed WI-748 even to someone staring at it.
     println!("created {} with:", dir.display());
     println!("  project.anthill      — project configuration");
+    println!(
+        "      language: {}, build: {}, tools: {} ({})",
+        config.language.as_deref().unwrap_or("(unset)"),
+        config.build.as_deref().unwrap_or("(unset)"),
+        config.tools.iter().map(String::as_str).collect::<Vec<_>>().join(", "),
+        config.origin
+    );
     println!("  store_format.anthill — the data format its items are written in");
     println!("(each item lands in its own file, under a directory named for its status)");
     println!("(the anthill.stage0 domain + workflow rules ship bundled with anthill-todo)");
@@ -4605,60 +4942,20 @@ fn run_anthill_bundle(argv: &[String]) -> i32 {
     // anthill-todo/ directory. Reuse the legacy implementation; once
     // there's a project to load, the bundle takes over.
     if bundle_argv.first().map(|s| s.as_str()) == Some("init") {
-        // `init --name <name>` (the legacy clap flag) or `init <name>`.
-        //
-        // THE NAME IS POSITIONAL, so before this every dash-led token read as one:
-        // `anthill-todo init --help` in a fresh directory SCAFFOLDED A PROJECT
-        // CALLED `--help`, wrote it into `project.anthill`, and exited 0 (found
-        // censusing WI-1124, 2026-09-06). `init` is host-served — it runs before
-        // any KB exists — so the bundle's spec-driven argument reporter, which
-        // would have refused the flag, never sees it. The three cases are answered
-        // here instead, and the one thing a `-`-led token cannot be is a name.
-        let name = match bundle_argv.get(1).map(|s| s.as_str()) {
-            Some("--help") | Some("-h") => {
-                println!("{INIT_USAGE}");
-                return 0;
+        return match parse_init_argv(&bundle_argv[1..]) {
+            Ok(InitRequest::Help) => {
+                println!("{}", init_usage());
+                0
             }
-            Some("--name") => match bundle_argv.get(2).map(|s| s.as_str()) {
-                // `init --name` with nothing after it used to fall through to the
-                // directory-derived default — a malformed flag scaffolding a
-                // project under a name the caller never chose.
-                None => {
-                    eprintln!("error: `init --name` expects a project name, and none was given");
-                    eprintln!("{INIT_USAGE}");
-                    return runner::EXIT_COMPILE;
-                }
-                Some(n) if n.starts_with('-') => {
-                    eprintln!("error: `init --name` expects a project name, got the flag `{n}`");
-                    eprintln!("{INIT_USAGE}");
-                    return runner::EXIT_COMPILE;
-                }
-                other => other,
-            },
-            Some(other) if other.starts_with('-') => {
-                eprintln!("error: `init` takes a project name, not the flag `{other}`");
-                eprintln!("{INIT_USAGE}");
-                return runner::EXIT_COMPILE;
+            // Honor the stripped `-d <dir>` — every other subcommand does, via
+            // find_project_dir; init used to be the lone exception (WI-748).
+            Ok(InitRequest::Scaffold(args)) => run_init(explicit_dir.as_deref(), args),
+            Err(e) => {
+                eprintln!("error: {e}");
+                eprintln!("{}", init_usage());
+                runner::EXIT_COMPILE
             }
-            other => other,
         };
-        // …and everything PAST the name is refused rather than dropped. Guarding
-        // argv[1] alone left the same swallow one position over:
-        // `init myproj --help` scaffolded `myproj` and discarded `--help`
-        // silently, which is the behaviour this guard exists to stop.
-        let consumed = if bundle_argv.get(1).map(|s| s.as_str()) == Some("--name") {
-            3
-        } else {
-            1 + usize::from(name.is_some())
-        };
-        if let Some(extra) = bundle_argv.get(consumed) {
-            eprintln!("error: `init` takes one project name; `{extra}` is unexpected");
-            eprintln!("{INIT_USAGE}");
-            return runner::EXIT_COMPILE;
-        }
-        // Honor the stripped `-d <dir>` — every other subcommand does, via
-        // find_project_dir; init used to be the lone exception (WI-748).
-        return run_init(explicit_dir.as_deref(), name);
     }
 
     // `skill` is a static doc print — served host-side so the output stays

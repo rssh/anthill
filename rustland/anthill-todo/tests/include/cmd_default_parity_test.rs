@@ -106,6 +106,7 @@ const SCENARIO: &[&[&str]] = &[
 fn default_path_reproduces_the_golden_transcript() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let proj = tmp.path();
+    crate::common::plant_cargo_toml(proj);
 
     let init = Command::new(BIN)
         .current_dir(proj)

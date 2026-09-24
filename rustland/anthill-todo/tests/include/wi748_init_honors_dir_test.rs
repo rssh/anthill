@@ -16,6 +16,8 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 fn init_honors_dir_flag_from_a_different_cwd() {
     let cwd_dir = tempfile::tempdir().expect("cwd tempdir");
     let target = tempfile::tempdir().expect("target tempdir");
+    // In the -d target only: the build file is read from where the project goes.
+    crate::common::plant_cargo_toml(target.path());
     assert_ne!(
         cwd_dir.path(),
         target.path(),
@@ -85,6 +87,7 @@ fn init_honors_dir_flag_from_a_different_cwd() {
 #[test]
 fn init_refuses_to_scaffold_over_an_existing_project() {
     let target = tempfile::tempdir().expect("target tempdir");
+    crate::common::plant_cargo_toml(target.path());
 
     let first = Command::new(BIN)
         .args(["-d", target.path().to_str().unwrap(), "init"])
@@ -182,6 +185,7 @@ fn init_with_relative_dir_flag_scaffolds_absolute() {
     let subname = "relproj";
     let sub = parent.path().join(subname);
     std::fs::create_dir(&sub).expect("mkdir sub");
+    crate::common::plant_cargo_toml(&sub);
 
     let out = Command::new(BIN)
         .current_dir(parent.path())
@@ -233,7 +237,8 @@ fn init_with_relative_dir_flag_scaffolds_absolute() {
 // scaffolded a project literally CALLED `--help` and exited 0 (found censusing
 // WI-1124, 2026-09-06).
 //
-// CONTROL. Restore the two-arm `match` these replace —
+// CONTROL. Restore the two-arm `match` these replaced (the parse is now
+// `parse_init_argv`, and a stray flag's refusal reads "`init` has no flag") —
 //     let name = match bundle_argv.get(1).map(|s| s.as_str()) {
 //         Some("--name") => bundle_argv.get(2).map(|s| s.as_str()),
 //         other => other,
@@ -251,6 +256,7 @@ fn init_with_relative_dir_flag_scaffolds_absolute() {
 /// the directory be cleaned up first, making every `scaffolded()` answer false.
 fn init_in_a_fresh_dir(args: &[&str]) -> (i32, String, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
+    crate::common::plant_cargo_toml(dir.path());
     let mut argv = vec!["-d", dir.path().to_str().unwrap(), "init"];
     argv.extend_from_slice(args);
     let out = Command::new(BIN).args(&argv).output().expect("run init");
@@ -268,17 +274,21 @@ fn scaffolded(dir: &tempfile::TempDir) -> bool {
 
 #[test]
 fn init_help_prints_usage_and_scaffolds_nothing() {
-    let (code, stdout, _, dir) = init_in_a_fresh_dir(&["--help"]);
-    assert_eq!(code, 0, "`init --help` is a help request, not a failure");
-    assert!(
-        stdout.contains("usage: anthill-todo [-d <DIR>] init [<name>]"),
-        "expected init's own usage, got stdout:\n{stdout}"
-    );
-    assert!(
-        !scaffolded(&dir),
-        "a help request must not create a project; {} exists",
-        dir.path().join("anthill-todo").display()
-    );
+    // Anywhere in the argv, not only first: `init myproj --help` once scaffolded
+    // `myproj` and dropped the `--help` in silence (/code-review, 2026-09-06).
+    for args in [&["--help"][..], &["myproj", "--help"][..], &["--tool", "t", "-h"][..]] {
+        let (code, stdout, _, dir) = init_in_a_fresh_dir(args);
+        assert_eq!(code, 0, "{args:?} is a help request, not a failure");
+        assert!(
+            stdout.contains("usage: anthill-todo [-d <DIR>] init [<name>]"),
+            "{args:?}: expected init's own usage, got stdout:\n{stdout}"
+        );
+        assert!(
+            !scaffolded(&dir),
+            "{args:?}: a help request must not create a project; {} exists",
+            dir.path().join("anthill-todo").display()
+        );
+    }
 }
 
 #[test]
@@ -286,7 +296,7 @@ fn init_refuses_a_stray_flag_as_a_project_name() {
     let (code, _, stderr, dir) = init_in_a_fresh_dir(&["--nosuch"]);
     assert_eq!(code, 2, "a mistyped flag is a usage error");
     assert!(
-        stderr.contains("`init` takes a project name, not the flag `--nosuch`"),
+        stderr.contains("`init` has no flag `--nosuch`"),
         "the refusal must name the offending token, got stderr:\n{stderr}"
     );
     assert!(!scaffolded(&dir), "a refused init must create nothing");
@@ -338,14 +348,21 @@ fn init_names_the_project_from_a_bare_argument() {
 fn init_refuses_a_token_after_the_project_name() {
     // /code-review, 2026-09-06: guarding argv[1] alone left the same swallow one
     // position over — `init myproj --help` scaffolded `myproj` and discarded
-    // `--help` in silence. CONTROL: drop the `consumed`/`extra` check and this
-    // fails alone; `init_names_the_project_from_a_bare_argument` stays green,
-    // which is what says the guard did not eat the name itself.
-    let (code, _, stderr, dir) = init_in_a_fresh_dir(&["myproj", "--help"]);
-    assert_eq!(code, 2, "an unconsumed trailing token is a usage error");
-    assert!(
-        stderr.contains("`init` takes one project name; `--help` is unexpected"),
-        "the refusal must name the dropped token, got stderr:\n{stderr}"
-    );
-    assert!(!scaffolded(&dir), "a refused init must create nothing");
+    // `--help` in silence. Since WI-20260924-EJMW4 `init` parses every token, so
+    // `--help` anywhere is a help request (pinned in the help test above); the
+    // swallow this guards is now a second NAME. CONTROL: let a second positional overwrite (or skip) the first and this
+    // fails alone; `init_names_the_project_from_a_bare_argument` stays green, which
+    // is what says the guard did not eat the name itself.
+    for (args, expected) in [
+        (["myproj", "other"], "`init` takes one project name; `other` is unexpected"),
+        (["myproj", "--nosuch"], "`init` has no flag `--nosuch`"),
+    ] {
+        let (code, _, stderr, dir) = init_in_a_fresh_dir(&args);
+        assert_eq!(code, 2, "{args:?}: an unconsumed trailing token is a usage error");
+        assert!(
+            stderr.contains(expected),
+            "{args:?}: the refusal must name the dropped token, got stderr:\n{stderr}"
+        );
+        assert!(!scaffolded(&dir), "{args:?}: a refused init must create nothing");
+    }
 }

@@ -42,12 +42,21 @@ namespace anthill.examples.lf1.realization
   -- follower_gps| from the broadcast leader pose plus own GPS). A
   -- supervisor-backed pseudo-device can replace the emulation later
   -- without touching the spec.
-  fact Generated(
-    source:      "anthill.examples.lf1.follower_transponder.TransponderFollowerController",
-    artifact:    "controllers/TransponderFollowerController",
-    language:    "cpp",
-    profile:     some("cpp20-stl"),
-    kind:        "controller",
-    description: some("Webots leader-follower outer-loop follower controller (transponder variant; scalar-range hill-climbing)")
-  )
+  --
+  -- PARKED (WI-20260823-ZW6N5): there is no
+  -- `cpp/TransponderFollowerController_main.cpp` yet — it needs the
+  -- leader-pose radio, which no controller has wired — and
+  -- `codegen cpp-project` refuses a controller with no entry point, so
+  -- this fact would stop `build.sh`. Restore it together with that shim
+  -- (and a `controller "TransponderFollowerController"` slot in the world).
+  -- The safety proofs read the SORT, not this fact, and are unaffected.
+  --
+  -- fact Generated(
+  --   source:      "anthill.examples.lf1.follower_transponder.TransponderFollowerController",
+  --   artifact:    "controllers/TransponderFollowerController",
+  --   language:    "cpp",
+  --   profile:     some("cpp20-stl"),
+  --   kind:        "controller",
+  --   description: some("Webots leader-follower outer-loop follower controller (transponder variant; scalar-range hill-climbing)")
+  -- )
 end

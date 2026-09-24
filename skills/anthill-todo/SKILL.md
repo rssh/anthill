@@ -22,7 +22,12 @@ anthill-todo -d "$PWD" $ARGS
 
 When invoked as `/anthill-todo`, run the CLI with the user's arguments. If no arguments, show the list.
 
-If the project has no `anthill-todo/` directory yet, run `init` first.
+If the project has no `anthill-todo/` directory yet, run `init` first. It reads the
+language, build and default acceptance tool off the ONE build file in the project
+(`init --help` lists which files it knows); `--language L`, `--build B` and
+`--tool T` (repeatable) override them field by field, and are needed where no such
+file is. A tool name is a free-form label anthill-todo does not run: `add` without
+`--acceptance` gives the new item one `ToolPasses` per `Project.tools` entry.
 
 ## Commands
 
@@ -44,7 +49,7 @@ anthill-todo -d "$PWD" add-dependency WI-A WI-B          # Make WI-A depend on W
 anthill-todo -d "$PWD" remove-dependency WI-A WI-B       # Drop WI-A's dependency on WI-B
 anthill-todo -d "$PWD" status                            # Show status counts
 anthill-todo -d "$PWD" graph                             # Show dependency graph
-anthill-todo -d "$PWD" init                              # Initialize anthill-todo/ in project
+anthill-todo -d "$PWD" init [--language L --build B --tool T]  # Initialize anthill-todo/ in project
 ```
 
 ### What a project looks like on disk
