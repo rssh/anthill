@@ -70,3 +70,11 @@ KEPT APART, deliberately — each is an answer changing, not a merge, and is nam
 
 ALSO FOUND AND FIXED, OUTSIDE THE BEHAVIOUR-PRESERVING GROUPS (its own commit, f7adb555): `projection_type_error`'s doc and `#[track_caller]` sat on `delta_failure_text` (S8CBV inserted it between them), so every projection error's WI-510 origin was the helper's own line — driven by `projection_error_origin_test`, which fails with the attribute where it was; and `build_op_scoped_dicts`' doc and `#[allow]` sat on `stamp_op_scoped_dicts` (28TAT inserted it between them) — doc/lint only.
 
+### 2026-09-24T05:24:36Z — feedback — user
+
+FOLLOW-UP, the three divergences this delivery kept apart and reported: two reproduced and are FIXED, one did not reproduce and is PINNED. Tests: wi_32xfq_found_divergences_test (9 rows, back-outs measured at each site).
+
+  * db7cfcb0 — a user sort named SortView was read as the reflect view wrapper (by suffix in the typer, by last segment in the loader), so its provision decoded as nothing: `widget(n: 1).describe()` was refused, namespaced or top-level. The one discriminant `is_sort_view_functor` now compares identity (`anthill.reflect.SortView`) for every provision decoder; the four readers that re-decoded the base read `ProvidesRow::spec_base`. The reflect builtins (`extract_sort_ref`, `resolve_sort_instantiation_param`) keep reading the local name — their input is a program-built value, spelled unqualified by their own tests; moving them failed eight of those.
+  * 4f2ea66a — `sort_ref_functor` preferred a `name:` child (the WI-361-retired wrapper), so an applied carrier whose parameter is called `name` read as that parameter's value: a written provision `sort_ref: Box[name = Int64]` hid Spec's member from `box(v: 1).describe()`. It reads the head (delegating to `head_functor_sym`); `ProvidesRow` loses its second carrier decode.
+  * 79b76a35 — positional bindings missing from the symbol-keyed σ: NOT reproduced. Since N3W68 #9 the loader stores a positional type-parameter binding as a named one, so named and positional spellings are refused identically (override check and instance-binding check). Doc corrected; two rows pin it.
+
