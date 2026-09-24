@@ -4,9 +4,8 @@
 //! The consolidation kept two decodes apart that it could not prove equal: the provision
 //! relation's SPEC-BASE decode and its CARRIER decode each had a second spelling. Both
 //! second spellings reproduced as silent wrong answers — a provision that every reader
-//! should see went invisible to the dot-member resolver — and both are fixed; the third
-//! suspicion (positional bindings missing from the symbol-keyed σ) did not reproduce,
-//! and its section pins why. Each test states its back-out at its own site.
+//! should see went invisible to the dot-member resolver — and both are fixed. Each test
+//! states its back-out at its own site.
 
 use crate::common::{assert_refused_naming, interp_for, try_load_kb_with};
 use anthill_core::eval::Value;
@@ -139,4 +138,66 @@ end
         &["does not fit", "wi32xfq.wrap.Sp.get", "Int64"],
         "a wrong override at a `SortView`-wrapped provision's bindings",
     );
+}
+
+// ── A carrier applied at a parameter called `name` is still the carrier ──────────────
+//
+// `load::sort_ref_functor` read a `sort_ref`'s carrier and, for a `Fn`, preferred a child
+// labelled `name` — the deep `sort_ref(name: Ref(S))` wrapper, which nothing has minted
+// since WI-361. The only other `sort_ref` with such a child is an APPLIED carrier whose
+// parameter is called `name`, and for it the preference answered the parameter's VALUE.
+// Two dispatch readers (`impl_sorts_providing_spec`, `collect_provides_candidates`) read
+// the bare head instead, so the one fact had two providers depending on who asked.
+
+/// A provision written as the relation's own fact — the one spelling that puts an APPLIED
+/// carrier in `sort_ref` — whose carrier `Box` has a parameter called `param`. `go()` runs
+/// `Spec`'s default through a dot-call on a `Box`.
+fn written_provision_program(ns: &str, param: &str) -> String {
+    format!(
+        r#"
+namespace {ns}
+  import anthill.prelude.{{Int64}}
+  import anthill.reflect.{{SortProvidesInfo}}
+
+  sort Spec
+    operation describe(x: Spec) -> Int64 = 7
+  end
+
+  sort Box
+    sort {param} = ?
+    entity box(v: Int64)
+  end
+
+  fact SortProvidesInfo(sort_ref: Box[{param} = Int64], spec: Spec)
+
+  operation go() -> Int64 = box(v: 1).describe()
+end
+"#
+    )
+}
+
+fn go_written(ns: &str, param: &str) -> i64 {
+    let mut interp = interp_for(&written_provision_program(ns, param));
+    let entry = format!("{ns}.go");
+    match interp.call(&entry, &[]) {
+        Ok(Value::Int(n)) => n,
+        other => panic!("`{entry}` with a `{param}` parameter must run to an Int64: {other:?}"),
+    }
+}
+
+/// MEASURED before the fix: the load refused `box(v: 1).describe()` with "expected
+/// operation declared on the receiver's sort, got no such member (dot dispatch)" — the
+/// provision's carrier had been read as `Int64`, the value bound to `name`.
+///
+/// BACK-OUT, MEASURED: restoring the `name:`-child preference in `sort_ref_functor` fails
+/// this test. The control below passes both ways by design.
+#[test]
+fn a_carrier_applied_at_a_parameter_called_name_is_still_the_carrier() {
+    assert_eq!(go_written("wi32xfq.sr", "name"), 7);
+}
+
+/// THE CONTROL: the same written provision with the parameter called anything else.
+#[test]
+fn the_same_written_provision_under_another_parameter_name_is_the_baseline() {
+    assert_eq!(go_written("wi32xfq.srctl", "nm"), 7);
 }

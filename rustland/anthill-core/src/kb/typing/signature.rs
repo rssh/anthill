@@ -2128,7 +2128,7 @@ fn all_spec_clause_views(kb: &KnowledgeBase) -> Vec<SpecClauseView> {
         // TERM-ONLY for all three, the condition relation included: a value-headed
         // condition fact is invisible here, where [`decoded_condition_row`] reads it.
         for rid in kb.rules_by_functor(sym) {
-            let Some((owner, _, spec_view)) = sort_clause_fields(kb, rid, spec_field) else {
+            let Some((owner, spec_view)) = sort_clause_fields(kb, rid, spec_field) else {
                 continue;
             };
             out.push(SpecClauseView {

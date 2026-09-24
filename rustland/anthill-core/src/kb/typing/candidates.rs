@@ -11,7 +11,7 @@ pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -
     let mut out: Vec<Symbol> = Vec::new();
     let spec_canon = kb.canonical_sort_sym(spec_sort);
     for row in provides_rows_of_spec_in(kb, spec_canon, provides_rids_by_spec(kb, spec_canon)) {
-        let carrier = kb.canonical_sort_sym(row.sort_ref_head(kb));
+        let carrier = kb.canonical_sort_sym(row.provider);
         if carrier != spec_canon && !out.contains(&carrier) {
             out.push(carrier);
         }
@@ -208,9 +208,9 @@ pub(super) fn collect_provides_candidates(
 
     let mut out: Vec<Candidate> = Vec::new();
     for row in candidates {
-        let impl_sort = row.sort_ref_head(kb);
         let ProvidesRow {
             rid,
+            provider: impl_sort,
             spec_base: view_base_sym,
             bindings: view_bindings,
             ..

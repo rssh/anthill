@@ -226,15 +226,14 @@ pub(super) fn provides_rids_by_carrier_canon(
 /// has no term head and is not a row, as it was no row to any reader before: occurrence-
 /// based provides lookup is gated effect-expressions-as-types work.
 ///
-/// ONE DECODE STAYS APART, because merging it changes an answer:
-///   * [`Self::provider`] is `sort_ref_functor`'s, which prefers a `sort_ref(name: …)` child;
-///     two dispatch readers read the bare head instead — [`Self::sort_ref_head`].
-///
-/// The SPEC BASE was the other until WI-20260923-32XFQ: `crate::kb::load::provides_spec_base_sym`
-/// took a user sort named `SortView` for the reflect wrapper by its last segment, where
-/// [`unwrap_spec_view`] took `anything.SortView` by its suffix, and four readers re-decoded
-/// the base to keep the difference. Both now ask [`is_sort_view_functor`], which asks by
-/// identity, so [`Self::spec_base`] is the base every reader reads.
+/// ONE DECODE PER FIELD. Until WI-20260923-32XFQ two fields had a second one kept apart,
+/// and both second spellings were wrong answers, found by program: the SPEC BASE (the
+/// loader's `provides_spec_base_sym` took a user sort named `SortView` for the reflect
+/// wrapper by its last segment, where [`unwrap_spec_view`] took `anything.SortView` by its
+/// suffix — both now ask [`is_sort_view_functor`], by identity), and the PROVIDER
+/// (`crate::kb::load::sort_ref_functor` preferred a `name:` child, so an applied carrier
+/// whose parameter is called `name` read as that parameter's value, where two dispatch
+/// readers took the bare head — it reads the head now).
 #[derive(Clone, Debug)]
 pub(super) struct ProvidesRow {
     pub(super) rid: crate::kb::RuleId,
@@ -243,8 +242,6 @@ pub(super) struct ProvidesRow {
     /// witness names its carrier in the spec's bindings ([`witness_dispatch_carrier`]),
     /// though the index calls this key `carrier` ([`provides_rids_by_carrier_canon`]).
     pub(super) provider: Symbol,
-    /// The `sort_ref` field as stored, for [`Self::sort_ref_head`].
-    pub(super) sort_ref: TermId,
     /// The `spec` field: the full `SortView` term, or a bare spec reference.
     pub(super) spec_view: TermId,
     /// The spec's base sort, RAW.
@@ -256,31 +253,11 @@ pub(super) struct ProvidesRow {
     pub(super) bindings: SmallVec<[(Symbol, TermId); 2]>,
 }
 
-impl ProvidesRow {
-    /// The `sort_ref`'s bare HEAD functor, ignoring the `sort_ref(name: Ref(S))` child
-    /// [`Self::provider`] prefers. [`impl_sorts_providing_spec`] and
-    /// [`collect_provides_candidates`] decoded their impl sort this way and still do: the two
-    /// reads differ only for a `sort_ref` carrying a `name:` argument, which nothing has
-    /// minted since WI-361 — but a written reflect fact can, and reconciling the two is an
-    /// answer changing, which is not a consolidation's to make. Total: a row's `sort_ref`
-    /// passed `sort_ref_functor`, which admits exactly the `Fn` / `Ref` / `Ident` shapes read
-    /// here.
-    pub(super) fn sort_ref_head(&self, kb: &KnowledgeBase) -> Symbol {
-        match kb.get_term(self.sort_ref) {
-            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
-            other => unreachable!(
-                "a decoded provision row's sort_ref passed sort_ref_functor, which admits \
-                 only Fn / Ref / Ident; got {other:?}"
-            ),
-        }
-    }
-}
-
 /// WI-20260923-32XFQ — the fields every sort-clause reflect fact shares. `SortProvidesInfo`,
 /// `SortRequiresInfo` and `ProvidesConditionInfo` are each a TERM-headed fact with a
 /// `sort_ref` (the sort the clause is written on) and one more named field: `(owner through
-/// `sort_ref_functor`, the `sort_ref` term, the field)`, or `None` for a rule, a value-headed
-/// fact, or a missing field.
+/// `sort_ref_functor`, the field)`, or `None` for a rule, a value-headed fact, or a missing
+/// field.
 ///
 /// TERM-ONLY, and that is a skip rather than a decode: a value head has no `TermId`.
 /// [`decoded_condition_row`] is the carrier-agnostic reader of the condition relation.
@@ -288,7 +265,7 @@ pub(super) fn sort_clause_fields(
     kb: &KnowledgeBase,
     rid: crate::kb::RuleId,
     field: &str,
-) -> Option<(Symbol, TermId, TermId)> {
+) -> Option<(Symbol, TermId)> {
     if !kb.is_fact(rid) {
         return None;
     }
@@ -296,7 +273,7 @@ pub(super) fn sort_clause_fields(
     let sort_ref = get_named_arg(kb, &named, "sort_ref")?;
     let owner = crate::kb::load::sort_ref_functor(kb, sort_ref)?;
     let value = get_named_arg(kb, &named, field)?;
-    Some((owner, sort_ref, value))
+    Some((owner, value))
 }
 
 /// [`ProvidesRow`]'s decoder: `None` for anything that is not a row, and for a row whose
@@ -312,7 +289,7 @@ fn decode_provides_row(
     rid: crate::kb::RuleId,
     keep: impl Fn(Symbol) -> bool,
 ) -> Option<ProvidesRow> {
-    let (provider, sort_ref, spec_view) = sort_clause_fields(kb, rid, "spec")?;
+    let (provider, spec_view) = sort_clause_fields(kb, rid, "spec")?;
     if !keep(provider) {
         return None;
     }
@@ -320,7 +297,6 @@ fn decode_provides_row(
     Some(ProvidesRow {
         rid,
         provider,
-        sort_ref,
         spec_view,
         spec_base,
         bindings,

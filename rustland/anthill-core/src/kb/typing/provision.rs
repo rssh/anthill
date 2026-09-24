@@ -1049,7 +1049,7 @@ pub(super) fn op_backed(
 }
 
 /// Top functor symbol of a term head — a `Fn` functor, or a bare `Ref`/`Ident`.
-pub(super) fn head_functor_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
+pub(crate) fn head_functor_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
     match kb.get_term(tid) {
         Term::Fn { functor, .. } => Some(*functor),
         Term::Ref(s) | Term::Ident(s) => Some(*s),

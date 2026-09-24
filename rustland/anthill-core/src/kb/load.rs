@@ -18208,31 +18208,25 @@ fn check_requires_shadows(kb: &mut KnowledgeBase) -> Vec<LoadWarning> {
     warnings
 }
 
-/// Extract the carrier sort symbol from a `SortProvidesInfo.sort_ref`
-/// term — a `sort_ref(name: Ref(S))`, a bare `Ref(S)`/`Ident(S)`, or a
-/// nullary `Fn` whose functor is `S`.
+/// Extract the sort a sort-clause fact's `sort_ref` names — `SortProvidesInfo`,
+/// `SortRequiresInfo`, `ProvidesConditionInfo` alike: its HEAD, i.e. a bare `Ref(S)` /
+/// `Ident(S)`, or the functor of a `Fn` (the nullary name the loader writes, or an APPLIED
+/// carrier `Box[…]`, whose head IS the carrier).
+///
+/// WI-20260923-32XFQ — it used to prefer a `name:` CHILD of a `Fn`, for the deep
+/// `sort_ref(name: Ref(S))` wrapper, which nothing has minted since WI-361. The preference
+/// outlived its producer and misread the one other shape with such a child: an applied
+/// carrier whose parameter is CALLED `name`. MEASURED — a written provision `sort_ref:
+/// Box[name = Int64]` was read as provided by `Int64`, so `b.describe()` on a `Box` found
+/// no member where the same program with the parameter called `nm` ran
+/// (`wi_32xfq_found_divergences_test`). The two dispatch readers that had always read the
+/// bare head (`impl_sorts_providing_spec`, `collect_provides_candidates`) disagreed with
+/// every other reader for exactly that shape; there is one reading now.
+///
+/// So it IS the head reader, [`super::typing::head_functor_sym`] — kept as its own name only
+/// because "the sort a clause is written on" is what its 14 callers ask.
 pub(crate) fn sort_ref_functor(kb: &KnowledgeBase, term: TermId) -> Option<Symbol> {
-    match kb.get_term(term) {
-        Term::Fn {
-            functor,
-            named_args,
-            ..
-        } => {
-            // `sort_ref(name: Ref(S))` wrapping — prefer the inner name.
-            if let Some(name_tid) = named_args
-                .iter()
-                .find(|(k, _)| kb.local_name_of(*k) == "name")
-                .map(|(_, v)| *v)
-            {
-                if let Term::Ref(s) | Term::Ident(s) = kb.get_term(name_tid) {
-                    return Some(*s);
-                }
-            }
-            Some(*functor)
-        }
-        Term::Ref(s) | Term::Ident(s) => Some(*s),
-        _ => None,
-    }
+    super::typing::head_functor_sym(kb, term)
 }
 
 /// Extract the spec sort symbol from a `SortProvidesInfo.spec` term:
