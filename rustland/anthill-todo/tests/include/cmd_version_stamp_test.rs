@@ -84,6 +84,7 @@ fact WorkItem(
 #[test]
 fn fresh_init_project_loads_clean() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    crate::common::plant_cargo_toml(tmp.path());
     let init = run_in(tmp.path(), &["init", "demo"]);
     assert!(init.status.success(), "init failed: {}", stderr(&init));
 

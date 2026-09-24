@@ -49,6 +49,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 /// item-per-file binding — so the item DIRECTORIES this ticket is about are the ones
 /// `add` actually creates. Returns the project's `anthill-todo/` directory.
 fn init_project(base: &Path) -> PathBuf {
+    crate::common::plant_cargo_toml(base);
     let out = Command::new(BIN)
         .args(["-d", base.to_str().unwrap(), "init"])
         .output()

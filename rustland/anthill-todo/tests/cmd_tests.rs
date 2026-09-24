@@ -148,3 +148,6 @@ mod wivdxam_fsck_renumber_test;
 
 #[path = "include/wic8sg5_discovery_walks_up_test.rs"]
 mod wic8sg5_discovery_walks_up_test;
+
+#[path = "include/wiejmw4_init_project_config_test.rs"]
+mod wiejmw4_init_project_config_test;

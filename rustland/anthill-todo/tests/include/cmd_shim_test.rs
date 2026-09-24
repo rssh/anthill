@@ -11,6 +11,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_anthill-todo");
 #[test]
 fn init_with_leading_dir_flag_scaffolds() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    crate::common::plant_cargo_toml(tmp.path());
     let out = Command::new(BIN)
         .current_dir(tmp.path())
         .args(["-d", tmp.path().to_str().unwrap(), "init"])
@@ -45,6 +46,7 @@ fn skill_with_leading_dir_flag_prints_frontmatter() {
 #[test]
 fn agent_equals_form_is_accepted() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    crate::common::plant_cargo_toml(tmp.path());
     let init = Command::new(BIN)
         .current_dir(tmp.path())
         .arg("init")

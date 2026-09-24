@@ -104,6 +104,7 @@ fact anthill.persistence.ExtentBinding(
 #[test]
 fn init_scaffolds_the_item_per_file_layout() {
     let tmp = tempfile::tempdir().expect("tempdir");
+    crate::common::plant_cargo_toml(tmp.path());
     let init = Command::new(BIN)
         .args(["-d", tmp.path().to_str().unwrap(), "init"])
         .output()

@@ -110,3 +110,11 @@ pub fn assert_no_project_above(dir: &Path) {
         }
     }
 }
+
+/// Make `dir` a Rust project as `init` reads one: `init` takes a project's language,
+/// build and default tool from the one build file in its directory, and refuses a
+/// directory holding none (WI-20260924-EJMW4). A test that scaffolds with a bare
+/// `init` models a Rust project — the `cargo-test` its `add`s embed comes from here.
+pub fn plant_cargo_toml(dir: &Path) {
+    fs::write(dir.join("Cargo.toml"), "").expect("plant Cargo.toml");
+}
