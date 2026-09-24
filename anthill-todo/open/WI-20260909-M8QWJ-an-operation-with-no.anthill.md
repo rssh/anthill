@@ -62,3 +62,7 @@ WHY IT MATTERS BEYOND ITSELF: WI-20260911-3MV2C's direction is `raise(error: T) 
 
 ROOT CAUSE NOT INVESTIGATED, NO TICKET FILED. Cross-reference, not a dependency.
 
+### 2026-09-24T05:08:42Z — feedback — user
+
+RULE-BODY FACE, MEASURED 2026-09-24 (under WI-20260923-9R5HN), and it is worse than an eval fault. With `operation undef(n: Int64) -> Int64` (no body, no binding, no attribute — loads clean): (1) DIRECT: `rule r(1) :- undef(1) = 1` answers 'no solutions' (DECIDED false, total 0) and `rule rn(1) :- not(undef(1) = 1)` answers 1 DEFINITE — UNSOUND, the kernel-language §5.2 decided-false shape: the call is neither reduced nor delayed (`functor_leaves_an_unreduced_op_call` asks for a body or a host mapping), so `eq` compares it as DATA. (2) THROUGH A BODY: with `operation wrap(n: Int64) -> Int64 = undef(n)`, `wrap(1) = 1` and its negation both SUSPEND with NO warning — the bridge hits `OperationBodyMissing`, which `EvalError::bridge_disposition` classifies `Schedule` (silent). That classification's stated reason ('reflect builtins registered nowhere the bridge can see') is GONE since 9R5HN made them HOST_FNS rows; the comment at the arm now says so. ACCEPTANCE ADDITION: once the load refuses this population, (a) the two rule-body rows above are load errors, and (b) `OperationBodyMissing`'s bridge disposition is revisited — whatever still reaches it at run time (a dynamic dispatch gap, e.g. WI-944's unbacked `Ring[Float]`) should report a `Fault` rather than delay in silence; measure what else moves when it does.
+
