@@ -2,36 +2,36 @@
 //
 // Glue between the Cyberbotics-reference inner-loop class
 // (`MavicBase`, in mavic_base.{cpp,hpp}) and the anthill-generated
-// outer-loop traits class (`anthill::examples::lf1::LeaderController`).
+// outer-loop traits class (`anthill::examples::lf1::leader::LeaderController`).
 //
 // MavicBase exposes its own nested `Pose` / `Controls` POD types
 // (protected members); the anthill side has parallel value types in
-// `anthill::examples::lf1`. This file marshals between them inside
+// `anthill::examples::lf1::leader`. This file marshals between them inside
 // the subclass — free functions can't see MavicBase's protected
 // nested types, so the conversions live as private static helpers.
 
+#include "anthill_examples_lf1_leader.hpp"
 #include "anthill_geometry.hpp"
-#include "lf1.hpp"
 #include "mavic_base.hpp"
 
 #include <vector>
 
 namespace {
 
-namespace lf1 = anthill::examples::lf1;
+namespace leader = anthill::examples::lf1::leader;
 using anthill::geometry::Vec3;
 
-lf1::LeaderState initial_leader_state() {
-    std::vector<lf1::Waypoint> patrol{
-        lf1::Waypoint{ 5.0,  0.0},
-        lf1::Waypoint{ 0.0,  5.0},
-        lf1::Waypoint{-5.0,  0.0},
-        lf1::Waypoint{ 0.0, -5.0},
+leader::LeaderState initial_leader_state() {
+    std::vector<leader::Waypoint> patrol{
+        leader::Waypoint{ 5.0,  0.0},
+        leader::Waypoint{ 0.0,  5.0},
+        leader::Waypoint{-5.0,  0.0},
+        leader::Waypoint{ 0.0, -5.0},
     };
-    return lf1::LeaderState{
+    return leader::LeaderState{
         /* altitude_target = */ 5.0,
         /* precision       = */ 0.5,
-        /* waypoints       = */ lf1::WaypointSequence{patrol, 0},
+        /* waypoints       = */ leader::WaypointSequence{patrol, 0},
     };
 }
 
@@ -41,22 +41,22 @@ public:
 
 protected:
     Controls computeControls(const Pose& pose) override {
-        const lf1::Pose anthill_pose = to_anthill(pose);
-        state_ = lf1::LeaderController::advance_waypoint(state_, anthill_pose);
-        return to_inner(lf1::LeaderController::compute_controls(state_, anthill_pose));
+        const leader::Pose anthill_pose = to_anthill(pose);
+        state_ = leader::LeaderController::advance_waypoint(state_, anthill_pose);
+        return to_inner(leader::LeaderController::compute_controls(state_, anthill_pose));
     }
 
 private:
     // Conversions live inside the subclass so they can name MavicBase's
     // protected nested types (Pose / Controls).
-    static lf1::Pose to_anthill(const Pose& p) {
-        return lf1::Pose{
+    static leader::Pose to_anthill(const Pose& p) {
+        return leader::Pose{
             Vec3{p.x, p.y, p.z},
             p.roll, p.pitch, p.yaw,
         };
     }
 
-    static Controls to_inner(const lf1::Controls& c) {
+    static Controls to_inner(const leader::Controls& c) {
         Controls out;
         out.yaw = c.yaw;
         out.pitch = c.pitch;
@@ -65,7 +65,7 @@ private:
         return out;
     }
 
-    lf1::LeaderState state_;
+    leader::LeaderState state_;
 };
 
 }  // anonymous namespace

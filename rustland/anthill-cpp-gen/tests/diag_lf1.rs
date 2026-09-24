@@ -15,19 +15,19 @@ fn emit_lf1_leader_controller() {
     let mut kb = load_kb_with_extras("namespace _anchor end", &extras);
 
     println!("\n=== LeaderController traits class ===\n");
-    match emit_traits_struct(&mut kb, "anthill.examples.lf1.LeaderController") {
+    match emit_traits_struct(&mut kb, "anthill.examples.lf1.leader.LeaderController") {
         Ok(cpp) => println!("{cpp}"),
         Err(e) => println!("ERROR: {}", e.message),
     }
 
     println!("\n=== FollowerController traits class ===\n");
-    match emit_traits_struct(&mut kb, "anthill.examples.lf1.FollowerController") {
+    match emit_traits_struct(&mut kb, "anthill.examples.lf1.follower_gps.FollowerController") {
         Ok(cpp) => println!("{cpp}"),
         Err(e) => println!("ERROR: {}", e.message),
     }
 
     println!("\n=== Full namespace header ===\n");
-    match emit_namespace_header(&mut kb, "anthill.examples.lf1") {
+    match emit_namespace_header(&mut kb, "anthill.examples.lf1.leader") {
         Ok(cpp) => println!("{cpp}"),
         Err(e) => println!("ERROR: {}", e.message),
     }

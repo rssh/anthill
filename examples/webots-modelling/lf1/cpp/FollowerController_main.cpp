@@ -9,8 +9,9 @@
 // binary, distinguished by a `--offset=x,y,z` argv passed via
 // `controllerArgs` on the Webots Robot node.
 
+#include "anthill_examples_lf1_follower_gps.hpp"
+#include "anthill_examples_lf1_leader.hpp"
 #include "anthill_geometry.hpp"
-#include "lf1.hpp"
 #include "mavic_base.hpp"
 
 #include <cstdio>
@@ -19,7 +20,8 @@
 
 namespace {
 
-namespace lf1 = anthill::examples::lf1;
+namespace leader = anthill::examples::lf1::leader;
+namespace follower = anthill::examples::lf1::follower_gps;
 using anthill::geometry::Vec3;
 
 // Parse `--offset=x,y,z` from argv. Defaults to (-3, 1, 0) — a sane
@@ -38,8 +40,8 @@ Vec3 parse_offset(int argc, char** argv) {
     return fallback;
 }
 
-lf1::FollowerState initial_follower_state(const Vec3& offset) {
-    return lf1::FollowerState{
+follower::FollowerState initial_follower_state(const Vec3& offset) {
+    return follower::FollowerState{
         offset,
         std::nullopt,
         /* hover_altitude = */ 5.0,
@@ -58,18 +60,18 @@ protected:
         // Receiver effect lowering is wired up the receiver handle
         // becomes a parameter to the override and this hook moves
         // back into the anthill spec.
-        return to_inner(lf1::FollowerController::compute_controls(state_, to_anthill(pose)));
+        return to_inner(follower::FollowerController::compute_controls(state_, to_anthill(pose)));
     }
 
 private:
-    static lf1::Pose to_anthill(const Pose& p) {
-        return lf1::Pose{
+    static leader::Pose to_anthill(const Pose& p) {
+        return leader::Pose{
             Vec3{p.x, p.y, p.z},
             p.roll, p.pitch, p.yaw,
         };
     }
 
-    static Controls to_inner(const lf1::Controls& c) {
+    static Controls to_inner(const leader::Controls& c) {
         Controls out;
         out.yaw = c.yaw;
         out.pitch = c.pitch;
@@ -78,7 +80,7 @@ private:
         return out;
     }
 
-    lf1::FollowerState state_;
+    follower::FollowerState state_;
 };
 
 }  // anonymous namespace

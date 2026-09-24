@@ -56,6 +56,7 @@ mod wi886_host_operation_mapping_test;
 mod wi931_eponymous_struct_test;
 mod wi_0qv5a_guarded_arm_refusal_test;
 mod wi_ej5f5_binder_arm_test;
+mod wi_zw6n5_header_closure_test;
 
 // Diagnostics — `#[ignore]`-gated dev-time helpers, kept in the
 // same binary so they stay buildable.

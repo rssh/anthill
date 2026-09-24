@@ -79,6 +79,9 @@ mod wi416_overflow_test;
 #[path = "include/wi564_check_discharge_test.rs"]
 mod wi564_check_discharge_test;
 
+#[path = "include/wi_zw6n5_lf1_scaffold_test.rs"]
+mod wi_zw6n5_lf1_scaffold_test;
+
 #[path = "include/wi754_unknown_functor_test.rs"]
 mod wi754_unknown_functor_test;
 

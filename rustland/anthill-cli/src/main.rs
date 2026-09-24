@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -119,15 +119,15 @@ struct CppCodegenArgs {
     #[arg(required = true)]
     paths: Vec<PathBuf>,
 
-    /// Anthill namespace to emit. Produces `<short>.hpp` covering all
-    /// entities, sum sorts, and traits classes declared directly
-    /// under the namespace.
+    /// Anthill namespace to emit. Produces its header (`anthill.a.b` →
+    /// `anthill_a_b.hpp`) covering all entities, sum sorts, and traits
+    /// classes declared directly under the namespace, plus the header of
+    /// every namespace that one references, transitively.
     #[arg(short = 'n', long = "namespace")]
     namespace: String,
 
     /// Output directory. Headers land here; `anthill_runtime.hpp` is
-    /// copied alongside (and `anthill_geometry.hpp` if the namespace
-    /// uses Vec3 / EulerAngles).
+    /// copied alongside.
     #[arg(short, long, default_value = "./generated")]
     output_dir: PathBuf,
 
@@ -142,8 +142,11 @@ struct CppProjectArgs {
     #[arg(required = true)]
     paths: Vec<PathBuf>,
 
-    /// Anthill namespace whose traits classes become C++ controller
-    /// targets. One controller is scaffolded per traits class found.
+    /// Anthill namespace selecting the controller targets: every
+    /// `fact Generated(kind: "controller", language: "cpp")` whose source
+    /// lies at or under it — or, when none is declared, every traits class
+    /// directly under it. Each controller gets the header of the namespace
+    /// declaring it plus every header that one includes.
     #[arg(short = 'n', long = "namespace")]
     namespace: String,
 
@@ -164,7 +167,7 @@ struct CppProjectArgs {
 
     /// Output directory for the generated project. One subdirectory
     /// per controller, each self-contained (sources + Makefile + a
-    /// copy of the runtime / geometry headers) so the result drops
+    /// copy of every generated header it includes) so the result drops
     /// into a fresh Webots install without requiring any reference
     /// project.
     #[arg(short, long, default_value = "./generated")]
@@ -1062,26 +1065,24 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
         1
     })?;
 
-    let header = anthill_cpp_gen::emit_namespace_header_with_profile(
-        &mut kb,
-        &args.namespace,
-        profile.clone(),
-    )
-    .map_err(|e| {
-        eprintln!("error: {}", e.message);
-        1
-    })?;
-
-    let short = args.namespace.rsplit('.').next().unwrap_or(&args.namespace);
-    let header_filename = format!("{}.hpp", anthill_cpp_gen::cpp_identifier(short));
+    // WI-20260823-ZW6N5: the namespace's header AND every header it includes,
+    // written under the names those `#include`s spell — a lone `<short>.hpp` left
+    // each cross-namespace include dangling.
+    let headers = anthill_cpp_gen::emit_namespace_header_closure(&mut kb, &args.namespace, profile)
+        .map_err(|e| {
+            eprintln!("error: {}", e.message);
+            1
+        })?;
 
     if args.dry_run {
-        println!(
-            "[dry-run] {} -> {}/{}",
-            args.namespace,
-            args.output_dir.display(),
-            header_filename
-        );
+        for h in &headers {
+            println!(
+                "[dry-run] {} -> {}/{}",
+                h.namespace,
+                args.output_dir.display(),
+                h.filename
+            );
+        }
         return Ok(());
     }
 
@@ -1093,12 +1094,14 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
         return Err(1);
     }
 
-    let header_path = args.output_dir.join(&header_filename);
-    if let Err(e) = fs::write(&header_path, &header) {
-        eprintln!("error: write {}: {e}", header_path.display());
-        return Err(1);
+    for h in &headers {
+        let header_path = args.output_dir.join(&h.filename);
+        if let Err(e) = fs::write(&header_path, &h.text) {
+            eprintln!("error: write {}: {e}", header_path.display());
+            return Err(1);
+        }
+        println!("{} -> {}", h.namespace, header_path.display());
     }
-    println!("{} -> {}", args.namespace, header_path.display());
 
     let runtime_path = args.output_dir.join("anthill_runtime.hpp");
     if let Err(e) = fs::write(&runtime_path, anthill_cpp_gen::emit_runtime_header()) {
@@ -1106,33 +1109,6 @@ fn run_codegen_cpp(args: &CppCodegenArgs) -> Result<(), i32> {
         return Err(1);
     }
     println!("anthill_runtime.hpp -> {}", runtime_path.display());
-
-    // anthill::geometry is an OPTIONAL sidecar header — emitted only when a
-    // spec references geometry. `Ok(None)` means the namespace declares nothing
-    // there (carrier-only / unrelated) and is skipped quietly, as before; a
-    // GENUINE lowering failure (e.g. an op whose effect the profile can't
-    // realize, WI-576) is now reported loudly and exits non-zero, instead of
-    // being swallowed as if the only reason to fail were an empty namespace
-    // (WI-761).
-    match anthill_cpp_gen::emit_optional_namespace_header_with_profile(
-        &mut kb,
-        "anthill.geometry",
-        profile,
-    ) {
-        Ok(Some(geometry_header)) => {
-            let geometry_path = args.output_dir.join("anthill_geometry.hpp");
-            if let Err(e) = fs::write(&geometry_path, &geometry_header) {
-                eprintln!("error: write {}: {e}", geometry_path.display());
-                return Err(1);
-            }
-            println!("anthill.geometry -> {}", geometry_path.display());
-        }
-        Ok(None) => {}
-        Err(e) => {
-            eprintln!("error: {}", e.message);
-            return Err(1);
-        }
-    }
 
     Ok(())
 }
@@ -1165,16 +1141,32 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
         .filter(|t| t.kind == "controller")
         .filter(|t| t.source == args.namespace || t.source.starts_with(&ns_prefix))
         .collect();
-    let controllers: Vec<String> = if declared.is_empty() {
+    // (controller name, the namespace DECLARING its sort). WI-20260823-ZW6N5: the
+    // controller's headers are rooted at the declaring namespace, not at
+    // `--namespace` — which only SELECTS targets by prefix, and may declare nothing
+    // itself once a spec is split per controller (lf1's `lf1.leader` / …).
+    let controllers: Vec<(String, String)> = if declared.is_empty() {
         anthill_cpp_gen::traits_classes_in_namespace(&mut kb, &args.namespace)
             .map_err(render_err)?
-    } else {
-        declared
-            .iter()
-            .map(|t| {
-                anthill_cpp_gen::cpp_identifier(t.source.rsplit('.').next().unwrap_or(&t.source))
-            })
+            .into_iter()
+            .map(|name| (name, args.namespace.clone()))
             .collect()
+    } else {
+        let mut out = Vec::new();
+        for t in &declared {
+            let Some((namespace, short)) = t.source.rsplit_once('.') else {
+                eprintln!(
+                    "error: `Generated` source '{}' is not a namespace-qualified sort name",
+                    t.source
+                );
+                return Err(1);
+            };
+            out.push((
+                anthill_cpp_gen::cpp_identifier(short),
+                namespace.to_string(),
+            ));
+        }
+        out
     };
     if controllers.is_empty() {
         eprintln!(
@@ -1191,26 +1183,19 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
     // helper as `run_codegen_cpp` so both entry points agree. None on the
     // traits-class fallback (no Generated facts declared).
     let profile = profile_for_namespace(&kb, &args.namespace).map_err(render_err)?;
-    let header = anthill_cpp_gen::emit_namespace_header_with_profile(
-        &mut kb,
-        &args.namespace,
-        profile.clone(),
-    )
-    .map_err(|e| {
-        eprintln!("error: {}", e.message);
-        1
-    })?;
-    // Optional geometry sidecar (WI-761): `Ok(None)` (namespace declares
-    // nothing) leaves `geometry` `None` and is skipped below, as before; a
-    // genuine lowering failure is reported loudly (via `render_err`, same as the
-    // reads above) and exits non-zero, instead of being dropped by the old
-    // `.ok()`.
-    let geometry = anthill_cpp_gen::emit_optional_namespace_header_with_profile(
-        &mut kb,
-        "anthill.geometry",
-        profile,
-    )
-    .map_err(render_err)?;
+    // Every controller's header closure, emitted before anything is written so a
+    // lowering failure leaves no half-scaffolded tree. Keyed by the declaring
+    // namespace: controllers sharing one share its closure.
+    let mut closures: BTreeMap<String, Vec<anthill_cpp_gen::NamespaceHeader>> = BTreeMap::new();
+    for (_, namespace) in &controllers {
+        if !closures.contains_key(namespace) {
+            let headers =
+                anthill_cpp_gen::emit_namespace_header_closure(&mut kb, namespace, profile.clone())
+                    .map_err(render_err)?;
+            closures.insert(namespace.clone(), headers);
+        }
+    }
+    let controller_names: Vec<String> = controllers.iter().map(|(n, _)| n.clone()).collect();
     let runtime = anthill_cpp_gen::emit_runtime_header();
 
     let cpp_files = match list_cpp_sources(&args.cpp_sources) {
@@ -1223,11 +1208,30 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
             return Err(1);
         }
     };
+    // WI-20260823-ZW6N5: a controller folder with no source of its own has no
+    // `main` — `make` there fails at LINK, long after the scaffold said it
+    // succeeded. Refuse it here, before anything is written.
+    for ctor_name in &controller_names {
+        let has_own_source = cpp_files.iter().any(|src| {
+            let is_translation_unit = matches!(
+                src.extension().and_then(|e| e.to_str()),
+                Some("cpp" | "cc" | "cxx")
+            );
+            let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            is_translation_unit && stem_belongs_to(stem, ctor_name)
+        });
+        if !has_own_source {
+            eprintln!(
+                "error: controller '{ctor_name}' has no hand-authored entry point in {}: \
+                 expected `{ctor_name}_main.cpp` (or another `{ctor_name}.cpp` / \
+                 `{ctor_name}_*.cpp`) — its scaffolded folder would not link",
+                args.cpp_sources.display()
+            );
+            return Err(1);
+        }
+    }
 
-    let ns_short = args.namespace.rsplit('.').next().unwrap_or(&args.namespace);
-    let header_filename = format!("{}.hpp", anthill_cpp_gen::cpp_identifier(ns_short));
-
-    for ctor_name in &controllers {
+    for (ctor_name, namespace) in &controllers {
         let dir = args.output_dir.join("controllers").join(ctor_name);
         if args.dry_run {
             println!(
@@ -1241,14 +1245,13 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
             return Err(1);
         }
 
-        // Generated headers — same content per controller, copies are
-        // intentional (Webots wants self-contained controller dirs).
+        // Generated headers — a header shared by two controllers is copied
+        // into both, intentionally (Webots wants self-contained controller dirs).
         let mut wrote: Vec<String> = Vec::new();
-        write_or_err(&dir.join(&header_filename), &header, &mut wrote)?;
-        write_or_err(&dir.join("anthill_runtime.hpp"), runtime, &mut wrote)?;
-        if let Some(g) = &geometry {
-            write_or_err(&dir.join("anthill_geometry.hpp"), g, &mut wrote)?;
+        for h in &closures[namespace] {
+            write_or_err(&dir.join(&h.filename), &h.text, &mut wrote)?;
         }
+        write_or_err(&dir.join("anthill_runtime.hpp"), runtime, &mut wrote)?;
 
         // Hand-authored sources copied verbatim. A file named
         // `<OtherCtor>.cpp`, `<OtherCtor>_main.cpp`, or `<OtherCtor>.hpp`
@@ -1262,7 +1265,7 @@ fn run_codegen_cpp_project(args: &CppProjectArgs) -> Result<(), i32> {
                 Some(f) => f,
                 None => continue,
             };
-            if !file_belongs_to_controller(fname, ctor_name, &controllers) {
+            if !file_belongs_to_controller(fname, ctor_name, &controller_names) {
                 continue;
             }
             let dst = dir.join(fname);
@@ -1350,23 +1353,17 @@ fn list_world_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
 /// helpers, the current controller's own files — is kept.
 fn file_belongs_to_controller(fname: &str, current_ctor: &str, controllers: &[String]) -> bool {
     let stem = fname.rsplit_once('.').map(|(s, _)| s).unwrap_or(fname);
-    for other in controllers {
-        if other == current_ctor {
-            continue;
-        }
-        if stem == other.as_str() {
-            return false;
-        }
-        if let Some(rest) = stem.strip_prefix(other.as_str()) {
-            // Match `<other>_main`, `<other>_impl`, etc. Don't match
-            // `LeaderController_helper` against `Leader` (require a
-            // separator after the prefix).
-            if rest.starts_with('_') || rest.is_empty() {
-                return false;
-            }
-        }
-    }
-    true
+    !controllers
+        .iter()
+        .any(|other| other != current_ctor && stem_belongs_to(stem, other))
+}
+
+/// Is a source with file stem `stem` one of `ctor`'s own — `<ctor>` itself or
+/// `<ctor>_main`, `<ctor>_impl`, …? A separator is required after the prefix, so
+/// `LeaderController_helper` is not `Leader`'s.
+fn stem_belongs_to(stem: &str, ctor: &str) -> bool {
+    stem.strip_prefix(ctor)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('_'))
 }
 
 fn list_cpp_sources(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
