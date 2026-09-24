@@ -847,16 +847,12 @@ impl Interpreter {
         // resolver unwraps it and binds the reads when it opens a clause
         // ([`crate::kb::resolve::WITHIN_REQUIREMENTS`]).
         let goal_atom = if requirements.iter().any(|r| !matches!(r, Value::Unit)) {
-            let within = self.kb.intern(crate::kb::resolve::WITHIN_REQUIREMENTS);
-            let mut wrapped: Vec<Value> = Vec::with_capacity(requirements.len() + 2);
-            wrapped.push(goal_atom);
-            wrapped.push(Value::SymbolRef(ref_sym));
-            wrapped.extend(requirements.iter().cloned());
-            Value::Entity {
-                functor: within,
-                pos: wrapped.into(),
-                named: Vec::new().into(),
-            }
+            crate::kb::resolve::within_requirements_goal(
+                &mut self.kb,
+                goal_atom,
+                ref_sym,
+                requirements.to_vec(),
+            )
         } else {
             goal_atom
         };

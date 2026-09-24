@@ -2135,8 +2135,26 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
     let type_bounds: Vec<(u32, TermId)> = if stored_bounds.is_empty() {
         Vec::new()
     } else {
-        let names: Vec<Symbol> = kb.rule_globals(rid).iter().map(|v| v.name()).collect();
-        let fresh_frame: Vec<VarId> = names.into_iter().map(|n| kb.fresh_var(n)).collect();
+        // INDEXED BY DE BRUIJN NUMBER, which is what `term_from_debruijn` reads: slot `k`
+        // holds `globals[len - 1 - k]`. A slot holding an enclosing SORT's type parameter
+        // (a relational clause's, §7.3 S3(d)) stays that parameter: it opens fresh per
+        // ACTIVATION, but at a citation it is the variable S1's `open_citation_params`
+        // renames and the bracket pins. MEASURED, built in POSITION order instead the
+        // parameter landed in the other slot and every bracket check stopped firing
+        // (`wi_5g28a_citation_bracket_test`'s refusals loaded clean) — harmless while
+        // every slot was fresh, where only the names came out swapped.
+        let globals: Vec<VarId> = kb.rule_globals(rid).to_vec();
+        let fresh_frame: Vec<VarId> = globals
+            .iter()
+            .rev()
+            .map(|&v| {
+                if kb.is_canonical_type_param_var(v) {
+                    v
+                } else {
+                    kb.fresh_var(v.name())
+                }
+            })
+            .collect();
         stored_bounds
             .into_iter()
             .map(|(i, t)| (i, kb.term_from_debruijn(t, &fresh_frame)))

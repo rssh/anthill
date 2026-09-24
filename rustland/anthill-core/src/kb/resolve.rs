@@ -309,6 +309,23 @@ pub enum BuiltinTag {
     /// must REFUSE rather than answer a second time — otherwise every enumerated value
     /// comes back twice.
     DomainLeaf,
+
+    /// WI-20260911-5G28A S3 (`docs/design/060-typedomains-implementation.md` §3) —
+    /// `apply_domain(?d, ?x)`: run the DOMAIN a `SortDomain` dictionary names on `?x`.
+    ///
+    /// A METACALL WITH A DETERMINATE FUNCTOR, which is the whole reason it exists: the
+    /// goal a typed head needs is "the domain of whatever type this dictionary is for",
+    /// and `?d(?x)` — a variable functor — reaches no clause. Once `?d` is bound,
+    /// `step_init` REPLACES this goal with `<impl>.domain(?x)`, the provider's member, so
+    /// the ordinary lookup finds its clauses and no second clause opener exists (§4.2). A
+    /// provider whose clauses read `SortDomain` themselves (a parametric one, whose element
+    /// domain is its own dictionary's `sub(0)`) is handed `?d` as their implicit argument,
+    /// on the same marker a citation's arguments ride ([`WITHIN_REQUIREMENTS`]).
+    ///
+    /// Reached here only while `?d` is UNBOUND — no evidence yet, so the goal DELAYS and
+    /// rotation re-asks it; still unbound at the drain, it flounders loudly — or bound to
+    /// something no domain can be read off, which is an error, not a no.
+    ApplyDomain,
 }
 
 /// A fault the resolver DETECTED but could not previously report — the payload of
@@ -1919,6 +1936,18 @@ impl SearchStream {
             // Carrier-neutral (WI-482 follow-up): `lower_ho_apply` reads the goal
             // through `TermView`, so a rule-body `ho_apply` occurrence lowers
             // without a whole-goal reify — only its args are reified as terms.
+            // WI-20260911-5G28A S3 — `apply_domain(?d, ?x)` with its dictionary BOUND becomes
+            // the provider's own `domain` goal, in place, like `ho_apply` above. Unbound, it
+            // falls through to the builtin, which delays it (`BuiltinTag::ApplyDomain`).
+            if tag == BuiltinTag::ApplyDomain {
+                let subst = frame.subst.clone();
+                if let Some(domain_goal) = kb.lower_apply_domain(&goal_val, &subst) {
+                    let f = self.stack.last_mut().unwrap();
+                    f.goals[0] = domain_goal;
+                    f.state = FrameState::Init { delay_mode };
+                    return Some(StepResult::Continue);
+                }
+            }
             if tag == BuiltinTag::HoApply {
                 let subst = frame.subst.clone();
                 if let Some(applied) = Self::lower_ho_apply(kb, &goal_val, &subst) {
@@ -5918,6 +5947,7 @@ impl KnowledgeBase {
             BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst, faults),
             BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst),
             BuiltinTag::DomainLeaf => self.builtin_domain_leaf(goal, answer_subst),
+            BuiltinTag::ApplyDomain => self.builtin_apply_domain(goal, answer_subst),
         }
     }
 
@@ -6715,6 +6745,79 @@ impl KnowledgeBase {
     /// and once as "its carried type conforms". Refusing is not a silent skip; it is
     /// this arm saying the question has an owner, and [`KnowledgeBase::has_domain_member`]
     /// is the one table that decides which.
+    /// WI-20260911-5G28A S3 — `apply_domain(?d, ?x)` as the goal it stands for, or `None`
+    /// while it cannot be lowered — `?d` unbound, or bound to something that is not a
+    /// dictionary for a sort with a `domain` — which [`Self::builtin_apply_domain`] then
+    /// answers (a delay, or a located error).
+    ///
+    /// THE SYMBOL FINDS, THE TREE RUNS (060-typedomains §4.3). The dictionary's IMPL names
+    /// the provider, and `<impl>.domain` is its member — derived beside the sort or written
+    /// in it. Its clauses' own `SortDomain` reads are handed the WHOLE dictionary, so a
+    /// parametric provider projects its element's domain out of the tree it was given;
+    /// every other read is left to derive its own, exactly as a citation leaves an unrouted
+    /// one.
+    pub(crate) fn lower_apply_domain(&mut self, goal: &Value, subst: &Substitution) -> Option<Value> {
+        let dict_val = self.walk_arg(goal.pos_arg(self, 0), subst)?;
+        let x = goal.pos_arg(self, 1)?.to_value();
+        let impl_sort = self.domain_provider_of(&dict_val)?;
+        let Some(relation) = super::typing::sort_domain_relation(self, impl_sort) else {
+            // A provider with a domain and no `.domain` relation to run it by: the kernel
+            // relation is its only name ([`super::typing::sort_domain_relation`]).
+            let member = self.try_resolve_symbol(super::typing::DOMAIN_MEMBER_GOAL)?;
+            let ty = Value::term(self.alloc(Term::Ref(impl_sort)));
+            return Some(self.make_goal_value(member, vec![x, ty]));
+        };
+        let domain_goal = self.make_goal_value(relation, vec![x]);
+        let spec = self.try_resolve_symbol(super::typing::SORT_DOMAIN_SPEC)?;
+        let dicts: Vec<Value> = super::typing::requirement_read_specs(self, relation)
+            .into_iter()
+            .map(|s| {
+                if s.is_some_and(|s| self.canonical_sort_sym(s) == self.canonical_sort_sym(spec)) {
+                    dict_val.clone()
+                } else {
+                    Value::Unit
+                }
+            })
+            .collect();
+        Some(if dicts.iter().any(|d| !matches!(d, Value::Unit)) {
+            within_requirements_goal(self, domain_goal, relation, dicts)
+        } else {
+            domain_goal
+        })
+    }
+
+    /// The sort whose domain a `SortDomain` dictionary names — its provider — or `None` when
+    /// `v` is no dictionary or its provider has no domain.
+    fn domain_provider_of(&self, v: &Value) -> Option<Symbol> {
+        let dict = crate::eval::value::Dictionary::from_view(self, v)?;
+        let impl_sort = self.canonical_sort_sym(dict.impl_sort());
+        self.has_domain_member(impl_sort).then_some(impl_sort)
+    }
+
+    /// `apply_domain(?d, ?x)` that `step_init` could not lower: DELAY while `?d` is unbound —
+    /// the evidence has not arrived, and a later goal or the citation that owns it may bind
+    /// it — and an ERROR for a bound `?d` no domain can be read off, which no later binding
+    /// repairs.
+    fn builtin_apply_domain<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let Some(d) = self.walk_arg(goal.pos_arg(self, 0), subst) else {
+            return BuiltinResult::Error(ResolveError::new(
+                "apply_domain(?d, ?x): the goal carries no dictionary operand".to_string(),
+            ));
+        };
+        if matches!(d.head(self), ViewHead::Var(_)) {
+            return BuiltinResult::delay();
+        }
+        BuiltinResult::Error(ResolveError::new(match crate::eval::value::Dictionary::from_view(self, &d) {
+            None => "apply_domain(?d, ?x): `?d` is bound to something that is not a dictionary, \
+                     so it names no domain"
+                .to_string(),
+            Some(dict) => format!(
+                "apply_domain(?d, ?x): the dictionary names `{}`, which has no domain to run",
+                self.qualified_name_of(dict.impl_sort()),
+            ),
+        }))
+    }
+
     fn builtin_domain_leaf<V: TermView>(
         &mut self,
         goal: &V,
@@ -13309,6 +13412,28 @@ fn node_first_pos_arg(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
 ///
 /// Recognized by LOCAL NAME, as [`is_scoping_marker`]'s markers are.
 pub(crate) const WITHIN_REQUIREMENTS: &str = "__within_requirements";
+
+/// Wrap `goal` — an application of `relation` — in a [`WITHIN_REQUIREMENTS`] marker carrying
+/// `dicts`, one per requirement read of `relation`'s clauses (`Unit` where a read is handed
+/// nothing). THE ONE BUILDER of the shape [`within_requirements_args`] reads, so a citation
+/// (eval's `build_relation_value`) and `apply_domain` cannot spell it two ways.
+pub(crate) fn within_requirements_goal(
+    kb: &mut KnowledgeBase,
+    goal: Value,
+    relation: Symbol,
+    dicts: Vec<Value>,
+) -> Value {
+    let within = kb.intern(WITHIN_REQUIREMENTS);
+    let mut pos: Vec<Value> = Vec::with_capacity(dicts.len() + 2);
+    pos.push(goal);
+    pos.push(Value::SymbolRef(relation));
+    pos.extend(dicts);
+    Value::Entity {
+        functor: within,
+        pos: pos.into(),
+        named: Vec::new().into(),
+    }
+}
 
 /// The goal a [`WITHIN_REQUIREMENTS`] marker wraps, or `None` for any other goal.
 fn within_requirements_inner(kb: &KnowledgeBase, goal: &Value) -> Option<Value> {

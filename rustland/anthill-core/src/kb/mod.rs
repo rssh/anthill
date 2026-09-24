@@ -5,6 +5,7 @@ pub(crate) mod discrim;
 pub(crate) mod entity_slots;
 pub(crate) mod eq_derive;
 pub(crate) mod type_value_derive;
+pub(crate) mod sort_domain_derive;
 pub mod execute;
 pub mod extent;
 pub(crate) mod flow_derive;
@@ -2846,17 +2847,20 @@ impl KnowledgeBase {
     /// "one principle, two engines") — it is decided by whoever instantiates `Lib`, not by
     /// this firing.
     ///
-    /// SO IT IS EXCLUDED FROM THE RULE'S FRAME. Admitting it would open a fresh variable
-    /// per firing and DECOUPLE the bound from the receiver, so a bound that names the
-    /// enclosing sort's parameter would accept anything. Caught by
+    /// SO AN EQUATION EXCLUDES IT FROM ITS FRAME. An equation is matched against a redex
+    /// whose receiver instance is the one to read it off, and a fresh variable per firing
+    /// would DECOUPLE the bound from that receiver, so a bound that names the enclosing
+    /// sort's parameter would accept anything. Caught by
     /// `wi_pw9a0_rule_tvar_in_bound_test::a_guard_whose_functor_is_a_type_parameter_lowers_
     /// as_that_parameter`, whose bound went from `Var::Global` to a frame `Var::DeBruijn`
     /// the first time this ticket admitted bound variables blindly.
     ///
-    /// Reaching it from a citation needs a channel a rule does not have — its head is its
-    /// only interface — which is WI-20260911-5G28A's own remaining half (the receiver
-    /// bracket as a hidden head slot). Until that lands the pre-ticket representation
-    /// stands here, unchanged.
+    /// A RELATIONAL clause ADMITS it (060-implementation §7.3 S3(d),
+    /// `load::bound_var_joins_frame`): it is activated, not matched against a receiver, and
+    /// its instance reaches it only through what its citation passes — so it opens per
+    /// activation and a value pins it. A citation still sees the parameter itself:
+    /// `typing::relation_clause_columns` keeps this variable canonical when it opens the
+    /// clause's bounds, which is what S1's bracket reads.
     pub(crate) fn is_canonical_type_param_var(&self, vid: VarId) -> bool {
         self.type_param_canonical_vids.contains_key(&vid)
     }
@@ -11293,6 +11297,10 @@ impl KnowledgeBase {
         // `domain_member` itself gets NO tag: it is clauses, and a tagged functor never
         // reaches the clause path. See [`BuiltinTag::DomainLeaf`].
         self.register_builtin_tag(crate::kb::typing::DOMAIN_LEAF_GOAL, BuiltinTag::DomainLeaf);
+        // WI-20260911-5G28A S3 — the typed-head sweep's metacall: run the domain a
+        // `SortDomain` dictionary names. Minted by the typer, never by the converter, like
+        // `TYPE_DOMAIN_GOAL` above. See [`BuiltinTag::ApplyDomain`].
+        self.register_builtin_tag(crate::kb::typing::APPLY_DOMAIN_GOAL, BuiltinTag::ApplyDomain);
         // Arithmetic and comparison. WI-616 (proposal 051 Phase 2): `=`/`eq`
         // and `neq` are the SEMANTIC `Eq` ops — structural until a carrier
         // declares its own `eq` override (`Set.eq`/`Map.eq`), which then

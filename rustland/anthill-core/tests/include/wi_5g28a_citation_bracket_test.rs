@@ -15,10 +15,10 @@
 //! WI-270's rule for an operation's parameter. A value written in the bracket or the expected
 //! type is read in the body's own terms, so a rigid `X` there is that rigid.
 //!
-//! TYPER ONLY, said so a green file is not read as more. What a citation EVALUATES to is
-//! unchanged: the pinned instance does not travel into the clause yet (§7.3 S2), and the
-//! clause's bound still carries the sort's shared parameter (§7.3 S3(d)), so the citations
-//! below still flounder at run time — `the_citation_still_flounders_at_run_time` pins that.
+//! TYPER ONLY, said so a green file is not read as more — with one row that is not:
+//! `a_bound_value_pins_the_parameter_per_activation` is §7.3 S3(d)'s, which made a relational
+//! clause's enclosing-sort parameter a variable of each activation, so a citation whose value
+//! is bound now ANSWERS where it floundered.
 //!
 //! BACK-OUT, measured one axis at a time (each run, not predicted; the fixture cites `dom`
 //! only where a row does, so an axis reddens the rows that read it and no others):
@@ -26,7 +26,7 @@
 //!    `the_bracket_types_the_column_at_its_instance`, `an_argument_pins_the_parameter`,
 //!    `a_rigid_in_the_bracket_is_that_rigid` and `a_member_of_the_sort_cites_its_own_instance`
 //!    (the old `got Wrap[T = ?T]` / "incompatible type" refusals), `nothing_at_the_citation_
-//!    names_the_parameter` (loads clean), and `the_citation_still_flounders_at_run_time`,
+//!    names_the_parameter` (loads clean), and `a_bound_value_pins_the_parameter_per_activation`,
 //!    whose program is one of the false refusals S1 closes and so does not load at all.
 //!  * [B] the bracket arm of `seed_citation_params`. 4 red: the bracket, rigid and member rows
 //!    (refused as undetermined), and `an_argument_pins_the_parameter`'s second half — without
@@ -185,21 +185,20 @@ fn a_rule_body_citation_keeps_the_relations_variables() {
 }
 
 #[test]
-fn the_citation_still_flounders_at_run_time() {
-    // PINNED — S1 is the typer, and this row is its limit. S1 is what makes the program
-    // LOAD (without it this citation is one of the false refusals), and eval is untouched:
-    // even with the value bound, the clause's bound carries `Wrap`'s SHARED `T`, which the
-    // resolver refuses to pin from one value (`bindable_type_var`), so the conformance goal
-    // suspends and the drain raises. §7.3 S3(d) — the parameter per activation — flips this
-    // row to `1`.
+fn a_bound_value_pins_the_parameter_per_activation() {
+    // §7.3 S3(d) — S1's limit, lifted. S1 is what makes the program LOAD (without it this
+    // citation is one of the false refusals); what made it FLOUNDER was the clause's bound
+    // carrying `Wrap`'s SHARED `T`, which the resolver refuses to pin from one value
+    // (`bindable_type_var`), so the conformance goal suspended and the drain raised. The
+    // parameter is now a variable of each ACTIVATION (`load::bound_var_joins_frame`), pinned
+    // by `wrap(red())` like a rule-scoped `?t` — one row.
+    //
+    // FAILS WITH S3(d) BACKED OUT — the old flounder, raised on the Error channel.
     let mut interp = crate::common::interp_for(&program(
         "  operation a() -> Int64 effects {Error} = Wrap.dom(wrap(red())).takeN(5).length()\n",
     ));
-    let err = interp
-        .call("zz5g28as1.a", &[])
-        .expect_err("PINNED: the citation still flounders; if it now answers, S3(d) has landed");
-    assert!(
-        matches!(err, anthill_core::eval::EvalError::Raised { .. }),
-        "the flounder raises on the Error channel, got {err:?}"
-    );
+    match interp.call("zz5g28as1.a", &[]) {
+        Ok(anthill_core::eval::Value::Int(n)) => assert_eq!(n, 1, "`wrap(red())` is the one row"),
+        other => panic!("expected the one row, got {other:?}"),
+    }
 }

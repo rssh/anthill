@@ -2153,6 +2153,32 @@ pub(crate) fn requirement_read_out<'a>(
         .map(|(_, out)| out)
 }
 
+/// WI-20260911-5G28A S3 — the SPEC each requirement read of `relation`'s clauses reads, in
+/// the flat layout [`requirement_read_counts`] indexes (clause after clause, read after read):
+/// the head of the read's written instance, or `None` where it has none a reader can name.
+///
+/// What `apply_domain` asks to decide which of a provider's reads its dictionary is FOR —
+/// the same enumeration, so the positions it fills are the positions the resolver binds.
+pub(crate) fn requirement_read_specs(kb: &KnowledgeBase, relation: Symbol) -> Vec<Option<Symbol>> {
+    let Some(fd) = find_dictionary_symbol(kb) else {
+        return Vec::new();
+    };
+    let qn = kb.qualified_name_of(relation).to_string();
+    let mut out: Vec<Option<Symbol>> = Vec::new();
+    for rid in kb.rule_ids_by_qn(&qn) {
+        for n in kb.rule_body_nodes(rid) {
+            if requirement_read_out(kb, fd, n).is_none() {
+                continue;
+            }
+            out.push(match n.as_expr() {
+                Some(Expr::Apply { pos_args, .. }) => occ_head_symbol(&pos_args[0]),
+                _ => None,
+            });
+        }
+    }
+    out
+}
+
 /// The `find_dictionary` symbol [`requirement_read_out`] keys on, or `None` in a KB that
 /// never registered it — where no clause can hold a read.
 pub(crate) fn find_dictionary_symbol(kb: &KnowledgeBase) -> Option<Symbol> {

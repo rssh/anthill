@@ -502,6 +502,16 @@ pub(crate) const DOMAIN_MEMBER_GOAL: &str = "anthill.kernel.domain_member";
 /// catch-all clause. See [`crate::kb::resolve::BuiltinTag::DomainLeaf`].
 pub(crate) const DOMAIN_LEAF_GOAL: &str = "anthill.kernel.domain_leaf";
 
+/// WI-20260911-5G28A S3 — the metacall a typed head's bound reaches its domain through when
+/// the bound names a type VARIABLE: `apply_domain(?d, ?x)` runs the domain the `SortDomain`
+/// dictionary `?d` names. See [`crate::kb::resolve::BuiltinTag::ApplyDomain`].
+pub(crate) const APPLY_DOMAIN_GOAL: &str = "anthill.kernel.apply_domain";
+
+/// WI-20260911-5G28A S3 (proposal 060 §2.2) — the kernel spec whose member is a sort's
+/// `domain`: evidence that `T` has one. Declared in `anthill/reflect/reflect.anthill`;
+/// every instance is derived (`kb::sort_domain_derive`).
+pub(crate) const SORT_DOMAIN_SPEC: &str = "anthill.reflect.SortDomain";
+
 /// The synthesizing pass that owns every generated [`TYPE_DOMAIN_GOAL`] node — the
 /// provenance stamp, and with it the IDEMPOTENCE test for
 /// [`install_typed_head_domain_goals`].
@@ -536,11 +546,18 @@ fn typed_head_domain_pass(kb: &mut KnowledgeBase) -> crate::kb::occurrence::Pass
 /// exists; in mode (out) the goal suspends and rotation carries it to wherever it can
 /// decide, so the placement costs nothing there. (`docs/design/060-implementation.md` §3.)
 ///
-/// WI-743 ADDS A SECOND GOAL AT THE OTHER END — `domain_member(?x, T)`, APPENDED, where
-/// `T` is a sort the loader derived a member clause for
-/// ([`KnowledgeBase::has_domain_member`]). That one GENERATES, which is what turns a
+/// WI-743 ADDS A SECOND GOAL AT THE OTHER END, APPENDED, for a bound whose sort has a
+/// domain ([`KnowledgeBase::has_domain_member`]). That one GENERATES, which is what turns a
 /// typed head from a filter into a domain: `rule colouring(wa: Colour, …) :- wa != nt`
-/// enumerates with no `palette` facts.
+/// enumerates with no `palette` facts. WHAT it is depends on what the bound NAMES
+/// (WI-20260911-5G28A S3, `060-implementation.md` §7.3):
+///   * a sort with no parameters — `Colour.domain(?x)`, the member of `Colour`'s
+///     `SortDomain`, called statically because the bound names the provider;
+///   * a TYPE VARIABLE — nothing names the sort, so an implicit `SortDomain` read and
+///     `apply_domain` on what it holds ([`implicit_domain_goals`]), filled by a citation's
+///     caller or derived from a bound value;
+///   * a parameterised sort — `domain_member(?x, T)`, the kernel relation, whose derived
+///     clause carries the element type as an argument (§7.3's S3b moves this one too).
 ///
 /// THE TWO PLACEMENTS ARE MEASURED, not symmetric (settled design §3). A generator ahead
 /// of the written body enumerates a recursive type forever before the body can prune it:
@@ -678,6 +695,21 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
             // the loader derived a `domain_member` clause for. A bound with none gets
             // nothing here and keeps WI-742's ladder exactly, which is what makes
             // `rule f(?x: String) :- ?x <=> "abe"` still answer its one row.
+            // WI-20260911-5G28A S3 — A BOUND THAT IS A TYPE VARIABLE (`?x: T`) READS ITS
+            // DOMAIN THROUGH THE REQUIREMENT CHANNEL: an implicit `SortDomain[T = T]` read,
+            // then `apply_domain` on what it holds. No term names the type — a citation's
+            // caller holds the evidence for its own rigid, and hands it in (§7.3 S2) — so the
+            // domain is a DICTIONARY the clause is given, never one it looks up by name.
+            // Mode (in) needs no caller: the read derives from `?x`'s carried type. Neither,
+            // and both goals delay and flounder at the drain, as the bound always did.
+            if matches!(kb.get_term(bound_tid), Term::Var(_)) {
+                if let Some(goals) =
+                    implicit_domain_goals(kb, rid, db_index, bound_tid, &anchor, pass, owner)
+                {
+                    member_body.extend(goals);
+                }
+                continue;
+            }
             let Some(member_sym) = mem_sym else {
                 continue;
             };
@@ -752,14 +784,36 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
             // not ask whether a rule is called `domain`; `record_sort_domain_is_written`
             // is written exactly where the 1-ary hook accepted one, which is the only
             // place that decision is made.
-            if kb.sort_domain_is_written(bound_head)
-                && rule_defines_sort_domain(kb, rid, bound_head)
-            {
+            let own_domain_clause = rule_defines_sort_domain(kb, rid, bound_head);
+            if own_domain_clause && kb.sort_domain_is_written(bound_head) {
                 continue;
             }
 
             let var =
                 NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(db_index)), anchor.span, owner);
+            // WI-20260911-5G28A S3 — A GROUND BOUND WITH NO PARAMETERS calls its sort's
+            // `domain` — the member of the sort's `SortDomain` provision, dispatched
+            // STATICALLY because the bound already names the provider, exactly as an
+            // operation call at a concrete carrier is. The kernel relation stays the one
+            // thing that bottoms out (060-typedomains §0): `S.domain`'s OWN clause keeps
+            // `domain_member(?x, S)` below, or it would call itself.
+            if !own_domain_clause && matches!(kb.get_term(member_bound), Term::Ref(_)) {
+                if let Some(dom) = sort_domain_relation(kb, bound_head) {
+                    member_body.push(NodeOccurrence::synthesized_expr(
+                        Expr::Apply {
+                            recv_type: None,
+                            functor: dom,
+                            pos_args: vec![var],
+                            named_args: Vec::new(),
+                            type_args: Vec::new(),
+                        },
+                        Rc::clone(&anchor),
+                        pass,
+                        owner,
+                    ));
+                    continue;
+                }
+            }
             let ty = NodeOccurrence::new_expr(
                 Expr::Spliced(Value::term(member_bound)),
                 anchor.span,
@@ -814,6 +868,106 @@ fn rule_defines_sort_domain(kb: &KnowledgeBase, rid: crate::kb::RuleId, sort: Sy
         .head(kb)
         .functor_sym()
         .is_some_and(|f| f == dom_sym)
+}
+
+/// WI-20260911-5G28A S3 — `<sort>.domain`, the relation a sort's `SortDomain` member is:
+/// derived beside the sort (`emit_domain_value_face`) or written in it. By SYMBOL, through
+/// the canonical sort, as [`rule_defines_sort_domain`] asks it.
+///
+/// `None` wherever the loader DECLINED the value face — the sort is parameterised, or its
+/// `domain` address holds something that is not its domain: an operation, a const, or a
+/// relation at another arity (kernel-language.md: such a sort "has a domain and no
+/// `.domain` to cite it by"). The kernel's `domain_member(?x, S)` is then that sort's only
+/// name for its domain, and both readers — the typed-head sweep and `apply_domain` — reach
+/// it there. The decline record is READ, not re-derived: MEASURED, asking only "is it a
+/// relation with clauses" sent `pick(?x: S)` to an author's own 3-ary `domain`, and the
+/// sort's three rows became none (`wi_wt8wg…::a_domain_at_an_unrecognised_arity_declines_
+/// readably`).
+pub(crate) fn sort_domain_relation(kb: &KnowledgeBase, sort: Symbol) -> Option<Symbol> {
+    if kb.domain_value_face_decline_reason(sort).is_some() {
+        return None;
+    }
+    kb.try_resolve_symbol(&format!(
+        "{}.domain",
+        kb.qualified_name_of(kb.canonical_sort_sym(sort))
+    ))
+    .filter(|&sym| kb.has_kind(sym, crate::kb::SymbolKind::Goal) && kb.has_clauses_under(sym))
+}
+
+/// WI-20260911-5G28A S3 — the two goals a TYPE-VARIABLE bound gets in place of a member goal:
+///
+/// ```text
+/// find_dictionary(SortDomain[T = <bound>], SortDomain, ?x, out: ?xd),  apply_domain(?xd, ?x)
+/// ```
+///
+/// THE READ IS AN IMPLICIT PARAMETER, and its shape is the anchor form's on purpose: it is
+/// what `requirement_read_out` finds, so a citation routes the caller's `SortDomain` slot to
+/// it (§7.3 S2) and the resolver binds `?xd` when it opens the clause; unrouted, it DERIVES
+/// from `?x`'s carried type as any anchored read does. `?xd` is a new clause variable, so the
+/// frame GROWS — by prepending, which leaves every existing De Bruijn index where it was
+/// ([`KnowledgeBase::extend_rule_frame_with_bounds`]).
+///
+/// `None` where the KB never declared the spec or the builtins it is spelled with — a bare
+/// KB with no `anthill.reflect`, where nothing could hand the clause a domain anyway.
+#[allow(clippy::too_many_arguments)]
+fn implicit_domain_goals(
+    kb: &mut KnowledgeBase,
+    rid: crate::kb::RuleId,
+    db_index: u32,
+    bound_tid: TermId,
+    anchor: &Rc<NodeOccurrence>,
+    pass: crate::kb::occurrence::PassId,
+    owner: Option<Symbol>,
+) -> Option<[Rc<NodeOccurrence>; 2]> {
+    let spec = kb.try_resolve_symbol(SORT_DOMAIN_SPEC)?;
+    let apply = kb.try_resolve_symbol(APPLY_DOMAIN_GOAL)?;
+    let fd = find_dictionary_symbol(kb)?;
+    let param = *kb.type_param_syms_of(spec).first()?;
+    let out_label = kb.intern(REQUIREMENT_OUT_LABEL);
+    // The new clause variable: prepended, so its index is the frame's old length.
+    let xd_index = kb.rule_globals(rid).len() as u32;
+    let xd_name = kb.intern("domain");
+    let xd = kb.fresh_var(xd_name);
+    let bounds = kb.rule_type_bounds(rid).to_vec();
+    kb.extend_rule_frame_with_bounds(rid, &[xd], bounds);
+
+    let span = anchor.span;
+    let node = |e: Expr| NodeOccurrence::new_expr(e, span, owner);
+    let instance = node(Expr::Apply {
+        recv_type: None,
+        functor: spec,
+        pos_args: Vec::new(),
+        named_args: vec![(param, node(Expr::Spliced(Value::term(bound_tid))))],
+        type_args: Vec::new(),
+    });
+    let read = NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            recv_type: None,
+            functor: fd,
+            pos_args: vec![instance, node(Expr::Ref(spec)), node(Expr::Var(Var::DeBruijn(db_index)))],
+            named_args: vec![(out_label, node(Expr::Var(Var::DeBruijn(xd_index))))],
+            type_args: Vec::new(),
+        },
+        Rc::clone(anchor),
+        pass,
+        owner,
+    );
+    let run = NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            recv_type: None,
+            functor: apply,
+            pos_args: vec![
+                node(Expr::Var(Var::DeBruijn(xd_index))),
+                node(Expr::Var(Var::DeBruijn(db_index))),
+            ],
+            named_args: Vec::new(),
+            type_args: Vec::new(),
+        },
+        Rc::clone(anchor),
+        pass,
+        owner,
+    );
+    Some([read, run])
 }
 
 /// WI-743 — the sort a stored TYPE TERM heads with: `Colour` for `Ref(Colour)`,
