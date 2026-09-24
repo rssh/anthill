@@ -177,30 +177,6 @@ impl StreamArenaRef {
         }
     }
 
-    /// Take the source out of the slot, run `f` on it, and put the
-    /// (possibly-updated) source back. The slot briefly holds `None` while
-    /// `f` runs — splitFirst needs this because the resolver's
-    /// `SearchStream::split_first` takes `self` by value.
-    pub fn with_source_mut<R>(
-        &self,
-        h: &StreamHandle,
-        f: impl FnOnce(StreamSource) -> (StreamSource, R),
-    ) -> R {
-        let src = {
-            let mut arena = self.0.borrow_mut();
-            arena.slots[h.raw as usize]
-                .source
-                .take()
-                .expect("stream arena slot missing source")
-        };
-        let (new_src, result) = f(src);
-        {
-            let mut arena = self.0.borrow_mut();
-            arena.slots[h.raw as usize].source = Some(new_src);
-        }
-        result
-    }
-
     /// Number of live stream slots (diagnostic for refcount tests).
     pub fn live(&self) -> usize {
         self.0.borrow().live()
@@ -225,9 +201,30 @@ impl StreamHandle {
     pub fn raw(&self) -> u32 {
         self.raw
     }
-    #[allow(dead_code)] // arena handle accessor; kept for future stream ops
-    pub(crate) fn arena(&self) -> &StreamArenaRef {
-        &self.arena
+
+    /// Take the source out of the slot, run `f` on it, and put the
+    /// (possibly-updated) source back. The slot briefly holds `None` while
+    /// `f` runs — splitFirst needs this because the resolver's
+    /// `SearchStream::split_first` takes `self` by value.
+    ///
+    /// WI-20260923-9R5HN — on the HANDLE, reading the arena it carries, as
+    /// `ClosureHandle::with` and `MapHandle::with_body` do: a stream minted in one
+    /// scratch bridge interpreter and pumped in another would otherwise index a slot
+    /// table it does not belong to.
+    pub fn with_source_mut<R>(&self, f: impl FnOnce(StreamSource) -> (StreamSource, R)) -> R {
+        let src = {
+            let mut arena = self.arena.0.borrow_mut();
+            arena.slots[self.raw as usize]
+                .source
+                .take()
+                .expect("stream arena slot missing source")
+        };
+        let (new_src, result) = f(src);
+        {
+            let mut arena = self.arena.0.borrow_mut();
+            arena.slots[self.raw as usize].source = Some(new_src);
+        }
+        result
     }
 }
 
@@ -273,6 +270,25 @@ impl std::hash::Hash for StreamHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WI-20260923-9R5HN — a handle pumps the arena that MINTED it: `a` holds `Faulted`
+    /// and `b` holds `Empty`, both at slot 0, and `a`'s handle must see `Faulted`.
+    #[test]
+    fn a_handle_reads_the_arena_that_minted_it() {
+        let (a, b) = (StreamArenaRef::new(), StreamArenaRef::new());
+        let in_b = b.alloc(StreamSource::Empty);
+        let in_a = a.alloc(StreamSource::Faulted);
+        assert_eq!(
+            in_a.raw(),
+            in_b.raw(),
+            "both at slot 0 — the case that aliases"
+        );
+        let faulted = in_a.with_source_mut(|src| {
+            let is = matches!(src, StreamSource::Faulted);
+            (src, is)
+        });
+        assert!(faulted, "a's handle reads a's source");
+    }
 
     #[test]
     fn empty_stream_live_drop() {

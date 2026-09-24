@@ -53,7 +53,8 @@
 //!
 //! NOT DRIVEN, and said here: `Substitution.apply(…)` cannot be WRITTEN in a rule body —
 //! it is a load error ("apply.arity … got 0 arguments"), MEASURED identical before and
-//! after this ticket. The typer reads the `apply` segment as the reflect `apply` FORM.
+//! after this ticket. The `apply` segment is read as the reflect `apply` FORM — the
+//! last-segment keying WI-20260904-FSNZ5 owns.
 //! Its eval face is driven from an operation body (`eval::reflect_builtins`' tests).
 //!
 //! AND ONE ARENA, which is the ticket's prerequisite: `mk()` runs in one scratch bridge
@@ -230,4 +231,88 @@ fn the_rest_of_the_reflect_set_reduces_at_a_rule_body_operand() {
             "{goal}: (definite, total)"
         );
     }
+}
+
+const FIXTURE_HANDLES: &str = r#"
+namespace wi9r5hn.handles
+  import anthill.prelude.{Int64, String, Bool, List, Map, Function}
+  operation adder(n: Int64) -> Function[Int64, Int64] = lambda x -> x + n
+  operation apply1(f: Function[Int64, Int64], v: Int64) -> Int64 = f(v)
+  rule clo(1)    :- adder(10) <=> ?f, apply1(?f, 1) = 11
+  rule clo_no(1) :- adder(10) <=> ?f, apply1(?f, 1) = 12
+  rule map(1)    :- Map.put(Map.empty(), "a", 1) <=> ?m, Map.size(?m) = 1
+  rule map_no(1) :- Map.put(Map.empty(), "a", 1) <=> ?m, Map.size(?m) = 2
+end
+"#;
+
+/// A RUNTIME HANDLE BOUND BY ONE RULE-BODY CALL IS READ BY THE NEXT, whatever it is.
+///
+/// The `Substitution` rows above are one case of a general shape: the resolver binds
+/// `?f` / `?m` to a closure or a map one scratch bridge interpreter minted, and the
+/// next call reduces in another. Two things stood in the way, both MEASURED:
+///   * the bound value reached the next call σ-applied into the goal as a SPLICED
+///     occurrence, so `apply1` bound its parameter to a node rather than a closure
+///     ("unknown operation: …apply1.f") and `Map.size` refused its receiver — both rows
+///     SUSPENDED. The resolver→eval boundary (`Interpreter::call_op_bridged`) cancels
+///     the wrapper now, leaving the resolver's own builtins the carrier the goal holds;
+///   * with that fixed, the closure rows PANICKED — `enter_closure` read the closure
+///     through `self.closures`, the READING interpreter's arena (index out of bounds).
+///     Closure and stream reads are methods on their handles now, as `Map`, `Cell` and
+///     `Substitution` reads are (`eval::closure` / `eval::stream` cross-arena tests).
+///
+/// NO STREAM ROW, and not for want of one: a stream pull (`splitFirst`) declares its
+/// row (`effects s.E`), so it never reduces at a rule-body operand — the same gate that
+/// keeps a σ-bound handle READ-only (`bridge_op_to_eval`'s "pure"). The stream handle's
+/// own-arena read is driven by `eval::stream`'s unit test.
+#[test]
+fn a_runtime_handle_crosses_bridge_interpreters() {
+    let mut kb = crate::common::load_kb_with(FIXTURE_HANDLES);
+    for (row, want) in [("clo", 1), ("clo_no", 0), ("map", 1), ("map_no", 0)] {
+        let goal = format!("wi9r5hn.handles.{row}(1)");
+        assert_eq!(
+            (answers(&mut kb, &goal), total(&mut kb, &goal)),
+            (want, want),
+            "{goal}: (definite, total)"
+        );
+    }
+}
+
+/// A REFLECT READ THE EXTENT REFUSES IS A REPORTED FAULT, NOT A CRASH. A program may
+/// assert a BODIED rule under a reflect functor, and the extent seam refuses to read
+/// such a relation as facts. The reader PANICKED on that — MEASURED, `KB.descriptions`
+/// at a rule-body operand took the process down from inside resolution. It is
+/// `EvalError::KbReadFailed` now: the goal suspends AND the search says why — a
+/// `Schedule` classification would suspend it just the same and say nothing, which is
+/// what the message row is here to tell apart — MEASURED, with `KbReadFailed` moved to
+/// `Schedule` the message row fails (no error reported) while the suspension row passes.
+#[test]
+fn a_refused_reflect_read_suspends_the_goal() {
+    let mut kb = crate::common::load_kb_with(
+        r#"
+namespace wi9r5hn.forged
+  import anthill.prelude.{Int64, String, Bool, List, Option}
+  import anthill.prelude.Option.{none}
+  import anthill.reflect.{KB, MemberInfo, DescriptionInfo}
+  rule DescriptionInfo(target: ?t, content: "forged", index: 0) :- MemberInfo(name: ?t, kind: ?, parent: ?)
+  rule descs(1) :- KB.descriptions(KB.kb(), none()) <=> []
+end
+"#,
+    );
+    let goal = "wi9r5hn.forged.descs(1)";
+    assert_eq!(
+        (answers(&mut kb, goal), total(&mut kb, goal)),
+        (0, 1),
+        "{goal}: the refused read must SUSPEND the goal — not decide it, not panic"
+    );
+    let g = crate::common::query_pattern_term(&mut kb, goal);
+    let (_, stats) = kb.resolve_with_stats(&[g], &ResolveConfig::default());
+    assert!(
+        stats
+            .errors
+            .iter()
+            .any(|e| e.message.contains("KB.descriptions")
+                && e.message.contains("reflect DescriptionInfo read")),
+        "the refusal must be REPORTED as a fault naming the call and the read; got {:?}",
+        stats.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }

@@ -141,40 +141,6 @@ impl ClosureArenaRef {
         }
     }
 
-    /// Read a closure via a scoped borrow; the closure `f` runs while the
-    /// arena's borrow is held, so `f` must not trigger further arena
-    /// operations (no closure alloc/retain/release within it). Use this for
-    /// extracting `Copy` fields only — to snapshot non-Copy data like the
-    /// env, go through [`Self::clone_env`] which drops the borrow before
-    /// the `Clone` impls run.
-    pub fn with<R>(&self, h: &ClosureHandle, f: impl FnOnce(&Closure) -> R) -> R {
-        let borrow = self.0.borrow();
-        f(borrow.get_raw(h.raw))
-    }
-
-    /// Clone a closure's captured env without holding the arena borrow
-    /// across the clone. `Value::clone` for a `Value::Closure` needs
-    /// `borrow_mut` (to bump the slot refcount), which panics if any other
-    /// borrow is already held. We swap the env out under a brief
-    /// `borrow_mut`, clone it with no borrow held, then swap it back.
-    ///
-    /// Safe because the interpreter is single-threaded and synchronous:
-    /// nothing else runs during the swap-out-swap-in window, so observers
-    /// never see an empty env.
-    pub fn clone_env(&self, h: &ClosureHandle) -> SmallVec<[(Symbol, Value); 4]> {
-        let mut stolen = {
-            let mut arena = self.0.borrow_mut();
-            let c = arena.get_raw_mut(h.raw);
-            std::mem::take(&mut c.env)
-        };
-        let cloned = stolen.clone();
-        {
-            let mut arena = self.0.borrow_mut();
-            std::mem::swap(&mut arena.get_raw_mut(h.raw).env, &mut stolen);
-        }
-        cloned
-    }
-
     /// Live-slot count — for reclamation observability.
     pub fn live(&self) -> usize {
         self.0.borrow().live()
@@ -198,6 +164,47 @@ pub struct ClosureHandle {
 impl ClosureHandle {
     pub fn raw(&self) -> u32 {
         self.raw
+    }
+
+    // WI-20260923-9R5HN — the reads are methods on the HANDLE, reading the arena it
+    // carries, for `MapHandle::with_body`'s reason (WI-20260922-BRT4Y): an arena handed
+    // a handle it did not mint indexes the wrong slot table. The rule-body operand gate
+    // reduces each call in its own scratch bridge interpreter, so a closure bound by one
+    // call (`adder(10) <=> ?f`) reaches the next (`apply1(?f, 1)`) from another arena —
+    // MEASURED, `enter_closure` panicked `index out of bounds` reading `self.closures`.
+
+    /// Read a closure via a scoped borrow; the closure `f` runs while the
+    /// arena's borrow is held, so `f` must not trigger further arena
+    /// operations (no closure alloc/retain/release within it). Use this for
+    /// extracting `Copy` fields only — to snapshot non-Copy data like the
+    /// env, go through [`Self::clone_env`] which drops the borrow before
+    /// the `Clone` impls run.
+    pub fn with<R>(&self, f: impl FnOnce(&Closure) -> R) -> R {
+        let borrow = self.arena.0.borrow();
+        f(borrow.get_raw(self.raw))
+    }
+
+    /// Clone a closure's captured env without holding the arena borrow
+    /// across the clone. `Value::clone` for a `Value::Closure` needs
+    /// `borrow_mut` (to bump the slot refcount), which panics if any other
+    /// borrow is already held. We swap the env out under a brief
+    /// `borrow_mut`, clone it with no borrow held, then swap it back.
+    ///
+    /// Safe because the interpreter is single-threaded and synchronous:
+    /// nothing else runs during the swap-out-swap-in window, so observers
+    /// never see an empty env.
+    pub fn clone_env(&self) -> SmallVec<[(Symbol, Value); 4]> {
+        let mut stolen = {
+            let mut arena = self.arena.0.borrow_mut();
+            let c = arena.get_raw_mut(self.raw);
+            std::mem::take(&mut c.env)
+        };
+        let cloned = stolen.clone();
+        {
+            let mut arena = self.arena.0.borrow_mut();
+            std::mem::swap(&mut arena.get_raw_mut(self.raw).env, &mut stolen);
+        }
+        cloned
     }
 }
 
@@ -300,7 +307,38 @@ mod tests {
             env: SmallVec::new(),
             requirements: SmallVec::new(),
         });
-        let pat = arena.with(&h, |c| c.param_pattern.clone());
+        let pat = h.with(|c| c.param_pattern.clone());
         assert!(Rc::ptr_eq(&pat, &param));
+    }
+
+    /// WI-20260923-9R5HN — a handle reads the arena that MINTED it. Two arenas each hold
+    /// a closure at slot 0, with different parameter patterns; the handle from `a` must
+    /// answer `a`'s. The arena-receiver form this replaced (`b.with(&h, …)`) indexed
+    /// whichever arena it was called on — the bridge-interpreter shape, where
+    /// `enter_closure` read `self.closures` for a closure another interpreter minted.
+    #[test]
+    fn a_handle_reads_the_arena_that_minted_it() {
+        use crate::kb::node_occurrence::{Expr, Pattern};
+        use crate::span::{SourceId, SourceSpan};
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+        let closure_over = |param: &Rc<NodeOccurrence>| Closure {
+            param_pattern: Rc::clone(param),
+            body: NodeOccurrence::new_expr(Expr::Bottom, span, None),
+            env: SmallVec::new(),
+            requirements: SmallVec::new(),
+        };
+        let pa = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);
+        let pb = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);
+        let (a, b) = (ClosureArenaRef::new(), ClosureArenaRef::new());
+        let in_b = b.alloc(closure_over(&pb));
+        let in_a = a.alloc(closure_over(&pa));
+        assert_eq!(
+            in_a.raw(),
+            in_b.raw(),
+            "both at slot 0 — the case that aliases"
+        );
+        assert!(Rc::ptr_eq(&in_a.with(|c| c.param_pattern.clone()), &pa));
+        assert!(in_a.clone_env().is_empty());
+        assert!(Rc::ptr_eq(&in_b.with(|c| c.param_pattern.clone()), &pb));
     }
 }

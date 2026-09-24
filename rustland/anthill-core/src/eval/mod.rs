@@ -868,6 +868,23 @@ impl Interpreter {
         args: &[Value],
         dispatched_through: Option<(Symbol, &value::Dictionary)>,
     ) -> Result<Value, EvalError> {
+        // WI-20260923-9R5HN — THE RESOLVER→EVAL BOUNDARY CANCELS A SPLICED WRAPPER. A
+        // runtime value bound in σ (a closure, a map, a substitution) reaches the next
+        // rule-body call σ-applied INTO the goal occurrence, so the argument arrives as
+        // `Node(Spliced(v))`; eval reads those values by carrier, and they refused it —
+        // MEASURED, `adder(10) <=> ?f, apply1(?f, 1) = 11` bound the parameter to a node
+        // ("unknown operation: …apply1.f") and `Map.put(..) <=> ?m, Map.size(?m) = 1`
+        // refused its receiver, both SUSPENDED. Cancelled here and not upstream in the
+        // σ-walk: the resolver's own builtins (the occurrence readers) are handed the
+        // carrier the goal holds, and read it as such. `Value::carried` strips every
+        // wrapper layer, whichever path the argument came by.
+        let unwrapped: Vec<Value>;
+        let args = if args.iter().any(|a| !std::ptr::eq(a.carried(), a)) {
+            unwrapped = args.iter().map(|a| a.carried().clone()).collect();
+            &unwrapped[..]
+        } else {
+            args
+        };
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             return (builtin)(self, args);
         }
@@ -1795,7 +1812,7 @@ impl Interpreter {
         &self,
         h: &value::ClosureHandle,
     ) -> smallvec::SmallVec<[(Symbol, value::Dictionary); 1]> {
-        self.closures.with(h, |c| c.requirements.clone())
+        h.with(|c| c.requirements.clone())
     }
 
 
@@ -1977,8 +1994,8 @@ impl Interpreter {
             Faulted,
         }
 
-        let arena = self.streams.clone();
-        let action = arena.with_source_mut(handle, |src| match src {
+        // Through the HANDLE's arena (`StreamHandle::with_source_mut`, WI-20260923-9R5HN).
+        let action = handle.with_source_mut(|src| match src {
             StreamSource::Empty => (StreamSource::Empty, Action::Done),
             StreamSource::Faulted => (StreamSource::Faulted, Action::Faulted),
             StreamSource::Resolver {
@@ -2060,11 +2077,10 @@ impl Interpreter {
             Action::YieldSelf(v) => Ok(Some((v, handle.clone()))),
             Action::PumpResolver(stream) => {
                 let result = stream.split_first(&mut self.kb);
-                let stream_arena = self.streams.clone();
                 match result {
                     Err(fault) => Err(self.fault_stream(handle, fault)),
                     Ok(Some((sol, rest))) => {
-                        stream_arena.with_source_mut(handle, |prev| {
+                        handle.with_source_mut(|prev| {
                             // Carry the layer forward onto the continuation — the
                             // rest of the search reads the same scoped KB.
                             let layer = match prev {
@@ -2085,7 +2101,7 @@ impl Interpreter {
                         Ok(Some((solution, handle.clone())))
                     }
                     Ok(None) => {
-                        stream_arena.with_source_mut(handle, |_| (StreamSource::Empty, ()));
+                        handle.with_source_mut(|_| (StreamSource::Empty, ()));
                         Ok(None)
                     }
                 }
@@ -2095,7 +2111,6 @@ impl Interpreter {
                 // the relation's free variables (`columns`) — the one place a
                 // relation solution becomes a value row.
                 let result = search.split_first(&mut self.kb);
-                let stream_arena = self.streams.clone();
                 match result {
                     // WI-20260911-8Y5BE — the RELATION face takes the same fault arm. It
                     // used to raise `relation_floundered` for a faulted goal (which
@@ -2105,7 +2120,7 @@ impl Interpreter {
                     Err(fault) => Err(self.fault_stream(handle, fault)),
                     Ok(Some((sol, rest))) => {
                         let cols = columns.clone();
-                        stream_arena.with_source_mut(handle, move |_| {
+                        handle.with_source_mut(move |_| {
                             (
                                 StreamSource::MaterializedResolver {
                                     search: Some(rest),
@@ -2118,15 +2133,14 @@ impl Interpreter {
                         Ok(Some((row, handle.clone())))
                     }
                     Ok(None) => {
-                        stream_arena.with_source_mut(handle, |_| (StreamSource::Empty, ()));
+                        handle.with_source_mut(|_| (StreamSource::Empty, ()));
                         Ok(None)
                     }
                 }
             }
             Action::PumpLeft { left, right } => match self.stream_split_first(&left)? {
                 Some((v, left_rest)) => {
-                    let arena = self.streams.clone();
-                    arena.with_source_mut(handle, |_| {
+                    handle.with_source_mut(|_| {
                         (
                             StreamSource::MPlus {
                                 left: left_rest,
@@ -2157,9 +2171,7 @@ impl Interpreter {
         handle: &value::StreamHandle,
         fault: crate::kb::resolve::SearchFault,
     ) -> EvalError {
-        self.streams
-            .clone()
-            .with_source_mut(handle, |_| (stream::StreamSource::Faulted, ()));
+        handle.with_source_mut(|_| (stream::StreamSource::Faulted, ()));
         self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at)
     }
 

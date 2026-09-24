@@ -133,23 +133,54 @@ fn term_named_args(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, TermId)> {
 ///
 /// Reflection rows are declared entities, so readers enumerate their functors
 /// through the extent seam rather than leaking a resident `RuleId` bucket.
-fn facts_by_functor(kb: &KnowledgeBase, qualified_functor: &str, reader: &str) -> Vec<Value> {
+///
+/// A READ THE EXTENT REFUSES IS AN `Err`, not a panic (WI-20260923-9R5HN). The seam
+/// refuses a BODIED rule under a reflect functor (`BodiedRulePolicy::Refuse`), and a
+/// program can write one — MEASURED: `rule DescriptionInfo(…) :- MemberInfo(…)` plus a
+/// rule-body `KB.descriptions(…)` panicked the process from inside resolution, since the
+/// eval builtins reach this through the rule-body operand gate. Each realization decides
+/// what the refusal becomes: an `EvalError` for the interpreter, a loud host failure for
+/// the bridge, whose trait methods have no error channel.
+fn facts_by_functor(
+    kb: &KnowledgeBase,
+    qualified_functor: &str,
+    reader: &'static str,
+) -> Result<Vec<Value>, ReflectReadError> {
     let Some(functor) = kb.try_resolve_symbol(qualified_functor) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     kb.read_facts(functor, &[], crate::kb::extent::BodiedRulePolicy::Refuse)
-        .unwrap_or_else(|e| panic!("reflect {reader} read: {e}"))
+        .map_err(|error| ReflectReadError { reader, error })
+}
+
+/// A reflect reader's failed read of the extent seam: which reader asked, and the
+/// seam's own typed answer — a bodied rule it refused to read as facts, or a mounted
+/// source that failed. Kept TYPED so a consumer can tell those apart.
+#[derive(Clone, Debug)]
+pub struct ReflectReadError {
+    pub reader: &'static str,
+    pub error: crate::kb::extent::ExtentReadError,
+}
+
+impl std::fmt::Display for ReflectReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "reflect {} read: {}", self.reader, self.error)
+    }
 }
 
 /// Collect the names of every `MemberInfo` of a given `kind` (`Constructor`,
 /// `Operation`, …) whose parent is the resolved sort `parent_sym` (WI-632:
 /// matched by functor symbol, not by display-name string).
-pub fn members_of_kind(kb: &mut KnowledgeBase, parent_sym: Symbol, kind: &str) -> Vec<String> {
+pub fn members_of_kind(
+    kb: &mut KnowledgeBase,
+    parent_sym: Symbol,
+    kind: &str,
+) -> Result<Vec<String>, ReflectReadError> {
     let name_field = kb.intern("name");
     let kind_field = kb.intern("kind");
     let parent_field = kb.intern("parent");
     let mut results = vec![];
-    for head in facts_by_functor(kb, "anthill.reflect.MemberInfo", "MemberInfo") {
+    for head in facts_by_functor(kb, "anthill.reflect.MemberInfo", "MemberInfo")? {
         let named = term_named_args(kb, &head);
         let field = |key| {
             named
@@ -167,7 +198,7 @@ pub fn members_of_kind(kb: &mut KnowledgeBase, parent_sym: Symbol, kind: &str) -
             results.push(term_display_name(kb, name));
         }
     }
-    results
+    Ok(results)
 }
 
 // ── Per-op record readers ───────────────────────────────────────
@@ -189,13 +220,11 @@ pub struct SortRecord {
 /// the `SortInfo` functor so the value-in-type `SortAlias`, which shares the
 /// `"Sort"` bucket (WI-366), is not picked up. A fact missing `name` or
 /// `definition` is skipped (incomplete record).
-pub fn read_sort_infos(kb: &mut KnowledgeBase, namespace: Option<&str>) -> Vec<SortRecord> {
-    let Some(sort_info) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
-        return Vec::new();
-    };
-    let facts = kb
-        .read_facts(sort_info, &[], crate::kb::extent::BodiedRulePolicy::Refuse)
-        .unwrap_or_else(|e| panic!("reflect SortInfo read: {e}"));
+pub fn read_sort_infos(
+    kb: &mut KnowledgeBase,
+    namespace: Option<&str>,
+) -> Result<Vec<SortRecord>, ReflectReadError> {
+    let facts = facts_by_functor(kb, "anthill.reflect.SortInfo", "SortInfo")?;
     let f_name = kb.intern("name");
     let f_definition = kb.intern("definition");
     let f_kind = kb.intern("kind");
@@ -248,7 +277,7 @@ pub fn read_sort_infos(kb: &mut KnowledgeBase, namespace: Option<&str>) -> Vec<S
             requires: list(f_requires),
         });
     }
-    out
+    Ok(out)
 }
 
 /// One `OperationInfo` fact for a sort, decoded carrier-faithfully through the
@@ -272,10 +301,13 @@ pub struct OperationRecord {
 
 /// Read the `OperationInfo` facts whose domain is the resolved sort `sort_sym`
 /// (WI-632: matched by functor symbol, not by display-name string).
-pub fn read_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<OperationRecord> {
+pub fn read_operations(
+    kb: &mut KnowledgeBase,
+    sort_sym: Symbol,
+) -> Result<Vec<OperationRecord>, ReflectReadError> {
     let meta_default_sym = kb.intern("meta");
     let mut out = Vec::new();
-    for head in facts_by_functor(kb, "anthill.reflect.OperationInfo", "OperationInfo") {
+    for head in facts_by_functor(kb, "anthill.reflect.OperationInfo", "OperationInfo")? {
         let name = match op_info::head_field_term(kb, &head, "name") {
             Some(t) => t,
             None => continue,
@@ -317,7 +349,7 @@ pub fn read_operations(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Operatio
             meta,
         });
     }
-    out
+    Ok(out)
 }
 
 /// One `DescriptionInfo(target, content, index)` fact. The index is the stored
@@ -330,12 +362,15 @@ pub struct DescriptionRecord {
 
 /// Read every `DescriptionInfo` fact, optionally filtered to `target` (full or
 /// short name). A malformed or incomplete record is skipped.
-pub fn read_descriptions(kb: &mut KnowledgeBase, target: Option<&str>) -> Vec<DescriptionRecord> {
+pub fn read_descriptions(
+    kb: &mut KnowledgeBase,
+    target: Option<&str>,
+) -> Result<Vec<DescriptionRecord>, ReflectReadError> {
     let target_field = kb.intern("target");
     let content_field = kb.intern("content");
     let index_field = kb.intern("index");
     let mut out = Vec::new();
-    for head in facts_by_functor(kb, "anthill.reflect.DescriptionInfo", "DescriptionInfo") {
+    for head in facts_by_functor(kb, "anthill.reflect.DescriptionInfo", "DescriptionInfo")? {
         let named = term_named_args(kb, &head);
         let field = |key| {
             named
@@ -366,7 +401,7 @@ pub fn read_descriptions(kb: &mut KnowledgeBase, target: Option<&str>) -> Vec<De
             index,
         });
     }
-    out
+    Ok(out)
 }
 
 /// The head `Value`s of every `Rule` fact whose domain is the resolved sort

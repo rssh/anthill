@@ -315,7 +315,7 @@ pub(super) fn kb_sorts(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     let kb = interp.kb_mut();
 
     let mut entries: Vec<Value> = Vec::new();
-    for rec in reader::read_sort_infos(kb, namespace.as_deref()) {
+    for rec in reader::read_sort_infos(kb, namespace.as_deref()).map_err(EvalError::KbReadFailed)? {
         let list =
             |ts: Vec<TermId>| build_list_value(syms, ts.into_iter().map(Value::term).collect());
         let mut fields = vec![
@@ -349,7 +349,7 @@ pub(super) fn kb_operations(interp: &mut Interpreter, args: &[Value]) -> Result<
     // the loader's synthetic `EffectsRuntime[Effects=E]` clause (WI-320); `ensures`
     // is user clauses only.
     let mut entries: Vec<Value> = Vec::new();
-    for rec in reader::read_operations(kb, sort_sym) {
+    for rec in reader::read_operations(kb, sort_sym).map_err(EvalError::KbReadFailed)? {
         let params_v = build_list_value(syms, rec.params.into_iter().map(Value::term).collect());
         let effects_v = build_list_value(syms, rec.effects);
         let requires_v = build_list_value(syms, rec.requires);
@@ -388,6 +388,7 @@ pub(super) fn kb_constructors(
     let sort_sym = sort_ref_functor(interp, &sort)?;
     let kb = interp.kb_mut();
     let items: Vec<Value> = reader::members_of_kind(kb, sort_sym, "Constructor")
+        .map_err(EvalError::KbReadFailed)?
         .into_iter()
         .map(|n| Value::Str(reader::short_of(&n).to_string()))
         .collect();
@@ -451,7 +452,7 @@ pub(super) fn kb_descriptions(
     // The reader yields `DescriptionInfo(target, content, index)` records; the index
     // is the STORED 0-based per-target index (WI-438), not a global enumeration.
     let mut items: Vec<Value> = Vec::new();
-    for rec in reader::read_descriptions(kb, target.as_deref()) {
+    for rec in reader::read_descriptions(kb, target.as_deref()).map_err(EvalError::KbReadFailed)? {
         let fields = vec![
             (syms.f_target, Value::term(rec.target)),
             (syms.f_content, Value::Str(rec.content)),
@@ -596,6 +597,17 @@ fn repr_field(kb: &KnowledgeBase, v: &Value, key: Symbol, index: usize) -> Optio
         .map(|c| c.to_value())
 }
 
+/// A reflect record that is not the shape its sort declares — the caller's DATA, so a
+/// type mismatch, not [`EvalError::Internal`] (an evaluator invariant, which the SLD
+/// bridge asserts against; `KB.reflect` reduces at a rule-body operand since
+/// WI-20260923-9R5HN).
+fn repr_shape_error(expected: &'static str, got: impl Into<String>) -> EvalError {
+    EvalError::TypeMismatch {
+        expected,
+        got: got.into(),
+    }
+}
+
 /// Interpreter realization of [`reader::ReflectReader`]: decodes a `TermRepr`
 /// `Value::Entity` tree. A `Ref`/`Fn` name is read back off its in-band `Ref`
 /// TERM carrier — the inverse of [`ValueReprBuilder`].
@@ -615,24 +627,24 @@ impl reader::ReflectReader for ValueRepr<'_> {
 
         if functor == syms.const_repr {
             let inner = lookup(syms.f_value, 0)
-                .ok_or_else(|| EvalError::Internal("ConstRepr: missing `value`".into()))?;
+                .ok_or_else(|| repr_shape_error("ConstRepr", "no `value` field"))?;
             Ok(reader::ReflectShape::Const(decode_literal_repr(
                 kb, syms, inner,
             )?))
         } else if functor == syms.var_repr {
             let name = lookup(syms.f_name, 0)
-                .ok_or_else(|| EvalError::Internal("VarRepr: missing `name`".into()))?;
+                .ok_or_else(|| repr_shape_error("VarRepr", "no `name` field"))?;
             Ok(reader::ReflectShape::Var(str_arg(kb, name)?))
         } else if functor == syms.ref_repr {
             let name = lookup(syms.f_name, 0)
-                .ok_or_else(|| EvalError::Internal("RefRepr: missing `name`".into()))?;
+                .ok_or_else(|| repr_shape_error("RefRepr", "no `name` field"))?;
             Ok(reader::ReflectShape::Ref(ref_repr_symbol(kb, name)?))
         } else if functor == syms.fn_repr {
             let name = lookup(syms.f_name, 0)
-                .ok_or_else(|| EvalError::Internal("FnRepr: missing `name`".into()))?;
+                .ok_or_else(|| repr_shape_error("FnRepr", "no `name` field"))?;
             let functor_sym = ref_repr_symbol(kb, name)?;
             let args_list = lookup(syms.f_args, 1)
-                .ok_or_else(|| EvalError::Internal("FnRepr: missing `args`".into()))?;
+                .ok_or_else(|| repr_shape_error("FnRepr", "no `args` field"))?;
             let children = super::builtins::view_list_items(kb, &args_list)
                 .ok_or_else(|| EvalError::TypeMismatch {
                     expected: "FnRepr.args: a cons-list",
@@ -643,10 +655,10 @@ impl reader::ReflectReader for ValueRepr<'_> {
                 .collect();
             Ok(reader::ReflectShape::Fn(functor_sym, children))
         } else {
-            Err(EvalError::Internal(format!(
-                "unknown TermRepr ctor: {}",
-                kb.local_name_of(functor)
-            )))
+            Err(repr_shape_error(
+                "TermRepr",
+                format!("the constructor `{}`", kb.local_name_of(functor)),
+            ))
         }
     }
 }
@@ -661,7 +673,7 @@ fn decode_literal_repr(
 ) -> Result<Literal, EvalError> {
     let lit_ctor = repr_functor(kb, &inner, "LiteralRepr")?;
     let lit_val = repr_field(kb, &inner, syms.f_value, 0)
-        .ok_or_else(|| EvalError::Internal("LiteralRepr: missing `value`".into()))?;
+        .ok_or_else(|| repr_shape_error("LiteralRepr", "no `value` field"))?;
     // WI-20260827-3ZNBC — the PAYLOAD reads through the carrier-neutral view, like
     // the constructor above it (`Value::Entity`'s functor) already did. Which
     // `LiteralRepr` constructor was written still decides which core `Literal` this
@@ -705,10 +717,10 @@ fn decode_literal_repr(
             _ => Err(mismatch("Bool")),
         }
     } else {
-        Err(EvalError::Internal(format!(
-            "unknown LiteralRepr ctor: {}",
-            kb.local_name_of(lit_ctor)
-        )))
+        Err(repr_shape_error(
+            "LiteralRepr",
+            format!("the constructor `{}`", kb.local_name_of(lit_ctor)),
+        ))
     }
 }
 
@@ -1050,9 +1062,10 @@ pub(super) fn subst_apply(interp: &mut Interpreter, args: &[Value]) -> Result<Va
     // is not interned; the RESULT is lowered below, at the declared `Term` boundary.
     let applied = handle.with_subst(|s| kb.reify_value(&t, s));
     let lowered = crate::kb::node_occurrence::value_to_term(kb, &applied).map_err(|e| {
-        EvalError::Internal(format!(
-            "Substitution.apply: the result has no term form: {e:?}"
-        ))
+        EvalError::TypeMismatch {
+            expected: "Term (Substitution.apply's result)",
+            got: format!("a value with no term form: {e:?}"),
+        }
     })?;
     Ok(Value::term(lowered))
 }
@@ -1125,9 +1138,10 @@ pub(super) fn subst_bindings(interp: &mut Interpreter, args: &[Value]) -> Result
         // `Entity` spine; both have a term form). A carrier with none is a loud
         // error here rather than a `TypeMismatch` at the first `Term` op downstream.
         let snd = crate::kb::node_occurrence::value_to_term(kb, &val).map_err(|e| {
-            EvalError::Internal(format!(
-                "Substitution.bindings: a binding has no term form: {e:?}"
-            ))
+            EvalError::TypeMismatch {
+                expected: "Term (a Substitution.bindings binding)",
+                got: format!("a value with no term form: {e:?}"),
+            }
         })?;
         pairs.push(make_entity(
             kb,

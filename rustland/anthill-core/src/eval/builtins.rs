@@ -5574,7 +5574,14 @@ fn kb_stored_facts_of(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
     let rows = interp
         .kb
         .read_stored_facts(functor_sym, crate::kb::extent::BodiedRulePolicy::Refuse)
-        .map_err(|e| EvalError::Internal(format!("stored_facts_of: {e}")))?;
+        // The program's data or its backend — not an evaluator invariant, which is what
+        // `Internal` asserts against at the SLD bridge (WI-20260923-9R5HN).
+        .map_err(|error| {
+            EvalError::KbReadFailed(crate::kb::reflect_reader::ReflectReadError {
+                reader: "stored_facts_of",
+                error,
+            })
+        })?;
     let elements = rows
         .into_iter()
         .map(|row| stored_ref_value(interp, row))

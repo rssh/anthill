@@ -137,7 +137,7 @@ impl CellHandle {
 
     /// Snapshot the held value. Briefly takes the slot's value out under
     /// `borrow_mut`, clones it with no borrow held, then puts the original
-    /// back. Pattern from `ClosureArenaRef::clone_env`: avoids holding a
+    /// back. Pattern from `ClosureHandle::clone_env`: avoids holding a
     /// borrow across the recursive `Value::clone` (which may bump
     /// refcounts on nested arena handles, requiring its own
     /// `borrow_mut`). A Cell holding another Cell handle (either today,

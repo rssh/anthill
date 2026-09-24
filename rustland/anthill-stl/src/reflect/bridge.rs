@@ -11,6 +11,15 @@ use crate::prelude::{Modifiable, Stream, Type};
 use crate::reflect::*;
 use anthill_core::kb::reflect_reader as reader;
 
+/// A reflect reader's result, for a host `KB` method with no error channel — the
+/// generated trait returns the bare record list. A read the extent seam refused (a
+/// bodied rule under a reflect functor, WI-20260923-9R5HN) or a failed mounted source
+/// is therefore a LOUD host failure naming the method, where the interpreter's twin
+/// answers `EvalError::KbReadFailed`.
+fn host_read<T>(method: &str, read: Result<T, reader::ReflectReadError>) -> T {
+    read.unwrap_or_else(|e| panic!("KB.{method}: {e}"))
+}
+
 // ── Boundary helpers (WI-540) ───────────────────────────────────
 //
 // The reflect API speaks `Term` (= `ReflectTerm`) and `Symbol` (=
@@ -902,7 +911,10 @@ impl KB for KbBridge {
     // them — so this file cannot grow a fourth copy without the compiler saying so.
 
     fn sorts(&self, namespace: Option<String>) -> Vec<SortInfo> {
-        let records = reader::read_sort_infos(&mut self.kb.borrow_mut(), namespace.as_deref());
+        let records = host_read(
+            "sorts",
+            reader::read_sort_infos(&mut self.kb.borrow_mut(), namespace.as_deref()),
+        );
         records
             .into_iter()
             .map(|rec| SortInfo {
@@ -926,7 +938,10 @@ impl KB for KbBridge {
 
     fn operations(&self, sort: Type) -> Vec<OperationInfo> {
         let sort_sym = self.ref_functor(&sort, "operations");
-        let records = reader::read_operations(&mut self.kb.borrow_mut(), sort_sym);
+        let records = host_read(
+            "operations",
+            reader::read_operations(&mut self.kb.borrow_mut(), sort_sym),
+        );
         // The shared reader yields `effects` / `requires` / `ensures` as carrier-
         // faithful `Value`s. A `denoted` label / clause rides as a `Value::Node`,
         // wrapped via `rterm` / `ReflectNodeOccurrence::new` — the struct fields
@@ -966,7 +981,10 @@ impl KB for KbBridge {
         let sort_sym = self.ref_functor(&sort, "constructors");
         // `let`-bind first to release the `borrow_mut()` RefMut before mapping (see
         // `fields`); the map here doesn't re-borrow, but keep the pattern uniform.
-        let members = reader::members_of_kind(&mut self.kb.borrow_mut(), sort_sym, "Constructor");
+        let members = host_read(
+            "constructors",
+            reader::members_of_kind(&mut self.kb.borrow_mut(), sort_sym, "Constructor"),
+        );
         members
             .into_iter()
             .map(|n| reader::short_of(&n).to_string())
@@ -1003,7 +1021,10 @@ impl KB for KbBridge {
     fn descriptions(&self, target: Option<String>) -> Vec<DescriptionInfo> {
         // `let`-bind first: `self.sym_of(..)` in the map re-borrows the KB, so the
         // `borrow_mut()` RefMut must be dropped before mapping (see `fields`).
-        let records = reader::read_descriptions(&mut self.kb.borrow_mut(), target.as_deref());
+        let records = host_read(
+            "descriptions",
+            reader::read_descriptions(&mut self.kb.borrow_mut(), target.as_deref()),
+        );
         records
             .into_iter()
             .map(|rec| DescriptionInfo {
