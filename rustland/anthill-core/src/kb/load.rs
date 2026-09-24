@@ -1060,6 +1060,21 @@ pub enum LoadError {
         provider: String,
         span: Span,
     },
+    /// WI-20260924-F8PYZ — a spec clause (`provides`, a provision's `:- …` condition, a
+    /// `requires`) whose spec is a type ALIAS it cannot read. A clause reads an alias as
+    /// the spec it stands for — `provides StoreAlias[State = WIS]` is `provides Store[State
+    /// = WIS]` — and this is what is left: the alias stands for no sort (a tuple), its
+    /// chain is a cycle, the name is an alias AND owns members of its own (two readings),
+    /// or the clause binds again a parameter the alias fixes (two values). Refused, never
+    /// resolved by picking one.
+    SpecAliasRefused {
+        /// The alias as the clause names it, qualified.
+        alias: String,
+        /// Why, pre-rendered by the reader that found it (`Loader::read_spec_alias`,
+        /// `Loader::refuse_alias_rebinding`).
+        reason: String,
+        span: Span,
+    },
     /// WI-20260913-KXNEX — a written `provides` clause that leaves its spec's CARRIER
     /// PARAMETER unbound, and so names no carrier. §5.1: "a `provides` clause names its
     /// PROVIDER by WHERE it is written, and its CARRIER by its bindings".
@@ -2368,6 +2383,7 @@ impl LoadError {
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
             | LoadError::ProvidesNamesDataSort { span, .. }
+            | LoadError::SpecAliasRefused { span, .. }
             | LoadError::ProvidesClauseNeedsSort { span, .. }
             | LoadError::RuleHeadOwnedByNoScope { span, .. }
             | LoadError::PredicateHeadsSpanFiles { span, .. }
@@ -3366,6 +3382,17 @@ impl LoadError {
                     provides_names_data_sort_message(spec, provider)
                 )
             }
+            LoadError::SpecAliasRefused {
+                alias,
+                reason,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    spec_alias_refused_message(alias, reason)
+                )
+            }
             LoadError::ProvisionNamesNoCarrier {
                 spec,
                 carrier_param,
@@ -3727,6 +3754,19 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     provides_names_data_sort_message(spec, provider),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::SpecAliasRefused {
+                alias,
+                reason,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    spec_alias_refused_message(alias, reason),
                     span.start,
                     span.end
                 )
@@ -7405,16 +7445,43 @@ fn provides_needs_sort_message(namespace: &str) -> String {
 }
 
 /// WI-1106 — the SPEC a `provides` clause names, as a symbol, or `None` for a shape
-/// that names no plain sort (a tuple, an arrow). Used only to ask the data-sort
-/// question; the clause's own lowering goes through `sort_inst_to_value` as before, so
-/// this reads the name and nothing else.
-fn provided_spec_symbol(loader: &mut Loader<'_>, pc: &ProvidesClause) -> Option<Symbol> {
-    let name = match &pc.spec {
-        TypeExpr::Simple(n) => n.last(),
-        TypeExpr::Parameterized { name, .. } => name.last(),
-        _ => return None,
-    };
-    Some(loader.remap_symbol(name, pc.span))
+/// that names no plain sort (a tuple, an arrow). The clause's own lowering goes through
+/// `sort_inst_to_value` as before, so this reads the name and nothing else.
+///
+/// THE SORT THE WRITTEN NAME DENOTES, which is the base of the view the relation records:
+/// the whole name, resolved as the lowering resolves it (`remap_name`, which
+/// `name_to_sort_term` calls), read through a type alias ([`Loader::read_spec_alias`]).
+/// It used to resolve the LAST SEGMENT in the writing scope through `remap_symbol`, whose
+/// miss is a silent bare intern: `provides qa.Colour` written in another namespace named
+/// a symbol that declares nothing, and every reader keyed on it went blind — MEASURED,
+/// the data-sort refusal let a qualified data sort through and the program ran
+/// (WI-20260924-F8PYZ). And an ALIAS answered itself, so the data-sort question, the
+/// `default` row and the written-clause registry were all asked about a name with no
+/// operations while the relation was about something else.
+///
+/// `Err` for an alias that names no spec: refused, and the provision is not filed.
+///
+/// LOUD, AND NOT TWICE. What resolving and reading the name reports — an unresolvable
+/// name, an ambiguity, an `internal` reach, an alias refused — the lowering reports too,
+/// from the same functions on the same `Name` at the same span, so the two render
+/// identically and the phase's rendering dedup keeps one. Not quiet, because the
+/// data-sort refusal and a refused alias return BEFORE the lowering runs, and then this
+/// report is the only one: an ambiguous name answers its first candidate
+/// (`push_ambiguous_symbol`), which may be the data sort refused.
+fn provided_spec_symbol(
+    loader: &mut Loader<'_>,
+    pc: &ProvidesClause,
+) -> Result<Option<Symbol>, ()> {
+    match &pc.spec {
+        TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => {
+            let written = loader.remap_name(name);
+            match loader.read_spec_alias(written, name.span) {
+                Ok((spec, _)) => Ok(Some(spec)),
+                Err(_) => Err(()),
+            }
+        }
+        _ => Ok(None),
+    }
 }
 
 /// WI-1106 — the sentence for [`LoadError::ProvidesNamesDataSort`]. One owner, for the
@@ -7432,6 +7499,16 @@ fn provides_names_data_sort_message(spec: &str, provider: &str) -> String {
          {spec}(…)`, which is a different statement and needs no clause here. (The \
          `fact {spec}[…]` spelling is classified as that data assertion rather than \
          refused, since it has both readings — this clause has only one.)"
+    )
+}
+
+/// WI-20260924-F8PYZ — the sentence for [`LoadError::SpecAliasRefused`]. One owner, for
+/// the reason [`provides_needs_sort_message`] states: two rendering paths, one under test.
+/// The frame is the reading; the `reason` says what stops it, and continues the sentence.
+fn spec_alias_refused_message(alias: &str, reason: &str) -> String {
+    format!(
+        "'{alias}' is a type alias, which a spec clause reads as the spec it stands for — \
+         {reason}"
     )
 }
 
@@ -23856,7 +23933,7 @@ impl<'a> Loader<'a> {
                     return kb_id;
                 }
 
-                let new_functor = self.remap_functor(functor, parse_id);
+                let mut new_functor = self.remap_functor(functor, parse_id);
 
                 // WI-20260911-073GH — DOES THIS WRITTEN FUNCTOR DENOTE AN ENTITY?
                 // Read ONCE here and used by every entity-shaped reading below (the
@@ -24535,6 +24612,23 @@ impl<'a> Loader<'a> {
                     //
                     // `has_kind`, as `check_sort_type_args` asks (WI-20260824-Q0093): `kind_of`
                     // answers "not a sort" for a sort whose ENTITY role registered first.
+                    //
+                    // WI-20260924-F8PYZ — AND THE SPEC IT NAMES, read through a type alias as
+                    // every spec clause reads one (`read_spec_alias`): `requires
+                    // StoreAlias[State = P]` IS `requires Store[State = P]`, and the bindings
+                    // an alias fixes join the written ones, which may not bind them again.
+                    // MEASURED before: the requirement was of the alias, which no provision of
+                    // `Store` meets — refused as a "missing `requires Store[State = …]`" when
+                    // the body called `Store`'s operations, and unchecked when it did not.
+                    let span = self.parsed.terms.span(parse_id);
+                    let written = new_functor;
+                    if let Ok((base, fixed)) = self.read_spec_alias(written, span) {
+                        let clause_params: SmallVec<[Symbol; 2]> =
+                            new_named.iter().map(|(s, _)| *s).collect();
+                        self.refuse_alias_rebinding(written, &fixed, &clause_params, span);
+                        new_named.insert_many(0, fixed);
+                        new_functor = base;
+                    }
                     let declared = self.kb.type_params_of_sort(new_functor);
                     let slots = KnowledgeBase::positional_param_slots(
                         &declared,
@@ -24592,7 +24686,7 @@ impl<'a> Loader<'a> {
                     }
                 }
                 let new_sym = self.remap_symbol_strict(sym, span);
-                Term::Ref(new_sym)
+                self.bare_contract_spec(new_sym, span)
             }
             Term::Bottom => Term::Bottom,
             Term::Ident(sym) => {
@@ -24604,10 +24698,11 @@ impl<'a> Loader<'a> {
                 {
                     Term::Var(Var::Global(vid))
                 } else {
-                    let new_sym = self.remap_symbol(sym, self.parsed.terms.span(parse_id));
+                    let span = self.parsed.terms.span(parse_id);
+                    let new_sym = self.remap_symbol(sym, span);
                     // Promote to Ref if the symbol resolved to a defined name
                     if self.kb.symbols.is_resolved(new_sym) {
-                        Term::Ref(new_sym)
+                        self.bare_contract_spec(new_sym, span)
                     } else {
                         Term::Ident(new_sym)
                     }
@@ -29869,8 +29964,16 @@ impl<'a> Loader<'a> {
             let Item::ProvidesClause(pc) = item else {
                 continue;
             };
-            // A bare `provides Spec` — or `provides ?S` — binds no member.
-            if !matches!(pc.spec, TypeExpr::Parameterized { .. }) {
+            // `provides ?S` names no spec, so it binds no member. A BARE name is read, not
+            // skipped: `provides Spec` binds nothing, but a bare type ALIAS stands for its
+            // target, bindings and all (WI-20260924-F8PYZ) — `provides WisStore` over `sort
+            // WisStore = Store[State = WIS]` binds `State` exactly as the bracketed
+            // spelling does, and narrows the sugar the same way. MEASURED skipped: `Store.State`
+            // stayed generic under `provides WisStore` and `s.n` was refused.
+            if !matches!(
+                pc.spec,
+                TypeExpr::Simple(_) | TypeExpr::Parameterized { .. }
+            ) {
                 continue;
             }
             // Lowered ONCE, and left for `load_provides_clause` to take
@@ -29879,12 +29982,21 @@ impl<'a> Loader<'a> {
             let spec = self.sort_inst_to_value(&pc.spec);
             self.prelowered_provision_specs
                 .insert((pc.span.start, pc.span.end), spec.clone());
-            // A bracketed spec lowers to a `SortView` over `name_to_sort_term`'s base,
-            // which always decodes. A binding carried as a VALUE — a denoted one (`E =
+            // A named spec lowers to a `SortView` over its base, or to the bare base, and
+            // either decodes. A binding carried as a VALUE — a denoted one (`E =
             // {Modify[c]}`), or a type holding one (`Vec[Int64, 3]`) — has no term and
             // does not come back, so its member keeps the generic reading.
-            let (spec_sym, bindings) = super::typing::unwrap_spec_view_value(&self.kb, &spec)
-                .expect("a bracketed provision spec lowers to a decodable `SortView`");
+            let Some((spec_sym, bindings)) = super::typing::unwrap_spec_view_value(&self.kb, &spec)
+            else {
+                // The one BARE spec that decodes to nothing is the reflect wrapper itself,
+                // `provides anthill.reflect.SortView` — a view with no base, binding no
+                // member. A bracketed spec always decodes.
+                assert!(
+                    matches!(pc.spec, TypeExpr::Simple(_)),
+                    "a bracketed provision spec lowers to a decodable `SortView`"
+                );
+                continue;
+            };
             for (member, value) in bindings {
                 let values = seen.entry((spec_sym, member)).or_default();
                 if !values
@@ -30594,6 +30706,15 @@ impl<'a> Loader<'a> {
     /// `Value::Entity` `SortView` carrying the `Value::Node` binding, so the value-
     /// in-type is CARRIED (the `SortRequiresInfo` / `SortProvidesInfo` fact becomes
     /// a value fact) rather than re-grounded via `make_denoted`.
+    ///
+    /// ITS TWO NAME ARMS SEE A SPEC'S HEAD AND NOTHING ELSE: every caller hands it a
+    /// clause's spec (a provision, a condition, a `requires`, the carrier pre-scan, a
+    /// binding block, `SortInfo.requires`), and a binding VALUE is lowered by
+    /// [`Self::sort_binding_to_value`], whose own `Simple` and `Parameterized` arms never
+    /// come back here. That is what lets them read a TYPE ALIAS as the spec it stands for
+    /// (WI-20260924-F8PYZ, [`Self::read_spec_alias`]) — `provides StoreAlias[State = WIS]`
+    /// lowers to `SortView(Store, State = WIS)` — while an alias in a binding value stays
+    /// the type position it is, where it already means its type.
     fn sort_inst_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         match ty {
@@ -30610,27 +30731,54 @@ impl<'a> Loader<'a> {
                 // provision, exactly like `fact Spec[T = T]` — the two must emit
                 // structurally identical `SortProvidesInfo` bindings.
                 //
-                // NOTE this arm is reached for BOTH the whole spec when it is a bare
-                // `provides Spec` (the spec-IDENTITY slot, which the spec readers need
-                // as the `Fn{Spec}` functor) AND a nested binding VALUE. A concrete
-                // bare sort stays the `Fn{S}` functor here; the binding-value position
-                // canonicalizes to `Ref(S)` separately (WI-391, `sort_binding_to_value`).
-                let sort_sym = self.remap_name(name);
+                // A concrete bare spec is the `Fn{S}` functor here — the spec-IDENTITY
+                // slot the spec readers read. (A bare sort as a binding VALUE is
+                // `Ref(S)`, canonicalized by `sort_binding_to_value`, WI-391.) An alias
+                // bare as the spec stands for its target, bindings and all: `provides
+                // WisStore` over `sort WisStore = Store[State = WIS]` is the VIEW
+                // `SortView(Store, State = WIS)`, as if written so.
+                let written = self.remap_name(name);
+                let span = self.type_expr_span(ty).span;
+                // A refused alias keeps the name as written: reported, and the load fails.
+                let (sort_sym, fixed) = match self.read_spec_alias(written, span) {
+                    Ok(read) => read,
+                    Err(written) => (written, SmallVec::new()),
+                };
                 let short_name = self.kb.local_name_of(sort_sym).to_owned();
-                if self
+                let head = if self
                     .kb
                     .symbols
                     .is_type_param(self.current_scope, &short_name)
                 {
-                    Value::term(self.kb.make_sort_ref(sort_sym))
+                    self.kb.make_sort_ref(sort_sym)
                 } else {
-                    Value::term(self.name_to_sort_term(name))
+                    self.kb.make_name_term_from_sym(sort_sym)
+                };
+                if fixed.is_empty() {
+                    Value::term(head)
+                } else {
+                    let fixed = fixed
+                        .into_iter()
+                        .map(|(p, t)| (p, Value::term(t)))
+                        .collect();
+                    self.assemble_sort_view_value(vec![Value::term(head)], fixed)
                 }
             }
             TypeExpr::Parameterized { name, bindings } => {
-                let name_term = self.name_to_sort_term(name);
+                // WI-20260924-F8PYZ — the spec the written name stands for, and the
+                // bindings a type alias there fixes: an alias is lowered as its target
+                // with the clause's own bindings added.
+                let written = self.remap_name(name);
+                let span = self.type_expr_span(ty).span;
+                // A refused alias keeps the name as written: reported, and the load fails.
+                let (base_sym, fixed) = match self.read_spec_alias(written, span) {
+                    Ok(read) => read,
+                    Err(written) => (written, SmallVec::new()),
+                };
+                let name_term = self.kb.make_name_term_from_sym(base_sym);
                 let mut pos: Vec<Value> = vec![Value::term(name_term)];
-                let mut named: Vec<(Symbol, Value)> = Vec::new();
+                let mut named: Vec<(Symbol, Value)> =
+                    fixed.iter().map(|&(p, t)| (p, Value::term(t))).collect();
                 // Positional bindings map to the base sort's declared type
                 // parameters in declaration order — the SAME mapping
                 // `type_expr_to_child` applies to plain type expressions — so a
@@ -30642,22 +30790,29 @@ impl<'a> Loader<'a> {
                 // clause silently loses its bindings (a pure `provides` would
                 // drop its `E = {}` and the carrier would stop being admissible
                 // as the spec).
-                let base_sym = self.remap_name(name);
                 let declared_params = self.kb.type_params_of_sort(base_sym);
                 // WI-20260923-N3W68 (#9) — NAMED FIRST: a positional binds the next declared
                 // param not already bound by name (`KnowledgeBase::positional_param_slots`).
                 // This paired by RAW INDEX, so `provides Spec2[T = C, String]` bound `T`
                 // twice and `U` never — MEASURED: a use at `Spec2[T = C, U = String]` was
                 // refused as a mismatch — while the `require[…]` bracket and a type position
-                // read the same spelling as `U = String`.
+                // read the same spelling as `U = String`. A parameter an ALIAS fixes is
+                // bound by name as far as a positional is concerned: `WisStore[X]` over
+                // `sort WisStore = Store[State = WIS]` binds the next parameter after it.
                 let named_syms: SmallVec<[Symbol; 2]> = bindings
                     .iter()
                     .filter_map(|b| b.param.as_ref().map(|p| self.reintern(p.last())))
                     .collect();
+                self.refuse_alias_rebinding(written, &fixed, &named_syms, span);
                 let positional_count = bindings.len() - named_syms.len();
                 let slots = KnowledgeBase::positional_param_slots(
                     &declared_params,
-                    |d| named_syms.iter().any(|n| self.kb.local_name_of(*n) == d),
+                    |d| {
+                        named_syms
+                            .iter()
+                            .chain(fixed.iter().map(|(p, _)| p))
+                            .any(|n| self.kb.local_name_of(*n) == d)
+                    },
                     positional_count,
                 );
                 // AN OVER-APPLIED PARAMETRIC SPEC IS REFUSED HERE, where it is written. The
@@ -31095,6 +31250,45 @@ impl<'a> Loader<'a> {
         );
     }
 
+    /// WI-20260924-F8PYZ — record a TYPE ALIAS for the reader that asks while files still
+    /// load (`KnowledgeBase::alias_targets`, read by `typing::alias_expansion`): a spec
+    /// clause reads the alias as the spec it stands for.
+    ///
+    /// Recorded as a clause's BINDING is lowered (`sort_binding_to_value`), not as the type
+    /// the `SortAlias` fact holds, because that is what the reader splices into a clause.
+    /// The two differ at a type PARAMETER: a type position lowers it to the parameter's
+    /// variable, a clause binding to `Ref(param)`, the spelling dispatch generalizes over —
+    /// and the binding's `Ref` is resolved by NAME, so it does not depend on whether the
+    /// parameter's variable is published yet. MEASURED both ways before this was the
+    /// reading: an alias fixing `State = Box[E = E]` made `Box`'s provision out-rank a more
+    /// specific one (the call answered 100 where the direct spelling answers 200), and
+    /// written ABOVE the `sort E = ?` it names it got a variable of its own. A tuple or an
+    /// arrow binding keeps its variables in both, as `sort_binding_to_value` does.
+    ///
+    /// QUIET: the declaration's own lowering above has reported every problem with the
+    /// definition and recorded its use sites, so this second lowering's reports and sites
+    /// are dropped. Not a declared parameter (`sort T = ?`, refused in `assert_sort_alias`
+    /// if its target is not a variable), and not a reading left value-carried, which
+    /// `lower_value_or_gate` has refused at the declaration. First wins, as
+    /// `build_sort_alias_index` files the facts; the callers' dedup guard makes a second
+    /// declaration of one source unreachable anyway.
+    fn record_alias_target(&mut self, sort_term: TermId, definition: &TypeExpr) {
+        let source = self.kb.name_term_sym(sort_term);
+        if super::typing::is_sort_param_symbol(self.kb, source) {
+            return;
+        }
+        let marks = self.kb.load_check_marks();
+        let reported = self.errors.len();
+        let reading = self.sort_binding_to_value(definition);
+        self.kb.restore_load_check_marks(marks);
+        self.errors.truncate(reported);
+        if let Ok(target) = node_occurrence::value_to_term(&mut self.kb, &reading) {
+            if !matches!(self.kb.get_term(target), Term::Var(_)) {
+                self.kb.alias_targets.entry(source).or_insert(target);
+            }
+        }
+    }
+
     fn load_abstract_sort(&mut self, s: &AbstractSort, domain: Symbol) {
         let sort_term = self.name_to_sort_term(&s.name);
 
@@ -31132,6 +31326,9 @@ impl<'a> Loader<'a> {
         let target_value = self.lower_value_or_gate(target_value, "sort alias", &s.definition);
         // SortAlias is positional: `SortAlias(sort_ref, target)`.
         self.assert_sort_alias(sort_term, target_value, domain);
+        if !matches!(s.definition, TypeExpr::Variable { .. }) {
+            self.record_alias_target(sort_term, &s.definition);
+        }
 
         // Emit DescriptionInfo facts for all description blocks
         for desc_text in &s.descriptions {
@@ -31330,11 +31527,18 @@ impl<'a> Loader<'a> {
                     // (value-in-type binding) projects to its ground base sort here
                     // rather than forcing `SortInfo` (and its 9 term-only readers)
                     // to a value carrier.
+                    // The base sort READ THROUGH an alias, as the `SortRequiresInfo` fact's
+                    // own lowering reads it (WI-20260924-F8PYZ) — the two copies of one
+                    // requirement name one spec. A refused alias keeps its written name;
+                    // the lowering reports it.
                     let req_term = match self.sort_inst_to_value(&r.type_expr) {
                         crate::eval::value::Value::Term { id: t, .. } => t,
                         _ => match &r.type_expr {
                             TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => {
-                                self.name_to_sort_term(name)
+                                match self.spec_name_symbol(name) {
+                                    Some(base) => self.kb.make_name_term_from_sym(base),
+                                    None => self.name_to_sort_term(name),
+                                }
                             }
                             _ => self.kb.make_name_term("?"),
                         },
@@ -33538,7 +33742,7 @@ impl<'a> Loader<'a> {
         // the rest of the declaration's metadata; the typer reads it to decide which
         // provision conditions the body may resolve against.
         if let Some(spec) = &o.provision {
-            self.emit_provision_member(functor, spec, o.span, domain);
+            self.emit_provision_member(functor, spec, domain);
         }
 
         // Set owner for expression occurrences
@@ -35236,9 +35440,12 @@ impl<'a> Loader<'a> {
         // would be exactly the "reads as a declaration and does nothing" defect WI-933
         // was filed for. Reviewing WI-1106 caught this arm written as a bare `return`,
         // which is how it shipped for about an hour.
-        // ONE call: `provided_spec_symbol` goes through `remap_symbol`, which reports an
-        // unresolvable name, so asking twice would report it twice.
-        let named_spec = provided_spec_symbol(self, pc);
+        // ONE call, for the diagnostics `provided_spec_symbol` pushes; its doc says why they
+        // are not doubled by the lowering's. A refused alias files nothing, for the
+        // data-sort arm's reason below: the clause names no spec to be a provision of.
+        let Ok(named_spec) = provided_spec_symbol(self, pc) else {
+            return;
+        };
         if let Some(spec_sym) = named_spec {
             if self.kb.sort_has_constructors(spec_sym) {
                 self.errors.push(LoadError::ProvidesNamesDataSort {
@@ -35333,6 +35540,139 @@ impl<'a> Loader<'a> {
         );
     }
 
+    /// WI-20260924-F8PYZ — a spec written as `written`, read through a type ALIAS: the sort
+    /// it stands for and the bindings the alias fixes, or `written` with none when it is
+    /// not an alias. The one reader for a spec clause's LOWERING — `sort_inst_to_value`'s
+    /// two name arms and the operation-`requires` goal — so every clause that names a spec
+    /// reads an alias the same way: `provides StoreAlias[State = WIS]` is `provides
+    /// Store[State = WIS]`, in the relation, to dispatch and to every check. MEASURED
+    /// before: the clause was filed about the alias itself, which declares no operations
+    /// and which no clause about `Store` meets — the provision was never found
+    /// (`Store.peek` died "operation has no body"), a condition checked nothing, and a
+    /// requirement went unchecked.
+    ///
+    /// The fixed bindings are in the CLAUSE's canon already (`record_alias_target`).
+    ///
+    /// `Err(written)` for an alias that names no spec, REPORTED here at `span`: the caller
+    /// skips what depends on the spec, or keeps the name as written to stay well-formed
+    /// while the failed load is discarded (the rule `push_ambiguous_symbol` states).
+    ///
+    /// ORDER-INDEPENDENT although it is asked while one clause loads: the WI-936
+    /// declaration pass pre-loads every `sort X = …` of every file of the batch
+    /// ([`Self::preload_type_param_aliases`]) before any file's load pass reaches a clause,
+    /// so an alias declared below its use, or in another file, is already recorded.
+    fn read_spec_alias(
+        &mut self,
+        written: Symbol,
+        span: Span,
+    ) -> Result<(Symbol, SmallVec<[(Symbol, TermId); 2]>), Symbol> {
+        use super::typing::AliasExpansion;
+        let reason = match super::typing::alias_expansion(self.kb, written) {
+            None => return Ok((written, SmallVec::new())),
+            Some(AliasExpansion::Sort { base, bindings }) => return Ok((base, bindings)),
+            Some(AliasExpansion::NotASort(target)) => format!(
+                "but it stands for `{}`, which is not a sort",
+                super::typing::type_display_name(self.kb, target)
+            ),
+            Some(AliasExpansion::Cycle(chain)) => format!(
+                "but its chain comes back to itself ({}), so it stands for no type",
+                chain
+                    .iter()
+                    .map(|s| self.kb.qualified_name_of(*s))
+                    .collect::<Vec<_>>()
+                    .join(" = ")
+            ),
+            Some(AliasExpansion::AlsoDeclared(name)) => format!(
+                "but '{}' is declared both as a type alias and with members of its own (a \
+                 sort body, or a `namespace` entry at its address), so nothing says whether \
+                 the clause means the alias's target or '{}' itself",
+                self.kb.qualified_name_of(name),
+                self.kb.qualified_name_of(name),
+            ),
+        };
+        self.errors.push(LoadError::SpecAliasRefused {
+            alias: self.kb.qualified_name_of(written).to_string(),
+            reason,
+            span,
+        });
+        Err(written)
+    }
+
+    /// WI-20260924-F8PYZ — a BARE resolved name at the top of an operation's `requires`, as
+    /// the clause's spec: a type alias read through (`read_spec_alias`), exactly as the
+    /// bracketed application in `convert_term`'s `Term::Fn` arm reads one — `requires
+    /// WisStore` IS `requires Store[State = WIS]`. MEASURED before: the requirement was of
+    /// the alias itself, which no provision of `Store` meets, and it went unchecked — a
+    /// call with no provider ran. A bare alias that fixes nothing is the spec's `Ref`, the
+    /// shape a bare `requires Store` has. Any other name, or one in any other position, is
+    /// the `Ref` it always was.
+    fn bare_contract_spec(&mut self, sym: Symbol, span: Span) -> Term {
+        if self.term_depth != 1 || !self.in_op_contract_clause {
+            return Term::Ref(sym);
+        }
+        match self.read_spec_alias(sym, span) {
+            Ok((base, fixed)) if base != sym => match fixed.is_empty() {
+                true => Term::Ref(base),
+                false => Term::Fn {
+                    functor: base,
+                    pos_args: SmallVec::new(),
+                    named_args: fixed,
+                },
+            },
+            _ => Term::Ref(sym),
+        }
+    }
+
+    /// WI-20260924-F8PYZ — a clause's own named bindings against the ones the alias it
+    /// names already FIXES (`read_spec_alias`). Binding one again is a contradiction, not
+    /// an override, and is refused whatever the two values are — as a type alias is
+    /// refused an argument it has already applied — rather than one silently winning.
+    fn refuse_alias_rebinding(
+        &mut self,
+        written: Symbol,
+        fixed: &[(Symbol, TermId)],
+        clause_params: &[Symbol],
+        span: Span,
+    ) {
+        if fixed.is_empty() {
+            return;
+        }
+        for param in clause_params {
+            let short = self.kb.local_name_of(*param);
+            let Some(&(_, value)) = fixed
+                .iter()
+                .find(|(p, _)| self.kb.local_name_of(*p) == short)
+            else {
+                continue;
+            };
+            let reason = format!(
+                "and it already binds `{short}` to `{}`, which the clause binds again — two \
+                 values for one parameter",
+                super::typing::type_display_name(self.kb, value),
+            );
+            self.errors.push(LoadError::SpecAliasRefused {
+                alias: self.kb.qualified_name_of(written).to_string(),
+                reason,
+                span,
+            });
+        }
+    }
+
+    /// WI-20260924-F8PYZ — the sort a written spec NAME denotes: the whole name resolved as
+    /// the lowering resolves it (`remap_name`, which `name_to_sort_term` calls), read
+    /// through a type alias to the sort it stands for — the base of the view the lowering
+    /// builds ([`Self::read_spec_alias`]). QUIET: `None` for an alias that names no spec,
+    /// which the clause's own reading reports; a caller skips what depends on the spec
+    /// rather than add a second diagnostic about a name the first already refused.
+    fn spec_name_symbol(&mut self, name: &Name) -> Option<Symbol> {
+        let written = self.remap_name(name);
+        match super::typing::alias_expansion(self.kb, written) {
+            None => Some(written),
+            Some(super::typing::AliasExpansion::Sort { base, .. }) => Some(base),
+            Some(_) => None,
+        }
+    }
+
     /// WI-862 (058 §3.6, §4) — `default provides X[…]` lowered to the row the defaults
     /// substrate reads: `fact DefaultProvider(spec: X, provider: <enclosing sort>)`.
     ///
@@ -35422,10 +35762,9 @@ impl<'a> Loader<'a> {
     /// an operation written inside `provides <spec> … where … end`. `provided` is the
     /// spec's BASE sort, because that is the key a carrier's chains are laid out by
     /// (`typing::provision_layout_key`).
-    fn emit_provision_member(&mut self, op: Symbol, spec: &TypeExpr, span: Span, domain: Symbol) {
+    fn emit_provision_member(&mut self, op: Symbol, spec: &TypeExpr, domain: Symbol) {
         let name = match spec {
-            TypeExpr::Simple(n) => n.last(),
-            TypeExpr::Parameterized { name, .. } => name.last(),
+            TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => name,
             // The grammar narrows a provision's spec to `_spec_instantiation`, which
             // admits `variable_term`; a member block over one has no provision to
             // scope a condition by.
@@ -35441,7 +35780,17 @@ impl<'a> Loader<'a> {
                 return;
             }
         };
-        let provided = self.remap_symbol(name, span);
+        // The spec the PROVISION names, by the one reading its other readers share
+        // (`spec_name_symbol`: the whole name, through a type alias) — WI-20260924-F8PYZ.
+        // It resolved the last segment alone, so beside a whole-name `provided_spec_symbol`
+        // one clause had two specs: MEASURED, `provides qa.Store[…] where …` written in a
+        // namespace with its own `Store` recorded its member under that `Store` while the
+        // clause count read `qa.Store`, and 066 §7.5's refusal was lost to a false one.
+        // An alias that names no spec is refused by the provision itself, which is not
+        // filed; a member of nothing is not a second thing to report about it.
+        let Some(provided) = self.spec_name_symbol(name) else {
+            return;
+        };
         // THE BLOCK HOLDS THE PROVIDED SPEC'S OWN MEMBERS (066 §5 Q2). The block scopes a
         // body by the provision it implements, and dispatch fills that provision's slots
         // only when the call went through that spec — so a helper, or a member of some
@@ -35583,6 +35932,33 @@ impl<'a> Loader<'a> {
     /// the carrier/artifact/namespace-map metadata so codegen and
     /// interpreters can locate the host bindings by `(language, profile)`.
     fn load_provides_block(&mut self, pb: &ProvidesBlock, _domain: Symbol) {
+        // WI-20260924-F8PYZ — A BINDING BLOCK DOES NOT READ A TYPE ALIAS, and says so. It
+        // names the sort it realizes, and where its clauses land is decided twice: here,
+        // and by the scan-time 059 R3 census (`RuleHeadCollectPass::collect_provides_block`),
+        // which runs before any alias is recorded and so reads the name as written. Reading
+        // through here alone let `provides RecAlias language … rule freshp … end` beside
+        // `namespace Rec`'s own `freshp` put two parties' clauses on one predicate — MEASURED,
+        // where `provides Rec` is refused. Before this, the block loaded into the alias's
+        // empty scope and its `operation_map` was refused as naming members of nothing.
+        if let TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } = &pb.spec {
+            let written = self.remap_name(name);
+            match self.read_spec_alias(written, name.span) {
+                Err(_) => return,
+                Ok((sort, _)) if sort != written => {
+                    self.errors.push(LoadError::SpecAliasRefused {
+                        alias: self.kb.qualified_name_of(written).to_string(),
+                        reason: format!(
+                            "but a `provides … language … end` block names the sort it \
+                             realizes and does not read an alias: write '{}'",
+                            self.kb.qualified_name_of(sort),
+                        ),
+                        span: name.span,
+                    });
+                    return;
+                }
+                Ok(_) => {}
+            }
+        }
         // The provides-block spec is used only as a ground scope identity (and the
         // `Implementation` fact target), so it needs a `TermId`. WI-366: a
         // denoted-bearing spec (a value-in-type binding, e.g. `Foo[Int64, 3]`)

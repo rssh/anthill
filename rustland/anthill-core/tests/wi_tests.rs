@@ -1847,3 +1847,5 @@ mod wi_n3w68_twin_divergence_test;
 mod wi_32xfq_found_divergences_test;
 #[path = "include/wi_zbwmc_provision_narrowing_test.rs"]
 mod wi_zbwmc_provision_narrowing_test;
+#[path = "include/wi_f8pyz_spec_clause_alias_test.rs"]
+mod wi_f8pyz_spec_clause_alias_test;

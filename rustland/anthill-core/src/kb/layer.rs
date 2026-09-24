@@ -185,6 +185,7 @@ kb_scoped_fields!(
     provides_clause_counts,
     // ── derived indexes and well-known symbols ─────────────────
     sort_alias_index,
+    alias_targets,
     provides_index,
     sort_info_index,
     requires_index,
@@ -415,6 +416,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         provides_clause_seen: _,
         provides_clause_counts: _,
         sort_alias_index: _,
+        alias_targets: _,
         provides_index: _,
         sort_info_index: _,
         requires_index: _,

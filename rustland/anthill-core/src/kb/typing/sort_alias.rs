@@ -435,3 +435,113 @@ fn resolve_alias_shape_chain(
     }
     Some(target)
 }
+
+/// WI-20260924-F8PYZ — a type ALIAS read as the SORT APPLICATION it stands for, which is
+/// how a spec clause reads the spec it names: `provides StoreAlias[State = WIS]` is
+/// `provides Store[State = WIS]`, and `provides WisStore` over `sort WisStore = Store[State
+/// = WIS]` is too. See [`alias_expansion`].
+#[derive(Clone, Debug)]
+pub(crate) enum AliasExpansion {
+    /// The sort `base`, with the bindings the alias fixes (`WisStore` fixes `State`), each
+    /// as a clause's own binding is written (`Loader::record_alias_target`), ready to
+    /// splice into one.
+    Sort {
+        base: Symbol,
+        bindings: SmallVec<[(Symbol, TermId); 2]>,
+    },
+    /// The alias stands for a type that is not a sort application — a tuple, an arrow, an
+    /// effect row — so it names no spec.
+    NotASort(TermId),
+    /// The chain comes back to a name already on it (`sort A = B`, `sort B = A`), so it
+    /// stands for no type at all. The chain in order, the repeated name last.
+    Cycle(Vec<Symbol>),
+    /// The name is an alias AND owns members of its own — a sort body beside `sort X =
+    /// …`, or a `namespace X` entry at the alias's address — so it has two readings, the
+    /// alias's target and itself, and nothing says which a clause means. Kernel-language
+    /// §5.2 records such a duplicate as loading (rule R1 does not reach an alias); a
+    /// reader that picked one reading would change what a clause about the other means.
+    AlsoDeclared(Symbol),
+}
+
+/// WI-20260924-F8PYZ — what the type alias `sym` stands for, or `None` when `sym` is not a
+/// type alias (a sort declared with a body, a `sort T = ?` parameter, an opaque sort).
+///
+/// Follows a chain of BARE links (`sort StoreAlias2 = StoreAlias`, `sort StoreAlias =
+/// Store`) to the target that is not itself one, whose bindings are the ones the chain
+/// fixes. An APPLIED link — `sort B = A[X = …]` with `A` an alias — is not followed, and
+/// needs no rule for merging two binding lists: its declaration is refused where it is
+/// written, as a type position applying arguments to a name that declares no parameters
+/// (`check_sort_type_args`).
+///
+/// Reads [`KnowledgeBase::alias_targets`], not the `SortAlias` scan: it is asked once per
+/// spec clause while files load, and that map is complete by then.
+pub(crate) fn alias_expansion(kb: &KnowledgeBase, sym: Symbol) -> Option<AliasExpansion> {
+    let mut target = *kb.alias_targets.get(&sym)?;
+    let mut chain = vec![sym];
+    loop {
+        let link = *chain.last().expect("the chain starts at `sym`");
+        if owns_members(kb, link) {
+            return Some(AliasExpansion::AlsoDeclared(link));
+        }
+        let Some((head, bindings)) = sort_application(kb, target) else {
+            return Some(AliasExpansion::NotASort(target));
+        };
+        let next = match bindings.is_empty() {
+            true => kb.alias_targets.get(&head).copied(),
+            false => None,
+        };
+        let Some(next) = next else {
+            return Some(AliasExpansion::Sort {
+                base: head,
+                bindings,
+            });
+        };
+        if chain.contains(&head) {
+            chain.push(head);
+            return Some(AliasExpansion::Cycle(chain));
+        }
+        chain.push(head);
+        target = next;
+    }
+}
+
+/// Does `sym` own a declaration's members — anything pass 1 defined inside it? A sort
+/// body's parameters and operations, or a `namespace` entry's items, live in the owner's
+/// scope; a `sort X = T` alias opens no scope, so a pure alias owns nothing. Pass 1
+/// defines every name of every file before the declaration pass records an alias, so the
+/// answer does not depend on which file or line came first.
+fn owns_members(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    kb.symbols
+        .scope(kb.symbols.scope_id(sym))
+        .is_some_and(|scope| !scope.locals.is_empty())
+}
+
+/// An alias's recorded reading as a sort application — `(sort, named bindings)` — or
+/// `None` for a type that is not one, by the typer's own classification (`type_head`,
+/// which also keeps the tuple, arrow and effect-row meta-constructors out): a bare sort
+/// reference, a sort applied by name (the plain term a clause binding lowers to), or the
+/// `SortView` over a base that a binding carried as a VALUE lowers to, decoded by
+/// [`unwrap_spec_view`]. A positional left over is an argument no parameter took, which
+/// the alias declaration has already refused, so it reads as no application rather than
+/// a partial one.
+fn sort_application(
+    kb: &KnowledgeBase,
+    tid: TermId,
+) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+    if let Some(sort) = extract_sort_ref_sym(kb, &TermIdView(tid)) {
+        return Some((sort, SmallVec::new()));
+    }
+    if let Term::Fn {
+        functor, pos_args, ..
+    } = kb.get_term(tid)
+    {
+        if is_sort_view_functor(kb, *functor) {
+            return match pos_args.len() {
+                1 => unwrap_spec_view(kb, tid),
+                _ => None,
+            };
+        }
+    }
+    let (base, positional, named) = parameterized_parts(kb, tid)?;
+    positional.is_empty().then_some((base, named))
+}

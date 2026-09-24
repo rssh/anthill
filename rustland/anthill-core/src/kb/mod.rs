@@ -1404,6 +1404,27 @@ pub struct KnowledgeBase {
     /// an O(1) lookup instead of a double linear scan of every SortAlias fact.
     pub(crate) sort_alias_index: Option<crate::kb::typing::SortAliasIndex>,
 
+    /// WI-20260924-F8PYZ — each TYPE ALIAS's target (`sort StoreAlias = Store` ↦
+    /// `Store`), written by the loader's one `SortAlias` emitter
+    /// (`Loader::assert_sort_alias`) beside the fact, for the reader that asks while files
+    /// are still loading: a spec clause reads an alias as the spec it stands for
+    /// ([`typing::alias_expansion`]). The scan passes run before it is written, so the names
+    /// they resolve — imports, a `requires`'s scope parents, rule-head addresses — cannot
+    /// read an alias through it (WI-20260924-SNJPR).
+    ///
+    /// ONLY an alias: a `sort T = ?` parameter or opaque sort, whose target is a logic
+    /// variable, is not one and is not here. A SECOND map of the `SortAlias` relation,
+    /// beside [`Self::sort_alias_index`], because that one is built as a batch at
+    /// type-check start and a batch built earlier would miss the parameter facts WI-402's
+    /// existential carriers add DURING the load pass — it has no fallback on a miss. One
+    /// map kept by this same emitter for every target could serve both and retire the
+    /// load-time scan; that is not done here. This one needs no fallback: every alias is
+    /// declared before any clause loads (the WI-936 declaration pass pre-loads every `sort X
+    /// = …` of every file), and a miss means "not an alias", exactly. O(1), where the
+    /// pre-index `resolve_sort_alias` scans every `SortAlias` fact — MEASURED ~110 in a
+    /// stdlib load, one of them an alias, against ~165 spec clauses asking.
+    pub(crate) alias_targets: HashMap<Symbol, TermId>,
+
     /// WI-660 — the SortProvidesInfo (provider/coherence) index: providers keyed
     /// BOTH by canonical spec-base symbol AND by canonical carrier symbol, built once at
     /// type-check start by `typing::build_provides_index`. Replaces the per-call
@@ -2381,6 +2402,7 @@ impl KnowledgeBase {
             provision_layout_key_cache: RefCell::new(HashMap::new()),
             provision_member_cache: RefCell::new(HashMap::new()),
             sort_alias_index: None,
+            alias_targets: HashMap::new(),
             provides_index: None,
             sort_info_index: None,
             requires_index: None,
