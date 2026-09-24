@@ -128,6 +128,8 @@ kb_scoped_fields!(
     rules_by_functor,
     by_domain,
     rules_by_label,
+    // "As loaded" rolls back with the load that moved it.
+    loaded_rule_frontier,
     bodied_rule_counts,
     discrim,
     fact_dedup,
@@ -327,6 +329,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         rules_by_functor: _,
         by_domain: _,
         rules_by_label: _,
+        loaded_rule_frontier: _,
         bodied_rule_counts: _,
         discrim: _,
         fact_dedup: _,

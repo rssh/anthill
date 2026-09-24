@@ -2132,7 +2132,26 @@ fn run_check(args: &CheckArgs) -> Result<(), i32> {
     // `anthill prove` uses. A green `check` then MEANS "verified", with no
     // separate prove step. Filters/report-only modes leave proofs alone — they
     // are inspection queries, not a full verification run.
-    if !args.report_stale && !args.report_trust && args.filter.is_empty() {
+    let discharges = !args.report_stale && !args.report_trust && args.filter.is_empty();
+    // A STALE sidecar is evidence about a KB that no longer exists, so nothing has
+    // verified the current claim — the discharge pass below does. Without it, the
+    // stale records are unverified proofs like any other (OQ-B: warn, and escalate
+    // under `--require-proofs`), not a silent exit 0.
+    let stale = outcomes
+        .iter()
+        .filter(|o| matches!(o.status, check::CheckStatus::Stale(_)))
+        .count();
+    if !discharges && stale > 0 {
+        eprintln!(
+            "warning: {stale} stale proof(s) not re-verified — this mode skips the \
+             discharge pass; run `anthill check` without filters, or `anthill prove`"
+        );
+        if args.require_proofs {
+            eprintln!("error: --require-proofs: {stale} stale proof(s) not re-verified");
+            return Err(1);
+        }
+    }
+    if discharges {
         let prove_args = prove_args_for_check(args);
         let report = prove::discharge_loaded_kb(&mut kb, &prove_args, false);
         let unverified = report.unverified();

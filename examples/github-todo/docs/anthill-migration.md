@@ -133,15 +133,9 @@ Two caches in the codebase:
 1. `SearchStream::query_cache` (`rustland/anthill-core/src/kb/resolve.rs:270`) — per-`resolve` call, rebuilt each call. Not a concern for retract.
 2. **The proof cache** from proposal 030 phase α — `ProofRecord.state_hash` is computed by `state_hash(kb, visited_rules)` (`rustland/anthill-smt-gen/src/cache/key.rs:79`) and stored alongside each cached witness (`rustland/anthill-cli/src/prove.rs:70`). When a cite or `prove --check` accesses a `ProofRecord`, the kernel **recomputes** its state_hash against the current KB and compares; mismatch ⇒ stale, re-discharge required.
 
-The proof cache's invalidation is correct today: any retract (or rule edit) changes some visited rule/functor's content, which changes the recomputed `state_hash`, which marks the record stale. WI-175 doesn't break this — it's just another path that mutates the KB, and the existing recomputation already covers it.
+The proof cache's invalidation is correct: the cache key covers the emitted SMT document and the visited rules' content, so any retract or rule edit that matters changes it. WI-175 is just another path that mutates the KB.
 
-The **performance** picture changes once retract becomes routine. Today `prove --check` is invoked rarely and recomputes `state_hash` per record by walking visited rules + their referenced functors over the whole KB — O(visited × kb_size). Once WI-009 lands, every `claim` / `deliver` / `verify` / `update` invocation of `anthill-todo` mutates the KB, and the next `prove --check` recomputes hashes for every recorded ProofRecord even though most are unaffected.
-
-**Filed as WI-177** (no longer forward-looking; not blocking WI-009): add a monotonic `kb.epoch: u64` bumped on every `assert_rule` / `assert_fact` / `retract`, plus optional per-functor `kb.functor_epoch(sym)`. ProofRecords cache `(epoch, state_hash)`; on access, if `kb.epoch() == cached_epoch` skip recomputation, else recompute and compare. The no-mutation steady state collapses to O(1) per record.
-
-Per-functor epochs are the natural finer grain — a `ProofRecord` records the set of functors its `visited_rules` referenced (already collected by `walk_visited` in `cache/key.rs`), and the cache hit condition becomes "every recorded functor's epoch matches its cached value." Mutation of an unrelated functor doesn't invalidate.
-
-WI-177 is independent of WI-009: shipping WI-009 without WI-177 yields a correct but slower `prove --check` after each todo mutation. WI-177 can land before, after, or alongside.
+**WI-177** (a `kb.epoch` to skip `state_hash` recomputation) was rejected on 2026-09-24: the recompute-and-compare it would have accelerated did not exist — `state_hash` was written and never read — and an in-memory epoch cannot hit across the separate `prove` / `check` / `anthill-todo` processes anyway. The comparison itself landed then (proposal 030 β.8): a witness sidecar records the rules its discharge visited, and `check` and cite resolution recompute its state hash against the current KB each time they read it.
 
 ## 7. Bundle layout
 

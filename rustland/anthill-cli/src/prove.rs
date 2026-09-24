@@ -161,25 +161,24 @@ pub(crate) fn discharge_loaded_kb(
         ) {
             write_backs.push((rid, vw));
         }
-        // Per-ProofRecord state hash (phase α.4): canonical hash of the kb-state
-        // slice this discharge consulted. None for early-exit Skipped / EmitError
-        // where no kb state was read.
-        let record_state_hash: Option<String> = if outcome.visited_rules.is_empty() {
-            None
-        } else {
-            Some(state_hash(kb, &outcome.visited_rules))
-        };
         // WI-124 — witness persistence: write a sidecar JSON for every Proved
         // outcome so `anthill check` can replay the witness across CLI
-        // invocations. Discharges that didn't produce a real witness (Skipped,
-        // EmitError) leave any existing sidecar in place for staleness next run.
+        // invocations. Any other outcome leaves an existing sidecar in place,
+        // and it can still hash as fresh — a timeout or a changed tactic is
+        // outside the slice it records — so an attempt that failed HERE is
+        // recorded too: a later cite must not reach the old sidecar.
         if let (Verdict::Proved, Some(w)) = (&outcome.verdict, &witness) {
-            persist_witness(args, &rec.rule, w, record_state_hash.as_deref());
+            persist_witness(args, kb, &rec.rule, w, &outcome.visited_rules);
             let kind = match w {
                 ProofWitness::TrustedAxiom { reason } => DischargeKind::Trusted(reason.clone()),
                 _ => DischargeKind::Sound,
             };
             discharged_this_run.insert(rec.rule.clone(), kind);
+        } else if matches!(
+            outcome.verdict,
+            Verdict::Disproved(_) | Verdict::Unknown(_) | Verdict::EmitError(_)
+        ) {
+            discharged_this_run.insert(rec.rule.clone(), DischargeKind::Failed);
         }
         match &outcome.verdict {
             Verdict::Proved => {
@@ -1497,6 +1496,19 @@ fn render_cited_lemmas(
                      remove the `using` clause."
                 ));
             }
+            CiteStatus::FailedThisRun => {
+                return Err(format!(
+                    "cite `{cited}` (in proof `{target_rule_qn}`) did not prove in \
+                     this run, so it cannot be cited — fix `{cited}`'s proof first."
+                ));
+            }
+            CiteStatus::Stale => {
+                return Err(format!(
+                    "cite `{cited}` (in proof `{target_rule_qn}`) is stale: the \
+                     rules or facts its proof was discharged against have changed \
+                     since. Re-run `anthill prove` on `{cited}` first."
+                ));
+            }
         }
         // WI-781: route through the per-predicate translation policy rather than
         // lifting unconditionally. Absent an explicit `TranslationPolicy` fact
@@ -1532,6 +1544,10 @@ enum DischargeKind {
     /// `by trust(reason: ...)` discharge — the reason propagates
     /// to consumers via `CiteStatus::Trusted`.
     Trusted(String),
+    /// Attempted in this run and not proved (disproved, unknown, or not
+    /// emittable). Whatever a sidecar from an earlier run says, it is not
+    /// evidence for a lemma that just failed.
+    Failed,
 }
 
 /// The cite-resolution outcome for a single `using <Y>` reference.
@@ -1547,6 +1563,11 @@ enum CiteStatus {
     /// Y's ProofRecord exists but is Pending or Failed (no sidecar
     /// to back it up).
     Pending,
+    /// Y has a sidecar, but the rules or facts it was discharged against
+    /// have changed since — the witness no longer speaks for the current KB.
+    Stale,
+    /// Y's own proof was attempted earlier in this run and did not prove.
+    FailedThisRun,
 }
 
 /// Resolve a cite to a `CiteStatus`. Resolution order:
@@ -1568,6 +1589,7 @@ fn cite_status(
         return match kind {
             DischargeKind::Sound => CiteStatus::Discharged,
             DischargeKind::Trusted(reason) => CiteStatus::Trusted(reason.clone()),
+            DischargeKind::Failed => CiteStatus::FailedThisRun,
         };
     }
     let record_sym = match kb.try_resolve_symbol("anthill.realization.ProofRecord") {
@@ -1645,11 +1667,7 @@ fn cite_status(
     if !found_record {
         return CiteStatus::NotFound;
     }
-    if sidecar_exists_for(cited_qn, cli) {
-        CiteStatus::Discharged
-    } else {
-        CiteStatus::Pending
-    }
+    sidecar_cite_status(kb, cited_qn, cli)
 }
 
 /// Read a witness term's `named_args` so we can look up its `reason`
@@ -1798,19 +1816,23 @@ fn implicit_cites_for(rule_qn: &str, kb: &KnowledgeBase) -> Vec<String> {
     out
 }
 
-/// True iff a witness sidecar JSON exists for the given rule QN at
-/// the project's cache location. Used by cite_status as the
-/// "discharged elsewhere" check for SmtDischarge / SldDerivation /
-/// MetaCompose witnesses whose ProofRecord still says Pending in
-/// source (because in-source persistence is deferred).
-fn sidecar_exists_for(rule_qn: &str, cli: &ProveArgs) -> bool {
+/// The "discharged elsewhere" check `cite_status` falls back to for
+/// SmtDischarge / SldDerivation / MetaCompose witnesses whose ProofRecord
+/// still says Pending in source (because in-source persistence is deferred):
+/// a sidecar at the project's cache location is `Discharged` only while the
+/// KB slice it was produced from is unchanged, and `Stale` after.
+fn sidecar_cite_status(kb: &KnowledgeBase, rule_qn: &str, cli: &ProveArgs) -> CiteStatus {
     if cli.no_cache {
-        return false;
+        return CiteStatus::Pending;
     }
     let cache_root = resolve_cache_root(cli.cache_dir.as_deref());
     let repo_root = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let dir = anthill_smt_gen::cache::witness_subdir(&cache_root, &repo_root);
-    anthill_smt_gen::cache::load_witness(&dir, rule_qn).is_some()
+    match anthill_smt_gen::cache::load_witness(&dir, rule_qn) {
+        None => CiteStatus::Pending,
+        Some(sidecar) if sidecar.stale_state_hash(kb).is_some() => CiteStatus::Stale,
+        Some(_) => CiteStatus::Discharged,
+    }
 }
 
 struct CacheCtx {
@@ -2408,11 +2430,15 @@ fn verdict_from_cache(entry: &CacheEntry) -> Verdict {
 /// as proof entries and blobs; `anthill check` reads it back and
 /// uses the stored witness in place of the in-source placeholder
 /// (TrustedAxiom("pending …")) on Pending ProofRecords.
+///
+/// The sidecar records `visited_rules` and the state hash of that slice
+/// (phase α.4), so a reader can tell when the KB has moved on from it.
 fn persist_witness(
     args: &ProveArgs,
+    kb: &KnowledgeBase,
     rule_qn: &str,
     witness: &ProofWitness,
-    state_hash: Option<&str>,
+    visited_rules: &BTreeSet<String>,
 ) {
     if args.no_cache {
         // --no-cache means don't touch the cache; sidecars live in
@@ -2438,7 +2464,8 @@ fn persist_witness(
         rule_qn: rule_qn.to_string(),
         verdict_label: verdict_label.to_string(),
         witness: witness.to_shape(),
-        state_hash: state_hash.unwrap_or("").to_string(),
+        visited_rules: visited_rules.clone(),
+        state_hash: state_hash(kb, visited_rules),
         written_at: now_iso8601(),
     };
     if let Err(e) = store_witness(&dir, &sidecar) {

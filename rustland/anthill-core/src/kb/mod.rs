@@ -943,6 +943,12 @@ pub struct KnowledgeBase {
     rules_by_functor: HashMap<Symbol, Vec<RuleId>>,
     by_domain: HashMap<Symbol, Vec<RuleId>>,
     rules_by_label: HashMap<Symbol, Vec<RuleId>>,
+    /// Rule slots allocated when the last load finished: a `RuleId` below it was
+    /// produced by loading source, one at or above it was asserted afterwards — a
+    /// defining rule synthesized at proof time (WI-669/687), a structured-proof
+    /// step, a runtime assert. `None` until a load completes. Read through
+    /// [`Self::is_loaded_rule`].
+    loaded_rule_frontier: Option<usize>,
 
     /// WI-812: per-functor count of currently-indexed BODIED rules (non-facts) —
     /// maintained in lockstep with `rules_by_functor` at each of its three
@@ -2362,6 +2368,7 @@ impl KnowledgeBase {
             rules_by_functor: HashMap::new(),
             bodied_rule_counts: HashMap::new(),
             rules_by_label: HashMap::new(),
+            loaded_rule_frontier: None,
             by_domain: HashMap::new(),
             sort_entities: HashMap::new(),
             entity_parent: HashMap::new(),
@@ -7230,6 +7237,25 @@ impl KnowledgeBase {
             .get(&sort)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Record that a load has finished: every rule present now is "as loaded".
+    pub(crate) fn mark_loaded(&mut self) {
+        self.loaded_rule_frontier = Some(self.rules.len());
+    }
+
+    /// Whether `rid` was produced by the last load rather than asserted after it
+    /// (see `loaded_rule_frontier`). What a proof's state hash covers: the KB as
+    /// loaded is the same in every process that loads the same sources, while what
+    /// is asserted afterwards depends on what that process happened to run.
+    ///
+    /// Panics on a KB no load has finished on — there is no "as loaded" to answer
+    /// against, and either answer would misreport silently.
+    pub fn is_loaded_rule(&self, rid: RuleId) -> bool {
+        let frontier = self
+            .loaded_rule_frontier
+            .expect("is_loaded_rule: no load has finished on this KB");
+        rid.index() < frontier
     }
 
     // ── Counting ─────────────────────────────────────────────────
