@@ -196,3 +196,65 @@ fn parameterized_provides_body_resolves_a_spec_scoped_name() {
         "an instantiated spec resolves in the same scope its bare spelling does",
     );
 }
+
+// ── WI-20260923-ZBWMC: the block is ABOUT the base spec, not its `SortView` ───────────
+
+/// A block over `Stack` with an `operation_map` for `Stack.size`, spelled `spec`.
+fn with_operation_map(ns: &str, spec: &str) -> String {
+    format!(
+        r#"
+namespace {ns}
+  import anthill.prelude.{{Int64}}
+  sort Stack
+    sort T = ?
+    operation size(s: Stack) -> Int64 @[host_implemented]
+  end
+  provides {spec} language rust
+    artifact "src/stack.rs"
+    operation_map {{ size: "stack_size" }}
+  end
+end
+"#
+    )
+}
+
+/// The `Implementation.target` of the one block in namespace `ns`.
+fn implementation_targets(kb: &KnowledgeBase, ns: &str) -> Vec<String> {
+    let impl_sym = kb
+        .try_resolve_symbol("anthill.realization.Implementation")
+        .expect("resolve anthill.realization.Implementation");
+    kb.rules_by_functor(impl_sym)
+        .iter()
+        .filter(|&&rid| kb.qualified_name_of(kb.rule_domain(rid)).starts_with(ns))
+        .map(|&rid| {
+            let head = kb.rule_head_value(rid);
+            let target = crate::common::entity_field(kb, head, "target", 0);
+            crate::common::scalar_str(kb, &target).expect("`target` is a string")
+        })
+        .collect()
+}
+
+/// The block's `target`, and the carrier an `operation_map` entry realizes an operation
+/// of, is the BASE spec whatever the spelling. `provides_block_identity` read the head of
+/// the lowered spec, which for a parameterized one is the reflect wrapper — the defect
+/// ZBWMC fixed in the bare-spec pre-scan, a second time. MEASURED before the fix: the
+/// target was `"anthill.reflect.SortView"`, and the `operation_map` was refused as mapping
+/// `anthill.reflect.SortView.size`, "which declares no operation `size`".
+///
+/// BACK-OUT, MEASURED over the whole `wi_tests` binary (5 039 rows run, 3 ignored), and
+/// again over this file once its baseline became a row of its own: restoring the head read
+/// fails this row alone.
+#[test]
+fn a_parameterized_binding_block_is_about_its_base_spec() {
+    let ns = "test.pbmap.param";
+    let kb = load_kb_with(&with_operation_map(ns, "Stack[T = Int64]"));
+    assert_eq!(implementation_targets(&kb, ns), vec![format!("{ns}.Stack")]);
+}
+
+/// THE BASELINE: the bare spelling, which the head read got right. Passes either way.
+#[test]
+fn a_bare_binding_block_is_about_its_spec() {
+    let ns = "test.pbmap.bare";
+    let kb = load_kb_with(&with_operation_map(ns, "Stack"));
+    assert_eq!(implementation_targets(&kb, ns), vec![format!("{ns}.Stack")]);
+}

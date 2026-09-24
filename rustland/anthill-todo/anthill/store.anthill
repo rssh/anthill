@@ -3,7 +3,7 @@
 -- Per proposal 036 (Domain Store Sorts) / WI-203. The spec lives over
 -- Cell[V = State] so the Cell protocol (Modify[s], Cell.get, Cell.set)
 -- applies uniformly. State is the data-shape; each impl picks its own
--- value-shape and bodies via a `fact WorkItemStore[State = …]`.
+-- value-shape and bodies via a `provides WorkItemStore[State = …]`.
 --
 -- Spec returns typed `WorkItem` (WI-204 phase B1): retrieve results
 -- materialize through reflect.term_as_entity (WI-260) so callers receive
@@ -64,7 +64,7 @@ namespace anthill.todo.store
 
   -- ─── 1. Spec ────────────────────────────────────────────────────
   -- Operations declared once, parameterized by State. Each impl
-  -- supplies its own State value-shape and bodies via a fact.
+  -- supplies its own State value-shape and bodies via a `provides`.
   sort WorkItemStore
     sort State = ?
 

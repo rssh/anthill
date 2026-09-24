@@ -359,6 +359,65 @@ pub(crate) fn check_provision_names_carrier(
     errors
 }
 
+/// WI-20260923-ZBWMC — a narrowed bare-spec member must be the carrier's ONE binding.
+///
+/// Inside a carrier that provides `Spec[Member = X]`, WI-201's sugar reads `Spec.Member`
+/// as `X`. The loader decides that from the provisions written in the operation's own
+/// block (`scan_sort_carrier_bindings`), because it lowers the signature before the other
+/// files are in. But a sort's provisions are the sort's wherever they stand (059), so the
+/// narrowing holds only if EVERY provision of `Spec` by the carrier binds `Member` to that
+/// same `X`. Two different bindings make `Spec.Member` name no one carrier there, and
+/// design §5.3 says what that is: a loud ambiguity, never a quiet choice. MEASURED before
+/// this check: `sort Multi { provides Conv[To = A]; operation mk(x: Conv.To) -> Conv.To }`
+/// beside `namespace Multi provides Conv[To = B] end` read `Conv.To` as `A`, so
+/// `Multi.mk(b(n: 2))` was refused `expected A, got B` — and swapping where the two
+/// provisions were written swapped the carrier.
+///
+/// A use the block itself already found ambiguous (`narrowed: None`) is refused here too,
+/// so both kinds of ambiguity read as one diagnostic listing every binding the carrier has.
+///
+/// Reads the provision RELATION, not the written registry beside it: the carrier's other
+/// provisions may have loaded in an earlier batch, which that registry no longer holds.
+pub(crate) fn check_bare_spec_narrowings(
+    kb: &KnowledgeBase,
+    uses: &[crate::kb::BareSpecNarrowing],
+) -> Vec<crate::kb::load::LoadError> {
+    let mut errors = Vec::new();
+    for use_ in uses {
+        let spec = kb.canonical_sort_sym(use_.spec);
+        let member = short_name_of(kb.local_name_of(use_.member));
+        let mut bound: SmallVec<[TermId; 2]> = SmallVec::new();
+        for row in provides_rows_of_provider(kb, use_.carrier) {
+            if kb.canonical_sort_sym(row.spec_base) != spec {
+                continue;
+            }
+            for &(param, value) in &row.bindings {
+                if short_name_of(kb.local_name_of(param)) == member
+                    && !bound.iter().any(|b| provision_bindings_agree(kb, *b, value))
+                {
+                    bound.push(value);
+                }
+            }
+        }
+        let agrees = use_.narrowed.is_some_and(|t| {
+            bound
+                .iter()
+                .all(|b| provision_bindings_agree(kb, *b, t))
+        });
+        if agrees {
+            continue;
+        }
+        errors.push(crate::kb::load::LoadError::AmbiguousSpecMember {
+            spec: kb.qualified_name_of(use_.spec).to_string(),
+            member: member.to_string(),
+            carrier: kb.qualified_name_of(use_.carrier).to_string(),
+            bound: bound.iter().map(|b| type_display_name(kb, *b)).collect(),
+            site: crate::kb::load::render_decl_site(kb, use_.span),
+        });
+    }
+    errors
+}
+
 /// WI-20260913-KXNEX — does a spec reference AS WRITTEN bind `param` to ANYTHING?
 ///
 /// "To anything" is the question the carrier check needs, and no established reader

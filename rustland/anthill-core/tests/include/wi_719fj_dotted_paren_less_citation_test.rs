@@ -55,7 +55,8 @@
 //!
 //! ── WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT ────────────────────────────
 //!
-//! NINE AXES AND TWELVE LEGS — three of the axes are written at TWO call sites each, and
+//! NINE AXES AND TWELVE LEGS, as measured when this ticket shipped (leg I's code has
+//! since gone — see I) — three of the axes are written at TWO call sites each, and
 //! a leg that is not backed out on its own is a leg nothing measures. Each back-out is
 //! PRESENT-BUT-WRONG rather than deleted, and each was APPLIED AND RUN over the WHOLE
 //! `wi_tests` binary — 4 020 rows run (3 more are `#[ignore]`d), not a hand-picked
@@ -111,14 +112,22 @@
 //! then PASSED — half the change measured. The fixture writes it in both, and the row
 //! counts `tgt` twice for exactly that reason.
 //!
-//! **I — THE SORT-BODY PRE-SCAN.** `scan_sort_carrier_bindings`' fact head back to
-//! `convert_term`. **1 ROW:**
-//! [`a_dotted_paren_less_fact_head_in_a_sort_body_is_reported_once`]. It fells NOTHING
-//! else, and that is worth saying: the pre-scan and `load_fact` read one parse node, and
-//! the second reading is invisible until a name in it is AMBIGUOUS — then it is a second
-//! report about a root segment the author never wrote.
+//! **I — THE SORT-BODY PRE-SCAN — RETIRED WITH ITS SUBJECT.** `scan_sort_carrier_bindings`'
+//! fact head back to `convert_term`. **1 ROW:**
+//! [`a_dotted_paren_less_fact_head_in_a_sort_body_is_reported_once`]. It felled NOTHING
+//! else: the pre-scan and `load_fact` read one parse node, and which walk the pre-scan
+//! used showed only when a name in it was AMBIGUOUS — a second report about a root
+//! segment the author never wrote. WI-20260923-ZBWMC deleted the pre-scan's `fact` arm (a
+//! `fact` is not a provision since WI-20260917-S8JYF, so it lends no carrier), which
+//! leaves `load_fact` the head's only reader and this leg nothing to back out; the row
+//! stays, as the pin that one head gets one report. That deletion measured what the
+//! pre-scan's reading had cost beyond ambiguity: `convert_term` memoizes per parse node,
+//! so `load_fact` got the pre-scan's conversion BACK, made with none of `load_fact`'s
+//! context, and a sort-body fact escaped WI-716's `none` fill and B8ESG's head-argument
+//! check (`wi_zbwmc_provision_narrowing_test::a_sort_body_fact_loads_like_a_namespace_fact`).
 //!
-//! **PASS UNDER ALL TWELVE, BY DESIGN** — the rows that say what must not move:
+//! **PASS UNDER ALL TWELVE, BY DESIGN** (as measured then) — the rows that say what must
+//! not move:
 //! [`an_operation_body_still_reads_the_dotted_citation_as_the_relation_value`] (052
 //! §6.7), [`a_data_slot_still_stores_the_chain_on_both_sides_of_a_match`],
 //! [`a_hand_written_field_access_is_still_a_call_in_both_positions`] (the mint gate's own
@@ -882,12 +891,13 @@ fn a_proof_step_reads_the_dotted_citation_as_the_name_too() {
     }
 }
 /// ONE HEAD, ONE FAULT, ONE REPORT — the fact head inside a SORT BODY, which two
-/// loader walks read. `scan_sort_carrier_bindings` pre-scans a sort's `fact` items for
-/// spec-application bindings (`fact Spec[… member = X …]`) BEFORE the body is loaded, and
-/// it converted the head through the generic walk while `load_fact` converts it as a
-/// SUBJECT — so one parse node had two readings, and a dotted paren-less head was
-/// resolved twice: once as the CHAIN (whose root segment is a name of its own) and once
-/// as the PATH.
+/// loader walks read until WI-20260923-ZBWMC. `scan_sort_carrier_bindings` pre-scanned a
+/// sort's `fact` items for spec-application bindings (`fact Spec[… member = X …]`) BEFORE
+/// the body was loaded, and it converted the head through the generic walk while
+/// `load_fact` converts it as a SUBJECT — so one parse node had two readings, and a dotted
+/// paren-less head was resolved twice: once as the CHAIN (whose root segment is a name of
+/// its own) and once as the PATH. ZBWMC removed that reader — the scan reads `provides`
+/// clauses only — so the row now pins that nothing else reads the head a second time.
 ///
 /// MEASURED on an ambiguous root — the same defect class WI-745's quiet owner-resolve
 /// exists to prevent, from a second producer:
@@ -896,8 +906,9 @@ fn a_proof_step_reads_the_dotted_citation_as_the_name_too() {
 ///   pre-scan on the generic walk: THAT, plus `ambiguous symbol 'M' …` — the root
 ///                                 segment reported as a name the author never wrote
 ///
-/// THE APPLIED SPELLING IS THE CONTROL: its functor is already the joined name, so the
-/// pre-scan resolves it once either way, and it gets one report under both readings.
+/// THE APPLIED SPELLING WAS THE CONTROL: its functor is already the joined name, so the
+/// pre-scan resolved it once either way, and it got one report under both readings. It
+/// still runs, as the second arm of the pin.
 #[test]
 fn a_dotted_paren_less_fact_head_in_a_sort_body_is_reported_once() {
     const ROOTS: &str = "namespace zz719I.a\n  namespace M719\n    rule tgt :- true\n  end\nend\n\

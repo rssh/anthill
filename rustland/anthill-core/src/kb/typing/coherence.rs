@@ -1567,7 +1567,10 @@ pub(super) fn check_provision_binding_agreement(
 /// of two routes' values for one spec param — and that caller is why the bare-name arm
 /// exists at all: a spec bound to one sort through two import scopes carries two
 /// `TermId`s for one type, and reading those as a disagreement discards a legitimate
-/// merged view (found by /code-review at the merge).
+/// merged view (found by /code-review at the merge). So do the bare-spec sugar's two
+/// readers of a carrier's bindings (WI-20260923-ZBWMC) — the loader's block pre-scan
+/// and [`check_bare_spec_narrowings`] — which must agree on "one binding" or the check
+/// would refuse a narrowing the block made.
 ///
 /// WI-20260923-N3W68 (#3) — "bare" is the word that was missing. Both copies of this
 /// predicate compared the HEAD sort of any sort-headed type (`sort_functor_of_view`
@@ -1578,7 +1581,7 @@ pub(super) fn check_provision_binding_agreement(
 /// String]]` loaded clean or was refused depending only on which line came first, and so
 /// did a carrier reaching one spec through two intermediates binding `P` to those two
 /// types, or to `(Int64) -> Int64` and `(String) -> String`.
-pub(super) fn provision_bindings_agree(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
+pub(crate) fn provision_bindings_agree(kb: &KnowledgeBase, a: TermId, b: TermId) -> bool {
     if a == b {
         return true;
     }

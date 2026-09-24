@@ -738,6 +738,29 @@ pub(crate) struct WrittenProvidesClause {
     pub span: SourceSpan,
 }
 
+/// WI-20260923-ZBWMC — one use of the bare-spec sugar `Spec.Member` (WI-201) that a
+/// carrier block's own provisions decided, for `typing::check_bare_spec_narrowings`.
+///
+/// RECORDED, because the block is not the whole carrier. A sort's provisions are the
+/// SORT'S wherever they are written (059): its body, a `namespace <Sort>` entry, another
+/// file. The loader narrows from the block it is in, and only once every file has loaded
+/// can a check ask whether the carrier provides `Spec` anywhere else with `Member` bound
+/// to something different — which makes the member ambiguous, and the narrowing wrong.
+#[derive(Clone, Debug)]
+pub(crate) struct BareSpecNarrowing {
+    /// The sort whose block the operation is written in.
+    pub carrier: Symbol,
+    /// The spec named at the use, as the sugar resolved it.
+    pub spec: Symbol,
+    /// The member, by its interned short name (`State`).
+    pub member: Symbol,
+    /// The carrier the block's provisions bound the member to, or `None` when they bound
+    /// it to several — already ambiguous in the block itself.
+    pub narrowed: Option<TermId>,
+    /// The use, for a `path:line:col` diagnostic.
+    pub span: SourceSpan,
+}
+
 /// WI-840/WI-841 (058 §4.7) — one NAMED requirement slot of an operation or a sort:
 /// `requires O: Ord[T = E]`. See [`KnowledgeBase::named_requirement_slots`] for the
 /// two lists `slot` indexes and why `spec_base` is recorded beside it rather than
@@ -1762,6 +1785,14 @@ pub struct KnowledgeBase {
     // `load_all` into the same KB re-checks only its own clauses.
     written_provides_clauses: Vec<WrittenProvidesClause>,
 
+    // WI-20260923-ZBWMC — every use of the bare-spec sugar this load NARROWED (or found
+    // ambiguous) from a carrier block's provisions, for
+    // `typing::check_bare_spec_narrowings`. Recorded rather than checked in place for
+    // the reason its KXNEX neighbour above is: the other provisions of the carrier may
+    // stand in a file that has not loaded yet. Push-only within a load, drained once by
+    // `load_phase_inner` beside it.
+    bare_spec_narrowings: Vec<BareSpecNarrowing>,
+
     // SortRequiresInfo facts already finalized by resolve_requires_bindings.
     // Keyed by post-reassert RuleId. Lets incremental loads skip stdlib facts.
     resolved_requires_facts: HashSet<RuleId>,
@@ -2192,6 +2223,9 @@ pub(crate) struct LoadCheckMarks {
     /// load, drained BELOW the `run_typer: false` return, and leaving a partial load's
     /// clauses behind hands the next batch a refusal about a file it was never given.
     written_provides_clauses: usize,
+    /// WI-20260923-ZBWMC — the bare-spec narrowing registry, on the same terms: drained
+    /// beside the written-`provides` one, so it is left behind by the same partial load.
+    bare_spec_narrowings: usize,
 }
 
 /// WI-709: how a sort application's type arguments failed to fit the sort's declared
@@ -2369,6 +2403,7 @@ impl KnowledgeBase {
             entity_field_types: HashMap::new(),
             parameterized_type_sites: Vec::new(),
             written_provides_clauses: Vec::new(),
+            bare_spec_narrowings: Vec::new(),
             resolved_requires_facts: HashSet::new(),
             judged_row_binding_clauses: HashSet::new(),
             unbacked_derived_provisions: HashSet::new(),
@@ -2572,6 +2607,7 @@ impl KnowledgeBase {
         LoadCheckMarks {
             parameterized_type_sites: self.parameterized_type_sites.len(),
             written_provides_clauses: self.written_provides_clauses.len(),
+            bare_spec_narrowings: self.bare_spec_narrowings.len(),
         }
     }
 
@@ -2580,6 +2616,7 @@ impl KnowledgeBase {
         let LoadCheckMarks {
             parameterized_type_sites,
             written_provides_clauses,
+            bare_spec_narrowings,
         } = marks;
         // TRUNCATE, not `clear`: the caller may have been handed a KB that already had
         // pending sites, and this restores what it found rather than what it wants.
@@ -2606,6 +2643,11 @@ impl KnowledgeBase {
         );
         self.written_provides_clauses
             .truncate(written_provides_clauses);
+        debug_assert!(
+            self.bare_spec_narrowings.len() >= bare_spec_narrowings,
+            "the bare-spec narrowing registry shrank between capture and restore"
+        );
+        self.bare_spec_narrowings.truncate(bare_spec_narrowings);
     }
 
     /// WI-20260901-EA6KS — the loader's declaration walk has just (re-)presented the
@@ -3507,12 +3549,14 @@ impl KnowledgeBase {
     /// `goal_from_op_requires_entry` and `written_spec_binds_param`. Five paired by RAW
     /// INDEX: the `provides` / `requires` clause lowering (`sort_inst_to_value`), the
     /// binding-value lowering (`sort_binding_to_value`), `op_requires_entry_carrier_map`,
-    /// the WI-359 capture in `resolve_requires_bindings`, and `scan_sort_carrier_bindings`.
+    /// the WI-359 capture in `resolve_requires_bindings`, and `scan_sort_carrier_bindings`
+    /// (which has since stopped pairing at all: it reads the clause lowering's view,
+    /// WI-20260923-ZBWMC).
     /// MEASURED on the raw-index side: `provides Spec2[T = C, String]` stored `T` twice and
     /// no `U`, and `provides Spec[T = Map[K = Int64, String]]` diverted the `String` out of
     /// the bindings — both then REFUSED a correct use as a type mismatch — while the same
-    /// spellings in a type position meant `U = String` and `V = String`. All twelve ask this
-    /// now. The one pairing that does not is the typer's `resolve_call_type_arg_targets`:
+    /// spellings in a type position meant `U = String` and `V = String`. The eleven that
+    /// still pair ask this now. The one pairing that does not is the typer's `resolve_call_type_arg_targets`:
     /// the same rule over a different list — an operation's OWN bracket parameters, up to a
     /// positional limit, with occupancy tracked by index — and its own excess error.
     pub fn positional_param_slots(
@@ -3549,6 +3593,26 @@ impl KnowledgeBase {
                 given: slots.len(),
                 free: slots.iter().flatten().count(),
             }
+        })
+    }
+
+    /// WI-20260923-ZBWMC — the DUPLICATE half of [`Self::check_sort_type_args`], for the
+    /// positions [`Self::excess_positional`] serves. Those may bind operations by name as
+    /// well as type parameters, so the whole check cannot run there — but a name bound
+    /// twice is two contradictory claims whatever it names. Unchecked, the clause loaded,
+    /// and the two view decoders read it differently: the term decoder kept both values,
+    /// the value decoder read the first one twice, so whether the bare-spec sugar
+    /// narrowed from `provides Store[State = WIS, State = WIS2]` turned on whether some
+    /// OTHER binding of the clause was denoted (MEASURED).
+    pub fn duplicate_named_binding(&self, named: &[Symbol]) -> Option<TypeArgProblem> {
+        named.iter().enumerate().find_map(|(i, n)| {
+            let short = self.local_name_of(*n);
+            named[..i]
+                .iter()
+                .any(|p| self.local_name_of(*p) == short)
+                .then(|| TypeArgProblem::DuplicateParam {
+                    param: short.to_owned(),
+                })
         })
     }
 
@@ -10901,6 +10965,20 @@ impl KnowledgeBase {
     /// of re-reporting every batch before it.
     pub(crate) fn take_written_provides_clauses(&mut self) -> Vec<WrittenProvidesClause> {
         std::mem::take(&mut self.written_provides_clauses)
+    }
+
+    /// WI-20260923-ZBWMC — record one narrowed (or block-ambiguous) use of the bare-spec
+    /// sugar, for the post-load check against the carrier's every provision. Same
+    /// record-now-decide-later split, and the same draining ownership, as
+    /// [`Self::record_written_provides_clause`] above.
+    pub(crate) fn record_bare_spec_narrowing(&mut self, narrowing: BareSpecNarrowing) {
+        self.bare_spec_narrowings.push(narrowing);
+    }
+
+    /// WI-20260923-ZBWMC — take the recorded uses, leaving the registry empty. DRAINING,
+    /// for the reason [`Self::take_written_provides_clauses`] is.
+    pub(crate) fn take_bare_spec_narrowings(&mut self) -> Vec<BareSpecNarrowing> {
+        std::mem::take(&mut self.bare_spec_narrowings)
     }
 
     /// Check if a functor symbol is a constructor (entity with a parent sort).

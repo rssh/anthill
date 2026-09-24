@@ -1087,6 +1087,27 @@ pub enum LoadError {
         /// rendering, so two files' refusals at equal offsets would collapse into one.
         site: String,
     },
+    /// WI-20260923-ZBWMC — the bare-spec sugar `Spec.Member` (WI-201), written in an
+    /// operation of a carrier that provides `Spec` with `Member` bound to MORE THAN ONE
+    /// carrier, so it names no one type there. Design §5.3's "two carriers in scope",
+    /// which it calls a loud ambiguity; before this the sugar chose one by where the
+    /// provisions were written, or quietly read `Spec.Member` generically.
+    ///
+    /// Raised by [`super::typing::check_bare_spec_narrowings`] after every file has
+    /// loaded, because the carrier's provisions may be split across its entries (059).
+    /// Pre-rendered `site`, for the reason [`Self::ProvisionNamesNoCarrier`] gives.
+    AmbiguousSpecMember {
+        /// The spec, qualified.
+        spec: String,
+        /// The member, by short name.
+        member: String,
+        /// The carrier whose operation wrote the sugar, qualified.
+        carrier: String,
+        /// Every binding the carrier's provisions give the member, rendered.
+        bound: Vec<String>,
+        /// The use's own `path:line:col`, pre-rendered by [`render_decl_site`].
+        site: String,
+    },
     /// WI-851: a constructor's named argument names no DECLARED FIELD of the entity.
     /// The named twin of the positional over-arity refusal, and like it a loud case
     /// rather than a silent never-match: an unknown label rides into the hash-consed
@@ -3321,6 +3342,19 @@ impl LoadError {
                     provision_names_no_carrier_message(spec, carrier_param, provider)
                 )
             }
+            LoadError::AmbiguousSpecMember {
+                spec,
+                member,
+                carrier,
+                bound,
+                site,
+            } => {
+                format!(
+                    "{}: {}",
+                    site,
+                    ambiguous_spec_member_message(spec, member, carrier, bound)
+                )
+            }
             LoadError::TypedPatternNotEnforced { rule, reason, span } => {
                 let msg = typed_pattern_refusal_detail(rule.as_deref(), *reason);
                 match span {
@@ -3671,6 +3705,20 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}",
                     provision_names_no_carrier_message(spec, carrier_param, provider),
+                    site
+                )
+            }
+            LoadError::AmbiguousSpecMember {
+                spec,
+                member,
+                carrier,
+                bound,
+                site,
+            } => {
+                write!(
+                    f,
+                    "{} at {}",
+                    ambiguous_spec_member_message(spec, member, carrier, bound),
                     site
                 )
             }
@@ -7365,6 +7413,28 @@ fn provision_names_no_carrier_message(spec: &str, carrier_param: &str, provider:
          `OperationBodyMissing` at run time, against a sort that implements it. Write the \
          carrier into the clause — `provides {spec}[{carrier_param} = {provider}]` — \
          alongside any bindings it already carries."
+    )
+}
+
+/// WI-20260923-ZBWMC — the sentence for [`LoadError::AmbiguousSpecMember`]. One owner,
+/// for the reason [`provides_needs_sort_message`] states: two rendering paths.
+///
+/// It lists EVERY binding, not the pair that collided first, because the repair is to
+/// pick one of them: write it in place of the sugar, or make the carrier a parameter.
+fn ambiguous_spec_member_message(
+    spec: &str,
+    member: &str,
+    carrier: &str,
+    bound: &[String],
+) -> String {
+    let short = spec.rsplit('.').next().unwrap_or(spec);
+    format!(
+        "`{short}.{member}` names no one type in an operation of '{carrier}': '{carrier}' \
+         provides '{spec}' with `{member}` bound to {} (design §5.3: two carriers in scope \
+         are an ambiguity). Write the type the operation means in place of \
+         `{short}.{member}`, or take it as a parameter: `[P](…) requires \
+         {short}[{member} = P]`.",
+        bound.join(", ")
     )
 }
 
@@ -13715,6 +13785,14 @@ fn load_phase_inner(
         &written_provides,
     ));
     mark!("check_provision_names_carrier");
+    // WI-20260923-ZBWMC: a bare `Spec.Member` the loader narrowed from its block's
+    // provisions must be the carrier's ONE binding across every block and file —
+    // `check_bare_spec_narrowings` says why this cannot be decided while loading. Here
+    // for the reasons the check above is: every provision has loaded, and the drain is
+    // below the `run_typer: false` return, which `restore_load_check_marks` relies on.
+    let narrowings = kb.take_bare_spec_narrowings();
+    all_errors.extend(super::typing::check_bare_spec_narrowings(kb, &narrowings));
+    mark!("check_bare_spec_narrowings");
     // WI-664: derive composite Eq/NonEq classification. Builds the field-wise-eq
     // carrier set (`field_wise_noneq_carriers`, read by the resolver and
     // interpreter to compare a Float-containing composite FIELD-WISE) and asserts
@@ -20754,14 +20832,21 @@ struct Loader<'a> {
     // the field is `None`, so the bare-spec arm keeps its loud `RigidTypeProjection`
     // conflation error (the sugar never fires for sort/entity/fact type positions).
     bare_spec_sugar: Option<BareSpecSugar>,
-    // WI-201: carrier bindings of the sort CURRENTLY being loaded — `(spec base sym,
-    // member sym)` → the bound value term, pre-scanned from the sort's `provides` /
-    // `fact` items BEFORE any operation in its body is loaded (so it is order-
-    // independent). Lets the bare-spec sugar NARROW `Spec.Member` to the concrete
-    // carrier an enclosing impl binds (`fact WorkItemStore[State = WIS]` ⟹
-    // `WorkItemStore.State` ≡ WIS inside that sort) instead of minting a fresh
-    // existential. Empty outside a sort body; saved/restored around nested sorts.
-    current_sort_carrier_bindings: HashMap<(Symbol, Symbol), TermId>,
+    // WI-201: the CARRIER BLOCK whose operations are being loaded — a sort body, or a
+    // `namespace <Sort>` entry — with what its `provides` clauses bind each spec member
+    // to, pre-scanned BEFORE any operation in it is loaded (so it is order-independent).
+    // Lets the bare-spec sugar NARROW `Spec.Member` to the carrier an enclosing impl binds
+    // (`provides WorkItemStore[State = WIS]` ⟹ `WorkItemStore.State` ≡ WIS inside that
+    // sort) instead of minting a fresh existential. Replaced on entering ANY scope and
+    // restored on leaving it, so a nested sort or namespace never sees its parent's.
+    carrier_block: CarrierBlock,
+    // WI-20260923-ZBWMC: a block's `provides` specs the carrier pre-scan has already
+    // lowered, keyed by the clause's span, for `load_provides_clause` to TAKE rather than
+    // lower a second time. The lowering is not side-effect free — a described binding
+    // (`State = ?x {< … >}?`) emits a `DescriptionInfo` fact per lowering, and nothing
+    // collapses a fact the way the rendering dedup collapses a report — so one clause is
+    // lowered once. Per file, like the loader: a span is unique within one.
+    prelowered_provision_specs: HashMap<(u32, u32), crate::eval::value::Value>,
     // WI-489: the statically-known type of each VALUE PLACE in the operation
     // signature CURRENTLY being loaded — param symbols → their declared type, the
     // `result` binder → the return type. Populated in `load_operation` BEFORE the
@@ -20819,6 +20904,39 @@ struct BareSpecSugar {
     /// source for the drain — the requires clause `Spec[Member = ?P]` is reconstructed
     /// from each entry, so there is no second list to keep in sync.
     minted: Vec<((Symbol, Symbol), TermId)>,
+}
+
+/// WI-201 / WI-20260923-ZBWMC: the carrier block being loaded, as the bare-spec sugar
+/// reads it ([`Loader::mint_bare_spec_carrier`]).
+///
+/// LEXICAL, like a Rust `impl` block: the narrowing reads the provisions written in the
+/// block the operation stands in. A provision in another block of the same sort does
+/// not narrow here, and `typing::check_bare_spec_narrowings` refuses a narrowing it
+/// contradicts — the sort's provisions are the sort's wherever they are written (059).
+#[derive(Default)]
+struct CarrierBlock {
+    /// The sort the block belongs to: a sort body's own sort, or the sort at a
+    /// `namespace <Sort>` entry's address. `None` outside every carrier block — a plain
+    /// namespace, even one nested in a sort body, whose operations are not the sort's.
+    carrier: Option<Symbol>,
+    /// `(spec base sym, member sym)` → what the block's provisions bind that member to.
+    bindings: HashMap<(Symbol, Symbol), BlockMemberBinding>,
+}
+
+/// What one carrier block's `provides` clauses bind one spec member to
+/// ([`Loader::scan_sort_carrier_bindings`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockMemberBinding {
+    /// One type an operation signature here could spell — the sugar narrows to it.
+    Carrier(TermId),
+    /// Two or more different bindings: `Spec.Member` names no one type in the block,
+    /// which `typing::check_bare_spec_narrowings` refuses at the use.
+    Several,
+    /// One binding no signature here could spell — a family (`State = ?x`,
+    /// `State = List[T = ?]`: a provision at every carrier of that shape), another
+    /// sort's abstract member (`State = Other.X`), an operation. The sugar keeps its
+    /// generic reading, as it has with no provision at all.
+    Unnameable,
 }
 
 /// WI-489: the outcome of resolving one field segment of a value-in-type projection
@@ -21036,7 +21154,8 @@ impl<'a> Loader<'a> {
             local_names_stack: Vec::new(),
             binder_syms: HashMap::new(),
             bare_spec_sugar: None,
-            current_sort_carrier_bindings: HashMap::new(),
+            carrier_block: CarrierBlock::default(),
+            prelowered_provision_specs: HashMap::new(),
             signature_place_types: HashMap::new(),
             consumed_call_type_args: HashSet::new(),
             consumed_recv_types: HashSet::new(),
@@ -29281,7 +29400,7 @@ impl<'a> Loader<'a> {
             // type-param too, but `Option.T` is a data param, not an associated spec
             // member to existentialize — it stays the loud conflation error, as before.
             if self.bare_spec_sugar.is_some() && !self.kb.sort_has_constructors(head_sort_sym) {
-                let var = self.mint_bare_spec_carrier(head_sort_sym, member_name);
+                let var = self.mint_bare_spec_carrier(head_sort_sym, member_name, span);
                 return Some(node_occurrence::TypeChild::Interned(var));
             }
         } else {
@@ -29472,17 +29591,41 @@ impl<'a> Loader<'a> {
     /// `load_operation`) suffices. The synthesized `requires Spec[member = ?P]` is
     /// rebuilt from the recorded entry at the drain. Precondition:
     /// `self.bare_spec_sugar.is_some()`.
-    fn mint_bare_spec_carrier(&mut self, spec: Symbol, member_name: &str) -> TermId {
+    fn mint_bare_spec_carrier(
+        &mut self,
+        spec: Symbol,
+        member_name: &str,
+        span: SourceSpan,
+    ) -> TermId {
         let member_sym = self.kb.intern(member_name);
-        // WI-201 carrier-in-scope NARROWING: when the enclosing sort BINDS this spec
-        // member to a CONCRETE carrier (`fact WorkItemStore[State = WIS]` / `provides …`),
-        // the bare `Spec.Member` denotes that carrier — return it directly (no fresh
-        // `?P`, no synthesized requires). The bindings were pre-scanned order-
-        // independently in `load_sort_with_body` (already filtered to concrete,
-        // unambiguous carriers, so a logic-var or conflicting binding falls through to a
-        // fresh existential here rather than leaking an uninferable term).
-        if let Some(&bound) = self.current_sort_carrier_bindings.get(&(spec, member_sym)) {
-            return bound;
+        // WI-201 carrier-in-scope NARROWING: inside a carrier block whose provisions bind
+        // this member to ONE type an operation here could spell (`provides
+        // WorkItemStore[State = WIS]`), the bare `Spec.Member` IS that type — returned
+        // directly, with no fresh `?P` and no synthesized requires. RECORDED, because the
+        // block is not the whole carrier: `typing::check_bare_spec_narrowings` refuses the
+        // narrowing once every file has loaded if the carrier provides `Spec` anywhere
+        // else with another binding. A block that binds the member SEVERAL ways is
+        // recorded for the same refusal and reads generically meanwhile, so the signature
+        // still loads and the one diagnostic is the ambiguity.
+        if let Some(carrier) = self.carrier_block.carrier {
+            let narrowed = match self.carrier_block.bindings.get(&(spec, member_sym)) {
+                Some(BlockMemberBinding::Carrier(t)) => Some(Some(*t)),
+                Some(BlockMemberBinding::Several) => Some(None),
+                Some(BlockMemberBinding::Unnameable) | None => None,
+            };
+            if let Some(narrowed) = narrowed {
+                self.kb
+                    .record_bare_spec_narrowing(crate::kb::BareSpecNarrowing {
+                        carrier,
+                        spec,
+                        member: member_sym,
+                        narrowed,
+                        span,
+                    });
+                if let Some(t) = narrowed {
+                    return t;
+                }
+            }
         }
         // Reuse an already-minted carrier for this `(spec, member)` in this signature.
         if let Some(sugar) = self.bare_spec_sugar.as_ref() {
@@ -29505,104 +29648,137 @@ impl<'a> Loader<'a> {
         var
     }
 
-    /// WI-201: is `t` a CONCRETE carrier the bare-spec sugar may narrow to — a sort
-    /// reference / application, never a logic var (a non-ground binding like `fact
-    /// Spec[State = ?x]`). Narrowing to a var would leak a term that is NOT in the op's
-    /// `type_params` and so cannot be inferred at a call; such a binding instead falls
-    /// back to the fresh existential `?P`.
-    fn is_concrete_carrier(&self, t: TermId) -> bool {
-        matches!(
-            self.kb.get_term(t),
-            Term::Ref(_) | Term::Ident(_) | Term::Fn { .. }
-        )
+    /// WI-201 / WI-20260923-ZBWMC: could an operation signature HERE spell `t` — is it a
+    /// type the bare-spec sugar may narrow to? No logic variable anywhere in it, no
+    /// operation named in it, and a type PARAMETER in it only when that parameter is in
+    /// scope here — the providing sort's own `T`, never another sort's abstract member.
+    ///
+    /// THE WHOLE TERM, not its head. The head-only test this replaces took `State =
+    /// List[T = ?]` — a family of provisions, and a variable no operation's
+    /// `type_params` holds — and read `idAny(s: Store.State) -> Store.State = s` as
+    /// returning another `List` than it took (MEASURED: refused `expected List[T = ?_],
+    /// got List[T = s.T]`, where the generic reading loads). It took `State = Other.X`,
+    /// another sort's abstract member, which the typer then reads as a free parameter:
+    /// `idWis(s: Store.State) -> WIS = s` LOADED and `FileStore.idWis(5).n` died at run
+    /// time (MEASURED), where the same text written `s: Other.X` is refused at load. And
+    /// it took `State = helper`, an operation. Each now keeps the generic reading.
+    fn is_nameable_carrier(&self, t: TermId) -> bool {
+        let term = self.kb.get_term(t);
+        let named = match term {
+            Term::Ref(sym) | Term::Ident(sym) => Some(*sym),
+            Term::Fn { functor, .. } => Some(*functor),
+            // A value argument of an applied type.
+            Term::Const(_) => None,
+            Term::Var(_) | Term::Bottom | Term::ParseAux(_) => return false,
+        };
+        if let Some(sym) = named {
+            if self.kb.has_kind(sym, SymbolKind::Operation) {
+                return false;
+            }
+            if super::typing::is_sort_param_symbol(&self.kb, sym)
+                && !matches!(
+                    self.kb
+                        .symbols
+                        .resolve_in_scope(self.kb.local_name_of(sym), self.current_scope),
+                    ResolveResult::Found(found) if found == sym
+                )
+            {
+                return false;
+            }
+        }
+        term.subterms()
+            .into_iter()
+            .all(|child| self.is_nameable_carrier(child))
     }
 
-    /// WI-201: pre-scan a sort body's `provides` / `fact` items for spec-application
-    /// bindings `Spec[… member = X …]`, mapping `(spec base sym, member sym)` → the
-    /// bound value term `X`. Feeds the bare-spec sugar's carrier-in-scope narrowing
-    /// (an impl that binds `WorkItemStore[State = WIS]` makes `WorkItemStore.State` ≡
-    /// WIS inside its body). Read from the PARSE items before any operation in the body
-    /// is loaded, so the narrowing does not depend on source order of fact-vs-op.
-    /// Positional bindings (`fact Spec[WIS]`) are mapped to the spec's declared
-    /// parameter order, mirroring [`Self::maybe_emit_fact_provides_info`].
-    fn scan_sort_carrier_bindings(&mut self, items: &[Item]) -> HashMap<(Symbol, Symbol), TermId> {
-        use crate::eval::value::Value;
-        let mut out = HashMap::new();
+    /// WI-201: pre-scan a CARRIER BLOCK's `provides` clauses — a sort body's, or a
+    /// `namespace <Sort>` entry's — for what each binds a spec member to, keyed
+    /// `(spec base sym, member sym)`. Feeds the bare-spec sugar's carrier-in-scope
+    /// narrowing (an impl providing `WorkItemStore[State = WIS]` makes
+    /// `WorkItemStore.State` ≡ WIS inside its body). Read from the PARSE items before any
+    /// operation in the block is loaded, so the narrowing does not depend on whether the
+    /// provision is written before or after the operation that uses it.
+    ///
+    /// ONLY A PROVISION LENDS CARRIER MEMBERS (WI-20260923-ZBWMC). The scan also read
+    /// `fact Spec[…]`, a provision until WI-20260917-S8JYF retired that spelling, and kept
+    /// narrowing from it after — a plain fact deciding what a signature's type meant —
+    /// while its `provides` arm recorded NOTHING: it gated on the head of the lowered
+    /// spec, the `SortView` wrapper rather than the spec, so every parameterized provision
+    /// read as a non-spec. MEASURED: under `provides Store[State = WIS]`, `count(s:
+    /// Store.State) -> Int64 = s.n` was refused (`?State.n … declare no 'n'`), and under
+    /// `fact Store[State = WIS]` it loaded; `wi_zbwmc_provision_narrowing_test` drives
+    /// both. Dropping the `fact` arm also stopped it converting every fact head of the
+    /// body before `load_fact` did — `convert_term` memoizes per parse node, so `load_fact`
+    /// got the pre-scan's context-free conversion back, and a sort-body fact escaped the
+    /// WI-716 `none` fill and the B8ESG head-argument check the same fact gets at
+    /// namespace level (pinned in the same test).
+    ///
+    /// NO SPEC GATE. The sugar fires only for a constructor-less sort that declares the
+    /// member (`try_rigid_type_projection`), so an entry keyed on anything else is never
+    /// read, and `load_provides_clause` refuses a provision naming a data sort (WI-1106).
+    /// The gate this had asked `kind_of` — the FIRST-declared kind — so an empty `namespace
+    /// Store end` written before `sort Store` turned narrowing off, and across files the
+    /// CLI's name order decided it (MEASURED).
+    fn scan_sort_carrier_bindings(
+        &mut self,
+        items: &[Item],
+    ) -> HashMap<(Symbol, Symbol), BlockMemberBinding> {
+        let mut seen: HashMap<(Symbol, Symbol), SmallVec<[TermId; 2]>> = HashMap::new();
         for item in items {
-            // `fact Spec[…]` carries a parse-time term; `provides Spec[…]` a TypeExpr.
-            let spec_term = match item {
-                // WI-20260901-719FJ: the SAME fact head `load_fact` converts, read
-                // through the same door. Not because a dotted paren-less head could be a
-                // spec application — a `Ref` fails the `Term::Fn` destructure below just
-                // as the chain did — but because `convert_term` MEMOIZES per parse node,
-                // and a pre-scan that converted one node two ways would leave the memo
-                // holding whichever ran first.
-                Item::Fact(f) => self.convert_subject_term(f.term),
-                Item::ProvidesClause(pc) => match self.sort_inst_to_value(&pc.spec) {
-                    Value::Term { id: t, .. } => t,
-                    // A denoted-bearing spec carries no concrete carrier to narrow to.
-                    _ => continue,
-                },
-                _ => continue,
+            let Item::ProvidesClause(pc) = item else {
+                continue;
             };
-            let (functor, pos_args, named_args) = match self.kb.get_term(spec_term) {
-                Term::Fn {
-                    functor,
-                    pos_args,
-                    named_args,
-                } => (*functor, pos_args.clone(), named_args.clone()),
-                _ => continue,
-            };
-            // Only a SPEC (an interface — a Sort with no constructors) lends carrier
-            // members; skip a non-Sort fact term and a parameterized DATA sort (`List`,
-            // `Option`, a user enum), matching the firing gate in the sugar itself.
-            if !matches!(self.kb.kind_of(functor), Some(SymbolKind::Sort))
-                || self.kb.sort_has_constructors(functor)
-            {
+            // A bare `provides Spec` — or `provides ?S` — binds no member.
+            if !matches!(pc.spec, TypeExpr::Parameterized { .. }) {
                 continue;
             }
-            // Translate positional bindings to the spec's declared parameters, so
-            // `Spec[WIS]` and `Spec[Member = WIS]` record the same carrier: each positional
-            // binds the next parameter NO NAMED binding took
-            // (`KnowledgeBase::positional_param_slots`). WI-20260923-N3W68 (#9): this paired
-            // by RAW INDEX and dropped a positional whose index a name had claimed, so
-            // `fact Spec[A = X, WIS]` recorded no carrier for the second parameter.
-            let params = self.kb.type_params_of_sort(functor);
-            let mut bindings: SmallVec<[(Symbol, TermId); 2]> = named_args.clone();
-            let slots = KnowledgeBase::positional_param_slots(
-                &params,
-                |d| bindings.iter().any(|(s, _)| self.kb.local_name_of(*s) == d),
-                pos_args.len(),
-            );
-            for (val, slot) in pos_args.iter().zip(slots) {
-                if let Some(i) = slot {
-                    let key = self.kb.intern(&params[i]);
-                    bindings.push((key, *val));
-                }
-            }
-            for (key, val) in bindings {
-                // Narrow ONLY to a concrete carrier (never a logic var / placeholder),
-                // and only when UNAMBIGUOUS: a second fact binding the same `(spec,
-                // member)` to a different carrier drops the entry, so the sugar mints a
-                // fresh existential (and the duplicate-provider coherence check surfaces
-                // the real error) rather than silently picking a source-order winner.
-                if !self.is_concrete_carrier(val) {
-                    continue;
-                }
-                use std::collections::hash_map::Entry;
-                match out.entry((functor, key)) {
-                    Entry::Occupied(e) => {
-                        if *e.get() != val {
-                            e.remove();
-                        }
-                    }
-                    Entry::Vacant(e) => {
-                        e.insert(val);
-                    }
+            // Lowered ONCE, and left for `load_provides_clause` to take
+            // (`prelowered_provision_specs` says why), so this and the provision read one
+            // value — positionals already mapped onto the spec's declared parameters.
+            let spec = self.sort_inst_to_value(&pc.spec);
+            self.prelowered_provision_specs
+                .insert((pc.span.start, pc.span.end), spec.clone());
+            // A bracketed spec lowers to a `SortView` over `name_to_sort_term`'s base,
+            // which always decodes. A binding carried as a VALUE — a denoted one (`E =
+            // {Modify[c]}`), or a type holding one (`Vec[Int64, 3]`) — has no term and
+            // does not come back, so its member keeps the generic reading.
+            let (spec_sym, bindings) = super::typing::unwrap_spec_view_value(&self.kb, &spec)
+                .expect("a bracketed provision spec lowers to a decodable `SortView`");
+            for (member, value) in bindings {
+                let values = seen.entry((spec_sym, member)).or_default();
+                if !values
+                    .iter()
+                    .any(|v| super::typing::provision_bindings_agree(&self.kb, *v, value))
+                {
+                    values.push(value);
                 }
             }
         }
-        out
+        seen.into_iter()
+            .map(|(key, values)| {
+                let binding = match values.as_slice() {
+                    [one] if self.is_nameable_carrier(*one) => BlockMemberBinding::Carrier(*one),
+                    [_] => BlockMemberBinding::Unnameable,
+                    _ => BlockMemberBinding::Several,
+                };
+                (key, binding)
+            })
+            .collect()
+    }
+
+    /// WI-201 / WI-20260923-ZBWMC: install the carrier block being entered — a sort
+    /// body (`carrier` = the sort), a `namespace <Sort>` entry (the sort at its address),
+    /// or any other scope (`None`, so nothing narrows there) — returning the enclosing
+    /// one for the caller to restore on leaving. Every scope replaces it, a nested
+    /// namespace included: a plain namespace written inside a sort body is not the sort,
+    /// and a `namespace Inner` entry inside `sort Outer` is `Inner`'s, not `Outer`'s
+    /// (MEASURED: it read `Outer`'s binding, so a call with `Inner`'s carrier was refused).
+    fn enter_carrier_block(&mut self, carrier: Option<Symbol>, items: &[Item]) -> CarrierBlock {
+        let bindings = match carrier {
+            Some(_) => self.scan_sort_carrier_bindings(items),
+            None => HashMap::new(),
+        };
+        std::mem::replace(&mut self.carrier_block, CarrierBlock { carrier, bindings })
     }
 
     fn type_expr_to_child(
@@ -30358,6 +30534,15 @@ impl<'a> Loader<'a> {
                         span: Some(self.type_expr_span(ty).span),
                     });
                 }
+                // A name bound twice, whether a type parameter or an operation — the one
+                // part of the full argument check a clause can take
+                // (`KnowledgeBase::duplicate_named_binding` says why it is needed).
+                if let Some(problem) = self.kb.duplicate_named_binding(&named_syms) {
+                    self.errors.push(LoadError::InvalidTypeArgument {
+                        detail: problem.describe(&self.kb, base_sym),
+                        span: Some(self.type_expr_span(ty).span),
+                    });
+                }
                 let mut slots = slots.into_iter();
                 for b in bindings {
                     let bound = self.sort_binding_to_value(&b.bound);
@@ -30476,8 +30661,10 @@ impl<'a> Loader<'a> {
     /// pass.
     /// It does NOT mirror the WI-201 carrier bindings: that narrowing is gated on
     /// `bare_spec_sugar`, which only an operation signature sets, so no entity field
-    /// type can reach it (and `scan_sort_carrier_bindings` CONVERTS terms, which is
-    /// precisely what this pass must run before).
+    /// type can reach it (and `scan_sort_carrier_bindings` LOWERS provision specs —
+    /// converting any term a binding holds, and leaving the lowering for
+    /// `load_provides_clause` to take — which is precisely what this pass must run
+    /// before).
     ///
     /// Exhaustive over `Item` on purpose: a future item kind that can contain an
     /// `entity` has to decide here, rather than defaulting into the silence above.
@@ -30842,7 +31029,7 @@ impl<'a> Loader<'a> {
         s: &SortWithBody,
         sort_scope: ScopeId,
         parent_domain: Symbol,
-    ) -> HashMap<(Symbol, Symbol), TermId> {
+    ) -> CarrierBlock {
         // WI-1028 — the sort's SYMBOL is what this half is mostly about (the
         // `defined_sorts` entry, the `register_sort` key, the domain its body's
         // clauses are filed under), and it is the scope's owner. The TERM is derived
@@ -30921,16 +31108,12 @@ impl<'a> Loader<'a> {
         // Emit member facts for direct children
         self.emit_member_facts_for_items(&s.items, sort_term);
 
-        // WI-201: pre-scan this sort's `provides` / `fact` carrier bindings so the
-        // bare-spec sugar can NARROW `Spec.Member` to a bound carrier (`fact
+        // WI-201: pre-scan this sort's `provides` carrier bindings so the bare-spec
+        // sugar can NARROW `Spec.Member` to a bound carrier (`provides
         // WorkItemStore[State = WIS]` ⟹ `WorkItemStore.State` ≡ WIS) regardless of
-        // whether the binding appears before or after the using operation. Saved/
-        // restored around the body load so a nested sort's bindings don't leak out.
-        let sort_carrier_bindings = self.scan_sort_carrier_bindings(&s.items);
-        std::mem::replace(
-            &mut self.current_sort_carrier_bindings,
-            sort_carrier_bindings,
-        )
+        // whether the provision appears before or after the using operation. Saved/
+        // restored around the body load so a nested scope's block doesn't leak out.
+        self.enter_carrier_block(Some(sort_domain), &s.items)
     }
 
     /// The half of a sort's load that runs AFTER its body — the `SortInfo` roll-up
@@ -30941,9 +31124,9 @@ impl<'a> Loader<'a> {
         s: &SortWithBody,
         sort_scope: ScopeId,
         parent_domain: Symbol,
-        prev_sort_carrier_bindings: HashMap<(Symbol, Symbol), TermId>,
+        enclosing_carrier_block: CarrierBlock,
     ) {
-        self.current_sort_carrier_bindings = prev_sort_carrier_bindings;
+        self.carrier_block = enclosing_carrier_block;
 
         let sort_sort = ClauseKind::Sort;
         let has_entities = s.items.iter().any(|item| matches!(item, Item::Entity(_)));
@@ -34934,7 +35117,16 @@ impl<'a> Loader<'a> {
             self.emit_default_provider_row(domain, named_spec);
         }
         let provides_sym = self.kb.resolve_symbol("anthill.reflect.SortProvidesInfo");
-        let spec_value = self.sort_inst_to_value(&pc.spec);
+        // The carrier pre-scan's lowering when it made one (a bracketed spec in a sort
+        // body or a `namespace <Sort>` entry): one clause is lowered ONCE, since the
+        // lowering is not side-effect free (`prelowered_provision_specs`).
+        let spec_value = match self
+            .prelowered_provision_specs
+            .remove(&(pc.span.start, pc.span.end))
+        {
+            Some(prelowered) => prelowered,
+            None => self.sort_inst_to_value(&pc.spec),
+        };
 
         let sort_ref_sym = self.kb.intern("sort_ref");
         let spec_sym = self.kb.intern("spec");
@@ -35383,9 +35575,13 @@ impl<'a> Loader<'a> {
         // 114 — SILENTLY. Every `?x.y` then died `OperationBodyMissing:
         // anthill.reflect.field_access` at eval, on a program that loaded clean.
         //
-        // `functor_sym` is the carrier-neutral read that answers for both spellings and
-        // cannot go stale the way a shape match does.
-        let functor = super::term_view::TermView::head(&spec_term, &self.kb).functor_sym()?;
+        // `provides_spec_base_sym` answers for both spellings too — and reads THROUGH the
+        // `SortView` wrapper of a PARAMETERIZED spec, which a head read does not
+        // (WI-20260923-ZBWMC, the same defect as that ticket's pre-scan). MEASURED with the
+        // head read: `provides Stack[T = Int64] language rust … end` emitted
+        // `Implementation(target: "anthill.reflect.SortView")`, and an `operation_map`
+        // entry in it was refused as mapping `anthill.reflect.SortView.size`.
+        let functor = provides_spec_base_sym(&self.kb, spec_term)?;
         let qn = self.kb.qualified_name_of(functor).to_string();
         Some((qn, self.parsed.symbols.local_name(pb.language).to_string()))
     }
@@ -36226,9 +36422,10 @@ struct LoadPass<'l, 'a> {
     /// not, so a named slot's index covers the whole list. Keyed by scope: the
     /// walk covers many scopes, and each item is offered to exactly one of them.
     requires_seen: HashMap<ScopeId, usize>,
-    /// WI-201: the carrier bindings each enclosing SORT displaced, innermost
-    /// last. A stack because sort bodies nest and each must get its own back.
-    carrier_stack: Vec<HashMap<(Symbol, Symbol), TermId>>,
+    /// WI-201: the carrier block each enclosing SCOPE displaced, innermost last. A
+    /// stack because scopes nest and each must get its own back — a namespace as much
+    /// as a sort (`Loader::enter_carrier_block` says why).
+    carrier_stack: Vec<CarrierBlock>,
 }
 
 impl ScopePass for LoadPass<'_, '_> {
@@ -36238,28 +36435,42 @@ impl ScopePass for LoadPass<'_, '_> {
 
     fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId> {
         let scope = self.loader.resolve_declared_scope(site)?;
-        match site.decl {
-            ScopeDecl::Namespace(n) => self.loader.enter_namespace(n, scope),
+        let displaced = match site.decl {
+            ScopeDecl::Namespace(n) => {
+                self.loader.enter_namespace(n, scope);
+                // A namespace at a sort's address is that sort's SECONDARY ENTRY (059),
+                // and its operations are the sort's; any other namespace is no carrier's.
+                let owner = scope.owner();
+                let carrier = self
+                    .loader
+                    .kb
+                    .has_kind(owner, SymbolKind::Sort)
+                    .then_some(owner);
+                self.loader.enter_carrier_block(carrier, &n.items)
+            }
             ScopeDecl::Sort(s) => {
                 // The DOMAIN a rule/fact is stored under is the enclosing scope's
                 // OWNER — see `at_item`.
                 let parent_domain = site.enclosing.owner();
-                let displaced = self.loader.enter_sort_with_body(s, scope, parent_domain);
-                self.carrier_stack.push(displaced);
+                self.loader.enter_sort_with_body(s, scope, parent_domain)
             }
-        }
+        };
+        self.carrier_stack.push(displaced);
         Some(scope)
     }
 
     fn exit_scope(&mut self, site: &ScopeSite<'_>, scope: ScopeId) {
-        if let ScopeDecl::Sort(s) = site.decl {
-            let displaced = self
-                .carrier_stack
-                .pop()
-                .expect("enter_scope pushes exactly one carrier frame per sort");
-            let parent_domain = site.enclosing.owner();
-            self.loader
-                .exit_sort_with_body(s, scope, parent_domain, displaced);
+        let displaced = self
+            .carrier_stack
+            .pop()
+            .expect("enter_scope pushes exactly one carrier frame per scope");
+        match site.decl {
+            ScopeDecl::Sort(s) => {
+                let parent_domain = site.enclosing.owner();
+                self.loader
+                    .exit_sort_with_body(s, scope, parent_domain, displaced);
+            }
+            ScopeDecl::Namespace(_) => self.loader.carrier_block = displaced,
         }
         self.loader.current_scope = site.enclosing;
     }
