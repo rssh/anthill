@@ -656,7 +656,8 @@ defaulted scan takes the LAST call as the witness (a LIFO walk) and its `Gadget`
 reaches both calls; and a written `require[Desc[T = Thing]]` beside typed head parameters
 answers the same `9, 9`, the bracket overridden by the witness. S2's carrier direction is not
 extended to it, because an uncovered bodied call folds the SPEC DEFAULT (`1`) rather than
-dispatching on its value, so the direction alone would trade `9` for `1`.
+dispatching on its value, so the direction alone would trade `9` for `1`. Filed as
+**WI-20260924-GP8JC**.
 
 ### Decisions open
 
