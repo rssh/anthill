@@ -100,7 +100,7 @@ pub(super) fn relation_ref_arg_type(
     if !kb.cites_a_relation(name) {
         return None;
     }
-    relation_reference_type(kb, name, Some(arg.span.span), arg).ok()
+    relation_reference_type(kb, name, Some(arg.span.span), arg, None).ok()
 }
 
 /// WI-275: a lambda or a bare reference — the two argument shapes that need a top-down

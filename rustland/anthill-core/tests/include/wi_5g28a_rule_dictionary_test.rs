@@ -26,9 +26,10 @@
 //! 3. THE WHOLE CASE — demo2: a GENERATIVE citation of a parameterised sort whose clause
 //!    both ENUMERATES its values and CALLS AN OPERATION on each, the operation's provider
 //!    chosen by the caller among two rivals. Both of today's answers are PINNED: the
-//!    projected spelling is refused at load (defect (2): the citation types its column at
-//!    `Wrap`'s own `T`, not at the bracket's `X`), and the count spelling answers `0` where
-//!    the answer is `1`. `060-implementation.md` §7.3 names the steps that flip each.
+//!    projected spelling LOADS since §7.3's S1 (it was refused, the citation typing its
+//!    column at `Wrap`'s own `T` rather than at the bracket's `X`) and finds no row at run
+//!    time, and the count spelling answers `0` where the answer is `1`.
+//!    `060-implementation.md` §7.3 names the steps that flip each.
 //!
 //! BACK-OUT, measured: [V] drop the `from_view` fallback from `expect_dictionary`
 //! (`eval/builtins.rs`). `the_element_dictionary_projects_out_of_a_passed_one` and
@@ -333,22 +334,36 @@ end
 /// The projected spelling — the one whose answer NAMES the provider (`wrap(red())` under
 /// `ByHeat`, `wrap(blue())` under `ByName`) once the case works end to end.
 const DEMO2_PROJECTED: &str = "    operation topAt[X]() -> Wrap[T = X] effects {Error, Error[EmptyStream]}\n      \
-     requires Score[T = X] = Wrap[T = X].top.head.x\n";
+     requires Score[T = X] = Wrap[T = X].top.head.x\n    \
+     operation topHeat() -> Wrap[T = Colour] effects {Error, Error[EmptyStream]} =\n      \
+     topAt[X = Colour, Score = ByHeat]()\n";
 
 fn demo2(projected: bool) -> String {
     DEMO2_PROGRAM.replace("{projected}", if projected { DEMO2_PROJECTED } else { "" })
 }
 
-/// PINNED DEFECT (2) — a FALSE REFUSAL of a correct program. The citation types `top`'s
-/// column at `Wrap`'s own canonical `T` rather than at the bracket's `X`, so the return
-/// type the author wrote is refused against a variable the author never wrote. §7.3's
-/// step S1 (the typer reads the citation bracket) flips this row to a clean load.
+/// PINNED — the projected spelling LOADS, and finds no row. §7.3's S1 flipped its load
+/// verdict: the citation used to type `top`'s column at `Wrap`'s own `T` and refuse the
+/// return the author wrote (`expected Wrap[T = ?X], got Wrap[T = ?T]`); it now reads the
+/// bracket's `X`. At run time the relation is still EMPTY — the causes are
+/// `demo2_the_count_answers_zero`'s — so `.head` raises `empty_stream`. The row the whole
+/// case flips to is `wrap(red())` under `ByHeat` and `wrap(blue())` under `ByName`.
 #[test]
-fn demo2_the_projected_spelling_is_refused_at_load() {
-    crate::common::expect_load_errors(
-        crate::common::try_load_kb_with(&demo2(true)),
-        &["expected Wrap[T = ?X], got Wrap[T = ?T]"],
-    );
+fn demo2_the_projected_spelling_loads_and_finds_no_row() {
+    let mut interp = crate::common::interp_for(&demo2(true));
+    let err = interp
+        .call("wi5g28a.demo2.Driver.topHeat", &[])
+        .expect_err("PINNED: the relation is still empty; if a row comes back, flip this row");
+    match &err {
+        anthill_core::eval::EvalError::Raised { payload } => {
+            let raised = sort_named(interp.kb(), payload);
+            assert!(
+                raised.ends_with(".empty_stream"),
+                "`.head` of an empty relation raises `empty_stream`, got `{raised}`",
+            );
+        }
+        other => panic!("expected a raised `empty_stream`, got {other:?}"),
+    }
 }
 
 /// PINNED — a SILENT WRONG ANSWER. `countAt` loads, runs, and answers `0` under both

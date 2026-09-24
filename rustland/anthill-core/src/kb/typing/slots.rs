@@ -326,6 +326,69 @@ fn bracket_binding_mentions_its_parameter(
     }
 }
 
+/// One entry of a RECEIVER BRACKET (`Sort[K = V, …]`): what it writes for one declared
+/// parameter of the sort it names. See [`receiver_bracket_entries`].
+pub(super) struct ReceiverBracketEntry {
+    /// The declared parameter, qualified.
+    pub(super) param: Symbol,
+    /// Its canonical variable, as [`sort_type_params_as_pairs`] publishes it.
+    pub(super) var_term: TermId,
+    /// The value AS WRITTEN — what a diagnostic quotes.
+    pub(super) written: Value,
+    /// The value to BIND: `written`, expanded by [`expand_written_bracket_value`] unless
+    /// the key names a requirement slot.
+    pub(super) value: Value,
+    /// The named requirement slot the key names, if it names one — read by NAME, because
+    /// the declared list is qualified and a slot's binder is a bare intern. Its SPEC is the
+    /// record the callee's `named_slot_spec` reads, so a validation failure names the spec
+    /// the callee spelling would.
+    pub(super) slot: Option<crate::kb::NamedRequirementSlot>,
+}
+
+/// THE ONE READER of what a receiver bracket binds, per declared parameter of `parent`,
+/// in declaration order; a parameter the bracket does not write has no entry.
+///
+/// SHARED by an operation call's receiver ([`seed_receiver_type_args`]) and a RULE
+/// CITATION's (WI-20260911-5G28A S1, [`seed_citation_params`]), so the two readers of one
+/// bracket cannot come to read it two ways.
+///
+/// BY SHORT NAME. The bracket's keys are bare interns of the written spelling and the
+/// declared list is qualified — the same split [`BindingKeyMatch`] closes for two WHOLE
+/// types, asked here one key at a time exactly as [`expand_foreign_sort_application`]
+/// asks it.
+pub(super) fn receiver_bracket_entries(
+    kb: &mut KnowledgeBase,
+    parent: Symbol,
+    written: &[(Symbol, Value)],
+) -> Vec<ReceiverBracketEntry> {
+    let mut entries = Vec::new();
+    for (param, var_term) in sort_type_params_as_pairs(kb, parent).iter() {
+        let short = kb.local_name_of(*param).to_string();
+        let Some((_, written_value)) = written.iter().find(|(k, _)| kb.local_name_of(*k) == short)
+        else {
+            continue;
+        };
+        let written_value = written_value.clone();
+        // The receiver channel's own spelling of "does this key name a PROVIDER SLOT" —
+        // see [`expand_written_bracket_value`] for the rule both channels obey.
+        let slot = kb
+            .named_requirement_slots(parent)
+            .iter()
+            .find(|slot| kb.local_name_of(slot.binder) == short)
+            .copied();
+        let value = expand_written_bracket_value(kb, &written_value, slot.is_some())
+            .unwrap_or_else(|| written_value.clone());
+        entries.push(ReceiverBracketEntry {
+            param: *param,
+            var_term: *var_term,
+            written: written_value,
+            value,
+            slot,
+        });
+    }
+    entries
+}
+
 /// WI-20260911-RS2G4 (058 rule 1, the SORT half of the binding) — a form-(3) COMPANION
 /// RECEIVER's bracket BINDS the enclosing sort's type parameters for this call, exactly
 /// as the callee's own bracket already does through [`call_bracket_scopes`].
@@ -410,31 +473,14 @@ pub(super) fn seed_receiver_type_args(
     // `concrete`: the §1.1 set, built lazily, so a receiver bracket that binds no slot
     // never pays for the scan. (The three corpora write no form-(3) call at all.)
     let mut concrete: Option<std::collections::HashSet<Symbol>> = None;
-    for (param, var_term) in sort_type_params_as_pairs(kb, parent).iter() {
-        // BY SHORT NAME. The receiver's keys are bare interns of the written spelling
-        // and the declared list is qualified — the same split [`BindingKeyMatch`] closes
-        // for two WHOLE types, asked here one key at a time exactly as
-        // [`expand_foreign_sort_application`] asks it.
-        let short = kb.local_name_of(*param).to_string();
-        let Some((_, written_value)) = written.iter().find(|(k, _)| kb.local_name_of(*k) == short)
-        else {
-            continue;
-        };
-        let written_value = written_value.clone();
-        // The receiver channel's own spelling of "does this key name a PROVIDER SLOT" —
-        // see [`expand_written_bracket_value`] for the rule both channels obey. By NAME,
-        // because the declared list is qualified and a slot's binder is a bare intern,
-        // exactly as the key match one line above. The SPEC is read off the same record,
-        // which is the record the callee's `named_slot_spec` reads, so a validation
-        // failure below names the spec the callee spelling would.
-        let slot = kb
-            .named_requirement_slots(parent)
-            .iter()
-            .find(|slot| kb.local_name_of(slot.binder) == short)
-            .copied();
-        let binds_slot = slot.is_some();
-        let expanded = expand_written_bracket_value(kb, &written_value, binds_slot);
-        let value = expanded.unwrap_or_else(|| written_value.clone());
+    for entry in receiver_bracket_entries(kb, parent, &written) {
+        let ReceiverBracketEntry {
+            param,
+            var_term,
+            written: written_value,
+            value,
+            slot,
+        } = entry;
         // READ BEFORE THE UNIFY, because it is what decides WHICH fault a `false` is.
         // [`seed_op_type_args`] is the only earlier writer, so a parameter that is
         // already BOUND can only have been bound by the callee's bracket — that is the
@@ -456,7 +502,7 @@ pub(super) fn seed_receiver_type_args(
         // parameter then rendered the cyclic-value message, blaming the author for a value
         // they did not write. The callee leg asks the same question the same way, and says
         // so at its site.
-        let (prior, mentions) = match kb.get_term(*var_term) {
+        let (prior, mentions) = match kb.get_term(var_term) {
             Term::Var(Var::Global(vid)) => {
                 let vid = *vid;
                 (
@@ -466,7 +512,7 @@ pub(super) fn seed_receiver_type_args(
             }
             _ => (None, false),
         };
-        if !unify_types(kb, subst, &TermIdView(*var_term), &value) {
+        if !unify_types(kb, subst, &TermIdView(var_term), &value) {
             // AS WRITTEN, not as expanded: `[T = List]` is what the author typed, and
             // telling them their `List` disagrees with `List[T = ?T]` names a variable
             // this pass minted.
@@ -488,7 +534,7 @@ pub(super) fn seed_receiver_type_args(
                 None => {
                     // WI-20260911-7TN1Q: the same bytes as the callee bracket's, one noun
                     // over — [`bracket_binding_mentions_its_parameter`].
-                    let param_name = kb.local_name_of(*param).to_string();
+                    let param_name = kb.local_name_of(param).to_string();
                     return Err(bracket_binding_mentions_its_parameter(
                         kb,
                         "a receiver binding",
@@ -503,7 +549,7 @@ pub(super) fn seed_receiver_type_args(
                     return Err(TypeError::ReceiverBracketConflict {
                         span,
                         op: fn_sym,
-                        param: *param,
+                        param,
                         receiver: written_value,
                         callee,
                     });

@@ -1181,7 +1181,10 @@ pub(super) fn check_bare_ref(
     // Sits before the `UnresolvedName` fall-through: a rule name is none of the
     // readings above, so it reached here as an unresolved name today.
     if kb.cites_a_relation(sym) {
-        let ty = relation_reference_type(kb, sym, span, occ)?;
+        // WI-20260911-5G28A S1: in functional code the citation reads its sort's parameters
+        // (see [`CitationSite`]); a rule body's keeps the relation's own variables.
+        let site = (!env.in_rule_body()).then_some(CitationSite { env, expected });
+        let ty = relation_reference_type(kb, sym, span, occ, site)?;
         return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
     }
     // WI-898: an EQUATION-introduced functor that owns no clauses is NOT a relation,

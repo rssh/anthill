@@ -516,6 +516,21 @@ pub enum TypeError {
         op: Symbol,
         type_param: Symbol,
     },
+    /// WI-20260911-5G28A S1 — WI-270's rule at a RULE CITATION. The cited relation's
+    /// columns mention a type parameter of its enclosing SORT, and nothing at the citation
+    /// fixed it: not the receiver bracket, not an applied argument, not the type the
+    /// consumer expects, and not an enclosing instance of the same sort. The relation
+    /// value would carry a variable its consumer cannot recover. Names the one spelling
+    /// that always fixes it — the receiver bracket — because a rule citation takes no
+    /// callee bracket, which is what [`Self::UnconstrainedTypeParam`]'s message suggests.
+    UnconstrainedCitationParam {
+        span: Option<Span>,
+        /// The cited relation.
+        relation: Symbol,
+        /// The sort that declares it, whose parameter this is.
+        sort: Symbol,
+        type_param: Symbol,
+    },
     /// WI-325: a spec-op call left at least one type parameter abstract
     /// AND the enclosing operation's `requires` chain does not cover the
     /// spec sort. Without a covering `requires`, the runtime has no impl
@@ -1416,6 +1431,12 @@ impl TypeError {
                     short_name_of(op_name),
                 )
             }
+            TypeError::UnconstrainedCitationParam {
+                relation,
+                sort,
+                type_param,
+                ..
+            } => citation_param_message(kb, *relation, *sort, *type_param),
             TypeError::MissingRequiresForSpecOp {
                 spec_op_sym,
                 spec_sort_sym,
@@ -1689,6 +1710,7 @@ impl TypeError {
             | TypeError::ConflictingSelection { span, .. }
             | TypeError::InvalidTypeArgument { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
+            | TypeError::UnconstrainedCitationParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
             | TypeError::ProvisionConditionOutOfScope { span, .. }
             | TypeError::UnsatisfiableRequirement { span, .. }
@@ -2066,6 +2088,19 @@ impl TypeError {
                     span: self.span(kb),
                 }
             }
+            TypeError::UnconstrainedCitationParam {
+                relation,
+                sort,
+                type_param,
+                ..
+            } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*relation).to_string(),
+                field_name: "type_arg".to_string(),
+                expected_type: format!("a type for '{}'", kb.local_name_of(*type_param)),
+                actual_type: citation_param_message(kb, *relation, *sort, *type_param),
+                span: self.span(kb),
+            },
             TypeError::MissingRequiresForSpecOp {
                 spec_op_sym,
                 spec_sort_sym,
@@ -2401,4 +2436,24 @@ impl TypeError {
             },
         }
     }
+}
+
+/// WI-20260911-5G28A S1 — the wording of [`TypeError::UnconstrainedCitationParam`], ONE
+/// owner for both renderings (the type error's own message and the `LoadError` it becomes),
+/// so the repair the two print cannot drift.
+fn citation_param_message(
+    kb: &KnowledgeBase,
+    relation: Symbol,
+    sort: Symbol,
+    type_param: Symbol,
+) -> String {
+    let sort_short = short_name_of(kb.qualified_name_of(sort)).to_string();
+    format!(
+        "type parameter '{param}' of `{sort_qn}` is not determined at this citation of `{rel}` \
+         — no bracket, argument or expected type fixes it; write it: `{sort_short}[{param} = …].{rel_short}`",
+        param = kb.local_name_of(type_param),
+        sort_qn = kb.qualified_name_of(sort),
+        rel = kb.qualified_name_of(relation),
+        rel_short = short_name_of(kb.qualified_name_of(relation)),
+    )
 }

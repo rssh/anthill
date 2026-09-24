@@ -18,9 +18,242 @@ pub(super) fn relation_reference_type(
     sym: Symbol,
     span: Option<Span>,
     occ: &Rc<NodeOccurrence>,
+    site: Option<CitationSite<'_>>,
 ) -> Result<Value, TypeError> {
-    let columns = relation_columns_across_clauses(kb, sym, span)?;
-    relation_type_from_columns(kb, sym, columns, occ.span, span)
+    let mut columns = relation_columns_across_clauses(kb, sym, span)?;
+    let Some(site) = site else {
+        return relation_type_from_columns(kb, sym, columns, occ.span, span);
+    };
+    let opened = open_citation_params(kb, sym, &mut columns);
+    let mut subst = Substitution::new();
+    let rigid = body_rigids(kb, site.env);
+    if let Some((owner, params)) = &opened {
+        seed_citation_params(kb, &mut subst, occ, sym, span, *owner, params, site.env, &rigid)?;
+    }
+    let ty = relation_type_from_columns(kb, sym, columns, occ.span, span)?;
+    settle_citation_type(kb, &rigid, subst, sym, span, opened, site.expected, ty)
+}
+
+/// WI-20260911-5G28A S1 — WHERE a citation is typed, for the step that reads its sort's
+/// parameters: the environment (which sort's member the citation is written in) and the
+/// type its consumer passed down, if any. Built only for a citation in FUNCTIONAL code —
+/// an operation or `const` body. A rule body unifies types at run time (WI-622's rule for
+/// an operation's parameter, which the rule-body walk skips for the same reason), so its
+/// citations keep the relation's own variables and pass `None`.
+pub(super) struct CitationSite<'a> {
+    pub(super) env: &'a TypingEnv,
+    pub(super) expected: Option<&'a Value>,
+}
+
+/// WI-20260911-5G28A S1 — one type parameter of the cited relation's ENCLOSING SORT, as
+/// one citation sees it: a variable of its own, fresh per citation.
+pub(super) struct CitationParam {
+    /// The declared parameter, qualified.
+    param: Symbol,
+    /// The sort's canonical variable for it — the one the relation's clauses mention.
+    canonical: VarId,
+    /// This citation's variable, which replaced `canonical` in every column type.
+    var: VarId,
+}
+
+/// WI-20260911-5G28A S1 — OPEN the enclosing sort's parameters for ONE citation: every
+/// parameter a column type mentions gets a fresh variable, substituted for the sort's
+/// canonical one in every column. `None` when the relation is not declared in a sort with
+/// parameters, or when no column mentions one.
+///
+/// WHY: a relation declared in `sort Wrap[T]` types a column `?x: Wrap[T = T]` at the
+/// SORT's canonical `T` — one variable shared by every clause and every citation. It is
+/// neither a wildcard nor something a citation may bind, so a citation that said which
+/// instance it meant was refused against it: `Wrap[T = Colour].dom.head.x` returned as
+/// `Wrap[T = Colour]` reported `got Wrap[T = ?T]`, and `Wrap.dom(wrap(red()))` "argument
+/// binding column `x` has an incompatible type" (060-implementation §7.3, defect (2)). An
+/// operation call has the same parameters and never had the problem, because it
+/// instantiates them per call; this is that instantiation, for a citation.
+///
+/// ONE VARIABLE PER PARAMETER FOR THE WHOLE CITATION, across the relation's clauses — the
+/// columns arrive here already lubbed across them, so a clause cannot pin its own copy.
+fn open_citation_params(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    columns: &mut [ClauseColumn],
+) -> Option<(Symbol, Vec<CitationParam>)> {
+    let owner = impl_parent_sort_of_op(kb, sym)?;
+    let pairs = sort_type_params_as_pairs(kb, owner);
+    let mut renaming = Substitution::new();
+    let mut params: Vec<CitationParam> = Vec::new();
+    for (param, var_term) in pairs.iter() {
+        // WI-954: a published parameter's variable IS a `Var::Global` term — the loader
+        // allocates it from a `VarId`, so there is no other shape to skip.
+        let Term::Var(Var::Global(canonical)) = kb.get_term(*var_term) else {
+            unreachable!("a published type parameter's canonical variable is a Var::Global term");
+        };
+        let canonical = *canonical;
+        if !columns.iter().any(|c| occurs_in_view(kb, canonical, &c.ty)) {
+            continue;
+        }
+        let var = kb.fresh_var(*param);
+        let var_term = kb.alloc(Term::Var(Var::Global(var)));
+        renaming.bind_term(kb, canonical, var_term);
+        params.push(CitationParam {
+            param: *param,
+            canonical,
+            var,
+        });
+    }
+    if params.is_empty() {
+        return None;
+    }
+    for c in columns.iter_mut() {
+        c.ty = walk_type_deep_value(kb, &renaming, &c.ty);
+    }
+    Some((owner, params))
+}
+
+/// WI-20260911-5G28A S1 — what a citation says about its sort's parameters BEFORE its
+/// arguments are read, in the order an operation call takes the same sources (Path 1 in
+/// `check_apply_iter`): the RECEIVER BRACKET first — the written instance beats an
+/// implicit one — then, for a citation written in a member of the relation's own sort,
+/// the ENCLOSING INSTANCE (WI-424's sibling rule: inside `sort Wrap[T]`, `dom` means this
+/// instance's `dom`). Applied arguments and the expected type reach the variables later,
+/// through the same σ.
+///
+/// The bracket is read by [`receiver_bracket_entries`], the reader an operation call's
+/// receiver uses, so `Wrap[T = Colour].dom` and `Wrap[T = Colour].op()` cannot read one
+/// bracket two ways. It binds only a parameter the columns mention: a bracket that fills
+/// nothing is not refused here (060-implementation §7.3, D4).
+///
+/// A BRACKET VALUE IS READ IN THE BODY'S OWN TERMS ([`body_rigids`]): `Wrap[T = X].dom`
+/// written in `operation g[X]` means THIS body's `X`, a rigid that unifies with itself
+/// alone. MEASURED: bound to `X`'s variable instead, the citation loaded both as the
+/// declared `Wrap[T = X]` and as `Wrap[T = Colour]` or `Wrap[T = Y]` — the variable
+/// unified with whatever the return check offered it.
+#[allow(clippy::too_many_arguments)]
+fn seed_citation_params(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    occ: &Rc<NodeOccurrence>,
+    sym: Symbol,
+    span: Option<Span>,
+    owner: Symbol,
+    params: &[CitationParam],
+    env: &TypingEnv,
+    rigid: &Substitution,
+) -> Result<(), TypeError> {
+    if let Some(rt) = call_recv_type_of(occ).cloned() {
+        // A BRACKET ON ANOTHER SORT BINDS NOTHING HERE, and saying nothing about it would
+        // be a silent drop of written text: the author named an instance, and a pin from an
+        // argument or the expected type could then load the citation at some OTHER one.
+        // Unreached by the corpus — `Sort[…].rel` resolves `rel` in `Sort`'s own scope, and
+        // `sort_application_parts` reads an alias as its underlying sort — so this is the
+        // loud form of an invariant, not a diagnostic anyone is expected to meet.
+        let base = sort_application_parts(kb, &rt)
+            .filter(|(base, _)| same_sort_canonical(kb, *base, owner));
+        let Some((_, written)) = base else {
+            return Err(TypeError::Other {
+                site: TypeError::here(),
+                span,
+                context: TypeErrorContext::Rule {
+                    name: sym,
+                    field: RuleField::Whole,
+                },
+                expected: format!(
+                    "a receiver bracket on `{}`, the sort that declares `{}`",
+                    kb.qualified_name_of(owner),
+                    kb.qualified_name_of(sym),
+                ),
+                actual: format!("`{}`, which binds none of its parameters", type_display_name_value(kb, &rt)),
+            });
+        };
+        for entry in receiver_bracket_entries(kb, owner, &written) {
+            if let Some(p) = params.iter().find(|p| p.param == entry.param) {
+                let value = walk_type_deep_value(kb, rigid, &entry.value);
+                // A FRESH variable, minted for this citation alone: nothing has bound it and
+                // the value cannot mention it, so the bind cannot fail — and if it ever did,
+                // the author would be told a parameter they WROTE is undetermined.
+                let bound = bind_resolved(kb, subst, p.var, value);
+                assert!(bound, "binding a citation's fresh parameter variable");
+            }
+        }
+    }
+    let same_sort = env
+        .enclosing_sort()
+        .is_some_and(|enclosing| same_sort_canonical(kb, enclosing, owner));
+    if same_sort {
+        for p in params {
+            if subst.resolve_as_value(p.var).is_some() {
+                continue;
+            }
+            if let Some((_, instance_rigid)) = env
+                .enclosing_instance_param_rigids()
+                .iter()
+                .find(|(canonical, _)| *canonical == p.canonical)
+            {
+                subst.bind_term(kb, p.var, *instance_rigid);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// WI-20260911-5G28A S1 — the last source, then the verdict. The type the consumer passed
+/// down pins what the bracket, the arguments and the enclosing instance left open —
+/// `operation g() -> Relation[T = (x: List[T = Letter]), …] = List.domain` — adopted only
+/// if the whole type unifies, so a mismatch is left for the ordinary expected-type check to
+/// report rather than half-applied here. Then any parameter still free is REFUSED: the
+/// relation value would carry a variable its consumer cannot recover, which is WI-270's
+/// rule for an operation's parameter (`check_unconstrained_type_params`), applied at the
+/// citation — LOCALLY, as WI-270 applies it: a consumer further up the chain that passes no
+/// expected type down (`Wrap.dom.head.x` against the return) does not count, exactly as it
+/// does not for `Option.none().isEmpty()`.
+///
+/// The expected type is read in the body's own terms, as the bracket is
+/// ([`seed_citation_params`]): a parameter it names pins the citation to that parameter's
+/// rigid, which nothing else can then unify with.
+#[allow(clippy::too_many_arguments)]
+fn settle_citation_type(
+    kb: &mut KnowledgeBase,
+    rigid: &Substitution,
+    mut subst: Substitution,
+    sym: Symbol,
+    span: Option<Span>,
+    opened: Option<(Symbol, Vec<CitationParam>)>,
+    expected: Option<&Value>,
+    ty: Value,
+) -> Result<Value, TypeError> {
+    let Some((owner, params)) = opened else {
+        return Ok(ty);
+    };
+    if let Some(expected) = expected {
+        let expected = walk_type_deep_value(kb, rigid, expected);
+        let mut trial = subst.clone();
+        if unify_types(kb, &mut trial, &ty, &expected) {
+            subst = trial;
+        }
+    }
+    for p in &params {
+        let var_term = kb.alloc(Term::Var(Var::Global(p.var)));
+        if resolved_var(kb, &walk_view(kb, &subst, &TermIdView(var_term))).is_some() {
+            return Err(TypeError::UnconstrainedCitationParam {
+                span,
+                relation: sym,
+                sort: owner,
+                type_param: p.param,
+            });
+        }
+    }
+    Ok(walk_type_deep_value(kb, &subst, &ty))
+}
+
+/// The body's type-parameter variables mapped to their RIGIDS (`env.param_rigids()`, the
+/// map `rigidify_op_type_params` built when the body's check began), as a substitution: how
+/// a type WRITTEN in this body — a bracket value, the declared return passed down as the
+/// expected type — is read in the body's own terms.
+fn body_rigids(kb: &mut KnowledgeBase, env: &TypingEnv) -> Substitution {
+    let mut rigid = Substitution::new();
+    for (param_var, rigid_term) in env.param_rigids() {
+        rigid.bind_term(kb, *param_var, *rigid_term);
+    }
+    rigid
 }
 
 /// WI-20260911-WT8WG — the citation-site diagnostic for a `<Sort>.domain` that was
@@ -223,8 +456,14 @@ pub(super) fn relation_reference_type_applied(
     named_results: &[Result<TypeResult, TypeError>],
     span: Option<Span>,
     occ: &Rc<NodeOccurrence>,
+    site: CitationSite<'_>,
 ) -> Result<Value, TypeError> {
-    let columns = relation_columns_across_clauses(kb, sym, span)?;
+    let mut columns = relation_columns_across_clauses(kb, sym, span)?;
+    // WI-20260911-5G28A S1 — the enclosing sort's parameters, opened for THIS citation and
+    // seeded from its bracket / enclosing instance BEFORE the arguments bind columns, so an
+    // argument meets `Wrap[T = ?t]` (a variable it can pin) or `Wrap[T = Colour]` (a type
+    // it is checked against) rather than the sort's shared canonical `T`.
+    let opened = open_citation_params(kb, sym, &mut columns);
     let arg_err = |kb: &KnowledgeBase, msg: String| TypeError::Other {
         site: TypeError::here(),
         span,
@@ -255,6 +494,10 @@ pub(super) fn relation_reference_type_applied(
     // "s")` binds `T := Int64` from arg 0, then rejects `"s"` against it. `bound[i]`
     // aligns with the i-th argument, matching how `pos_results` ++ `named_results` index.
     let mut subst = Substitution::new();
+    let rigid = body_rigids(kb, site.env);
+    if let Some((owner, params)) = &opened {
+        seed_citation_params(kb, &mut subst, occ, sym, span, *owner, params, site.env, &rigid)?;
+    }
     for (i, cname) in bound.iter().enumerate() {
         let col_ty = columns
             .iter()
@@ -340,7 +583,8 @@ pub(super) fn relation_reference_type_applied(
             c
         })
         .collect();
-    relation_type_from_columns(kb, sym, free, occ.span, span)
+    let ty = relation_type_from_columns(kb, sym, free, occ.span, span)?;
+    settle_citation_type(kb, &rigid, subst, sym, span, opened, site.expected, ty)
 }
 
 /// WI-714 — the free-variable columns of a relation, merged across its clauses:

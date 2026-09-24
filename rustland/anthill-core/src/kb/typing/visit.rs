@@ -475,7 +475,7 @@ pub(super) fn visit_type(
             // tests added), just the cheap tests written first.
             if pos_args.len() == 2 && named_args.is_empty() {
                 if let Some(rel) = dotted_citation_relation(kb, &occ) {
-                    let r = relation_reference_type(kb, rel, occ_span, &occ)
+                    let r = relation_reference_type(kb, rel, occ_span, &occ, None)
                         .map(|ty| TypeResult::pure_value(ty, unwrap_env(env), Rc::clone(&occ)));
                     results.push(r);
                     return;

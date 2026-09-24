@@ -1779,6 +1779,8 @@ mod wi_5g28a_rule_head_type_variables_test;
 mod wi_5g28a_paren_less_citation_test;
 #[path = "include/wi_5g28a_rule_dictionary_test.rs"]
 mod wi_5g28a_rule_dictionary_test;
+#[path = "include/wi_5g28a_citation_bracket_test.rs"]
+mod wi_5g28a_citation_bracket_test;
 #[path = "include/dotted_nullary_op_call_test.rs"]
 mod dotted_nullary_op_call_test;
 

@@ -149,6 +149,10 @@ pub(super) fn check_apply_iter(
             named_results,
             span,
             occ,
+            CitationSite {
+                env,
+                expected: expected.as_ref(),
+            },
         )?;
         let mut effects: Vec<Value> = Vec::new();
         for r in pos_results.iter().chain(named_results.iter()).flatten() {
