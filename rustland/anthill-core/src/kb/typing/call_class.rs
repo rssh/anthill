@@ -930,8 +930,7 @@ fn entry_type_param_bindings(
                 named_args,
                 pos_args,
             } => {
-                let f_qn = kb.qualified_name_of(*functor);
-                if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
+                if is_sort_view_functor(kb, *functor) {
                     named_args.clone()
                 } else if pos_args.is_empty() && named_args.is_empty() {
                     // Plain sort term, e.g. `requires Paintable`.

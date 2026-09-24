@@ -359,6 +359,65 @@ pub(crate) fn check_provision_names_carrier(
     errors
 }
 
+/// WI-20260923-ZBWMC — a narrowed bare-spec member must be the carrier's ONE binding.
+///
+/// Inside a carrier that provides `Spec[Member = X]`, WI-201's sugar reads `Spec.Member`
+/// as `X`. The loader decides that from the provisions written in the operation's own
+/// block (`scan_sort_carrier_bindings`), because it lowers the signature before the other
+/// files are in. But a sort's provisions are the sort's wherever they stand (059), so the
+/// narrowing holds only if EVERY provision of `Spec` by the carrier binds `Member` to that
+/// same `X`. Two different bindings make `Spec.Member` name no one carrier there, and
+/// design §5.3 says what that is: a loud ambiguity, never a quiet choice. MEASURED before
+/// this check: `sort Multi { provides Conv[To = A]; operation mk(x: Conv.To) -> Conv.To }`
+/// beside `namespace Multi provides Conv[To = B] end` read `Conv.To` as `A`, so
+/// `Multi.mk(b(n: 2))` was refused `expected A, got B` — and swapping where the two
+/// provisions were written swapped the carrier.
+///
+/// A use the block itself already found ambiguous (`narrowed: None`) is refused here too,
+/// so both kinds of ambiguity read as one diagnostic listing every binding the carrier has.
+///
+/// Reads the provision RELATION, not the written registry beside it: the carrier's other
+/// provisions may have loaded in an earlier batch, which that registry no longer holds.
+pub(crate) fn check_bare_spec_narrowings(
+    kb: &KnowledgeBase,
+    uses: &[crate::kb::BareSpecNarrowing],
+) -> Vec<crate::kb::load::LoadError> {
+    let mut errors = Vec::new();
+    for use_ in uses {
+        let spec = kb.canonical_sort_sym(use_.spec);
+        let member = short_name_of(kb.local_name_of(use_.member));
+        let mut bound: SmallVec<[TermId; 2]> = SmallVec::new();
+        for row in provides_rows_of_provider(kb, use_.carrier) {
+            if kb.canonical_sort_sym(row.spec_base) != spec {
+                continue;
+            }
+            for &(param, value) in &row.bindings {
+                if short_name_of(kb.local_name_of(param)) == member
+                    && !bound.iter().any(|b| provision_bindings_agree(kb, *b, value))
+                {
+                    bound.push(value);
+                }
+            }
+        }
+        let agrees = use_.narrowed.is_some_and(|t| {
+            bound
+                .iter()
+                .all(|b| provision_bindings_agree(kb, *b, t))
+        });
+        if agrees {
+            continue;
+        }
+        errors.push(crate::kb::load::LoadError::AmbiguousSpecMember {
+            spec: kb.qualified_name_of(use_.spec).to_string(),
+            member: member.to_string(),
+            carrier: kb.qualified_name_of(use_.carrier).to_string(),
+            bound: bound.iter().map(|b| type_display_name(kb, *b)).collect(),
+            site: crate::kb::load::render_decl_site(kb, use_.span),
+        });
+    }
+    errors
+}
+
 /// WI-20260913-KXNEX — does a spec reference AS WRITTEN bind `param` to ANYTHING?
 ///
 /// "To anything" is the question the carrier check needs, and no established reader
@@ -414,19 +473,21 @@ fn written_spec_binds_param(
     if positionals == 0 {
         return false;
     }
-    // Declaration order, minus whatever a named binding already pinned — so a mixed
-    // `Spec[V = Vec3, Float]` assigns its positional to the next FREE parameter, which is
-    // the rule the requires-coverage decoder applies to this same shape.
-    sort_type_params_as_pairs(kb, kb.canonical_sort_sym(spec_sort))
+    // Each positional binds the next parameter no named binding pinned — so a mixed
+    // `Spec[V = Vec3, Float]` assigns its positional to the next FREE parameter:
+    // `KnowledgeBase::positional_param_slots`, the rule's one owner.
+    let params: Vec<String> = sort_type_params_as_pairs(kb, kb.canonical_sort_sym(spec_sort))
         .iter()
-        .map(|(p, _)| short_name_of(kb.local_name_of(*p)))
-        .filter(|n| {
-            !named
-                .iter()
-                .any(|k| short_name_of(kb.local_name_of(*k)) == *n)
-        })
-        .take(positionals)
-        .any(|n| n == want)
+        .map(|(p, _)| short_name_of(kb.local_name_of(*p)).to_string())
+        .collect();
+    KnowledgeBase::positional_param_slots(
+        &params,
+        |d| named.iter().any(|k| short_name_of(kb.local_name_of(*k)) == d),
+        positionals,
+    )
+    .into_iter()
+    .flatten()
+    .any(|i| params[i] == want)
 }
 
 /// WI-431: the OPERATION symbol an instance fact binds for `op_short` among a
@@ -539,70 +600,16 @@ pub(crate) fn instance_fact_op_binding(
 /// explicitly witnessed as non-reflexive — and `check_eq_noneq_exclusive` could not see
 /// the contradiction either, because it groups by `sort_ref` too.
 pub(crate) fn provision_carriers_of_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
-    provisions_of_spec(kb, spec_sort)
-        .map(|(provider, spec_t, _)| {
+    provides_rows_of_spec(kb, spec_sort)
+        .map(|row| {
             // `None` = the provision's carrier IS the provider (a self-provision, an
             // instance fact, or a bare one naming no other sort) — that function's own
             // documented contract.
-            witness_dispatch_carrier(kb, spec_sort, provider, spec_t).unwrap_or(provider)
+            witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view)
+                .unwrap_or(row.provider)
         })
         .map(|c| kb.canonical_sort_sym(c))
         .collect()
-}
-
-/// Every `SortProvidesInfo` provision OF `spec_sort`, decoded once into
-/// `(provider sort, the provision's `SortView` term, its type-param bindings)`.
-///
-/// The shared substrate of the multi-candidate walks
-/// ([`collect_spec_op_suppliers_by_carrier`], [`spec_op_suppliers_for_carrier`]),
-/// which differ only in whether they bucket every carrier or filter to one. It used
-/// to be spelled twice — eleven identical lines — which is the shape that produced
-/// WI-838's cross-kind blind spot in the first place (two copies of one criterion,
-/// kept in step by hand).
-///
-/// Reads the WI-660 `by_spec_base` bucket via [`provides_rids_by_spec`] rather than
-/// every provision fact, and keeps the per-fact canonical re-filter that bucket's
-/// contract requires (its no-index fallback returns EVERY provides fact, which is
-/// what both readers see today — `build_eq_dispatch_index` runs before
-/// `build_provides_index`, and `eq_derive::run`'s caller nulls the index first).
-pub(super) fn provisions_of_spec(
-    kb: &KnowledgeBase,
-    spec_sort: Symbol,
-) -> impl Iterator<Item = (Symbol, TermId, SmallVec<[(Symbol, TermId); 2]>)> + '_ {
-    let spec_canon = kb.canonical_sort_sym(spec_sort);
-    provisions_from_rids(kb, spec_canon, provides_rids_by_spec(kb, spec_canon))
-}
-
-/// WI-20260829-K0E8T — the DECODE half of [`provisions_of_spec`], over rids the caller
-/// has already fetched with [`provides_rids_by_spec`].
-///
-/// Split out for the one caller that must SEE the bucket before it decides to walk it:
-/// [`witness_provides_admissibly`]'s gate, which is entered on the failure path of every
-/// bare↔bare compatibility check and whose bucket is empty at 1263 of 1267 stdlib-load
-/// entries. Going through [`provisions_of_spec`] would make it canonicalize the spec a
-/// second time (an FQN string hash — that function's own first statement) and
-/// canonicalize the ACTUAL before it knows there is anything to compare it against. One
-/// decoder still, not two: this IS the body, and `provisions_of_spec` is now the
-/// canonicalize-and-fetch wrapper around it.
-pub(super) fn provisions_from_rids(
-    kb: &KnowledgeBase,
-    spec_canon: Symbol,
-    rids: Vec<crate::kb::RuleId>,
-) -> impl Iterator<Item = (Symbol, TermId, SmallVec<[(Symbol, TermId); 2]>)> + '_ {
-    rids.into_iter().filter_map(move |rid| {
-        if !kb.is_fact(rid) {
-            return None;
-        }
-        // A value-fact `SortProvidesInfo` (denoted-bearing spec) is skipped:
-        // occurrence-based provides lookup is gated effect-expressions-as-types
-        // work, and `fact_head_named_args` is `None` rather than panicking on it.
-        let named = kb.fact_head_named_args(rid)?;
-        let sr = get_named_arg(kb, &named, "sort_ref")?;
-        let provider = crate::kb::load::sort_ref_functor(kb, sr)?;
-        let spec_t = get_named_arg(kb, &named, "spec")?;
-        let (base, bindings) = unwrap_spec_view(kb, spec_t)?;
-        (kb.canonical_sort_sym(base) == spec_canon).then_some((provider, spec_t, bindings))
-    })
 }
 
 /// WI-837 — how a spec op's impl reaches a carrier. The three routes are written in
@@ -743,15 +750,15 @@ pub(crate) fn collect_spec_op_suppliers_by_carrier(
     op_short_sym: Symbol,
     out: &mut std::collections::HashMap<Symbol, SmallVec<[SpecOpSupplier; 2]>>,
 ) {
-    for (provider, spec_t, bindings) in provisions_of_spec(kb, spec_sort) {
+    for row in provides_rows_of_spec(kb, spec_sort) {
         let Some((carrier_canon, supplier)) = provision_supplier(
             kb,
             spec_sort,
             spec_op,
             op_short_sym,
-            provider,
-            spec_t,
-            &bindings,
+            row.provider,
+            row.spec_view,
+            &row.bindings,
         ) else {
             continue;
         };
@@ -883,15 +890,15 @@ pub(crate) fn spec_op_suppliers_for_carrier(
         });
     }
     // ROUTES 2 and 3 — a provision supplies it (instance fact / witness sort).
-    for (provider, spec_t, bindings) in provisions_of_spec(kb, spec_sort) {
+    for row in provides_rows_of_spec(kb, spec_sort) {
         let Some((c, supplier)) = provision_supplier(
             kb,
             spec_sort,
             spec_op,
             op_short_sym,
-            provider,
-            spec_t,
-            &bindings,
+            row.provider,
+            row.spec_view,
+            &row.bindings,
         ) else {
             continue;
         };
@@ -1101,7 +1108,7 @@ pub(super) fn op_backed(
 }
 
 /// Top functor symbol of a term head — a `Fn` functor, or a bare `Ref`/`Ident`.
-pub(super) fn head_functor_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
+pub(crate) fn head_functor_sym(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
     match kb.get_term(tid) {
         Term::Fn { functor, .. } => Some(*functor),
         Term::Ref(s) | Term::Ident(s) => Some(*s),
@@ -1145,25 +1152,41 @@ pub(super) fn provider_requires_subgoals(
     sigma: &[(String, TermId)],
 ) -> Vec<SortGoal> {
     let chain = direct_requires_chain(kb, spec);
+    requires_chain_goals(kb, &chain, &|kb, v| subst_requires_value(kb, v, sigma))
+}
+
+/// WI-20260923-32XFQ — a `requires` chain as the sub-goals it asks: one [`SortGoal`] per
+/// entry, IN CHAIN ORDER, each type-parameter binding's value rewritten by `substitute`
+/// (op-bindings — the auto-bound `eq`, `neq`, … — constrain no resolution and are
+/// dropped). The one decode under the provider's two sub-goal walks, which differed only
+/// in the chain they read and the σ they apply: [`provider_requires_subgoals`] (the spec's
+/// direct chain, σ by short NAME) and `instantiate_provider_entries` (the provider's
+/// chain, σ by SYMBOL). The carrier never discriminates a by-binding sub-goal (WI-350).
+///
+/// WI-857: THE WALK IS POSITIONAL, because it produces a dictionary's halves and not only
+/// a load check's goals, so an entry is never dropped — dropping one would shift every
+/// later slot into it. That includes the synthetic `requires EffectsRuntime[E]` an
+/// effect-row parameter contributes, which `resolve_inner` fills with a structural leaf
+/// rather than resolving ([`effects_runtime_sym`] has the measurement).
+///
+/// An entry whose spec has no readable head KEEPS ITS SLOT too, and the slot is a GUESS: a
+/// bindings-free goal is one every provider matches, so it is RESOLVABLE, and resolving is
+/// the concern — not indexing. In `check_provider_requires` empty bindings make `concrete`
+/// vacuously true, so a previously-skipped entry would be resolved and could raise a load
+/// error; in the provider half an unresolvable one fails the whole dispatch. MEASURED
+/// UNREACHABLE: a probe on this branch across the `anthill-core` suite hit it ZERO times —
+/// a `requires` clause's spec is always a `SortView`, a bare ref or an ident. The assert
+/// says so, and fires if that ever stops being true, rather than letting a guessed goal
+/// decide a load.
+pub(super) fn requires_chain_goals(
+    kb: &mut KnowledgeBase,
+    chain: &[RequiresEntry],
+    substitute: &impl Fn(&mut KnowledgeBase, TermId) -> TermId,
+) -> Vec<SortGoal> {
     let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
-    for entry in &chain {
+    for entry in chain {
         let required = entry.required_sort;
         let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
-            // WI-857: KEEP THE SLOT, exactly as `candidate_provider_sub_goals` does —
-            // this walk is now positional (it produces the dictionary's spec half, not
-            // only the load check's goals), so dropping an entry would shift every
-            // later slot into it.
-            //
-            // But the slot is a GUESS: a bindings-free goal is one every provider
-            // matches, so it is RESOLVABLE, and resolving is the concern — not
-            // indexing. In `check_provider_requires` (which shares this walk) empty
-            // bindings make `concrete` vacuously true, so a previously-skipped entry
-            // would now be resolved and could raise a load error; in the provider half
-            // an unresolvable one fails the whole dispatch. MEASURED UNREACHABLE: a
-            // probe on this branch across the `anthill-core` suite hit it ZERO times —
-            // a `requires` clause's spec is always a `SortView`, a bare ref or an
-            // ident. The assert says so, and fires if that ever stops being true,
-            // rather than letting a guessed goal decide a load.
             debug_assert!(
                 false,
                 "WI-857: `requires {}` has no readable spec head — the dictionary slot \
@@ -1177,14 +1200,14 @@ pub(super) fn provider_requires_subgoals(
             });
             continue;
         };
-        let r_qn = kb.qualified_name_of(required).to_string();
+        let spec_qn = kb.qualified_name_of(required).to_string();
         let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         for (k, v) in &entry_bindings {
-            if !is_type_param_binding(kb, *k, &r_qn) {
+            if !is_type_param_binding(kb, *k, &spec_qn) {
                 continue;
             }
-            let nv = subst_requires_value(kb, *v, sigma);
-            bindings.push((*k, nv));
+            let substituted = substitute(kb, *v);
+            bindings.push((*k, substituted));
         }
         out.push(SortGoal {
             spec_sort: required,
@@ -1199,10 +1222,10 @@ pub(super) fn provider_requires_subgoals(
 /// leave anything σ doesn't ground unchanged. Recurses through `Fn`
 /// children (`List[T]`, `Pair[A, B]`).
 fn subst_requires_value(kb: &mut KnowledgeBase, v: TermId, sigma: &[(String, TermId)]) -> TermId {
-    if let Some(s) = view_ref_symbol(kb, &TermIdView(v)) {
-        return map_requires_name(kb, s, v, sigma);
-    }
-    kb.map_fn_children(v, |kb, t| subst_requires_value(kb, t, sigma))
+    rewrite_term_leaves(kb, v, &|kb, t| {
+        let s = view_ref_symbol(kb, &TermIdView(t))?;
+        Some(map_requires_name(kb, s, t, sigma))
+    })
 }
 
 /// σ-ground a bare name in a `requires` value by short name; otherwise keep
@@ -1220,42 +1243,13 @@ fn map_requires_name(
         .map_or(orig, |(_, val)| *val)
 }
 
-/// True iff `value` mentions any abstract type-parameter anywhere in its
-/// structure — a `Var`, a `Ref`/`Ident` to a `sort T = ?` param, or that
-/// param as a nullary `Fn` functor (the `make_name_term` shape the loader
-/// emits for a bare name, e.g. the unbound `E` left by `requires
-/// Iterable[…, E = Effect]`). Used to decide whether a σ-instantiated
-/// `requires` goal is concrete enough to resolve precisely against ground
-/// facts, vs. falling back to the base-level existence check (WI-356).
-pub(super) fn contains_type_param(kb: &KnowledgeBase, value: TermId) -> bool {
-    if is_type_param_value(kb, value) {
-        return true;
-    }
-    match kb.get_term(value) {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => {
-            // A `Fn` functor that is itself a param (`Fn{Effect}` nullary, or a
-            // param used as a head) makes the value abstract.
-            if is_sort_param_symbol(kb, *functor) {
-                return true;
-            }
-            let pos: SmallVec<[TermId; 4]> = pos_args.clone();
-            let named: SmallVec<[(Symbol, TermId); 2]> = named_args.clone();
-            pos.iter().any(|t| contains_type_param(kb, *t))
-                || named.iter().any(|(_, t)| contains_type_param(kb, *t))
-        }
-        _ => false,
-    }
-}
-
-/// WI-20260822-1TKN0 — the carrier-neutral twin of [`contains_type_param`], for a
-/// reader that holds an effect label rather than a `TermId`.
+/// WI-20260822-1TKN0 — "does this mention a type parameter", for a reader that holds an
+/// effect label rather than a `TermId`. The `TermId` question is `!`[`type_value_is_ground`]
+/// (the CONCRETE reading); `contains_type_param` was a second spelling of that walk, arm for
+/// arm, until WI-20260923-32XFQ folded it in.
 ///
-/// NOT A CONVENIENCE WRAPPER. [`contains_type_param`] takes a `TermId`, so its
-/// callers reach it through `matches!(v, Value::Term { .. })` — a CARRIER test
+/// NOT A CONVENIENCE WRAPPER. The `TermId` question takes a `TermId`, so its
+/// callers reached it through `matches!(v, Value::Term { .. })` — a CARRIER test
 /// standing in for an ABSTRACTNESS test. The two questions are not the same one:
 /// a denoted effect label (`Modify[c]`) rides a `Value::Node` because it carries
 /// an occurrence, not because it is parametric, and the override-refinement
@@ -1266,10 +1260,10 @@ pub(super) fn contains_type_param(kb: &KnowledgeBase, value: TermId) -> bool {
 ///
 /// Mirrors [`TermView::bears_opaque`]'s shape for the same reason it exists: a
 /// reader that asks the structure cannot drift when a carrier is added.
-/// On the `TermId` carrier this decides exactly what [`contains_type_param`]
-/// decides, arm for arm — `Var` ⇒ abstract, `Ref`/`Ident` ⇒
-/// [`is_sort_param_symbol`], a functor head that is itself a param ⇒ abstract
-/// (which subsumes the nullary-`Fn` name shape), else recurse.
+/// On the `TermId` carrier this decides exactly what `!type_value_is_ground` decides,
+/// arm for arm — `Var` ⇒ abstract, `Ref`/`Ident` ⇒ [`is_sort_param_symbol`], a functor
+/// head that is itself a param ⇒ abstract (which subsumes the nullary-`Fn` name shape),
+/// else recurse.
 ///
 /// An `Opaque` head answers ABSTRACT: it presents no structure, so nothing here
 /// can establish it is concrete, and "cannot decide" is the fail-open direction
@@ -1284,13 +1278,7 @@ pub(super) fn view_contains_type_param<V: TermView>(kb: &KnowledgeBase, v: &V) -
             if functor.is_some_and(|f| is_sort_param_symbol(kb, f)) {
                 return true;
             }
-            (0..pos_arity).any(|i| {
-                v.pos_arg(kb, i)
-                    .is_some_and(|a| view_contains_type_param(kb, &a))
-            }) || v.named_keys(kb).into_iter().any(|k| {
-                v.named_arg(kb, k)
-                    .is_some_and(|a| view_contains_type_param(kb, &a))
-            })
+            view_any_child(kb, v, pos_arity, |a| view_contains_type_param(kb, a))
         }
         ViewHead::Opaque => true,
         ViewHead::Const(_) | ViewHead::Bottom => false,
@@ -1327,11 +1315,7 @@ pub(super) fn view_bears_denoted<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool
     }
     match v.head(kb) {
         ViewHead::Functor { pos_arity, .. } => {
-            (0..pos_arity).any(|i| v.pos_arg(kb, i).is_some_and(|a| view_bears_denoted(kb, &a)))
-                || v.named_keys(kb).into_iter().any(|k| {
-                    v.named_arg(kb, k)
-                        .is_some_and(|a| view_bears_denoted(kb, &a))
-                })
+            view_any_child(kb, v, pos_arity, |a| view_bears_denoted(kb, a))
         }
         _ => false,
     }
@@ -1380,4 +1364,43 @@ pub(super) fn type_param_sym_of_binding(
     let qn = format!("{spec_qn}.{}", kb.local_name_of(short));
     let s = kb.try_resolve_symbol(&qn)?;
     resolve_sort_alias(kb, s).map(|_| s)
+}
+
+/// σ from a spec view's `bindings` to `spec`'s own type parameters: each binding whose key
+/// names one, keyed by the RESOLVED parameter symbol ([`type_param_sym_of_binding`]);
+/// op-valued and unknown keys are dropped. One builder for the three σ readers —
+/// [`check_override_refinement`], [`check_instance_fact_op_signatures`] and
+/// [`requires_shadow_is_confusable`] (WI-20260923-32XFQ).
+///
+/// The resolved symbol and NOT the raw binding key, which is a different `Symbol` copy
+/// resolved in the provision's scope: `substitute_impl_params_alloc` matches by `Symbol`
+/// equality, so a σ keyed on the raw copy makes every substitution a SILENT NO-OP —
+/// MEASURED on `provides Sp[T = Carrier]`, where the key was `Symbol(2626)` and the spec's
+/// return type held `Symbol(2563)`. A σ reader then fails open: an effects leg sees a
+/// still-parametric row and skips, and a return-type guard cannot decide a spec returning
+/// its own parameter, which is the ordinary case. WI-431 (B) made this correction at two of
+/// the three sites; `check_override_refinement` was the outlier until it followed.
+///
+/// The CALLER picks `bindings`, and the three pick differently on purpose: the override
+/// check reads the view's raw named arguments (so a bare `Spec[T = X]` application keeps
+/// its bindings), the other two [`unwrap_spec_view`]'s.
+///
+/// No POSITIONAL binding reaches σ, and none needs to: since WI-20260923-N3W68 #9 the loader
+/// stores a positional type-parameter binding as the NAMED binding of the parameter it
+/// fills, so a stored view carries none. MEASURED (WI-20260923-32XFQ, where this looked
+/// like a fail-open): `provides Sp[Int64]` and `provides Comb[Thing, combine = …]` are
+/// refused exactly as their named spellings (`wi_32xfq_found_divergences_test`). The only
+/// positional left in a stored view is the WI-407 carrier slot of a parameterless spec,
+/// which binds no parameter — [`check_provider_requires`], which reads the raw view and
+/// pairs positionals itself, drops it for that reason.
+pub(super) fn spec_param_sigma(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    bindings: &[(Symbol, TermId)],
+) -> Vec<(Symbol, TermId)> {
+    let spec_qn = kb.qualified_name_of(spec);
+    bindings
+        .iter()
+        .filter_map(|(k, v)| type_param_sym_of_binding(kb, *k, spec_qn).map(|p| (p, *v)))
+        .collect()
 }

@@ -793,8 +793,8 @@ pub(super) fn build_type(
             // [`dot_member_dispatch_decision`].
             //
             // `find_operation_in_scope` reads the sort symbol from a bare
-            // `Ref(sort)` / `sort(args)` head — not the `sort_ref(name:…)`
-            // wrapper `make_sort_ref` builds (whose functor is `sort_ref`).
+            // `Ref(sort)` / `sort(args)` head, which is what `make_sort_ref` builds
+            // since WI-361 (it built a `sort_ref(name:…)` wrapper before).
             let op_sym = if let Some(s) = recv_sort {
                 let sort_term = kb.alloc(Term::Ref(s));
                 let mut own_op = crate::kb::load::find_operation_in_scope(kb, sort_term, &short);

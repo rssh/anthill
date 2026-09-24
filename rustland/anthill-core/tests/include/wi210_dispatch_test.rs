@@ -278,9 +278,9 @@ fn stdlib_namespace_facts_emit_provides_info_for_numeric() {
 #[test]
 fn store_anthill_emits_provides_info_for_workitemstore() {
     // End-to-end: anthill-todo's actual store.anthill writes
-    // `fact WorkItemStore[State = WIS]` inside `sort
-    // FileBasedWorkitemStore`. After WI-210 phase 1, this should
-    // produce a SortProvidesInfo record.
+    // `provides WorkItemStore[State = WIS]` inside `sort
+    // FileBasedWorkitemStore` (a `fact` until WI-20260917-S8JYF retired that
+    // spelling), which produces a SortProvidesInfo record.
     let mut kb = load_with_store();
     let heads = provides_info_heads(&mut kb);
     let found = heads

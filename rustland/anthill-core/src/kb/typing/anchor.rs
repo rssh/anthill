@@ -900,10 +900,9 @@ pub(super) fn anchor_grounding(
     // neither — it is a member of that bound, and the two are equal only by accident.
     let sort_carrier_checks = projection_anchor.is_none();
     if let (Some(p), false, true) = (carrier_param, bound_is_the_spec, sort_carrier_checks) {
-        let row = provisions_of_spec(kb, spec_canon).find(|(provider, _, _)| {
-            kb.canonical_sort_sym(*provider) == kb.canonical_sort_sym(anchor_bound)
-        });
-        if let Some((_, _, bindings)) = row {
+        let row = provides_rows_of_spec(kb, spec_canon)
+            .find(|row| kb.canonical_sort_sym(row.provider) == kb.canonical_sort_sym(anchor_bound));
+        if let Some(ProvidesRow { bindings, .. }) = row {
             let pins_the_carrier = bindings.iter().any(|(k, v)| {
                 same_label(kb, *k, p)
                     && sort_functor_of_view(kb, &TermIdView(*v)).is_some_and(|h| {
@@ -1097,10 +1096,49 @@ pub(super) fn defaulted_spec_op_witness_grounds_soundly(
 /// The nominal head symbol of an occurrence in spec-instance / reference position
 /// (`Eq[T]` → `Eq`, `Ref(Eq)` → `Eq`).
 pub(super) fn occ_head_symbol(occ: &NodeOccurrence) -> Option<Symbol> {
-    match occ.as_expr()? {
-        Expr::Apply { functor, .. } => Some(*functor),
-        Expr::Constructor { name, .. } | Expr::Instantiation { name, .. } => Some(*name),
+    let expr = occ.as_expr()?;
+    match expr {
         Expr::Ref(s) | Expr::Ident(s) => Some(*s),
+        _ => expr_call_parts(expr).map(|(f, _, _)| f),
+    }
+}
+
+/// WI-20260923-32XFQ — a functor-bearing expression as `(functor, positional, named)`: an
+/// `Apply`, or a `Constructor` / `Instantiation`, the two forms a head takes when it was
+/// MATERIALIZED from a term rather than lowered from source (`forall_impl` names no
+/// operation; a spec-op head can come back a `Constructor`). The occurrence analogue of
+/// `Term::Fn`, which carries all three the same way; `None` for every other form.
+///
+/// The one reading of those three shapes, which ten sites spelled as a two-arm `match`.
+/// Only the DESTRUCTURE is shared: the walks around it keep their own order — two stack
+/// walkers in `elaborate.rs` push in SOURCE order and the rest do not, and moving them to
+/// one walker would reorder the diagnostics they emit.
+#[allow(clippy::type_complexity)]
+pub(super) fn expr_call_parts(
+    expr: &Expr,
+) -> Option<(
+    Symbol,
+    &[Rc<NodeOccurrence>],
+    &[(Symbol, Rc<NodeOccurrence>)],
+)> {
+    match expr {
+        Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } => Some((*functor, pos_args, named_args)),
+        Expr::Constructor {
+            name,
+            pos_args,
+            named_args,
+            ..
+        }
+        | Expr::Instantiation {
+            name,
+            pos_args,
+            named_args,
+        } => Some((*name, pos_args, named_args)),
         _ => None,
     }
 }

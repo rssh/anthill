@@ -1228,13 +1228,11 @@ fn declared_type_goal_bindings(
 }
 
 /// WI-274: rewrite a field-type type term into the canonical shape the
-/// instance resolver matches against. Field types encode sort
-/// references as `sort_ref(name: Ref(S))`, whereas the resolver's
-/// candidate side (from `SortProvidesInfo` / `requires` clauses) uses
-/// bare sort refs. Unwrap every `sort_ref` to its bare `Ref(S)` —
-/// recursing through `parameterized(base, bindings)` so nested element
-/// types (`List[T = Int]`) expose their real base and value sorts to
-/// `parametric_value_parts`.
+/// instance resolver matches against: every BARE sort to `Ref(S)` — the nullary `Fn{S}`
+/// spelling included, which [`extract_sort_ref_sym`] reads too — recursing through
+/// parameterized types so nested element types (`List[T = Int]`) expose their real base
+/// and value sorts to `parametric_value_parts`. (Written when field types still carried
+/// the deep `sort_ref(name: Ref(S))` wrapper; since WI-361 nothing mints that.)
 fn canonicalize_goal_value(kb: &mut KnowledgeBase, value: TermId) -> TermId {
     if let Some(s) = extract_sort_ref_sym(kb, &TermIdView(value)) {
         return kb.alloc(Term::Ref(s));
@@ -1489,36 +1487,14 @@ pub(super) fn provides_out_edges(kb: &KnowledgeBase, node_canon: Symbol) -> Smal
             .unwrap_or_default();
     }
     // No index (the load-time windows where the relation is being written): decode live.
-    // This is the definition the memo above is built from.
+    // This is the definition the memo above is built from — a provision ROW ([`ProvidesRow`]),
+    // as `build_provides_index` files the memo from the same decode.
     let mut out: SmallVec<[Symbol; 4]> = SmallVec::new();
-    for rid in provides_rids_by_carrier_canon(kb, node_canon) {
-        // Match `build_provides_index`, which only buckets facts: a non-fact rule with a
-        // `SortProvidesInfo` head is not a provider edge. Can't arise today (provides are
-        // only ever asserted as facts), but keeps the indexed and scan paths identical —
-        // the other carrier consumers already filter `is_fact` here.
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(c) = get_named_arg(kb, &named, "sort_ref")
-            .and_then(|t| crate::kb::load::sort_ref_functor(kb, t))
-        else {
-            continue;
-        };
-        if kb.canonical_sort_sym(c) != node_canon {
-            continue;
-        }
-        let Some(s) = get_named_arg(kb, &named, "spec")
-            .and_then(|t| crate::kb::load::provides_spec_base_sym(kb, t))
-        else {
-            continue;
-        };
+    for row in provides_rows_of_provider_canon(kb, node_canon) {
         // CANONICAL out-edges: the sole caller compares them canonically and recurses on
         // them (where the recursion would canonicalize anyway), so canonicalizing at the
         // producer is the same relation with the conversion done once.
-        out.push(kb.canonical_sort_sym(s));
+        out.push(kb.canonical_sort_sym(row.spec_base));
     }
     out
 }

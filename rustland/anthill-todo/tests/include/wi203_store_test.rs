@@ -2,7 +2,7 @@
 //!
 //! Phase 2 (per proposal 036): `store.anthill` declares the spec
 //! (over `Cell[V = State]`) and the file-backed impl
-//! (`enum WIS { entity wis(...) }` + `fact WorkItemStore[State = WIS]`)
+//! (`enum WIS { entity wis(...) }` + `provides WorkItemStore[State = WIS]`)
 //! plus the operation bodies (next_id / lookup / by_status_of / commit /
 //! commit_feedback / forget). This file is embedded in the bundle binary
 //! alongside main.anthill — no per-project copy needed. This test

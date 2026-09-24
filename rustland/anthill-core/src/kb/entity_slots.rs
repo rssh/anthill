@@ -223,9 +223,11 @@ pub(crate) fn complete_named_slots<C: SlotCarrier>(
 /// DATA slots too, where `Ref(WorkItem)` must stay the sort-as-value (`facts_of(kb(),
 /// WorkItem)`, `typing::check_bare_ref`'s free-standing-entity arm), and `expected: None`
 /// cannot tell a goal from a data slot of unknown type. `Loader::convert_subject_term`
-/// is the funnel for four of the five positions (rule head, fact head, sort-body
-/// pre-scan, proof step); `load::convert_query_term` and the rule-body GOAL arm of
-/// `build_body_atom_occurrence_inner` are the other two, and each reaches this.
+/// is the funnel for three of the five positions (rule head, fact head, proof step);
+/// `load::convert_query_term` and the rule-body GOAL arm of
+/// `build_body_atom_occurrence_inner` are the other two, and each reaches this. (A
+/// fourth caller, the sort-body carrier pre-scan, read fact heads until
+/// WI-20260923-ZBWMC.)
 ///
 /// WI-20260902-VNWAW: that GOAL arm reaches it down TWO paths, because a dotted
 /// paren-less citation is collapsed to its symbol in a branch of its own (719FJ) and so

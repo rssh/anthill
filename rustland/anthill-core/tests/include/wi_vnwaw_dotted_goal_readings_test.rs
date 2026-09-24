@@ -30,7 +30,8 @@
 //!
 //! CZJ2N put §8.3's expansion at all five, and the dotted spelling reaches four of them
 //! through code that was already shared: `Loader::convert_subject_term` (the rule head,
-//! the fact head, the sort-body pre-scan and the proof step) calls
+//! the fact head and the proof step — and the sort-body pre-scan, until
+//! WI-20260923-ZBWMC stopped it reading fact heads) calls
 //! `expand_bare_entity_subject` on ITS dotted branch, and `convert_query_term` calls
 //! `expand_bare_entity_query_name` on its own (`expand_bare_entity_pattern` until
 //! WI-20260904-J0RM4 split the two carriers). Only the rule-body GOAL arm forked, because

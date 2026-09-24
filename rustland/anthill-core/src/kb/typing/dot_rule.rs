@@ -135,7 +135,6 @@ pub(super) fn find_spec_op_for_provided_sort(
     recv_sort: Symbol,
     short: &str,
 ) -> Option<Symbol> {
-    let provides_sym = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")?;
     // Snapshot the provided specs first: the resolution loop below mutates `kb`
     // (`alloc` / `find_operation_in_scope`), so it can't run while iterating.
     let mut spec_syms: Vec<Symbol> = Vec::new();
@@ -147,39 +146,19 @@ pub(super) fn find_spec_op_for_provided_sort(
     // `sort_ref` is a DIFFERENT sort (`TagCombiner`), so it lives in another carrier
     // bucket — the carrier index's `by_carrier` bucket for `recv_sort` would drop it. Nor is it spec-keyed
     // (it collects EVERY spec `recv_sort` provides). So the full scan is required.
-    for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // A value-fact SortProvidesInfo (denoted-bearing spec) carries no spec
-        // base via the term-only path; occurrence dispatch is gated effect-
-        // expressions-as-types work, so skip rather than panic on a value head.
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        let Some(spec_t) = get_named_arg(kb, &named, "spec") else {
-            continue;
-        };
-        let Some(spec_sym) = crate::kb::load::provides_spec_base_sym(kb, spec_t) else {
-            continue;
-        };
+    for row in provides_rows(kb) {
+        let spec_sym = row.spec_base;
         // Carrier-keyed: the receiver's sort IS the provider — `(3).min(5)` →
         // `Ord.min` via `fact Ord[Int]`. WI-672: canonical sort identity (see
         // `same_sort_canonical`), not `same_symbol`'s last-segment bridge.
-        let carrier_match = same_sort_canonical(kb, carrier, recv_sort);
+        let carrier_match = same_sort_canonical(kb, row.provider, recv_sort);
         // WI-450 witness: the receiver's sort is the spec's CARRIER-PARAM VALUE of a
         // provider whose `sort_ref` is some OTHER (witness) sort — `tag.combine(t)`
         // → `Combiner.combine` via `sort TagCombiner provides Combiner[T = Tag]`. The
         // dot-call synthesises a `combine(tag, t)` Apply that then value-directs to
         // the witness impl at eval (param-agnostic, like the non-dot call form).
         let witness_match = !carrier_match
-            && provision_carrier_sort(kb, spec_sym, &Value::term(spec_t))
+            && provision_carrier_sort(kb, spec_sym, &Value::term(row.spec_view))
                 .map(|c| kb.canonical_sort_sym(c) == recv_canon)
                 .unwrap_or(false);
         if carrier_match || witness_match {

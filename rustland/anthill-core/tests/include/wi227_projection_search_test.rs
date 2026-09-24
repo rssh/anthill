@@ -239,7 +239,7 @@ fn nested_handle_emits_requirement_at_sort_chain() {
     // names-model rewrite in the runtime tests for the real path.
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires
         .iter()
-        .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
+        .map(|ar| anthill_core::kb::typing::requires_chain(&mut kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
         &mut kb,
@@ -317,7 +317,7 @@ fn ground_dep_emits_the_dictionary_node() {
     // SLD resolution and doesn't consult `caller_sort`.
     let caller_sub_chains: Vec<Vec<RequiresEntry>> = caller_requires
         .iter()
-        .map(|ar| anthill_core::kb::typing::requires_chain_flat(&kb, ar.required_sort))
+        .map(|ar| anthill_core::kb::typing::requires_chain(&mut kb, ar.required_sort))
         .collect();
     let projection = build_dep_projection(
         &mut kb,

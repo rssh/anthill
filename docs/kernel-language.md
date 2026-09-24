@@ -995,7 +995,7 @@ use the kernel but are neither additional native constructs nor §6 sugar.
 
 The unit of encapsulation and independent evolution. A namespace scopes sorts, entities, operations, and rules. Namespaces can be nested.
 
-**Dotted names desugar to nested namespaces.** When any declaration (`sort`, `namespace`, `entity`, `operation`) uses a dotted name, each dot-separated prefix segment becomes an implicit namespace if one does not already exist. The item itself is defined by its last segment (short name) in the innermost scope.
+Dotted names desugar to nested namespaces. When any declaration (`sort`, `namespace`, `entity`, `operation`) uses a dotted name, each dot-separated prefix segment becomes an implicit namespace if one does not already exist. The item itself is defined by its last segment (short name) in the innermost scope.
 
 ```
 -- This declaration:
@@ -1056,6 +1056,8 @@ sort C = SPair[B, A]     -- SPair[A = B, B = A] — positional, swaps params
 ```
 
 Note that `Eq[T]` inside a scope where `T` is a sort parameter works because `T` is positionally bound to `Eq`'s first parameter — which happens to be named `T`. This is a positional coincidence, not name-based punning.
+
+**"The next unfilled parameter" means not bound BY NAME, in every position** (WI-20260923-N3W68). A positional written after a name skips the parameter that name bound — `Spec2[T = C, String]` is `Spec2[T = C, U = String]` — and the rule is the same wherever the application is written: a type, a binding value inside a clause, a sort's `provides` / `requires` clause, an operation's `requires`. In those positions a positional left with no unfilled parameter is a **load error** (`… is over-applied`) — except on a spec that declares **no** type parameters, where a positional is the instance's **carrier**. Two positions read a leftover positional as the carrier on any spec, and are not refused: an operation's `ensures` names its existential carrier first (`-> C ensures KVStore[C, K = String, V = String]`, WI-402), and an instance claim names its carrier (`fact NonMonotonicStore[FileStore]`). (Until WI-20260923-N3W68 the `provides` / `requires` clause lowering paired by raw index — binding `T` twice in the example above — and an over-applied clause loaded with the extra argument silently dropped.)
 
 A sort binding can also be a **logical variable** (`?` or `?name`). This is used to express existential quantification over type parameters — "for any instantiation":
 
@@ -1579,6 +1581,43 @@ retired the `fact` spelling of a provision there is nothing to classify — ever
 an ordinary fact — and the data-sort rule survives only on the `provides` side, where it
 was always a refusal rather than a reading.
 
+**A spec clause reads a type alias as the spec it stands for** (WI-20260924-F8PYZ). With
+`sort StoreAlias = Store`, a `provides` clause (its `where` block and `default` mark with
+it), a provision's `:- …` condition, and a sort's or an operation's `requires` read
+`StoreAlias[State = WIS]` as `Store[State = WIS]`: it is `Store` that is provided, required
+or conditioned on — in the provision relation, at dispatch, and to every check, the rule
+above included, so an alias of a data sort is refused as that data sort. An alias carrying
+bindings supplies them: `provides WisStore` over `sort WisStore = Store[State = WIS]` is
+`provides Store[State = WIS]`, bare in an operation's `requires` as anywhere, and a
+positional binding after it binds the next parameter the alias left open. A binding that
+names a type parameter of the declaring sort (`sort StoreOfS = Store[State = S]` inside the
+sort that declares `S`) is that parameter, as the clause spelled directly has it. A chain
+of bare aliases is followed to the sort at its end; an alias written over another alias's
+APPLICATION (`sort B = A[X = …]`) is refused where it is declared, a name that declares no
+parameters being applied. It does not matter where the alias is declared — below the
+clause, or in a later file. Before, each of these spellings loaded as something other than
+what it reads as: a provision was never found by dispatch (the first call died "operation
+has no body"), its `default` mark let another provider answer, an alias of a data sort
+walked past the rule above, a condition conditioned nothing — the provision held at an
+argument providing no such spec — and a requirement went unchecked unless the body called
+the spec's operations.
+
+What a clause cannot read an alias as is **refused at load**, naming why, and never
+resolved by picking one reading: an alias that stands for no sort (`sort Pair2 = (Int64,
+Bool)`), a chain that comes back to itself, a clause binding again a parameter its alias
+fixes (`provides WisStore[State = X]`), and a name that is an alias AND owns members of its
+own (a sort body beside `sort X = …`, or a `namespace X` entry at the alias's address),
+which has two readings. And a spec's qualified name is resolved WHOLE: `provides qa.Colour`
+written in another namespace is refused under the rule above, where the last segment alone
+had been resolved in the writing scope, found nothing, and let the clause through.
+
+**Not read through yet** — each is loud, and each is WI-20260924-SNJPR: a member reached
+through an alias (`StoreAlias.peek(…)` is an unknown functor; the bare-spec sugar
+`StoreAlias.State` is refused), the names a `requires StoreAlias[…]` would bring into scope
+bare, an alias in a type position applied to further arguments, an import through an
+alias, and a `provides … language … end` binding block, which refuses an alias and names
+the sort to write instead.
+
 **One spec operation, one symbol** — WITHDRAWN by WI-20260825-KD9SW, and the paragraph that stood here is gone rather than amended.
 
 WI-20260824-BFB9A refused a **free-standing** `operation` that took a spec operation's name (`operation eq(a: Int64, b: Int64) -> Bool` beside `anthill.prelude.PartialEq.eq`), because the second symbol would shadow the implicit-tier entry a minted `=` resolved through, and the operator would silently change meaning. The refusal was exactly as wide as that tier: its population was the twelve spec operations the tier carried.
@@ -1862,6 +1901,8 @@ operation transform(x: ?T {< input type >} ?) -> ?T  -- with inline description 
 sort Money = Int64                     -- Money is an alias for Int64
 sort Velocity = Float                -- Velocity is an alias for Float
 ```
+
+An alias stands for its type in a type position, and for the spec it names in a spec clause: `provides StoreAlias[…]` over `sort StoreAlias = Store` provides `Store` (§5.1, which lists the clauses, what is refused, and where an alias is not read through yet).
 
 Unspecified properties are expressed as accessor operations within the enclosing sort body:
 
@@ -2966,6 +3007,8 @@ ordinary lexical binding rules. This delivered widening is proposal 041 /
 WI-261.
 
 **Operation type parameters** (`[T1, T2, ...]`) declare per-call polymorphic slots scoped to a single operation invocation. They may appear in the parameter list, return type, requires/ensures, and effects positions. At a call site the bindings can be written positionally (`foo[Int64, String](args)`) or named (`foo[T1 = Int64, T2 = String](args)`), with the positional-first rule borrowed from `SortBinding` (see §5.2). Operation type parameters are **per-call** — each invocation binds them afresh — in contrast to sort-level type parameters which are pinned at sort instantiation. See `docs/proposals/042-explicit-type-parameters-on-operations.md` for the full design and `docs/design/operation-call-model.md` §"Operation type arguments" for the runtime threading through `frame.requirements`.
+
+**A bare spec member in a signature is a type parameter, spelled shorter** (WI-201). `Spec.Member` in an operation's parameter, return or effect type — where `Member` is a type parameter of a constructor-less sort `Spec` — is a fresh operation type parameter `P` with `requires Spec[Member = P]`: `operation cmd(s: WorkItemStore.State)` is `operation cmd[P](s: P) requires WorkItemStore[State = P]`, and typechecks as that does. Every occurrence in one signature is the same `P`; another operation gets its own. Outside an operation signature (a field type) the bare form is not sugar, and stays the refusal it always was. **Inside a carrier, it names the carrier's binding** (WI-20260923-ZBWMC): in a block of a sort that provides `Spec` — its body, or a `namespace <Sort>` secondary entry (§5.1) — `Spec.Member` is the type that block's `provides` clauses bind `Member` to, so under `provides WorkItemStore[State = WIS]` it means `WIS`, with no parameter and no requirement. Only a `provides` clause does this; a `fact Spec[…]` is not a provision (§5.1). The narrowing reads the provisions written in the operation's own block, but a sort's provisions are the sort's wherever they are written, so if the sort's provisions give `Member` **more than one binding** — two in the block, or one in the body and another in a secondary entry or another file — `Spec.Member` names no one type there and is a **load error** listing every binding (`docs/design/path-dependent-types.md` §5.3, "two carriers in scope"): write the type meant, or take it as a parameter. A sole binding no signature in the block could spell — a family (`State = ?x`, `State = List[T = ?]`), another sort's abstract member, an operation — narrows nothing, and the sugar keeps its generic reading.
 
 **A type-parameterized operation as a FUNCTION VALUE** (WI-1083). A bare operation name in a
 function-typed slot denotes the operation as a value — its eta expansion, `inc(n: Int64) ->
@@ -4792,7 +4835,7 @@ When an obligation is discharged, the result is recorded as a `ProofResult` term
 The kernel enforces a **structural type system**:
 
 - **Unspecified sorts** (`sort T = ?` inside a sort body) introduce type parameters without representation. Can appear in operation signatures and fields within the enclosing sort, but have no constructors until a carrier binding is provided.
-- **Type aliases** (`sort Money = Int64`) introduce a name equivalent to an existing type. The alias is interchangeable with the aliased type.
+- **Type aliases** (`sort Money = Int64`) introduce a name equivalent to an existing type. The alias is interchangeable with the aliased type — a clause naming a spec through one names the spec (§5.1).
 - **Sorts with constructors** (`sort S { entity C₁(...), entity C₂(...) }`) introduce closed algebraic data types. All constructors are enumerated; pattern matching in rules is exhaustive.
 - **Operations** have typed signatures: `operation op(x: A, y: B) -> C`. Parameters are named bindings; the kernel type-checks that actual arguments match declared types.
 - **Terms** are typed: `Const` carries its type, `Var` declares its type, `Fn` has the type of its sort's constructor, `Ref` refers to a named type.

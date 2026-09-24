@@ -12,9 +12,15 @@
 //! explicit `[P](…) requires Spec[Member = P]` form and infers at concrete calls.
 //!
 //! Disambiguation:
-//!   - INSIDE an impl that binds the carrier (`fact WorkItemStore[State = WIS]`),
+//!   - INSIDE an impl that binds the carrier (`provides WorkItemStore[State = WIS]`),
 //!     `WorkItemStore.State` NARROWS to the bound carrier (WIS) — order-independent of
-//!     the fact-vs-op source order.
+//!     the provision-vs-op source order. Only a PROVISION narrows: these rows were
+//!     written with the `fact` spelling, which WI-20260917-S8JYF retired, and until
+//!     WI-20260923-ZBWMC that retired spelling was the only one the pre-scan read
+//!     (`wi_zbwmc_provision_narrowing_test` drives the switch and pins the fact).
+//!   - a carrier whose provisions bind the member to SEVERAL types — in one block, or
+//!     across its body and `namespace <Sort>` entries — makes `Spec.Member` a LOUD
+//!     ambiguity there (ZBWMC; design §5.3), not a quiet generic reading.
 //!   - a member the spec does NOT declare (`Spec.Nope`) stays LOUD.
 //!   - the sugar fires ONLY in operation signatures; a bare-spec member in a
 //!     sort/entity field stays the loud `RigidTypeProjection` conflation error.
@@ -45,7 +51,7 @@ fn load_errors(extras: &[&str]) -> Vec<String> {
 }
 
 /// The shared WorkItemStore-shaped spec + carrier: `Store` has a SOLE type-param
-/// `State` (its carrier — the slot a `fact`/`provides` binds); `WIS` is the concrete
+/// `State` (its carrier — the slot a `provides` binds); `WIS` is the concrete
 /// state shape an impl carries. (`peek` gives the spec a member op so it is a real
 /// interface.)
 const STORE: &str = r#"
@@ -144,7 +150,7 @@ fn distinct_operations_get_distinct_carriers() {
 fn carrier_in_scope_narrows_to_bound_type() {
     let src = with_store(
         "narrow",
-        "  sort FileStore\n    fact Store[State = WIS]\n    \
+        "  sort FileStore\n    provides Store[State = WIS]\n    \
          operation idWis(s: Store.State) -> WIS = s\n  end\n",
     );
     assert!(
@@ -159,7 +165,7 @@ fn carrier_in_scope_narrows_to_bound_type() {
 fn carrier_in_scope_narrowing_is_real() {
     let src = with_store(
         "narrow_real",
-        "  sort FileStore\n    fact Store[State = WIS]\n    \
+        "  sort FileStore\n    provides Store[State = WIS]\n    \
          operation badRet(s: Store.State) -> Int64 = s\n  end\n",
     );
     let errs = load_errors(&[&src]);
@@ -170,33 +176,33 @@ fn carrier_in_scope_narrowing_is_real() {
 }
 
 /// The narrowing is ORDER-INDEPENDENT: the using operation may appear BEFORE the
-/// binding `fact` in source (the bindings are pre-scanned from the parse items).
+/// binding provision in source (the bindings are pre-scanned from the parse items).
 #[test]
 fn carrier_in_scope_narrowing_is_order_independent() {
     let src = with_store(
         "narrow_order",
         "  sort FileStore\n    \
          operation idWis(s: Store.State) -> WIS = s\n    \
-         fact Store[State = WIS]\n  end\n",
+         provides Store[State = WIS]\n  end\n",
     );
     assert!(
         load_errors(&[&src]).is_empty(),
-        "op declared before the binding fact still narrows (pre-scan is order-independent)",
+        "op declared before the binding provision still narrows (pre-scan is order-independent)",
     );
 }
 
-/// A POSITIONAL binding (`fact Store[WIS]`) narrows too — mapped to the spec's first
-/// declared parameter, identical to `fact Store[State = WIS]`.
+/// A POSITIONAL binding (`provides Store[WIS]`) narrows too — mapped to the spec's first
+/// declared parameter, identical to `provides Store[State = WIS]`.
 #[test]
 fn carrier_in_scope_narrowing_positional_binding() {
     let src = with_store(
         "narrow_pos",
-        "  sort FileStore\n    fact Store[WIS]\n    \
+        "  sort FileStore\n    provides Store[WIS]\n    \
          operation idWis(s: Store.State) -> WIS = s\n  end\n",
     );
     assert!(
         load_errors(&[&src]).is_empty(),
-        "positional `fact Store[WIS]` narrows Store.State to WIS",
+        "positional `provides Store[WIS]` narrows Store.State to WIS",
     );
 }
 
@@ -245,7 +251,7 @@ fn data_sort_member_is_not_sugar() {
     );
 }
 
-/// A fact binding the spec member to a NON-concrete carrier (a logic var) does not
+/// A provision binding the spec member to a NON-concrete carrier (a logic var) does not
 /// narrow — it falls back to the fresh `?P` existential rather than leaking an
 /// uninferable var into the signature (so a body under `-> WIS` is rejected as the
 /// generic `?State`, not the var).
@@ -253,7 +259,7 @@ fn data_sort_member_is_not_sugar() {
 fn non_concrete_binding_falls_back_to_existential() {
     let src = with_store(
         "nonconcrete",
-        "  sort FileStore\n    fact Store[State = ?x]\n    \
+        "  sort FileStore\n    provides Store[State = ?x]\n    \
          operation idWis(s: Store.State) -> WIS = s\n  end\n",
     );
     let errs = load_errors(&[&src]);
@@ -263,22 +269,24 @@ fn non_concrete_binding_falls_back_to_existential() {
     );
 }
 
-/// CONFLICTING carrier facts for one `(spec, member)` do not silently last-win: the
-/// ambiguous binding is dropped, so the sugar mints a fresh existential (the body
-/// under `-> WIS` is rejected as the generic `?State`, not one of the two carriers).
+/// CONFLICTING provisions for one `(spec, member)` narrow to neither: `Store.State` names
+/// no one type there, and that is a LOUD ambiguity naming both carriers (design §5.3,
+/// and this ticket's own acceptance, "ambiguous … stays loud"). It used to fall back to
+/// the generic existential without a word — and, with a third provision, to re-admit one
+/// carrier by source order (WI-20260923-ZBWMC, whose test covers that and the rest).
 #[test]
 fn conflicting_carrier_bindings_do_not_narrow() {
     let src = with_store(
         "conflict",
         "  enum WIS2\n    entity wis2(n: Int64)\n  end\n  \
-         sort FileStore\n    fact Store[State = WIS]\n    fact Store[State = WIS2]\n    \
+         sort FileStore\n    provides Store[State = WIS]\n    provides Store[State = WIS2]\n    \
          operation idWis(s: Store.State) -> WIS = s\n  end\n",
     );
     let errs = load_errors(&[&src]);
     assert!(
-        errs.iter()
-            .any(|e| e.contains("WIS") && e.contains("State")),
-        "two conflicting carrier facts ⟹ no narrowing, a generic existential; got: {errs:?}",
+        errs.iter().any(|e| e.contains("`Store.State` names no one type")
+            && e.contains("bound to WIS, WIS2")),
+        "two conflicting provisions ⟹ a loud ambiguity naming both; got: {errs:?}",
     );
 }
 

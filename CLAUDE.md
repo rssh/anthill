@@ -8,7 +8,7 @@ A kernel language and knowledge base system for formal specification and reasoni
 
 > **Representation note (not "types are terms").** The old "types are terms" mantra was too abstract and invited a false conclusion — that types must be hash-consed `TermId`s. They need not be. Hash-consing is a storage *optimization* (O(1) structural equality, dedup, shared-subterm memory) that pays off for **persistent, heavily-shared structure** — asserted facts, rule heads, nominal sort identities. It is **not implied by type-hood**, and notably **not required by being indexed/searched**: the discrimination tree keys on purely structural `DiscrimKey`s, never on `TermId` identity, so a non-hash-consed carrier (a `Value::Node`/`Entity`, a transient query pattern) indexes and matches identically. It is specifically **inappropriate for binders** (arrow / dependent types), whose scope and alpha-equivalence don't fit a global dedup store. The genuinely load-bearing claim is only that types carry logical variables and unify.
 
-Specification: `docs/kernel-language.md` — canonical language spec (should be kept in sync with implementation).
+Specification: `docs/kernel-language.md` — canonical language spec (should be kept in sync with implementation). If you need to change specification - discuss this with user at first.
 
 Design proposals: `docs/proposals/` (numbered 001–024+) — language extensions and design decisions.
 
@@ -111,8 +111,6 @@ invariant comment and `wi321_cross_file_mutual_recursion_test`.
 
 ### Key Concepts
 
-- **Hash-consing (selective, not universal)**: persistent, heavily-shared structure (asserted facts, rule heads, sort identities) is interned in `TermStore` so structurally-identical terms share one `TermId` — but interned terms live for the KB's lifetime, so transient terms (query patterns, occurrence-derived twins, **and the resolver's σ-applied goals**) are deliberately NOT interned; they ride as `Value::Node`/`Entity` carriers and match structurally. A `Value::Entity` is therefore a GOAL carrier, not only a value one — every goal reader must fold it (WI-20260906-7YPGM). See the Representation note at the top of this file.
-- **Symbol table**: string interning (`Symbol(u32)`), scope-aware two-phase resolution (Unresolved → Resolved)
 - **De Bruijn variables**: rules stored with `DeBruijn(u32)`, opened to fresh globals during resolution
 - **Discrimination tree**: structural term matching index for fast rule/fact lookup
 - **SLD resolution**: depth-first search with negation-as-failure, delay/rotation for unbound vars

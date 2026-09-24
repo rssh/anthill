@@ -739,6 +739,29 @@ pub(crate) struct WrittenProvidesClause {
     pub span: SourceSpan,
 }
 
+/// WI-20260923-ZBWMC — one use of the bare-spec sugar `Spec.Member` (WI-201) that a
+/// carrier block's own provisions decided, for `typing::check_bare_spec_narrowings`.
+///
+/// RECORDED, because the block is not the whole carrier. A sort's provisions are the
+/// SORT'S wherever they are written (059): its body, a `namespace <Sort>` entry, another
+/// file. The loader narrows from the block it is in, and only once every file has loaded
+/// can a check ask whether the carrier provides `Spec` anywhere else with `Member` bound
+/// to something different — which makes the member ambiguous, and the narrowing wrong.
+#[derive(Clone, Debug)]
+pub(crate) struct BareSpecNarrowing {
+    /// The sort whose block the operation is written in.
+    pub carrier: Symbol,
+    /// The spec named at the use, as the sugar resolved it.
+    pub spec: Symbol,
+    /// The member, by its interned short name (`State`).
+    pub member: Symbol,
+    /// The carrier the block's provisions bound the member to, or `None` when they bound
+    /// it to several — already ambiguous in the block itself.
+    pub narrowed: Option<TermId>,
+    /// The use, for a `path:line:col` diagnostic.
+    pub span: SourceSpan,
+}
+
 /// WI-840/WI-841 (058 §4.7) — one NAMED requirement slot of an operation or a sort:
 /// `requires O: Ord[T = E]`. See [`KnowledgeBase::named_requirement_slots`] for the
 /// two lists `slot` indexes and why `spec_base` is recorded beside it rather than
@@ -1381,6 +1404,27 @@ pub struct KnowledgeBase {
     /// an O(1) lookup instead of a double linear scan of every SortAlias fact.
     pub(crate) sort_alias_index: Option<crate::kb::typing::SortAliasIndex>,
 
+    /// WI-20260924-F8PYZ — each TYPE ALIAS's target (`sort StoreAlias = Store` ↦
+    /// `Store`), written by the loader's one `SortAlias` emitter
+    /// (`Loader::assert_sort_alias`) beside the fact, for the reader that asks while files
+    /// are still loading: a spec clause reads an alias as the spec it stands for
+    /// ([`typing::alias_expansion`]). The scan passes run before it is written, so the names
+    /// they resolve — imports, a `requires`'s scope parents, rule-head addresses — cannot
+    /// read an alias through it (WI-20260924-SNJPR).
+    ///
+    /// ONLY an alias: a `sort T = ?` parameter or opaque sort, whose target is a logic
+    /// variable, is not one and is not here. A SECOND map of the `SortAlias` relation,
+    /// beside [`Self::sort_alias_index`], because that one is built as a batch at
+    /// type-check start and a batch built earlier would miss the parameter facts WI-402's
+    /// existential carriers add DURING the load pass — it has no fallback on a miss. One
+    /// map kept by this same emitter for every target could serve both and retire the
+    /// load-time scan; that is not done here. This one needs no fallback: every alias is
+    /// declared before any clause loads (the WI-936 declaration pass pre-loads every `sort X
+    /// = …` of every file), and a miss means "not an alias", exactly. O(1), where the
+    /// pre-index `resolve_sort_alias` scans every `SortAlias` fact — MEASURED ~110 in a
+    /// stdlib load, one of them an alias, against ~165 spec clauses asking.
+    pub(crate) alias_targets: HashMap<Symbol, TermId>,
+
     /// WI-660 — the SortProvidesInfo (provider/coherence) index: providers keyed
     /// BOTH by canonical spec-base symbol AND by canonical carrier symbol, built once at
     /// type-check start by `typing::build_provides_index`. Replaces the per-call
@@ -1762,6 +1806,14 @@ pub struct KnowledgeBase {
     // Push-only WITHIN a load; drained ONCE by `load_phase_inner`, so a second
     // `load_all` into the same KB re-checks only its own clauses.
     written_provides_clauses: Vec<WrittenProvidesClause>,
+
+    // WI-20260923-ZBWMC — every use of the bare-spec sugar this load NARROWED (or found
+    // ambiguous) from a carrier block's provisions, for
+    // `typing::check_bare_spec_narrowings`. Recorded rather than checked in place for
+    // the reason its KXNEX neighbour above is: the other provisions of the carrier may
+    // stand in a file that has not loaded yet. Push-only within a load, drained once by
+    // `load_phase_inner` beside it.
+    bare_spec_narrowings: Vec<BareSpecNarrowing>,
 
     // SortRequiresInfo facts already finalized by resolve_requires_bindings.
     // Keyed by post-reassert RuleId. Lets incremental loads skip stdlib facts.
@@ -2193,6 +2245,9 @@ pub(crate) struct LoadCheckMarks {
     /// load, drained BELOW the `run_typer: false` return, and leaving a partial load's
     /// clauses behind hands the next batch a refusal about a file it was never given.
     written_provides_clauses: usize,
+    /// WI-20260923-ZBWMC — the bare-spec narrowing registry, on the same terms: drained
+    /// beside the written-`provides` one, so it is left behind by the same partial load.
+    bare_spec_narrowings: usize,
 }
 
 /// WI-709: how a sort application's type arguments failed to fit the sort's declared
@@ -2347,6 +2402,7 @@ impl KnowledgeBase {
             provision_layout_key_cache: RefCell::new(HashMap::new()),
             provision_member_cache: RefCell::new(HashMap::new()),
             sort_alias_index: None,
+            alias_targets: HashMap::new(),
             provides_index: None,
             sort_info_index: None,
             requires_index: None,
@@ -2370,6 +2426,7 @@ impl KnowledgeBase {
             entity_field_types: HashMap::new(),
             parameterized_type_sites: Vec::new(),
             written_provides_clauses: Vec::new(),
+            bare_spec_narrowings: Vec::new(),
             resolved_requires_facts: HashSet::new(),
             judged_row_binding_clauses: HashSet::new(),
             unbacked_derived_provisions: HashSet::new(),
@@ -2573,6 +2630,7 @@ impl KnowledgeBase {
         LoadCheckMarks {
             parameterized_type_sites: self.parameterized_type_sites.len(),
             written_provides_clauses: self.written_provides_clauses.len(),
+            bare_spec_narrowings: self.bare_spec_narrowings.len(),
         }
     }
 
@@ -2581,6 +2639,7 @@ impl KnowledgeBase {
         let LoadCheckMarks {
             parameterized_type_sites,
             written_provides_clauses,
+            bare_spec_narrowings,
         } = marks;
         // TRUNCATE, not `clear`: the caller may have been handed a KB that already had
         // pending sites, and this restores what it found rather than what it wants.
@@ -2607,6 +2666,11 @@ impl KnowledgeBase {
         );
         self.written_provides_clauses
             .truncate(written_provides_clauses);
+        debug_assert!(
+            self.bare_spec_narrowings.len() >= bare_spec_narrowings,
+            "the bare-spec narrowing registry shrank between capture and restore"
+        );
+        self.bare_spec_narrowings.truncate(bare_spec_narrowings);
     }
 
     /// WI-20260901-EA6KS — the loader's declaration walk has just (re-)presented the
@@ -3491,6 +3555,90 @@ impl KnowledgeBase {
             .collect()
     }
 
+    /// WI-20260923-N3W68 (#9) — which DECLARED type parameter each POSITIONAL argument of one
+    /// application binds: `slots[i]` is the index in `declared` the i-th positional binds, or
+    /// `None` past the free parameters (an over-application). `bound_by_name` answers, by
+    /// SHORT name, whether the application also binds a declared parameter by name.
+    ///
+    /// THE LANGUAGE'S RULE, AND ITS ONE OWNER: a positional binds the next declared
+    /// parameter NOT ALREADY BOUND BY NAME, in declaration order — `Spec2[T = C, String]`
+    /// binds `U = String`, never `T` a second time. [`Self::check_sort_type_args`] decides
+    /// arity by it.
+    ///
+    /// Before this, every site that paired positionals spelled the rule itself — twelve of
+    /// them — and the spellings disagreed. Seven skipped the named parameters: the loader's
+    /// type-position lowering and its `require[…]` bracket, eval's `finish_sort_type`,
+    /// `check_provider_requires`, `normalize_op_requires_entry`,
+    /// `goal_from_op_requires_entry` and `written_spec_binds_param`. Five paired by RAW
+    /// INDEX: the `provides` / `requires` clause lowering (`sort_inst_to_value`), the
+    /// binding-value lowering (`sort_binding_to_value`), `op_requires_entry_carrier_map`,
+    /// the WI-359 capture in `resolve_requires_bindings`, and `scan_sort_carrier_bindings`
+    /// (which has since stopped pairing at all: it reads the clause lowering's view,
+    /// WI-20260923-ZBWMC).
+    /// MEASURED on the raw-index side: `provides Spec2[T = C, String]` stored `T` twice and
+    /// no `U`, and `provides Spec[T = Map[K = Int64, String]]` diverted the `String` out of
+    /// the bindings — both then REFUSED a correct use as a type mismatch — while the same
+    /// spellings in a type position meant `U = String` and `V = String`. The eleven that
+    /// still pair ask this now. The one pairing that does not is the typer's `resolve_call_type_arg_targets`:
+    /// the same rule over a different list — an operation's OWN bracket parameters, up to a
+    /// positional limit, with occupancy tracked by index — and its own excess error.
+    pub fn positional_param_slots(
+        declared: &[String],
+        bound_by_name: impl Fn(&str) -> bool,
+        positional_count: usize,
+    ) -> Vec<Option<usize>> {
+        let mut slots = Vec::with_capacity(positional_count);
+        let mut next = 0usize;
+        for _ in 0..positional_count {
+            while next < declared.len() && bound_by_name(&declared[next]) {
+                next += 1;
+            }
+            if next < declared.len() {
+                slots.push(Some(next));
+                next += 1;
+            } else {
+                slots.push(None);
+            }
+        }
+        slots
+    }
+
+    /// WI-20260923-N3W68 (#9) — the POSITIONAL half of [`Self::check_sort_type_args`], for the
+    /// positions whose argument grammar is richer than a type's: a `provides` / `requires`
+    /// clause, an operation's `requires`, an instance claim. They may bind OPERATIONS by
+    /// name, which the full check would call undeclared parameters, and on a spec with NO
+    /// parameters a positional is the WI-407 carrier slot, not an argument. So: an
+    /// over-application of a spec that HAS parameters, given the [`Self::positional_param_slots`]
+    /// of the application, or `None`.
+    pub fn excess_positional(declared: &[String], slots: &[Option<usize>]) -> Option<TypeArgProblem> {
+        (!declared.is_empty() && slots.iter().any(Option::is_none)).then(|| {
+            TypeArgProblem::ExcessPositional {
+                given: slots.len(),
+                free: slots.iter().flatten().count(),
+            }
+        })
+    }
+
+    /// WI-20260923-ZBWMC — the DUPLICATE half of [`Self::check_sort_type_args`], for the
+    /// positions [`Self::excess_positional`] serves. Those may bind operations by name as
+    /// well as type parameters, so the whole check cannot run there — but a name bound
+    /// twice is two contradictory claims whatever it names. Unchecked, the clause loaded,
+    /// and the two view decoders read it differently: the term decoder kept both values,
+    /// the value decoder read the first one twice, so whether the bare-spec sugar
+    /// narrowed from `provides Store[State = WIS, State = WIS2]` turned on whether some
+    /// OTHER binding of the clause was denoted (MEASURED).
+    pub fn duplicate_named_binding(&self, named: &[Symbol]) -> Option<TypeArgProblem> {
+        named.iter().enumerate().find_map(|(i, n)| {
+            let short = self.local_name_of(*n);
+            named[..i]
+                .iter()
+                .any(|p| self.local_name_of(*p) == short)
+                .then(|| TypeArgProblem::DuplicateParam {
+                    param: short.to_owned(),
+                })
+        })
+    }
+
     /// WI-709: check a sort APPLICATION's type arguments against the sort's DECLARED
     /// type params — the ONE rule both positions a type can be written in must obey.
     ///
@@ -3559,17 +3707,18 @@ impl KnowledgeBase {
                 });
             }
         }
-        // Each positional binds the next declared param NOT already given by name, so
-        // the params still free is what bounds the positional count — the same rule
-        // `finish_sort_type` and the loader bind by.
-        let free = declared
-            .iter()
-            .filter(|d| !named.iter().any(|n| self.local_name_of(*n) == d.as_str()))
-            .count();
-        if positional_count > free {
+        // Each positional binds the next declared param NOT already given by name
+        // ([`Self::positional_param_slots`], the rule's one owner), so an over-application
+        // is a positional it finds no slot for.
+        let slots = Self::positional_param_slots(
+            declared,
+            |d| named.iter().any(|n| self.local_name_of(*n) == d),
+            positional_count,
+        );
+        if slots.iter().any(Option::is_none) {
             return Err(TypeArgProblem::ExcessPositional {
                 given: positional_count,
-                free,
+                free: slots.iter().flatten().count(),
             });
         }
         Ok(())
@@ -9663,13 +9812,13 @@ impl KnowledgeBase {
 
     // ── Type term constructors (anthill.prelude.Type entities) ───
 
-    /// `sort_ref(name: <sym>)` — reference to a named sort.
+    /// A reference to a named sort: the bare term `Ref(S)`.
     pub fn make_sort_ref(&mut self, sort_sym: Symbol) -> TermId {
         // WI-361 producer flip: a bare sort is the term `Ref(S)` itself — no
         // `sort_ref(name: Ref(S))` wrapper. The sort symbol IS the functor for
-        // discrimination (`rules_by_functor`, discrim top-edge); dual-form readers
-        // (`extract_sort_ref_sym` / `type_head`) still recognize the deep
-        // `sort_ref` shape for any residual/reflect terms.
+        // discrimination (`rules_by_functor`, discrim top-edge). The deep wrapper has
+        // no reader either: `type_head` reads it as `Parameterized { base: sort_ref }`,
+        // not as a bare sort — this comment claimed otherwise until WI-20260923-N3W68.
         self.alloc(Term::Ref(sort_sym))
     }
 
@@ -10839,6 +10988,20 @@ impl KnowledgeBase {
     /// of re-reporting every batch before it.
     pub(crate) fn take_written_provides_clauses(&mut self) -> Vec<WrittenProvidesClause> {
         std::mem::take(&mut self.written_provides_clauses)
+    }
+
+    /// WI-20260923-ZBWMC — record one narrowed (or block-ambiguous) use of the bare-spec
+    /// sugar, for the post-load check against the carrier's every provision. Same
+    /// record-now-decide-later split, and the same draining ownership, as
+    /// [`Self::record_written_provides_clause`] above.
+    pub(crate) fn record_bare_spec_narrowing(&mut self, narrowing: BareSpecNarrowing) {
+        self.bare_spec_narrowings.push(narrowing);
+    }
+
+    /// WI-20260923-ZBWMC — take the recorded uses, leaving the registry empty. DRAINING,
+    /// for the reason [`Self::take_written_provides_clauses`] is.
+    pub(crate) fn take_bare_spec_narrowings(&mut self) -> Vec<BareSpecNarrowing> {
+        std::mem::take(&mut self.bare_spec_narrowings)
     }
 
     /// Check if a functor symbol is a constructor (entity with a parent sort).

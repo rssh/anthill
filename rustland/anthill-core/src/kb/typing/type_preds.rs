@@ -110,13 +110,7 @@ fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool)
             if functor.is_some_and(|f| is_sort_param_symbol(kb, f)) {
                 return false;
             }
-            (0..pos_arity).all(|i| {
-                v.pos_arg(kb, i)
-                    .is_some_and(|c| type_view_is_ground_g(kb, &c, rigid_ok))
-            }) && v.named_keys(kb).iter().all(|k| {
-                v.named_arg(kb, *k)
-                    .is_some_and(|c| type_view_is_ground_g(kb, &c, rigid_ok))
-            })
+            view_all_children(kb, v, pos_arity, |c| type_view_is_ground_g(kb, c, rigid_ok))
         }
         // A carrier with no structure to read — a closure, a stream, a `ParseAux`. It is not
         // a type and cannot be judged one; `false` withholds the verdict, which is what the
@@ -125,17 +119,85 @@ fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool)
     }
 }
 
+/// WI-20260923-32XFQ — does `t`, or any term beneath it, satisfy `hit`? Pre-order over the
+/// hash-consed `Term::Fn` spine — the node itself, then its positional arguments, then its
+/// named ones — stopping at the first hit. `hit` is asked of EVERY node, interior ones
+/// included, and is handed the node's `Term` so it need not fetch it again; a question
+/// that is only a leaf's answers `false` for an interior node ([`occurs_in`]).
+///
+/// The one child walk under the `TermId` "does this type mention X" predicates, which each
+/// spelled it with only the leaf test differing: [`term_contains_callable`],
+/// `term_mentions_an_entity`, `type_term_has_variable`, `declared_type_mentions_param`,
+/// [`type_term_mentions_type_var`], `type_term_mentions_op_tp`, `term_contains_functor`,
+/// [`occurs_in`]. A `TermId` walk rather than a [`TermView`] one on purpose: the view's
+/// `named_keys` allocates per node, and [`occurs_in`] runs for every hash-consed binding.
+pub(super) fn term_any_subterm(
+    kb: &KnowledgeBase,
+    t: TermId,
+    hit: &impl Fn(TermId, &Term) -> bool,
+) -> bool {
+    let term = kb.get_term(t);
+    if hit(t, term) {
+        return true;
+    }
+    match term {
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            pos_args.iter().any(|&a| term_any_subterm(kb, a, hit))
+                || named_args
+                    .iter()
+                    .any(|&(_, a)| term_any_subterm(kb, a, hit))
+        }
+        _ => false,
+    }
+}
+
+/// WI-20260923-32XFQ — does any CHILD of `v` satisfy `f`: its positional arguments in order
+/// (`pos_arity` of them, read off the head the caller already matched), then its named ones?
+/// The child loop the [`TermView`] walkers' functor arm spelled each for itself; everything
+/// around it — which heads are leaves, what a variable answers — stays theirs, and differs.
+///
+/// A child the view names and cannot hand out counts as NO hit here and as a FAILURE in
+/// [`view_all_children`], which is what each walker's `is_some_and` answered.
+pub(super) fn view_any_child<V: TermView>(
+    kb: &KnowledgeBase,
+    v: &V,
+    pos_arity: usize,
+    mut f: impl FnMut(&ViewItem<'_>) -> bool,
+) -> bool {
+    (0..pos_arity).any(|i| v.pos_arg(kb, i).is_some_and(|c| f(&c)))
+        || v.named_keys(kb)
+            .into_iter()
+            .any(|k| v.named_arg(kb, k).is_some_and(|c| f(&c)))
+}
+
+/// [`view_any_child`]'s universal twin: does EVERY child of `v` satisfy `f`?
+pub(super) fn view_all_children<V: TermView>(
+    kb: &KnowledgeBase,
+    v: &V,
+    pos_arity: usize,
+    mut f: impl FnMut(&ViewItem<'_>) -> bool,
+) -> bool {
+    (0..pos_arity).all(|i| v.pos_arg(kb, i).is_some_and(|c| f(&c)))
+        && v.named_keys(kb)
+            .into_iter()
+            .all(|k| v.named_arg(kb, k).is_some_and(|c| f(&c)))
+}
+
 /// WI-385: groundness of a substitution-RESOLVED type `Value` — the gate for
 /// argument / field type validation. Only a fully-concrete declared type
 /// checked against a fully-concrete actual type may fail; a type-parameter
-/// position (`T`), an unresolved inference var (`?_` / `Value::Var`), or a
-/// carrier whose groundness the term predicate can't read stays UNCHECKED.
-/// This is what keeps the validation from false-positiving on the pervasive
-/// polymorphic signatures (`add(a: T, b: T)`, `some(value: T)`, `cons(head: T,
-/// …)`): those param/field types resolve to a sort-param or a still-free var,
-/// whose conformance the spec-op dispatch / return-conformance path settles, not
-/// this check. Conservative by design — a non-`Term` carrier returns `false`
-/// (skip) rather than risk an unsound pass or a false reject.
+/// position (`T`) or an unresolved inference var (`?_` / `Value::Var`) stays
+/// UNCHECKED. This is what keeps the validation from false-positiving on the
+/// pervasive polymorphic signatures (`add(a: T, b: T)`, `some(value: T)`,
+/// `cons(head: T, …)`): those param/field types resolve to a sort-param or a
+/// still-free var, whose conformance the spec-op dispatch / return-conformance
+/// path settles, not this check. EVERY carrier is judged — see
+/// [`resolved_type_is_ground_g`]; this doc used to promise that a non-`Term`
+/// carrier returned `false` (skip), which stopped being true at WI-470.
 pub(super) fn resolved_type_is_ground(kb: &KnowledgeBase, v: &Value) -> bool {
     resolved_type_is_ground_g(kb, v, false)
 }
@@ -147,6 +209,13 @@ pub(super) fn resolved_type_is_determined(kb: &KnowledgeBase, v: &Value) -> bool
     resolved_type_is_ground_g(kb, v, true)
 }
 
+/// The shared body of [`resolved_type_is_ground`] (`rigid_ok = false`, CONCRETE) and
+/// [`resolved_type_is_determined`] (`rigid_ok = true`, DETERMINED) — the two readings
+/// [`type_value_is_ground_g`] documents. Three arms, by carrier: a hash-consed type through
+/// [`type_value_is_ground_g`]; an occurrence through [`node_type_is_ground_g`], which keeps
+/// its own arm for the type-specific judgments it names; and every other carrier through
+/// the shared view walk [`type_view_is_ground_g`] (which is where the old `_ => false`
+/// went — one type, one answer, whatever carrier it rides in on).
 fn resolved_type_is_ground_g(kb: &KnowledgeBase, v: &Value, rigid_ok: bool) -> bool {
     match v {
         Value::Term { id: t, .. } => type_value_is_ground_g(kb, *t, rigid_ok),
@@ -406,33 +475,10 @@ pub(super) fn type_mentions_flex_var<V: TermView>(kb: &KnowledgeBase, ty: &V) ->
     if bindable_type_var(kb, ty).is_some() {
         return true;
     }
-    let ViewHead::Functor {
-        pos_arity,
-        named_arity,
-        ..
-    } = ty.head(kb)
-    else {
+    let ViewHead::Functor { pos_arity, .. } = ty.head(kb) else {
         return false;
     };
-    for i in 0..pos_arity {
-        if ty
-            .pos_arg(kb, i)
-            .is_some_and(|a| type_mentions_flex_var(kb, &a))
-        {
-            return true;
-        }
-    }
-    if named_arity > 0 {
-        for key in ty.named_keys(kb) {
-            if ty
-                .named_arg(kb, key)
-                .is_some_and(|a| type_mentions_flex_var(kb, &a))
-            {
-                return true;
-            }
-        }
-    }
-    false
+    view_any_child(kb, ty, pos_arity, |a| type_mentions_flex_var(kb, a))
 }
 
 /// WI-722: is this resolved type EXACTLY an occurrence type — a bare

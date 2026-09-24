@@ -10,21 +10,22 @@ use super::*;
 /// engine-internal classifier the typer/codegen `match` over (replacing ad-hoc
 /// functor-name-keyed dispatch as readers migrate).
 ///
-/// **Dual-form.** A `Type` value is converging from a deep ADT representation
-/// (`sort_ref(name)` / `parameterized(base, bindings)` terms) onto a *term
-/// backing*: a bare sort `S` is `Term::Ref(S)`, a type application `S[p = v, …]`
-/// is `Fn{S, named:[(p, v), …]}` (the base sort is the functor — no
-/// `parameterized` wrapper). [`extract_type`] reads BOTH forms into the same
-/// variants, so producers and readers can migrate independently. The structural
-/// type forms (`arrow` / `effects_rows` / `named_tuple` / `denoted` / `nothing`
-/// / `type_var`) stay entities in both worlds and read identically.
+/// **The term backing** (WI-361): a bare sort `S` is `Term::Ref(S)` (or the nullary
+/// `Fn{S}` a sort name keeps under the CZJ2N canon), and a type application
+/// `S[p = v, …]` is `Fn{S, named:[(p, v), …]}` — the base sort is the functor, with no
+/// `parameterized` wrapper. The deep ADT this converged FROM (`sort_ref(name)` /
+/// `parameterized(base, bindings)` terms) is gone, and it is NOT read here: a
+/// `sort_ref(name: Ref(S))` term classifies as `Parameterized { base: sort_ref }`. (This
+/// doc said [`extract_type`] reads both forms until WI-20260923-N3W68.) The structural type
+/// forms (`arrow` / `effects_rows` / `named_tuple` / `denoted` / `nothing` / `type_var`)
+/// are entities.
 ///
 /// Sub-type children are owned [`Value`]s (the carrier the builtin emits and the
 /// typer is migrating onto, WI-342); symbol heads (`SortRef`/`TypeVar` name,
 /// `Parameterized` base) are `Symbol`s.
 #[derive(Clone, Debug)]
 pub enum TypeExtractor {
-    /// A bare sort `S` — term-backed `Ref(S)` or deep `sort_ref(name: Ref(S))`.
+    /// A bare sort `S` — `Ref(S)`, or the nullary `Fn{S}` a sort name keeps (CZJ2N).
     SortRef(Symbol),
     /// A type variable — deep `type_var(name)`.
     TypeVar(Symbol),

@@ -30,6 +30,11 @@ pub(super) type ParamBackedVars = HashSet<u32>;
 /// WI-9C2PZ — the canonical type-parameter VARIABLE a declared-type node denotes, if it
 /// denotes one.
 ///
+/// Named `declared_type_param_var` until WI-20260923-N3W68, which is also the name of
+/// [`crate::kb::op_info::declared_type_param_var`] — a DIFFERENT question (the variable an
+/// operation's own bracket declares, by short name) asked of different arguments. Two
+/// functions, one name, in one crate.
+///
 /// The question is NOT "does this look like a type parameter" but "is this a VARIABLE
 /// that [`walk_type`] collapses into one canonical identity KB-wide" — because that
 /// collapse is exactly the conflation being repaired, so its set is exactly the set to
@@ -70,7 +75,7 @@ pub(super) type ParamBackedVars = HashSet<u32>;
 /// test accepts and the map does not answer for would be a residual conflation, so it was
 /// counted: instrumented across the whole `wi_tests` corpus (3151 tests, full stdlib plus
 /// every fixture), ZERO names diverged.
-pub(super) fn declared_type_param_var(kb: &KnowledgeBase, t: TermId) -> Option<VarId> {
+pub(super) fn denoted_type_param_var(kb: &KnowledgeBase, t: TermId) -> Option<VarId> {
     match kb.get_term(t) {
         Term::Var(Var::Global(v)) => Some(*v),
         Term::Ref(sym) | Term::Ident(sym) => type_param_global_var(kb, *sym),
@@ -93,24 +98,7 @@ pub(super) fn declared_type_param_var(kb: &KnowledgeBase, t: TermId) -> Option<V
 /// itself. Measured on a full stdlib load, the large majority of declared parameter /
 /// field types mention no parameter at all (`String`, `Int64`, `List[Term]`).
 fn declared_type_mentions_param(kb: &KnowledgeBase, t: TermId) -> bool {
-    if declared_type_param_var(kb, t).is_some() {
-        return true;
-    }
-    match kb.get_term(t) {
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => {
-            pos_args
-                .iter()
-                .any(|&a| declared_type_mentions_param(kb, a))
-                || named_args
-                    .iter()
-                    .any(|&(_, a)| declared_type_mentions_param(kb, a))
-        }
-        _ => false,
-    }
+    term_any_subterm(kb, t, &|t, _| denoted_type_param_var(kb, t).is_some())
 }
 
 /// WI-9C2PZ — the fresh variable `inst` stands `canonical` up as, minted on first use.
@@ -138,7 +126,7 @@ fn instantiate_declared_term(
     t: TermId,
     inst: &mut ParamInstantiation,
 ) -> TermId {
-    if let Some(canonical) = declared_type_param_var(kb, t) {
+    if let Some(canonical) = denoted_type_param_var(kb, t) {
         return instantiated_param_var(kb, canonical, inst);
     }
     let Term::Fn {
@@ -248,65 +236,90 @@ pub(super) fn instantiate_declared_type(
     }
 }
 
-/// WI-9C2PZ — term-side twin of [`constrain_occ_arg_type`]: [`constrain_var_type`] for a
-/// variable, plus the LITERAL channel. Kept in step with its occurrence sibling on
-/// purpose — the two walkers ask the same question of the same declarations, and a
-/// channel present in only one of them is exactly the drift the twinning exists to
-/// prevent. Both delegate the literal half to [`constrain_literal_arg`], which states the
-/// gate once.
-pub(super) fn constrain_arg_type(
+/// WI-20260923-32XFQ — an applied ARGUMENT as the two constraint walkers read it: a rule
+/// head's `TermId` argument ([`collect_term_type_constraints`]) or a body OCCURRENCE
+/// ([`collect_occurrence_type_constraints`]). The two questions either asks of one, and all
+/// that differed between the twins they used to keep "in step on purpose": is it a
+/// literal, and is it a variable — keyed by a `Global`'s raw id or a De Bruijn index, the
+/// one key space a rule's head term and its body occurrences share.
+pub(super) trait ConstrainedArg {
+    fn literal(&self, kb: &KnowledgeBase) -> Option<Literal>;
+    fn var_key(&self, kb: &KnowledgeBase) -> Option<u32>;
+}
+
+impl ConstrainedArg for TermId {
+    fn literal(&self, kb: &KnowledgeBase) -> Option<Literal> {
+        match kb.get_term(*self) {
+            Term::Const(lit) => Some(lit.clone()),
+            _ => None,
+        }
+    }
+    fn var_key(&self, kb: &KnowledgeBase) -> Option<u32> {
+        match kb.get_term(*self) {
+            Term::Var(Var::Global(vid)) => Some(vid.raw()),
+            Term::Var(Var::DeBruijn(idx)) => Some(*idx),
+            _ => None,
+        }
+    }
+}
+
+impl ConstrainedArg for Rc<NodeOccurrence> {
+    fn literal(&self, _kb: &KnowledgeBase) -> Option<Literal> {
+        match self.as_expr() {
+            Some(Expr::Const(lit)) => Some(lit.clone()),
+            _ => None,
+        }
+    }
+    fn var_key(&self, _kb: &KnowledgeBase) -> Option<u32> {
+        match self.as_expr() {
+            Some(Expr::Var(Var::Global(vid))) => Some(vid.raw()),
+            Some(Expr::Var(Var::DeBruijn(idx))) => Some(*idx),
+            _ => None,
+        }
+    }
+}
+
+/// WI-9C2PZ — constrain one applied ARGUMENT position: [`constrain_vid`] for a variable,
+/// plus the LITERAL channel a variable position does not need — for either walker's
+/// carrier ([`ConstrainedArg`]), which is what used to be two twins kept in step by hand.
+///
+/// A literal argument is not a variable, so it recorded nothing at all — and for a
+/// parameter that is the difference between knowing the parameter's type and never
+/// knowing it. `rule twoeq(?x, ?n) :- gen(?x, ?n), eq(?x, "a"), eq(?n, 1)` has no other
+/// typing source for either column (a rule subgoal types nothing), so without this the
+/// two columns instantiate to two unconstrained variables — independent, which is the
+/// repair, but also untyped, so `twoeq(1, "a")` would be accepted as readily as
+/// `twoeq("a", 1)`. Reading the literal makes the columns `String` and `Int64`. The gate
+/// that scopes it is [`constrain_literal_arg`]'s.
+///
+/// Anything neither a literal nor a variable constrains nothing here.
+pub(super) fn constrain_arg<A: ConstrainedArg>(
     kb: &mut KnowledgeBase,
-    term: TermId,
+    arg: &A,
     expected_type: &Value,
     instantiated: bool,
     var_types: &mut HashMap<u32, Value>,
     param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
 ) {
-    if let Term::Const(lit) = kb.get_term(term) {
-        let lit = lit.clone();
+    if let Some(lit) = arg.literal(kb) {
         constrain_literal_arg(kb, &lit, expected_type, instantiated, subst);
         return;
     }
-    constrain_var_type(
-        kb,
-        term,
-        expected_type,
-        instantiated,
-        var_types,
-        param_backed,
-        subst,
-    );
+    if let Some(vid) = arg.var_key(kb) {
+        constrain_vid(
+            kb,
+            vid,
+            expected_type,
+            instantiated,
+            var_types,
+            param_backed,
+            subst,
+        );
+    }
 }
 
-/// If `term` is a variable, record that it should have `expected_type`.
-/// If the variable already has a type, unify the two.
-fn constrain_var_type(
-    kb: &mut KnowledgeBase,
-    term: TermId,
-    expected_type: &Value,
-    from_param: bool,
-    var_types: &mut HashMap<u32, Value>,
-    param_backed: &mut ParamBackedVars,
-    subst: &mut Substitution,
-) {
-    let vid = match kb.get_term(term) {
-        Term::Var(Var::Global(vid)) => vid.raw(),
-        Term::Var(Var::DeBruijn(idx)) => *idx,
-        _ => return,
-    };
-    constrain_vid(
-        kb,
-        vid,
-        expected_type,
-        from_param,
-        var_types,
-        param_backed,
-        subst,
-    );
-}
-
-/// Shared core of `constrain_var_type` / `constrain_occ_var_type`: record the
+/// Shared core of [`constrain_arg`]'s variable arm: record the
 /// var's expected type, or unify against an existing one (keyed by the var's
 /// raw id / De Bruijn idx — the same key space for a rule's head term and its
 /// body occurrences, both closed against the same `vars`).
@@ -410,69 +423,43 @@ pub(super) fn collect_occurrence_type_constraints(
         return;
     }
     let Some(expr) = occ.as_expr() else { return };
-    match expr {
-        Expr::Apply {
+    if let Some((functor, pos_args, named_args)) = expr_call_parts(expr) {
+        constrain_application(
+            kb,
             functor,
             pos_args,
             named_args,
-            ..
-        } => {
-            constrain_application(
-                kb,
-                *functor,
-                pos_args,
-                named_args,
-                var_types,
-                param_backed,
-                subst,
-            );
-        }
-        Expr::Constructor {
-            name,
-            pos_args,
-            named_args,
-            ..
-        }
-        | Expr::Instantiation {
-            name,
-            pos_args,
-            named_args,
-        } => {
-            constrain_application(
-                kb,
-                *name,
-                pos_args,
-                named_args,
-                var_types,
-                param_backed,
-                subst,
-            );
-        }
-        // WI-819: `Expr::Let` no longer has a type-positional field. Its
-        // annotation is an Expr-kind child of the PATTERN occurrence, and the
-        // pattern arm at the top of this function already descends into it — so
-        // a ground annotation's nested op/entity calls are constrained through
-        // the SAME recursion, not a parallel term-collector call.
-        // WI-318: Lambda / LambdaWithin params AND MatchBranch.pattern
-        // are now Pattern-kind occurrences walked by `for_each_child`
-        // below. Any nested TermId-typed children (e.g. a Var pattern's
-        // type_ann Expr-kind occurrence) are reached via that recursion;
-        // no explicit term-level call needed here.
-        _ => {}
+            var_types,
+            param_backed,
+            subst,
+        );
     }
+    // Every other form adds no constraint of its own and is reached through the child
+    // walk below.
+    //
+    // WI-819: `Expr::Let` no longer has a type-positional field. Its
+    // annotation is an Expr-kind child of the PATTERN occurrence, and the
+    // pattern arm at the top of this function already descends into it — so
+    // a ground annotation's nested op/entity calls are constrained through
+    // the SAME recursion, not a parallel term-collector call.
+    // WI-318: Lambda / LambdaWithin params AND MatchBranch.pattern
+    // are now Pattern-kind occurrences walked by `for_each_child`
+    // below. Any nested TermId-typed children (e.g. a Var pattern's
+    // type_ann Expr-kind occurrence) are reached via that recursion;
+    // no explicit term-level call needed here.
     for_each_child(expr, |c| {
         collect_occurrence_type_constraints(kb, c, var_types, param_backed, subst)
     });
 }
 
-/// Constrain the op-arg (positional) / entity-field (named) var positions of one
-/// applied occurrence — the occurrence analog of the op/entity dispatch in
-/// [`collect_term_type_constraints`].
-fn constrain_application(
+/// Constrain the op-arg (positional) / entity-field (named) argument positions of one
+/// application — of a rule head's `Term::Fn` or a body occurrence alike: the op/entity
+/// dispatch both walkers share ([`ConstrainedArg`]).
+pub(super) fn constrain_application<A: ConstrainedArg>(
     kb: &mut KnowledgeBase,
     functor: Symbol,
-    pos_args: &[Rc<NodeOccurrence>],
-    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_args: &[A],
+    named_args: &[(Symbol, A)],
     var_types: &mut HashMap<u32, Value>,
     param_backed: &mut ParamBackedVars,
     subst: &mut Substitution,
@@ -486,7 +473,7 @@ fn constrain_application(
             if let Some((_, param_type)) = op.params.get(i) {
                 let (param_type, instantiated) =
                     instantiate_declared_type(kb, param_type, &mut inst);
-                constrain_occ_arg_type(
+                constrain_arg(
                     kb,
                     arg,
                     &param_type,
@@ -505,7 +492,7 @@ fn constrain_application(
                 // constrain directly, no re-grounding to a term.
                 let (field_type, instantiated) =
                     instantiate_declared_type(kb, field_type, &mut inst);
-                constrain_occ_arg_type(
+                constrain_arg(
                     kb,
                     arg,
                     &field_type,
@@ -517,49 +504,6 @@ fn constrain_application(
             }
         }
     }
-}
-
-/// WI-9C2PZ — constrain one applied ARGUMENT position: [`constrain_occ_var_type`] for a
-/// variable, plus the LITERAL channel a variable position does not need.
-///
-/// A literal argument is not a variable, so it recorded nothing at all — and for a
-/// parameter that is the difference between knowing the parameter's type and never
-/// knowing it. `rule twoeq(?x, ?n) :- gen(?x, ?n), eq(?x, "a"), eq(?n, 1)` has no other
-/// typing source for either column (a rule subgoal types nothing), so without this the
-/// two columns instantiate to two unconstrained variables — independent, which is the
-/// repair, but also untyped, so `twoeq(1, "a")` would be accepted as readily as
-/// `twoeq("a", 1)`. Reading the literal makes the columns `String` and `Int64`.
-///
-/// GATED ON `expected` MENTIONING A VARIABLE, deliberately, and the gate is not caution
-/// but scope: against a CONCRETE parameter an argument's own type is the ordinary
-/// type-check's business, which this pre-pass has no standing to re-decide (and could
-/// not, for anything but a literal — every other argument shape still contributes
-/// nothing here). Against an INSTANTIATED one this pre-pass owns the only channel that
-/// says what the parameter is. Ungated it would also start manufacturing refusals in
-/// reflect-shaped code, where a `Bool` literal in a `Term` slot is ordinary.
-fn constrain_occ_arg_type(
-    kb: &mut KnowledgeBase,
-    occ: &Rc<NodeOccurrence>,
-    expected_type: &Value,
-    instantiated: bool,
-    var_types: &mut HashMap<u32, Value>,
-    param_backed: &mut ParamBackedVars,
-    subst: &mut Substitution,
-) {
-    if let Some(Expr::Const(lit)) = occ.as_expr() {
-        let lit = lit.clone();
-        constrain_literal_arg(kb, &lit, expected_type, instantiated, subst);
-        return;
-    }
-    constrain_occ_var_type(
-        kb,
-        occ,
-        expected_type,
-        instantiated,
-        var_types,
-        param_backed,
-        subst,
-    );
 }
 
 /// WI-9C2PZ — the LITERAL channel itself, one copy for both walkers so the gate that
@@ -593,31 +537,4 @@ fn constrain_literal_arg(
     if !ok && std::env::var("FIRST_CUT_9C2PZ").is_ok() {
         subst.contradiction = true;
     }
-}
-
-/// Occurrence analog of [`constrain_var_type`]: if `occ` is a var leaf, record /
-/// unify its expected type.
-fn constrain_occ_var_type(
-    kb: &mut KnowledgeBase,
-    occ: &Rc<NodeOccurrence>,
-    expected_type: &Value,
-    from_param: bool,
-    var_types: &mut HashMap<u32, Value>,
-    param_backed: &mut ParamBackedVars,
-    subst: &mut Substitution,
-) {
-    let vid = match occ.as_expr() {
-        Some(Expr::Var(Var::Global(vid))) => vid.raw(),
-        Some(Expr::Var(Var::DeBruijn(idx))) => *idx,
-        _ => return,
-    };
-    constrain_vid(
-        kb,
-        vid,
-        expected_type,
-        from_param,
-        var_types,
-        param_backed,
-        subst,
-    );
 }

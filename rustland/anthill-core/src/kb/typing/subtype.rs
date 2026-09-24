@@ -2226,7 +2226,7 @@ impl WitnessActual {
 /// `types_compatible` is therefore not hot in the sense the word carries — 2799 calls is
 /// ~17 per millisecond of a 168 ms load — and the `by_spec_base` bucket is EMPTY at 1263
 /// of the 1267 entries. BEFORE the split below, this leg was 87% of every
-/// [`provisions_of_spec`] call in the load (1267 of 1457) while accounting for 0.2% of
+/// [`provides_rows_of_spec`] call in the load (1267 of 1457) while accounting for 0.2% of
 /// the rids they decode (4 of 1924); after it, the load makes 194 such calls in all and
 /// the leg is TWO of them.
 ///
@@ -2250,7 +2250,7 @@ impl WitnessActual {
 /// WHAT K0E8T CHANGED, both behaviour-preserving, and neither justified by the load:
 ///   * the bare arm no longer MINTS before the gate ([`WitnessActual`], which says what
 ///     the mint costs and why the refcount is the observable);
-///   * `spec_canon` is threaded into [`provisions_from_rids`] and `actual_canon` is
+///   * `spec_canon` is threaded into [`provides_rows_of_spec_in`] and `actual_canon` is
 ///     deferred past the emptiness check, so the common path does ONE
 ///     `canonical_sort_sym` (an FQN string hash) where it did three, and never enters the
 ///     decoder at all.
@@ -2313,7 +2313,7 @@ pub(super) fn witness_provides_admissibly(
     // criterion (its `None` means the provision's carrier IS its provider — a
     // self-provision or an instance fact, both of which `sort_provides_admissibly` has
     // already answered for). Reading the rids HERE rather than through
-    // [`provisions_of_spec`] is what lets `actual_canon` wait: at 1263 of 1267
+    // [`provides_rows_of_spec`] is what lets `actual_canon` wait: at 1263 of 1267
     // stdlib-load entries the bucket is empty, and canonicalizing the actual for a bucket
     // with nothing in it is an FQN string hash spent on a decided question. The empty
     // answer is now one `canonical_sort_sym` and one `HashMap` lookup, with no `Vec`
@@ -2339,11 +2339,11 @@ pub(super) fn witness_provides_admissibly(
         return false;
     }
     let actual_canon = kb.canonical_sort_sym(actual_base);
-    let rows: Vec<SmallVec<[(Symbol, TermId); 2]>> = provisions_from_rids(kb, spec_canon, rids)
-        .filter_map(|(provider, spec_t, bindings)| {
-            witness_dispatch_carrier(kb, expected_spec, provider, spec_t)
+    let rows: Vec<SmallVec<[(Symbol, TermId); 2]>> = provides_rows_of_spec_in(kb, spec_canon, rids)
+        .filter_map(|row| {
+            witness_dispatch_carrier(kb, expected_spec, row.provider, row.spec_view)
                 .filter(|c| *c == actual_canon)
-                .map(|_| bindings)
+                .map(|_| row.bindings)
         })
         .collect();
     if rows.is_empty() {
@@ -3090,9 +3090,12 @@ fn project_type_component(kb: &KnowledgeBase, ty: &Value, sel: &LeafSelector) ->
     }
 }
 
-/// The variable a tail leaf references, if it is a bare value reference (the forms
-/// `value_references` enumerates: `Ident` / `Ref` / `VarRef`).
-fn leaf_var_ref(node: &Rc<NodeOccurrence>) -> Option<Symbol> {
+/// The name a BARE VALUE REFERENCE occurrence names — `Ident` / `Ref` / `VarRef`, the
+/// forms `value_references` enumerates — else `None`. WI-20260923-32XFQ: the one reading of
+/// "is this argument a simple reference, and to what", which eight sites spelled as a
+/// three-arm match (a dot-call receiver, a relation reference, a constructor field's
+/// receiver, a stable receiver path's head, …).
+pub(super) fn leaf_var_ref(node: &Rc<NodeOccurrence>) -> Option<Symbol> {
     match node.as_expr() {
         Some(Expr::Ident(s)) | Some(Expr::Ref(s)) => Some(*s),
         Some(Expr::VarRef { name }) => Some(*name),

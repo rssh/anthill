@@ -304,14 +304,14 @@ pub(super) fn carrier_is_its_own_sole_provider(
 ) -> bool {
     let carrier_param = spec_carrier_param_or_sole(kb, spec);
     let mut saw_self = false;
-    for (provider, spec_t, _) in provisions_of_spec(kb, spec) {
+    for row in provides_rows_of_spec(kb, spec) {
         let dispatch_carrier = carrier_param
-            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(spec_t)))
-            .map_or(provider, |(_, base)| base);
+            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(row.spec_view)))
+            .map_or(row.provider, |(_, base)| base);
         if !same_sort_canonical(kb, dispatch_carrier, carrier) {
             continue;
         }
-        if same_sort_canonical(kb, provider, carrier) {
+        if same_sort_canonical(kb, row.provider, carrier) {
             saw_self = true;
         } else {
             // A witness dispatching at this carrier: the slot may hold ITS dictionary.
@@ -323,13 +323,13 @@ pub(super) fn carrier_is_its_own_sole_provider(
 
 pub(super) fn carrier_has_provision_row(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
     let carrier_param = spec_carrier_param_or_sole(kb, spec);
-    provisions_of_spec(kb, spec).any(|(provider, spec_t, _)| {
+    provides_rows_of_spec(kb, spec).any(|row| {
         // No carrier parameter to read ⇒ the provision's dispatch carrier IS the
         // provider (a self-provision, an instance fact, or a row that names no other
         // sort) — the same default `witness_dispatch_carrier`'s `None` stands for.
         let dispatch_carrier = carrier_param
-            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(spec_t)))
-            .map_or(provider, |(_, base)| base);
+            .and_then(|p| provision_binding_at_param(kb, p, &Value::term(row.spec_view)))
+            .map_or(row.provider, |(_, base)| base);
         same_sort_canonical(kb, dispatch_carrier, carrier)
     })
 }
@@ -1355,60 +1355,6 @@ pub(super) fn build_concrete_dispatch_dict(
     )
 }
 
-/// WI-822 LEG 1 — the dictionary each OP-SCOPED requirement slot of `callee_op`
-/// gets, in op-chain order, built at the call site from the per-call substitution.
-/// Empty for an operation that writes no `requires` of its own, which is nearly all
-/// of them and costs one memoized `is_empty()`.
-///
-/// The op half's supply is the CALL's, not the instance's, and that is why it is
-/// built here and not folded into the dispatching dictionary. A dictionary is a
-/// SPEC INSTANCE — `Dictionary(spec half ++ provider half, impl: P)`, indexed by
-/// `requirement_at_sort` and laid out by [`DictLayout`] — whereas an op-scoped
-/// requirement is evidence about THIS CALL of THIS OPERATION, belonging to no
-/// instance. Appending it to the instance would make every layout reader op-aware
-/// for a thing no instance has.
-///
-/// BEST-EFFORT, PER SLOT, and deliberately not `require_complete`: a slot that does
-/// not project is `None` and is simply absent from the callee's frame. That is the
-/// decision WI-822 LEG 2 already measured and recorded for the same channel — "has
-/// an unpinnable chain" and "needs it" are different questions and only the body
-/// answers the second, and refusing here broke 29 green stdlib tests whose bodies
-/// never read the slot. A body that DOES read an absent slot raises the
-/// frame-naming `DeferToRequirement: … not bound` from `start_apply_deferred`. The
-/// all-or-nothing shape the sort half uses is wrong here for a second reason too:
-/// these slots are keyed by NAME, so a partial supply cannot mis-index the rest.
-///
-/// EXCEPT FOR A TIE (WI-1091), which is the one absence that is a VERDICT rather than
-/// a gap. "Best-effort" answers the question "could this call supply the slot?", and for
-/// every other cause the honest answer is "no, and maybe nobody needs it". A tie answers
-/// a DIFFERENT question — 058 tier 3 let two providers coexist and this call names
-/// neither — and nothing else in the pipeline will ever report it: the load-time
-/// coherence checks exempt these pairs BY DESIGN, so a tie reaching a route with no
-/// bracket is exactly the case that must go loud where it is found (WI-855's rule).
-/// Refusing it here is what makes the op-scoped spelling AGREE with the sort-level one,
-/// which has refused the identical program at load since WI-828 —
-/// `build_dispatching_dict_from_chain`'s `require_complete` arm, through the same
-/// [`explain_dep_refusal`] and with the same `RequirementRefusal` payload.
-///
-/// MEASURED as the row that needs it: `wi855 tie_through_value_directed_dispatch_names_
-/// the_requirement_and_both_providers` drives `Holder.probe(wrap(twig()))` from a WRITTEN
-/// call site, so the supply is this function's and not the bridge's. Silent, its slot was
-/// absent and the widened read said `__req_desc not bound … frame binds []`, naming
-/// neither the tie nor the two witnesses that caused it.
-///
-/// AND SINCE WI-1102, a `NoMatch` at a FULLY-PINNED carrier is PARKED rather than silent
-/// — 058 §3.10's use-site discharge, "'provides nothing at all' stops being an accepting
-/// state". That does NOT reopen the paragraph above: "best-effort" still answers "could
-/// this call supply the slot?", and the parked refusal is REPORTED by
-/// [`report_unsuppliable_requirements`]. Since WI-20260921-3G1YT it is reported
-/// unconditionally — the old "does the callee's body READ it?" gate is gone, and what
-/// keeps a legitimate call out of the park is a DISCHARGE ROUTE
-/// ([`scope_contract_covers_dep`]) rather than an excuse. See [`unprovided_provision`]
-/// for the three conditions and [`OpSlotParkSite`] for the two the caller supplies.
-// WI-20260909-S8CBV added the 8th parameter (`param_arg_types`). Allowed rather than
-// bundled: the seven that were here are each a distinct call-site fact this function
-// reads once, and a struct around them would be a carrier invented for a lint.
-#[allow(clippy::too_many_arguments)]
 /// WI-20260921-28TAT — THE ONE WRITER of an occurrence's op-scoped evidence: build the
 /// dictionaries this call site owes its callee's OWN `requires` slots, and stamp them.
 ///
@@ -1594,6 +1540,60 @@ pub(super) fn param_supplied_slot(
     })
 }
 
+/// WI-822 LEG 1 — the dictionary each OP-SCOPED requirement slot of `callee_op`
+/// gets, in op-chain order, built at the call site from the per-call substitution.
+/// Empty for an operation that writes no `requires` of its own, which is nearly all
+/// of them and costs one memoized `is_empty()`.
+///
+/// The op half's supply is the CALL's, not the instance's, and that is why it is
+/// built here and not folded into the dispatching dictionary. A dictionary is a
+/// SPEC INSTANCE — `Dictionary(spec half ++ provider half, impl: P)`, indexed by
+/// `requirement_at_sort` and laid out by [`DictLayout`] — whereas an op-scoped
+/// requirement is evidence about THIS CALL of THIS OPERATION, belonging to no
+/// instance. Appending it to the instance would make every layout reader op-aware
+/// for a thing no instance has.
+///
+/// BEST-EFFORT, PER SLOT, and deliberately not `require_complete`: a slot that does
+/// not project is `None` and is simply absent from the callee's frame. That is the
+/// decision WI-822 LEG 2 already measured and recorded for the same channel — "has
+/// an unpinnable chain" and "needs it" are different questions and only the body
+/// answers the second, and refusing here broke 29 green stdlib tests whose bodies
+/// never read the slot. A body that DOES read an absent slot raises the
+/// frame-naming `DeferToRequirement: … not bound` from `start_apply_deferred`. The
+/// all-or-nothing shape the sort half uses is wrong here for a second reason too:
+/// these slots are keyed by NAME, so a partial supply cannot mis-index the rest.
+///
+/// EXCEPT FOR A TIE (WI-1091), which is the one absence that is a VERDICT rather than
+/// a gap. "Best-effort" answers the question "could this call supply the slot?", and for
+/// every other cause the honest answer is "no, and maybe nobody needs it". A tie answers
+/// a DIFFERENT question — 058 tier 3 let two providers coexist and this call names
+/// neither — and nothing else in the pipeline will ever report it: the load-time
+/// coherence checks exempt these pairs BY DESIGN, so a tie reaching a route with no
+/// bracket is exactly the case that must go loud where it is found (WI-855's rule).
+/// Refusing it here is what makes the op-scoped spelling AGREE with the sort-level one,
+/// which has refused the identical program at load since WI-828 —
+/// `build_dispatching_dict_from_chain`'s `require_complete` arm, through the same
+/// [`explain_dep_refusal`] and with the same `RequirementRefusal` payload.
+///
+/// MEASURED as the row that needs it: `wi855 tie_through_value_directed_dispatch_names_
+/// the_requirement_and_both_providers` drives `Holder.probe(wrap(twig()))` from a WRITTEN
+/// call site, so the supply is this function's and not the bridge's. Silent, its slot was
+/// absent and the widened read said `__req_desc not bound … frame binds []`, naming
+/// neither the tie nor the two witnesses that caused it.
+///
+/// AND SINCE WI-1102, a `NoMatch` at a FULLY-PINNED carrier is PARKED rather than silent
+/// — 058 §3.10's use-site discharge, "'provides nothing at all' stops being an accepting
+/// state". That does NOT reopen the paragraph above: "best-effort" still answers "could
+/// this call supply the slot?", and the parked refusal is REPORTED by
+/// [`report_unsuppliable_requirements`]. Since WI-20260921-3G1YT it is reported
+/// unconditionally — the old "does the callee's body READ it?" gate is gone, and what
+/// keeps a legitimate call out of the park is a DISCHARGE ROUTE
+/// ([`scope_contract_covers_dep`]) rather than an excuse. See [`unprovided_provision`]
+/// for the three conditions and [`OpSlotParkSite`] for the two the caller supplies.
+// WI-20260909-S8CBV added the 8th parameter (`param_arg_types`). Allowed rather than
+// bundled: the seven that were here are each a distinct call-site fact this function
+// reads once, and a struct around them would be a carrier invented for a lint.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_op_scoped_dicts(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -2658,8 +2658,7 @@ fn view_carrier_binding(kb: &KnowledgeBase, tid: TermId) -> Option<TermId> {
             pos_args,
             named_args,
         } => {
-            let qn = kb.qualified_name_of(*functor);
-            if qn == "anthill.reflect.SortView" || qn.ends_with(".SortView") {
+            if is_sort_view_functor(kb, *functor) {
                 let base = pos_args
                     .first()
                     .copied()
@@ -3323,63 +3322,22 @@ fn caller_param_rigids(
 /// `resolve_sort_alias` + the live `subst` (no precomputed qualified-name
 /// map, so it makes no assumption about how the param symbol is spelled). A
 /// param left abstract (`is_type_param_value`) or unbound is preserved.
+///
+/// A denoted spec is walked carrier-faithfully ([`rewrite_spec_value`], WI-662): a
+/// co-carried type-param binding (`Foo[T = ParentT, E = Modify[c]]`) must still be
+/// root-scoped so the concrete call type reaches the `SortGoal`, and a denoted
+/// `Value::Node` child is kept verbatim, mirroring the op-level `substitute_clause`.
 pub(super) fn substitute_spec_via_subst(
     kb: &mut KnowledgeBase,
     spec: &Value,
     subst: &Substitution,
 ) -> Value {
-    match spec {
-        Value::Term { id, .. } => Value::term(substitute_spec_via_subst_term(kb, *id, subst)),
-        // WI-662: carrier-faithful walk of a denoted spec. Substitute the
-        // term-representable children — a co-carried type-param binding
-        // (`Foo[T = ParentT, E = Modify[c]]`) must still be root-scoped so the
-        // concrete call type reaches the `SortGoal` — and preserve a denoted
-        // `Value::Node` child verbatim (its Expr-occurrence σ is the deferred
-        // parametric-effect handling, mirroring the op-level `substitute_clause`).
-        Value::Entity {
-            functor,
-            pos,
-            named,
-        } => {
-            let new_pos: Vec<Value> = pos
-                .iter()
-                .map(|v| substitute_spec_via_subst(kb, v, subst))
-                .collect();
-            let new_named: Vec<(Symbol, Value)> = named
-                .iter()
-                .map(|(k, v)| (*k, substitute_spec_via_subst(kb, v, subst)))
-                .collect();
-            Value::Entity {
-                functor: *functor,
-                pos: new_pos.into(),
-                named: new_named.into(),
-            }
-        }
-        other => other.clone(),
-    }
-}
-
-/// WI-662: the ground TermId walk under [`substitute_spec_via_subst`].
-fn substitute_spec_via_subst_term(
-    kb: &mut KnowledgeBase,
-    spec: TermId,
-    subst: &Substitution,
-) -> TermId {
-    match kb.get_term(spec).clone() {
-        Term::Ref(s) => resolve_param_value_via_subst(kb, s, subst).unwrap_or(spec),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => {
-            // Nullary Fn — the loader's alternative encoding for a bare name.
-            resolve_param_value_via_subst(kb, functor, subst).unwrap_or(spec)
-        }
-        Term::Fn { .. } => kb.map_fn_children(spec, |kb, child| {
-            substitute_spec_via_subst_term(kb, child, subst)
-        }),
-        _ => spec,
-    }
+    rewrite_spec_value(kb, spec, &|kb, t| {
+        rewrite_term_leaves(kb, t, &|kb, t| {
+            let s = ref_or_nullary_name(kb.get_term(t))?;
+            Some(resolve_param_value_via_subst(kb, s, subst).unwrap_or(t))
+        })
+    })
 }
 
 /// WI-415: the concrete type a sort-parameter symbol's logical variable is

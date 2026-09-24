@@ -10,33 +10,8 @@ use super::*;
 pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
     let mut out: Vec<Symbol> = Vec::new();
     let spec_canon = kb.canonical_sort_sym(spec_sort);
-    // WI-660: the spec-base bucket (built index) or the full scan (pre-build); the
-    // `canonical_sort_sym` filter below is a no-op for the bucket (already keyed by
-    // canonical spec-base) and the real filter for the scan — one loop body serves both.
-    for rid in provides_rids_by_spec(kb, spec_canon) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(head_named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sort_ref_tid) = get_named_arg(kb, &head_named, "sort_ref") else {
-            continue;
-        };
-        let Some(spec_view_tid) = get_named_arg(kb, &head_named, "spec") else {
-            continue;
-        };
-        let Some((view_base_sym, _)) = unwrap_spec_view(kb, spec_view_tid) else {
-            continue;
-        };
-        if kb.canonical_sort_sym(view_base_sym) != spec_canon {
-            continue;
-        }
-        let impl_sort = match kb.get_term(sort_ref_tid) {
-            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
-            _ => continue,
-        };
-        let carrier = kb.canonical_sort_sym(impl_sort);
+    for row in provides_rows_of_spec_in(kb, spec_canon, provides_rids_by_spec(kb, spec_canon)) {
+        let carrier = kb.canonical_sort_sym(row.provider);
         if carrier != spec_canon && !out.contains(&carrier) {
             out.push(carrier);
         }
@@ -208,12 +183,10 @@ pub(super) fn collect_provides_candidates(
     // concrete) not its surface spelling. `None` keeps the head-only match.
     sigma: Option<&SigmaCtx>,
 ) -> Vec<Candidate> {
-    let spec_canon = kb.canonical_sort_sym(goal.spec_sort);
-    // WI-660: the spec-base bucket (built index) or the full scan. The bucket keys on
-    // `canonical_sort_sym(base)`; the inner `view_base_sym != goal.spec_sort` raw-equality
-    // filter below stays the exact match (raw-equal ⟹ canonical-equal ⟹ in the bucket, so
-    // no provider is missed). Owned `Vec` — the loop below borrows `kb` mutably.
-    let candidates = provides_rids_by_spec(kb, spec_canon);
+    // WI-660: the spec-base bucket (built index) or the full scan, re-filtered BY CANONICAL
+    // SORT (WI-20260923-N3W68 #10 — see [`provides_rows_of_spec_in`]). Collected — the loop
+    // below borrows `kb` mutably.
+    let candidates: Vec<ProvidesRow> = provides_rows_of_spec(kb, goal.spec_sort).collect();
     // Spec's type-param short names — hoisted out of the candidate
     // loop so the inner binding-walk just does a string membership
     // check instead of format!+resolve+sort-alias per binding.
@@ -234,35 +207,14 @@ pub(super) fn collect_provides_candidates(
         .is_some_and(|c| provider_spec_view_bindings(kb, c.sort, goal.spec_sort).is_some());
 
     let mut out: Vec<Candidate> = Vec::new();
-    for rid in candidates {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped from
-        // dispatch-candidate collection; occurrence-based dispatch is gated
-        // effect-expressions-as-types work (avoid the term-only `rule_head`
-        // panic on a value head).
-        let Some(head_named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let sort_ref_tid = match get_named_arg(kb, &head_named, "sort_ref") {
-            Some(t) => t,
-            None => continue,
-        };
-        let spec_view_tid = match get_named_arg(kb, &head_named, "spec") {
-            Some(t) => t,
-            None => continue,
-        };
-        let impl_sort = match kb.get_term(sort_ref_tid) {
-            Term::Fn { functor, .. } | Term::Ref(functor) | Term::Ident(functor) => *functor,
-            _ => continue,
-        };
-        let Some((view_base_sym, view_bindings)) = unwrap_spec_view(kb, spec_view_tid) else {
-            continue;
-        };
-        if view_base_sym != goal.spec_sort {
-            continue;
-        }
+    for row in candidates {
+        let ProvidesRow {
+            rid,
+            provider: impl_sort,
+            spec_base: view_base_sym,
+            bindings: view_bindings,
+            ..
+        } = row;
         // WI-1110 — A CONVERSION IS NOT A PROVIDER. `Ord provides WeakOrd[T = T]` says
         // "hold an `Ord[T]` and you can obtain a `WeakOrd[T]`"; it does not say anything
         // has type `Ord`, and nothing ever will. Offering it here made `Ord` an answer to
@@ -742,6 +694,33 @@ fn provision_path_subst(
     None
 }
 
+/// Is `functor` THE reflect view wrapper `anthill.reflect.SortView`? The ONE discriminant
+/// for "this stored spec term is a view, whose positional 0 is the base" (WI-20260923-N3W68
+/// #9) — for the typer and the loader's provision decoders (`provides_spec_base_sym`,
+/// `flatten_spec`, `resolve_provides_spec`) alike.
+///
+/// NOT for the reflect builtins that read an instance a PROGRAM builds
+/// (`extract_sort_ref`, `resolve_sort_instantiation_param`): they keep reading the LOCAL
+/// NAME, because their input is a reflective value whose author may spell the wrapper
+/// unqualified — `SortView(Eq, T = Int64)` interned bare, which is how their own tests
+/// build it. The provision relation's `spec` field is minted by the loader with the reflect
+/// symbol itself, so for it identity is exact.
+///
+/// BY IDENTITY, NOT BY NAME (WI-20260923-32XFQ). The qualified name compared EXACTLY, so a
+/// copy of the symbol interned in another scope still answers — and a USER sort that
+/// happens to be called `SortView` does not. It used to be asked by name at every site: a
+/// dotted suffix here (`anything.SortView`, admitted as a "re-export" nothing writes), the
+/// last segment in the loader (which also takes a top-level `SortView`), the local name in
+/// the builtins. A spec its author called `SortView` was then read as the wrapper, its
+/// "base" looked for in a positional slot a bare spec has none of, and its provision
+/// decoded as NOTHING — MEASURED, `Widget provides SortView` hid a defaulted member from
+/// `widget(n: 1).describe()`, namespaced or not (`wi_32xfq_found_divergences_test`). N3W68
+/// had already unified the typer's five spellings on the suffix; the census it ran could not
+/// see this, because no corpus names a sort `SortView`.
+pub(crate) fn is_sort_view_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    kb.qualified_name_of(functor) == "anthill.reflect.SortView"
+}
+
 /// Unwrap a `SortView(base, …named)` term into `(base_sort_sym,
 /// named_bindings)`. Accepts a bare functor (no SortView wrap) as the
 /// no-bindings case. Returns `None` for shapes that don't fit either
@@ -756,8 +735,7 @@ pub(super) fn unwrap_spec_view(
             pos_args,
             named_args,
         } => {
-            let f_qn = kb.qualified_name_of(*functor);
-            if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
+            if is_sort_view_functor(kb, *functor) {
                 let base_sym = pos_args
                     .first()
                     .copied()
@@ -797,8 +775,7 @@ pub(crate) fn unwrap_spec_view_value(
         ViewHead::Functor {
             functor: Some(f), ..
         } => {
-            let f_qn = kb.qualified_name_of(f);
-            if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
+            if is_sort_view_functor(kb, f) {
                 let base_sym = spec.pos_arg(kb, 0).and_then(|p| match p.head(kb) {
                     ViewHead::Functor {
                         functor: Some(s), ..
@@ -1228,7 +1205,7 @@ pub(super) fn parametric_value_parts(
             let f_qn = kb.qualified_name_of(*functor);
             // SortView is the candidate-side parametric encoding —
             // unwrap into (base, bindings).
-            if f_qn == "anthill.reflect.SortView" || f_qn.ends_with(".SortView") {
+            if is_sort_view_functor(kb, *functor) {
                 let base = pos_args
                     .first()
                     .copied()
@@ -1475,8 +1452,19 @@ pub(super) fn op_requires_entry_carrier_map(
 ) -> SmallVec<[(Symbol, TermId); 2]> {
     let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
     let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    // Positional carriers pair with the spec's declared type-params (source order).
+    // Positional carriers pair with the spec's declared type-params by the language's
+    // rule — the next param no NAMED binding took (`KnowledgeBase::positional_param_slots`).
+    // WI-20260923-N3W68 (#9): this zipped params against positionals by RAW INDEX, so an
+    // op-scoped `requires Spec2[T = X, Y]` paired `Y` with `T` — the parameter the name had
+    // already bound — and never with `U`. A positional with no slot binds no parameter: the
+    // loader refuses an over-applied op-scoped `requires` where it is written.
     let params = kb.type_params_of_sort(entry.required_sort);
+    let bound_by_name = |kb: &KnowledgeBase, keys: &[Symbol], d: &str| {
+        keys.iter().any(|k| {
+            type_param_sym_of_binding(kb, *k, &spec_qn)
+                .is_some_and(|p| short_name_of(kb.local_name_of(p)) == d)
+        })
+    };
     match &entry.spec {
         // WI-662: ground fast path — byte-identical to the pre-WI-662 term read.
         Value::Term { id, .. } => {
@@ -1488,7 +1476,18 @@ pub(super) fn op_requires_entry_carrier_map(
             else {
                 return out; // a bare `Ref`/`Ident` spec carries no bindings
             };
-            for (short, v) in params.iter().zip(pos_args.iter()) {
+            let keys: SmallVec<[Symbol; 2]> = named_args.iter().map(|(k, _)| *k).collect();
+            let slots = KnowledgeBase::positional_param_slots(
+                &params,
+                |d| bound_by_name(kb, &keys, d),
+                pos_args.len(),
+            );
+            for (v, slot) in pos_args.iter().zip(slots) {
+                // No slot: refused at load where it is written (the op-contract arity gate
+                // in `convert_term`), and binding nothing.
+                let Some(short) = slot.map(|i| &params[i]) else {
+                    continue;
+                };
                 if let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) {
                     out.push((param, *v));
                 }
@@ -1508,7 +1507,16 @@ pub(super) fn op_requires_entry_carrier_map(
             let ViewHead::Functor { pos_arity, .. } = other.head(kb) else {
                 return out;
             };
-            for (short, i) in params.iter().zip(0..pos_arity) {
+            let keys = other.named_keys(kb);
+            let slots = KnowledgeBase::positional_param_slots(
+                &params,
+                |d| bound_by_name(kb, &keys, d),
+                pos_arity,
+            );
+            for (i, slot) in slots.into_iter().enumerate() {
+                let Some(short) = slot.map(|j| &params[j]) else {
+                    continue;
+                };
                 if let Some(v) = other.pos_arg(kb, i).and_then(|it| it.as_term_id()) {
                     if let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) {
                         out.push((param, v));
@@ -1933,56 +1941,10 @@ fn instantiate_provider_entries(
     chain: &[RequiresEntry],
     impl_subst: &[(Symbol, TermId)],
 ) -> Vec<SortGoal> {
-    let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
-    for entry in chain.iter() {
-        let required_sort = entry.required_sort;
-        // WI-857: the synthetic `requires EffectsRuntime[E]` that every effect-row
-        // param (`effects ES = ?`) contributes KEEPS ITS SLOT, and `resolve_inner`
-        // places a structural leaf in it without resolving — `EffectsRuntime` is the
-        // effect-runtime kind-anchor, never a resolvable dispatch provider, so
-        // resolving it would fail with a spurious `no impl provides EffectsRuntime`
-        // (WI-590's witness over an effect-row-parameterized carrier). It used to be
-        // SKIPPED here, which made the dictionary shorter than the chain it is
-        // indexed by — see [`effects_runtime_sym`] for the measurement. The
-        // parent-bundle producer (`build_dep_projection`) already emitted the same
-        // structural leaf; now both agree.
-        let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
-            // A `requires` spec with no readable head cannot become a goal. Keep the
-            // SLOT anyway so the halves stay positionally exact — and see the twin in
-            // `provider_requires_subgoals` for why the bindings-free goal is a GUESS
-            // and why this is asserted rather than merely commented. Measured
-            // unreachable there and here.
-            debug_assert!(
-                false,
-                "WI-857: `requires {}` has no readable spec head — the dictionary slot \
-                 for it is a bindings-free guess",
-                kb.qualified_name_of(required_sort),
-            );
-            out.push(SortGoal {
-                spec_sort: required_sort,
-                bindings: SmallVec::new(),
-                carrier: None,
-            });
-            continue;
-        };
-        let spec_qn = kb.qualified_name_of(required_sort).to_string();
-        let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-        for (k, v) in &entry_bindings {
-            // Op-bindings (auto-bound `eq`, `neq`, …) don't constrain
-            // resolution — skip.
-            if !is_type_param_binding(kb, *k, &spec_qn) {
-                continue;
-            }
-            let substituted = substitute_impl_params_alloc(kb, *v, impl_subst);
-            bindings.push((*k, substituted));
-        }
-        out.push(SortGoal {
-            spec_sort: required_sort,
-            bindings,
-            // Transitive `requires` sub-goals resolve by binding; the
-            // receiver carrier discriminates only the top-level call (WI-350).
-            carrier: None,
-        });
-    }
-    out
+    // The resolver's impl-side template: σ keyed by SYMBOL, since these entries' values
+    // reference the impl's OWN parameters (see [`provider_requires_subgoals`] for the
+    // by-name keying the spec half needs instead).
+    requires_chain_goals(kb, chain, &|kb, v| {
+        substitute_impl_params_alloc(kb, v, impl_subst)
+    })
 }

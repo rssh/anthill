@@ -2986,10 +2986,11 @@ impl<'a> Converter<'a> {
                         // lowering and dropped `T`). Route through `convert_type_value`
                         // — the SAME structure-preserving converter the named arm
                         // above uses — so a `simple_type` still lowers to `Ref(Name)`
-                        // but an `application` keeps its `Fn{base, …}` shape, letting
-                        // the loader's `canonicalize_fact_binding_value` map it
-                        // positional→named (byte-identical to `sort_inst_to_value`).
-                        // Variable / tuple / arrow shapes keep `convert_term`.
+                        // but an `application` keeps its `Fn{base, …}` shape. (The
+                        // loader's `canonicalize_fact_binding_value`, which then mapped it
+                        // positional→named, went with the `fact` spelling of a provision,
+                        // WI-20260917-S8JYF.) Variable / tuple / arrow shapes keep
+                        // `convert_term`.
                         let tid = match t.kind() {
                             "simple_type" | "application" => self.convert_type_value(t),
                             _ => self.convert_term(t),

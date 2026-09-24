@@ -666,40 +666,35 @@ fn substitute_ref_terms_rec(
     map: &HashMap<Symbol, TermId>,
     var_ref_sym: Symbol,
 ) -> TermId {
-    match kb.get_term(term).clone() {
-        Term::Ref(s) | Term::Ident(s) => map.get(&s).copied().unwrap_or(term),
+    rewrite_term_leaves(kb, term, &|kb, t| match kb.get_term(t) {
+        Term::Ref(s) | Term::Ident(s) => Some(map.get(s).copied().unwrap_or(t)),
         Term::Fn {
             functor,
             named_args,
             ..
-        } if functor == var_ref_sym => {
-            match var_ref_name_symbol(kb, &named_args) {
-                Some(s) => map.get(&s).copied().unwrap_or(term),
-                // A `var_ref`'s `name` child is always `Ref(sym)` by construction
-                // ([`KnowledgeBase::make_var_ref_term`]). A `None` here means a
-                // malformed binder reached σ — surface it loudly rather than
-                // silently leaving an un-substitutable node (repo principle: loud
-                // error over silent skip). Release keeps the conservative `term`.
-                None => {
-                    debug_assert!(
-                        false,
-                        "substitute_ref_terms: var_ref with a non-symbol `name` child"
-                    );
-                    term
-                }
+        } if *functor == var_ref_sym => Some(match var_ref_name_symbol(kb, named_args) {
+            Some(s) => map.get(&s).copied().unwrap_or(t),
+            // A `var_ref`'s `name` child is always `Ref(sym)` by construction
+            // ([`KnowledgeBase::make_var_ref_term`]). A `None` here means a
+            // malformed binder reached σ — surface it loudly rather than
+            // silently leaving an un-substitutable node (repo principle: loud
+            // error over silent skip). Release keeps the conservative `term`.
+            None => {
+                debug_assert!(
+                    false,
+                    "substitute_ref_terms: var_ref with a non-symbol `name` child"
+                );
+                t
             }
-        }
-        Term::Fn { .. } => kb.map_fn_children(term, |kb, child| {
-            substitute_ref_terms_rec(kb, child, map, var_ref_sym)
         }),
-        _ => term,
-    }
+        _ => None,
+    })
 }
 
 /// Read the binder symbol `s` from a `var_ref(name: Ref(s))` term's `name` child.
 /// Returns `None` for a malformed / absent `name` (the caller then leaves the
 /// `var_ref` intact rather than substituting).
-fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> Option<Symbol> {
+pub(super) fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)]) -> Option<Symbol> {
     let name_key = kb.lookup_symbol("name")?;
     let child = named_args
         .iter()
@@ -983,13 +978,7 @@ fn view_references_any<V: TermView>(kb: &KnowledgeBase, view: &V, syms: &[Symbol
             named_arity: 0,
         } => syms.contains(&s),
         ViewHead::Functor { pos_arity, .. } => {
-            (0..pos_arity).any(|i| {
-                view.pos_arg(kb, i)
-                    .is_some_and(|c| view_references_any(kb, &c, syms))
-            }) || view.named_keys(kb).iter().any(|&k| {
-                view.named_arg(kb, k)
-                    .is_some_and(|c| view_references_any(kb, &c, syms))
-            })
+            view_any_child(kb, view, pos_arity, |c| view_references_any(kb, c, syms))
         }
         _ => false,
     }
@@ -1077,13 +1066,7 @@ fn view_carries_undecided_var<V: TermView>(kb: &KnowledgeBase, view: &V) -> bool
     match view.head(kb) {
         ViewHead::Var(v) => !v.is_rigid(),
         ViewHead::Functor { pos_arity, .. } => {
-            (0..pos_arity).any(|i| {
-                view.pos_arg(kb, i)
-                    .is_some_and(|c| view_carries_undecided_var(kb, &c))
-            }) || view.named_keys(kb).iter().any(|&k| {
-                view.named_arg(kb, k)
-                    .is_some_and(|c| view_carries_undecided_var(kb, &c))
-            })
+            view_any_child(kb, view, pos_arity, |c| view_carries_undecided_var(kb, c))
         }
         _ => false,
     }
@@ -1609,7 +1592,20 @@ fn row_inner_value(
 /// A row-tail [`TermId`] if `node` resolves to a logic var, else `None`. A
 /// `TermId`-carried var (any flavor — Global/Rigid/DeBruijn) returns its own
 /// hash-consed id (preserving the pre-P4 tail classification); a `Value::Var`
-/// materializes to a hash-consed `Term::Var` (row tails are plain vars).
+/// or an occurrence-carried `TypeNode::Var` materializes to a hash-consed
+/// `Term::Var` (row tails are plain vars).
+///
+/// WI-20260923-N3W68 (#5) — THE OCCURRENCE ARM, the third spelling of a variable
+/// WI-20260904-02ERR gave [`resolved_var`] and [`walk_value_to_resolved`] and not this
+/// reader. Without it an unbound `TypeNode::Var` at the TOP of a row decomposed as the
+/// EMPTY row — a closed `{}` where an open tail stood, silently. (Inside the algebra the
+/// same variable is read through `named_child_value`, which hands it back as a plain
+/// variable, so only the top-level read was affected.) A producer exists
+/// (`value_to_type_child` mints this carrier for a `Value::Var` in a type slot, e.g. the
+/// arrow rebuild in `rigidify_unwritten_sort_params`), but MEASURED, nothing brings one
+/// here: a temporary probe fired zero times across the stdlib, both example corpora and
+/// the 7410-test workspace suite. The arm is the twin's, not a response to a failing
+/// program.
 fn row_tail_termid(kb: &mut KnowledgeBase, node: &Value) -> Option<TermId> {
     match node {
         Value::Term { id: t, .. } => match kb.get_term(*t) {
@@ -1617,6 +1613,10 @@ fn row_tail_termid(kb: &mut KnowledgeBase, node: &Value) -> Option<TermId> {
             _ => None,
         },
         Value::Var(v) => Some(kb.alloc(Term::Var(*v))),
+        Value::Node(occ) => match occ.as_type() {
+            Some(TypeNode::Var(v)) => Some(kb.alloc(Term::Var(*v))),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -2125,6 +2125,59 @@ pub(super) fn unify_effect_rows<EA: TermView, EB: TermView>(
     a_effects: &EA,
     b_effects: &EB,
 ) -> bool {
+    relate_effect_rows(kb, subst, a_effects, b_effects, false)
+}
+
+/// WI-326 v1a row subtyping — the covariant directional analog of
+/// [`unify_effect_rows`], mirroring its decompose/pair/tail-bind pipeline
+/// ([`decompose_effect_row`], [`pair_present_labels`], [`bind_row_tail`])
+/// but asymmetric: `actual <: expected` iff actual's effect *set* is a
+/// subset of expected's. The body is [`relate_effect_rows`] with `a` the actual row and
+/// `b` the expected one, so `only_a` / `only_b` below are its names. Specifically:
+///
+/// - `only_a` (labels actual has but expected doesn't) must be absorbed
+///   by expected's open tail; with expected closed, that's a hard reject.
+/// - `only_b` (labels expected has but actual doesn't) are always fine
+///   under subset — expected can advertise effects the actual doesn't use.
+///   If actual is open, expected's extras are absorbed by actual's tail
+///   (the row-rewrite equation that makes actual reach expected's labels).
+/// - Actual open + expected closed: actual's tail must close to
+///   `empty_row` (actual can't carry unknown extras beyond expected's
+///   finite set).
+/// - Both open: the unify case applies as-is — a fresh shared tail
+///   accommodates either side's extras; once both rows extend through it,
+///   the sub relation holds.
+///
+/// The `subst` argument is the caller's THREADED substitution, not a scratch: since
+/// WI-335 [`arrow_compatible_view`] and [`types_compatible`] pass their own, so a row
+/// variable bound here is visible to the sibling param / result / effects checks of the
+/// same comparison (a local scratch let each reason in isolation and accept arrows whose
+/// shared row variable had no consistent binding). A caller whose question must not
+/// commit bindings passes a σ of its own — the lattice checks allocate a fresh one per
+/// direction. This doc said "a local scratch, allocated by `arrow_compatible_view`" until
+/// WI-20260923-N3W68.
+pub(super) fn subtype_effect_rows<EA: TermView, EB: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual_effects: &EA,
+    expected_effects: &EB,
+) -> bool {
+    relate_effect_rows(kb, subst, actual_effects, expected_effects, true)
+}
+
+/// WI-20260923-32XFQ — the one body of [`unify_effect_rows`] (`directional = false`, `b` is
+/// the other row) and [`subtype_effect_rows`] (`true`, `a` the actual and `b` the expected
+/// row), which spelled it twice. The fast path, the decompose, the lacks registration, the
+/// multi-tail arm and the both-open arm ([`bind_both_open_tails`]) are one code; the flag
+/// decides EXACTLY five things, each marked `DIRECTIONAL` below — the label pairing, the
+/// multi-tail flag (the one [`multi_tail_rows_compat`] already took), and three tail arms.
+fn relate_effect_rows<EA: TermView, EB: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a_effects: &EA,
+    b_effects: &EB,
+    directional: bool,
+) -> bool {
     // Fast path: identical hash-consed `TermId` carriers — covers the canonical
     // case where both arrows shared an effects field. (`Value::Node` carriers
     // have no O(1) identity → fall through to the structural decompose.)
@@ -2137,7 +2190,7 @@ pub(super) fn unify_effect_rows<EA: TermView, EB: TermView>(
     }
 
     // WI-339 F13: decompose returns None on malformed input — propagate
-    // as a unify rejection so the typer surfaces the row-shape error
+    // as a rejection so the typer surfaces the row-shape error
     // instead of proceeding on incomplete decomposition.
     let (a_present, a_tails, a_absent) = match decompose_effect_row(kb, subst, a_effects) {
         Some(p) => p,
@@ -2151,6 +2204,15 @@ pub(super) fn unify_effect_rows<EA: TermView, EB: TermView>(
     // WI-328: register each side's `- e` absents as `lacks` constraints on
     // that side's tail(s) BEFORE the tail-binding step, so `bind_row_tail`
     // sees them when it checks the labels flowing into each tail.
+    //
+    // Directional subtyping reuses the symmetric `bind_row_tail` lacks check: a label
+    // absorbed into a tail that lacks it is rejected on either side. This is **sound
+    // but conservative** on the open/open arm: when expected presents `e` and actual's
+    // tail lacks `e` (`{-e | ρa} <: {e | ρe}`), the shared-tail step would bind `ρa` to
+    // absorb `e`, which the lacks check rejects — so the pair is reported incompatible.
+    // Rejecting is the safe direction (binding a lacked label into the tail would be
+    // unsound); the rare genuinely-compatible directional case (route `e` only into the
+    // expected side) is left for a later refinement.
     for &t in &a_tails {
         register_row_lacks(kb, subst, Some(t), &a_absent);
     }
@@ -2158,10 +2220,20 @@ pub(super) fn unify_effect_rows<EA: TermView, EB: TermView>(
         register_row_lacks(kb, subst, Some(t), &b_absent);
     }
 
-    let (only_a, only_b) = pair_present_labels(kb, subst, &a_present, &b_present);
+    // DIRECTIONAL (1) — the pairing. Unification pairs 1-to-1. Subtyping COVERS
+    // (WI-326 F1, code-review): set semantics with element subtyping lets one expected
+    // label cover multiple actuals — `{red, blue} <: {Color}` where both `red`, `blue`
+    // are entities of `Color` — and the 1-to-1 pairing would mark `Color` matched after
+    // the first hit and reject the second.
+    let (only_a, only_b) = if directional {
+        cover_present_labels(kb, subst, &a_present, &b_present)
+    } else {
+        pair_present_labels(kb, subst, &a_present, &b_present)
+    };
 
     // WI-441: a row UNION (≥ 2 tails, `{E, EffP}`) takes the dedicated
     // multi-tail arm — equal tail sets or the bare-flexible wholesale absorb.
+    // DIRECTIONAL (2) — its own flag.
     if a_tails.len() > 1 || b_tails.len() > 1 {
         let a_inner = row_inner_value(kb, subst, a_effects);
         let b_inner = row_inner_value(kb, subst, b_effects);
@@ -2174,18 +2246,23 @@ pub(super) fn unify_effect_rows<EA: TermView, EB: TermView>(
             (&b_present, &b_tails, &b_absent),
             &only_a,
             &only_b,
-            false,
+            directional,
         );
     }
     let a_tail = a_tails.first().copied();
     let b_tail = b_tails.first().copied();
 
     match (a_tail, b_tail) {
-        (None, None) => only_a.is_empty() && only_b.is_empty(),
+        // DIRECTIONAL (3) — both closed. Unification needs the two label sets equal;
+        // subtyping needs only actual's extras empty (actual ⊆ expected labels), since
+        // expected's extras are fine under subset semantics.
+        (None, None) => only_a.is_empty() && (directional || only_b.is_empty()),
+        // DIRECTIONAL (4) — `a` closed, `b` open. `b`'s tail absorbs `a`'s extras, closing
+        // it. Under unification `a` has no tail to absorb `b`'s extras, so those must be
+        // empty; under subtyping they are already in expected's known set and constrain
+        // nothing.
         (None, Some(b_t)) => {
-            // a is closed, b is open.
-            // a has no tail to absorb b's extras — b's extras must be empty.
-            //
+            // (Unification's reading — the only one with a failing path in this arm.)
             // WI-329 CONSIDERED BINDING HERE AND MEASURED THAT IT IS WRONG. A handler's
             // discharge wants `ρ := only_a` on exactly this arm's FAILING path (the body
             // does not perform the handled label), and binding before the `return` looks
@@ -2209,236 +2286,91 @@ pub(super) fn unify_effect_rows<EA: TermView, EB: TermView>(
             // both refused — before and after WI-329 alike, so it is pre-existing and not
             // about handlers. `infer_discharged_row_tails` cannot repair it either: it
             // fires only for tails still UNBOUND after both arg loops.
-            if !only_b.is_empty() {
+            if !directional && !only_b.is_empty() {
                 return false;
             }
-            // b's tail absorbs a's extras, closing b.
             bind_row_tail(kb, subst, b_t, &only_a, None)
         }
+        // DIRECTIONAL (5) — `a` open, `b` closed. `b` can absorb nothing through a tail,
+        // so `a`'s extras must be empty either way. `a`'s tail then closes to `b`'s extras
+        // under unification, and to the EMPTY row under subtyping: actual can't carry
+        // unknown extras beyond expected's finite set.
         (Some(a_t), None) => {
-            // Symmetric.
             if !only_a.is_empty() {
                 return false;
             }
-            bind_row_tail(kb, subst, a_t, &only_b, None)
+            let closing: &[Value] = if directional { &[] } else { &only_b };
+            bind_row_tail(kb, subst, a_t, closing, None)
         }
-        (Some(a_t), Some(b_t)) => {
-            // Both open. If tails are already the same Var, the
-            // extras must merge into ONE binding to avoid the
-            // contradicting double-bind (WI-334) — see analogous arm
-            // in subtype_effect_rows for the soundness argument.
-            let a_walked = walk_type(kb, subst, a_t);
-            let b_walked = walk_type(kb, subst, b_t);
-            if a_walked == b_walked {
-                if only_a.is_empty() && only_b.is_empty() {
-                    return true;
-                }
-                let fresh_var = fresh_row_tail_var(kb);
-                let mut all_extras: Vec<Value> = Vec::with_capacity(only_a.len() + only_b.len());
-                all_extras.extend(only_a.iter().cloned());
-                all_extras.extend(only_b.iter().cloned());
-                return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
-            }
-            // WI-441: tail-to-tail aliasing when ONE side's tail is a RIGID
-            // (forall-Skolem) row var — the FORWARDING shape (`find(rest,
-            // pred)` / `Stream.find(iterator(c), pred)` passes the enclosing
-            // op's callback straight through, its row tail rigidified by the
-            // body check). The rigid is un-bindable (WI-336), so the
-            // symmetric fresh-tail step below would fail and leave the
-            // callee's row param unconstrained. With no extras to push INTO
-            // the rigid side, the flexible tail simply ALIASES the rigid
-            // (a flexible var solves TO a rigid, the ordinary direction).
-            // Note: the flexible side's lacks are not propagated onto the
-            // rigid continuation (`bind_row_tail` propagates onto `Global`
-            // continuations only) — the rigid's constraints are enforced at
-            // its own instantiation site.
-            let a_rigid = matches!(kb.get_term(a_walked), Term::Var(Var::Rigid(_)));
-            let b_rigid = matches!(kb.get_term(b_walked), Term::Var(Var::Rigid(_)));
-            match (a_rigid, b_rigid) {
-                (true, false) if only_b.is_empty() => {
-                    return bind_row_tail(kb, subst, b_walked, &only_a, Some(a_walked));
-                }
-                (false, true) if only_a.is_empty() => {
-                    return bind_row_tail(kb, subst, a_walked, &only_b, Some(b_walked));
-                }
-                // Two DISTINCT rigids (the a_walked == b_walked case returned
-                // above) never alias; a rigid that must absorb extras fails.
-                (true, _) | (_, true) => return false,
-                (false, false) => {}
-            }
-            // Distinct tails: fresh shared tail var ρ'. Both sides extend
-            // their respective labels and end in `open(ρ')` — afterward a
-            // future decompose_effect_row reveals (only_a + only_b) as
-            // present labels with shared tail ρ'.
-            let fresh_var = fresh_row_tail_var(kb);
-            bind_row_tail(kb, subst, a_t, &only_b, Some(fresh_var))
-                && bind_row_tail(kb, subst, b_t, &only_a, Some(fresh_var))
-        }
+        (Some(a_t), Some(b_t)) => bind_both_open_tails(kb, subst, a_t, b_t, &only_a, &only_b),
     }
 }
 
-/// WI-326 v1a row subtyping — the covariant directional analog of
-/// [`unify_effect_rows`], mirroring its decompose/pair/tail-bind pipeline
-/// ([`decompose_effect_row`], [`pair_present_labels`], [`bind_row_tail`])
-/// but asymmetric: `actual <: expected` iff actual's effect *set* is a
-/// subset of expected's. Specifically:
-///
-/// - `only_a` (labels actual has but expected doesn't) must be absorbed
-///   by expected's open tail; with expected closed, that's a hard reject.
-/// - `only_e` (labels expected has but actual doesn't) are always fine
-///   under subset — expected can advertise effects the actual doesn't use.
-///   If actual is open, expected's extras are absorbed by actual's tail
-///   (the row-rewrite equation that makes actual reach expected's labels).
-/// - Actual open + expected closed: actual's tail must close to
-///   `empty_row` (actual can't carry unknown extras beyond expected's
-///   finite set).
-/// - Both open: the unify case applies as-is — a fresh shared tail
-///   accommodates either side's extras; once both rows extend through it,
-///   the sub relation holds.
-///
-/// The `subst` argument is intended to be a **local scratch** substitution
-/// (allocated by [`arrow_compatible_view`]) — bindings are reasoning witnesses,
-/// not committed into the caller's typing context.
-pub(super) fn subtype_effect_rows<EA: TermView, EB: TermView>(
+/// The both-open arm of [`relate_effect_rows`], the same in both relations: once both tails
+/// link through one shared continuation, the two rows agree on one set, which is what
+/// unification asks and all that subtyping asks.
+fn bind_both_open_tails(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
-    actual_effects: &EA,
-    expected_effects: &EB,
+    a_t: TermId,
+    b_t: TermId,
+    only_a: &[Value],
+    only_b: &[Value],
 ) -> bool {
-    // Fast path: identical hash-consed `TermId` carriers (hash-cons identity).
-    // `Value::Node` carriers have no O(1) identity → structural decompose.
-    if let (BindValue::Term(x), BindValue::Term(y)) = (
-        actual_effects.as_bind_value(),
-        expected_effects.as_bind_value(),
-    ) {
-        if x == y {
+    let a_walked = walk_type(kb, subst, a_t);
+    let b_walked = walk_type(kb, subst, b_t);
+    // WI-334: a shared row var (a_walked == b_walked). Two distinct `bind_row_tail` calls
+    // would each try to bind the same VarId to two structurally different terms
+    // (`only_b ++ open(fresh)` vs `only_a ++ open(fresh)`) — contradicting subst.bind,
+    // returning false even for valid pairs. Bind once with the union of both extras
+    // instead: A's set = a_present ∪ K, B's set = b_present ∪ K, where K is the shared
+    // tail. Binding K to {only_a ∪ only_b | fresh} makes both rows agree on the same set
+    // (the labels already matched — paired under unification, covered under subtyping).
+    if a_walked == b_walked {
+        if only_a.is_empty() && only_b.is_empty() {
             return true;
         }
+        let fresh_var = fresh_row_tail_var(kb);
+        let mut all_extras: Vec<Value> = Vec::with_capacity(only_a.len() + only_b.len());
+        all_extras.extend(only_a.iter().cloned());
+        all_extras.extend(only_b.iter().cloned());
+        return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
     }
-
-    // WI-339 F13: decompose returns None on malformed input — propagate
-    // as a sub rejection.
-    let (a_present, a_tails, a_absent) = match decompose_effect_row(kb, subst, actual_effects) {
-        Some(p) => p,
-        None => return false,
-    };
-    let (e_present, e_tails, e_absent) = match decompose_effect_row(kb, subst, expected_effects) {
-        Some(p) => p,
-        None => return false,
-    };
-
-    // WI-328: register `- e` absents as `lacks` on each side's tail before
-    // the tail-binding step (same as the unify path). Directional subtyping
-    // reuses the symmetric `bind_row_tail` lacks check: a label absorbed
-    // into a tail that lacks it is rejected on either side. This is **sound
-    // but conservative** on the open/open arm: when expected presents `e`
-    // and actual's tail lacks `e` (`{-e | ρa} <: {e | ρe}`), the shared-tail
-    // step would bind `ρa` to absorb `e`, which the lacks check rejects —
-    // so the pair is reported incompatible. Rejecting is the safe direction
-    // (binding a lacked label into the tail would be unsound); the rare
-    // genuinely-compatible directional case (route `e` only into the
-    // expected side) is left for a later refinement.
-    for &t in &a_tails {
-        register_row_lacks(kb, subst, Some(t), &a_absent);
-    }
-    for &t in &e_tails {
-        register_row_lacks(kb, subst, Some(t), &e_absent);
-    }
-
-    // WI-326 F1 (code-review): use the covering variant (existential), NOT
-    // the unify-shaped 1-to-1 [`pair_present_labels`]. Set semantics with
-    // element subtyping lets one expected label cover multiple actuals —
-    // e.g. `{red, blue} <: {Color}` where both `red`, `blue` are entities
-    // of `Color`. The 1-to-1 pairing would mark `Color` matched after the
-    // first hit and reject the second.
-    let (only_a, only_e) = cover_present_labels(kb, subst, &a_present, &e_present);
-
-    // WI-441: row UNIONS (≥ 2 tails) take the multi-tail arm (directional).
-    if a_tails.len() > 1 || e_tails.len() > 1 {
-        let a_inner = row_inner_value(kb, subst, actual_effects);
-        let e_inner = row_inner_value(kb, subst, expected_effects);
-        return multi_tail_rows_compat(
-            kb,
-            subst,
-            a_inner,
-            e_inner,
-            (&a_present, &a_tails, &a_absent),
-            (&e_present, &e_tails, &e_absent),
-            &only_a,
-            &only_e,
-            true,
-        );
-    }
-    let a_tail = a_tails.first().copied();
-    let e_tail = e_tails.first().copied();
-
-    match (a_tail, e_tail) {
-        // Both closed. actual's extras must be empty (actual ⊆ expected
-        // labels); expected's extras are fine under subset semantics.
-        (None, None) => only_a.is_empty(),
-        // Actual closed, expected open. actual's extras flow into
-        // expected's tail, closing it; expected's extras are already
-        // present in expected's known set — no constraint on actual.
-        (None, Some(e_t)) => bind_row_tail(kb, subst, e_t, &only_a, None),
-        // Actual open, expected closed. expected can't absorb anything
-        // through a tail. actual's open tail must close to empty_row and
-        // actual must have no extras.
-        (Some(a_t), None) => {
-            if !only_a.is_empty() {
-                return false;
-            }
-            bind_row_tail(kb, subst, a_t, &[], None)
+    // WI-441: tail-to-tail aliasing when ONE side's tail is a RIGID
+    // (forall-Skolem) row var — the FORWARDING shape (`find(rest,
+    // pred)` / `Stream.find(iterator(c), pred)` passes the enclosing
+    // op's callback straight through, its row tail rigidified by the
+    // body check). The rigid is un-bindable (WI-336), so the
+    // symmetric fresh-tail step below would fail and leave the
+    // callee's row param unconstrained. With no extras to push INTO
+    // the rigid side, the flexible tail simply ALIASES the rigid
+    // (a flexible var solves TO a rigid, the ordinary direction).
+    // Under subtyping (actual ⊆ expected) that reads: a rigid ACTUAL tail can't absorb
+    // expected's extras (require none) and the flexible expected tail aliases it;
+    // symmetric for a rigid EXPECTED tail.
+    // Note: the flexible side's lacks are not propagated onto the
+    // rigid continuation (`bind_row_tail` propagates onto `Global`
+    // continuations only) — the rigid's constraints are enforced at
+    // its own instantiation site.
+    let a_rigid = matches!(kb.get_term(a_walked), Term::Var(Var::Rigid(_)));
+    let b_rigid = matches!(kb.get_term(b_walked), Term::Var(Var::Rigid(_)));
+    match (a_rigid, b_rigid) {
+        (true, false) if only_b.is_empty() => {
+            return bind_row_tail(kb, subst, b_walked, only_a, Some(a_walked));
         }
-        // Both open. Mirrors the unify case — once both tails link
-        // through a fresh shared row var, the sub relation holds
-        // (the two rows agree on the same set after extension).
-        (Some(a_t), Some(e_t)) => {
-            let a_walked = walk_type(kb, subst, a_t);
-            let e_walked = walk_type(kb, subst, e_t);
-            // WI-334: shared row var (a_walked == e_walked). The two
-            // distinct bind_row_tail calls below would each try to bind
-            // the same VarId to two structurally different terms
-            // (`only_e ++ open(fresh)` vs `only_a ++ open(fresh)`) —
-            // contradicting subst.bind, returning false even for valid
-            // subtypes. Bind once with the union of both extras instead:
-            // A's set = a_present ∪ K, B's set = e_present ∪ K, where K
-            // is the shared tail. Binding K to {only_a ∪ only_e | fresh}
-            // makes both rows agree on the same set (paired_a unifies
-            // with paired_e via pair_present_labels), satisfying
-            // actual <: expected.
-            if a_walked == e_walked {
-                if only_a.is_empty() && only_e.is_empty() {
-                    return true;
-                }
-                let fresh_var = fresh_row_tail_var(kb);
-                let mut all_extras: Vec<Value> = Vec::with_capacity(only_a.len() + only_e.len());
-                all_extras.extend(only_a.iter().cloned());
-                all_extras.extend(only_e.iter().cloned());
-                return bind_row_tail(kb, subst, a_walked, &all_extras, Some(fresh_var));
-            }
-            // WI-441: tail-to-tail aliasing when one tail is RIGID — see the
-            // analogous arm in `unify_effect_rows` (the forwarding shape).
-            // actual ⊆ expected: a rigid ACTUAL tail can't absorb expected's
-            // extras (require none), the flexible expected tail aliases it;
-            // symmetric for a rigid EXPECTED tail.
-            let a_rigid = matches!(kb.get_term(a_walked), Term::Var(Var::Rigid(_)));
-            let e_rigid = matches!(kb.get_term(e_walked), Term::Var(Var::Rigid(_)));
-            match (a_rigid, e_rigid) {
-                (true, false) if only_e.is_empty() => {
-                    return bind_row_tail(kb, subst, e_walked, &only_a, Some(a_walked));
-                }
-                (false, true) if only_a.is_empty() => {
-                    return bind_row_tail(kb, subst, a_walked, &only_e, Some(e_walked));
-                }
-                (true, _) | (_, true) => return false,
-                (false, false) => {}
-            }
-            // Distinct tails: each side's tail absorbs the other's
-            // extras + a fresh shared continuation. Symmetric Rémy
-            // fresh-tail step.
-            let fresh_var = fresh_row_tail_var(kb);
-            bind_row_tail(kb, subst, a_t, &only_e, Some(fresh_var))
-                && bind_row_tail(kb, subst, e_t, &only_a, Some(fresh_var))
+        (false, true) if only_a.is_empty() => {
+            return bind_row_tail(kb, subst, a_walked, only_b, Some(b_walked));
         }
+        // Two DISTINCT rigids (the a_walked == b_walked case returned
+        // above) never alias; a rigid that must absorb extras fails.
+        (true, _) | (_, true) => return false,
+        (false, false) => {}
     }
+    // Distinct tails: fresh shared tail var ρ'. Both sides extend
+    // their respective labels and end in `open(ρ')` — afterward a
+    // future decompose_effect_row reveals (only_a + only_b) as
+    // present labels with shared tail ρ'. The symmetric Rémy fresh-tail step.
+    let fresh_var = fresh_row_tail_var(kb);
+    bind_row_tail(kb, subst, a_t, only_b, Some(fresh_var))
+        && bind_row_tail(kb, subst, b_t, only_a, Some(fresh_var))
 }

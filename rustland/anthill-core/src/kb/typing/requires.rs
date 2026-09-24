@@ -258,7 +258,7 @@ pub fn flatten_requires_tree(nodes: &[RequiresNode]) -> Vec<RequiresEntry> {
 /// Takes `&mut KnowledgeBase` because substitution composition may
 /// allocate freshly-substituted `Term::Fn` nodes. Consumers that only
 /// read `required_sort` (and never compare bindings) should use
-/// `requires_chain_flat` instead — it doesn't substitute and so
+/// [`transitive_required_sorts`] instead — it doesn't substitute and so
 /// preserves the `&KnowledgeBase` signature.
 pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     let tree = requires_tree(kb, sort_sym);
@@ -281,7 +281,7 @@ pub fn requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresE
 ///
 /// Consumers that must remain transitive (resolution-tree subgoals are
 /// recursive per-level, obligation checks, the `sort_refines` reach
-/// relation) use `requires_chain` / `requires_chain_flat` instead.
+/// relation) use `requires_chain` / `transitive_required_sorts` instead.
 pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
     (*direct_requires_chain_rc(kb, sort_sym)).clone()
 }
@@ -301,7 +301,7 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 /// written `requires X` on a sort and both ride the same `SortRequiresInfo` fact:
 ///
 ///   `sort Narrow requires Boom`   `Narrow <: Boom` — a REFINEMENT. It is read by
-///                                 [`sort_refines`], through `requires_chain_flat`,
+///                                 [`sort_refines`], through `transitive_required_sorts`,
 ///                                 and that is the whole of its meaning.
 ///   `sort C requires Eq[T]`       a SPEC DEMAND — an inbound dictionary slot the
 ///                                 caller fills, read by every dispatch site.
@@ -323,7 +323,7 @@ pub fn direct_requires_chain(kb: &mut KnowledgeBase, sort_sym: Symbol) -> Vec<Re
 /// to the diagnostic: an unresolved op-scoped dep is a SILENTLY absent slot, so the
 /// boundary simply stopped narrowing.
 ///
-/// FILTERED HERE, on the DICTIONARY side alone. `requires_chain_flat` — which
+/// FILTERED HERE, on the DICTIONARY side alone. `transitive_required_sorts` — which
 /// [`sort_refines`] and [`check_obligations`] read — is built from the tree by its own
 /// path and is deliberately left whole, so `Narrow` still refines `Boom` and the
 /// subsumption a boundary written at `Boom` performs on a `Narrow` payload is unchanged.
@@ -996,6 +996,73 @@ pub fn op_dict_entries(kb: &mut KnowledgeBase, op_sym: Symbol) -> DictChain {
     }
 }
 
+/// WI-20260923-32XFQ — the bindings an op-scoped `requires` entry's BARE APPLICATION
+/// writes (`Desc[MT]`, `Monoid[T = HT]` — the shape `push_op_requires_clause_term`
+/// stores): its NAMED type-parameter bindings, keyed as written, and each POSITIONAL
+/// paired with the SHORT NAME of the declared parameter it fills. The one decode under
+/// [`goal_from_op_requires_entry`] and [`normalize_op_requires_entry`], which spelled it
+/// line for line and differ only in how they key a positional — a bare interned short name
+/// for the goal, the spec's registered parameter symbol for the `SortView`.
+///
+/// Positionals fill the parameters no named binding took, in declaration order —
+/// `KnowledgeBase::positional_param_slots`, the rule's one owner. `None`, and the caller
+/// decodes nothing, in the two cases a pairing would be FABRICATED:
+///   * a positional this cannot read (a denoted `Value::Node` carrier, WI-662). ABORT,
+///     never skip: pairing is by POSITION, so dropping an unreadable positional would
+///     shift every later value onto the wrong parameter — for the goal, a pin judged
+///     against a binding nobody wrote, i.e. a false refusal of a correct call;
+///   * MORE positionals than the spec has free parameters: not a spec application at
+///     all. Reached from real source, so not a `debug_assert` — MEASURED on
+///     `wi840_named_requires_slot_test`'s `operation div[neq](…) requires neq(b, 0)`,
+///     where a type parameter named `neq` CAPTURES the head of the operation's own value
+///     precondition, so [`is_value_precondition_clause`] sees a `Sort`-kinded functor
+///     and does not filter the clause. That program is refused at load by WI-840's own
+///     collision check (and an over-applied spec clause by the op-contract gate in
+///     `convert_term`).
+///
+/// A third copy, in `check_provider_requires`, reads the view's raw term and keys σ by
+/// short name — it reads a provision's `SortView`, not an op clause, and stays its own.
+#[allow(clippy::type_complexity)]
+pub(super) fn op_requires_application_bindings(
+    kb: &KnowledgeBase,
+    entry: &RequiresEntry,
+) -> Option<(SmallVec<[(Symbol, TermId); 2]>, Vec<(String, TermId)>)> {
+    let spec_qn = kb.qualified_name_of(entry.required_sort);
+    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for key in entry.spec.named_keys(kb) {
+        if !is_type_param_binding(kb, key, spec_qn) {
+            continue;
+        }
+        if let Some(v) = entry.spec.named_arg(kb, key).and_then(|it| it.as_term_id()) {
+            bindings.push((key, v));
+        }
+    }
+    let pos_arity = match entry.spec.head(kb) {
+        ViewHead::Functor { pos_arity, .. } => pos_arity,
+        _ => 0,
+    };
+    let mut positional: Vec<(String, TermId)> = Vec::new();
+    if pos_arity > 0 {
+        let declared = kb.type_params_of_sort(entry.required_sort);
+        let slots = KnowledgeBase::positional_param_slots(
+            &declared,
+            |d| bindings.iter().any(|(k, _)| kb.local_name_of(*k) == d),
+            pos_arity,
+        );
+        let mut vals: Vec<TermId> = Vec::with_capacity(pos_arity);
+        for i in 0..pos_arity {
+            vals.push(entry.spec.pos_arg(kb, i).and_then(|it| it.as_term_id())?);
+        }
+        let slots = slots.into_iter().collect::<Option<Vec<usize>>>()?;
+        positional = vals
+            .into_iter()
+            .zip(slots)
+            .map(|(val, i)| (declared[i].clone(), val))
+            .collect();
+    }
+    Some((bindings, positional))
+}
+
 /// WI-822 LEG 1 — re-spell an OP-SCOPED `requires` entry in the SORT-level shape, so
 /// the composed chain has ONE entry shape and every chain predicate reads it.
 ///
@@ -1038,63 +1105,29 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
     // fix `goal_from_op_requires_entry`'s doc names) passes straight through here.
     if matches!(
         entry.spec.head(kb),
-        ViewHead::Functor { functor: Some(f), .. } if same_sort_canonical(kb, f, sort_view)
+        ViewHead::Functor { functor: Some(f), .. } if is_sort_view_functor(kb, f)
     ) {
         return entry.clone();
     }
-    let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
-    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    for key in entry.spec.named_keys(kb) {
-        if !is_type_param_binding(kb, key, &spec_qn) {
-            continue;
-        }
-        if let Some(v) = entry.spec.named_arg(kb, key).and_then(|it| it.as_term_id()) {
-            bindings.push((key, v));
-        }
-    }
-    let pos_arity = match entry.spec.head(kb) {
-        ViewHead::Functor { pos_arity, .. } => pos_arity,
-        _ => 0,
+    // Undecodable (see [`op_requires_application_bindings`]): leave it as written rather
+    // than pair positionals with the WRONG parameter names, which would be a fabricated
+    // binding.
+    let Some((mut bindings, positional)) = op_requires_application_bindings(kb, entry) else {
+        return entry.clone();
     };
-    if pos_arity > 0 {
-        let unbound: Vec<String> = kb
-            .type_params_of_sort(entry.required_sort)
-            .into_iter()
-            .filter(|p| !bindings.iter().any(|(k, _)| kb.local_name_of(*k) == p))
-            .collect();
-        let mut vals: Vec<TermId> = Vec::with_capacity(pos_arity);
-        for i in 0..pos_arity {
-            match entry.spec.pos_arg(kb, i).and_then(|it| it.as_term_id()) {
-                Some(v) => vals.push(v),
-                // See the doc: leave it as written rather than pair positionals with
-                // the WRONG parameter names, which would be a fabricated binding.
-                None => return entry.clone(),
-            }
-        }
-        // MORE positionals than the spec has free parameters: not a spec application
-        // at all. Reached from real source, so NOT a `debug_assert` — MEASURED on
-        // `wi840_named_requires_slot_test`'s `operation div[neq](…) requires neq(b, 0)`,
-        // where a type parameter named `neq` CAPTURES the head of the operation's own
-        // value precondition, so [`is_value_precondition_clause`] sees a `Sort`-kinded
-        // functor and does not filter the clause. That program is refused at load by
-        // WI-840's own collision check; this leaves its entry as written in the
-        // meantime rather than aborting the typer on the way to that refusal.
-        if vals.len() > unbound.len() {
+    let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
+    for (name, val) in positional {
+        // The spec's OWN parameter symbol, which is what a `SortView`'s named args
+        // are keyed by and what `substitute_impl_params_alloc` matches on. A BARE
+        // `intern` is not a substitute for it — an interned name is not the
+        // registered qualified one, so such a key matches nothing in
+        // `is_type_param_binding` and the binding would be silently inert. If the
+        // spec's parameter cannot be named, leave the entry as written, which is
+        // what every other undecodable case here does.
+        let Some(key) = kb.try_resolve_symbol(&format!("{spec_qn}.{name}")) else {
             return entry.clone();
-        }
-        for (name, val) in unbound.iter().zip(vals) {
-            // The spec's OWN parameter symbol, which is what a `SortView`'s named args
-            // are keyed by and what `substitute_impl_params_alloc` matches on. A BARE
-            // `intern` is not a substitute for it — an interned name is not the
-            // registered qualified one, so such a key matches nothing in
-            // `is_type_param_binding` and the binding would be silently inert. If the
-            // spec's parameter cannot be named, leave the entry as written, which is
-            // what every other undecodable case here does.
-            let Some(key) = kb.try_resolve_symbol(&format!("{spec_qn}.{name}")) else {
-                return entry.clone();
-            };
-            bindings.push((key, val));
-        }
+        };
+        bindings.push((key, val));
     }
     let base_ref = kb.alloc(Term::Ref(entry.required_sort));
     let spec = kb.alloc(Term::Fn {
@@ -1355,6 +1388,55 @@ pub(crate) fn op_requires_chain_rc(
     rc
 }
 
+/// `__req_<spec short name, lowercased>` — a requirement slot's BASE name, before any
+/// disambiguating suffix. See [`name_slots`].
+fn req_slot_base(kb: &KnowledgeBase, required_sort: Symbol) -> String {
+    let mut s = String::from("__req_");
+    push_short_lc(kb, required_sort, &mut s);
+    s
+}
+
+/// WI-20260923-32XFQ — name one run of requirement slots, the rule all three namers
+/// (the sort level, a provision's conditions, an operation's own chain) spelled for
+/// themselves. Each entry's base ([`req_slot_base`]) is counted into `counts` — which may
+/// already hold the bases of the slots named BEFORE this run, and the run then yields to
+/// them — and a base counted more than once is suffixed: `_<marker><hash-cons id>` for a
+/// ground spec, `_<marker>d<idx_offset + position>` for a denoted one (WI-662: no
+/// hash-cons id; the chain position is stable across the typer and eval passes, which
+/// both come through these cached namers).
+///
+/// THE STRINGS ARE AN ABI: eval frames read slots BY THESE NAMES, so the three markers
+/// (`""`, `"c"`, `"o"`) and the two formats reproduce exactly what each namer wrote.
+/// Interned in slot order, as before.
+fn name_slots(
+    kb: &mut KnowledgeBase,
+    entries: &[RequiresEntry],
+    counts: &mut HashMap<String, usize>,
+    marker: &str,
+    idx_offset: usize,
+) -> Vec<Symbol> {
+    let bases: Vec<String> = entries
+        .iter()
+        .map(|e| req_slot_base(kb, e.required_sort))
+        .collect();
+    for b in &bases {
+        *counts.entry(b.clone()).or_default() += 1;
+    }
+    let mut out: Vec<Symbol> = Vec::with_capacity(entries.len());
+    for (k, (entry, base)) in entries.iter().zip(bases.iter()).enumerate() {
+        let name = if counts[base.as_str()] > 1 {
+            match &entry.spec {
+                Value::Term { id, .. } => format!("{base}_{marker}{}", id.raw()),
+                _ => format!("{base}_{marker}d{}", idx_offset + k),
+            }
+        } else {
+            base.clone()
+        };
+        out.push(kb.intern(&name));
+    }
+    out
+}
+
 /// WI-822 LEG 1 — the `__req_<spec>` names of the slots `op_sym`'s OWN chain
 /// contributes, in chain order. The CONTINUATION of `synth_req_names_of(parent)`,
 /// never a replacement for it.
@@ -1378,53 +1460,35 @@ fn synth_op_req_names_of(kb: &mut KnowledgeBase, op_sym: Symbol) -> Rc<Vec<Symbo
     if impl_parent_of_op(kb, op_sym).is_some() {
         let sort_chain = op_owner_dict_entries(kb, op_sym);
         for entry in sort_chain.entries() {
-            let mut s = String::from("__req_");
-            push_short_lc(kb, entry.required_sort, &mut s);
-            *counts.entry(s).or_default() += 1;
+            *counts
+                .entry(req_slot_base(kb, entry.required_sort))
+                .or_default() += 1;
         }
     }
-    let mut bases: Vec<String> = Vec::with_capacity(op_entries.len());
-    for entry in op_entries.iter() {
-        let mut s = String::from("__req_");
-        push_short_lc(kb, entry.required_sort, &mut s);
-        *counts.entry(s.clone()).or_default() += 1;
-        bases.push(s);
-    }
-    let mut out: Vec<Symbol> = Vec::with_capacity(op_entries.len());
-    for (idx, (entry, base)) in op_entries.iter().zip(bases.iter()).enumerate() {
-        let name = if counts[base.as_str()] > 1 {
-            // MARKED `_o`, where the sort half's namer writes the bare id. Without the
-            // marker an op slot could mint a name the sort half ALREADY minted: the sort
-            // namer suffixes by hash-cons id whenever its own chain has two same-base
-            // entries, and an op-scoped clause normalizes to a `SortView` that may hash-
-            // cons to the very same `TermId` (`requires Desc[T = HT]` written on the sort
-            // and on one of its members). Two slots under one name, and `find_requirement`
-            // takes the first — silently the other instance's dictionary.
-            //
-            // THE `_o<id>` FORM IS NOT ITSELF COLLISION-FREE, and stays that way on
-            // purpose (asked of it by the WI-1092 review, then re-derived): two OP
-            // entries can mint this same name, but only by sharing a base AND a
-            // hash-cons id — and a shared id IS structural identity, i.e. the same
-            // requirement written twice. Identical entries substitute to one concrete
-            // goal, hence one resolved tree and one dictionary, so first-wins hands the
-            // second slot exactly what resolving it again would have produced. What
-            // makes two slots want DIFFERENT dictionaries is a difference in the spec
-            // term — another type-param binding, an operation binding — and every such
-            // difference is a different `TermId`, which this suffix already separates.
-            // Position would separate the names without separating anything real.
-            match &entry.spec {
-                Value::Term { id, .. } => format!("{base}_o{}", id.raw()),
-                // WI-662: a denoted spec has no hash-cons id — the op-chain position is
-                // stable and deterministic across the typer and eval passes, which both
-                // come through this one cached function. `_od` and not `_o`, so a
-                // position cannot collide with a `TermId` of the same numeric value.
-                _ => format!("{base}_od{idx}"),
-            }
-        } else {
-            base.clone()
-        };
-        out.push(kb.intern(&name));
-    }
+    // MARKED `_o`, where the sort half's namer writes the bare id. Without the
+    // marker an op slot could mint a name the sort half ALREADY minted: the sort
+    // namer suffixes by hash-cons id whenever its own chain has two same-base
+    // entries, and an op-scoped clause normalizes to a `SortView` that may hash-
+    // cons to the very same `TermId` (`requires Desc[T = HT]` written on the sort
+    // and on one of its members). Two slots under one name, and `find_requirement`
+    // takes the first — silently the other instance's dictionary.
+    //
+    // THE `_o<id>` FORM IS NOT ITSELF COLLISION-FREE, and stays that way on
+    // purpose (asked of it by the WI-1092 review, then re-derived): two OP
+    // entries can mint this same name, but only by sharing a base AND a
+    // hash-cons id — and a shared id IS structural identity, i.e. the same
+    // requirement written twice. Identical entries substitute to one concrete
+    // goal, hence one resolved tree and one dictionary, so first-wins hands the
+    // second slot exactly what resolving it again would have produced. What
+    // makes two slots want DIFFERENT dictionaries is a difference in the spec
+    // term — another type-param binding, an operation binding — and every such
+    // difference is a different `TermId`, which this suffix already separates.
+    // Position would separate the names without separating anything real.
+    //
+    // A denoted spec (WI-662) has no hash-cons id, so it takes its op-chain position,
+    // `_od` and not `_o`, so a position cannot collide with a `TermId` of the same
+    // numeric value.
+    let out = name_slots(kb, &op_entries, &mut counts, "o", 0);
     let rc = Rc::new(out);
     kb.synth_op_req_names_cache
         .borrow_mut()
@@ -1491,55 +1555,22 @@ fn synth_req_names_of(
     // a member calling a helper) is read by name, and a sort-level slot that renamed
     // itself per provision would vanish from the reader's view.
     let sort_level = direct_requires_chain_rc(kb, parent_sort);
-    let mut bases: Vec<String> = Vec::with_capacity(sort_level.len());
-    for entry in sort_level.iter() {
-        let mut s = String::from("__req_");
-        push_short_lc(kb, entry.required_sort, &mut s);
-        bases.push(s);
-    }
+    // A ground spec takes its hash-cons id, unchanged from the pre-WI-662 field; a
+    // denoted one (WI-662) its chain position.
     let mut counts: HashMap<String, usize> = HashMap::new();
-    for b in &bases {
-        *counts.entry(b.clone()).or_default() += 1;
-    }
-    let mut out: Vec<Symbol> = Vec::new();
-    for (idx, (entry, base)) in sort_level.iter().zip(bases.iter()).enumerate() {
-        let name = if counts[base] > 1 {
-            match &entry.spec {
-                // Ground: the hash-cons id, unchanged from the pre-WI-662 field.
-                Value::Term { id, .. } => format!("{base}_{}", id.raw()),
-                // WI-662: a denoted spec has no hash-cons id — disambiguate by chain
-                // position (stable and deterministic across the typer/eval passes,
-                // which both derive names through this one cached function).
-                _ => format!("{base}_d{idx}"),
-            }
-        } else {
-            base.clone()
-        };
-        out.push(kb.intern(&name));
-    }
+    let mut out = name_slots(kb, &sort_level, &mut counts, "", 0);
     // THE PROVISION'S CONDITIONS, named after it — so a collision is resolved on THEIR
     // side, as the op half resolves one ([`synth_op_req_names_of`]). Marked `_c` so a
     // condition can never mint a name the sort-level namer minted by its own suffix rule.
     let full = provider_dict_chain(kb, parent_sort, provision);
     let conditions = &full[sort_level.len()..];
-    let mut cond_bases: Vec<String> = Vec::with_capacity(conditions.len());
-    for entry in conditions {
-        let mut s = String::from("__req_");
-        push_short_lc(kb, entry.required_sort, &mut s);
-        *counts.entry(s.clone()).or_default() += 1;
-        cond_bases.push(s);
-    }
-    for (k, (entry, base)) in conditions.iter().zip(cond_bases.iter()).enumerate() {
-        let name = if counts[base] > 1 {
-            match &entry.spec {
-                Value::Term { id, .. } => format!("{base}_c{}", id.raw()),
-                _ => format!("{base}_cd{}", sort_level.len() + k),
-            }
-        } else {
-            base.clone()
-        };
-        out.push(kb.intern(&name));
-    }
+    out.extend(name_slots(
+        kb,
+        conditions,
+        &mut counts,
+        "c",
+        sort_level.len(),
+    ));
     let rc = Rc::new(out);
     kb.synth_req_names_cache
         .borrow_mut()
@@ -1896,45 +1927,56 @@ fn push_short_lc(kb: &KnowledgeBase, sym: Symbol, out: &mut String) {
     }
 }
 
-/// WI-230 — pre-WI-230 flat chain (no substitution composition). Used
-/// by consumers that only filter on `required_sort` and don't read the
-/// spec bindings — `sort_refines`, `check_obligations`,
-/// `seed_entry_requirements`, etc.
+/// Every sort `sort_sym` reaches through `requires`, transitively — each ONCE, in
+/// first-reached depth-first order. The reader for the questions that are about WHICH
+/// specs a sort refines: [`sort_refines`], [`check_obligations`], requirement coverage
+/// (`op_requirements`), the loader's `capture_is_excused`. None of them reads a binding; a
+/// reader that needs the bindings wants [`requires_chain`], whose entries are substituted
+/// into `sort_sym`'s own scope.
 ///
-/// WI-326 / WI-339: takes `&KnowledgeBase` because this function does
-/// no mutation. The `types_compatible` chain moved to `&mut
-/// KnowledgeBase` for row subtyping, but this site is independent of
-/// that chain and reads the cached `requires_tree` immutably. Pre-WI-326
-/// the doc-comment argued for `&KB` "so callers up the types_compatible
-/// chain don't need to convert to &mut"; that rationale is stale now
-/// that the chain is &mut everywhere — keeping & here is justified
-/// purely on "the function is read-only".
+/// WI-20260923-N3W68 (#8) — THIS WAS `requires_chain_flat`, and it returned
+/// [`RequiresEntry`]s computed TWO WAYS, chosen by whether [`requires_tree`] had already run
+/// for `sort_sym`: the flattened tree (bindings substituted; a sort reached along two paths
+/// walked, and listed, once per PATH) or an unsubstituted walk with a global visited set
+/// (raw bindings; a shared sub-requirement's subtree walked once). One question, two
+/// answers, decided by cache warmth. MEASURED with a probe comparing the two lengths
+/// wherever the cache was warm: they differed 14072 times across the workspace suite, and
+/// `check_obligations`, which reported one obligation per ENTRY, grew with the cache.
+/// Every source consumer read `required_sort` alone, which is why nothing else noticed.
+/// Returning the sorts, deduplicated, makes the two paths one answer by construction: both
+/// are a depth-first pre-order over the same `direct_requires` lists, and they differ only
+/// in how far a REVISIT is re-walked — which adds nothing a first visit had not.
 ///
-/// Memoized on the same `requires_tree_cache` as `requires_tree` since
-/// the flat shape can be derived by flattening the tree. The
-/// substituted bindings in the tree are dropped in the flatten step
-/// (consumers of the flat form ignore bindings anyway).
-pub fn requires_chain_flat(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEntry> {
+/// `&KnowledgeBase` because the function is read-only (WI-326 / WI-339): the tree cache is
+/// the fast path when warm, and without it the walk reads `direct_requires` itself and
+/// leaves the cache alone.
+pub fn transitive_required_sorts(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<Symbol> {
+    let mut out: Vec<Symbol> = Vec::new();
     if let Some(cached) = kb.requires_tree_cache.borrow().get(&sort_sym) {
-        return flatten_requires_tree(&cached);
+        collect_tree_sorts(cached, &mut out);
+        return out;
     }
-    // No cache yet — build the flat chain directly (without substitution)
-    // and skip the tree-cache write (we don't have &mut). Subsequent
-    // calls on a populated tree cache hit the fast path above.
-    let mut result = Vec::new();
     let mut visited: Vec<Symbol> = Vec::new();
-    collect_requires_unsubstituted(kb, sort_sym, &mut result, &mut visited);
-    result
+    collect_required_sorts(kb, sort_sym, &mut out, &mut visited);
+    out
 }
 
-/// WI-230 internal: the pre-WI-230 transitive walk, without
-/// substitution composition. Equivalent to the old `collect_requires`.
-/// Used as a fallback by `requires_chain_flat` when the tree cache
-/// isn't yet populated for the queried sort.
-fn collect_requires_unsubstituted(
+/// [`transitive_required_sorts`]' warm path: the cached tree's sorts, pre-order, deduplicated.
+fn collect_tree_sorts(nodes: &[RequiresNode], out: &mut Vec<Symbol>) {
+    for node in nodes {
+        if !out.contains(&node.entry.required_sort) {
+            out.push(node.entry.required_sort);
+        }
+        collect_tree_sorts(&node.sub_requires, out);
+    }
+}
+
+/// [`transitive_required_sorts`]' cold path: the walk over `direct_requires`, each sort's
+/// own requirements read once.
+fn collect_required_sorts(
     kb: &KnowledgeBase,
     sort_sym: Symbol,
-    result: &mut Vec<RequiresEntry>,
+    out: &mut Vec<Symbol>,
     visited: &mut Vec<Symbol>,
 ) {
     if visited.contains(&sort_sym) {
@@ -1942,8 +1984,10 @@ fn collect_requires_unsubstituted(
     }
     visited.push(sort_sym);
     for entry in direct_requires(kb, sort_sym) {
-        result.push(entry.clone());
-        collect_requires_unsubstituted(kb, entry.required_sort, result, visited);
+        if !out.contains(&entry.required_sort) {
+            out.push(entry.required_sort);
+        }
+        collect_required_sorts(kb, entry.required_sort, out, visited);
     }
 }
 
@@ -2115,14 +2159,22 @@ pub(super) fn collect_sort_requires(
         let Some(sort_ref_tid) = crate::kb::op_info::head_field_term(kb, head, "sort_ref") else {
             continue;
         };
-        let Term::Fn {
-            functor: sr_functor,
-            ..
-        } = kb.get_term(sort_ref_tid)
-        else {
+        // WI-20260923-N3W68 (#11) — decoded by `sort_ref_functor`, as every provides-side
+        // reader decodes the same field, and NOT by a `Term::Fn` shape test. The field is
+        // `make_name_term_from_sym(owner)`, which applies the WI-511 / CZJ2N canon: `Fn` for
+        // a `SymbolKind::Sort` owner, `Ref` for any other — so the shape test was an unnamed
+        // "is the owner a sort" read (the convention in `rustland/CLAUDE.md`). And the owner
+        // need not be one: a `requires` in a NAMESPACE body is legal (kernel-language.md,
+        // "Requires declaration") and emits its fact scoped to the namespace, whose `Ref`
+        // this scan and `build_requires_index` both skipped — a declared requirement no
+        // reader could see, with no diagnostic. MEASURED: `namespace N … requires
+        // Spec[T = Int64] … end` loaded clean and `direct_requires(N)` answered nothing.
+        // No corpus writes one (a probe on the skip fired zero times across the workspace
+        // suite).
+        let Some(sr_functor) = crate::kb::load::sort_ref_functor(kb, sort_ref_tid) else {
             continue;
         };
-        if !same_sort_canonical(kb, *sr_functor, sort_sym) {
+        if !same_sort_canonical(kb, sr_functor, sort_sym) {
             continue;
         }
 
@@ -2454,38 +2506,14 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
     // provision relation is the largest in the KB, so the raw scan is O(sorts x
     // provisions). MEASURED: the scanning form took a stdlib load from 0.10 s to 0.18 s,
     // an 80 % regression on the whole load. `rids_or_scan` still falls back to the scan
-    // when `provides_index` is `None`, which is the state during the derivation pass.
-    for rid in provides_rids_by_carrier(kb, sort_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // WI-660/WI-672 — THE PER-FACT CARRIER RE-FILTER, which
-        // [`provides_rids_by_carrier`]'s doc calls load-bearing and which every sibling
-        // consumer performs (see [`directly_provided_specs`]). Without it this reads a row
-        // belonging to ANOTHER carrier as if it were this sort's own — live in exactly the
-        // no-index window the comment above names, where `rids_or_scan` returns EVERY
-        // provides fact in the KB, so `Ord provides WeakOrd[T = T]` read while querying an
-        // unrelated `Foo` would hand `Foo` a self-supplied slot it never declared.
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        if !same_sort_canonical(kb, carrier, sort_sym) {
-            continue;
-        }
-        let head = kb.rule_head_value(rid);
-        let Some(spec_value) = crate::kb::op_info::head_field_value(kb, head, "spec") else {
-            continue;
-        };
-        let Some((base, bindings)) = unwrap_spec_view_value(kb, &spec_value) else {
-            continue;
-        };
-        if !provision_is_conversion(kb, sort_sym, base, &bindings) {
+    // when `provides_index` is `None`, which is the state during the derivation pass —
+    // and in that window its per-fact carrier RE-FILTER (inside
+    // [`provides_rows_of_provider`]) is what keeps a row belonging to ANOTHER carrier
+    // out: without it `Ord provides WeakOrd[T = T]`, read while querying an unrelated
+    // `Foo`, handed `Foo` a self-supplied slot it never declared (WI-660/WI-672).
+    for row in provides_rows_of_provider(kb, sort_sym) {
+        let (base, bindings) = (row.spec_base, &row.bindings);
+        if !provision_is_conversion(kb, sort_sym, base, bindings) {
             continue;
         }
         // Decoded lazily: the overwhelming majority of sorts have no conversion at all,
@@ -2508,49 +2536,73 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
         // `synth_req_names` and every projection path through `A`. `mark_derived_provision`
         // records exactly which rows the pass minted (WI-1109's provenance channel), so
         // this asks it rather than guessing from the shape.
-        if kb.derived_provision_origin_of(rid).is_some() {
+        if kb.derived_provision_origin_of(row.rid).is_some() {
             continue;
         }
         out.push(RequiresEntry {
             required_sort: base,
-            spec: spec_value,
+            spec: Value::term(row.spec_view),
             supply: SupplySource::SelfSupplied,
         });
     }
     out
 }
 
-/// WI-230 internal: substitution-aware deep walk. Replaces both
-/// `Term::Ref(s)` AND nullary `Term::Fn(s, [], [])` (the loader's
-/// alternative encoding for a bare name reference; see WI-224's
-/// `substitute_impl_params_alloc`) where `s` is in `map` with the
-/// mapped TermId. Recurses into non-nullary `Term::Fn` children.
-/// Allocates fresh `Term::Fn` nodes only when a child was actually
-/// rewritten (preserves hash-cons identity for unchanged sub-terms).
-pub(super) fn substitute_in_spec(
+/// WI-20260923-32XFQ — rewrite `t`'s LEAVES. `leaf` answers `Some(new)` for a term it
+/// rewrites — `Some(t)` keeps one whole and stops the descent there — and `None` to descend:
+/// a `Fn` is rebuilt through [`KnowledgeBase::map_fn_children`] (hash-cons identity kept when
+/// nothing below changed), anything else is kept.
+///
+/// The one walk under the term-level σ substitutions, each of which spelled it. `leaf`
+/// carries the site's LEAF SET, and the sets differ on purpose: {`Ref`, nullary `Fn`} for
+/// [`substitute_in_spec`] and [`substitute_spec_via_subst`]; those plus `Ident` where the
+/// leaf is read through [`view_ref_symbol`] (`substitute_impl_params_alloc`,
+/// `subst_requires_value`); a bare `Ref` (and `Ident`) beside a `var_ref` wrapper that is
+/// kept or replaced WHOLE, never descended, in the two binder-aware passes
+/// (`substitute_ref_syms`, [`substitute_ref_terms`]). Merging ACROSS two sets changes an
+/// answer unless `Ident` is shown absent from what the narrower one reads; this owns only
+/// the walk.
+pub(super) fn rewrite_term_leaves(
+    kb: &mut KnowledgeBase,
+    t: TermId,
+    leaf: &impl Fn(&mut KnowledgeBase, TermId) -> Option<TermId>,
+) -> TermId {
+    if let Some(new) = leaf(kb, t) {
+        return new;
+    }
+    // A declined non-`Fn` is kept as it is. Asked here and not left to `map_fn_children`,
+    // which clones the term before it looks — a `String` literal's allocation per leaf.
+    if !matches!(kb.get_term(t), Term::Fn { .. }) {
+        return t;
+    }
+    kb.map_fn_children(t, |kb, child| rewrite_term_leaves(kb, child, leaf))
+}
+
+/// WI-20260923-32XFQ — [`rewrite_term_leaves`]' carrier-faithful spec walk (WI-662): a
+/// ground `Value::Term` spec is rewritten by `term`; a denoted `Value::Entity` spec is
+/// rebuilt with each child walked the same way, so a co-carried type binding (`Foo[T =
+/// ParentT, E = Modify[c]]`) is still rewritten; anything else — a denoted `Value::Node`
+/// child — is kept verbatim (its Expr-occurrence σ is the deferred parametric-effect
+/// handling). The walk [`substitute_in_spec`] and [`substitute_spec_via_subst`] each spelled.
+pub(super) fn rewrite_spec_value(
     kb: &mut KnowledgeBase,
     spec: &Value,
-    map: &HashMap<Symbol, TermId>,
+    term: &impl Fn(&mut KnowledgeBase, TermId) -> TermId,
 ) -> Value {
-    if map.is_empty() {
-        return spec.clone();
-    }
     match spec {
-        Value::Term { id, .. } => Value::term(substitute_in_spec_term(kb, *id, map)),
-        // WI-662: carrier-faithful walk of a denoted spec (WI-230 root-scope
-        // composition) — substitute the term-representable children (a co-carried
-        // `T = ParentT` type binding is re-scoped top-down) and preserve a denoted
-        // `Value::Node` child verbatim (deferred parametric-effect handling). See
-        // `substitute_spec_via_subst` for the per-call-subst twin.
+        Value::Term { id, .. } => Value::term(term(kb, *id)),
         Value::Entity {
             functor,
             pos,
             named,
         } => {
-            let new_pos: Vec<Value> = pos.iter().map(|v| substitute_in_spec(kb, v, map)).collect();
+            let new_pos: Vec<Value> = pos
+                .iter()
+                .map(|v| rewrite_spec_value(kb, v, term))
+                .collect();
             let new_named: Vec<(Symbol, Value)> = named
                 .iter()
-                .map(|(k, v)| (*k, substitute_in_spec(kb, v, map)))
+                .map(|(k, v)| (*k, rewrite_spec_value(kb, v, term)))
                 .collect();
             Value::Entity {
                 functor: *functor,
@@ -2562,30 +2614,45 @@ pub(super) fn substitute_in_spec(
     }
 }
 
-/// WI-662: the ground TermId walk under [`substitute_in_spec`].
-fn substitute_in_spec_term(
-    kb: &mut KnowledgeBase,
-    spec: TermId,
-    map: &HashMap<Symbol, TermId>,
-) -> TermId {
-    if map.is_empty() {
-        return spec;
-    }
-    match kb.get_term(spec).clone() {
-        Term::Ref(s) => map.get(&s).copied().unwrap_or(spec),
+/// The bare-name symbol of a `Ref(s)` or the nullary `Fn{s}` — the loader's alternative
+/// encoding for a bare name (see WI-224's `substitute_impl_params_alloc`) — and NOT of an
+/// `Ident`: the {`Ref`, nullary `Fn`} LEAF SET the two spec substitutions read (see
+/// [`rewrite_term_leaves`] for why that set is theirs and not [`view_ref_symbol`]'s).
+pub(super) fn ref_or_nullary_name(term: &Term) -> Option<Symbol> {
+    match term {
+        Term::Ref(s) => Some(*s),
         Term::Fn {
             functor,
             pos_args,
             named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => {
-            // Nullary Fn — treat as a name reference.
-            map.get(&functor).copied().unwrap_or(spec)
-        }
-        Term::Fn { .. } => {
-            kb.map_fn_children(spec, |kb, child| substitute_in_spec_term(kb, child, map))
-        }
-        _ => spec,
+        } if pos_args.is_empty() && named_args.is_empty() => Some(*functor),
+        _ => None,
     }
+}
+
+/// WI-230 internal: substitution-aware deep walk. Replaces both
+/// `Term::Ref(s)` AND nullary `Term::Fn(s, [], [])` (the loader's
+/// alternative encoding for a bare name reference; see WI-224's
+/// `substitute_impl_params_alloc`) where `s` is in `map` with the
+/// mapped TermId. Recurses into non-nullary `Term::Fn` children.
+/// Allocates fresh `Term::Fn` nodes only when a child was actually
+/// rewritten (preserves hash-cons identity for unchanged sub-terms).
+/// A denoted spec is walked carrier-faithfully ([`rewrite_spec_value`], WI-662 — the
+/// WI-230 root-scope composition); `substitute_spec_via_subst` is the per-call-subst twin.
+pub(super) fn substitute_in_spec(
+    kb: &mut KnowledgeBase,
+    spec: &Value,
+    map: &HashMap<Symbol, TermId>,
+) -> Value {
+    if map.is_empty() {
+        return spec.clone();
+    }
+    rewrite_spec_value(kb, spec, &|kb, t| {
+        rewrite_term_leaves(kb, t, &|kb, t| {
+            let s = ref_or_nullary_name(kb.get_term(t))?;
+            Some(map.get(&s).copied().unwrap_or(t))
+        })
+    })
 }
 
 /// WI-230 internal: from an entry whose spec has already been
@@ -2615,10 +2682,9 @@ pub(super) fn build_child_subst_map(
 
 /// Check if sort A refines sort B via `requires` chain.
 pub(super) fn sort_refines(kb: &KnowledgeBase, a_sym: Symbol, b_sym: Symbol) -> bool {
-    let chain = requires_chain_flat(kb, a_sym);
-    chain
-        .iter()
-        .any(|entry| same_sort_canonical(kb, entry.required_sort, b_sym))
+    transitive_required_sorts(kb, a_sym)
+        .into_iter()
+        .any(|required| same_sort_canonical(kb, required, b_sym))
 }
 
 // ── Obligation checking ────────────────────────────────────────
@@ -2639,15 +2705,17 @@ pub struct MissingObligation {
 pub fn check_obligations(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<MissingObligation> {
     let mut missing = Vec::new();
     let sort_name = kb.local_name_of(sort_sym).to_string();
-    let chain = requires_chain_flat(kb, sort_sym);
+    // One obligation per (required sort, operation): the sorts come deduplicated
+    // (WI-20260923-N3W68 #8 — per chain ENTRY, the report's length followed cache warmth).
+    let required = transitive_required_sorts(kb, sort_sym);
 
     // Collect operations provided by this sort
     let provided_ops = sort_operation_names(kb, sort_sym);
 
-    for entry in &chain {
+    for required_sort in required {
         // Get operations required by the spec sort
-        let required_ops = sort_operation_names(kb, entry.required_sort);
-        let required_sort_name = kb.local_name_of(entry.required_sort).to_string();
+        let required_ops = sort_operation_names(kb, required_sort);
+        let required_sort_name = kb.local_name_of(required_sort).to_string();
 
         for op in &required_ops {
             if !provided_ops.iter().any(|p| p == op) {
@@ -2673,12 +2741,16 @@ fn sort_operation_names(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
     })
 }
 
-/// Extract the sort symbol from a sort_ref(name: Ref(sym)) term.
-/// Returns None if the term is not a sort_ref.
+/// The sort symbol of a BARE sort type — a nullary head, `Ref(S)` or the `Fn{S}` a
+/// `SymbolKind::Sort` name keeps under the CZJ2N canon, both classified
+/// [`TypeHead::SortRef`] by [`type_head`]. `None` for anything else: a parameterized or
+/// structural type, a meta-constructor (`Nothing`), a variable.
+///
+/// NOT the deep `sort_ref(name: Ref(S))` wrapper, which this doc used to name and a comment
+/// here claimed [`type_head`] reads as `SortRef` (WI-20260923-N3W68, stale docs): it reads
+/// as `Parameterized { base: sort_ref }`, and nothing mints the form since the WI-361
+/// producer flip (`KnowledgeBase::make_sort_ref` builds `Ref(S)`).
 pub fn extract_sort_ref_sym<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
-    // WI-361 stage 2: a bare sort is `Ref(S)` (term backing) or `sort_ref(name:
-    // Ref(S))` (deep) — `type_head` classifies both as `SortRef`. Parameterized /
-    // structural variants are not bare sorts → `None` (unchanged).
     // WI-342: carrier-agnostic over `TermView` (input principle) so a `Value`
     // sort type reads identically without re-grounding.
     match type_head(kb, ty) {

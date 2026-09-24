@@ -3202,51 +3202,13 @@ pub(super) fn goal_from_op_requires_entry(
     kb: &mut KnowledgeBase,
     entry: &RequiresEntry,
 ) -> Option<SortGoal> {
-    let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
-    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    for key in entry.spec.named_keys(kb) {
-        if !is_type_param_binding(kb, key, &spec_qn) {
-            continue;
-        }
-        if let Some(v) = entry.spec.named_arg(kb, key).and_then(|it| it.as_term_id()) {
-            bindings.push((key, v));
-        }
-    }
-    let pos_arity = match entry.spec.head(kb) {
-        ViewHead::Functor { pos_arity, .. } => pos_arity,
-        _ => 0,
-    };
-    if pos_arity > 0 {
-        // The params a named binding did not already take, in declaration order.
-        let unbound: Vec<String> = kb
-            .type_params_of_sort(entry.required_sort)
-            .into_iter()
-            .filter(|p| !bindings.iter().any(|(k, _)| kb.local_name_of(*k) == p))
-            .collect();
-        // ABORT, never skip: `zip` pairs by POSITION, so dropping an unreadable
-        // positional would shift every later value onto the wrong parameter name and
-        // the check would then judge the pin against a FABRICATED binding — a false
-        // refusal of a correct call. A positional carrier this cannot read (a denoted
-        // `Value::Node`, WI-662) means the goal is not decidable here; say nothing
-        // rather than something wrong, and let the route report.
-        let mut vals: Vec<TermId> = Vec::with_capacity(pos_arity);
-        for i in 0..pos_arity {
-            match entry.spec.pos_arg(kb, i).and_then(|it| it.as_term_id()) {
-                Some(v) => vals.push(v),
-                None => return None,
-            }
-        }
-        // More positionals than free params is a malformed clause, not a goal.
-        if vals.len() > unbound.len() {
-            return None;
-        }
-        for (name, val) in unbound.iter().zip(vals) {
-            // The BARE short name: `goal_binding_value` matches a goal key against a
-            // candidate's by RESOLVED SHORT NAME (with a symbol-identity fast path),
-            // so the two need only render alike.
-            let key = kb.intern(name);
-            bindings.push((key, val));
-        }
+    let (mut bindings, positional) = op_requires_application_bindings(kb, entry)?;
+    for (name, val) in positional {
+        // The BARE short name: `goal_binding_value` matches a goal key against a
+        // candidate's by RESOLVED SHORT NAME (with a symbol-identity fast path),
+        // so the two need only render alike.
+        let key = kb.intern(&name);
+        bindings.push((key, val));
     }
     Some(SortGoal {
         spec_sort: entry.required_sort,

@@ -1840,3 +1840,12 @@ mod wi_9r5hn_reflect_set_test;
 
 #[path = "include/wi_z1q8b_occurrence_bound_type_param_test.rs"]
 mod wi_z1q8b_occurrence_bound_type_param_test;
+
+#[path = "include/wi_n3w68_twin_divergence_test.rs"]
+mod wi_n3w68_twin_divergence_test;
+#[path = "include/wi_32xfq_found_divergences_test.rs"]
+mod wi_32xfq_found_divergences_test;
+#[path = "include/wi_zbwmc_provision_narrowing_test.rs"]
+mod wi_zbwmc_provision_narrowing_test;
+#[path = "include/wi_f8pyz_spec_clause_alias_test.rs"]
+mod wi_f8pyz_spec_clause_alias_test;

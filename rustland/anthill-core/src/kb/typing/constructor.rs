@@ -502,6 +502,47 @@ pub(super) fn sort_param_is_effect_row(kb: &mut KnowledgeBase, sort: Symbol, mem
     false
 }
 
+/// WI-20260923-32XFQ — the constructor field a receiver projection threads into: `(spec
+/// base, its bindings)` when the declared field type APPLIES a spec (`Stream[Src, ES]`),
+/// else `None` — a bare-sort field has no params to thread, and a structural field (arrow /
+/// row) is not a receiver slot. The prologue [`bare_spec_arg_self_projection`],
+/// [`carrier_arg_provision_projection`] and [`bare_spec_arg_provision_projection`] each
+/// spelled.
+fn applied_spec_field(
+    kb: &KnowledgeBase,
+    declared_field_type: &Value,
+) -> Option<(Symbol, Vec<(Symbol, Value)>)> {
+    match extract_type(kb, declared_field_type) {
+        TypeExtractor::Parameterized { base, bindings } if !bindings.is_empty() => {
+            Some((base, bindings))
+        }
+        _ => None,
+    }
+}
+
+/// WI-20260923-32XFQ — a value threaded into the field's `member_short` binding: an
+/// EFFECT-ROW parameter binds a single-label ROW (`{s.E}`) — the field's effect param is a
+/// row TAIL, and a projection inside a row is an ATOM (`present`), which is how the
+/// source-written `{s.E, EffP}` return wraps it — while a SORT parameter binds the value
+/// bare. A value already a row is kept as read (a provision may store it pre-wrapped), and
+/// so is a non-term carrier. The one wrap the three receiver projections each spelled.
+fn effect_row_param_value(
+    kb: &mut KnowledgeBase,
+    field_base: Symbol,
+    member_short: &str,
+    val: Value,
+) -> Value {
+    if !sort_param_is_effect_row(kb, field_base, member_short) {
+        return val;
+    }
+    match &val {
+        Value::Term { id, .. } if !is_effects_rows_term(kb, *id) => {
+            Value::term(kb.build_canonical_effects_rows(&[*id]))
+        }
+        _ => val,
+    }
+}
+
 /// WI-594: the SELF-PROJECTION of a bare spec-typed receiver argument flowing
 /// into a constructor field whose declared type applies the SAME spec.
 ///
@@ -532,26 +573,10 @@ fn bare_spec_arg_self_projection(
 ) -> Option<Value> {
     // The field must APPLY a spec (`Stream[Src, ES]`); a bare-sort field has no
     // params to thread, and a structural field (arrow / row) is not a receiver slot.
-    let TypeExtractor::Parameterized {
-        base: field_base,
-        bindings,
-    } = extract_type(kb, declared_field_type)
-    else {
-        return None;
-    };
-    if bindings.is_empty() {
-        return None;
-    }
+    let (field_base, bindings) = applied_spec_field(kb, declared_field_type)?;
     // Recover the receiver head from a simple value reference; a compound or
     // non-reference argument has no single projectable receiver.
-    let recv = match &arg.node.kind {
-        NodeKind::Expr { expr, .. } => match expr {
-            Expr::VarRef { name } => *name,
-            Expr::Ref(name) | Expr::Ident(name) => *name,
-            _ => return None,
-        },
-        _ => return None,
-    };
+    let recv = leaf_var_ref(&arg.node)?;
     // The argument must be a BARE receiver at that same base — either spelling
     // ([`bare_receiver_sort`], which owns that shape test and its WI-1059 half). An
     // already-applied argument (`s: Stream[S, EffS]`) threads through the ordinary arm
@@ -592,11 +617,7 @@ fn bare_spec_arg_self_projection(
         // `{s.E, EffP}` return wraps it exactly so. Binding the row keeps the
         // provision's `{ES, EF}` structurally a present-atom + tail, matching the
         // declared return. A SORT param threads the bare projection (`Src = s.T`).
-        let proj_val = if sort_param_is_effect_row(kb, field_base, &member_short) {
-            Value::term(kb.build_canonical_effects_rows(&[proj]))
-        } else {
-            Value::term(proj)
-        };
+        let proj_val = effect_row_param_value(kb, field_base, &member_short, Value::term(proj));
         // Key by the FIELD's binding symbol so `unify_parameterized_view`'s
         // by-symbol param match threads it.
         proj_bindings.push((*field_key, proj_val));
@@ -1227,16 +1248,7 @@ pub(super) fn carrier_arg_provision_projection(
     arg: &TypeResult,
 ) -> Option<Value> {
     // The field must APPLY a spec (`FiniteCollection[C = …, …]`).
-    let TypeExtractor::Parameterized {
-        base: field_base,
-        bindings,
-    } = extract_type(kb, declared_field_type)
-    else {
-        return None;
-    };
-    if bindings.is_empty() {
-        return None;
-    }
+    let (field_base, bindings) = applied_spec_field(kb, declared_field_type)?;
     // The argument must be a BARE carrier — a type-param value (`c : C`, possibly
     // rigidified) or a bare sort ref — naming a sort OTHER than the field's spec
     // base. (An already-applied `s : Stream[…]` threads through the ordinary arm;
@@ -1270,16 +1282,7 @@ pub(super) fn carrier_arg_provision_projection(
         // source-written provision; a SORT param threads the bare value. A value
         // that is already a row is kept as-is (the requires/provider source may
         // store it pre-wrapped).
-        let proj_val = if sort_param_is_effect_row(kb, field_base, &member_short) {
-            match &val {
-                Value::Term { id, .. } if !is_effects_rows_term(kb, *id) => {
-                    Value::term(kb.build_canonical_effects_rows(&[*id]))
-                }
-                _ => val,
-            }
-        } else {
-            val
-        };
+        let proj_val = effect_row_param_value(kb, field_base, &member_short, val);
         proj_bindings.push((*field_key, proj_val));
     }
     Some(parameterized_value(
@@ -1361,26 +1364,10 @@ pub(super) fn bare_spec_arg_provision_projection(
 ) -> Option<Value> {
     // The field must APPLY a spec (`Iterable[C = …, …]`); a bare-sort field has no params
     // to thread, and a structural field (arrow / row) is not a receiver slot.
-    let TypeExtractor::Parameterized {
-        base: field_base,
-        bindings,
-    } = extract_type(kb, declared_field_type)
-    else {
-        return None;
-    };
-    if bindings.is_empty() {
-        return None;
-    }
+    let (field_base, bindings) = applied_spec_field(kb, declared_field_type)?;
     // Recover the receiver head from a simple value reference; a compound or
     // non-reference argument has no single projectable receiver.
-    let recv = match &arg.node.kind {
-        NodeKind::Expr { expr, .. } => match expr {
-            Expr::VarRef { name } => *name,
-            Expr::Ref(name) | Expr::Ident(name) => *name,
-            _ => return None,
-        },
-        _ => return None,
-    };
+    let recv = leaf_var_ref(&arg.node)?;
     // A bare receiver of a sort OTHER than the field's spec — an argument at the field's
     // own spec is [`bare_spec_arg_self_projection`]'s job, and answering it here too would
     // route the same shape through two readers.
@@ -1522,13 +1509,7 @@ pub(super) fn bare_spec_arg_provision_projection(
         // An EFFECT-ROW param threads as a single-label row (`{s.E}`); a SORT param threads
         // the substituted value bare. A value already stored as a row is kept as read.
         let member_short = short_name_of(kb.local_name_of(*field_key)).to_owned();
-        let proj_val = if sort_param_is_effect_row(kb, field_base, &member_short)
-            && !is_effects_rows_term(kb, val)
-        {
-            Value::term(kb.build_canonical_effects_rows(&[val]))
-        } else {
-            Value::term(val)
-        };
+        let proj_val = effect_row_param_value(kb, field_base, &member_short, Value::term(val));
         proj_bindings.push((*field_key, proj_val));
     }
     Some(parameterized_value(

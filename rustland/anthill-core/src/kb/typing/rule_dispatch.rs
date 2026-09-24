@@ -1528,52 +1528,17 @@ pub(super) fn collect_term_type_constraints(
             let pos_args = pos_args.clone();
             let named_args = named_args.clone();
 
-            // Try to get expected types from operation params or entity fields.
-            // WI-9C2PZ: ONE [`ParamInstantiation`] per application, so the callee's own
-            // type parameters are correlated across THIS call's arguments and shared
-            // with no other call.
-            let mut inst = ParamInstantiation::new();
-            if let Some(op) = lookup_operation_info_full(kb, functor) {
-                // Operation call: match args to param types
-                for (i, &arg) in pos_args.iter().enumerate() {
-                    // WI-341 Stage A: seed inference from the param type
-                    // carrier-agnostically (a `Value::Node` callback-arrow param too).
-                    if let Some((_, param_type)) = op.params.get(i) {
-                        let (param_type, instantiated) =
-                            instantiate_declared_type(kb, param_type, &mut inst);
-                        constrain_arg_type(
-                            kb,
-                            arg,
-                            &param_type,
-                            instantiated,
-                            var_types,
-                            param_backed,
-                            subst,
-                        );
-                    }
-                }
-            } else if let Some(field_types) = kb.entity_field_types(functor) {
-                // Entity constructor: match named args to field types
-                let field_types = field_types.to_vec();
-                for (field_sym, field_type) in &field_types {
-                    if let Some((_, arg_tid)) = named_args.iter().find(|(s, _)| s == field_sym) {
-                        let arg_tid = *arg_tid;
-                        // WI-341 Stage A: field type is a carrier-agnostic `Value` —
-                        // constrain directly, no re-grounding to a term.
-                        let (field_type, instantiated) =
-                            instantiate_declared_type(kb, field_type, &mut inst);
-                        constrain_arg_type(
-                            kb,
-                            arg_tid,
-                            &field_type,
-                            instantiated,
-                            var_types,
-                            param_backed,
-                            subst,
-                        );
-                    }
-                }
-            }
+            // Expected types from operation params or entity fields — the dispatch the
+            // body walker applies to an occurrence, on the head's `TermId` arguments.
+            constrain_application(
+                kb,
+                functor,
+                &pos_args,
+                &named_args,
+                var_types,
+                param_backed,
+                subst,
+            );
 
             // Recurse into subterms
             for &arg in pos_args.iter() {

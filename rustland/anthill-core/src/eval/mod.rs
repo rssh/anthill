@@ -1137,7 +1137,7 @@ impl Interpreter {
         // the parent sort; `__req_<spec>` → each host-supplied chain
         // dict, zipped against `synth_req_names`. The arity check uses
         // the same name list as the bind step so the two can't diverge
-        // (a prior version used `requires_chain_flat` here, which can
+        // (a prior version used the flat requires chain here, which could
         // see different cache state than `synth_req_names`'s
         // substitution-composed walk). See operation-call-model.md
         // §"Host-to-entry-op boundary".

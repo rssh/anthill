@@ -363,9 +363,6 @@ fn render_op_signature(
 /// same pass.
 pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::LoadError> {
     use crate::kb::load::LoadError;
-    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
-        return Vec::new();
-    };
     // WI-20260822-1TKN0 — the frame-condition marker, resolved once for the whole
     // walk rather than per effect label (see [`effect_is_modify`]).
     let modify_sym = kb.try_resolve_symbol("anthill.prelude.Modify");
@@ -387,58 +384,20 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         spec: Symbol,
         sigma: Vec<(Symbol, TermId)>,
     }
-    let mut provs: Vec<Prov> = Vec::new();
-    for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        // A value-fact SortProvidesInfo (denoted-bearing spec) is skipped from
-        // override-refinement coverage; occurrence-based coverage is gated
-        // effect-expressions-as-types work (avoid the term-only `rule_head` panic).
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        let Some(spec_view) = get_named_arg(kb, &named, "spec") else {
-            continue;
-        };
-        let Some((spec_base, _)) = unwrap_spec_view(kb, spec_view) else {
-            continue;
-        };
-        let spec_qn = kb.qualified_name_of(spec_base).to_string();
-        let mut sigma: Vec<(Symbol, TermId)> = Vec::new();
-        if let Term::Fn { named_args, .. } = kb.get_term(spec_view).clone() {
-            for (k, v) in &named_args {
-                // σ keys on the RESOLVED spec-param symbol — the one the spec
-                // operations' own types reference (`Sp.op`'s `Ref(Sp.T)`) — and not
-                // on the raw binding key, which is a different `Symbol` copy
-                // resolved in the provision's scope. `substitute_impl_params_alloc`
-                // matches by `Symbol` equality, so keying on the raw copy makes
-                // every substitution below a SILENT NO-OP: measured on
-                // `provides Sp[T = Carrier]`, the key was `Symbol(2626)` where the
-                // spec's return type held `Symbol(2563)`. Both readers of σ then
-                // fail open — the effects leg sees a still-parametric spec row and
-                // skips, and the return-type guard below cannot decide a spec that
-                // returns its own parameter, which is the ordinary case. This is
-                // the same correction WI-431 (B) already carries at the two sibling
-                // σ sites (`check_instance_fact_op_signatures`,
-                // `requires_shadow_is_confusable`); this pass was the one outlier.
-                if let Some(param_sym) = type_param_sym_of_binding(kb, *k, &spec_qn) {
-                    sigma.push((param_sym, *v));
-                }
+    let provs: Vec<Prov> = provides_rows(kb)
+        .map(|row| {
+            // The view's RAW named arguments, not `row.bindings` — see [`spec_param_sigma`].
+            let named: &[(Symbol, TermId)] = match kb.get_term(row.spec_view) {
+                Term::Fn { named_args, .. } => named_args,
+                _ => &[],
+            };
+            Prov {
+                carrier: row.provider,
+                spec: row.spec_base,
+                sigma: spec_param_sigma(kb, row.spec_base, named),
             }
-        }
-        provs.push(Prov {
-            carrier,
-            spec: spec_base,
-            sigma,
-        });
-    }
+        })
+        .collect();
 
     let mut errors = Vec::new();
     for p in &provs {
@@ -2166,20 +2125,10 @@ fn all_spec_clause_views(kb: &KnowledgeBase) -> Vec<SpecClauseView> {
         let Some(sym) = kb.try_resolve_symbol(qn) else {
             continue;
         };
+        // TERM-ONLY for all three, the condition relation included: a value-headed
+        // condition fact is invisible here, where [`decoded_condition_row`] reads it.
         for rid in kb.rules_by_functor(sym) {
-            if !kb.is_fact(rid) {
-                continue;
-            }
-            let Some(named) = kb.fact_head_named_args(rid) else {
-                continue;
-            };
-            let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-                continue;
-            };
-            let Some(owner) = crate::kb::load::sort_ref_functor(kb, sr) else {
-                continue;
-            };
-            let Some(spec_view) = get_named_arg(kb, &named, spec_field) else {
+            let Some((owner, spec_view)) = sort_clause_fields(kb, rid, spec_field) else {
                 continue;
             };
             out.push(SpecClauseView {
@@ -2477,9 +2426,6 @@ pub fn check_instance_fact_op_signatures(
     kb: &mut KnowledgeBase,
 ) -> Vec<crate::kb::load::LoadError> {
     use crate::kb::load::LoadError;
-    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
-        return Vec::new();
-    };
     // Spec's own declared ops, to resolve a binding key's short name → the spec op.
     let own: HashMap<Symbol, Vec<Symbol>> =
         crate::kb::load::sorts_and_own_ops(kb).into_iter().collect();
@@ -2494,52 +2440,33 @@ pub fn check_instance_fact_op_signatures(
         sigma: Vec<(Symbol, TermId)>,
         ops: Vec<(String, Symbol)>,
     }
-    let mut provs: Vec<Prov> = Vec::new();
-    for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let Some(sr) = get_named_arg(kb, &named, "sort_ref") else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr) else {
-            continue;
-        };
-        let Some(spec_view) = get_named_arg(kb, &named, "spec") else {
-            continue;
-        };
-        let Some((spec_base, bindings)) = unwrap_spec_view(kb, spec_view) else {
-            continue;
-        };
-        let spec_qn = kb.qualified_name_of(spec_base).to_string();
-        let mut sigma: Vec<(Symbol, TermId)> = Vec::new();
-        let mut ops: Vec<(String, Symbol)> = Vec::new();
-        for (k, v) in &bindings {
-            // σ keys on the RESOLVED spec-param symbol (the one the spec op types
-            // reference), not the raw binding key copy — else the substitution
-            // silently no-ops and every type check falls open.
-            if let Some(param_sym) = type_param_sym_of_binding(kb, *k, &spec_qn) {
-                sigma.push((param_sym, *v));
-            } else if let Some(bound_op) = binding_op_symbol(kb, *v) {
-                ops.push((
-                    short_name_of(kb.qualified_name_of(*k)).to_string(),
-                    bound_op,
-                ));
+    let provs: Vec<Prov> = provides_rows(kb)
+        .filter_map(|row| {
+            let spec_qn = kb.qualified_name_of(row.spec_base);
+            // The op-valued bindings: every binding [`spec_param_sigma`] does not take.
+            let ops: Vec<(String, Symbol)> = row
+                .bindings
+                .iter()
+                .filter(|(k, _)| !is_type_param_binding(kb, *k, spec_qn))
+                .filter_map(|(k, v)| {
+                    let bound_op = binding_op_symbol(kb, *v)?;
+                    Some((
+                        short_name_of(kb.qualified_name_of(*k)).to_string(),
+                        bound_op,
+                    ))
+                })
+                .collect();
+            if ops.is_empty() {
+                return None;
             }
-        }
-        if ops.is_empty() {
-            continue;
-        }
-        provs.push(Prov {
-            carrier,
-            spec: spec_base,
-            sigma,
-            ops,
-        });
-    }
+            Some(Prov {
+                carrier: row.provider,
+                spec: row.spec_base,
+                sigma: spec_param_sigma(kb, row.spec_base, &row.bindings),
+                ops,
+            })
+        })
+        .collect();
 
     let mut errors = Vec::new();
     for p in &provs {
@@ -2746,14 +2673,8 @@ pub(crate) fn requires_shadow_is_confusable(
     if spec_info.params.len() != local_info.params.len() {
         return false; // different arity — a call site cannot confuse them
     }
-    let spec_qn = kb.qualified_name_of(spec).to_string();
     let sigma: Vec<(Symbol, TermId)> = unwrap_spec_view_value(kb, spec_view)
-        .map(|(_, bindings)| {
-            bindings
-                .iter()
-                .filter_map(|(k, v)| type_param_sym_of_binding(kb, *k, &spec_qn).map(|p| (p, *v)))
-                .collect()
-        })
+        .map(|(_, bindings)| spec_param_sigma(kb, spec, &bindings))
         .unwrap_or_default();
 
     // Params then return, cloned out of the two records so the `&mut kb`

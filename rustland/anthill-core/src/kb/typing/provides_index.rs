@@ -125,9 +125,9 @@ pub(crate) struct ProvidesIndex {
     /// base)` edges out of it, which is what [`provides_out_edges`] recomputes per hop of
     /// every transitive `sort_provides` walk. Two other buckets over the same facts would
     /// be redundant; this is not, because the cost it removes is the DECODE
-    /// (`fact_head_named_args` + two `get_named_arg`s + `sort_ref_functor` +
-    /// `provides_spec_base_sym` + two `canonical_sym` string hashes per fact), not the
-    /// bucket lookup. Built in the SAME pass, by calling the very decode
+    /// (the [`ProvidesRow`] decode — `fact_head_named_args`, two `get_named_arg`s,
+    /// `sort_ref_functor`, the spec view's base — and two `canonical_sym` string hashes per
+    /// fact), not the bucket lookup. Built in the SAME pass, by calling the very decode
     /// `provides_out_edges` uses, so the memo is that function computed once rather than a
     /// second spelling of it that could drift.
     ///
@@ -190,22 +190,12 @@ pub(super) fn provides_rids_by_spec(
 }
 
 /// WI-660/WI-672 — the provides-fact rids for a CARRIER-keyed lookup: the canonical-carrier
-/// bucket when built, else a live scan. The bucket keys on `canonical_sort_sym(carrier)`,
-/// so the caller passes any carrier symbol and the lookup canonicalizes it; each consumer
-/// keeps its own per-fact `canonical_sort_sym` re-filter (the no-index scan fallback
-/// returns EVERY provides fact, so the re-filter is load-bearing there).
-pub(super) fn provides_rids_by_carrier(
-    kb: &KnowledgeBase,
-    carrier: Symbol,
-) -> Vec<crate::kb::RuleId> {
-    provides_rids_by_carrier_canon(kb, kb.canonical_sort_sym(carrier))
-}
-
-/// [`provides_rids_by_carrier`] for a caller that ALREADY holds the canonical carrier —
-/// the transitive `provides` walk (WI-864), which canonicalizes once per walk and then
-/// carries canonical symbols. Split rather than relying on `canonical_sym`'s idempotence
-/// at the entry: idempotence makes the extra call harmless, not free, and the walk asks
-/// per hop.
+/// bucket when built, else a live scan. The bucket keys on `canonical_sort_sym(carrier)`, so
+/// the caller passes the CANONICAL carrier — the transitive `provides` walk (WI-864)
+/// canonicalizes once per walk and then carries canonical symbols, and relying on
+/// `canonical_sym`'s idempotence per hop would make the extra call harmless, not free. The
+/// one reader, [`provides_rows_of_provider_canon`], keeps the per-fact re-filter: the no-index
+/// scan fallback returns EVERY provides fact, so the re-filter is load-bearing there.
 pub(super) fn provides_rids_by_carrier_canon(
     kb: &KnowledgeBase,
     carrier_canon: Symbol,
@@ -216,6 +206,173 @@ pub(super) fn provides_rids_by_carrier_canon(
         carrier_canon,
         "anthill.reflect.SortProvidesInfo",
     )
+}
+
+/// WI-20260923-32XFQ — ONE `anthill.reflect.SortProvidesInfo` fact, decoded: THE row reader
+/// of the provision relation. Sixteen readers across the typer spelled this decode each for
+/// itself — iterate the rids, skip a non-fact, read `sort_ref` → provider and `spec` → view
+/// and base, `continue` on any missing field — and read it through [`provides_rows`],
+/// [`provides_rows_of_provider`] and [`provides_rows_of_spec`] now. The two keyed forms
+/// carry the per-fact canonical RE-FILTER their bucket needs, because the bucket's no-index
+/// fallback returns EVERY provision fact: `self_supplied_entries` records a reader that
+/// once forgot it (WI-660/672) and read another carrier's conversion as its own.
+///
+/// NOT read through here, deliberately: [`build_provides_index`], which files a rid under
+/// each field INDEPENDENTLY (a fact with a readable `spec` and no readable `sort_ref` is still
+/// in the spec bucket), and [`spec_has_any_providers`]' fallback scan, which answers what that
+/// bucket answers. Both are keyed on one field; a row is all of them.
+///
+/// A row exists only when every field decodes. A VALUE-headed fact (a denoted-bearing spec)
+/// has no term head and is not a row, as it was no row to any reader before: occurrence-
+/// based provides lookup is gated effect-expressions-as-types work.
+///
+/// ONE DECODE PER FIELD. Until WI-20260923-32XFQ two fields had a second one kept apart,
+/// and both second spellings were wrong answers, found by program: the SPEC BASE (the
+/// loader's `provides_spec_base_sym` took a user sort named `SortView` for the reflect
+/// wrapper by its last segment, where [`unwrap_spec_view`] took `anything.SortView` by its
+/// suffix — both now ask [`is_sort_view_functor`], by identity), and the PROVIDER
+/// (`crate::kb::load::sort_ref_functor` preferred a `name:` child, so an applied carrier
+/// whose parameter is called `name` read as that parameter's value, where two dispatch
+/// readers took the bare head — it reads the head now).
+#[derive(Clone, Debug)]
+pub(super) struct ProvidesRow {
+    pub(super) rid: crate::kb::RuleId,
+    /// The `sort_ref`, RAW: the providing sort for a `provides` clause, the DERIVED carrier
+    /// for a namespace-level instance fact. The PROVIDER, not the dispatch carrier — a
+    /// witness names its carrier in the spec's bindings ([`witness_dispatch_carrier`]),
+    /// though the index calls this key `carrier` ([`provides_rids_by_carrier_canon`]).
+    pub(super) provider: Symbol,
+    /// The `spec` field: the full `SortView` term, or a bare spec reference.
+    pub(super) spec_view: TermId,
+    /// The spec's base sort, RAW.
+    pub(super) spec_base: Symbol,
+    /// The view's NAMED bindings, as [`unwrap_spec_view`] reads them — so a bare application
+    /// (`Spec[T = X]` with no `SortView` wrapper) contributes none, and the view's
+    /// POSITIONAL bindings are not here either. A reader that needs either reads
+    /// [`Self::spec_view`] itself.
+    pub(super) bindings: SmallVec<[(Symbol, TermId); 2]>,
+}
+
+/// WI-20260923-32XFQ — the fields every sort-clause reflect fact shares. `SortProvidesInfo`,
+/// `SortRequiresInfo` and `ProvidesConditionInfo` are each a TERM-headed fact with a
+/// `sort_ref` (the sort the clause is written on) and one more named field: `(owner through
+/// `sort_ref_functor`, the field)`, or `None` for a rule, a value-headed fact, or a missing
+/// field.
+///
+/// TERM-ONLY, and that is a skip rather than a decode: a value head has no `TermId`.
+/// [`decoded_condition_row`] is the carrier-agnostic reader of the condition relation.
+pub(super) fn sort_clause_fields(
+    kb: &KnowledgeBase,
+    rid: crate::kb::RuleId,
+    field: &str,
+) -> Option<(Symbol, TermId)> {
+    if !kb.is_fact(rid) {
+        return None;
+    }
+    let named = kb.fact_head_named_args(rid)?;
+    let sort_ref = get_named_arg(kb, &named, "sort_ref")?;
+    let owner = crate::kb::load::sort_ref_functor(kb, sort_ref)?;
+    let value = get_named_arg(kb, &named, field)?;
+    Some((owner, value))
+}
+
+/// [`ProvidesRow`]'s decoder: `None` for anything that is not a row, and for a row whose
+/// provider `keep` refuses. Private, so a reader cannot pair it with a bucket and forget the
+/// bucket's re-filter — the iterators below are the only doors.
+///
+/// `keep` is asked BEFORE the spec is unwrapped, because the provider-keyed reader's no-index
+/// fallback hands it EVERY provision fact and a reader like `self_supplied_entries` runs once
+/// per sort: unwrapping (and cloning the bindings of) every other carrier's row first would put
+/// back a slice of the O(sorts × provisions) cost the carrier bucket exists to remove.
+fn decode_provides_row(
+    kb: &KnowledgeBase,
+    rid: crate::kb::RuleId,
+    keep: impl Fn(Symbol) -> bool,
+) -> Option<ProvidesRow> {
+    let (provider, spec_view) = sort_clause_fields(kb, rid, "spec")?;
+    if !keep(provider) {
+        return None;
+    }
+    let (spec_base, bindings) = unwrap_spec_view(kb, spec_view)?;
+    Some(ProvidesRow {
+        rid,
+        provider,
+        spec_view,
+        spec_base,
+        bindings,
+    })
+}
+
+/// Every provision row, in relation order — a scan of the whole relation, and empty when
+/// `SortProvidesInfo` is not declared at all.
+pub(super) fn provides_rows(kb: &KnowledgeBase) -> impl Iterator<Item = ProvidesRow> + '_ {
+    kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo")
+        .map(|sym| kb.rules_by_functor(sym))
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(move |rid| decode_provides_row(kb, rid, |_| true))
+}
+
+/// The rows whose PROVIDER is `provider` — the carrier-keyed bucket
+/// ([`provides_rids_by_carrier_canon`]) with its re-filter built in: canonical sort identity,
+/// [`same_sort_canonical`]'s.
+pub(super) fn provides_rows_of_provider(
+    kb: &KnowledgeBase,
+    provider: Symbol,
+) -> impl Iterator<Item = ProvidesRow> + '_ {
+    provides_rows_of_provider_canon(kb, kb.canonical_sort_sym(provider))
+}
+
+/// [`provides_rows_of_provider`] for a caller that already holds the CANONICAL provider —
+/// the transitive `provides` walk ([`provides_out_edges`]), which canonicalizes once per walk
+/// rather than once per hop.
+pub(super) fn provides_rows_of_provider_canon(
+    kb: &KnowledgeBase,
+    provider_canon: Symbol,
+) -> impl Iterator<Item = ProvidesRow> + '_ {
+    provides_rids_by_carrier_canon(kb, provider_canon)
+        .into_iter()
+        .filter_map(move |rid| {
+            decode_provides_row(kb, rid, |p| {
+                p == provider_canon || kb.canonical_sort_sym(p) == provider_canon
+            })
+        })
+}
+
+/// The rows providing `spec` — the spec-base bucket ([`provides_rids_by_spec`]) with its
+/// canonical re-filter built in. The re-filter is not for show: the no-index fallback is
+/// what the dispatch readers see today (`build_eq_dispatch_index` runs before
+/// `build_provides_index`, and `eq_derive::run`'s caller nulls the index first), and it
+/// returns EVERY provision fact.
+pub(super) fn provides_rows_of_spec(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+) -> impl Iterator<Item = ProvidesRow> + '_ {
+    let spec_canon = kb.canonical_sort_sym(spec);
+    provides_rows_of_spec_in(kb, spec_canon, provides_rids_by_spec(kb, spec_canon))
+}
+
+/// WI-20260829-K0E8T — [`provides_rows_of_spec`] over rids the caller has already fetched
+/// with [`provides_rids_by_spec`], for the one caller that must SEE the bucket before it
+/// decides to walk it: [`witness_provides_admissibly`]'s gate, entered on the failure path
+/// of every bare↔bare compatibility check, whose bucket is empty at 1263 of 1267
+/// stdlib-load entries. Going through [`provides_rows_of_spec`] would canonicalize the spec
+/// a second time (an FQN string hash) before it knows there is anything to compare.
+///
+/// The re-filter is CANONICAL, as the bucket is (WI-20260923-N3W68 #10): a provision whose
+/// `SortView` base was resolved in another import scope is in the canonical bucket, and a
+/// RAW compare then drops it — the silent no-op [`provider_spec_view_bindings`] warns of.
+/// `collect_provides_candidates` compared raw until N3W68; a probe on "canonical-equal,
+/// raw-different" fired zero times across the workspace suite, so that change served no
+/// program newly.
+pub(super) fn provides_rows_of_spec_in(
+    kb: &KnowledgeBase,
+    spec_canon: Symbol,
+    rids: Vec<crate::kb::RuleId>,
+) -> impl Iterator<Item = ProvidesRow> + '_ {
+    rids.into_iter()
+        .filter_map(move |rid| decode_provides_row(kb, rid, |_| true))
+        .filter(move |row| kb.canonical_sort_sym(row.spec_base) == spec_canon)
 }
 
 /// WI-20260920-E3DC5 — ONE decoder for a `ProvidesConditionInfo` fact, shared by its three
@@ -336,18 +493,17 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
                 );
                 let carrier_canon = kb.canonical_sort_sym(carrier);
                 by_carrier.insert(carrier_canon, rid);
-                // WI-864: the out-edge, decoded once. `provides_spec_base_sym` and NOT the
-                // `unwrap_spec_view` above, because this memoizes `provides_out_edges` —
-                // whose spec decode is that one. The two agree on every shape the loader
-                // emits, but "agree today" is not the invariant a memo may rest on: using
-                // the consumer's own decode makes the memo the function, not a lookalike.
-                if let Some(dst) = get_named_arg(kb, &named, "spec")
-                    .and_then(|t| crate::kb::load::provides_spec_base_sym(kb, t))
-                {
+                // WI-864: the out-edge, decoded once — and through the ROW decoder
+                // `provides_out_edges`' live arm reads ([`ProvidesRow`]), because a memo
+                // built from the consumer's own decode is that function computed once, not a
+                // lookalike of it that could drift. (Until WI-20260923-32XFQ the two read the
+                // spec base through two decoders that disagreed about a user sort named
+                // `SortView`; there is one now, and this reads it.)
+                if let Some(row) = decode_provides_row(kb, rid, |_| true) {
                     carrier_edges
                         .entry(carrier_canon)
                         .or_default()
-                        .push((rid, kb.canonical_sort_sym(dst)));
+                        .push((rid, kb.canonical_sort_sym(row.spec_base)));
                 }
             }
         }
@@ -479,14 +635,12 @@ pub(crate) fn build_requires_index(kb: &mut KnowledgeBase) {
         let Some(sort_ref_tid) = crate::kb::op_info::head_field_term(kb, head, "sort_ref") else {
             continue;
         };
-        let Term::Fn {
-            functor: sr_functor,
-            ..
-        } = kb.get_term(sort_ref_tid)
-        else {
+        // `sort_ref_functor`, the provides side's decoder — see `collect_sort_requires`,
+        // the scan this bucket must agree with, for why not a `Term::Fn` shape test.
+        let Some(sr_functor) = crate::kb::load::sort_ref_functor(kb, sort_ref_tid) else {
             continue;
         };
-        index.insert(kb.canonical_sort_sym(*sr_functor), rid);
+        index.insert(kb.canonical_sort_sym(sr_functor), rid);
     }
     kb.requires_index = Some(index);
 }
@@ -724,12 +878,7 @@ fn bindings_cover_named(
     covering: &[(Symbol, TermId)],
     asked: &[(String, TermId)],
 ) -> bool {
-    asked.iter().all(|(an, av)| {
-        let ak = binding_key_named(kb, an.as_str(), *av);
-        covering
-            .iter()
-            .any(|(cn, cv)| binding_key(kb, *cn, *cv) == ak)
-    })
+    bindings_cover(covering, asked, kb, |(n, v)| binding_key(kb, *n, *v))
 }
 
 /// [`bindings_cover_named`] with BOTH sides keyed by local name — comparing two pending
@@ -739,11 +888,21 @@ fn bindings_cover_named_pairs(
     covering: &[(String, TermId)],
     asked: &[(String, TermId)],
 ) -> bool {
+    bindings_cover(covering, asked, kb, |(n, v)| binding_key_named(kb, n, *v))
+}
+
+/// The coverage test both of those ask — every `asked` binding's key is among the
+/// `covering` side's — with the covering side's key read by `key`, the only thing the
+/// two differed in.
+fn bindings_cover<C>(
+    covering: &[C],
+    asked: &[(String, TermId)],
+    kb: &KnowledgeBase,
+    key: impl Fn(&C) -> (String, String),
+) -> bool {
     asked.iter().all(|(an, av)| {
         let ak = binding_key_named(kb, an.as_str(), *av);
-        covering
-            .iter()
-            .any(|(cn, cv)| binding_key_named(kb, cn.as_str(), *cv) == ak)
+        covering.iter().any(|c| key(c) == ak)
     })
 }
 
@@ -863,34 +1022,14 @@ struct DecodedProvision {
 /// standard library. The control was the same loop with the indexes rebuilt inside it;
 /// if anything it UNDERSTATES the original, which also re-scanned for the
 /// already-provided check.
-fn decoded_provision_rows(kb: &KnowledgeBase, provides_sym: Symbol) -> Vec<DecodedProvision> {
-    let mut out = Vec::new();
-    for rid in kb.rules_by_functor(provides_sym) {
-        if !kb.is_fact(rid) {
-            continue;
-        }
-        let Some(named) = kb.fact_head_named_args(rid) else {
-            continue;
-        };
-        let (Some(sr_tid), Some(spec_tid)) = (
-            get_named_arg(kb, &named, "sort_ref"),
-            get_named_arg(kb, &named, "spec"),
-        ) else {
-            continue;
-        };
-        let Some(carrier) = crate::kb::load::sort_ref_functor(kb, sr_tid) else {
-            continue;
-        };
-        let Some((base, bindings)) = unwrap_spec_view(kb, spec_tid) else {
-            continue;
-        };
-        out.push(DecodedProvision {
-            carrier: kb.canonical_sort_sym(carrier),
-            base: kb.canonical_sort_sym(base),
-            bindings,
-        });
-    }
-    out
+fn decoded_provision_rows(kb: &KnowledgeBase) -> Vec<DecodedProvision> {
+    provides_rows(kb)
+        .map(|row| DecodedProvision {
+            carrier: kb.canonical_sort_sym(row.provider),
+            base: kb.canonical_sort_sym(row.spec_base),
+            bindings: row.bindings,
+        })
+        .collect()
 }
 
 /// The (carrier, provided-spec) pairs whose provision carries a `:- goals` tail, from ONE
@@ -999,15 +1138,12 @@ pub(super) fn conditioned_provision_pairs(
 /// copied tail could not serve both anyway). Deriving a conditional row means asserting
 /// a rule with the source's body, and is the next increment, not this one.
 pub(crate) fn derive_forwarded_provisions(kb: &mut KnowledgeBase) {
-    let Some(provides_sym) = kb.try_resolve_symbol("anthill.reflect.SortProvidesInfo") else {
-        return;
-    };
     // Bounded fixpoint, so a tower deeper than one hop still derives; the bound is a
     // runaway guard, not a depth claim — the shipped tower needs one round and settles
     // on the second, which is what ends the loop.
     const ROUNDS: usize = 8;
     for _round in 0..ROUNDS {
-        let pending = forwarded_rows_to_derive(kb, provides_sym);
+        let pending = forwarded_rows_to_derive(kb);
         if pending.is_empty() {
             return;
         }
@@ -1024,7 +1160,7 @@ pub(crate) fn derive_forwarded_provisions(kb: &mut KnowledgeBase) {
     // below would then be raised on a COMPLETE fixpoint, with a message saying rows are
     // missing when none are. Ask once more; only a still-non-empty set is the failure the
     // assertion is about.
-    if forwarded_rows_to_derive(kb, provides_sym).is_empty() {
+    if forwarded_rows_to_derive(kb).is_empty() {
         return;
     }
     // FALLING OUT OF THE LOOP MEANS THE LAST ROUND STILL HAD WORK, so rows a further
@@ -1048,9 +1184,8 @@ pub(crate) fn derive_forwarded_provisions(kb: &mut KnowledgeBase) {
 /// [`forwarding_param_map`].
 pub(super) fn forwarded_rows_to_derive(
     kb: &KnowledgeBase,
-    provides_sym: Symbol,
 ) -> Vec<(Symbol, Symbol, Symbol, Vec<(String, TermId)>)> {
-    let rows = decoded_provision_rows(kb, provides_sym);
+    let rows = decoded_provision_rows(kb);
 
     let conditioned = conditioned_provision_pairs(kb);
 
