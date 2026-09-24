@@ -323,7 +323,7 @@ impl Interpreter {
                 // reaches here; falling through to `dispatch_call`'s `UnknownOperation`
                 // is the correct backstop for a KB built without the typer.
                 if self.kb.cites_a_relation(*functor) {
-                    return self.start_relation_apply(*functor, pos_args, named_args);
+                    return self.start_relation_apply(occ, *functor, pos_args, named_args);
                 }
                 // WI-218: the typer may have classified this apply for
                 // spec-op rewrite. PinNow redirects the call to the
@@ -678,10 +678,12 @@ impl Interpreter {
         // twin, and same backstop (the typer refuses it; `UnknownOperation` catches a
         // typer-less KB).
         if self.kb.cites_a_relation(sym) {
+            let requirements = self.citation_requirements(occ)?;
             return Ok(StepOutcome::Deliver(self.build_relation_value(
                 sym,
                 &[],
                 &[],
+                &requirements,
             )?));
         }
         self.dispatch_call(sym, Vec::new())
@@ -710,6 +712,11 @@ impl Interpreter {
         ref_sym: Symbol,
         supplied_pos: &[Value],
         supplied_named: &[(Symbol, Value)],
+        // WI-20260911-5G28A S2 — the relation's implicit arguments as
+        // [`Self::citation_requirements`] evaluated them, `Unit` where a read has none.
+        // Empty for every relation whose clauses read no requirement, and for a citation
+        // the typer did not route.
+        requirements: &[Value],
     ) -> Result<Value, EvalError> {
         use crate::kb::term::{Var, VarId};
         use crate::kb::typing::{resolve_relation_arg_columns, rule_head_var_slots, SlotKey};
@@ -831,6 +838,28 @@ impl Interpreter {
             pos: pos.into(),
             named: named.into(),
         };
+        // WI-20260911-5G28A S2 — THE IMPLICIT ARGUMENTS RIDE THE GOAL, CAPTURED HERE. A
+        // relation outlives the frame that built it — it is returned, composed, consumed
+        // after that frame pops — so the dictionaries its clauses are owed are captured in
+        // the value now rather than read from a frame at run time (op-to-rule-requirement-
+        // channel.md §5.1). They travel as the goal's own marker, so a relation composed
+        // from several citations needs no rule: each leaf's goal carries its own. The
+        // resolver unwraps it and binds the reads when it opens a clause
+        // ([`crate::kb::resolve::WITHIN_REQUIREMENTS`]).
+        let goal_atom = if requirements.iter().any(|r| !matches!(r, Value::Unit)) {
+            let within = self.kb.intern(crate::kb::resolve::WITHIN_REQUIREMENTS);
+            let mut wrapped: Vec<Value> = Vec::with_capacity(requirements.len() + 2);
+            wrapped.push(goal_atom);
+            wrapped.push(Value::SymbolRef(ref_sym));
+            wrapped.extend(requirements.iter().cloned());
+            Value::Entity {
+                functor: within,
+                pos: wrapped.into(),
+                named: Vec::new().into(),
+            }
+        } else {
+            goal_atom
+        };
         // Wrap as `pattern_query(term: <goal atom>)` — the arbitrary-goal-atom
         // LogicalQuery constructor `execute_logical_query` lowers to one goal.
         let query = self.build_logical_query_value("pattern_query", vec![("term", goal_atom)])?;
@@ -838,6 +867,32 @@ impl Interpreter {
             query: Rc::new(query),
             columns: columns.into(),
         })
+    }
+
+    /// WI-20260911-5G28A S2 — a citation's IMPLICIT ARGUMENTS, evaluated in the CITING
+    /// frame: one per requirement read of the cited relation (the typer's routes, stamped on
+    /// the citation by `citation_requirement_routes`), each the dictionary its route names,
+    /// or `Unit` where the typer routed nothing and the read derives its own.
+    ///
+    /// NOW, AND IN THIS FRAME, because a route names the caller's own slots
+    /// (`var_ref(__req_…)`), and the argument pump that follows pushes child frames. A route
+    /// this frame cannot answer stays `Unit` in place, as an operation's op-scoped slot does
+    /// ([`Self::eta_op_scoped_reqs`]): position is which read it is owed to.
+    fn citation_requirements(&mut self, occ: &Rc<NodeOccurrence>) -> Result<Vec<Value>, EvalError> {
+        let routes = occ.op_dicts();
+        let mut out: Vec<Value> = Vec::with_capacity(routes.len());
+        for route in routes.iter() {
+            let Some(tid) = route else {
+                out.push(Value::Unit);
+                continue;
+            };
+            let node = crate::kb::node_occurrence::materialize_from_handle(&self.kb, *tid);
+            out.push(match self.try_eval_requirement_chain_node(&node)? {
+                Some(dict) => dict.into_value(),
+                None => Value::Unit,
+            });
+        }
+        Ok(out)
     }
 
     /// Build a `LogicalQuery` constructor VALUE (WI-714 / proposal 052). This is the
@@ -885,10 +940,14 @@ impl Interpreter {
     /// is exactly the bare reference (no bound slots).
     fn start_relation_apply(
         &mut self,
+        occ: &Rc<NodeOccurrence>,
         ref_sym: Symbol,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
     ) -> Result<StepOutcome, EvalError> {
+        // S2: read NOW, while the citing frame is the top one — see
+        // [`Self::citation_requirements`]. The argument pump below pushes child frames.
+        let requirements = self.citation_requirements(occ)?;
         let mut remaining: Vec<(Option<Symbol>, Rc<NodeOccurrence>)> =
             Vec::with_capacity(pos_args.len() + named_args.len());
         for a in pos_args.iter() {
@@ -903,6 +962,7 @@ impl Interpreter {
                 ref_sym,
                 &[],
                 &[],
+                &requirements,
             )?));
         }
 
@@ -919,6 +979,7 @@ impl Interpreter {
             remaining: std::iter::once((first_name, placeholder))
                 .chain(remaining.into_iter())
                 .collect(),
+            requirements,
         });
         let ctx = self.stack.top().unwrap().child_context();
         self.stack.push(child_frame(ctx, first_expr))?;
@@ -4518,6 +4579,7 @@ impl Interpreter {
                     mut buffered_pos,
                     mut buffered_named,
                     mut remaining,
+                    requirements,
                 } => {
                     // WI-714: same one-at-a-time pump as `SortTypeArgs` — the first
                     // entry of `remaining` names the argument just evaluated.
@@ -4531,6 +4593,7 @@ impl Interpreter {
                             ref_sym,
                             &buffered_pos,
                             &buffered_named,
+                            &requirements,
                         )?));
                     }
                     let (next_name, next_expr) = remaining[0].clone();
@@ -4542,6 +4605,7 @@ impl Interpreter {
                         buffered_pos,
                         buffered_named,
                         remaining,
+                        requirements,
                     });
                     let ctx = self.stack.top().unwrap().child_context();
                     self.stack.push(child_frame(ctx, pushed_expr))?;

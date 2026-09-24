@@ -210,6 +210,7 @@ kb_scoped_fields!(
     head_argument_sites,
     rigid_projection_formations,
     unsuppliable_requirements,
+    pending_citation_routes,
     dispatch_rewrites,
     // ── memo caches ────────────────────────────────────────────
     //
@@ -440,6 +441,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         head_argument_sites: _,
         rigid_projection_formations: _,
         unsuppliable_requirements: _,
+        pending_citation_routes: _,
         dispatch_rewrites: _,
         requires_chain_cache: _,
         requires_tree_cache: _,

@@ -1947,6 +1947,10 @@ pub struct KnowledgeBase {
     // once that body has been classified.
     pub(crate) unsuppliable_requirements: Vec<typing::UnsuppliableRequirement>,
 
+    // WI-20260911-5G28A S2 — rule citations whose implicit arguments are routed only once
+    // every rule's requirement reads exist. See `typing::PendingCitationRoutes`.
+    pub(crate) pending_citation_routes: Vec<typing::PendingCitationRoutes>,
+
     // WI-226 Cache A — memoized FLATTENED direct `requires` chain per sort.
     // WI-657(12) revived this (WI-230 → WI-657 it was dormant): it now caches the
     // flattened `Rc<Vec<RequiresEntry>>` that `typing::direct_requires_chain_rc`
@@ -2435,6 +2439,7 @@ impl KnowledgeBase {
             extents: extent::ExtentRegistry::new(),
             host_fns: host_fns::HostFnRegistry::new(),
             unsuppliable_requirements: Vec::new(),
+            pending_citation_routes: Vec::new(),
             dispatch_rewrites: HashMap::new(),
             requires_chain_cache: RefCell::new(HashMap::new()),
             requires_tree_cache: RefCell::new(HashMap::new()),

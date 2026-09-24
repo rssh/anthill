@@ -164,6 +164,9 @@ pub enum AwaitState {
         /// positional `queens(board)`). As in `SortTypeArgs`, the first entry's
         /// expression is a placeholder — only its name is read on delivery.
         remaining: Vec<(Option<Symbol>, Rc<NodeOccurrence>)>,
+        /// WI-20260911-5G28A S2 — the relation's implicit arguments, evaluated in the
+        /// citing frame before any argument was pushed (`citation_requirements`).
+        requirements: Vec<Value>,
     },
     /// The frame has dispatched an apply to an anthill-defined operation
     /// body (child frame pushed). When the body produces a value, that

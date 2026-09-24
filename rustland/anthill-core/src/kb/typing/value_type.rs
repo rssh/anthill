@@ -1398,7 +1398,7 @@ fn project_carried_member(kb: &KnowledgeBase, ty: &Value, member: Symbol) -> Opt
 /// so an anchored goal was routed down the WITNESS path with a sort in the op slot, found
 /// no signature, and the clause SILENTLY answered nothing where the same program without
 /// that namespace answered `7`. The same desync WI-20260824-Q0093 found once already.
-fn is_anchor_form(kb: &KnowledgeBase, spec_sort: Symbol, slot1: Symbol) -> bool {
+pub(super) fn is_anchor_form(kb: &KnowledgeBase, spec_sort: Symbol, slot1: Symbol) -> bool {
     slot1 == spec_sort && kb.has_kind(slot1, crate::kb::SymbolKind::Sort)
 }
 
@@ -1470,7 +1470,7 @@ fn spec_param_key(kb: &KnowledgeBase, spec_qn: &str, short: &str, fallback: Symb
 /// ([`anchor_grounding`]), not here: it answers "which parameter an operation takes",
 /// which "is not by itself which parameter names the carrier", and the load-time check
 /// can name the sort and the spec in a located refusal where this one could only delay.
-fn anchor_sort_goal(
+pub(super) fn anchor_sort_goal(
     kb: &mut KnowledgeBase,
     spec_sort: Symbol,
     arg_types: &[Value],
@@ -1567,6 +1567,12 @@ pub(crate) fn fetch_dictionary(
     // halves are read: the projected member picks which carried type to look at, and the
     // written bindings fill the spec elements the witness call does not name.
     bracket: &RequirementBracket,
+    // WI-20260911-5G28A S2 — may a RANKING answer a tie? [`DefaultRung::Consult`] when the
+    // read BINDS its dictionary (nobody chose, so 058 §3.2's default fills the silence);
+    // [`DefaultRung::Unranked`] when it CHECKS a supplied one, where proposal 060 §4 lets
+    // only a UNIQUE local row veto it — a default among rivals answers "which provider
+    // wins", not "which one the caller chose" (WI-20260922-ATFGH's reading).
+    rung: DefaultRung,
 ) -> FindDictFetch {
     let arg_types = match projected_arg_types(kb, subst, arg_vals, bracket.project) {
         Ok(t) => t,
@@ -1622,7 +1628,7 @@ pub(crate) fn fetch_dictionary(
         selected: &[],
         sub_goal_requires: &[],
     };
-    match resolve(kb, &goal, &scope) {
+    match resolve_with_rung(kb, &goal, &scope, rung) {
         ResolutionResult::Resolved(tree) => match dictionary_of_tree(kb, &tree) {
             Some(d) => FindDictFetch::Fetched(d.into_value()),
             None => FindDictFetch::Undecided {
@@ -1652,7 +1658,12 @@ pub(crate) fn fetch_dictionary(
             // the call never constrained, which is no overlap and no defect, so the honest
             // verdict is "cannot decide" and the caller delays. Both sources are MEASURED
             // as debug aborts on legal programs; see [`WitnessGoal`].
-            if from_carried_types {
+            //
+            // AND A TIE WITH THE RANKINGS WITHHELD IS NO DEFECT EITHER: it is 058 §3.3's
+            // named-instance case — rivals at one carrier, which the language admits — and
+            // the goal only asked whether a UNIQUE row exists to check a supplied
+            // dictionary against (WI-20260911-5G28A S2).
+            if from_carried_types && rung == DefaultRung::Consult {
                 FindDictFetch::Defect { detail }
             } else {
                 FindDictFetch::Undecided { detail }
