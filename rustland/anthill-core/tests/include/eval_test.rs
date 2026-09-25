@@ -2041,8 +2041,14 @@ end
 /// to do: "the diagnostic is poor (an `Internal` from the unfilled requirement slot
 /// rather than a load-time 'Float does not provide Eq, which Ord requires') because no
 /// use-site `requires Ord` check exists — WI-883. Pinning the message would pin the
-/// defect." That check now exists (058 §3.10, `unprovided_provision`) and says exactly
-/// the sentence that paragraph asked for, so pinning it pins the FIX.
+/// defect."
+///
+/// WI-1102 made it a load refusal, and this arm then pinned "`Float` provides no `Eq`" —
+/// which was the refusal being right FOR THE WRONG REASON. `WeakOrd requires Eq[T]`, so
+/// the call failed on a requirement the spec happens to carry; a carrier that provides
+/// `Eq` and `PartialOrd` but not `WeakOrd` loaded clean and died at eval on
+/// `WeakOrd.compare`. WI-883 discharges the spec ITSELF at the call, so the sentence now
+/// names `WeakOrd` — backing that check out restores the `Eq` wording and fails this arm.
 #[test]
 fn m3_float_comparison_and_max() {
     let src = r#"
@@ -2075,9 +2081,9 @@ end
         assert_eq!(got.literal_bool(interp.kb()), Some(want), "{op}");
     }
 
-    // A `Float` is not `Ord`, so the total `max` has no implementation for it — and
-    // `Ord requires Eq[T]`, which `Float` cannot satisfy (it provides `NonEq`). The
-    // call is refused AT LOAD, naming the carrier and the provision it lacks.
+    // A `Float` is not `WeakOrd`, so the total `max` has no implementation for it. The
+    // call is refused AT LOAD, naming the carrier and the SPEC it is not an instance of
+    // — not `Eq`, the requirement `WeakOrd` also carries (WI-883).
     let float_max = r#"
 namespace test.m3_float_max
   import anthill.prelude.{Float}
@@ -2091,9 +2097,9 @@ end
     let text = errs.join("\n");
     assert!(
         text.contains("anthill.prelude.WeakOrd.max")
-            && text.contains("`anthill.prelude.Float` provides no `anthill.prelude.Eq`"),
-        "the refusal must name the call and the carrier's missing provision — the \
-         load-time sentence WI-883 recorded as absent; got:\n{text}"
+            && text.contains("`anthill.prelude.Float` provides no `anthill.prelude.WeakOrd`"),
+        "the refusal must name the call, the carrier, and the spec the carrier is not an \
+         instance of — WI-883; got:\n{text}"
     );
 
     let mut interp = interp_for(src);

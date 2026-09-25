@@ -276,8 +276,16 @@ fn the_two_spellings_diverge_outside_the_provision() {
     use smallvec::SmallVec;
 
     /// Solutions of `{ns}.Desc(T: ?q)` — the spec named as a goal in its own right.
+    ///
+    /// WITHOUT the `probe` call, on both spellings alike: under `fact` nothing provides
+    /// `Desc` at `Leaf` (a `fact` provides nothing since WI-20260917-S8JYF), so that call
+    /// is refused at load since WI-883. The row measures the queryable surface, which the
+    /// call never touched.
     fn spec_goal_solutions(ns: &str, claim: &str) -> usize {
-        let mut kb = crate::common::load_kb_with(&witness_program(ns, claim));
+        let src = witness_program(ns, claim)
+            .replace("  operation probe() -> Int64 = Desc.describe(leaf())\n", "");
+        assert!(!src.contains("probe"), "the fixture must really lose its call");
+        let mut kb = crate::common::load_kb_with(&src);
         let functor = kb
             .try_resolve_symbol(&format!("{ns}.Desc"))
             .expect("the spec sort must resolve");

@@ -88,17 +88,23 @@ end
     let (_kb, errs) = try_load(&src);
     assert!(
         !errs.is_empty(),
-        "expected a MissingRequiresForSpecOp load error for a rule-body spec-op call \
-         at a concrete no-instance carrier; got clean load",
+        "expected a load error for a rule-body spec-op call at a concrete no-instance \
+         carrier; got clean load",
     );
     let formatted = fmt_errs(&errs);
     assert!(
         formatted.contains("Relatable.related"),
         "diagnostic should name the spec op; got:\n{formatted}",
     );
+    // WI-883: the carrier is a GROUND sort, so the sentence says so — the old one was the
+    // ABSTRACT case's ("covering abstract type parameter … on enclosing sort"), wrong on
+    // both counts for a rule. It names the carrier and offers both repairs, the clause's
+    // own `requires(…)` among them.
     assert!(
-        formatted.contains("requires Relatable"),
-        "diagnostic should suggest `requires Relatable[…]`; got:\n{formatted}",
+        formatted.contains("`test.wi642.no_instance.Blob` provides no `test.wi642.no_instance.Relatable`")
+            && formatted.contains("requires(Relatable[…])"),
+        "diagnostic should name the carrier and suggest `requires(Relatable[…])`; \
+         got:\n{formatted}",
     );
 }
 

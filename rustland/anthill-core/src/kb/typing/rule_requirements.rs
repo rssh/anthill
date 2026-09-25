@@ -307,7 +307,14 @@ pub(super) fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<Ty
 ///     has a caller who must thread the dictionary, a rule resolves its own from
 ///     the concrete query values at fire time.
 ///   * **`DontFire`** — a ground concrete carrier that provides no instance → the
-///     statically-missing case → `MissingRequiresForSpecOp`.
+///     statically-missing case → `UnfillableOperationRequirement`, naming the carrier
+///     (WI-883; `MissingRequiresForSpecOp`, the abstract case's sentence, only where no
+///     carrier was read).
+///
+/// WI-883 widened the population from body-less members to a DEFAULTED member of a spec
+/// with an abstract one — its default's sibling calls need the instance just the same —
+/// and made this pass the ONLY owner of a rule-body spec-op call: the typer's
+/// operation-body refusal stays out of rule bodies, so one call gets one diagnosis.
 ///
 /// Read-only: the arg carrier sorts come from the `inferred_type` the preceding
 /// `type_rule_bodies` stamped onto each body `Var` (WI-603), exactly as the typer's
@@ -874,9 +881,16 @@ fn check_occ_spec_op_requirements(
         // `Ref(op)` and carrier vars, not a call) — never a spec op, so skip it.
         if let Some((functor, pos_args, named_args)) = expr_call_parts(expr) {
             if Some(functor) != fd_sym {
-                if let Some(spec_sort) = lookup_spec_op_dispatch(kb, functor) {
+                // WI-883 — a DEFAULTED member too: its default's sibling calls need the
+                // carrier's instance exactly as a body-less call does, when the spec has an
+                // ABSTRACT member — asked on the failure path only, inside.
+                let spec_sort = lookup_spec_op_dispatch(kb, functor)
+                    .map(|s| (s, false))
+                    .or_else(|| defaulted_spec_op_parent(kb, functor).map(|s| (s, true)));
+                if let Some((spec_sort, defaulted)) = spec_sort {
                     check_one_spec_op_requirement(
-                        kb, &o, functor, pos_args, named_args, spec_sort, declared, errors,
+                        kb, &o, functor, pos_args, named_args, spec_sort, defaulted, declared,
+                        errors,
                     );
                 }
             }
@@ -894,6 +908,9 @@ pub(super) fn check_one_spec_op_requirement(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     spec_sort: Symbol,
+    // WI-883 — `functor` has a body: a DEFAULTED member, which owes an instance only when
+    // its spec has an abstract member ([`spec_has_an_abstract_member`]).
+    defaulted: bool,
     declared: &[Symbol],
     errors: &mut Vec<TypeError>,
 ) {
@@ -926,7 +943,11 @@ pub(super) fn check_one_spec_op_requirement(
     //     `Numeric` instance, so a `requires Ord[…]` could not even fix them; a
     //     non-numeric carrier is a plain resolution failure, not a missing dictionary.
     //     (Why stdlib `needs_rebuild`'s `gt` on two `Timestamp`s must not be flagged.)
-    if kb.is_builtin(functor) {
+    //   * WI-883 — and any callee the HOST owes ([`host_implements`]): an `operation_map`
+    //     entry or `@[host_implemented]` claim on the operation itself serves every
+    //     carrier, as the operation-body refusal already reads it. Two predicates for one
+    //     question made a call's verdict depend on which body it was written in.
+    if host_implements(kb, functor) {
         return;
     }
     // Only a spec op with a CARRIER parameter grounds its instance from its
@@ -997,8 +1018,12 @@ pub(super) fn check_one_spec_op_requirement(
     //     a `Stream`) reads as a spurious `DontFire` ([`carrier_is_abstract_spec`]).
     //   * WI-1043 — a WITNESS-PROVIDED carrier ([`carrier_provided_by_witness`]): the
     //     instance exists and this guard's question cannot see it.
+    // WI-883 — the carrier the guard last read, so a `DontFire` can NAME the sort that
+    // provides nothing. `simp_guard_holds_core` returns on the first carrier that fails,
+    // so the last one read is that one.
+    let last_carrier: std::cell::Cell<Option<Symbol>> = std::cell::Cell::new(None);
     let outcome = simp_guard_holds_core(kb, functor, spec_sort, |i| {
-        aligned
+        let carrier = aligned
             .as_ref()
             .and_then(|args| args.get(i))
             .and_then(|a| a.inferred_type())
@@ -1007,11 +1032,44 @@ pub(super) fn check_one_spec_op_requirement(
                 !is_sort_param_symbol(kb, *s)
                     && !carrier_is_abstract_spec(kb, *s)
                     && !carrier_provided_by_witness(kb, spec_sort, *s)
-            })
+            });
+        last_carrier.set(carrier);
+        carrier
     });
     // `Fire` (satisfiable) and `Suspend` (under-determined) are never errors —
     // only a ground carrier that provides no instance is statically missing.
     if !matches!(outcome, FindDictOutcome::DontFire) {
+        return;
+    }
+    // WI-883 — A CONCRETE CARRIER IS SAID SO. `MissingRequiresForSpecOp` is the ABSTRACT
+    // case's sentence ("covering abstract type parameter … on enclosing sort"), which is
+    // wrong on both counts here: the carrier is a ground sort and a rule has no enclosing
+    // sort to annotate. `UnfillableOperationRequirement` is the rule-body sentence for
+    // exactly this — the carrier provides no such spec and the clause declares no
+    // `requires(…)` — and its two repairs are the two that exist. The degenerate
+    // `DontFire` (no operation record) names no carrier and keeps the old one.
+    // WI-883 — A DEFAULTED member is owed an instance only when its spec has an ABSTRACT
+    // one, and never at the REFLEXIVE carrier: a sort's own member on its own value
+    // (`Box.twice(box(1))`) reads the self-receiver `b: Box` as the carrier, and
+    // `sort_provides(Box, Box)` is false — so without this it was refused "`Box` provides no
+    // `Box`", a repair that is not one (measured). Asked HERE, on the failure path, because
+    // the abstract-member walk visits every operation of the spec (found by /code-review:
+    // every rule-body call to a defaulted `List` member paid it).
+    if defaulted
+        && (!spec_has_an_abstract_member(kb, spec_sort)
+            || last_carrier
+                .get()
+                .is_some_and(|c| same_sort_canonical(kb, c, spec_sort)))
+    {
+        return;
+    }
+    if let Some(carrier_sym) = last_carrier.get() {
+        errors.push(TypeError::UnfillableOperationRequirement {
+            span: Some(occ.span.span),
+            callee_op: functor,
+            spec_sort_sym: spec_sort,
+            carrier_sym,
+        });
         return;
     }
     // Statically missing → `MissingRequiresForSpecOp` (WI-325), the same diagnostic
