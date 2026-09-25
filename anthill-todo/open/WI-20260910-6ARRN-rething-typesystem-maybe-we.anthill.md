@@ -102,3 +102,25 @@ to state, not as this ticket's work list.
 
 also thibk - are we need some notion for unfilled rigid patameter '?'  (like unknown in typescript)  or have rigid type-var itself as type
 
+### 2026-09-25T09:57:32Z — feedback — claude
+
+UNKNOWN[e] — A THIRD KIND OF UNKNOWN TYPE (user's question, 2026-09-25; arose designing WI-20260911-5G28A S3b, proposal 060 §2.3 / 067). It answers this ticket's opening question — "type-projection over expr" — and the 2026-09-20 note above ("unfilled rigid parameter '?' like unknown in TypeScript, or the rigid type-var itself as a type"): there are THREE kinds, not two, and they answer differently.
+
+  rule same(?a: T, ?b: T) :- true
+  rule q(1) :- same([?h], [red()])          -- ?a pins T from its value; ?b says T = List[Colour]
+
+  ?a's type            unified with List[Colour]                      q answers
+  List[?]              `?` is FLEX, anonymous, unshared:              1, DEFINITE, ?h free — WRONG (?h must be a Colour)
+                       unifies with Colour and forgets ?h
+  List[X], X rigid     a RIGID (skolem, e.g. the caller's X inside    nothing — WRONG
+                       countAt[X]) unifies only with itself: fails
+  List[Unknown[?h]]    the type OF ?h: no type variable to bind or    1, CONDITIONAL until ?h binds — RIGHT
+                       refuse; the unification becomes a CHECK on      (as Int64's domain check waits on its
+                       the value ?h (it must be a Colour)              variable today)
+
+So `Unknown[e]` is a type that DEPENDS ON A VALUE — neither flex `?` nor rigid. Where each belongs: `List[?]` for a value with no element (`[]`: nothing for it to be the type OF — proposal 060 §2.3 decides `[]` is a `List[?]`, whose element's SortDomain is the Fillable of any value); `List[Unknown[?h]]` for a value whose element is a FREE variable — the carried type of a partially bound value (WI-578's value_type_term would produce it). PRECEDENT: docs/design/constrained-term-substrate.md already defines `typeof(?x)` — "the CARRIED type of ?x's binding; for an unbound ?x, its constraint-store bound" — in the desugaring `head(…) :- conforms(typeof(?x), T), body`; `Unknown[e]` is `typeof` made a type. Not designed further; nothing filed.
+
+### 2026-09-25T10:00:47Z — feedback — claude
+
+REFINED THE SAME DAY (user, 2026-09-25), correcting the note above: proposal 060 §2.3 no longer makes an unnamed element "the Fillable of any value". A condition is resolved when `fill` READS it, and a read WAITS while its type is unpinned. `[]` never reads it (its `nil` case), so `Wrap.el([])` still answers 1 definitely; and in the `same([?h], [red()])` row the waiting element check resumes once `?b` pins the type to Colour, so `q` answers red, green — the RIGHT answer, which the "any" reading got wrong. So the waiting goal already carries the tie between a type and a value; `Unknown[e]` is the type-system form of it, for the typer and the reflect model, and not a prerequisite of 5G28A S3b.
+

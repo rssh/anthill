@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20260925-SHED7-inductive-relations-proposal
+
 - tags: typing
 
 ## Description

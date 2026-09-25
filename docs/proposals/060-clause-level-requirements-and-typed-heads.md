@@ -188,6 +188,9 @@ follows; its column is typed at the sort, so `Colour.domain.head.x` is a
 `Colour`. The three readers — mode (in), mode (out), the citation — read ONE set
 of clauses and cannot disagree.
 
+**SUPERSEDED by §2.3 (2026-09-25):** the paragraph below designed the parameterised value
+face as a hidden head slot; §2.3 carries the element's domain in a dictionary instead.
+
 **A PARAMETERIZED sort has the goal face and no value face yet.** `List` keeps
 its derived clause and every typed head that reads it; `List[T = Letter].domain`
 is a load error naming **WI-20260911-5G28A**, because a rule citation's query is
@@ -278,7 +281,8 @@ a free element type and deadlocks against the delay above.
   Making it delay moves that from a silent load-time skip to a residual that is
   loud at the drain — WI-737's route. Fairness for the case where BOTH are free
   is WI-20260911-09E6M's, not this.
-- **Abstract T does NOT enumerate**, and this bullet's earlier wording —
+- **Abstract T does NOT enumerate** — SUPERSEDED by §2.3 (2026-09-25), where the caller's
+  instantiation reaches the clause as a `SortDomain` dictionary. This bullet's earlier wording —
   "dispatches through the requirement channel (§3's anchor; WI-1040)" — named no
   mechanism and had no owner. A rule-bracket bound records the SPEC, nothing is
   derived for a spec, and the bound keeps §2's delay. Reaching the caller's
@@ -295,6 +299,129 @@ rule colouring(wa: Colour, nt: Colour, sa: Colour, q: Colour, nsw: Colour, v: Co
   :- wa != nt, wa != sa, nt != sa, nt != q,
      sa != q,  sa != nsw, sa != v, q != nsw, nsw != v
 ```
+
+### 2.3 The domain through the requirement channel — `SortDomain` (WI-20260911-5G28A; designed 2026-09-25)
+
+For a caller's RIGID `X` the type is a name, not a domain, so the domain reaches the clause as a
+DICTIONARY, handed in by the citation's caller
+([`060-typedomains-implementation.md`](../design/060-typedomains-implementation.md); the build plan
+in [`060-implementation.md`](../design/060-implementation.md) §7.3). The dictionary is
+`SortDomain`'s:
+
+```anthill
+namespace anthill.reflect
+  sort SortDomain
+    sort T = ?
+    provides Fillable[T = T]       -- proposal 067
+  end
+end
+```
+
+- **`SortDomain provides Fillable`** (user, 2026-09-25). `Fillable` is the interface
+  ([proposal 067](067-fillable.md)): one rule, `fill(?x)`, which fills `?x` with a value of `T`.
+  `SortDomain` is the implementation the loader derives for every sort with constructors, and its
+  `fill` IS the sort's domain — what a typed head generates from, and checks against.
+- **ONE MECHANISM.** The type-keyed goals of §2 and §2.2 — `domain(?x, T)` and the derived
+  `domain_member(?x, T)` — are built for a type the rule can NAME; `SortDomain` covers that case
+  too, so they retire into it rather than stand beside it (060-implementation §7.3, "`SortDomain`
+  is the ONLY domain mechanism").
+
+**What a typed head means** (user, 2026-09-25):
+
+```anthill
+rule p(?x: T) :- body      ≡      rule p(?x) :- body, SortDomain[T].fill(?x)
+```
+
+`SortDomain[T]` is the clause's REQUIREMENT — filled by a citation's caller (S2's channel), or
+resolved at the call from what the values pin. The goal goes AFTER the body: a generator ahead of
+it enumerates a recursive type forever before the body can prune it — WI-743 measured `word(?w)
+:- domain(?w, List[T = Letter]), ?w <=> [?, ?, ?]` not terminating, and the twin with the goal
+last answering 27 and stopping.
+
+**Derived per entity.** Each entity has a one-case `SortDomain`, and a sort's is their `combine`
+(067 §2):
+
+```
+SortDomain[List] = combine(SortDomain[List.nil], SortDomain[List.cons])
+```
+
+An entity's case unifies `?x` with the constructor over fresh fields, then fills each field — so
+for `List`:
+
+```anthill
+List provides SortDomain[T = List[T = T]] :- SortDomain[T = T]      -- derived
+  rule fill(?x) :- ?x <=> nil()
+                 | ( ?x <=> cons(head: ?h, tail: ?t),
+                     fill(?t),                                      -- the tail first
+                     SortDomain[T].fill(?h) )                       -- then the head, through its SortDomain
+```
+
+**Per field.** Each field's type decides how it is filled and what the provision requires:
+
+| field's type | example | filled by | the provision |
+|---|---|---|---|
+| the sort itself | `cons`'s `tail: List` | `fill` — the recursion | requires nothing |
+| a type parameter | `cons`'s `head: T` | the parameter's `SortDomain` | is CONDITIONAL on it (058 §3.8) |
+| a concrete type | `box(c: Colour, n: Int64)` | that type's `Fillable` | holds only if it has one |
+
+So `SortDomain[E]` holds when every field of every entity of `E` can be filled — per FIELD, not per
+type parameter. (S3a's rows put one condition on each parameter, so a parameter no field uses —
+`SortedSet`'s `O` — was required anyway, a concrete field — `Box`'s `Colour` — never checked, and a
+sort whose field cannot be filled — `Delay`'s arrow — got a row it could not honour.) A member of a
+conditional provision reads its condition (066); at run time the condition is a sub-dictionary of
+the dictionary `fill` was reached through (067 §3).
+
+**The order is semantic — two rules.** `fill` recurses, so it can have infinitely many answers, and
+the order of its alternatives decides what is ever reached. WI-743 measured both:
+1. **Inside a case, the recursive fields first** — `fill(?t)` before `SortDomain[T].fill(?h)`. Head
+   first, a free list descends one spine forever: for `Letter = {a, b}`, `fill(?h)` picks `a` and
+   `fill(?t)` then enumerates `[a]`, `[a, a]`, … and never backtracks to `b`. Tail first, the lists
+   come out by length: `[]`, `[a]`, `[b]`, `[a, a]`, `[b, a]`, …
+2. **The cases with no recursive field first** — `nil` before `cons`: `combine` is ordered
+   concatenation (067 §2), and an infinite first operand starves the second.
+
+Fair for ONE recursive field per case, and no further: a tree's `node(l: Tree, r: Tree)` descends
+depth-first in the later one — the limit WI-743 pinned; interleaving is WI-20260911-09E6M's.
+
+**A primitive has no cases.** `Int64` provides `Fillable` through its own implementation, not a
+`SortDomain`: its `fill` leaves the variable free with its type check waiting, so `List[T = Int64]`
+fills to skeletons — `[]` definitely, then `[?a]`, conditional until something binds `?a`, which is
+what the type-keyed goal answers today.
+
+**The loader applies `combine` when deriving:** a sort's `fill` is emitted as the disjunction of its
+entities' cases, so `SortDomain[List.cons]` — a nested entity as a TYPE ARGUMENT, which is new
+(kernel-language §6.3 makes a nested entity a constructor of its sort, not a sort) — is notation for
+the derivation's parts, and nothing at run time needs it.
+
+**Open:**
+- `<Sort>.domain`, the value face a citation reads (WI-20260911-WT8WG) — the name it keeps for
+  `SortDomain`'s `fill` at that sort.
+- ~~A condition that cannot be resolved yet.~~ **DECIDED (user, 2026-09-25): a value whose type
+  does not name its element is a `List[?]`, and a condition is resolved when `fill` READS it — a
+  read WAITS while its type is unpinned.** `rule elNil(1) :- Wrap.el([])` calls `el(?x: T)` —
+  `el(?x) :- SortDomain[T].fill(?x)` — from a rule body, so no citation hands the requirement in,
+  and `[]` pins `T` as `List[?]`. The requirement `SortDomain[List[?]]` is `List`'s provision; its
+  condition `SortDomain[?]` is resolved only when `fill` reads it. For `[]` it never does —
+  `List`'s `fill` takes its `nil` case: `1`, definitely, where `861b3013` answers undecided
+  (MEASURED). Where an element exists, the read waits until something pins its type — by the
+  delay that makes `Int64`'s check wait on its variable — so the waiting goal carries the tie
+  between the type and the value:
+
+  ```anthill
+  rule same(?a: T, ?b: T) :- true          -- in sort Wrap[T]
+  rule q(?h) :- Wrap.same([?h], [red()])
+  ```
+
+  `?a = [?h]`'s element check waits; `?b` pins the element type to `Colour`; the check resumes,
+  and `q` answers `red`, `green`. Resolving `SortDomain[?]` to the `Fillable` of ANY value instead —
+  this decision's first reading — answers `?h` free and definite, which is wrong: `?b` makes the
+  element a `Colour`. (On `861b3013` `q` answers nothing — S3a's `[red()]` defect — MEASURED.) A
+  value-dependent TYPE, `List[Unknown[?h]]`, is the type-system form of the same tie
+  (WI-20260910-6ARRN), and not a prerequisite. What the resolver owes: `SortDomain[?]` is never
+  resolved by a search among providers — the requirement machinery's wildcard rule
+  (WI-20260830-X9PB4, `sort_goal_with_wildcards`) matches every candidate and would come back
+  ambiguous — and a dictionary holding a condition not yet read is not ground, which
+  `dictionary.rs` and WI-860's unification check assume it is.
 
 ## 3. The annotation is an ANCHOR — dictionaries and constraints come up together
 

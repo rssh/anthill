@@ -18,7 +18,7 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §2.2 a sort defines its `domain` | mode-(out) enumeration | WI-743 | **delivered** — §7 |
 | §2.2 the VALUE face `<Sort>.domain` | the domain cited as a `Relation` | **WI-20260911-WT8WG** | **delivered** for a sort with no type parameters — §7.1; the parameterised half waits on §7.3 |
 | §2.2 / §8.1 rule-head type VARIABLES | a bound's variable is a clause variable | **WI-20260911-5G28A** | **delivered** except the citation bracket — §7.2 |
-| §2.2 / §8.1 the citation BRACKET | which instance a citation means | **WI-20260911-5G28A** | **redesigned 2026-09-24 onto the requirement channel** — §7.3: L3, the projection gate, S1, S2 and S3a delivered, S3b–S7 planned |
+| §2.2 / §8.1 the citation BRACKET | which instance a citation means | **WI-20260911-5G28A** | **redesigned 2026-09-24 onto the requirement channel** — §7.3: L3, the projection gate, S1, S2 and S3a delivered; S3b onward redesigned 2026-09-25 (one domain mechanism) and waiting on [proposal 067](../proposals/067-fillable.md), WI-20260925-SHED7 |
 | §3 anchor (requirement half) | covered body call grounds the spec | WI-1040 | delivered |
 | §3 anchor (typed-head half) | `?x: T` grounds the spec | WI-20260909-QMFC5 | **delivered** — §8, mechanism at §8.2–§8.6 |
 | channel §10 item 1 | retain the spec's type-args | WI-20260909-51W18 | **delivered** — §8.6 |
@@ -627,6 +627,292 @@ arrives on the occurrence carrier — the gap NAR1X closed for DISPATCH
 now tries `from_value`, then `from_view`. The projection then crosses a second head and is
 read and CHECKED (WI-860) like any other dictionary. Rows and the measured back-out:
 `wi_5g28a_rule_dictionary_test.rs` §2.
+
+### `SortDomain` is the ONLY domain mechanism — design, 2026-09-25
+
+**THE PROBLEM, MEASURED on `861b3013`.** S3a's type-variable bound, reached with no caller:
+
+```anthill
+sort Wrap[T]
+  entity wrap(v: T)
+  rule el(?x: T) :- true
+end
+rule elRed(1)     :- Wrap.el(red())           -- 1 definite
+rule elInt(1)     :- Wrap.el(7)               -- NO ANSWER
+rule elColours(1) :- Wrap.el([red()])         -- NO ANSWER
+rule elInts(1)    :- Wrap.el([1, 2])          -- undecided
+rule elNone(1)    :- Wrap.el(Option.none())   -- undecided
+rule elNil(1)     :- Wrap.el([])              -- undecided
+```
+
+Every row should be one DEFINITE answer: proposal 060 §2's table holds a bound value that
+conforms and, where its type has a domain, is a member. The cause, read from the code: an
+unfilled read DERIVES a `SortDomain` dictionary from the value's carried type, and
+* `Int64` has no provision, so the read fails the clause (`7`);
+* `List`'s provision is conditional on its element's, and `Int64` has none (`[1, 2]`);
+* `none()` and `[]` carry no element type, so the derivation cannot finish;
+* for `List[T = Colour]` the dictionary IS found, but `List` has no `.domain` to run, and
+  `apply_domain`'s declined path calls `domain_member(?x, List)` — the BARE sort, which the
+  derived clause, keyed `List[T = ?T]`, does not match.
+
+S3b as planned gives every parameterised bound the same read, and `?x: List` means
+`List[T = ?t]`: `my_rule([1, 2], ?r)`, pinned DEFINITE in
+`wi_5g28a_rule_head_type_variables_test`, would turn undecided.
+
+**WHY THERE ARE THREE `domain` NAMES TODAY.** `rule pick(?x: Colour) :- true` compiles to
+
+```
+pick(?x) :- anthill.kernel.domain(?x, Colour),   -- prepended: TESTS ?x's type (a builtin)
+            Colour.domain(?x)                    -- appended: GENERATES
+
+domain_member(?x, Colour) :- ?x <=> red() | ?x <=> green() | ?x <=> blue()
+Colour.domain(?x)         :- domain_member(?x, Colour)
+```
+
+`anthill.kernel.domain` is a type TEST that is called "domain"; `domain_member` is the domain
+keyed by a TYPE; `Colour.domain` is the same domain keyed by the sort's NAME — and, since S3a,
+the member of `SortDomain`. Proposal 060 §2 meant ONE goal that tests and generates. WI-743
+split it (§4's naming note, §7), for three reasons:
+1. the test is a builtin and the generator is clauses, and a builtin's name never reaches the
+   clause path;
+2. a test belongs at the front of the body and a generator at the end — at the front it
+   enumerates a recursive type forever before the body can prune it (measured, §7);
+3. a type with no constructors (`String`, `Int64`) has no generator, so the test is all it has.
+
+The type-keyed pair was built first, and it does not reach an ABSTRACT type: for a rigid `X` the
+type is a name, not a domain. `SortDomain` was created for that case. Keeping the type-keyed goals
+beside it for the case with no caller — which answers all six rows above — would leave two
+mechanisms for one question (user, 2026-09-25).
+
+**THE DECISION (user, 2026-09-25): MERGE THEM.** None of the three reasons still holds:
+1. S3a's `apply_domain` is a builtin that BECOMES the relation call when it runs (`step_init`
+   lowers it), so one name can front both;
+2. the merged goal goes at the END. With `?x` bound it still tests — after the body instead of
+   before, with the same answers, except under a cut in the body or a body that does not
+   terminate for a non-member;
+3. EVERY TYPE HAS A `SortDomain`, `Int64` included, so no type is left with a test and no domain.
+
+A typed head compiles to ONE goal, appended; `anthill.kernel.domain`, `domain_member` and
+`domain_leaf` merge into it:
+
+```
+rule pick(?x: Colour) :- true   ⇒   pick(?x) :- Colour.domain(?x)          -- type known at typing
+rule el(?x: T) :- true          ⇒   el(?x)   :- apply_domain(?d, ?x, T)    -- ?d: the implicit parameter
+```
+
+**THE SPEC** — declared by S3a in `stdlib/anthill/reflect/reflect.anthill`, unchanged here:
+
+```anthill
+sort SortDomain
+  sort T = ?
+  rule domain(?x)        -- DECLARED UNTYPED: typed, it would run itself (060-typedomains §0)
+end
+```
+
+Its instances are DERIVED (`kb/sort_domain_derive.rs`), one per sort, conditional per parameter
+(HXGXF's shape) — `Colour provides SortDomain[T = Colour]`, `List provides SortDomain[T = List[T
+= T]] :- SortDomain[T = T]` — and each provider's member is its own `<Sort>.domain`. Today only a
+sort with constructors gets one; under this design EVERY type does, `Int64` included (open
+point 1 says what its member is).
+
+**WHAT THE MERGED GOAL DOES.** `apply_domain(D, ?x, B)` — "`?x` is a `B`, in `B`'s domain, whose
+`SortDomain` dictionary is `D`":
+* `?x` BOUND — CONFORM, then MEMBER. Conform is today's test, and the merge keeps it inside the
+  goal because it is not only a test: it reads the value's type into `B`'s variables (060 §2.2's
+  (in, out) read), which is what ties two columns — in
+  `my_rule(?x: List[T = ?t], ?res: List[T = ?t])` it pins `?t := Int64` off `[1, 2]` and refuses
+  `["a"]` for `?res`. Member then runs `B`'s domain on the value, through `D`.
+* `?x` UNBOUND — GENERATE, through `D`.
+
+**WHERE `D` COMES FROM** — the one thing that varies between bounds:
+
+| the bound's type | `D` |
+|---|---|
+| known at typing — `Colour`, `List[T = Letter]` | used DIRECTLY: a CONSTANT, built at typing as a value and spliced into the clause's goal — a rule has no citing frame to evaluate a route in, so this is not the citation path below, and nothing builds it today (the pieces: `resolve` over the provisions, the resolver's `Dictionary::build`). For a sort with no parameters the goal is the static call `Colour.domain(?x)` (S3a). An OPTIMIZATION of the rows below, not a second mechanism (user) |
+| a caller's — a rigid `X`, a citation's bracket | the clause's implicit parameter, filled at the citation (S2). The typer computes only a ROUTE — IR naming a read of the caller's slot, or a construction from the provisions — stamped on the citation; evaluating the citation BUILDS the dictionary, in the citing frame (`eval::citation_requirements`), and `build_relation_value` captures it in the `Relation` value, on its root goal (`__within_requirements`); the resolver binds it to the clause's read when it opens a clause (`bind_citation_reads`) |
+| neither, `B` pinned | derived from `B` — pinned by the value's own conform (060 §2.2: "a free type is READ off the value"), or by another column's. S3a derived it from the value alone, which cannot serve a column whose value is still unbound |
+| neither, `B` not pinned | nothing names the type: the goal delays, and flounders at the drain (WI-737) as the bound always did |
+
+**A DICTIONARY CARRIES THE RELATION BY ITS PROVIDER'S NAME** — 060-typedomains §6 asked whether
+it can carry one at all. A dictionary is `Dictionary(sub₀ … subₙ₋₁, impl: S)`; `apply_domain`
+reads `impl` and finds `S.domain` by name — exactly how a dictionary carries an OPERATION
+(`resolveOp`: the provider's ops table, keyed by the spec op). The clauses never travel, and no
+`Value` holds clauses. MEASURED by S3a's rigid row: `Dictionary(impl: Colour)`, from
+`countAt[X = Colour]`'s slot, answers `3`; `Letter`'s answers `2`.
+
+**WHERE `<Sort>.domain` COMES FROM — the derivation that feeds `domain_member` today, emitted
+under the sort's own name.** Today the loader derives the constructor disjunction as the KERNEL
+relation's clause (`derive_domain_member_clauses`), and the value face forwards to it — a body-less
+`Bit.domain(?x)` (`emit_domain_value_face`) to which the sweep appends `domain_member(?x, Bit)`:
+
+```
+domain_member(?x, Bit) :- ?x <=> t() | ?x <=> f()
+Bit.domain(?x)         :- domain_member(?x, Bit)
+```
+
+After the merge the same pass emits the disjunction as `Bit.domain`'s own clause, and the forward
+goes: `Bit.domain(?x) :- ?x <=> t() | ?x <=> f()`. A sort that WRITES its `domain` keeps it — a
+written one replaces the derivation, as today. `Int64`, with no constructors to derive from, has
+the member open point 1 describes.
+
+**THE MEMBER IS RESOLVED THROUGH THE PROVISIONS, NOT BY NAME** (user, 2026-09-25). S3a's
+`apply_domain` finds the provider's relation with a Rust helper, `typing::sort_domain_relation`,
+that builds the string `"<Sort>.domain"` and resolves it — so the resolver knows the word `domain`
+and a naming convention. That is the shape WI-240 retired for OPERATIONS: a dictionary finds an
+operation member through `SortOpsTable` (`load::build_sort_ops_table`, from the `SortProvidesInfo`
+rows; read by `eval`'s `dispatch_via_sort_ops_table` → `typing::resolve_op_target_checked`),
+replacing the `format!("{impl_qn}.{op}")` fallback. The table holds operations only, and a spec's
+RULE member — `SortDomain`'s `rule domain(?x)` — has no row, which is why S3a fell back to a name.
+So the table gets rows for rule members: `Colour provides SortDomain[T = Colour]` records that
+`SortDomain.domain` at `Colour` is `Colour.domain`, and `apply_domain(D, ?x)` resolves
+`SortDomain.domain` at `D`'s `impl` through it, exactly as an operation call resolves `Eq.eq`. The
+resolver then knows "apply a spec's rule member through a dictionary" and not the word `domain`,
+and a provider with no relation for the member has no row — which replaces the decline-record
+check `sort_domain_relation` makes today.
+
+**A PARAMETERISED SORT'S `domain` READS ITS ELEMENTS THROUGH ITS OWN DICTIONARY** — the plan's
+shape, unchanged: the name finds the clauses, and the rest of the tree is handed to them.
+
+```
+List.domain(?x) :- ?x <=> nil()
+                 | ( ?x <=> cons(head: ?h, tail: ?t),
+                     apply_domain(?self, ?t),           -- the tail: the same dictionary
+                     apply_domain(sub(?self, 0), ?h) )  -- the element: sub-dictionary 0
+```
+
+`?self` is the clause's own `SortDomain[T = List[T = T]]` read, handed in by `apply_domain` (S3a's
+marker) or at a citation. A field whose type names no parameter (`SortedSet`'s `n: Int64`) takes
+the table's first row.
+
+**FRESH VARIABLES COME FROM THE CLAUSE, NOT FROM A KERNEL OPERATION** (060-typedomains §4.2,
+confirmed by the user 2026-09-25 over a `make-fresh-var` primitive). `apply_domain` only NAMES the
+relation — `step_init` replaces it with `List.domain(?x)` — and the resolver opens that clause
+through `with_fresh_vars`, as it opens every clause, so `?h`, `?t` and `?self` are fresh per
+activation and `?x <=> cons(head: ?h, tail: ?t)` grows the value one fresh cell per recursion.
+`apply_domain` never opens a clause itself: one opener, or a frame invariant holds in only one of
+them.
+
+**NAMES, after the merge:** `<Sort>.domain` — a sort's domain, derived or written; `SortDomain[T]`
+— the evidence that `T` has one, whose member is `<Sort>.domain`; `apply_domain` — the goal a bound
+compiles to where the dictionary is not known at typing. `domain` names a domain and nothing else.
+
+**ACCEPTANCE — the answers, driven through `SortDomain` alone.** With `domain_member` gone, a
+row that still passes can only have passed through the dictionary:
+* the classic-mini examples keep their answers (user, 2026-09-25: tiny-sat must work with
+  `SortDomain`) — `classic_mini_test.rs`: tiny-sat's `model(vs: List[T = Bit])` exactly TWO
+  definite models; alphabet-words' `word` 27, `no_repeat` 12, and the unbounded `any_word`
+  exactly its 100-row cap, every row definite. `vs: List[T = Bit]` is a ground bound, so its
+  dictionary, `Dictionary(Dictionary(impl: Bit), impl: List)`, is built at load, and `List.domain`
+  walks it. `any_word` is the row that holds `List.domain` to WI-743's two ORDERING rules — base
+  constructors first, recursive positions first inside a branch (the tail's `apply_domain` before
+  the element's) — without which a free word never comes out by length. map-colouring keeps its
+  6 (a sort with no parameters: S3a's static call);
+* the two S3b flips — `Wrap[T = Colour].dom.takeN(5)` = 3, `List[T = Letter].domain.takeN(5)` = 5
+  — and S3a's rigid row, 3 / 2;
+* the six `Wrap.el` rows above, one definite answer each;
+* `wi_5g28a_rule_head_type_variables_test`'s pinned rows: `answers` 1, `mismatched` 0,
+  `two_calls` 1, `nested_row` 1, and `anylist` with no definite row.
+
+**WHAT THE MERGE REACHES** (§7.3 S3's census): `domain_member` is declared in stdlib
+`kernel.anthill` and named at eight Rust sites; three test files write its 2-ary spelling, and no
+`.anthill` file does. `anthill.kernel.domain` is minted by the typed-head sweep for EVERY bound,
+answered by `BuiltinTag::TypeDomain`, and printed in floundered residuals.
+
+**OPEN — to decide before building:**
+1. ~~What `Int64.domain` is.~~ **ANSWERED (user, 2026-09-25): a domain rule creates fresh
+   logical variables, so a primitive's domain never has to invent values.** `Int64 provides
+   SortDomain[T = Int64]` needs its member, the relation `Int64.domain(?x)`, and nothing derives
+   it — `Int64` has no constructors. It does not have to enumerate: `List.domain` builds
+   `cons(head: ?a, tail: …)` with `?a` FRESH, so `List[T = Int64]` is a generator of skeletons,
+   and `Int64.domain(?a)` is a TEST that waits on `?a` and decides once the body binds it:
+
+   ```
+   rule ints(?w: List[T = Int64]) :- true
+   ?- ints(?w)     →   [],   [?a],   [?a, ?b],   …      (resolved as a query)
+   ```
+
+   `[]` is definite; `[?a]` stays conditional until something binds `?a`, because a free `?a`
+   is not known to be an `Int64`. MEASURED on `861b3013`, that is what `domain_member` answers
+   today — resolved, `ints` gives `[]` definitely, then skeletons `cons(head: ?a, …)`
+   conditionally — so no row moves.
+
+   A FREE VARIABLE CROSSES A `Relation`; A PENDING CHECK DOES NOT. A `Relation` value (proposal
+   052) hands an operation a row holding fresh logical variables when nothing is pending on them
+   — MEASURED: `rule skel(?l) :- ?l <=> [?, ?]` gives `skel.takeN(3).length()` = `1`, the row
+   `[?1, ?2]`, definite. What raises `relation_floundered` (WI-737) is a CONDITIONAL row:
+   `ints.takeN(1).length()` = `1` (the definite `[]`), and `ints.takeN(3).length()` raises,
+   because `[?a]` carries the `Int64` check still waiting on `?a`. The same for `String` and `Float`; `Bool`, whose values are
+   literals, is WI-20260910-5TK6B's.
+2. ~~A value whose type names no element~~ — **DECIDED (user, 2026-09-25), proposal 060 §2.3:**
+   `[]` is a `List[?]`, and a condition is resolved when `fill` reads it, a read waiting while its
+   type is unpinned — `[]` takes `List`'s `nil` case and never reads it. The original question: reached with no caller — `[]`, `none()`. Conform
+   leaves `B = List[T = ?t]` unpinned, so `D` cannot be derived whole; the type-keyed clause
+   answers `[]` definitely today (its `nil` branch needs no element). Candidate: derive the part
+   `B` names and leave the unnamed sub-dictionary unbound — the element's `apply_domain` then
+   waits, and never runs for `nil`.
+3. **A bound recorded as a SPEC** — a rule's own `[A]` introducer. Conform is the spec check
+   today's test makes; member derives from the value's own type, which now always has a domain;
+   unbound, nothing names a type and the goal flounders, as today. To confirm by driving.
+4. **A column pinned by ANOTHER column's value** — `rule p(?a: List[T = ?t], ?b: List[T = ?t])`,
+   `?a` bound, `?b` free: `?b`'s goal delays until `?a`'s conform pins `?t`, then derives `D`
+   from `B` and generates. To measure.
+5. **The demand gate.** With a row for every type, and the stdlib's own domains built from them,
+   S3a's gate (`sort_domain_derive`, ~55 ms per load in a debug build) would be open on every
+   load. Measure what the rows cost (`type_check_sorts` +36, `check_provider_requires` +12): if it
+   is those passes re-validating DERIVED rows, exempt them as `eq_derive`'s are (WI-1103's mark)
+   and drop the gate.
+
+S3b and S3c in the plan below are SUPERSEDED by this section; their rows are rewritten once the
+open points are decided. S3b and every later step DEPEND on [proposal 067](../proposals/067-fillable.md)'s
+implementation, **WI-20260925-SHED7** (user, 2026-09-25): a sort's domain is `SortDomain`'s `fill`
+(proposal 060 §2.3), and `SortDomain` provides `anthill.reflect.Fillable` — the interface, one rule
+`fill(?x)` that fills `?x` with a value of its type, carried by a dictionary as any spec member is
+(proposal 067). The next case below is 067's worked example.
+
+### The next case — MiniSat over a collection BUILDER: the collection's domain creates it
+
+Beyond S3b, recorded because it is what the mechanism is for (user, 2026-09-25), and carried on as
+[proposal 067](../proposals/067-fillable.md) §5 — whose open questions 1–3 (the size,
+labelling, the builder) are this case's.
+
+tiny-sat (`examples/classic-mini/tiny-sat`) is MiniSat over `List`, and it works: exactly two
+definite models (`classic_mini_test.rs`). It works because the PROGRAM names `List`'s shape —
+`vs <=> [?p, ?q, ?r]` fixes three cells, and opening the clause mints them. THE GENERALIZATION WE
+WANT is the same solver written once, over any collection that can be BUILT: the solver cannot
+name the collection's shape, so the shape must come from the collection's DOMAIN — generated from
+the builder's root (the empty collection), one step per cell, each step minting a fresh cell —
+carried by the dictionary the citation hands in. (`FiniteCollection` is not a builder: its only
+door to the elements, `collect(c: C) -> List[T = Element]`, reads a collection and builds none.)
+
+**WHAT MINISAT-STYLE NEEDS — three things the design above does not have:**
+1. **The collection's domain FIRST**, building the cells before the constraints need them. The
+   appended placement is WI-743's measurement (a generator ahead of the body enumerates a
+   recursive type forever), which is point 3 below by another name.
+2. **Cells that stay FREE when they are created.** `Bit.domain(?h)` must WAIT while `neg` and
+   `or2` bind the cells, and LABEL only what is still free at the end. Today a derived domain
+   enumerates `t | f` the moment the cell exists. (A primitive's domain already waits — open
+   point 1 — so this is that behaviour for an enumerable element too.)
+3. **A SIZE the generator can see.** A domain that advances step after step forever cannot be
+   pruned by constraints that run after it.
+
+**THE DIRECTION (user, 2026-09-25): TEACH THE KERNEL TO CREATE FRESH LOGICAL VARIABLES.** Clause
+opening mints a FIXED set of fresh variables per activation, so it cannot make n of them for an
+n known only at the call; a kernel goal can. Each variable it creates carries its ELEMENT DOMAIN,
+ATTACHED AND NOT RUN:
+* CREATED by the kernel, as the resolver already creates variables — opening a clause, and the
+  operation-world `anthill.reflect.fresh_var[T](name)` (WI-182 / WI-406), which builds pattern
+  queries with holes;
+* its domain WAITS on it, by the delay and rotation that already make `Int64`'s check wait on
+  `?a` (open point 1) — so `Bit.domain(?h)` waits while `neg` and `or2` bind the variables;
+* LABELLED at the end: the kernel runs the attached domain on each variable still free (`t | f`
+  for `Bit`). This is the new part — today a goal still waiting at the end FLOUNDERS rather than
+  generates;
+* SHAPED by the collection's domain, named by the dictionary, with the SIZE from the call — so
+  the domain builds the n-cell collection and no longer.
+
+That meets all three requirements above: the cells exist before the constraints run (1), stay
+free until labelling (2), and the call bounds them (3). Proposal 067 is where the spec that
+does this — `anthill.reflect.Fillable`, one rule `fill(?x)` — is designed.
 
 ### The plan
 
