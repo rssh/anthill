@@ -73,6 +73,13 @@ namespace anthill.realization.cpp_std
   fact IncludeMapping(lang: "cpp", host_type: "std::string",         include: "#include <string>")
   fact IncludeMapping(lang: "cpp", host_type: "std::vector",         include: "#include <vector>")
   fact IncludeMapping(lang: "cpp", host_type: "std::optional",       include: "#include <optional>")
+  -- The VALUE spellings `Option` lowers to (`Option.some` / `Option.none`, and a
+  -- bounds-checked `nth`). Neither contains `std::optional`, and a body whose type
+  -- `auto` elides names only them — MEASURED: lf1's leader header came out without
+  -- `<optional>` and did not compile under g++, whose libstdc++ does not pull the
+  -- header in transitively (wi_zw6n5_lf1_scaffold_test).
+  fact IncludeMapping(lang: "cpp", host_type: "std::make_optional",  include: "#include <optional>")
+  fact IncludeMapping(lang: "cpp", host_type: "std::nullopt",        include: "#include <optional>")
   fact IncludeMapping(lang: "cpp", host_type: "std::pair",           include: "#include <utility>")
   fact IncludeMapping(lang: "cpp", host_type: "std::map",            include: "#include <map>")
   fact IncludeMapping(lang: "cpp", host_type: "std::set",            include: "#include <set>")
