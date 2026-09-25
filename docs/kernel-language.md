@@ -995,7 +995,7 @@ use the kernel but are neither additional native constructs nor §6 sugar.
 
 The unit of encapsulation and independent evolution. A namespace scopes sorts, entities, operations, and rules. Namespaces can be nested.
 
-Dotted names desugar to nested namespaces. When any declaration (`sort`, `namespace`, `entity`, `operation`) uses a dotted name, each dot-separated prefix segment becomes an implicit namespace if one does not already exist. The item itself is defined by its last segment (short name) in the innermost scope.
+Dotted names desugar to nested namespaces. When any declaration (`sort`, `namespace`, `entity`, `operation`) uses a dotted name, each dot-separated prefix segment becomes an implicit namespace — a namespace created as part of a qualified name — if one does not already exist. The item itself is defined by its last segment (short name) in the innermost scope.
 
 ```
 -- This declaration:
@@ -1009,7 +1009,7 @@ namespace anthill {              -- implicit, created if not present
 }
 ```
 
-Implicit namespaces merge with explicit namespaces of the same qualified name. This means:
+Implicit namespaces merge with explicit ones — declared with `namespace` — of the same qualified name: together they are one namespace. This means:
 - Siblings share a scope: `sort ns.A` and `sort ns.B` in separate files both live in the implicit `ns` namespace and can reference each other without imports.
 - Wildcard imports work naturally: `import anthill.prelude.*` imports all items defined in the `anthill.prelude` scope — that scope's own items, not those of the `anthill` around it (§8.6, WI-1089).
 - Explicit `namespace anthill { ... }` and implicit `anthill` (from `sort anthill.prelude.X`) merge into one scope.
