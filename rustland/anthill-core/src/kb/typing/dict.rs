@@ -2903,6 +2903,26 @@ fn spec_is_a_marker(kb: &KnowledgeBase, spec_sort: Symbol) -> bool {
     crate::kb::op_requirements::operations_of_sort(kb, spec_sort).is_empty()
 }
 
+/// WI-883 — does `spec` declare an operation with NO IMPLEMENTATION OF ITS OWN — no body,
+/// and none the host owes ([`host_implements`])? Only then does calling into it need an
+/// INSTANCE: that member's code is what a provision supplies.
+///
+/// A sort whose every operation runs by itself is a PARAMETERIZED MODULE, not an
+/// interface. `sort SortHolder { sort T = ?  requires Ord[T]  operation cmp(a: T, b: T)
+/// = WeakOrd.compare(a, b) }` is called at `Int64` by
+/// `vec3_ops_test::one_parameter_spec_op_scoped_requires_now_agrees_and_dispatches` and
+/// answers: what it owes is its DECLARED `requires Ord[T]`, which WI-1102 discharges, and
+/// nobody provides — or could be asked to provide — a `SortHolder`. `WeakOrd` is the
+/// other kind: `compare` is body-less, so its defaulted `max` needs the carrier's.
+///
+/// A STRUCTURAL FACT about the declaration, decidable at load — the sibling of
+/// [`spec_is_a_marker`], which exempts the other end (no operations at all).
+pub(super) fn spec_has_an_abstract_member(kb: &KnowledgeBase, spec: Symbol) -> bool {
+    crate::kb::op_requirements::operations_of_sort(kb, spec)
+        .iter()
+        .any(|&op| !host_implements(kb, op) && !op_has_runnable_body(kb, op))
+}
+
 /// WI-1102 — a call site permitted to PARK an op-slot refusal, and the location it would
 /// carry. `None` means "do not park here", which is a decision about the SITE and not
 /// about the dep; each caller's `None` says why at its own site.
@@ -2985,7 +3005,20 @@ fn unprovided_provision(
     dep: &RequiresEntry,
 ) -> Option<UnprovidedProvision> {
     let goal = goal_from_requires_entry(kb, dep)?;
-    let tparams = kb.type_params_of_sort(dep.required_sort);
+    let carrier = pinned_goal_carrier(kb, &goal)?;
+    Some(UnprovidedProvision {
+        carrier,
+        spec: dep.required_sort,
+        has_a_row: carrier_has_provision_row(kb, carrier, dep.required_sort),
+    })
+}
+
+/// Conditions 1 and 2 of [`unprovided_provision`], on a goal: the sort a FULLY PINNED
+/// goal names in its spec's carrier parameter, or `None` when some parameter is still
+/// open or the carrier is not a sort. Shared with [`unprovided_spec_at_carrier`] so the
+/// two refusals cannot disagree about which carrier a call named.
+fn pinned_goal_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
+    let tparams = kb.type_params_of_sort(goal.spec_sort);
     if tparams.is_empty() {
         return None;
     }
@@ -3008,7 +3041,7 @@ fn unprovided_provision(
     // two halves of this diagnostic cannot disagree about which parameter that is.
     // The param is read for the CARRIER alone; the repair line quotes the whole
     // requirement, so a multi-parameter spec is not narrowed to one binding.
-    let param = spec_carrier_param_or_sole(kb, dep.required_sort)?;
+    let param = spec_carrier_param_or_sole(kb, goal.spec_sort)?;
     let bound = goal
         .bindings
         .iter()
@@ -3018,12 +3051,146 @@ fn unprovided_provision(
     // `Eq[T = Box[B = Leaf]]` names `Box` — the sort that would carry the provision, so
     // the parametric case suggests the line on the container, which is where a
     // conditional provision goes (058 §3.8).
-    let carrier = sort_functor_of_view(kb, &TermIdView(bound))?;
-    Some(UnprovidedProvision {
-        carrier,
-        spec: dep.required_sort,
-        has_a_row: carrier_has_provision_row(kb, carrier, dep.required_sort),
+    sort_functor_of_view(kb, &TermIdView(bound))
+}
+
+/// WI-883 (058 §3.9) — the refusal for calling an operation OF spec `goal.spec_sort` at
+/// `carrier`, when no provision of that spec answers there.
+///
+/// THE ONE REQUIREMENT NOBODY WRITES. [`unprovided_provision`] discharges a callee's
+/// DECLARED `requires` — the spec's own chain and the operation's own clauses. Calling a
+/// spec's operation at `C` also asserts `Spec[T = C]` itself, and no chain carries that
+/// entry, so before this a carrier providing everything the spec REQUIRES but not the spec
+/// loaded clean and died at eval: `Show.show(1)` with no `Show` row on `Int64` ran into
+/// "operation has no body: Show.show", and `max(p, q)` on a `P` providing `Eq` and
+/// `PartialOrd` but not `WeakOrd` entered the default body and died the same way on
+/// `WeakOrd.compare`. `Float` was refused only by accident — `WeakOrd` also `requires
+/// Eq[T]`, which `Float` cannot meet — so the message named `Eq` and not the spec.
+///
+/// THE SAME SENTENCE AS WI-1102's, deliberately: the dep IS a fully pinned requirement and
+/// the carrier IS what lacks it. `callee_sort` is the operation, which drops the "of
+/// `Spec`" owner clause — the requirement is the spec itself, not one of its clauses.
+///
+/// A CALLEE THE HOST IMPLEMENTS ([`host_implements`]) is exempt, and so `None`: a host
+/// implementation of the operation itself (`Error.raise`) serves every carrier, whose
+/// parameter is then a payload. MEASURED: without it the stdlib's own
+/// `raise(EmptyStream…)` is refused.
+///
+/// THE VERDICT IS "NOT AN INSTANCE BY ANY ROUTE" ([`carrier_is_an_instance`]), and not a
+/// failed resolution at the call's bindings alone. MEASURED: a binding-level `NoMatch`
+/// also fires where the carrier IS an instance and the call simply leaves something open
+/// — `isEmpty(nil)` (element unbound), `FiniteCollection.size` over a `MutableStack.new()`,
+/// a provider at a different `Relation` schema, an existential `O = ?` — and every one of
+/// those loads and answers. WI-1102's "`C` does provide `S`, but no row answers here" is
+/// the right sentence for a DECLARED requirement; for the implicit one it was a false
+/// refusal every time it fired, so it is not asked.
+pub(super) fn unprovided_spec_at_carrier(
+    kb: &KnowledgeBase,
+    goal: &SortGoal,
+    carrier: Symbol,
+    callee_op: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    if host_implements(kb, callee_op) || carrier_is_an_instance(kb, carrier, goal.spec_sort) {
+        return None;
+    }
+    Some(TypeError::UnsatisfiableRequirement {
+        span,
+        op: callee_op,
+        callee_sort: callee_op,
+        eta: false,
+        refusal: Box::new(RequirementRefusal {
+            no_scope_route: false,
+            construction_carries_repair: false,
+            dep_text: format_goal(kb, goal),
+            unconstrained: Vec::new(),
+            refused_covers: Vec::new(),
+            construction: String::new(),
+            pinned: None,
+            unprovided: Some(UnprovidedProvision {
+                carrier,
+                spec: goal.spec_sort,
+                has_a_row: false,
+            }),
+            untied: None,
+        }),
     })
+}
+
+/// WI-883 — is `carrier` an instance of `spec` by ANY route, at any bindings? The union of
+/// the readers that each see part: [`carrier_has_provision_row`] sees a WITNESS row (filed
+/// under the witness, dispatching here) and misses a TRANSITIVE one; `sort_provides` sees
+/// the transitive chain (`List provides Stream`, `Stream provides Iterable`) and misses a
+/// witness. MEASURED: the row reader alone refused the stdlib's own `Iterable.find` at
+/// `List`. (No REFLEXIVE leg: a sort's own member on its own value never reaches here in an
+/// operation body — measured, `Box.get(box(1))` loads with or without one; the rule-body
+/// pass, which does read the self-receiver as the carrier, exempts it itself.)
+///
+/// A GENERIC witness (`sort AnyM { sort E = ?  provides Monoid[T = E] }`) is an instance
+/// everywhere and none of these sees it — its row binds a type parameter, not a sort. That
+/// is why this is only HALF of either arm's verdict; the other half is a resolution that
+/// finds such a witness (the body-less arm's dispatch, the defaulted arm's `resolve`).
+pub(super) fn carrier_is_an_instance(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
+    carrier_has_provision_row(kb, carrier, spec)
+        || sort_provides(kb, carrier, spec)
+}
+
+/// WI-883 — does the HOST owe `op`'s implementation, for every carrier? A resolver builtin
+/// (`PartialOrd.gt` answers structurally), an `operation_map` entry on the operation itself,
+/// or the declaration's own `@[host_implemented]` claim. ONE reader, for the refusal's
+/// callee exemption and for [`spec_has_an_abstract_member`] — two spellings of it
+/// disagreed on the canonical symbol and on the claim (found by /code-review).
+///
+/// THE CLAIM IS READ AS WELL AS THE EVIDENCE, and for a different question than the one
+/// WI-20260922-BRT4Y keeps to the evidence. That rule is about whether an implementation
+/// EXISTS; this asks who OWES one — the host or an instance — and `@[host_implemented]`
+/// is the declaration's own answer. Whether the host then supplies it is BRT4Y's check,
+/// which holds claim and mapping together and refuses either without the other; asking
+/// only the mapping here gives a binding-less load a SECOND diagnosis of that same absence
+/// (measured: `wi931…::stdlib_alone_declares_no_store_provision`, whose load must fail for
+/// the unsupplied claims only).
+pub(super) fn host_implements(kb: &KnowledgeBase, op: Symbol) -> bool {
+    kb.is_builtin(op)
+        || kb.is_host_mapped_op(kb.canonical_sym(op))
+        || crate::kb::op_info::lookup_operation_info(kb, op).is_some_and(|rec| {
+            crate::kb::load::meta_has_flag(kb, rec.meta, crate::kb::load::HOST_IMPLEMENTED_ATTR)
+        })
+}
+
+/// WI-883 — the carrier a spec-op call names through its GOAL when nothing classified one:
+/// the sort bound at the spec's carrier parameter ([`pinned_goal_carrier`]).
+///
+/// WHY NOT THE CLASSIFIER'S. `carrier_param_receiver` recognizes a carrier only through a
+/// provision view, so a carrier providing NOTHING — the case [`unprovided_spec_at_carrier`]
+/// is for — is never classified, and its call arrives with no statically pinned carrier.
+///
+/// ONLY FOR A SPEC THAT IS NOT SELF-REPRESENTING ([`spec_is_self_representing`]). Where an
+/// operation receives the sort itself (`List.contains(l: List, x: T)`), the RECEIVER is
+/// the carrier and the parameter is its ELEMENT — reading `List[T = Int64]` as "`Int64`
+/// must provide `List`" is WI-1076's defect, and MEASURED here as ~20 refused programs
+/// over `List`'s own operations. The receiver speaks for those calls, or nothing does.
+/// And the answer passes the filter [`statically_pinned_carrier`] applies to a classified
+/// carrier, so an abstract-spec value or the spec itself (whose runtime value is some
+/// provider) is never named.
+///
+/// `None` TOO FOR A CARRIER THAT IS AN INSTANCE ([`carrier_is_an_instance`]) — there is
+/// nothing to name — and that test runs FIRST: it is decisive at nearly every call and
+/// cheap, where the two filters after it walk every operation of the spec and scan the
+/// symbol table (`sort_has_constructors`). Found by /code-review on the typer's hot path.
+pub(super) fn unclassified_goal_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
+    let from_goal = pinned_goal_carrier(kb, goal)?;
+    if carrier_is_an_instance(kb, from_goal, goal.spec_sort)
+        || spec_is_self_representing(kb, kb.canonical_sort_sym(goal.spec_sort))
+    {
+        return None;
+    }
+    statically_pinned_carrier(
+        kb,
+        &ReceiverCarrier::NotApplicable,
+        Some(from_goal),
+        Some(goal.spec_sort),
+    )
+    .map(|c| c.sort)
 }
 
 /// PROPOSAL 065 OPEN QUESTION 3 — is this unfilled op slot's carrier a STRUCTURAL FORMER

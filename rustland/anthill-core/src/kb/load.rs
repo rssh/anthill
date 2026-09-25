@@ -190,6 +190,22 @@ fn derived_row_clause(spec: &str, derived_from: Option<&str>) -> String {
     }
 }
 
+/// WI-20260925-P5G39 — [`derived_row_clause`]'s twin for `ProvisionConditionsTooWeak`,
+/// whose repair is a CONDITION rather than an operation. A derived row carries none and
+/// cannot be given one: conditioning its ORIGIN makes the origin conditional, and a
+/// conditional provision derives nothing (MEASURED — the floor vanished and the origin
+/// was refused for lacking it). So the repair is to write the floor's own clause.
+fn derived_conditions_clause(spec: &str, derived_from: Option<&str>) -> String {
+    match derived_from {
+        Some(origin) => format!(
+            " — note '{spec}' is not written on this carrier: it is DERIVED, \
+             unconditionally, from its `provides {origin}`; write `provides {spec}[…] :- …` \
+             with a condition that implies it"
+        ),
+        None => String::new(),
+    }
+}
+
 /// The short face.
 fn unbacked_provider_operation_message(
     carrier: &str,
@@ -259,6 +275,31 @@ fn written_effect_row_label_message(
 /// [`LoadResult::warnings`] on the `Ok` path (the WI-345/346 channel). Keep it
 /// that way — a new `LoadError` variant blocks by construction, and nothing has
 /// to remember to add it to a list.
+/// WI-20260925-P5G39 — one clause of a provision with several, named in a refusal so the
+/// author can tell WHICH alternative over-claims (066 §7: each clause is a way for the
+/// provision to hold, and each is checked).
+#[derive(Clone, Debug)]
+pub enum ProvisionClause {
+    /// `provides S[…]` with no `:- …` — the clause that makes the provision hold outright.
+    Unconditioned,
+    /// `provides S[…] :- G…`, the conditions rendered as the author wrote them.
+    Conditioned(String),
+}
+
+/// The ` — for its clause …` tail both faces of a provision refusal append; empty for a
+/// provision with one clause.
+fn provision_clause_note(spec: &str, clause: Option<&ProvisionClause>) -> String {
+    match clause {
+        None => String::new(),
+        Some(ProvisionClause::Unconditioned) => {
+            format!(" — for its clause `provides {spec}[…]` with no condition")
+        }
+        Some(ProvisionClause::Conditioned(conditions)) => {
+            format!(" — for its clause `provides {spec}[…] :- {conditions}`")
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum LoadError {
     /// A name that resolves to nothing — a typo, or a reference to something
@@ -508,6 +549,10 @@ pub enum LoadError {
         /// WI-1110 — the provision the author DID write, when `spec` names a row this
         /// load derived from it. `None` for a written row.
         derived_from: Option<String>,
+        /// WI-20260925-P5G39 — which of SEVERAL clauses of the provision the requirement
+        /// fails under; `None` for a provision with one clause, where there is no choice
+        /// to name.
+        clause: Option<ProvisionClause>,
     },
     /// WI-1046 (spec §6.6): a boolean operator written in a GOAL position that has no
     /// goal reading. Today that is exactly `and` (`a & b`, or the word form): `not` and
@@ -576,6 +621,14 @@ pub enum LoadError {
         spec: String,
         required: String,
         unentailed: String,
+        /// WI-20260925-P5G39 — the spec the author wrote, when `spec` is a row the loader
+        /// DERIVED from it (WI-1110's channel, as on `UnsatisfiedProviderRequires`). A
+        /// derived row is unconditional and carries no clause of its own, so the repair is
+        /// to WRITE one — naming `provides {spec}[…] :- …` as if it existed would send the
+        /// author to a clause that is not in the source.
+        derived_from: Option<String>,
+        /// As on `UnsatisfiedProviderRequires`.
+        clause: Option<ProvisionClause>,
     },
     /// WI-363, as amended by WI-818: a carrier provides a spec but does not back
     /// one of the spec's declared operations. The op-level twin of
@@ -2635,9 +2688,11 @@ impl LoadError {
                 spec,
                 required,
                 derived_from,
+                clause,
             } => {
-                format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (declare `provides {}[…]` on the carrier){}",
+                format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (declare `provides {}[…]` on the carrier){}{}",
                     carrier, spec, required, carrier, required, required,
+                    provision_clause_note(spec, clause.as_ref()),
                     derived_row_clause(spec, derived_from.as_deref()))
             }
             LoadError::ProvisionConditionsTooWeak {
@@ -2645,14 +2700,31 @@ impl LoadError {
                 spec,
                 required,
                 unentailed,
+                derived_from,
+                clause,
             } => {
+                let repair = match derived_from {
+                    None => format!(
+                        "Strengthen `provides {spec}[…] :- …` to a condition that implies \
+                         `{unentailed}`"
+                    ),
+                    // Conditioning the ORIGIN would not help: a conditional provision
+                    // derives nothing, so the floor would vanish rather than hold.
+                    Some(origin) => format!(
+                        "'{spec}' is not written on this carrier: it is DERIVED, \
+                         unconditionally, from its `provides {origin}`, and a derived floor \
+                         carries no condition. Write `provides {spec}[…] :- …` yourself, with \
+                         a condition that implies `{unentailed}` (a conditional provider \
+                         writes each floor, as `pair.anthill` does)"
+                    ),
+                };
                 format!(
                     "'{carrier}' provides '{spec}', which requires '{required}' — and \
                      '{carrier}' DOES provide '{required}', but only under the condition \
-                     `{unentailed}`, which the conditions of '{spec}' do not entail. So \
+                     `{unentailed}`, which the conditions of '{spec}' do not entail{}. So \
                      '{spec}' would be claimed where '{required}' does not hold. \
-                     Strengthen `provides {spec}[…] :- …` to a condition that implies \
-                     `{unentailed}`, or weaken `provides {required}[…] :- …`."
+                     {repair}, or weaken `provides {required}[…] :- …`.",
+                    provision_clause_note(spec, clause.as_ref()),
                 )
             }
             LoadError::UndefinedRuleBodyTerm { functor, span } => {
@@ -3930,15 +4002,17 @@ impl std::fmt::Display for LoadError {
                 spec,
                 required,
                 derived_from,
+                clause,
             } => {
                 write!(
                     f,
-                    "'{}' provides '{}', which requires '{}', but '{}' does not provide '{}'{}",
+                    "'{}' provides '{}', which requires '{}', but '{}' does not provide '{}'{}{}",
                     carrier,
                     spec,
                     required,
                     carrier,
                     required,
+                    provision_clause_note(spec, clause.as_ref()),
                     derived_row_clause(spec, derived_from.as_deref())
                 )
             }
@@ -3947,12 +4021,16 @@ impl std::fmt::Display for LoadError {
                 spec,
                 required,
                 unentailed,
+                derived_from,
+                clause,
             } => {
                 write!(
                     f,
                     "'{carrier}' provides '{spec}', which requires '{required}' — and \
                      '{carrier}' DOES provide '{required}', but only under `{unentailed}`, \
-                     which the conditions of '{spec}' do not entail"
+                     which the conditions of '{spec}' do not entail{}{}",
+                    provision_clause_note(spec, clause.as_ref()),
+                    derived_conditions_clause(spec, derived_from.as_deref()),
                 )
             }
             LoadError::UndefinedRuleBodyGoal { functor, span } => {

@@ -746,8 +746,11 @@ pub enum CallClass {
     /// case here (where the subst is still in scope) and tags the
     /// occurrence; `req_insertion::run` translates the tag into a
     /// `MissingRequiresForSpecOp` error. Concrete-binding `NoCandidates`
-    /// is **not** classified — it remains a legitimate pass-through
-    /// (host builtin / spec-derived rule may resolve at runtime).
+    /// is **not** classified: in an operation body a carrier that is no
+    /// instance of the spec is refused outright (WI-883,
+    /// `unprovided_spec_at_carrier`), and what passes through is a
+    /// host-implemented callee or a carrier that IS an instance by a route
+    /// the dispatch goal did not match.
     ///
     /// `abstract_params` lists the spec's short type-param names
     /// (e.g. `T`) that the call left abstract. `enclosing_sort` is

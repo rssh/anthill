@@ -1068,6 +1068,9 @@ mod wi884_sibling_backing_test;
 #[path = "include/wi882_deleted_denials_test.rs"]
 mod wi882_deleted_denials_test;
 
+#[path = "include/wi883_spec_op_at_non_instance_test.rs"]
+mod wi883_spec_op_at_non_instance_test;
+
 #[path = "include/wi886_cpp_mapping_language_test.rs"]
 mod wi886_cpp_mapping_language_test;
 
@@ -1855,3 +1858,5 @@ mod wi_32xfq_found_divergences_test;
 mod wi_zbwmc_provision_narrowing_test;
 #[path = "include/wi_f8pyz_spec_clause_alias_test.rs"]
 mod wi_f8pyz_spec_clause_alias_test;
+#[path = "include/wi_p5g39_provision_assumptions_test.rs"]
+mod wi_p5g39_provision_assumptions_test;

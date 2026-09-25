@@ -2330,6 +2330,19 @@ pub(super) fn check_apply_iter(
                 // THIRD sort whose slots it does not carry (`Stream.find`,
                 // `Iterable.filter`), which is `expand_dispatching_dict`'s WI-857 raise
                 // and its `push_op_scoped_slots` twin.
+                // WI-883 — no supplier, and the carrier may not be an instance at all.
+                if let Some(refusal) = defaulted_call_at_non_instance(
+                    kb,
+                    env,
+                    &subst,
+                    &goal,
+                    &selections,
+                    carrier_sym,
+                    fn_sym,
+                    span,
+                ) {
+                    return Err(refusal);
+                }
                 let default_tree = match resolve(kb, &goal, &scope) {
                     ResolutionResult::Resolved(tree @ ResolvedRequiresNode::Conditional { .. }) => {
                         Some(tree)
@@ -2397,6 +2410,35 @@ pub(super) fn check_apply_iter(
                         effects,
                         node: Rc::clone(occ),
                     });
+                }
+            }
+
+            // WI-883 — NO CARRIER WAS CLASSIFIED, which is also what a carrier providing
+            // NOTHING looks like: the carrier-param classifier recognizes a carrier only
+            // through a provision view. The call's goal still names it (`WeakOrd[T = P]`),
+            // so the instance question is asked of the goal — for an operation with no
+            // self-receiver, whose receiver would otherwise be the carrier (see
+            // [`unclassified_goal_carrier`]). Those tests come first because they are
+            // compares, and they keep every `List` member and every rule body off the walks
+            // below. An abstract goal pins no carrier and passes untouched to the slot route.
+            if carrier.is_none()
+                && matches!(recv_carrier, ReceiverCarrier::NotApplicable)
+                && env.enclosing_op().is_some()
+            {
+                let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
+                if let Some(refusal) = unclassified_goal_carrier(kb, &goal).and_then(|c| {
+                    defaulted_call_at_non_instance(
+                        kb,
+                        env,
+                        &subst,
+                        &goal,
+                        &selections,
+                        c,
+                        fn_sym,
+                        span,
+                    )
+                }) {
+                    return Err(refusal);
                 }
             }
 
@@ -3017,12 +3059,37 @@ pub(super) fn check_apply_iter(
                             node: Rc::clone(occ),
                         });
                     }
-                    // WI-325: distinguish concrete-binding NoCandidates
-                    // (legitimate pass-through — host builtin / spec-derived
-                    // rule may resolve at runtime) from abstract-binding
-                    // NoCandidates with no covering `requires` (unsafe —
-                    // dispatch will fail at first call site). Concrete:
-                    // leave untagged so the call stays as the spec op.
+                    // WI-883 — A CALL THAT NAMES A CARRIER WITH NO CANDIDATE: the carrier
+                    // provides no such spec, and the call is refused here rather than
+                    // passed through to die at eval with "operation has no body". The
+                    // enclosing operation's own `requires` is exempt — an ASSUMPTION its
+                    // callers discharge (058 §3.9), the licence WI-562 grants below — and
+                    // so is a host-implemented callee (see the helper). An abstract
+                    // carrier names nothing and falls through to WI-325.
+                    //
+                    // AN OPERATION BODY ONLY. A rule-body spec-op call has its own owner,
+                    // `check_rule_body_requirements`, which reads the clause's declared
+                    // `requires(…)` as the rule's own dictionary; answering here too gave
+                    // one call two diagnoses, and refused the declared clause
+                    // `wi642…::declared_in_body_requires_loads_clean` pins as legal.
+                    if env.enclosing_op().is_some()
+                        && !op_requires_covers_call(kb, env, &subst, spec_sort)
+                    {
+                        let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
+                        if let Some(refusal) = pinned_carrier
+                            .or_else(|| unclassified_goal_carrier(kb, &goal))
+                            .and_then(|c| unprovided_spec_at_carrier(kb, &goal, c, fn_sym, span))
+                        {
+                            return Err(refusal);
+                        }
+                    }
+                    // WI-325: distinguish concrete-binding NoCandidates from
+                    // abstract-binding NoCandidates with no covering `requires`
+                    // (unsafe — dispatch will fail at first call site). A concrete
+                    // carrier that is no instance was refused just above (WI-883);
+                    // one that reaches here is an instance by a route the goal did
+                    // not match, or a host-implemented callee: leave it untagged so
+                    // the call stays as the spec op.
                     // Abstract: tag the occurrence so `req_insertion::run`
                     // can emit a `MissingRequiresForSpecOp` diagnostic.
                     //
@@ -4582,4 +4649,66 @@ pub fn impl_parent_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
 /// parent. It takes the re-declaration above to build one.
 pub(crate) fn impl_parent_sort_of_op(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     impl_parent_of_op(kb, op_sym).filter(|p| kb.has_kind(*p, crate::intern::SymbolKind::Sort))
+}
+
+/// WI-883 (058 §3.9) — a DEFAULTED spec op called at a carrier that is not an instance of
+/// its spec: the refusal, or `None` when the call may run its default body.
+///
+/// NO SUPPLIER IS THE GAP A DEFAULT FILLS ONLY FOR AN INSTANCE. The default body's sibling
+/// calls dispatch through the carrier's own provision, so at a carrier with none it is
+/// entered and dies on the first of them — `max(p, q)` on a `P` providing `Eq` and
+/// `PartialOrd` but not `WeakOrd` died "operation has no body: WeakOrd.compare".
+///
+/// AN OPERATION BODY ONLY, for the body-less arm's reason: a rule-body call is
+/// `check_rule_body_requirements`' to judge, with the clause's declared `requires(…)` in
+/// hand.
+///
+/// TWO HALVES, BOTH REQUIRED, cheapest first. [`carrier_is_an_instance`] finds no provision
+/// of the spec at this carrier by any route — the binding-blind half, which alone cannot
+/// see a GENERIC witness. And the call's own resolution fails — the half that sees one, and
+/// that honours what the call site holds: its explicit selection (`f[Spec = W](…)`, 058
+/// §4.1 tier 1), the enclosing sort's and operation's `requires` (with σ, as the body-less
+/// arm's dispatch reads them, so the two arms agree). Neither alone: the resolution by
+/// itself ends `NoMatch` wherever a call leaves an element open (`isEmpty(nil)`), and every
+/// such program runs.
+///
+/// A spec with no ABSTRACT member ([`spec_has_an_abstract_member`]) is exempt: it is a
+/// parameterized module, whose every operation runs by itself. A spec WITH one owes the
+/// instance at EVERY member, including a default that happens never to reach the abstract
+/// one (`label(s: T) -> Int64 = 0`): calling a spec's operation asserts the carrier is an
+/// instance (058 §3.9), and what one default body reads today is that body's business, not
+/// the call's — WI-20260921-3G1YT's reason for deleting the body walks, one question over.
+/// A decision, raised by /code-review, and kept.
+#[allow(clippy::too_many_arguments)]
+fn defaulted_call_at_non_instance(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &Substitution,
+    goal: &SortGoal,
+    selections: &[InstanceSelection],
+    carrier: Symbol,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    if env.enclosing_op().is_none()
+        || carrier_is_an_instance(kb, carrier, goal.spec_sort)
+        || !spec_has_an_abstract_member(kb, goal.spec_sort)
+        || op_requires_covers_call(kb, env, subst, goal.spec_sort)
+    {
+        return None;
+    }
+    let sigma = SigmaCtx {
+        subst,
+        param_rigids: env.param_rigids(),
+    };
+    let scope = ResolutionScope {
+        available_requires: env.enclosing_requires(),
+        sigma: Some(&sigma),
+        selected: selections,
+        sub_goal_requires: env.sub_goal_requires(),
+    };
+    if !matches!(resolve(kb, goal, &scope), ResolutionResult::NoMatch { .. }) {
+        return None;
+    }
+    unprovided_spec_at_carrier(kb, goal, carrier, fn_sym, span)
 }

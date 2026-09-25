@@ -306,14 +306,13 @@ fn a_witness_supplied_carrier_answers_through_both_spellings() {
     );
 }
 
-/// THE TRUE POSITIVE THE WITNESS ESCAPE MUST NOT SWALLOW, and the one row where the rule
-/// body is now STRICTER than the operation body rather than merely equal to it.
+/// THE TRUE POSITIVE THE WITNESS ESCAPE MUST NOT SWALLOW.
 ///
 /// `Leaf` declares a `describe` member and NO provision, so nothing makes it an instance
-/// of `Desc`: there is no dictionary and no dispatch. MEASURED on the operation-body
-/// twin: it LOADS CLEAN and fails at the CALL with `OperationBodyMissing` — WI-1012's
-/// cost (1), `anthill check` passing on a program the interpreter refuses. The rule-body
-/// face says so at LOAD.
+/// of `Desc`: there is no dictionary and no dispatch. This row used to be where the rule
+/// body was STRICTER than the operation body — the operation-body twin LOADED CLEAN and
+/// failed at the CALL with `OperationBodyMissing` (WI-1012's cost (1), `anthill check`
+/// passing on a program the interpreter refuses). WI-883 refuses both at LOAD.
 ///
 /// An own member is NOT a provision, which is the distinction that makes the escape safe:
 /// widening it to "the carrier has a supplier of this op by any route" would admit route
@@ -327,15 +326,14 @@ fn a_carrier_with_no_instance_is_refused_at_load() {
         "a call on a carrier that provides no instance must be refused, naming the \
          requirement: {msg}",
     );
-    // The operation-body twin, so the asymmetry is a measurement and not an assumption:
-    // it loads, and the failure arrives only when the call runs.
+    // The operation-body twin. It used to LOAD and fail only when the call ran
+    // (`OperationBodyMissing`) — the asymmetry this row recorded. WI-883 closed it: the
+    // operation body now refuses at load too, naming the carrier and the spec.
     let ns_op = "test.wi1043.noinstanceop";
-    let interp_err = crate::common::interp_for(&body_less(ns_op, OWN_NO_PROVISION, "", QUAL_OP))
-        .call(&format!("{ns_op}.probe"), &[])
-        .expect_err("no instance: the operation-body call has nothing to dispatch to");
+    let msg_op = refusal(&body_less(ns_op, OWN_NO_PROVISION, "", QUAL_OP));
     assert!(
-        format!("{interp_err:?}").contains("OperationBodyMissing"),
-        "the operation body's face is a RUNTIME failure: {interp_err:?}",
+        msg_op.contains(&format!("`{ns_op}.Leaf` provides no `{ns_op}.Desc`")),
+        "the operation body's face is a LOAD refusal since WI-883: {msg_op}",
     );
 }
 

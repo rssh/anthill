@@ -135,49 +135,21 @@ pub(super) fn check_operation_bodies(
                 let op_param_len = all_params.len();
                 // WI-849: the op table is `Var`-typed; the sort table is still TermId-typed
                 // (its other consumers want the param as a TERM, under `&KnowledgeBase`
-                // where they could not re-alloc). Convert here — total, because
-                // `sort_type_params_as_pairs` admits an entry only when it IS a
-                // `Term::Var(Global)`. A non-var would mean that filter changed under us.
-                all_params.extend(
-                    parent_sort_params
-                        .iter()
-                        .map(|(n, t)| match kb.get_term(*t) {
-                            Term::Var(v) => (*n, *v),
-                            other => unreachable!(
-                    "sort_type_params_as_pairs admits only `Term::Var(Global)`, got {other:?}"
-                ),
-                        }),
-                );
+                // where they could not re-alloc).
+                all_params.extend(param_pairs_as_vars(kb, &parent_sort_params));
                 let rigidify = rigidify_op_type_params(kb, &all_params);
-                // EVERY param the rigidifier was given gets its bridge — reading back from
-                // the list it was actually handed is what keeps the two from coming apart
-                // (WI-942: the sort half used to be collected on its own, leaving an
-                // op-declared param with no Global→Rigid entry at all). ONE entry per param,
-                // because a param has ONE canonical var: what the record holds is what a
-                // written occurrence resolves to ([`type_param_global_var`], WI-943).
-                let to_rigids = |params: &[(Symbol, Var)]| -> Vec<(VarId, TermId)> {
-                    params
-                        .iter()
-                        .filter_map(|(_, var)| {
-                            let Var::Global(vid) = var else { return None };
-                            // `rigidify` binds each param to its fresh `Rigid` term — always
-                            // a `Value::Term`; a non-`Term` binding would not be a rigid.
-                            match rigidify.resolve_as_value(*vid) {
-                                Some(Value::Term { id: rigid, .. }) => Some((*vid, *rigid)),
-                                _ => None,
-                            }
-                        })
-                        .collect()
-                };
+                // EVERY param the rigidifier was given gets its bridge ([`rigid_bridge`]):
+                // what the record holds is what a written occurrence resolves to
+                // ([`type_param_global_var`], WI-943).
                 // `all_params` is `op_own_params ++ parent_sort_params`; `param_rigids` is
                 // the other order — enclosing SORT params first, so `sort_rigid_len` is where
                 // the op's own begin. Split and reverse explicitly rather than partitioning
                 // in-place: the length must be read BETWEEN the two halves, which is why
                 // `op_param_len` is taken above rather than here.
                 let (op_half, sort_half) = all_params.split_at(op_param_len);
-                param_rigids = to_rigids(sort_half);
+                param_rigids = rigid_bridge(&rigidify, sort_half);
                 sort_rigid_len = param_rigids.len();
-                param_rigids.extend(to_rigids(op_half));
+                param_rigids.extend(rigid_bridge(&rigidify, op_half));
                 let params = rec
                     .params
                     .iter()

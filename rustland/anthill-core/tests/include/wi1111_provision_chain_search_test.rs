@@ -953,16 +953,15 @@ end
 // the mask, pinned so it is not read as this ticket's
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A spec-op call at a CONCRETE receiver, in a sort that declares no `requires`, is not
-/// checked at load — it loads clean and traps at eval — EVEN WHEN NOTHING PROVIDES THE
-/// SPEC AT ALL. That is not a candidate defect and no change in this ticket touches it:
-/// it is the call-site half of a spec-op requirement, unchecked while the op is still
-/// reachable that way (WI-1110's shape A; WI-876 measured the same for `PartialOrd.gt`;
-/// WI-879 owns it). PINNED rather than described, so that when WI-879 lands this test
-/// fails and says where to look.
+/// A spec-op call at a CONCRETE receiver, in a sort that declares no `requires`, WHEN
+/// NOTHING PROVIDES THE SPEC AT ALL. It used to load clean and trap at eval — the
+/// call-site half of a spec-op requirement (WI-1110's shape A; WI-876 measured the same
+/// for `PartialOrd.gt`). This row pinned that so the ticket that closed it would land
+/// here: WI-883 did (the note named WI-879, which is the resolver-registry ticket and
+/// never owned it). The search is still truthful, and the call is now refused at LOAD.
 #[test]
 fn the_direct_call_mask_is_not_this_tickets() {
-    let src = r#"
+    let decls = r#"
 namespace wi1111.mask
   import anthill.prelude.{Int64}
   sort Sp
@@ -972,24 +971,25 @@ namespace wi1111.mask
   enum Other
     entity other(v: Int64)
   end
-  sort D
-    operation go(n: Int64) -> Int64 = Sp.probe(Other.other(1))
-  end
-end
 "#;
-    let mut kb = crate::common::load_kb_with(src);
+    // The declarations alone load: nothing is CALLED at `Other`, so nothing is owed.
+    let mut kb = crate::common::load_kb_with(&format!("{decls}end\n"));
     let cands = candidates(&mut kb, "wi1111.mask.Sp", &[("X", "wi1111.mask.Other")]);
     assert!(
         cands.is_empty(),
         "the search is truthful: nothing provides `Sp` at `Other`; got {cands:?}",
     );
-    let mut interp = crate::common::interp_for(src);
-    let r = interp.call("wi1111.mask.D.go", &[Value::Int(0)]);
+    let with_call = format!(
+        "{decls}  sort D\n    operation go(n: Int64) -> Int64 = Sp.probe(Other.other(1))\n  \
+         end\nend\n"
+    );
+    let text = crate::common::try_load_kb_with(&with_call)
+        .err()
+        .expect("the call at a carrier nothing provides `Sp` for must not load (WI-883)")
+        .join("\n");
     assert!(
-        r.is_err(),
-        "and the LOAD accepted it anyway, so the trap is at eval — when WI-879 closes the \
-         call-site half this becomes a load error and this test must be rewritten to \
-         assert the refusal; got {r:?}",
+        text.contains("`wi1111.mask.Other` provides no `wi1111.mask.Sp`"),
+        "the refusal names the carrier and the spec; got:\n{text}",
     );
 }
 

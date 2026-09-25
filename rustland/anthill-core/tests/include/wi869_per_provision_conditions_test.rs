@@ -874,7 +874,9 @@ fn each_condition_is_joined_to_its_own_provision() {
 
 // ── WI-1033 review: the entailment rule's quantifiers and pairing ────
 //
-// Three shapes the FIRST cut of `conditions_entail` got wrong, each measured. They are
+// Three shapes the FIRST cut of `conditions_entail` got wrong, each measured — and that
+// the resolver must get right now that it answers the question instead (WI-20260925-P5G39
+// deleted `conditions_entail`; these rows passed unchanged across it). They are
 // here rather than in prose because every one of them loaded (or refused) silently.
 
 /// A two-parameter tower, so the check cannot pass by comparing binding values as a

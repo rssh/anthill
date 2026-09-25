@@ -56,9 +56,35 @@ namespace anthill.prelude.Int64
 end
 "#;
 
+/// `SRC`'s `Bool` call site, and `SRC_CARRIER`'s. Each calls a `Magma`/`Box` operation at
+/// a carrier that provides no such spec — since WI-883 a LOAD refusal (the carrier is not
+/// an instance, so the call has nothing to run). The rows that read the LOADED KB take the
+/// fixture [`without`] it; the two negative rows read the refusal instead.
+const BOOL_USER: &str =
+    "  sort BoolUser\n    operation use_bool(a: Bool, b: Bool) -> Bool = op2(a, b)\n  end\n";
+const BAD_USER: &str = "  sort BadUser\n    operation use_bool(x: Bool) -> Bool = wrap(5, x)\n  end\n";
+
+fn without(src: &str, block: &str) -> String {
+    assert!(src.contains(block), "the fixture must carry the block being removed");
+    src.replace(block, "")
+}
+
+/// The negative rows' reading, and why it still measures the GUARD: the typer fires
+/// `@[simp]` on an Apply BEFORE `check_apply_iter` sees it (`build.rs`, the `fire_simp`
+/// arm re-`Visit`s the RHS in place of the call). So had the rule fired over `Bool`, the
+/// call would be GONE and the program would load clean — this refusal exists only because
+/// the guard held the call back. The one error, naming the carrier and the spec, is the
+/// whole verdict.
+fn assert_refused_at_bool(src: &str, spec: &str) {
+    crate::common::expect_load_errors(
+        crate::common::try_load_kb_with(src),
+        &[&format!("`anthill.prelude.Bool` provides no `{spec}`")],
+    );
+}
+
 #[test]
 fn simp_rule_fires_where_receiver_provides_the_spec() {
-    let kb = crate::common::load_kb_with(SRC);
+    let kb = crate::common::load_kb_with(&without(SRC, BOOL_USER));
     let op = kb
         .try_resolve_symbol("test.wi283guard.IntUser.use_int")
         .expect("use_int symbol");
@@ -74,24 +100,10 @@ fn simp_rule_fires_where_receiver_provides_the_spec() {
 
 #[test]
 fn simp_rule_does_not_fire_where_receiver_lacks_the_spec() {
-    let kb = crate::common::load_kb_with(SRC);
-    let op = kb
-        .try_resolve_symbol("test.wi283guard.BoolUser.use_bool")
-        .expect("use_bool symbol");
-    let body = kb.op_body_node(op).expect("use_bool has a body");
-    // op2(a, b) over Bool (Bool does NOT provide Magma) → the guard blocks
-    // firing; the call stays an Apply of the spec op. Firing here would
-    // erase a call whose `requires Eq[T]` / `Magma[T = Bool]` is unmet.
-    match body.as_expr() {
-        Some(Expr::Apply { functor, .. }) => {
-            let qn = kb.qualified_name_of(*functor);
-            assert!(
-                qn.ends_with("Magma.op2"),
-                "expected the unfired op2 apply, got functor {qn}",
-            );
-        }
-        other => panic!("op2_id must NOT fire over Bool; expected op2 apply, got {other:?}"),
-    }
+    // op2(a, b) over Bool (Bool does NOT provide Magma) → the guard blocks firing, the
+    // call survives as an apply of the spec op, and WI-883 refuses it: firing here would
+    // have erased a call whose `Magma[T = Bool]` is unmet. See [`assert_refused_at_bool`].
+    assert_refused_at_bool(SRC, "test.wi283guard.Magma");
 }
 
 // ── carrier is not the leading argument ──────────────────────────────
@@ -139,7 +151,7 @@ end
 fn guard_tests_the_carrier_arg_not_arg0_positive() {
     // Carrier `x` (arg 1) is Int64, which provides Box → fires to `x`, even
     // though the carrier is not the leading argument.
-    let kb = crate::common::load_kb_with(SRC_CARRIER);
+    let kb = crate::common::load_kb_with(&without(SRC_CARRIER, BAD_USER));
     let op = kb
         .try_resolve_symbol("test.wi283carrier.GoodUser.use_int")
         .expect("use_int symbol");
@@ -154,27 +166,11 @@ fn guard_tests_the_carrier_arg_not_arg0_positive() {
 
 #[test]
 fn guard_tests_the_carrier_arg_not_arg0_negative() {
-    // Carrier `x` (arg 1) is Bool, which does NOT provide Box → must NOT
-    // fire, even though arg 0 (`tag: Int64`) is a type that DOES provide Box.
-    // This is the unsoundness an arg-0 guard would introduce.
-    let kb = crate::common::load_kb_with(SRC_CARRIER);
-    let op = kb
-        .try_resolve_symbol("test.wi283carrier.BadUser.use_bool")
-        .expect("use_bool symbol");
-    let body = kb.op_body_node(op).expect("use_bool has a body");
-    match body.as_expr() {
-        Some(Expr::Apply { functor, .. }) => {
-            let qn = kb.qualified_name_of(*functor);
-            assert!(
-                qn.ends_with("Box.wrap"),
-                "expected the unfired wrap apply, got functor {qn}",
-            );
-        }
-        other => panic!(
-            "wrap_id must NOT fire when the carrier x: Bool lacks Box, even though \
-             arg 0 (Int64) provides it; got {other:?}",
-        ),
-    }
+    // Carrier `x` (arg 1) is Bool, which does NOT provide Box → must NOT fire, even
+    // though arg 0 (`tag: Int64`) is a type that DOES provide Box. This is the
+    // unsoundness an arg-0 guard would introduce — and the refusal names `Bool`, the real
+    // carrier, not `Int64`. See [`assert_refused_at_bool`].
+    assert_refused_at_bool(SRC_CARRIER, "test.wi283carrier.Box");
 }
 
 // ── resolver side: requires-guarded rules fire via the carried type ───
@@ -190,7 +186,7 @@ fn guard_tests_the_carrier_arg_not_arg0_negative() {
 
 #[test]
 fn resolver_fires_requires_guarded_equation_when_carrier_provides_spec() {
-    let mut kb = crate::common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(&without(SRC, BOOL_USER));
     let op2 = kb
         .try_resolve_symbol("test.wi283guard.Magma.op2")
         .expect("op2 symbol");
@@ -216,7 +212,7 @@ fn resolver_fires_requires_guarded_equation_when_carrier_provides_spec() {
 
 #[test]
 fn resolver_does_not_fire_requires_guarded_equation_when_carrier_lacks_spec() {
-    let mut kb = crate::common::load_kb_with(SRC);
+    let mut kb = crate::common::load_kb_with(&without(SRC, BOOL_USER));
     let op2 = kb
         .try_resolve_symbol("test.wi283guard.Magma.op2")
         .expect("op2 symbol");
