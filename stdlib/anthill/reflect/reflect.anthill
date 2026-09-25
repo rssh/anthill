@@ -172,6 +172,25 @@ namespace anthill.reflect
   end
 
 
+  {< SortDomain[T]: evidence that `T` HAS A DOMAIN — the relation listing its values
+     (proposal 060 §2.2; WI-20260911-5G28A S3, `docs/design/060-implementation.md`
+     §7.3).
+
+     Its member is the sort's own `domain`: `Colour.domain` answers `red`, `green`,
+     `blue`. The instance is what carries a domain to a place that names no sort — a
+     rule whose bound is a type variable, cited from an operation that holds
+     `requires SortDomain[T = X]` for its own rigid `X` — the same way `Eq` carries
+     equality there. Every instance is DERIVED by the loader, conditional for a
+     parametric sort (`List provides SortDomain[T = List[T = T]] :- SortDomain[T = T]`):
+     the element's domain is the condition's slot.
+
+     `domain` is DECLARED UNTYPED, and that is a soundness rule: typed, it would be a
+     typed head whose generated domain goal runs `domain` itself (060-typedomains §0). >}
+  sort SortDomain
+    sort T = ?
+    rule domain(?x)
+  end
+
   sort NodeOccurrence = ?
 
   -- Builtin operations on occurrences

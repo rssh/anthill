@@ -166,7 +166,7 @@ pub use requires::*;
 pub use result::*;
 use rule_constraints::*;
 use rule_dispatch::*;
-use rule_requirements::*;
+pub(crate) use rule_requirements::*;
 pub(crate) use rules::*;
 pub use signature::*;
 pub use slots::*;

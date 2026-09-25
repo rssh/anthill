@@ -309,6 +309,23 @@ pub enum BuiltinTag {
     /// must REFUSE rather than answer a second time — otherwise every enumerated value
     /// comes back twice.
     DomainLeaf,
+
+    /// WI-20260911-5G28A S3 (`docs/design/060-typedomains-implementation.md` §3) —
+    /// `apply_domain(?d, ?x)`: run the DOMAIN a `SortDomain` dictionary names on `?x`.
+    ///
+    /// A METACALL WITH A DETERMINATE FUNCTOR, which is the whole reason it exists: the
+    /// goal a typed head needs is "the domain of whatever type this dictionary is for",
+    /// and `?d(?x)` — a variable functor — reaches no clause. Once `?d` is bound,
+    /// `step_init` REPLACES this goal with `<impl>.domain(?x)`, the provider's member, so
+    /// the ordinary lookup finds its clauses and no second clause opener exists (§4.2). A
+    /// provider whose clauses read `SortDomain` themselves (a parametric one, whose element
+    /// domain is its own dictionary's `sub(0)`) is handed `?d` as their implicit argument,
+    /// on the same marker a citation's arguments ride ([`WITHIN_REQUIREMENTS`]).
+    ///
+    /// Reached here only while `?d` is UNBOUND — no evidence yet, so the goal DELAYS and
+    /// rotation re-asks it; still unbound at the drain, it flounders loudly — or bound to
+    /// something no domain can be read off, which is an error, not a no.
+    ApplyDomain,
 }
 
 /// A fault the resolver DETECTED but could not previously report — the payload of
@@ -1772,7 +1789,7 @@ impl SearchStream {
         // nothing else has to change. The goal rides carrier-neutrally from here —
         // the builtin handlers read it through `TermView`, reifying to a `TermId`
         // only at genuine term boundaries.
-        let goal_val: Value = {
+        let mut goal_val: Value = {
             let f = self.stack.last().unwrap();
             if f.subst.is_empty() {
                 f.goals[0].clone()
@@ -1784,6 +1801,13 @@ impl SearchStream {
                 walked
             }
         };
+        // WI-20260911-5G28A S2 — A CITATION'S ROOT GOAL, unwrapped: everything below
+        // classifies and resolves the cited predicate's own atom, and the MARKER it rode
+        // in on becomes this goal's `original_goal` — so its implicit arguments stay with
+        // it through a delay rotation and reach `step_choice_point`, which binds them in
+        // each clause it opens ([`WITHIN_REQUIREMENTS`]).
+        let within: Option<Value> =
+            within_requirements_inner(kb, &goal_val).map(|inner| std::mem::replace(&mut goal_val, inner));
         let frame = self.stack.last().unwrap();
 
         // Scoping / hereditary-Harrop markers (`__pop_assumption`,
@@ -1912,6 +1936,18 @@ impl SearchStream {
             // Carrier-neutral (WI-482 follow-up): `lower_ho_apply` reads the goal
             // through `TermView`, so a rule-body `ho_apply` occurrence lowers
             // without a whole-goal reify — only its args are reified as terms.
+            // WI-20260911-5G28A S3 — `apply_domain(?d, ?x)` with its dictionary BOUND becomes
+            // the provider's own `domain` goal, in place, like `ho_apply` above. Unbound, it
+            // falls through to the builtin, which delays it (`BuiltinTag::ApplyDomain`).
+            if tag == BuiltinTag::ApplyDomain {
+                let subst = frame.subst.clone();
+                if let Some(domain_goal) = kb.lower_apply_domain(&goal_val, &subst) {
+                    let f = self.stack.last_mut().unwrap();
+                    f.goals[0] = domain_goal;
+                    f.state = FrameState::Init { delay_mode };
+                    return Some(StepResult::Continue);
+                }
+            }
             if tag == BuiltinTag::HoApply {
                 let subst = frame.subst.clone();
                 if let Some(applied) = Self::lower_ho_apply(kb, &goal_val, &subst) {
@@ -2983,7 +3019,7 @@ impl SearchStream {
         let f = self.stack.last_mut().unwrap();
         f.state = FrameState::ChoicePoint {
             delay_mode,
-            original_goal: goal_val,
+            original_goal: within.unwrap_or(goal_val),
             candidates,
             next: 0,
             extent_rows,
@@ -4380,6 +4416,9 @@ impl SearchStream {
             FrameState::ChoicePoint { original_goal, .. } => original_goal.clone(),
             _ => unreachable!("pump_extent_row on a non-ChoicePoint frame"),
         };
+        // A citation's `original_goal` is its `__within_requirements` marker (WI-20260911-
+        // 5G28A S2); the rows were gathered for the goal INSIDE it, so they match that one.
+        let goal = within_requirements_inner(kb, &goal).unwrap_or(goal);
         loop {
             let row = {
                 let frame = self.stack.last_mut().unwrap();
@@ -4795,6 +4834,13 @@ impl SearchStream {
                  (WI-20260905-N20EZ)",
             );
             merged.bind_compressed(answer_links.bindings.into_iter(), kb);
+            // WI-20260911-5G28A S2 — a CITATION's implicit arguments reach the clause
+            // here, before any of its body runs: each requirement read of the opened
+            // clause has its `out` bound to the dictionary the citation captured for it,
+            // so the read CHECKS it (060 §4) instead of deriving its own.
+            if let Some((relation, dicts)) = within_requirements_args(kb, &original_goal) {
+                bind_citation_reads(kb, rid, relation, &dicts, &fresh_nodes, &mut merged);
+            }
 
             // Pre-check: delay propagation on caller vars (over the occurrence body)
             if !caller_fresh_vars.is_empty()
@@ -5901,6 +5947,7 @@ impl KnowledgeBase {
             BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst, faults),
             BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst),
             BuiltinTag::DomainLeaf => self.builtin_domain_leaf(goal, answer_subst),
+            BuiltinTag::ApplyDomain => self.builtin_apply_domain(goal, answer_subst),
         }
     }
 
@@ -6698,6 +6745,79 @@ impl KnowledgeBase {
     /// and once as "its carried type conforms". Refusing is not a silent skip; it is
     /// this arm saying the question has an owner, and [`KnowledgeBase::has_domain_member`]
     /// is the one table that decides which.
+    /// WI-20260911-5G28A S3 — `apply_domain(?d, ?x)` as the goal it stands for, or `None`
+    /// while it cannot be lowered — `?d` unbound, or bound to something that is not a
+    /// dictionary for a sort with a `domain` — which [`Self::builtin_apply_domain`] then
+    /// answers (a delay, or a located error).
+    ///
+    /// THE SYMBOL FINDS, THE TREE RUNS (060-typedomains §4.3). The dictionary's IMPL names
+    /// the provider, and `<impl>.domain` is its member — derived beside the sort or written
+    /// in it. Its clauses' own `SortDomain` reads are handed the WHOLE dictionary, so a
+    /// parametric provider projects its element's domain out of the tree it was given;
+    /// every other read is left to derive its own, exactly as a citation leaves an unrouted
+    /// one.
+    pub(crate) fn lower_apply_domain(&mut self, goal: &Value, subst: &Substitution) -> Option<Value> {
+        let dict_val = self.walk_arg(goal.pos_arg(self, 0), subst)?;
+        let x = goal.pos_arg(self, 1)?.to_value();
+        let impl_sort = self.domain_provider_of(&dict_val)?;
+        let Some(relation) = super::typing::sort_domain_relation(self, impl_sort) else {
+            // A provider with a domain and no `.domain` relation to run it by: the kernel
+            // relation is its only name ([`super::typing::sort_domain_relation`]).
+            let member = self.try_resolve_symbol(super::typing::DOMAIN_MEMBER_GOAL)?;
+            let ty = Value::term(self.alloc(Term::Ref(impl_sort)));
+            return Some(self.make_goal_value(member, vec![x, ty]));
+        };
+        let domain_goal = self.make_goal_value(relation, vec![x]);
+        let spec = self.try_resolve_symbol(super::typing::SORT_DOMAIN_SPEC)?;
+        let dicts: Vec<Value> = super::typing::requirement_read_specs(self, relation)
+            .into_iter()
+            .map(|s| {
+                if s.is_some_and(|s| self.canonical_sort_sym(s) == self.canonical_sort_sym(spec)) {
+                    dict_val.clone()
+                } else {
+                    Value::Unit
+                }
+            })
+            .collect();
+        Some(if dicts.iter().any(|d| !matches!(d, Value::Unit)) {
+            within_requirements_goal(self, domain_goal, relation, dicts)
+        } else {
+            domain_goal
+        })
+    }
+
+    /// The sort whose domain a `SortDomain` dictionary names — its provider — or `None` when
+    /// `v` is no dictionary or its provider has no domain.
+    fn domain_provider_of(&self, v: &Value) -> Option<Symbol> {
+        let dict = crate::eval::value::Dictionary::from_view(self, v)?;
+        let impl_sort = self.canonical_sort_sym(dict.impl_sort());
+        self.has_domain_member(impl_sort).then_some(impl_sort)
+    }
+
+    /// `apply_domain(?d, ?x)` that `step_init` could not lower: DELAY while `?d` is unbound —
+    /// the evidence has not arrived, and a later goal or the citation that owns it may bind
+    /// it — and an ERROR for a bound `?d` no domain can be read off, which no later binding
+    /// repairs.
+    fn builtin_apply_domain<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
+        let Some(d) = self.walk_arg(goal.pos_arg(self, 0), subst) else {
+            return BuiltinResult::Error(ResolveError::new(
+                "apply_domain(?d, ?x): the goal carries no dictionary operand".to_string(),
+            ));
+        };
+        if matches!(d.head(self), ViewHead::Var(_)) {
+            return BuiltinResult::delay();
+        }
+        BuiltinResult::Error(ResolveError::new(match crate::eval::value::Dictionary::from_view(self, &d) {
+            None => "apply_domain(?d, ?x): `?d` is bound to something that is not a dictionary, \
+                     so it names no domain"
+                .to_string(),
+            Some(dict) => format!(
+                "apply_domain(?d, ?x): the dictionary names `{}`, which has no domain to run",
+                self.qualified_name_of(dict.impl_sort()),
+            ),
+        }))
+    }
+
     fn builtin_domain_leaf<V: TermView>(
         &mut self,
         goal: &V,
@@ -8358,9 +8478,26 @@ impl KnowledgeBase {
         bracket: &super::typing::RequirementBracket,
         faults: &mut ReduceFaults,
     ) -> BuiltinResult {
-        use super::typing::{FindDictFetch, FindDictOutcome};
+        use super::typing::{DefaultRung, FindDictFetch, FindDictOutcome};
+        // WI-20260911-5G28A S2 — A SUPPLIED DICTIONARY IS CHECKED AGAINST A UNIQUE ROW
+        // ONLY, and decides where there is none (proposal 060 §4: "a supplied `?d` and a
+        // unique local row must agree … a supplied dictionary decides only where the
+        // local row cannot — the 058 §3.3 named-instance case"). A caller's dictionary
+        // reaches a clause through a citation's implicit arguments, and the caller may
+        // have CHOSEN among rivals: `viaRule[A = Int64, WeakOrd = Descending]` hands in
+        // `Descending` while the local derivation at `Int64` takes `Int64`'s own by 058
+        // §3.2's DEFAULT. MEASURED, checking against that default refused the caller's
+        // choice — the answer was the local `-1`, never `Descending`'s `4`. So the check
+        // derives UNRANKED: rivals come back undecided and the supplied one stands; one
+        // provider still vetoes a disagreeing dictionary, which is WI-860 unchanged.
+        let supplied = !matches!(out.head(self), ViewHead::Var(_));
+        let rung = if supplied {
+            DefaultRung::Unranked
+        } else {
+            DefaultRung::Consult
+        };
         let dict = match super::typing::fetch_dictionary(
-            self, subst, spec_sort, op_functor, arg_vals, bracket,
+            self, subst, spec_sort, op_functor, arg_vals, bracket, rung,
         ) {
             FindDictFetch::Fetched(dict) => dict,
             FindDictFetch::Guard(FindDictOutcome::Fire) => {
@@ -8373,6 +8510,10 @@ impl KnowledgeBase {
             // through ordinary rotation. This is what replaced WI-300's bespoke
             // `FindDictOutcome::Suspend` reading with the general mechanism.
             FindDictFetch::Guard(FindDictOutcome::Suspend) => return BuiltinResult::delay(),
+            // THE ROW A SUPPLIED DICTIONARY DECIDES (060 §4): nothing local can object,
+            // so the check holds and the clause runs on what it was handed. `out` is
+            // already bound, so there is nothing to write.
+            FindDictFetch::Undecided { .. } if supplied => return BuiltinResult::Success,
             FindDictFetch::Undecided { detail } => {
                 // Undecided, not failed. `out` says the clause asked to be PASSED a
                 // dictionary; answering "no solution" here would be the silent skip
@@ -13255,6 +13396,135 @@ fn node_first_pos_arg(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
             pos_args.first().map(Rc::clone)
         }
         _ => None,
+    }
+}
+
+/// WI-20260911-5G28A S2 — the marker a CITATION's root goal rides in:
+/// `__within_requirements(goal, relation, d₀ … dₙ₋₁)`, where `dᵢ` is the dictionary the
+/// citation captured for the relation's `i`-th requirement read (clause after clause, read
+/// after read — `requirement_read_counts`' layout), or `Unit` where it routed none.
+///
+/// WHY A MARKER ON ONE GOAL AND NOT A CHANNEL ON EVERY GOAL (060-implementation §7.3, D3):
+/// only a citation's root goal is owed implicit arguments until rule→rule passing exists
+/// (§7.3 S7), so nothing else pays for them — no field on every goal, no clone per push.
+/// The marker is the goal's `original_goal` in its choice point, which is what a delay
+/// rotation re-pushes, so the arguments cannot be lost by reordering.
+///
+/// Recognized by LOCAL NAME, as [`is_scoping_marker`]'s markers are.
+pub(crate) const WITHIN_REQUIREMENTS: &str = "__within_requirements";
+
+/// Wrap `goal` — an application of `relation` — in a [`WITHIN_REQUIREMENTS`] marker carrying
+/// `dicts`, one per requirement read of `relation`'s clauses (`Unit` where a read is handed
+/// nothing). THE ONE BUILDER of the shape [`within_requirements_args`] reads, so a citation
+/// (eval's `build_relation_value`) and `apply_domain` cannot spell it two ways.
+pub(crate) fn within_requirements_goal(
+    kb: &mut KnowledgeBase,
+    goal: Value,
+    relation: Symbol,
+    dicts: Vec<Value>,
+) -> Value {
+    let within = kb.intern(WITHIN_REQUIREMENTS);
+    let mut pos: Vec<Value> = Vec::with_capacity(dicts.len() + 2);
+    pos.push(goal);
+    pos.push(Value::SymbolRef(relation));
+    pos.extend(dicts);
+    Value::Entity {
+        functor: within,
+        pos: pos.into(),
+        named: Vec::new().into(),
+    }
+}
+
+/// The goal a [`WITHIN_REQUIREMENTS`] marker wraps, or `None` for any other goal.
+fn within_requirements_inner(kb: &KnowledgeBase, goal: &Value) -> Option<Value> {
+    match goal.head(kb) {
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            ..
+        } if pos_arity >= 2 && kb.local_name_of(f) == WITHIN_REQUIREMENTS => {
+            Some(goal.pos_arg(kb, 0)?.to_value())
+        }
+        _ => None,
+    }
+}
+
+/// The cited relation and the captured dictionaries of a [`WITHIN_REQUIREMENTS`] marker.
+fn within_requirements_args(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol, Vec<Value>)> {
+    let ViewHead::Functor {
+        functor: Some(f),
+        pos_arity,
+        ..
+    } = goal.head(kb)
+    else {
+        return None;
+    };
+    if pos_arity < 2 || kb.local_name_of(f) != WITHIN_REQUIREMENTS {
+        return None;
+    }
+    // The relation rides as a SYMBOL on whatever carrier the σ walk left it on — built a
+    // `SymbolRef`, it comes back a nullary `Term` once `reify_value_transient` has walked
+    // the goal — so it is read as a nullary head, as `Dictionary::from_view` reads `impl`.
+    let relation = match goal.pos_arg(kb, 1)?.head(kb) {
+        ViewHead::Ident(s)
+        | ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            ..
+        } => s,
+        other => unreachable!("a citation marker names its relation by a symbol, got {other:?}"),
+    };
+    let dicts = (2..pos_arity)
+        .map(|i| goal.pos_arg(kb, i).map(|v| v.to_value()))
+        .collect::<Option<Vec<Value>>>()?;
+    Some((relation, dicts))
+}
+
+/// Bind each requirement read of the just-opened clause `rid` to the dictionary a citation
+/// captured for it — [`WITHIN_REQUIREMENTS`]' consumer.
+///
+/// The clause's OFFSET in the flat layout comes from the RELATION the marker names, the
+/// list the typer routed over (`requirement_read_counts`), not from the goal's functor: a
+/// labelled relation's clauses are that label's, and a clause of the same functor outside
+/// it takes nothing. The reads are found in the OPENED body by the same predicate and in
+/// the same order the typer enumerated them in the stored one (`requirement_read_out`), so
+/// position is identity; each `out` is a fresh variable once opened, and a read whose slot
+/// is `Unit` is left to derive its own.
+fn bind_citation_reads(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    relation: Symbol,
+    dicts: &[Value],
+    opened: &[Rc<NodeOccurrence>],
+    merged: &mut Substitution,
+) {
+    let counts = super::typing::requirement_read_counts(kb, relation);
+    let Some(at) = counts.iter().position(|(r, _)| *r == rid) else {
+        return;
+    };
+    let offset: usize = counts[..at].iter().map(|(_, n)| n).sum();
+    let fd = super::typing::find_dictionary_symbol(kb)
+        .expect("a citation marker carries dictionaries only for reads, and a read is a `find_dictionary` goal");
+    let outs: Vec<Rc<NodeOccurrence>> = opened
+        .iter()
+        .filter_map(|n| super::typing::requirement_read_out(kb, fd, n).cloned())
+        .collect();
+    assert_eq!(
+        outs.len(),
+        counts[at].1,
+        "an opened clause holds the reads its stored body held",
+    );
+    for (i, out) in outs.iter().enumerate() {
+        let Some(dict) = dicts.get(offset + i) else {
+            unreachable!("a citation marker carries one slot per read of its relation");
+        };
+        if matches!(dict, Value::Unit) {
+            continue;
+        }
+        let Some(Expr::Var(Var::Global(vid))) = out.as_expr() else {
+            unreachable!("an opened read's `out` is a fresh variable, got {:?}", out.as_expr());
+        };
+        merged.bind_waking(kb, *vid, dict.clone());
     }
 }
 

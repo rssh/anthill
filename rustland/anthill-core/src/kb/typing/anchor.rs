@@ -205,7 +205,12 @@ pub(super) fn rewrite_find_dictionary_goal(
                     // where a carrier argument names the spec's own carrier parameter.
                     bracket_attributed: false,
                     covered_calls: if covers {
-                        collect_covered_calls(kb, body_nodes, spec_canon)
+                        collect_covered_calls(
+                            kb,
+                            body_nodes,
+                            spec_canon,
+                            &call_carrier_args(kb, *functor, pos_args, named_args, spec_canon),
+                        )
                     } else {
                         Vec::new()
                     },
@@ -312,26 +317,29 @@ pub(super) fn rewrite_find_dictionary_goal(
         if let Some(goal) = make_witness(kb, *functor, pos_args, named_args) {
             // A call to X's OWN operation is both the witness AND a call this
             // dictionary covers: its dispatch is exactly what the dictionary decides.
-            let covered = collect_covered_calls(kb, body_nodes, spec_canon);
+            let covered = collect_covered_calls(
+                kb,
+                body_nodes,
+                spec_canon,
+                &call_carrier_args(kb, *functor, pos_args, named_args, spec_canon),
+            );
             return Ok(GroundedRequirement {
                 goal: Some(goal),
                 bracket_attributed: attributed,
-                // A BRACKET THAT CHOSE ITS WITNESS ALSO NARROWS WHAT IT COVERS, or the
-                // two dictionaries it just separated would be woven into each other's
-                // calls one step later — the one-dictionary-per-call refusal fires and
-                // the pair is refused after all. Narrowed only where the bracket chose,
-                // so a single `require` keeps covering every call it covers today.
-                // NOT NARROWED BY THE BRACKET, AND THAT WAS BUILT AND MEASURED AWAY.
-                // A first cut filtered these to the calls whose carrier the bracket
-                // names, on the argument that two dictionaries would otherwise be woven
-                // into each other's calls. Backing that filter out failed ZERO rows,
-                // including this ticket's own acceptance, and the reason is structural:
-                // the filter can only engage where a carrier argument is READABLE, and
-                // exactly there the call is VALUE-DIRECTED — a carrier-bearing spec op
-                // dispatches on its argument, so which dictionary it carries decides
-                // nothing. The weave decides dispatch only for a CARRIER-LESS op
-                // (WI-20260909-NAR1X), which exposes no carrier argument to select on.
-                // The two mechanisms are disjoint by construction.
+                // NARROWED BY THE WITNESS'S CARRIER ARGUMENT, not by the bracket: a
+                // carrier-bearing body-less call is covered only where it shares the
+                // argument this witness reads (`collect_covered_calls`, WI-20260911-5G28A
+                // S2). That is what keeps two bracket-chosen `require`s from being woven
+                // into each other's calls — without it the one-dictionary-per-call
+                // refusal fires and the pair is refused after all
+                // (`wi_hrfr5…::a_typed_head_carrier_is_readable_too`).
+                //
+                // HRFR5 built a BRACKET filter here and measured it away: backing it out
+                // failed zero rows, because every call it could engage on was one the
+                // weave did not decide — a carrier-bearing op dispatched on its argument.
+                // S2 changed that premise, not the finding: a clause can now be HANDED a
+                // dictionary its caller chose, which the argument cannot name, so the call
+                // at that carrier is woven and the weave has to say which call that is.
                 covered_calls: covered,
             });
         }
@@ -1037,7 +1045,7 @@ pub(super) fn anchor_grounding(
                 Rc::clone(spec_arg),
                 // Slot 1 is the discriminant: a SORT here means the anchor form.
                 NodeOccurrence::new_expr(Expr::Ref(spec_base), span, owner),
-                carrier,
+                Rc::clone(&carrier),
             ],
             named_args: out_arg.iter().map(|(n, v)| (*n, Rc::clone(v))).collect(),
             type_args: Vec::new(),
@@ -1047,21 +1055,26 @@ pub(super) fn anchor_grounding(
     );
     Some(Ok(GroundedRequirement {
         goal: Some(goal),
-        // The dictionary this anchor grounds decides the dispatch of every call to the
+        // The dictionary this anchor grounds decides the dispatch of the calls to the
         // spec's own operations in the clause — the same population the DIRECT witness
         // scan covers, and for the same reason.
         //
-        // CARRIER-BLIND, AND THAT IS AN OPEN AXIS RATHER THAN A SETTLED ONE.
-        // `collect_covered_calls` filters on the functor's parent spec, arity and
-        // `classified_apply_target` — never on WHICH carrier the call names. So a clause
-        // with one anchored bound and a second, UNBOUND variable of another provider
-        // would weave the anchor's dictionary into that variable's call too, and the
-        // `>1 anchors` refusal cannot see it because it counts BOUNDS. `/code-review`
-        // could not drive it to a wrong value — the anchor path is only reachable when no
-        // witness call exists, and the shapes left name no carrier to differ on — so it
-        // is recorded here rather than claimed as fixed or as impossible. The
-        // carrier-directed weave (WI-20260909-96ZTM) is what closes it.
-        covered_calls: collect_covered_calls(kb, body_nodes, spec_canon),
+        // AT THE ANCHORED VARIABLE, for a carrier-bearing body-less call (see
+        // [`collect_covered_calls`]); a PROJECTED anchor's carrier is the root's
+        // ELEMENT, which no call argument spells, so it names none. The bodied and
+        // carrier-less calls are still covered CARRIER-BLIND: a clause with one anchored
+        // bound and a second, UNBOUND variable of another provider would weave the
+        // anchor's dictionary into that variable's bodied call too, and the `>1 anchors`
+        // refusal cannot see it because it counts BOUNDS. `/code-review` could not drive
+        // it to a wrong value — the anchor path is only reachable when no witness call
+        // exists, and the shapes left name no carrier to differ on — so it is recorded
+        // here rather than claimed as fixed or as impossible.
+        covered_calls: collect_covered_calls(
+            kb,
+            body_nodes,
+            spec_canon,
+            if projection_anchor.is_none() { std::slice::from_ref(&carrier) } else { &[] },
+        ),
         // THE ANCHOR PATH IS A BRACKET-CHOOSING PATH BY CONSTRUCTION: reading the
         // written bracket is what selected the head binding above.
         bracket_attributed: true,

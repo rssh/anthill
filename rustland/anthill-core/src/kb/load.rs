@@ -13803,6 +13803,11 @@ fn load_phase_inner(
     // gets a generator at all.
     all_errors.extend(expand_rule_head_bound_type_params(kb));
     mark!("expand_rule_head_bound_type_params");
+    // WI-20260911-5G28A S3 — `SortDomain` rows for every sort that now HAS a domain, so
+    // after the derivation above and before the typer. The pass owns the provision
+    // relation's obligations itself, and only when its gate lets it assert anything.
+    all_errors.extend(super::sort_domain_derive::run(kb));
+    mark!("sort_domain_derive::run");
     // WI-352/WI-353: derive `flow(kind, from, to)` facts from operation bodies
     // BEFORE op-body type-checking, because the typer's operation-boundary
     // masking (WI-353, `region::op_boundary_effects`) consumes them via
@@ -16528,12 +16533,15 @@ fn expand_rule_head_bound_type_params(kb: &mut KnowledgeBase) -> Vec<LoadError> 
         // already hold — `collect_vars` reports `Var::Global`s only, and every variable
         // the bound carried BEFORE this pass is already De Bruijn-closed, so it reports
         // none of them.
+        let equational = match kb.rule_head_value(rid) {
+            Value::Term { id, .. } => head_is_equational(kb, *id),
+            _ => false,
+        };
         let mut minted: Vec<VarId> = Vec::new();
         for &(_, e) in &expanded {
             for v in kb.collect_vars(&e) {
-                // Same exclusion as `load_rule`'s: an enclosing sort's type parameter is
-                // not a clause variable (`is_canonical_type_param_var`).
-                if !kb.is_canonical_type_param_var(v) && !minted.contains(&v) {
+                // `load_rule`'s rule, asked the same way: [`bound_var_joins_frame`].
+                if bound_var_joins_frame(kb, v, equational) && !minted.contains(&v) {
                     minted.push(v);
                 }
             }
@@ -16547,6 +16555,35 @@ fn expand_rule_head_bound_type_params(kb: &mut KnowledgeBase) -> Vec<LoadError> 
         kb.extend_rule_frame_with_bounds(rid, &minted, closed);
     }
     errors
+}
+
+/// WI-20260911-5G28A — does variable `v` of a head BOUND join the clause's FRAME, and so open
+/// fresh per activation?
+///
+/// Every variable does, but an enclosing SORT's type parameter
+/// ([`KnowledgeBase::is_canonical_type_param_var`]) in an EQUATION's bound: an equation is
+/// matched against a redex whose receiver instance is the one to read it off, so its bound
+/// names the receiver's parameter, and a fresh variable per firing would decouple the two —
+/// `wi_pw9a0_rule_tvar_in_bound_test::a_guard_whose_functor_is_a_type_parameter_lowers_as_
+/// that_parameter` is that control.
+///
+/// A RELATIONAL clause's does join (§7.3 S3(d)). Such a clause is ACTIVATED, not matched
+/// against a receiver, and its enclosing instance reaches it only through what its citation
+/// passes — so a variable shared by every activation is one no value can pin: the
+/// conformance goal reads it as the sort's own parameter, `bindable_type_var` refuses to
+/// bind that, and `Wrap[T = Colour].dom(wrap(red()))` suspended and floundered. Per
+/// activation it is an ordinary clause variable, pinned by the value like a rule-scoped
+/// `?t`. A CITATION still sees the parameter itself: `typing::relation_clause_columns`
+/// keeps a canonical slot canonical when it opens the bounds, and S1's bracket reads it
+/// there.
+fn bound_var_joins_frame(kb: &KnowledgeBase, v: VarId, equational: bool) -> bool {
+    !(equational && kb.is_canonical_type_param_var(v))
+}
+
+/// Is `head` an EQUALITY connective's application — an equation's head, whose bound is read
+/// at match time rather than by a generated goal?
+fn head_is_equational(kb: &KnowledgeBase, head: TermId) -> bool {
+    matches!(kb.get_term(head), Term::Fn { functor, .. } if kb.is_equality_connective_functor(*functor))
 }
 
 /// WI-20260911-5G28A — a rule-head BOUND's unwritten type parameters become rule-scoped
@@ -33285,16 +33322,14 @@ impl<'a> Loader<'a> {
             // `assert_rule_debruijn_with_bound_vars` for what that costs. Collected in
             // written order, deduped there; empty for every untyped head, which is what
             // keeps this path byte-identical for them.
+            let equational = head_is_equational(self.kb, kb_head);
             let bound_vars: Vec<VarId> = head_type_bounds
                 .get(head_idx)
                 .map(|bounds| {
                     let mut vars: Vec<VarId> = Vec::new();
                     for &(_, bound) in bounds {
                         for v in self.kb.collect_vars(&bound) {
-                            // NOT an enclosing SORT's type parameter — that one is a
-                            // projection off the receiver, not a clause variable; see
-                            // `KnowledgeBase::is_canonical_type_param_var`.
-                            if !self.kb.is_canonical_type_param_var(v) && !vars.contains(&v) {
+                            if bound_var_joins_frame(self.kb, v, equational) && !vars.contains(&v) {
                                 vars.push(v);
                             }
                         }

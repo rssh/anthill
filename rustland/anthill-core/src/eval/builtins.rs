@@ -5854,16 +5854,28 @@ fn symbol_value(s: crate::intern::Symbol) -> Value {
 // a second store any more: `impl` reads the named child, `arity` is the
 // positional arity, `sub` is positional child `k`. What each one still owns is
 // the BOUNDARY CHECK — an anthill caller may pass any value, so
-// [`Dictionary::from_value`] is what turns "some value" into a dictionary here,
-// and it is the only place in the crate that test runs.
+// [`expect_dictionary`] is what turns "some value" into a dictionary here.
 // Design: `docs/design/requirement-dictionaries.md` §2,
 // `docs/design/requirement-channel.md` §9.
 
 /// The dictionary an anthill caller passed, or the declared `type_mismatch`.
-/// ONE owner for the four faces' boundary check, so they cannot come to accept
-/// different things under one sort name.
+/// ONE owner for the five faces' boundary check (`impl`, `arity`, `sub`, `resolveOp`,
+/// `ops`), so they cannot come to accept different things under one sort name.
+///
+/// ON ANY OF A DICTIONARY'S THREE CARRIERS (WI-20260911-5G28A). A dictionary a rule
+/// clause received through its HEAD reaches a host op the way the goal walk
+/// materializes a σ binding — `Value::Node(Expr::Dictionary { .. })` — and
+/// [`Dictionary::from_value`] matches the `Value::Entity` carrier structurally, so it
+/// refused the very value it is the reader of. MEASURED: `?ed <=> Dictionary.sub(?d,
+/// 0)` on a `?d` passed in through the head answered one CONDITIONAL row, "expected
+/// Dictionary, got Node", with the whole tree sitting in the residual. The fallback is
+/// [`Dictionary::from_view`], the carrier-neutral twin NAR1X added for the same carrier
+/// at `dictionary_dispatch_target`; `from_value` stays first because it rebuilds
+/// nothing.
 fn expect_dictionary(interp: &Interpreter, v: &Value) -> Result<Dictionary, EvalError> {
-    Dictionary::from_value(&interp.kb, v).ok_or_else(|| type_mismatch("Dictionary", v, None))
+    Dictionary::from_value(&interp.kb, v)
+        .or_else(|| Dictionary::from_view(&interp.kb, v))
+        .ok_or_else(|| type_mismatch("Dictionary", v, None))
 }
 
 /// `Dictionary.impl(d) -> Symbol` — the resolved impl identity, surfaced as a

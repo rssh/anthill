@@ -1,9 +1,13 @@
 # 060 type domains — the domain as a runtime value, through the requirement channel
 
-**STATUS: EXPLORATORY.** No ticket owns this, nothing is scheduled, and nothing here is
-built. It is a direction, written down because it dissolves a problem
-[`060-implementation.md` §7.3](./060-implementation.md) can only work around, and because
-two of the three things it appears to need turn out to already exist.
+**STATUS: THE CHOSEN DIRECTION, owned by WI-20260911-5G28A** (re-aimed here 2026-09-12;
+[`060-implementation.md` §7.3](./060-implementation.md) was rewritten onto it 2026-09-24 and
+carries the build plan, S1–S7). Nothing here is built yet except what §7.3 records as
+delivered. Two things this document treats as open have moved since it was written: HXGXF
+now DERIVES a conditional provision per sort (`TypeValue`), which answers §6's placement
+question by precedent and makes `TypeValue` itself a candidate for the domain's evidence
+(§7.3's decision D1); and WI-20260921-28TAT deleted `Frame::type_args`, so §1's comparison is
+with a route that no longer exists.
 
 Companion to [proposal 060](../proposals/060-clause-level-requirements-and-typed-heads.md)
 and to [`requirement-channel.md`](./requirement-channel.md), which owns the dictionary
@@ -567,13 +571,10 @@ Written as questions, because none of them was measured.
 
 ## 7. Relation to §7.3
 
-**Not a replacement, and not a competitor to schedule against.** §7.3 closes a silent
-acceptance that ships today — `Wrap[T = Colour].dom` and bare `Wrap.dom` are
-indistinguishable, and a bracketed citation floats to a flounder at the drain. That is a
-defect with users; this is a direction.
-
-If this direction is taken, §7.3's typer work (pinning the bracket per citation) stays —
-the bracket still has to be read and validated — and what changes is where the pinned type
-GOES: into a dictionary the caller threads, rather than beside the goal to be resolved from
-the frame. The right order is therefore §7.3 first, this after NAR1X, with §7.3's
-frame-reading step as the thing that would be retired.
+**§7.3 IS NOW THIS DIRECTION'S BUILD PLAN** (rewritten 2026-09-24). Its typer step — reading
+the citation's bracket per citation (S1) — stayed, as this section predicted: the bracket
+still gives the edge its σ. What was retired is the step that sent the pinned type BESIDE the
+goal to be resolved from the frame; the citation instead fills the cited predicate's implicit
+parameters from the caller's requirement slots (S2), and a domain is one such parameter (S3).
+The case that settled it is recorded there: a relation that calls operations on the values it
+produces needs the provider the caller CHOSE, which no type carries.

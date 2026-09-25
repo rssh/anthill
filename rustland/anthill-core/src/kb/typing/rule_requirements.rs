@@ -1893,59 +1893,6 @@ fn goal_pos0(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
     }
 }
 
-/// WI-1040 — every call in `body_nodes` this spec's dictionary COVERS and CAN be
-/// threaded into. Whole-body DFS, so a nested call is reached too.
-///
-/// TWO GATES, and each was measured before it was written.
-///
-/// * **A reader must exist for a woven goal.** `weave_covered_call` produces an
-///   `Expr::ApplyWithin`, whose `TermView` head is `Opaque` — so at GOAL position it
-///   is invisible to builtin dispatch (`get_builtin_view` keys on a `Functor` head),
-///   to the discrim query, and to the WI-938 functional-relation hook unless that
-///   hook recognizes the callee. `functional_relation_arity(..).is_some()` is exactly
-///   that recognition: a rule-less BODIED operation. Without this gate,
-///   `require[PartialEq[T]], eq(?x, ?y)` — the ordinary typeclass shape, where `eq`
-///   is body-less AND builtin-tagged — went from ONE solution to ZERO, a clause that
-///   worked before the weave silently failing after it.
-///
-///   **WI-20260909-NAR1X ADDED A SECOND READER TEST BESIDE IT, AND THE SENTENCE THIS
-///   NOTE USED TO CARRY IS NO LONGER TRUE OF EVERY BODY-LESS OP** — kept corrected
-///   rather than deleted, because the reasoning is what a reader needs. It said: "a
-///   **body-less** spec op (the typeclass norm) and a **builtin-backed** one are
-///   deliberately NOT woven … threading a dictionary into them needs a reader that
-///   does not exist yet". WI-1057 BUILT that reader —
-///   [`KnowledgeBase::body_less_relation_arity`], read through
-///   `dispatched_relation_arity`'s woven-head arm in `step_init` — so the gate now
-///   asks BOTH predicates, and a body-less callee is admitted where that one answers.
-///
-///   The **builtin-backed** half is untouched and stays refused, by the reader test
-///   itself: `body_less_relation_arity` bails on `builtins.get(&f).is_some()`, so
-///   `eq` never reaches the carrier test below and WI-1040's measured regression
-///   cannot come back (`nar1x_carrier_less_spec_op_test::a_builtin_backed_spec_op_is_
-///   still_not_woven`).
-///
-/// * **A body-less callee must ALSO be CARRIER-LESS** (WI-20260909-NAR1X). The
-///   admission above is narrowed by `!op_has_spec_carrier_param(functor, spec)` — the
-///   marker NAR1X names — so `Zeroable.zero()` is woven and a body-less
-///   `Desc.describe(x: T)` is not. Not because weaving the latter is known to be
-///   wrong: MEASURED, dropping the carrier test changes no row in the corpus and the
-///   one hand-built fixture for the shape (`Desc.describe` body-less, one supplier)
-///   answers `7` either way — value-directed classification (WI-1044/WI-1057) already
-///   decides it from the operand it carries. The line is drawn where the design does,
-///   at the case with NO other route: a carrier-less call has no operand for the
-///   value route to read and no argument type for `resolve_bridge_requirements` to
-///   pin, so the clause's dictionary is not a better answer there, it is the only
-///   one. Widening to the carrier-BEARING half is a live choice about WI-1040's
-///   weaving population — the same choice the `classified_apply_target` note below
-///   leaves open — and belongs to whoever revisits it, with the two-supplier row
-///   (058 §4.9, where value-direction REFUSES) as the measurement that would decide.
-///
-/// * **Only where the typer did not already pin** (channel doc §5). Where
-///   `check_apply_iter` resolved the call at compile stage the dispatch is decided
-///   and installed; weaving it would put a run-time dictionary read in front of a
-///   solved case — and the resolver honours the pin
-///   (`classified_apply_target`), so the two would also disagree about which
-///   decision wins.
 /// The CARRIER a `require` bracket WRITES, as a bare sort symbol — `require[Desc[T =
 /// Leaf]]` ⟹ `Leaf`, and `None` for every bracket that names no carrier or names one this
 /// cannot read.
@@ -2041,72 +1988,162 @@ pub(super) fn call_names_carrier(
     bounds: &[(u32, TermId)],
     written: Symbol,
 ) -> bool {
+    let wc = kb.canonical_sort_sym(written);
+    call_carrier_args(kb, functor, pos_args, named_args, spec_canon)
+        .iter()
+        .any(|arg| static_arg_sort(kb, arg, bounds).is_some_and(|s| kb.canonical_sort_sym(s) == wc))
+}
+
+/// The CARRIER ARGUMENTS of a call to one of `spec_canon`'s operations — the arguments
+/// whose type decides the instance, by the guard's own rule ([`param_is_spec_carrier`] /
+/// [`spec_self_represented_by`], WI-596's two shapes). Empty for a carrier-less op and for
+/// a PARTIAL call, whose arguments cannot be aligned to the parameters that say which
+/// ones carry.
+///
+/// Read by [`call_names_carrier`] (which of them statically names a sort) and by
+/// [`collect_covered_calls`] (which of them IS the argument a dictionary was read from).
+pub(super) fn call_carrier_args(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    spec_canon: Symbol,
+) -> Vec<Rc<NodeOccurrence>> {
     let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) else {
-        return false;
+        return Vec::new();
     };
     let Some(args) = align_call_args_to_params(kb, &rec.params, pos_args, named_args) else {
-        return false;
+        return Vec::new();
     };
     let type_params = kb.type_params_of_sort(spec_canon);
     let self_representing = spec_self_represented_by(kb, &rec.params, spec_canon);
-    let wc = kb.canonical_sort_sym(written);
     rec.params
         .iter()
-        .zip(args.iter())
+        .zip(args)
         .filter(|((_n, pty), _)| {
             param_is_spec_carrier(kb, spec_canon, &type_params, self_representing, pty)
         })
-        .any(|(_, arg)| {
-            static_arg_sort(kb, arg, bounds).is_some_and(|s| kb.canonical_sort_sym(s) == wc)
-        })
+        .map(|(_, arg)| arg)
+        .collect()
 }
 
+/// WI-1040 — every call in `body_nodes` this spec's dictionary COVERS and CAN be
+/// threaded into. Whole-body DFS, so a nested call is reached too.
+///
+/// THREE GATES, and each was measured before it was written.
+///
+/// * **A reader must exist for a woven goal.** `weave_covered_call` produces an
+///   `Expr::ApplyWithin`, whose `TermView` head is `Opaque` — so at GOAL position it
+///   is invisible to builtin dispatch (`get_builtin_view` keys on a `Functor` head),
+///   to the discrim query, and to the WI-938 functional-relation hook unless that
+///   hook recognizes the callee. `functional_relation_arity(..).is_some()` is exactly
+///   that recognition: a rule-less BODIED operation. Without this gate,
+///   `require[PartialEq[T]], eq(?x, ?y)` — the ordinary typeclass shape, where `eq`
+///   is body-less AND builtin-tagged — went from ONE solution to ZERO, a clause that
+///   worked before the weave silently failing after it.
+///
+///   **WI-20260909-NAR1X ADDED A SECOND READER TEST BESIDE IT, AND THE SENTENCE THIS
+///   NOTE USED TO CARRY IS NO LONGER TRUE OF EVERY BODY-LESS OP** — kept corrected
+///   rather than deleted, because the reasoning is what a reader needs. It said: "a
+///   **body-less** spec op (the typeclass norm) and a **builtin-backed** one are
+///   deliberately NOT woven … threading a dictionary into them needs a reader that
+///   does not exist yet". WI-1057 BUILT that reader —
+///   [`KnowledgeBase::body_less_relation_arity`], read through
+///   `dispatched_relation_arity`'s woven-head arm in `step_init` — so the gate now
+///   asks BOTH predicates, and a body-less callee is admitted where that one answers.
+///
+///   The **builtin-backed** half is untouched and stays refused, by the reader test
+///   itself: `body_less_relation_arity` bails on `builtins.get(&f).is_some()`, so
+///   `eq` never reaches the carrier test below and WI-1040's measured regression
+///   cannot come back (`nar1x_carrier_less_spec_op_test::a_builtin_backed_spec_op_is_
+///   still_not_woven`).
+///
+/// * **A CARRIER-BEARING body-less callee is covered only AT THE DICTIONARY'S OWN
+///   CARRIER** — where one of its carrier arguments IS one of `at`, the arguments the
+///   dictionary was read from (the witness's carrier arguments, or the anchored head
+///   variable). A carrier-LESS one (`Zeroable.zero()`, WI-20260909-NAR1X) is covered
+///   wherever the spec's dictionary is: it has no operand for the value route to read,
+///   so the clause's dictionary is not a better answer there, it is the only one.
+///
+///   NAR1X drew the line at carrier-less, and said so as a choice rather than a
+///   finding: a carrier-bearing call's own operand already decided it, and weaving it
+///   changed no row. WI-20260911-5G28A S2 made the choice live. A citation now HANDS a
+///   clause the dictionary its caller chose (`ruleDesc` selects `Descending` for
+///   `WeakOrd[T = Int64]`), which the operand cannot name — so the call at that
+///   carrier must dispatch through it, or the caller's choice reaches the read and
+///   stops there (`wi_5g28a_rule_dictionary_test`'s Ord and Rank rows).
+///
+///   AT ITS CARRIER, NOT EVERYWHERE, because the weave is otherwise CARRIER-BLIND and a
+///   carrier-bearing call has a correct route of its own. MEASURED with the carrier
+///   test absent: `rule two(?x, ?y, ?r1, ?r2) :- ?d = require[Desc[T]],
+///   Desc.describe(?x, ?r1), Desc.describe(?y, ?r2)` answered `7, 7` for `(thing(),
+///   gadget())` — the witness's `Thing` dictionary threaded into `gadget()`'s call —
+///   where value dispatch answers `7, 9`; and two bracket-chosen `require`s
+///   (`wi_hrfr5…::a_typed_head_carrier_is_readable_too`) were REFUSED, each call
+///   covered by both. A call at another argument keeps the value route it had.
+///
+///   ARGUMENT IDENTITY is what "at its carrier" can mean at load: a rule body's
+///   variables are untyped, so a call sharing the witness's carrier VARIABLE is the
+///   one call known to be at the dictionary's type. A PROJECTED anchor (`p.E`) names no
+///   argument at all, so it covers no carrier-bearing call. The BODIED population
+///   (`functional_relation_arity`) is left carrier-blind, as WI-1040 wove it: an
+///   uncovered bodied call folds the SPEC DEFAULT rather than dispatching on its value,
+///   so narrowing it would trade one wrong answer for another.
+///
+/// * **Only where the typer did not already pin** (channel doc §5). Where
+///   `check_apply_iter` resolved the call at compile stage the dispatch is decided
+///   and installed; weaving it would put a run-time dictionary read in front of a
+///   solved case — and the resolver honours the pin
+///   (`classified_apply_target`), so the two would also disagree about which
+///   decision wins.
 pub(super) fn collect_covered_calls(
     kb: &KnowledgeBase,
     body_nodes: &[Rc<NodeOccurrence>],
     spec_canon: Symbol,
+    at: &[Rc<NodeOccurrence>],
 ) -> Vec<(Rc<NodeOccurrence>, Symbol)> {
     let mut out: Vec<(Rc<NodeOccurrence>, Symbol)> = Vec::new();
     let mut stack: Vec<Rc<NodeOccurrence>> = body_nodes.iter().cloned().collect();
     while let Some(cand) = stack.pop() {
         let Some(expr) = cand.as_expr() else { continue };
         for_each_child(expr, |c| stack.push(Rc::clone(c)));
-        let Expr::Apply { functor, .. } = expr else {
+        let Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } = expr
+        else {
             continue;
         };
         if spec_op_parent_sort(kb, *functor).is_none_or(|p| kb.canonical_sort_sym(p) != spec_canon)
         {
             continue;
         }
-        // WI-20260909-NAR1X — …OR a CARRIER-LESS body-less spec op, which is the one
-        // shape nothing else can ever dispatch. `Monoid.unit()` / `Zeroable.zero()`
-        // exposes no parameter typed at the spec's carrier
-        // ([`op_has_spec_carrier_param`], the marker NAR1X names), so there is no
-        // carried type for value-directed classification to read and no argument type
-        // for the bridge's `resolve_bridge_requirements` to pin — MEASURED, such a goal
-        // answered `[]` in a clause that had asked for the dictionary explicitly. The
-        // clause's dictionary is the ONLY thing in the system that says which impl the
-        // call means, so weaving is not an optimisation here; it is the whole dispatch.
-        //
-        // THE CARRIER-BEARING body-less op STAYS OUT, and that half is what keeps
-        // WI-1040's measured regression from coming back: `require[PartialEq[T]],
-        // eq(?x, ?y)` went from ONE solution to ZERO when the weave admitted it,
-        // because `eq` is ALSO builtin-tagged and an `Expr::ApplyWithin` at goal
-        // position is `ViewHead::Opaque` to builtin dispatch. `body_less_relation_arity`
-        // is the goal-shape reader that DOES understand a woven goal (WI-1057, read
-        // through `dispatched_relation_arity`'s woven-head arm in `step_init`), and
-        // asking it here is how this gate keeps saying what it has always said: weave
-        // only a callee some reader will recognize. A builtin has none — it bails on
-        // `self.builtins.get(&f).is_some()` — so `eq` is refused by that leg, and the
-        // carrier test is what leaves every OTHER carrier-bearing body-less op on the
-        // value-directed route that already decides it.
-        //
-        // Driven by `nar1x_carrier_less_spec_op_test`; with this leg backed out its
-        // headline rows answer `[]` and its carrier-bearing control answers the same
-        // number either way.
-        if kb.functional_relation_arity(*functor).is_none()
-            && !(kb.body_less_relation_arity(*functor).is_some()
-                && !op_has_spec_carrier_param(kb, *functor, spec_canon))
+        // A reader must exist for the woven goal: a rule-less BODIED op
+        // (`functional_relation_arity`), or a BODY-LESS spec op
+        // (`body_less_relation_arity`, WI-1057's woven-head arm in `step_init`). A
+        // builtin-tagged op answers neither — `body_less_relation_arity` bails on
+        // `self.builtins.get(&f).is_some()` — which is what keeps WI-1040's measured
+        // regression out: `require[PartialEq[T]], eq(?x, ?y)` went from ONE solution to
+        // ZERO when `eq` was woven, an `Expr::ApplyWithin` at goal position being
+        // `ViewHead::Opaque` to builtin dispatch. Driven by
+        // `nar1x_carrier_less_spec_op_test`.
+        let bodied = kb.functional_relation_arity(*functor).is_some();
+        if !bodied && kb.body_less_relation_arity(*functor).is_none() {
+            continue;
+        }
+        // …and a CARRIER-BEARING body-less call only AT THE DICTIONARY'S CARRIER — one
+        // of its carrier arguments is one `at` names. See this function's doc for why,
+        // and for why the bodied population stays carrier-blind. Driven by
+        // `wi_5g28a_rule_dictionary_test::a_call_at_another_carrier_keeps_its_own_dispatch`
+        // (`7, 7` without it) and `wi_hrfr5…::a_typed_head_carrier_is_readable_too`
+        // (refused without it).
+        if !bodied
+            && op_has_spec_carrier_param(kb, *functor, spec_canon)
+            && !call_carrier_args(kb, *functor, pos_args, named_args, spec_canon)
+                .iter()
+                .any(|arg| at.iter().any(|a| views_structurally_equal(kb, arg, a)))
         {
             continue;
         }
@@ -2139,4 +2176,93 @@ pub(super) fn collect_covered_calls(
         out.push((Rc::clone(&cand), *functor));
     }
     out
+}
+
+/// WI-20260911-5G28A S2 — the `out` argument of a REQUIREMENT READ, or `None` for any other
+/// body node. A read is the goal `?d = require[X]` becomes once the typing sweep has
+/// rewritten it — `find_dictionary(spec, op, args…, out: ?d)`, positional spec and witness,
+/// and the dictionary variable under the `out` label.
+///
+/// THE ONE PREDICATE both ends of a citation's implicit arguments read, and POSITION is the
+/// identity between them: the typer's edge check ([`citation_requirement_routes`]) routes a
+/// clause's reads in body order, and the resolver finds the same reads, in the same order,
+/// in the clause it has just opened, to bind each `out` to the dictionary routed for it.
+/// Matched by LOCAL NAME for `out`, as [`REQUIREMENT_OUT_LABEL`]'s other readers match it.
+pub(crate) fn requirement_read_out<'a>(
+    kb: &KnowledgeBase,
+    find_dictionary: Symbol,
+    node: &'a Rc<NodeOccurrence>,
+) -> Option<&'a Rc<NodeOccurrence>> {
+    let Some(Expr::Apply {
+        functor,
+        pos_args,
+        named_args,
+        ..
+    }) = node.as_expr()
+    else {
+        return None;
+    };
+    if *functor != find_dictionary || pos_args.len() < 2 {
+        return None;
+    }
+    named_args
+        .iter()
+        .find(|(k, _)| kb.local_name_of(*k) == REQUIREMENT_OUT_LABEL)
+        .map(|(_, out)| out)
+}
+
+/// WI-20260911-5G28A S3 — the SPEC each requirement read of `relation`'s clauses reads, in
+/// the flat layout [`requirement_read_counts`] indexes (clause after clause, read after read):
+/// the head of the read's written instance, or `None` where it has none a reader can name.
+///
+/// What `apply_domain` asks to decide which of a provider's reads its dictionary is FOR —
+/// the same enumeration, so the positions it fills are the positions the resolver binds.
+pub(crate) fn requirement_read_specs(kb: &KnowledgeBase, relation: Symbol) -> Vec<Option<Symbol>> {
+    let Some(fd) = find_dictionary_symbol(kb) else {
+        return Vec::new();
+    };
+    let qn = kb.qualified_name_of(relation).to_string();
+    let mut out: Vec<Option<Symbol>> = Vec::new();
+    for rid in kb.rule_ids_by_qn(&qn) {
+        for n in kb.rule_body_nodes(rid) {
+            if requirement_read_out(kb, fd, n).is_none() {
+                continue;
+            }
+            out.push(match n.as_expr() {
+                Some(Expr::Apply { pos_args, .. }) => occ_head_symbol(&pos_args[0]),
+                _ => None,
+            });
+        }
+    }
+    out
+}
+
+/// The `find_dictionary` symbol [`requirement_read_out`] keys on, or `None` in a KB that
+/// never registered it — where no clause can hold a read.
+pub(crate) fn find_dictionary_symbol(kb: &KnowledgeBase) -> Option<Symbol> {
+    kb.try_resolve_symbol(crate::parse::desugar_target::qualified(
+        crate::parse::desugar_target::FIND_DICTIONARY,
+    ))
+}
+
+/// WI-20260911-5G28A S2 — how many requirement reads each clause of `relation` holds, in
+/// the order the relation's clauses are enumerated (`rule_ids_by_qn`). The FLAT layout of
+/// a citation's implicit arguments is clause after clause, read after read; this is what
+/// turns a clause's `RuleId` into its offset in that layout.
+pub(crate) fn requirement_read_counts(kb: &KnowledgeBase, relation: Symbol) -> Vec<(RuleId, usize)> {
+    let Some(fd) = find_dictionary_symbol(kb) else {
+        return Vec::new();
+    };
+    let qn = kb.qualified_name_of(relation).to_string();
+    kb.rule_ids_by_qn(&qn)
+        .into_iter()
+        .map(|rid| {
+            let reads = kb
+                .rule_body_nodes(rid)
+                .iter()
+                .filter(|n| requirement_read_out(kb, fd, n).is_some())
+                .count();
+            (rid, reads)
+        })
+        .collect()
 }

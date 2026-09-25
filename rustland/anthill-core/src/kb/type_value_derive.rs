@@ -48,7 +48,7 @@ use crate::kb::KnowledgeBase;
 /// as well as a concrete one. That is deliberate: `Map[K = Int64, V = Int64]` is a type an
 /// author writes, so it needs to be nameable, and `check_provider_operations` skips a
 /// value-less carrier anyway.
-fn declared_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
+pub(crate) fn declared_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
     let Some(sort_info_sym) = kb.try_resolve_symbol("anthill.reflect.SortInfo") else {
         return Vec::new();
     };

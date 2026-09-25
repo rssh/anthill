@@ -36,6 +36,14 @@
 //! dispatch only for a CARRIER-LESS op (WI-20260909-NAR1X), which exposes no carrier
 //! argument to select on. Deleted rather than shipped undriven.
 //!
+//! WI-20260911-5G28A S2 CHANGED THAT PREMISE, not the finding. A rule citation can now hand
+//! a clause the dictionary its CALLER chose, which the argument cannot name, so the weave
+//! covers a carrier-bearing body-less call too — AT ITS DICTIONARY'S CARRIER, narrowed by
+//! the witness's carrier ARGUMENT rather than by the bracket's sort
+//! (`collect_covered_calls`). [`a_typed_head_carrier_is_readable_too`] is what drives that
+//! narrowing: with it backed out, each call is covered by both `require`s and the clause
+//! is REFUSED by the one-dictionary-per-call check.
+//!
 //! ## Back-out
 //!
 //! With the selection backed out (the `chosen` computation forced to `None`) the two

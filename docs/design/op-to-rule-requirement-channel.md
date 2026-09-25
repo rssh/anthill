@@ -379,6 +379,11 @@ stated so it is not found as a hole.
 
 ### 5.1 Crossing 2 — the arguments are CAPTURED IN THE VALUE
 
+**BUILT 2026-09-24 (060-implementation §7.3's S2), with one departure:** the arguments are
+captured on the value's GOAL — a `__within_requirements` marker around the goal atom — not in a
+third `Value::Relation` field. Everything below about WHY capture, and about composition, holds
+unchanged; see §7 step 4.
+
 **A first-class relation outlives the frame that built it.** `build_relation_value` constructs
 `Value::Relation { query: Rc<Value>, columns: Rc<[(Symbol, VarId)]> }` (`eval/value.rs:312`) — a
 packaged query carrying no environment — and the resolver is not started until
@@ -393,10 +398,12 @@ where it's invoked."* A `Relation` takes the same treatment:
 
 - **WHERE IT LIVES:** a third field on `Value::Relation`: the cited predicate's implicit
   arguments as VALUES, evaluated at `build_relation_value` from the typer's terms for the
-  citation — a `?rₖ` read from `Frame::requirements` (paired with its entry per §3), a tree
-  built over such reads, each entry's spec walked through `Frame::type_args` FIRST so a rigid
-  `Eq[T = X]` is the real `Eq[T = Int64]` (060-implementation §7.3's E1). `Rc`, so `clone`
-  stays O(1) — the variant's existing payloads are `Rc` for that reason.
+  citation — a `?rₖ` read from `Frame::requirements` (paired with its entry per §3), or a tree
+  built over such reads. NOTHING IS WALKED THROUGH A TYPE CHANNEL: a rigid `Eq[T = X]` needs no
+  replacing, because the slot the typer routed to already holds the real `Eq[Int64]`
+  dictionary. (An earlier draft walked each spec through `Frame::type_args`, 060-implementation
+  §7.3's old E1; WI-20260921-28TAT deleted that channel, and the route never needed it.) `Rc`,
+  so `clone` stays O(1) — the variant's existing payloads are `Rc` for that reason.
 - **WHO READS IT:** `execute_logical_query` attaches them to the initial goal as its implicit
   arguments — never from a live frame. This is the one entry that carries op evidence INTO a
   resolution, and the generative `member(?x)` with `?x` free is what it exists for.
@@ -556,11 +563,17 @@ forms are alternatives and the choice belongs to that document, which still owes
    loudly naming both (WI-860), which WI-1040's
    `a_clause_dictionary_crosses_a_rule_boundary_and_is_checked` already owns and this did not
    move.
-4. **Crossing 2 — the capture.** The `Value::Relation` field, the evaluation at
-   `build_relation_value` through `Frame::type_args`, the seed at `execute_logical_query` (§5.1).
-   Acceptance: a citation consumed **after the creating frame has popped** — the row a
-   frame-reading implementation fails; and the generative row, `member(?x)` with `?x` free cited
-   at `g[Colour]`, which is 060-typedomains' own.
+4. **Crossing 2 — the capture. BUILT, 060-implementation §7.3's S2, 2026-09-24**
+   (`rustland/anthill-core/tests/include/wi_5g28a_rule_dictionary_test.rs`, §1 and §1b). Not
+   as written above: the arguments ride the GOAL, not a `Value::Relation` field —
+   `build_relation_value` evaluates the routes in the citing frame and wraps the goal atom in
+   `__within_requirements(goal, relation, dict…)`, which `step_init` unwraps; the clause's reads
+   are bound when it is opened (`bind_citation_reads`), and a read that arrives bound CHECKS
+   (proposal 060 §4). Driven: a rigid `A` passed with `WeakOrd[A]` answers through the rival the
+   caller selected (`4` / `-4` where the rule answered `-1`), and a citation consumed **after the
+   creating frame has popped** keeps it (`a_returned_relation_keeps_the_callers_dictionary`). The
+   GENERATIVE row, `member(?x)` with `?x` free cited at `g[Colour]`, is not driven — it needs
+   the domain on the channel (§7.3's S3).
 5. **Not in this note**: `apply_domain`, the typed-head sweep that generates the `SortDomain`
    reads, and the derivation of `provides SortDomain[…]` (`060-typedomains` §6 lists four
    placements and picks none).
