@@ -309,8 +309,9 @@ fn a_fine_kernel_collapses_nothing() {
 ///
 /// BACK-OUT: drop the `bindings_cover` clause from `forwarded_to_requires` and this
 /// loads clean — the `Eq` entry bound to `A` answers the `Eq[B]` goal by spec name
-/// alone. That is the control; the sibling `self_provides_required` arm carries the
-/// same precision for the same reason.
+/// alone. That is the control. The provision check's own route to the same precision is
+/// the resolver's σ-precise scope cover (WI-20260925-P5G39 retired the hand-rolled
+/// `self_provides_required` arm this used to point at).
 #[test]
 fn a_forwarding_is_not_discharged_by_a_requires_at_other_bindings() {
     let src = "

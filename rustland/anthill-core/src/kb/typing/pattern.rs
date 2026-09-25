@@ -92,6 +92,25 @@ pub(super) fn sort_type_params_as_pairs(
     rc
 }
 
+/// [`sort_type_params_as_pairs`]' pairs with each variable as the `Var` it is — the shape
+/// [`rigidify_op_type_params`] takes. TOTAL, because that function admits an entry only
+/// when it IS a `Term::Var(Global)` (WI-849: the op table is `Var`-typed, the sort table
+/// still `TermId`-typed); a non-var would mean that filter changed under us.
+pub(super) fn param_pairs_as_vars(
+    kb: &KnowledgeBase,
+    pairs: &[(Symbol, TermId)],
+) -> Vec<(Symbol, Var)> {
+    pairs
+        .iter()
+        .map(|(n, t)| match kb.get_term(*t) {
+            Term::Var(v) => (*n, *v),
+            other => unreachable!(
+                "sort_type_params_as_pairs admits only `Term::Var(Global)`, got {other:?}"
+            ),
+        })
+        .collect()
+}
+
 /// WI-954 — the canonical variable of a parameter its OWNER has declared, with the
 /// miss made LOUD. The two readers that enumerate `type_param_syms_of` and then look
 /// each entry up ([`sort_type_params_as_pairs`], [`reconstruct_sort_params`]) would

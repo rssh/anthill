@@ -7158,6 +7158,19 @@ impl KnowledgeBase {
         self.provides_clause_counts.get(&key).map_or(0, |s| s.len() as u32)
     }
 
+    /// WI-20260925-P5G39 — does one of `carrier`'s written clauses provide `spec` with NO
+    /// condition? Such a clause makes the provision hold outright, beside any conditioned
+    /// ones (`alternative_condition_goals` reads it the same way), so a check of the
+    /// provision's contract must also be made assuming nothing. Asked of the clause record
+    /// itself rather than as a count difference: two clauses writing the SAME conditions
+    /// are one entry there and two groups in `provision_conditions`.
+    pub(crate) fn provides_unconditioned_clause(&self, carrier: Symbol, spec: Symbol) -> bool {
+        let key = (self.canonical_sort_sym(carrier), self.canonical_sort_sym(spec));
+        self.provides_clause_counts
+            .get(&key)
+            .is_some_and(|clauses| clauses.iter().any(|c| c.is_empty()))
+    }
+
     pub(crate) fn next_provides_clause_index(&mut self, scope: ScopeId) -> usize {
         let seen = self.provides_clause_seen.entry(scope).or_insert(0);
         let clause = *seen;

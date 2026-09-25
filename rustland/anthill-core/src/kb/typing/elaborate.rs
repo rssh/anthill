@@ -1513,6 +1513,33 @@ pub(super) fn rigidify_op_type_params(
     rigidify
 }
 
+/// The `(canonical var, rigid)` bridge ([`SigmaCtx::param_rigids`]) for `params`, read
+/// back from the `rigidify` substitution [`rigidify_op_type_params`] minted for them.
+/// Reading back from the list the rigidifier was actually handed is what keeps the two
+/// from coming apart (WI-942: a param once had no Global→Rigid entry at all). ONE entry
+/// per param, because a param has ONE canonical var.
+///
+/// Shared by an operation body's bridge (`op_bodies`) and a provision check's
+/// (WI-20260925-P5G39, `coherence`), so "this scope's params, skolemized" has one
+/// spelling.
+pub(super) fn rigid_bridge(
+    rigidify: &Substitution,
+    params: &[(Symbol, Var)],
+) -> Vec<(VarId, TermId)> {
+    params
+        .iter()
+        .filter_map(|(_, var)| {
+            let Var::Global(vid) = var else { return None };
+            // `rigidify` binds each param to its fresh `Rigid` term — always a
+            // `Value::Term`; a non-`Term` binding would not be a rigid.
+            match rigidify.resolve_as_value(*vid) {
+                Some(Value::Term { id: rigid, .. }) => Some((*vid, *rigid)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// WI-461: a bare self-receiver IDENTITY body — `operation iterator(l: List) -> … = l` —
 /// infers the BARE carrier sort `List` as its body type, leaving the carrier's type params
 /// unbound. But the returned VALUE is the receiver `l`, whose members ARE its projections

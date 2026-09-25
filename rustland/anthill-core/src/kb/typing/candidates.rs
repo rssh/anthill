@@ -1897,16 +1897,21 @@ pub(super) fn alternative_condition_goals(
     if clauses < 2 {
         return None;
     }
+    // A clause with no condition makes the provision hold outright. Asked of the clause
+    // record, not as `conditioned groups < clause count`: two clauses writing the SAME
+    // conditions are one entry in the count and two groups below, so beside an
+    // unconditioned clause the difference was zero and the outright clause was dropped
+    // (found by /code-review, WI-20260925-P5G39, whose load check reads the same
+    // predicate — the two must agree on which clauses a provision has).
+    if kb.provides_unconditioned_clause(impl_sort, goal_spec) {
+        return None;
+    }
     let spec_canon = kb.canonical_sort_sym(goal_spec);
     let conditional: Vec<Vec<Value>> = provision_conditions(kb, impl_sort)
         .into_iter()
         .filter(|g| kb.canonical_sort_sym(g.provided) == spec_canon)
         .map(|g| g.conditions)
         .collect();
-    // A clause with no `ProvidesConditionInfo` row is unconditioned: it holds.
-    if conditional.len() < clauses {
-        return None;
-    }
     let base = direct_requires_chain_rc(kb, impl_sort);
     let mut groups = Vec::with_capacity(conditional.len());
     for conditions in conditional {
