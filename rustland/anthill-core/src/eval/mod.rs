@@ -867,6 +867,11 @@ impl Interpreter {
         sym: Symbol,
         args: &[Value],
         dispatched_through: Option<(Symbol, &value::Dictionary)>,
+        // WI-20260925-P7VP4 — the calling clause's conditions for `sym`'s dictionary chain,
+        // one per slot in chain order (`op_dict_entries`): `Some` stands in for what the
+        // argument values would derive for that slot, `None` leaves the derivation below
+        // in charge of it. Empty for every caller that is not a woven rule-body call.
+        supplied_slots: &[Option<value::Dictionary>],
     ) -> Result<Value, EvalError> {
         // WI-20260923-9R5HN — THE RESOLVER→EVAL BOUNDARY CANCELS A SPLICED WRAPPER. A
         // runtime value bound in σ (a closure, a map, a substitution) reaches the next
@@ -928,12 +933,30 @@ impl Interpreter {
             let requirements = self.expand_dispatching_dict(dispatched_from, sym, dict)?;
             return self.invoke_op_with_requirements(sym, args, requirements);
         }
-        let requirements =
-            match crate::kb::typing::resolve_bridge_requirements(
+        // WI-20260925-P7VP4 — EVERY SLOT SUPPLIED: the clause's conditions are the whole
+        // chain, so nothing is left to derive from the arguments — and nothing the
+        // derivation would refuse (a tie among rivals the caller already chose between)
+        // can stand in the way of what the caller handed in.
+        if !supplied_slots.is_empty() && supplied_slots.iter().all(Option::is_some) {
+            if let Some(requirements) = self.requirements_from_supplied(sym, supplied_slots) {
+                return self.invoke_op_with_requirements(sym, args, requirements);
+            }
+        }
+        // SOME slots supplied: the derivation leaves them out, so a tie or an unpinnable
+        // element at a slot the caller already chose for cannot suspend the call before
+        // `override_supplied_slots` places the caller's dictionary.
+        let supplied_at: Vec<usize> = supplied_slots
+            .iter()
+            .enumerate()
+            .filter_map(|(k, d)| d.is_some().then_some(k))
+            .collect();
+        let mut requirements =
+            match crate::kb::typing::resolve_bridge_requirements_except(
                 &mut self.kb,
                 sym,
                 args,
                 crate::kb::typing::NamedSlotTies::Raise,
+                &supplied_at,
             ) {
                 BridgeRequirements::NoneNeeded => smallvec::SmallVec::new(),
                 BridgeRequirements::Unresolvable { detail } => {
@@ -1004,7 +1027,57 @@ impl Interpreter {
                         })?
                 }
             };
+        // WI-20260925-P7VP4 — SOME SLOTS SUPPLIED: each stands in for what the arguments
+        // derived for it, by the slot's frame name; the rest stay as derived.
+        self.override_supplied_slots(sym, &mut requirements, supplied_slots);
         self.invoke_op_with_requirements(sym, args, requirements)
+    }
+
+    /// WI-20260925-P7VP4 — a frame `requirements` channel built from the calling clause's
+    /// conditions alone, when they fill every slot of `sym`'s chain: the `__req_self`
+    /// stand-in first, as [`Self::frame_requirements_from_trees`] lays it out, then each
+    /// supplied dictionary under its slot's frame name. `None` where the stand-in cannot be
+    /// built, which leaves the caller to derive as before.
+    fn requirements_from_supplied(
+        &mut self,
+        sym: Symbol,
+        supplied: &[Option<value::Dictionary>],
+    ) -> Option<smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>> {
+        let parent = crate::kb::typing::impl_parent_of_op(&self.kb, sym)?;
+        let provision = crate::kb::typing::op_owner_provision(&self.kb, sym);
+        let self_slot = self.stand_in_requirement(parent, parent, provision).ok()?;
+        let chain = crate::kb::typing::op_dict_entries(&mut self.kb, sym);
+        let names = chain.names(&mut self.kb);
+        let mut out: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]> =
+            smallvec::SmallVec::with_capacity(names.len() + 1);
+        out.push((self.fields.req_self, self_slot));
+        for (name, dict) in names.iter().zip(supplied) {
+            out.push((*name, dict.clone()?));
+        }
+        Some(out)
+    }
+
+    /// WI-20260925-P7VP4 — put each supplied slot dictionary in place of the derived one of
+    /// the same frame name, or beside the derived ones where the derivation skipped that
+    /// slot (an op-half slot the arguments do not pin).
+    fn override_supplied_slots(
+        &mut self,
+        sym: Symbol,
+        requirements: &mut smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>,
+        supplied: &[Option<value::Dictionary>],
+    ) {
+        if supplied.iter().all(Option::is_none) {
+            return;
+        }
+        let chain = crate::kb::typing::op_dict_entries(&mut self.kb, sym);
+        let names = chain.names(&mut self.kb);
+        for (name, dict) in names.iter().zip(supplied) {
+            let Some(dict) = dict else { continue };
+            match requirements.iter_mut().find(|(n, _)| n == name) {
+                Some(slot) => slot.1 = dict.clone(),
+                None => requirements.push((*name, dict.clone())),
+            }
+        }
     }
 
     /// The frame `requirements` channel for a [`BridgeRequirements::Resolved`]

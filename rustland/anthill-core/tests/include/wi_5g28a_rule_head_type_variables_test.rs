@@ -6,16 +6,22 @@
 //!
 //!  A. `typing::relation_reference_type_applied`'s `type_mentions_flex_var` arm —
 //!     make it fall through to `types_compatible`.
-//!  B. `typing::pin_bound_from_value` — return `TypeBoundPin::NotApplicable` always.
+//!  B. The (in, out) READ of a value's type into a bound's variables — at THREE sites since
+//!     WI-20260925-SHED7 and its review, each covering the others: `typing::pin_bound_from_value`
+//!     (the EARLY guard in front of a typed head's body), `typing::pin_bound_from_value_open`
+//!     (the conform of the fill after it), and `lower_apply_domain`'s `Unpinned` read (a
+//!     condition's type, off a bound element). Back out ONE and every row here passes; all
+//!     THREE (both pins returning `NotApplicable`, the `Unpinned` arm skipped) redden
+//!     `a_tied_head_answers_definite_with_an_empty_residual`, `a_bound_body_decides_in_one_row`,
+//!     `the_accepted_rigid_row_evaluates` and `the_bound_variable_is_opened_per_firing` — ten
+//!     rows over the domain suites, measured.
 //!  C. `KnowledgeBase::assert_rule_debruijn_with_bound_vars` — drop the `bound_vars` loop.
 //!  D. `load::expand_unwritten_type_params`'s `Term::Ref` arm — return `t` unchanged.
-//!  E. `resolve::domain_member_goal_is_undetermined` — return `false`.
-//!
-//! AXIS E IS NOT A RED, IT IS A HANG, and that is the measurement: with the mode-(out)
-//! guard removed, `anylist` opens a choice point per derived domain and the search is a
-//! product of two infinite streams. `an_undetermined_element_type_delays_rather_than_
-//! enumerating` therefore asserts that the query RETURNS, with the member goal standing
-//! in its residual.
+//!  E. (RETIRED by WI-20260925-SHED7) `resolve::domain_member_goal_is_undetermined`. With
+//!     the kernel `domain_member` retired no goal enumerates a free TYPE at all: a free
+//!     element type is a condition of `List`'s `fill`, read only by its `cons` case and
+//!     waiting there. `an_undetermined_element_type_delays_rather_than_enumerating` keeps
+//!     the question, answered the new way — `[]` definite, then undecided skeletons.
 
 use anthill_core::kb::term::Term;
 use anthill_core::kb::term::TermId;
@@ -203,8 +209,10 @@ fn a_tied_head_answers_definite_with_an_empty_residual() {
 
 #[test]
 fn the_tie_refutes_a_mismatched_second_column() {
-    // AXIS B, the refuting direction: `?x` pins `?t := Int64` into the answer σ, so the
-    // `?res` goal is checked against `List[Int64]` and `["a"]` fails.
+    // The refuting direction of a tie. PASSES UNDER AXIS B, by measurement: the body
+    // `?res <=> ?x` refutes `["a"]` against `[1, 2]` before any type test decides it. The
+    // pin's own refuting direction is `wi_shed7_fillable_test`'s `tieBad`, which axis B
+    // reddens.
     let mut kb = crate::common::load_kb_with(RES);
     assert_eq!(
         crate::common::definite_unary(&mut kb, "zz5g28ar.mismatched").len(),
@@ -281,9 +289,9 @@ fn the_expansion_is_recursive_at_every_depth() {
 
 #[test]
 fn a_bound_body_decides_in_one_row() {
-    // AXES B+D together, and the row WI-743 measured at 20: `nest`'s body binds `?w`
-    // outright, so it has at most ONE answer. With the determinacy gate lifted and the
-    // (in, out) read backed out (axis B) this reddens to the 20 rows WI-743 recorded.
+    // AXES B+D together: `nest`'s body binds `?w` outright, so it has at most ONE answer.
+    // Axis B's three sites backed out redden it (measured); WI-743 recorded 20 rows for it
+    // with the determinacy gate lifted as well.
     let mut kb = crate::common::load_kb_with(NEST);
     assert_eq!(
         crate::common::definite_unary(&mut kb, "zz5g28an.nested_row").len(),
@@ -315,37 +323,36 @@ fn a_variable_bearing_bound_still_gets_its_member_goal() {
     // determinate type, which a `?t` bound never does. Lifting that gate is what lets a
     // typed head with an unwritten or tied parameter GENERATE at all — and it is safe only
     // because the value now pins the type (axis B) and mode (out) delays (axis E).
+    //
+    // WI-20260925-SHED7: the goal is `apply_domain(?d, ?x, B)` — conform, then fill through
+    // the clause's `SortDomain` dictionary or, with no caller, through `B` itself.
     let kb = crate::common::load_kb_with(NEST);
     assert!(
-        body_mentions(&kb, "zz5g28an.anylist", "anthill.kernel.domain_member"),
-        "the member goal must be generated for a `?t`-bearing bound",
+        body_mentions(&kb, "zz5g28an.anylist", "anthill.kernel.apply_domain"),
+        "the fill goal must be generated for a `?t`-bearing bound",
     );
-    assert!(body_mentions(
-        &kb,
-        "zz5g28an.nest",
-        "anthill.kernel.domain_member"
-    ));
+    assert!(body_mentions(&kb, "zz5g28an.nest", "anthill.kernel.apply_domain"));
 }
 
 // ── E. MODE (out) OVER AN UNDETERMINED TYPE DELAYS ─────────────────────────────
 
 #[test]
 fn an_undetermined_element_type_delays_rather_than_enumerating() {
-    // AXIS E, and its back-out HANGS rather than reddens (see the module header): with the
-    // guard removed, `domain_member(?h, ?t)` — the element goal inside the derived `List`
-    // clause — unifies with the head of EVERY derived clause, and the search is a product
-    // of two infinite streams whose fairness is WI-20260911-09E6M's.
+    // AXIS E's question, answered by WI-20260925-SHED7 without enumerating TYPES: with
+    // `?t` free, `anylist`'s element domain is never guessed. `List`'s `fill` reads its
+    // element's dictionary only in the `cons` case — `[]` needs none, a DEFINITE row
+    // (060 §2.3: a condition is resolved when `fill` reads it) — and every longer list's
+    // element fill WAITS on `?t`, which nothing pins, so each is undecided, loud at the
+    // drain on WI-737's route. Before SHED7 the goal delayed whole and the relation had
+    // no definite row; enumerating types instead was a product of two infinite streams
+    // that never came back.
     //
-    // WHAT IT MUST DO INSTEAD: come back, with NO definite row and the member goal standing
-    // in the residual — visible and loud at the drain on WI-737's route, where WI-743's
-    // load-time gate said nothing at all.
+    // READ LAZILY: the generator is infinite, and an eager drain would stop only at the
+    // resolver's depth cap — a truncation, not an answer.
     let mut kb = crate::common::load_kb_with(NEST);
-    let rows = crate::common::query_unary(&mut kb, "zz5g28an.anylist");
-    assert!(
-        rows.iter().all(|(_, definite)| !*definite),
-        "an unpinned element type cannot yield a DEFINITE row",
-    );
-    assert!(!rows.is_empty(), "the goal must residualize, not vanish");
+    let first = crate::common::first_unary(&mut kb, "zz5g28an.anylist", 3);
+    let definite: Vec<bool> = first.iter().map(|(_, d)| *d).collect();
+    assert_eq!(definite, [true, false, false], "`[]`, then skeletons waiting on `?t`");
 }
 
 // ── DECISION A: the `[T]` introducer keeps its refusal, and names the other spelling ──

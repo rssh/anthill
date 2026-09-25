@@ -130,6 +130,20 @@ pub(crate) fn resolve_bridge_requirements(
     args: &[Value],
     named_slot_ties: NamedSlotTies,
 ) -> BridgeRequirements {
+    resolve_bridge_requirements_except(kb, op, args, named_slot_ties, &[])
+}
+
+/// [`resolve_bridge_requirements`] with the chain slots at `supplied` left out: the caller
+/// already HOLDS a dictionary for each (WI-20260925-P7VP4 — a woven rule-body call carrying
+/// its clause's conditions), so a tie or an unpinnable element there is no verdict about
+/// the call — the host entry's rule (`seed_entry_requirements`) for the same reason.
+pub(crate) fn resolve_bridge_requirements_except(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    args: &[Value],
+    named_slot_ties: NamedSlotTies,
+    supplied: &[usize],
+) -> BridgeRequirements {
     let Some(parent) = impl_parent_of_op(kb, op) else {
         return BridgeRequirements::NoneNeeded;
     };
@@ -209,6 +223,9 @@ pub(crate) fn resolve_bridge_requirements(
     let sort_len = chain.sort_len();
     let mut trees: Vec<(Symbol, ResolvedRequiresNode)> = Vec::with_capacity(chain.len());
     for (i, (entry, name)) in chain.iter().zip(names.iter()).enumerate() {
+        if supplied.contains(&i) {
+            continue;
+        }
         let op_half = i >= sort_len;
         // WI-20260830-DQD5W — the `EffectsRuntime` KIND-ANCHOR keeps its slot as a
         // STRUCTURAL LEAF here too, exactly as [`build_dep_projection`] projects it at

@@ -869,6 +869,52 @@ implementation, **WI-20260925-SHED7** (user, 2026-09-25): a sort's domain is `So
 `fill(?x)` that fills `?x` with a value of its type, carried by a dictionary as any spec member is
 (proposal 067). The next case below is 067's worked example.
 
+### DELIVERED 2026-09-25 — WI-20260925-SHED7 step 1: `SortDomain provides Fillable`, the ONE mechanism
+
+Every row this section set is driven (`wi_shed7_fillable_test.rs`; the 5G28A, WT8WG and WI-743
+suites keep theirs), and the kernel `domain_member` / `domain_leaf` are gone.
+
+| piece | where |
+|---|---|
+| `Fillable { sort T = ?; rule fill(?x) }`; `SortDomain { sort T = ?; provides Fillable[T = T] }` | `stdlib/anthill/reflect/reflect.anthill` |
+| each sort's `SortDomain` entry — its `fill` relation, parameters, CONDITIONS, layout offset, kind (derived / written / primitive) | `KnowledgeBase::sort_domains`, written by `kb::fill_derive` |
+| the derivation per entity and per field, a fillability GREATEST fixpoint (a field nothing fills declines its sort, and the sorts that fill through it) and a conditions LEAST fixpoint (the parameters a field fills, through `H[args]` at `H`'s own conditions — `SortedSet`'s `O` is none); WI-743's two orders | `kb::fill_derive::run`, called by `load::derive_sort_domains` |
+| a primitive's `fill`: `Int64.domain(?x) :- anthill.kernel.domain(?x, Int64)`, the waiting check (every type has a `SortDomain` — user, 2026-09-25) | `fill_derive::derive_primitives` |
+| the `SortDomain` and `Fillable` provision rows, gated on a WRITTEN requirement (a provider's `fill` is found through its `SortDomain` entry — no operation-table row, which collided with an operation named `fill`) | `kb::sort_domain_derive::run` |
+| `apply_domain(E, ?x)` — `E` a dictionary, a TYPE (built into a dictionary one level deep, conditions pending until read), or `__domain_sub(E, k)` / a `Dictionary(…)` construction a derived clause writes; the typed-head `apply_domain(?d, ?x, B)` CONFORMS first (`pin_bound_from_value_open`) and fills through `?d` or `B` | `KnowledgeBase::lower_apply_domain`, `domain_evidence`; `step_init` merges the pin |
+| a `SortDomain` read: FILLED → trusted (no rivals; `fill` refuses what its dictionary does not describe); unfilled → built from the witness's type; routed at a citation from the TYPE (`sort_domain_route`), a rigid through the caller's chain | `resolve::read_dictionary_into`, `typing::sort_domain_route` |
+| the typed-head sweep: the fill after the body and an EARLY conformance guard in front of it (decides a bound `?x`, stands aside for an unbound one); the waiting conformance check alone for a type with no domain | `typing::install_typed_head_domain_goals` |
+
+**THE LAYOUT WAS THE FINDING.** The typer lays a `SortDomain` dictionary out by its requirement
+chain: `SortDomain`'s own chain FIRST — the `Fillable` it provides, a conversion filed where a
+`requires` goes (WI-1110) — then the carrier's sort-level `requires`, then the conditions. A
+derived `fill` reading its element at sub 0 got the `Fillable` sub, which is the carrier's OWN
+dictionary: MEASURED, `Wrap.dom(wrap(red()))` cited from an operation answered 0 where the same goal
+from a rule body answered 1. So every `SortDomain` dictionary follows the typer's layout: the entry
+records the offset of its first condition (`typing::sort_domain_sub_offset`), a derived clause
+reads condition `k` there, a dictionary built from a type pads the prefix, and the row pass checks
+the typer's own count against it once the rows exist (a load error if they drift).
+
+**THE GATE, re-measured and narrowed.** Rows for every sort with a domain — two per sort now —
+cost ~115 ms per load in a debug build (`check_provider_requires` +64, `type_check_sorts` +52).
+They are not needed where S3a needed them: the resolver builds a `SortDomain` dictionary from a
+type, and the typer routes a citation's read from the type too, so neither reads a row. What does
+is the general machinery at a WRITTEN requirement's call site (`countAt[X = Colour]()`), and that is
+now the gate's only trigger. MEASURED: without the structural route, `List[T = Letter].domain.
+takeN(5)` in a program that opened no gate raised `relation_floundered`.
+
+**WHAT MOVED, BY DESIGN** — each at its test's site: `anylist(?w: List) :- true` answers `[]`
+DEFINITELY, then skeletons waiting on `?t` (the nil case reads no condition; before, the goal
+delayed whole); `Bool` and `String` have a domain (the waiting check) and a `.domain`; a parametric
+sort has its value face; `domain_member(?x, T)` is no longer a spelling — `T.domain(?x)` is. An
+infinite generator is asserted over a LAZY prefix (`common::first_unary`), never counted to the
+depth cap.
+
+**NOT BUILT HERE** — SHED7 steps 2 and 3, decided with the user: 067 §5 question 3 (the monoid's
+home, `combine` at run time) and 067 §4 (MiniSat over a collection builder, after questions 1 and
+2). A hand-written `Fillable` that is not a `SortDomain` — the builder's case — fills no field and
+no condition yet: both read `SortDomain`.
+
 ### The next case — MiniSat over a collection BUILDER: the collection's domain creates it
 
 Beyond S3b, recorded because it is what the mechanism is for (user, 2026-09-25), and carried on as

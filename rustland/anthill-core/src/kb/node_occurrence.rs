@@ -5923,8 +5923,8 @@ pub fn substitute_occurrence(
         //
         // WHAT IT COSTS TO SKIP IT, measured on this ticket's own first cut: the typed-head
         // sweep splices the rule's stored type bound as the generated goal's type operand,
-        // so once a bound could carry a variable (`List[T = ?t]`) the goal
-        // `domain_member(?x, List[T = ?t])` reached the MATCH with `?t` still free even
+        // so once a bound could carry a variable (`List[T = ?t]`) the goal — then WI-743's
+        // `domain_member(?x, List[T = ?t])` — reached the MATCH with `?t` still free even
         // though a sibling goal had already pinned it to `Int64`. It then unified with the
         // head of every derived clause and enumerated TYPES — `rule r1(?x: List[T = ?t])`
         // over a bound `[1]` came back 100 rows / 100 conditional, with residuals naming

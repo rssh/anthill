@@ -436,6 +436,35 @@ fn resolve_alias_shape_chain(
     Some(target)
 }
 
+/// WI-20260925-SHED7 — `t` with each TYPE ALIAS in it read as the type it stands for:
+/// `Radius` as `Int64` under `sort Radius = Int64`, `List[T = Name]` as `List[T = String]`.
+///
+/// A sort's DOMAIN is its target's — an alias declares no constructors of its own — so every
+/// domain reader asks its question of this form: the derivation's field types, a typed head's
+/// bound, the resolver's type evidence, a citation's route. MEASURED before it: `circle(r:
+/// Radius)` declined `Shape`'s whole domain ("a type with no `SortDomain`") where `r: Int64`
+/// filled it — an alias and its target disagreeing.
+///
+/// [`resolve_alias_shape`]'s aliases only: a BARE link to a GROUND shape. A type parameter
+/// (`sort T = ?`), an opaque sort and a parametric alias stay as they are, as they do for the
+/// typer; so does a cyclic or non-well-founded alias, which has no finite expansion. An
+/// applied alias (`Name[…]`) is refused where it is written, so only a bare leaf can be one.
+pub(crate) fn dealias_type(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+    rewrite_term_leaves(kb, t, &|kb, leaf| {
+        let s = match kb.get_term(leaf) {
+            Term::Ref(s) => *s,
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } if pos_args.is_empty() && named_args.is_empty() => *functor,
+            _ => return None,
+        };
+        let shape = resolve_alias_shape(kb, s)?;
+        Some(dealias_type(kb, shape))
+    })
+}
+
 /// WI-20260924-F8PYZ — a type ALIAS read as the SORT APPLICATION it stands for, which is
 /// how a spec clause reads the spec it names: `provides StoreAlias[State = WIS]` is
 /// `provides Store[State = WIS]`, and `provides WisStore` over `sort WisStore = Store[State

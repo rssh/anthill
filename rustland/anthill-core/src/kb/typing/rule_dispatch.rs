@@ -508,7 +508,7 @@ impl GoalCommit {
 /// a data constructor's fields, and every argument of an ordinary subgoal, out of goal
 /// position. Read from that table rather than written here, so the typer is not a fourth
 /// hand-written copy of "which arguments are goals" (WI-1034/WI-1046).
-fn child_body_positions(
+pub(super) fn child_body_positions(
     kb: &KnowledgeBase,
     expr: &Expr,
     pos: BodyPos,

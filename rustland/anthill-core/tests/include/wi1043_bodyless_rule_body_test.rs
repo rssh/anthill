@@ -440,14 +440,21 @@ fn a_fact_route_supplier_answers_from_a_rule_body() {
 /// `a_fact_route_supplier_answers_from_a_rule_body` still passes — there the bridge
 /// DOES answer, so the guard is never consulted. That asymmetry is the point: it is
 /// the only one of WI-1057's four pieces this test can see.
+///
+/// NO SUPPLIER AT ALL, since WI-20260925-P7VP4, and that is what keeps this row on the
+/// hook. With the fact-route supplier this fixture used to carry, the call's carrier is
+/// not known at load and the spec has a provider, so the call now gets an inferred
+/// condition and is WOVEN — and a woven call whose dictionary is not bound DELAYS instead
+/// (the "open half" above, closed for that population; pinned by
+/// `wi_p7vp4_rule_body_requirements_test::an_unground_woven_call_delays`). A spec nobody
+/// provides gets no condition, so the call still reaches the hook unwoven.
 #[test]
 fn an_unground_body_less_goal_binds_no_residual() {
     let ns = "test.wi1043.unground";
     // `?x` is never bound by any earlier goal, so the call reaching the goal shape has
     // a free carrier argument — the one thing the WI-938 hook must not decide.
     let unground_rule = "  rule answer(?r) :- Desc.describe(?x, ?r)\n";
-    let mut kb =
-        crate::common::load_kb_with(&body_less(ns, NO_SUPPLIER_LEAF, RIVAL_FACT, unground_rule));
+    let mut kb = crate::common::load_kb_with(&body_less(ns, NO_SUPPLIER_LEAF, "", unground_rule));
     let answers = crate::common::query_unary(&mut kb, &format!("{ns}.answer"));
     assert!(
         answers.is_empty(),

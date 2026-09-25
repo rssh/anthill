@@ -383,10 +383,15 @@ the order of its alternatives decides what is ever reached. WI-743 measured both
 Fair for ONE recursive field per case, and no further: a tree's `node(l: Tree, r: Tree)` descends
 depth-first in the later one — the limit WI-743 pinned; interleaving is WI-20260911-09E6M's.
 
-**A primitive has no cases.** `Int64` provides `Fillable` through its own implementation, not a
-`SortDomain`: its `fill` leaves the variable free with its type check waiting, so `List[T = Int64]`
-fills to skeletons — `[]` definitely, then `[?a]`, conditional until something binds `?a`, which is
-what the type-keyed goal answers today.
+**A primitive has no cases.** EVERY TYPE HAS A `SortDomain` (user, 2026-09-25, deciding between
+this paragraph's first wording — "`Int64` provides `Fillable`, not a `SortDomain`" — and the rest
+of this section, which fills a parameter through its `SortDomain` and reads a typed head as
+`SortDomain[T].fill`: together they left `List[T = Int64]` and `?x: String` unfillable). A
+primitive's `SortDomain` is not DERIVED — it has no constructors — and its `fill` is the waiting type
+check: it leaves the variable free with its check waiting, so `List[T = Int64]` fills to skeletons —
+`[]` definitely, then `[?a]`, conditional until something binds `?a`, which is what the type-keyed
+goal answered before. A hand-written `Fillable` (067 §4's builder) is a `Fillable` and not a
+`SortDomain`, so it is accepted where `Fillable` itself is required.
 
 **The loader applies `combine` when deriving:** a sort's `fill` is emitted as the disjunction of its
 entities' cases, so `SortDomain[List.cons]` — a nested entity as a TYPE ARGUMENT, which is new

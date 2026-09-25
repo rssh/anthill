@@ -986,8 +986,17 @@ pub(super) fn simp_guard_holds_core(
         }
         // The carrier argument's sort head, read by the caller's reader. Split the
         // three outcomes (never NAF-decide an under-determined carrier; WI-067):
+        //
+        // BOTH CHANNELS — [`carrier_provides_spec`]: the carrier's own out-edges AND a
+        // provision another sort declares FOR it (`sort Rival provides Desc[T = Leaf]`,
+        // WI-450/WI-1043), as `anchor_guard` already asks. With `sort_provides` alone a
+        // witness-supplied carrier read as "provides nothing": the load-side check had to
+        // special-case it, and at run time a rule-body read of it — written, or inferred by
+        // WI-20260925-P7VP4 — DontFired, failing a clause that value dispatch answers.
         match arg_carrier_sort(i) {
-            Some(carrier) if sort_provides(kb, carrier, spec_sort) => checked_carrier = true,
+            Some(carrier) if carrier_provides_spec(kb, carrier, spec_sort) => {
+                checked_carrier = true
+            }
             // Ground carrier that does not provide the spec → don't fire.
             Some(_) => return FindDictOutcome::DontFire,
             // Headless / missing carrier (under-determined) → suspend, don't decide.
@@ -1099,6 +1108,13 @@ pub(crate) fn simp_requires_guard_holds(
 /// migration exists — a rewritten rule body is an in-memory contract between the
 /// sweep and the resolver arm, re-elaborated from source on every load.
 pub(crate) const REQUIREMENT_OUT_LABEL: &str = "out";
+
+/// WI-20260925-P7VP4 — the label that makes a requirement read a SLOT read:
+/// `find_dictionary(Spec, op, args…, slot: k, out: ?d)` is the clause's condition for slot
+/// `k` of the called operation `op`'s dictionary chain ([`op_dict_entries`]), which the
+/// call carries woven. Present on no read an author writes. See
+/// [`super::infer_rule_body_requirements`].
+pub(crate) const REQUIREMENT_SLOT_LABEL: &str = "slot";
 
 /// WI-300 — the three-way outcome of a rule-body `requires(X)` guard (the
 /// desugared `find_dictionary` goal). Three-way *by construction* (never
@@ -2251,10 +2267,10 @@ pub(crate) fn type_bound_verdict(
 /// handed in as a `TermId`.
 ///
 /// The `TermId` front is right for WI-742's generated guard, whose bound IS an interned
-/// term the loader resolved and the typer spliced. It is wrong for the derived
-/// `domain_member` relation's leaf arm, where the type arrives as an ordinary GOAL
-/// ARGUMENT — bound by unifying the caller's `List[T = String]` against the derived
-/// clause's `List[T = ?T]`, so it rides whatever carrier that unification produced.
+/// term the loader resolved and the typer spliced. It is wrong for a type that arrives
+/// as an ordinary GOAL ARGUMENT — a source-written `domain(?x, T)`, or (WI-743's case,
+/// retired by WI-20260925-SHED7) a type bound by unifying the caller's `List[T = String]`
+/// against a derived clause's `List[T = ?T]` — which rides whatever carrier produced it.
 /// MEASURED: demanding `Value::Term` there reported a malformed-goal Error on
 /// `rule text(?w: List[T = String]) :- ?w <=> ["ab"]` — the element type arrived as a
 /// `Value::Node` occurrence and the row came back conditional instead of definite.
@@ -2314,8 +2330,8 @@ pub(crate) enum TypeBoundPin {
     /// The value's type pins the bound's variables. `pin` is merged into the caller's σ,
     /// so it is visible to every later goal — that is what makes a rule's two columns a
     /// TIE rather than two independent checks. `bound` is the SAME bound resolved through
-    /// that pin, handed back so a caller that must re-ask a question ABOUT the type
-    /// (`builtin_domain_leaf`'s "does a structural clause own this call") asks it of the
+    /// that pin, handed back so a caller that must re-ask a question ABOUT the type (the
+    /// typed-head `apply_domain`, which builds its dictionary from it) asks it of the
     /// pinned type rather than of the variable it started with.
     Pinned { pin: Substitution, bound: Value },
     /// The value's type is determined and cannot satisfy the bound under ANY pin
@@ -2360,6 +2376,97 @@ pub(crate) fn pin_bound_from_value(
         TypeBoundPin::Pinned { pin, bound }
     } else {
         TypeBoundPin::Refuted
+    }
+}
+
+/// WI-20260925-SHED7 — [`pin_bound_from_value`] for a value whose type is only PARTLY
+/// determined: `[]` is a `List[?]`, `[?h]` too (proposal 060 §2.3, decided with the user).
+///
+/// The one difference is the gate. The value's type must have a HEAD — a value whose own
+/// type is a variable still pins nothing and suspends — but its ARGUMENTS may be unknown,
+/// and each unknown becomes a FRESH LOGIC VARIABLE in the pin rather than the reflect
+/// `TypeVar` placeholder [`value_type_term`] writes for it. That is the whole point: the
+/// placeholder is a wildcard no later binding can reach, while the variable is what a
+/// second column pins — `same(?a: T, ?b: T)` over `([?h], [red()])` reads `T` as
+/// `List[T = ?e]` off `?a` and `?b` binds `?e := Colour`, which is what resumes `?h`'s
+/// waiting element fill.
+///
+/// Read by the typed-head `apply_domain` only. The conformance builtin keeps the closed
+/// reading, where an open argument is a suspension, because it decides a VERDICT; this one
+/// feeds a `fill`, and a `fill` that never reads the open argument (`[]`'s `nil` case) has a
+/// definite answer.
+pub(crate) fn pin_bound_from_value_open(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    value: &Value,
+    bound: &Value,
+) -> TypeBoundPin {
+    if !type_mentions_flex_var(kb, bound) {
+        return TypeBoundPin::NotApplicable;
+    }
+    let Some(ty) = value_type_open(kb, subst, value) else {
+        return TypeBoundPin::Suspend;
+    };
+    let mut pin = Substitution::new();
+    let bound = walk_type_deep_value(kb, subst, bound);
+    if pin_type_vars(kb, &mut pin, &ty, &bound) {
+        let bound = walk_type_deep_value(kb, &pin, &bound);
+        TypeBoundPin::Pinned { pin, bound }
+    } else {
+        TypeBoundPin::Refuted
+    }
+}
+
+/// WI-20260925-SHED7 — `value`'s type with its unknowns OPEN — each a fresh logic variable —
+/// or `None` while the type has no head (the value is itself unbound). `[]` reads as
+/// `List[T = ?t]`: the type of a value whose element type nothing names yet.
+pub(crate) fn value_type_open(kb: &mut KnowledgeBase, subst: &Substitution, value: &Value) -> Option<Value> {
+    let ty = value_type_term(kb, subst, value);
+    if !type_head_is_decidable(kb, &ty) {
+        return None;
+    }
+    Some(open_type_placeholders(kb, &ty))
+}
+
+/// `ty` with every reflect `TypeVar` placeholder — [`value_type_term`]'s "not known" — replaced
+/// by a fresh logic variable a later pin can bind. See [`pin_bound_from_value_open`].
+fn open_type_placeholders(kb: &mut KnowledgeBase, ty: &Value) -> Value {
+    match ty {
+        Value::Term { id, .. } => Value::term(open_term_placeholders(kb, *id)),
+        other => other.clone(),
+    }
+}
+
+fn open_term_placeholders(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+    if matches!(type_head(kb, &Value::term(t)), TypeHead::TypeVar(_)) {
+        let name = kb.intern("T");
+        let vid = kb.fresh_var(name);
+        return kb.alloc(Term::Var(Var::Global(vid)));
+    }
+    let Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    } = kb.get_term(t).clone()
+    else {
+        return t;
+    };
+    let pos: SmallVec<[TermId; 4]> = pos_args
+        .iter()
+        .map(|&a| open_term_placeholders(kb, a))
+        .collect();
+    let named: SmallVec<[(Symbol, TermId); 2]> = named_args
+        .iter()
+        .map(|&(k, a)| (k, open_term_placeholders(kb, a)))
+        .collect();
+    if pos == pos_args && named == named_args {
+        t
+    } else {
+        kb.alloc(Term::Fn {
+            functor,
+            pos_args: pos,
+            named_args: named,
+        })
     }
 }
 

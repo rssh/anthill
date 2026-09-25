@@ -310,6 +310,17 @@ pub(super) fn type_rule_bodies(
             _ => continue,
         };
         let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        // WI-20260925-P7VP4 — A BODY THE REQUIREMENT WEAVE ELABORATED WAS TYPED BY THE RUN
+        // THAT WOVE IT. The typer runs again on every later load phase (a layer, a second
+        // `load_all`), over every live rule, and a woven call is a post-elaboration form it
+        // has no surface case for: MEASURED, one woven stdlib clause failed 133 rows of the
+        // workspace with "expected surface expression, got bottom / post-elaboration form"
+        // once a second program loaded. The weave runs only after this pass, so a body
+        // holding one was typed, stamped and elaborated by an earlier run, and its stamps
+        // persist on the shared occurrences.
+        if body_nodes.iter().any(|n| occ_holds_woven_call(n)) {
+            continue;
+        }
         // WI-1058 — the rule whose TEXT a checked-not-typed refusal points at.
         let rule_sym = kb.head_functor(head);
         // The one collection per rule: head + body var types + whether they unify.
@@ -478,29 +489,11 @@ pub(super) fn type_rule_bodies(
 /// member a DIFFERENT name rather than a capture of this one.
 pub(crate) const TYPE_DOMAIN_GOAL: &str = "anthill.kernel.domain";
 
-/// WI-743 (proposal 060 §2.2) — the qualified name of the DERIVED MEMBER RELATION,
-/// `domain_member(?x, T)`: "`?x` is an inhabitant of type `T`".
-///
-/// A RELATION, not a builtin. One clause is derived per sort with constructors
-/// ([`crate::kb::load::derive_domain_member_clauses`]) — a disjunction over the sort's
-/// constructors with each field's own domain conjoined inside the branch — plus ONE
-/// catch-all clause whose body is [`DOMAIN_LEAF_GOAL`]. That shape is what makes the
-/// recursion work: `domain_member(?h, ?T)` inside the `List` clause dispatches on
-/// whatever `?T` the caller's `List[T = …]` bound, so one clause serves every element
-/// sort and every nesting depth, with no dictionary and no name lookup at run time.
-///
-/// A SECOND NAME, and deliberately not [`TYPE_DOMAIN_GOAL`]. The two goals a typed head
-/// generates ask different questions and sit at opposite ends of the body: the
-/// conformance guard is prepended and only TESTS, this one is appended and GENERATES.
-/// Sharing one functor would put a generator at the prepended position too, which is
-/// the non-termination the settled design measured. It is also mechanically impossible:
-/// `step_init` sends a functor with a builtin tag to the builtin and never looks for
-/// clauses, so the relation and the builtin cannot be one name.
-pub(crate) const DOMAIN_MEMBER_GOAL: &str = "anthill.kernel.domain_member";
-
-/// WI-743 — the qualified name of the leaf arm behind [`DOMAIN_MEMBER_GOAL`]'s
-/// catch-all clause. See [`crate::kb::resolve::BuiltinTag::DomainLeaf`].
-pub(crate) const DOMAIN_LEAF_GOAL: &str = "anthill.kernel.domain_leaf";
+/// The label that makes a generated [`TYPE_DOMAIN_GOAL`] the EARLY guard of a fillable bound
+/// (`domain(?x, B, early: true)`, [`install_typed_head_domain_goals`]): it decides a value
+/// already bound when the clause opens and STANDS ASIDE otherwise, instead of waiting — the
+/// fill appended after the body tests and generates whatever it leaves open.
+pub(crate) const TYPE_DOMAIN_EARLY_LABEL: &str = "early";
 
 /// WI-20260911-5G28A S3 — the metacall a typed head's bound reaches its domain through when
 /// the bound names a type VARIABLE: `apply_domain(?d, ?x)` runs the domain the `SortDomain`
@@ -512,6 +505,43 @@ pub(crate) const APPLY_DOMAIN_GOAL: &str = "anthill.kernel.apply_domain";
 /// every instance is derived (`kb::sort_domain_derive`).
 pub(crate) const SORT_DOMAIN_SPEC: &str = "anthill.reflect.SortDomain";
 
+/// WI-20260925-SHED7 (proposal 067) — the interface `SortDomain` provides: one rule,
+/// `fill(?x)`. Declared in `anthill/reflect/reflect.anthill`.
+pub(crate) const FILLABLE_SPEC: &str = "anthill.reflect.Fillable";
+
+/// WI-20260925-SHED7 — where a `SortDomain` dictionary provided by `sort` holds its FIRST
+/// CONDITION: the typer lays such a dictionary out as `SortDomain`'s own chain (the
+/// `Fillable` it provides, a conversion filed where a `requires` goes), then `sort`'s
+/// sort-level `requires`, then the provision's conditions ([`dict_layout`]). The derived
+/// `fill` clauses read condition `k` at this offset plus `k`, and a dictionary the resolver
+/// builds from a type is padded to it, so every `SortDomain` dictionary — built by the
+/// typer for a citation or a call, or by the resolver from a type — is read one way.
+pub(crate) fn sort_domain_sub_offset(kb: &mut KnowledgeBase, sort: Symbol) -> usize {
+    let spec_half = kb
+        .try_resolve_symbol(SORT_DOMAIN_SPEC)
+        .map_or(0, |spec| direct_requires_chain_rc(kb, spec).len());
+    spec_half + provider_dict_entries(kb, sort, None).len()
+}
+
+/// WI-20260925-SHED7 — the typer's own count of a `SortDomain` dictionary's subs for
+/// `sort`, both halves ([`dict_layout`]): what `sort_domain_sub_offset` plus the conditions
+/// must equal once the provision rows exist.
+pub(crate) fn sort_domain_dict_len(kb: &mut KnowledgeBase, sort: Symbol) -> Option<usize> {
+    let spec = kb.try_resolve_symbol(SORT_DOMAIN_SPEC)?;
+    let layout = dict_layout(kb, spec, sort, None);
+    Some(layout.spec_len + layout.provider_len)
+}
+
+/// WI-20260925-SHED7 — is `spec` (canonically) `anthill.reflect.SortDomain`? Asked on every
+/// requirement read, so the SHORT name screens first — an index off the `Symbol` — and the
+/// qualified resolve runs only for a spec actually spelled `SortDomain`.
+pub(crate) fn is_sort_domain_spec(kb: &KnowledgeBase, spec: Symbol) -> bool {
+    kb.local_name_of(kb.canonical_sort_sym(spec)) == "SortDomain"
+        && kb
+        .try_resolve_symbol(SORT_DOMAIN_SPEC)
+        .is_some_and(|sd| kb.canonical_sort_sym(sd) == kb.canonical_sort_sym(spec))
+}
+
 /// The synthesizing pass that owns every generated [`TYPE_DOMAIN_GOAL`] node — the
 /// provenance stamp, and with it the IDEMPOTENCE test for
 /// [`install_typed_head_domain_goals`].
@@ -520,111 +550,78 @@ pub(crate) const SORT_DOMAIN_SPEC: &str = "anthill.reflect.SortDomain";
 /// imports `anthill.kernel` and writes their own `domain(?x, T)` beside a typed head
 /// must not suppress the generated guard. A functor-presence test would do exactly
 /// that, and silently.
-fn typed_head_domain_pass(kb: &mut KnowledgeBase) -> crate::kb::occurrence::PassId {
+pub(crate) fn typed_head_domain_pass(kb: &mut KnowledgeBase) -> crate::kb::occurrence::PassId {
     kb.register_pass("anthill.kb.passes.typed_head_domain")
 }
 
-/// WI-742 (proposal 060 §2) — compile every `?x: T` annotation on a RELATIONAL rule
-/// head into a `domain(?x, T)` goal PREPENDED to that clause's body.
+/// WI-742 / WI-743 / WI-20260925-SHED7 (proposal 060 §2–§2.3) — compile every `?x: B`
+/// annotation on a RELATIONAL rule head into generated goals: the domain's `fill`, APPENDED
+/// after the body, and in front of the body an EARLY type test of a value already bound:
 ///
-/// This is proposal 060's rule at its third instance: a type-level declaration written
-/// in a rule clause becomes a generated body goal, which at run time only READS the
-/// value's carried type. The head itself stays structurally bare — the annotation was
-/// already stripped at load (WI-582's `typed_var` marker) — so the discrimination tree
-/// indexes a typed head exactly as it indexes the untyped one.
+/// ```text
+/// rule p(?x: B) :- body      ≡      rule p(?x) :- domain(?x, B, early: true), body,
+///                                                 SortDomain[B].fill(?x)
+/// ```
 ///
-/// WHY THE TYPER AND NOT THE LOADER OR THE CONVERTER. The converter has only an
-/// unresolved parse-level `T`, and the bound's own resolution happens in the loader —
-/// generating there would make the goal's `T` and the bound's `T` two resolutions of
-/// one annotation. The loader could do it, but its body nodes are pre-`type_rule_bodies`,
-/// so a generated goal would be walked by dot-dispatch and type-collection as if the
-/// author had written it. Here, `rule_type_bounds` is installed, `rule_globals` fixes
-/// the DeBruijn frame, and [`KnowledgeBase::set_rule_body_nodes`] is the supported edit —
-/// the same one `record_find_dictionary_grounding` makes.
+/// This is proposal 060's rule at its third instance: a type-level declaration written in a
+/// rule clause becomes a generated body goal. The head stays structurally bare — the
+/// annotation was stripped at load (WI-582's `typed_var` marker) — so the discrimination
+/// tree indexes a typed head exactly as it indexes the untyped one.
 ///
-/// PREPENDED, not appended. In mode (in) that prunes at the earliest point the binding
-/// exists; in mode (out) the goal suspends and rotation carries it to wherever it can
-/// decide, so the placement costs nothing there. (`docs/design/060-implementation.md` §3.)
+/// ONE GOAL, AND IT BOTH TESTS AND GENERATES (060-implementation §7.3, "`SortDomain` is the
+/// ONLY domain mechanism"). With `?x` bound it fills `?x` in mode (in) — a membership test,
+/// which for a derived domain or a primitive's waiting check is also the type test; with
+/// `?x` unbound it GENERATES. What it is depends on what the bound names:
+///   * a GROUND type with a domain — `Colour.domain(?x)`, the provider's `fill` called by
+///     name, where the sort's `fill` reads no dictionary; else `apply_domain(B, ?x)`, the
+///     dictionary built from the type (`List[T = Letter]`);
+///   * a type MENTIONING A VARIABLE — `apply_domain(?d, ?x, B)`, which first CONFORMS (reads
+///     `?x`'s type into `B`'s variables: the tie between two columns) and fills through
+///     `?d`, the clause's implicit `SortDomain` parameter a citation routes — the read
+///     `find_dictionary(SortDomain, SortDomain, ?x, out: ?d)` beside it — or, with no
+///     caller, through `B` itself;
+///   * a type with NO domain — a function type, a tuple, a spec, an abstract sort — the
+///     conformance check `domain(?x, B)`, PREPENDED: it only tests, and delays on an unbound
+///     `?x` exactly as WI-742 built it.
 ///
-/// WI-743 ADDS A SECOND GOAL AT THE OTHER END, APPENDED, for a bound whose sort has a
-/// domain ([`KnowledgeBase::has_domain_member`]). That one GENERATES, which is what turns a
-/// typed head from a filter into a domain: `rule colouring(wa: Colour, …) :- wa != nt`
-/// enumerates with no `palette` facts. WHAT it is depends on what the bound NAMES
-/// (WI-20260911-5G28A S3, `060-implementation.md` §7.3):
-///   * a sort with no parameters — `Colour.domain(?x)`, the member of `Colour`'s
-///     `SortDomain`, called statically because the bound names the provider;
-///   * a TYPE VARIABLE — nothing names the sort, so an implicit `SortDomain` read and
-///     `apply_domain` on what it holds ([`implicit_domain_goals`]), filled by a citation's
-///     caller or derived from a bound value;
-///   * a parameterised sort — `domain_member(?x, T)`, the kernel relation, whose derived
-///     clause carries the element type as an argument (§7.3's S3b moves this one too).
+/// THE FILL IS APPENDED, because a generator ahead of the written body enumerates a recursive
+/// type forever before the body can prune it: `word(?w) :- domain(?w, List[T = Letter]), ?w
+/// <=> [?, ?, ?]` did not terminate, while the twin with the goal LAST answers 27 and stops
+/// (WI-743).
 ///
-/// THE TWO PLACEMENTS ARE MEASURED, not symmetric (settled design §3). A generator ahead
-/// of the written body enumerates a recursive type forever before the body can prune it:
-/// `word(?w) :- domain(?w, List[T = Letter]), ?w <=> [?, ?, ?]` did not terminate, while
-/// the twin with the goal LAST answers 27 and stops. Neither placement gives early
-/// pruning of a DELAYED test — that needs wake-on-bind, which is not this.
+/// AND THE TYPE TEST ALSO RUNS FIRST, on a value the call already bound — the EARLY guard
+/// (WI-742's conformance check, [`TYPE_DOMAIN_EARLY_LABEL`]), which decides a bound `?x` and
+/// stands aside for an unbound one rather than waiting, so a generating call is exactly what
+/// it was. Without it the written body ran on a value of the wrong type before any test did:
+/// a body goal that FAULTS on the wrong carrier (`add(2.5, 1, ?y)` under `?x: Int64`) turned
+/// the clause's quiet refutation into a fault, a CUT committed before the test ran, and a
+/// long body enumerated its answers only for the appended test to refuse each of them.
 ///
-/// THE CONFORMANCE GOAL STAYS, and is not made redundant by the member goal. It is what
-/// a sort with NO derived domain has (`String`, a primitive, a spec, a declined sort):
-/// its delay/rotate/flounder ladder is WI-742's whole behaviour and is unchanged here.
-/// Where both are generated they answer the same question two ways and the member goal
-/// is the stricter — a hand-written `domain` narrowing a sort makes mode (in) refute a
-/// CONFORMING NON-MEMBER, which is proposal §2.2's domain-defining rule.
+/// A SORT'S OWN `fill` CLAUSES GET NOTHING: they are the generator, and their bound is the
+/// column type a citation reads — a goal generated from it would run them again
+/// (060-typedomains §0). A WRITTEN domain keeps the conformance check it always had.
 ///
-/// THE POPULATION IS EXACTLY THE CLAUSES THE LOADER LET KEEP A BOUND, and the loader's
-/// refusal is what makes that list right:
-///   * a DIRECTIONAL EQUATION keeps WI-582's match-time reader (`apply_eq_rules`) and is
-///     skipped here — two routes, one syntax, as proposal 060 §2 and WI-742 both say;
-///   * everything else with a bound is a RELATIONAL head — this feature — INCLUDING a
-///     body-less one. `rule p(?x: T) :- true` folds to an empty body (§6.1) and is still
-///     a CLAUSE: measured, it answers `p(5)` where a bare declaration `rule p(?x)` does
-///     not, the latter never reaching an assert at all. So the guard has something to
-///     guard, and [`KnowledgeBase::prepend_generated_body_goals`] — not
-///     `set_rule_body_nodes`, whose assertion forbids exactly this — maintains the
-///     WI-812 bodied-rule gate across the fact-ness flip.
+/// THE POPULATION IS EXACTLY THE CLAUSES THE LOADER LET KEEP A BOUND: a directional equation
+/// keeps WI-582's match-time reader (`apply_eq_rules`) and is skipped; everything else with
+/// a bound is a RELATIONAL head, including a body-less one — `rule p(?x: T) :- true` folds to
+/// an empty body (§6.1) and is still a clause that answers.
 pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
     let Some(dom_sym) = kb.try_resolve_symbol(TYPE_DOMAIN_GOAL) else {
         return; // builtin not registered — nothing to generate against
     };
-    // WI-743 — `None` only where the loader derived nothing at all, in which case no
-    // bound can have a member clause either and the lookup below never fires.
-    let mem_sym = kb.try_resolve_symbol(DOMAIN_MEMBER_GOAL);
     let pass = typed_head_domain_pass(kb);
     for rid in kb.live_rule_ids() {
         if kb.rule_type_bounds(rid).is_empty() {
             continue;
         }
-        // A directional equation already has a reader (`apply_eq_rules`, WI-582) —
-        // the loader's own classification, re-asked here in its own terms rather than
-        // restated in this pass's vocabulary. Everything else the loader let keep a
-        // bound is a relational head, INCLUDING a body-less one: `rule p(?x: T) :- true`
-        // folds to an empty body (§6.1) and is still a clause that answers, so the
-        // guard has something to guard.
         if kb.is_directional_equation(rid) {
             continue;
         }
-        // WI-20260908-PW9A0 — THE POPULATION ABOVE IS A COUPLING, SO ASSERT IT.
-        //
-        // The doc says "everything else with a bound is a RELATIONAL head", and that is
-        // true only because `load_rule`'s typed-pattern refusal declines every other
-        // shape. It is a documented coupling and was an UNENFORCED one: this pass's own
-        // test is `is_directional_equation`, which reads "not a directional equation ⇒
-        // relational" — a false dichotomy, since a GUARDED equation is neither.
-        //
-        // MEASURED, by breaking the coupling on purpose: narrowing that refusal so a
-        // guarded equation could keep its bound made this pass prepend a `domain(?x, T)`
-        // goal to a clause nothing evaluates (WI-20260820-8RJK8: every firing site gates
-        // on `is_equation`, whose first clause is an EMPTY BODY, and nothing anywhere
-        // runs a matched equation's body). The bound installed, the body grew a goal, and
-        // an UNSATISFIABLE bound was byte-identical to no bound at all — the mechanism
-        // running looked exactly like the effect happening. Nothing here complained.
-        //
-        // A BACKSTOP, NOT A VERDICT, in `RuleHeadOwnedByNoScope`'s sense: unreachable
-        // while the refusal stands, and its whole value is that a future change which
-        // widens the refusal fails HERE and loudly, instead of silently generating a goal
-        // that cannot fire. When 8RJK8 lands and a guarded equation does fire, this is
-        // one of the sites that has to be revisited rather than deleted.
+        // WI-20260908-PW9A0 — THE POPULATION ABOVE IS A COUPLING, SO ASSERT IT: a GUARDED
+        // equation is neither a directional equation nor a relational head, and a goal
+        // generated for it would never run (WI-20260820-8RJK8: nothing evaluates a matched
+        // equation's body). A backstop, unreachable while `load_rule`'s typed-pattern
+        // refusal stands.
         debug_assert!(
             !kb.rule_head_value(rid)
                 .head(kb)
@@ -634,26 +631,33 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
              typed-pattern refusal admitted a bound whose generated goal cannot run, \
              because nothing evaluates a matched equation's body (WI-20260820-8RJK8)",
         );
+        let own_fill = kb
+            .rule_head_value(rid)
+            .head(kb)
+            .functor_sym()
+            .and_then(|f| kb.fill_relation_sort(f))
+            .and_then(|s| kb.sort_domain(s).map(|e| e.kind));
+        if matches!(
+            own_fill,
+            Some(crate::kb::fill_derive::SortDomainKind::Derived | crate::kb::fill_derive::SortDomainKind::Primitive)
+        ) {
+            continue;
+        }
+        let written_domain = own_fill == Some(crate::kb::fill_derive::SortDomainKind::Written);
         let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
-        // IDEMPOTENT by provenance: a second run finds its own stamp and stops. The
-        // typer is not guaranteed to run once per KB, and generating twice would make
-        // the same guard delay twice on one unbound variable.
+        // IDEMPOTENT by provenance: a second run finds its own stamp and stops. The typer is
+        // not guaranteed to run once per KB, and generating twice would fill twice.
         if body.iter().any(|n| n.synthesized_by() == Some(pass)) {
             continue;
         }
         // The provenance anchor is the clause's first body goal where it has one; a
-        // body-less clause (`:- true`) has none, so its head span stands in. Both are
-        // this clause's own location, which is all the anchor is for.
+        // body-less clause (`:- true`) has none, so its head span stands in.
         let anchor = match (body.first(), kb.rule_head_span(rid)) {
             (Some(n), _) => Rc::clone(n),
             (None, Some(span)) => {
                 NodeOccurrence::new_expr(Expr::Bottom, span, Some(kb.rule_domain(rid)))
             }
             (None, None) => {
-                // A body-less clause the loader never wrote (no head span means no
-                // source head). Nothing here can locate the guard it would generate,
-                // and a bound on such a clause is not something this pass produced —
-                // say so rather than emit an unlocatable goal.
                 debug_assert!(
                     false,
                     "a type bound on a body-less clause with no source head span",
@@ -663,249 +667,137 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
         };
         let bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
         let owner = anchor.owner;
-        let mut new_body: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(bounds.len());
-        let mut member_body: Vec<Rc<NodeOccurrence>> = Vec::new();
+        let early_key = kb.intern(TYPE_DOMAIN_EARLY_LABEL);
+        let mut prepended: Vec<Rc<NodeOccurrence>> = Vec::new();
+        let mut appended: Vec<Rc<NodeOccurrence>> = Vec::new();
         for (db_index, bound_tid) in bounds {
+            // A bound written with an ALIAS has its target's domain (`dealias_type`).
+            let bound_tid = dealias_type(kb, bound_tid);
             // `?x` rides as the SAME DeBruijn index the bound is keyed by
-            // (`install_rule_type_bounds` stores `len - 1 - position`, which is
-            // `node_to_debruijn`'s own convention), so the goal names the head
-            // variable itself — no new slot is allocated and the rule's arity is
-            // unchanged.
-            let var =
-                NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(db_index)), anchor.span, owner);
-            // The bound rides as the interned type term the loader resolved. A
-            // `Spliced` leaf is the Value carrier for exactly this (`load.rs`'s
-            // `Expr::Spliced(Value::term(row))` is the precedent); the resolver arm
-            // cancels the wrapper with `Value::carried`.
-            let ty =
-                NodeOccurrence::new_expr(Expr::Spliced(Value::term(bound_tid)), anchor.span, owner);
-            new_body.push(NodeOccurrence::synthesized_expr(
-                Expr::Apply {
-                    recv_type: None,
-                    functor: dom_sym,
-                    pos_args: vec![var, ty],
-                    named_args: Vec::new(),
-                    type_args: Vec::new(),
-                },
-                Rc::clone(&anchor),
-                pass,
-                owner,
-            ));
-            // WI-743 (proposal 060 §2.2) — the GENERATOR half, for a bound whose sort
-            // the loader derived a `domain_member` clause for. A bound with none gets
-            // nothing here and keeps WI-742's ladder exactly, which is what makes
-            // `rule f(?x: String) :- ?x <=> "abe"` still answer its one row.
-            // WI-20260911-5G28A S3 — A BOUND THAT IS A TYPE VARIABLE (`?x: T`) READS ITS
-            // DOMAIN THROUGH THE REQUIREMENT CHANNEL: an implicit `SortDomain[T = T]` read,
-            // then `apply_domain` on what it holds. No term names the type — a citation's
-            // caller holds the evidence for its own rigid, and hands it in (§7.3 S2) — so the
-            // domain is a DICTIONARY the clause is given, never one it looks up by name.
-            // Mode (in) needs no caller: the read derives from `?x`'s carried type. Neither,
-            // and both goals delay and flounder at the drain, as the bound always did.
-            if matches!(kb.get_term(bound_tid), Term::Var(_)) {
-                if let Some(goals) =
-                    implicit_domain_goals(kb, rid, db_index, bound_tid, &anchor, pass, owner)
-                {
-                    member_body.extend(goals);
+            // (`install_rule_type_bounds` stores `len - 1 - position`), so the goal names
+            // the head variable itself and the rule's arity is unchanged.
+            let var = || {
+                NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(db_index)), anchor.span, owner)
+            };
+            // The bound rides as the interned type term the loader resolved, in a `Spliced`
+            // leaf (`Value::carried` cancels the wrapper at the resolver).
+            let ty = || {
+                NodeOccurrence::new_expr(Expr::Spliced(Value::term(bound_tid)), anchor.span, owner)
+            };
+            let goal_named = |functor: Symbol,
+                              pos_args: Vec<Rc<NodeOccurrence>>,
+                              named_args: Vec<(Symbol, Rc<NodeOccurrence>)>| {
+                NodeOccurrence::synthesized_expr(
+                    Expr::Apply {
+                        recv_type: None,
+                        functor,
+                        pos_args,
+                        named_args,
+                        type_args: Vec::new(),
+                    },
+                    Rc::clone(&anchor),
+                    pass,
+                    owner,
+                )
+            };
+            let goal = |functor: Symbol, pos_args: Vec<Rc<NodeOccurrence>>| {
+                goal_named(functor, pos_args, Vec::new())
+            };
+            // What fills the bound, or `None` where only the conformance check can stand: a
+            // WRITTEN domain's own clause (it IS the generator), a type with no domain, or a
+            // KB that never declared `SortDomain` — the check then still guards the bound.
+            let fill: Option<Vec<Rc<NodeOccurrence>>> = if written_domain
+                || !bound_is_fillable(kb, bound_tid)
+            {
+                None
+            } else if term_mentions_var(kb, bound_tid) {
+                implicit_domain_goals(kb, rid, db_index, bound_tid, &anchor, pass, owner)
+                    .map(Vec::from)
+            } else {
+                // A ground type with a domain: its `fill` by name where it reads no
+                // dictionary, else through the type.
+                let head = type_term_head_sym(kb, bound_tid).expect("a fillable bound has a head");
+                let entry = kb.sort_domain(head).cloned().expect("a fillable bound has a domain");
+                if entry.conditions.is_empty() {
+                    Some(vec![goal(entry.fill, vec![var()])])
+                } else {
+                    kb.try_resolve_symbol(APPLY_DOMAIN_GOAL)
+                        .map(|apply| vec![goal(apply, vec![ty(), var()])])
                 }
-                continue;
-            }
-            let Some(member_sym) = mem_sym else {
-                continue;
             };
-            let Some(bound_head) = type_term_head_sym(kb, bound_tid) else {
-                continue;
-            };
-            if !kb.has_domain_member(bound_head) {
-                continue;
-            }
-            // WI-20260911-5G28A — THE DETERMINACY GATE IS LIFTED, because the two
-            // things it was protecting against are now owned elsewhere.
-            //
-            // WI-743 SKIPPED a bound that did not name a determinate type, for two
-            // reasons that were the same defect: a BARE reference to a parameterised sort
-            // (`?w: List`) named no element domain, and a type VARIABLE named no type at
-            // all, so the generated goal asked `domain_member(?x, ?T)` with `?T` unbound
-            // — which unifies with the head of EVERY derived clause and enumerates TYPES
-            // instead of values. Measured at 20 rows (the solution cap) for
-            // `rule nest(?w: List[T = List]) :- ?w <=> [[a()]]`, a clause whose body binds
-            // `?w` outright and can have at most ONE answer.
-            //
-            // BOTH REASONS ARE GONE, and each to a different owner:
-            //   * the BARE reference is no longer a shape a bound can have — the loader's
-            //     `expand_rule_head_bound_type_params` writes the unwritten parameter as a
-            //     rule-scoped variable, so `?w: List` arrives here as `List[T = ?t]`;
-            //   * the VARIABLE is no longer guessed — `pin_bound_from_value` reads it off
-            //     the value in mode (in, out), so a bound value decides the goal in one
-            //     step instead of opening a choice point per derived domain. With the
-            //     value UNBOUND there is still nothing to range over, and the goal DELAYS
-            //     at the resolver's dispatch site (`domain_member_goal_is_undetermined`)
-            //     rather than being skipped here.
-            //
-            // WHAT THAT CHANGES FOR `rule anylist(?w: List) :- true` — stated exactly,
-            // because this paragraph is the reason the gate went. It answered ONE
-            // conditional row before and answers ONE conditional row now. What moved is
-            // WHERE: the goal is GENERATED and stands in the residual, where the gate left
-            // it un-asked with nothing said at load. Enumerating instead was built and
-            // measured, and it does not come back at all — both operands free is a product
-            // of two infinite streams, whose fairness is WI-20260911-09E6M's. An earlier
-            // draft of this paragraph claimed the row "now comes back as rows", which is
-            // not what ships; found by `/code-review`.
-            //
-            // SKIPPING WAS ALSO THE SILENT HALF. A skipped goal left `<Sort>.domain` and
-            // every `?t`-bearing head reading WI-742's conformance ladder only — a
-            // CONDITIONAL answer where the author wrote a generator — with nothing said
-            // at load. The control for lifting it is `pin_bound_from_value`: back that
-            // read out with this lifted and `nest` reddens to the 20 rows WI-743 measured.
-            //
-            // THE PREDICATE ITSELF IS GONE rather than left unread. A gate no caller asks
-            // is not a gate, and keeping one whose doc still claims to prevent the 20-row
-            // enumeration would misdescribe where that prevention now lives — at the
-            // resolver's `domain_member_goal_is_undetermined`, which asks the same question
-            // of the same bound at the moment the answer can be different.
-            let member_bound = bound_tid;
-            // THE SELF-CALL TRAP, cut here — WI-20260911-WT8WG moved it from the loader.
-            //
-            // A clause of a sort's OWN written `domain` carrying that sort's bound
-            // (`rule domain(?x: Colour) :- …`, inside `sort Colour`) would get a member
-            // goal appended, which resolves through the loader's forwarding clause
-            // `domain_member(?x, Colour) :- Colour.domain(?x)`, which re-enters the
-            // clause: a loop with no base case. WI-743 refused such a clause at the
-            // loader, which cost nothing while the written spelling was 2-ary and the
-            // annotation was redundant. At the 1-ARY spelling that annotation is the
-            // NATURAL thing to write — it is the derived clause's own shape — so
-            // refusing it would refuse the feature's majority spelling.
-            //
-            // A WRITTEN DOMAIN IS NEVER GENERATED FROM: it IS the generator. So the
-            // clause keeps the prepended CONFORMANCE goal (which only tests, and is
-            // WI-742's whole behaviour) and loses only the appended MEMBER goal.
-            //
-            // THE LOADER'S SHAPE DECISION, read back — never a name test. This pass does
-            // not ask whether a rule is called `domain`; `record_sort_domain_is_written`
-            // is written exactly where the 1-ary hook accepted one, which is the only
-            // place that decision is made.
-            let own_domain_clause = rule_defines_sort_domain(kb, rid, bound_head);
-            if own_domain_clause && kb.sort_domain_is_written(bound_head) {
-                continue;
-            }
-
-            let var =
-                NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(db_index)), anchor.span, owner);
-            // WI-20260911-5G28A S3 — A GROUND BOUND WITH NO PARAMETERS calls its sort's
-            // `domain` — the member of the sort's `SortDomain` provision, dispatched
-            // STATICALLY because the bound already names the provider, exactly as an
-            // operation call at a concrete carrier is. The kernel relation stays the one
-            // thing that bottoms out (060-typedomains §0): `S.domain`'s OWN clause keeps
-            // `domain_member(?x, S)` below, or it would call itself.
-            if !own_domain_clause && matches!(kb.get_term(member_bound), Term::Ref(_)) {
-                if let Some(dom) = sort_domain_relation(kb, bound_head) {
-                    member_body.push(NodeOccurrence::synthesized_expr(
-                        Expr::Apply {
-                            recv_type: None,
-                            functor: dom,
-                            pos_args: vec![var],
-                            named_args: Vec::new(),
-                            type_args: Vec::new(),
-                        },
-                        Rc::clone(&anchor),
-                        pass,
+            // The fill APPENDED, and the EARLY guard in front of the body (see the doc above);
+            // a bound with no fill keeps the waiting conformance check, which is all it has.
+            match fill {
+                Some(goals) => {
+                    let early = NodeOccurrence::new_expr(
+                        Expr::Const(crate::kb::term::Literal::Bool(true)),
+                        anchor.span,
                         owner,
-                    ));
-                    continue;
+                    );
+                    prepended.push(goal_named(dom_sym, vec![var(), ty()], vec![(early_key, early)]));
+                    appended.extend(goals);
                 }
+                None => prepended.push(goal(dom_sym, vec![var(), ty()])),
             }
-            let ty = NodeOccurrence::new_expr(
-                Expr::Spliced(Value::term(member_bound)),
-                anchor.span,
-                owner,
-            );
-            member_body.push(NodeOccurrence::synthesized_expr(
-                Expr::Apply {
-                    recv_type: None,
-                    functor: member_sym,
-                    pos_args: vec![var, ty],
-                    named_args: Vec::new(),
-                    type_args: Vec::new(),
-                },
-                Rc::clone(&anchor),
-                pass,
-                owner,
-            ));
         }
-        kb.prepend_generated_body_goals(rid, new_body);
-        // APPENDED, after the written body — see this function's doc for the measurement.
-        kb.append_generated_body_goals(rid, member_body);
+        kb.prepend_generated_body_goals(rid, prepended);
+        kb.append_generated_body_goals(rid, appended);
     }
 }
 
-/// WI-20260911-WT8WG — is `rid` a clause of `<sort>.domain` itself?
-///
-/// The narrowing that makes the self-call exclusion right. `sort_domain_is_written` says
-/// the SORT writes its own domain; it does not say this clause is one of them, and the
-/// difference is the whole feature: `rule pick(?x: Palette) :- true` beside a written
-/// `Palette.domain` MUST keep its member goal — that appended goal is what makes it
-/// answer the written domain's 2 rows instead of the sort's 3. Only `Palette.domain`'s
-/// OWN clauses are the ones whose member goal would re-enter them.
-///
-/// BY SYMBOL, not by name: the head functor is compared against the symbol
-/// `<sort_qn>.domain` resolves to, so a rule merely SPELLED `domain` somewhere else is
-/// not mistaken for one.
-fn rule_defines_sort_domain(kb: &KnowledgeBase, rid: crate::kb::RuleId, sort: Symbol) -> bool {
-    // CANONICALISED, because its caller's other half is. `sort_domain_is_written` keys on
-    // `canonical_sort_sym`, so asking this one under the sort's WRITTEN name would let an
-    // ALIAS pass the first test and fail the second — the exclusion skipped, the member
-    // goal appended to a clause of the written `S.domain`, and the loop it exists to cut
-    // closed through the forwarding clause. One question, asked the same way twice.
-    // Raised by `/code-review`.
-    let qn = format!(
-        "{}.domain",
-        kb.qualified_name_of(kb.canonical_sort_sym(sort))
-    );
-    let Some(dom_sym) = kb.try_resolve_symbol(&qn) else {
-        return false;
-    };
-    kb.rule_head_value(rid)
-        .head(kb)
-        .functor_sym()
-        .is_some_and(|f| f == dom_sym)
-}
-
-/// WI-20260911-5G28A S3 — `<sort>.domain`, the relation a sort's `SortDomain` member is:
-/// derived beside the sort (`emit_domain_value_face`) or written in it. By SYMBOL, through
-/// the canonical sort, as [`rule_defines_sort_domain`] asks it.
-///
-/// `None` wherever the loader DECLINED the value face — the sort is parameterised, or its
-/// `domain` address holds something that is not its domain: an operation, a const, or a
-/// relation at another arity (kernel-language.md: such a sort "has a domain and no
-/// `.domain` to cite it by"). The kernel's `domain_member(?x, S)` is then that sort's only
-/// name for its domain, and both readers — the typed-head sweep and `apply_domain` — reach
-/// it there. The decline record is READ, not re-derived: MEASURED, asking only "is it a
-/// relation with clauses" sent `pick(?x: S)` to an author's own 3-ary `domain`, and the
-/// sort's three rows became none (`wi_wt8wg…::a_domain_at_an_unrecognised_arity_declines_
-/// readably`).
-pub(crate) fn sort_domain_relation(kb: &KnowledgeBase, sort: Symbol) -> Option<Symbol> {
-    if kb.domain_value_face_decline_reason(sort).is_some() {
-        return None;
+/// Can a value of the bound's type be FILLED: its sort has a `SortDomain`, and so does every
+/// argument that sort's `fill` reads — its conditions? A variable counts, being pinned when the
+/// clause runs. A bound that names a SPEC — WI-582's `[A]` introducer records `A`'s spec, so
+/// `?a: List[T = A]` is stored `List[T = Summable]` — or a function type, a tuple, an abstract
+/// sort, names a type nothing fills, and keeps the conformance check.
+fn bound_is_fillable(kb: &KnowledgeBase, t: TermId) -> bool {
+    match kb.get_term(t) {
+        Term::Var(_) => true,
+        Term::Ref(s) => kb.has_sort_domain(*s),
+        Term::Fn { functor, .. } => {
+            let Some(entry) = kb.sort_domain(*functor) else {
+                return false;
+            };
+            entry.conditions.iter().all(|&j| {
+                crate::kb::fill_derive::type_arg(kb, t, &entry.params, j)
+                    .is_none_or(|a| bound_is_fillable(kb, a))
+            })
+        }
+        _ => false,
     }
-    kb.try_resolve_symbol(&format!(
-        "{}.domain",
-        kb.qualified_name_of(kb.canonical_sort_sym(sort))
-    ))
-    .filter(|&sym| kb.has_kind(sym, crate::kb::SymbolKind::Goal) && kb.has_clauses_under(sym))
 }
 
-/// WI-20260911-5G28A S3 — the two goals a TYPE-VARIABLE bound gets in place of a member goal:
+/// Does the stored type term mention a variable — a rule-scoped one, or the enclosing sort's
+/// parameter opened per activation? Either way it is not known until the clause runs.
+fn term_mentions_var(kb: &KnowledgeBase, t: TermId) -> bool {
+    match kb.get_term(t) {
+        Term::Var(_) => true,
+        Term::Fn {
+            pos_args,
+            named_args,
+            ..
+        } => {
+            pos_args.iter().any(|&a| term_mentions_var(kb, a))
+                || named_args.iter().any(|&(_, a)| term_mentions_var(kb, a))
+        }
+        _ => false,
+    }
+}
+
+/// WI-20260911-5G28A S3, WI-20260925-SHED7 — the two goals a bound MENTIONING A VARIABLE
+/// gets:
 ///
 /// ```text
-/// find_dictionary(SortDomain[T = <bound>], SortDomain, ?x, out: ?xd),  apply_domain(?xd, ?x)
+/// apply_domain(?d, ?x, B),  find_dictionary(SortDomain, SortDomain, ?x, out: ?d)
 /// ```
 ///
-/// THE READ IS AN IMPLICIT PARAMETER, and its shape is the anchor form's on purpose: it is
-/// what `requirement_read_out` finds, so a citation routes the caller's `SortDomain` slot to
-/// it (§7.3 S2) and the resolver binds `?xd` when it opens the clause; unrouted, it DERIVES
-/// from `?x`'s carried type as any anchored read does. `?xd` is a new clause variable, so the
-/// frame GROWS — by prepending, which leaves every existing De Bruijn index where it was
-/// ([`KnowledgeBase::extend_rule_frame_with_bounds`]).
+/// `apply_domain` conforms and fills — through `?d` when a citation routed one, through `B`
+/// otherwise. The read is the IMPLICIT PARAMETER a citation routes to: its shape is the
+/// anchor form on purpose, so `requirement_read_out` finds it, the typer routes the caller's
+/// `SortDomain` slot to it (§7.3 S2) and the resolver binds `?d` when it opens the clause.
+/// Unrouted, it builds its dictionary from `?x`'s type once `?x` is bound. `?d` is a new
+/// clause variable, so the frame GROWS — by prepending, which leaves every existing De
+/// Bruijn index where it was ([`KnowledgeBase::extend_rule_frame_with_bounds`]).
 ///
 /// `None` where the KB never declared the spec or the builtins it is spelled with — a bare
 /// KB with no `anthill.reflect`, where nothing could hand the clause a domain anyway.
@@ -922,7 +814,6 @@ fn implicit_domain_goals(
     let spec = kb.try_resolve_symbol(SORT_DOMAIN_SPEC)?;
     let apply = kb.try_resolve_symbol(APPLY_DOMAIN_GOAL)?;
     let fd = find_dictionary_symbol(kb)?;
-    let param = *kb.type_param_syms_of(spec).first()?;
     let out_label = kb.intern(REQUIREMENT_OUT_LABEL);
     // The new clause variable: prepended, so its index is the frame's old length.
     let xd_index = kb.rule_globals(rid).len() as u32;
@@ -933,25 +824,6 @@ fn implicit_domain_goals(
 
     let span = anchor.span;
     let node = |e: Expr| NodeOccurrence::new_expr(e, span, owner);
-    let instance = node(Expr::Apply {
-        recv_type: None,
-        functor: spec,
-        pos_args: Vec::new(),
-        named_args: vec![(param, node(Expr::Spliced(Value::term(bound_tid))))],
-        type_args: Vec::new(),
-    });
-    let read = NodeOccurrence::synthesized_expr(
-        Expr::Apply {
-            recv_type: None,
-            functor: fd,
-            pos_args: vec![instance, node(Expr::Ref(spec)), node(Expr::Var(Var::DeBruijn(db_index)))],
-            named_args: vec![(out_label, node(Expr::Var(Var::DeBruijn(xd_index))))],
-            type_args: Vec::new(),
-        },
-        Rc::clone(anchor),
-        pass,
-        owner,
-    );
     let run = NodeOccurrence::synthesized_expr(
         Expr::Apply {
             recv_type: None,
@@ -959,6 +831,7 @@ fn implicit_domain_goals(
             pos_args: vec![
                 node(Expr::Var(Var::DeBruijn(xd_index))),
                 node(Expr::Var(Var::DeBruijn(db_index))),
+                node(Expr::Spliced(Value::term(bound_tid))),
             ],
             named_args: Vec::new(),
             type_args: Vec::new(),
@@ -967,7 +840,19 @@ fn implicit_domain_goals(
         pass,
         owner,
     );
-    Some([read, run])
+    let read = NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            recv_type: None,
+            functor: fd,
+            pos_args: vec![node(Expr::Ref(spec)), node(Expr::Ref(spec)), node(Expr::Var(Var::DeBruijn(db_index)))],
+            named_args: vec![(out_label, node(Expr::Var(Var::DeBruijn(xd_index))))],
+            type_args: Vec::new(),
+        },
+        Rc::clone(anchor),
+        pass,
+        owner,
+    );
+    Some([run, read])
 }
 
 /// WI-743 — the sort a stored TYPE TERM heads with: `Colour` for `Ref(Colour)`,
@@ -979,4 +864,19 @@ fn type_term_head_sym(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
         crate::kb::term::Term::Fn { functor, .. } => Some(*functor),
         _ => None,
     }
+}
+
+/// Does this rule-body occurrence hold a WOVEN call — an `apply_within` a requirement weave
+/// put there ([`weave_covered_call`], WI-1040 and WI-20260925-P7VP4)? Iterative, like the
+/// other rule-body walks.
+fn occ_holds_woven_call(occ: &Rc<NodeOccurrence>) -> bool {
+    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(o) = stack.pop() {
+        let Some(expr) = o.as_expr() else { continue };
+        if matches!(expr, Expr::ApplyWithin { .. }) {
+            return true;
+        }
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    false
 }
