@@ -2537,7 +2537,9 @@ impl SearchStream {
                 .op_record(f)
                 .and_then(|r| r.signature.as_ref())
                 .map(|sig| sig.params.len());
-            if declared_arity == Some(pos_arity + named_arity) && kb.bare_bodied_bool_relation(f) {
+            if declared_arity == Some(pos_arity + named_arity)
+                && kb.dispatched_bool_relation(&goal_val, f)
+            {
                 let eq_sym = kb.eq_functor();
                 // WI-20260830-DQD5W — THE OPERAND GOES IN ON THE OCCURRENCE CARRIER, and
                 // that is not tidiness: `reduce_op_value` opens with `Value::Node(o) =>
@@ -2651,8 +2653,9 @@ impl SearchStream {
                 //
                 // ARITY 0 IS NOT RE-TESTED, because the outer gate already decided it:
                 // reaching here means `goal_val.head(kb)` was `Functor { f, 0, 0 }` and
-                // `bare_bodied_bool_relation(f)` held — so `f` is a bodied, rule-less,
-                // effect-free Bool OPERATION carrying no arguments. A goal WITH arguments
+                // `dispatched_bool_relation` held — so `f`, or the implementation the typer
+                // pinned it to, is a bodied, rule-less, effect-free Bool OPERATION carrying no
+                // arguments. A goal WITH arguments
                 // never meets the canon (it fires on an empty argument list) and is an
                 // `Apply` already, so it takes the untouched arm. The arity+1 sibling below
                 // needs nothing for the same reason — its call shape is `f(a…, ?r)`.
@@ -12378,6 +12381,49 @@ impl KnowledgeBase {
         self.functional_relation_arity(target)
     }
 
+    /// [`Self::bare_bodied_bool_relation`] asked of the operation the goal DISPATCHES to —
+    /// the arity+0 twin of [`Self::dispatched_relation_arity`], and for the same reason.
+    ///
+    /// A rule-body goal on a BODY-LESS spec `Bool` op (`Desc.isGood(leaf())`) is pinned by the
+    /// typer to the carrier's implementation, but the Bool view read only the SPELLED
+    /// functor, which has no body — so the goal fell to candidate selection, found no
+    /// clause, and answered nothing; `not(Desc.isGood(leaf()))` then proved a falsehood.
+    /// MEASURED (WI-20260925-PRVA2 review, filed on ACG10): the operand form
+    /// `Desc.isGood(leaf()) = true` and the arity+1 form `Desc.isGood(leaf(), ?r)` both
+    /// answered `true`. The rule-less clause stays on the SPELLED functor, as in the sibling:
+    /// a hand-written clause of the name the goal is written with wins.
+    ///
+    /// TWO READERS, which must agree: `step_init`'s Bool-view gate, and WI-670's open-time
+    /// refutation ([`Self::body_refuted_by_ground_conjunct`]), for which such a goal's zero
+    /// discrim candidates are no refutation. Fixing the gate alone left a clause opened with its
+    /// caller variable unbound REFUTED at open time — `rule at(?x, ?y) :- ground(?x),
+    /// Desc.isAbove(leaf(), ?y)` behind `at(?z, 3)` answered nothing, and NAF over it proved a
+    /// falsehood — before the gate was ever reached. P7VP4's weave (`woven_goal_has_reader`)
+    /// keeps the spelled reading: its weaving population is unchanged.
+    ///
+    /// A WIDENING, NEVER A NARROWING: the spelled reading still admits what it admitted, and the
+    /// pin only adds. /code-review asked about a pinned goal whose TARGET fails the gate while
+    /// the spelled spec default passes — reading the target alone would send a goal that used
+    /// to wait (the bridge declining the target) to candidate selection, answering nothing. Its
+    /// two shapes were MEASURED unreachable as wrong answers today — an override that widens the
+    /// effect row is refused at load (§8.7, "effects must not widen"), and a clause-defined
+    /// override (`rule isOk(cl()) :- true`) answers correctly either way — but the union costs
+    /// nothing and keeps the old reading's population by construction.
+    ///
+    /// Driven by `wi1043_bodyless_rule_body_test::a_pinned_body_less_bool_goal_decides`.
+    fn dispatched_bool_relation(&self, goal: &Value, f: Symbol) -> bool {
+        if self.bare_bodied_bool_relation(f) {
+            return true;
+        }
+        let pinned = match goal {
+            Value::Node(o) => o.classified_apply_target().filter(|t| *t != f),
+            _ => None,
+        };
+        pinned.is_some_and(|target| {
+            self.rules_by_functor_iter(f).next().is_none() && self.bare_bodied_bool_relation(target)
+        })
+    }
+
     /// WI-938's gate: `Some((f, n))` when `goal` is the FUNCTIONAL-RELATION view `f(a₁…aₙ, ?r)`
     /// of a rule-less operation of arity `n` — the goal `step_init` rewrites to
     /// `unify(?r, f(a₁…aₙ))` instead of selecting candidates for it. A WOVEN goal reads its
@@ -13517,7 +13563,7 @@ impl KnowledgeBase {
     ///   (WI-108), the Γ overlay (WI-537), the `@[simp]` eq-rewrite pass, a mounted
     ///   extent source (extent rows), a scoping/quantifier MARKER (`forall_impl` /
     ///   `forall_in` / `some_in` / `__pop_assumption`), a
-    ///   `bare_bodied_bool_relation` (routed to `eq(f(args), true)`), or a WOVEN
+    ///   Bool-view goal ([`Self::dispatched_bool_relation`], routed to `eq(f(args), true)`), or a WOVEN
     ///   goal (`Expr::ApplyWithin`, read by the Bool view or the functional-relation
     ///   hook). A FUNCTIONAL-RELATION goal ([`Self::functional_relation_goal`], routed to
     ///   `unify(?r, f(args))`) is judged by EVALUATION instead
@@ -13567,7 +13613,7 @@ impl KnowledgeBase {
             // keyed in lockstep with `step_init`'s dispatch (WI-878): a mis-arity
             // marker name is NOT resolved off-discrim, so it is refutable here.
             if self.extent_owner(functor).is_some()
-                || self.bare_bodied_bool_relation(functor)
+                || self.dispatched_bool_relation(&walked, functor)
                 || is_scoping_marker(self.local_name_of(functor), pos_arity)
             {
                 continue;

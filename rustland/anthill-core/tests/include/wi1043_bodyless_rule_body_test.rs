@@ -507,3 +507,91 @@ fn a_tie_nested_in_an_eq_goal_is_reported_once() {
         );
     }
 }
+
+/// THE ARITY+0 TWIN OF THIS FILE'S PIN READ: a body-less spec `Bool` op written as a GOAL.
+/// `Desc.isGood(leaf())` is pinned by the typer to `Leaf`'s implementation exactly as the
+/// arity+1 `Desc.describe(leaf(), ?r)` is, but the Bool view read only the SPELLED functor,
+/// which has no body: the goal answered nothing and `not(...)` over it proved a falsehood,
+/// while the operand spelling `Desc.isGood(leaf()) = true` answered `true`. Measured in the
+/// WI-20260925-PRVA2 review and filed on WI-20260926-ACG10; fixed by
+/// `KnowledgeBase::dispatched_bool_relation`.
+///
+/// TWO READERS, and each half has its own rows. BACK-OUTS, each RUN:
+///  * the Bool-view gate in `step_init` restored to the spelled functor: `good` answers 0 and
+///    `ngood` 1 (the falsehood). `someTrue` / `noneTrue` pass — the refutation half alone
+///    keeps the clause open.
+///  * WI-670's open-time refutation restored to the spelled functor: `someTrue` answers
+///    NOTHING (the clause opened with `?z` unbound is refuted by its conjunct's zero discrim
+///    candidates) and `noneTrue` answers 1 DEFINITE — a falsehood. `good` / `ngood` pass.
+/// PASS EITHER WAY, by design: `badg` / `nbad` (a false goal is refuted with or without the
+/// view), and `opnd` (the operand path always read the pin — the row that says the defect
+/// was the GOAL reading alone).
+#[test]
+fn a_pinned_body_less_bool_goal_decides() {
+    use anthill_core::kb::resolve::ResolveConfig;
+    let src = r#"
+namespace test.wi1043.boolview
+  import anthill.prelude.{Bool, Int64}
+  sort Desc
+    sort T = ?
+    operation isGood(x: T) -> Bool
+    operation isAbove(x: T, n: Int64) -> Bool
+  end
+  sort Leaf
+    entity leaf
+    provides Desc[T = Leaf]
+    operation isGood(x: Leaf) -> Bool = true
+    operation isAbove(x: Leaf, n: Int64) -> Bool = n > 2
+  end
+  sort Bad
+    entity bad
+    provides Desc[T = Bad]
+    operation isGood(x: Bad) -> Bool = false
+    operation isAbove(x: Bad, n: Int64) -> Bool = false
+  end
+  rule good(1)  :- Desc.isGood(leaf())
+  rule ngood(1) :- not(Desc.isGood(leaf()))
+  rule badg(1)  :- Desc.isGood(bad())
+  rule nbad(1)  :- not(Desc.isGood(bad()))
+  rule opnd(1)  :- Desc.isGood(leaf()) = true
+  -- opened with `?z` unbound: `ground` delays the clause, and WI-670 asks whether the
+  -- other conjunct refutes it regardless
+  rule at(?x, ?y) :- anthill.reflect.ground(?x), Desc.isAbove(leaf(), ?y)
+  rule someTrue() :- at(?z, 3)
+  rule noneTrue(?r) :- not someTrue(), ?r <=> 1
+end
+"#;
+    let mut kb = crate::common::load_kb_with(src);
+    // (definite, total): a suspension must not read as success, nor as a refutation.
+    let mut count = |pattern: &str| {
+        let goal = crate::common::query_pattern_term(&mut kb, pattern);
+        let sols = kb.resolve(&[goal], &ResolveConfig::default());
+        (sols.iter().filter(|s| s.is_definite()).count(), sols.len())
+    };
+    let ns = "test.wi1043.boolview";
+    assert_eq!(count(&format!("{ns}.good(1)")), (1, 1), "the pinned Bool goal DECIDES true");
+    assert_eq!(
+        count(&format!("{ns}.ngood(1)")),
+        (0, 0),
+        "…so NAF over it no longer proves a falsehood"
+    );
+    assert_eq!(count(&format!("{ns}.badg(1)")), (0, 0), "CONTROL: a false goal is refuted");
+    assert_eq!(count(&format!("{ns}.nbad(1)")), (1, 1), "CONTROL: …and its negation holds");
+    assert_eq!(
+        count(&format!("{ns}.opnd(1)")),
+        (1, 1),
+        "CONTROL: the operand spelling always read the pin"
+    );
+    assert_eq!(
+        count(&format!("{ns}.someTrue()")),
+        (0, 1),
+        "a clause opened with its caller variable unbound WAITS — one conditional row — \
+         rather than being refuted by the Bool goal's zero discrim candidates"
+    );
+    assert_eq!(
+        count(&format!("{ns}.noneTrue(?r)")).0,
+        0,
+        "…so NAF over it proves nothing DEFINITE (it proved `1` with the refutation half \
+         backed out)"
+    );
+}
