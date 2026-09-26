@@ -30,7 +30,7 @@
 //! |---|---|---|
 //! | `record_apply_within_concrete` (term) | carried `pos_args` the entity has none of; hand-ordered named args | no positionals, through `canonicalize_record_named_args` |
 //! | `visit_fn` `"apply_within"` (term → occurrence) | read a `type_args` field the entity did not declare | the entity declares it |
-//! | `weave_covered_call` (occurrence) | carried `type_args` with nowhere to go | ditto |
+//! | `weave_calls` (occurrence; `weave_covered_call` until WI-20260925-YNCY3) | carried `type_args` with nowhere to go | ditto |
 //!
 //! The `type_args` field was MISSING from the declaration rather than deliberately
 //! absent: `apply` beside it has had `type_args: Option[T = List[type_arg]]` since
@@ -255,7 +255,7 @@ fn a_woven_call_and_its_term_twin_read_alike() {
 }
 
 /// THE DECLARATION carries every field its producers build — the `type_args` channel
-/// `visit_fn` already read and `weave_covered_call` already carried.
+/// `visit_fn` already read and the weave (`weave_calls`) already carried.
 ///
 /// FAILS when `type_args` is dropped from the `apply_within` entity: the field list
 /// comes back three long.

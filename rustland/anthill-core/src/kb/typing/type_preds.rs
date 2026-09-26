@@ -131,7 +131,7 @@ fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool)
 /// [`type_term_mentions_type_var`], `type_term_mentions_op_tp`, `term_contains_functor`,
 /// [`occurs_in`]. A `TermId` walk rather than a [`TermView`] one on purpose: the view's
 /// `named_keys` allocates per node, and [`occurs_in`] runs for every hash-consed binding.
-pub(super) fn term_any_subterm(
+pub(crate) fn term_any_subterm(
     kb: &KnowledgeBase,
     t: TermId,
     hit: &impl Fn(TermId, &Term) -> bool,

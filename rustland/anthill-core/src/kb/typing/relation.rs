@@ -798,6 +798,19 @@ fn route_requirement_read(
     } else {
         witness_sort_goal(kb, spec_sort, op_functor, &arg_types, &bracket.written)
     }?;
+    resolve_route(kb, chain, param_rigids, subst, &built.goal)
+}
+
+/// The tail every route shares: resolve `goal` against the citing caller's frame `chain` —
+/// a rigid element meeting the caller's own `requires` through `param_rigids` — and emit
+/// the tree as the projection the citation passes. `None` routes nothing.
+fn resolve_route(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    param_rigids: &[(VarId, TermId)],
+    subst: &Substitution,
+    goal: &SortGoal,
+) -> Option<TermId> {
     let sigma = SigmaCtx {
         subst,
         param_rigids,
@@ -808,7 +821,7 @@ fn route_requirement_read(
         selected: &[],
         sub_goal_requires: &[],
     };
-    let ResolutionResult::Resolved(tree) = resolve(kb, &built.goal, &scope) else {
+    let ResolutionResult::Resolved(tree) = resolve(kb, goal, &scope) else {
         return None;
     };
     let syms = ProjectionSyms::resolve(kb)?;
@@ -895,21 +908,7 @@ fn op_slot_route(
             ..entry
         },
     )?;
-    let sigma = SigmaCtx {
-        subst,
-        param_rigids,
-    };
-    let scope = ResolutionScope {
-        available_requires: chain.entries(),
-        sigma: Some(&sigma),
-        selected: &[],
-        sub_goal_requires: &[],
-    };
-    let ResolutionResult::Resolved(tree) = resolve(kb, &goal, &scope) else {
-        return None;
-    };
-    let syms = ProjectionSyms::resolve(kb)?;
-    emit_tree_as_projection(kb, chain, &tree, &syms)
+    resolve_route(kb, chain, param_rigids, subst, &goal)
 }
 
 /// WI-20260925-SHED7 (proposal 060 §2.3) — the route of a `SortDomain` read at the type
@@ -923,7 +922,6 @@ fn op_slot_route(
 /// A TYPE WITH NO ENTRY — a caller's RIGID `X` — is the caller's own evidence, resolved
 /// against its frame chain: the one way a rigid's domain reaches a clause (§7.3). `None`
 /// where there is none; the read then builds its own from the value at run time.
-#[allow(clippy::too_many_arguments)]
 fn sort_domain_route(
     kb: &mut KnowledgeBase,
     chain: &DictChain,
@@ -955,38 +953,14 @@ fn sort_domain_route(
         let mut subs: Vec<TermId> = (0..entry.sub_offset)
             .map(|_| build_dictionary_term(kb, syms, head, &[]))
             .collect();
-        let keys = ty.named_keys(kb);
         for &j in &entry.conditions {
-            let short = kb.local_name_of(entry.params[j].0).to_string();
-            let arg = keys
-                .iter()
-                .copied()
-                .find(|k| kb.local_name_of(*k) == short)
-                .and_then(|k| ty.named_arg(kb, k))
-                .or_else(|| {
-                    crate::kb::fill_derive::condition_arg_position(kb, head, &entry.params, j)
-                        .and_then(|p| ty.pos_arg(kb, p))
-                })?
-                .to_value();
+            let arg = crate::kb::fill_derive::condition_arg(kb, &ty, &entry.params[j])?.to_value();
             subs.push(sort_domain_route(kb, chain, param_rigids, subst, spec, &arg, syms)?);
         }
         return Some(build_dictionary_term(kb, syms, head, &subs));
     }
     let built = anchor_sort_goal(kb, spec, &[ty], &[])?;
-    let sigma = SigmaCtx {
-        subst,
-        param_rigids,
-    };
-    let scope = ResolutionScope {
-        available_requires: chain.entries(),
-        sigma: Some(&sigma),
-        selected: &[],
-        sub_goal_requires: &[],
-    };
-    let ResolutionResult::Resolved(tree) = resolve(kb, &built.goal, &scope) else {
-        return None;
-    };
-    emit_tree_as_projection(kb, chain, &tree, syms)
+    resolve_route(kb, chain, param_rigids, subst, &built.goal)
 }
 
 /// WI-714 — the free-variable columns of a relation, merged across its clauses:

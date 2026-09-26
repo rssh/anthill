@@ -8308,8 +8308,7 @@ impl ScopePass for DefinePass<'_> {
         };
         // WI-20260925-SHED7 — a PRIMITIVE has a domain too (every type has a
         // `SortDomain`), whose `fill` is the waiting type check (`kb::fill_derive`).
-        let primitive = super::fill_derive::PRIMITIVE_SORTS
-            .contains(&self.kb.qualified_name_of(scope.owner()));
+        let primitive = is_prelude_sort_qn(self.kb.qualified_name_of(scope.owner()));
         if !primitive && !s.items.iter().any(|i| matches!(i, Item::Entity(_))) {
             return;
         }
@@ -11411,8 +11410,20 @@ fn process_imports(
 // ── Prelude: built-in primitive sorts ────────────────────────────
 
 /// Primitive sort names that are always available in the global scope.
-/// These correspond to the stdlib primitive types (Int64, Float, String, Bool).
+/// These correspond to the stdlib primitive types (Int64, Float, String, Bool) — the sorts
+/// whose values are LITERALS (`typing::literal_sort`), each declared in `anthill.prelude`.
 pub const PRELUDE_SORTS: &[&str] = &["Int64", "BigInt", "Float", "String", "Bool"];
+
+/// The qualified name a [`PRELUDE_SORTS`] entry is declared under.
+pub(crate) fn prelude_sort_qn(name: &str) -> String {
+    format!("anthill.prelude.{name}")
+}
+
+/// Is `qn` the qualified name of a [`PRELUDE_SORTS`] entry?
+pub(crate) fn is_prelude_sort_qn(qn: &str) -> bool {
+    qn.strip_prefix("anthill.prelude.")
+        .is_some_and(|name| PRELUDE_SORTS.contains(&name))
+}
 
 /// Effect sorts declared inside `namespace anthill.prelude` in
 /// stdlib/anthill/prelude/effects.anthill that user code references by
@@ -12285,7 +12296,7 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
     // stdlib's `sort anthill.prelude.Int64 { ... }` reuses the same Symbol,
     // alias the bare QN for try_resolve_symbol("Int64"), import into <global>.
     for &name in PRELUDE_SORTS {
-        let qualified = format!("anthill.prelude.{name}");
+        let qualified = prelude_sort_qn(name);
         let sym = kb
             .symbols
             .define(name, &qualified, SymbolKind::Sort, prelude_scope);
@@ -16224,10 +16235,8 @@ pub(crate) struct DomainJob {
     /// The namespace/sort the derived clause is asserted into — the same one the sort's
     /// induction rule takes.
     pub(crate) domain: Symbol,
-    /// The sort's declared type parameters in declaration order: the bare short-name
-    /// symbol a written `List[T = …]` uses as its binding key, and the parameter's
-    /// canonical variable (the very variable the entity field types carry).
-    pub(crate) params: Vec<(Symbol, TermId)>,
+    /// The sort's declared type parameters in declaration order.
+    pub(crate) params: Vec<crate::kb::fill_derive::DomainParam>,
     /// One entry per constructor, in DECLARATION order.
     pub(crate) ctors: Vec<DomainCtor>,
     /// The SORT DECLARATION's own span — where the derived `<Sort>.domain` clause
@@ -16572,7 +16581,7 @@ fn expand_unwritten_type_params(kb: &mut KnowledgeBase, t: TermId) -> TermId {
         // A BARE reference to a parameterised sort: every parameter is unwritten.
         Term::Ref(s) => match kb.domain_params_of(kb.canonical_sort_sym(s)) {
             Some(ps) if !ps.is_empty() => {
-                let keys: Vec<Symbol> = ps.iter().map(|&(k, _)| k).collect();
+                let keys: Vec<Symbol> = ps.iter().map(|p| p.key).collect();
                 let base = kb.make_sort_ref(s);
                 let bindings: Vec<(Symbol, TermId)> = keys
                     .into_iter()
@@ -16629,7 +16638,7 @@ fn expand_unwritten_type_params(kb: &mut KnowledgeBase, t: TermId) -> TermId {
             if let Some(ps) = kb.domain_params_of(kb.canonical_sort_sym(functor)) {
                 let missing: Vec<Symbol> = ps
                     .iter()
-                    .map(|&(k, _)| k)
+                    .map(|p| p.key)
                     .filter(|k| !named.iter().any(|&(w, _)| w == *k))
                     .collect();
                 for k in missing {
@@ -31316,7 +31325,7 @@ impl<'a> Loader<'a> {
         // variable in the derived `fill`'s self type `List[T = ?T]` is the very variable
         // `entity cons(head: T, …)`'s field type carries. Two mints of "the same"
         // parameter never unify, and nothing would say so.
-        let mut domain_params: Vec<(Symbol, TermId)> = Vec::new();
+        let mut domain_params: Vec<crate::kb::fill_derive::DomainParam> = Vec::new();
 
         for item in &s.items {
             match item {
@@ -31341,7 +31350,11 @@ impl<'a> Loader<'a> {
                         let short = self.parsed.symbols.local_name(abs.name.last()).to_owned();
                         let key = self.kb.intern(&short);
                         let var = self.type_param_var(sym, &short);
-                        domain_params.push((key, var));
+                        domain_params.push(crate::kb::fill_derive::DomainParam {
+                            key,
+                            decl: sym,
+                            var,
+                        });
                     }
                 }
                 Item::RequiresDecl(r) => {
@@ -31437,7 +31450,7 @@ impl<'a> Loader<'a> {
         &mut self,
         entities: &[&Entity],
         sort_functor: Symbol,
-        params: Vec<(Symbol, TermId)>,
+        params: Vec<crate::kb::fill_derive::DomainParam>,
         decl_span: Span,
     ) {
         let domain = self.current_domain();

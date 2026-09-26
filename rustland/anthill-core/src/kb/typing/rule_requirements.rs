@@ -139,9 +139,9 @@ pub(super) fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<Ty
         }
         let mut new_body: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(body_nodes.len());
         let mut changed = false;
-        // WI-1040 — `(covered call, its functor, the dictionary variable)` per
-        // `require[X]` in this clause, applied once the goal rewrites are done.
-        let mut weaves: Vec<(Rc<NodeOccurrence>, Symbol, Rc<NodeOccurrence>)> = Vec::new();
+        // WI-1040 — `(covered call, the dictionary variable)` per `require[X]` in this
+        // clause, applied once the goal rewrites are done.
+        let mut weaves: Vec<(Rc<NodeOccurrence>, Rc<NodeOccurrence>)> = Vec::new();
         // `(spec, was it ANCHOR-grounded)` per `require` seen in this clause — see the
         // gate below.
         let mut spec_groundings: Vec<(Symbol, bool)> = Vec::new();
@@ -205,8 +205,8 @@ pub(super) fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<Ty
                     // call in the body exactly as it found them, which is what makes
                     // acceptance (f) structural.
                     if let Some(out) = out_var_of_goal(kb, node, fd_sym) {
-                        for (call, call_fn) in &found.covered_calls {
-                            weaves.push((Rc::clone(call), *call_fn, Rc::clone(&out)));
+                        for call in &found.covered_calls {
+                            weaves.push((Rc::clone(call), Rc::clone(&out)));
                         }
                     }
                     // `None` — the requirement was decided at LOAD (the check tier under
@@ -239,8 +239,8 @@ pub(super) fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<Ty
         // travel the SLOT-indexed `op_dicts` channel (WI-822), which is N-ary, has a
         // reader, and needs nothing from here.
         let mut ambiguous: Option<crate::span::SourceSpan> = None;
-        for (i, (call, _, _)) in weaves.iter().enumerate() {
-            if weaves[..i].iter().any(|(c, _, _)| Rc::ptr_eq(c, call)) {
+        for (i, (call, _)) in weaves.iter().enumerate() {
+            if weaves[..i].iter().any(|(c, _)| Rc::ptr_eq(c, call)) {
                 ambiguous = Some(call.span);
                 break;
             }
@@ -266,18 +266,21 @@ pub(super) fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<Ty
             });
             continue; // leave the rule un-rewritten; the load fails on the error above
         }
-        for (call, call_fn, out) in weaves {
-            let mut wove = false;
-            new_body = new_body
-                .iter()
-                .map(|n| weave_covered_call(n, &call, call_fn, std::slice::from_ref(&out), &mut wove))
-                .collect();
+        // ONE pass, every covered call matched by identity ([`weave_calls`], the inference's
+        // walk too). Weaving call after call lost an outer covered call around a woven inner
+        // one — `reassemble` hands the rebuilt parent back as a NEW node, which the later
+        // identity match cannot find: a debug build panicked at load and a release build
+        // left the outer call value-dispatched (WI-20260925-PRVA2 (a)).
+        let targets: Vec<WeaveTarget> = weaves.into_iter().map(|(call, out)| (call, vec![out])).collect();
+        if !targets.is_empty() {
+            let mut reached = vec![false; targets.len()];
+            new_body = new_body.iter().map(|n| weave_calls(n, &targets, &mut reached)).collect();
             debug_assert!(
-                wove,
-                "WI-1040: the covered call chosen as witness was not found in the body \
-                 it was chosen from",
+                reached.iter().all(|r| *r),
+                "WI-1040: a covered call chosen as witness was not found in the body it was \
+                 chosen from",
             );
-            changed |= wove;
+            changed |= reached.iter().any(|r| *r);
         }
         if changed {
             kb.set_rule_body_nodes(rid, new_body);
@@ -404,18 +407,17 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         for node in &body {
             collect_find_dictionary_bases(kb, node, fd_sym, &mut written);
         }
-        // Per SPEC-OP demand `(goal index, spec, the call, its carrier arguments)`, and per
-        // SLOT demand `(goal index, the call, its callee's chain)`, in body order.
-        let mut demands: Vec<(usize, Symbol, Rc<NodeOccurrence>, Vec<Rc<NodeOccurrence>>)> =
-            Vec::new();
-        let mut slot_calls: Vec<(usize, Rc<NodeOccurrence>, Vec<Symbol>)> = Vec::new();
+        // Per SPEC-OP demand `(goal index, the demand)`, and per SLOT demand `(goal index, the
+        // call, its arguments, its callee's chain)`, in body order.
+        let mut demands: Vec<(usize, SpecDemand)> = Vec::new();
+        let mut slot_calls: Vec<(usize, SlotDemand)> = Vec::new();
         for (gi, goal) in body.iter().enumerate() {
             // `(node, is it the top-level goal itself)`: the top goal's VALUE positions, and
             // below them only what [`demand_walk_enters`] admits — see the doc above for
             // where the walk stops and why.
             let mut stack: Vec<(Rc<NodeOccurrence>, bool)> = vec![(Rc::clone(goal), true)];
-            let mut found: Vec<(Symbol, Rc<NodeOccurrence>, Vec<Rc<NodeOccurrence>>)> = Vec::new();
-            let mut found_slots: Vec<(Rc<NodeOccurrence>, Vec<Symbol>)> = Vec::new();
+            let mut found: Vec<SpecDemand> = Vec::new();
+            let mut found_slots: Vec<SlotDemand> = Vec::new();
             while let Some((o, top)) = stack.pop() {
                 let Some(expr) = o.as_expr() else { continue };
                 if top || demand_walk_enters(expr) {
@@ -449,45 +451,49 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                 if top && !woven_goal_has_reader(kb, *functor, pos_args, named_args) {
                     continue;
                 }
-                if let Some(spec) =
+                if let Some(demand) =
                     inferred_demand(kb, &o, top, *functor, pos_args, named_args, &written)
                 {
-                    let carriers = call_carrier_args(kb, *functor, pos_args, named_args, spec);
-                    found.push((spec, Rc::clone(&o), carriers));
-                } else if let Some(chain) =
+                    found.push(demand);
+                } else if let Some(demand) =
                     inferred_slot_demand(kb, &o, *functor, pos_args, named_args)
                 {
-                    found_slots.push((Rc::clone(&o), chain));
+                    found_slots.push(demand);
                 }
             }
             // The walk pops children first; restore SOURCE order within the goal so the
             // witness of a shared read is the call written first.
-            found.sort_by_key(|(_, o, _)| o.span.span.start);
-            found_slots.sort_by_key(|(o, _)| o.span.span.start);
-            demands.extend(found.into_iter().map(|(s, o, c)| (gi, s, o, c)));
-            slot_calls.extend(found_slots.into_iter().map(|(o, c)| (gi, o, c)));
+            found.sort_by_key(|d| d.call.call.span.span.start);
+            found_slots.sort_by_key(|d| d.call.call.span.span.start);
+            demands.extend(found.into_iter().map(|d| (gi, d)));
+            slot_calls.extend(found_slots.into_iter().map(|d| (gi, d)));
         }
         if demands.is_empty() && slot_calls.is_empty() {
             continue;
         }
         // Group by (spec, carrier arguments); the first call of a group is its witness.
-        let mut groups: Vec<(usize, Symbol, Vec<Rc<NodeOccurrence>>, Vec<Rc<NodeOccurrence>>)> =
-            Vec::new();
-        for (gi, spec, call, carriers) in demands {
-            let same = groups.iter_mut().find(|(_, s, _, cs)| {
-                *s == spec
-                    && cs.len() == carriers.len()
-                    && cs.iter().zip(&carriers).all(|(a, b)| views_structurally_equal(kb, a, b))
+        let mut groups: Vec<(usize, SpecDemand, Vec<Rc<NodeOccurrence>>)> = Vec::new();
+        for (gi, demand) in demands {
+            let same = groups.iter_mut().find(|(_, w, _)| {
+                w.spec == demand.spec
+                    && w.carriers.len() == demand.carriers.len()
+                    && w.carriers
+                        .iter()
+                        .zip(&demand.carriers)
+                        .all(|(a, b)| views_structurally_equal(kb, a, b))
             });
             match same {
-                Some((_, _, calls, _)) => calls.push(call),
-                None => groups.push((gi, spec, vec![call], carriers)),
+                Some((_, _, calls)) => calls.push(demand.call.call),
+                None => {
+                    let call = Rc::clone(&demand.call.call);
+                    groups.push((gi, demand, vec![call]));
+                }
             }
         }
         let mut reads_before: Vec<Vec<Rc<NodeOccurrence>>> = vec![Vec::new(); body.len()];
         let mut targets: Vec<WeaveTarget> = Vec::new();
-        for (gi, spec, calls, _) in groups {
-            let (read, out) = inferred_read(kb, rid, fd_sym, pass, &labels, spec, &calls[0], None);
+        for (gi, witness, calls) in groups {
+            let (read, out) = inferred_read(kb, rid, fd_sym, pass, &labels, witness.spec, &witness.call, None);
             reads_before[gi].push(read);
             for call in calls {
                 targets.push((call, vec![Rc::clone(&out)]));
@@ -495,23 +501,26 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         }
         // A SLOT demand gets one read per slot of the callee's chain, and the call carries
         // all of them, in chain order — the layout `call_op_bridged` reads them back in.
-        for (gi, call, chain) in slot_calls {
-            let mut outs: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(chain.len());
-            for (k, spec) in chain.into_iter().enumerate() {
-                let (read, out) = inferred_read(kb, rid, fd_sym, pass, &labels, spec, &call, Some(k));
+        for (gi, demand) in slot_calls {
+            let mut outs: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(demand.chain.len());
+            for (k, spec) in demand.chain.iter().enumerate() {
+                let (read, out) = inferred_read(kb, rid, fd_sym, pass, &labels, *spec, &demand.call, Some(k));
                 reads_before[gi].push(read);
                 outs.push(out);
             }
-            targets.push((call, outs));
+            targets.push((demand.call.call, outs));
         }
         // ONE pass over the ORIGINAL body, every target matched by identity there. Weaving
         // call after call instead lost any call whose subtree an earlier weave had rebuilt —
         // an outer call around a woven inner one — which `reassemble` hands back as a NEW
         // node the later identity match cannot find.
-        let mut wove = 0;
+        let mut reached = vec![false; targets.len()];
         let new_body: Vec<Rc<NodeOccurrence>> =
-            body.iter().map(|g| weave_calls(g, &targets, &mut wove)).collect();
-        debug_assert_eq!(wove, targets.len(), "P7VP4: an inferred demand's call was not found in its body");
+            body.iter().map(|g| weave_calls(g, &targets, &mut reached)).collect();
+        debug_assert!(
+            reached.iter().all(|r| *r),
+            "P7VP4: an inferred demand's call was not found in its body"
+        );
         let mut body_out: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(new_body.len() + 2);
         for (goal, reads) in new_body.into_iter().zip(reads_before) {
             body_out.extend(reads);
@@ -528,6 +537,31 @@ struct ReadLabels {
     dict: Symbol,
 }
 
+/// A call [`infer_rule_body_requirements`] reads a condition for: the occurrence, its
+/// operation, and its arguments in the operation's PARAMETER order — aligned once, by the
+/// predicate that admitted the call ([`align_call_args_to_params`]), and read as they stand
+/// by everything after it.
+struct DemandCall {
+    call: Rc<NodeOccurrence>,
+    functor: Symbol,
+    args: Vec<Rc<NodeOccurrence>>,
+}
+
+/// A SPEC-OP demand ([`inferred_demand`]): the spec its instance is read at, and the call's
+/// CARRIER arguments, which say which calls share one read.
+struct SpecDemand {
+    call: DemandCall,
+    spec: Symbol,
+    carriers: Vec<Rc<NodeOccurrence>>,
+}
+
+/// A SLOT demand ([`inferred_slot_demand`]): the spec of each slot of the callee's dictionary
+/// chain, in chain order.
+struct SlotDemand {
+    call: DemandCall,
+    chain: Vec<Symbol>,
+}
+
 /// One INFERRED read for [`infer_rule_body_requirements`], and the clause variable it binds:
 /// `find_dictionary(Spec, op, args…, out: ?d)` for a spec-op demand, with `slot: k` besides
 /// for slot `k` of an ordinary operation's chain. `?d` is a NEW clause variable, PREPENDED to
@@ -541,23 +575,14 @@ fn inferred_read(
     pass: crate::kb::occurrence::PassId,
     labels: &ReadLabels,
     spec: Symbol,
-    witness: &Rc<NodeOccurrence>,
+    witness: &DemandCall,
     slot: Option<usize>,
 ) -> (Rc<NodeOccurrence>, Rc<NodeOccurrence>) {
-    let Some(Expr::Apply {
+    let DemandCall {
+        call: witness,
         functor,
-        pos_args,
-        named_args,
-        ..
-    }) = witness.as_expr()
-    else {
-        unreachable!("a demand is an application");
-    };
-    let Some(args) = crate::kb::op_info::lookup_operation_info(kb, *functor)
-        .and_then(|rec| align_call_args_to_params(kb, &rec.params, pos_args, named_args))
-    else {
-        unreachable!("a demand's call aligns — its predicate aligned it");
-    };
+        args,
+    } = witness;
     let d_index = kb.rule_globals(rid).len() as u32;
     let d = kb.fresh_var(labels.dict);
     let bounds = kb.rule_type_bounds(rid).to_vec();
@@ -567,7 +592,7 @@ fn inferred_read(
     let node = |e: Expr| NodeOccurrence::new_expr(e, span, owner);
     let out = node(Expr::Var(Var::DeBruijn(d_index)));
     let mut read_args = vec![node(Expr::Ref(spec)), node(Expr::Ref(*functor))];
-    read_args.extend(args);
+    read_args.extend(args.iter().cloned());
     let mut read_named = Vec::with_capacity(2);
     if let Some(k) = slot {
         read_named.push((labels.slot, node(Expr::Const(Literal::Int(k as i64)))));
@@ -593,13 +618,33 @@ type WeaveTarget = (Rc<NodeOccurrence>, Vec<Rc<NodeOccurrence>>);
 
 /// Weave every target under `node` in ONE walk of the original tree, a target's own
 /// arguments included — so a woven call nested in another woven call is found either way
-/// round. `wove` counts the targets reached.
-fn weave_calls(node: &Rc<NodeOccurrence>, targets: &[WeaveTarget], wove: &mut usize) -> Rc<NodeOccurrence> {
+/// round. `reached[i]` is set once `targets[i]` is found.
+///
+/// The ONE weave, for both producers: WI-1040's covered calls (one DISPATCH dictionary per
+/// spec-op call, which instance it dispatches on) and [`infer_rule_body_requirements`]'
+/// demands (that, or one per SLOT of an ordinary operation's dictionary chain, the clause's
+/// conditions for the callee's own `requires`). `reduce_op_value` tells the two apart by
+/// the callee: a spec op dispatches, anything else takes slots.
+///
+/// ```text
+///     Desc.describe(?x, ?r)  ⇒  apply_within(fn = Desc.describe, args = (?x, ?r),
+///                                            requirements = [?d])
+/// ```
+///
+/// `apply_within` is the EXISTING carrier — `req_insertion` emits exactly this shape for
+/// operation bodies, and eval's `start_apply_within` reads a dictionary out of that
+/// channel. Identity, not structure: two calls to the same operation on the same arguments
+/// are distinct occurrences, and only the ones a scan chose are woven.
+fn weave_calls(
+    node: &Rc<NodeOccurrence>,
+    targets: &[WeaveTarget],
+    reached: &mut [bool],
+) -> Rc<NodeOccurrence> {
     let Some(expr) = node.as_expr() else {
         return Rc::clone(node);
     };
     if let (
-        Some((_, requirements)),
+        Some(i),
         Expr::Apply {
             functor,
             pos_args,
@@ -607,17 +652,17 @@ fn weave_calls(node: &Rc<NodeOccurrence>, targets: &[WeaveTarget], wove: &mut us
             type_args,
             ..
         },
-    ) = (targets.iter().find(|(t, _)| Rc::ptr_eq(t, node)), expr)
+    ) = (targets.iter().position(|(t, _)| Rc::ptr_eq(t, node)), expr)
     {
-        *wove += 1;
+        reached[i] = true;
         return node.rebuilt_expr(Expr::ApplyWithin {
             functor: *functor,
-            args: pos_args.iter().map(|a| weave_calls(a, targets, wove)).collect(),
+            args: pos_args.iter().map(|a| weave_calls(a, targets, reached)).collect(),
             named_args: named_args
                 .iter()
-                .map(|(k, a)| (*k, weave_calls(a, targets, wove)))
+                .map(|(k, a)| (*k, weave_calls(a, targets, reached)))
                 .collect(),
-            requirements: requirements.clone(),
+            requirements: targets[i].1.clone(),
             type_args: type_args.clone(),
         });
     }
@@ -627,12 +672,12 @@ fn weave_calls(node: &Rc<NodeOccurrence>, targets: &[WeaveTarget], wove: &mut us
         return Rc::clone(node);
     }
     let new_children: Vec<Rc<NodeOccurrence>> =
-        children.iter().map(|c| weave_calls(c, targets, wove)).collect();
+        children.iter().map(|c| weave_calls(c, targets, reached)).collect();
     crate::kb::simp_rewrite::reassemble(node, &new_children)
 }
 
 /// Does a woven call at GOAL position have a reader? The resolver reads two call shapes
-/// there, and both read a woven head (`step_init`'s `woven_head`):
+/// there, and both read a woven head (`resolve::goal_call_head`):
 ///   * the FUNCTIONAL-RELATION form `f(args…, result)` of a callee that form reads — a
 ///     rule-less bodied operation, or WI-1057's body-less spec op (the WI-938 hook);
 ///   * the BOOL VIEW — a bodied `Bool` operation at its declared arity, `eq(f(args…), true)`
@@ -708,7 +753,8 @@ fn occ_mentions_var(occ: &Rc<NodeOccurrence>) -> bool {
 
 /// WI-20260925-P7VP4 — the SLOT demand of a rule-body call to an ORDINARY operation with a
 /// dictionary chain (its parent sort's `requires`, then its own — [`op_dict_entries`]): the
-/// spec of each slot, in chain order, or `None` where the call demands no conditions.
+/// spec of each slot, in chain order, with the call's aligned arguments ([`SlotDemand`]), or
+/// `None` where the call demands no conditions.
 ///
 /// Each slot becomes a condition of the clause, and the call carries them. A condition no
 /// citation fills stays UNBOUND, and the bridge then derives that slot from the argument
@@ -729,12 +775,11 @@ fn inferred_slot_demand(
     functor: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
-) -> Option<Vec<Symbol>> {
+) -> Option<SlotDemand> {
     if !crate::kb::op_info::operation_is_declared(kb, functor)
         || kb.is_builtin(functor)
         || host_implements(kb, functor)
-        || lookup_spec_op_dispatch(kb, functor).is_some()
-        || defaulted_spec_op_parent(kb, functor).is_some()
+        || spec_op_call_parent(kb, functor).is_some()
         || kb.functional_relation_arity(functor).is_none()
         || occ.classified_apply_target().is_some()
         || !occ.op_dicts().is_empty()
@@ -747,11 +792,19 @@ fn inferred_slot_demand(
         return None;
     }
     let chain = op_dict_entries(kb, functor);
-    (!chain.is_empty()).then(|| chain.iter().map(|e| e.required_sort).collect())
+    (!chain.is_empty()).then(|| SlotDemand {
+        chain: chain.iter().map(|e| e.required_sort).collect(),
+        call: DemandCall {
+            call: Rc::clone(occ),
+            functor,
+            args,
+        },
+    })
 }
 
 /// The spec a rule-body call DEMANDS a condition for under [`infer_rule_body_requirements`],
-/// or `None` where it demands none there (see that function's list of what is declined).
+/// with the call's aligned and carrier arguments ([`SpecDemand`]), or `None` where it demands
+/// none there (see that function's list of what is declined).
 /// `top`: the call IS the top-level goal, rather than sitting in one of its value positions.
 fn inferred_demand(
     kb: &KnowledgeBase,
@@ -761,7 +814,7 @@ fn inferred_demand(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     written: &[Symbol],
-) -> Option<Symbol> {
+) -> Option<SpecDemand> {
     let (spec, defaulted) = lookup_spec_op_dispatch(kb, functor)
         .map(|s| (s, false))
         .or_else(|| defaulted_spec_op_parent(kb, functor).map(|s| (s, true)))?;
@@ -780,8 +833,8 @@ fn inferred_demand(
     // A call that does not ALIGN to its operation's parameters (an argument missing, a
     // label naming no parameter) is the typer's to refuse; it reads headless below and
     // would otherwise pass as a demand no read can be written for.
-    crate::kb::op_info::lookup_operation_info(kb, functor)
-        .and_then(|rec| align_call_args_to_params(kb, &rec.params, pos_args, named_args))?;
+    let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
+    let args = align_call_args_to_params(kb, &rec.params, pos_args, named_args)?;
     // A BODY-LESS spec op is read — dispatched — only AT GOAL POSITION, WI-1057's
     // functional-relation form. In a value slot an UNPINNED one — and this pass sees only
     // those: its carrier is not known at load — is SYMBOLIC ALGEBRA, the term the rule
@@ -796,7 +849,7 @@ fn inferred_demand(
     }
     // Only a carrier NOT KNOWN AT LOAD gets a condition: `Fire` is decided by its concrete
     // carrier (the typer's route) and `DontFire` is WI-642's refusal.
-    let (outcome, _) = spec_op_call_carrier_outcome(kb, functor, pos_args, named_args, spec);
+    let (outcome, _) = aligned_carrier_outcome(kb, functor, Some(&args), spec);
     if !matches!(outcome, FindDictOutcome::Suspend) {
         return None;
     }
@@ -809,12 +862,21 @@ fn inferred_demand(
     // sort alone (WI-20260925-PRVA2 (c)): `Conv.conv(?x, ?u, ?r)` with `?u` a `String`, under
     // `sort Meters provides Conv[A = Meters, B = String]`, answered `7` unwoven and nothing
     // woven. Only a call whose carriers are ALL unknown at load gets a condition.
-    let concrete = call_carrier_args(kb, functor, pos_args, named_args, spec)
+    let carriers = aligned_carrier_args(kb, &rec.params, &args, spec);
+    let concrete = carriers
         .iter()
         .filter_map(|a| a.inferred_type())
         .filter_map(|t| sort_functor_of_view(kb, &t))
         .any(|s| !is_sort_param_symbol(kb, s) && !carrier_is_abstract_spec(kb, s));
-    (!concrete).then_some(spec)
+    (!concrete).then(|| SpecDemand {
+        call: DemandCall {
+            call: Rc::clone(occ),
+            functor,
+            args,
+        },
+        spec,
+        carriers,
+    })
 }
 
 /// WI-642 — the STATIC face of the WI-300 rule-body dictionary. Walk every rule
@@ -1611,6 +1673,17 @@ fn spec_op_call_carrier_outcome(
     // argument's sort.
     let aligned = crate::kb::op_info::lookup_operation_info(kb, functor)
         .and_then(|rec| align_call_args_to_params(kb, &rec.params, pos_args, named_args));
+    aligned_carrier_outcome(kb, functor, aligned.as_deref(), spec_sort)
+}
+
+/// [`spec_op_call_carrier_outcome`] over arguments already in PARAMETER order — `None` for
+/// a partial call, whose every argument then reads headless.
+fn aligned_carrier_outcome(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    aligned: Option<&[Rc<NodeOccurrence>]>,
+    spec_sort: Symbol,
+) -> (FindDictOutcome, Option<Symbol>) {
     // Read each carrier parameter's argument sort head from the `inferred_type`
     // `type_rule_bodies` stamped (WI-603), like [`simp_fire_guard_holds`], and treat
     // two carrier shapes as headless (`None` → `Suspend`), never as a concrete sort
@@ -1635,7 +1708,6 @@ fn spec_op_call_carrier_outcome(
     let last_carrier: std::cell::Cell<Option<Symbol>> = std::cell::Cell::new(None);
     let outcome = simp_guard_holds_core(kb, functor, spec_sort, |i| {
         let carrier = aligned
-            .as_ref()
             .and_then(|args| args.get(i))
             .and_then(|a| a.inferred_type())
             .and_then(|t| sort_functor_of_view(kb, &t))
@@ -1694,9 +1766,26 @@ pub(super) fn carrier_provided_by_witness(
     carrier: Symbol,
 ) -> bool {
     let carrier_canon = kb.canonical_sort_sym(carrier);
-    provides_rows_of_spec(kb, spec_sort).any(|row| {
-        witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view) == Some(carrier_canon)
-    })
+    // Before the index is built — a load phase's own window — the rows are walked as asked.
+    let Some(index) = kb.provides_index.as_ref() else {
+        return witness_carriers_of(kb, spec_sort).contains(&carrier_canon);
+    };
+    if let Some(carriers) = index.witness_carriers.borrow().get(&spec_sort) {
+        return carriers.contains(&carrier_canon);
+    }
+    let carriers: Rc<[Symbol]> = witness_carriers_of(kb, spec_sort).into();
+    let hit = carriers.contains(&carrier_canon);
+    index.witness_carriers.borrow_mut().insert(spec_sort, carriers);
+    hit
+}
+
+/// The canonical carriers `spec_sort`'s WITNESS provisions dispatch at — the one criterion,
+/// `witness_dispatch_carrier`, over each of its rows. See [`ProvidesIndex`]'s
+/// `witness_carriers`, which memoizes it.
+fn witness_carriers_of(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
+    provides_rows_of_spec(kb, spec_sort)
+        .filter_map(|row| witness_dispatch_carrier(kb, spec_sort, row.provider, row.spec_view))
+        .collect()
 }
 
 /// Is `spec` a `SortView` wrapper? [`is_sort_view_functor`] of its head, so the witness-gate
@@ -2382,69 +2471,6 @@ fn out_var_of_goal(
     }
 }
 
-/// WI-1040 step 2 — rewrite the call `target` (matched by occurrence IDENTITY) into
-/// the form that carries its dictionary:
-///
-/// ```text
-///     Desc.describe(?x, ?r)  ⇒  apply_within(fn = Desc.describe, args = (?x, ?r),
-///                                            requirements = [?d])
-/// ```
-///
-/// `apply_within` is the EXISTING carrier — `req_insertion` emits exactly this shape
-/// for operation bodies (as a `Term::Fn` in `dispatch_rewrites`) and eval's
-/// `start_apply_within` already reads a dictionary out of that channel to select the
-/// impl op. So there is no new node kind here, only the first OCCURRENCE-side
-/// producer of one; the resolver's reader is `reduce_op_value`.
-///
-/// Identity, not structure: two calls to the same operation on the same arguments
-/// are distinct occurrences, and only the one the witness scan chose is covered.
-/// `wove` reports whether the target was reached, so a scan that picked a call the
-/// walk cannot find is loud rather than silently un-woven.
-///
-/// `requirements` is ONE dictionary for a spec op — which instance this call dispatches
-/// on — and, since WI-20260925-P7VP4, one per SLOT of an ordinary operation's dictionary
-/// chain (the clause's conditions for that callee's own `requires`). `reduce_op_value`
-/// tells the two apart by the callee: a spec op dispatches, anything else takes slots.
-pub(super) fn weave_covered_call(
-    node: &Rc<NodeOccurrence>,
-    target: &Rc<NodeOccurrence>,
-    call_fn: Symbol,
-    requirements: &[Rc<NodeOccurrence>],
-    wove: &mut bool,
-) -> Rc<NodeOccurrence> {
-    if Rc::ptr_eq(node, target) {
-        if let Some(Expr::Apply {
-            pos_args,
-            named_args,
-            type_args,
-            ..
-        }) = node.as_expr()
-        {
-            *wove = true;
-            return node.rebuilt_expr(Expr::ApplyWithin {
-                functor: call_fn,
-                args: pos_args.clone(),
-                named_args: named_args.clone(),
-                requirements: requirements.to_vec(),
-                type_args: type_args.clone(),
-            });
-        }
-    }
-    let Some(expr) = node.as_expr() else {
-        return Rc::clone(node);
-    };
-    let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
-    for_each_child(expr, |c| children.push(Rc::clone(c)));
-    if children.is_empty() {
-        return Rc::clone(node);
-    }
-    let new_children: Vec<Rc<NodeOccurrence>> = children
-        .iter()
-        .map(|c| weave_covered_call(c, target, call_fn, requirements, wove))
-        .collect();
-    crate::kb::simp_rewrite::reassemble(node, &new_children)
-}
-
 /// The spec-instance slot of a `find_dictionary` goal occurrence, or `None` when the
 /// occurrence is not one.
 ///
@@ -2580,15 +2606,25 @@ pub(super) fn call_carrier_args(
     let Some(args) = align_call_args_to_params(kb, &rec.params, pos_args, named_args) else {
         return Vec::new();
     };
+    aligned_carrier_args(kb, &rec.params, &args, spec_canon)
+}
+
+/// [`call_carrier_args`] over arguments already in the order of `params`.
+fn aligned_carrier_args(
+    kb: &KnowledgeBase,
+    params: &[(Symbol, Value)],
+    args: &[Rc<NodeOccurrence>],
+    spec_canon: Symbol,
+) -> Vec<Rc<NodeOccurrence>> {
     let type_params = kb.type_params_of_sort(spec_canon);
-    let self_representing = spec_self_represented_by(kb, &rec.params, spec_canon);
-    rec.params
+    let self_representing = spec_self_represented_by(kb, params, spec_canon);
+    params
         .iter()
         .zip(args)
         .filter(|((_n, pty), _)| {
             param_is_spec_carrier(kb, spec_canon, &type_params, self_representing, pty)
         })
-        .map(|(_, arg)| arg)
+        .map(|(_, arg)| Rc::clone(arg))
         .collect()
 }
 
@@ -2597,7 +2633,7 @@ pub(super) fn call_carrier_args(
 ///
 /// THREE GATES, and each was measured before it was written.
 ///
-/// * **A reader must exist for a woven goal.** `weave_covered_call` produces an
+/// * **A reader must exist for a woven goal.** [`weave_calls`] produces an
 ///   `Expr::ApplyWithin`, whose `TermView` head is `Opaque` — so at GOAL position it
 ///   is invisible to builtin dispatch (`get_builtin_view` keys on a `Functor` head),
 ///   to the discrim query, and to the WI-938 functional-relation hook unless that
@@ -2666,8 +2702,8 @@ pub(super) fn collect_covered_calls(
     body_nodes: &[Rc<NodeOccurrence>],
     spec_canon: Symbol,
     at: &[Rc<NodeOccurrence>],
-) -> Vec<(Rc<NodeOccurrence>, Symbol)> {
-    let mut out: Vec<(Rc<NodeOccurrence>, Symbol)> = Vec::new();
+) -> Vec<Rc<NodeOccurrence>> {
+    let mut out: Vec<Rc<NodeOccurrence>> = Vec::new();
     let mut stack: Vec<Rc<NodeOccurrence>> = body_nodes.iter().cloned().collect();
     while let Some(cand) = stack.pop() {
         let Some(expr) = cand.as_expr() else { continue };
@@ -2735,10 +2771,10 @@ pub(super) fn collect_covered_calls(
         if cand.classified_apply_target().is_some() {
             continue;
         }
-        if out.iter().any(|(c, _)| Rc::ptr_eq(c, &cand)) {
+        if out.iter().any(|c| Rc::ptr_eq(c, &cand)) {
             continue;
         }
-        out.push((Rc::clone(&cand), *functor));
+        out.push(Rc::clone(&cand));
     }
     out
 }

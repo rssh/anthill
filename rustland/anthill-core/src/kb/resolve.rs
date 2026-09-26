@@ -1263,6 +1263,16 @@ pub struct SearchStream {
     /// the body open with one `HashMap` probe instead of scanning every goal
     /// (WI-568). Safe because rules don't change during a single resolve call.
     cut_cache: HashMap<RuleId, Option<Symbol>>,
+    /// Per-query cache: rule → the body positions of its ROUTING-ONLY reads
+    /// ([`is_routing_only_read`]), which the body open drops. Static per rule, as
+    /// `cut_cache` is, and for the same reason: a rule that holds none — nearly every rule —
+    /// opens with one `HashMap` probe instead of a scan of its body.
+    routing_read_cache: HashMap<RuleId, SmallVec<[usize; 2]>>,
+    /// Per-query cache: a cited relation → its requirement-read layout
+    /// (`typing::requirement_read_counts`), which [`bind_citation_reads`] reads at every
+    /// clause opening a citation marker reaches — a `fill` step opens its relation once per
+    /// step. Static per relation, as `cut_cache` is per rule.
+    read_layout_cache: HashMap<Symbol, Rc<[(RuleId, usize)]>>,
     /// WI-616/WI-628 — set when any branch was abandoned at the `max_depth`
     /// limit: the search is INCOMPLETE, so "no solutions" does not mean
     /// "refuted". Read (via [`SearchStream::drain_verdict`]) by the two
@@ -2517,32 +2527,13 @@ impl SearchStream {
         // outcome for a call written at an arity the operation does not have.
         //
         // WI-20260925-P7VP4 — A WOVEN Bool-view call reads its shape off the occurrence, as the
-        // arity+1 hook below does (`woven_head`): the inference weaves `Util.isLess(?a, ?b)`
-        // to carry its clause's conditions, and on the view an `ApplyWithin` heads its reflect
-        // twin `apply_within`, not the callee. Read only through the view, the call answered
-        // nothing — so the inference declined it, and a citation's dictionary never reached a
-        // Bool-view call.
-        let bool_view_head = match &goal_val {
-            Value::Node(o) => match o.as_expr() {
-                Some(Expr::ApplyWithin {
-                    functor,
-                    args,
-                    named_args,
-                    ..
-                }) => Some((*functor, args.len(), named_args.len())),
-                _ => None,
-            },
-            _ => None,
-        }
-        .or_else(|| match goal_val.head(kb) {
-            ViewHead::Functor {
-                functor: Some(f),
-                pos_arity,
-                named_arity,
-            } => Some((f, pos_arity, named_arity)),
-            _ => None,
-        });
-        if let Some((f, pos_arity, named_arity)) = bool_view_head {
+        // arity+1 hook below does ([`goal_call_head`]): the inference weaves
+        // `Util.isLess(?a, ?b)` to carry its clause's conditions, and on the view an
+        // `ApplyWithin` heads its reflect twin `apply_within`, not the callee. Read only
+        // through the view, the call answered nothing — so the inference declined it, and a
+        // citation's dictionary never reached a Bool-view call.
+        let call_head = goal_call_head(kb, &goal_val);
+        if let Some((f, pos_arity, named_arity)) = call_head {
             let declared_arity = kb
                 .op_record(f)
                 .and_then(|r| r.signature.as_ref())
@@ -2727,40 +2718,14 @@ impl SearchStream {
         //
         // Same rewrite discipline as the Bool hook: goal[0] in place, same goal
         // count, `delay_mode` threaded through unchanged.
-        // WI-1040 — a WOVEN goal reads its shape off the occurrence, not off the
-        // view. On the view an `Expr::ApplyWithin` heads its faithful term twin, the
-        // WRAPPED reflect shape `apply_within(fn = …, args = …, requirements = …)`
-        // (term_view.rs), whose functor is `apply_within` and NOT the callee — so
-        // reading the callee there would be a cross-carrier miss of exactly the
-        // WI-425/WI-815 kind. The readers that must understand a woven call therefore
-        // read `as_expr()` directly: this hook, the Bool view above, the WI-580 case
-        // split (`op_call_as_occ`), WI-670's refutation pre-check (which skips one)
-        // and `reduce_op_value`. A woven goal no reader claims reaches candidate
-        // selection under `apply_within`, which no clause has, and answers nothing —
-        // never a wrong answer.
-        let woven_head: Option<(Symbol, usize)> = match &goal_val {
-            Value::Node(o) => match o.as_expr() {
-                Some(Expr::ApplyWithin {
-                    functor,
-                    args,
-                    named_args,
-                    ..
-                }) if named_args.is_empty() => Some((*functor, args.len())),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some((f, pos_arity)) = woven_head.or_else(|| match goal_val.head(kb) {
-            // Named args are not a functional-relation call shape — the result
-            // column is POSITIONAL and last. A named-arg goal falls through to
-            // ordinary candidate selection rather than being silently re-read.
-            ViewHead::Functor {
-                functor: Some(f),
-                pos_arity,
-                named_arity: 0,
-            } => Some((f, pos_arity)),
-            _ => None,
-        }) {
+        // A WOVEN goal reads its shape off the occurrence ([`goal_call_head`]). Named args
+        // are not a functional-relation call shape — the result column is POSITIONAL and
+        // last — so a named-arg goal falls through to ordinary candidate selection rather
+        // than being silently re-read.
+        if let Some((f, pos_arity)) = call_head
+            .filter(|&(_, _, named_arity)| named_arity == 0)
+            .map(|(f, pos_arity, _)| (f, pos_arity))
+        {
             {
                 if pos_arity > 0
                     && kb.dispatched_relation_arity(&goal_val, f) == Some(pos_arity - 1)
@@ -4831,7 +4796,12 @@ impl SearchStream {
             // clause has its `out` bound to the dictionary the citation captured for it,
             // so the read CHECKS it (060 §4) instead of deriving its own.
             if let Some((relation, dicts)) = within_requirements_args(kb, &original_goal) {
-                bind_citation_reads(kb, rid, relation, &dicts, &fresh_nodes, &mut merged);
+                let layout = Rc::clone(
+                    self.read_layout_cache
+                        .entry(relation)
+                        .or_insert_with(|| super::typing::requirement_read_counts(kb, relation).into()),
+                );
+                bind_citation_reads(kb, rid, &layout, &dicts, &fresh_nodes, &mut merged);
             }
 
             // Pre-check: delay propagation on caller vars (over the occurrence body)
@@ -4893,6 +4863,34 @@ impl SearchStream {
                         detected
                     }
                 }
+            };
+
+            // A ROUTING-ONLY read runs as no goal ([`is_routing_only_read`]): its `out` was
+            // bound above if a citation routed one, and nothing reads it if none did. Dropped
+            // here, after every reader of the opened body — the citation binding, the delay
+            // pre-check, the refutation pre-check — has seen the body whole.
+            let routing_reads = match self.routing_read_cache.get(&rid) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let found: SmallVec<[usize; 2]> = fresh_nodes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, n)| is_routing_only_read(kb, n))
+                        .map(|(i, _)| i)
+                        .collect();
+                    self.routing_read_cache.insert(rid, found.clone());
+                    found
+                }
+            };
+            let fresh_nodes: Vec<Rc<NodeOccurrence>> = if routing_reads.is_empty() {
+                fresh_nodes
+            } else {
+                fresh_nodes
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(i, _)| !routing_reads.contains(i))
+                    .map(|(_, n)| n)
+                    .collect()
             };
 
             // WI-246: opened rule-body atoms enter the goal stream as
@@ -5394,6 +5392,8 @@ impl KnowledgeBase {
             stats: ResolveStats::default(),
             next_barrier: 0,
             cut_cache: HashMap::new(),
+            routing_read_cache: HashMap::new(),
+            read_layout_cache: HashMap::new(),
             truncated: false,
             errors: Vec::new(),
             faults: Vec::new(),
@@ -5939,7 +5939,12 @@ impl KnowledgeBase {
             BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst, faults),
             BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst, false),
             BuiltinTag::TypeDomainGuard => self.builtin_type_domain(goal, answer_subst, true),
-            BuiltinTag::ApplyDomain => self.builtin_apply_domain(goal, answer_subst),
+            // `apply_domain` that `step_init` could not lower DELAYS. It is reached only on that
+            // lowering's fall-through, in the same step and under the same σ — so its evidence
+            // is not readable yet (a dictionary variable no citation filled, a condition whose
+            // type is still unpinned, a value with no domain still unbound), and every fault the
+            // evidence could name was the lowering's to report.
+            BuiltinTag::ApplyDomain => BuiltinResult::delay(),
             BuiltinTag::DomainSub => BuiltinResult::Error(ResolveError::new(
                 "`__domain_sub` is `apply_domain`'s dictionary operand, not a goal".to_string(),
             )),
@@ -6828,7 +6833,7 @@ impl KnowledgeBase {
         // through its own type would accept `y: "s"` as well. And it reads the value OPEN, so an
         // unknown part of its type interns a fresh variable per step — the typed-head pin path's
         // growth, recorded for SHED7's rework (a transient pin path end to end).
-        if let (DomainEvidence::Unpinned(var), 2) = (&read, pos_arity) {
+        if let (DomainEvidence::NotYet(Some(var)), 2) = (&read, pos_arity) {
             let var = *var;
             let bound_x = self
                 .walk_arg(goal.pos_arg(self, 1), scratch)
@@ -6843,22 +6848,25 @@ impl KnowledgeBase {
         match read {
             DomainEvidence::Dict { impl_sort, value } => {
                 // The provider's `fill`, from its `SortDomain` entry.
-                let Some(fill) = self.sort_domain(impl_sort).map(|e| e.fill) else {
+                let Some((fill, kind, reads_dict)) = self
+                    .sort_domain(impl_sort)
+                    .map(|e| (e.fill, e.kind, !e.conditions.is_empty()))
+                else {
                     return ApplyDomainLowering::Error(format!(
                         "apply_domain: `{}` provides no `fill`",
                         self.qualified_name_of(impl_sort),
                     ));
                 };
                 ApplyDomainLowering::Goal {
-                    goal: self.fill_goal(fill, x, value),
+                    goal: self.fill_goal(fill, kind, reads_dict, x, value),
                     pin,
                 }
             }
-            DomainEvidence::NotYet | DomainEvidence::Unpinned(_) => ApplyDomainLowering::NotYet,
+            DomainEvidence::NotYet(_) => ApplyDomainLowering::NotYet,
             // A BOUND whose type has no domain — a function type, a tuple, a spec, an
             // abstract sort: the conformance check is all it has, and `?x` unbound keeps
             // §2's ladder (delay, flounder at the drain).
-            DomainEvidence::NoDomain(_) | DomainEvidence::NoDomainType(_) if conform.is_some() => {
+            DomainEvidence::NoDomainType(_) if conform.is_some() => {
                 let (x_now, bound_now) = conform.expect("checked");
                 match super::typing::type_bound_verdict_view(self, scratch, &x_now, &bound_now) {
                     super::typing::TypeBoundVerdict::Holds => ApplyDomainLowering::Holds { pin },
@@ -6866,9 +6874,7 @@ impl KnowledgeBase {
                     super::typing::TypeBoundVerdict::Suspend => ApplyDomainLowering::NotYet,
                 }
             }
-            DomainEvidence::NoDomain(_) | DomainEvidence::NoDomainType(_) if pos_arity == 3 => {
-                ApplyDomainLowering::NotYet
-            }
+            DomainEvidence::NoDomainType(_) if pos_arity == 3 => ApplyDomainLowering::NotYet,
             // A CONDITION whose TYPE has no domain — a derived `fill` reaching an element of
             // a tuple, `Map` or function type, or of a sort whose domain was declined: what
             // the retired `domain_leaf` answered, the CONFORMANCE question. A bound element is
@@ -6895,18 +6901,24 @@ impl KnowledgeBase {
     /// its conditions through. A relation with no such read is called bare.
     ///
     /// ON THE HOT PATH, once per fill step: a DERIVED `fill` has exactly one read, its own
-    /// dictionary, where its sort has conditions and none otherwise — the `SortDomain` entry
-    /// says which, with no scan. Only a written domain's clauses are scanned for reads.
-    fn fill_goal(&mut self, fill: Symbol, x: Value, dict: Value) -> Value {
+    /// dictionary, where its sort has conditions (`reads_dict`) and none otherwise — the
+    /// provider's `SortDomain` entry, which the caller holds, says which (`kind`), with no
+    /// scan. Only a written domain's clauses are scanned for reads.
+    fn fill_goal(
+        &mut self,
+        fill: Symbol,
+        kind: super::fill_derive::SortDomainKind,
+        reads_dict: bool,
+        x: Value,
+        dict: Value,
+    ) -> Value {
         let goal = self.make_goal_value(fill, vec![x]);
-        if let Some(entry) = self.fill_relation_sort(fill).and_then(|s| self.sort_domain(s)) {
-            if entry.kind != super::fill_derive::SortDomainKind::Written {
-                return if entry.conditions.is_empty() {
-                    goal
-                } else {
-                    within_requirements_goal(self, goal, fill, vec![dict])
-                };
-            }
+        if kind != super::fill_derive::SortDomainKind::Written {
+            return if reads_dict {
+                within_requirements_goal(self, goal, fill, vec![dict])
+            } else {
+                goal
+            };
         }
         let Some(spec) = self.try_resolve_symbol(super::typing::SORT_DOMAIN_SPEC) else {
             return goal;
@@ -6935,17 +6947,10 @@ impl KnowledgeBase {
     /// each built, only when `fill` reaches it. `__domain_sub(e, k)` and a `Dictionary(…)`
     /// construction, the two spellings a derived `fill` clause writes, are evaluated here.
     pub(crate) fn domain_evidence(&mut self, v: Value, subst: &Substitution) -> DomainEvidence {
-        let v = match self.value_global_var(&v) {
-            Some(vid) => self.chase_var(vid, subst).cloned().unwrap_or(v),
-            None => v,
+        let v = match self.bound_evidence(v, subst) {
+            Ok(v) => v,
+            Err(not_yet) => return not_yet,
         };
-        if self.value_is_unbound_var(&v) {
-            return match self.value_global_var(&v) {
-                Some(vid) => DomainEvidence::Unpinned(vid),
-                None => DomainEvidence::NotYet,
-            };
-        }
-        let v = v.carried().clone();
         if let Value::SymbolRef(s) = v {
             let ty = Value::term(self.alloc(Term::Ref(s)));
             return self.domain_evidence_of_type(ty, subst);
@@ -6972,31 +6977,20 @@ impl KnowledgeBase {
             let ViewHead::Const(Literal::Int(k)) = k.head(self) else {
                 return DomainEvidence::NoDomain("a `__domain_sub` with no index".to_string());
             };
-            return match self.domain_evidence(inner, subst) {
-                DomainEvidence::Dict { value, .. } => match value.pos_arg(self, k as usize) {
-                    Some(sub) => {
-                        let sub = sub.to_value();
-                        self.domain_evidence(sub, subst)
-                    }
-                    None => DomainEvidence::NoDomain(format!("the dictionary has no sub-dictionary {k}")),
-                },
-                other => other,
-            };
+            return self.domain_sub_evidence(inner, k as usize, subst);
         }
         if let Some((ctor, impl_key)) = crate::kb::term_view::dictionary_view_syms(self) {
             if functor == ctor {
-                let Some(impl_item) = v.named_arg(self, impl_key) else {
-                    return DomainEvidence::NoDomain("a dictionary with no `impl`".to_string());
+                let impl_sort = match self.dictionary_impl(&v, impl_key) {
+                    Ok(s) => self.canonical_sort_sym(s),
+                    Err(no_domain) => return no_domain,
                 };
-                let impl_sort = match impl_item.to_value().head(self) {
-                    ViewHead::Ident(s)
-                    | ViewHead::Functor {
-                        functor: Some(s),
-                        pos_arity: 0,
-                        ..
-                    } => s,
-                    _ => return DomainEvidence::NoDomain("a dictionary whose `impl` names no sort".to_string()),
-                };
+                // A dictionary a read has already BUILT — every sub evaluated — is handed on as
+                // it stands: a routed dictionary crosses every `fill` step this way, and
+                // rebuilding it copied it each time. Only a CONSTRUCTION is evaluated.
+                if self.is_built_dictionary(&v, ctor) {
+                    return DomainEvidence::Dict { impl_sort, value: v };
+                }
                 let mut subs: Vec<Value> = Vec::with_capacity(pos_arity);
                 for i in 0..pos_arity {
                     let Some(sub) = self.walk_arg(v.pos_arg(self, i), subst) else {
@@ -7004,7 +6998,6 @@ impl KnowledgeBase {
                     };
                     subs.push(self.normalize_domain_sub(sub, subst));
                 }
-                let impl_sort = self.canonical_sort_sym(impl_sort);
                 return DomainEvidence::Dict {
                     impl_sort,
                     value: Value::Entity {
@@ -7016,6 +7009,88 @@ impl KnowledgeBase {
             }
         }
         self.domain_evidence_of_type(v, subst)
+    }
+
+    /// The evidence `v` resolved through σ, or — while it is still a variable —
+    /// [`DomainEvidence::NotYet`], naming the variable where it is a global one.
+    fn bound_evidence(&self, v: Value, subst: &Substitution) -> Result<Value, DomainEvidence> {
+        let v = match self.value_global_var(&v) {
+            Some(vid) => self.chase_var(vid, subst).cloned().unwrap_or(v),
+            None => v,
+        };
+        if self.value_is_unbound_var(&v) {
+            return Err(DomainEvidence::NotYet(self.value_global_var(&v)));
+        }
+        Ok(v.carried().clone())
+    }
+
+    /// The provider a dictionary names in its `impl`, or the [`DomainEvidence::NoDomain`] a
+    /// malformed one is.
+    fn dictionary_impl(&self, dict: &Value, impl_key: Symbol) -> Result<Symbol, DomainEvidence> {
+        let Some(impl_item) = dict.named_arg(self, impl_key) else {
+            return Err(DomainEvidence::NoDomain("a dictionary with no `impl`".to_string()));
+        };
+        match impl_item.to_value().head(self) {
+            ViewHead::Ident(s)
+            | ViewHead::Functor {
+                functor: Some(s),
+                pos_arity: 0,
+                ..
+            } => Ok(s),
+            _ => Err(DomainEvidence::NoDomain("a dictionary whose `impl` names no sort".to_string())),
+        }
+    }
+
+    /// Is `v` a dictionary VALUE this read built — an entity of the dictionary constructor whose
+    /// every sub is a type, a variable, or such a dictionary, and none an expression still to
+    /// evaluate ([`Self::normalize_domain_sub`]'s), and none a variable σ may have bound?
+    fn is_built_dictionary(&self, v: &Value, ctor: Symbol) -> bool {
+        let Value::Entity { functor, pos, .. } = v else {
+            return false;
+        };
+        *functor == ctor
+            && pos.iter().all(|sub| match sub.head(self) {
+                ViewHead::Functor {
+                    functor: Some(f), ..
+                } if f == ctor => self.is_built_dictionary(sub, ctor),
+                ViewHead::Functor {
+                    functor: Some(f), ..
+                } => self.builtin_of(f) != Some(BuiltinTag::DomainSub),
+                // A variable is handed on only WALKED — the construction path reads it.
+                ViewHead::Var(_) => false,
+                _ => true,
+            })
+    }
+
+    /// `__domain_sub(inner, k)` — the `k`-th sub-dictionary of the evidence `inner`, READ AT
+    /// SLOT `k` ALONE. A `fill` step reads one condition, and evaluating `inner` whole — every
+    /// sibling sub normalized — built the parent dictionary to take one child of it. A
+    /// dictionary is read at its slot; anything else (a nested `__domain_sub`, a TYPE, whose
+    /// dictionary is laid out one level deep) is evaluated first.
+    fn domain_sub_evidence(&mut self, inner: Value, k: usize, subst: &Substitution) -> DomainEvidence {
+        let inner = match self.bound_evidence(inner, subst) {
+            Ok(v) => v,
+            Err(not_yet) => return not_yet,
+        };
+        let dictionary = crate::kb::term_view::dictionary_view_syms(self).filter(|&(ctor, _)| {
+            matches!(inner.head(self), ViewHead::Functor { functor: Some(f), .. } if f == ctor)
+        });
+        let sub = match dictionary {
+            Some((_, impl_key)) => {
+                if let Err(no_domain) = self.dictionary_impl(&inner, impl_key) {
+                    return no_domain;
+                }
+                self.walk_arg(inner.pos_arg(self, k), subst)
+            }
+            None => match self.domain_evidence(inner, subst) {
+                DomainEvidence::Dict { value, .. } => value.pos_arg(self, k).map(|s| s.to_value()),
+                other => return other,
+            },
+        };
+        match sub {
+            Some(sub) => self.domain_evidence(sub, subst),
+            None => DomainEvidence::NoDomain(format!("the dictionary has no sub-dictionary {k}")),
+        }
     }
 
     /// A sub of a `Dictionary(…)` construction, as the dictionary built from it holds it: an
@@ -7047,7 +7122,7 @@ impl KnowledgeBase {
                 functor: Some(f), ..
             } => f,
             ViewHead::Ident(s) => s,
-            ViewHead::Var(_) => return DomainEvidence::NotYet,
+            ViewHead::Var(_) => return DomainEvidence::NotYet(None),
             _ => return DomainEvidence::NoDomainType(ty),
         };
         let Some(entry) = self.sort_domain(head).cloned() else {
@@ -7063,23 +7138,12 @@ impl KnowledgeBase {
         let Some((ctor, impl_key)) = crate::kb::term_view::dictionary_view_syms(self) else {
             return DomainEvidence::NoDomain("this KB never loaded `anthill.realization.runtime.Dictionary`".to_string());
         };
-        let keys = ty.named_keys(self);
         // THE TYPER'S LAYOUT (`typing::sort_domain_sub_offset`): the slots before the
         // conditions — `SortDomain`'s own chain, the sort's sort-level `requires` — are never
         // read by a `fill`, so a dictionary built here holds a placeholder there.
         let mut subs: Vec<Value> = vec![Value::Unit; entry.sub_offset];
         for &j in &entry.conditions {
-            let (key, _) = entry.params[j];
-            let short = self.local_name_of(key).to_string();
-            let item = keys
-                .iter()
-                .copied()
-                .find(|k| self.local_name_of(*k) == short)
-                .and_then(|k| ty.named_arg(self, k))
-                .or_else(|| {
-                    super::fill_derive::condition_arg_position(self, head, &entry.params, j)
-                        .and_then(|p| ty.pos_arg(self, p))
-                });
+            let item = super::fill_derive::condition_arg(self, &ty, &entry.params[j]);
             let sub = match self.walk_arg(item, subst) {
                 Some(a) => a,
                 // An argument the type leaves unwritten: a fresh type, pending until pinned.
@@ -7101,41 +7165,6 @@ impl KnowledgeBase {
             },
         }
     }
-
-    /// `apply_domain` that `step_init` could not lower: DELAY while its evidence is not
-    /// readable yet — a dictionary variable no citation filled, a condition whose type is
-    /// still unpinned — and an ERROR for evidence that names no domain, which no later
-    /// binding repairs.
-    fn builtin_apply_domain<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
-        let ViewHead::Functor { pos_arity, .. } = goal.head(self) else {
-            return BuiltinResult::Error(ResolveError::new("apply_domain: not an application".to_string()));
-        };
-        // The typed-head form: every decidable case was lowered, so what reaches here waits
-        // on a binding (an unpinned bound, or a value with no domain still unbound).
-        if pos_arity == 3 {
-            return BuiltinResult::delay();
-        }
-        let Some(d) = self.walk_arg(goal.pos_arg(self, 0), subst) else {
-            return BuiltinResult::Error(ResolveError::new(
-                "apply_domain(?d, ?x): the goal carries no dictionary operand".to_string(),
-            ));
-        };
-        match self.domain_evidence(d, subst) {
-            // The lowering decided a no-domain TYPE whenever `?x` was bound: waiting is all
-            // that is left.
-            DomainEvidence::NotYet | DomainEvidence::Unpinned(_) | DomainEvidence::NoDomainType(_) => {
-                BuiltinResult::delay()
-            }
-            DomainEvidence::NoDomain(why) => {
-                BuiltinResult::Error(ResolveError::new(format!("apply_domain(?d, ?x): {why}")))
-            }
-            DomainEvidence::Dict { impl_sort, .. } => BuiltinResult::Error(ResolveError::new(format!(
-                "apply_domain(?d, ?x): `{}` provides no `fill`",
-                self.qualified_name_of(impl_sort),
-            ))),
-        }
-    }
-
 
     /// `extract_sort_ref(?inst, ?result)`: given a term like `Eq[T = Int]` (represented as
     /// `ParameterizedType(Eq(), T=Int())`) or a simple `Ref(Eq)`, extract the sort symbol
@@ -8625,6 +8654,8 @@ impl KnowledgeBase {
             Some(s) => s,
             None => return BuiltinResult::Failure,
         };
+        // ONE pass over the labels, for both questions asked of them below.
+        let keys = goal.named_keys(self);
         // WI-20260925-P7VP4 — A SLOT READ DERIVES NOTHING. It is the clause's condition for
         // one slot of an ordinary operation's dictionary chain, and the woven call it
         // precedes carries its variable: a citation that fills it (`bind_citation_reads`)
@@ -8632,10 +8663,9 @@ impl KnowledgeBase {
         // argument values, as every such slot was before this read existed. So there is
         // nothing to fetch here and nothing to check — a supplied slot was routed by the
         // typer's edge check for this very entry — and the read succeeds as it stands.
-        if goal
-            .named_keys(self)
-            .into_iter()
-            .any(|k| self.local_name_of(k) == super::typing::REQUIREMENT_SLOT_LABEL)
+        if keys
+            .iter()
+            .any(|&k| self.local_name_of(k) == super::typing::REQUIREMENT_SLOT_LABEL)
         {
             return BuiltinResult::Success;
         }
@@ -8663,8 +8693,7 @@ impl KnowledgeBase {
         // sweep would still weave the call while this read found no `out` and quietly
         // fell back to check-only — a dispatch that stops happening with nothing
         // saying so. One spelling of the question, on both sides.
-        let out_sym = goal
-            .named_keys(self)
+        let out_sym = keys
             .into_iter()
             .find(|k| self.local_name_of(*k) == super::typing::REQUIREMENT_OUT_LABEL);
         let Some(out_sym) = out_sym else {
@@ -8773,13 +8802,15 @@ impl KnowledgeBase {
                         _ => BuiltinResult::Failure,
                     }
                 }
-                DomainEvidence::NotYet | DomainEvidence::Unpinned(_) => BuiltinResult::delay(),
+                DomainEvidence::NotYet(_) => BuiltinResult::delay(),
                 // A WITNESS WHOSE TYPE HAS NO DOMAIN has no `SortDomain` dictionary to bind:
                 // the read stands aside, `?d` unbound, and what decides the value is the
                 // conformance check its typed head also carries (`apply_domain`'s `Holds`) —
                 // failing here refused a value that check had just accepted.
                 DomainEvidence::NoDomainType(_) => BuiltinResult::Success,
-                DomainEvidence::NoDomain(_) => BuiltinResult::Failure,
+                DomainEvidence::NoDomain(why) => BuiltinResult::Error(ResolveError::new(format!(
+                    "find_dictionary(SortDomain, …): {why}"
+                ))),
             };
         }
         let rung = if supplied {
@@ -10556,7 +10587,7 @@ impl KnowledgeBase {
     ///
     /// The WOVEN CALL ITSELF is still handled where WI-1040 put it — the `Node` arm
     /// above, reading `Expr::ApplyWithin` directly, which is the carrier its only
-    /// producer (`weave_covered_call`) writes to. Nothing here narrows that.
+    /// producer (`weave_calls`) writes to. Nothing here narrows that.
     fn op_call_occurrence_to_reduce(&mut self, v: &Value) -> Option<Rc<NodeOccurrence>> {
         let ViewHead::Functor {
             functor: Some(f),
@@ -11132,8 +11163,8 @@ impl KnowledgeBase {
     }
 
     /// WI-20260925-P7VP4 — the dictionary a woven call's requirement variable is BOUND to in
-    /// σ, read carrier-neutrally as [`Self::dictionary_dispatch_target`] reads its own, or
-    /// `None` while it is unbound (or not a dictionary a frame can take).
+    /// σ ([`Self::dictionary_of_binding`]), or `None` while it is unbound (or not a
+    /// dictionary a frame can take).
     fn supplied_dictionary(
         &mut self,
         req: &Rc<NodeOccurrence>,
@@ -11143,15 +11174,7 @@ impl KnowledgeBase {
         if matches!(dict.head(self), ViewHead::Var(_)) {
             return None;
         }
-        match dict.as_bind_value() {
-            super::persist_subst::BindValue::Value(v) => {
-                crate::eval::value::Dictionary::from_view(self, &v)
-            }
-            super::persist_subst::BindValue::Term(t) => {
-                crate::eval::value::Dictionary::from_view(self, &t)
-            }
-            super::persist_subst::BindValue::Path(_) => None,
-        }
+        self.dictionary_of_binding(&dict)
     }
 
     /// WI-20260925-P7VP4 — does a woven call to `functor` carry SLOTS — the clause's
@@ -11163,8 +11186,7 @@ impl KnowledgeBase {
     /// (`op_dicts`, so the inference declines it), and an operation whose chain is only its
     /// sort's is a DEFAULTED spec op of that sort, not a slot weave.
     fn woven_call_takes_slots(&self, functor: Symbol) -> bool {
-        super::typing::lookup_spec_op_dispatch(self, functor).is_none()
-            && super::typing::defaulted_spec_op_parent(self, functor).is_none()
+        super::typing::spec_op_call_parent(self, functor).is_none()
     }
 
     /// WI-1040 — the implementation member a woven call's dictionary selects, and
@@ -11251,18 +11273,25 @@ impl KnowledgeBase {
         // WHY THE SUBTREE AND NOT THE IMPL SYMBOL: `060-typedomains-implementation.md`
         // §4.1 — "the components' types live in the subtree, so the subtree is what must
         // cross". The symbol FINDS the member; running it is what needs the tree.
-        let handle = match dict.as_bind_value() {
+        let handle = self.dictionary_of_binding(&dict);
+        Some((target, handle))
+    }
+
+    /// A σ-walked dictionary binding as an eval [`crate::eval::value::Dictionary`], read
+    /// CARRIER-NEUTRALLY through the view ([`crate::eval::value::Dictionary::from_view`]) —
+    /// [`Self::dictionary_dispatch_target`] says why it must be the view. `None` for a
+    /// deferred fact-term path, a persisted-query artefact whose value is not in hand here,
+    /// and for anything the view does not read as a dictionary.
+    fn dictionary_of_binding(&self, dict: &Value) -> Option<crate::eval::value::Dictionary> {
+        match dict.as_bind_value() {
             super::persist_subst::BindValue::Value(v) => {
                 crate::eval::value::Dictionary::from_view(self, &v)
             }
             super::persist_subst::BindValue::Term(t) => {
                 crate::eval::value::Dictionary::from_view(self, &t)
             }
-            // A deferred fact-term path: a persisted-query artefact, whose value is not
-            // in hand at all here. No handle; the member still stands.
             super::persist_subst::BindValue::Path(_) => None,
-        };
-        Some((target, handle))
+        }
     }
 
     /// WI-20260911-0V0F7 — what a bridged operation's FAULT says, for the TWO bridges
@@ -13846,20 +13875,93 @@ pub(crate) const UNROUTED_READ: &str = "__unrouted";
 
 /// The [`UNROUTED_READ`] slot.
 pub(crate) fn unrouted_read(kb: &mut KnowledgeBase) -> Value {
-    Value::SymbolRef(kb.intern(UNROUTED_READ))
+    let sym = kb.intern(UNROUTED_READ);
+    kb.unrouted_read_sym.set(Some(sym));
+    Value::SymbolRef(sym)
+}
+
+/// Does this opened body goal exist only to RECEIVE a citation's dictionary? Two reads do,
+/// and each is a no-op as a goal:
+///  * a SLOT read (WI-20260925-P7VP4, `slot: k`) — the woven call it precedes reads its `out`
+///    from σ, bound when the clause opened if a citation routed it, and derives that slot
+///    from the argument values itself if none did (`builtin_find_dictionary` answers the goal
+///    `Success` untouched);
+///  * a TYPED HEAD's `SortDomain` read (WI-20260925-SHED7) — the `apply_domain` it follows
+///    reads its `out` from σ, bound when the clause opened if a citation routed it; unrouted,
+///    the goal built a dictionary from the value's type that no later goal reads, the
+///    `apply_domain` before it having filled through the bound itself.
+///
+/// Both stay in the STORED body: they are the reads a citation's layout indexes
+/// (`requirement_read_counts`) and the typer routes to (`requirement_read_out`). Only the
+/// opened body the resolver runs drops them. Recognised by PROVENANCE, never by shape — a
+/// derived `fill` clause's own `SortDomain` read is the same shape and does run: unrouted, it
+/// builds the dictionary its body reads.
+fn is_routing_only_read(kb: &KnowledgeBase, n: &NodeOccurrence) -> bool {
+    let Some(by) = n.synthesized_by() else {
+        return false;
+    };
+    let Some(Expr::Apply {
+        functor,
+        named_args,
+        ..
+    }) = n.as_expr()
+    else {
+        return false;
+    };
+    if kb.builtin_of(*functor) != Some(BuiltinTag::FindDictionary) {
+        return false;
+    }
+    named_args
+        .iter()
+        .any(|(k, _)| kb.local_name_of(*k) == super::typing::REQUIREMENT_SLOT_LABEL)
+        || super::typing::is_typed_head_domain_pass(kb, by)
+}
+
+/// The call a goal makes — `(callee, positional arity, named arity)` — for `step_init`'s two
+/// operation-call hooks (the Bool view and the arity+1 functional relation).
+///
+/// WI-1040 — a WOVEN goal reads its shape off the occurrence, not off the view. On the view
+/// an `Expr::ApplyWithin` heads its faithful term twin, the WRAPPED reflect shape
+/// `apply_within(fn = …, args = …, requirements = …)` (term_view.rs), whose functor is
+/// `apply_within` and NOT the callee — so reading the callee there would be a cross-carrier
+/// miss of exactly the WI-425/WI-815 kind. The readers that must understand a woven call
+/// therefore read `as_expr()` directly: these hooks, the WI-580 case split
+/// (`op_call_as_occ`), WI-670's refutation pre-check (which skips one) and
+/// `reduce_op_value`. A woven goal no reader claims reaches candidate selection under
+/// `apply_within`, which no clause has, and answers nothing — never a wrong answer.
+fn goal_call_head(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol, usize, usize)> {
+    if let Value::Node(o) = goal {
+        if let Some(Expr::ApplyWithin {
+            functor,
+            args,
+            named_args,
+            ..
+        }) = o.as_expr()
+        {
+            return Some((*functor, args.len(), named_args.len()));
+        }
+    }
+    match goal.head(kb) {
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            named_arity,
+        } => Some((f, pos_arity, named_arity)),
+        _ => None,
+    }
 }
 
 /// Is this marker slot [`UNROUTED_READ`], on whichever carrier the marker reached here on?
 pub(crate) fn is_unrouted_read(kb: &KnowledgeBase, v: &Value) -> bool {
-    match v.head(kb) {
-        ViewHead::Ident(s)
-        | ViewHead::Functor {
-            functor: Some(s),
-            pos_arity: 0,
-            named_arity: 0,
-        } => kb.symbols.lookup(UNROUTED_READ) == Some(s),
-        _ => false,
-    }
+    let Some(s) = kb.value_symbol(v) else {
+        return false;
+    };
+    let unrouted = kb.unrouted_read_sym.get().or_else(|| {
+        let sym = kb.symbols.lookup(UNROUTED_READ);
+        kb.unrouted_read_sym.set(sym);
+        sym
+    });
+    unrouted == Some(s)
 }
 
 /// Wrap `goal` — an application of `relation` — in a [`WITHIN_REQUIREMENTS`] marker carrying
@@ -13905,12 +14007,14 @@ pub(crate) enum DomainEvidence {
     /// A dictionary — its provider, and the whole value (a sub may be a type, built when
     /// read, or a variable, waiting until pinned).
     Dict { impl_sort: Symbol, value: Value },
-    /// Not readable yet: a type whose head is still a variable.
-    NotYet,
-    /// The evidence IS a variable nothing has bound yet: a condition's type left unwritten or
-    /// still unpinned. [`KnowledgeBase::lower_apply_domain`] pins it from a bound value.
-    Unpinned(VarId),
-    /// Readable, and names no domain: not a dictionary or a type at all.
+    /// Not readable yet: the evidence is a variable, or a type whose head still is one.
+    /// `Some(var)` where the evidence IS a variable nothing has bound yet — a condition's type
+    /// left unwritten or still unpinned — which [`KnowledgeBase::lower_apply_domain`] pins
+    /// from a bound value.
+    NotYet(Option<VarId>),
+    /// Readable, and names no domain: not a dictionary or a type at all — or a KB that never
+    /// loaded `anthill.realization.runtime.Dictionary`, where no dictionary can be built. A
+    /// FAULT wherever it is read, never a type with no domain ([`Self::NoDomainType`]).
     NoDomain(String),
     /// A TYPE, readable, whose sort has no domain — a tuple, a function type, `Map`, a sort
     /// whose domain was declined. It keeps the type, because what such a type still answers
@@ -13967,7 +14071,8 @@ fn within_requirements_args(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol,
 /// captured for it — [`WITHIN_REQUIREMENTS`]' consumer.
 ///
 /// The clause's OFFSET in the flat layout comes from the RELATION the marker names, the
-/// list the typer routed over (`requirement_read_counts`), not from the goal's functor: a
+/// list the typer routed over (`counts`, `requirement_read_counts`' layout), not from the
+/// goal's functor: a
 /// labelled relation's clauses are that label's, and a clause of the same functor outside
 /// it takes nothing. The reads are found in the OPENED body by the same predicate and in
 /// the same order the typer enumerated them in the stored one (`requirement_read_out`), so
@@ -13976,12 +14081,11 @@ fn within_requirements_args(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol,
 fn bind_citation_reads(
     kb: &mut KnowledgeBase,
     rid: RuleId,
-    relation: Symbol,
+    counts: &[(RuleId, usize)],
     dicts: &[Value],
     opened: &[Rc<NodeOccurrence>],
     merged: &mut Substitution,
 ) {
-    let counts = super::typing::requirement_read_counts(kb, relation);
     let Some(at) = counts.iter().position(|(r, _)| *r == rid) else {
         return;
     };

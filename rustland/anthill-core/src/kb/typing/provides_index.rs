@@ -170,6 +170,18 @@ pub(crate) struct ProvidesIndex {
     /// site drops it and the one builder fills it. A cache of its own would have added a
     /// fourth set of producers to audit (cf. WI-1112) for no separation that buys anything.
     conditions_by_carrier: SymbolKeyedFactIndex,
+    /// WI-20260925-YNCY3 — [`carrier_provided_by_witness`]' question per spec, memoized: the
+    /// canonical carriers the spec's WITNESS provisions dispatch at (`witness_dispatch_carrier`
+    /// over its rows), keyed by the spec symbol exactly as asked. The run-time guard asks it on
+    /// its DontFire path — every call whose carrier provides nothing — and it walked and decoded
+    /// every row of the spec each time (MEASURED: 15 µs a call, a fifth of such a query).
+    ///
+    /// FILLED LAZILY, per spec a guard asks about, so the population `witness_dispatch_carrier`
+    /// is asked about is exactly the scan's — the WI-954 tripwire
+    /// [`witness_provides_admissibly`] records is why that matters. And INSIDE the index, as
+    /// `carrier_edges` is: it is dropped and rebuilt with the rows it memoizes, so it has no
+    /// invalidation surface of its own.
+    pub(super) witness_carriers: std::cell::RefCell<HashMap<Symbol, Rc<[Symbol]>>>,
 }
 
 /// WI-660 — the provides-fact rids for a SPEC-BASE-keyed lookup: the `by_spec_base`
@@ -561,6 +573,7 @@ pub(crate) fn build_provides_index(kb: &mut KnowledgeBase) {
         by_carrier,
         carrier_edges,
         conditions_by_carrier,
+        witness_carriers: Default::default(),
     });
 }
 

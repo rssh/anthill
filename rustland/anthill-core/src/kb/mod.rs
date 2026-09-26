@@ -1342,8 +1342,8 @@ pub struct KnowledgeBase {
 
     /// WI-743, WI-20260925-SHED7 — every sort with constructors whose domain the loader
     /// derives (or found written), keyed by [`Self::canonical_sort_sym`], mapped to its
-    /// declared TYPE PARAMETERS (the binding-key symbol and the parameter's canonical
-    /// variable). Taken back out when the derivation declines the sort.
+    /// declared TYPE PARAMETERS (`fill_derive::DomainParam`: the binding key, the declared
+    /// symbol, the canonical variable). Taken back out when the derivation declines the sort.
     ///
     /// TWO readers, both about PARAMETERS. The DERIVATION ([`load::derive_sort_domains`],
     /// `kb::fill_derive`) repairs a field type that names a parameterised sort bare —
@@ -1352,7 +1352,7 @@ pub struct KnowledgeBase {
     /// writes an unwritten parameter of such a sort as a rule-scoped variable. It is KB
     /// state and not a per-batch map because that sort may have been derived in an EARLIER
     /// LOAD BATCH. Whether a sort HAS a domain is [`Self::sort_domains`]' question, not this.
-    pub(crate) domain_params: HashMap<Symbol, Vec<(Symbol, TermId)>>,
+    pub(crate) domain_params: HashMap<Symbol, Vec<fill_derive::DomainParam>>,
 
     /// WI-20260925-SHED7 (proposal 060 §2.3, 067) — every sort's `SortDomain`, keyed by
     /// [`Self::canonical_sort_sym`]: the relation its `fill` runs and the layout of the
@@ -1685,6 +1685,12 @@ pub struct KnowledgeBase {
     /// constructor name the loader stamps is the same `by_qualified_name` canonical
     /// symbol this resolves to (load.rs), so the `Symbol ==` is exact.
     pub(crate) tuple_literal_sym: Option<Symbol>,
+
+    /// WI-20260925-YNCY3 — the interned `resolve::UNROUTED_READ` symbol, cached the first
+    /// time a marker slot is read, so `resolve::is_unrouted_read` compares a `Symbol` per
+    /// slot rather than hashing the name. An INTERNED name, not a resolved one: it never
+    /// changes once minted, so the cache cannot go stale.
+    pub(crate) unrouted_read_sym: std::cell::Cell<Option<Symbol>>,
 
     /// WI-429: every `RigidTypeProjection` the loader FORMS, with its source
     /// span — the work-list for the end-of-load formation sweep
@@ -2430,6 +2436,7 @@ impl KnowledgeBase {
             and_connective_sym: None,
             unify_connective_sym: None,
             tuple_literal_sym: None,
+            unrouted_read_sym: std::cell::Cell::new(None),
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),
             field_wise_noneq_carriers: std::collections::HashSet::new(),
@@ -2910,7 +2917,7 @@ impl KnowledgeBase {
     /// WI-743 — `sort`'s declared type parameters, recorded when its domain is derived
     /// (see [`Self::domain_params`]). `None` when the sort has none recorded. Cloned,
     /// because the caller is mid-derivation and needs `&mut self` to build terms with them.
-    pub(crate) fn domain_params_of(&self, sort: Symbol) -> Option<Vec<(Symbol, TermId)>> {
+    pub(crate) fn domain_params_of(&self, sort: Symbol) -> Option<Vec<fill_derive::DomainParam>> {
         self.domain_params
             .get(&self.canonical_sort_sym(sort))
             .cloned()
@@ -2919,7 +2926,7 @@ impl KnowledgeBase {
     /// WI-743 — record `sort`'s parameter list for the derivation of its domain. Keyed by
     /// [`Self::canonical_sort_sym`] on BOTH sides, so a sort reached under a second
     /// spelling of its name is the same row.
-    pub(crate) fn record_domain_params(&mut self, sort: Symbol, params: Vec<(Symbol, TermId)>) {
+    pub(crate) fn record_domain_params(&mut self, sort: Symbol, params: Vec<fill_derive::DomainParam>) {
         let canon = self.canonical_sort_sym(sort);
         self.domain_params.insert(canon, params);
     }

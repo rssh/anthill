@@ -162,7 +162,7 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 /// (a runnable default a carrier may override) or [`lookup_spec_op_dispatch`]'s
 /// (body-less, resolved by call-site dispatch). Returns the parent spec sort.
 ///
-/// ONE reader — [`call_dispatch_shape`] — and it is the union because
+/// ITS FIRST READER is [`call_dispatch_shape`], and it is the union because
 /// [`check_apply_iter`] decides both halves in the same frame: the WI-444 block pins
 /// or refuses a defaulted call, the WI-210 block dispatches a body-less one and
 /// [`arbitrate_unarbitrated_supplier_tie`] refuses ITS tie. WI-1026 admitted only the
@@ -183,6 +183,12 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 /// `OperationInfo`), so asking for one directly is what makes this their union and not
 /// a wider third reading. `wi1043_bodyless_rule_body_test::the_walk_gate_is_exactly_-
 /// the_two_halves` drives that equality over the corpus.
+///
+/// THE SAME UNION SPLITS A WOVEN CALL (WI-20260925-P7VP4): a spec op's woven call carries
+/// one DISPATCH dictionary, any other operation's carries SLOTS — the inference declines a
+/// slot demand on what this answers (`inferred_slot_demand`), and the resolver reads a woven
+/// call by it (`resolve::woven_call_takes_slots`). One predicate, so the weave and its reader
+/// cannot disagree about which kind a call is.
 ///
 /// CLAUSE ORDER as [`defaulted_spec_op_parent`] measured it: the name split first (the
 /// cheap non-operation early-out — every relational atom head leaves here), then the

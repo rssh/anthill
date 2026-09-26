@@ -24,10 +24,14 @@
 //! Remove the `infer_rule_body_requirements(kb)` call in `type_check_sorts_collect`: both
 //! CASE rows fail — both selections answer `-1`, `Int64`'s own `compare`, because the
 //! caller's dictionary stays in the caller's frame and the call dispatches on its value.
-//! Remove the router's slot branch (`slot_read_index` in `route_requirement_read`) or the
-//! bridge's use of a supplied slot (`override_supplied_slots` with the all-supplied path in
-//! `call_op_bridged`): the SLOT case row fails, and only it. The router's two measured
-//! choices — pin the CALLEE's parameters first, and keep a variable when substituting —
+//! Remove the router's slot branch (`slot_read_index` in `route_requirement_read`): the SLOT
+//! case row fails, and only it. Remove the bridge's use of a supplied slot
+//! (`BridgeSlot::Supplied` — `resolve_bridge_requirements_supplied` handed none): EIGHT rows
+//! fail, every one whose caller fills a slot — the SLOT case row, the two Bool-view rows,
+//! `a_slot_routes_whichever_parameter_pins_it`, `a_subtype_argument_does_not_block_a_slot_-
+//! route`, `a_supplied_slot_is_not_re_derived`, `a_negated_partly_routed_citation_decides` and
+//! `a_woven_slot_call_that_waits_keeps_its_slots` (measured, WI-20260925-YNCY3). The router's
+//! two measured choices — pin the CALLEE's parameters first, and keep a variable when substituting —
 //! each failed the same row the same way (`-1, -1`) before they were made. Remove
 //! `check_rule_body_operation_requires`' reading of a WOVEN call, or look the inference
 //! pass up through `try_resolve_symbol` in `is_inferred_requirement_read` (where it is never
@@ -181,7 +185,7 @@ end
         .any(|rid| kb.rule_body_nodes(rid).iter().any(holds_woven_call));
     assert!(woven, "`dbl`'s nested call is woven — the shape this row is about");
     assert_eq!(
-        only_int(&mut kb, "wip7vp4.phases.dblOne"),
+        crate::common::one_definite_int(&mut kb, "wip7vp4.phases.dblOne"),
         Some(1),
         "after the second phase the woven `dbl` still answers, definitely",
     );
@@ -447,21 +451,14 @@ fn fix_program(ns: &str, body: &str) -> String {
     format!("namespace {ns}\n{FIX_PRELUDE}\n{body}end\n")
 }
 
-/// One definite answer of a unary relation, as an `Int64`.
-fn only_int(kb: &mut anthill_core::kb::KnowledgeBase, rel: &str) -> Option<i64> {
-    let rows = crate::common::query_unary(kb, rel);
-    match rows.as_slice() {
-        [(v, true)] => crate::common::scalar_int(kb, v),
-        _ => panic!("{rel}: expected one definite row, got {rows:?}"),
-    }
-}
-
 /// A woven call NESTED in another woven call — an inner spec-op call (a DEFAULTED one, which a
 /// value slot weaves) as an argument of an outer slot call. Weaving call after call lost the
 /// outer one once the inner weave had rebuilt its node: the load PANICKED on the "not found in
-/// its body" assertion. Both calls are woven now. This row guards that panic and the count; it
-/// does not drive the clause, because the nested shape answers nothing with or without the
-/// weave — a bridged call reduces no argument but a host operation's. FAILS with the one-pass
+/// its body" assertion. Both calls are woven now, the inner one INSIDE the woven outer one.
+/// This row guards that panic and the structure; it does not drive the clause, because the
+/// nested shape answers nothing with or without the weave — a bridged call reduces no argument
+/// but a host operation's (WI-1040's `a_covered_call_nested_in_another_covered_call_is_woven_-
+/// with_it` drives a nested weave through a FOLDED outer body). FAILS with the one-pass
 /// `weave_calls` backed out to sequential weaves.
 #[test]
 fn a_call_nested_in_a_woven_call_is_woven_too() {
@@ -469,27 +466,18 @@ fn a_call_nested_in_a_woven_call_is_woven_too() {
         "wip7vp4.nest",
         "  rule nested(?x, ?z, ?c) :- Util.sign(Scale.twice(?x), ?z, ?c)\n",
     ));
-    let woven: usize = kb
-        .rule_ids_by_qn("wip7vp4.nest.nested")
+    let woven: Vec<(String, bool, Vec<String>)> = crate::common::body_calls(&kb, "wip7vp4.nest.nested")
         .into_iter()
-        .flat_map(|rid| kb.rule_body_nodes(rid).to_vec())
-        .map(|n| count_woven_calls(&n))
-        .sum();
-    assert_eq!(woven, 2, "the inner `twice` and the outer `sign` are both woven");
-}
-
-/// How many woven calls this stored body goal holds.
-fn count_woven_calls(occ: &Rc<NodeOccurrence>) -> usize {
-    let mut n = 0;
-    let mut stack = vec![Rc::clone(occ)];
-    while let Some(o) = stack.pop() {
-        let Some(expr) = o.as_expr() else { continue };
-        if matches!(expr, Expr::ApplyWithin { .. }) {
-            n += 1;
-        }
-        for_each_child(expr, |c| stack.push(Rc::clone(c)));
-    }
-    n
+        .filter(|(_, woven, _)| *woven)
+        .collect();
+    assert_eq!(
+        woven,
+        vec![
+            ("sign".to_string(), true, vec!["twice".to_string()]),
+            ("twice".to_string(), true, Vec::new()),
+        ],
+        "the outer `sign` is woven, holding the woven inner `twice`",
+    );
 }
 
 /// A spec-op call that does not ALIGN to its parameters — `y` names no parameter of
@@ -524,7 +512,7 @@ fn a_written_requires_keeps_its_inherited_witness() {
          rule viaDerived(?x, ?r) :- requires(Derived[T]), Base.op(?x, ?r)\n  \
          rule derivedOne(?r) :- viaDerived(leaf2(), ?r)\n",
     ));
-    assert_eq!(only_int(&mut kb, "wip7vp4.inherited.derivedOne"), Some(5), "`Leaf2`'s own `op`");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.inherited.derivedOne"), Some(5), "`Leaf2`'s own `op`");
 }
 
 /// A call at its DECLARED arity in GOAL position is woven only for the BOOL VIEW
@@ -541,7 +529,7 @@ fn a_goal_at_its_declared_arity_is_woven_only_for_the_bool_view() {
         "  rule less(?a, ?b) :- Util.isLess(?a, ?b)\n  \
          rule lessOne(?x) :- less(1, 5), ?x <=> 1\n",
     ));
-    assert_eq!(only_int(&mut kb, "wip7vp4.declared.lessOne"), Some(1), "`1 < 5` through the Bool view");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.declared.lessOne"), Some(1), "`1 < 5` through the Bool view");
     let errs = crate::common::try_load_kb_with(&fix_program(
         "wip7vp4.bare",
         "  rule bare(?a, ?b) :- Util.sign(?a, ?b)\n",
@@ -564,7 +552,7 @@ fn a_call_inside_a_quantifier_keeps_its_value_dispatch() {
         "  rule allSix(?xs) :- (forall ?e in ?xs: Scale.twice(?e, 6))\n  \
          rule sixOne(?x) :- allSix([rod(), rod()]), ?x <=> 1\n",
     ));
-    assert_eq!(only_int(&mut kb, "wip7vp4.scope.sixOne"), Some(1), "each element doubled by value");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.scope.sixOne"), Some(1), "each element doubled by value");
 }
 
 /// A cited slot call that must WAIT — its second argument is bound by a later goal. The
@@ -613,7 +601,7 @@ fn a_slot_routes_whichever_parameter_pins_it() {
 /// witnesses at `Colour` and no provision on `Colour` itself, so deriving the first slot
 /// from the value TIES. The derivation used to run over the whole chain before the caller's
 /// dictionary was placed, and the tie suspended the call. FAILS with
-/// `resolve_bridge_requirements_except` handed no supplied slots.
+/// `resolve_bridge_requirements_supplied` handed no supplied slots.
 #[test]
 fn a_supplied_slot_is_not_re_derived() {
     const PROGRAM: &str = r#"
@@ -717,16 +705,7 @@ namespace wip7vp4.symbolic
 end
 "#;
     let mut kb = crate::common::load_kb_with(PROGRAM);
-    let rows = crate::common::query_unary(&mut kb, "wip7vp4.symbolic.mkOne");
-    let printer = anthill_core::persistence::print::TermPrinter::new(&kb);
-    let shown: Vec<(String, bool)> = rows
-        .iter()
-        .map(|(v, d)| match v {
-            Value::Node(occ) => (printer.print_occurrence(occ), *d),
-            Value::Term { id, .. } => (printer.print_term(*id), *d),
-            other => (format!("{other:?}"), *d),
-        })
-        .collect();
+    let shown = crate::common::shown_rows(&mut kb, "wip7vp4.symbolic.mkOne");
     assert!(
         shown.len() == 1 && shown[0].1 && shown[0].0.contains("circle(num(v: 1))"),
         "`?s` is the term `mk` wrote, not `Num.circle`'s `num(v: 9)`; got {shown:?}",
@@ -746,7 +725,7 @@ fn a_call_in_an_untaken_branch_gets_no_condition() {
         "  rule pick(?f, ?v, ?e) :- ?e <=> (if ?f then Scale.twice(?v) else 1)\n  \
          rule pickOne(?x) :- pick(false, 5, ?e), ?x <=> 1\n",
     ));
-    assert_eq!(only_int(&mut kb, "wip7vp4.deferred.pickOne"), Some(1), "the `else` calls nothing");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.deferred.pickOne"), Some(1), "the `else` calls nothing");
 }
 
 /// THE STATED LIMIT, pinned: a call in a `|` BRANCH gets no condition, because the only place
@@ -980,12 +959,12 @@ end
 "#;
     let mut kb = crate::common::load_kb_with(PROGRAM);
     assert_eq!(
-        only_int(&mut kb, "wip7vp4.waitsdispatch.sumAnswer"),
+        crate::common::one_definite_int(&mut kb, "wip7vp4.waitsdispatch.sumAnswer"),
         Some(104),
         "`Wrap.zeroPlus(1)`: `Sum`'s `zero()` + 100 + 1, through the element's dictionary",
     );
     assert_eq!(
-        only_int(&mut kb, "wip7vp4.waitsdispatch.prodAnswer"),
+        crate::common::one_definite_int(&mut kb, "wip7vp4.waitsdispatch.prodAnswer"),
         Some(106),
         "the element's number, not a constant: `Prod`'s `zero()` + 100 + 1",
     );
@@ -1023,7 +1002,7 @@ namespace wip7vp4.mixed
 end
 "#;
     let mut kb = crate::common::load_kb_with(MIXED);
-    assert_eq!(only_int(&mut kb, "wip7vp4.mixed.go"), Some(7), "`Meters.conv`, by value");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.mixed.go"), Some(7), "`Meters.conv`, by value");
 }
 
 /// A WITNESS-supplied carrier beside a second carrier LOADS: `W provides Conv[A = Leaf2, B =
@@ -1059,7 +1038,7 @@ namespace wip7vp4.witness2
 end
 "#;
     let mut kb = crate::common::load_kb_with(WITNESS2);
-    assert_eq!(only_int(&mut kb, "wip7vp4.witness2.r"), Some(9), "`W.conv`");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.witness2.r"), Some(9), "`W.conv`");
 }
 
 /// A clause holding a WOVEN goal is not refuted when it opens. `lessH`'s `?p(?a)` — a
@@ -1080,7 +1059,7 @@ fn a_clause_with_a_woven_goal_is_not_refuted_at_opening() {
          rule lessH(?p, ?a, ?b) :- ?p(?a), Util.isLess(?a, ?b)\n  \
          rule q(?r) :- lessH(?p, 1, 5), known(p: ?p), ?r <=> 1\n",
     ));
-    assert_eq!(only_int(&mut kb, "wip7vp4.opening.q"), Some(1), "`isPos(1)` and `isLess(1, 5)`, once `?p` is bound");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.opening.q"), Some(1), "`isPos(1)` and `isLess(1, 5)`, once `?p` is bound");
 }
 
 /// A woven Bool-view call keeps its WI-580 CASE SPLIT. `warm` is a DEFAULTED spec op whose body
@@ -1141,22 +1120,10 @@ end
 "#;
     let mut interp = crate::common::interp_for(SPLIT);
     let cited = interp.call("wip7vp4.split.Driver.warmCool", &[]).expect("`warmCool` answers");
-    let shown = match &cited {
-        Value::Node(occ) => anthill_core::persistence::print::TermPrinter::new(interp.kb()).print_occurrence(occ),
-        other => format!("{other:?}"),
-    };
+    let shown = crate::common::show_value(interp.kb(), &cited);
     assert!(shown.ends_with("blue"), "`Cool`'s `warm` holds at `blue()`, not `red()`: {shown}");
     let mut kb = crate::common::load_kb_with(SPLIT);
-    let rows = crate::common::query_unary(&mut kb, "wip7vp4.split.wRod");
-    let printer = anthill_core::persistence::print::TermPrinter::new(&kb);
-    let shown: Vec<(String, bool)> = rows
-        .iter()
-        .map(|(v, d)| match v {
-            Value::Node(occ) => (printer.print_occurrence(occ), *d),
-            Value::Term { id, .. } => (printer.print_term(*id), *d),
-            other => (format!("{other:?}"), *d),
-        })
-        .collect();
+    let shown = crate::common::shown_rows(&mut kb, "wip7vp4.split.wRod");
     assert_eq!(shown, vec![("red".to_string(), true)], "`warm(red(), rod())` holds; `blue()` does not");
 }
 
@@ -1219,15 +1186,6 @@ namespace wip7vp4.law
 end
 "#;
     let mut kb = crate::common::load_kb_with(LAW);
-    let rows = crate::common::query_unary(&mut kb, "wip7vp4.law.r");
-    let printer = anthill_core::persistence::print::TermPrinter::new(&kb);
-    let shown: Vec<(String, bool)> = rows
-        .iter()
-        .map(|(v, d)| match v {
-            Value::Node(occ) => (printer.print_occurrence(occ), *d),
-            Value::Term { id, .. } => (printer.print_term(*id), *d),
-            other => (format!("{other:?}"), *d),
-        })
-        .collect();
+    let shown = crate::common::shown_rows(&mut kb, "wip7vp4.law.r");
     assert_eq!(shown, vec![("l1".to_string(), true)], "the law's left projection");
 }

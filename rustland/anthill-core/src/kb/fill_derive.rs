@@ -44,18 +44,8 @@ use smallvec::SmallVec;
 use crate::intern::Symbol;
 use crate::kb::load::{DomainJob, LoadError};
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
+use crate::kb::term_view::{TermView, ViewHead, ViewItem};
 use crate::kb::{ClauseKind, KnowledgeBase, SymbolKind};
-
-/// The sorts whose values are LITERALS, not constructor applications — the primitives, each
-/// of which provides `SortDomain` through the waiting type check rather than a derivation.
-/// The literal sorts of `typing::literal_sort`, by qualified name.
-pub(crate) const PRIMITIVE_SORTS: &[&str] = &[
-    "anthill.prelude.Int64",
-    "anthill.prelude.BigInt",
-    "anthill.prelude.Float",
-    "anthill.prelude.Bool",
-    "anthill.prelude.String",
-];
 
 /// The marker a derived `fill` clause spells "the `k`-th sub-dictionary of `?self`" with —
 /// `__domain_sub(?self, k)` — evaluated by `apply_domain` when it reads its dictionary
@@ -74,14 +64,32 @@ pub(crate) enum SortDomainKind {
     Primitive,
 }
 
+/// One of a sort's `sort T = ?` type parameters, as its domain reads it — collected by the
+/// loader in declaration order (`collect_domain_job`), in ONE walk with the field types, so
+/// `var` is the very variable `entity cons(head: T, …)`'s field type carries.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DomainParam {
+    /// The binding key a written `List[T = …]` uses: the parameter's short name, interned.
+    pub(crate) key: Symbol,
+    /// The parameter the sort DECLARES — what a provision row conditions on. Not the `j`-th
+    /// of the sort's type parameters, which counts a WI-452 marked structured one too.
+    pub(crate) decl: Symbol,
+    /// The parameter's canonical variable.
+    pub(crate) var: TermId,
+}
+
+/// `(key, var)` per parameter — the bindings `make_parameterized_type` applies a sort at.
+pub(crate) fn param_bindings(params: &[DomainParam]) -> Vec<(Symbol, TermId)> {
+    params.iter().map(|p| (p.key, p.var)).collect()
+}
+
 /// One sort's `SortDomain` — see `KnowledgeBase::sort_domains`.
 #[derive(Clone, Debug)]
 pub(crate) struct SortDomainEntry {
     /// The relation `fill` runs at this sort: `<Sort>.domain`.
     pub(crate) fill: Symbol,
-    /// The sort's declared type parameters in declaration order: the binding key a written
-    /// `List[T = …]` uses, and the parameter's canonical variable.
-    pub(crate) params: Vec<(Symbol, TermId)>,
+    /// The sort's declared type parameters in declaration order.
+    pub(crate) params: Vec<DomainParam>,
     /// The CONDITIONS — the parameters some field fills — as indices into `params`, in
     /// declaration order: the dictionary's sub `sub_offset + k` is the evidence for
     /// `params[conditions[k]]`.
@@ -293,11 +301,13 @@ fn fill_symbol(kb: &mut KnowledgeBase, sort: Symbol) -> Symbol {
         .define_qualified_only("__fill", &internal, SymbolKind::Goal, scope)
 }
 
-/// Every PRIMITIVE sort this KB declares gets its `fill` — the waiting type check:
-/// `Int64.domain(?x) :- anthill.kernel.domain(?x, Int64)`.
+/// Every PRIMITIVE sort this KB declares — a sort whose values are LITERALS, not constructor
+/// applications ([`crate::kb::load::PRELUDE_SORTS`]) — gets its `fill`, the waiting type
+/// check: `Int64.domain(?x) :- anthill.kernel.domain(?x, Int64)`.
 fn derive_primitives(kb: &mut KnowledgeBase, errors: &mut Vec<LoadError>) {
-    for qn in PRIMITIVE_SORTS {
-        let Some(sort) = kb.try_resolve_symbol(qn) else {
+    for name in crate::kb::load::PRELUDE_SORTS {
+        let qn = crate::kb::load::prelude_sort_qn(name);
+        let Some(sort) = kb.try_resolve_symbol(&qn) else {
             continue;
         };
         if !kb.has_kind(sort, SymbolKind::Sort) || kb.has_sort_domain(sort) {
@@ -351,7 +361,7 @@ fn condition_fixpoint(
         .iter()
         .map(|c| (kb.canonical_sort_sym(c.job.sort), BTreeSet::new()))
         .collect();
-    let params_of: HashMap<Symbol, &[(Symbol, TermId)]> = candidates
+    let params_of: HashMap<Symbol, &[DomainParam]> = candidates
         .iter()
         .map(|c| (kb.canonical_sort_sym(c.job.sort), c.job.params.as_slice()))
         .collect();
@@ -382,7 +392,7 @@ fn collect_conditions(
     t: TermId,
     c: &Candidate,
     conds: &HashMap<Symbol, BTreeSet<usize>>,
-    params_of: &HashMap<Symbol, &[(Symbol, TermId)]>,
+    params_of: &HashMap<Symbol, &[DomainParam]>,
     out: &mut BTreeSet<usize>,
 ) {
     if t == c.self_type {
@@ -396,7 +406,7 @@ fn collect_conditions(
         return;
     };
     let hc = kb.canonical_sort_sym(head);
-    let (params, filled): (&[(Symbol, TermId)], Vec<usize>) = match (conds.get(&hc), params_of.get(&hc)) {
+    let (params, filled): (&[DomainParam], Vec<usize>) = match (conds.get(&hc), params_of.get(&hc)) {
         (Some(set), Some(ps)) => (ps, set.iter().copied().collect()),
         _ => match kb.sort_domain(hc) {
             Some(e) => (e.params.as_slice(), e.conditions.clone()),
@@ -404,7 +414,7 @@ fn collect_conditions(
         },
     };
     for j in filled {
-        if let Some(arg) = type_arg(kb, t, params, j) {
+        if let Some(arg) = condition_arg_term(kb, t, &params[j]) {
             collect_conditions(kb, arg, c, conds, params_of, out);
         }
     }
@@ -425,7 +435,7 @@ fn fillable_fixpoint(
         .map(|c| kb.canonical_sort_sym(c.job.sort))
         .filter(|s| !declined.contains(s))
         .collect();
-    let params_of: HashMap<Symbol, Vec<(Symbol, TermId)>> = candidates
+    let params_of: HashMap<Symbol, Vec<DomainParam>> = candidates
         .iter()
         .map(|c| (kb.canonical_sort_sym(c.job.sort), c.job.params.clone()))
         .collect();
@@ -470,7 +480,7 @@ fn field_fillable(
     c: &Candidate,
     alive: &HashSet<Symbol>,
     conds: &HashMap<Symbol, BTreeSet<usize>>,
-    params_of: &HashMap<Symbol, Vec<(Symbol, TermId)>>,
+    params_of: &HashMap<Symbol, Vec<DomainParam>>,
 ) -> bool {
     if t == c.self_type || param_index(kb, t, &c.job.params).is_some() {
         return true;
@@ -479,7 +489,7 @@ fn field_fillable(
         return false;
     };
     let hc = kb.canonical_sort_sym(head);
-    let (params, filled): (Vec<(Symbol, TermId)>, Vec<usize>) = if alive.contains(&hc) {
+    let (params, filled): (Vec<DomainParam>, Vec<usize>) = if alive.contains(&hc) {
         (
             params_of.get(&hc).cloned().unwrap_or_default(),
             conds
@@ -492,7 +502,7 @@ fn field_fillable(
     } else {
         return false;
     };
-    filled.into_iter().all(|j| match type_arg(kb, t, &params, j) {
+    filled.into_iter().all(|j| match condition_arg_term(kb, t, &params[j]) {
         Some(arg) => field_fillable(kb, arg, c, alive, conds, params_of),
         // An argument the type does not write is a fresh type — filled when something pins
         // it, as `[]`'s element is.
@@ -678,7 +688,7 @@ fn evidence(kb: &mut KnowledgeBase, t: TermId, c: &Candidate, entry: &SortDomain
     // placeholder holds them; the conditions follow.
     let mut subs: Vec<Evidence> = (0..target.sub_offset).map(|_| Evidence::Placeholder).collect();
     for &j in &target.conditions {
-        subs.push(match type_arg(kb, t, &target.params, j) {
+        subs.push(match condition_arg_term(kb, t, &target.params[j]) {
             Some(arg) => evidence(kb, arg, c, entry),
             // Unwritten: a fresh type, pending until pinned.
             None => Evidence::Type(fresh_global(kb, "T")),
@@ -713,32 +723,27 @@ fn evidence_term(kb: &mut KnowledgeBase, syms: &ClauseSyms, ev: Evidence, self_v
                 .into_iter()
                 .map(|s| evidence_term(kb, syms, s, self_var))
                 .collect();
-            let impl_ref = kb.alloc(Term::Ref(head));
             let reads = syms.reads();
-            kb.alloc(Term::Fn {
-                functor: reads.dict_ctor,
-                pos_args: subs,
-                named_args: SmallVec::from_slice(&[(reads.dict_impl, impl_ref)]),
-            })
+            crate::kb::typing::dictionary_term(kb, (reads.dict_ctor, reads.dict_impl), head, &subs)
         }
     }
 }
 
 /// Is `t` the canonical variable of one of `params`, and which?
-fn param_index(kb: &KnowledgeBase, t: TermId, params: &[(Symbol, TermId)]) -> Option<usize> {
+fn param_index(kb: &KnowledgeBase, t: TermId, params: &[DomainParam]) -> Option<usize> {
     let Term::Var(Var::Global(v)) = kb.get_term(t) else {
         return None;
     };
     params
         .iter()
-        .position(|&(_, pt)| matches!(kb.get_term(pt), Term::Var(Var::Global(pv)) if pv == v))
+        .position(|p| matches!(kb.get_term(p.var), Term::Var(Var::Global(pv)) if pv == v))
 }
 
 /// Does `t` mention any of `params`' canonical variables?
-fn term_mentions_params(kb: &KnowledgeBase, t: TermId, params: &[(Symbol, TermId)]) -> bool {
+fn term_mentions_params(kb: &KnowledgeBase, t: TermId, params: &[DomainParam]) -> bool {
     let vars: Vec<VarId> = params
         .iter()
-        .filter_map(|&(_, pt)| match kb.get_term(pt) {
+        .filter_map(|p| match kb.get_term(p.var) {
             Term::Var(Var::Global(v)) => Some(*v),
             _ => None,
         })
@@ -749,19 +754,11 @@ fn term_mentions_params(kb: &KnowledgeBase, t: TermId, params: &[(Symbol, TermId
 /// Does `t` mention the sort `s` (at any depth) — a recursive field?
 fn mentions_sort(kb: &KnowledgeBase, t: TermId, s: Symbol) -> bool {
     let canon = kb.canonical_sort_sym(s);
-    match kb.get_term(t) {
+    crate::kb::typing::term_any_subterm(kb, t, &|_, term| match term {
         Term::Ref(h) => kb.canonical_sort_sym(*h) == canon,
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => {
-            kb.canonical_sort_sym(*functor) == canon
-                || pos_args.iter().any(|&a| mentions_sort(kb, a, s))
-                || named_args.iter().any(|&(_, a)| mentions_sort(kb, a, s))
-        }
+        Term::Fn { functor, .. } => kb.canonical_sort_sym(*functor) == canon,
         _ => false,
-    }
+    })
 }
 
 /// The nominal head of a type term, or `None` for a variable, an arrow, a tuple.
@@ -773,63 +770,41 @@ fn type_head(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
     }
 }
 
-/// The argument type `t` writes for `params[j]`: by its binding key's SHORT NAME (the two
-/// sides reach their keys through different resolutions, `pin_type_vars`' rule), else by
-/// position — [`condition_arg_position`]'s. The one reader of a TERM type's condition
-/// argument; the resolver and the citation route read a `Value` type the same way.
-pub(crate) fn type_arg(kb: &KnowledgeBase, t: TermId, params: &[(Symbol, TermId)], j: usize) -> Option<TermId> {
-    let Term::Fn {
-        functor,
-        pos_args,
-        named_args,
-    } = kb.get_term(t)
-    else {
-        return None;
-    };
-    let (key, _) = params.get(j)?;
-    let short = kb.local_name_of(*key);
-    named_args
-        .iter()
-        .find(|(k, _)| kb.local_name_of(*k) == short)
-        .map(|&(_, a)| a)
-        .or_else(|| {
-            condition_arg_position(kb, *functor, params, j).and_then(|p| pos_args.get(p).copied())
-        })
+/// The argument the type `ty` writes for the domain parameter `p` — THE reader of a
+/// condition's argument, over any carrier: the fill derivation and the typed-head sweep read a
+/// type TERM ([`condition_arg_term`]), the resolver and the citation route a `Value`. By the
+/// binding key's SHORT NAME (the two sides reach their keys through different resolutions,
+/// `pin_type_vars`' rule).
+///
+/// NAMED ONLY. Every type argument a sort is applied at is written NAMED
+/// (`make_parameterized_type`), so no positional application reaches here — debug-asserted
+/// rather than read by position, which would have to know where the sort DECLARES `p` among
+/// its type parameters (a WI-452 marked structured one shifts it).
+pub(crate) fn condition_arg<'a, V: TermView>(
+    kb: &'a KnowledgeBase,
+    ty: &'a V,
+    p: &DomainParam,
+) -> Option<ViewItem<'a>> {
+    let arg = ty.named_field(kb, kb.local_name_of(p.key));
+    debug_assert!(
+        arg.is_some() || !matches!(ty.head(kb), ViewHead::Functor { pos_arity, .. } if pos_arity > 0),
+        "a sort's type arguments are written named, never positionally",
+    );
+    arg
 }
 
-/// Where a POSITIONAL type application of `sort` writes the argument for `params[j]` — one of
-/// the sort's `sort T = ?` parameters, as a `SortDomainEntry` or a derivation candidate lists
-/// them: its position among the sort's DECLARED type parameters, which is not `j` where a
-/// WI-452 marked structured parameter is declared too (`sort Tagged[F[T], A]`: `A` is
-/// `params[0]` and position 1). Read by `j` instead, a condition took `F`'s argument.
-pub(crate) fn condition_arg_position(
-    kb: &KnowledgeBase,
-    sort: Symbol,
-    params: &[(Symbol, TermId)],
-    j: usize,
-) -> Option<usize> {
-    let decl = condition_param_sym(kb, sort, params, j)?;
-    kb.type_param_syms_of(sort).iter().position(|&p| p == decl)
-}
-
-/// The type-parameter symbol `sort` DECLARES for `params[j]` — whose keys are interned short
-/// names — as a provision row conditions on it.
-pub(crate) fn condition_param_sym(
-    kb: &KnowledgeBase,
-    sort: Symbol,
-    params: &[(Symbol, TermId)],
-    j: usize,
-) -> Option<Symbol> {
-    kb.type_param_sym_of(sort, kb.local_name_of(params.get(j)?.0))
+/// [`condition_arg`] over a type TERM, whose children are terms.
+pub(crate) fn condition_arg_term(kb: &KnowledgeBase, t: TermId, p: &DomainParam) -> Option<TermId> {
+    condition_arg(kb, &t, p).and_then(|a| a.as_term_id())
 }
 
 /// `List[T = ?T]` — the type of the sort's own values, at its canonical parameters.
-fn domain_self_type(kb: &mut KnowledgeBase, sort: Symbol, params: &[(Symbol, TermId)]) -> TermId {
+fn domain_self_type(kb: &mut KnowledgeBase, sort: Symbol, params: &[DomainParam]) -> TermId {
     let base = kb.make_sort_ref(sort);
     if params.is_empty() {
         return base;
     }
-    kb.make_parameterized_type(base, params)
+    kb.make_parameterized_type(base, &param_bindings(params))
 }
 
 fn fresh_global(kb: &mut KnowledgeBase, name: &str) -> TermId {

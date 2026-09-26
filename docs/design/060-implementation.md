@@ -1209,7 +1209,9 @@ dictionaries was measured wrong twice over: it broke NESTED covered calls on a S
 reader — `dictionary_dispatch_target` destructures a one-element slice and eval rejects
 more, because `requirements` answers "which instance does THIS CALL dispatch on" and one
 call dispatches on one instance. The claim that "`apply_within` needs nothing — the list is
-already a list" was false: the list exists, its consumers do not.
+already a list" was false: the list exists, its consumers do not. (The NESTED case itself was
+fixed later, one dictionary per call still: WI-20260925-YNCY3 weaves WI-1040's covered calls
+in P7VP4's one-pass `weave_calls`, matched by identity in the original tree — PRVA2 (a).)
 
 ### MEASURED 2026-09-16 — the projection root ATTRIBUTES, and REMOVES NOTHING
 

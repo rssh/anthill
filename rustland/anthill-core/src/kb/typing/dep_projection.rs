@@ -1176,10 +1176,22 @@ pub(super) fn build_dictionary_term(
     impl_sym: Symbol,
     subs: &[TermId],
 ) -> TermId {
+    dictionary_term(kb, (syms.dict_ctor, syms.dict_impl), impl_sym, subs)
+}
+
+/// [`build_dictionary_term`] for a producer holding only the dictionary's constructor and
+/// `impl` key ([`crate::kb::term_view::dictionary_view_syms`]) — the derived `fill` clauses
+/// (`kb::fill_derive`), which build one where a field's type mentions the sort's parameters.
+pub(crate) fn dictionary_term(
+    kb: &mut KnowledgeBase,
+    (ctor, impl_key): (Symbol, Symbol),
+    impl_sym: Symbol,
+    subs: &[TermId],
+) -> TermId {
     let impl_ref = kb.alloc(Term::Ref(impl_sym));
     kb.alloc(Term::Fn {
-        functor: syms.dict_ctor,
+        functor: ctor,
         pos_args: SmallVec::from_slice(subs),
-        named_args: SmallVec::from_slice(&[(syms.dict_impl, impl_ref)]),
+        named_args: SmallVec::from_slice(&[(impl_key, impl_ref)]),
     })
 }

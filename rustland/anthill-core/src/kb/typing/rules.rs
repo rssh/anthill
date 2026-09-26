@@ -553,7 +553,18 @@ pub(crate) fn is_sort_domain_spec(kb: &KnowledgeBase, spec: Symbol) -> bool {
 /// must not suppress the generated guard. A functor-presence test would do exactly
 /// that, and silently.
 pub(crate) fn typed_head_domain_pass(kb: &mut KnowledgeBase) -> crate::kb::occurrence::PassId {
-    kb.register_pass("anthill.kb.passes.typed_head_domain")
+    kb.register_pass(TYPED_HEAD_DOMAIN_PASS)
+}
+
+const TYPED_HEAD_DOMAIN_PASS: &str = "anthill.kb.passes.typed_head_domain";
+
+/// Did [`install_typed_head_domain_goals`] synthesize a node stamped `by`? The read-only face
+/// of [`typed_head_domain_pass`], for the resolver: a lookup in the intern map, never a
+/// registration from a resolution.
+pub(crate) fn is_typed_head_domain_pass(kb: &KnowledgeBase, by: crate::kb::occurrence::PassId) -> bool {
+    kb.symbols
+        .lookup(TYPED_HEAD_DOMAIN_PASS)
+        .is_some_and(|s| crate::kb::occurrence::PassId::from_symbol(s) == by)
 }
 
 /// WI-742 / WI-743 / WI-20260925-SHED7 (proposal 060 §2–§2.3) — compile every `?x: B`
@@ -760,7 +771,7 @@ fn bound_is_fillable(kb: &KnowledgeBase, t: TermId) -> bool {
                 return false;
             };
             entry.conditions.iter().all(|&j| {
-                crate::kb::fill_derive::type_arg(kb, t, &entry.params, j)
+                crate::kb::fill_derive::condition_arg_term(kb, t, &entry.params[j])
                     .is_none_or(|a| bound_is_fillable(kb, a))
             })
         }
@@ -771,18 +782,7 @@ fn bound_is_fillable(kb: &KnowledgeBase, t: TermId) -> bool {
 /// Does the stored type term mention a variable — a rule-scoped one, or the enclosing sort's
 /// parameter opened per activation? Either way it is not known until the clause runs.
 fn term_mentions_var(kb: &KnowledgeBase, t: TermId) -> bool {
-    match kb.get_term(t) {
-        Term::Var(_) => true,
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => {
-            pos_args.iter().any(|&a| term_mentions_var(kb, a))
-                || named_args.iter().any(|&(_, a)| term_mentions_var(kb, a))
-        }
-        _ => false,
-    }
+    term_any_subterm(kb, t, &|_, term| matches!(term, Term::Var(_)))
 }
 
 /// WI-20260911-5G28A S3, WI-20260925-SHED7 — the two goals a bound MENTIONING A VARIABLE
@@ -868,7 +868,7 @@ fn type_term_head_sym(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
 }
 
 /// Does this rule-body occurrence hold a WOVEN call — an `apply_within` a requirement weave
-/// put there ([`weave_covered_call`], WI-1040 and WI-20260925-P7VP4)? Iterative, like the
+/// put there (`rule_requirements::weave_calls`, WI-1040 and WI-20260925-P7VP4)? Iterative, like the
 /// other rule-body walks.
 fn occ_holds_woven_call(occ: &Rc<NodeOccurrence>) -> bool {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];

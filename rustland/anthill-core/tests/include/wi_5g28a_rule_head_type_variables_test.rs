@@ -11,10 +11,10 @@
 //!     WI-20260925-SHED7 and its review, each covering the others: `typing::pin_bound_from_value`
 //!     (the typed head's guard in front of its body, `__domain_guard`, and a written `domain`),
 //!     `typing::pin_bound_from_value_open` (the conform of the fill after it), and
-//!     `lower_apply_domain`'s `Unpinned` read (a condition's type, off a bound element). Back
+//!     `lower_apply_domain`'s `NotYet(Some(_))` read (a condition's type, off a bound element). Back
 //!     out ONE and every row here passes (the closed pin alone reddens only WT8WG's
 //!     `a_written_bound_carrying_a_type_variable_is_read_off_the_value`, a written `domain`
-//!     having no other reader); all THREE (both pins returning `NotApplicable`, the `Unpinned`
+//!     having no other reader); all THREE (both pins returning `NotApplicable`, the `NotYet(Some(_))`
 //!     arm skipped) redden `a_tied_head_answers_definite_with_an_empty_residual`,
 //!     `a_bound_body_decides_in_one_row`, `the_accepted_rigid_row_evaluates` and
 //!     `the_bound_variable_is_opened_per_firing` — eleven rows over the domain suites,

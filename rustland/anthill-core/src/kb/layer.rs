@@ -325,6 +325,9 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // instrument, not KB state.
         #[cfg(test)]
             sem_eq_sub_depth: _,
+        // An INTERNED symbol, cached: the interner above never rolls back, so neither does
+        // what it minted.
+        unrouted_read_sym: _,
 
         // ── SCOPED: every field to the NEXT HEADER is in `kb_scoped_fields!` ─
         rules: _,

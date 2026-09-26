@@ -20,8 +20,8 @@ pub(super) struct GroundedRequirement {
     ///
     /// Empty for the transitive / inherited witnesses, which ground the requirement
     /// through a DIFFERENT spec's carrier and so name no call this dictionary can be
-    /// threaded into (see [`weave_covered_call`]).
-    pub(super) covered_calls: Vec<(Rc<NodeOccurrence>, Symbol)>,
+    /// threaded into (see `rule_requirements::weave_calls`).
+    pub(super) covered_calls: Vec<Rc<NodeOccurrence>>,
     /// WI-20260909-96ZTM, widened by WI-20260917-HRFR5 — did the WRITTEN BRACKET choose
     /// this grounding?
     ///

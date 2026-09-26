@@ -1119,6 +1119,83 @@ pub fn scalar_int(kb: &KnowledgeBase, v: &eval::Value) -> Option<i64> {
     v.literal_int64(kb)
 }
 
+/// The ONE DEFINITE answer of the unary relation `qn` ([`query_unary`]), as the `Int64` it
+/// denotes ([`scalar_int`]) — `None` for a row that denotes no `Int64`. Any other answer
+/// set PANICS, naming it: none, several, or one that is not definite are no single answer.
+#[allow(dead_code)]
+pub fn one_definite_int(kb: &mut KnowledgeBase, qn: &str) -> Option<i64> {
+    let rows = query_unary(kb, qn);
+    match rows.as_slice() {
+        [(v, true)] => scalar_int(kb, v),
+        _ => panic!("{qn}: expected one definite row, got {rows:?}"),
+    }
+}
+
+/// A row value as `.anthill` text: an occurrence or a term through `TermPrinter`, any other
+/// carrier by its `Debug` form.
+#[allow(dead_code)]
+pub fn show_value(kb: &KnowledgeBase, v: &eval::Value) -> String {
+    use anthill_core::persistence::print::TermPrinter;
+    match v {
+        eval::Value::Node(occ) => TermPrinter::new(kb).print_occurrence(occ),
+        eval::Value::Term { id, .. } => TermPrinter::new(kb).print_term(*id),
+        other => format!("{other:?}"),
+    }
+}
+
+/// The answers of the unary relation `qn` ([`query_unary`]), each rendered ([`show_value`])
+/// and marked whether it is definite.
+#[allow(dead_code)]
+pub fn shown_rows(kb: &mut KnowledgeBase, qn: &str) -> Vec<(String, bool)> {
+    query_unary(kb, qn)
+        .into_iter()
+        .map(|(v, definite)| (show_value(kb, &v), definite))
+        .collect()
+}
+
+/// Every CALL in the stored clause bodies of the relation `qn` — an `Expr::Apply`, or a
+/// WOVEN `Expr::ApplyWithin` — as `(callee's local name, is it woven, the local names of the
+/// woven calls nested inside it)`: what a requirement weave leaves behind, read off the stored
+/// body. Sorted, so a comparison does not depend on the walk's order.
+#[allow(dead_code)]
+pub fn body_calls(kb: &KnowledgeBase, qn: &str) -> Vec<(String, bool, Vec<String>)> {
+    use anthill_core::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence};
+    use std::rc::Rc;
+    fn woven_below(kb: &KnowledgeBase, expr: &Expr) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack: Vec<Rc<NodeOccurrence>> = Vec::new();
+        for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        while let Some(o) = stack.pop() {
+            let Some(e) = o.as_expr() else { continue };
+            if let Expr::ApplyWithin { functor, .. } = e {
+                out.push(kb.local_name_of(*functor).to_string());
+            }
+            for_each_child(e, |c| stack.push(Rc::clone(c)));
+        }
+        out.sort();
+        out
+    }
+    let mut calls = Vec::new();
+    for rid in kb.rule_ids_by_qn(qn) {
+        let mut stack: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        while let Some(o) = stack.pop() {
+            let Some(expr) = o.as_expr() else { continue };
+            match expr {
+                Expr::ApplyWithin { functor, .. } => {
+                    calls.push((kb.local_name_of(*functor).to_string(), true, woven_below(kb, expr)))
+                }
+                Expr::Apply { functor, .. } => {
+                    calls.push((kb.local_name_of(*functor).to_string(), false, Vec::new()))
+                }
+                _ => {}
+            }
+            for_each_child(expr, |c| stack.push(Rc::clone(c)));
+        }
+    }
+    calls.sort();
+    calls
+}
+
 /// The `Bool` a value DENOTES, read through the carrier-neutral view — the peer of
 /// [`scalar_str`] / [`scalar_int`], for the same reason (WI-20260827-3ZNBC).
 #[allow(dead_code)]

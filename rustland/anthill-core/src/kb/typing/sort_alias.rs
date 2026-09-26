@@ -451,15 +451,7 @@ fn resolve_alias_shape_chain(
 /// applied alias (`Name[…]`) is refused where it is written, so only a bare leaf can be one.
 pub(crate) fn dealias_type(kb: &mut KnowledgeBase, t: TermId) -> TermId {
     rewrite_term_leaves(kb, t, &|kb, leaf| {
-        let s = match kb.get_term(leaf) {
-            Term::Ref(s) => *s,
-            Term::Fn {
-                functor,
-                pos_args,
-                named_args,
-            } if pos_args.is_empty() && named_args.is_empty() => *functor,
-            _ => return None,
-        };
+        let s = ref_or_nullary_name(kb.get_term(leaf))?;
         // O(1) FIRST: `alias_targets` holds every alias, keyed as `resolve_sort_alias` matches
         // (the exact symbol), and nothing else — a `sort T = ?` parameter is not one — so a
         // miss is `resolve_alias_shape`'s `None`. Asked before it because the derivation runs

@@ -15,12 +15,19 @@ use super::*;
 /// dictionary with a hole" is unrepresentable rather than merely not produced. What
 /// remains is a slot-level fact about a frame this route enters, and only these routes
 /// hold one.
+///
+/// A slot the CALLER already holds a dictionary for is [`Self::Supplied`]: a woven rule-body
+/// call carrying its clause's conditions (WI-20260925-P7VP4). It stands in for what the
+/// argument values would derive, in the slot's own place, so every frame this route enters
+/// is laid out by one constructor (`Interpreter::frame_requirements_from_trees`) — the
+/// `__req_self` stand-in first, whichever slots were supplied.
 pub(crate) enum BridgeSlot {
     Resolved(ResolvedRequiresNode),
     Absent {
         spec_sort: Symbol,
         why: UnavailableWhy,
     },
+    Supplied(crate::eval::value::Dictionary),
 }
 
 /// WI-625 Layer B (WI-300 Tier B) — the requirement dictionaries an op needs,
@@ -151,21 +158,35 @@ pub(crate) fn resolve_bridge_requirements(
     args: &[Value],
     named_slot_ties: NamedSlotTies,
 ) -> BridgeRequirements {
-    resolve_bridge_requirements_except(kb, op, args, named_slot_ties, &[])
+    resolve_bridge_requirements_supplied(kb, op, args, named_slot_ties, &[])
 }
 
-/// [`resolve_bridge_requirements`] with the chain slots at `supplied` left out: the caller
-/// already HOLDS a dictionary for each (WI-20260925-P7VP4 — a woven rule-body call carrying
-/// its clause's conditions), so a tie or an unpinnable element there is no verdict about
-/// the call — the host entry's rule (`seed_entry_requirements`) for the same reason.
-pub(crate) fn resolve_bridge_requirements_except(
+/// [`resolve_bridge_requirements`] for a caller that already HOLDS dictionaries for some of
+/// the chain's slots — `supplied[k]` for slot `k`, in chain order, or empty for none
+/// (WI-20260925-P7VP4 — a woven rule-body call carrying its clause's conditions). Each
+/// supplied slot is answered [`BridgeSlot::Supplied`] in its own place and nothing is
+/// derived for it, so a tie or an unpinnable element there is no verdict about the call —
+/// the host entry's rule (`seed_entry_requirements`) for the same reason. With every slot
+/// supplied, nothing is derived at all.
+pub(crate) fn resolve_bridge_requirements_supplied(
     kb: &mut KnowledgeBase,
     op: Symbol,
     args: &[Value],
     named_slot_ties: NamedSlotTies,
-    supplied: &[usize],
+    supplied: &[Option<crate::eval::value::Dictionary>],
 ) -> BridgeRequirements {
     let Some(parent) = impl_parent_of_op(kb, op) else {
+        // A caller that SUPPLIED slots holds dictionaries for a chain this op must then have,
+        // and a frame with no parent has nowhere to put them — refused, never dropped.
+        if supplied.iter().any(Option::is_some) {
+            return BridgeRequirements::Unresolvable {
+                detail: format!(
+                    "`{}` names no declaring scope, so the calling clause's conditions for \
+                     its slots have no frame to enter",
+                    kb.qualified_name_of(op),
+                ),
+            };
+        }
         return BridgeRequirements::NoneNeeded;
     };
     // WI-822: the `_rc` read, not an owned clone. This is on the per-dispatch path
@@ -195,6 +216,30 @@ pub(crate) fn resolve_bridge_requirements_except(
     let chain = op_dict_entries(kb, op);
     if chain.is_empty() {
         return BridgeRequirements::NoneNeeded;
+    }
+    // The weave read ONE condition per slot of this very chain (`inferred_slot_demand`); a
+    // count that disagrees would place dictionaries in the wrong slots, so it is refused.
+    if !supplied.is_empty() && supplied.len() != chain.len() {
+        return BridgeRequirements::Unresolvable {
+            detail: format!(
+                "the calling clause carries {} condition(s) for `{}`, whose dictionary chain \
+                 has {} slot(s)",
+                supplied.len(),
+                kb.qualified_name_of(op),
+                chain.len(),
+            ),
+        };
+    }
+    if !supplied.is_empty() && supplied.iter().all(Option::is_some) {
+        let names = chain.names(kb);
+        return BridgeRequirements::Resolved(
+            parent,
+            names
+                .iter()
+                .zip(supplied)
+                .filter_map(|(name, d)| Some((*name, BridgeSlot::Supplied(d.clone()?))))
+                .collect(),
+        );
     }
     // Pin the parent sort's type-parameters from the concrete argument types: unify
     // each ground arg's inferred type with the op's declared parameter type. A
@@ -244,7 +289,8 @@ pub(crate) fn resolve_bridge_requirements_except(
     let sort_len = chain.sort_len();
     let mut trees: Vec<(Symbol, BridgeSlot)> = Vec::with_capacity(chain.len());
     for (i, (entry, name)) in chain.iter().zip(names.iter()).enumerate() {
-        if supplied.contains(&i) {
+        if let Some(Some(d)) = supplied.get(i) {
+            trees.push((*name, BridgeSlot::Supplied(d.clone())));
             continue;
         }
         let op_half = i >= sort_len;

@@ -1343,7 +1343,7 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         //  - Rigid / DeBruijn vars and rule-head occurrences, as before.
         //  - `Expr::ApplyWithin`, and the reason CHANGED in WI-1040 — do not read the
         //    older one ("nothing produces it as an occurrence"), which is now false.
-        //    `weave_covered_call` (typing.rs) is a first-class occurrence-side
+        //    `weave_calls` (typing/rule_requirements.rs) is a first-class occurrence-side
         //    producer: it rewrites a rule-body spec-op call covered by a clause
         //    `require[X]` into `ApplyWithin` carrying the dictionary variable.
         //

@@ -85,9 +85,7 @@ pub(crate) fn run(kb: &mut KnowledgeBase) -> Vec<super::load::LoadError> {
         let conds: Vec<(Symbol, Symbol)> = entry
             .conditions
             .iter()
-            .filter_map(|&j| {
-                super::fill_derive::condition_param_sym(kb, s, &entry.params, j).map(|p| (spec, p))
-            })
+            .map(|&j| (spec, entry.params[j].decl))
             .collect();
         super::eq_derive::assert_derived_provision(kb, s, spec, &conds);
         if let Some(fillable) = fillable {

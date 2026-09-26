@@ -2351,29 +2351,7 @@ pub(crate) fn pin_bound_from_value(
     value: &Value,
     bound: &Value,
 ) -> TypeBoundPin {
-    if !type_mentions_flex_var(kb, bound) {
-        return TypeBoundPin::NotApplicable;
-    }
-    let ty = value_type_term(kb, subst, value);
-    // THE VALUE'S OWN TYPE MUST BE DETERMINED, and this is the same question
-    // [`type_bound_verdict_view`] asks of it — an under-determined input cannot pin an
-    // output. Without it a value whose carried type is itself a variable would unify the
-    // bound with a variable and call that a decision.
-    if type_is_undetermined(kb, &ty) {
-        return TypeBoundPin::Suspend;
-    }
-    let mut pin = Substitution::new();
-    // WALK THE BOUND THROUGH σ FIRST. A tie is only a tie if the SECOND column sees what
-    // the FIRST pinned: `my_rule(?x: List[T = ?t], ?res: List[T = ?t])` checks `?x`,
-    // binds `?t := Int64` into the caller's σ, and the `?res` goal must then read `?t`
-    // as `Int64` and REFUTE a `["a"]` — not re-bind it to `String`.
-    let bound = walk_type_deep_value(kb, subst, bound);
-    if pin_type_vars(kb, &mut pin, &ty, &bound) {
-        let bound = walk_type_deep_value(kb, &pin, &bound);
-        TypeBoundPin::Pinned { pin, bound }
-    } else {
-        TypeBoundPin::Refuted
-    }
+    pin_bound(kb, subst, value, bound, false)
 }
 
 /// WI-20260925-SHED7 — [`pin_bound_from_value`] for a value whose type is only PARTLY
@@ -2398,27 +2376,53 @@ pub(crate) fn pin_bound_from_value_open(
     value: &Value,
     bound: &Value,
 ) -> TypeBoundPin {
+    pin_bound(kb, subst, value, bound, true)
+}
+
+/// The one body of [`pin_bound_from_value`] (`open: false`) and
+/// [`pin_bound_from_value_open`] (`open: true`), which differ in how they read the value's
+/// type — and, for the open reading, a bound σ has already pinned.
+fn pin_bound(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    value: &Value,
+    bound: &Value,
+    open: bool,
+) -> TypeBoundPin {
     if !type_mentions_flex_var(kb, bound) {
         return TypeBoundPin::NotApplicable;
     }
+    // WALK THE BOUND THROUGH σ FIRST. A tie is only a tie if the SECOND column sees what
+    // the FIRST pinned: `my_rule(?x: List[T = ?t], ?res: List[T = ?t])` checks `?x`,
+    // binds `?t := Int64` into the caller's σ, and the `?res` goal must then read `?t`
+    // as `Int64` and REFUTE a `["a"]` — not re-bind it to `String`.
     let bound = walk_type_deep_value(kb, subst, bound);
-    // PINNED ALREADY — by the guard in front of the body, or by a tie's other column: nothing
-    // is left to read off the value, so the conformance is asked of its CLOSED type, which
-    // interns nothing (an unknown part is the one `?_` placeholder, compatible with anything),
-    // and the pin is empty. The common case: a typed head with a variable in its bound whose
-    // value the guard could type.
-    if !type_mentions_flex_var(kb, &bound) {
-        let ty = value_type_term(kb, subst, value);
-        return if types_compatible(kb, &mut Substitution::new(), &ty, &bound) {
-            TypeBoundPin::Pinned {
-                pin: Substitution::new(),
-                bound,
-            }
-        } else {
-            TypeBoundPin::Refuted
-        };
-    }
-    let Some(ty) = value_type_open(kb, subst, value) else {
+    let ty = if open {
+        // PINNED ALREADY — by the guard in front of the body, or by a tie's other column:
+        // nothing is left to read off the value, so the conformance is asked of its CLOSED
+        // type, which interns nothing (an unknown part is the one `?_` placeholder,
+        // compatible with anything), and the pin is empty. The common case: a typed head
+        // with a variable in its bound whose value the guard could type.
+        if !type_mentions_flex_var(kb, &bound) {
+            let ty = value_type_term(kb, subst, value);
+            return if types_compatible(kb, &mut Substitution::new(), &ty, &bound) {
+                TypeBoundPin::Pinned {
+                    pin: Substitution::new(),
+                    bound,
+                }
+            } else {
+                TypeBoundPin::Refuted
+            };
+        }
+        value_type_open(kb, subst, value)
+    } else {
+        // THE VALUE'S OWN TYPE MUST BE DETERMINED, and this is the same question
+        // [`type_bound_verdict_view`] asks of it — an under-determined input cannot pin an
+        // output. Without it a value whose carried type is itself a variable would unify the
+        // bound with a variable and call that a decision.
+        Some(value_type_term(kb, subst, value)).filter(|ty| !type_is_undetermined(kb, ty))
+    };
+    let Some(ty) = ty else {
         return TypeBoundPin::Suspend;
     };
     let mut pin = Substitution::new();
@@ -2451,36 +2455,13 @@ fn open_type_placeholders(kb: &mut KnowledgeBase, ty: &Value) -> Value {
 }
 
 fn open_term_placeholders(kb: &mut KnowledgeBase, t: TermId) -> TermId {
-    if matches!(type_head(kb, &Value::term(t)), TypeHead::TypeVar(_)) {
-        let name = kb.intern("T");
-        let vid = kb.fresh_var(name);
-        return kb.alloc(Term::Var(Var::Global(vid)));
-    }
-    let Term::Fn {
-        functor,
-        pos_args,
-        named_args,
-    } = kb.get_term(t).clone()
-    else {
-        return t;
-    };
-    let pos: SmallVec<[TermId; 4]> = pos_args
-        .iter()
-        .map(|&a| open_term_placeholders(kb, a))
-        .collect();
-    let named: SmallVec<[(Symbol, TermId); 2]> = named_args
-        .iter()
-        .map(|&(k, a)| (k, open_term_placeholders(kb, a)))
-        .collect();
-    if pos == pos_args && named == named_args {
-        t
-    } else {
-        kb.alloc(Term::Fn {
-            functor,
-            pos_args: pos,
-            named_args: named,
+    rewrite_term_leaves(kb, t, &|kb, t| {
+        matches!(type_head(kb, &Value::term(t)), TypeHead::TypeVar(_)).then(|| {
+            let name = kb.intern("T");
+            let vid = kb.fresh_var(name);
+            kb.alloc(Term::Var(Var::Global(vid)))
         })
-    }
+    })
 }
 
 /// WI-20260911-5G28A — MATCH a determined type against a bound, binding the bound's type

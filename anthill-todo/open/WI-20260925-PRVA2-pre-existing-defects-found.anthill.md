@@ -27,3 +27,9 @@ PRE-EXISTING DEFECTS FOUND WHILE REVIEWING WI-20260925-P7VP4 / WI-20260925-SHED7
 
 ACCEPTANCE: each item driven by a row that fails before its fix (the example above as the fixture), or — for (d) — the user's decision recorded and the spec updated first. Full workspace green via rustland/scripts/test.sh; scaland testFull.
 
+## Changes
+
+### 2026-09-26T08:39:53Z — feedback — user
+
+(a) DELIVERED by WI-20260925-YNCY3 (item 1, not committed, claude 2026-09-26): WI-1040 weaves through the one-pass `weave_calls`; `weave_covered_call` is gone. Row `wi1040_require_clause_dictionary_test::a_covered_call_nested_in_another_covered_call_is_woven_with_it` — the load panicked on the call-by-call weave at 35e115c6. (b)–(e) remain.
+

@@ -47,7 +47,6 @@
 //! `861b3013`, and each is the mechanism as a whole rather than one of its parts.
 
 use anthill_core::eval::Value;
-use anthill_core::persistence::print::TermPrinter;
 
 const PROGRAM: &str = r#"
 namespace shed7
@@ -90,30 +89,6 @@ namespace shed7
 end
 "#;
 
-fn show(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> String {
-    match v {
-        Value::Node(occ) => TermPrinter::new(kb).print_occurrence(occ),
-        Value::Term { id, .. } => TermPrinter::new(kb).print_term(*id),
-        other => format!("{other:?}"),
-    }
-}
-
-/// `qn`'s answers, rendered, each marked whether it is definite.
-fn rows(kb: &mut anthill_core::kb::KnowledgeBase, qn: &str) -> Vec<(String, bool)> {
-    crate::common::query_unary(kb, qn)
-        .into_iter()
-        .map(|(v, d)| (show(kb, &v), d))
-        .collect()
-}
-
-/// The one DEFINITE answer of a unary relation, as an `Int64` — `None` for anything else.
-fn one_definite_int(kb: &mut anthill_core::kb::KnowledgeBase, qn: &str) -> Option<i64> {
-    match crate::common::query_unary(kb, qn).as_slice() {
-        [(v, true)] => crate::common::scalar_int(kb, v),
-        _ => None,
-    }
-}
-
 fn drive(entry: &str) -> Result<i64, String> {
     let mut interp = crate::common::interp_for(PROGRAM);
     match interp.call(&format!("shed7.Driver.{entry}"), &[]) {
@@ -137,7 +112,7 @@ fn a_type_variable_bound_decides_every_value_it_is_handed() {
     let mut kb = crate::common::load_kb_with(PROGRAM);
     for r in ["elRed", "elInt", "elColours", "elInts", "elNone", "elNil"] {
         assert_eq!(
-            rows(&mut kb, &format!("shed7.{r}")),
+            crate::common::shown_rows(&mut kb, &format!("shed7.{r}")),
             vec![("1".to_string(), true)],
             "`{r}`: one definite row",
         );
@@ -156,7 +131,7 @@ fn a_type_variable_bound_decides_every_value_it_is_handed() {
 fn the_second_column_pins_the_first_columns_element() {
     let mut kb = crate::common::load_kb_with(PROGRAM);
     assert_eq!(
-        rows(&mut kb, "shed7.q"),
+        crate::common::shown_rows(&mut kb, "shed7.q"),
         vec![
             ("red".to_string(), true),
             ("green".to_string(), true),
@@ -194,7 +169,7 @@ fn a_parameterised_value_face_is_cited() {
 fn a_primitive_fills_to_skeletons() {
     let mut kb = crate::common::load_kb_with(PROGRAM);
     let first = crate::common::first_unary(&mut kb, "shed7.ints", 3);
-    let rendered: Vec<(String, bool)> = first.iter().map(|(v, d)| (show(&kb, v), *d)).collect();
+    let rendered: Vec<(String, bool)> = first.iter().map(|(v, d)| (crate::common::show_value(&kb, v), *d)).collect();
     assert_eq!(rendered.len(), 3, "an infinite generator yields its prefix: {rendered:?}");
     assert!(rendered[0].1, "`[]` is definite: {rendered:?}");
     assert!(
@@ -255,10 +230,7 @@ fn a_dictionary_the_typer_builds_is_read_at_its_layout() {
     let first = interp
         .call("shed7r.Driver.firstWrapped", &[])
         .expect("the first row");
-    let rendered = match &first {
-        Value::Node(occ) => TermPrinter::new(interp.kb()).print_occurrence(occ),
-        other => format!("{other:?}"),
-    };
+    let rendered = crate::common::show_value(interp.kb(), &first);
     assert_eq!(
         rendered.matches("wrap").count(),
         1,
@@ -306,7 +278,7 @@ end
 #[test]
 fn conditions_are_per_field() {
     let mut kb = crate::common::load_kb_with(FIELDS);
-    let answers = rows(&mut kb, "shed7f.tagged");
+    let answers = crate::common::shown_rows(&mut kb, "shed7f.tagged");
     assert_eq!(answers.len(), 3, "one `tag` per colour: {answers:?}");
     assert!(answers.iter().all(|(_, d)| *d), "every row definite: {answers:?}");
 }
@@ -327,7 +299,7 @@ fn a_field_that_cannot_be_filled_leaves_its_sort_without_a_domain() {
     assert!(kb.has_sort_domain(boxed), "a `Colour` and an `Int64` field can both be filled");
     // With no domain, the bound is the conformance check alone: mode (out) cannot generate,
     // and flounders — undecided, never an empty answer.
-    let held = rows(&mut kb, "shed7f.held");
+    let held = crate::common::shown_rows(&mut kb, "shed7f.held");
     assert!(
         !held.is_empty() && held.iter().all(|(_, d)| !*d),
         "undecided rows only: {held:?}",
@@ -372,7 +344,7 @@ end
         other => panic!("expected an Int64, got {other:?}"),
     }
     let mut kb = crate::common::load_kb_with(TANK);
-    let answers = rows(&mut kb, "shed7tank.tanks");
+    let answers = crate::common::shown_rows(&mut kb, "shed7tank.tanks");
     assert!(answers.len() == 1 && answers[0].1, "`Tank`'s domain still fills the element: {answers:?}");
 }
 
@@ -405,10 +377,10 @@ end
 "#;
     let mut kb = crate::common::load_kb_with(NO_DOMAIN);
     for rel in ["shed7nd.tupleList", "shed7nd.elTuple"] {
-        let answers = rows(&mut kb, rel);
+        let answers = crate::common::shown_rows(&mut kb, rel);
         assert!(answers.len() == 1 && answers[0].1, "{rel}: one definite row, got {answers:?}");
     }
-    let refused = rows(&mut kb, "shed7nd.tieBad");
+    let refused = crate::common::shown_rows(&mut kb, "shed7nd.tieBad");
     assert!(refused.is_empty(), "`(\"x\", \"y\")` is no `(Int64, Int64)`: {refused:?}");
 }
 
@@ -433,7 +405,7 @@ namespace shed7cut
 end
 "#;
     let mut kb = crate::common::load_kb_with(CUT);
-    let answers = rows(&mut kb, "shed7cut.cls");
+    let answers = crate::common::shown_rows(&mut kb, "shed7cut.cls");
     assert_eq!(answers, vec![("Int(2)".to_string(), true)], "`5` is no `Colour`: the second clause answers");
 }
 
@@ -459,7 +431,7 @@ end
 "#;
     let mut kb = crate::common::load_kb_with(EARLY);
     assert_eq!(
-        one_definite_int(&mut kb, "shed7early.noInc"),
+        crate::common::one_definite_int(&mut kb, "shed7early.noInc"),
         Some(1),
         "`2.5` is no `Int64`, refused before `add` runs",
     );
@@ -467,7 +439,7 @@ end
 
 /// A type argument a field's type leaves UNWRITTEN is read off the value: `Holder`'s field is
 /// `Pair2[A = Int64]`, `B` unwritten, and the bound `holder(p: pr(a: 1, b: 2))` pins `B` from
-/// `2` and fills it. FAILS with the `Unpinned` read backed out (the condition waits on its
+/// `2` and fills it. FAILS with the `NotYet(Some(_))` read backed out (the condition waits on its
 /// fresh variable for ever): `okOne` is a floundered, conditional row.
 #[test]
 fn an_unwritten_type_argument_is_read_off_the_value() {
@@ -491,7 +463,7 @@ end
 "#;
     let mut kb = crate::common::load_kb_with(UNWRITTEN);
     assert_eq!(
-        one_definite_int(&mut kb, "shed7unwritten.okOne"),
+        crate::common::one_definite_int(&mut kb, "shed7unwritten.okOne"),
         Some(1),
         "a ground, well-typed value, definitely",
     );
@@ -520,12 +492,12 @@ namespace shed7alias
 end
 "#;
     let mut kb = crate::common::load_kb_with(ALIAS);
-    let answers = rows(&mut kb, "shed7alias.anyShape");
+    let answers = crate::common::shown_rows(&mut kb, "shed7alias.anyShape");
     assert!(
         answers.iter().any(|(r, d)| *d && r.contains("dot")),
         "`Shape` has a domain, and `dot` is in it: {answers:?}",
     );
-    assert_eq!(one_definite_int(&mut kb, "shed7alias.isCircle"), Some(1));
+    assert_eq!(crate::common::one_definite_int(&mut kb, "shed7alias.isCircle"), Some(1));
 }
 
 /// A sort with a WI-452 MARKED structured parameter declared before the one a field fills: the
@@ -574,18 +546,25 @@ end
 /// relation that cannot be applied. FAILS with the `(S, fill) ↦ S.domain` rows recorded again.
 #[test]
 fn a_domain_relation_is_no_row_of_the_operation_table() {
-    let interp = crate::common::interp_for(PROGRAM);
-    let int64 = interp
-        .kb()
-        .resolve_symbol("anthill.prelude.Int64");
-    let rows: Vec<String> = interp
-        .kb()
-        .sort_ops_for_impl(int64)
-        .into_iter()
-        .map(|op| interp.kb().qualified_name_of(op).to_string())
+    let mut interp = crate::common::interp_for(PROGRAM);
+    let int64 = interp.kb().resolve_symbol("anthill.prelude.Int64");
+    let dict = crate::common::dict(&interp, int64, []).into_value();
+    let ops = interp
+        .call("anthill.realization.runtime.Dictionary.ops", &[dict])
+        .expect("`Dictionary.ops` answers");
+    let listed: Vec<String> = crate::common::list_heads(&ops)
+        .iter()
+        .map(|r| match r {
+            Value::OpRef { op, .. } => interp.kb().qualified_name_of(*op).to_string(),
+            other => panic!("`Dictionary.ops` lists OpRefs, got {other:?}"),
+        })
+        .collect();
+    assert!(!listed.is_empty(), "`Int64`'s dictionary lists its operations");
+    let relations: Vec<&String> = listed
+        .iter()
         .filter(|qn| qn.ends_with(".domain") || qn.ends_with(".__fill"))
         .collect();
-    assert!(rows.is_empty(), "no domain relation among `Int64`'s operations: {rows:?}");
+    assert!(relations.is_empty(), "no domain relation among `Int64`'s operations: {relations:?}");
 }
 
 /// A sort from an EARLIER load phase that a later phase makes provide a spec with an
@@ -665,8 +644,8 @@ namespace shed7late
 end
 "#;
     let mut kb = crate::common::load_kb_with(LATE);
-    assert_eq!(one_definite_int(&mut kb, "shed7late.nb"), Some(1), "`2.5` is refused, not faulted on");
-    assert_eq!(one_definite_int(&mut kb, "shed7late.good"), Some(3), "`add(2, 1)`");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "shed7late.nb"), Some(1), "`2.5` is refused, not faulted on");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "shed7late.good"), Some(3), "`add(2, 1)`");
 }
 
 /// A WRITTEN `domain(…)` asks one question, of two operands: a stray one is a located ERROR,
@@ -698,7 +677,7 @@ end
         stats.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>(),
     );
     // CONTROL — passes either way, BY DESIGN: the two-operand check refutes `"s"`.
-    assert!(rows(&mut kb, "shed7written.chkPlain").is_empty(), "`\"s\"` is no `Int64`");
+    assert!(crate::common::shown_rows(&mut kb, "shed7written.chkPlain").is_empty(), "`\"s\"` is no `Int64`");
 }
 
 /// A typed head whose bound is an ALIAS fills as its target: `pick(?x: Hue)` under `sort Hue =
@@ -730,9 +709,9 @@ end
         ("green".to_string(), true),
         ("blue".to_string(), true),
     ];
-    assert_eq!(rows(&mut kb, "shed7aliashead.pick"), colours);
+    assert_eq!(crate::common::shown_rows(&mut kb, "shed7aliashead.pick"), colours);
     assert_eq!(
-        rows(&mut kb, "shed7aliashead.pickL"),
+        crate::common::shown_rows(&mut kb, "shed7aliashead.pickL"),
         vec![
             ("[red]".to_string(), true),
             ("[green]".to_string(), true),
@@ -782,7 +761,7 @@ end
 /// though both provide `Shape`. The typer refuses the same value in an operation body,
 /// "expected Circle, got Square": the domain and the typer agree. (Filling each position through
 /// its own type instead — "any type" — would accept `y: "s"` too, which the typer refuses as
-/// well.) FAILS with the `Unpinned` read backed out (`K9`): the condition waits on its variable
+/// well.) FAILS with the `NotYet(Some(_))` read backed out (`K9`): the condition waits on its variable
 /// for ever, and both relations flounder.
 #[test]
 fn an_unwritten_argument_is_one_type_as_the_typer_reads_it() {
@@ -822,8 +801,8 @@ namespace shed7duo
 end
 "#;
     let mut kb = crate::common::load_kb_with(DUO);
-    assert_eq!(one_definite_int(&mut kb, "shed7duo.same"), Some(1), "one `B`, a `Circle`");
-    assert!(rows(&mut kb, "shed7duo.mixed").is_empty(), "`B` is a `Circle` from `x`; `y` is no `Circle`");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "shed7duo.same"), Some(1), "one `B`, a `Circle`");
+    assert!(crate::common::shown_rows(&mut kb, "shed7duo.mixed").is_empty(), "`B` is a `Circle` from `x`; `y` is no `Circle`");
     let typed = format!(
         "{}\n  sort Driver\n    operation mk() -> Holder = holder(d: duo(a: 1, x: circle(r: 1), y: square(s: 2)))\n  end\nend\n",
         DUO.trim_end().trim_end_matches("end").trim_end(),
@@ -860,11 +839,41 @@ end
 "#;
     let mut kb = crate::common::load_kb_with(WRITTEN_ALIAS);
     assert_eq!(
-        rows(&mut kb, "shed7writtenalias.viaAlias"),
+        crate::common::shown_rows(&mut kb, "shed7writtenalias.viaAlias"),
         vec![
             ("red".to_string(), true),
             ("green".to_string(), true),
             ("blue".to_string(), true),
         ],
     );
+}
+
+/// A typed-head `apply_domain(?d, ?x, B)` whose evidence names NO domain — `7` is neither a
+/// dictionary nor a type — is a FAULT, reported as the two-operand form's always was
+/// (WI-20260925-YNCY3), never a type with no domain that the conformance check alone decides.
+/// FAILS with the typed-head arms reading `NoDomain` as `NoDomainType` again: `1` is checked
+/// against `7` and refused quietly, with no fault reported.
+#[test]
+fn a_typed_head_evidence_that_names_no_domain_is_a_fault() {
+    const NO_DOMAIN: &str = r#"
+namespace shed7nodomain
+  import anthill.prelude.Int64
+  import anthill.kernel.*
+
+  rule bad(?r) :- ?x <=> 1, apply_domain(?d, ?x, 7), ?r <=> 1
+  rule good(?r) :- ?x <=> 1, apply_domain(?d, ?x, Int64), ?r <=> 1
+end
+"#;
+    use anthill_core::kb::resolve::ResolveConfig;
+    let mut kb = crate::common::load_kb_with(NO_DOMAIN);
+    let goal = crate::common::query_pattern_term(&mut kb, "shed7nodomain.bad(?r)");
+    let (sols, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+    assert!(sols.iter().all(|s| !s.is_definite()), "no definite answer through a fault");
+    assert!(
+        stats.errors.iter().any(|e| e.message.contains("not a dictionary or a type")),
+        "the evidence that names no domain is reported: {:?}",
+        stats.errors.iter().map(|e| e.message.clone()).collect::<Vec<_>>(),
+    );
+    // CONTROL — passes either way, BY DESIGN: a TYPE with a domain fills, `1` is an `Int64`.
+    assert_eq!(crate::common::one_definite_int(&mut kb, "shed7nodomain.good"), Some(1));
 }

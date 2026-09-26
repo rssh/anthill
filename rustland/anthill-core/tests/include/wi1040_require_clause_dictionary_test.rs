@@ -303,6 +303,58 @@ fn every_covered_call_in_the_clause_is_woven() {
     );
 }
 
+/// WI-20260925-PRVA2 (a) — a covered call NESTED in another covered call is woven, and so is
+/// the call around it. The weave used to go call by call: weaving the inner
+/// `Desc.describe(?a)` rebuilt the `Scale.scale(…)` holding it, so the outer call's identity
+/// match then missed — a debug build PANICKED at load (`debug_assert!(wove)`) and a release
+/// build left the outer call unwoven, value-dispatched. One pass over the body finds both.
+///
+/// FAILS on the call-by-call weave: the load panics. The ANSWER passes either way by design
+/// — `Rod` is `Scale`'s one provider, so value dispatch reaches it too; the structure is
+/// what discriminates in a release build. `Rod`'s `scale` is `= n`, FOLDED: a bridged call
+/// reduces no argument but a host operation's, so a nested call answers only where the
+/// outer body folds (`wi_p7vp4…::a_call_nested_in_a_woven_call_is_woven_too` says the same
+/// of its slot call).
+#[test]
+fn a_covered_call_nested_in_another_covered_call_is_woven_with_it() {
+    let ns = "test.wi1040.nested";
+    let src = program(
+        ns,
+        "  sort Scale\n    sort T = ?\n    operation scale(n: Int64, y: T) -> Int64 = 0\n  end\n  \
+           sort Rod\n    import anthill.prelude.Int64\n    import anthill.prelude.Numeric.{mul}\n    \
+             entity rod\n    provides Scale[T = Rod]\n    \
+             operation scale(n: Int64, y: Rod) -> Int64 = n\n  end\n  \
+           rule r(?a, ?b, ?s, ?r) :- ?dy = require[Desc[T]], ?dx = require[Scale[T]], \
+             Desc.describe(?a, ?s), Scale.scale(Desc.describe(?a), ?b, ?r)\n  \
+           rule answer(?r) :- r(leaf(), rod(), ?s, ?r)\n",
+    );
+    let mut kb = crate::common::load_kb_with(&src);
+    // Every call to `describe` / `scale` in `r`'s stored body. The witness read of `Scale`
+    // carries the call's own arguments, so the nested `describe` is met there too.
+    let calls: Vec<(String, bool, Vec<String>)> = crate::common::body_calls(&kb, &format!("{ns}.r"))
+        .into_iter()
+        .filter(|(f, _, _)| f == "describe" || f == "scale")
+        .collect();
+    assert!(
+        calls.iter().all(|(_, woven, _)| *woven),
+        "no covered call is left unwoven: {calls:?}",
+    );
+    assert!(
+        calls.iter().any(|(f, _, inner)| f == "scale" && inner == &["describe".to_string()]),
+        "the outer `scale` is woven, holding the woven `describe`: {calls:?}",
+    );
+    assert_eq!(answer_in(&mut kb, ns), 7, "`Rod`'s `scale` of `Leaf`'s `7`");
+}
+
+/// [`answer`] over a KB the caller already loaded.
+fn answer_in(kb: &mut anthill_core::kb::KnowledgeBase, ns: &str) -> i64 {
+    let qn = format!("{ns}.answer");
+    match crate::common::query_unary(kb, &qn).as_slice() {
+        [(Value::Int(i), true)] => *i,
+        other => panic!("`{qn}` must answer exactly one definite Int, got {other:?}"),
+    }
+}
+
 /// A BODY-LESS, builtin-backed spec op — the ordinary typeclass shape — must behave
 /// exactly as `requires(X)` does. It is deliberately NOT woven.
 ///
@@ -733,3 +785,4 @@ end
         "a carrier with no provider must not satisfy the guard",
     );
 }
+

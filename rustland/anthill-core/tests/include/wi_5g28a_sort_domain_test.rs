@@ -144,7 +144,12 @@ fn a_free_type_variable_with_no_caller_stays_undecided() {
 /// CONTROL — a bound that NAMES its sort. The sweep calls `Colour.domain(?x)` — the member
 /// of `Colour`'s `SortDomain`, dispatched statically because the bound names the provider;
 /// it called the retired `domain_member(?x, Colour)` before SHED7, and the three rows are the
-/// same. The row is here so a change that broke the static call could not pass as a no-op.
+/// same. FAILS with the ground bound's FILL backed out (`install_typed_head_domain_goals`'
+/// static arm answering `None`, conformance alone): the free `?x` only waits — and sixteen
+/// rows of `wi743`, `wi_shed7` and `wi_wt8wg` fail with it. Passes, BY DESIGN, with the bound
+/// routed through `apply_domain(Colour, ?x)` instead of the static call: both reach
+/// `Colour`'s `fill`, and the static call is the cheaper spelling of one answer, not another
+/// answer (both measured, WI-20260925-YNCY3).
 #[test]
 fn a_bound_that_names_its_sort_enumerates_as_before() {
     let mut kb = crate::common::load_kb_with(&uncited("  rule pick(?x: Colour) :- true\n"));
