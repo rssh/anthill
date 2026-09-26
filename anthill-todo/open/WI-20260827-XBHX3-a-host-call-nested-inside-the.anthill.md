@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260827-P1TPE-unfold-eq-operand-compares, WI-20260926-ACG10-proposal-068-an-operation
+- depends_on: WI-20260827-P1TPE-unfold-eq-operand-compares, WI-20260926-DSEXA-068-after-060-a-woven-call
 
 ## Description
 

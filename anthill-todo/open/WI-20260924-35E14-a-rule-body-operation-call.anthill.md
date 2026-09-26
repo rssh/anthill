@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260926-ACG10-proposal-068-an-operation
+- depends_on: WI-20260926-CYNPE-a-waiting-goal-is-re-evaluated
 
 - tags: resolver
 
