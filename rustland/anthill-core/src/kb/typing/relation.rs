@@ -874,15 +874,50 @@ fn op_slot_route(
     // SUBTYPE of it — `circle()` for `s: Shape`, which the citation accepted (above:
     // "unification is not subsumption") — and the other parameters still pin the slot; the
     // failed trial's partial bindings are dropped with it. Refusing the whole route there sent
-    // the call back to the value's own dictionary where the caller had chosen one. Only an
-    // argument that is no instance of its parameter at all routes nothing.
+    // the call back to the value's own dictionary where the caller had chosen one.
     let mut pins = Substitution::new();
     for ((_, pty), aty) in rec.params.iter().zip(arg_types) {
         let mut trial = pins.clone();
         if unify_types(kb, &mut trial, pty, aty) {
             pins = trial;
-        } else if !types_compatible(kb, &mut Substitution::new(), aty, pty) {
-            return None;
+        }
+    }
+    // THEN EVERY ARGUMENT MUST CONFORM TO ITS PARAMETER AS PINNED — asked once all parameters
+    // have pinned, against the pinned type and not the written one (WI-20260925-PRVA2 (e)).
+    // Against the WRITTEN `y: A` the subtype test compared `Circle` with the bare parameter and
+    // refused: `cmp2[A](x: A, y: A)` cited at `(Shape, Circle)` routed NOTHING, so the slot was
+    // derived from the values (`Circle`'s own) where the typer instantiates `A = Shape` for the
+    // same call (`Shape`'s). And a pin is not a verdict: `unify_types` answers a mismatch of
+    // two sorts with a ONE-WAY subtype test, so at `(Circle, Shape)` it pinned `A = Circle` and
+    // accepted the `Shape` beside it — a route for a type one argument is not. That order is
+    // refused at load today (the citation's column typing takes `A` from the first argument,
+    // and `Shape` is no `Circle`), and it is a route nothing here may produce either way.
+    //
+    // THE TYPER'S OWN QUESTION, `validate_arg_against_param`, and not a bare
+    // `types_compatible`: it walks BOTH sides through the pins — an argument's type is itself a
+    // variable where the clause binds it only through another parameter, a body variable's
+    // witness pinned to the caller's rigid `A` by the column beside it — and it accepts the
+    // conversions an operation-body argument gets (WI-408's some-coercion, the reflect-`Term`
+    // escape, a provider-admissible carrier). With the bare relation, `f[A](x: Option[T = A],
+    // y: A)` given a bare `Shape` for `x` through a typed column routed nothing where the typer
+    // wraps it, and the slot fell back to the value's dictionary. An argument the typer would
+    // refuse routes nothing.
+    for ((param, pty), aty) in rec.params.iter().zip(arg_types) {
+        let mut sigma = pins.clone();
+        match validate_arg_against_param(
+            kb,
+            &mut sigma,
+            aty,
+            pty,
+            None,
+            TypeErrorContext::OperationArgument {
+                op_name: op,
+                param: *param,
+            },
+            None,
+        ) {
+            ArgValidation::Ok | ArgValidation::WrapSome { .. } => {}
+            ArgValidation::Fail(_) => return None,
         }
     }
     // NOT `substitute_spec_via_subst`, which declines a parameter bound to another TYPE

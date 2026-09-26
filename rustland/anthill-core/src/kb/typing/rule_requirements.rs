@@ -371,9 +371,9 @@ fn is_inferred_requirement_read(kb: &KnowledgeBase, node: &NodeOccurrence) -> bo
 ///   * a callee with no reader for a woven call ([`collect_covered_calls`]' first gate), and
 ///     a BODY-LESS spec op in a VALUE slot, which is symbolic algebra there (kernel-language
 ///     §5.3) where a woven call would be dispatched ([`inferred_demand`]);
-///   * a `Suspend` call with a CONCRETE carrier among its arguments — a witness-provided one,
-///     or one after the carrier the guard stopped at — which that carrier decides, as it
-///     decides a `Fire` one ([`inferred_demand`] says what weaving it refused);
+///   * a `Suspend` call with a CONCRETE carrier among its arguments, beside one not known
+///     at load — which that carrier decides, as it decides a `Fire` one ([`inferred_demand`]
+///     says what weaving it would let in);
 ///   * a call the typer PINNED, and a spec the author already wrote a `require` for in
 ///     this clause — that read covers its calls exactly as it did (WI-1040).
 ///
@@ -448,7 +448,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                 };
                 // A call AT GOAL POSITION is woven only where a reader reads it woven
                 // ([`woven_goal_has_reader`]).
-                if top && !woven_goal_has_reader(kb, *functor, pos_args, named_args) {
+                if top && !woven_goal_has_reader(kb, &o, *functor, pos_args, named_args) {
                     continue;
                 }
                 if let Some(demand) =
@@ -690,17 +690,25 @@ fn weave_calls(
 /// POSITIONAL call only (its result column is positional and last), while the Bool view
 /// counts every argument, named ones included — so `Util.isLess(x: ?a, y: ?b)` is the Bool
 /// view it is at run time, and is woven like its positional twin.
+///
+/// THE FUNCTIONAL-RELATION LEG IS THE HOOK'S OWN GATE, asked of the goal
+/// ([`KnowledgeBase::functional_relation_goal`], which `step_init`'s hook and WI-670's
+/// refutation ask too) — a hand-spelled copy here skipped the gate's pinned-call branch, a
+/// drift harmless only because a pinned call is declined later (WI-20260925-PRVA2). One
+/// counting difference is inherited and unreachable: read through the view, an `Apply`
+/// carrying CALL-SITE type arguments reports one more named slot than its woven twin — and
+/// the loader refuses a written bracket on a rule-body goal (see the note at the Bool hook
+/// in `step_init`).
 fn woven_goal_has_reader(
     kb: &KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
     functor: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> bool {
-    let relational = named_args.is_empty()
-        && kb
-            .functional_relation_arity(functor)
-            .or_else(|| kb.body_less_relation_arity(functor))
-            .is_some_and(|n| pos_args.len() == n + 1);
+    let relational = kb
+        .functional_relation_goal(&crate::eval::Value::Node(Rc::clone(goal)))
+        .is_some();
     let bool_view = kb.bare_bodied_bool_relation(functor)
         && kb
             .op_record(functor)
@@ -853,15 +861,16 @@ fn inferred_demand(
     if !matches!(outcome, FindDictOutcome::Suspend) {
         return None;
     }
-    // AND `Suspend` IS NOT "NO CARRIER IS KNOWN". The guard stops at the first carrier it
-    // cannot read, and the load-side reader files a WITNESS-provided carrier as unreadable
-    // too ([`spec_op_call_carrier_outcome`]), so a call with a concrete carrier among its
-    // arguments can answer `Suspend`. Such a call is decided by that carrier, as a `Fire` one
-    // is, and keeps value dispatch. Woven, its run-time read asks EVERY carrier's sort to
-    // provide the spec — and a multi-parameter provision is provided by its carrier-parameter's
-    // sort alone (WI-20260925-PRVA2 (c)): `Conv.conv(?x, ?u, ?r)` with `?u` a `String`, under
-    // `sort Meters provides Conv[A = Meters, B = String]`, answered `7` unwoven and nothing
-    // woven. Only a call whose carriers are ALL unknown at load gets a condition.
+    // AND `Suspend` IS NOT "NO CARRIER IS KNOWN": the guard answers it wherever one carrier
+    // is unknown and the known ones refuse nothing, so a call with a concrete carrier among
+    // its arguments can answer it. Such a call is decided by that carrier, as a `Fire` one
+    // is, and keeps value dispatch — the concrete-carrier CONTROL's policy, one argument over
+    // (a clause that wrote `Int64` is not handed the caller's dictionary). Where the carriers
+    // stand at several spec parameters a concrete one need not fix the instance —
+    // `Conv.conv(?x, "km")` leaves `A` open — and such a call keeps value dispatch too,
+    // conservatively: its woven read would ask the provision at its carriers and answer
+    // (WI-20260925-PRVA2 (c)), and a written `require[…]` weaves it. Only a call whose
+    // carriers are ALL unknown at load gets an inferred condition.
     let carriers = aligned_carrier_args(kb, &rec.params, &args, spec);
     let concrete = carriers
         .iter()
@@ -1591,7 +1600,7 @@ pub(super) fn check_one_spec_op_requirement(
     if declared.contains(&kb.canonical_sort_sym(spec_sort)) {
         return;
     }
-    let (outcome, last_carrier) =
+    let (outcome, refusal) =
         spec_op_call_carrier_outcome(kb, functor, pos_args, named_args, spec_sort);
     // `Fire` (satisfiable) and `Suspend` (under-determined) are never errors —
     // only a ground carrier that provides no instance is statically missing.
@@ -1614,19 +1623,34 @@ pub(super) fn check_one_spec_op_requirement(
     // every rule-body call to a defaulted `List` member paid it).
     if defaulted
         && (!spec_has_an_abstract_member(kb, spec_sort)
-            || last_carrier
-                .is_some_and(|c| same_sort_canonical(kb, c, spec_sort)))
+            || matches!(refusal, Some(GuardRefusal::Carrier(c)) if same_sort_canonical(kb, c, spec_sort)))
     {
         return;
     }
-    if let Some(carrier_sym) = last_carrier {
-        errors.push(TypeError::UnfillableOperationRequirement {
-            span: Some(occ.span.span),
-            callee_op: functor,
-            spec_sort_sym: spec_sort,
-            carrier_sym,
-        });
-        return;
+    match refusal {
+        Some(GuardRefusal::Carrier(carrier_sym)) => {
+            errors.push(TypeError::UnfillableOperationRequirement {
+                span: Some(occ.span.span),
+                callee_op: functor,
+                spec_sort_sym: spec_sort,
+                carrier_sym,
+            });
+            return;
+        }
+        // WI-20260925-PRVA2 (c) — carriers no provision binds TOGETHER are said so: the
+        // per-carrier sentence named whichever carrier was read last, and "`String` provides
+        // no `Conv`" is false of a provision's second binding (and of a sort that does provide
+        // `Conv`, at other bindings).
+        Some(GuardRefusal::NoProvision(bindings)) => {
+            errors.push(TypeError::NoProvisionAtCarriers {
+                span: Some(occ.span.span),
+                callee_op: functor,
+                spec_sort_sym: spec_sort,
+                bindings: bindings.into_vec(),
+            });
+            return;
+        }
+        None => {}
     }
     // Statically missing → `MissingRequiresForSpecOp` (WI-325), the same diagnostic
     // the op-body pass raises; the spec's type-param short names drive the
@@ -1645,10 +1669,10 @@ pub(super) fn check_one_spec_op_requirement(
     });
 }
 
-/// The CARRIER DECISION for one rule-body call to a spec operation — `Fire` (the carrier
-/// provides the spec), `Suspend` (the carrier is not known at load) or `DontFire` (a ground
-/// carrier that provides nothing) — with the carrier the guard read last, which is the one
-/// that failed on a `DontFire` (`simp_guard_holds_core` stops at the first that fails).
+/// The CARRIER DECISION for one rule-body call to a spec operation — `Fire` (its carriers have
+/// an instance), `Suspend` (a carrier is not known at load) or `DontFire` (the known carriers
+/// can have none) — with what decided a `DontFire` ([`GuardRefusal`]): the carrier that
+/// provides nothing, or the carriers no provision binds together (WI-20260925-PRVA2 (c)).
 ///
 /// ONE OWNER for two readers that must agree about which calls are decided at load:
 /// [`check_one_spec_op_requirement`] refuses the `DontFire` ones, and
@@ -1660,7 +1684,7 @@ fn spec_op_call_carrier_outcome(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     spec_sort: Symbol,
-) -> (FindDictOutcome, Option<Symbol>) {
+) -> (FindDictOutcome, Option<GuardRefusal>) {
     // Fold the call's positional + named arguments into the op's declared PARAMETER
     // order, so the carrier reader indexes them the way `simp_guard_holds_core`
     // iterates parameters — the same alignment the resolver's `find_dictionary_guard`
@@ -1683,7 +1707,7 @@ fn aligned_carrier_outcome(
     functor: Symbol,
     aligned: Option<&[Rc<NodeOccurrence>]>,
     spec_sort: Symbol,
-) -> (FindDictOutcome, Option<Symbol>) {
+) -> (FindDictOutcome, Option<GuardRefusal>) {
     // Read each carrier parameter's argument sort head from the `inferred_type`
     // `type_rule_bodies` stamped (WI-603), like [`simp_fire_guard_holds`], and treat
     // two carrier shapes as headless (`None` → `Suspend`), never as a concrete sort
@@ -1698,28 +1722,22 @@ fn aligned_carrier_outcome(
     //     takes before its `NoCandidates` arm; `sort_provides` sees a sort as NOT
     //     providing ITSELF, so without this a self-receiver call (`splitFirst(s)` on
     //     a `Stream`) reads as a spurious `DontFire` ([`carrier_is_abstract_spec`]).
-    //   * WI-1043 — a WITNESS-PROVIDED carrier ([`carrier_provided_by_witness`]), though the
-    //     core itself would FIRE for it ([`carrier_provides_spec`]), as its run-time twin
-    //     does. At load the core then reads the NEXT carrier, and asks its sort to provide
-    //     the spec too — which a multi-parameter provision's other arguments never do
-    //     (WI-20260925-PRVA2 (c)): `sort W provides Conv[A = Leaf, B = Int64]` with a
-    //     rule-body `Conv.conv(?l, ?n, ?x)` was REFUSED at load, "`Int64` provides no
-    //     `Conv`", for a program that loads without the widening and answers `9`.
-    let last_carrier: std::cell::Cell<Option<Symbol>> = std::cell::Cell::new(None);
-    let outcome = simp_guard_holds_core(kb, functor, spec_sort, |i| {
-        let carrier = aligned
+    //
+    // A WITNESS-PROVIDED carrier is KNOWN here, as it is to the run-time read. It was filed
+    // as unknown (P7VP4's third review round) because the per-carrier question then walked
+    // on to a multi-parameter provision's other carriers and refused them; the core asks the
+    // provision there now (WI-20260925-PRVA2 (c)), and the filter had turned into a hidden
+    // refusal: with `sort W provides Conv[A = Leaf, B = Int64]` beside `sort Meters provides
+    // Conv[A = Meters, B = String]`, a rule-body `Conv.conv(leaf(), "s", ?r)` read `Leaf` as
+    // unknown, `B = String` matched Meters' row, and the call LOADED — and answered `9`,
+    // `W.conv` dispatched at `(Leaf, String)`.
+    simp_guard_decision(kb, functor, spec_sort, |i| {
+        aligned
             .and_then(|args| args.get(i))
             .and_then(|a| a.inferred_type())
             .and_then(|t| sort_functor_of_view(kb, &t))
-            .filter(|s| {
-                !is_sort_param_symbol(kb, *s)
-                    && !carrier_is_abstract_spec(kb, *s)
-                    && !carrier_provided_by_witness(kb, spec_sort, *s)
-            });
-        last_carrier.set(carrier);
-        carrier
-    });
-    (outcome, last_carrier.get())
+            .filter(|s| !is_sort_param_symbol(kb, *s) && !carrier_is_abstract_spec(kb, *s))
+    })
 }
 
 /// WI-1043 — is `carrier` an instance of `spec_sort` through a WITNESS provision, i.e.
@@ -1730,16 +1748,14 @@ fn aligned_carrier_outcome(
 /// this shape, and a guard asking `sort_provides` alone reads a witness-supplied carrier
 /// as having no instance.
 ///
-/// TWO READERS, TWO DIRECTIONS:
-///   * the shared guard core [`simp_guard_holds_core`] asks [`carrier_provides_spec`] —
-///     own edges OR this — since WI-20260925-P7VP4, so the WI-300/1040 run-time read and
-///     BOTH `@[simp]` guards (the typer's `simp_fire_guard_holds`, the resolver's
-///     `simp_requires_guard_holds`) FIRE for a witness-supplied carrier: this ACCEPTS a
-///     dispatch, and a law rewrites at it;
-///   * the load check's carrier reader ([`spec_op_call_carrier_outcome`]) files such a
-///     carrier as not known at load — `Suspend`, DECLINE-ONLY: it withholds WI-642's
-///     diagnostic and nothing more, because firing there walked on to a multi-parameter
-///     provision's other carriers and refused them (WI-20260925-PRVA2 (c)).
+/// ONE READER: the shared guard core's per-carrier question ([`simp_guard_decision`]) asks
+/// [`carrier_provides_spec`] — own edges OR this — since WI-20260925-P7VP4, so the WI-300/1040
+/// run-time read, the load check ([`spec_op_call_carrier_outcome`]) and BOTH `@[simp]` guards
+/// (the typer's `simp_fire_guard_holds`, the resolver's `simp_requires_guard_holds`) FIRE for
+/// a witness-supplied carrier: this ACCEPTS a dispatch, and a law rewrites at it. The core asks
+/// it only of carriers at the spec's CARRIER parameter; a carrier elsewhere asks the provision
+/// (WI-20260925-PRVA2 (c)). The load check no longer files such a carrier as unknown — see
+/// [`aligned_carrier_outcome`].
 ///
 /// A LOAD REFUSAL OF A LEGAL PROGRAM, MEASURED both before and after WI-1043's widening:
 /// `sort Rival provides Desc[T = Leaf]` supplying a body-less `Desc.describe`, called as
@@ -1753,13 +1769,14 @@ fn aligned_carrier_outcome(
 /// BINDING-BLIND, EXACTLY AS [`sort_provides`] IS. This asks whether SOME witness provision
 /// of the spec names this carrier, not whether one does at the call's other type arguments
 /// — so for a multi-parameter spec a provision at `Desc[T = Leaf, U = Int64]` answers for a
-/// call at `U = String` too. At load that only withholds a diagnostic. Through the guard
-/// core it FIRES the guard, and the dictionary is then resolved at the call's own types
-/// (`fetch_dictionary`), where a provision at other arguments answers nothing and the read
-/// is UNDECIDED rather than wrong; a `@[simp]` law has no such second step, and rewrites.
-/// Closing it means giving the check the call's σ, which the guard reads only as argument
-/// SORT HEADS today — the same input WI-653's carrier-alignment machinery wants (see the
-/// WI-653 note in [`check_one_spec_op_requirement`]).
+/// call whose `U` is `String`, when no CARRIER of the call stands at `U` (one that does is
+/// asked the provision instead, WI-20260925-PRVA2 (c)). Through the guard core it FIRES the
+/// guard, and the dictionary is then resolved at the call's own types (`fetch_dictionary`),
+/// where a provision at other arguments answers nothing and the read is UNDECIDED rather
+/// than wrong; a `@[simp]` law has no such second step, and rewrites. Closing it means giving
+/// the check the call's σ, which the guard reads only as argument SORT HEADS today — the same
+/// input WI-653's carrier-alignment machinery wants (see the WI-653 note in
+/// [`check_one_spec_op_requirement`]).
 pub(super) fn carrier_provided_by_witness(
     kb: &KnowledgeBase,
     spec_sort: Symbol,

@@ -854,6 +854,81 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
     )
 }
 
+/// WI-596 — is `spec_sort` a *self-representing* container over `params` (some
+/// parameter is typed with the spec sort itself, e.g. `member(x: T, s: Set)`)?
+/// Such a sort names its carrier by the SORT, not by a type-parameter, so the
+/// carrier arguments are the sort-typed ones and its type-parameters are content.
+/// Shared by [`simp_guard_holds_core`] and [`op_has_spec_carrier_param`] so they
+/// classify carriers identically.
+pub(super) fn spec_self_represented_by(
+    kb: &KnowledgeBase,
+    params: &[(Symbol, Value)],
+    spec_sort: Symbol,
+) -> bool {
+    params.iter().any(|(_n, pty)| {
+        carrier_sort_of_value(kb, pty).is_some_and(|s| same_sort_canonical(kb, s, spec_sort))
+    })
+}
+
+/// WI-596 — the spec PARAMETER at which parameter type `param_type` CARRIES spec `spec_sort`
+/// (so that its argument's runtime type decides the instance), or `None` when it carries
+/// nothing. For a carrier-parameter typeclass (`PartialEq.eq(a: T, b: T)`) the carriers are
+/// the type-param-typed parameters, each standing at its type parameter; for a
+/// self-representing container (`Set.member(x: T, s: Set)`) they are the sort-typed
+/// parameters, standing at the sort itself (and the content `x: T` carries no obligation).
+/// The per-parameter half of [`simp_guard_decision`]'s carrier decision, factored out so the
+/// WI-300 witness selector applies the SAME rule — and returns the parameter it read, so no
+/// caller reads the parameter's type a second time to learn where the carrier stands.
+pub(super) fn spec_carrier_param_of(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    type_params: &[String],
+    self_representing: bool,
+    param_type: &Value,
+) -> Option<Symbol> {
+    let s = carrier_sort_of_value(kb, param_type)?;
+    let carries = if self_representing {
+        same_sort_canonical(kb, s, spec_sort)
+    } else {
+        type_params.iter().any(|tp| tp.as_str() == kb.local_name_of(s))
+    };
+    carries.then_some(s)
+}
+
+/// Does parameter type `param_type` carry `spec_sort` at all? [`spec_carrier_param_of`] as a
+/// yes/no.
+pub(super) fn param_is_spec_carrier(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    type_params: &[String],
+    self_representing: bool,
+    param_type: &Value,
+) -> bool {
+    spec_carrier_param_of(kb, spec_sort, type_params, self_representing, param_type).is_some()
+}
+
+/// WI-300 — does `functor` (a spec op of `spec_sort`) have at least one carrier
+/// parameter, i.e. can a call to it ground the spec's instance from its arguments?
+/// A nullary or all-content op (`Monoid.unit() -> T`, `Numeric.fromInt(n: Int)`)
+/// has none: its arguments never determine the carrier, so it cannot serve as a
+/// WI-300 requirement witness (the witness scan must skip it, else the guard
+/// permanently `DontFire`s — [`simp_guard_decision`] refuses a call with no carrier
+/// argument). Uses the SAME carrier rule as the guard.
+pub(super) fn op_has_spec_carrier_param(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    spec_sort: Symbol,
+) -> bool {
+    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) else {
+        return false;
+    };
+    let type_params = kb.type_params_of_sort(spec_sort);
+    let self_representing = spec_self_represented_by(kb, &rec.params, spec_sort);
+    rec.params
+        .iter()
+        .any(|(_n, pty)| param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, pty))
+}
+
 /// WI-283 / WI-292 — the shared spec-op firing decision for `@[simp]` rewriting,
 /// parameterized over how each positional argument's carrier sort head is read.
 /// Both the typer ([`simp_fire_guard_holds`]) and the resolver
@@ -871,99 +946,80 @@ pub fn simp_fire_guard_holds(kb: &KnowledgeBase, redex: &NodeOccurrence) -> bool
 /// ([`lookup_spec_op_dispatch`]); each caller resolves it once and applies its
 /// OWN non-spec-op default (the typer fires a non-spec-op monomorphic identity,
 /// the resolver leaves its requires-guarded rule skipped), so this core handles
-/// only the spec-op case and never re-dispatches. Returns `true` (fire) when the
-/// spec op has ≥1 carrier argument and every carrier's sort head provides the
-/// spec. Returns `false` (don't fire)
-/// when the signature is unavailable, a carrier argument's sort head is unknown
-/// (`arg_carrier_sort` returns `None`: a missing positional slot, an unresolved
-/// type, or a headless type — under-determined, never NAF-decided; WI-067), or
-/// it does not provide the spec. The carrier arguments depend on the sort's
-/// shape (WI-596): for a carrier-parameter typeclass they are the parameters
+/// only the spec-op case and never re-dispatches. The carrier arguments depend on the
+/// sort's shape (WI-596): for a carrier-parameter typeclass they are the parameters
 /// declared with the spec sort's own type-parameter (`add(a: T, b: T)` → both
 /// `a` and `b`; `scale(v: T, k: Int)` → just `v`); for a self-representing
 /// container (some parameter is typed with the sort itself) they are the
 /// sort-typed parameters (`member(x: T, s: Set)` → just `s`), and the content
-/// type-parameter arguments (`x: T`) carry no obligation.
-/// WI-596 — is `spec_sort` a *self-representing* container over `params` (some
-/// parameter is typed with the spec sort itself, e.g. `member(x: T, s: Set)`)?
-/// Such a sort names its carrier by the SORT, not by a type-parameter, so the
-/// carrier arguments are the sort-typed ones and its type-parameters are content.
-/// Shared by [`simp_guard_holds_core`] and [`op_has_spec_carrier_param`] so they
-/// classify carriers identically.
-pub(super) fn spec_self_represented_by(
-    kb: &KnowledgeBase,
-    params: &[(Symbol, Value)],
-    spec_sort: Symbol,
-) -> bool {
-    params.iter().any(|(_n, pty)| {
-        carrier_sort_of_value(kb, pty).is_some_and(|s| same_sort_canonical(kb, s, spec_sort))
-    })
-}
-
-/// WI-596 — does parameter type `param_type` CARRY spec `spec_sort` (so that its
-/// argument's runtime type decides the instance)? For a carrier-parameter
-/// typeclass (`PartialEq.eq(a: T, b: T)`) the carriers are the type-param-typed
-/// parameters; for a self-representing container (`Set.member(x: T, s: Set)`) they
-/// are the sort-typed parameters (and the content `x: T` carries no obligation).
-/// The per-parameter half of [`simp_guard_holds_core`]'s carrier decision,
-/// factored out so the WI-300 witness selector applies the SAME rule.
-pub(super) fn param_is_spec_carrier(
-    kb: &KnowledgeBase,
-    spec_sort: Symbol,
-    type_params: &[String],
-    self_representing: bool,
-    param_type: &Value,
-) -> bool {
-    match carrier_sort_of_value(kb, param_type) {
-        Some(s) if self_representing => same_sort_canonical(kb, s, spec_sort),
-        Some(s) => type_params
-            .iter()
-            .any(|tp| tp.as_str() == kb.local_name_of(s)),
-        None => false,
-    }
-}
-
-/// WI-300 — does `functor` (a spec op of `spec_sort`) have at least one carrier
-/// parameter, i.e. can a call to it ground the spec's instance from its arguments?
-/// A nullary or all-content op (`Monoid.unit() -> T`, `Numeric.fromInt(n: Int)`)
-/// has none: its arguments never determine the carrier, so it cannot serve as a
-/// WI-300 requirement witness (the witness scan must skip it, else the guard
-/// permanently `DontFire`s — [`simp_guard_holds_core`] leaves `checked_carrier`
-/// false with no carrier argument). Uses the SAME carrier rule as the guard.
-pub(super) fn op_has_spec_carrier_param(
-    kb: &KnowledgeBase,
-    functor: Symbol,
-    spec_sort: Symbol,
-) -> bool {
-    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) else {
-        return false;
-    };
-    let type_params = kb.type_params_of_sort(spec_sort);
-    let self_representing = spec_self_represented_by(kb, &rec.params, spec_sort);
-    rec.params
-        .iter()
-        .any(|(_n, pty)| param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, pty))
-}
-
+/// type-parameter arguments (`x: T`) carry no obligation. See [`simp_guard_decision`]
+/// for the verdict.
 pub(super) fn simp_guard_holds_core(
     kb: &KnowledgeBase,
     functor: Symbol,
     spec_sort: Symbol,
     arg_carrier_sort: impl Fn(usize) -> Option<Symbol>,
 ) -> FindDictOutcome {
+    simp_guard_decision(kb, functor, spec_sort, arg_carrier_sort).0
+}
+
+/// What decided a [`FindDictOutcome::DontFire`], for a load refusal to name — the two
+/// questions [`simp_guard_decision`] asks refuse for different reasons, and a sentence about
+/// one carrier is false about a combination.
+pub(super) enum GuardRefusal {
+    /// A carrier at the spec's CARRIER parameter that provides no instance.
+    Carrier(Symbol),
+    /// Carriers, `(spec parameter, carrier sort)` in parameter order, that no provision
+    /// binds together.
+    NoProvision(SmallVec<[(Symbol, Symbol); 4]>),
+}
+
+/// [`simp_guard_holds_core`]'s verdict, with what decided a refusal.
+///
+/// `Fire` when the carriers the spec's arguments stand at have an instance, `DontFire` when
+/// the KNOWN ones cannot have one (a signature-less op, or one with no carrier argument —
+/// `Monoid.unit() -> T` — never fires), `Suspend` otherwise while a carrier is unknown
+/// (`arg_carrier_sort` answers `None`: a missing positional slot, an unresolved type, a
+/// headless type — under-determined, never NAF-decided; WI-067). Every carrier is read ONCE,
+/// in parameter order, before anything is decided: a carrier not read yet can neither rescue
+/// a known one that fails nor create a provision, so a refusal on the known ones is the same
+/// whatever order the arguments come in. (It was not — the loop returned at the first carrier
+/// it read, so `(unknown, non-providing)` waited where `(non-providing, unknown)` refused.)
+///
+/// TWO QUESTIONS, by where the carriers stand (WI-20260925-PRVA2 (c)).
+///
+///   * Every carrier at the spec's CARRIER parameter ([`spec_carrier_param`]) — every carrier
+///     of a one-parameter spec, and of a self-representing one — asks each carrier to provide
+///     the spec, through both channels ([`carrier_provides_spec`]: its own out-edges, walked
+///     transitively, and a witness provision filed for it, WI-1043). The provision a carrier
+///     there needs is filed under it or for it, so that IS the provision question.
+///   * A carrier at ANOTHER parameter asks the provision: `Conv[A, B]`'s `conv(a: A, b: B)`
+///     under `sort Meters provides Conv[A = Meters, B = String]` — `String` provides no `Conv`
+///     and never will; it is the provision's second binding, not a provider. Asked per
+///     carrier, a woven `Conv.conv(?x, ?u, ?r)` DontFired on `String` once `?x = m(v: 3)`, `?u
+///     = "km"`, and the clause answered nothing where value dispatch answers `7`; so did a
+///     `require[Conv[A = Meters, B = String]]` over `Conv.tag("km", ?r)`, whose one carrier
+///     stands at `B`. So these ask whether SOME provision binds every such parameter at its
+///     carrier ([`provision_admits_carriers`]).
+pub(super) fn simp_guard_decision(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    spec_sort: Symbol,
+    arg_carrier_sort: impl Fn(usize) -> Option<Symbol>,
+) -> (FindDictOutcome, Option<GuardRefusal>) {
     // The caller has already resolved `functor`'s spec sort (one
     // `lookup_spec_op_dispatch` per firing decision, shared with its own
     // non-spec-op default) and passes it in — a non-spec-op functor never
     // reaches here. Without the signature we can't tell which arguments carry the spec,
     // so we can't verify the law applies — don't fire.
     let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) else {
-        return FindDictOutcome::DontFire;
+        return (FindDictOutcome::DontFire, None);
     };
     let type_params = kb.type_params_of_sort(spec_sort);
 
     // WI-596 — two shapes of spec sort name their carrier differently, and the
     // "which argument carries the spec" decision must follow the shape (see
-    // [`param_is_spec_carrier`] / [`spec_self_represented_by`]):
+    // [`spec_carrier_param_of`] / [`spec_self_represented_by`]):
     //
     //   * A pure carrier-parameter typeclass (`Magma`, `Eq`, `Numeric`) names its
     //     carrier BY a type-parameter — `op2(a: T, b: T)` — so its instances ARE
@@ -976,38 +1032,126 @@ pub(super) fn simp_guard_holds_core(
     //     carry an obligation.
     let self_representing = spec_self_represented_by(kb, &rec.params, spec_sort);
 
-    let mut checked_carrier = false;
-    for (i, (_param_name, param_type)) in rec.params.iter().enumerate() {
-        // Only CARRIER arguments decide the instance; a content argument's
-        // under-determination is irrelevant, so it is never read here (this is
-        // what keeps the guard from over-suspending on an unbound content arg).
-        if !param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, param_type) {
-            continue;
-        }
-        // The carrier argument's sort head, read by the caller's reader. Split the
-        // three outcomes (never NAF-decide an under-determined carrier; WI-067):
-        //
-        // BOTH CHANNELS — [`carrier_provides_spec`]: the carrier's own out-edges AND a
-        // provision another sort declares FOR it (`sort Rival provides Desc[T = Leaf]`,
-        // WI-450/WI-1043), as `anchor_guard` already asks. With `sort_provides` alone a
-        // witness-supplied carrier read as "provides nothing": the load-side check had to
-        // special-case it, and at run time a rule-body read of it — written, or inferred by
-        // WI-20260925-P7VP4 — DontFired, failing a clause that value dispatch answers.
-        match arg_carrier_sort(i) {
-            Some(carrier) if carrier_provides_spec(kb, carrier, spec_sort) => {
-                checked_carrier = true
-            }
-            // Ground carrier that does not provide the spec → don't fire.
-            Some(_) => return FindDictOutcome::DontFire,
-            // Headless / missing carrier (under-determined) → suspend, don't decide.
-            None => return FindDictOutcome::Suspend,
-        }
+    // Only CARRIER arguments decide the instance; a content argument's
+    // under-determination is irrelevant, so it is never read here (this is
+    // what keeps the guard from over-suspending on an unbound content arg). Each is kept
+    // with the spec parameter it stands at — the key a provision binds it by.
+    let carrier_params: SmallVec<[(usize, Symbol); 4]> = rec
+        .params
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (_, pty))| {
+            spec_carrier_param_of(kb, spec_sort, &type_params, self_representing, pty)
+                .map(|param| (i, param))
+        })
+        .collect();
+    if carrier_params.is_empty() {
+        return (FindDictOutcome::DontFire, None);
     }
-    if checked_carrier {
-        FindDictOutcome::Fire
+    let known: SmallVec<[(Symbol, Symbol); 4]> = carrier_params
+        .iter()
+        .filter_map(|&(i, param)| arg_carrier_sort(i).map(|carrier| (param, carrier)))
+        .collect();
+    let refusal = if self_representing
+        || type_params.len() <= 1
+        || every_carrier_at_carrier_param(kb, spec_sort, &carrier_params)
+    {
+        known
+            .iter()
+            .find(|&&(_, carrier)| !carrier_provides_spec(kb, carrier, spec_sort))
+            .map(|&(_, carrier)| GuardRefusal::Carrier(carrier))
+    } else if !known.is_empty() && !provision_admits_carriers(kb, spec_sort, &known) {
+        Some(GuardRefusal::NoProvision(known.clone()))
     } else {
-        FindDictOutcome::DontFire
+        None
+    };
+    match refusal {
+        Some(refusal) => (FindDictOutcome::DontFire, Some(refusal)),
+        None if known.len() < carrier_params.len() => (FindDictOutcome::Suspend, None),
+        None => (FindDictOutcome::Fire, None),
     }
+}
+
+/// Does every carrier stand at `spec_sort`'s CARRIER parameter — the one its operations
+/// receive on ([`spec_carrier_param`], cached per spec)?
+fn every_carrier_at_carrier_param(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carrier_params: &[(usize, Symbol)],
+) -> bool {
+    let Some(carrier_param) = spec_carrier_param(kb, spec_sort) else {
+        return false;
+    };
+    let name = kb.local_name_of(carrier_param);
+    carrier_params
+        .iter()
+        .all(|&(_, param)| kb.local_name_of(param) == name)
+}
+
+/// WI-20260925-PRVA2 (c) — does SOME provision of `spec_sort` bind each of `carriers`'
+/// parameters at its carrier? `carriers` pairs a spec parameter with the carrier sort there.
+/// The same rows the provider search offers, read at the heads the guard has:
+///
+///   * a CONVERSION row answers nothing ([`is_conversion_row`]) — `Conv2 provides Conv[A = A,
+///     B = B]` says "hold a `Conv2` and you can obtain a `Conv`", and nothing is a `Conv2`
+///     unless a provision says so, whose derived row is here too. Read as a provision with
+///     only variables in it, it admitted EVERY carrier pair: the WI-642 refusal of
+///     `Conv.conv(5, 6)` was lost, and a `@[simp]` law rewrote that ill-typed call;
+///   * a binding to a TYPE VARIABLE of its provider admits any carrier, once — a variable
+///     binding two parameters (`Same provides Conv[A = X, B = X]`) binds them alike, so
+///     `(Int64, String)` is no instance of it;
+///   * a binding with a SORT head admits a carrier that is that sort or provides it (the
+///     subtype relation [`sort_provides`] walks); one headed by a type parameter (`F[T = X]`)
+///     is generic in its head;
+///   * a STRUCTURAL binding (an arrow, a tuple, `Nothing`) admits no carrier: a carrier here
+///     is a sort head, never one of those;
+///   * a parameter the provision leaves UNBOUND admits any carrier.
+///
+/// Heads, not types: which instance applies at the call's full types is the fetch's question
+/// ([`fetch_dictionary`]), so a row this admits may still be decided against there — never
+/// the converse. Both channels at once: [`provides_rows_of_spec`] holds a carrier's own
+/// provision and a witness's alike.
+fn provision_admits_carriers(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carriers: &[(Symbol, Symbol)],
+) -> bool {
+    provides_rows_of_spec(kb, spec_sort).any(|row| {
+        if is_conversion_row(kb, &row) {
+            return false;
+        }
+        let mut variables: SmallVec<[(TermId, Symbol); 4]> = SmallVec::new();
+        carriers.iter().all(|&(param, carrier)| {
+            let name = kb.local_name_of(param);
+            let Some(&(_, bound)) = row
+                .bindings
+                .iter()
+                .find(|(k, _)| kb.local_name_of(*k) == name)
+            else {
+                return true;
+            };
+            if is_type_param_value(kb, bound) {
+                return match variables.iter().find(|&&(v, _)| v == bound) {
+                    Some(&(_, earlier)) => {
+                        same_sort_canonical(kb, earlier, carrier)
+                            || sort_provides(kb, earlier, carrier)
+                            || sort_provides(kb, carrier, earlier)
+                    }
+                    None => {
+                        variables.push((bound, carrier));
+                        true
+                    }
+                };
+            }
+            match sort_functor_of_view(kb, &Value::term(bound)) {
+                Some(sort) if is_sort_param_symbol(kb, sort) => true,
+                Some(sort) => {
+                    same_sort_canonical(kb, sort, carrier) || sort_provides(kb, carrier, sort)
+                }
+                None => false,
+            }
+        })
+    })
 }
 
 /// WI-292 — the RESOLVER-side type-satisfaction check for a requires-guarded
@@ -1777,9 +1921,13 @@ pub(super) fn witness_sort_goal(
     // reads the written bracket). One left behind here would tell a reader this function
     // still tracks the value that decides Defect-vs-Undecided when the callee does.
     for (i, (_pname, pty)) in rec.params.iter().enumerate() {
-        if !param_is_spec_carrier(kb, spec_sort, &type_params, self_representing, pty) {
+        // The parameter a carrier stands at: the spec's own sort for a self-representing
+        // spec, else one of its type-parameters, whose short name is the binding key.
+        let Some(param_sym) =
+            spec_carrier_param_of(kb, spec_sort, &type_params, self_representing, pty)
+        else {
             continue;
-        }
+        };
         let Some(arg_ty) = arg_types.get(i).cloned() else {
             continue;
         };
@@ -1797,11 +1945,6 @@ pub(super) fn witness_sort_goal(
             });
             continue;
         }
-        // The parameter's declared type IS one of the spec's type-parameters
-        // (`param_is_spec_carrier` just said so); its short name is the binding key.
-        let Some(param_sym) = carrier_sort_of_value(kb, pty) else {
-            continue;
-        };
         let short = kb.local_name_of(param_sym).to_string();
         // The key spelling `resolve` matches provider heads against — [`spec_param_key`].
         let key = spec_param_key(kb, &spec_qn, &short, param_sym);

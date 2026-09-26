@@ -5105,11 +5105,12 @@ pub fn pattern_annotation_value(kb: &mut KnowledgeBase, ann: &Rc<NodeOccurrence>
 
 /// WI-390 — the faithful, total `Value → Term` boundary. `Ok(term)` for the
 /// **structural subset**: a `Value::Node` lowers via the now-lossless
-/// [`occurrence_to_term`] (so a denoted-bearing type round-trips), an `Entity`
+/// [`try_occurrence_to_term`] (so a denoted-bearing type round-trips), an `Entity`
 /// recurses through `value_to_term` (a nested `Node` lowers, not errors), and the
 /// scalar / `Term` / `Var` leaves reuse [`KnowledgeBase::alloc_from_value`].
 /// `Err` for the opaque runtime handles (`Closure`/`Stream`/`Map`/`Cell`/
-/// `Substitution`/`Requirement`) and the term-less `Unit`/`Tuple` — the honest
+/// `Substitution`/`Requirement`), the term-less `Unit`/`Tuple`, and an occurrence
+/// with no term form (a lambda, an `if`, a `let`, a `match`) — the honest
 /// residue, never a panic or a lossy term. Unlike `alloc_from_value` (which
 /// rejects *every* `Node`), this is `Node`-aware: it is the one converter to use
 /// where a value-in-type may ride (e.g. a `requires`/`provides` spec).
@@ -5118,8 +5119,14 @@ pub fn value_to_term(
     v: &Value,
 ) -> Result<TermId, crate::kb::execute::LowerError> {
     match v {
-        // A value-in-type occurrence — lossless via occurrence_to_term (WI-390).
-        Value::Node(occ) => Ok(occurrence_to_term(kb, occ)),
+        // A value-in-type occurrence — lossless via occurrence_to_term (WI-390). Through the
+        // TOTAL twin, not the asserting `occurrence_to_term`, whose contract is goal atoms
+        // only: an operand the SLD→eval bridge hands an operation on its own carrier
+        // (WI-20260827-3ZNBC) can be a lambda or an `if`, and a query leaf holding one reached
+        // the `debug_assert!` — a panic in a debug build, a `⊥` query in release
+        // (WI-20260925-PRVA2). Refused like the other term-less carriers.
+        Value::Node(occ) => try_occurrence_to_term(kb, occ)
+            .ok_or(crate::kb::execute::LowerError::UnsupportedVariant("Node")),
         // Recurse via value_to_term (NOT alloc_from_value) so a nested Node child
         // lowers faithfully instead of erroring. Canonical named-arg order mirrors
         // alloc_from_value (declared field order, else Symbol::index()).

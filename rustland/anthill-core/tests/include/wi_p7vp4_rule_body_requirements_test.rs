@@ -973,12 +973,12 @@ end
 // ── Review fixes, round 3: each row drives one fix, and fails with it backed out ─────
 
 /// A call with a CONCRETE carrier among its arguments keeps value dispatch, though the guard
-/// answers `Suspend` for it — it stops at the first carrier it cannot read. `toN`'s `?u` is a
-/// `String`, the second carrier of `Conv`, which `Meters` provides at `B = String`: the
-/// provision is its carrier-parameter's, so asking `String` to provide `Conv` — what a woven
-/// read's guard does — refuses the call. `go` answers `7`. FAILS with `inferred_demand`'s
-/// concrete-carrier check removed: the call is woven, its read DontFires on `String`, and `go`
-/// is empty.
+/// answers `Suspend` for it (`?x` is not known at load): `toN`'s `?u` is a `String`, the
+/// second carrier of `Conv`, and the call is left unwoven. `go` answers `7`. FAILS, first
+/// assertion, with `inferred_demand`'s concrete-carrier check removed: the call is woven. The
+/// ANSWER passes either way since WI-20260925-PRVA2 (c): woven, its read asks the provision at
+/// `(Meters, String)`, which `Meters`' row binds (measured, `7`); before (c) the read asked
+/// `String` to provide `Conv`, DontFired, and `go` was empty.
 #[test]
 fn a_call_with_a_concrete_carrier_among_its_arguments_keeps_value_dispatch() {
     const MIXED: &str = r#"
@@ -1002,14 +1002,22 @@ namespace wip7vp4.mixed
 end
 "#;
     let mut kb = crate::common::load_kb_with(MIXED);
+    assert_eq!(
+        crate::common::body_calls(&kb, "wip7vp4.mixed.toN"),
+        vec![("conv".to_string(), false, Vec::new()), ("unify".to_string(), false, Vec::new())],
+        "the call is left unwoven: its concrete carrier decides it",
+    );
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.mixed.go"), Some(7), "`Meters.conv`, by value");
 }
 
 /// A WITNESS-supplied carrier beside a second carrier LOADS: `W provides Conv[A = Leaf2, B =
-/// Int64]`, and `r`'s call reads `?l: Leaf2`, `?n: Int64`. The load check files `Leaf2` as not
-/// known at load (`Suspend`) — firing on it walked on to `Int64`, which provides no `Conv`,
-/// and refused the program. `r` answers `9`, `W`'s. FAILS with the witness filter removed from
-/// `spec_op_call_carrier_outcome`: the load is refused, "`Int64` provides no `Conv`".
+/// Int64]`, and `r`'s call reads `?l: Leaf2`, `?n: Int64`. The load check asked each carrier
+/// to provide `Conv`: `Leaf2` does (a witness provision), `Int64` never will — it is the
+/// provision's second binding — and the program was refused. Round 3 filed `Leaf2` as not
+/// known at load to dodge that; WI-20260925-PRVA2 (c) asks the provision at `(Leaf2, Int64)`,
+/// which `W`'s row binds, and removed the filter (it had turned into a hidden refusal). `r`
+/// answers `9`, `W`'s. FAILS with the per-carrier question restored for carriers at several
+/// parameters: the load is refused, "`Int64` provides no `Conv`".
 #[test]
 fn a_witness_carrier_beside_a_second_carrier_loads() {
     const WITNESS2: &str = r#"

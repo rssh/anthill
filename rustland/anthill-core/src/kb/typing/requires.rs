@@ -2383,7 +2383,7 @@ pub(super) fn provision_is_conversion(
 /// opless multi-parameter floor — each of which loaded clean and trapped at eval with
 /// `OperationBodyMissing`. `wi1111_provision_chain_search_test` drives all four.
 pub(super) fn is_conversion_edge_at(
-    kb: &mut KnowledgeBase,
+    kb: &KnowledgeBase,
     subject: Symbol,
     target: Symbol,
     bindings: &[(Symbol, TermId)],

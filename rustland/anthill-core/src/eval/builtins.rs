@@ -2581,9 +2581,10 @@ fn expect_relation(v: Value) -> Result<RelationParts, EvalError> {
 /// descends compound terms too — so a column var nested inside a compound goal arg
 /// (as a future `where` / `join` → `guarded` / `conjunction` will emit) is renamed,
 /// not silently missed. Ground scalar / opaque arg values carry no free column var
-/// and pass through; a `Value::Node` occurrence or a value-level `Var` never appears
-/// in an eval-built query, so it is surfaced loudly rather than cloned through (which
-/// could silently drop a var that must be aligned).
+/// and pass through — a GROUND `Value::Node` occurrence too, which is an operand the
+/// SLD→eval bridge handed the operation on its own carrier (WI-20260827-3ZNBC); an
+/// occurrence that is not ground has no such source and is surfaced loudly rather than
+/// cloned through (which could silently drop a var that must be aligned).
 fn rename_query_vars(
     kb: &mut crate::kb::KnowledgeBase,
     v: &Value,
@@ -2622,8 +2623,14 @@ fn rename_query_vars(
             None => v.clone(),
         }),
         Value::Var(_) => Ok(v.clone()),
-        // A `Value::Node` occurrence never appears in an eval-built query; if one
-        // does, surface it loudly rather than silently cloning a var that must align.
+        // A GROUND occurrence is a bridged operand (the bridge admits no other,
+        // `bridge_op_to_eval`'s ground gate): it names no column var, so there is nothing
+        // to align. `seven.union(same(x))` reached from `?r <=> Driver.uniR(4)` raised
+        // Internal here — a debug-build panic — where the eval-called twin answers `7`
+        // (WI-20260925-PRVA2). One that is not ground has no known source: loud.
+        Value::Node(_) if kb.value_deep_ground(v, &crate::kb::subst::Substitution::new()) => {
+            Ok(v.clone())
+        }
         Value::Node(_) => Err(EvalError::Internal(format!(
             "relation query alignment: unexpected {} carrier in a relation query",
             v.type_name()

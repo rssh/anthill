@@ -2532,8 +2532,7 @@ impl SearchStream {
         // `ApplyWithin` heads its reflect twin `apply_within`, not the callee. Read only
         // through the view, the call answered nothing — so the inference declined it, and a
         // citation's dictionary never reached a Bool-view call.
-        let call_head = goal_call_head(kb, &goal_val);
-        if let Some((f, pos_arity, named_arity)) = call_head {
+        if let Some((f, pos_arity, named_arity)) = goal_call_head(kb, &goal_val) {
             let declared_arity = kb
                 .op_record(f)
                 .and_then(|r| r.signature.as_ref())
@@ -2718,177 +2717,93 @@ impl SearchStream {
         //
         // Same rewrite discipline as the Bool hook: goal[0] in place, same goal
         // count, `delay_mode` threaded through unchanged.
-        // A WOVEN goal reads its shape off the occurrence ([`goal_call_head`]). Named args
-        // are not a functional-relation call shape — the result column is POSITIONAL and
-        // last — so a named-arg goal falls through to ordinary candidate selection rather
-        // than being silently re-read.
-        if let Some((f, pos_arity)) = call_head
-            .filter(|&(_, _, named_arity)| named_arity == 0)
-            .map(|(f, pos_arity, _)| (f, pos_arity))
-        {
+        // The gate is [`KnowledgeBase::functional_relation_goal`], which WI-670's open-time
+        // refutation asks too: a goal this hook answers is no refutation for its zero
+        // candidates, and the two readers must not disagree about which goals those are.
+        if let Some((f, n)) = kb.functional_relation_goal(&goal_val) {
+            if let Some(FunctionalRelationCall {
+                call,
+                result,
+                woven,
+            }) = kb.functional_relation_call(&goal_val, f, n)
             {
-                if pos_arity > 0
-                    && kb.dispatched_relation_arity(&goal_val, f) == Some(pos_arity - 1)
-                {
-                    let n = pos_arity - 1;
-                    // Rebuild the call in the OCCURRENCE carrier: `reduce_op_value`
-                    // folds a `Value::Node` and returns anything else untouched, so an
-                    // `Entity`-carried call would silently never reduce. The args are
-                    // reused from the goal's own occurrence rather than round-tripped
-                    // through `Value`, which keeps their occurrence identity (WI-621).
-                    // WI-20260906-7YPGM: every carrier, through the one
-                    // materializer — the goal walk builds `Value::Entity` goals now,
-                    // and `_ => None` made this hook answer nothing for them. The
-                    // CALL-shape test is still made below (`call_parts`), so a goal
-                    // with no `Apply` reading falls through exactly as before.
-                    let goal_occ: Option<Rc<NodeOccurrence>> =
-                        Some(node_occurrence::value_as_occurrence(kb, &goal_val));
-                    // WI-1040: a woven goal's args live in `ApplyWithin.args` and its
-                    // dictionary in `requirements` — both carried through the rebuild
-                    // below, so the n-ary call the resolver reduces is still woven and
-                    // `reduce_op_value` still dispatches it through the dictionary.
-                    let call_parts: Option<(
-                        &Vec<Rc<NodeOccurrence>>,
-                        &Vec<(Option<Symbol>, Value)>,
-                        &[Rc<NodeOccurrence>],
-                    )> = goal_occ.as_ref().and_then(|o| match o.as_expr() {
-                        Some(Expr::Apply {
-                            pos_args,
-                            type_args,
-                            ..
-                        }) => Some((pos_args, type_args, &[][..])),
-                        Some(Expr::ApplyWithin {
-                            args,
-                            type_args,
-                            requirements,
-                            ..
-                        }) => Some((args, type_args, requirements.as_slice())),
-                        _ => None,
-                    });
-                    if let (Some(goal_occ), Some((pos_args, type_args, reqs))) =
-                        (goal_occ.as_ref(), call_parts)
-                    {
-                        {
-                            if pos_args.len() == pos_arity {
-                                // WI-1026: `rebuilt_expr`, not a bare `new_expr` — the
-                                // GOAL is the site the typer classified, and the pin
-                                // has to reach `reduce_op_value` or it folds
-                                // `op_body_node(f)`, a DEFAULTED spec op's own default,
-                                // over the implementation the carrier supplies (a rule
-                                // body answered `1` where an operation body answered
-                                // `7`). It also carries the goal's `owner`, which the
-                                // hand-rolled `new_expr` here dropped.
-                                //
-                                // This is NOT a rebuild of the same expression — it
-                                // drops the goal's RESULT COLUMN (`pos_args[..n]` of
-                                // `n + 1`). That is fine for the pin, whose subject is
-                                // the callee, and benign for the `inferred_type` the
-                                // same helper carries: `check_apply_iter` ignores
-                                // positional args past the declared params, so the
-                                // goal's stamped type already IS the n-ary call's
-                                // return type, not something about the extra column.
-                                let call_occ = if reqs.is_empty() {
-                                    goal_occ.rebuilt_expr(Expr::Apply {
-                                        recv_type: None,
-                                        functor: f,
-                                        pos_args: pos_args[..n].to_vec(),
-                                        named_args: Vec::new(),
-                                        type_args: type_args.clone(),
-                                    })
-                                } else {
-                                    goal_occ.rebuilt_expr(Expr::ApplyWithin {
-                                        functor: f,
-                                        args: pos_args[..n].to_vec(),
-                                        named_args: Vec::new(),
-                                        requirements: reqs.to_vec(),
-                                        type_args: type_args.clone(),
-                                    })
-                                };
-                                let result = Value::Node(Rc::clone(&pos_args[n]));
-                                let subst = self.stack.last().unwrap().subst.clone();
-                                // WI-1057 — `reduce_dispatched_goal_call`, not
-                                // `reduce_operand`: this frame BUILT the call and is
-                                // deciding it, which is the one context in which a
-                                // body-less spec op may be dispatched. See that method.
-                                // WI-20260911-0V0F7 — the WI-938 hook is DECIDING this
-                                // call, so a bridged callee that raised is this goal's
-                                // own fault, not an unrelated branch's. Drained here
-                                // rather than at the builtin dispatch above because this
-                                // site never reaches it — it either rewrites the goal to
-                                // `unify` or falls through to candidate selection.
-                                let mut faults = ReduceFaults::default();
-                                let reduced = kb.reduce_dispatched_goal_call(
-                                    Value::Node(call_occ),
-                                    &subst,
-                                    &mut faults,
-                                );
-                                if !faults.is_empty() {
-                                    Self::absorb_reduce_faults(
-                                        &mut self.errors,
-                                        &mut self.faults,
-                                        &mut self.truncated,
-                                        faults,
-                                        &goal_val,
-                                    );
-                                }
-                                // ONLY route once the body actually reduced. `unify` is
-                                // structural and never dispatches (proposal 049's
-                                // invariant), so handing it an unreduced call would bind
-                                // the result var to the CALL TERM — measured, and a
-                                // definite-looking wrong answer. An unreduced call falls
-                                // through to ordinary candidate selection instead, which
-                                // is the pre-WI-938 behaviour (no answer) rather than a
-                                // wrong one. Making that case DELAY instead of answering
-                                // nothing is the open half — see WI-938's feedback.
-                                // WI-1040 — a WOVEN call routes to `unify` even when it
-                                // did NOT reduce, and that is safe for the exact reason
-                                // the comment above gives for why it is otherwise not:
-                                // `unify_values` delays on an unevaluated call
-                                // (`operand_is_unevaluated_call`, which counts an
-                                // `ApplyWithin` as one), so the result variable is never
-                                // bound to the call term. Falling through instead would
-                                // answer NOTHING for a woven call whose dictionary is not
-                                // bound yet — a silent failure where the clause must
-                                // DELAY and re-fire once a later goal binds the carrier.
-                                // WI-1057 — the third way the reduction can come back
-                                // undecided, and the one WI-1057's own goal shape newly
-                                // admits: a BODY-LESS spec op whose eval bridge declined
-                                // (an un-ground argument, no supplier, or a supplier tie).
-                                // Its own predicate rather than a clause inside
-                                // `is_unreduced_op_call`, because that one also decides
-                                // `eq`'s domain, where a body-less spec op may be symbolic
-                                // ALGEBRA — measured, folding the two broke 5 wi616 cases.
-                                let undecided = kb.is_unreduced_op_call(&reduced)
-                                    || kb.reduction_left_body_less_call(&reduced);
-                                // THE WOVEN BYPASS NEEDS NO NARROWING, and the one WI-1057 gave
-                                // it is gone because it could no longer match. An undecided
-                                // woven call comes back as the `Expr::ApplyWithin` it went in
-                                // as — one exit for `reduce_op_value`'s dispatch and slot arms
-                                // (WI-20260925-P7VP4) — never as the plain member call
-                                // `reduction_left_body_less_call` reads, so `unify` always
-                                // meets a call it DELAYS on (`operand_is_unevaluated_call`
-                                // counts an `ApplyWithin`) and the result variable is never
-                                // bound to it. "Never `unify` on an undecided call it would
-                                // bind" holds here by that exit, not by a clause.
-                                //
-                                // THE RETRY'S LIMIT, stated rather than rediscovered: `unify`
-                                // re-reduces its operand through `reduce_operand`, whose
-                                // `dispatch_body_less` is OFF, so a dictionary that selects a
-                                // BODY-LESS member only the bridge runs is re-asked without the
-                                // bridge and waits. Reaching it needs a concrete provider with a
-                                // body-less member, which WI-818's backing check refuses.
-                                if !reqs.is_empty() || !undecided {
-                                    let unify_sym = kb.unify_functor();
-                                    let unify_goal =
-                                        kb.make_goal_value(unify_sym, vec![result, reduced]);
-                                    let fr = self.stack.last_mut().unwrap();
-                                    fr.goals[0] = unify_goal;
-                                    fr.state = FrameState::Init { delay_mode };
-                                    return Some(StepResult::Continue);
-                                }
-                            }
-                        }
-                    }
+                let subst = self.stack.last().unwrap().subst.clone();
+                // WI-1057 — `reduce_dispatched_goal_call`, not
+                // `reduce_operand`: this frame BUILT the call and is
+                // deciding it, which is the one context in which a
+                // body-less spec op may be dispatched. See that method.
+                // WI-20260911-0V0F7 — the WI-938 hook is DECIDING this
+                // call, so a bridged callee that raised is this goal's
+                // own fault, not an unrelated branch's. Drained here
+                // rather than at the builtin dispatch above because this
+                // site never reaches it — it either rewrites the goal to
+                // `unify` or falls through to candidate selection.
+                let mut faults = ReduceFaults::default();
+                let reduced =
+                    kb.reduce_dispatched_goal_call(Value::Node(call), &subst, &mut faults);
+                if !faults.is_empty() {
+                    Self::absorb_reduce_faults(
+                        &mut self.errors,
+                        &mut self.faults,
+                        &mut self.truncated,
+                        faults,
+                        &goal_val,
+                    );
+                }
+                // ONLY route once the body actually reduced. `unify` is
+                // structural and never dispatches (proposal 049's
+                // invariant), so handing it an unreduced call would bind
+                // the result var to the CALL TERM — measured, and a
+                // definite-looking wrong answer. An unreduced call falls
+                // through to ordinary candidate selection instead, which
+                // is the pre-WI-938 behaviour (no answer) rather than a
+                // wrong one. Making that case DELAY instead of answering
+                // nothing is the open half — see WI-938's feedback.
+                // WI-1040 — a WOVEN call routes to `unify` even when it
+                // did NOT reduce, and that is safe for the exact reason
+                // the comment above gives for why it is otherwise not:
+                // `unify_values` delays on an unevaluated call
+                // (`operand_is_unevaluated_call`, which counts an
+                // `ApplyWithin` as one), so the result variable is never
+                // bound to the call term. Falling through instead would
+                // answer NOTHING for a woven call whose dictionary is not
+                // bound yet — a silent failure where the clause must
+                // DELAY and re-fire once a later goal binds the carrier.
+                // WI-1057 — the third way the reduction can come back
+                // undecided, and the one WI-1057's own goal shape newly
+                // admits: a BODY-LESS spec op whose eval bridge declined
+                // (an un-ground argument, no supplier, or a supplier tie).
+                // Its own predicate rather than a clause inside
+                // `is_unreduced_op_call`, because that one also decides
+                // `eq`'s domain, where a body-less spec op may be symbolic
+                // ALGEBRA — measured, folding the two broke 5 wi616 cases.
+                let undecided = kb.is_unreduced_op_call(&reduced)
+                    || kb.reduction_left_body_less_call(&reduced);
+                // THE WOVEN BYPASS NEEDS NO NARROWING, and the one WI-1057 gave
+                // it is gone because it could no longer match. An undecided
+                // woven call comes back as the `Expr::ApplyWithin` it went in
+                // as — one exit for `reduce_op_value`'s dispatch and slot arms
+                // (WI-20260925-P7VP4) — never as the plain member call
+                // `reduction_left_body_less_call` reads, so `unify` always
+                // meets a call it DELAYS on (`operand_is_unevaluated_call`
+                // counts an `ApplyWithin`) and the result variable is never
+                // bound to it. "Never `unify` on an undecided call it would
+                // bind" holds here by that exit, not by a clause.
+                //
+                // THE RETRY'S LIMIT, stated rather than rediscovered: `unify`
+                // re-reduces its operand through `reduce_operand`, whose
+                // `dispatch_body_less` is OFF, so a dictionary that selects a
+                // BODY-LESS member only the bridge runs is re-asked without the
+                // bridge and waits. Reaching it needs a concrete provider with a
+                // body-less member, which WI-818's backing check refuses.
+                if woven || !undecided {
+                    let unify_sym = kb.unify_functor();
+                    let unify_goal =
+                        kb.make_goal_value(unify_sym, vec![Value::Node(result), reduced]);
+                    let fr = self.stack.last_mut().unwrap();
+                    fr.goals[0] = unify_goal;
+                    fr.state = FrameState::Init { delay_mode };
+                    return Some(StepResult::Continue);
                 }
             }
         }
@@ -7647,11 +7562,12 @@ impl KnowledgeBase {
             return;
         }
         match self.entity_field_names(functor) {
-            Some(fields) => {
-                let order: HashMap<Symbol, usize> =
-                    fields.iter().enumerate().map(|(i, &s)| (s, i)).collect();
-                named.sort_by_key(|(s, _)| order.get(s).copied().unwrap_or(usize::MAX));
-            }
+            // A linear scan, not a map: an entity has a handful of fields, and a map built
+            // per call is an allocation on every entity construction and query lowering.
+            // Field names are distinct, so the first position is the only one.
+            Some(fields) => named.sort_by_key(|(s, _)| {
+                fields.iter().position(|f| f == s).unwrap_or(usize::MAX)
+            }),
             None => named.sort_by_key(|(s, _)| s.index()),
         }
     }
@@ -12456,6 +12372,141 @@ impl KnowledgeBase {
         self.functional_relation_arity(target)
     }
 
+    /// WI-938's gate: `Some((f, n))` when `goal` is the FUNCTIONAL-RELATION view `f(a₁…aₙ, ?r)`
+    /// of a rule-less operation of arity `n` — the goal `step_init` rewrites to
+    /// `unify(?r, f(a₁…aₙ))` instead of selecting candidates for it. A WOVEN goal reads its
+    /// shape off the occurrence ([`goal_call_head`]). Named args are not this call shape — the
+    /// result column is POSITIONAL and last — so a named-arg goal is not the view, and falls
+    /// through to ordinary candidate selection rather than being silently re-read.
+    ///
+    /// ONE GATE, THREE READERS: `step_init`'s hook; WI-670's open-time refutation
+    /// ([`Self::body_refuted_by_ground_conjunct`]), for which such a goal's zero discrim
+    /// candidates are no refutation — no clause is written for `f/n+1`, and the hook answers the
+    /// goal off that path; and P7VP4's weave decision (`woven_goal_has_reader`), which weaves a
+    /// goal only where this hook will read it. Asked only by the hook, the refutation declared a
+    /// clause dead that a delay would have answered once a sibling bound its caller variable:
+    /// `rule r(?x, ?c) :- ground(?x), Util.sign(?x, 5, ?c)` answered nothing from `r(?x, ?c),
+    /// num(n: ?x)` and `-4` from the swapped conjunction (WI-20260925-PRVA2 (b)).
+    pub(crate) fn functional_relation_goal(&self, goal: &Value) -> Option<(Symbol, usize)> {
+        let (f, pos_arity, named_arity) = goal_call_head(self, goal)?;
+        let n = pos_arity.checked_sub(1)?;
+        (named_arity == 0 && self.dispatched_relation_arity(goal, f) == Some(n)).then_some((f, n))
+    }
+
+    /// The CALL a functional-relation goal `f(a₁…aₙ, ?r)` ([`Self::functional_relation_goal`])
+    /// denotes, and its result column — `None` when the goal has no call reading at that
+    /// arity. ONE BUILDER for the two sites that reduce it: `step_init`'s WI-938 hook, which
+    /// routes the goal to `unify(?r, f(a₁…aₙ))`, and WI-670's open-time refutation, which
+    /// evaluates a GROUND one ([`Self::functional_relation_refuted`]).
+    ///
+    /// Rebuilt on the OCCURRENCE carrier: `reduce_op_value` folds a `Value::Node` and returns
+    /// anything else untouched, so an `Entity`-carried call would silently never reduce. The
+    /// args are reused from the goal's own occurrence rather than round-tripped through
+    /// `Value`, which keeps their occurrence identity (WI-621). WI-20260906-7YPGM: every
+    /// carrier, through the one materializer — the goal walk builds `Value::Entity` goals.
+    ///
+    /// WI-1040: a woven goal's args live in `ApplyWithin.args` and its dictionary in
+    /// `requirements` — both carried through the rebuild, so the n-ary call the resolver
+    /// reduces is still woven and `reduce_op_value` still dispatches it through the
+    /// dictionary.
+    ///
+    /// WI-1026: `rebuilt_expr`, not a bare `new_expr` — the GOAL is the site the typer
+    /// classified, and the pin has to reach `reduce_op_value` or it folds `op_body_node(f)`, a
+    /// DEFAULTED spec op's own default, over the implementation the carrier supplies (a rule
+    /// body answered `1` where an operation body answered `7`). It also carries the goal's
+    /// `owner`. This is NOT a rebuild of the same expression — it drops the goal's RESULT
+    /// COLUMN (`args[..n]` of `n + 1`). That is fine for the pin, whose subject is the callee,
+    /// and benign for the `inferred_type` the same helper carries: `check_apply_iter` ignores
+    /// positional args past the declared params, so the goal's stamped type already IS the
+    /// n-ary call's return type, not something about the extra column.
+    pub(crate) fn functional_relation_call(
+        &mut self,
+        goal: &Value,
+        f: Symbol,
+        n: usize,
+    ) -> Option<FunctionalRelationCall> {
+        let goal_occ = node_occurrence::value_as_occurrence(self, goal);
+        let (args, type_args, requirements) = match goal_occ.as_expr() {
+            Some(Expr::Apply {
+                pos_args,
+                type_args,
+                ..
+            }) => (pos_args, type_args, &[][..]),
+            Some(Expr::ApplyWithin {
+                args,
+                type_args,
+                requirements,
+                ..
+            }) => (args, type_args, requirements.as_slice()),
+            _ => return None,
+        };
+        if args.len() != n + 1 {
+            return None;
+        }
+        let call = if requirements.is_empty() {
+            goal_occ.rebuilt_expr(Expr::Apply {
+                recv_type: None,
+                functor: f,
+                pos_args: args[..n].to_vec(),
+                named_args: Vec::new(),
+                type_args: type_args.clone(),
+            })
+        } else {
+            goal_occ.rebuilt_expr(Expr::ApplyWithin {
+                functor: f,
+                args: args[..n].to_vec(),
+                named_args: Vec::new(),
+                requirements: requirements.to_vec(),
+                type_args: type_args.clone(),
+            })
+        };
+        Some(FunctionalRelationCall {
+            call,
+            result: Rc::clone(&args[n]),
+            woven: !requirements.is_empty(),
+        })
+    }
+
+    /// WI-670 over a FUNCTIONAL-RELATION conjunct: is it provably FALSE — ground, its call
+    /// reduced to a value, and that value not its result column? Zero discrim candidates say
+    /// nothing about such a goal (the WI-938 hook answers it off the tree), and reading them
+    /// as a refutation refuted a clause a delay would have answered (WI-20260925-PRVA2 (b)).
+    /// So the conjunct is EVALUATED here, as the hook would evaluate it, and refutes only on
+    /// a definite mismatch: `ground(?x), Util.sign(?y, 5, 0)` opened at `?y = 1` is dead
+    /// (`sign(1, 5)` is `-4`), and without this it was delayed on `?x` and, `?x` never bound,
+    /// residualized into a phantom conditional row — the very outcome WI-670 exists to
+    /// prevent. A conjunct still open, a call the bridge declines, and a raised call refute
+    /// nothing: the clause is delayed and the goal is asked again when it runs.
+    fn functional_relation_refuted(
+        &mut self,
+        goal: &Value,
+        f: Symbol,
+        n: usize,
+        subst: &Substitution,
+    ) -> bool {
+        if !self.value_deep_ground(goal, subst) {
+            return false;
+        }
+        let Some(FunctionalRelationCall { call, result, .. }) =
+            self.functional_relation_call(goal, f, n)
+        else {
+            return false;
+        };
+        let mut faults = ReduceFaults::default();
+        let reduced = self.reduce_dispatched_goal_call(Value::Node(call), subst, &mut faults);
+        if !faults.is_empty()
+            || self.is_unreduced_op_call(&reduced)
+            || self.reduction_left_body_less_call(&reduced)
+        {
+            return false;
+        }
+        let mut work = Substitution::with_parent(subst.clone());
+        matches!(
+            self.unify_values(Value::Node(result), reduced, &mut work, &mut faults),
+            UnifyOutcome::Fail
+        )
+    }
+
     /// WI-1057 — the functional-relation view of a BODY-LESS SPEC OP, the one supply
     /// shape that reaches a goal with NO pin to read.
     ///
@@ -13459,8 +13510,13 @@ impl KnowledgeBase {
     ///   resolution path `query_view` does not see — the frame's `assumed_facts`
     ///   (WI-108), the Γ overlay (WI-537), the `@[simp]` eq-rewrite pass, a mounted
     ///   extent source (extent rows), a scoping/quantifier MARKER (`forall_impl` /
-    ///   `forall_in` / `some_in` / `__pop_assumption`), or a
-    ///   `bare_bodied_bool_relation` (routed to `eq(f(args), true)`). The caller
+    ///   `forall_in` / `some_in` / `__pop_assumption`), a
+    ///   `bare_bodied_bool_relation` (routed to `eq(f(args), true)`), or a WOVEN
+    ///   goal (`Expr::ApplyWithin`, read by the Bool view or the functional-relation
+    ///   hook). A FUNCTIONAL-RELATION goal ([`Self::functional_relation_goal`], routed to
+    ///   `unify(?r, f(args))`) is judged by EVALUATION instead
+    ///   ([`Self::functional_relation_refuted`]): refuted only when ground and its call
+    ///   reduces to a value its result column is not. The caller
     ///   folds the assumptions/Γ/simplify conditions into `context_opaque`; the
     ///   remaining per-functor forms are skipped here. Each such form is a goal
     ///   with zero discrim candidates that `step_init` nonetheless resolves, so
@@ -13508,6 +13564,14 @@ impl KnowledgeBase {
                 || self.bare_bodied_bool_relation(functor)
                 || is_scoping_marker(self.local_name_of(functor), pos_arity)
             {
+                continue;
+            }
+            // A FUNCTIONAL-RELATION goal is answered off the tree too; it refutes the clause
+            // only by evaluating to a value its result column is not.
+            if let Some((f, n)) = self.functional_relation_goal(&walked) {
+                if self.functional_relation_refuted(&walked, f, n, subst) {
+                    return true;
+                }
                 continue;
             }
             // Zero non-equation candidates ⇒ provably unsatisfiable ⇒ the rule is
@@ -13915,6 +13979,17 @@ fn is_routing_only_read(kb: &KnowledgeBase, n: &NodeOccurrence) -> bool {
         .iter()
         .any(|(k, _)| kb.local_name_of(*k) == super::typing::REQUIREMENT_SLOT_LABEL)
         || super::typing::is_typed_head_domain_pass(kb, by)
+}
+
+/// A functional-relation goal's call and result column —
+/// [`KnowledgeBase::functional_relation_call`].
+pub(crate) struct FunctionalRelationCall {
+    /// `f(a₁…aₙ)`, rebuilt from the goal's occurrence (woven if the goal was).
+    pub(crate) call: Rc<NodeOccurrence>,
+    /// The goal's last column, `?r`.
+    pub(crate) result: Rc<NodeOccurrence>,
+    /// The goal carried its dictionary (`Expr::ApplyWithin`, WI-1040).
+    pub(crate) woven: bool,
 }
 
 /// The call a goal makes — `(callee, positional arity, named arity)` — for `step_init`'s two

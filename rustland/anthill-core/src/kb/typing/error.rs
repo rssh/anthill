@@ -589,6 +589,23 @@ pub enum TypeError {
         spec_sort_sym: Symbol,
         carrier_sym: Symbol,
     },
+    /// WI-20260925-PRVA2 (c) — a rule-body call to a spec operation whose carriers, known at
+    /// load, stand at spec parameters other than its carrier parameter, and NO provision
+    /// binds them together: `Conv.conv(m(v: 3), 5)` where `Conv[A, B]`'s one provision is
+    /// `sort Meters provides Conv[A = Meters, B = String]`.
+    ///
+    /// THE SIBLING OF [`Self::UnfillableOperationRequirement`], whose sentence is about ONE
+    /// carrier — "`X` provides no `Spec`" — and is false here: `Int64` at `B` is a
+    /// provision's binding, never a provider, and a sort that provides `Conv` at other
+    /// bindings is not helped by providing it again. The repair is a provision at the
+    /// combination.
+    NoProvisionAtCarriers {
+        span: Option<Span>,
+        callee_op: Symbol,
+        spec_sort_sym: Symbol,
+        /// `(spec parameter, carrier sort)` for each known carrier, in parameter order.
+        bindings: Vec<(Symbol, Symbol)>,
+    },
     /// WI-20260919-N31XX (proposal 065, "The rule") — a RIGID TYPE IS READ AS A VALUE
     /// AND NOTHING IN SCOPE SAYS IT MAY BE.
     ///
@@ -1509,6 +1526,25 @@ impl TypeError {
                     short_name_of(spec_qn),
                 )
             }
+            TypeError::NoProvisionAtCarriers {
+                callee_op,
+                spec_sort_sym,
+                bindings,
+                ..
+            } => {
+                let spec_qn = kb.qualified_name_of(*spec_sort_sym);
+                let at = carrier_bindings_text(kb, bindings);
+                format!(
+                    "`{}` requires `{}` at `{at}`, and no provision binds that — this clause \
+                     can neither supply it nor declare it. Add a `provides {}[{at}]` (on a \
+                     sort, or a witness sort), or write `requires({}[…])` in this clause to \
+                     take the obligation on",
+                    kb.qualified_name_of(*callee_op),
+                    spec_qn,
+                    short_name_of(spec_qn),
+                    short_name_of(spec_qn),
+                )
+            }
             // WI-20260919-N31XX — 065's message verbatim: the parameter, the read, and
             // the clause to add, on the operation that must carry it.
             TypeError::TypeValueReadUnbacked { param, op, .. } => {
@@ -1694,6 +1730,7 @@ impl TypeError {
             | TypeError::DispatchAmbiguous { span, .. }
             | TypeError::AmbiguousSpecOpDispatch { span, .. }
             | TypeError::UnfillableOperationRequirement { span, .. }
+            | TypeError::NoProvisionAtCarriers { span, .. }
             | TypeError::TypeValueReadUnbacked { span, .. }
             | TypeError::AmbiguousConstrainedParamMember { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
@@ -2188,6 +2225,29 @@ impl TypeError {
                     span: self.span(kb),
                 }
             }
+            TypeError::NoProvisionAtCarriers {
+                callee_op,
+                spec_sort_sym,
+                bindings,
+                ..
+            } => {
+                let spec_qn = kb.qualified_name_of(*spec_sort_sym);
+                let short = short_name_of(spec_qn);
+                let at = carrier_bindings_text(kb, bindings);
+                LoadError::TypeMismatch {
+                    origin: None,
+                    entity_name: kb.qualified_name_of(*callee_op).to_string(),
+                    field_name: "requires".to_string(),
+                    expected_type: format!("a `{spec_qn}` provision binding `{at}`"),
+                    actual_type: format!(
+                        "no provision of `{spec_qn}` binds `{at}`, and this clause declares \
+                         no `requires({short}[…])` of its own — so no call here can \
+                         discharge it. Add a `provides {short}[{at}]` (on a sort, or a \
+                         witness sort), or take the obligation on in this clause"
+                    ),
+                    span: self.span(kb),
+                }
+            }
             TypeError::UnsatisfiableRequirement {
                 op,
                 callee_sort,
@@ -2456,4 +2516,20 @@ fn citation_param_message(
         rel = kb.qualified_name_of(relation),
         rel_short = short_name_of(kb.qualified_name_of(relation)),
     )
+}
+
+/// `A = Meters, B = anthill.prelude.Int64` — a [`TypeError::NoProvisionAtCarriers`]'s
+/// carriers as the bracket a provision would write, each parameter by its short name.
+fn carrier_bindings_text(kb: &KnowledgeBase, bindings: &[(Symbol, Symbol)]) -> String {
+    bindings
+        .iter()
+        .map(|&(param, carrier)| {
+            format!(
+                "{} = {}",
+                short_name_of(kb.qualified_name_of(param)),
+                kb.qualified_name_of(carrier)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }

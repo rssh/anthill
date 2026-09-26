@@ -742,13 +742,11 @@ impl KnowledgeBase {
     /// the round-trip this cleanup removes (and preserves the occurrence's
     /// spans/types). A term/entity goal has no occurrence source, so it reifies to
     /// a `TermId` and materializes to an occurrence exactly as the former
-    /// `term_body_to_nodes(goal_value_to_term(g))` chain did — including the
-    /// pre-existing limitation that a builtin-wrapper entity over a BARE occurrence
-    /// child (`not(occ)`, from a negated single occurrence goal) cannot reify
-    /// (`alloc_from_value` rejects a `Value::Node` child) and surfaces the same
-    /// `LowerError` the term path raised. This materialization runs only on a memo
-    /// MISS (see the caller's `if fresh`), so that error — like the whole body
-    /// build — is bounded to once per distinct multi-goal body.
+    /// `term_body_to_nodes(goal_value_to_term(g))` chain did. A builtin-wrapper entity
+    /// over a BARE occurrence child (`not(occ)`, from a negated single occurrence goal)
+    /// reifies too since WI-20260925-PRVA2, which [`Self::goal_value_to_term`] states.
+    /// This materialization runs only on a memo MISS (see the caller's `if fresh`), so
+    /// the whole body build is bounded to once per distinct multi-goal body.
     fn goal_value_to_node(&mut self, v: &Value) -> Result<Rc<NodeOccurrence>, LowerError> {
         match v {
             Value::Node(occ) => Ok(Rc::clone(occ)),
@@ -760,14 +758,16 @@ impl KnowledgeBase {
     }
 
     /// Reify a goal `Value` to a hash-consed `TermId` at a genuine term boundary
-    /// (the multi-goal conjunction-rule synthesis). A `Value::Node` occurrence
-    /// materializes via `occurrence_to_term`; every other carrier goes through
-    /// `alloc_from_value` (loud on a non-goal carrier).
+    /// (the multi-goal conjunction-rule synthesis, and an `or`'s branches) — through
+    /// [`value_to_term`](super::node_occurrence::value_to_term), like [`Self::lower_leaf`],
+    /// so an occurrence NESTED in a builtin wrapper lowers too (loud on a non-goal carrier).
+    /// With `alloc_from_value` here, a bridged operation's parameter used as a negated goal
+    /// inside an `or` or a multi-goal body — `disjunction(negation(pattern_query(g)), …)`
+    /// reached from `?r <=> Driver.orNot(num(n: 1))` — raised "cannot lower Value::Node
+    /// into a KB term", where the same operation called from eval answered
+    /// (WI-20260925-PRVA2).
     fn goal_value_to_term(&mut self, v: &Value) -> Result<TermId, LowerError> {
-        match v {
-            Value::Node(occ) => Ok(super::node_occurrence::occurrence_to_term(self, occ)),
-            other => self.alloc_from_value(other),
-        }
+        super::node_occurrence::value_to_term(self, v)
     }
 
     /// Build a builtin-goal `Value` `functor(args...)` as a `Value::Entity`
@@ -834,13 +834,21 @@ impl KnowledgeBase {
     /// Lower a single goal-atom leaf carrier-neutrally (WI-513). An occurrence
     /// (`Value::Node`) is kept as-is — it resolves as an occurrence goal via
     /// `query_view` (WI-518) and must not be reified (reifying would discard its
-    /// source spans, and `alloc_from_value` rejects it anyway). Every other
-    /// carrier reifies to a canonical `Value::Term` via `alloc_from_value`,
-    /// which also surfaces a non-goal carrier (Closure/Stream/…) loudly.
+    /// source spans). Every other carrier reifies to a canonical `Value::Term`
+    /// via [`value_to_term`](super::node_occurrence::value_to_term), which also
+    /// surfaces a non-goal carrier (Closure/Stream/…) loudly.
+    ///
+    /// `value_to_term`, NOT `alloc_from_value` — the difference is a NESTED
+    /// occurrence, which `alloc_from_value` refuses and `value_to_term` lowers
+    /// (WI-20260925-PRVA2). An operation run by the SLD→eval bridge receives a
+    /// rule-body operand on its own carrier (WI-20260827-3ZNBC), so a body that
+    /// queried a rule with its parameter — `fInt(x) = same(x).head.c`, reached from
+    /// `?r <=> Driver.fInt(3)` — built `same(<Node 3>, ?c)` and raised
+    /// "cannot lower Value::Node into a KB term": the rule was never asked.
     pub(crate) fn lower_leaf(&mut self, v: &Value) -> Result<Value, LowerError> {
         match v {
             Value::Node(_) => Ok(v.clone()),
-            other => Ok(Value::term(self.alloc_from_value(other)?)),
+            other => Ok(Value::term(super::node_occurrence::value_to_term(self, other)?)),
         }
     }
 

@@ -135,6 +135,22 @@ pub fn dispatch_candidate_impl_sorts(kb: &mut KnowledgeBase, goal: &SortGoal) ->
         .collect()
 }
 
+/// Does provision `row` answer no goal of its own — a CONVERSION (WI-1110: `Ord provides
+/// WeakOrd[T = T]`, "hold an `Ord[T]` and you can obtain a `WeakOrd[T]`") or a row DERIVED
+/// through one (WI-1111)? Such a row stays a live fact, since `derive_forwarded_provisions`
+/// reads it to materialize each carrier's own row; so a reader that must tell a conversion
+/// from a membership claim skips it, relocating the answer to those rows rather than losing it.
+/// ONE PREDICATE, TWO READERS: the provider search ([`collect_provides_candidates`]) and the
+/// guard's provision question (`provision_admits_carriers`, WI-20260925-PRVA2 (c)), which must
+/// agree about which rows are instances — the guard read a conversion as a provision with only
+/// variables in it and admitted every carrier pair the search then found nothing for.
+pub(super) fn is_conversion_row(kb: &KnowledgeBase, row: &ProvidesRow) -> bool {
+    is_conversion_edge_at(kb, row.provider, row.spec_base, &row.bindings)
+        || kb
+            .derived_provision_origin_of(row.rid)
+            .is_some_and(|origin| chain_has_conversion(kb, row.provider, origin))
+}
+
 /// WI-1111 — HOW FAR THIS SEARCH REACHES, reviewed and recorded so the next reader does
 /// not re-derive it. The question was whether a goal answerable only through a CHAIN of
 /// parametrized `requires` and `provides` edges is found, and found at the right bindings.
@@ -208,13 +224,6 @@ pub(super) fn collect_provides_candidates(
 
     let mut out: Vec<Candidate> = Vec::new();
     for row in candidates {
-        let ProvidesRow {
-            rid,
-            provider: impl_sort,
-            spec_base: view_base_sym,
-            bindings: view_bindings,
-            ..
-        } = row;
         // WI-1110 — A CONVERSION IS NOT A PROVIDER. `Ord provides WeakOrd[T = T]` says
         // "hold an `Ord[T]` and you can obtain a `WeakOrd[T]`"; it does not say anything
         // has type `Ord`, and nothing ever will. Offering it here made `Ord` an answer to
@@ -263,9 +272,7 @@ pub(super) fn collect_provides_candidates(
         // it, together with the prior question of whether this skip is needed at all once
         // a self-supplied slot is a projection rather than a search — see
         // [`SupplySource`].
-        if is_conversion_edge_at(kb, impl_sort, view_base_sym, &view_bindings) {
-            continue;
-        }
+        //
         // WI-1111 — AND A DERIVED ROW IS A CONVERSION WHEN THE EDGE IT WAS DERIVED
         // THROUGH IS ONE. A two-floor tower (`Top provides Mid[T = T]`,
         // `Mid provides Low[T = T]`) makes [`derive_forwarded_provisions`] assert
@@ -290,11 +297,18 @@ pub(super) fn collect_provides_candidates(
         // invariant applied one level up. A derived row at a real carrier
         // (`Car provides Low[T = Car]`) has a concrete carrier binding, its origin edge is
         // no conversion, and it stays.
-        if let Some(origin) = kb.derived_provision_origin_of(rid) {
-            if chain_has_conversion(kb, impl_sort, origin) {
-                continue;
-            }
+        //
+        // BOTH SKIPS ARE ONE PREDICATE, [`is_conversion_row`], which the guard's provision
+        // question (`provision_admits_carriers`, WI-20260925-PRVA2 (c)) asks too — the future
+        // reader that needs the distinction, taught it here as the first paragraph says.
+        if is_conversion_row(kb, &row) {
+            continue;
         }
+        let ProvidesRow {
+            provider: impl_sort,
+            bindings: view_bindings,
+            ..
+        } = row;
 
         // WI-350: when the call supplies a concrete receiver carrier (a
         // self-receiver spec — `head(s: Stream)` with `s : List[…]`),
