@@ -773,8 +773,9 @@ fn occ_mentions_var(occ: &Rc<NodeOccurrence>) -> bool {
 /// `an_unground_woven_call_delays`, and `an_unground_slot_call_delays` for this one.
 ///
 /// Declined: a spec op (a [`inferred_demand`] or a builtin); a builtin or host-implemented
-/// callee; a callee the bridge does not run from a rule body (a rule-less BODIED operation,
-/// `functional_relation_arity` — WI-1040's weaving population); a call the typer stamped;
+/// callee; a callee the bridge does not run from a rule body (`functional_relation_arity`
+/// — a rule-less bodied or host-mapped operation, the host-implemented ones declined
+/// before it); a call the typer stamped;
 /// and a call whose every argument's type is known at load, which the chain is pinned by
 /// already.
 fn inferred_slot_demand(
@@ -2747,7 +2748,17 @@ pub(super) fn collect_covered_calls(
         // ZERO when `eq` was woven, an `Expr::ApplyWithin` at goal position being
         // `ViewHead::Opaque` to builtin dispatch. Driven by
         // `nar1x_carrier_less_spec_op_test`.
-        let bodied = kb.functional_relation_arity(*functor).is_some();
+        //
+        // BODIED, read off the body and not off `functional_relation_arity` alone: since
+        // the ACG10 review that view also admits a HOST-MAPPED op (`String.length("abc",
+        // ?n)`), and a host-mapped op whose parent is a parametric sort (`Map.size`) would
+        // then read as bodied here and skip the carrier check below — woven with the
+        // clause's dictionary at a call on another carrier, the regression
+        // `wi_5g28a_rule_dictionary_test::a_call_at_another_carrier_keeps_its_own_dispatch`
+        // guards for a body-less op. The goal-position view widened; the weaving
+        // population did not, and weaving a host op is unmeasured.
+        let bodied =
+            kb.op_body_node(*functor).is_some() && kb.functional_relation_arity(*functor).is_some();
         if !bodied && kb.body_less_relation_arity(*functor).is_none() {
             continue;
         }

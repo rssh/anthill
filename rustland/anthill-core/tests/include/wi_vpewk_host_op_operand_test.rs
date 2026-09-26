@@ -427,3 +427,83 @@ fn an_eq_between_a_host_call_and_a_bodied_call_does_not_depend_on_operand_order(
          agree because the unfold ran and not because it was abandoned twice"
     );
 }
+
+/// THE ARITY+1 VIEW RUNS A HOST OP — `String.length("abc", ?n)` binds `?n = 3`, the
+/// neighbouring shape this ticket's description set aside ("a different route") and
+/// nothing then covered. Found reviewing proposal 068 (WI-20260926-ACG10).
+///
+/// `functional_relation_arity` still gated on "has a body" on a negative ZJZS7 recorded
+/// before this ticket opened the operand path it routes into (`unify(?r, f(args))`), so
+/// the negative had expired and the goal fell through to ordinary candidate selection:
+/// no clause of `length/2`, NO SOLUTIONS, silently — while `?n <=> String.length("abc")`
+/// one spelling over answered 3, and `not(String.length("abc", 3))` proved a falsehood.
+///
+/// BACK-OUT, RUN (each row measured, not only the first assertion): the gate restored to
+/// `self.op_body_node(f).is_none()`. FAILS: `len` (`[]`), `up` (`[]`), `len3` (0), `nlen`
+/// (1 — the NAF falsehood), `pure` (`[]`). PASSES EITHER WAY, by design: `len4` (decided
+/// false both ways — with the gate closed there is no clause; with it open the call runs
+/// and `3 ≠ 4`), `bound` (the `<=>` spelling never read this gate — it shows the two
+/// spellings now AGREE), and `fx`, which the effect clause keeps out whichever way this
+/// gate reads: `effect_row_admits_relational_view` admits a parametric row only for a
+/// BODIED op and a concrete row never, so a host op's declared row is read strictly.
+/// `pure` is what makes `fx` mean something — same host function, no row, and it binds.
+#[test]
+fn the_arity_plus_one_view_runs_a_host_op() {
+    let mut kb = crate::common::load_kb_with(
+        "namespace vpewkr\n  import anthill.prelude.{String, Int64}\n  \
+         sort MyS\n    \
+           operation trimIt(s: String) -> String @[host_implemented]\n    \
+           operation trimFx(s: String) -> String\n      effects {Error} @[host_implemented]\n  end\n  \
+         provides MyS language rust\n    artifact \"scratch\"\n    \
+           carrier { MyS: \"String\" }\n    \
+           operation_map {\n      trimIt: \"string_trim\",\n      trimFx: \"string_trim\"\n    }\n  end\n  \
+         rule len(?n)   :- String.length(\"abc\", ?n)\n  \
+         rule up(?r)    :- String.toUpper(\"abc\", ?r)\n  \
+         rule bound(?n) :- ?n <=> String.length(\"abc\")\n  \
+         rule len3(1)   :- String.length(\"abc\", 3)\n  \
+         rule len4(1)   :- String.length(\"abc\", 4)\n  \
+         rule nlen(1)   :- not(String.length(\"abc\", 3))\n  \
+         rule pure(?r)  :- MyS.trimIt(\"  a  \", ?r)\n  \
+         rule fx(?r)    :- MyS.trimFx(\"  a  \", ?r)\nend\n",
+    );
+    use anthill_core::eval::Value;
+    use crate::common::definite_unary;
+    let len = definite_unary(&mut kb, "vpewkr.len");
+    assert!(
+        matches!(len.as_slice(), [Value::Int(3)]),
+        "the arity+1 view BINDS the host op's result; got {len:?}"
+    );
+    let up = definite_unary(&mut kb, "vpewkr.up");
+    assert!(
+        matches!(up.as_slice(), [Value::Str(s)] if s == "ABC"),
+        "…for a String-valued host op too; got {up:?}"
+    );
+    let bound = definite_unary(&mut kb, "vpewkr.bound");
+    assert!(
+        matches!(bound.as_slice(), [Value::Int(3)]),
+        "CONTROL: the `<=>` spelling answered 3 before and after — the row above now \
+         AGREES with it; got {bound:?}"
+    );
+    assert_eq!(answers(&mut kb, "vpewkr.len3(1)"), 1, "a bound result column is CHECKED");
+    assert_eq!(
+        (answers(&mut kb, "vpewkr.len4(1)"), total(&mut kb, "vpewkr.len4(1)")),
+        (0, 0),
+        "…and a wrong one is DECIDED false, not suspended"
+    );
+    assert_eq!(
+        answers(&mut kb, "vpewkr.nlen(1)"),
+        0,
+        "THE UNSOUNDNESS: with the view closed the goal had no clause, so NAF proved \
+         `not(String.length(\"abc\", 3))` — a falsehood"
+    );
+    let pure = definite_unary(&mut kb, "vpewkr.pure");
+    assert!(
+        matches!(pure.as_slice(), [Value::Str(s)] if s == "a"),
+        "CONTROL for `fx`: the same host function with no effect row binds; got {pure:?}"
+    );
+    assert_eq!(
+        definite_unary(&mut kb, "vpewkr.fx").len(),
+        0,
+        "…and behind `effects {{Error}}` it does not run at arity+1 either"
+    );
+}

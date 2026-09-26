@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- tags: proposal-068
+
 ## Description
 
 PROPOSAL 068 — AN OPERATION APPLICATION IN A RULE BODY IS A COMPUTATION: typed as in an operation body, evaluated by value. FIRST STEP: REVIEW THE PROPOSAL, docs/proposals/068-rule-body-operation-applications.md (Draft, 2026-09-26). Nothing is implemented until the review settles it, and the review's outcome is recorded in the proposal's Status line.
@@ -31,6 +33,10 @@ ACCEPTANCE: the proposal reviewed and its Status updated; docs/design/068-implem
 ### 2026-09-26T10:01:15Z — feedback — user
 
 WI-20260925-PRVA2 (d) MOVED HERE (user, 2026-09-26): 068 §1–§2 decides it, so §5.3's 'what the gate still declines' changes with 068 step 2 and not before. PRVA2 (d) read a SPLIT — `PartialEq.eq(WeakOrd.compare(1, 5), -1)` holding with its carrier known at load, while `rule below(?a, ?b) :- PartialEq.eq(WeakOrd.compare(?a, ?b), -1)` fails `below(1, 5)` silently. MEASURED at 028e13f8 (PRVA2's fixes do not touch it): there is NO split — both are refuted. `WeakOrd.compare(1, 5) = -1` answers no solutions; `below(1, 5)` no solutions; `not(below(1, 5))` HOLDS (NAF proves a falsehood); the functional-relation view `WeakOrd.compare(1, 5, ?r)` answers -1; and `?r <=> WeakOrd.compare(1, 5)` binds `?r` to the unreduced `compare(1, 5)` as a DEFINITE answer. A body-less spec op in a value slot is compared as data wherever it is written; under 068 its carrier is ground, it dispatches, and each row answers its truth. Candidate rows for 068's problem table.
+
+### 2026-09-26T10:01:39Z — feedback — user
+
+NARROWED (2026-09-26, user: 'ACG10 — as you wish'). This ticket is now step A0 of the 068/060 sequence: (1) the REVIEW — done; its outcome is recorded in 068's Status line (two rounds: one evaluation strategy for <=>, =, === and goal arguments; nothing stored in a binding is an unevaluated call; a call is data only inside a quote, which produces a plain Term; heads are an implicit quote; splice evaluates, a typed quote is deferred; @[simp] does not fire inside the evaluation; typing creates a rule-body call's dictionary, 060 / P7VP4); (2) docs/design/068-implementation.md; (3) 068 §8 step 1's census, changing no behaviour — fragment-typing report counts, the library code that compares unevaluated calls as data, and a re-measure of 068's problem rows on current main (P7VP4's weaving already moved part of 35E14's population). The IMPLEMENTATION and this description's per-row acceptance moved to: WI-20260926-CYNPE (A1, resolver scheduling: blockers, parking), WI-20260926-K4JGC (A2, the evaluation strategy; depends on A1), WI-20260926-7D48J (C1, one rule-clause typing for 060's inference and 068's fragments; design first; depends on P7VP4), WI-20260926-DSEXA (D1, dictionary blockers, retiring the per-consumer reductions, the unfold threads dictionaries; depends on A2 and C1), and the library ticket WI-20260926-QCJ0B (Set). XBHX3 now depends on DSEXA and 35E14 on CYNPE — the tickets that fix them — instead of on this one. 0RRQP stays its own ticket (user). ACCEPTANCE for this narrowed scope: the design doc written and reviewed; the census numbers recorded in it.
 
 ### 2026-09-26T11:39:59Z — feedback — user
 
