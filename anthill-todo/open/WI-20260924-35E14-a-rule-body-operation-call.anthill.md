@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20260926-ACG10-proposal-068-an-operation
+
 - tags: resolver
 
 ## Description
@@ -26,4 +28,10 @@ WANTED: a call with an unbound argument DELAYS and rotates like any goal that ca
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh; every row driven): late answers blue, definite; unbound answers one CONDITIONAL row carrying the call in its residual. Controls, passing either way by design: early, and a call whose argument is bound before it.
 
 FOUND BY WI-20260911-5G28A's demo2 (060-implementation §7.3, S5): Wrap[T = X].top's clause calls Score.score(?v, 3) before the appended generator binds ?v, which is one reason its count answers 0 (wi_5g28a_rule_dictionary_test.rs, demo2_the_count_answers_zero).
+
+## Changes
+
+### 2026-09-26T08:28:47Z — feedback — user
+
+DEPENDS ON PROPOSAL 068 (WI-20260926-ACG10), decided in review 2026-09-26. Same root as WI-20260827-XBHX3, different symptom: a rule-body operation application has no SUSPENDED state, so each position improvises — the WI-580 case-split compares the unevaluated call as DATA (a wrong refutation), and the WI-938 hook treats it as a FAILURE (this ticket: 'falls through to ordinary candidate selection … (no answer)', resolve.rs around line 2854). Under 068 §2 Score.score(x) is SUSPENDED with blocker x — it rotates, is asked again once x is bound, and 'late' answers blue; 'unbound' stays suspended and ends conditional. The bridge's three decline reasons (unbound argument / no supplier / supplier tie) separate into SUSPENDED and UNREDUCED instead of one fall-through. 068's problem section carries this ticket's three rows.
 

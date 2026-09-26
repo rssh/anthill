@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260827-P1TPE-unfold-eq-operand-compares
+- depends_on: WI-20260827-P1TPE-unfold-eq-operand-compares, WI-20260926-ACG10-proposal-068-an-operation
 
 ## Description
 
@@ -150,4 +150,18 @@ WHAT YOU OWE, CONCRETELY: when you remove the standalone `if self.value_has_bodi
 AND THE REST OF THIS TICKET IS UNBLOCKED: in that same neutralized state `bodyNest` -- `C.bpick(?c) = box(v: C.tag(red()))`, a Box with no custom `Eq` -- reaches 1 DEFINITE `?c = red`, so P1TPE's key does not take back the answer you measured this gate costing. `wi_p1tpe_unfold_eq_semantic_test` pins it at (1, 0) with the gate in place and states the neutralized number at its site.
 
 STILL OPEN FROM YOUR OWN NOTES, not touched by P1TPE: the unbounded-recursion question ("`unify` DELAYS instead of binding the hoist vars against a finite OTHER ... 1 -> 32 residuals at the default cap"), and the stale `push_choice_test::wi580_op_call_other_operand_declines`, whose name and doc state the behaviour your change deletes.
+
+### 2026-09-26T08:22:01Z — feedback — user
+
+PARKED ON PROPOSAL 068 (WI-20260926-ACG10), decided in review 2026-09-26 — the gate is one instance of a wider defect, and 068 removes the cause rather than re-keying the gate.
+
+RE-MEASURED on main at fa32695e, gate ON / gate OFF, (total, definite):
+  bodyNest  C.bpick(?c) = box(v: C.tag(red()))      (1, 0) / (1, 1) ?c = red   — the answer the gate costs
+  w         C.pick(?c) = C.mk(red())                (1, 0) / (0, 0) WRONG      — P1TPE's hand-over, still owed
+  app       append(?a,[3]) = append(?b,[4])          (1, 0) 0.3 ms / (32, 0) 14 ms — removing the gate loses termination
+So both open items of the earlier feedback are live on today's tree: w's soundness and the unbounded recursion.
+
+THE CAUSE (068's problem section): a rule-body operand is untyped, so each consumer evaluates calls to a different depth — the unfold none at all, hence this gate. 068 evaluates every rule-body call by value (functional fragments), which makes the gate unnecessary: OTHER's ground calls evaluate (bodyNest), its unground ones SUSPEND (app, no split), and w compares a value.
+
+THE NARROW FIX, designed and NOT implemented, in case 068 stalls: in unfold_eq_operand replace the gate by (A) decline when OTHER contains ANY call (bodied, host, builtin — the operand_is_unevaluated_call test at every depth, as a widened fold_gate) AND is not deep-ground — termination; (B) OR 'OTHER contains a call' into both of P1TPE's OTHER halves (override and Float) — soundness for w. Predicted: bodyNest (1,1), w (1,0), app (1,0), P1TPE rows and bodiedFirst unchanged. Its cost: (A) is coarse — a call anywhere plus a variable anywhere in OTHER declines.
 
