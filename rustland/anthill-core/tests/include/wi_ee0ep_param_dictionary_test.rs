@@ -676,9 +676,14 @@ fn with_one_provider_the_host_entry_still_answers() {
 /// which withheld only 058 §3.2's DEFAULT: `pick_most_specific` still ran first.
 ///
 /// Three providers of `WeakOrd[T = Pair[A = String, B = String]]`: the stdlib's `Pair`
-/// (lexicographic, generic head), `Flat` (a witness generic over any `Pair`, calling
-/// every pair equal) and `PairNe` (a witness at exactly `Pair[String, String]`, calling
-/// no pair equal — the most specific head). The set `{pair("a", "z")}` is built at
+/// (lexicographic, generic head), `Flat` (a witness generic over any `Pair` of ordered
+/// components, calling every pair equal) and `PairNe` (a witness at exactly
+/// `Pair[String, String]`, calling no pair equal — the most specific head).
+///
+/// `Flat`'s `:- WeakOrd[A], WeakOrd[B]` is WI-20260925-4ZZKZ's: `WeakOrd` requires `Eq` and
+/// `PartialOrd` at the pair, which hold only where the components have them, so the
+/// unconditioned provision claimed an ordering at pairs with no equality. It loaded through
+/// the load check's base-level fallback, which that ticket removed. The set `{pair("a", "z")}` is built at
 /// `O = Flat`, so it holds `pair("a", "b")`; `PairNe` would say it does not.
 ///
 /// BACKED OUT — MEASURED: resolve a type-carried slot with `DefaultRung::Withhold`
@@ -693,7 +698,7 @@ fn specificity_does_not_choose_a_type_carried_slot() {
          sort Flat\n    \
          sort A = ?\n    \
          sort B = ?\n    \
-         provides WeakOrd[T = Pair[A = A, B = B]]\n    \
+         provides WeakOrd[T = Pair[A = A, B = B]] :- WeakOrd[A], WeakOrd[B]\n    \
          operation compare(a: Pair[A = A, B = B], b: Pair[A = A, B = B]) -> Int64 = 0\n  \
          end\n  \
          sort PairNe\n    \

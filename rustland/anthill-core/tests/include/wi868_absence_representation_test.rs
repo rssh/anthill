@@ -10,31 +10,33 @@
 //! measured rather than assumed.
 //!
 //! It was, three ways — see [`Interpreter::stand_in_requirement`] for the decision and
-//! the other two arms. THE ROW BELOW IS THE THIRD: with the refusal off the dispatch
+//! the other two arms. THE ROWS BELOW ARE THE THIRD: with the refusal off the dispatch
 //! path, a body that reads a marker slot to call a BUILTIN-backed spec op gets the
 //! HOST's structural verdict for a requirement that has no provider at all, silently.
+//!
+//! WI-20260925-4ZZKZ CLOSED THE LOAD-TIME ROUTE to such a slot: the resolver no longer
+//! records a spec half absent, and the provision that let one arise is refused at load
+//! (`a_marker_slot_is_no_longer_minted_at_load`). The refusal at the read is still the
+//! only thing between a builtin and the host default for the markers that remain — the
+//! RUN-time producers, of which the host-entry stand-in is the one a program reaches
+//! without a rule body (`a_builtin_read_through_a_host_entry_marker_is_refused`).
 
 use anthill_core::eval::Value;
 
-/// The shape that reaches a marker slot at all — and reaching one is HARDER than the
-/// ticket assumes, which is itself part of the account.
+/// The shape that reached a load-time marker slot, before WI-20260925-4ZZKZ — and
+/// reaching one was HARDER than WI-868 assumed, which is itself part of the account.
 ///
-/// TWO LOAD-TIME GATES refuse the obvious spellings, MEASURED:
+/// TWO LOAD-TIME GATES refused the obvious spellings, MEASURED then:
 ///
 ///  * a CONCRETE carrier at the call site (`Holder.via(wrap(v: 5))` where `Holder
-///    requires PartialEq[T]`) is refused by WI-1102's use-site discharge —
-///    "`Wrap` provides no `anthill.prelude.PartialEq` — declare `provides …`";
+///    requires PartialEq[T]`) is refused by WI-1102's use-site discharge;
 ///  * a provider whose spec's chain it does not cover (`WTop provides Top` where `Top
-///    requires PartialEq`) is refused by `check_provider_requires` (WI-343/WI-356) —
-///    "'WTop' provides 'Top', which requires 'PartialEq', but 'WTop' does not provide
-///    'PartialEq'".
+///    requires PartialEq`) is refused by `check_provider_requires` (WI-343/WI-356).
 ///
-/// So the fixture needs the WI-865 template's RED HERRING — `provides PartialEq[T =
-/// Int64]`, a provision at a binding this call never uses — to satisfy the
-/// base-level existence check while leaving the goal the dictionary actually has,
-/// `PartialEq[T = Wrap[E = Int64]]`, with no provider. That is the gap through which a
-/// marker slot is minted, and it is where the refusal below is the only thing standing
-/// between the program and a host answer.
+/// So the fixture needed the WI-865 template's RED HERRING — `provides PartialEq[T =
+/// Int64]`, a provision at a binding this call never uses — to satisfy the check's
+/// base-level fallback while leaving `PartialEq[T = Wrap[E = Int64]]` with no provider.
+/// That fallback is gone: the check resolves `PartialEq[T = Wrap[E = WTop.E]]` itself.
 const BUILTIN_READ: &str = r#"
 namespace wi868.builtin
   import anthill.prelude.{Int64, Bool, PartialEq}
@@ -63,51 +65,89 @@ namespace wi868.builtin
     operation t(x: Wrap[E = E]) -> Int64 = 7
   end
 
+end
+"#;
+
+/// THE GAP IS CLOSED: the program that minted a marker slot at load is refused there.
+///
+/// CONTROL (MEASURED): restore `check_provider_requires`' base-level fallback and this
+/// loads clean (the red herring answers it) — the premise the row below used to rest on.
+/// The host-entry row passes either way by design: it is the channel that remains.
+#[test]
+fn a_marker_slot_is_no_longer_minted_at_load() {
+    let errs = crate::common::try_load_kb_with(BUILTIN_READ)
+        .err()
+        .expect("`WTop provides Top` needs `PartialEq[Wrap[E]]`, which nothing provides");
+    assert!(
+        errs.iter().any(|e| e.contains(
+            "'wi868.builtin.WTop' provides 'wi868.builtin.Top', which requires \
+             'anthill.prelude.PartialEq'"
+        )),
+        "the refusal names the provision and the requirement: {errs:?}",
+    );
+}
+
+/// The same program made SOUND — `Wrap` gets its own `PartialEq`, and `WTop`'s provision
+/// is conditioned on its element's — so it loads, and the only marker left is the one a
+/// HOST ENTRY installs: `Holder.via` entered directly, with no dictionary supplied.
+const BUILTIN_READ_SOUND: &str = r#"
+namespace wi868.sound
+  import anthill.prelude.{Int64, Bool, PartialEq}
+
+  enum Wrap
+    import anthill.prelude.{Int64, Bool, PartialEq}
+    sort E = ?
+    entity wrap(v: E)
+    provides PartialEq[T = Wrap] :- PartialEq[E]
+    operation eq(a: Wrap, b: Wrap) -> Bool = true
+  end
+
+  sort Top
+    sort T = ?
+    requires PartialEq[T = T]
+    operation t(x: T) -> Int64
+  end
+
+  sort WTop
+    sort E = ?
+    provides Top[T = Wrap[E = E]] :- PartialEq[E]
+    operation t(x: Wrap[E = E]) -> Int64 = 7
+  end
+
   sort Holder
     sort T = ?
     requires Top[T]
     operation via(a: T, b: T) -> Bool = PartialEq.eq(a, b)
   end
-
-  sort Driver
-    operation same(n: Int64) -> Int64 = if Holder.via(wrap(v: 5), wrap(v: 5)) then 1 else 0
-    operation diff(n: Int64) -> Int64 = if Holder.via(wrap(v: 5), wrap(v: 6)) then 1 else 0
-  end
 end
 "#;
 
 /// THE MEASUREMENT THE TICKET ASKED FOR. A builtin-backed spec op read through a
-/// marker slot is REFUSED, naming the spec and the repair — and it has to be refused
-/// HERE, at `resolve_op_target_checked`, because there is nothing downstream to refuse
-/// it: the value-directed rescue is what runs next, and for a builtin the fall-through
-/// IS the host default.
+/// marker slot is REFUSED, naming the op and the entry — and it has to be refused HERE,
+/// at `resolve_op_target_checked`, because there is nothing downstream to refuse it: the
+/// value-directed rescue is what runs next, and for a builtin the fall-through IS the
+/// host default.
 ///
-/// MEASURED with the refusal removed from `dispatch_via_sort_ops_table` (the ticket's
-/// proposed move):
-///
-/// ```text
-///   Driver.same  ->  Ok(Int(1))
-///   Driver.diff  ->  Ok(Int(0))
-/// ```
-///
-/// A full structural verdict for `PartialEq[Wrap[E = Int64]]`, which NOTHING provides.
-/// BOTH POLARITIES, deliberately: `eq(x, x)` alone proves little, because reflexivity
-/// can be answered before dispatch — `diff` is the row that shows the host's `eq`
-/// actually compared two distinct values and decided.
-///
-/// The two rows below are the same program under the refusal that ships. They are the
-/// CONTROL for the numbers above, and the tripwire for a future attempt at the merge.
+/// CONTROL (MEASURED, WI-20260925-4ZZKZ): make `marker_refusal` accept every marker and
+/// this row fails on its first pair — `Holder.via(5, 5)` answers `Bool(true)`, the host's
+/// structural verdict for a `PartialEq` nothing supplied. (WI-868 measured the same
+/// silence on the load-time marker this file used to reach, both polarities.) BOTH
+/// POLARITIES are driven, deliberately: `eq(x, x)` alone proves little, because
+/// reflexivity can be answered before dispatch — the distinct pair is the row that shows
+/// the host's `eq` actually compared two values and decided. The values are passed bare,
+/// as the host would: the slot is read before either is inspected.
 #[test]
-fn wi868_a_builtin_read_through_a_marker_slot_is_refused() {
-    for entry in ["same", "diff"] {
+fn a_builtin_read_through_a_host_entry_marker_is_refused() {
+    for (v1, v2) in [(5, 5), (5, 6)] {
         // A FRESH interpreter per row — a trapped call poisons later calls.
-        let mut interp = crate::common::interp_for(BUILTIN_READ);
-        let err = match interp.call(&format!("wi868.builtin.Driver.{entry}"), &[Value::Int(0)]) {
+        let mut interp = crate::common::interp_for(BUILTIN_READ_SOUND);
+        let err = match interp.call("wi868.sound.Holder.via", &[Value::Int(v1), Value::Int(v2)])
+        {
             Err(e) => format!("{e}"),
             Ok(v) => panic!(
-                "`Driver.{entry}` must not answer: nothing provides `PartialEq` at this \
-                 dictionary's bindings, so a value here is the HOST deciding \
-                 structurally for a requirement the program never satisfied. Got {v:?}",
+                "`Holder.via({v1}, {v2})` must not answer: the host supplied no `Top` \
+                 dictionary, so a value here is decided by nothing the program provided. \
+                 Got {v:?}",
             ),
         };
         assert!(
@@ -115,8 +155,8 @@ fn wi868_a_builtin_read_through_a_marker_slot_is_refused() {
             "the refusal must name the op it would not dispatch and say why; got: {err}",
         );
         assert!(
-            err.contains("Declare a provider"),
-            "…and the repair, which is WI-865's payload doing its work; got: {err}",
+            err.contains("host entry point"),
+            "…and blame the entry, which is WI-865's payload doing its work; got: {err}",
         );
     }
 }

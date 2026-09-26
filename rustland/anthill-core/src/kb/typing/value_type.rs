@@ -1726,9 +1726,10 @@ pub(crate) fn fetch_dictionary(
 ///  * There an unresolved param is a FLEX VAR the typer may still pin; here nothing
 ///    more will ever arrive, because the goal is rebuilt from runtime values at the
 ///    moment the goal runs.
-///  * The compile-time route has a mechanism this one does not — an un-pinnable SLOT
-///    becomes WI-857's `Unavailable` marker inside a dictionary that still gets built.
-///    `fetch_dictionary`'s goal IS the whole dictionary, so there is no slot to mark.
+///  * The compile-time route had a mechanism this one does not — an un-pinnable SLOT
+///    became WI-857's `Unavailable` marker inside a dictionary that still got built
+///    (until WI-20260925-4ZZKZ, which fails such a resolution). `fetch_dictionary`'s goal
+///    IS the whole dictionary, so there is no slot to mark.
 ///
 /// MEASURED rather than argued, on the shape this ticket is about: the same spec, the
 /// same provision (`Leaf provides Desc[T = Leaf[N], Note = N]`) and the same carrier,
@@ -2071,11 +2072,8 @@ pub(super) struct WitnessGoal {
 ///
 /// Built in WI-1019's shape: the sub-dictionaries are POSITIONAL children (slot `k`
 /// is the k-th entry of the WI-857 dictionary layout, so the order is the identity)
-/// and the impl carrier is the one named child. WI-857's `Unavailable` marker
-/// becomes a childless dictionary over the `NoProvider` marker, exactly as
-/// `emit_tree_as_projection` spells it — every use of
-/// that slot is refused at the read (`resolve_op_target_checked`), so carrying the
-/// absence stays loud.
+/// and the impl carrier is the one named child. A resolved tree holds no absence
+/// (WI-20260925-4ZZKZ); a value-only route's recorded one is [`dictionary_of_absence`].
 ///
 /// `None` when the tree names a caller slot — `FromScope` cannot arise from the
 /// empty-scope resolution this is called on, and answering `None` rather than
@@ -2092,21 +2090,6 @@ pub(crate) fn dictionary_of_tree(
     fn build(kb: &mut KnowledgeBase, tree: &ResolvedRequiresNode) -> Option<Dictionary> {
         let (impl_sort, subs): (Symbol, Vec<Dictionary>) = match tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. } => (*impl_sort, Vec::new()),
-            ResolvedRequiresNode::Unavailable {
-                spec_sort,
-                why,
-                below,
-            } => (
-                absence_marker_sym(
-                    kb,
-                    AbsenceRecord::Slot {
-                        spec: *spec_sort,
-                        why: why.clone(),
-                        below: *below,
-                    },
-                ),
-                Vec::new(),
-            ),
             ResolvedRequiresNode::Conditional {
                 impl_sort,
                 sub_resolutions,
@@ -2123,6 +2106,19 @@ pub(crate) fn dictionary_of_tree(
         Dictionary::build(kb, impl_sort, subs)
     }
     build(kb, tree)
+}
+
+/// WI-857's marker dictionary for a slot a value-only route recorded ABSENT
+/// ([`BridgeSlot::Absent`]): no sub-dictionaries, over the marker minted for THIS absence
+/// (WI-865), so every read of it is refused naming why. `None` when the KB has no
+/// `anthill.realization.runtime.Dictionary` to name.
+pub(crate) fn dictionary_of_absence(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    why: UnavailableWhy,
+) -> Option<Dictionary> {
+    let marker = absence_marker_sym(kb, AbsenceRecord::Slot { spec, why });
+    Dictionary::build(kb, marker, Vec::new())
 }
 
 /// A carried type as a `TermId`, for the `TermId`-keyed [`SortGoal::bindings`].

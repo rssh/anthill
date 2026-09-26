@@ -26,9 +26,10 @@
 //!     the shape where BOTH halves are non-empty at once — runs on both routes;
 //!  4. the LOCALITY rule: inside provider `W`'s dictionary, a sub-goal `W` itself
 //!     provides resolves to `W`'s own provision before any global search;
-//!  5. the layout's own shape, read off `resolve` directly, including that a
-//!     spec-half slot with no provider is RECORDED (`Unavailable`) rather than
-//!     dropped — and that reading such a slot is LOUD.
+//!  5. the layout's own shape, read off `resolve` directly — and that a spec-half
+//!     slot with no provider is not a dictionary at all. WI-857 RECORDED it
+//!     (`Unavailable`) and made reading it loud; WI-20260925-4ZZKZ refuses the
+//!     provision that lets it arise, at LOAD, and the resolver refuses the goal.
 //!
 //! Everything here is driven end-to-end (`interp.call`), because the defect was
 //! invisible to the load: every reproducer below loaded clean before the fix.
@@ -37,7 +38,6 @@ use anthill_core::eval::Value;
 use anthill_core::kb::term::Term;
 use anthill_core::kb::typing::{
     dict_layout, resolve, ResolutionResult, ResolutionScope, ResolvedRequiresNode, SortGoal,
-    UnavailableWhy,
 };
 use anthill_core::kb::KnowledgeBase;
 use smallvec::SmallVec;
@@ -51,18 +51,6 @@ fn eval_int(src: &str, entry: &str, why: &str) -> i64 {
         Ok(Value::Int(n)) => n,
         other => panic!("{why}; got {other:?}"),
     }
-}
-
-fn eval_err(src: &str, entry: &str, needle: &str, why: &str) {
-    let mut interp = crate::common::interp_for(src);
-    let err = match interp.call(entry, &[Value::Int(0)]) {
-        Err(e) => format!("{e}"),
-        Ok(v) => panic!("{why}; expected a failure, got {v:?}"),
-    };
-    assert!(
-        err.contains(needle),
-        "{why}; expected {needle:?}, got: {err}"
-    );
 }
 
 // ── (1)+(2) the ticket's reproducers and their controls ───────────────────
@@ -465,28 +453,22 @@ fn the_layout_counts_what_resolve_bundles() {
     }
 }
 
-/// The fixture for the two tests below — the shape in which a spec-half slot can have
-/// NO provider yet the program still LOADS.
+/// The fixture for the two tests below — a provision whose spec's own `requires` has NO
+/// provider at the provision's bindings: `WTop provides Top[T = Wrap[E = E]]`, and `Top
+/// requires Base[T = T]`, while `Wrap` provides `Base` at `T = Int64` only.
 ///
-/// `check_provider_requires` (WI-343/WI-356) is binding-precise only where σ grounds
-/// every binding; where one stays abstract it falls back to a base-level existence
-/// check — "some sort named in the provision provides the required spec", at ANY
-/// bindings. `WTop`'s provision `Top[T = Wrap[E = E]]` keeps `E` abstract, and `Wrap`
-/// does provide `Base` — at `T = Int64`, not at `T = Wrap[…]`. So the load passes and
-/// `Base[T = Wrap[E = Int64]]` still has no provider at the call's bindings.
+/// WI-857 found this LOADING, and built the rule around it: `check_provider_requires`
+/// then fell back, where σ left a binding abstract, to a base-level existence check
+/// ("some sort named in the provision provides `Base`", at ANY bindings), which `Wrap`
+/// answered. So the dictionary for `Top[T = Wrap[E = Int64]]` was built with its `Base`
+/// slot RECORDED absent (`Unavailable`), refused only at a read — tolerated because "the
+/// stdlib's normal state" was believed to need the fallback (`FiniteCollection requires
+/// Iterable[C = C]` at `List`), and refusing broke 33 tests at the time.
 ///
-/// That gap is not contrived: it is the stdlib's normal state. `FiniteCollection
-/// requires Iterable[C = C]` holds for a `List` carrier only through `List provides
-/// Stream provides Iterable`, which no `Iterable[C = List[…]]` provision matches — and
-/// the same for `MutableCollection`, `PersistentCollection`, and every `Stream` op
-/// dispatched on a non-`Stream` carrier. Demanding the spec half resolve broke 33
-/// tests (MEASURED), which is why it is recorded instead.
-///
-/// (A tighter fixture is not available: with every binding GROUND, or with the
-/// required spec provided by nothing at all, the load check refuses the program
-/// outright — `fact Eq[T = Odd]` without `PartialEq[Odd]`, and even `fact Eq[T =
-/// List[T = A]]` without a list `PartialEq`, are both load errors. MEASURED while
-/// writing this file.)
+/// WI-20260925-4ZZKZ measured both premises gone and moved the verdict to LOAD: the
+/// check resolves every goal, abstract ones included, under the provision's own
+/// parameters (rigid) and conditions, and the resolver fails a spec half that does not
+/// resolve exactly as it fails a provider half.
 const UNPROVIDED_SPEC_HALF: &str = r#"
 namespace wi857.gap
   import anthill.prelude.{Int64}
@@ -531,12 +513,40 @@ namespace wi857.gap
 end
 "#;
 
-/// A spec-half slot whose goal has NO provider is RECORDED, not dropped: dropping it
-/// would shorten the dictionary and silently shift the provider half into its place,
-/// and refusing it would reject the programs the fixture's note describes.
+/// THE PROVISION IS REFUSED AT LOAD, naming what it requires and does not have.
+///
+/// CONTROL (MEASURED): restore the base-level fallback in `check_provider_requires` and
+/// this fixture loads clean again (`Wrap` provides `Base` at `Int64`), so this row fails.
+/// `the_layout_counts_what_resolve_bundles` passes either way by design.
 #[test]
-fn an_unprovided_spec_half_slot_is_recorded_not_dropped() {
-    let mut kb = crate::common::load_kb_with(UNPROVIDED_SPEC_HALF);
+fn an_unprovided_spec_half_is_refused_at_load() {
+    let errs = crate::common::try_load_kb_with(UNPROVIDED_SPEC_HALF)
+        .err()
+        .expect("a provision whose spec half has no provider must not load");
+    assert!(
+        errs.iter().any(|e| e.contains(
+            "'wi857.gap.WTop' provides 'wi857.gap.Top', which requires 'wi857.gap.Base', \
+             but nothing provides `wi857.gap.Base[T = wi857.gap.Wrap[E = wi857.gap.WTop.E]]`"
+        )),
+        "the refusal must name the provision and the goal it cannot meet — about `Wrap`, \
+         not `WTop`, so it must not tell `WTop` to provide `Base`: {errs:?}",
+    );
+}
+
+/// …AND THE RESOLVER BUILDS NO DICTIONARY WITH A HOLE. Read off `resolve` directly, on
+/// the partial load (the provision check runs after the typer, so the unsound provision
+/// is still in the relation here): the goal `Top[T = Wrap[E = Int64]]` FAILS, forwarded
+/// from the `Base` slot, where WI-857 answered `Conditional` with that slot `Unavailable`.
+///
+/// NO BACK-OUT CONTROL, by construction: WI-20260925-4ZZKZ removed the tree's absence
+/// node (`ResolvedRequiresNode::Unavailable`), so tolerating the slot is no longer
+/// expressible — a tree here would have to name a provider for `Base`. The row pins the
+/// resolver's half of the move: the goal FAILS, naming `Base`. It passes with the load
+/// check's fallback restored (MEASURED), since the partial load never runs that check.
+#[test]
+fn an_unprovided_spec_half_fails_the_resolution() {
+    let mut kb = crate::common::try_load_kb_untyped_with(UNPROVIDED_SPEC_HALF)
+        .unwrap_or_else(|e| panic!("the partial load stops before the provision check: {e:?}"));
     // Goal `Top[T = Wrap[E = Int64]]` — what `Driver.go`'s call pins.
     let wrap = kb.try_resolve_symbol("wi857.gap.Wrap").expect("Wrap");
     let int64 = kb
@@ -563,72 +573,23 @@ fn an_unprovided_spec_half_slot_is_recorded_not_dropped() {
         sub_goal_requires: &[],
     };
     match resolve(&mut kb, &goal, &scope) {
-        ResolutionResult::Resolved(ResolvedRequiresNode::Conditional {
-            impl_sort,
-            sub_resolutions,
-            ..
-        }) => {
-            assert_eq!(kb.qualified_name_of(impl_sort), "wi857.gap.WTop");
+        ResolutionResult::NoMatch {
+            spec, forwarded, ..
+        } => {
             assert_eq!(
-                sub_resolutions.len(),
-                1,
-                "`Top`'s chain is one entry and `WTop` declares no `requires`, so the \
-                 dictionary is the spec half alone: {sub_resolutions:?}",
+                kb.qualified_name_of(spec),
+                "wi857.gap.Base",
+                "the failure names the requirement that has no provider",
             );
-            match &sub_resolutions[0] {
-                ResolvedRequiresNode::Unavailable {
-                    spec_sort,
-                    why,
-                    below,
-                } => {
-                    assert_eq!(
-                        kb.qualified_name_of(*spec_sort),
-                        "wi857.gap.Base",
-                        "the recorded absence must name the requirement it is missing",
-                    );
-                    // WI-865: …and WHY. Nothing provides `Base` at these bindings, so
-                    // this is the plain no-provider arm and not one of the three the
-                    // old payload-free marker was indistinguishable from — and the
-                    // goal it names is the SLOT's own, since the failure is at this
-                    // level and not below it.
-                    assert_eq!(
-                        *why,
-                        UnavailableWhy::NoProvider { goal: *spec_sort },
-                        "one candidate would have resolved and two would have tied; \
-                         neither happened here",
-                    );
-                    assert!(
-                        !below,
-                        "and the failure is at THIS goal — `Base[T = Wrap[E = Int64]]` \
-                         has no candidate at all, so nothing was forwarded from below",
-                    );
-                }
-                other => panic!(
-                    "nothing provides `Base[T = Wrap[E = Int64]]`, so the slot must be \
-                     Unavailable — neither dropped nor filled with a provider that \
-                     does not exist; got {other:?}"
-                ),
-            }
+            assert!(
+                forwarded,
+                "…a level below the goal asked for: `WTop` IS the `Top` provider, and it is \
+                 its `Base` slot that cannot be filled",
+            );
         }
         other => panic!(
-            "the dictionary must still BUILD — refusing here would reject programs \
-             that never read the slot; got {other:?}"
+            "nothing provides `Base[T = Wrap[E = Int64]]`, so no `Top` dictionary can be \
+             built — neither with the slot dropped nor with it recorded absent; got {other:?}"
         ),
     }
-}
-
-/// …and the other half of that decision: a recorded absence that IS read is LOUD.
-/// Without this the tolerance above would be a silent skip — the read would fall
-/// through to `Base.b` itself, which for a bodyless spec op means a value-directed
-/// rescue or an unattributable `OperationBodyMissing`, and for a BUILTIN spec op
-/// (`PartialEq.eq`) means quietly taking the host's structural answer where a
-/// provider's was wanted.
-#[test]
-fn reading_an_unprovided_spec_half_slot_is_loud() {
-    eval_err(
-        UNPROVIDED_SPEC_HALF,
-        "wi857.gap.Driver.go",
-        "pins no provider",
-        "reading a slot the dictionary recorded as unprovided must name it",
-    );
 }

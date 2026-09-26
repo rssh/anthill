@@ -300,6 +300,114 @@ fn provision_clause_note(spec: &str, clause: Option<&ProvisionClause>) -> String
     }
 }
 
+/// WI-20260925-4ZZKZ — WHY a provision's requirement does not hold, as the resolver
+/// answered it. The load check is now where a spec half with no answer is refused (it used
+/// to be recorded absent in every dictionary built for the provision and refused only at a
+/// read, with WI-865 carrying the failure kind to that read); the kind comes along, because
+/// the one sentence the check had — "the carrier does not provide it" — is false for three
+/// of the four: under a tie two providers DO match, under a cycle one does, and below the
+/// goal the provider exists and its own condition or contract is what fails.
+#[derive(Clone, Debug)]
+pub enum RequirementFailure {
+    /// No candidate matches the requirement at the provision's bindings. `about_carrier`:
+    /// the requirement is about the carrier itself, so a provision ON the carrier is the
+    /// repair; otherwise it is about another type (`Base[T = Wrap[E]]` for `WTop`'s
+    /// provision), which the carrier cannot provide for.
+    NoProvider { goal: String, about_carrier: bool },
+    /// The requirement names a parameter of the PROVIDED spec that the provision leaves
+    /// unwritten — the loader reads an omitted binding as the spec's own parameter — so
+    /// it must hold for EVERY value of it, and "does not provide" would blame the goal's
+    /// other types for an omission.
+    Unwritten { goal: String, params: Vec<String> },
+    /// More than one does, and none is more specific.
+    Ambiguous { goal: String, candidates: Vec<String> },
+    /// Resolving it re-enters a goal it is already resolving.
+    Cyclic { path: Vec<String> },
+    /// The chosen provider cannot serve the goal at all here — a named slot its carrier's
+    /// type leaves erased, untied or unwritten; `hint` is the resolver's account.
+    Refused { provider: String, hint: String },
+    /// A provider was chosen, and a goal BELOW it fails — `goal` is that goal, `detail`
+    /// the resolver's account of it.
+    Below {
+        provider: String,
+        goal: String,
+        detail: String,
+    },
+}
+
+/// The clause after "which requires `{required}`" in an [`LoadError::UnsatisfiedProviderRequires`].
+fn requirement_failure_clause(carrier: &str, required: &str, failure: &RequirementFailure) -> String {
+    match failure {
+        RequirementFailure::NoProvider {
+            about_carrier: true,
+            ..
+        } => format!("but '{carrier}' does not provide '{required}'"),
+        RequirementFailure::NoProvider { goal, .. } => format!("but nothing provides `{goal}`"),
+        RequirementFailure::Unwritten { goal, params } => format!(
+            "at `{goal}`, which names {} — a parameter of the provided spec that the \
+             provision does not write, so the requirement would have to hold for every value \
+             of it",
+            params
+                .iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        RequirementFailure::Ambiguous { goal, candidates } => format!(
+            "and MORE THAN ONE provider matches `{goal}` — {} — none more specific",
+            candidates
+                .iter()
+                .map(|c| format!("`{c}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        RequirementFailure::Cyclic { path } => format!(
+            "and resolving it is cyclic — a conditional provision depends on the instance \
+             being built: {}",
+            path.join(" -> "),
+        ),
+        RequirementFailure::Refused { provider, hint } => {
+            format!("and its provider `{provider}` cannot answer it here: {hint}")
+        }
+        RequirementFailure::Below {
+            provider,
+            goal,
+            detail,
+        } => format!(
+            "and its provider `{provider}` was chosen, but `{goal}` beneath it does not hold: \
+             {detail}"
+        ),
+    }
+}
+
+/// The repair an [`LoadError::UnsatisfiedProviderRequires`] advises, per failure kind.
+fn requirement_failure_repair(required: &str, failure: &RequirementFailure) -> String {
+    match failure {
+        RequirementFailure::NoProvider {
+            about_carrier: true,
+            ..
+        } => format!(" (declare `provides {required}[…]` on the carrier)"),
+        RequirementFailure::NoProvider { .. } => format!(
+            " (declare a provision of `{required}` at those bindings, or make this provision \
+             conditional on it)"
+        ),
+        RequirementFailure::Unwritten { params, .. } => format!(
+            " (write {} in the provision's head)",
+            params
+                .iter()
+                .map(|p| format!("`{} = …`", p.rsplit('.').next().unwrap_or(p)))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        RequirementFailure::Ambiguous { .. } => {
+            " (retract one of those provisions or make one more specific)".to_string()
+        }
+        RequirementFailure::Cyclic { .. }
+        | RequirementFailure::Refused { .. }
+        | RequirementFailure::Below { .. } => String::new(),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum LoadError {
     /// A name that resolves to nothing — a typo, or a reference to something
@@ -553,6 +661,8 @@ pub enum LoadError {
         /// fails under; `None` for a provision with one clause, where there is no choice
         /// to name.
         clause: Option<ProvisionClause>,
+        /// WI-20260925-4ZZKZ — why the requirement does not hold.
+        failure: RequirementFailure,
     },
     /// WI-1046 (spec §6.6): a boolean operator written in a GOAL position that has no
     /// goal reading. Today that is exactly `and` (`a & b`, or the word form): `not` and
@@ -2689,9 +2799,12 @@ impl LoadError {
                 required,
                 derived_from,
                 clause,
+                failure,
             } => {
-                format!("'{}' provides '{}', which requires '{}', but '{}' does not provide '{}' (declare `provides {}[…]` on the carrier){}{}",
-                    carrier, spec, required, carrier, required, required,
+                format!("'{}' provides '{}', which requires '{}', {}{}{}{}",
+                    carrier, spec, required,
+                    requirement_failure_clause(carrier, required, failure),
+                    requirement_failure_repair(required, failure),
                     provision_clause_note(spec, clause.as_ref()),
                     derived_row_clause(spec, derived_from.as_deref()))
             }
@@ -4003,15 +4116,15 @@ impl std::fmt::Display for LoadError {
                 required,
                 derived_from,
                 clause,
+                failure,
             } => {
                 write!(
                     f,
-                    "'{}' provides '{}', which requires '{}', but '{}' does not provide '{}'{}{}",
+                    "'{}' provides '{}', which requires '{}', {}{}{}",
                     carrier,
                     spec,
                     required,
-                    carrier,
-                    required,
+                    requirement_failure_clause(carrier, required, failure),
                     provision_clause_note(spec, clause.as_ref()),
                     derived_row_clause(spec, derived_from.as_deref())
                 )

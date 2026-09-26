@@ -252,12 +252,9 @@ pub(crate) fn resolve_op_target_checked(
 /// WI-865 — AND IT NO LONGER HEDGES. The sentence used to name all three of "nothing
 /// provides it" / "more than one does" / "entered from a host entry point" at every
 /// read, because the marker carried no payload and the reader could not be sent to
-/// the wrong fix. Each is now its own arm, off the [`AbsenceRecord`] the mint filed —
-/// which is what makes a TIE report as a tie, naming the candidates that tied and the
-/// bracket that picks one, exactly as WI-843's `describe_resolution_failure` does for
-/// the same tie at a call's own goal. The two are deliberately not shared: this one
-/// has no goal text, no span and no candidate ORDER to offer, and inventing them here
-/// is the mis-attribution WI-843 exists to have closed.
+/// the wrong fix. Each is now its own arm, off the [`AbsenceRecord`] the mint filed.
+/// (The resolver's own failures — a miss, a tie, a cycle — no longer reach a marker at
+/// all: WI-20260925-4ZZKZ fails such a resolution, and the load reports its kind.)
 ///
 /// The shared head — "pins no provider" — is load-bearing wording, not a leftover:
 /// it is what every reader of this refusal keys on, and the arms differ after it.
@@ -283,91 +280,11 @@ pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), 
              dictionary. Enter through `call_with_requirements` to supply one."
                 .to_string()
         }
-        AbsenceRecord::Slot { spec, why, below } => {
+        AbsenceRecord::Slot { spec, why } => {
             let slot_qn = kb.qualified_name_of(*spec);
-            // WHERE the absence sits — the slot — as CONTEXT for a failure that may
-            // be several levels below it. Emitted exactly when the failure IS below,
-            // so the ordinary case reads as one fact and not as a redundant pair.
-            //
-            // ON `below`, NOT ON SPEC IDENTITY: the two specs can be equal with the
-            // failure still a level down (`provides Base[T = Wrap[E]]` beside
-            // `requires Base[T = Bool]`), and suppressing the clause there says "the
-            // failure is at this level" about a carrier that provides exactly this
-            // level — the same falsehood one coordinate over. Driven:
-            // `wi865_absence_reason_test::a_failure_below_the_slot_on_the_same_spec…`.
-            //
-            // AND `below` DECIDES WHOSE BINDINGS THE SENTENCE ASSERTS, not just
-            // whether to name the slot. "at the bindings this dictionary was built
-            // for" is true only at the slot's own level; one level down they are a
-            // DIFFERENT goal's, and the same fixture reads as a falsehood without this
-            // half — `SelfDeep` provides `Base` at exactly those bindings, and it is
-            // `Base[T = Bool]` that has none.
             match why {
-                UnavailableWhy::NoProvider { goal } if *below => format!(
-                    "nothing provides `{}` where it was reached, while filling this \
-                     dictionary's `{slot_qn}` slot. Declare a provider for it.",
-                    kb.qualified_name_of(*goal),
-                ),
-                UnavailableWhy::NoProvider { goal } => format!(
-                    "nothing provides `{}` at the bindings this dictionary was built \
-                     for. Declare a provider for it.",
-                    kb.qualified_name_of(*goal),
-                ),
-                UnavailableWhy::Ambiguous { goal, candidates } => {
-                    let named = candidates
-                        .iter()
-                        .map(|c| format!("`{}`", kb.qualified_name_of(*c)))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    // Spelled here rather than hoisted above the `match`: this is the
-                    // only arm that appends the clause (the `NoProvider` below-arm
-                    // builds the phrase into its own sentence, and `Cyclic` emits
-                    // none), and a shared binding with one consumer reads as though
-                    // the wording were common when it is not.
-                    let at_slot = if *below {
-                        format!(", reached while filling this dictionary's `{slot_qn}` slot")
-                    } else {
-                        String::new()
-                    };
-                    // NO BRACKET IS OFFERED, and that is WI-843's verdict, not a
-                    // shortfall: an `Unavailable` is only ever a SUB-goal of a
-                    // resolved tree (see the variant), where §4.5 step 0 deliberately
-                    // keeps a call-site key out — `TieRepair::SubGoal` records both
-                    // spellings being driven to a refusal. Advertising one here would
-                    // print advice that does not load.
-                    format!(
-                        "MORE THAN ONE provider matched `{}` here{at_slot} — {named} — \
-                         and none is more specific, so the slot was left unpinned. \
-                         Retract one of those provisions or make one more specific; a \
-                         call-site bracket does not reach a dictionary sub-slot.",
-                        kb.qualified_name_of(*goal),
-                    )
-                }
-                // NO SLOT CLAUSE HERE, WHATEVER `below` SAYS. The clause's job is "the
-                // thing that failed is elsewhere, look there"; for a cycle the thing
-                // that failed is this goal RE-ENTERED, which is what "cyclic" already
-                // says, so the clause points back at the level it just came from.
-                // Driven by /code-review on `SELF_CONDITIONAL`, where it rendered as
-                // "resolving `Base` here is cyclic … (reached while filling this
-                // dictionary's `Base` slot)".
-                //
-                // The reason is that, NOT "a cycle is always `below`" — which is how
-                // this was first written and is not established: a cycle detected at a
-                // spec-half sub-goal's OWN level (mutually-requiring specs) would be
-                // recorded `below: false`, and whether such specs load is UNMEASURED.
-                // Nothing here depends on it, since the arm emits no clause either
-                // way — but `below` is still part of the record and must stay in the
-                // marker name, or two cyclic absences differing only in it would
-                // collide on one symbol.
-                UnavailableWhy::Cyclic { goal } => format!(
-                    "resolving `{}` here is cyclic — a conditional provision depends on \
-                     the instance being built.",
-                    kb.qualified_name_of(*goal),
-                ),
-                // WI-20260830-NX4FD. NO SLOT CLAUSE and no `below` split: this absence
-                // is only ever recorded AT its own slot (the bridge pins per slot, and
-                // there is no sub-goal walk to inherit a deeper failure from), so the
-                // "look one level down" clause would point at nothing.
+                // WI-20260830-NX4FD — recorded AT its own slot: the bridge pins per slot,
+                // and there is no sub-goal walk to inherit a deeper failure from.
                 UnavailableWhy::UnderDetermined => format!(
                     "the argument types did not pin every type-parameter of \
                      `{slot_qn}`, and its providers left no single completion for the \

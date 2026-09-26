@@ -202,36 +202,6 @@ pub enum ResolvedRequiresNode {
         /// `Eq` dictionary, the same projection `build_dep_projection`'s Strategy 2 emits.
         projection: SmallVec<[usize; 2]>,
     },
-    /// WI-857 — a SPEC-HALF slot ([`DictLayout`]) whose goal did not resolve:
-    /// no provider at these bindings, a tie, or a cycle. Recorded rather than
-    /// propagated, because the slot must exist for the halves to stay
-    /// positionally exact, and because the spec's own `requires` is often
-    /// satisfied only LOOSELY — `check_provider_requires` falls back to a
-    /// base-level existence check when σ leaves a binding abstract, and the
-    /// stdlib relies on that: `FiniteCollection requires Iterable[C = C]` holds
-    /// for a `List` carrier only through `List provides Stream provides
-    /// Iterable`, which no `Iterable[C = List[…]]` provision matches. Refusing
-    /// to build the dictionary there would reject every program that dispatches
-    /// such a spec op without ever reading the evidence (MEASURED: 33 tests).
-    ///
-    /// So the absence is CARRIED, and every attempt to USE it is loud — eval
-    /// refuses to dispatch through the marker functor
-    /// ([`absence_marker_sym`]). A slot nobody reads costs nothing; a slot
-    /// somebody reads names the requirement that has no provider.
-    ///
-    /// WI-865 — and it names WHY. Placement is still uniform across every failure
-    /// kind (that is what the paragraphs above are about); `why` rides ALONGSIDE so
-    /// the refusal at the read can distinguish what the placement rule deliberately
-    /// does not. Without it a two-provider tie inside a spec half reported as "no
-    /// provider" — the attribution regression against WI-843 that WI-865 closes.
-    Unavailable {
-        spec_sort: Symbol,
-        why: UnavailableWhy,
-        /// [`ResolutionResult::is_forwarded`] — whether what failed is a goal BENEATH
-        /// this slot. Not derivable from `spec_sort` and `why`'s goal; see
-        /// [`AbsenceRecord::Slot`].
-        below: bool,
-    },
 }
 
 impl ResolvedRequiresNode {
@@ -240,8 +210,7 @@ impl ResolvedRequiresNode {
         match self {
             ResolvedRequiresNode::Leaf { spec_sort, .. }
             | ResolvedRequiresNode::Conditional { spec_sort, .. }
-            | ResolvedRequiresNode::FromScope { spec_sort, .. }
-            | ResolvedRequiresNode::Unavailable { spec_sort, .. } => *spec_sort,
+            | ResolvedRequiresNode::FromScope { spec_sort, .. } => *spec_sort,
         }
     }
 
@@ -251,11 +220,8 @@ impl ResolvedRequiresNode {
         match self {
             ResolvedRequiresNode::Leaf { impl_sort, .. }
             | ResolvedRequiresNode::Conditional { impl_sort, .. } => Some(*impl_sort),
-            // Neither pins an impl: `FromScope` reads the caller's slot, and
-            // `Unavailable` has none to pin (WI-857).
-            ResolvedRequiresNode::FromScope { .. } | ResolvedRequiresNode::Unavailable { .. } => {
-                None
-            }
+            // `FromScope` pins no impl: it reads the caller's slot.
+            ResolvedRequiresNode::FromScope { .. } => None,
         }
     }
 }
@@ -515,7 +481,196 @@ pub fn resolve_with_rung(
     rung: DefaultRung,
 ) -> ResolutionResult {
     let mut stack: Vec<SortGoal> = Vec::new();
-    resolve_inner(kb, goal, scope, &mut stack, None, None, rung)
+    resolve_inner(kb, goal, scope, &mut stack, None, None, rung, &mut None)
+}
+
+/// WI-20260918-CKD4J / WI-20260925-4ZZKZ — the first scope entry whose `requires` chain,
+/// followed down, reaches an entry that covers `goal`: its frame index and the projection
+/// path into its dictionary.
+///
+/// THE WALK IS `build_requires_tree`'s — the tree `closed_under_requires` gives the load
+/// check its assumptions from — so the two cannot come to disagree about what a
+/// requirement holds: the same order at every level (a spec's `direct_requires`, which IS
+/// its dictionary chain, so an index is a slot), the same composition through each
+/// entry's bindings, and the same PER-PATH cycle rule (a spec already on the path is still
+/// an entry that may cover, it is only not expanded again). It is walked lazily,
+/// breadth-first so a shallower path wins, and only into entries whose transitive
+/// `requires` can reach the goal's spec at all — this runs for every sub-goal no direct
+/// entry covered.
+///
+/// DEEPER THAN ONE HOP ONLY UNDER σ. Without a call-site σ, [`requires_entry_covers_goal`]
+/// is the coarse wildcard cover, and following it down the whole chain would widen
+/// WI-419's first-match hazard — `requires Ord[A]` forwarding `A`'s `Eq` for a goal at
+/// another parameter — from one hop to every depth (found by /code-review). The σ-less
+/// paths keep the one hop they had; every path that builds a dictionary a body reads, and
+/// the load check, carries σ.
+fn scope_chain_cover(
+    kb: &mut KnowledgeBase,
+    scope: &ResolutionScope,
+    goal: &SortGoal,
+) -> Option<(usize, SmallVec<[usize; 2]>)> {
+    let max_depth = if scope.sigma.is_some() { usize::MAX } else { 1 };
+    let mut reaches: HashMap<Symbol, bool> = HashMap::new();
+    let mut can_reach = |kb: &KnowledgeBase, sort: Symbol| -> bool {
+        *reaches
+            .entry(sort)
+            .or_insert_with(|| transitive_required_sorts(kb, sort).contains(&goal.spec_sort))
+    };
+    // One frontier per depth, across every entry, so depth — not entry order — decides.
+    let mut frontier: Vec<(usize, RequiresEntry, SmallVec<[usize; 2]>, Vec<Symbol>)> = Vec::new();
+    for (i, entry) in scope
+        .available_requires
+        .iter()
+        .chain(scope.sub_goal_requires.iter())
+        .enumerate()
+    {
+        if can_reach(kb, entry.required_sort) {
+            frontier.push((i, entry.clone(), SmallVec::new(), vec![entry.required_sort]));
+        }
+    }
+    let mut depth = 0;
+    while !frontier.is_empty() && depth < max_depth {
+        depth += 1;
+        let mut next = Vec::new();
+        for (i, entry, path, on_path) in frontier {
+            let chain = direct_requires_chain_rc(kb, entry.required_sort);
+            let map = build_child_subst_map(kb, &entry);
+            for (k, sub) in chain.iter().enumerate() {
+                let is_goal_spec = sub.required_sort == goal.spec_sort;
+                // `build_requires_tree`'s rule: a node on the path keeps its place (it may
+                // cover) and has no children.
+                let expand = !on_path.contains(&sub.required_sort) && can_reach(kb, sub.required_sort);
+                if !is_goal_spec && !expand {
+                    continue;
+                }
+                let composed = RequiresEntry {
+                    required_sort: sub.required_sort,
+                    spec: substitute_in_spec(kb, &sub.spec, &map),
+                    supply: sub.supply,
+                };
+                let mut sub_path = path.clone();
+                sub_path.push(k);
+                if is_goal_spec && requires_entry_covers_goal(kb, &composed, goal, scope.sigma) {
+                    return Some((i, sub_path));
+                }
+                if expand {
+                    let mut sub_on_path = on_path.clone();
+                    sub_on_path.push(composed.required_sort);
+                    next.push((i, composed, sub_path, sub_on_path));
+                }
+            }
+        }
+        frontier = next;
+    }
+    None
+}
+
+/// WI-20260925-4ZZKZ — [`resolve`] for a goal that is a slot of `provider`'s OWN
+/// dictionary, so WI-857's LOCALITY applies to it exactly as to any sub-goal of that
+/// dictionary: a candidate the provider itself supplies wins. A provision's load check
+/// asks this ([`check_provider_requires`]): its goals ARE the spec half of the dictionary
+/// the provision builds.
+///
+/// With the failure, WHERE it happened once a provider was chosen ([`TopFailure`]), so
+/// the check classifies the resolution that failed instead of re-deriving it.
+pub(super) fn resolve_within_provider(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    scope: &ResolutionScope,
+    provider: Symbol,
+) -> (ResolutionResult, Option<TopFailure>) {
+    let mut stack: Vec<SortGoal> = Vec::new();
+    let local = LocalProvider {
+        sort: provider,
+        slots: &[],
+        source: SlotPinSource::Bracket,
+        impl_subst: &[],
+    };
+    let mut report = None;
+    let result = resolve_inner(
+        kb,
+        goal,
+        scope,
+        &mut stack,
+        Some(local),
+        None,
+        DefaultRung::Consult,
+        &mut report,
+    );
+    (result, report)
+}
+
+/// WI-20260925-4ZZKZ — where the goal a resolution was ASKED failed, once a provider had
+/// been chosen for it. Recorded by the top frame only (the goal the caller made), which is
+/// the one frame that knows which of the chosen provider's sub-goals failed; the failure
+/// itself is forwarded verbatim from wherever below it happened.
+pub(super) struct TopFailure {
+    /// The provider the resolver chose for the goal.
+    pub(super) provider: Symbol,
+    pub(super) at: FailedAt,
+}
+
+pub(super) enum FailedAt {
+    /// A sub-goal of the chosen provider's dictionary did not resolve: the goal as
+    /// instantiated, and whether it is in the PROVIDER half (the provision's own
+    /// conditions and its carrier's `requires`) or the SPEC half (the spec's contract).
+    Slot { goal: SortGoal, provider_half: bool },
+    /// The chosen provider cannot serve the goal at all here — a named slot its carrier's
+    /// type leaves erased, untied or unwritten; the failure's hint says which.
+    Refused,
+    /// The provision holds through one of several alternative clauses (066 §7), and none
+    /// held.
+    Alternatives,
+}
+
+/// WI-857's LOCALITY provider — the provider whose dictionary a sub-goal fills — AS THE
+/// INSTANCE IT WAS SELECTED AS.
+///
+/// WI-20260925-4ZZKZ — a witness chosen with its named slots bound (`LexFst[OA = Rev]`,
+/// or `ByInner[OI = ByLength]` read off a carrier's type) is ONE instance, and locality
+/// hands a sub-goal the witness itself provides to that witness's own provision. That
+/// provision is the SAME instance, so its named slots are the ones already bound — not
+/// fresh ones for the search to answer. Without them the SPEC half re-asked the slot
+/// with nothing written (`Ord[Duo]`'s `PartialOrd[Duo]` slot, back at `LexFst`, asking
+/// `OA: Ord[Int64]` again) and tied among every ordering in scope: a dictionary built
+/// with a hole, for a program that runs (MEASURED — the wi870 / wi456 rows, ~70 slots).
+///
+/// Inherited only where the sub-goal's provision instantiates the witness at the SAME
+/// parameters (`impl_subst`): a slot's selection is for the slot at those arguments, and
+/// a provision of the witness at other ones is another instance, left to its own search.
+#[derive(Clone, Copy)]
+pub(super) struct LocalProvider<'s> {
+    pub(super) sort: Symbol,
+    /// The enclosing level's own written slots (a bracket value's or a carrier's).
+    slots: &'s [SlotSelection],
+    source: SlotPinSource,
+    impl_subst: &'s [(Symbol, TermId)],
+}
+
+impl<'s> LocalProvider<'s> {
+    /// The slots a sub-goal's chosen provision inherits: the enclosing instance's, when
+    /// the choice IS that instance.
+    fn slots_for(
+        &self,
+        kb: &KnowledgeBase,
+        chosen: Symbol,
+        chosen_subst: &[(Symbol, TermId)],
+    ) -> Option<(&'s [SlotSelection], SlotPinSource)> {
+        // Nothing to inherit is the overwhelmingly common case; ask it first.
+        if self.slots.is_empty() {
+            return None;
+        }
+        let same_instance = same_sort_canonical(kb, chosen, self.sort)
+            && chosen_subst.len() == self.impl_subst.len()
+            && chosen_subst.iter().all(|(p, v)| {
+                // By qualified name as well: one parameter can be interned twice.
+                self.impl_subst.iter().any(|(q, w)| {
+                    (p == q || kb.qualified_name_of(*p) == kb.qualified_name_of(*q))
+                        && values_structurally_equal(kb, *v, *w)
+                })
+            });
+        same_instance.then_some((self.slots, self.source))
+    }
 }
 
 pub(super) fn resolve_inner<'a>(
@@ -528,7 +683,7 @@ pub(super) fn resolve_inner<'a>(
     // that provider itself provides resolves to its OWN provision before any global
     // search. The IMMEDIATELY enclosing provider only — one level down, the sub-goal's
     // own chosen provider takes over, which is what makes locality compose.
-    local_provider: Option<Symbol>,
+    local_provider: Option<LocalProvider<'_>>,
     // WI-870 (058 §3.3) — the binding a bracket VALUE wrote for THIS sub-goal's slot,
     // when this goal is a named slot of the provider one level up and the call named
     // it: `[Ord = ListOrd[OE = LexFst]]`. `None` at the call's own goal (where
@@ -547,6 +702,9 @@ pub(super) fn resolve_inner<'a>(
     // ([`rung_for_dep`]) — a witness's named element slots are named slots too, and a
     // bracket-less call into one is the same erased binding one level down.
     rung: DefaultRung,
+    // WI-20260925-4ZZKZ — written by the TOP frame only (`at_call_goal`) when it fails
+    // after choosing a provider ([`TopFailure`]); nested frames are handed their own.
+    report: &mut Option<TopFailure>,
 ) -> ResolutionResult {
     // WI-20260921-28TAT — A REFINEMENT GOAL IS ALREADY DISCHARGED, and asking the
     // provider search about it can only fail. `sort Narrow requires Boom` names a DATA
@@ -644,45 +802,31 @@ pub(super) fn resolve_inner<'a>(
                 });
             }
         }
-        // WI-20260918-CKD4J — THROUGH a scope entry's own chain, one level: `requires
-        // Eq[X]` answers a `PartialEq[X]` sub-goal, because `Eq provides PartialEq[T =
-        // T]` puts `PartialEq` in `Eq`'s chain and so in every `Eq` dictionary. The
-        // call's OWN goal already reached this through `find_requires_location`; a
-        // conditional provision's SUB-goal (`Pair`'s `PartialEq[A]` under `eq(a, b)`)
-        // had only the direct cover above, so `requires Eq[X]` was refused where
-        // `requires PartialEq[X]` loaded. Tried AFTER every direct cover, so a slot of
-        // the goal's own spec still wins. Each sub-entry is compared COMPOSED into the
-        // caller's scope through the slot's bindings (`Eq[T = X]`'s chain entry
-        // `PartialEq[T = Eq.T]` becomes `PartialEq[T = X]`) — Strategy 2's composition.
-        let all: Vec<RequiresEntry> = scope
-            .available_requires
-            .iter()
-            .chain(scope.sub_goal_requires.iter())
-            .cloned()
-            .collect();
-        for (i, ar) in all.iter().enumerate() {
-            let chain = direct_requires_chain_rc(kb, ar.required_sort);
-            if !chain.iter().any(|e| e.required_sort == goal.spec_sort) {
-                continue;
-            }
-            let map = build_child_subst_map(kb, ar);
-            for (k, sub) in chain.iter().enumerate() {
-                if sub.required_sort != goal.spec_sort {
-                    continue;
-                }
-                let composed = RequiresEntry {
-                    required_sort: sub.required_sort,
-                    spec: substitute_in_spec(kb, &sub.spec, &map),
-                    supply: sub.supply,
-                };
-                if requires_entry_covers_goal(kb, &composed, goal, scope.sigma) {
-                    return ResolutionResult::Resolved(ResolvedRequiresNode::FromScope {
-                        scope_index: i,
-                        spec_sort: goal.spec_sort,
-                        projection: SmallVec::from_elem(k, 1),
-                    });
-                }
-            }
+        // WI-20260918-CKD4J — THROUGH a scope entry's own chain: `requires Eq[X]` answers a
+        // `PartialEq[X]` sub-goal, because `Eq provides PartialEq[T = T]` puts `PartialEq` in
+        // `Eq`'s chain and so in every `Eq` dictionary. The call's OWN goal already reached
+        // this through `find_requires_location`; a conditional provision's SUB-goal
+        // (`Pair`'s `PartialEq[A]` under `eq(a, b)`) had only the direct cover above, so
+        // `requires Eq[X]` was refused where `requires PartialEq[X]` loaded. Tried AFTER
+        // every direct cover, so a slot of the goal's own spec still wins. Each sub-entry is
+        // compared COMPOSED into the caller's scope through the slot's bindings (`Eq[T = X]`'s
+        // chain entry `PartialEq[T = Eq.T]` becomes `PartialEq[T = X]`) — Strategy 2's
+        // composition.
+        //
+        // WI-20260925-4ZZKZ — TO ANY DEPTH, shallowest first. `requires Ord[A]` holds an
+        // `Eq[A]` two hops down (`Ord` → `WeakOrd` → `Eq`), and the projection is the path
+        // (`[k₁, k₂]`: each dictionary's spec half is its spec's chain, in order). One hop
+        // was enough while a spec half that did not resolve was tolerated; it is refused
+        // now, and the load check closes a provision's assumptions under `requires` to any
+        // depth (`closed_under_requires`), so a use site stopping at one hop refused a
+        // generic body the check had already admitted — `WeakOrd.compare` at `Pair[A, A]`
+        // under `requires Ord[A]` (MEASURED, found by /code-review).
+        if let Some((scope_index, projection)) = scope_chain_cover(kb, scope, goal) {
+            return ResolutionResult::Resolved(ResolvedRequiresNode::FromScope {
+                scope_index,
+                spec_sort: goal.spec_sort,
+                projection,
+            });
         }
     }
 
@@ -700,8 +844,9 @@ pub(super) fn resolve_inner<'a>(
     // WI-827: the same call-site σ that gates the scope `FromScope` lookup
     // above rides into candidate matching, so a per-call element's rigid /
     // wildcard / concrete role is classified once, spelling-neutrally, rather
-    // than by the head-only `Var::Rigid` test. `None` (the `resolve_at_goal`
-    // dispatch/diagnostic path) keeps today's behaviour.
+    // than by the head-only `Var::Rigid` test. `None` (the σ-less paths) classifies by
+    // head only: a bare element is WI-507's wildcard against an impl-parameter head and,
+    // since WI-20260925-4ZZKZ, matches no STRUCTURED head (WI-824's rule, on both paths).
     let mut candidates = collect_provides_candidates(kb, goal, scope.sigma);
 
     // WI-841 STEP 0, second half: restrict the goal's OWN candidate set to the pinned
@@ -754,7 +899,7 @@ pub(super) fn resolve_inner<'a>(
     // bindings: a `W` that provides the spec only at OTHER bindings contributes no
     // candidate here and the search proceeds globally, rather than being narrowed to
     // an instance that does not fit.
-    if let Some(w) = local_provider {
+    if let Some(w) = local_provider.map(|l| l.sort) {
         // Canonicalize `w` ONCE, not once per candidate per pass.
         let w_canon = kb.canonical_sort_sym(w);
         let is_w =
@@ -842,35 +987,72 @@ pub(super) fn resolve_inner<'a>(
         chosen_impl_sort,
         &chosen_impl_subst,
         &chosen_bindings,
+        scope.sigma.map_or(&[], |s| s.param_rigids),
     );
     // The pin's own slot selections, and who wrote them: at the call's goal a bracket; one
     // level in, whoever wrote the pin that got us here — a carrier's nested selection is
     // still the carrier's.
-    let written_slots: &[SlotSelection] = pin.map_or(&[], |p| &p.slots);
-    let written_source = match slot_pin {
-        Some((_, source)) if !at_call_goal => source,
-        _ => SlotPinSource::Bracket,
+    // With no pin of its own, a sub-goal that locality answered with the enclosing
+    // witness INSTANCE reads that instance's slots ([`LocalProvider`]).
+    let inherited = match pin {
+        None => local_provider
+            .and_then(|l| l.slots_for(kb, chosen_impl_sort, &chosen_impl_subst)),
+        Some(_) => None,
     };
-    let mut sub_resolutions: Vec<ResolvedRequiresNode> = Vec::with_capacity(sub_goals.len());
+    let (written_slots, written_source): (&[SlotSelection], SlotPinSource) = match inherited {
+        Some(from_enclosing) => from_enclosing,
+        None => (
+            pin.map_or(&[], |p| &p.slots),
+            match slot_pin {
+                Some((_, source)) if !at_call_goal => source,
+                _ => SlotPinSource::Bracket,
+            },
+        ),
+    };
+    let here = LocalProvider {
+        sort: chosen_impl_sort,
+        slots: written_slots,
+        source: written_source,
+        impl_subst: &chosen_impl_subst,
+    };
+    // One vector per half, each filled in its own order and joined in layout order after
+    // the loop (which resolves the provider half first — see there).
+    let mut spec_half: Vec<ResolvedRequiresNode> = Vec::with_capacity(provider_half_start);
+    let mut provider_half: Vec<ResolvedRequiresNode> =
+        Vec::with_capacity(sub_goals.len() - provider_half_start);
     let anchor = effects_runtime_sym(kb);
-    for (i, sg) in sub_goals.iter().enumerate() {
+    // THE PROVIDER HALF FIRST (WI-20260925-4ZZKZ). Both halves now fail the resolution,
+    // and the first failure is the one reported — so the order is what the refusal says.
+    // The provider half is the provision's OWN conditions, and WI-869 made the unmet one
+    // the goal a refusal names: "the only thing that explains the refusal". The spec half
+    // is the spec's contract at this provider, which the provision's load check already
+    // answered for at its own parameters, so where it fails at a use site it fails BECAUSE
+    // a condition did: `WeakOrd[Pair[Float, Int64]]`'s spec half needs `Eq[Float]` exactly
+    // because `Pair`'s `:- WeakOrd[A]` does not hold at `Float`, and naming `Eq[Float]`
+    // told the author about a consequence (MEASURED —
+    // `wi869 …a_total_comparison_of_a_float_pair_names_the_unmet_condition`).
+    let order = (provider_half_start..sub_goals.len()).chain(0..provider_half_start);
+    for i in order {
+        let sg = &sub_goals[i];
         // WI-857: the `EffectsRuntime` kind-anchor occupies its slot as a STRUCTURAL
         // LEAF, never resolved — see [`effects_runtime_sym`]. Byte-identical to what
         // `build_dep_projection` emits for the same anchor, so the two dictionary
         // producers agree.
         //
-        // A `Leaf` over the anchor sort, NOT the `Unavailable` marker, and the
-        // difference is the point: the anchor IS satisfied — structurally, by the
-        // effect-row machinery — and names a real sort a body can read
-        // (`var_ref(__req_effectsruntime)` in a cross-sort delegating body), whereas
-        // `Unavailable` records that nothing satisfies the slot at all and is refused
-        // at any use. Two encodings because there are two facts.
+        // A `Leaf` over the anchor sort, and the point is that it IS satisfied —
+        // structurally, by the effect-row machinery — and names a real sort a body can
+        // read (`var_ref(__req_effectsruntime)` in a cross-sort delegating body).
         if anchor.is_some_and(|er| same_sort_canonical(kb, sg.spec_sort, er)) {
-            sub_resolutions.push(ResolvedRequiresNode::Leaf {
+            let leaf = ResolvedRequiresNode::Leaf {
                 impl_sort: sg.spec_sort,
                 spec_sort: sg.spec_sort,
                 bindings: SmallVec::new(),
-            });
+            };
+            if i < provider_half_start {
+                spec_half.push(leaf);
+            } else {
+                provider_half.push(leaf);
+            }
             continue;
         }
         // WI-857, the LOCALITY rule (058 §3.8): the sub-goals of `chosen_impl_sort`'s
@@ -904,8 +1086,17 @@ pub(super) fn resolve_inner<'a>(
                 frame,
             )
         });
-        let refuse = |kb: &mut KnowledgeBase, stack: &mut Vec<SortGoal>, hint: String| {
+        let refuse = |kb: &mut KnowledgeBase,
+                      stack: &mut Vec<SortGoal>,
+                      report: &mut Option<TopFailure>,
+                      hint: String| {
             stack.pop();
+            if at_call_goal {
+                *report = Some(TopFailure {
+                    provider: chosen_impl_sort,
+                    at: FailedAt::Refused,
+                });
+            }
             ResolutionResult::NoMatch {
                 goal_text: format_goal(kb, goal),
                 hint,
@@ -931,7 +1122,8 @@ pub(super) fn resolve_inner<'a>(
                         // caller's own dictionary, so there is no provider to choose and no
                         // sub-goal of its own, as for the `EffectsRuntime` anchor above.
                         Some((scope_index, projection)) => {
-                            sub_resolutions.push(ResolvedRequiresNode::FromScope {
+                            // A forward is a named slot, so the provider half's.
+                            provider_half.push(ResolvedRequiresNode::FromScope {
                                 scope_index,
                                 spec_sort: sg.spec_sort,
                                 projection,
@@ -947,13 +1139,13 @@ pub(super) fn resolve_inner<'a>(
                                 kb.qualified_name_of(chosen_impl_sort),
                                 render_requires_entry(kb, &held.slots[0].entry),
                             );
-                            return refuse(kb, stack, hint);
+                            return refuse(kb, stack, report, hint);
                         }
                     }
                 }
                 Some(CarriedSlot::Untied(u)) => {
                     let hint = format!("the carrier's type binds {}", u.render(kb));
-                    return refuse(kb, stack, hint);
+                    return refuse(kb, stack, report, hint);
                 }
                 _ => {}
             }
@@ -976,7 +1168,7 @@ pub(super) fn resolve_inner<'a>(
                         },
                         kb.qualified_name_of(c.selection.witness),
                     );
-                    return refuse(kb, stack, hint);
+                    return refuse(kb, stack, report, hint);
                 }
                 Some((w, written_source))
             }
@@ -993,7 +1185,7 @@ pub(super) fn resolve_inner<'a>(
                     kb.qualified_name_of(chosen_impl_sort),
                     b = binder_name(kb),
                 );
-                return refuse(kb, stack, hint);
+                return refuse(kb, stack, report, hint);
             }
             (Some(CarriedSlot::NotInHead), None)
                 if is_value_directed_provider(
@@ -1009,7 +1201,7 @@ pub(super) fn resolve_inner<'a>(
                     kb.qualified_name_of(chosen_impl_sort),
                     b = binder_name(kb),
                 );
-                return refuse(kb, stack, hint);
+                return refuse(kb, stack, report, hint);
             }
             // `Forwarded(None)`: no σ, so the scope and the search answer, as they always
             // did there. `Unspoken`: the search is the ladder, as at a construction site.
@@ -1029,63 +1221,65 @@ pub(super) fn resolve_inner<'a>(
             sg,
             scope,
             stack,
-            Some(chosen_impl_sort),
+            Some(here),
             sub_pin,
             sub_rung,
+            // A nested frame's failure is reported by THIS frame, below.
+            &mut None,
         ) {
-            ResolutionResult::Resolved(t) => sub_resolutions.push(t),
-            // WI-857: a SPEC-half slot that does not resolve is CARRIED as
-            // `Unavailable`, uniformly across NoMatch / Ambiguous / Cyclic — the
-            // honest record either way is "no dictionary was pinned here", and one
-            // rule has no cases to get wrong. See the variant's own note for why
-            // refusing instead would reject working programs. The PROVIDER half
-            // stays strict: those are the provision's OWN conditions, which the
-            // provider's body will read, and failing them has always been the
-            // dispatch failure the caller reports.
-            //
-            // Written as a branch on the FAILURE rather than a guarded `_` arm beside
-            // `Resolved`: a guarded wildcard would silently shadow any arm added after
-            // it (for half the loop, with no reachability lint), and the tolerance is a
-            // property of the slot, not of the outcome's shape.
+            ResolutionResult::Resolved(t) if i < provider_half_start => spec_half.push(t),
+            ResolutionResult::Resolved(t) => provider_half.push(t),
+            // EITHER HALF, the same way. WI-20260925-4ZZKZ retired WI-857's tolerance for
+            // the SPEC half, which recorded a failed slot as `Unavailable` and built the
+            // dictionary anyway, on the ground that "the spec's own `requires` is often
+            // satisfied only LOOSELY" (33 tests, measured then). MEASURED again after
+            // P5G39, every one of those slots was a resolver defect or an unsound
+            // provision, not a looseness a program could rely on: a σ-less search choosing
+            // a provider for an open element (candidates.rs arm (2)), a witness instance's
+            // slot bindings not reaching its own lower floor ([`LocalProvider`]), an
+            // unconstrained effect row compared as a row, the req-insertion record
+            // re-deriving a dictionary the call site had built, and provisions the load
+            // check admitted through a base-level fallback (`check_provider_requires` now
+            // resolves every goal). With those fixed, a spec half that does not resolve is
+            // a dictionary that cannot be built, and it fails as the provider half always
+            // has — the absence no longer reaches run time.
             err => {
-                if i < provider_half_start {
-                    // WI-865: the failure KIND rides into the slot. Read off `err`
-                    // before it is dropped, and off THIS level's failure — the tie
-                    // that reaches here is the sub-goal's own, forwarded exactly as
-                    // WI-843 forwards one at a call's goal rather than restamping it.
-                    sub_resolutions.push(ResolvedRequiresNode::Unavailable {
-                        spec_sort: sg.spec_sort,
-                        why: unavailable_why_of(&err),
-                        below: err.is_forwarded(),
+                stack.pop();
+                if at_call_goal {
+                    *report = Some(TopFailure {
+                        provider: chosen_impl_sort,
+                        at: FailedAt::Slot {
+                            goal: sg.clone(),
+                            provider_half: i >= provider_half_start,
+                        },
                     });
-                } else {
-                    stack.pop();
-                    // WI-865: THE ONE PLACE A FAILURE STOPS BEING ABOUT THE GOAL THE
-                    // CALLER ASKED FOR. Everything else returns a failure this frame
-                    // generated for its own `goal`.
-                    //
-                    // WI-456 — and THE one place that knows whose named slot the failed
-                    // sub-goal was filling, which is what lets `TieRepair::SubGoal` name
-                    // a repair instead of describing a shape. Nothing else about the tie
-                    // is touched — `spec` and `candidates` stay the sub-goal's, which is
-                    // the re-attribution 058 §8 measured and fixed.
-                    //
-                    // `!is_forwarded()` IS THE WHOLE CORRECTNESS CONDITION, and reading it
-                    // as "innermost wins" is not the same test. A tie passes through every
-                    // enclosing provider on its way out; `forwarded` is false only in the
-                    // frame whose OWN sub-goal `sg` is the goal that tied. Without it, a
-                    // tie raised under a provider with ANONYMOUS requires (which stamps
-                    // nothing) would keep travelling until some outer provider with a
-                    // named slot stamped it — and the message would then assert that the
-                    // tie fills THAT slot and advise binding it, which re-selects the same
-                    // provider and the same tie. An unstamped tie renders the schema
-                    // wording instead, which is true of every shape.
-                    let owns_the_tie = !err.is_forwarded();
-                    return err.stamped_slot(named.filter(|_| owns_the_tie).map(|s| TieSlot {
-                        owner: chosen_impl_sort,
-                        binder: s.binder,
-                    }));
                 }
+                // WI-865: THE ONE PLACE A FAILURE STOPS BEING ABOUT THE GOAL THE CALLER
+                // ASKED FOR. Everything else returns a failure this frame generated for its
+                // own `goal`.
+                //
+                // WI-456 — and THE one place that knows whose named slot the failed
+                // sub-goal was filling, which is what lets `TieRepair::SubGoal` name a
+                // repair instead of describing a shape. Nothing else about the tie is
+                // touched — `spec` and `candidates` stay the sub-goal's, which is the
+                // re-attribution 058 §8 measured and fixed. A spec-half slot is no named
+                // slot of the provider (`named` is `None` there), so it stamps nothing.
+                //
+                // `!is_forwarded()` IS THE WHOLE CORRECTNESS CONDITION, and reading it as
+                // "innermost wins" is not the same test. A tie passes through every
+                // enclosing provider on its way out; `forwarded` is false only in the
+                // frame whose OWN sub-goal `sg` is the goal that tied. Without it, a tie
+                // raised under a provider with ANONYMOUS requires (which stamps nothing)
+                // would keep travelling until some outer provider with a named slot
+                // stamped it — and the message would then assert that the tie fills THAT
+                // slot and advise binding it, which re-selects the same provider and the
+                // same tie. An unstamped tie renders the schema wording instead, which is
+                // true of every shape.
+                let owns_the_tie = !err.is_forwarded();
+                return err.stamped_slot(named.filter(|_| owns_the_tie).map(|s| TieSlot {
+                    owner: chosen_impl_sort,
+                    binder: s.binder,
+                }));
             }
         }
     }
@@ -1104,9 +1298,10 @@ pub(super) fn resolve_inner<'a>(
                     sg,
                     scope,
                     stack,
-                    Some(chosen_impl_sort),
+                    Some(here),
                     None,
                     DefaultRung::Consult,
+                    &mut None,
                 ) {
                     ResolutionResult::Resolved(_) => true,
                     err => {
@@ -1118,6 +1313,12 @@ pub(super) fn resolve_inner<'a>(
         });
         if !holds {
             stack.pop();
+            if at_call_goal {
+                *report = Some(TopFailure {
+                    provider: chosen_impl_sort,
+                    at: FailedAt::Alternatives,
+                });
+            }
             return first_failure
                 .expect("an alternative that does not hold has a failed condition")
                 .forwarded();
@@ -1125,6 +1326,8 @@ pub(super) fn resolve_inner<'a>(
     }
     stack.pop();
 
+    let mut sub_resolutions = spec_half;
+    sub_resolutions.extend(provider_half);
     let tree = if sub_resolutions.is_empty() {
         ResolvedRequiresNode::Leaf {
             impl_sort: chosen_impl_sort,

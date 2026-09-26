@@ -1150,9 +1150,54 @@ pub(super) fn provider_requires_subgoals(
     kb: &mut KnowledgeBase,
     spec: Symbol,
     sigma: &[(String, TermId)],
+    // The rigids of the frame the goals are asked in (`SigmaCtx::param_rigids`). A row
+    // parameter of `spec` held here is the frame's OWN row — a goal issued inside the
+    // spec's own body — not an omission, and is kept (found by /code-review).
+    rigid_params: &[(VarId, TermId)],
 ) -> Vec<SortGoal> {
     let chain = direct_requires_chain(kb, spec);
-    requires_chain_goals(kb, &chain, &|kb, v| subst_requires_value(kb, v, sigma))
+    let mut goals = requires_chain_goals(kb, &chain, &|kb, v| subst_requires_value(kb, v, sigma));
+    // WI-20260925-4ZZKZ — AN EFFECT ROW σ LEFT AT `spec`'S OWN PARAMETER IS OMITTED, and
+    // so is non-discriminating, exactly as a goal that never named it (WI-387). The
+    // loader normalizes an omitted binding to the spec's own parameter
+    // (`provides PersistentCollection[C = …, Element = …]` carries `Effect = Effect`), so
+    // `PersistentCollection requires Iterable[…, E = Effect]` reached the resolver SPELLED
+    // — `E = PersistentCollection.Effect` — and was compared against a provider's
+    // `E = {}` as though it were a row, refusing a carrier that provides exactly that
+    // (MEASURED: the wn9p8 / tx0g6 / wi456_no_scope spec halves). Only a ROW: an omitted
+    // TYPE parameter discriminates (WI-387), and a spelled one already fails every
+    // concrete head.
+    //
+    // ON THE RESOLVER'S HOT PATH (every `dict_sub_goals`), so the common case allocates
+    // nothing: a binding is looked at only when its value names one of `spec`'s own
+    // parameters, compared by qualified name (one parameter can be interned twice), and
+    // only such a binding pays the row test.
+    let own: SmallVec<[Symbol; 4]> = kb.type_param_syms_of(spec).iter().copied().collect();
+    if own.is_empty() {
+        return goals;
+    }
+    for goal in &mut goals {
+        let required = goal.spec_sort;
+        let mut i = 0;
+        while i < goal.bindings.len() {
+            let (k, v) = goal.bindings[i];
+            let spec_own_param = view_ref_symbol(kb, &TermIdView(v)).is_some_and(|s| {
+                own.iter()
+                    .any(|p| kb.qualified_name_of(*p) == kb.qualified_name_of(s))
+                    && !type_param_global_var(kb, s)
+                        .is_some_and(|var| rigid_params.iter().any(|(r, _)| *r == var))
+            });
+            if spec_own_param {
+                let name = kb.local_name_of(k).to_string();
+                if sort_param_is_effect_row(kb, required, &name) {
+                    goal.bindings.remove(i);
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+    goals
 }
 
 /// WI-20260923-32XFQ — a `requires` chain as the sub-goals it asks: one [`SortGoal`] per

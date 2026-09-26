@@ -689,9 +689,9 @@ pub(super) fn settle_citation_routes(kb: &mut KnowledgeBase) {
 /// against the CALLER's frame chain under the edge's σ (so a rigid `A` meets the caller's
 /// `requires WeakOrd[T = A]` through `param_rigids`, WI-821's σ-class agreement). The tree
 /// becomes IR by [`emit_tree_as_projection`], the emitter an operation call's own routes use:
-/// `FromScope` a read of the caller's slot, a construction a `Dictionary(…)`. A tree with an
-/// `Unavailable` node anywhere routes nothing — a marker bundle would be a dictionary that
-/// cannot be dispatched through, handed in where local derivation could have answered.
+/// `FromScope` a read of the caller's slot, a construction a `Dictionary(…)`. A resolution
+/// that cannot fill a slot routes nothing — it fails (WI-20260925-4ZZKZ), where it used to
+/// hand back a tree with a marker slot that had to be filtered out here.
 fn citation_requirement_routes(
     kb: &mut KnowledgeBase,
     chain: &DictChain,
@@ -803,23 +803,8 @@ fn route_requirement_read(
     let ResolutionResult::Resolved(tree) = resolve(kb, &built.goal, &scope) else {
         return None;
     };
-    if tree_has_unavailable(&tree) {
-        return None;
-    }
     let syms = ProjectionSyms::resolve(kb)?;
     emit_tree_as_projection(kb, chain, &tree, &syms)
-}
-
-/// Does a resolved tree hold an `Unavailable` node anywhere — a slot recorded rather than
-/// resolved?
-fn tree_has_unavailable(tree: &ResolvedRequiresNode) -> bool {
-    match tree {
-        ResolvedRequiresNode::Unavailable { .. } => true,
-        ResolvedRequiresNode::Conditional {
-            sub_resolutions, ..
-        } => sub_resolutions.iter().any(tree_has_unavailable),
-        ResolvedRequiresNode::Leaf { .. } | ResolvedRequiresNode::FromScope { .. } => false,
-    }
 }
 
 /// WI-714 — the free-variable columns of a relation, merged across its clauses:

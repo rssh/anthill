@@ -865,8 +865,8 @@ pub(super) fn match_candidate_against_goal(
         let (p_base, p_bindings) = match parametric_value_parts(kb, per_call_value) {
             Some(parts) => parts,
             None => {
-                // WI-824: with a call-site σ in hand, a BARE TYPE-PARAM element
-                // does NOT match a STRUCTURED candidate head. Matching a var
+                // WI-824: a BARE TYPE-PARAM element does NOT match a STRUCTURED
+                // candidate head. Matching a var
                 // against a structure is unification; dispatch is MATCHING, and
                 // the goal side is what the call already fixed. `FT` is not
                 // provably `Wrap[A = E]` for any `E` — accepting PINNED the
@@ -890,14 +890,7 @@ pub(super) fn match_candidate_against_goal(
                 // and so is decided by arm (1) — not by this branch, whose
                 // candidate side is a parameterized application; and an element
                 // nothing determines is exactly what WI-828 calls genuinely
-                // unconstrained and refuses to guess at. Keying on σ-PRESENCE
-                // rather than on a σ-CLASS also drops a dependency on the
-                // classifier: it returns `None` on chase-bound exhaustion, and it
-                // chases a KB-wide canonical global — two ways a spelling-sensitive
-                // rule could silently not fire. (A third was listed until WI-942:
-                // "it cannot see an OPERATION's own type param". It can now — the
-                // bridge carries both scopes — so that leg no longer argues for
-                // presence-keying, and the two above are what the choice rests on.)
+                // unconstrained and refuses to guess at.
                 //
                 // The neighbours this agrees with, neither a duplicate of it:
                 //  - step (3) refuses a rigid against a CONCRETE candidate
@@ -908,20 +901,17 @@ pub(super) fn match_candidate_against_goal(
                 //    still RECORDS into an empty slot there — arm (1)'s
                 //    candidate side is a VARIABLE, which a skolem does match.
                 //
-                // The σ-LESS path keeps today's leniency verbatim (WI-827's
-                // discipline). Its FOUR entries, since "compat-only" is the
-                // easy thing to assume and is wrong: `find_unique_impl_op` /
-                // `dispatch_spec_op_with_tree` (no `src/` caller — tests);
-                // `build_dispatching_dict_direct` (the req-insertion DIAGNOSTIC
-                // dict, whose call-site subst is gone by then);
-                // `resolve_bridge_requirements` (eval, RUNTIME dicts — but it
-                // resolves only FULLY-GROUND goals, so no abstract element
-                // reaches here, and its own guard says so); and
-                // `spec_resolves_at_bindings` (declared-binding validation —
-                // probed at delivery: its verdict on an abstract binding is the
-                // same with and without a parametric provider in scope, so this
-                // branch is not what decides it).
-                return is_type_param_value(kb, per_call_value) && sigma.is_none();
+                // THE σ-LESS PATH NOW KEEPS THE RULE TOO (WI-20260925-4ZZKZ). It
+                // kept the unification leniency "verbatim (WI-827's discipline)",
+                // and what that bought was a GUESS: an open element admitted against
+                // whichever provider happens to write a STRUCTURED head. The stdlib
+                // has one such `Eq` head — `SortedSet`'s `Eq[T = SortedSet[T, O]]` —
+                // so every σ-less `Eq[T = X.T]` / `Eq[T = ?]` "chose" `SortedSet`,
+                // built its dictionary and recorded its spec half absent (MEASURED:
+                // ~500 of the 720 load-time `Unavailable` slots across the suite,
+                // from the req-insertion DIAGNOSTIC dict and route 4's provision leg).
+                // No answer is the honest one for a goal the call never pinned.
+                return false;
             }
         };
         // WI-768: this arm requires ONE base, and that is exactly the question
@@ -1764,6 +1754,8 @@ pub(super) fn dict_sub_goals(
     impl_sort: Symbol,
     impl_subst: &[(Symbol, TermId)],
     head_bindings: &[(Symbol, TermId)],
+    // The resolving frame's rigids ([`provider_requires_subgoals`]'s row rule).
+    rigid_params: &[(VarId, TermId)],
 ) -> DictSubGoals {
     let mut goals: Vec<SortGoal> = Vec::new();
     if !same_sort_canonical(kb, impl_sort, goal.spec_sort) {
@@ -1774,7 +1766,7 @@ pub(super) fn dict_sub_goals(
             .iter()
             .map(|(k, v)| (kb.local_name_of(*k).to_string(), *v))
             .collect();
-        goals.extend(provider_requires_subgoals(kb, goal.spec_sort, &sigma));
+        goals.extend(provider_requires_subgoals(kb, goal.spec_sort, &sigma, rigid_params));
     }
     let provider_half_start = goals.len();
     let provider_goals = candidate_provider_sub_goals(kb, impl_sort, impl_subst, goal.spec_sort);
@@ -1829,31 +1821,6 @@ pub(super) struct DictSubGoals {
     /// [`slot_pin_at`]'s `chain_index` is relative to — NOT the layout's `spec_len`,
     /// see the type's own doc.
     pub(super) provider_half_start: usize,
-}
-
-/// WI-865 — a sub-goal's failure as the reason its slot pins no provider.
-///
-/// EXHAUSTIVE on [`ResolutionResult`], with `Resolved` raising rather than falling
-/// into a default: the only caller reaches here on the FAILURE arm of a match that
-/// already took `Resolved`, so a `Resolved` would mean that arm moved — and a silent
-/// "no provider" for a slot that in fact resolved is precisely the mis-attribution
-/// this ticket is about. A new failure variant likewise has to choose an arm here
-/// rather than inherit one.
-pub(super) fn unavailable_why_of(err: &ResolutionResult) -> UnavailableWhy {
-    match err {
-        // Each arm reads the FAILURE's own spec, never the slot's — see
-        // [`UnavailableWhy`] for the falsehood the other reading produces.
-        ResolutionResult::NoMatch { spec, .. } => UnavailableWhy::NoProvider { goal: *spec },
-        ResolutionResult::Ambiguous { tie, .. } => UnavailableWhy::Ambiguous {
-            goal: tie.spec,
-            candidates: tie.candidates.clone(),
-        },
-        ResolutionResult::Cyclic { spec, .. } => UnavailableWhy::Cyclic { goal: *spec },
-        ResolutionResult::Resolved(_) => unreachable!(
-            "unavailable_why_of is called only on `resolve_inner`'s failure arm, \
-             which `Resolved` cannot reach"
-        ),
-    }
 }
 
 /// The PROVIDER half of [`dict_sub_goals`]: the impl sort's dictionary chain FOR THE

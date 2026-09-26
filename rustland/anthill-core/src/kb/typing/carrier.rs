@@ -3006,8 +3006,10 @@ pub fn dispatch_spec_op_cached(
 /// `FromScope` check σ-precise, so a shallow-vs-deep compound frame entry no
 /// longer coarse-covers a DEEPER goal and re-defers it — the outer goal
 /// constructs its deeper dictionary while a sub-goal that σ-AGREES with the
-/// frame entry still resolves `FromScope`. Without it (`None`) the head-only
-/// leniency the WI-827 dispatch path relied on is preserved.
+/// frame entry still resolves `FromScope`. Without it (`None`) elements are classified
+/// by head only (WI-827's dispatch path) — a bare element still matches an
+/// impl-parameter head as a wildcard, though no longer a structured one
+/// (WI-20260925-4ZZKZ).
 pub(super) fn resolve_at_goal(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
@@ -3063,6 +3065,7 @@ pub(super) fn resolve_at_goal(
         None,
         None,
         DefaultRung::Consult,
+        &mut None,
     ) {
         ResolutionResult::Resolved(tree) => match &tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. }
@@ -3077,14 +3080,6 @@ pub(super) fn resolve_at_goal(
                 }
             }
             ResolvedRequiresNode::FromScope { .. } => (DispatchOutcome::Deferred, None),
-            // WI-857: `Unavailable` is only ever a SPEC-half SLOT inside a resolved
-            // tree, never a whole resolution — `resolve_inner` returns the failure
-            // itself at the top level and only substitutes the marker when placing a
-            // sub-goal. Reaching here would mean a dispatch pinned no impl at all,
-            // which `NoMatch` is the answer to.
-            ResolvedRequiresNode::Unavailable { .. } => {
-                (DispatchOutcome::NoMatch { unmet: None }, None)
-            }
         },
         // WI-869: the failure rides out with the verdict — for a conditional provision
         // the goal it names is the unmet CONDITION, which is the only thing that

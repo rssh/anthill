@@ -1860,3 +1860,5 @@ mod wi_zbwmc_provision_narrowing_test;
 mod wi_f8pyz_spec_clause_alias_test;
 #[path = "include/wi_p5g39_provision_assumptions_test.rs"]
 mod wi_p5g39_provision_assumptions_test;
+#[path = "include/wi_4zzkz_spec_half_refusal_test.rs"]
+mod wi_4zzkz_spec_half_refusal_test;

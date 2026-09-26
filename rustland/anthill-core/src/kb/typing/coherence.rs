@@ -77,8 +77,9 @@ pub fn validate_rigid_projection_formations(
 /// CLOSED, because an assumption answers a goal only by COVER — the resolver's FromScope
 /// lookup — and a condition implies more than it says: `Ord[A]` implies `WeakOrd[A]` (a
 /// conversion), hence `Eq[A]`, `PartialOrd[A]` and `PartialEq[A]`. The resolver's own
-/// through-a-slot step goes ONE hop (a dictionary PROJECTION has to be emitted for it); a
-/// load check emits nothing, so the whole chain is spelled out here. The PAIRING survives
+/// through-a-slot step (`scope_chain_cover`) walks the same tree to answer a sub-goal, but
+/// it runs only once no entry covers and only under σ at depth; spelling the closure out
+/// here makes every implied entry a direct cover. The PAIRING survives
 /// the composition: `Big[X = P, Y = Q] requires Small[X = X, Y = Y]` yields `Small[X = P,
 /// Y = Q]` and not `Small[X = Q, Y = P]` (`a_permuted_inner_condition_is_not_entailed`).
 fn closed_under_requires(kb: &mut KnowledgeBase, roots: Vec<RequiresEntry>) -> Vec<RequiresEntry> {
@@ -309,57 +310,6 @@ impl ProvisionScope {
     }
 }
 
-/// WI-1033 — when a resolution failed BELOW `goal` and the provider the resolver chose
-/// for it is the CARRIER's own provision, the condition of that provision which does not
-/// hold, rendered as written (instantiated at the goal). `None` when the chosen provider
-/// is someone else's.
-///
-/// ASKED OF THE CHOICE, NOT OF THE SHAPE: the same collection and ranking the resolver's
-/// top level makes (no pin and no enclosing provider at a declaration's check), because a
-/// carrier that merely HAS some provision of the spec — at other arguments — is not the
-/// one that failed when a generic witness (`provides Lo[T = X] :- Lawful[X]`) was chosen,
-/// and must not be told it "DOES provide" under the witness's condition (found by
-/// /code-review).
-///
-/// THE WRITTEN CONDITION, NOT THE DEEPEST FAILURE: the resolver forwards the innermost
-/// failed goal, which for `provides Lo[T = Cell] :- Lawful[T = Seq[E = A]]` is
-/// `Lawful[T = Cell.A]`, two levels below anything the author wrote. The provider half of
-/// the chosen dictionary is the provision's own conditions, so the first of them that
-/// does not resolve here is the one to name. A provision decided among ALTERNATIVE
-/// clauses lays no condition out as a slot; there the resolver's own account
-/// (`innermost`) is the one there is.
-fn unentailed_condition_of_own_provision(
-    kb: &mut KnowledgeBase,
-    goal: &SortGoal,
-    carrier: Symbol,
-    scope: &ResolutionScope,
-    innermost: &str,
-) -> Option<String> {
-    let candidates = collect_provides_candidates(kb, goal, scope.sigma);
-    let chosen = &candidates[pick_most_specific(kb, &candidates)?];
-    if !same_sort_canonical(kb, chosen.impl_sort, carrier) {
-        return None;
-    }
-    let impl_sort = chosen.impl_sort;
-    let impl_subst = chosen.impl_subst.clone();
-    let head = chosen.resolved_head_bindings.clone();
-    drop(candidates);
-    let DictSubGoals {
-        goals,
-        provider_half_start,
-    } = dict_sub_goals(kb, goal, impl_sort, &impl_subst, &head);
-    let anchor = effects_runtime_sym(kb);
-    for sg in &goals[provider_half_start..] {
-        if anchor.is_some_and(|er| same_sort_canonical(kb, sg.spec_sort, er)) {
-            continue;
-        }
-        if !matches!(resolve(kb, sg, scope), ResolutionResult::Resolved(_)) {
-            return Some(format_goal(kb, sg));
-        }
-    }
-    Some(innermost.to_string())
-}
-
 /// WI-20260925-P5G39 — [`CarrierAtOwnParams`] for `carrier`, built once; `None` when it
 /// cannot be built, which is REPORTED the first time and only then, naming the carrier's
 /// declaration.
@@ -425,33 +375,37 @@ fn clause_of(kb: &KnowledgeBase, clause: &ClauseScope) -> crate::kb::load::Provi
 ///
 /// Binding-precise and transitive where the representation allows it (WI-356).
 /// `provider_requires_subgoals` substitutes σ into each `requires R[…]` clause (σ keyed
-/// by short *name* — see there). Then, per clause:
+/// by short *name* — see there). Each goal is then RESOLVED — through the canonical
+/// resolver, binding-precise (a provider satisfying `R` at the *wrong* bindings fails)
+/// AND transitive (the resolver recurses into `R`'s own `requires`). `Ord[T=Int] requires
+/// Eq[T]` is checked as `Eq[T=Int]`. The carrier's parameters are its OWN, and
+/// WI-20260925-P5G39 resolves under exactly what the provision may assume about them —
+/// its clause's conditions and the sort-level chain, closed ([`closed_under_requires`]) —
+/// with the parameters rigid ([`CarrierAtOwnParams`]). For EVERY clause of the provision
+/// the goal must resolve, because each clause is a way for the provision to hold.
 ///
-///  - If σ left no type parameter in any binding, the goal is RESOLVED — through the
-///    canonical resolver, binding-precise (a provider satisfying `R` at the *wrong*
-///    bindings fails) AND transitive (the resolver recurses into `R`'s own `requires`).
-///    `Ord[T=Int] requires Eq[T]` is checked as `Eq[T=Int]`. A bare parametric carrier
-///    (`Pair`) counts: its parameters are the carrier's OWN, and WI-20260925-P5G39
-///    resolves under exactly what the provision may assume about them — its clause's
-///    conditions and the sort-level chain, closed ([`closed_under_requires`]) — with
-///    the parameters rigid
-///    ([`CarrierAtOwnParams`]). For EVERY clause of the provision the goal must
-///    resolve, because each clause is a way for the provision to hold.
-///  - If a binding stays an abstract type-param, fall back to v0's base-level
-///    existence check (some sort named in the provision provides `R`). Two
-///    stdlib realities force this: the shorthand `requires Ring[F]` drops the
-///    `F`→`Ring.T` binding when the names differ (Ring's param is `T`), so σ
-///    can't ground it; and a transitive provision (`FiniteCollection requires
-///    Iterable[C = C]` at `List`, which holds only through `List provides Stream
-///    provides Iterable`) matches no provision row at the binding level.
-///    WI-20260925-4ZZKZ owns that remainder.
+/// WITNESS-LOCALLY (058 §3.8, [`resolve_within_provider`]): the goal is a slot of the
+/// carrier's OWN dictionary, and a dictionary resolves a sub-goal its provider itself
+/// provides to that provider's provision. Two coexisting bundles (`ByFst`, `BySnd`, each
+/// `provides WeakOrd[Duet[A, B]]` beside `provides Ord[Duet[A, B]]`) otherwise TIE on the
+/// `WeakOrd` goal of each one's `Ord`.
 ///
-/// A resolution that fails BELOW the goal, under the carrier's own provision of the
-/// required spec ([`unentailed_condition_of_own_provision`]), is WI-1033's
-/// `ProvisionConditionsTooWeak`: the carrier DOES provide it, only under a written
-/// condition this clause does not entail, which the refusal names. Any other failure is
-/// `UnsatisfiedProviderRequires` — including one below ANOTHER provider, whose "does not
-/// provide" wording predates this ticket and is imprecise there (a requirement reaching
+/// WI-20260925-4ZZKZ — FOR EVERY GOAL, the ones σ leaves abstract included. Those used to
+/// fall back to v0's base-level existence check ("some sort named in the provision
+/// provides `R`", at ANY bindings), justified by two stdlib realities — the shorthand
+/// `requires Ring[F]` dropping `F`→`Ring.T`, and `FiniteCollection requires Iterable[C =
+/// C]` at `List` holding only through `Stream`. MEASURED under P5G39's route: neither
+/// survives (the bare stdlib's precise and loose verdicts agree on every such goal). What
+/// the fallback still admitted was unsound: `WTop provides Top[T = Wrap[E = E]]` with no
+/// `Base[T = Wrap[E]]` anywhere loaded because `Wrap` provides `Base` at `Int64`, and the
+/// absence then reached every dictionary built for it as a spec-half slot recorded absent.
+///
+/// A resolution that fails in the PROVIDER half of the carrier's own provision of the
+/// required spec ([`unentailed_condition`]) is WI-1033's `ProvisionConditionsTooWeak`: the
+/// carrier DOES provide it, only under a written condition this clause does not entail,
+/// which the refusal names. Any other failure is `UnsatisfiedProviderRequires`, whose
+/// [`requirement_failure_of`] says which kind — no provider, a tie, a cycle, a provider
+/// that refuses the goal, or a goal beneath the chosen provider (a requirement reaching
 /// the carrier nested, `Small[Seq[Box]]`, fails at `Box`'s condition beneath `Seq`). A
 /// provision with several clauses names the one the requirement fails under.
 ///
@@ -573,13 +527,13 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
         if is_conversion_edge_named(kb, p.carrier, p.spec, &p.sigma) {
             continue;
         }
-        // WI-20260925-P5G39 — what this provision may assume, built on its FIRST concrete
-        // goal: most provisions have none (a fallback goal, or a spec with no `requires`),
-        // and building it mints the carrier's rigids and composes a chain per condition.
-        // `Some(None)`: it could not be built, and why has been reported where that was
-        // found — each concrete goal then goes unresolved, the fallback goals do not.
+        // WI-20260925-P5G39 — what this provision may assume, built on its FIRST goal: most
+        // provisions have none (a spec with no `requires`), and building it mints the
+        // carrier's rigids and composes a chain per condition. `Some(None)`: it could not be
+        // built, and why has been reported where that was found — each goal then goes
+        // unresolved.
         let mut scope_of_provision: Option<Option<ProvisionScope>> = None;
-        for goal in provider_requires_subgoals(kb, p.spec, &p.sigma) {
+        for goal in provider_requires_subgoals(kb, p.spec, &p.sigma, &[]) {
             let required = goal.spec_sort;
             if Some(required) == effects_runtime {
                 continue;
@@ -591,38 +545,6 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
                 kb.derived_provision_origin_of(p.rid)
                     .map(|o| kb.qualified_name_of(o).to_string())
             };
-            let unsatisfied = |kb: &KnowledgeBase, clause| LoadError::UnsatisfiedProviderRequires {
-                carrier: kb.qualified_name_of(p.carrier).to_string(),
-                spec: kb.qualified_name_of(p.spec).to_string(),
-                required: kb.qualified_name_of(required).to_string(),
-                derived_from: derived_from(kb),
-                clause,
-            };
-            let concrete = goal
-                .bindings
-                .iter()
-                .all(|(_, v)| type_value_is_ground(kb, *v));
-            if !concrete {
-                let mut cands: SmallVec<[Symbol; 4]> = SmallVec::from_elem(p.carrier, 1);
-                for (_, v) in &p.sigma {
-                    // Unwrap a parameterized carrier binding to its BASE sort. A
-                    // WITNESS provision keyed on a parameterized carrier
-                    // (`C = MappedStream[Source = S, …]`) stores the binding value
-                    // as a `SortView` wrapper, so the bare `sort_sym_of_term` yields
-                    // the wrapper functor (`SortView`) and the base carrier sort —
-                    // the thing that actually provides the required interface
-                    // (transitively, through its own `provides`) — is lost.
-                    // `unwrap_spec_view` reads the base sort out of every form (bare
-                    // `Ref`, term-backed `Fn{S, named}`, and the `SortView` wrapper).
-                    if let Some((base, _)) = unwrap_spec_view(kb, *v) {
-                        cands.push(base);
-                    }
-                }
-                if !cands.iter().any(|&c| sort_provides(kb, c, required)) {
-                    errors.push(unsatisfied(kb, None));
-                }
-                continue;
-            }
             if scope_of_provision.is_none() {
                 let built = carrier_at_own_params(kb, &mut own_params, &mut errors, p.carrier)
                     .and_then(|own| match ProvisionScope::of(kb, own, p.carrier, p.spec) {
@@ -655,24 +577,15 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
                     // A DECLARATION is being validated: no call site, so no selection.
                     selected: &[],
                     // The assumptions are CLOSED ([`closed_under_requires`]): the
-                    // resolver's one-hop through-a-slot step, which still runs over them
-                    // for a sub-goal no entry covers, cannot find what they lack.
+                    // resolver's through-a-slot step, which still runs over them for a
+                    // sub-goal no entry covers, cannot find what they lack.
                     sub_goal_requires: &[],
                 };
-                let failure = match resolve(kb, &goal, &scope) {
-                    ResolutionResult::Resolved(_) => continue,
-                    failure => failure,
+                let (failure, top) = match resolve_within_provider(kb, &goal, &scope, p.carrier) {
+                    (ResolutionResult::Resolved(_), _) => continue,
+                    failed => failed,
                 };
-                let unentailed = match &failure {
-                    ResolutionResult::NoMatch {
-                        goal_text,
-                        forwarded: true,
-                        ..
-                    } => unentailed_condition_of_own_provision(
-                        kb, &goal, p.carrier, &scope, goal_text,
-                    ),
-                    _ => None,
-                };
+                let unentailed = unentailed_condition(kb, &failure, top.as_ref(), p.carrier);
                 let clause = several.then(|| clause_of(kb, clause));
                 errors.push(match unentailed {
                     Some(unentailed) => LoadError::ProvisionConditionsTooWeak {
@@ -683,7 +596,14 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
                         derived_from: derived_from(kb),
                         clause,
                     },
-                    None => unsatisfied(kb, clause),
+                    None => LoadError::UnsatisfiedProviderRequires {
+                        carrier: kb.qualified_name_of(p.carrier).to_string(),
+                        spec: kb.qualified_name_of(p.spec).to_string(),
+                        required: kb.qualified_name_of(required).to_string(),
+                        derived_from: derived_from(kb),
+                        clause,
+                        failure: requirement_failure_of(kb, &failure, top.as_ref(), &goal, p.carrier, p.spec),
+                    },
                 });
                 // One report per requirement: a second clause failing the same goal
                 // repeats the same repair.
@@ -692,6 +612,161 @@ pub fn check_provider_requires(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::L
         }
     }
     errors
+}
+
+/// WI-1033 — the condition a `ProvisionConditionsTooWeak` names, when the failure is one:
+/// the resolver CHOSE the carrier's own provision of the required spec, and a goal of its
+/// PROVIDER half — the provision's own conditions, which this clause does not entail —
+/// found nothing. Named as the resolver instantiated it, not as the innermost goal it
+/// forwarded: for `provides Lo[T = Cell] :- Lawful[T = Seq[E = A]]` that innermost goal
+/// is `Lawful[T = Cell.A]`, two levels below anything the author wrote. A provision decided
+/// among ALTERNATIVE clauses lays no condition out as a slot; there the resolver's own
+/// account (the innermost goal) is the one there is.
+///
+/// READ OFF THE RESOLUTION THAT FAILED ([`TopFailure`]). WI-20260925-P5G39 re-derived it —
+/// collected and ranked the candidates again and re-resolved the provider half with a
+/// plain `resolve` — and /code-review found both halves of that able to disagree with the
+/// resolution that actually ran: no locality, no slot pins, no named-slot rung, and no
+/// SPEC half, whose failure (the carrier's OTHER provision breaking its own contract) then
+/// fell through and was blamed on this provision's conditions.
+fn unentailed_condition(
+    kb: &KnowledgeBase,
+    failure: &ResolutionResult,
+    top: Option<&TopFailure>,
+    carrier: Symbol,
+) -> Option<String> {
+    let top = top.filter(|t| same_sort_canonical(kb, t.provider, carrier))?;
+    match (failure, &top.at) {
+        (
+            ResolutionResult::NoMatch { .. },
+            FailedAt::Slot {
+                goal,
+                provider_half: true,
+            },
+        ) => Some(format_goal(kb, goal)),
+        (ResolutionResult::NoMatch { goal_text, .. }, FailedAt::Alternatives) => {
+            Some(goal_text.clone())
+        }
+        _ => None,
+    }
+}
+
+/// The parameters of `spec` that `goal`'s bindings still name anywhere — what a provision
+/// that omitted them leaves open (the loader writes an omitted binding as the spec's own
+/// parameter), qualified.
+fn spec_params_named_in(kb: &KnowledgeBase, goal: &SortGoal, spec: Symbol) -> Vec<String> {
+    fn walk(kb: &KnowledgeBase, t: TermId, own: &[String], out: &mut Vec<String>) {
+        match kb.get_term(t) {
+            Term::Ref(s) | Term::Ident(s) => {
+                let qn = kb.qualified_name_of(*s);
+                if own.iter().any(|p| p == qn) && !out.iter().any(|o| o == qn) {
+                    out.push(qn.to_string());
+                }
+            }
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
+                if pos_args.is_empty() && named_args.is_empty() {
+                    let qn = kb.qualified_name_of(*functor);
+                    if own.iter().any(|p| p == qn) && !out.iter().any(|o| o == qn) {
+                        out.push(qn.to_string());
+                    }
+                }
+                for a in pos_args.iter() {
+                    walk(kb, *a, own, out);
+                }
+                for (_, a) in named_args.iter() {
+                    walk(kb, *a, own, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let own: Vec<String> = kb
+        .type_param_syms_of(spec)
+        .iter()
+        .map(|p| kb.qualified_name_of(*p).to_string())
+        .collect();
+    let mut out = Vec::new();
+    for (_, v) in &goal.bindings {
+        walk(kb, *v, &own, &mut out);
+    }
+    out
+}
+
+/// Is `goal` about `carrier` — does one of its bindings name the carrier (bare or
+/// applied)? Then a provision ON the carrier is the repair a missing provider asks for.
+fn goal_is_about(kb: &KnowledgeBase, goal: &SortGoal, carrier: Symbol) -> bool {
+    goal.bindings.iter().any(|(_, v)| {
+        unwrap_spec_view(kb, *v)
+            .map(|(base, _)| base)
+            .or_else(|| extract_sort_ref_sym(kb, &TermIdView(*v)))
+            .is_some_and(|s| same_sort_canonical(kb, s, carrier))
+    })
+}
+
+/// WI-20260925-4ZZKZ — the resolver's failure as the refusal reports it, classified by
+/// WHERE it happened ([`TopFailure`]). No provider chosen: the goal's own `NoMatch` is the
+/// plain absence, its own tie names the candidates. A provider chosen: it refused the goal
+/// itself (a named slot its carrier's type leaves unanswerable — the hint says which), or a
+/// goal beneath it failed, named as that goal. A cycle is a cycle wherever it closes.
+fn requirement_failure_of(
+    kb: &KnowledgeBase,
+    failure: &ResolutionResult,
+    top: Option<&TopFailure>,
+    goal: &SortGoal,
+    carrier: Symbol,
+    spec: Symbol,
+) -> crate::kb::load::RequirementFailure {
+    use crate::kb::load::RequirementFailure;
+    // An omission first: whatever else failed, a goal the provision left open cannot be
+    // answered by adding a provider, and every other wording would say it could.
+    let unwritten = spec_params_named_in(kb, goal, spec);
+    if !unwritten.is_empty() {
+        return RequirementFailure::Unwritten {
+            goal: format_goal(kb, goal),
+            params: unwritten,
+        };
+    }
+    match (failure, top) {
+        (ResolutionResult::Cyclic { path, .. }, _) => {
+            RequirementFailure::Cyclic { path: path.clone() }
+        }
+        (
+            ResolutionResult::NoMatch { hint, .. },
+            Some(TopFailure {
+                provider,
+                at: FailedAt::Refused,
+            }),
+        ) => RequirementFailure::Refused {
+            provider: kb.qualified_name_of(*provider).to_string(),
+            hint: hint.clone(),
+        },
+        (
+            ResolutionResult::NoMatch { goal_text, .. }
+            | ResolutionResult::Ambiguous { goal_text, .. },
+            Some(TopFailure { provider, .. }),
+        ) => RequirementFailure::Below {
+            provider: kb.qualified_name_of(*provider).to_string(),
+            goal: goal_text.clone(),
+            detail: describe_resolution_failure(kb, failure),
+        },
+        (ResolutionResult::NoMatch { .. }, None) => RequirementFailure::NoProvider {
+            goal: format_goal(kb, goal),
+            about_carrier: goal_is_about(kb, goal, carrier),
+        },
+        (ResolutionResult::Ambiguous { goal_text, tie, .. }, None) => {
+            RequirementFailure::Ambiguous {
+                goal: goal_text.clone(),
+                candidates: tie_candidate_names(kb, tie),
+            }
+        }
+        (ResolutionResult::Resolved(_), _) => {
+            unreachable!("requirement_failure_of is asked only of a failed resolution")
+        }
+    }
 }
 
 /// WI-658: `Eq` ⊥ `NonEq` — a carrier must not provide BOTH the lawful
@@ -946,7 +1021,7 @@ pub(crate) fn check_use_site_requires_eq(
         // `List[…]` written anywhere. A base with no `Eq` clause caches an empty vec
         // and every later site of it costs one map hit.
         let raw_goals = eq_clauses.entry(base).or_insert_with(|| {
-            provider_requires_subgoals(kb, base, &[])
+            provider_requires_subgoals(kb, base, &[], &[])
                 .into_iter()
                 .filter(|g| kb.canonical_sort_sym(g.spec_sort) == eq_canon)
                 .collect()
@@ -956,7 +1031,7 @@ pub(crate) fn check_use_site_requires_eq(
         }
         // Re-walk with σ applied. Filtered to the `Eq` clauses the same way, so the
         // two vectors stay index-aligned with the cached raw ones.
-        let goals: Vec<SortGoal> = provider_requires_subgoals(kb, base, &sigma)
+        let goals: Vec<SortGoal> = provider_requires_subgoals(kb, base, &sigma, &[])
             .into_iter()
             .filter(|g| kb.canonical_sort_sym(g.spec_sort) == eq_canon)
             .collect();

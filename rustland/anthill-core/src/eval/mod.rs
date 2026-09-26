@@ -1032,7 +1032,7 @@ impl Interpreter {
         // Proposal 066 §7 — the provision the frame's operation is a member of; the
         // `__req_self` stand-in is that frame's parent bundle.
         self_provision: Option<Symbol>,
-        trees: &[(Symbol, crate::kb::typing::ResolvedRequiresNode)],
+        trees: &[(Symbol, crate::kb::typing::BridgeSlot)],
     ) -> Result<smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>, FrameReqFailure> {
         let mut out: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]> =
             smallvec::SmallVec::with_capacity(trees.len() + 1);
@@ -1041,15 +1041,21 @@ impl Interpreter {
             .stand_in_requirement(parent, parent, self_provision)
             .map_err(|_| FrameReqFailure::NoDictionarySort)?;
         out.push((self.fields.req_self, self_slot));
-        for (name, tree) in trees {
-            // `port_resolved_tree` answers `None` for a `FromScope` AND for the
-            // missing-sort case; the `stand_in_requirement` above already ruled the
-            // second one out, so reaching here names the slot.
-            out.push((
-                *name,
-                self.port_resolved_tree(tree)
+        for (name, slot) in trees {
+            let dict = match slot {
+                // `port_resolved_tree` answers `None` for a `FromScope` AND for the
+                // missing-sort case; the `stand_in_requirement` above already ruled the
+                // second one out, so reaching here names the slot.
+                crate::kb::typing::BridgeSlot::Resolved(tree) => self
+                    .port_resolved_tree(tree)
                     .ok_or(FrameReqFailure::CallerScopeSlot(*name))?,
-            ));
+                // WI-857's marker, minted for THIS absence (WI-865), refused at any read.
+                crate::kb::typing::BridgeSlot::Absent { spec_sort, why } => {
+                    crate::kb::typing::dictionary_of_absence(&mut self.kb, *spec_sort, why.clone())
+                        .ok_or(FrameReqFailure::NoDictionarySort)?
+                }
+            };
+            out.push((*name, dict));
         }
         Ok(out)
     }
@@ -1062,7 +1068,7 @@ impl Interpreter {
     /// to the resolver-side [`crate::kb::typing::dictionary_of_tree`] and
     /// differing only in which carrier it built. With one representation there is
     /// nothing left to differ in, so there is one walk: a `Leaf`'s impl with no
-    /// sub-dictionaries, WI-857's marker for an `Unavailable`, and a
+    /// sub-dictionaries, and a
     /// `Conditional` recursing first so the arity matches the DICTIONARY LAYOUT
     /// (the spec's own `requires` chain then the impl's, WI-857 — which is what
     /// the eval dispatcher's cross-check measures).
@@ -1612,9 +1618,11 @@ impl Interpreter {
     ///
     /// WI-857 left two, and WI-868 asked whether they should be one:
     ///
-    ///  * a resolver ABSENCE — [`crate::kb::typing::ResolvedRequiresNode::Unavailable`],
-    ///    emitted as an empty bundle over an `anthill.reflect.NoProvider` marker, which
-    ///    `resolve_op_target_checked` REFUSES to dispatch through;
+    ///  * a recorded ABSENCE — then the resolver's `ResolvedRequiresNode::Unavailable`,
+    ///    since WI-20260925-4ZZKZ only a value-only route's
+    ///    [`crate::kb::typing::BridgeSlot::Absent`] — emitted as an empty bundle over an
+    ///    `anthill.reflect.NoProvider` marker, which `resolve_op_target_checked` REFUSES
+    ///    to dispatch through;
     ///  * this STAND-IN — marker sub-slots, but its own functor is a real sort, which
     ///    `call_with_requirements`' own doc calls a claim that can mis-dispatch.
     ///

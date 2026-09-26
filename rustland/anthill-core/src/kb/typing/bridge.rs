@@ -3,6 +3,26 @@
 
 use super::*;
 
+/// WI-20260925-4ZZKZ — one slot of a frame a VALUE-ONLY route enters: a resolved
+/// dictionary, or an ABSENCE the route recorded because the argument values could not
+/// decide it (`UnderDetermined`, `NamedSlotNotCarried`, `ParamSlotNotCarried` — each
+/// documented at its producer below, with the decision to keep it).
+///
+/// ITS OWN TYPE, NOT A VARIANT OF [`ResolvedRequiresNode`]. The resolver used to answer a
+/// spec-half sub-goal it could not fill with an `Unavailable` node inside the tree, and
+/// that is what let an absence cross from the LOAD into run time. It fails the resolution
+/// instead now, and the tree type has no node for an absence at all — so "a load-time
+/// dictionary with a hole" is unrepresentable rather than merely not produced. What
+/// remains is a slot-level fact about a frame this route enters, and only these routes
+/// hold one.
+pub(crate) enum BridgeSlot {
+    Resolved(ResolvedRequiresNode),
+    Absent {
+        spec_sort: Symbol,
+        why: UnavailableWhy,
+    },
+}
+
 /// WI-625 Layer B (WI-300 Tier B) — the requirement dictionaries an op needs,
 /// resolved at the CONCRETE types of its arguments. Two consumers, both of which
 /// hold a concrete op and its runtime argument VALUES but no caller dictionary:
@@ -27,9 +47,9 @@ pub(crate) enum BridgeRequirements {
     /// The op's parent sort has no `requires` chain — run with empty dicts (the
     /// gap-1 behavior; a requirement-free body decides).
     NoneNeeded,
-    /// Resolved: the parent sort + one tree per slot of its `requires` chain, in
+    /// Resolved: the parent sort + one slot per entry of its `requires` chain, in
     /// `synth_req_names` order, for the eval bridge to port into `Dictionary`s.
-    Resolved(Symbol, Vec<(Symbol, ResolvedRequiresNode)>),
+    Resolved(Symbol, Vec<(Symbol, BridgeSlot)>),
     /// A required dictionary is unresolvable at these arg types (NO provider, a
     /// cyclic one, an under-determined carrier, or a signature/spec-binding the
     /// pin cannot read) — the caller must residualize or raise rather than run
@@ -108,6 +128,7 @@ pub(crate) enum NamedSlotTies {
     /// which a marker's read would turn into a fault.
     Raise,
 }
+
 
 /// Resolve the requirement dictionaries for a bridged op call over GROUND args (see
 /// [`BridgeRequirements`]). Types each argument, unifies it with the op's declared
@@ -207,7 +228,7 @@ pub(crate) fn resolve_bridge_requirements(
     // or was empty and answered `NoneNeeded`. The skipped slot is the same
     // "enter unsupplied, loud at the read" this channel takes everywhere else.
     let sort_len = chain.sort_len();
-    let mut trees: Vec<(Symbol, ResolvedRequiresNode)> = Vec::with_capacity(chain.len());
+    let mut trees: Vec<(Symbol, BridgeSlot)> = Vec::with_capacity(chain.len());
     for (i, (entry, name)) in chain.iter().zip(names.iter()).enumerate() {
         let op_half = i >= sort_len;
         // WI-20260830-DQD5W — the `EffectsRuntime` KIND-ANCHOR keeps its slot as a
@@ -238,11 +259,11 @@ pub(crate) fn resolve_bridge_requirements(
         if is_effects_runtime(kb, entry.required_sort) {
             trees.push((
                 *name,
-                ResolvedRequiresNode::Leaf {
+                BridgeSlot::Resolved(ResolvedRequiresNode::Leaf {
                     impl_sort: entry.required_sort,
                     spec_sort: entry.required_sort,
                     bindings: SmallVec::new(),
-                },
+                }),
             ));
             continue;
         }
@@ -306,10 +327,12 @@ pub(crate) fn resolve_bridge_requirements(
         // leaves it abstract, and `match_candidate_against_goal` treats an abstract
         // binding as a WILDCARD that matches ANY provider — which would build a WRONG
         // dictionary and let the bridged op mis-decide. Residualize instead.
-        // STILL TRUE after WI-824, which refuses that match for a rigid skolem: the
-        // refusal is σ-GATED and this resolve is σ-less (`sigma: None` below), so the
-        // wildcard leniency is fully in force here. This gate is what keeps an
-        // abstract element off it — do not relax one without the other.
+        // STILL TRUE after WI-824 and WI-20260925-4ZZKZ, which together refuse an
+        // abstract element against a STRUCTURED provider head on every path, σ-less
+        // included: a bare impl-parameter head (`provides Spec[T = X]`) still accepts it
+        // WITHOUT recording (WI-507's sibling wildcard, `match_impl_param`'s σ-less arm),
+        // so every generic witness would match. This gate is what keeps an abstract
+        // element off them — do not relax one without the other.
         // WI-822 inherits exactly this guarantee for VALUE-DIRECTED DISPATCH, whose
         // WI-824 feedback asks that an op-scoped construction path meeting an
         // ABSTRACT element land on a refusal rather than build a dictionary: it does,
@@ -440,18 +463,24 @@ pub(crate) fn resolve_bridge_requirements(
                 // unbuildable slot COSTS — a marker that is loud at the read (WI-857)
                 // instead of a residualized call that could not run at all.
                 //
-                // THIS IS THE COMPILE-TIME PRODUCER'S OWN ANSWER, which is the whole
-                // argument for it. [`ResolvedRequiresNode::Unavailable`]'s doc names
-                // THIS EXACT SLOT as the shape the stdlib relies on it for:
-                // "`FiniteCollection requires Iterable[C = C]` holds for a `List`
-                // carrier only through `List provides Stream provides Iterable`, which
-                // no `Iterable[C = List[…]]` provision matches … Refusing to build the
-                // dictionary there would reject every program that dispatches such a
-                // spec op without ever reading the evidence (MEASURED: 33 tests)". The
-                // typer places a marker and 33 tests pass; the bridge returned
-                // `Unresolvable` and the same call answered NOTHING. Two producers of
-                // one dictionary disagreeing about one slot is the drift WI-857's "one
-                // owner for the three readers" discipline exists to refuse.
+                // WI-20260925-4ZZKZ — DECISION: KEPT, a run-time absence loud at the
+                // read, and NOT moved to the entry. This used to be argued from the
+                // compile-time producer, which placed the same marker in the same slot
+                // (WI-857) — that producer is gone: a load-time resolution that cannot fill
+                // a slot now fails. The argument that remains is this route's own. It holds
+                // argument VALUES, and a value carries no type arguments, so an element the
+                // operation's parameters do not mention is not recoverable HERE even where
+                // the program determines it — and the typed call sites of the same
+                // operations build the same slot with σ, where it is checked (3G1YT's
+                // obligation is owed and discharged at LOAD). MEASURED (full workspace,
+                // log-only probe): 73 slots in 25 tests, 71 on value-directed dispatch into
+                // the stdlib's lazy combinators — `MappedStream`/`FilteredStream.
+                // splitFirst`, `Mapped`/`FilteredStreamFinite.collect`, whose sort-level
+                // `requires Iterable[C = Source, …]` names a parameter no value carries —
+                // and 2 on the SLD bridge (`size` below). None is read: their bodies'
+                // inner calls dispatch by value. Refusing at the entry would refuse every
+                // `map`/`filter` pipeline evaluated by value, and a slot that IS read is
+                // refused naming it.
                 //
                 // MEASURED, and it is the ticket's acceptance row: `rule spec_len(?n)
                 // :- Box(items: ?ls), size(?ls, ?n)` answered `[]` beside a
@@ -491,12 +520,9 @@ pub(crate) fn resolve_bridge_requirements(
                 None if !op_half => {
                     trees.push((
                         *name,
-                        ResolvedRequiresNode::Unavailable {
+                        BridgeSlot::Absent {
                             spec_sort: goal.spec_sort,
                             why: UnavailableWhy::UnderDetermined,
-                            // The absence is at THIS slot's own level: nothing below it
-                            // was searched, so there is no deeper goal to attribute to.
-                            below: false,
                         },
                     ));
                     continue;
@@ -540,7 +566,7 @@ pub(crate) fn resolve_bridge_requirements(
             }
         }
         match result {
-            ResolutionResult::Resolved(tree) => trees.push((*name, tree)),
+            ResolutionResult::Resolved(tree) => trees.push((*name, BridgeSlot::Resolved(tree))),
             // WI-456 — EXCEPT, ON VALUE-DIRECTED DISPATCH, A TIE AT ONE OF THE SORT'S NAMED
             // SLOTS, which is not a coherence verdict at all: it is the NX4FD
             // under-determined slot above, one step later. A named slot is a type parameter
@@ -567,6 +593,13 @@ pub(crate) fn resolve_bridge_requirements(
             // provider that answered it, which is a coherence verdict about that condition.
             // The SORT half only, where the layout keeps the slot: an op-scoped tie stays
             // WI-1091's loud verdict.
+            //
+            // WI-20260925-4ZZKZ — DECISION: KEPT, loud at the read. MEASURED (full
+            // workspace, log-only probe): ONE slot left in the suite, R10KC's existential
+            // return (`r10kc.exists.MySet.contains`), whose rigid skolem names no provider
+            // anywhere — no route could have built a dictionary for it, the call site's
+            // included. The value was CONSTRUCTED with one; moving the refusal to the entry
+            // would refuse `toList(s)`-style bodies that never ask which.
             ResolutionResult::Ambiguous {
                 forwarded: false, ..
             } if named_slot_ties == NamedSlotTies::RecordAbsent
@@ -575,10 +608,9 @@ pub(crate) fn resolve_bridge_requirements(
             {
                 trees.push((
                     *name,
-                    ResolvedRequiresNode::Unavailable {
+                    BridgeSlot::Absent {
                         spec_sort: goal.spec_sort,
                         why: UnavailableWhy::NamedSlotNotCarried,
-                        below: false,
                     },
                 ));
             }
@@ -752,11 +784,16 @@ fn ground_entry_spec(
 /// WI-20260922-ATFGH — the recorded absence for a type-carried slot `param.binder`
 /// ([`UnavailableWhy::ParamSlotNotCarried`]), at its own level. One spelling for its
 /// producers.
-fn param_slot_marker(spec_sort: Symbol, param: Symbol, binder: Symbol) -> ResolvedRequiresNode {
-    ResolvedRequiresNode::Unavailable {
+///
+/// WI-20260925-4ZZKZ — DECISION: KEPT, loud at the read. MEASURED (full workspace,
+/// log-only probe): 4 slots, all HOST ENTRIES (the EE0EP rows), where the host holds a
+/// repair the refusal names — `Interpreter::call_with_witnesses` — and a body that never
+/// reads the slot answers. The route has argument values only; the witness is in the
+/// argument's TYPE, which the typed call site reads and a value does not carry.
+fn param_slot_marker(spec_sort: Symbol, param: Symbol, binder: Symbol) -> BridgeSlot {
+    BridgeSlot::Absent {
         spec_sort,
         why: UnavailableWhy::ParamSlotNotCarried { param, binder },
-        below: false,
     }
 }
 
@@ -1151,9 +1188,20 @@ pub(super) fn goal_from_requires_entry(
 ///
 /// When `resolved_tree` is `Some`, the requirements list is built from
 /// the SLD-resolved sub_resolutions (WI-228 path) — conditional impls
-/// produce nested `Dictionary` IR. When `None`, the
-/// per-dep search runs against the callee's `requires_chain`
-/// (Direct-call path; no SLD tree available).
+/// produce nested `Dictionary` IR. When `None`, the call site's own
+/// `dispatch_dict` is recorded where the typer built one, and only
+/// otherwise does the per-dep search run against the callee's
+/// `requires_chain` (Direct-call path; no SLD tree available).
+///
+/// WI-20260925-4ZZKZ — `dispatch_dict` FIRST, because it is the dictionary EVAL
+/// threads (`CallClass::ConcreteApplyWithin::dispatch_dict`, built with the call's σ
+/// and pin). The σ-less rebuild below re-derives it in the CALLEE's own parameter
+/// space, where every element the call pinned is open again: a call pinning
+/// `SortedSet[T = String, O = ByLength]` was recorded as a dictionary for
+/// `SortedSet[T = El, O = OE]`, whose named slot the σ-less match could not read — a
+/// spec half recorded absent in a record of a call that runs (MEASURED: the wn9p8 /
+/// tx0g6 / wi456_no_scope rows).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn record_apply_within_concrete(
     kb: &mut KnowledgeBase,
     site: crate::kb::CallSite,
@@ -1163,6 +1211,7 @@ pub(crate) fn record_apply_within_concrete(
     spec_op_sym: Symbol,
     caller_requires: &DictChain,
     resolved_tree: Option<&ResolvedRequiresNode>,
+    dispatch_dict: Option<TermId>,
 ) -> bool {
     if kb.dispatch_rewrite_at(site).is_some() {
         return false;
@@ -1179,12 +1228,13 @@ pub(crate) fn record_apply_within_concrete(
         Some(t) => t,
         None => return false,
     };
-    let dict_term = match resolved_tree {
-        Some(tree) => match emit_tree_as_projection(kb, caller_requires, tree, &syms) {
+    let dict_term = match (resolved_tree, dispatch_dict) {
+        (Some(tree), _) => match emit_tree_as_projection(kb, caller_requires, tree, &syms) {
             Some(t) => t,
             None => return false,
         },
-        None => match build_dispatching_dict_direct(
+        (None, Some(built)) => built,
+        (None, None) => match build_dispatching_dict_direct(
             kb,
             callee_spec_sort,
             op_owner_provision(kb, spec_op_sym),

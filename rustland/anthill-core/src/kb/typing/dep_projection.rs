@@ -876,84 +876,39 @@ pub fn type_param_global_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
     }
 }
 
-/// WI-865 — WHY a dictionary slot pins no provider, as the RESOLVER knows it.
+/// WI-865 — WHY a frame slot a value-only route entered holds no dictionary.
 ///
-/// Rides on [`ResolvedRequiresNode::Unavailable`] and, through
-/// [`absence_marker_sym`], all the way to the runtime refusal. WI-857 built that
-/// variant for `NoMatch`, `Ambiguous` and `Cyclic` ALIKE — deliberately, so the
-/// PLACEMENT rule has no cases to get wrong — and this enum does not reopen that:
-/// placement is still uniform, and the discriminant is carried alongside so the
-/// REFUSAL can say which. Two questions, and only the second one has cases.
+/// Rides on [`BridgeSlot::Absent`] and, through [`absence_marker_sym`], all the way to
+/// the runtime refusal, which renders it. WI-857 built the channel for the RESOLVER's
+/// failures — `NoMatch`, `Ambiguous` and `Cyclic` at a spec-half slot, recorded rather
+/// than refused — and WI-865 carried their kind so the refusal at the read could say
+/// which. WI-20260925-4ZZKZ retired that producer: a resolution that cannot fill a
+/// slot now FAILS, and the load reports the failure kind itself
+/// (`LoadError::UnsatisfiedProviderRequires::failure`). What is left are the three
+/// absences only a route entered with argument VALUES can record, each at its own slot
+/// and each for a reason a type-directed route does not have.
 ///
-/// EVERY FAILURE ARM CARRIES `goal` — THE SPEC OF THE LEVEL THAT ACTUALLY FAILED,
-/// which is NOT always the slot's own. `resolve_inner` returns a provider-half
-/// sub-goal's failure verbatim, so a slot for `Base` whose sole provider's own
-/// `requires Mid[…]` ties receives a tie over `Mid`'s providers. Rendering that
-/// against the SLOT's spec says "more than one provider matched `Base` — `MidA`,
-/// `MidB`" when neither provides `Base` — a definite falsehood, and worse than the
-/// hedge it replaced, which named no spec and was merely vague. WI-843 carries
-/// [`InstanceTie::spec`] for precisely this and forwards it rather than restamping;
-/// this is that discipline at the second read point. Both halves MEASURED and both
-/// were wrong in the first cut (found by /code-review):
-/// `wi865_absence_reason_test::a_tie_below_the_slot_names_the_spec_that_actually_tied`
-/// and its `…a_miss_below…` sibling.
-///
-/// The failing goal's BINDINGS are deliberately not carried, and neither is
-/// `NoMatch`'s `hint` — `ResolutionResult` renders both into `String`s, and a String
-/// in this record would key the marker name, where a fresh-variable rendering
-/// differing per call would mint an unbounded symbol family on the per-call dispatch
-/// path. Every field here is a SYMBOL and the family is therefore a function of the
-/// PROGRAM, not of the execution: bounded, though not linearly — the `Ambiguous`
-/// candidate SUBSET varies with the goal's bindings, so its bound is the number of
-/// distinct tying sets a program can produce, not the number of specs.
-///
-/// Losing the hint costs little. The generic `NoMatch` hint says "add
-/// `fact X[…]` or `requires X[…]` in scope", which [`marker_refusal`] says as "declare
-/// a provider for it"; and WI-870's BRACKET-pinned hint ("the call bound slot `O` of `W`
-/// to `V`, which provides no instance") cannot reach a recorded slot at all —
-/// `slot_pin_at` answers `None` for every spec-half index by construction
-/// (`i.checked_sub(provider_half_start)` — WI-866 renamed it, and the rename is the
-/// point: it is the PRODUCER's split, not the layout's), and `at_call_goal` is false
-/// everywhere below the root (`stack.push(goal)` precedes the sub-goal loop), so no
-/// bracket pin is written anywhere in a recorded slot's subtree. WI-456's CARRIER pins
-/// are the exception: a provider chosen inside that subtree can have a named slot its
-/// carrier's type binds, and a witness that provides nothing at those bindings is a
-/// pinned refusal forwarded up into the record — rendered "declare a provider" rather
-/// than naming the slot.
+/// Every field is a SYMBOL, never a rendering: the record keys the marker name, and a
+/// string differing per call would mint an unbounded symbol family on the per-call
+/// dispatch path. The family is therefore a function of the PROGRAM.
 ///
 /// `Hash` because [`AbsenceRecord`] keys the mint side of the marker table — see
 /// [`absence_marker_sym`] for why re-minting has to be cheap.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum UnavailableWhy {
-    /// No candidate's head unifies with `goal` at its bindings.
-    NoProvider { goal: Symbol },
-    /// More than one does, and specificity coherence could not pick. `goal` and
-    /// `candidates` are WI-843's [`InstanceTie`] fields, carried verbatim.
-    Ambiguous {
-        goal: Symbol,
-        candidates: SmallVec<[Symbol; 2]>,
-    },
-    /// A cycle in conditional-instance resolution; `goal` is the repeated one.
-    Cyclic { goal: Symbol },
     /// WI-20260830-NX4FD — the ARGUMENT TYPES left a spec type-parameter of `goal`
     /// abstract, so NO PROVIDER WAS SEARCHED FOR. Only [`resolve_bridge_requirements`]
     /// produces it: that consumer pins the parent sort's parameters from the runtime
     /// argument types alone, and an element the operation's parameters do not mention
-    /// (`FiniteCollection.Element`/`E` under `size(c: C)`) stays open. Its own arm
-    /// because the others would misattribute it.
-    /// `NoProvider` in particular would be a FALSEHOOD here and its repair a
-    /// misdirection: `List` DOES provide `Iterable`, transitively through `Stream`, and
-    /// "declare a provider for it" is not what an author whose call under-determines a
-    /// slot has to do.
+    /// (`FiniteCollection.Element`/`E` under `size(c: C)`) stays open. "No provider"
+    /// would be a FALSEHOOD here and its repair a misdirection: `List` DOES provide
+    /// `Iterable`, and "declare a provider for it" is not what an author whose call
+    /// under-determines a slot has to do.
     ///
-    /// FIELDLESS, unlike its four siblings, and that is a claim rather than an omission
-    /// (the first cut carried a `goal: Symbol` and /code-review was right that it was
-    /// decorative). The others carry the spec of the level that ACTUALLY failed, which
-    /// need not be the slot's own — `resolve_inner` forwards a sub-goal's failure
-    /// verbatim. This absence has no level below it: the bridge asks per slot and
-    /// nothing under it was searched, so the failing goal IS the slot's own spec, which
-    /// [`AbsenceRecord::Slot::spec`] already carries. A field that can only ever repeat
-    /// its neighbour is one a later reader will believe says something.
+    /// FIELDLESS, and that is a claim rather than an omission (the first cut carried a
+    /// `goal: Symbol` and /code-review was right that it was decorative): the bridge
+    /// asks per slot and nothing under it was searched, so the failing goal IS the
+    /// slot's own spec, which [`AbsenceRecord::Slot::spec`] already carries.
     UnderDetermined,
     /// WI-456 — a NAMED requirement slot of the carrier, reached by a dispatch that had
     /// only the argument VALUES. A named slot is a type parameter and a value carries
@@ -1014,20 +969,13 @@ pub enum UnavailableWhy {
 /// the dictionary value.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AbsenceRecord {
-    /// A dictionary slot the resolver could not fill — the ordinary case, and the
-    /// one the whole channel exists for.
+    /// A frame slot a value-only route recorded absent ([`BridgeSlot::Absent`]).
     ///
-    /// `spec` is the SLOT's — where the absence sits. `below` is
-    /// [`ResolutionResult::is_forwarded`]: whether what failed is a goal BENEATH that
-    /// slot rather than the slot's own. It is a property of the PAIR, which is why it
-    /// lives here and not in [`UnavailableWhy`], and it is not derivable from the two
-    /// specs — see [`ResolutionResult::forwarded`] for the measured case where they
-    /// are equal and the failure is still below.
-    Slot {
-        spec: Symbol,
-        why: UnavailableWhy,
-        below: bool,
-    },
+    /// `spec` is the SLOT's — where the absence sits. WI-865 paired it with a `below`
+    /// bit for a resolver failure forwarded from beneath the slot; every absence left
+    /// is recorded at its own slot (WI-20260925-4ZZKZ), so there is no deeper level to
+    /// point at and the bit went with the resolver's producer.
+    Slot { spec: Symbol, why: UnavailableWhy },
     /// The sub-slots of eval's host-entry STAND-IN (`Interpreter::
     /// stand_in_requirement`). Nothing resolved and nothing failed: the frame was
     /// entered from the host with no dictionary at all, so the remedy is
@@ -1038,9 +986,9 @@ pub enum AbsenceRecord {
     HostEntry,
 }
 
-/// WI-857/WI-865 — the functor a dictionary slot carries when its goal did not
-/// resolve ([`ResolvedRequiresNode::Unavailable`]), and the one place a marker is
-/// minted.
+/// WI-857/WI-865 — the functor a dictionary slot carries when it holds no dictionary
+/// ([`BridgeSlot::Absent`], and the host-entry stand-in's sub-slots), and the one place a
+/// marker is minted.
 ///
 /// Not a sort: it is INTERNED, never DEFINED, and `SymbolTable` keeps those two maps
 /// disjoint — that, not the choice of name, is what keeps `sort_ops_lookup` from ever
@@ -1065,7 +1013,7 @@ pub enum AbsenceRecord {
 /// Every use is refused through [`marker_refusal`], which is what turns a carried
 /// absence into a loud error exactly where the absence matters.
 ///
-/// THE REPEAT MINT IS THE COMMON ONE, and it must not allocate: `dictionary_of_tree`
+/// THE REPEAT MINT IS THE COMMON ONE, and it must not allocate: `dictionary_of_absence`
 /// runs per CALL on the value-directed / bridge dispatch path. Rendering the name each
 /// time would be three `String`s per marker per call where WI-857's single hoisted
 /// symbol was one hash of a `&'static str`, so the record keys the table in BOTH
@@ -1077,25 +1025,9 @@ pub(crate) fn absence_marker_sym(kb: &mut KnowledgeBase, rec: AbsenceRecord) -> 
     let name = match &rec {
         // The bare prefix, so eval's stand-in keeps the exact symbol WI-857 minted.
         AbsenceRecord::HostEntry => NO_PROVIDER_NAME.to_string(),
-        AbsenceRecord::Slot { spec, why, below } => {
+        AbsenceRecord::Slot { spec, why } => {
             let spec_qn = kb.qualified_name_of(*spec).to_string();
-            let depth = if *below { " below" } else { "" };
             let detail = match why {
-                UnavailableWhy::NoProvider { goal } => {
-                    format!(" none {}", kb.qualified_name_of(*goal))
-                }
-                UnavailableWhy::Ambiguous { goal, candidates } => format!(
-                    " ties {} {}",
-                    kb.qualified_name_of(*goal),
-                    candidates
-                        .iter()
-                        .map(|c| kb.qualified_name_of(*c).to_string())
-                        .collect::<Vec<_>>()
-                        .join("|"),
-                ),
-                UnavailableWhy::Cyclic { goal } => {
-                    format!(" cyclic {}", kb.qualified_name_of(*goal))
-                }
                 // The name already leads with `spec_qn`, which IS this absence's goal.
                 UnavailableWhy::UnderDetermined => " unpinned".to_string(),
                 UnavailableWhy::NamedSlotNotCarried => " named slot not carried".to_string(),
@@ -1107,7 +1039,7 @@ pub(crate) fn absence_marker_sym(kb: &mut KnowledgeBase, rec: AbsenceRecord) -> 
                     kb.qualified_name_of(*binder),
                 ),
             };
-            format!("{NO_PROVIDER_NAME}[{spec_qn}{depth}{detail}]")
+            format!("{NO_PROVIDER_NAME}[{spec_qn}{detail}]")
         }
     };
     let sym = kb.intern(&name);
@@ -1172,27 +1104,6 @@ pub(super) fn emit_tree_as_projection(
         ResolvedRequiresNode::Leaf { impl_sort, .. } => {
             Some(build_empty_bundle(kb, syms, *impl_sort))
         }
-        ResolvedRequiresNode::Unavailable {
-            spec_sort,
-            why,
-            below,
-        } => {
-            // WI-857: an empty bundle over the marker functor. Occupies its slot so
-            // the halves stay positionally exact, and cannot be dispatched through.
-            // WI-865: the marker is the one minted for THIS absence, so the refusal at
-            // the read has the reason. The IR-term half needs a functor SYMBOL and
-            // nothing else, which is exactly what the record-keyed marker still is —
-            // no `Expr` node had to grow a field for the reason to cross.
-            let marker = absence_marker_sym(
-                kb,
-                AbsenceRecord::Slot {
-                    spec: *spec_sort,
-                    why: why.clone(),
-                    below: *below,
-                },
-            );
-            Some(build_empty_bundle(kb, syms, marker))
-        }
         ResolvedRequiresNode::Conditional {
             impl_sort,
             sub_resolutions,
@@ -1242,9 +1153,9 @@ pub(super) fn build_req_at_sort(
 }
 
 /// Build `Dictionary(impl: <Ref(functor)>)` — a dictionary bundling nothing.
-/// THREE producers need it: a `Leaf` resolution, WI-857's `Unavailable` marker slot,
-/// and `build_dep_projection`'s synthetic `EffectsRuntime` anchor. One owner, so the
-/// spelling of a childless dictionary has one definition.
+/// Two producers need it: a `Leaf` resolution and `build_dep_projection`'s synthetic
+/// `EffectsRuntime` anchor. One owner, so the spelling of a childless dictionary has one
+/// definition.
 fn build_empty_bundle(kb: &mut KnowledgeBase, syms: &ProjectionSyms, functor: Symbol) -> TermId {
     build_dictionary_term(kb, syms, functor, &[])
 }

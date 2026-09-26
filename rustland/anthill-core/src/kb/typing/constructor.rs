@@ -487,7 +487,7 @@ pub(super) fn sort_param_is_effect_row(kb: &mut KnowledgeBase, sort: Symbol, mem
     let Some(effects_runtime) = effects_runtime_sym(kb) else {
         return false;
     };
-    for entry in direct_requires_chain(kb, sort) {
+    for entry in direct_requires_chain_rc(kb, sort).iter() {
         if !same_sort_canonical(kb, entry.required_sort, effects_runtime) {
             continue;
         }

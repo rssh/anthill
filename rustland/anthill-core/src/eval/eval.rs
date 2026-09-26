@@ -1230,8 +1230,8 @@ impl Interpreter {
     /// WI-857 — project sub-requirement `k` out of `parent`, as an `EvalError` rather
     /// than the arena's `panic!`. ONE owner for the two things that make a projection
     /// impossible: the parent pins no provider (a `NoProvider` marker bundles nothing,
-    /// and a marker is now reachable in a frame slot two ways — a recorded-absent
-    /// spec-half slot, and a host-entry stand-in's sub-slots), and a plain
+    /// and a marker is reachable in a frame slot two ways — a value-only route's
+    /// recorded absence, and a host-entry stand-in's sub-slots), and a plain
     /// out-of-range index. `start_apply_deferred`'s `proj_path` loop already stated
     /// this intent ("a clean `EvalError` rather than the arena's `project` panic") and
     /// was the only consumer that had it.

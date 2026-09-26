@@ -29,9 +29,9 @@ fn load_with(extra: &str) -> KnowledgeBase {
 }
 
 /// [`load_with`] for the two fixtures whose provider is DELIBERATELY incoherent
-/// — an `EqList` that declares the `Eq` marker and nothing else, so that
-/// resolving `Eq[List[…]]` has an unsatisfiable `PartialEq` leg to record as
-/// `Unavailable`. The loader rightly complains; `expected` pins that complaint.
+/// — an `EqList` that declares the `Eq` marker and nothing else. The loader rightly
+/// complains; `expected` pins that complaint. (Its `PartialEq` leg was once recorded
+/// `Unavailable`; since WI-1110 it resolves, see below.)
 ///
 /// WI-966: this file used to discard the loader's `Err`, which meant the two
 /// conditional-resolution tests could not tell "the fixture is incoherent on
@@ -267,8 +267,8 @@ fn one_level_conditional_resolves_via_subgoal() {
             // PartialEq[T = T]` is a CONVERSION, so `EqList`'s own `PartialEq` row is
             // derived from the `Eq` row it wrote, and the slot resolves — through
             // `EqList` itself, conditional on `Eq[A]` exactly as the provider half is.
-            // The `Unavailable` machinery is unaffected and still pinned by
-            // `wi869_per_provision_conditions_test`'s sibling-provision slots.
+            // (WI-20260925-4ZZKZ has since removed the `Unavailable` node itself: a spec
+            // half that does not resolve fails the resolution.)
             match &sub_resolutions[0] {
                 ResolvedRequiresNode::Conditional {
                     impl_sort: inner,
@@ -673,10 +673,8 @@ fn diamond_coherence_picks_same_a_impl_for_both_branches() {
                 }
                 None
             }
-            // Neither pins an impl to compare (WI-857).
-            ResolvedRequiresNode::FromScope { .. } | ResolvedRequiresNode::Unavailable { .. } => {
-                None
-            }
+            // Pins no impl to compare.
+            ResolvedRequiresNode::FromScope { .. } => None,
         }
     }
     let a_under_b = pick_a(&kb, &b_tree, ".DiamondA")
