@@ -5737,8 +5737,14 @@ pub fn scan_definitions_with_sources(
     // so there is no reserved name at all — dissolving both that rung and the
     // collision blocklist WI-476 needed.
     if role == SourceRole::Query {
-        for file in files {
+        for (i, file) in files.iter().enumerate() {
+            kb.symbols.set_asking_file(Some(source_ids[i]));
             errors.extend(query_bracket_errors(file));
+            for item in &file.items {
+                if let Item::Fact(fact) = item {
+                    query_type_name_errors(kb, file, fact.term, global, false, &mut errors);
+                }
+            }
         }
     }
     // WI-995 — the scan is over; nothing after it asks on one file's behalf until
@@ -5800,6 +5806,66 @@ fn query_bracket_errors(file: &ParsedFile) -> Vec<LoadError> {
         }
     }
     errors
+}
+
+/// WI-20260911-7FP1M: names in a query's type bracket must denote something.
+/// `-i List.*` imports members, not `List` itself. Previously that missing import
+/// became an unresolved functor in a data slot and silently matched no clauses.
+/// Validate before conversion, where both the CLI and pattern helpers have a
+/// located error channel. Ordinary data slots retain their existing semantics.
+/// Query facts are consumed at global scope by both callers, including query files.
+fn query_type_name_errors(
+    kb: &KnowledgeBase,
+    file: &ParsedFile,
+    id: TermId,
+    scope: ScopeId,
+    in_type: bool,
+    errors: &mut Vec<LoadError>,
+) {
+    let in_type = in_type || file.terms.is_type_application(id);
+    let term = file.terms.get(id);
+    if in_type {
+        let symbol = match term {
+            Term::Fn { functor, .. } => Some(*functor),
+            Term::Ref(sym) | Term::Ident(sym) => Some(*sym),
+            _ => None,
+        };
+        if let Some(symbol) = symbol {
+            let name = file.symbols.local_name(symbol);
+            let span = file.terms.span(id);
+            let error = match resolve_name_in_kb(kb, name, scope) {
+                ResolveResult::Found(_) => None,
+                ResolveResult::NotFound => Some(LoadError::UnresolvedName {
+                    name: name.to_owned(),
+                    span,
+                    scope_name: kb.scope_display_name(scope).to_owned(),
+                }),
+                ResolveResult::Ambiguous(candidates) => Some(LoadError::AmbiguousSymbol {
+                    name: name.to_owned(),
+                    candidates: kb.candidate_names(&candidates),
+                    span,
+                    scope_name: kb.scope_display_name(scope).to_owned(),
+                }),
+            };
+            if let Some(error) = error {
+                errors.push(error.located_in(file));
+            }
+        }
+    }
+    if let Term::Fn {
+        pos_args,
+        named_args,
+        ..
+    } = term
+    {
+        for child in pos_args
+            .iter()
+            .copied()
+            .chain(named_args.iter().map(|(_, v)| *v))
+        {
+            query_type_name_errors(kb, file, child, scope, in_type, errors);
+        }
+    }
 }
 
 /// WI-909 — THE IMPLICIT TIER WAS HERE, AND IS GONE. `PRELUDE_QUALIFIED` (a short-name →

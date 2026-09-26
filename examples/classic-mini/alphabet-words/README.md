@@ -91,6 +91,18 @@ query `any_word` — the domain with nothing binding the spine — under a cap:
 #   ...
 ```
 
-(A query *pattern* naming a parameterized type argument directly returns
-nothing from the CLI today although the same goal inside a rule answers —
-measured 2026-09-11, WI-20260911-7FP1M. Hence the rule.)
+Parameterized types also work directly in query arguments. For example, test
+membership of the empty word with:
+
+```bash
+./rustland/target/debug/anthill query -p examples/classic-mini/alphabet-words \
+  -i 'classic.alphabet.*' -i 'anthill.prelude.List' \
+  -i 'anthill.prelude.List.*' \
+  'anthill.kernel.domain(nil(), List[T = Letter])'
+#   true
+# 1 solution(s)
+```
+
+Import `List` itself as well as its members: `List.*` alone does not put the
+sort name in scope. A missing name in a type bracket is reported as an error
+(WI-20260911-7FP1M). Use `any_word` above for enumeration; `domain` tests membership.

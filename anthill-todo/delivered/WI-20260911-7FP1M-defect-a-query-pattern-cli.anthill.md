@@ -3,9 +3,9 @@
 - id: WI-20260911-7FP1M-defect-a-query-pattern-cli
 - created: 2026-09-11T07:49:07Z
 
-- status: Open
-- status_agent: claude
-- status_at: 2026-09-11T07:49:07Z
+- status: Delivered
+- status_agent: codex
+- status_at: 2026-09-26T16:11:35Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -20,4 +20,10 @@ CAUSE (not driven; where to look first). `convert_query_term` / `convert_query_t
 WHY IT MATTERS. Every relation with a parameterized type in an argument -- WI-743's derived `domain(?x, T)` is the first, rule-body goals like `Modifiable[?t]` are the same family -- is unqueryable from the CLI and from pattern-driven tests except through a wrapper rule, and a test that "queries the relation directly" asserts 0 rows without noticing. The loud-over-silent rule applies: if the query path cannot lower a type application it must REFUSE the pattern, never lower it to a term that matches nothing.
 
 ACCEPTANCE (cargo-test via scripts/test.sh). Pattern-driven over the alphabet-words rules: `domain(nil(), List[T = Letter])` answers 1, and `domain(?w, List[T = Letter])` under a cap answers the cap with first rows `nil`, `[a]`, `[b]`, `[c]`. CONTROLS, each at its site: the bare-sort pattern `domain(?x, Letter)` answers 3 either way BY DESIGN; the wrapper-rule route `any_word(?w)` answers identically either way BY DESIGN; an unresolvable sort name inside the bracket stays a loud error. Say which rows fail with the fix backed out. If the decision is to REFUSE rather than lower, the acceptance row becomes a located refusal naming the pattern, and the two controls stay.
+
+## Changes
+
+### 2026-09-26T15:56:06Z — feedback — user
+
+2026-09-26: Reproduced the remaining defect as name resolution, not type-application lowering: List.* does not import List itself. Correctly imported bracket patterns already match the original recursive domain rules. Added shared query-scan diagnostics for unresolved or ambiguous names in type brackets, preserving file-local imports and source spans. Added core and CLI regressions using the original alphabet/list rules: ground nil gives one answer, capped enumeration gives eight with nil/a/b/c first, bare Letter gives three, and wrapper enumeration agrees. Missing outer and nested names are refused. Back-out measured: the missing-name core test fails while both successful-query controls pass. Scala testFull passed all 578 tests; full Rust acceptance is running. Updated the example README. /code-review skill could not be found in the available skill locations; manual diff review performed.
 

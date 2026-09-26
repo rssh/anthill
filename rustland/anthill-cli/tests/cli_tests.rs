@@ -132,3 +132,5 @@ mod wi_2yhz3_answer_line_test;
 
 #[path = "include/wi_5g28a_query_bracket_test.rs"]
 mod wi_5g28a_query_bracket_test;
+#[path = "include/wi_7fp1m_query_type_names_test.rs"]
+mod wi_7fp1m_query_type_names_test;

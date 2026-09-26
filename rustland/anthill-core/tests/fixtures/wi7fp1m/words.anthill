@@ -1,0 +1,16 @@
+namespace wi7fp1m
+  import anthill.prelude.List
+  import anthill.prelude.List.{nil, cons}
+
+  sort Letter
+    entity a
+    entity b
+    entity c
+  end
+
+  rule domain(?x, Letter) :- ?x <=> a() | ?x <=> b() | ?x <=> c()
+  rule domain(nil(), List[T = ?T]) :- true
+  rule domain(cons(?h, ?t), List[T = ?T])
+    :- domain(?t, List[T = ?T]), domain(?h, ?T)
+  rule any_word(?w) :- domain(?w, List[T = Letter])
+end
