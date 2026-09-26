@@ -294,6 +294,19 @@ pub enum BuiltinTag {
     /// 060's staging rule).
     TypeDomain,
 
+    /// WI-20260925-SHED7 — `__domain_guard(?x, B)`: the TYPE TEST a typed head with a
+    /// FILLABLE bound runs IN FRONT of its body, beside the fill appended after it
+    /// (`typing::install_typed_head_domain_goals`). The question [`Self::TypeDomain`] asks,
+    /// with ONE answer changed: a value that is GROUND and whose type the closed reading
+    /// still leaves open (`[]` against `List[T = ?t]`) passes, because no later binding can
+    /// decide it and the appended fill — which reads the open type — owns it. An unbound or a
+    /// partly bound `?x` WAITS, exactly as `domain` does, so rotation re-asks it ahead of every
+    /// body goal that delayed after it.
+    ///
+    /// Internal: minted by the typer, never by the converter, and its own tag rather than a
+    /// flag on `domain`, so no written `domain(…)` can ask for the relaxed answer.
+    TypeDomainGuard,
+
     /// WI-20260911-5G28A S3, WI-20260925-SHED7 (proposal 060 §2.3, 067 §3) —
     /// `apply_domain(E, ?x)`: `SortDomain[…].fill(?x)` through the evidence `E` — a
     /// dictionary, or a TYPE whose dictionary is built one level at a time as `fill` reads
@@ -2505,9 +2518,10 @@ impl SearchStream {
         //
         // WI-20260925-P7VP4 — A WOVEN Bool-view call reads its shape off the occurrence, as the
         // arity+1 hook below does (`woven_head`): the inference weaves `Util.isLess(?a, ?b)`
-        // to carry its clause's conditions, and `ApplyWithin` heads `Opaque` on the view. Read
-        // only through the view, the call answered nothing — so the inference declined it, and
-        // a citation's dictionary never reached a Bool-view call.
+        // to carry its clause's conditions, and on the view an `ApplyWithin` heads its reflect
+        // twin `apply_within`, not the callee. Read only through the view, the call answered
+        // nothing — so the inference declined it, and a citation's dictionary never reached a
+        // Bool-view call.
         let bool_view_head = match &goal_val {
             Value::Node(o) => match o.as_expr() {
                 Some(Expr::ApplyWithin {
@@ -2714,15 +2728,16 @@ impl SearchStream {
         // Same rewrite discipline as the Bool hook: goal[0] in place, same goal
         // count, `delay_mode` threaded through unchanged.
         // WI-1040 — a WOVEN goal reads its shape off the occurrence, not off the
-        // view. `Expr::ApplyWithin` is `ViewHead::Opaque` (term_view.rs, `occ_head`),
-        // deliberately: its faithful term twin is the WRAPPED reflect shape
-        // `apply_within(fn = …, args = …, requirements = …)`, whose head functor is
-        // `apply_within` and NOT the callee — so a transparent head here would be a
-        // cross-carrier miss of exactly the WI-425/WI-815 kind. The two readers that
-        // must understand a woven call therefore read `as_expr()` directly: this one
-        // and `reduce_op_value`. An opaque goal that reaches neither answers nothing
-        // (it is not indexed and not cached), which is the pre-existing outcome for
-        // an unrecognized goal — never a wrong answer.
+        // view. On the view an `Expr::ApplyWithin` heads its faithful term twin, the
+        // WRAPPED reflect shape `apply_within(fn = …, args = …, requirements = …)`
+        // (term_view.rs), whose functor is `apply_within` and NOT the callee — so
+        // reading the callee there would be a cross-carrier miss of exactly the
+        // WI-425/WI-815 kind. The readers that must understand a woven call therefore
+        // read `as_expr()` directly: this hook, the Bool view above, the WI-580 case
+        // split (`op_call_as_occ`), WI-670's refutation pre-check (which skips one)
+        // and `reduce_op_value`. A woven goal no reader claims reaches candidate
+        // selection under `apply_within`, which no clause has, and answers nothing —
+        // never a wrong answer.
         let woven_head: Option<(Symbol, usize)> = match &goal_val {
             Value::Node(o) => match o.as_expr() {
                 Some(Expr::ApplyWithin {
@@ -2880,34 +2895,24 @@ impl SearchStream {
                                 // ALGEBRA — measured, folding the two broke 5 wi616 cases.
                                 let undecided = kb.is_unreduced_op_call(&reduced)
                                     || kb.reduction_left_body_less_call(&reduced);
-                                // WI-1057 — the WOVEN bypass is narrowed by that same
-                                // predicate, so "never `unify` on an undecided call" is a
-                                // TOTAL invariant of this site rather than one with an
-                                // exception. WI-1040's reason for the bypass survives
-                                // intact: an unresolved call comes back as the
-                                // `Expr::ApplyWithin` it went in as, which
-                                // `reduction_left_body_less_call` does not match (it reads
-                                // `Expr::Apply` only), so a woven goal whose dictionary is
-                                // not bound yet still routes and still DELAYS. What the
-                                // clause removes is the other exit: once the dictionary
-                                // resolves, `reduce_op_value` continues on the impl MEMBER
-                                // as a plain `Apply`, and a body-less member the bridge
-                                // declined is a bare call that `unify_values` would NOT
-                                // delay on — `operand_is_unevaluated_call` reads bodied ops
-                                // and `ApplyWithin`, neither of which that is.
+                                // THE WOVEN BYPASS NEEDS NO NARROWING, and the one WI-1057 gave
+                                // it is gone because it could no longer match. An undecided
+                                // woven call comes back as the `Expr::ApplyWithin` it went in
+                                // as — one exit for `reduce_op_value`'s dispatch and slot arms
+                                // (WI-20260925-P7VP4) — never as the plain member call
+                                // `reduction_left_body_less_call` reads, so `unify` always
+                                // meets a call it DELAYS on (`operand_is_unevaluated_call`
+                                // counts an `ApplyWithin`) and the result variable is never
+                                // bound to it. "Never `unify` on an undecided call it would
+                                // bind" holds here by that exit, not by a clause.
                                 //
-                                // NOT DRIVEN, and said so deliberately. Reaching it needs a
-                                // woven call — so a BODIED functor, since
-                                // `collect_covered_calls` weaves only what
-                                // `functional_relation_arity` admits — whose dictionary
-                                // selects a BODY-LESS member of a concrete provider, which
-                                // is what WI-818's backing check refuses. Both halves of
-                                // that argument are load-bearing; a change to either makes
-                                // this reachable, which is why the clause is here rather
-                                // than the argument alone.
-                                if (!reqs.is_empty() && !kb.reduction_left_body_less_call(&reduced))
-                                    || !undecided
-                                {
+                                // THE RETRY'S LIMIT, stated rather than rediscovered: `unify`
+                                // re-reduces its operand through `reduce_operand`, whose
+                                // `dispatch_body_less` is OFF, so a dictionary that selects a
+                                // BODY-LESS member only the bridge runs is re-asked without the
+                                // bridge and waits. Reaching it needs a concrete provider with a
+                                // body-less member, which WI-818's backing check refuses.
+                                if !reqs.is_empty() || !undecided {
                                     let unify_sym = kb.unify_functor();
                                     let unify_goal =
                                         kb.make_goal_value(unify_sym, vec![result, reduced]);
@@ -5932,7 +5937,8 @@ impl KnowledgeBase {
             BuiltinTag::SubOccurrences => self.builtin_sub_occurrences(goal, answer_subst),
             BuiltinTag::OperationBody => self.builtin_operation_body(goal, answer_subst),
             BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst, faults),
-            BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst),
+            BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst, false),
+            BuiltinTag::TypeDomainGuard => self.builtin_type_domain(goal, answer_subst, true),
             BuiltinTag::ApplyDomain => self.builtin_apply_domain(goal, answer_subst),
             BuiltinTag::DomainSub => BuiltinResult::Error(ResolveError::new(
                 "`__domain_sub` is `apply_domain`'s dictionary operand, not a goal".to_string(),
@@ -6542,28 +6548,27 @@ impl KnowledgeBase {
     /// generator can bind `?x`, collapsing `f(?x: Colour) :- palette(c: ?x)` to one
     /// floundered residual.
     ///
-    /// THE EARLY GUARD (`early: true`, [`super::typing::TYPE_DOMAIN_EARLY_LABEL`]) is the same
-    /// question asked in front of a typed head's body, beside the fill appended after it:
-    /// every row above answers as written EXCEPT the `Delay`s, which SUCCEED — the guard
-    /// decides only what the value already settles, and leaves the rest to that fill rather
-    /// than waiting in front of the generator that binds it.
+    /// THE TYPED-HEAD GUARD ([`BuiltinTag::TypeDomainGuard`], `guard`) is the same question
+    /// asked in front of a typed head's body, beside the fill appended after it. Every row
+    /// above answers as written, the unbound `?x` included — it WAITS, so rotation re-asks it
+    /// before any body goal that delayed after it — except one: a GROUND value whose type the
+    /// closed reading leaves open (`[]` against `List[T = ?t]`) SUCCEEDS. No binding can
+    /// decide it any more, and the appended fill, which reads the open type, owns it; waiting
+    /// would leave it a residual beside a fill that answered.
     fn builtin_type_domain<V: TermView>(
         &mut self,
         goal: &V,
         subst: &Substitution,
+        guard: bool,
     ) -> BuiltinResult {
-        let early = matches!(goal.head(self), ViewHead::Functor { named_arity, .. } if named_arity > 0)
-            && goal
-                .named_keys(self)
-                .into_iter()
-                .any(|k| self.local_name_of(k) == super::typing::TYPE_DOMAIN_EARLY_LABEL);
-        let undecided = || {
-            if early {
-                BuiltinResult::Success
-            } else {
-                BuiltinResult::delay()
-            }
-        };
+        // A WRITTEN `domain(…)` can carry any shape; the question has exactly one. A stray
+        // operand is refused rather than ignored — a label here once changed the answer.
+        if !matches!(goal.head(self), ViewHead::Functor { pos_arity: 2, named_arity: 0, .. }) {
+            return BuiltinResult::Error(ResolveError::new(
+                "domain(?x, T) takes exactly two positional operands — the value and its type"
+                    .to_string(),
+            ));
+        }
         let (Some(value), Some(bound)) = (
             self.walk_arg(goal.pos_arg(self, 0), subst),
             self.walk_arg(goal.pos_arg(self, 1), subst),
@@ -6586,8 +6591,15 @@ impl KnowledgeBase {
             ));
         };
         if self.value_is_unbound_var(&value) {
-            return undecided();
+            return BuiltinResult::delay();
         }
+        let undecided = |kb: &Self| {
+            if guard && kb.value_is_ground(&value, subst) {
+                BuiltinResult::Success
+            } else {
+                BuiltinResult::delay()
+            }
+        };
         // TWO CARRIERS, ONE QUESTION, and the split is by PROVENANCE of the operand
         // rather than by anything this goal means.
         //
@@ -6636,7 +6648,7 @@ impl KnowledgeBase {
                 return BuiltinResult::SuccessWithBindings(pin)
             }
             super::typing::TypeBoundPin::Refuted => return BuiltinResult::Failure,
-            super::typing::TypeBoundPin::Suspend => return undecided(),
+            super::typing::TypeBoundPin::Suspend => return undecided(self),
         }
         let verdict = match *bound.carried() {
             Value::Term { id: bound_tid, .. } => {
@@ -6669,14 +6681,14 @@ impl KnowledgeBase {
             // and walks it, turning definite rows conditional. So the new rule lives with
             // the new carrier, and the generated path is untouched.
             _ if view_has_type_variable(self, bound.carried()) => {
-                return undecided();
+                return undecided(self);
             }
             _ => super::typing::type_bound_verdict_view(self, subst, &value, bound.carried()),
         };
         match verdict {
             super::typing::TypeBoundVerdict::Holds => BuiltinResult::Success,
             super::typing::TypeBoundVerdict::Refuted => BuiltinResult::Failure,
-            super::typing::TypeBoundVerdict::Suspend => undecided(),
+            super::typing::TypeBoundVerdict::Suspend => undecided(self),
         }
     }
 }
@@ -6771,12 +6783,16 @@ impl KnowledgeBase {
                 match super::typing::pin_bound_from_value_open(self, subst, &x_now, &bound) {
                     super::typing::TypeBoundPin::NotApplicable => {}
                     super::typing::TypeBoundPin::Pinned { pin: p, bound: b } => {
-                        let mut s = Substitution::with_parent(subst.clone());
-                        for (v, val) in p.bindings.iter() {
-                            s.bind_value(self, *v, val.clone());
+                        // An EMPTY pin — the bound was pinned already — says nothing σ does
+                        // not, and σ is not copied for it.
+                        if !p.bindings.is_empty() {
+                            let mut s = Substitution::with_parent(subst.clone());
+                            for (v, val) in p.bindings.iter() {
+                                s.bind_value(self, *v, val.clone());
+                            }
+                            scratch = Some(s);
+                            pin = Some(p);
                         }
-                        scratch = Some(s);
-                        pin = Some(p);
                         bound_now = b;
                     }
                     super::typing::TypeBoundPin::Refuted => return ApplyDomainLowering::Fail,
@@ -6804,6 +6820,14 @@ impl KnowledgeBase {
         // ever on a variable no goal could reach — `holder(p: pair(a: 1, b: 2))` floundered
         // where the retired `domain_leaf` answered it. An unbound value still waits: nothing
         // enumerates an unknown type.
+        //
+        // ONE TYPE, pinned by the FIRST value it types — as the TYPER reads an unwritten
+        // parameter (kernel-language §8: a variable that was not written). `duo(x: circle(…),
+        // y: square(…))` under `Duo[A = Int64]` is refused here, and the typer refuses the same
+        // value in an operation body ("expected Circle, got Square"); filling each position
+        // through its own type would accept `y: "s"` as well. And it reads the value OPEN, so an
+        // unknown part of its type interns a fresh variable per step — the typed-head pin path's
+        // growth, recorded for SHED7's rework (a transient pin path end to end).
         if let (DomainEvidence::Unpinned(var), 2) = (&read, pos_arity) {
             let var = *var;
             let bound_x = self
@@ -11002,7 +11026,18 @@ impl KnowledgeBase {
         // argument untouched.
         let reduce_args = self.host_op_reducible_at_a_value(op);
         for (i, &p) in params.iter().enumerate() {
-            let item = occ.pos_arg(self, i).or_else(|| occ.named_arg(self, p));
+            // A WRITTEN label (`lt2(x: 1, y: 5)`) is the bare name, where the arg place is
+            // the parameter's own symbol (`U2.lt2.x`): matched as a LABEL, as the typer aligns
+            // a call (`align_call_args_to_params`) and the rewriter binds one. Read by symbol
+            // alone, every written-label call in a rule body stayed un-reduced — its Bool view
+            // a conditional residual where the positional twin decided.
+            let item = occ.pos_arg(self, i).or_else(|| occ.named_arg(self, p)).or_else(|| {
+                let key = occ
+                    .named_keys(self)
+                    .into_iter()
+                    .find(|k| super::typing::same_label(self, *k, p))?;
+                occ.named_arg(self, key)
+            });
             match self.walk_arg(item, subst) {
                 Some(a) => {
                     let a = if reduce_args && depth < FOLD_DEPTH_CAP {
@@ -11896,15 +11931,45 @@ impl KnowledgeBase {
     /// A `Value::Entity` is the SAME term-lowered goal once σ has moved it
     /// (WI-20260906-7YPGM) and takes the arm below for the same reason. `None` when
     /// `v` is not such an op-call.
-    fn op_call_as_occ(&mut self, v: &Value) -> Option<Rc<NodeOccurrence>> {
+    ///
+    /// A DISPATCH-woven call (WI-1040, WI-20260925-P7VP4) whose dictionary σ has bound is the
+    /// call to the member that dictionary selects — `reduce_op_value` rebuilds it exactly so —
+    /// and that member is what this reader unfolds: the inference weaves a Bool-view call
+    /// (`Palette.warm(?c, rod())`) to carry its clause's condition, and read as an opaque woven
+    /// call it lost the split on `?c` the unwoven call had. Unbound, it is no call yet.
+    fn op_call_as_occ(&mut self, v: &Value, subst: &Substitution) -> Option<Rc<NodeOccurrence>> {
+        if let Value::Node(o) = v {
+            if let Some(Expr::ApplyWithin {
+                functor,
+                args,
+                named_args,
+                requirements,
+                type_args,
+            }) = o.as_expr()
+            {
+                if self.woven_call_takes_slots(*functor) {
+                    return None;
+                }
+                let (target, _) = self.dictionary_dispatch_target(*functor, requirements, subst)?;
+                self.op_body_node(target)?;
+                return Some(o.rebuilt_expr(Expr::Apply {
+                    recv_type: None,
+                    functor: target,
+                    pos_args: args.clone(),
+                    named_args: named_args.clone(),
+                    type_args: type_args.clone(),
+                }));
+            }
+        }
         match v {
             // WI-1040 — an `ApplyWithin` is `is_unreduced_op_call` (it is un-reduced
             // by construction until its dictionary reads), but it is NOT what this
             // reader's contract promises: "BODIED ops only … which UNFOLDS the
-            // callee's body". Admitting it made `unfold_eq_operand` pick a woven
-            // operand as its case-split subject and then bail at its own `_ =>
+            // callee's body". Admitting it AS IT STANDS made `unfold_eq_operand` pick a
+            // woven operand as its case-split subject and then bail at its own `_ =>
             // return None`, ABANDONING the WI-580 split that the other operand would
-            // have served.
+            // have served — so a woven call is admitted above only rebuilt as the
+            // `Apply` of the member its dictionary selected, and never reaches here.
             // WI-20260826-VPEWK — AND IT MUST HAVE A BODY, asked HERE rather than
             // inherited from `is_unreduced_op_call`. That predicate gained a
             // HOST-MAPPED leg, which is right for the DELAY question it answers for
@@ -12489,9 +12554,9 @@ impl KnowledgeBase {
         // genuinely unground op-call case-splits.
         let a = self.walk_arg(goal.pos_arg(self, 0), subst)?;
         let b = self.walk_arg(goal.pos_arg(self, 1), subst)?;
-        let (occ, other) = if let Some(o) = self.op_call_as_occ(&a) {
+        let (occ, other) = if let Some(o) = self.op_call_as_occ(&a, subst) {
             (o, b)
-        } else if let Some(o) = self.op_call_as_occ(&b) {
+        } else if let Some(o) = self.op_call_as_occ(&b, subst) {
             (o, a)
         } else {
             return None;
@@ -13316,6 +13381,12 @@ impl KnowledgeBase {
     ///   imposed, `rule f(?x: Colour) :- palette(c: ?x)` returns one floundered
     ///   residual instead of its rows, because the rule delays before its own
     ///   generator runs.
+    /// - [`BuiltinTag::TypeDomainGuard`] (WI-20260925-SHED7) — REORDERABLE, for the same
+    ///   reason: it is `domain`'s question about the value. Its one success `domain` would
+    ///   not give — a ground value the closed reading cannot type — is no claim about the
+    ///   caller's instantiation: groundness only grows, and the appended fill still decides.
+    ///   And it sits in front of every fillable typed head, so the wholesale delay would
+    ///   collapse each generating call exactly as above.
     fn builtin_is_reorderable(tag: BuiltinTag) -> bool {
         !matches!(
             tag,
@@ -13378,6 +13449,13 @@ impl KnowledgeBase {
         for node in nodes {
             // A builtin conjunct's satisfiability is not a candidate count.
             if self.get_builtin_view(node).is_some() {
+                continue;
+            }
+            // Nor is a WOVEN goal's (WI-1040, WI-20260925-P7VP4): it reaches the readers of a
+            // call — the Bool view, the functional-relation hook — never candidate selection,
+            // and its view head is the reflect twin `apply_within`, which no clause has. Read
+            // here, its zero candidates REFUTED the clause the unwoven call delayed.
+            if matches!(node.as_expr(), Some(Expr::ApplyWithin { .. })) {
                 continue;
             }
             let walked = Value::Node(node_occurrence::substitute_occurrence(self, node, subst));

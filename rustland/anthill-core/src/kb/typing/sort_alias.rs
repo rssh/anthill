@@ -460,6 +460,14 @@ pub(crate) fn dealias_type(kb: &mut KnowledgeBase, t: TermId) -> TermId {
             } if pos_args.is_empty() && named_args.is_empty() => *functor,
             _ => return None,
         };
+        // O(1) FIRST: `alias_targets` holds every alias, keyed as `resolve_sort_alias` matches
+        // (the exact symbol), and nothing else — a `sort T = ?` parameter is not one — so a
+        // miss is `resolve_alias_shape`'s `None`. Asked before it because the derivation runs
+        // ahead of `sort_alias_index`, where that read is a scan of every `SortAlias` fact per
+        // field leaf, for a pass that rarely meets an alias.
+        if !kb.alias_targets.contains_key(&s) {
+            return None;
+        }
         let shape = resolve_alias_shape(kb, s)?;
         Some(dealias_type(kb, shape))
     })

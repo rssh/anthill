@@ -990,3 +990,244 @@ end
         "the element's number, not a constant: `Prod`'s `zero()` + 100 + 1",
     );
 }
+
+// ── Review fixes, round 3: each row drives one fix, and fails with it backed out ─────
+
+/// A call with a CONCRETE carrier among its arguments keeps value dispatch, though the guard
+/// answers `Suspend` for it — it stops at the first carrier it cannot read. `toN`'s `?u` is a
+/// `String`, the second carrier of `Conv`, which `Meters` provides at `B = String`: the
+/// provision is its carrier-parameter's, so asking `String` to provide `Conv` — what a woven
+/// read's guard does — refuses the call. `go` answers `7`. FAILS with `inferred_demand`'s
+/// concrete-carrier check removed: the call is woven, its read DontFires on `String`, and `go`
+/// is empty.
+#[test]
+fn a_call_with_a_concrete_carrier_among_its_arguments_keeps_value_dispatch() {
+    const MIXED: &str = r#"
+namespace wip7vp4.mixed
+  import anthill.prelude.{Int64, String}
+
+  sort Conv
+    sort A = ?
+    sort B = ?
+    operation conv(a: A, b: B) -> Int64
+  end
+
+  sort Meters
+    entity m(v: Int64)
+    provides Conv[A = Meters, B = String]
+    operation conv(a: Meters, b: String) -> Int64 = 7
+  end
+
+  rule toN(?x, ?r) :- ?u <=> "km", Conv.conv(?x, ?u, ?r)
+  rule go(?r) :- toN(m(v: 3), ?r)
+end
+"#;
+    let mut kb = crate::common::load_kb_with(MIXED);
+    assert_eq!(only_int(&mut kb, "wip7vp4.mixed.go"), Some(7), "`Meters.conv`, by value");
+}
+
+/// A WITNESS-supplied carrier beside a second carrier LOADS: `W provides Conv[A = Leaf2, B =
+/// Int64]`, and `r`'s call reads `?l: Leaf2`, `?n: Int64`. The load check files `Leaf2` as not
+/// known at load (`Suspend`) — firing on it walked on to `Int64`, which provides no `Conv`,
+/// and refused the program. `r` answers `9`, `W`'s. FAILS with the witness filter removed from
+/// `spec_op_call_carrier_outcome`: the load is refused, "`Int64` provides no `Conv`".
+#[test]
+fn a_witness_carrier_beside_a_second_carrier_loads() {
+    const WITNESS2: &str = r#"
+namespace wip7vp4.witness2
+  import anthill.prelude.Int64
+
+  sort Conv
+    sort A = ?
+    sort B = ?
+    operation conv(a: A, b: B) -> Int64
+  end
+
+  sort Leaf2
+    entity leaf2
+  end
+
+  sort W
+    provides Conv[A = Leaf2, B = Int64]
+    operation conv(a: Leaf2, b: Int64) -> Int64 = 9
+  end
+
+  entity seed(l: Leaf2, n: Int64)
+  fact seed(l: leaf2(), n: 4)
+
+  rule r(?x) :- seed(l: ?l, n: ?n), Conv.conv(?l, ?n, ?x)
+end
+"#;
+    let mut kb = crate::common::load_kb_with(WITNESS2);
+    assert_eq!(only_int(&mut kb, "wip7vp4.witness2.r"), Some(9), "`W.conv`");
+}
+
+/// A clause holding a WOVEN goal is not refuted when it opens. `lessH`'s `?p(?a)` — a
+/// higher-order call, non-reorderable — delays the whole clause on the caller's unbound `?p`
+/// (WI-670's open-time pre-check), and the pre-check first asks whether a conjunct REFUTES the
+/// clause regardless: the woven `isLess` goal heads the reflect twin `apply_within` on the view,
+/// which no clause has — zero candidates, read as a refutation. It is skipped: the clause
+/// delays, `known` binds `?p`, and `q` answers. (A `ground(?a)` or `nonvar(?a)` in its place
+/// types `?a`, so the call is not woven and never reaches the question.) FAILS with the skip
+/// removed: the clause is refuted at opening and `q` is empty.
+#[test]
+fn a_clause_with_a_woven_goal_is_not_refuted_at_opening() {
+    let mut kb = crate::common::load_kb_with(&fix_program(
+        "wip7vp4.opening",
+        "  entity known(p: ?)\n  \
+         rule isPos(?n) :- Int64.gt(?n, 0)\n  \
+         fact known(p: isPos)\n  \
+         rule lessH(?p, ?a, ?b) :- ?p(?a), Util.isLess(?a, ?b)\n  \
+         rule q(?r) :- lessH(?p, 1, 5), known(p: ?p), ?r <=> 1\n",
+    ));
+    assert_eq!(only_int(&mut kb, "wip7vp4.opening.q"), Some(1), "`isPos(1)` and `isLess(1, 5)`, once `?p` is bound");
+}
+
+/// A woven Bool-view call keeps its WI-580 CASE SPLIT. `warm` is a DEFAULTED spec op whose body
+/// `match`es on `c`; `w`'s call is woven (its carrier `?x` is unknown at load), and `wRod` asks
+/// it with `?c` unbound: the split reads the call through the member its dictionary selects —
+/// the default, `Rod` supplying none — and narrows `?c` to `red`, definitely; cited with the
+/// rival `Cool`, it splits through `Cool`'s own `warm` and finds `blue`. FAILS with
+/// `op_call_as_occ`'s woven arm removed: no split, the bridge waits on `?c`, and `wRod` is one
+/// floundered row.
+#[test]
+fn a_woven_bool_view_call_keeps_its_case_split() {
+    const SPLIT: &str = r#"
+namespace wip7vp4.split
+  import anthill.prelude.{Int64, Bool}
+
+  sort Colour
+    entity red
+    entity blue
+  end
+
+  sort Palette
+    sort T = ?
+    operation tint(x: T) -> Int64
+    operation warm(c: Colour, x: T) -> Bool =
+      match c
+        case red() -> true
+        case blue() -> false
+  end
+
+  sort Rod
+    entity rod
+    provides Palette[T = Rod]
+    operation tint(x: Rod) -> Int64 = 1
+  end
+
+  -- a rival whose `warm` is the other way round: a citation that hands it in must split
+  -- through ITS body
+  sort Cool
+    provides Palette[T = Rod]
+    operation tint(x: Rod) -> Int64 = 2
+    operation warm(c: Colour, x: Rod) -> Bool =
+      match c
+        case red() -> false
+        case blue() -> true
+  end
+
+  rule w(?c, ?x) :- Palette.warm(?c, ?x)
+  rule wRod(?c) :- w(?c, rod())
+
+  sort Driver
+    import anthill.prelude.{Error, EmptyStream}
+    operation citeW[X](x: X) -> Colour effects {Error, Error[EmptyStream]}
+      requires Palette[T = X] = w(x: x).head.c
+    operation warmCool() -> Colour effects {Error, Error[EmptyStream]} =
+      citeW[X = Rod, Palette = Cool](rod())
+  end
+end
+"#;
+    let mut interp = crate::common::interp_for(SPLIT);
+    let cited = interp.call("wip7vp4.split.Driver.warmCool", &[]).expect("`warmCool` answers");
+    let shown = match &cited {
+        Value::Node(occ) => anthill_core::persistence::print::TermPrinter::new(interp.kb()).print_occurrence(occ),
+        other => format!("{other:?}"),
+    };
+    assert!(shown.ends_with("blue"), "`Cool`'s `warm` holds at `blue()`, not `red()`: {shown}");
+    let mut kb = crate::common::load_kb_with(SPLIT);
+    let rows = crate::common::query_unary(&mut kb, "wip7vp4.split.wRod");
+    let printer = anthill_core::persistence::print::TermPrinter::new(&kb);
+    let shown: Vec<(String, bool)> = rows
+        .iter()
+        .map(|(v, d)| match v {
+            Value::Node(occ) => (printer.print_occurrence(occ), *d),
+            Value::Term { id, .. } => (printer.print_term(*id), *d),
+            other => (format!("{other:?}"), *d),
+        })
+        .collect();
+    assert_eq!(shown, vec![("red".to_string(), true)], "`warm(red(), rod())` holds; `blue()` does not");
+}
+
+/// A Bool-view call written with NAMED arguments answers through the caller's dictionary, as
+/// its positional twin does (`a_bool_view_call_answers_through_the_callers_dictionary`): it is
+/// woven like it, and its labels reach the callee's parameters. FAILS two ways: with
+/// `woven_goal_has_reader` refusing named arguments, the call is not woven and derives `Int64`'s
+/// own `-1` — `lessN(1, 5)` holds under `Descending` too; and with `reduce_op_value` reading a
+/// named argument by the parameter's symbol alone, the written label `x` matches no `…isLess.x`
+/// and the call never reduces — one conditional row under both.
+#[test]
+fn a_named_argument_bool_view_call_answers_through_the_callers_dictionary() {
+    let driver = "  rule lessN(?a, ?b) :- Util.isLess(x: ?a, y: ?b)\n  \
+                  sort Driver\n    \
+                  operation citeLessN[A](x: A, y: A) -> Bool effects {Error, Error[EmptyStream]}\n      \
+                  requires WeakOrd[T = A] =\n      \
+                  let r = lessN(x, y)\n      \
+                  r.isEmpty\n    \
+                  operation lessNDesc() -> Bool effects {Error, Error[EmptyStream]} =\n      \
+                  citeLessN[A = Int64, WeakOrd = Descending](1, 5)\n    \
+                  operation lessNAsc() -> Bool effects {Error, Error[EmptyStream]} =\n      \
+                  citeLessN[A = Int64, WeakOrd = Ascending](1, 5)\n  \
+                  end\n";
+    let mut interp = crate::common::interp_for(&fix_program("wip7vp4.named", driver));
+    let mut empty = |entry: &str| match interp.call(&format!("wip7vp4.named.Driver.{entry}"), &[]) {
+        Ok(Value::Bool(b)) => b,
+        other => panic!("{entry}: expected a Bool, got {other:?}"),
+    };
+    assert!(empty("lessNDesc"), "`Descending`: 1 is not less than 5, so `lessN(1, 5)` is empty");
+    assert!(!empty("lessNAsc"), "`Ascending`: it is, so `lessN(1, 5)` holds");
+}
+
+/// A `@[simp]` LAW fires at a carrier whose only instance is a WITNESS provision, as the run-time
+/// read's guard does since this ticket: both ask the one guard core, which asks both channels
+/// (`carrier_provides_spec`). `Rival provides Magma[T = Leaf]` with an `op2` that answers its
+/// second argument, and `Magma`'s law `op2(?a, ?b) <=> ?a`: the typer rewrites `r`'s call at
+/// load and `r` is `l1`. FAILS with the guard core asking `sort_provides` alone: the law does not
+/// fire at `Leaf`, the call dispatches to `Rival.op2`, and `r` is `l2`.
+#[test]
+fn a_simp_law_fires_at_a_witness_supplied_carrier() {
+    const LAW: &str = r#"
+namespace wip7vp4.law
+  sort Leaf
+    entity l1
+    entity l2
+  end
+
+  sort Magma
+    sort T = ?
+    operation op2(a: T, b: T) -> T
+    rule op2(?a, ?b) <=> ?a @[simp]
+  end
+
+  sort Rival
+    provides Magma[T = Leaf]
+    operation op2(a: Leaf, b: Leaf) -> Leaf = b
+  end
+
+  rule r(?z) :- ?z <=> Magma.op2(l1(), l2())
+end
+"#;
+    let mut kb = crate::common::load_kb_with(LAW);
+    let rows = crate::common::query_unary(&mut kb, "wip7vp4.law.r");
+    let printer = anthill_core::persistence::print::TermPrinter::new(&kb);
+    let shown: Vec<(String, bool)> = rows
+        .iter()
+        .map(|(v, d)| match v {
+            Value::Node(occ) => (printer.print_occurrence(occ), *d),
+            Value::Term { id, .. } => (printer.print_term(*id), *d),
+            other => (format!("{other:?}"), *d),
+        })
+        .collect();
+    assert_eq!(shown, vec![("l1".to_string(), true)], "the law's left projection");
+}

@@ -11337,6 +11337,9 @@ impl KnowledgeBase {
         // (`typing::install_typed_head_domain_goals`) from the type bound the loader
         // already installed, which is why the name is looked up rather than written.
         self.register_builtin_tag(crate::kb::typing::TYPE_DOMAIN_GOAL, BuiltinTag::TypeDomain);
+        // WI-20260925-SHED7 — the type test in front of a typed head's body, beside its fill.
+        // Minted by the typer only. See [`BuiltinTag::TypeDomainGuard`].
+        self.register_builtin_tag(crate::kb::typing::TYPE_DOMAIN_GUARD, BuiltinTag::TypeDomainGuard);
         // WI-20260911-5G28A S3 — the typed-head sweep's metacall: run the domain a
         // `SortDomain` dictionary names. Minted by the typer, never by the converter, like
         // `TYPE_DOMAIN_GOAL` above. See [`BuiltinTag::ApplyDomain`].

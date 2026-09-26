@@ -1,20 +1,24 @@
 //! WI-20260911-5G28A — RULE HEAD TYPE VARIABLES: opened per CITATION at the typer, read
 //! off the VALUE at the resolver, minted for UNWRITTEN parameters at the loader.
 //!
-//! FIVE AXES, FIVE BACK-OUTS. Each group names the one edit that reddens it; a row that
-//! passes with its axis backed out is marked as a control and says so.
+//! FIVE AXES, FIVE BACK-OUTS. Each group names the edit that reddens it — one edit, except B,
+//! whose three sites cover each other; a row that passes with its axis backed out is marked as
+//! a control and says so.
 //!
 //!  A. `typing::relation_reference_type_applied`'s `type_mentions_flex_var` arm —
 //!     make it fall through to `types_compatible`.
 //!  B. The (in, out) READ of a value's type into a bound's variables — at THREE sites since
 //!     WI-20260925-SHED7 and its review, each covering the others: `typing::pin_bound_from_value`
-//!     (the EARLY guard in front of a typed head's body), `typing::pin_bound_from_value_open`
-//!     (the conform of the fill after it), and `lower_apply_domain`'s `Unpinned` read (a
-//!     condition's type, off a bound element). Back out ONE and every row here passes; all
-//!     THREE (both pins returning `NotApplicable`, the `Unpinned` arm skipped) redden
-//!     `a_tied_head_answers_definite_with_an_empty_residual`, `a_bound_body_decides_in_one_row`,
-//!     `the_accepted_rigid_row_evaluates` and `the_bound_variable_is_opened_per_firing` — ten
-//!     rows over the domain suites, measured.
+//!     (the typed head's guard in front of its body, `__domain_guard`, and a written `domain`),
+//!     `typing::pin_bound_from_value_open` (the conform of the fill after it), and
+//!     `lower_apply_domain`'s `Unpinned` read (a condition's type, off a bound element). Back
+//!     out ONE and every row here passes (the closed pin alone reddens only WT8WG's
+//!     `a_written_bound_carrying_a_type_variable_is_read_off_the_value`, a written `domain`
+//!     having no other reader); all THREE (both pins returning `NotApplicable`, the `Unpinned`
+//!     arm skipped) redden `a_tied_head_answers_definite_with_an_empty_residual`,
+//!     `a_bound_body_decides_in_one_row`, `the_accepted_rigid_row_evaluates` and
+//!     `the_bound_variable_is_opened_per_firing` — eleven rows over the domain suites,
+//!     measured in SHED7's third review round.
 //!  C. `KnowledgeBase::assert_rule_debruijn_with_bound_vars` — drop the `bound_vars` loop.
 //!  D. `load::expand_unwritten_type_params`'s `Term::Ref` arm — return `t` unchanged.
 //!  E. (RETIRED by WI-20260925-SHED7) `resolve::domain_member_goal_is_undetermined`. With

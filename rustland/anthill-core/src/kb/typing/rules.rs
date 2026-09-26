@@ -489,11 +489,13 @@ pub(super) fn type_rule_bodies(
 /// member a DIFFERENT name rather than a capture of this one.
 pub(crate) const TYPE_DOMAIN_GOAL: &str = "anthill.kernel.domain";
 
-/// The label that makes a generated [`TYPE_DOMAIN_GOAL`] the EARLY guard of a fillable bound
-/// (`domain(?x, B, early: true)`, [`install_typed_head_domain_goals`]): it decides a value
-/// already bound when the clause opens and STANDS ASIDE otherwise, instead of waiting — the
-/// fill appended after the body tests and generates whatever it leaves open.
-pub(crate) const TYPE_DOMAIN_EARLY_LABEL: &str = "early";
+/// WI-20260925-SHED7 — the type test a FILLABLE typed-head bound runs in front of its body,
+/// `__domain_guard(?x, B)` ([`install_typed_head_domain_goals`],
+/// [`crate::kb::resolve::BuiltinTag::TypeDomainGuard`]): [`TYPE_DOMAIN_GOAL`]'s question,
+/// except that a ground value whose type the closed reading leaves open passes — the fill
+/// appended after the body owns it. Its own builtin rather than a flag on `domain`, so a
+/// written `domain(…)` cannot ask for that answer.
+pub(crate) const TYPE_DOMAIN_GUARD: &str = "anthill.kernel.__domain_guard";
 
 /// WI-20260911-5G28A S3 — the metacall a typed head's bound reaches its domain through when
 /// the bound names a type VARIABLE: `apply_domain(?d, ?x)` runs the domain the `SortDomain`
@@ -556,10 +558,10 @@ pub(crate) fn typed_head_domain_pass(kb: &mut KnowledgeBase) -> crate::kb::occur
 
 /// WI-742 / WI-743 / WI-20260925-SHED7 (proposal 060 §2–§2.3) — compile every `?x: B`
 /// annotation on a RELATIONAL rule head into generated goals: the domain's `fill`, APPENDED
-/// after the body, and in front of the body an EARLY type test of a value already bound:
+/// after the body, and in front of the body the TYPE TEST:
 ///
 /// ```text
-/// rule p(?x: B) :- body      ≡      rule p(?x) :- domain(?x, B, early: true), body,
+/// rule p(?x: B) :- body      ≡      rule p(?x) :- __domain_guard(?x, B), body,
 ///                                                 SortDomain[B].fill(?x)
 /// ```
 ///
@@ -568,10 +570,10 @@ pub(crate) fn typed_head_domain_pass(kb: &mut KnowledgeBase) -> crate::kb::occur
 /// annotation was stripped at load (WI-582's `typed_var` marker) — so the discrimination
 /// tree indexes a typed head exactly as it indexes the untyped one.
 ///
-/// ONE GOAL, AND IT BOTH TESTS AND GENERATES (060-implementation §7.3, "`SortDomain` is the
-/// ONLY domain mechanism"). With `?x` bound it fills `?x` in mode (in) — a membership test,
-/// which for a derived domain or a primitive's waiting check is also the type test; with
-/// `?x` unbound it GENERATES. What it is depends on what the bound names:
+/// THE FILL BOTH TESTS AND GENERATES (060-implementation §7.3, "`SortDomain` is the ONLY
+/// domain mechanism"). With `?x` bound it fills `?x` in mode (in) — a membership test, which
+/// for a derived domain or a primitive's waiting check is also the type test; with `?x`
+/// unbound it GENERATES. What it is depends on what the bound names:
 ///   * a GROUND type with a domain — `Colour.domain(?x)`, the provider's `fill` called by
 ///     name, where the sort's `fill` reads no dictionary; else `apply_domain(B, ?x)`, the
 ///     dictionary built from the type (`List[T = Letter]`);
@@ -589,13 +591,21 @@ pub(crate) fn typed_head_domain_pass(kb: &mut KnowledgeBase) -> crate::kb::occur
 /// <=> [?, ?, ?]` did not terminate, while the twin with the goal LAST answers 27 and stops
 /// (WI-743).
 ///
-/// AND THE TYPE TEST ALSO RUNS FIRST, on a value the call already bound — the EARLY guard
-/// (WI-742's conformance check, [`TYPE_DOMAIN_EARLY_LABEL`]), which decides a bound `?x` and
-/// stands aside for an unbound one rather than waiting, so a generating call is exactly what
-/// it was. Without it the written body ran on a value of the wrong type before any test did:
-/// a body goal that FAULTS on the wrong carrier (`add(2.5, 1, ?y)` under `?x: Int64`) turned
-/// the clause's quiet refutation into a fault, a CUT committed before the test ran, and a
-/// long body enumerated its answers only for the appended test to refuse each of them.
+/// AND A FILLABLE BOUND'S TYPE TEST ALSO RUNS FIRST — the guard [`TYPE_DOMAIN_GUARD`], WI-742's
+/// conformance check with one answer changed. Without it the written body ran on a value of
+/// the wrong type before any test did: a body goal that FAULTS on the wrong carrier
+/// (`add(2.5, 1, ?y)` under `?x: Int64`) turned the clause's quiet refutation into a fault, a
+/// CUT committed before the test ran, and a long body enumerated its answers only for the
+/// appended test to refuse each of them. The guard WAITS on an unbound or partly bound `?x`,
+/// and that is what keeps the fault out when a LATER goal binds it: the guard was delayed
+/// first, so rotation re-asks it before the body goal that delayed after it (a guard that
+/// stood aside instead let `add(2.5, 1, ?y)` run first). The one answer changed: a GROUND
+/// value whose type the closed reading leaves open (`[]` against `List[T = ?t]`) passes —
+/// no binding decides it any more, and the fill, which reads the open type, owns it.
+///
+/// Where the closed reading leaves a ground value's type open and the fill would REFUSE it
+/// (`[[]]` against `List[T = Int64]`), the body still runs first: the guard cannot tell it
+/// from `[]`, which the fill accepts. The boundary is the closed reading's.
 ///
 /// A SORT'S OWN `fill` CLAUSES GET NOTHING: they are the generator, and their bound is the
 /// column type a citation reads — a goal generated from it would run them again
@@ -606,8 +616,10 @@ pub(crate) fn typed_head_domain_pass(kb: &mut KnowledgeBase) -> crate::kb::occur
 /// a bound is a RELATIONAL head, including a body-less one — `rule p(?x: T) :- true` folds to
 /// an empty body (§6.1) and is still a clause that answers.
 pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
-    let Some(dom_sym) = kb.try_resolve_symbol(TYPE_DOMAIN_GOAL) else {
-        return; // builtin not registered — nothing to generate against
+    let (Some(dom_sym), Some(guard_sym)) =
+        (kb.try_resolve_symbol(TYPE_DOMAIN_GOAL), kb.try_resolve_symbol(TYPE_DOMAIN_GUARD))
+    else {
+        return; // builtins not registered — nothing to generate against
     };
     let pass = typed_head_domain_pass(kb);
     for rid in kb.live_rule_ids() {
@@ -667,7 +679,6 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
         };
         let bounds: Vec<(u32, TermId)> = kb.rule_type_bounds(rid).to_vec();
         let owner = anchor.owner;
-        let early_key = kb.intern(TYPE_DOMAIN_EARLY_LABEL);
         let mut prepended: Vec<Rc<NodeOccurrence>> = Vec::new();
         let mut appended: Vec<Rc<NodeOccurrence>> = Vec::new();
         for (db_index, bound_tid) in bounds {
@@ -684,24 +695,19 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
             let ty = || {
                 NodeOccurrence::new_expr(Expr::Spliced(Value::term(bound_tid)), anchor.span, owner)
             };
-            let goal_named = |functor: Symbol,
-                              pos_args: Vec<Rc<NodeOccurrence>>,
-                              named_args: Vec<(Symbol, Rc<NodeOccurrence>)>| {
+            let goal = |functor: Symbol, pos_args: Vec<Rc<NodeOccurrence>>| {
                 NodeOccurrence::synthesized_expr(
                     Expr::Apply {
                         recv_type: None,
                         functor,
                         pos_args,
-                        named_args,
+                        named_args: Vec::new(),
                         type_args: Vec::new(),
                     },
                     Rc::clone(&anchor),
                     pass,
                     owner,
                 )
-            };
-            let goal = |functor: Symbol, pos_args: Vec<Rc<NodeOccurrence>>| {
-                goal_named(functor, pos_args, Vec::new())
             };
             // What fills the bound, or `None` where only the conformance check can stand: a
             // WRITTEN domain's own clause (it IS the generator), a type with no domain, or a
@@ -725,16 +731,11 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
                         .map(|apply| vec![goal(apply, vec![ty(), var()])])
                 }
             };
-            // The fill APPENDED, and the EARLY guard in front of the body (see the doc above);
-            // a bound with no fill keeps the waiting conformance check, which is all it has.
+            // The fill APPENDED, and the guard in front of the body (see the doc above); a bound
+            // with no fill keeps the waiting conformance check, which is all it has.
             match fill {
                 Some(goals) => {
-                    let early = NodeOccurrence::new_expr(
-                        Expr::Const(crate::kb::term::Literal::Bool(true)),
-                        anchor.span,
-                        owner,
-                    );
-                    prepended.push(goal_named(dom_sym, vec![var(), ty()], vec![(early_key, early)]));
+                    prepended.push(goal(guard_sym, vec![var(), ty()]));
                     appended.extend(goals);
                 }
                 None => prepended.push(goal(dom_sym, vec![var(), ty()])),

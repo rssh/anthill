@@ -82,6 +82,13 @@
 //! `functional_relation_arity`), the WITNESS ESCAPE (the third filter clause), and the
 //! RECURSION (`CallDispatch::BodyLessSpecOp` walking into its own children).
 //!
+//! THE WITNESS ESCAPE COLUMN IS WI-1043's MEASUREMENT, and it has since moved. WI-20260925-
+//! P7VP4 made the guard core itself ask both provision channels (`carrier_provides_spec`), so
+//! backing the escape out alone no longer reddens either of its two rows (re-measured in that
+//! ticket's third review round). What the escape still holds is a MULTI-carrier call's load —
+//! `wi_p7vp4_rule_body_requirements_test::a_witness_carrier_beside_a_second_carrier_loads` —
+//! where firing on the witness carrier walks on to a second carrier that provides nothing.
+//!
 //! `the_walk_gate_is_exactly_the_two_halves` is ok in every column BY DESIGN, and the
 //! first version of this table predicted otherwise — it pins the GATE FUNCTION, not any
 //! reader of it, so reverting a reader cannot move it. What does: a clause added to

@@ -1686,11 +1686,12 @@ pub(crate) fn fetch_dictionary(
             }
         }
         // The guard said the carrier PROVIDES the spec and instance synthesis then
-        // found no tree. The two readers are not the same oracle — `sort_provides`
-        // sees a WI-450 witness-sort provision and a denoted/value-fact provision
-        // that `resolve`'s candidate collection does not — so this is a reachable
-        // COMPLETENESS gap, not an invariant break, and is deliberately not a
-        // `debug_assert`: firing on those shapes would reject programs that run
+        // found no tree. The two readers are not the same oracle — the guard's
+        // `carrier_provides_spec` is a BINDING-BLIND reachability question over sort
+        // heads (a WI-450 witness provision at other type arguments than the call's
+        // answers it), where synthesis resolves the call's own types — so this is a
+        // reachable COMPLETENESS gap, not an invariant break, and is deliberately not
+        // a `debug_assert`: firing on that shape would reject programs that run
         // correctly today whenever nothing reads the dictionary.
         //
         // Reported as UNDECIDED (⇒ the caller delays), not as failure: `out` is
@@ -2400,11 +2401,27 @@ pub(crate) fn pin_bound_from_value_open(
     if !type_mentions_flex_var(kb, bound) {
         return TypeBoundPin::NotApplicable;
     }
+    let bound = walk_type_deep_value(kb, subst, bound);
+    // PINNED ALREADY — by the guard in front of the body, or by a tie's other column: nothing
+    // is left to read off the value, so the conformance is asked of its CLOSED type, which
+    // interns nothing (an unknown part is the one `?_` placeholder, compatible with anything),
+    // and the pin is empty. The common case: a typed head with a variable in its bound whose
+    // value the guard could type.
+    if !type_mentions_flex_var(kb, &bound) {
+        let ty = value_type_term(kb, subst, value);
+        return if types_compatible(kb, &mut Substitution::new(), &ty, &bound) {
+            TypeBoundPin::Pinned {
+                pin: Substitution::new(),
+                bound,
+            }
+        } else {
+            TypeBoundPin::Refuted
+        };
+    }
     let Some(ty) = value_type_open(kb, subst, value) else {
         return TypeBoundPin::Suspend;
     };
     let mut pin = Substitution::new();
-    let bound = walk_type_deep_value(kb, subst, bound);
     if pin_type_vars(kb, &mut pin, &ty, &bound) {
         let bound = walk_type_deep_value(kb, &pin, &bound);
         TypeBoundPin::Pinned { pin, bound }
