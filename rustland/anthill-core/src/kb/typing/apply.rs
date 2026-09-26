@@ -2347,6 +2347,34 @@ pub(super) fn check_apply_iter(
                     ResolutionResult::Resolved(tree @ ResolvedRequiresNode::Conditional { .. }) => {
                         Some(tree)
                     }
+                    // WI-20260829-H0YCE — A GROUND GOAL THAT DOES NOT RESOLVE IS REFUSED,
+                    // as the body-less arm's dispatch refuses it. The instance gate above
+                    // is binding-BLIND: `MappedStream` HAS a `FiniteCollection` row (the
+                    // conditional `MappedStreamFinite` witness), so it passes at
+                    // `Source = Nats` too, and the witness's unmet condition was never
+                    // asked — `FiniteCollection.size` over an infinite source loaded while
+                    // `collect` over the same carrier was refused. Ground only: an OPEN
+                    // binding (`isEmpty(nil)`'s element) ends `NoMatch` on programs that
+                    // run, which is why the gate above does not refuse on `NoMatch` alone;
+                    // a ground goal's answer cannot change later. An UNBOUND parameter is
+                    // DROPPED from `goal.bindings` rather than carried as a var
+                    // (`sort_goal_from_subst`), so groundness needs the count too —
+                    // `size(MutableStack.new())` with the element never pinned is
+                    // `FiniteCollection[C = MutableStack, E = {}]`, no `Element`, and runs.
+                    ResolutionResult::NoMatch { goal_text, hint, .. }
+                        if env.enclosing_op().is_some()
+                            && goal.bindings.len() == kb.type_params_of_sort(spec_sort).len()
+                            && goal.bindings.iter().all(|(_, v)| {
+                                type_value_is_ground(kb, *v)
+                                    && !type_term_mentions_type_var(kb, *v)
+                            }) =>
+                    {
+                        return Err(TypeError::DispatchNoMatch {
+                            span,
+                            op: fn_sym,
+                            unmet: Some(Box::new(DispatchFailure { goal_text, hint })),
+                        });
+                    }
                     _ => None,
                 };
                 // WI-1091 — …AND ONLY WHERE THAT INSTANCE SPEAKS ABOUT THE OPERATION
