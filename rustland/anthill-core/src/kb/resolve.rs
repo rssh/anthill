@@ -12284,7 +12284,7 @@ impl KnowledgeBase {
         returns_bool && self.rules_by_functor_iter(f).next().is_none()
     }
 
-    /// WI-938 — the FUNCTIONAL-RELATION view of a bodied operation: the number of
+    /// WI-938 — the FUNCTIONAL-RELATION view of a bodied or host-mapped operation: the number of
     /// parameters `f` declares, when a goal `f(a₁…aₙ, ?r)` at arity **n + 1** is
     /// that operation's relation with the result as its last column. `None` when
     /// `f` is not eligible.
@@ -12300,8 +12300,10 @@ impl KnowledgeBase {
     ///
     /// Eligibility mirrors the Bool gate, and each clause is load-bearing:
     /// - **not a builtin** — a builtin has its own goal semantics and no body.
-    /// - **has a runnable body** — the relation is DERIVED from it; there is
-    ///   nothing to derive from a body-less spec op (it dispatches via WI-573).
+    /// - **reducible in a rule body** ([`Self::op_reducible_in_rule_body`]) — a
+    ///   runnable body the relation is DERIVED from, or a host mapping the bridge
+    ///   calls. A body-less spec op is neither (it dispatches via WI-573, and
+    ///   [`Self::body_less_relation_arity`] owns its view).
     /// - **effect-free**, as [`Self::effect_row_admits_relational_view`] defines it
     ///   (the row's MEMBERS, not its length — see the paragraph below) — an effectful
     ///   body is not a logical relation, and the eval bridge's empty effect registry
@@ -12377,14 +12379,18 @@ impl KnowledgeBase {
     /// before any allocation, and `rules_by_functor_iter` short-circuits at the
     /// first rule.
     pub(crate) fn functional_relation_arity(&self, f: Symbol) -> Option<usize> {
-        // NOT [`Self::op_reducible_in_rule_body`], and that is measured rather than
-        // conservative: widening this gate to a host-mapped op changes NOTHING —
-        // `String.concat("a", "b", ?r)` still answers nothing with it widened, and still
-        // does with `reduce_op_value`'s body-less arm opened up beside it. Whatever
-        // blocks the arity+1 view for a host op is further in and is not either of those
-        // two gates (WI-20260822-ZJZS7 carries both negatives). The Bool sibling above
-        // DOES widen, because its route is the one that works.
-        if self.builtins.get(&f).is_some() || self.op_body_node(f).is_none() {
+        // [`Self::op_reducible_in_rule_body`] — a body OR a host mapping, the Bool
+        // sibling's gate. This read `op_body_node(f).is_none()` until the ACG10 review,
+        // on a negative ZJZS7 recorded: widening changed NOTHING (`String.concat("a",
+        // "b", ?r)` still answered nothing). That negative was taken before
+        // WI-20260826-VPEWK opened the operand path for a mapped host op and WI-880
+        // mapped `concat`; this view is routed INTO that path (`unify(?r, f(args))`), so
+        // the negative expired with them and nobody re-measured. Until then
+        // `String.length("abc", ?n)` answered no solutions while `?n <=>
+        // String.length("abc")` answered 3, and `not(String.length("abc", 3))` proved a
+        // falsehood. Driven by
+        // `wi_vpewk_host_op_operand_test::the_arity_plus_one_view_runs_a_host_op`.
+        if self.builtins.get(&f).is_some() || !self.op_reducible_in_rule_body(f) {
             return None;
         }
         let sig = self.op_record(f).and_then(|r| r.signature.as_ref())?;

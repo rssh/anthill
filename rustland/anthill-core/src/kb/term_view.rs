@@ -1356,8 +1356,9 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         //
         //    THE PRICE IS PAID AT THE PRODUCER, not hidden here: an `Opaque` goal is
         //    invisible to builtin dispatch, to the discrim query and to the WI-938
-        //    hook, so `collect_covered_calls` weaves ONLY callees the WI-938 hook
-        //    recognizes (`functional_relation_arity`). Widening that population needs
+        //    hook, so `collect_covered_calls` weaves ONLY bodied callees the WI-938 hook
+        //    recognizes (`functional_relation_arity`, whose host-mapped admissions it
+        //    leaves unwoven). Widening that population needs
         //    a goal-position reader, or this head's twin problem solved — not a
         //    quiet transparent head.
         //
