@@ -153,10 +153,12 @@ namespace wi590.conditional
         case fin(l) -> l
   end
 
+  operation addp(a: Int64, b: Int64) -> Int64 = a + b
+
   operation probe(
       m: MappedStream[Source = {SOURCE}, Src = Int64, T = Int64, ES = {}, EF = {}])
-    -> List[T = Int64] =
-    FiniteCollection.collect(m)
+    -> {RET} =
+    {CONSUMER}
 end
 "#;
 
@@ -183,19 +185,52 @@ namespace wi590.conditional.filter
         case fnats(k) -> some(pair(k, fnats(from: k + 1)))
   end
 
+  operation addp(a: Int64, b: Int64) -> Int64 = a + b
+
   operation probe(
-      f: FilteredStream[Source = {SOURCE}, T = Int64, ES = {}, EF = {}])
-    -> List[T = Int64] =
-    FiniteCollection.collect(f)
+      m: FilteredStream[Source = {SOURCE}, T = Int64, ES = {}, EF = {}])
+    -> {RET} =
+    {CONSUMER}
 end
 "#;
 
+/// `collect`, the body-less primitive, is the consumer the original rows use.
+const COLLECT: Consumer = Consumer {
+    name: "collect",
+    ret: "List[T = Int64]",
+    body: "FiniteCollection.collect(m)",
+};
+
+/// WI-20260829-H0YCE — FiniteCollection's DEFAULTED members, each of which reaches
+/// the carrier through a different typer arm than `collect` does (the defaulted-op
+/// arm, not body-less dispatch). `m.size()` is here beside `FiniteCollection.size(m)`
+/// because the dot spelling is the one the docs reach for, and it is resolved first.
+const DEFAULTED: [Consumer; 4] = [
+    Consumer { name: "size", ret: "Int64", body: "FiniteCollection.size(m)" },
+    Consumer { name: "m.size()", ret: "Int64", body: "m.size()" },
+    Consumer { name: "foldLeft", ret: "Int64", body: "FiniteCollection.foldLeft(m, 0, addp)" },
+    Consumer { name: "foldRight", ret: "Int64", body: "FiniteCollection.foldRight(m, 0, addp)" },
+];
+
+struct Consumer {
+    name: &'static str,
+    ret: &'static str,
+    body: &'static str,
+}
+
+fn fill(fixture: &str, source: &str, c: &Consumer) -> String {
+    fixture
+        .replace("{SOURCE}", source)
+        .replace("{RET}", c.ret)
+        .replace("{CONSUMER}", c.body)
+}
+
 fn probe_over(source: &str) -> Vec<String> {
-    stdlib_plus_source_errors(&PROBE.replace("{SOURCE}", source))
+    stdlib_plus_source_errors(&fill(PROBE, source, &COLLECT))
 }
 
 fn filter_probe_over(source: &str) -> Vec<String> {
-    stdlib_plus_source_errors(&FILTER_PROBE.replace("{SOURCE}", source))
+    stdlib_plus_source_errors(&fill(FILTER_PROBE, source, &COLLECT))
 }
 
 /// THE GATE. A `List` source is finite, so the witness's `requires` discharges and
@@ -274,6 +309,128 @@ fn filtered_over_an_infinite_source_is_not_collectable() {
             .any(|e| e.contains("collect") || e.contains("FiniteCollection")),
         "the refusal must name the finiteness primitive it could not supply; \
          got: {errs:?}"
+    );
+}
+
+/// WI-20260829-H0YCE — THE GATE THROUGH THE DEFAULTED MEMBERS, finite side. Every
+/// defaulted consumer over every finite source loads, on both witnesses. The CONTROL
+/// for the refusal row below: without it, "the defaulted members are refused" could
+/// be "the defaulted members are refused everywhere".
+///
+/// Passes with and without the H0YCE fix, by design.
+#[test]
+fn defaulted_members_over_a_finite_source_load() {
+    let cells = [(PROBE, "List[T = Int64]"), (PROBE, "Fin"), (FILTER_PROBE, "List[T = Int64]")];
+    for (fixture, source) in cells {
+        for c in &DEFAULTED {
+            let errs = stdlib_plus_source_errors(&fill(fixture, source, c));
+            assert!(
+                errs.is_empty(),
+                "`{}` over a finite source ({source}) must load; got: {errs:?}",
+                c.name
+            );
+        }
+    }
+}
+
+/// WI-20260829-H0YCE — THE GATE THROUGH THE DEFAULTED MEMBERS, infinite side, and the
+/// row the ticket exists for. `collect` is body-less, so its call goes through
+/// spec-op dispatch and the witness's condition is asked. `size` / `foldLeft` /
+/// `foldRight` carry a default body and went through the defaulted-op arm, whose
+/// instance gate is binding-BLIND — `MappedStream` HAS a `FiniteCollection` row, the
+/// conditional one — so the condition was never asked and `size` over `Nats` loaded
+/// (a diverging count). Each must now be refused, naming the unmet condition.
+///
+/// BACK-OUT: remove the ground-`NoMatch` refusal arm in `apply.rs`'s defaulted-op
+/// block (tagged WI-20260829-H0YCE) and every cell of this test goes red — all four
+/// consumers load over `Nats` and over `FNats`. MEASURED.
+#[test]
+fn defaulted_members_over_an_infinite_source_are_refused() {
+    // The QUALIFIED source right after `C = `: that is the unmet CONDITION
+    // (`FiniteCollection[C = Nats]`), which the outer goal
+    // (`FiniteCollection[C = MappedStream[Source = Nats, …]]`) does not spell.
+    let cells = [
+        (PROBE, "Nats", "wi590.conditional.Nats"),
+        (FILTER_PROBE, "FNats", "wi590.conditional.filter.FNats"),
+    ];
+    for (fixture, source, qualified) in cells {
+        for c in &DEFAULTED {
+            let errs = stdlib_plus_source_errors(&fill(fixture, source, c));
+            let condition = format!("FiniteCollection[C = {qualified},");
+            assert!(
+                errs.iter().any(|e| e.contains(&condition)),
+                "`{}` over an INFINITE source ({source}) must be a load error naming \
+                 `FiniteCollection[C = {source}]`, as `collect` is; got: {errs:?}",
+                c.name
+            );
+        }
+    }
+}
+
+/// WI-20260829-H0YCE — the defaulted members DRIVEN over a finite mapped source: the
+/// refusal above must not have cost the accepting side its evaluation. `[1, 2, 3]`
+/// mapped by `+1` is `[2, 3, 4]`: size 3, and both folds sum to 9 (6 would be an
+/// unmapped walk). `Map` is the census's fourth row: its `size` is a counted OVERRIDE
+/// (WI-444), not the default, and its folds are the default over a DIRECT
+/// (unconditional) provision — both must still load and answer.
+///
+/// Passes with and without the H0YCE fix, by design.
+#[test]
+fn the_defaulted_members_evaluate_over_finite_carriers() {
+    let src = r#"
+namespace wi590.conditional.defaulted
+  import anthill.prelude.{List, Int64, Map, FiniteCollection, Pair}
+  import anthill.prelude.Pair.{pair}
+
+  operation inc(x: Int64) -> Int64 = x + 1
+  operation addp(a: Int64, b: Int64) -> Int64 = a + b
+  operation addr(b: Int64, a: Int64) -> Int64 = a + b
+  operation addv(acc: Int64, e: Pair[A = Int64, B = Int64]) -> Int64 =
+    match e
+      case pair(_, v) -> acc + v
+
+  operation mk() -> List[T = Int64] = [1, 2, 3]
+
+  operation mapped_size(xs: List[T = Int64]) -> Int64 =
+    FiniteCollection.size(FiniteCollection.map(xs, inc))
+  operation mapped_dot_size(xs: List[T = Int64]) -> Int64 = xs.map(inc).size()
+  operation mapped_fold_left(xs: List[T = Int64]) -> Int64 =
+    FiniteCollection.foldLeft(FiniteCollection.map(xs, inc), 0, addp)
+  operation mapped_fold_right(xs: List[T = Int64]) -> Int64 =
+    FiniteCollection.foldRight(FiniteCollection.map(xs, inc), 0, addr)
+
+  operation mk_map() -> Map[K = Int64, V = Int64] =
+    Map.put(Map.put(Map.empty(), 1, 10), 2, 20)
+  operation map_size(m: Map[K = Int64, V = Int64]) -> Int64 = FiniteCollection.size(m)
+  operation map_fold(m: Map[K = Int64, V = Int64]) -> Int64 =
+    FiniteCollection.foldLeft(m, 0, addv)
+end
+"#;
+    let mut interp = crate::common::interp_for(src);
+    let xs = interp
+        .call("wi590.conditional.defaulted.mk", &[])
+        .expect("build the source list");
+    for (op, want) in [
+        ("mapped_size", 3),
+        ("mapped_dot_size", 3),
+        ("mapped_fold_left", 9),
+        ("mapped_fold_right", 9),
+    ] {
+        let qn = format!("wi590.conditional.defaulted.{op}");
+        assert_eq!(int_of(&mut interp, &qn, &[xs.clone()]), want, "{op}");
+    }
+    let m = interp
+        .call("wi590.conditional.defaulted.mk_map", &[])
+        .expect("build the map");
+    assert_eq!(
+        int_of(&mut interp, "wi590.conditional.defaulted.map_size", &[m.clone()]),
+        2,
+        "Map's counted size override"
+    );
+    assert_eq!(
+        int_of(&mut interp, "wi590.conditional.defaulted.map_fold", &[m]),
+        30,
+        "the defaulted fold over a Map's direct provision"
     );
 }
 

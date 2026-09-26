@@ -3,9 +3,9 @@
 - id: WI-20260829-H0YCE-typer-stdlib-finitecollection
 - created: 2026-08-29T19:01:35Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-29T19:01:35Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-26T18:47:40Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -53,4 +53,10 @@ naming `FiniteCollection[C = Nats]`, as `collect` already is; the `List`-sourced
 loads AND evaluates; every defaulted member of FiniteCollection has a row saying which way it
 goes; `wi590_conditional_finiteness_test` gains the `size` rows beside its `collect` ones;
 say at the site which rows fail when the fix is backed out.
+
+## Changes
+
+### 2026-09-26T18:47:29Z — feedback — user
+
+DELIVERED. Cause as the ticket guessed, now traced: a DEFAULTED spec op (size/foldLeft/foldRight) at a concrete carrier goes through apply.rs's defaulted-op arm, whose instance gate (carrier_is_an_instance) is binding-blind — MappedStream/FilteredStream HAVE a FiniteCollection row (the conditional MappedStreamFinite/FilteredStreamFinite witness), so the gate passed at Source = Nats and the witness's condition was never asked; body-less collect goes through dispatch, which asks it. Fix: in that arm, a resolution that ends NoMatch on a GROUND goal (every spec param bound, none open) is refused as DispatchNoMatch naming the unmet condition — the same refusal collect gets. Open goals keep loading: an unbound param is DROPPED from the goal, hence the param-count check (size(MutableStack.new()), isEmpty(nil) — wi508/wi818 caught the first cut without it). CENSUS, measured: over MappedStream AND FilteredStream (the ticket named only Mapped; Filtered had the same hole), size, m.size(), foldLeft, foldRight over Nats are now refused naming FiniteCollection[C = Nats]; over List / Fin all load; size, dot-size and both folds over a List-sourced map EVALUATE (3, 3, 9, 9); Map.size (the WI-444 counted override) = 2 and the defaulted foldLeft over Map's direct provision = 30. Rows in wi590_conditional_finiteness_test (defaulted_members_*). BACK-OUT measured: disabling the new arm reddens only defaulted_members_over_an_infinite_source_are_refused; the finite and eval rows pass either way by design. NOT CHANGED, observed: FiniteCollection.size over a BARE Nats (not a combinator) is refused only by an effect error (undeclared effect ?_), not by finiteness — the carrier is never classified, so this arm is not reached. scaland has no typer; the change touches no stdlib file, so it has nothing to mirror — sbt not installed in this container, not run.
 
