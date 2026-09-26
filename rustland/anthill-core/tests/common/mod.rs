@@ -699,6 +699,51 @@ pub fn query_unary(kb: &mut KnowledgeBase, qn: &str) -> Vec<(eval::Value, bool)>
         .collect()
 }
 
+/// The FIRST `k` answers of `qn(?r)`, pulled one at a time off the resolver's LAZY stream
+/// (`KnowledgeBase::resolve_lazy`), each paired with whether it is definite.
+///
+/// FOR A RELATION WITH INFINITELY MANY ANSWERS — a recursive type's domain, a generator of
+/// skeletons. [`query_unary`] drains eagerly, so on such a relation it stops only where
+/// the search hits its depth cap, and the rows it returns are a truncation, not an
+/// answer: their count moves whenever a clause gains or loses a step. A prefix read
+/// lazily is the answer's own first `k` rows, and the search never nears the cap.
+///
+/// A FAULT PANICS, naming it: a faulted search is neither rows nor the end of rows.
+#[allow(dead_code)]
+pub fn first_unary(kb: &mut KnowledgeBase, qn: &str, k: usize) -> Vec<(eval::Value, bool)> {
+    use anthill_core::kb::resolve::ResolveConfig;
+    use anthill_core::kb::term::{Term, Var};
+    use smallvec::SmallVec;
+
+    let sym = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("first_unary: `{qn}` does not resolve"));
+    let r_sym = kb.intern("r");
+    let r_vid = kb.fresh_var(r_sym);
+    let r_var = kb.alloc(Term::Var(Var::Global(r_vid)));
+    let goal = kb.alloc(Term::Fn {
+        functor: sym,
+        pos_args: SmallVec::from_elem(r_var, 1),
+        named_args: SmallVec::new(),
+    });
+    let mut stream = kb.resolve_lazy(&[goal], &ResolveConfig::default());
+    let mut out = Vec::with_capacity(k);
+    while out.len() < k {
+        match stream.split_first(kb) {
+            Ok(Some((sol, rest))) => {
+                let v = kb
+                    .answer_binding(r_vid, &sol.subst)
+                    .unwrap_or_else(|| kb.reify(r_var, &sol.subst));
+                out.push((v, sol.is_definite()));
+                stream = rest;
+            }
+            Ok(None) => break,
+            Err(fault) => panic!("first_unary: `{qn}` faulted: {}", fault.error.message),
+        }
+    }
+    out
+}
+
 /// [`query_unary`] KEEPING ONLY THE DEFINITE ANSWERS — what a test asserting that
 /// something DECIDES must count.
 ///

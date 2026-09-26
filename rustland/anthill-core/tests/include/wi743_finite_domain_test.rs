@@ -2,6 +2,16 @@
 //! `domain_member` relation from its constructor list, and a typed relational head
 //! reads it in mode (out).
 //!
+//! WI-20260925-SHED7 REPLACED THE MECHANISM, and kept these rows' answers. A sort's
+//! domain is now its `SortDomain`'s `fill` — `<Sort>.domain`, derived per entity and per
+//! field, the element reached through a dictionary — and a typed head's fill goes after the
+//! body, with an early type test in front of it; the kernel `domain_member` / `domain_leaf`
+//! are retired. The back-out axes below name the WI-743 build — its functions, by the names
+//! they had then — and are kept as its record; SHED7's own axes are in
+//! `wi_shed7_fillable_test`. Three rows moved with the design, each saying so at its
+//! site: the explicit member goal is `Colour.domain(?x)`, `Bool` has a primitive domain
+//! (the waiting check), and a bare `?w: List` fills to skeletons — `[]` definitely.
+//!
 //! WI-742 gave `?x: T` a body goal that TESTS (`domain(?x, T)`, prepended) and DELAYS
 //! when `?x` is unbound. This ticket adds the generator at the other end of the body:
 //! `domain_member(?x, T)`, APPENDED, one derived clause per sort with constructors —
@@ -51,7 +61,8 @@
 //!    bottoming out and backtracking, where the partition gives `[0, 1, 2, 3, 4]`.
 //!
 //!  * `a_constructorless_bound_keeps_wi742`, `an_introducer_bound_still_delays`,
-//!    `bool_has_no_derived_domain`, `a_simp_equation_reads_no_member_and_still_fires`
+//!    `bool_has_a_primitive_domain_and_does_not_enumerate`,
+//!    `a_simp_equation_reads_no_member_and_still_fires`
 //!    and `a_declined_sort_records_why` pass under EVERY back-out above, BY DESIGN:
 //!    they are the gate's other side — what a sort with no derived domain still does.
 //!    The `@[simp]` one is not inert, though: it fails the moment the append stops
@@ -59,14 +70,13 @@
 //!
 //! WHAT IS NOT HERE, each with its owner:
 //!  * ABSTRACT `T` (an introducer bound, recorded as the SPEC) enumerating through the
-//!    caller's instantiation. Nothing is derived for a spec, so the bound keeps
-//!    WI-742's delay — pinned by `an_introducer_bound_still_delays`. Making it
-//!    enumerate needs `domain` to be a SPEC member and a dictionary channel that
-//!    carries a RELATION (WI-20260909-NAR1X), neither of which exists.
-//!  * The VALUE face. `Colour.domain` cited as a relation VALUE is not delivered;
-//!    §2.2 promises the GOAL face only.
-//!  * `Bool`. Its values are literals, not entity constructors, so it has no
-//!    constructor list to derive from — pinned by `bool_has_no_derived_domain`.
+//!    caller's instantiation: a spec has no domain, so the bound keeps WI-742's delay —
+//!    pinned by `an_introducer_bound_still_delays`. A caller's instantiation reaches a
+//!    TYPE-VARIABLE bound through a `SortDomain` dictionary (5G28A S3a, SHED7).
+//!  * The VALUE face, `Colour.domain` cited as a relation value — WT8WG's suite, and since
+//!    SHED7 the parameterised one too (`wi_shed7_fillable_test`).
+//!  * `Bool` ENUMERATING: its values are literals, so its `fill` is the waiting check —
+//!    pinned by `bool_has_a_primitive_domain_and_does_not_enumerate`; WI-20260910-5TK6B.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
@@ -268,9 +278,10 @@ fn an_infinite_domain_is_fair() {
 fn a_leaf_element_type_is_answered_exactly_once() {
     let mut kb = crate::common::load_kb_with(WORD_SRC);
     // `List[T = String]`: the SPINE is structural (the `List` clause answers it) and
-    // the ELEMENT is not (`String` has no constructors, so it reaches the conformance
-    // read through the catch-all). ONE row, not two — the catch-all must stand aside
-    // for the spine, which is what `domain_leaf`'s `has_domain_member` arm does.
+    // the ELEMENT is not — `String` has no constructors, and its `fill` is the primitive's
+    // waiting type check (SHED7), which leaves the element as it found it. ONE row, not
+    // two: the element's check answers beside the spine, never as a second spine. (WI-743
+    // built this with a catch-all `domain_leaf` that had to stand aside for the spine.)
     assert_eq!(definite_answers(&mut kb, "test.wi743.words.text(?w)"), 1);
     // And an UNBOUND element is a conditional answer, never a definite one: `String`
     // is not enumerable, so the element's domain goal stays undischarged.
@@ -375,24 +386,21 @@ end
 #[test]
 fn an_explicit_member_goal_answers_what_the_typed_head_does() {
     // §2.2 makes the implicit typed head and the explicit relation ONE thing, so pin
-    // both spellings against each other. `domain_member` is reached by GENERATION and
-    // has no surface spelling (the same reason `find_dictionary` has none), so the
-    // explicit side is built here rather than written in anthill.
+    // both spellings against each other. Since WI-20260925-SHED7 the explicit relation is
+    // the sort's own `fill`, `Colour.domain` — the kernel `domain_member` is retired — and
+    // the typed head calls it by name; built here from its symbol, as the typed head
+    // reaches it.
     //
     // MEASURES THE LOADER ALONE: this row still passes with the typer's appended goal
     // deleted, which is what separates the two axes.
     let mut kb = crate::common::load_kb_with(COLOUR_SRC);
     let member = kb
-        .try_resolve_symbol("anthill.kernel.domain_member")
-        .expect("WI-743 defines the member relation whenever anything derives");
-    let colour = kb
-        .try_resolve_symbol("test.wi743.colour.Colour")
-        .expect("the fixture's sort");
+        .try_resolve_symbol("test.wi743.colour.Colour.domain")
+        .expect("the loader derives the sort's `fill` under its `.domain`");
     let x = fresh_var(&mut kb, "x");
-    let ty = kb.alloc(Term::Ref(colour));
     let goal: TermId = kb.alloc(Term::Fn {
         functor: member,
-        pos_args: SmallVec::from_slice(&[x, ty]),
+        pos_args: SmallVec::from_slice(&[x]),
         named_args: SmallVec::new(),
     });
     let sols = kb.resolve(&[goal], &ResolveConfig::default());
@@ -403,20 +411,32 @@ fn an_explicit_member_goal_answers_what_the_typed_head_does() {
 }
 
 #[test]
-fn bool_has_no_derived_domain() {
+fn bool_has_a_primitive_domain_and_does_not_enumerate() {
     // `Bool` did not appear in the all-nullary census because its values are LITERALS,
-    // not entity constructors — there is no constructor list to read existentially. So
-    // `?x: Bool` does not enumerate under this gate, and saying so is the point: a
-    // hand-written `Bool.domain` in the prelude is the cheap later fix, not this ticket.
-    let kb = crate::common::load_kb_with(COLOUR_SRC);
+    // not entity constructors — there is no constructor list to read existentially.
+    // WI-20260925-SHED7: EVERY type has a `SortDomain` (user, 2026-09-25), and a
+    // primitive's `fill` is the WAITING TYPE CHECK — so `Bool` has a domain, derived from
+    // no constructor list, and `?x: Bool` over an unbound `?x` still does not enumerate:
+    // it waits, and the row is undecided. Enumerating `true` / `false` is
+    // WI-20260910-5TK6B's.
+    let mut kb = crate::common::load_kb_with(
+        "namespace test.wi743.bool\n\
+         \x20 import anthill.prelude.{Bool}\n\
+         \x20 sort Colour\n\
+         \x20   entity red\n\
+         \x20 end\n\
+         \x20 rule anyBool(?x: Bool) :- true\n\
+         end\n",
+    );
     let b = kb
         .try_resolve_symbol("anthill.prelude.Bool")
         .expect("Bool is in the prelude");
-    assert!(!kb.has_domain_member(b));
-    // The CONTROL, sharing nothing but the predicate: a sort that DOES have
-    // constructors answers the other way.
-    let colour = kb.try_resolve_symbol("test.wi743.colour.Colour").unwrap();
-    assert!(kb.has_domain_member(colour));
+    assert!(kb.has_sort_domain(b));
+    assert_eq!(answers(&mut kb, "test.wi743.bool.anyBool(?x)"), 1);
+    assert_eq!(definite_answers(&mut kb, "test.wi743.bool.anyBool(?x)"), 0);
+    // The CONTROL, sharing nothing but the predicate: a sort with constructors has one too.
+    let colour = kb.try_resolve_symbol("test.wi743.bool.Colour").unwrap();
+    assert!(kb.has_sort_domain(colour));
 }
 
 #[test]
@@ -477,7 +497,7 @@ fn a_declined_sort_records_why() {
     // Nothing in this fixture declines, which is the control for the accessor itself:
     // it must answer `None` for a sort that DID derive.
     let colour = kb.try_resolve_symbol("test.wi743.colour.Colour").unwrap();
-    assert_eq!(kb.domain_member_decline_reason(colour), None);
+    assert_eq!(kb.sort_domain_decline_reason(colour), None);
 }
 
 const FIELDED_SRC: &str = r#"
@@ -670,14 +690,14 @@ fn an_indeterminate_bound_gets_no_generator() {
     );
     assert_eq!(sols.len(), 1, "the body binds `?w`; there is one row");
     assert!(sols[0].is_definite());
-    // A TOP-LEVEL bare `List` keeps WI-742's ladder: nothing binds `?w`, the conformance
-    // goal delays, and the row is conditional. `List` names no element domain, so there
-    // is nothing to enumerate and inventing one would be inventing an answer.
-    assert_eq!(answers(&mut kb, "test.wi743.indeterminate.anylist(?w)"), 1);
-    assert_eq!(
-        definite_answers(&mut kb, "test.wi743.indeterminate.anylist(?w)"),
-        0
-    );
+    // A TOP-LEVEL bare `List` is `List[T = ?t]` (5G28A), and since WI-20260925-SHED7 it
+    // FILLS: `List`'s `fill` needs no element for `[]`, whose `nil` case never reads the
+    // condition — a definite row — and every longer list waits on `?t`, which nothing
+    // pins, so each is undecided. No element type is invented. The generator is infinite,
+    // so it is read LAZILY: an eager drain would stop only at the depth cap.
+    let first = crate::common::first_unary(&mut kb, "test.wi743.indeterminate.anylist", 3);
+    let definite: Vec<bool> = first.iter().map(|(_, d)| *d).collect();
+    assert_eq!(definite, [true, false, false], "`[]`, then skeletons waiting on `?t`");
     // THE CONTROL, and it is what makes the two rows above a boundary rather than a
     // failure to generate: the same sort, the same body shape, with the element type
     // WRITTEN — and it answers.
@@ -781,13 +801,13 @@ end
 "#,
     );
     let holder = kb.try_resolve_symbol("test.wi743.decline.Holder").unwrap();
-    assert!(!kb.has_domain_member(holder));
+    assert!(!kb.has_sort_domain(holder));
     assert!(kb
-        .domain_member_decline_reason(holder)
+        .sort_domain_decline_reason(holder)
         .is_some_and(|r| r.contains("no type arguments")));
     // THE CONTROL: a sort in the same file with no such field derives, so the decline is
     // this sort's and not the batch's.
     let fine = kb.try_resolve_symbol("test.wi743.decline.Fine").unwrap();
-    assert!(kb.has_domain_member(fine));
-    assert_eq!(kb.domain_member_decline_reason(fine), None);
+    assert!(kb.has_sort_domain(fine));
+    assert_eq!(kb.sort_domain_decline_reason(fine), None);
 }

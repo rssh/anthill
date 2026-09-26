@@ -1,6 +1,6 @@
 # 067: `Fillable` — a type whose logical variables can be filled, through a dictionary
 
-## Status: Draft (2026-09-25). Decided in discussion while designing WI-20260911-5G28A's S3b (`docs/design/060-implementation.md` §7.3). The names are the user's.
+## Status: Draft (2026-09-25). Decided in discussion while designing WI-20260911-5G28A's S3b (`docs/design/060-implementation.md` §7.3). The names are the user's. §6 step 1 DELIVERED (WI-20260925-SHED7): the spec, `SortDomain provides Fillable`, `fill` found through the provider's `SortDomain` entry, a sort's derived `fill` and a primitive's (060-implementation §7.3, "DELIVERED 2026-09-25"). Steps 2 and 3 wait on §5.
 
 ## Relates to: [060](060-clause-level-requirements-and-typed-heads.md) §2.2–§2.3 (a sort's domain — an implementation of `Fillable`), [`060-typedomains-implementation.md`](../design/060-typedomains-implementation.md) (the requirement channel), [058](058-modular-instances.md) (dictionaries; §3.8 conditional provisions), [052](052-rules-as-stream-valued-operations.md) (`Relation`), [056](056-variadic-argument-capture.md) (the `...` spelling).
 
@@ -64,7 +64,16 @@ fill ?x with D           impl List → List's fill:  ?x <=> cons(head: ?h, tail:
 ```
 
 `fill` is found from `impl` through the provisions, as an operation member is found through
-`SortOpsTable` — which gains rows for a spec's RULE members.
+`SortOpsTable` — through a map of the rule member's own, the provider's `SortDomain` entry.
+(Step 1 first filed it IN `SortOpsTable`, as a row for the RULE member. That table is keyed by
+short name, so the row collided with any operation of the provider named `fill` — the relation
+took the operation's dispatch in one load phase and the operation lost its row across two — and
+`Dictionary.ops` listed the relation as an operation. `/code-review`, 2026-09-25.)
+
+(The example shows the conditions only. A `SortDomain` dictionary as built carries
+`SortDomain`'s own chain first — the `Fillable` it provides is a conversion, filed where a
+`requires` goes — so `Bit`'s dictionary is sub 1 of `List`'s there, and the derived `fill` reads it
+at that offset; 060-implementation §7.3, "DELIVERED 2026-09-25".)
 
 ## 4. Worked example — MiniSat over `List`, and the generalization we want
 

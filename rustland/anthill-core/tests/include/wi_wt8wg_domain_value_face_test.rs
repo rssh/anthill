@@ -1,6 +1,15 @@
 //! WI-20260911-WT8WG (proposal 060 §2.2) — the VALUE face of a sort's domain:
 //! `<Sort>.domain`, cited as an ordinary `Relation`.
 //!
+//! WI-20260925-SHED7 REPLACED THE MECHANISM UNDER THE FACE, and kept these rows' answers.
+//! `<Sort>.domain` is no longer a projection of the kernel `domain_member` (retired): it IS
+//! the sort's `SortDomain` `fill`, derived per entity and per field — the constructor
+//! disjunction itself — and the goal face calls it. So the parameterised value face now
+//! exists (`List[T = Letter].domain`), a primitive has one (its waiting check), and the
+//! kernel relation's rows are written against `Colour.domain` instead. The back-out axes
+//! below name the WT8WG build and are kept as its record; SHED7's are in
+//! `wi_shed7_fillable_test`.
+//!
 //! WI-743 delivered the GOAL face — a typed relational head reads the derived
 //! `anthill.kernel.domain_member` relation as an appended body goal. This ticket adds
 //! the NAME that reads the same clauses from a value position:
@@ -41,7 +50,7 @@
 //!    0 passed, 39 failed. The sweep anchors a body-less clause's generated goals on
 //!    `rule_head_span` and hits its own `debug_assert!(false, "a type bound on a body-less
 //!    clause with no source head span")`. The strongest control in the file, and the
-//!    reason the span is a field of `DomainMemberJob` rather than an afterthought.
+//!    reason the span is a field of `DomainJob` rather than an afterthought.
 //!  * **[c] the 1-ARY hand-written hook** (its arity filter no longer matches) — exactly
 //!    2, one per file: `a_written_domain_is_both_the_value_face_and_the_generator` and
 //!    wi743's `a_hand_written_domain_narrows_the_sort`. The written relation stops
@@ -344,24 +353,22 @@ namespace test.wt8wg.kernel
     entity blue
   end
 
-  rule members(?x) :- domain_member(?x, Colour)
+  rule members(?x) :- Colour.domain(?x)
   rule redConforms() :- ?x <=> red(), domain(?x, Colour)
   rule redIsNotAnInt(?y) :- ?y <=> red(), domain(?y, Int64)
 end
 "#;
 
-/// `anthill.kernel.domain_member` IS WRITABLE — it is declared in `kernel.anthill`
-/// (061's body-less form) rather than minted at the derivation's drain, which is after
-/// every body in the batch has resolved. MEASURED before this ticket: under
-/// `import anthill.kernel.*`, `domain`, `domain_leaf`, `find_dictionary` and `push_and`
-/// all resolved and `domain_member` alone "named nothing".
+/// THE SORT'S DOMAIN IS WRITABLE FROM A RULE BODY — as `Colour.domain(?x)`, the relation
+/// itself. It was the kernel `domain_member(?x, Colour)` until WI-20260925-SHED7 retired
+/// that relation: a sort's domain has one name, its own `fill`.
 #[test]
-fn the_kernel_domain_relation_is_writable_from_a_rule_body() {
-    let mut kb = try_load_kb_with(KERNEL_SRC).expect("`domain_member` must resolve");
+fn the_sorts_domain_relation_is_writable_from_a_rule_body() {
+    let mut kb = try_load_kb_with(KERNEL_SRC).expect("`Colour.domain` must resolve");
     assert_eq!(
         definite_answers(&mut kb, "test.wt8wg.kernel.members(?x)"),
         3,
-        "a written `domain_member(?x, Colour)` generates the sort's three inhabitants"
+        "a written `Colour.domain(?x)` generates the sort's three inhabitants"
     );
 }
 
@@ -406,26 +413,22 @@ namespace test.wt8wg.bare
 end
 "#;
 
-/// DECISION C — no value face for a parameterised sort, and the citation says WHOSE
-/// ticket that is. MEASURED before this change, on a hand-written twin inside a
-/// parameterised sort: `Wrap[T = Colour].dom.takeN(5)` AND bare `Wrap.dom.takeN(5)` BOTH
-/// LOAD CLEAN — the bracket is validated and dropped, the bound is a type variable so the
-/// sweep skips the member goal, and the citation can only flounder at the drain.
+/// THE PARAMETERISED VALUE FACE (WI-20260925-SHED7; it was WT8WG's DECISION C, a load
+/// error naming 5G28A). `List`'s `fill` is `List.domain`, and a citation's bracket
+/// reaches it as the dictionary the typer routes to its `SortDomain` read: five lists,
+/// shortest first. BARE `List.domain` names no element type and stays refused — by S1's
+/// rule, which names the bracketed spelling.
 #[test]
-fn a_parameterised_sorts_citation_names_its_owner() {
-    for (what, src) in [("braced", PARAM_BRACED), ("bare", PARAM_BARE)] {
-        let errs = try_load_kb_with(src)
-            .err()
-            .unwrap_or_else(|| panic!("the {what} parameterised citation must be refused"));
-        crate::common::assert_refused_naming(
-            &errs,
-            &["has a domain but no `.domain` to cite it by", "5G28A"],
-            "a parameterised sort's citation names the ticket that owns it",
-        );
-    }
-    // THE GOAL FACE IS UNTOUCHED — `List` keeps its derived member clause. Without this
-    // the refusal above would pass just as well if the derivation had been switched off
-    // for parameterised sorts entirely.
+fn a_parameterised_sorts_value_face_is_cited_through_its_bracket() {
+    assert_eq!(int_op(PARAM_BRACED, "test.wt8wg.braced.n"), 5);
+    let errs = try_load_kb_with(PARAM_BARE)
+        .err()
+        .expect("the bare parameterised citation must be refused");
+    crate::common::assert_refused_naming(
+        &errs,
+        &["is not determined at this citation", "`List[T = …].domain`"],
+        "a bare parameterised citation names the bracket that would fix it",
+    );
     let kb = try_load_kb_with(
         r#"
 namespace test.wt8wg.goalface
@@ -435,10 +438,7 @@ end
     )
     .expect("loads");
     let list = kb.try_resolve_symbol("anthill.prelude.List").expect("List");
-    assert!(
-        kb.has_domain_member(list),
-        "`List` still has its derived `domain_member` clause — only the NAME is withheld"
-    );
+    assert!(kb.has_sort_domain(list), "`List` has a domain — its `fill`");
 }
 
 const FIELD_SRC: &str = r#"
@@ -484,8 +484,8 @@ fn a_field_named_domain_and_the_derived_relation_coexist() {
 }
 
 /// THE THREE READERS READ ONE SET OF CLAUSES — the design claim, asserted rather than
-/// argued. The citation, mode (out) through a typed head, and an explicit kernel goal must
-/// agree on the SAME sort in the SAME KB; a derivation that answered the citation from a
+/// argued. The citation, mode (out) through a typed head, and the relation written as a
+/// goal must agree on the SAME sort in the SAME KB; a derivation that answered the citation from a
 /// second clause set would pass every count row above and fail this one.
 #[test]
 fn the_citation_and_the_goal_face_answer_the_same_rows() {
@@ -501,7 +501,7 @@ namespace test.wt8wg.agree
   end
 
   rule viaHead(?x: Colour) :- true
-  rule viaKernel(?x) :- domain_member(?x, Colour)
+  rule viaRelation(?x) :- Colour.domain(?x)
 
   operation viaCitation() -> Int64 effects Error = Colour.domain.takeN(9).length()
 end
@@ -509,11 +509,11 @@ end
     let cited = int_op(SRC, "test.wt8wg.agree.viaCitation");
     let mut kb = try_load_kb_with(SRC).expect("loads");
     let head = definite_answers(&mut kb, "test.wt8wg.agree.viaHead(?x)");
-    let kernel = definite_answers(&mut kb, "test.wt8wg.agree.viaKernel(?x)");
+    let relation = definite_answers(&mut kb, "test.wt8wg.agree.viaRelation(?x)");
     assert_eq!(
-        (cited as usize, head, kernel),
+        (cited as usize, head, relation),
         (3, 3, 3),
-        "the citation, the typed head and the explicit kernel goal are one relation"
+        "the citation, the typed head and the relation written as a goal are one relation"
     );
 }
 
@@ -521,7 +521,7 @@ end
 /// produce a duplicate — the pass-1 mint (a second `define` under one name) and the drain
 /// (a second clause) — and a doubled domain is the kind of defect a `takeN` row reads as
 /// success. The guards are `mint_domain_value_face_name`'s name check and pass 1's
-/// `has_domain_member` skip; this drives both at once.
+/// `has_sort_domain` skip; this drives both at once.
 #[test]
 fn a_second_load_does_not_duplicate_the_value_face() {
     use anthill_core::kb::load::{self, NullResolver};
@@ -705,7 +705,7 @@ end
 
 /// A DECLINED sort — one whose derivation found a field type it cannot name — has a
 /// minted `<Sort>.domain` with no clause behind it, exactly as a parameterised sort does.
-/// Its citation must say WHY, from `domain_member_decline_reason`; without that second
+/// Its citation must say WHY, from `sort_domain_decline_reason`; without that second
 /// arm the author is told the name is unresolved, which is true and useless.
 #[test]
 fn a_declined_sorts_citation_says_why_the_domain_is_missing() {
@@ -730,24 +730,26 @@ end
     );
 }
 
-/// A sort with NO constructors has no domain to derive and no name to cite, so the
-/// citation is the ordinary unknown-member error — LOUD AT LOAD, where a
-/// derived-but-floundering member would have been loud only at the drain.
+/// A sort with NO constructors that is NO PRIMITIVE has no domain and no name to cite, so
+/// the citation is the ordinary unknown-member error — LOUD AT LOAD, where a
+/// derived-but-floundering member would have been loud only at the drain. (A PRIMITIVE has
+/// one since WI-20260925-SHED7: `String.domain` is its waiting check.)
 #[test]
 fn a_constructorless_sort_has_no_value_face() {
     let errs = try_load_kb_with(
         r#"
 namespace test.wt8wg.leaf
   import anthill.prelude.{Int64, String, List, Relation, Error}
-  operation n() -> Int64 effects Error = String.domain.takeN(5).length()
+  sort Opaque = ?
+  operation n() -> Int64 effects Error = Opaque.domain.takeN(5).length()
 end
 "#,
     )
     .err()
-    .expect("`String.domain` names nothing");
+    .expect("`Opaque.domain` names nothing");
     crate::common::assert_refused_naming(
         &errs,
-        &["String.domain.takeN"],
+        &["Opaque.domain.takeN"],
         "a sort with no constructors has no `.domain` member at all",
     );
 }

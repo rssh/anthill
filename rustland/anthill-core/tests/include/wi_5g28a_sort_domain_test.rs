@@ -4,8 +4,8 @@
 //! `rule el(?x: T) :- true` inside `sort Wrap[T]` has a bound no term can name: `T` is the
 //! instance its CITATION means, and inside `countAt[X]` that instance is a rigid `X` known
 //! only to `countAt`'s caller. So the typed-head sweep gives such a bound an IMPLICIT
-//! PARAMETER instead of a member goal — `find_dictionary(SortDomain[T = T], SortDomain, ?x,
-//! out: ?d), apply_domain(?d, ?x)` — and a citation fills it from the caller's own
+//! PARAMETER instead of a member goal — since WI-20260925-SHED7 `apply_domain(?d, ?x, T),
+//! find_dictionary(SortDomain, SortDomain, ?x, out: ?d)` — and a citation fills it from the caller's own
 //! `requires SortDomain[T = X]` slot (§7.3 S2's channel). `apply_domain` runs the domain the
 //! dictionary names: its provider's `domain` relation, `Colour.domain` here. The spec is
 //! `anthill.reflect.SortDomain`; its instances are DERIVED per sort with a domain
@@ -27,13 +27,14 @@
 //!    (`bound_var_joins_frame` answering as before). 3 red: both rows above and
 //!    `wi_5g28a_citation_bracket_test::a_bound_value_pins_the_parameter_per_activation` —
 //!    the shared `T` cannot be pinned, so the conformance goal suspends.
-//!  * [G] the derivation gate's type-variable arm (rows only for a written requirement).
-//!    2 red: `a_bound_value_is_read_through_its_carried_type` (no row to derive from, so
-//!    the read cannot fire) and `nothing_is_derived_until_something_can_read_it`.
-//!  * [S] the ground bound's static `S.domain(?x)` (back to `domain_member(?x, S)`).
-//!    0 red, BY DESIGN: the derived `S.domain` bottoms out in `domain_member(?x, S)`, so
-//!    the two calls answer alike — the change is that a named bound reaches its domain
-//!    through its provider's member, one scheme for every bound.
+//!  * [G] (RETIRED by WI-20260925-SHED7) the derivation gate's type-variable arm. A
+//!    `SortDomain` read is now built from a type — at run time by the resolver, at a
+//!    citation by the typer — and never from a provision row, so the arm is gone and
+//!    `nothing_is_derived_until_something_can_read_it` pins the narrower gate.
+//!  * [S] (RETIRED by WI-20260925-SHED7) the ground bound's static `S.domain(?x)`, which
+//!    backed out to `domain_member(?x, S)` — a relation SHED7 deleted, so there is nothing
+//!    left to back out to: `S.domain` IS the sort's derived `fill` now, not a call into
+//!    `domain_member`. SHED7's own axes are in `wi_shed7_fillable_test`.
 //!
 //! Nothing else in `wi_tests` moved under any axis.
 
@@ -140,20 +141,21 @@ fn a_free_type_variable_with_no_caller_stays_undecided() {
     );
 }
 
-/// CONTROL — passes either way, BY DESIGN: a bound that NAMES its sort. The sweep now calls
-/// `Colour.domain(?x)` — the member of `Colour`'s `SortDomain`, dispatched statically because
-/// the bound names the provider — where it called `domain_member(?x, Colour)`, which the
-/// derived `Colour.domain` itself bottoms out in. Same three rows either way; the row is
-/// here so a change that broke the static call could not pass as a no-op.
+/// CONTROL — a bound that NAMES its sort. The sweep calls `Colour.domain(?x)` — the member
+/// of `Colour`'s `SortDomain`, dispatched statically because the bound names the provider;
+/// it called the retired `domain_member(?x, Colour)` before SHED7, and the three rows are the
+/// same. The row is here so a change that broke the static call could not pass as a no-op.
 #[test]
 fn a_bound_that_names_its_sort_enumerates_as_before() {
     let mut kb = crate::common::load_kb_with(&uncited("  rule pick(?x: Colour) :- true\n"));
     assert_eq!(crate::common::definite_unary(&mut kb, "wi5g28a.s3u.pick").len(), 3);
 }
 
-/// THE GATE: the `SortDomain` rows cost ~55 ms per load (debug) in the typer's provision
-/// walks, so they are derived only when something can read them — a written requirement,
-/// or a clause bound that is a type variable (`kb::sort_domain_derive`).
+/// THE GATE: the `SortDomain` rows cost ~115 ms per load (debug) in the typer's provision
+/// walks, so they are derived only when something reads them — a WRITTEN requirement
+/// (`kb::sort_domain_derive`). WI-20260925-SHED7: a type-variable bound no longer opens it;
+/// its citation's route is built from the type (`typing::sort_domain_route`), and its
+/// uncited read from the value, neither through a row.
 #[test]
 fn nothing_is_derived_until_something_can_read_it() {
     let domain_rows = |src: &str| -> Vec<String> {
@@ -172,9 +174,15 @@ fn nothing_is_derived_until_something_can_read_it() {
          end\n",
     );
     assert!(closed.is_empty(), "a named-sort bound reads no row, so none is derived: {closed:?}");
-    let open = domain_rows(&uncited(""));
+    let still_closed = domain_rows(&uncited(""));
     assert!(
-        open.iter().any(|c| c == "wi5g28a.s3u.Colour") && open.iter().any(|c| c == "wi5g28a.s3u.Wrap"),
-        "a type-variable bound opens the gate, for every sort with a domain: {open:?}",
+        still_closed.is_empty(),
+        "a type-variable bound reads no row either: {still_closed:?}",
+    );
+    let open = domain_rows(PROGRAM);
+    assert!(
+        open.iter().any(|c| c == "wi5g28a.s3.Colour") && open.iter().any(|c| c == "wi5g28a.s3.Wrap"),
+        "a written `requires SortDomain[…]` opens the gate, for every sort with a domain: \
+         {open:?}",
     );
 }

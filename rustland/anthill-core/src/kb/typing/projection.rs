@@ -1775,7 +1775,16 @@ fn project_via_provided_spec(
 /// they ask about". The precise question needs the concrete bindings at call sites, which
 /// only exist after the typer — and this pass must run before it.
 pub(crate) fn any_requirement_names_spec(kb: &KnowledgeBase, spec: Symbol) -> bool {
-    let canon = kb.canonical_sort_sym(spec);
+    any_requirement_names_one_of(kb, &[spec])
+}
+
+/// [`any_requirement_names_spec`] for several specs in ONE walk — the relations it reads are
+/// the whole program's operations, so asking about two specs in two walks paid for the
+/// program twice (WI-20260925-SHED7: `SortDomain` and `Fillable`, measured ~22 ms per walk
+/// in a debug build).
+pub(crate) fn any_requirement_names_one_of(kb: &KnowledgeBase, specs: &[Symbol]) -> bool {
+    let canons: Vec<Symbol> = specs.iter().map(|&s| kb.canonical_sort_sym(s)).collect();
+    let named = |s: Symbol| canons.contains(&kb.canonical_sort_sym(s));
     if let Some(req_sym) = kb.try_resolve_symbol("anthill.reflect.SortRequiresInfo") {
         for rid in kb.rules_by_functor(req_sym) {
             if !kb.is_fact(rid) {
@@ -1783,7 +1792,7 @@ pub(crate) fn any_requirement_names_spec(kb: &KnowledgeBase, spec: Symbol) -> bo
             }
             let head = kb.rule_head_value(rid);
             if let Some(v) = crate::kb::op_info::head_field_value(kb, &head, "spec") {
-                if spec_base_functor(kb, &v).is_some_and(|b| kb.canonical_sort_sym(b) == canon) {
+                if spec_base_functor(kb, &v).is_some_and(named) {
                     return true;
                 }
             }
@@ -1818,7 +1827,7 @@ pub(crate) fn any_requirement_names_spec(kb: &KnowledgeBase, spec: Symbol) -> bo
         };
         if op_requires_entries(kb, op)
             .iter()
-            .any(|e| kb.canonical_sort_sym(e.required_sort) == canon)
+            .any(|e| named(e.required_sort))
         {
             return true;
         }
@@ -1848,7 +1857,7 @@ pub(crate) fn any_requirement_names_spec(kb: &KnowledgeBase, spec: Symbol) -> bo
             let Some((_, _, condition)) = decoded_condition_row(kb, rid) else {
                 continue;
             };
-            if condition_names_spec(kb, &condition, canon) {
+            if canons.iter().any(|&c| condition_names_spec(kb, &condition, c)) {
                 return true;
             }
         }

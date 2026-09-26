@@ -290,6 +290,13 @@ pub(super) fn type_check_sorts_collect(
     install_typed_head_domain_goals(kb);
 
     errors.extend(record_find_dictionary_grounding(kb));
+    // WI-20260925-P7VP4: every rule-body call whose requirement is not known at load gets
+    // the condition its author could have written — a read before the goal holding it, the
+    // call woven through it. AFTER the requirement sweep, which grounds each WRITTEN
+    // `require` on a body call and only finds that call unwoven (a transitive or inherited
+    // witness woven first made a loading clause fail "no such call"); BEFORE
+    // `settle_citation_routes`, so a citation routes the inferred reads as the written ones.
+    infer_rule_body_requirements(kb);
     // WI-20260911-5G28A S2: every rule read is now routable, so the citations queued while
     // the operation bodies were typed can be routed (`settle_citation_routes`).
     settle_citation_routes(kb);

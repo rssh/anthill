@@ -713,9 +713,9 @@ impl Interpreter {
         supplied_pos: &[Value],
         supplied_named: &[(Symbol, Value)],
         // WI-20260911-5G28A S2 — the relation's implicit arguments as
-        // [`Self::citation_requirements`] evaluated them, `Unit` where a read has none.
-        // Empty for every relation whose clauses read no requirement, and for a citation
-        // the typer did not route.
+        // [`Self::citation_requirements`] evaluated them, `UNROUTED_READ` where a read has
+        // none. Empty for every relation whose clauses read no requirement, and for a
+        // citation the typer did not route.
         requirements: &[Value],
     ) -> Result<Value, EvalError> {
         use crate::kb::term::{Var, VarId};
@@ -846,7 +846,10 @@ impl Interpreter {
         // from several citations needs no rule: each leaf's goal carries its own. The
         // resolver unwraps it and binds the reads when it opens a clause
         // ([`crate::kb::resolve::WITHIN_REQUIREMENTS`]).
-        let goal_atom = if requirements.iter().any(|r| !matches!(r, Value::Unit)) {
+        let goal_atom = if requirements
+            .iter()
+            .any(|r| !crate::kb::resolve::is_unrouted_read(&self.kb, r))
+        {
             crate::kb::resolve::within_requirements_goal(
                 &mut self.kb,
                 goal_atom,
@@ -868,24 +871,27 @@ impl Interpreter {
     /// WI-20260911-5G28A S2 — a citation's IMPLICIT ARGUMENTS, evaluated in the CITING
     /// frame: one per requirement read of the cited relation (the typer's routes, stamped on
     /// the citation by `citation_requirement_routes`), each the dictionary its route names,
-    /// or `Unit` where the typer routed nothing and the read derives its own.
+    /// or [`crate::kb::resolve::UNROUTED_READ`] where the typer routed nothing and the read
+    /// derives its own.
     ///
     /// NOW, AND IN THIS FRAME, because a route names the caller's own slots
     /// (`var_ref(__req_…)`), and the argument pump that follows pushes child frames. A route
-    /// this frame cannot answer stays `Unit` in place, as an operation's op-scoped slot does
-    /// ([`Self::eta_op_scoped_reqs`]): position is which read it is owed to.
+    /// this frame cannot answer is `UNROUTED_READ` in place, as an operation's op-scoped slot
+    /// stays unfilled ([`Self::eta_op_scoped_reqs`]): position is which read it is owed to.
     fn citation_requirements(&mut self, occ: &Rc<NodeOccurrence>) -> Result<Vec<Value>, EvalError> {
         let routes = occ.op_dicts();
         let mut out: Vec<Value> = Vec::with_capacity(routes.len());
         for route in routes.iter() {
-            let Some(tid) = route else {
-                out.push(Value::Unit);
-                continue;
+            let dict = match route {
+                Some(tid) => {
+                    let node = crate::kb::node_occurrence::materialize_from_handle(&self.kb, *tid);
+                    self.try_eval_requirement_chain_node(&node)?.map(|d| d.into_value())
+                }
+                None => None,
             };
-            let node = crate::kb::node_occurrence::materialize_from_handle(&self.kb, *tid);
-            out.push(match self.try_eval_requirement_chain_node(&node)? {
-                Some(dict) => dict.into_value(),
-                None => Value::Unit,
+            out.push(match dict {
+                Some(d) => d,
+                None => crate::kb::resolve::unrouted_read(&mut self.kb),
             });
         }
         Ok(out)

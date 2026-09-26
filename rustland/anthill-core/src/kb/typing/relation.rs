@@ -266,19 +266,12 @@ fn body_rigids(kb: &mut KnowledgeBase, env: &TypingEnv) -> Substitution {
 /// WI-20260911-WT8WG — the citation-site diagnostic for a `<Sort>.domain` that was
 /// MINTED but never given a clause, or `None` when `sym` is not such a name.
 ///
-/// THE PARAMETERISED SORT IS WHY THIS EXISTS. `List[T = Letter].domain` needs the
-/// citation's type argument to reach a clause, and a rule citation's query is built from
-/// the clause HEAD ALONE (`eval::build_relation_value`) — WI-20260911-RS2G4 delivered the
-/// receiver-bracket binding for OPERATION members only. Until **WI-20260911-5G28A** does
-/// the rule half, no value face is derived for a parameterised sort. MEASURED before this
-/// ticket, on the hand-written twin: `Wrap[T = Colour].dom.takeN(5)` AND bare
-/// `Wrap.dom.takeN(5)` BOTH LOAD CLEAN — the bracket is validated and dropped, the bound
-/// is a type variable so the sweep skips the member goal, and the citation can only
-/// flounder at the drain. That silent acceptance is what this turns loud, at load.
-///
-/// AND IT IS WHY THE NAME IS MINTED WITH NO CLAUSE TO HANG ON IT
-/// (`load::mint_domain_value_face_name`): without the name there is nothing to attach a
-/// reason to, and the author gets "no such member `domain`" — true, and useless.
+/// A SORT WITH NO DOMAIN is why it exists since WI-20260925-SHED7, which gave the
+/// parameterised sort its value face (the case this was written for): a sort whose field
+/// nothing can fill has a minted `.domain` and no `fill` behind it, and its citation says
+/// so. The name is minted in pass 1, before the derivation can decline
+/// (`load::mint_domain_value_face_name`) — without it there is nothing to attach a reason
+/// to, and the author gets "no such member `domain`": true, and useless.
 fn domain_value_face_refusal(
     kb: &KnowledgeBase,
     sym: Symbol,
@@ -288,16 +281,14 @@ fn domain_value_face_refusal(
     let sort_qn = qn.strip_suffix(".domain")?;
     let sort = kb.try_resolve_symbol(sort_qn)?;
     // TWO RECORDS, TWO QUESTIONS, and the message must not merge them. The first says
-    // "the relation EXISTS, the name does not" — a parameterised sort, whose goal face is
-    // intact. The second says the sort has NO derived domain at all (a field type this
-    // derivation cannot name), which is `domain_member_decline_reason`'s own answer and
-    // the reason a name minted in pass 1 can still have no clause behind it. Saying "has
-    // a domain" in that second case would be false, so the two get their own sentence.
-    // Without the second arm at all, a declined sort's citation reports the name as
-    // unresolved — true, and useless.
+    // "the domain EXISTS, the name does not" — the sort's `fill` was derived under an
+    // internal name because something else holds this one. The second says the sort has
+    // NO domain at all (a field nothing can fill), which is `sort_domain_decline_reason`'s
+    // own answer. Saying "has a domain" in that second case would be false, so the two get
+    // their own sentence.
     let (has_domain, reason) = match kb.domain_value_face_decline_reason(sort) {
         Some(reason) => (true, reason),
-        None => (false, kb.domain_member_decline_reason(sort)?),
+        None => (false, kb.sort_domain_decline_reason(sort)?),
     };
     Some(TypeError::Other {
         site: TypeError::here(),
@@ -715,7 +706,12 @@ fn citation_requirement_routes(
             if requirement_read_out(kb, fd, node).is_none() {
                 continue;
             }
-            let Some(Expr::Apply { pos_args, .. }) = node.as_expr() else {
+            let Some(Expr::Apply {
+                pos_args,
+                named_args,
+                ..
+            }) = node.as_expr()
+            else {
                 unreachable!("a requirement read is an application");
             };
             let route = route_requirement_read(
@@ -723,6 +719,7 @@ fn citation_requirement_routes(
                 chain,
                 param_rigids,
                 pos_args,
+                named_args,
                 &slots,
                 column_types,
                 bound_types,
@@ -740,13 +737,14 @@ fn citation_requirement_routes(
 }
 
 /// One read's route for [`citation_requirement_routes`] — `pos_args` is the read's
-/// `[spec, op, witness…]`.
+/// `[spec, op, witness…]`, and `named_args` carries a SLOT read's `slot: k`.
 #[allow(clippy::too_many_arguments)]
 fn route_requirement_read(
     kb: &mut KnowledgeBase,
     chain: &DictChain,
     param_rigids: &[(VarId, TermId)],
     pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
     slots: &[(SlotKey, Symbol, u32)],
     column_types: &[(Symbol, Value)],
     bound_types: &[(Symbol, Value)],
@@ -785,6 +783,16 @@ fn route_requirement_read(
         };
         arg_types.push(ty);
     }
+    // WI-20260925-P7VP4 — a SLOT read is routed from its callee's own chain entry.
+    if let Some(k) = slot_read_index(kb, named_args) {
+        return op_slot_route(kb, chain, param_rigids, subst, op_functor, k, &arg_types);
+    }
+    // WI-20260925-SHED7 — a `SortDomain` read is routed from the TYPE, never by a search.
+    if is_sort_domain_spec(kb, spec_sort) {
+        let ty = arg_types.first()?.clone();
+        let syms = ProjectionSyms::resolve(kb)?;
+        return sort_domain_route(kb, chain, param_rigids, subst, spec_sort, &ty, &syms);
+    }
     let built = if is_anchor_form(kb, spec_sort, op_functor) {
         anchor_sort_goal(kb, spec_sort, &arg_types, &bracket.written)
     } else {
@@ -805,6 +813,180 @@ fn route_requirement_read(
     };
     let syms = ProjectionSyms::resolve(kb)?;
     emit_tree_as_projection(kb, chain, &tree, &syms)
+}
+
+/// WI-20260925-P7VP4 — the slot index `k` of a SLOT read (`slot: k`), or `None` for any
+/// other read.
+fn slot_read_index(kb: &KnowledgeBase, named_args: &[(Symbol, Rc<NodeOccurrence>)]) -> Option<usize> {
+    let (_, v) = named_args
+        .iter()
+        .find(|(k, _)| kb.local_name_of(*k) == REQUIREMENT_SLOT_LABEL)?;
+    match v.as_expr() {
+        Some(Expr::Const(Literal::Int(k))) => usize::try_from(*k).ok(),
+        _ => None,
+    }
+}
+
+/// WI-20260925-P7VP4 — the route of a SLOT read: slot `k` of `op`'s dictionary chain, at the
+/// argument types this citation gives the call — the entry the bridge would resolve from the
+/// VALUES ([`resolve_bridge_requirements`]), resolved here from the TYPES against the
+/// caller's frame chain, so a rigid element meets the caller's own `requires` through
+/// `param_rigids` exactly as a written read's does.
+///
+/// `None` routes nothing, and the slot is then derived from the values as it always was: an
+/// entry written at a PROJECTION (δ needs the receiver's value, which a type does not carry)
+/// or one these types leave open.
+fn op_slot_route(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    param_rigids: &[(VarId, TermId)],
+    subst: &Substitution,
+    op: Symbol,
+    k: usize,
+    arg_types: &[Value],
+) -> Option<TermId> {
+    let rec = crate::kb::op_info::lookup_operation_info(kb, op)?;
+    let entry = op_dict_entries(kb, op).iter().nth(k)?.clone();
+    if value_contains_projection(kb, &entry.spec) {
+        return None;
+    }
+    // THE CALLEE'S PARAMETERS ARE WHAT GET PINNED, so each is unified FIRST: a citation's
+    // argument type may itself be a variable — the caller's own rigid `A`, which is what
+    // meets the caller's `requires` below through `param_rigids` — and a variable-variable
+    // unification binds the left one. Arguments first bound the CALLER's variable to the
+    // callee's, and the goal named a type the caller holds no entry for (MEASURED: the
+    // route came back empty exactly for the rigid citation, and filled for an `Int64` one).
+    //
+    // An argument type that does not UNIFY with its parameter pins nothing there when it is a
+    // SUBTYPE of it — `circle()` for `s: Shape`, which the citation accepted (above:
+    // "unification is not subsumption") — and the other parameters still pin the slot; the
+    // failed trial's partial bindings are dropped with it. Refusing the whole route there sent
+    // the call back to the value's own dictionary where the caller had chosen one. Only an
+    // argument that is no instance of its parameter at all routes nothing.
+    let mut pins = Substitution::new();
+    for ((_, pty), aty) in rec.params.iter().zip(arg_types) {
+        let mut trial = pins.clone();
+        if unify_types(kb, &mut trial, pty, aty) {
+            pins = trial;
+        } else if !types_compatible(kb, &mut Substitution::new(), aty, pty) {
+            return None;
+        }
+    }
+    // NOT `substitute_spec_via_subst`, which declines a parameter bound to another TYPE
+    // VARIABLE ("the enclosing sort's own `requires` carries it"). Here that variable is the
+    // point: it is the citing caller's rigid, and `resolve` below meets the caller's own
+    // entry at it through `param_rigids`. Each parameter is WALKED through the pins to its
+    // end: a parameter bound to a witness variable a later parameter pinned reads as that
+    // pin, not as the variable (a one-step lookup made the route depend on parameter order).
+    let spec = rewrite_spec_value(kb, &entry.spec, &|kb, t| {
+        rewrite_term_leaves(kb, t, &|kb, t| {
+            let param = ref_or_nullary_name(kb.get_term(t))?;
+            let var = kb.alloc(Term::Var(Var::Global(type_param_global_var(kb, param)?)));
+            match walk_type_deep_value(kb, &pins, &Value::term(var)) {
+                Value::Term { id, .. } if id != var => Some(id),
+                _ => None,
+            }
+        })
+    });
+    let goal = goal_from_requires_entry(
+        kb,
+        &RequiresEntry {
+            spec,
+            ..entry
+        },
+    )?;
+    let sigma = SigmaCtx {
+        subst,
+        param_rigids,
+    };
+    let scope = ResolutionScope {
+        available_requires: chain.entries(),
+        sigma: Some(&sigma),
+        selected: &[],
+        sub_goal_requires: &[],
+    };
+    let ResolutionResult::Resolved(tree) = resolve(kb, &goal, &scope) else {
+        return None;
+    };
+    let syms = ProjectionSyms::resolve(kb)?;
+    emit_tree_as_projection(kb, chain, &tree, &syms)
+}
+
+/// WI-20260925-SHED7 (proposal 060 §2.3) — the route of a `SortDomain` read at the type
+/// `ty`, built from the `SortDomain` table: a sort has ONE domain, so nothing is chosen, and
+/// a search among providers is exactly what `SortDomain[?]` must never get (its wildcard
+/// matches every candidate — X9PB4). The construction is laid out as the typer lays every
+/// `SortDomain` dictionary out (`sort_domain_sub_offset`): the slots no `fill` reads — the
+/// `Fillable` conversion, the sort's sort-level `requires` — hold an empty bundle, and each
+/// condition holds the route of the argument at it. So a citation needs no provision row.
+///
+/// A TYPE WITH NO ENTRY — a caller's RIGID `X` — is the caller's own evidence, resolved
+/// against its frame chain: the one way a rigid's domain reaches a clause (§7.3). `None`
+/// where there is none; the read then builds its own from the value at run time.
+#[allow(clippy::too_many_arguments)]
+fn sort_domain_route(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    param_rigids: &[(VarId, TermId)],
+    subst: &Substitution,
+    spec: Symbol,
+    ty: &Value,
+    syms: &ProjectionSyms,
+) -> Option<TermId> {
+    let ty = walk_type_deep_value(kb, subst, ty);
+    let head = match ty.head(kb) {
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } => Some(f),
+        ViewHead::Ident(s) => Some(s),
+        _ => None,
+    };
+    // A TYPE ALIAS has its target's domain (`dealias_type`); a bare name is the only form one
+    // takes.
+    if let Some(h) = head.filter(|&h| kb.sort_domain(h).is_none()) {
+        let bare = kb.alloc(Term::Ref(h));
+        let target = dealias_type(kb, bare);
+        if target != bare {
+            return sort_domain_route(kb, chain, param_rigids, subst, spec, &Value::term(target), syms);
+        }
+    }
+    if let Some((head, entry)) = head.and_then(|h| kb.sort_domain(h).cloned().map(|e| (h, e))) {
+        let head = kb.canonical_sort_sym(head);
+        let mut subs: Vec<TermId> = (0..entry.sub_offset)
+            .map(|_| build_dictionary_term(kb, syms, head, &[]))
+            .collect();
+        let keys = ty.named_keys(kb);
+        for &j in &entry.conditions {
+            let short = kb.local_name_of(entry.params[j].0).to_string();
+            let arg = keys
+                .iter()
+                .copied()
+                .find(|k| kb.local_name_of(*k) == short)
+                .and_then(|k| ty.named_arg(kb, k))
+                .or_else(|| {
+                    crate::kb::fill_derive::condition_arg_position(kb, head, &entry.params, j)
+                        .and_then(|p| ty.pos_arg(kb, p))
+                })?
+                .to_value();
+            subs.push(sort_domain_route(kb, chain, param_rigids, subst, spec, &arg, syms)?);
+        }
+        return Some(build_dictionary_term(kb, syms, head, &subs));
+    }
+    let built = anchor_sort_goal(kb, spec, &[ty], &[])?;
+    let sigma = SigmaCtx {
+        subst,
+        param_rigids,
+    };
+    let scope = ResolutionScope {
+        available_requires: chain.entries(),
+        sigma: Some(&sigma),
+        selected: &[],
+        sub_goal_requires: &[],
+    };
+    let ResolutionResult::Resolved(tree) = resolve(kb, &built.goal, &scope) else {
+        return None;
+    };
+    emit_tree_as_projection(kb, chain, &tree, syms)
 }
 
 /// WI-714 — the free-variable columns of a relation, merged across its clauses:
