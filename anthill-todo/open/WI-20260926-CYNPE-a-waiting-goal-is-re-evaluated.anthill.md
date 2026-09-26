@@ -23,3 +23,9 @@ No 060 dependency: a blocker is a variable, whatever will bind it. A woven call'
 
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh; every row driven, back-out stated at its site): 35E14's rows, re-measured on current main first (P7VP4's weaving already moved part of that population): `rule late(x: Colour) :- Score.score(x, 3)` answers `blue`; `rule unbound(?r) :- Score.score(?v, ?r)` ends as a CONDITIONAL answer carrying the call, not "no solutions". A suspended goal whose blockers are never bound is evaluated ONCE, not once per sibling's progress (counted, not timed). An UNREDUCED goal (no supplier) yields an undecided residual naming its cause, and a failing sibling still makes the clause answer 0 definitely. CONTROLS, stated at their sites: WI-519's residual rows unchanged; classic-mini unchanged (tiny-sat 2, alphabet-words 27/12/100, map-colouring 6).
 
+## Changes
+
+### 2026-09-26T13:26:23Z — feedback — user
+
+ROW ADDED FROM THE PRVA2 REVIEW (filed on ACG10 2026-09-26): a rule-body call value dispatch cannot evaluate answers NOTHING, silently — Conv.tag(b: B) has no argument at Conv's carrier parameter A, so ?s <=> "km", Conv.tag(?s, ?r) answers no solutions (the operation-body twin fails at run time, 'operation has no body'); with require[Conv[A = Meters, B = String]] it answers 3. The 35E14 class. Whatever reaches run time here is UNREDUCED or SUSPENDED under 068 §2 — a named undecided residual, never an empty answer; the load-time half (060 §3's anchor rule) is WI-20260926-7D48J's. Joins the acceptance, driven.
+

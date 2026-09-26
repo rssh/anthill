@@ -40,6 +40,31 @@ nothing (`unify_match_values`). And a call that cannot run yet is treated one wa
 | `?v <=> C.tag(?c)` | (1, 0), residual `unify(?_, tag(?_))` | conditional |
 | `?v <=> box(v: C.tag(?c))` | **(1, 1)**, `?v = box(v: tag(?_))` — the stuck call bound as data | conditional |
 
+A BODY-LESS SPEC OPERATION in a value slot is compared as data too, wherever it is written.
+MEASURED at `028e13f8` while reviewing WI-20260925-PRVA2 (its item (d), moved to 068):
+
+| goal | answer | truth |
+|---|---|---|
+| `WeakOrd.compare(1, 5) = -1` | **(0, 0)** | 1 |
+| `below(1, 5)`, `rule below(?a, ?b) :- PartialEq.eq(WeakOrd.compare(?a, ?b), -1)` | **(0, 0)** | 1 |
+| `not(below(1, 5))` | **holds** — NAF proves a falsehood | 0 |
+| `WeakOrd.compare(1, 5, ?r)` — the functional-relation form | `?r = -1` | `-1` |
+| `?r <=> WeakOrd.compare(1, 5)` | **definite**, `?r` = the unreduced `compare(1, 5)` | `-1` |
+| `?r <=> Conv.twice(m(v: 3), "km")`, `twice` a `@[simp]` law whose right side calls body-less `conv` | conditional, `unify(?_, add(conv(..), conv(..)))` — the rewrite leaves its calls unpinned | 14 (untagged) |
+| `?s <=> "km", Conv.tag(?s, ?r)` — no argument at `Conv`'s carrier parameter | **(0, 0)**, silently | 3 with `require[Conv[…]]`; otherwise refused at load (060 §3's anchor rule) or undecided |
+
+Under §1 a ground carrier dispatches, so the first five rows answer their truth. The `@[simp]`
+row is why §3 types fragments with simp OFF. A sibling row — `Desc.isGood(leaf())` written as a
+GOAL answered nothing and `not(...)` over it held — was the Bool view reading the spelled functor
+instead of the typer's pin, and was fixed inline (`dispatched_bool_relation`).
+
+One more consumer judges a call without evaluating it: WI-670's OPEN-TIME REFUTATION
+(`body_refuted_by_ground_conjunct`) reads a conjunct's discrim candidates, behind a hand-kept
+list of the routes `step_init` answers off the tree. In `rule r(?x) :- ground(?x), p(add(?x,
+1))` over `fact p(3)` it keys `add(…)` structurally and refutes the clause where §1 would
+evaluate `add` and answer. The implementation must teach it §1's fragments, or have it refuse to
+judge an atom holding one.
+
 The same happens where the operation has NO implementation at all, as an abstract spec legitimately
 may. `Set.empty` / `insert` / `union` / `intersection` / `difference` have no body, no host mapping
 and no provider; with sets written as `insert`/`empty` chains:
@@ -97,6 +122,7 @@ to a different depth:
 | `<=>` (`unify_values`) | every level it recurses into — but a BIND stores the interior unreduced (`unify_bind`) |
 | the WI-580 unfold | nothing: it reads OTHER unreduced, hence the gate |
 | head matching (`unify_match_values`) | nothing: a call in a goal argument is structure |
+| WI-670's open-time refutation (`body_refuted_by_ground_conjunct`) | nothing: a conjunct's discrim candidates, structurally |
 
 ## 1. The rule
 
@@ -337,7 +363,7 @@ At run time a fragment has four outcomes:
 - **unreduced** — no implementation is reachable: parked, never retried (§2.2).
 
 The rule is that every consumer (`=`, `<=>`, `===`, `cmp`, `arith`, head matching, the relational
-views, the unfold) sees the same outcome for the same fragment — which §1.1 makes true by giving
+views, the unfold, WI-670's open-time refutation) sees the same outcome for the same fragment — which §1.1 makes true by giving
 them one strategy rather than one reduction each. Narrowing keeps its existing soundness gates (disjoint
 arms; the P1TPE residual check).
 

@@ -33,3 +33,9 @@ THEN implement.
 
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh; driven): the fragments' stamps land on the stored occurrences; P7VP4's inference reads the typer's classification — a call the clause typing now places at a concrete carrier is pinned at load and not woven, a row per class, each back-out reddening its own row; the new load errors match the census; P7VP4's, SHED7's and 0RRQP's rows unchanged or flipped as the design records. CONTROLS: an operation body's typing unchanged; classic-mini unchanged.
 
+## Changes
+
+### 2026-09-26T13:26:05Z — feedback — user
+
+ROWS ADDED FROM THE PRVA2 REVIEW (filed on ACG10 2026-09-26, now in 068's problem section). (1) A TYPER @[simp] LAW WHOSE RIGHT SIDE CALLS BODY-LESS SPEC OPS leaves those calls unpinned: with rule twice(?a, ?b) <=> Int64.add(conv(?a, ?b), conv(?a, ?b)) @[simp], ?r <=> Conv.twice(m(v: 3), "km") is a conditional unify(?_, add(conv(..), conv(..))); untagged it answers 14 (the one-parameter control is identical). The clause typing this ticket designs runs with simp OFF (068 §3) — this row is the measurement that says why, and joins the acceptance. (2) THE LOAD-TIME HALF of a call with no argument at its spec's carrier parameter: Conv.tag(b: B) has none at A, so ?s <=> "km", Conv.tag(?s, ?r) answers nothing, silently; with require[Conv[A = Meters, B = String]] it answers 3 (since PRVA2 (c)). Under 060 §3's anchor rule a read nothing grounds is refused at typing unless a require supplies it; the clause typing decides which, and the run-time half (whatever still reaches run time answers undecided, never nothing) is WI-20260926-CYNPE's.
+
