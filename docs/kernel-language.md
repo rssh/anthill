@@ -1926,7 +1926,7 @@ sort Money = Int64                     -- Money is an alias for Int64
 sort Velocity = Float                -- Velocity is an alias for Float
 ```
 
-An alias stands for its type in a type position, and for the spec it names in a spec clause: `provides StoreAlias[…]` over `sort StoreAlias = Store` provides `Store` — and in a name, wherever the name is used (§5.1, which lists the clauses, the names, and what is refused).
+An alias stands for its type in a type position, and for the spec it names in a spec clause: `provides StoreAlias[…]` over `sort StoreAlias = Store` provides `Store` — and in a name, wherever the name is used (§5.1, which lists the clauses, the names, and what is refused). Being read through, an alias is no more visible than what it names: a public alias of an `internal` sort is refused (§8.6).
 
 Unspecified properties are expressed as accessor operations within the enclosing sort body:
 
@@ -5221,6 +5221,17 @@ where `v` belongs to an `internal` constructor of another sort, is the same
 forbidden-internal access as naming that constructor directly. An `internal`
 name declared *at* the top level is unaffected, the global scope being its own
 declaring scope.
+
+**A type alias is no more visible than what it names (WI-20260924-R97NK).** An alias is
+read through wherever it is used (§5.1) — in a type position, a spec clause, a member
+path — so a public `sort PubAlias = Hidden` over an `internal sort Hidden` would hand every
+scope the sort whose direct spelling is refused. It is therefore **refused at the
+declaration**: a public alias whose definition names an `internal` name hidden from
+outside — at any depth (`sort Hs = List[T = Hidden]`), by any leading part of a path, and
+from any scope that can see it (a namespace nested in `Hidden`'s owner) — is a load error
+naming the alias and the hidden name. The alias the owner writes is `internal sort PubAlias
+= Hidden`: it works inside the scope, and outside it is refused as the internal name it
+is. An alias is not a re-export, as an import is not.
 
 The former `export` statement and `export` visibility prefix (no-ops under this
 model) were removed in WI-291.

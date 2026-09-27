@@ -1241,6 +1241,21 @@ pub enum LoadError {
         head: Option<(String, bool)>,
         span: Span,
     },
+    /// WI-20260924-R97NK — a type alias VISIBLE MORE WIDELY than a name its definition
+    /// cites: a public `sort PubAlias = Hidden` over an `internal sort Hidden`. An alias
+    /// is read through wherever it is used (§5.1), so it would hand every scope the
+    /// hidden sort — in a type position, a spec clause, a member path — that the direct
+    /// spelling is refused. Refused at the declaration, once, rather than at each use:
+    /// `internal sort PubAlias = Hidden` is the alias the owner can write.
+    PublicAliasOfInternal {
+        /// The alias, qualified.
+        alias: String,
+        /// The `internal` name its definition cites, qualified.
+        hidden: String,
+        /// The scope `hidden` is internal to.
+        declared_in: String,
+        span: Span,
+    },
     /// WI-20260924-F8PYZ — a spec clause (`provides`, a provision's `:- …` condition, a
     /// `requires`) whose spec is a type ALIAS it cannot read. A clause reads an alias as
     /// the spec it stands for — `provides StoreAlias[State = WIS]` is `provides Store[State
@@ -2566,6 +2581,7 @@ impl LoadError {
             | LoadError::ProvidesNamesDataSort { span, .. }
             | LoadError::ProvidesAtAliasAddress { span, .. }
             | LoadError::SpecAliasRefused { span, .. }
+            | LoadError::PublicAliasOfInternal { span, .. }
             | LoadError::ProvidesClauseNeedsSort { span, .. }
             | LoadError::RuleHeadOwnedByNoScope { span, .. }
             | LoadError::PredicateHeadsSpanFiles { span, .. }
@@ -3598,6 +3614,18 @@ impl LoadError {
                     provides_at_alias_address_message(alias, target, head.as_ref())
                 )
             }
+            LoadError::PublicAliasOfInternal {
+                alias,
+                hidden,
+                declared_in,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    public_alias_of_internal_message(alias, hidden, declared_in)
+                )
+            }
             LoadError::SpecAliasRefused {
                 alias,
                 reason,
@@ -3984,6 +4012,20 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     provides_at_alias_address_message(alias, target, head.as_ref()),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::PublicAliasOfInternal {
+                alias,
+                hidden,
+                declared_in,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    public_alias_of_internal_message(alias, hidden, declared_in),
                     span.start,
                     span.end
                 )
@@ -7839,6 +7881,17 @@ fn provides_at_alias_address_message(
         "a `provides` clause cannot stand in a `namespace` at '{alias}', a type alias of \
          '{target}': the clause names its provider by where it is written, and an alias is \
          not a sort dispatch searches — {repair}"
+    )
+}
+
+/// WI-20260924-R97NK — the sentence for [`LoadError::PublicAliasOfInternal`]. One owner,
+/// for the reason [`provides_needs_sort_message`] states: two rendering paths, one under
+/// test.
+fn public_alias_of_internal_message(alias: &str, hidden: &str, declared_in: &str) -> String {
+    format!(
+        "type alias '{alias}' is public but names '{hidden}', which is internal to \
+         '{declared_in}': an alias stands for what it names wherever it is used, so it \
+         cannot be visible more widely — declare it `internal sort`"
     )
 }
 
@@ -32125,6 +32178,50 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-20260924-R97NK — an alias is no more visible than what it names (§8.6). A
+    /// PUBLIC alias whose definition cites an `internal` name — at any depth, by any
+    /// leading part of a path — that is hidden from outside is refused. An `internal`
+    /// alias needs no check: its definition resolved from the alias's own scope, so the
+    /// scopes that see the alias see every name it cites. A name the declaring scope
+    /// itself may not see is skipped here, because resolving the definition has already
+    /// refused it as the forbidden access it is.
+    ///
+    /// A public alias declared INSIDE an `internal` sort is refused too, and must be: a
+    /// path through an `internal` owner is not gated (`lib.Box.Inner` under an `internal
+    /// sort Box` loads from outside, measured 2026-09-27), so such an alias is reachable.
+    fn refuse_public_alias_of_internal(&mut self, sort_term: TermId, s: &AbstractSort) {
+        let alias = self.kb.name_term_sym(sort_term);
+        if self.kb.symbols.is_internal(alias) {
+            return;
+        }
+        let global = self.kb.global_scope();
+        let mut heads: Vec<String> = Vec::new();
+        collect_type_expr_heads(&self.parsed.symbols, &s.definition, &mut heads);
+        for head in heads {
+            let ResolveResult::Found(sym) = resolve_name_in_kb(self.kb, &head, self.current_scope)
+            else {
+                continue;
+            };
+            let symbols = &self.kb.symbols;
+            if !symbols.internal_visible_from(sym, self.current_scope)
+                || symbols.internal_visible_from(sym, global)
+            {
+                continue;
+            }
+            let declared_in = symbols
+                .declaring_scope(sym)
+                .map(|d| self.kb.scope_display_name(d).to_owned())
+                .expect("an internal symbol hidden from the global scope has a declaring scope");
+            self.errors.push(LoadError::PublicAliasOfInternal {
+                alias: self.kb.qualified_name_of(alias).to_owned(),
+                hidden: self.kb.qualified_name_of(sym).to_owned(),
+                declared_in,
+                span: s.span,
+            });
+            return;
+        }
+    }
+
     fn load_abstract_sort(&mut self, s: &AbstractSort, domain: Symbol) {
         let sort_term = self.name_to_sort_term(&s.name);
 
@@ -32164,6 +32261,7 @@ impl<'a> Loader<'a> {
         self.assert_sort_alias(sort_term, target_value, domain);
         if !matches!(s.definition, TypeExpr::Variable { .. }) {
             self.record_alias_target(sort_term, &s.definition);
+            self.refuse_public_alias_of_internal(sort_term, s);
         }
 
         // Emit DescriptionInfo facts for all description blocks
