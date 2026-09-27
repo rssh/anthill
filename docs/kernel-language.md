@@ -1169,7 +1169,9 @@ a first one; WI-956), and every declaration that puts a type there satisfies it.
   `fact`, is refused as a secondary entry's content; and both controls — the same
   block with no alias at that address — load. So a `namespace` at an alias's
   address IS a secondary entry today. What is *not* settled is whether it should
-  be, and R1 has not followed the classification there (§5.2).
+  be, and R1 has not followed the classification there (§5.2). One content rule is
+  already specific to it: a `provides` clause there is refused (see the table
+  below).
 - **Secondary entry** — a `namespace X` at an address that **has** a main entry.
   It *adds to* `X`'s scope and defines nothing about the type. Any number may
   exist.
@@ -1229,7 +1231,7 @@ admitted:
 | a `const` | allowed, **and it must have a defining value** — the same clause as the operation above, for the same reason: a value-less `const` reserves a host slot for a `const_map` entry (§10.2), the const-level peer of `operation_map`. A value-less `const` in a MAIN entry stays legal, as `Float.infinity` / `nan` require |
 | a nested `sort` / `enum` with a body, or a type alias `sort A = T` | allowed: each declares a new type at its own address (`X.A`), so it is that type's main entry and the restrictions do not recurse into it |
 | a nested `namespace` | allowed, and not recursed into: it is an ordinary namespace at `X.Inner` |
-| `provides Spec[…]`, and a host `provides Spec language L … end` block | allowed. The block's INTERIOR is classified by this same table — realization clauses only |
+| `provides Spec[…]`, and a host `provides Spec language L … end` block | allowed. The block's INTERIOR is classified by this same table — realization clauses only — **except at a type ALIAS's address**: `provides Spec[…]` in a `namespace A` over `sort A = T` is **refused**, naming `T` (WI-20260924-FS8M3). A clause names its provider by where it is written, and an alias is no sort dispatch searches, so it was filed about `A` and never found. It is not read through to `T` either: for an alias that applies its target (`sort A = Box[E = Int64]`) that would claim the provision for every `Box`. Write it in `T`'s own entry. The entry's other members are unaffected |
 | a `proof`, or a standalone `describe` | allowed **iff its target is declared in this same entry**. A proof writes its verdict back onto the target declaration and a `describe` writes a description onto it, so neither may reach a declaration another entry owns |
 | an `entity`, or a type-parameter binder (`sort T = ?`, `sort ?T`, `sort [T]`, `sort [F] { … }`) | **refused** — a constructor and a type parameter are the type's identity, and identity is declared once (§5.2, §6.3) |
 | a sort-level `requires` | **refused** — a requirement constrains every CALLER of the type's operations, and an entry may not add an obligation to a type's users. The qualified call `Spec.op(x)` needs no clause |

@@ -1223,6 +1223,24 @@ pub enum LoadError {
         provider: String,
         span: Span,
     },
+    /// WI-20260924-FS8M3 — a `provides` clause in a `namespace` at a type ALIAS's address.
+    /// A clause names its provider by where it is written, so it would be filed about the
+    /// alias, a name dispatch never searches: the program loaded and died at run time
+    /// ("operation has no body"). Not read through to the target either — for an alias
+    /// that APPLIES its target (`sort FSBox = Box[E = Int64]`) that would claim the
+    /// provision for every instantiation of the head. Only the clause is refused; the
+    /// entry's operations stay members at the alias's address (§5.1).
+    ProvidesAtAliasAddress {
+        /// The alias the entry is written at, qualified.
+        alias: String,
+        /// What the alias stands for, rendered (`t.FileStore`, `t.Box[E = Int64]`).
+        target: String,
+        /// The sort at the head of `target`, qualified, when the chain reaches one — and
+        /// whether the alias stands for exactly that sort (`sort FSAlias = FileStore`)
+        /// rather than an application of it.
+        head: Option<(String, bool)>,
+        span: Span,
+    },
     /// WI-20260924-F8PYZ — a spec clause (`provides`, a provision's `:- …` condition, a
     /// `requires`) whose spec is a type ALIAS it cannot read. A clause reads an alias as
     /// the spec it stands for — `provides StoreAlias[State = WIS]` is `provides Store[State
@@ -2546,6 +2564,7 @@ impl LoadError {
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
             | LoadError::ProvidesNamesDataSort { span, .. }
+            | LoadError::ProvidesAtAliasAddress { span, .. }
             | LoadError::SpecAliasRefused { span, .. }
             | LoadError::ProvidesClauseNeedsSort { span, .. }
             | LoadError::RuleHeadOwnedByNoScope { span, .. }
@@ -3567,6 +3586,18 @@ impl LoadError {
                     provides_names_data_sort_message(spec, provider)
                 )
             }
+            LoadError::ProvidesAtAliasAddress {
+                alias,
+                target,
+                head,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    provides_at_alias_address_message(alias, target, head.as_ref())
+                )
+            }
             LoadError::SpecAliasRefused {
                 alias,
                 reason,
@@ -3939,6 +3970,20 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     provides_names_data_sort_message(spec, provider),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::ProvidesAtAliasAddress {
+                alias,
+                target,
+                head,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    provides_at_alias_address_message(alias, target, head.as_ref()),
                     span.start,
                     span.end
                 )
@@ -7767,6 +7812,33 @@ fn provides_names_data_sort_message(spec: &str, provider: &str) -> String {
          {spec}(…)`, which is a different statement and needs no clause here. (The \
          `fact {spec}[…]` spelling is classified as that data assertion rather than \
          refused, since it has both readings — this clause has only one.)"
+    )
+}
+
+/// WI-20260924-FS8M3 — the sentence for [`LoadError::ProvidesAtAliasAddress`]. One owner,
+/// for the reason [`provides_needs_sort_message`] states: two rendering paths, one under
+/// test. The repair names the head's own address; for an applied alias it also says that
+/// a clause there speaks for every instantiation, which is the reading this refuses to
+/// make on the author's behalf.
+fn provides_at_alias_address_message(
+    alias: &str,
+    target: &str,
+    head: Option<&(String, bool)>,
+) -> String {
+    let repair = match head {
+        Some((h, true)) => format!(
+            "write it where '{h}' is declared, or in a `namespace {h}` entry"
+        ),
+        Some((h, false)) => format!(
+            "write it where '{h}' is declared or in a `namespace {h}` entry — a clause \
+             there speaks for every '{h}', not only '{target}'"
+        ),
+        None => "write it at the address of the sort that provides the spec".to_string(),
+    };
+    format!(
+        "a `provides` clause cannot stand in a `namespace` at '{alias}', a type alias of \
+         '{target}': the clause names its provider by where it is written, and an alias is \
+         not a sort dispatch searches — {repair}"
     )
 }
 
@@ -36184,6 +36256,46 @@ impl<'a> Loader<'a> {
     /// `Specialization` ProofRecords pointing at the supporting
     /// proofs.
     fn load_provides_clause(&mut self, pc: &ProvidesClause, domain: Symbol, clause: usize) {
+        // WI-20260924-FS8M3 — a provider that is a type ALIAS: see
+        // [`LoadError::ProvidesAtAliasAddress`]. First, so nothing is filed about it.
+        // Either map may be the only one to know an alias: `alias_heads` misses one whose
+        // target is no sort application (a tuple), `alias_targets` one whose target did
+        // not lower to a term (a value-carried binding).
+        if self.kb.is_scan_alias(domain) || self.kb.alias_targets.contains_key(&domain) {
+            // The alias's target as recorded, when its target lowered to a term (an
+            // unlowerable one — a value-carried binding — is still an alias and still
+            // refused, rendered through its head).
+            let target = self
+                .kb
+                .alias_targets
+                .get(&domain)
+                .map(|&t| crate::kb::typing::type_display_name(&self.kb, t));
+            // EXACT when no link of the chain APPLIES its target (`A2 = FSAlias`,
+            // `FSAlias = FileStore`); any applied link makes the alias one instantiation.
+            // Read off the SCAN (`alias_heads` / `aliases_applying`), complete before any
+            // clause loads, so the answer cannot depend on load order — `alias_targets`
+            // fills per declaration (today every declaration is recorded before a clause
+            // loads, measured; the scan does not rely on it).
+            let exact = !alias_chain_applies(self.kb, domain);
+            let head = self.kb.alias_head(domain);
+            let target = target
+                .or_else(|| {
+                    // The declaration has not loaded yet: render through the head.
+                    head.map(|h| {
+                        let name = self.kb.local_name_of(h);
+                        if exact { name.to_string() } else { format!("{name}[…]") }
+                    })
+                })
+                .unwrap_or_else(|| "its target".to_string());
+            let head = head.map(|h| (self.kb.qualified_name_of(h).to_string(), exact));
+            self.errors.push(LoadError::ProvidesAtAliasAddress {
+                alias: self.kb.qualified_name_of(domain).to_string(),
+                target,
+                head,
+                span: pc.span,
+            });
+            return;
+        }
         let provides_sort = ClauseKind::Requirement;
         // A SORT WITH CONSTRUCTORS IS A DATA SORT, and that rule belongs to BOTH
         // spellings (WI-1106). `maybe_emit_fact_provides_info` returns for such a
