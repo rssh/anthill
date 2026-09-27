@@ -497,10 +497,11 @@ pub(crate) enum AliasExpansion {
 ///
 /// Follows a chain of BARE links (`sort StoreAlias2 = StoreAlias`, `sort StoreAlias =
 /// Store`) to the target that is not itself one, whose bindings are the ones the chain
-/// fixes. An APPLIED link — `sort B = A[X = …]` with `A` an alias — is not followed, and
-/// needs no rule for merging two binding lists: its declaration is refused where it is
-/// written, as a type position applying arguments to a name that declares no parameters
-/// (`check_sort_type_args`).
+/// fixes. An APPLIED link — `sort B = A[X = …]` with `A` an alias — needs no following
+/// here: its declaration is recorded already merged (WI-20260924-SNJPR), `A`'s own
+/// bindings and the link's in one application of the sort `A` stands for
+/// (`Loader::sort_binding_to_value`), and the load records `A` before `B`
+/// (`declare_type_aliases`).
 ///
 /// Reads [`KnowledgeBase::alias_targets`], not the `SortAlias` scan: it is asked once per
 /// spec clause while files load, and that map is complete by then.
@@ -539,7 +540,7 @@ pub(crate) fn alias_expansion(kb: &KnowledgeBase, sym: Symbol) -> Option<AliasEx
 /// scope; a `sort X = T` alias opens no scope, so a pure alias owns nothing. Pass 1
 /// defines every name of every file before the declaration pass records an alias, so the
 /// answer does not depend on which file or line came first.
-fn owns_members(kb: &KnowledgeBase, sym: Symbol) -> bool {
+pub(crate) fn owns_members(kb: &KnowledgeBase, sym: Symbol) -> bool {
     kb.symbols
         .scope(kb.symbols.scope_id(sym))
         .is_some_and(|scope| !scope.locals.is_empty())

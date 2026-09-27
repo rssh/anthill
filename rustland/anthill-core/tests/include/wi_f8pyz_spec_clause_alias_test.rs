@@ -13,7 +13,7 @@
 //! An alias the reading has no answer for is refused, naming why. Member access through an
 //! alias (`StoreAlias.peek`, the bare-spec sugar `StoreAlias.State`), a binding block, and
 //! an alias in a type position are NOT this change: they are WI-20260924-SNJPR, which says
-//! why a name needs more than a clause does; a binding block refuses an alias until then.
+//! why a name needs more than a clause does (`wi_snjpr_alias_in_a_name_test`).
 //!
 //! AND A QUALIFIED SPEC NAME IS RESOLVED WHOLE: `provided_spec_symbol` and the `where`-block
 //! reader resolved only its last segment in the writing scope, whose miss is a silent bare
@@ -60,8 +60,8 @@
 //!    [`a_where_block_through_an_alias_holds_the_spec_members`],
 //!    [`a_where_block_named_through_its_namespace_holds_the_spec_members`],
 //!    [`a_where_block_over_a_refused_alias_reports_once`].
-//! 9. A BINDING BLOCK THROUGH AN ALIAS IS NOT REFUSED:
-//!    [`a_binding_block_through_an_alias_is_refused`].
+//! 9. (A BINDING BLOCK THROUGH AN ALIAS WAS REFUSED; WI-20260924-SNJPR reads it through, and
+//!    its row moved to `wi_snjpr_alias_in_a_name_test`.)
 //! 10. A NAME THAT IS AN ALIAS AND OWNS MEMBERS READS AS THE ALIAS (`owns_members` false):
 //!     [`a_name_that_is_an_alias_and_more_is_refused`].
 //! 11. A CLAUSE MAY BIND AGAIN WHAT ITS ALIAS FIXES (`refuse_alias_rebinding` returns):
@@ -82,9 +82,10 @@
 //! [`a_sort_requirement_named_directly_is_supplied`],
 //! [`a_binding_block_named_directly_loads`], and
 //! [`an_alias_in_a_binding_is_the_type_it_stands_for`], where an alias already meant its
-//! type. And two that pass either way and say why at their site:
-//! [`a_bare_alias_requirement_is_supplied_where_it_holds`] and
-//! [`an_alias_over_an_applied_alias_is_refused_where_it_is_declared`].
+//! type. And one that passes either way and says why at its site:
+//! [`a_bare_alias_requirement_is_supplied_where_it_holds`]. (A row pinning the refusal of
+//! an alias over an APPLIED alias stood here; WI-20260924-SNJPR reads such an alias
+//! through, merging the two binding lists — `wi_snjpr_alias_in_a_name_test`.)
 //!
 //! A row that loops over spellings runs its direct ones, the controls, FIRST. Run ALONE —
 //! the alias spellings cut from a copy of this file — they pass under 1, 3, 4 and 6, the
@@ -516,29 +517,6 @@ fn a_sort_requirement_applying_an_alias_is_supplied() {
     }
 }
 
-/// An alias over an alias APPLIED to further bindings is refused where it is declared — a
-/// type position applying bindings to a name that declares no parameters (WI-709's
-/// `check_sort_type_args`) — which is what lets `alias_expansion` stop at such a link rather
-/// than merge two binding lists. PASSES EITHER WAY: the refusal is the declaration's own and
-/// stood before; this row pins the guard the reading relies on.
-#[test]
-fn an_alias_over_an_applied_alias_is_refused_where_it_is_declared() {
-    let over_s2a = format!("  sort S2AB = S2A[B = NoSp]\n{}", spec2("S2AB"));
-    let over_store_alias = format!(
-        "  sort WisStore2 = StoreAlias[State = WIS]\n{}",
-        file_store("provides WisStore2")
-    );
-    for (extra, token) in [
-        (&over_s2a, "`t.S2A` has no type parameter named 'B'"),
-        (
-            &over_store_alias,
-            "`t.StoreAlias` has no type parameter named 'State'",
-        ),
-    ] {
-        assert_refused_naming(&load_errors(&program(extra, "1")), &[token], token);
-    }
-}
-
 // ── the data-sort refusal an alias walked past ─────────────────────────────────────────
 
 /// `Colour` has a constructor, so it is a DATA sort and nothing provides it (WI-1106) —
@@ -952,20 +930,6 @@ namespace t
 end
 "#
     )
-}
-
-/// A binding block does not read an alias — where its clauses land is decided at scan
-/// time too, before any alias is known — and says so, naming the sort. Was: the block
-/// loaded into the alias's empty scope and its `operation_map` was refused as naming
-/// "`StackAlias.size`, which declares no operation `size`".
-#[test]
-fn a_binding_block_through_an_alias_is_refused() {
-    assert_alias_refused(
-        &load_errors(&binding_block("StackAlias")),
-        "t.StackAlias",
-        &["does not read an alias: write 't.Stack'"],
-        "a binding block through an alias",
-    );
 }
 
 /// The control: the block named directly loads.

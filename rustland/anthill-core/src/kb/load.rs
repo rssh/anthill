@@ -5126,6 +5126,7 @@ pub fn scan_definitions_with_sources(
     // hand-built IR), so `check_name_captures` never re-judges a declaration an
     // earlier phase already ruled on — the same reason WI-1049 resets `op_decl_sites`.
     kb.decl_sites.clear();
+    kb.scan_alias_decls.clear();
     kb.scope_text_files.clear();
     for (file_idx, file) in files.iter().enumerate() {
         // WI-995 — every pass below resolves names on ONE file's behalf; say which.
@@ -5190,6 +5191,8 @@ pub fn scan_definitions_with_sources(
     }
 
     let mut pending: Vec<PendingImport> = Vec::new();
+    // WI-20260924-SNJPR — the pass-2 work that names an alias whose head is not known yet.
+    let mut alias_deferred: Vec<DeferredAliasWork> = Vec::new();
     for (file_idx, file) in files.iter().enumerate() {
         kb.symbols.set_asking_file(Some(source_ids[file_idx]));
         // WI-995: whose import is this? `PerFile` for ordinary text; `Invocation` for
@@ -5215,6 +5218,7 @@ pub fn scan_definitions_with_sources(
             &mut pending,
             file_idx,
             origin,
+            &mut alias_deferred,
         );
         let mut pass = ImportPass {
             kb,
@@ -5223,9 +5227,16 @@ pub fn scan_definitions_with_sources(
             pending: &mut pending,
             file_idx,
             origin,
+            deferred: &mut alias_deferred,
         };
         walk_scopes(&mut pass, &file.items, global);
         errors.extend(file_errors.into_iter().map(|e| e.located_in(file)));
+    }
+    // Sub-pass 2b (WI-20260924-SNJPR) — every alias's target HEAD, now that imports are
+    // wired, and the pass-2 work that waited for one. See [`resolve_alias_dependent_work`].
+    for e in resolve_alias_dependent_work(kb, alias_deferred, &mut pending, source_ids) {
+        let (file_idx, e) = e;
+        errors.push(e.located_in(files[file_idx]));
     }
 
     // Sub-pass 3: register unlabeled rule head-functor Goals, binding to an
@@ -8608,6 +8619,22 @@ impl ScopePass for DefinePass<'_> {
                 if matches!(s.definition, TypeExpr::Variable { .. }) && is_sort_scope(kb, scope) {
                     kb.symbols.add_type_param(scope, &short, abstract_sym);
                 }
+                // WI-20260924-SNJPR — a TYPE ALIAS of a sort application: its target head
+                // is resolved once imports are wired (`resolve_scan_alias_heads`), in the
+                // scope it is written in, on this file's behalf.
+                if matches!(s.definition, TypeExpr::Parameterized { .. }) {
+                    kb.aliases_applying.insert(abstract_sym);
+                }
+                if let TypeExpr::Simple(_) | TypeExpr::Parameterized { .. } = &s.definition {
+                    kb.scan_alias_decls.insert(
+                        abstract_sym,
+                        crate::kb::ScanAliasDecl {
+                            scope,
+                            source: source_id,
+                            target: type_expr_base_name(parse_sym, &s.definition),
+                        },
+                    );
+                }
             }
             Item::Entity(e) => {
                 let name = join_segments(parse_sym, &e.name.segments);
@@ -10240,6 +10267,8 @@ struct ImportPass<'a> {
     file_idx: usize,
     /// WI-995 — who this file's imports belong to.
     origin: ImportOrigin,
+    /// WI-20260924-SNJPR — work naming an alias whose head is not resolved yet.
+    deferred: &'a mut Vec<DeferredAliasWork>,
 }
 
 impl ScopePass for ImportPass<'_> {
@@ -10258,12 +10287,14 @@ impl ScopePass for ImportPass<'_> {
             self.pending,
             self.file_idx,
             self.origin,
+            self.deferred,
         );
         Some(scope)
     }
 
     fn at_item(&mut self, item: &Item, scope: ScopeId, _prefix: &str) {
         let (kb, parse_sym, errors) = (&mut *self.kb, self.parse_sym, &mut *self.errors);
+        let (deferred, file_idx) = (&mut *self.deferred, self.file_idx);
         match item {
             Item::RequiresDecl(r) => {
                 let req_sort_name = type_expr_base_name(parse_sym, &r.type_expr);
@@ -10316,6 +10347,22 @@ impl ScopePass for ImportPass<'_> {
                     // MEASURED before gating: of 64,445 `requires` links across the
                     // stdlib, `anthill-stl` and every fixture the suite loads, all
                     // 64,445 name a `Sort` — the refusal costs the corpus nothing.
+                    // WI-20260924-SNJPR — `requires StoreAlias[…]` brings `Store`'s names
+                    // into scope: the parent is the alias target's scope, wired once the
+                    // alias's head is resolved.
+                    if let ResolveResult::Found(alias) = resolved {
+                        if kb.is_scan_alias(alias) && !super::typing::owns_members(kb, alias) {
+                            deferred.push(DeferredAliasWork::ScopeParent {
+                                scope,
+                                alias,
+                                provides: false,
+                                file_idx,
+                                written: req_sort_name.clone(),
+                                span: r.span,
+                            });
+                            return;
+                        }
+                    }
                     if let ResolveResult::Found(sym) = resolved {
                         match parent_scope_of(kb, sym, REQUIRES_PARENT_ADMITS) {
                             // WI-20260906-6BX85 — `add_requires_parent`, not
@@ -10377,7 +10424,7 @@ impl ScopePass for ImportPass<'_> {
             // going `ambiguous symbol ... candidates [PartialOrd.gte, Int64.gte,
             // BigInt.gte, String.gte, Float.gte]`. Two clauses, one keyword.
             Item::ProvidesClause(p) => {
-                wire_provides_scope_parent(kb, parse_sym, &p.spec, scope);
+                wire_provides_scope_parent(kb, parse_sym, &p.spec, scope, deferred, file_idx);
             }
             _ => {}
         }
@@ -10427,6 +10474,8 @@ fn wire_provides_scope_parent(
     parse_sym: &crate::intern::SymbolTable,
     spec: &TypeExpr,
     scope: ScopeId,
+    deferred: &mut Vec<DeferredAliasWork>,
+    file_idx: usize,
 ) {
     let spec_name = type_expr_base_name(parse_sym, spec);
     if spec_name == "anthill.prelude.EffectsRuntime" {
@@ -10442,6 +10491,19 @@ fn wire_provides_scope_parent(
         }
     });
     if let ResolveResult::Found(sym) = resolved {
+        // WI-20260924-SNJPR — a conversion spelled through an alias lends the alias
+        // target's names, once its head is known.
+        if kb.is_scan_alias(sym) && !super::typing::owns_members(kb, sym) {
+            deferred.push(DeferredAliasWork::ScopeParent {
+                scope,
+                alias: sym,
+                provides: true,
+                file_idx,
+                written: spec_name,
+                span: Span::default(),
+            });
+            return;
+        }
         if let Some(parent_scope) = parent_scope_of(kb, sym, REQUIRES_PARENT_ADMITS) {
             // WI-20260825-N2865 — `add_provides_parent`, not `add_parent`: the same
             // inclusion, filed under an origin that says WHICH clause wrote it, so the
@@ -10925,12 +10987,20 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
             return;
         }
         let base = type_expr_base_name(self.parse_sym, &pb.spec);
-        let ResolveResult::Found(spec) = resolve_name_in_kb(self.kb, &base, scope) else {
+        let ResolveResult::Found(written) = resolve_name_in_kb(self.kb, &base, scope) else {
             // The spec names nothing here, so `load_provides_block`'s own remap of the
             // same name falls to the bare intern (WI-476) and the block's clauses land
             // under a global symbol, never on a scoped predicate this census is about.
             // The unresolved spec is the load's own diagnostic, not this pass's.
             return;
+        };
+        // WI-20260924-SNJPR — the block realizes the sort an alias stands for, as
+        // `load_provides_block` reads it; the scan knows the alias's head by now (sub-pass
+        // 2b). A name that is an alias AND owns members is refused by the load and read
+        // as written here.
+        let spec = match super::typing::owns_members(self.kb, written) {
+            true => written,
+            false => self.kb.alias_head(written).unwrap_or(written),
         };
         let spec_scope = self.kb.symbols.scope_id(spec);
         let (parse_sym, parse_terms) = (self.parse_sym, self.parse_terms);
@@ -11289,6 +11359,242 @@ fn forbid_internal_import(
 /// Process `import` declarations → register imported names and parent scopes.
 /// Unresolvable import paths produce errors (deferred predicate imports go to
 /// `pending` for the post-pass-3 retry — see `PendingImport`).
+/// WI-20260924-SNJPR — sub-pass 2b: resolve every alias's target HEAD, then run the
+/// sub-pass-2 work that waited for one ([`DeferredAliasWork`]), until neither makes
+/// progress — an import through one alias can bring in the name another alias's target
+/// is written as. What is left is run once more with no deferral, so an import through
+/// an alias with no head (its target names nothing, or its chain comes back to itself) is
+/// reported as the unresolved path it is. Errors come back with the index of the file
+/// that wrote them.
+fn resolve_alias_dependent_work(
+    kb: &mut KnowledgeBase,
+    mut work: Vec<DeferredAliasWork>,
+    pending: &mut Vec<PendingImport>,
+    source_ids: &[SourceId],
+) -> Vec<(usize, LoadError)> {
+    let mut errors: Vec<(usize, LoadError)> = Vec::new();
+    loop {
+        let mut progress = resolve_scan_alias_heads(kb);
+        let mut next: Vec<DeferredAliasWork> = Vec::new();
+        let before = work.len();
+        for item in work {
+            run_deferred_alias_work(kb, item, pending, source_ids, Some(&mut next), &mut errors);
+        }
+        progress |= next.len() < before;
+        work = next;
+        if work.is_empty() || !progress {
+            break;
+        }
+    }
+    for item in work {
+        run_deferred_alias_work(kb, item, pending, source_ids, None, &mut errors);
+    }
+    kb.scan_alias_decls.clear();
+    errors
+}
+
+/// Does any link of `alias`'s chain APPLY its target ([`KnowledgeBase::aliases_applying`])?
+fn alias_chain_applies(kb: &KnowledgeBase, alias: Symbol) -> bool {
+    let mut cur = alias;
+    let mut seen: Vec<Symbol> = Vec::new();
+    loop {
+        if kb.aliases_applying.contains(&cur) {
+            return true;
+        }
+        seen.push(cur);
+        match kb.alias_heads.get(&cur) {
+            Some(&next) if !seen.contains(&next) => cur = next,
+            _ => return false,
+        }
+    }
+}
+
+/// Resolve the head of every alias this scan declared that has none yet: its target's
+/// base name, in the scope the declaration is written in, through the declaring file's
+/// imports — the same ladder a reference there takes. `true` when one was resolved.
+fn resolve_scan_alias_heads(kb: &mut KnowledgeBase) -> bool {
+    let mut open: Vec<(Symbol, crate::kb::ScanAliasDecl)> = kb
+        .scan_alias_decls
+        .iter()
+        .filter(|(sym, _)| !kb.alias_heads.contains_key(sym))
+        .map(|(sym, d)| (*sym, d.clone()))
+        .collect();
+    open.sort_by_key(|(sym, _)| sym.index());
+    let mut progress = false;
+    for (alias, decl) in open {
+        let previous = kb.symbols.set_asking_file(Some(decl.source));
+        let answer = resolve_name_in_kb(kb, &decl.target, decl.scope);
+        kb.symbols.set_asking_file(previous);
+        if let ResolveResult::Found(head) = answer {
+            if head != alias && kb.has_kind(head, SymbolKind::Sort) {
+                kb.alias_heads.insert(alias, head);
+                progress = true;
+            }
+        }
+    }
+    progress
+}
+
+fn run_deferred_alias_work(
+    kb: &mut KnowledgeBase,
+    item: DeferredAliasWork,
+    pending: &mut Vec<PendingImport>,
+    source_ids: &[SourceId],
+    retry: Option<&mut Vec<DeferredAliasWork>>,
+    errors: &mut Vec<(usize, LoadError)>,
+) {
+    match item {
+        DeferredAliasWork::Import {
+            import,
+            scope,
+            file_idx,
+            origin,
+        } => {
+            let previous = kb.symbols.set_asking_file(Some(source_ids[file_idx]));
+            let mut errs = Vec::new();
+            process_one_import(kb, &import, scope, &mut errs, pending, file_idx, origin, retry);
+            kb.symbols.set_asking_file(previous);
+            errors.extend(errs.into_iter().map(|e| (file_idx, e)));
+        }
+        DeferredAliasWork::ScopeParent {
+            scope,
+            alias,
+            provides,
+            file_idx,
+            written,
+            span,
+        } => {
+            let Some(head) = kb.alias_head(alias) else {
+                if let Some(r) = retry {
+                    r.push(DeferredAliasWork::ScopeParent {
+                        scope,
+                        alias,
+                        provides,
+                        file_idx,
+                        written,
+                        span,
+                    });
+                }
+                // Nothing to wire: the clause's own load reports an alias of no sort.
+                return;
+            };
+            // A conversion through an alias that APPLIES its target speaks of the bindings
+            // the alias fixes too, which the gate cannot read here: no names are lent, as
+            // `provides Store[State = WIS, Key = T]` written out lends none.
+            if provides && alias_chain_applies(kb, alias) {
+                return;
+            }
+            match (parent_scope_of(kb, head, REQUIRES_PARENT_ADMITS), provides) {
+                (Some(parent), true) => kb.symbols.add_provides_parent(scope, parent),
+                (Some(parent), false) => kb.symbols.add_requires_parent(scope, parent),
+                (None, true) => {}
+                (None, false) => errors.push((
+                    file_idx,
+                    LoadError::RequiresNamesNonSort {
+                        written,
+                        resolved: kb.qualified_name_of(head).to_string(),
+                        kind: kb.symbols.get(head).primary_kind(),
+                        span,
+                    },
+                )),
+            }
+        }
+    }
+}
+
+/// WI-20260924-SNJPR — one import, read off the parse IR into owned form so that an
+/// import whose path crosses a type alias can wait for the alias's head
+/// ([`DeferredAliasWork`]) and be processed exactly as it would have been.
+#[derive(Clone)]
+struct OwnedImport {
+    path: String,
+    span: Span,
+    kind: OwnedImportKind,
+}
+
+#[derive(Clone)]
+enum OwnedImportKind {
+    Plain,
+    Selective(Vec<(String, Span)>),
+    Wildcard,
+}
+
+/// WI-20260924-SNJPR — sub-pass 2's work that names a type ALIAS whose head the scan has
+/// not resolved yet: the head is resolved only once imports are wired, because an alias's
+/// target may itself be an imported name. Retried by [`resolve_alias_dependent_work`].
+enum DeferredAliasWork {
+    /// An import whose path reaches INTO an alias (`import qa.StoreAlias.{peek}`).
+    Import {
+        import: OwnedImport,
+        scope: ScopeId,
+        file_idx: usize,
+        origin: ImportOrigin,
+    },
+    /// A `requires` (or a conversion's `provides`) naming an alias: the scope parent it
+    /// wires is the alias target's scope.
+    ScopeParent {
+        scope: ScopeId,
+        alias: Symbol,
+        provides: bool,
+        file_idx: usize,
+        written: String,
+        span: Span,
+    },
+}
+
+/// WI-20260924-SNJPR — how a PATH reads once the type aliases it crosses are read
+/// through.
+enum AliasPath {
+    /// No segment of the path is an alias with members to offer: read as written.
+    AsWritten,
+    /// A segment is an alias whose head the scan has not resolved yet.
+    Pending,
+    /// Every alias segment replaced by the qualified name of the sort it stands for.
+    Through(String),
+}
+
+/// WI-20260924-SNJPR — read `path`'s segments through the type aliases among them:
+/// `qa.StoreAlias.peek` over `sort StoreAlias = Store` is `qa.Store.peek`. `upto` is the
+/// number of LEADING segments that are containers — every segment of a selective or
+/// wildcard import's base, all but the last of a plain import's path (whose last segment
+/// is the name bound, alias or not).
+///
+/// An alias that also owns members (a `namespace X` at its address beside `sort X = …`)
+/// is read as written: it has two readings, and the spec-clause reader refuses such a
+/// name where a clause names it (`alias_expansion`'s `AlsoDeclared`).
+fn read_path_through_aliases(kb: &KnowledgeBase, path: &str, upto: usize) -> AliasPath {
+    let segs: Vec<&str> = path.split('.').collect();
+    let mut cur = String::new();
+    let mut crossed = false;
+    for (i, seg) in segs.iter().enumerate() {
+        if !cur.is_empty() {
+            cur.push('.');
+        }
+        cur.push_str(seg);
+        if i >= upto {
+            continue;
+        }
+        let Some(&sym) = kb.symbols.by_qualified_name.get(&cur) else {
+            continue;
+        };
+        if !kb.is_scan_alias(sym) || super::typing::owns_members(kb, sym) {
+            continue;
+        }
+        match kb.alias_head(sym) {
+            Some(head) => {
+                cur = kb.qualified_name_of(head).to_owned();
+                crossed = true;
+            }
+            None => return AliasPath::Pending,
+        }
+    }
+    match crossed {
+        true => AliasPath::Through(cur),
+        false => AliasPath::AsWritten,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn process_imports(
     kb: &mut KnowledgeBase,
     parse_sym: &crate::intern::SymbolTable,
@@ -11298,9 +11604,74 @@ fn process_imports(
     pending: &mut Vec<PendingImport>,
     file_idx: usize,
     origin: ImportOrigin,
+    deferred: &mut Vec<DeferredAliasWork>,
 ) {
     for imp in imports {
-        let raw_path = join_segments(parse_sym, &imp.path.segments);
+        let owned = OwnedImport {
+            path: join_segments(parse_sym, &imp.path.segments),
+            span: imp.path.span,
+            kind: match &imp.kind {
+                ImportKind::Plain => OwnedImportKind::Plain,
+                ImportKind::Selective(names) => OwnedImportKind::Selective(
+                    names
+                        .iter()
+                        .map(|n| (join_segments(parse_sym, &n.segments), n.span))
+                        .collect(),
+                ),
+                ImportKind::Wildcard => OwnedImportKind::Wildcard,
+            },
+        };
+        process_one_import(
+            kb,
+            &owned,
+            scope_id,
+            errors,
+            pending,
+            file_idx,
+            origin,
+            Some(deferred),
+        );
+    }
+}
+
+/// One import of [`process_imports`]. `deferred` is where an import through an alias
+/// whose head is not resolved yet waits; `None` on the LAST retry, where such an import
+/// is processed as written and so reported as the unresolved path it is.
+#[allow(clippy::too_many_arguments)]
+fn process_one_import(
+    kb: &mut KnowledgeBase,
+    imp: &OwnedImport,
+    scope_id: ScopeId,
+    errors: &mut Vec<LoadError>,
+    pending: &mut Vec<PendingImport>,
+    file_idx: usize,
+    origin: ImportOrigin,
+    deferred: Option<&mut Vec<DeferredAliasWork>>,
+) {
+    {
+        let raw_path = imp.path.clone();
+        let containers = match imp.kind {
+            OwnedImportKind::Plain => raw_path.split('.').count() - 1,
+            OwnedImportKind::Selective(_) | OwnedImportKind::Wildcard => usize::MAX,
+        };
+        // WI-20260924-SNJPR — an import reaching INTO an alias reads it as the sort it
+        // stands for: `import qa.StoreAlias.{peek}` is `import qa.Store.{peek}`.
+        let raw_path = match read_path_through_aliases(kb, &raw_path, containers) {
+            AliasPath::AsWritten => raw_path,
+            AliasPath::Through(p) => p,
+            AliasPath::Pending => match deferred {
+                Some(d) => {
+                    d.push(DeferredAliasWork::Import {
+                        import: imp.clone(),
+                        scope: scope_id,
+                        file_idx,
+                        origin,
+                    });
+                    return;
+                }
+                None => raw_path,
+            },
+        };
         // Implicit-prelude fallback: a single-segment path like `Modify` that
         // doesn't resolve at top level falls back to `anthill.prelude.<path>`.
         // Mirrors the global short-name visibility of post-WI-215 prelude
@@ -11320,7 +11691,7 @@ fn process_imports(
             raw_path
         };
         match &imp.kind {
-            ImportKind::Plain => {
+            OwnedImportKind::Plain => {
                 // `import anthill.prelude.List` → make "List" resolvable locally
                 // and add the target scope as a parent for accessing its contents.
                 let found = kb.symbols.by_qualified_name.get(&path).copied();
@@ -11333,7 +11704,7 @@ fn process_imports(
                         original_sym,
                         short,
                         scope_id,
-                        imp.path.span,
+                        imp.span,
                         errors,
                     ) {
                         kb.symbols.add_import(scope_id, short, original_sym, origin);
@@ -11357,11 +11728,11 @@ fn process_imports(
                 if found.is_none() {
                     errors.push(LoadError::UnresolvedImport {
                         path: path.clone(),
-                        span: imp.path.span,
+                        span: imp.span,
                     });
                 }
             }
-            ImportKind::Selective(names) => {
+            OwnedImportKind::Selective(names) => {
                 // `import anthill.prelude.{Eq, Ord}` → for each name,
                 // register a local alias. Parent-scope links are NOT added here —
                 // if sort contents (operations) are needed, use `requires` or
@@ -11399,11 +11770,11 @@ fn process_imports(
                     // The base path itself doesn't resolve
                     errors.push(LoadError::UnresolvedImport {
                         path: path.clone(),
-                        span: imp.path.span,
+                        span: imp.span,
                     });
                 }
-                for name in names {
-                    let short = join_segments(parse_sym, &name.segments);
+                for (short, name_span) in names {
+                    let short = short.clone();
                     let qualified = format!("{}.{}", path, short);
                     let original_sym = kb
                         .symbols
@@ -11422,7 +11793,7 @@ fn process_imports(
                     if let Some(sym) = original_sym {
                         // WI-369: a selective import of an `internal` name into a
                         // scope that can't see it is a forbidden reference.
-                        if !forbid_internal_import(kb, sym, &short, scope_id, name.span, errors) {
+                        if !forbid_internal_import(kb, sym, &short, scope_id, *name_span, errors) {
                             kb.symbols.add_import(scope_id, &short, sym, origin);
                         }
                     } else {
@@ -11435,13 +11806,13 @@ fn process_imports(
                             scope: scope_id,
                             short,
                             qualified,
-                            span: name.span,
+                            span: *name_span,
                             file_idx,
                         });
                     }
                 }
             }
-            ImportKind::Wildcard => {
+            OwnedImportKind::Wildcard => {
                 if let Some(target_scope) = find_scope_by_name(kb, &path) {
                     kb.symbols.add_import_parent(
                         scope_id,
@@ -11460,12 +11831,12 @@ fn process_imports(
                     errors.push(LoadError::WildcardImportOfNonScope {
                         path: path.clone(),
                         kind: kb.symbols.get(sym).primary_kind(),
-                        span: imp.path.span,
+                        span: imp.span,
                     });
                 } else {
                     errors.push(LoadError::UnresolvedImport {
                         path: path.clone(),
-                        span: imp.path.span,
+                        span: imp.span,
                     });
                 }
             }
@@ -13810,6 +14181,17 @@ fn load_phase_inner(
     // list-literal desugaring, the `Option` wrap and the absent-optional fill)
     // independent of the order the files were handed to the loader; see
     // `Loader::declare_field_types`.
+    // WI-20260924-SNJPR — every TYPE ALIAS of every file is recorded before any other
+    // declaration is lowered, an alias after the aliases its definition names: so
+    // `x: WisStore.State` and `sort Y = WisStore.State` read `WisStore` whichever file or
+    // line declares it. See [`declare_type_aliases`].
+    all_errors.extend(declare_type_aliases(
+        kb,
+        files,
+        &source_ids,
+        resolver,
+        &mut loaded_paths,
+    ));
     for (parsed, &source_id) in files.iter().zip(&source_ids) {
         // WI-995 — this file's declarations resolve on this file's behalf.
         kb.symbols.set_asking_file(Some(source_id));
@@ -14449,6 +14831,206 @@ fn declare_file_field_types(
         "the declaration pass queued DeclarationMeta rows it never emits"
     );
     stamped_file_errors(loader.errors, parsed)
+}
+
+/// WI-20260924-SNJPR — record every type alias of every file (`sort X = T`, its
+/// `SortAlias` fact and its clause reading, `load_abstract_sort`) before the WI-936
+/// declaration pass lowers any field type, in DEPENDENCY order: an alias is recorded once
+/// every alias its definition names is. Before this, each scope level pre-loaded its own
+/// aliases in source order, file by file, so `sort Y = WisStore.State` written above
+/// `sort WisStore = Store[State = WIS]` — or an entity field naming an alias declared in a
+/// later file — read an alias that was not recorded yet. The type parameters (`sort T =
+/// ?`, a marked `sort [F]`) are pre-loaded first at every level, so an alias naming one
+/// finds its canonical variable.
+///
+/// In rounds: each walks every file and records the aliases whose named aliases are all
+/// recorded. A chain that comes back to itself never becomes ready; the last round records
+/// what is left in source order, and the readers refuse such an alias by name
+/// (`alias_expansion`'s `Cycle`). Both emitters dedup, so the declaration and load passes
+/// re-encountering an alias no-op.
+fn declare_type_aliases(
+    kb: &mut KnowledgeBase,
+    files: &[&ParsedFile],
+    source_ids: &[SourceId],
+    resolver: &dyn SourceResolver,
+    loaded_paths: &mut HashSet<String>,
+) -> Vec<LoadError> {
+    let global = kb.global_scope();
+    let mut errors = Vec::new();
+    let mut pending: HashSet<Symbol> = HashSet::new();
+    let mut round = AliasRound::Collect;
+    loop {
+        let mut progress = false;
+        for (parsed, &source_id) in files.iter().zip(source_ids) {
+            kb.symbols.set_asking_file(Some(source_id));
+            let mut loader =
+                Loader::new(kb, parsed, resolver, loaded_paths, global, Some(source_id));
+            let mut pass = AliasDeclarePass {
+                loader: &mut loader,
+                pending: &mut pending,
+                round,
+                progress: &mut progress,
+            };
+            // The top level is a level too; `enter_scope` runs every nested one.
+            pass.level(&parsed.items);
+            walk_scopes(&mut pass, &parsed.items, global);
+            errors.extend(stamped_file_errors(loader.errors, parsed));
+        }
+        round = match round {
+            AliasRound::Collect => AliasRound::Ready,
+            AliasRound::Ready if pending.is_empty() => break,
+            AliasRound::Ready if progress => AliasRound::Ready,
+            AliasRound::Ready => AliasRound::Rest,
+            AliasRound::Rest => break,
+        };
+    }
+    errors
+}
+
+/// One round of [`declare_type_aliases`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AliasRound {
+    /// Pre-load the type parameters and note every alias as pending.
+    Collect,
+    /// Record each pending alias whose definition names no pending alias.
+    Ready,
+    /// Record what is left — a cycle — in source order.
+    Rest,
+}
+
+struct AliasDeclarePass<'l, 'a> {
+    loader: &'l mut Loader<'a>,
+    pending: &'l mut HashSet<Symbol>,
+    round: AliasRound,
+    progress: &'l mut bool,
+}
+
+impl AliasDeclarePass<'_, '_> {
+    fn level(&mut self, items: &[Item]) {
+        let domain = self.loader.current_domain();
+        for item in items {
+            let Item::AbstractSort(abs) = item else {
+                if let Item::SortWithBody(inner) = item {
+                    if inner.is_type_param && self.round == AliasRound::Collect {
+                        let f_term = self.loader.name_to_sort_term(&inner.name);
+                        self.loader.emit_type_param_backing_var(f_term, domain);
+                    }
+                }
+                continue;
+            };
+            let is_param = matches!(abs.definition, TypeExpr::Variable { .. });
+            match self.round {
+                AliasRound::Collect if is_param => self.loader.load_abstract_sort(abs, domain),
+                AliasRound::Collect => {
+                    let sym = self.loader.remap_name(&abs.name);
+                    self.pending.insert(sym);
+                }
+                _ if is_param => {}
+                round => {
+                    let sym = self.loader.remap_name(&abs.name);
+                    if !self.pending.contains(&sym) {
+                        continue;
+                    }
+                    if round == AliasRound::Ready && self.names_pending_alias(&abs.definition, sym)
+                    {
+                        continue;
+                    }
+                    self.loader.load_abstract_sort(abs, domain);
+                    self.pending.remove(&sym);
+                    *self.progress = true;
+                }
+            }
+        }
+    }
+
+    /// Does `ty` name — by any leading part of any name in it — an alias still waiting to
+    /// be recorded, other than `this`?
+    fn names_pending_alias(&self, ty: &TypeExpr, this: Symbol) -> bool {
+        let mut heads: Vec<String> = Vec::new();
+        collect_type_expr_heads(&self.loader.parsed.symbols, ty, &mut heads);
+        heads.iter().any(|h| {
+            matches!(
+                resolve_name_in_kb(self.loader.kb, h, self.loader.current_scope),
+                ResolveResult::Found(s) if s != this && self.pending.contains(&s)
+            )
+        })
+    }
+}
+
+/// Every leading part of every name written in `ty` — `WisStore` and `WisStore.State` of
+/// `WisStore.State`, `qa` and `qa.S2A` of `qa.S2A[B = NoSp]`, with `NoSp` — so a name
+/// reaching an alias by its qualified path is seen as naming it.
+fn collect_type_expr_heads(
+    parse_sym: &crate::intern::SymbolTable,
+    ty: &TypeExpr,
+    out: &mut Vec<String>,
+) {
+    let prefixes = |name: &Name, out: &mut Vec<String>| {
+        let mut joined = String::new();
+        for seg in &name.segments {
+            if !joined.is_empty() {
+                joined.push('.');
+            }
+            joined.push_str(parse_sym.local_name(*seg));
+            out.push(joined.clone());
+        }
+    };
+    match ty {
+        TypeExpr::Simple(name) => prefixes(name, out),
+        TypeExpr::Parameterized { name, bindings } => {
+            prefixes(name, out);
+            for b in bindings {
+                collect_type_expr_heads(parse_sym, &b.bound, out);
+            }
+        }
+        TypeExpr::Tuple(fields) => {
+            for (_, t) in fields {
+                collect_type_expr_heads(parse_sym, t, out);
+            }
+        }
+        TypeExpr::Arrow {
+            params,
+            return_type,
+            effects,
+        } => {
+            for (_, t) in params {
+                collect_type_expr_heads(parse_sym, t, out);
+            }
+            collect_type_expr_heads(parse_sym, return_type, out);
+            for e in effects {
+                collect_type_expr_heads(parse_sym, e, out);
+            }
+        }
+        TypeExpr::EffectAbsent(inner) => collect_type_expr_heads(parse_sym, inner, out),
+        TypeExpr::EffectRow(items) => {
+            for t in items {
+                collect_type_expr_heads(parse_sym, t, out);
+            }
+        }
+        TypeExpr::EffectGuarded { label, .. } => collect_type_expr_heads(parse_sym, label, out),
+        TypeExpr::Variable { .. } | TypeExpr::Denoted(_) => {}
+    }
+}
+
+impl ScopePass for AliasDeclarePass<'_, '_> {
+    fn parse_symbols(&self) -> &crate::intern::SymbolTable {
+        &self.loader.parsed.symbols
+    }
+
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId> {
+        let scope = self.loader.resolve_declared_scope(site)?;
+        self.loader.current_scope = scope;
+        self.level(site.decl.items());
+        Some(scope)
+    }
+
+    fn exit_scope(&mut self, site: &ScopeSite<'_>, _scope: ScopeId) {
+        self.loader.current_scope = site.enclosing;
+    }
+
+    /// Every level's items are read whole, at `enter_scope` (and for the top level by
+    /// [`declare_type_aliases`]): readiness is decided per alias, not per item offered.
+    fn at_item(&mut self, _item: &Item, _scope: ScopeId, _prefix: &str) {}
 }
 
 /// Internal: load with cycle detection via `loaded_paths`.
@@ -19780,7 +20362,17 @@ fn quoted_scope_list(scopes: &[String]) -> String {
 /// nothing else gained a question; keeping the answer is what stops the ladder being
 /// walked twice for every equation subject on every load.
 fn rule_head_ladder_answer(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> ResolveResult {
-    resolve_name_in_kb(kb, name, scope)
+    // WI-20260924-SNJPR — the ladder, save that a head is a DECLARATION: it does not read
+    // a type alias through ([`AliasReading::AsDeclared`]).
+    kb.symbols.resolve_in_scope(name, scope).or_else(|| {
+        resolve_dotted_in_kb_with(
+            kb,
+            name,
+            scope,
+            DottedVisibility::VisibleOnly,
+            AliasReading::AsDeclared,
+        )
+    })
 }
 
 /// WI-742 — the TYPE NAMES a rule head's `?x: T` annotations write, dotted, in written
@@ -20119,6 +20711,31 @@ fn resolve_dotted_in_kb(
     scope: ScopeId,
     vis: DottedVisibility,
 ) -> ResolveResult {
+    resolve_dotted_in_kb_with(kb, name, scope, vis, AliasReading::ReadThrough)
+}
+
+/// WI-20260924-SNJPR — whether the dotted ladder reads a type ALIAS among a path's
+/// segments as the sort it stands for (`StoreAlias.peek` is `Store.peek`).
+///
+/// A name is read through an alias where it is USED, never where one is DECLARED: a rule
+/// head `rule RecAlias.freshp(…)` is a declaration at the address it spells, and the
+/// scan's 059 R3 census counts it there — reading it through would land the clause on
+/// `Rec.freshp` while the census had counted it under `RecAlias`, one name with two
+/// answers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AliasReading {
+    ReadThrough,
+    AsDeclared,
+}
+
+/// [`resolve_dotted_in_kb`] with the alias reading chosen by the caller.
+fn resolve_dotted_in_kb_with(
+    kb: &KnowledgeBase,
+    name: &str,
+    scope: ScopeId,
+    vis: DottedVisibility,
+    aliases: AliasReading,
+) -> ResolveResult {
     let admits = |sym: &Symbol| match vis {
         DottedVisibility::VisibleOnly => kb.symbols.internal_visible_from(*sym, scope),
         DottedVisibility::Any => true,
@@ -20153,6 +20770,10 @@ fn resolve_dotted_in_kb(
     if let Some(path) = absolute_path_target(name) {
         return dotted_absolute(kb, path)
             .filter(not_a_field)
+            .or_else(|| match aliases {
+                AliasReading::ReadThrough => dotted_through_alias(kb, path).filter(not_a_field),
+                AliasReading::AsDeclared => None,
+            })
             .filter(admits)
             .map_or(ResolveResult::NotFound, ResolveResult::Found);
     }
@@ -20169,7 +20790,19 @@ fn resolve_dotted_in_kb(
         ResolveResult::Ambiguous(candidates) => return ResolveResult::Ambiguous(candidates),
         ResolveResult::NotFound => None,
     };
-    let hit = match dotted_by_head(kb, head_sym, tail).filter(not_a_field) {
+    // WI-20260924-SNJPR — below the declared-member join: a path that joins as written
+    // keeps its answer, so reading an alias through can only turn a MISS into one.
+    let through_alias = || match (aliases, head_sym) {
+        (AliasReading::ReadThrough, Some(h)) => {
+            let full = format!("{}.{tail}", kb.qualified_name_of(h));
+            dotted_through_alias(kb, &full).filter(not_a_field)
+        }
+        _ => None,
+    };
+    let hit = match dotted_by_head(kb, head_sym, tail)
+        .filter(not_a_field)
+        .or_else(through_alias)
+    {
         Some(hit) => hit,
         // WI-20260825-X9RRN — THE PROVISION RUNG, and it is part of the RELATIVE reading
         // rather than a new one: `Numeric.add` still means "member `add` of the head
@@ -20257,6 +20890,28 @@ pub fn absolute_fallthrough_hits() -> usize {
 /// Zero the census count on this thread, so the next read is a delta.
 pub fn reset_absolute_fallthrough_hits() {
     ABSOLUTE_FALLTHROUGH_HITS.with(|c| c.set(0));
+}
+
+/// WI-20260924-SNJPR — the member a fully qualified `path` names once each type alias
+/// among its CONTAINER segments is read as the sort it stands for: `t.StoreAlias.peek`
+/// over `sort StoreAlias = Store` is `t.Store.peek`, `t.WisStore.peek` is too. `None` when
+/// no alias is crossed, or the member is not there.
+///
+/// NOT A TYPE PARAMETER: `WisStore.State` over `sort WisStore = Store[State = WIS]` is
+/// `WIS`, a TYPE, which a symbol cannot carry — answering `Store.State` would drop the
+/// binding the alias fixes and read as the wildcard spec member. A type member reached
+/// through an alias is the type-position reader's (`Loader::alias_type_member`), which
+/// reads the alias's bindings.
+fn dotted_through_alias(kb: &KnowledgeBase, path: &str) -> Option<Symbol> {
+    let containers = path.split('.').count() - 1;
+    let AliasPath::Through(through) = read_path_through_aliases(kb, path, containers) else {
+        return None;
+    };
+    kb.symbols
+        .by_qualified_name
+        .get(&through)
+        .copied()
+        .filter(|m| !super::typing::is_sort_param_symbol(kb, *m))
 }
 
 /// The RELATIVE reading — HEAD-SEGMENT qualification: append the trailing segments to
@@ -21021,6 +21676,11 @@ struct BareSpecSugar {
     /// source for the drain — the requires clause `Spec[Member = ?P]` is reconstructed
     /// from each entry, so there is no second list to keep in sync.
     minted: Vec<((Symbol, Symbol), TermId)>,
+    /// WI-20260924-SNJPR — the bindings a TYPE ALIAS fixes, for a carrier minted through
+    /// one (`S2A.B` over `sort S2A = Spec2[A = WIS]`): the synthesized requirement is
+    /// `Spec2[A = WIS, B = ?P]`, not `Spec2[B = ?P]`. Keyed by the minted var, in the
+    /// clause canon `alias_expansion` hands them over in; absent for a spec named directly.
+    fixed: HashMap<TermId, SmallVec<[(Symbol, TermId); 2]>>,
 }
 
 /// WI-201 / WI-20260923-ZBWMC: the carrier block being loaded, as the bare-spec sugar
@@ -26598,6 +27258,25 @@ impl<'a> Loader<'a> {
     /// dropping, is what gets enumerated. Call it only where the result is actually
     /// threaded onward (`ApplyOrConstructor`'s non-entity arm); calling it and then
     /// discarding the Vec would mark a bracket consumed that in fact vanished.
+    /// WI-20260924-SNJPR — the spec a bare call-bracket key names through a type alias
+    /// visible at the call (`StoreAlias` ↦ `Store`), or `None` for any other key. A
+    /// declared type parameter is never an alias, so a key naming one is untouched; a
+    /// callee parameter spelled like an alias in the CALLER's scope is the one key this
+    /// reads as the alias, and `NoSuchTypeParam` then names the spec.
+    fn call_key_alias_head(&self, raw: &str) -> Option<Symbol> {
+        if raw.contains('.') {
+            return None;
+        }
+        let ResolveResult::Found(sym) = self.kb.symbols.resolve_in_scope(raw, self.current_scope)
+        else {
+            return None;
+        };
+        if super::typing::owns_members(self.kb, sym) {
+            return None;
+        }
+        self.kb.alias_head(sym)
+    }
+
     fn build_call_type_args(
         &mut self,
         parse_id: TermId,
@@ -26611,6 +27290,16 @@ impl<'a> Loader<'a> {
             .map(|b| {
                 let name = b.param.as_ref().map(|name| {
                     let raw = join_segments(&self.parsed.symbols, &name.segments);
+                    // WI-20260924-SNJPR — a key naming a type ALIAS in scope here selects
+                    // for the spec it stands for: `usePeek[StoreAlias = FileStore]` is
+                    // `usePeek[Store = FileStore]`. The key is otherwise a LABEL the typer
+                    // matches without a scope (`resolve_call_type_arg_targets`), so the
+                    // alias is read here, where the caller's scope is in hand, and the key
+                    // handed on as the spec's own short name.
+                    let raw = match self.call_key_alias_head(&raw) {
+                        Some(head) => self.kb.local_name_of(head).to_owned(),
+                        None => raw,
+                    };
                     self.kb.intern(&raw)
                 });
                 let value = self.type_expr_to_value(&b.bound);
@@ -29414,6 +30103,109 @@ impl<'a> Loader<'a> {
         qn
     }
 
+    /// WI-20260924-SNJPR — the sort a type-position APPLICATION of `written` applies, and
+    /// the bindings it already carries: `(base, fixed)` for a type alias the spec-clause
+    /// reading resolves (`alias_expansion`), each fixed binding in the TYPE canon (a type
+    /// parameter as its variable, where the clause canon holds `Ref(param)`); `(written,
+    /// [])` for any other name.
+    fn type_alias_application(&mut self, written: Symbol) -> (Symbol, SmallVec<[(Symbol, TermId); 2]>) {
+        let Some(super::typing::AliasExpansion::Sort { base, bindings }) =
+            super::typing::alias_expansion(self.kb, written)
+        else {
+            return (written, SmallVec::new());
+        };
+        let fixed = bindings
+            .into_iter()
+            .map(|(p, v)| (p, self.type_canon_binding(v)))
+            .collect();
+        (base, fixed)
+    }
+
+    /// A binding an alias fixes, recorded in the CLAUSE canon (`record_alias_target`), as
+    /// a TYPE position spells it: a type parameter's `Ref(param)` is the parameter's
+    /// variable there. Anything else is one term in both.
+    fn type_canon_binding(&self, value: TermId) -> TermId {
+        match self.kb.get_term(value) {
+            Term::Ref(p) if super::typing::is_sort_param_symbol(self.kb, *p) => {
+                super::typing::resolve_sort_alias(self.kb, *p).unwrap_or(value)
+            }
+            _ => value,
+        }
+    }
+
+    /// WI-20260924-SNJPR — a type-position application binding again a parameter its alias
+    /// already fixes (`WisStore[State = NoSp]`) is two values for one slot, refused as the
+    /// spec-clause reading refuses it (`refuse_alias_rebinding`), whatever the two values.
+    fn refuse_type_alias_rebinding(
+        &mut self,
+        written: Symbol,
+        fixed: &[(Symbol, TermId)],
+        named: &[Symbol],
+        span: SourceSpan,
+    ) {
+        for n in named {
+            let short = self.kb.local_name_of(*n).to_owned();
+            if let Some((_, value)) = fixed.iter().find(|(p, _)| self.kb.local_name_of(*p) == short) {
+                self.errors.push(LoadError::SpecAliasRefused {
+                    alias: self.kb.qualified_name_of(written).to_string(),
+                    reason: format!(
+                        "and it already binds `{short}` to `{}`, which the application \
+                         binds again — two values for one parameter",
+                        super::typing::type_display_name(self.kb, *value),
+                    ),
+                    span: span.span,
+                });
+            }
+        }
+    }
+
+    /// WI-20260924-SNJPR — `Alias.Member` in a TYPE position, the head a type ALIAS: read
+    /// as the member of the sort the alias stands for, with the bindings the alias fixes.
+    /// A member the alias FIXES is its type (`WisStore.State` over `sort WisStore =
+    /// Store[State = WIS]` is `WIS`); a spec member it leaves open is the bare-spec sugar's
+    /// carrier, whose synthesized requirement keeps what the alias fixes (`S2A.B` over
+    /// `sort S2A = Spec2[A = WIS]` requires `Spec2[A = WIS, B = ?P]`); anything else is
+    /// what the same member of the sort spelled directly is. `None` when `head` is not an
+    /// alias the spec-clause reading resolves — its refusals are that reader's to make.
+    fn alias_type_member(
+        &mut self,
+        head: Symbol,
+        member_name: &str,
+        span: SourceSpan,
+    ) -> Option<node_occurrence::TypeChild> {
+        let super::typing::AliasExpansion::Sort { base, bindings } =
+            super::typing::alias_expansion(self.kb, head)?
+        else {
+            return None;
+        };
+        let declares = self
+            .kb
+            .type_params_of_sort(base)
+            .iter()
+            .any(|p| p == member_name);
+        if declares {
+            let fixed = bindings
+                .iter()
+                .find(|(p, _)| self.kb.local_name_of(*p) == member_name)
+                .map(|(_, v)| *v);
+            if let Some(value) = fixed {
+                // The clause canon spells a type PARAMETER as `Ref(param)`; a type
+                // position spells it as the parameter's variable.
+                let value = self.type_canon_binding(value);
+                return Some(node_occurrence::TypeChild::Interned(value));
+            }
+            if self.bare_spec_sugar.is_some()
+                && !self.kb.sort_has_constructors(base)
+                && !bindings.is_empty()
+            {
+                let var = self.mint_bare_spec_carrier_fixing(base, member_name, bindings, span);
+                return Some(node_occurrence::TypeChild::Interned(var));
+            }
+        }
+        let base_name = self.kb.local_name_of(base).to_owned();
+        self.try_rigid_type_projection(base, &base_name, member_name, span)
+    }
+
     /// WI-428: classify a two-segment TYPE-headed name (`P.Key` / `MemStore.Key` /
     /// `Storage.Key`) as a `RigidTypeProjection` — the type-keyed sibling of the
     /// value-headed `ExprCarried` (design path-dependent-types.md §5.3). Formation
@@ -29432,6 +30224,9 @@ impl<'a> Loader<'a> {
         member_name: &str,
         span: SourceSpan,
     ) -> Option<node_occurrence::TypeChild> {
+        if let Some(child) = self.alias_type_member(head_resolved, member_name, span) {
+            return Some(child);
+        }
         let head_short = self.kb.local_name_of(head_resolved).to_owned();
         let qn = self.kb.qualified_name_of(head_resolved).to_owned();
         let sort_qn = self.logical_sort_qn(&qn, &head_short).to_owned();
@@ -29732,7 +30527,37 @@ impl<'a> Loader<'a> {
         member_name: &str,
         span: SourceSpan,
     ) -> TermId {
+        self.mint_bare_spec_carrier_fixing(spec, member_name, SmallVec::new(), span)
+    }
+
+    /// [`Self::mint_bare_spec_carrier`] reached through a type ALIAS that fixes `fixed`
+    /// of the spec's other parameters (WI-20260924-SNJPR). Neither narrowed by the
+    /// carrier block (its bindings are read about the spec, not about the alias's fixed
+    /// ones) nor shared with a carrier minted through another spelling.
+    fn mint_bare_spec_carrier_fixing(
+        &mut self,
+        spec: Symbol,
+        member_name: &str,
+        fixed: SmallVec<[(Symbol, TermId); 2]>,
+        span: SourceSpan,
+    ) -> TermId {
         let member_sym = self.kb.intern(member_name);
+        if !fixed.is_empty() {
+            if let Some(sugar) = self.bare_spec_sugar.as_ref() {
+                if let Some((_, var)) = sugar.minted.iter().find(|((s, m), v)| {
+                    *s == spec && *m == member_sym && sugar.fixed.get(v) == Some(&fixed)
+                }) {
+                    return *var;
+                }
+            }
+            let vid = self.kb.fresh_var(member_sym);
+            let var = self.kb.alloc(Term::Var(Var::Global(vid)));
+            if let Some(sugar) = self.bare_spec_sugar.as_mut() {
+                sugar.minted.push(((spec, member_sym), var));
+                sugar.fixed.insert(var, fixed);
+            }
+            return var;
+        }
         // WI-201 carrier-in-scope NARROWING: inside a carrier block whose provisions bind
         // this member to ONE type an operation here could spell (`provides
         // WorkItemStore[State = WIS]`), the bare `Spec.Member` IS that type — returned
@@ -29767,7 +30592,7 @@ impl<'a> Loader<'a> {
             if let Some((_, var)) = sugar
                 .minted
                 .iter()
-                .find(|((s, m), _)| *s == spec && *m == member_sym)
+                .find(|((s, m), v)| *s == spec && *m == member_sym && !sugar.fixed.contains_key(v))
             {
                 return *var;
             }
@@ -30039,7 +30864,16 @@ impl<'a> Loader<'a> {
                 }
             }
             TypeExpr::Parameterized { name, bindings } => {
-                let sort_sym = self.remap_name(name);
+                let written_sym = self.remap_name(name);
+                // WI-20260924-SNJPR — an ALIAS applied to further arguments is the sort
+                // it stands for, applied to the bindings the alias fixes and then the
+                // written ones: `IntPair[R = String]` over `sort IntPair = Pair[L =
+                // Int64]` is `Pair[L = Int64, R = String]`, and a positional binds the
+                // next parameter the alias left open. What the spec-clause reading
+                // refuses (an alias of no sort, a cycle, a name with two readings) is
+                // read as written, and so refused as an application of a name that
+                // declares no parameters.
+                let (sort_sym, fixed) = self.type_alias_application(written_sym);
                 let base_term = self.kb.make_sort_ref(sort_sym);
                 // Same positional→declared-param-name mapping for both the node
                 // and the ground hash-consed form, so a label's binding
@@ -30052,11 +30886,19 @@ impl<'a> Loader<'a> {
                 // written type cannot mean two things. Reported once here; the binding
                 // loop below then proceeds (a stray name still lands in the term, but the
                 // load already failed, so nothing downstream reads it).
-                let named_syms: SmallVec<[Symbol; 2]> = bindings
+                let written_named: SmallVec<[Symbol; 2]> = bindings
                     .iter()
                     .filter_map(|b| b.param.as_ref().map(|p| self.reintern(p.last())))
                     .collect();
-                let positional_count = bindings.len() - named_syms.len();
+                let positional_count = bindings.len() - written_named.len();
+                self.refuse_type_alias_rebinding(written_sym, &fixed, &written_named, span);
+                // The alias's fixed parameters are GIVEN, as a named binding is: the fit
+                // check counts them, and a positional skips them.
+                let named_syms: SmallVec<[Symbol; 2]> = fixed
+                    .iter()
+                    .map(|(p, _)| *p)
+                    .chain(written_named.iter().copied())
+                    .collect();
                 if let Err(problem) = self.kb.check_sort_type_args(
                     sort_sym,
                     &declared_params,
@@ -30069,7 +30911,10 @@ impl<'a> Loader<'a> {
                         span: Some(span.span),
                     });
                 }
-                let mut child_bindings: Vec<(Symbol, node_occurrence::TypeChild)> = Vec::new();
+                let mut child_bindings: Vec<(Symbol, node_occurrence::TypeChild)> = fixed
+                    .iter()
+                    .map(|(p, v)| (*p, node_occurrence::TypeChild::Interned(*v)))
+                    .collect();
                 // A positional binds the next declared param NOT already given by name —
                 // `KnowledgeBase::positional_param_slots`, the rule's one owner, so
                 // `Map[K = K1, V1]` binds `V` rather than re-binding `K` to a second value
@@ -30522,21 +31367,41 @@ impl<'a> Loader<'a> {
             // `canonicalize_fact_binding_value`, went with the `fact` spelling of a
             // provision, WI-20260917-S8JYF.)
             TypeExpr::Parameterized { name, bindings } => {
-                let base_sym = self.remap_name(name);
+                // WI-20260924-SNJPR — an ALIAS applied to further arguments is the sort it
+                // stands for with the bindings it fixes, as in a type position
+                // (`Loader::type_alias_application`) — here in the clause canon the alias
+                // is recorded in. So `sort W2 = StoreAlias[WIS]` records `Store[State =
+                // WIS]`, and `sort S2AB = S2A[B = NoSp]` records `Spec2[A = WIS, B =
+                // NoSp]`, which is what lets `alias_expansion` stop at the sort it reaches.
+                let written = self.remap_name(name);
+                let (base_sym, fixed) = match super::typing::alias_expansion(self.kb, written) {
+                    Some(super::typing::AliasExpansion::Sort { base, bindings }) => {
+                        (base, bindings)
+                    }
+                    _ => (written, SmallVec::new()),
+                };
                 let declared_params = self.kb.type_params_of_sort(base_sym);
                 // Explicit named bindings first, then each positional onto the next
                 // declared param no name took. An OVERFLOW positional diverts to `pos`,
                 // which `assemble_binding_value` preserves (via the `SortView` carrier)
                 // rather than dropping — and which the arity check below reports.
-                let mut named: Vec<(Symbol, Value)> = Vec::new();
+                let mut named: Vec<(Symbol, Value)> =
+                    fixed.iter().map(|&(p, t)| (p, Value::term(t))).collect();
                 let mut positionals: Vec<Value> = Vec::new();
+                let mut written_named: SmallVec<[Symbol; 2]> = SmallVec::new();
                 for b in bindings {
                     let bound = self.sort_binding_to_value(&b.bound);
                     match &b.param {
-                        Some(p) => named.push((self.reintern(p.last()), bound)),
+                        Some(p) => {
+                            let sym = self.reintern(p.last());
+                            written_named.push(sym);
+                            named.push((sym, bound));
+                        }
                         None => positionals.push(bound),
                     }
                 }
+                let span = self.type_expr_span(ty);
+                self.refuse_type_alias_rebinding(written, &fixed, &written_named, span);
                 // WI-20260923-N3W68 (#9) — a positional binds the next declared param NOT
                 // already bound by name (`KnowledgeBase::positional_param_slots`). This arm
                 // paired by RAW INDEX and diverted a positional whose index a name had
@@ -33908,10 +34773,17 @@ impl<'a> Loader<'a> {
         let mut extra_requires = auto_requires_terms;
         for ((spec, member), var) in &sugar.minted {
             type_param_var_terms.push(*var);
+            // WI-20260924-SNJPR — through an alias, the bindings it fixes join the
+            // member's, in the canonical order a written clause's arguments take, so the
+            // synthesized clause is one term with the same clause written by hand.
+            let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            named_args.extend(sugar.fixed.get(var).into_iter().flatten().copied());
+            named_args.push((*member, *var));
+            self.kb.canonicalize_record_named_args(*spec, &mut named_args);
             extra_requires.push(self.kb.alloc(Term::Fn {
                 functor: *spec,
                 pos_args: SmallVec::new(),
-                named_args: SmallVec::from_slice(&[(*member, *var)]),
+                named_args,
             }));
         }
         // WI-20260909-S8CBV: the contract clauses are the one term position whose spec
@@ -35458,10 +36330,10 @@ impl<'a> Loader<'a> {
     /// skips what depends on the spec, or keeps the name as written to stay well-formed
     /// while the failed load is discarded (the rule `push_ambiguous_symbol` states).
     ///
-    /// ORDER-INDEPENDENT although it is asked while one clause loads: the WI-936
-    /// declaration pass pre-loads every `sort X = …` of every file of the batch
-    /// ([`Self::preload_type_param_aliases`]) before any file's load pass reaches a clause,
-    /// so an alias declared below its use, or in another file, is already recorded.
+    /// ORDER-INDEPENDENT although it is asked while one clause loads: every `sort X = …`
+    /// of every file of the batch is recorded ([`declare_type_aliases`]) before any file's
+    /// load pass reaches a clause, so an alias declared below its use, or in another file,
+    /// is already recorded.
     fn read_spec_alias(
         &mut self,
         written: Symbol,
@@ -35833,33 +36705,26 @@ impl<'a> Loader<'a> {
     /// the carrier/artifact/namespace-map metadata so codegen and
     /// interpreters can locate the host bindings by `(language, profile)`.
     fn load_provides_block(&mut self, pb: &ProvidesBlock, _domain: Symbol) {
-        // WI-20260924-F8PYZ — A BINDING BLOCK DOES NOT READ A TYPE ALIAS, and says so. It
-        // names the sort it realizes, and where its clauses land is decided twice: here,
-        // and by the scan-time 059 R3 census (`RuleHeadCollectPass::collect_provides_block`),
-        // which runs before any alias is recorded and so reads the name as written. Reading
-        // through here alone let `provides RecAlias language … rule freshp … end` beside
-        // `namespace Rec`'s own `freshp` put two parties' clauses on one predicate — MEASURED,
-        // where `provides Rec` is refused. Before this, the block loaded into the alias's
-        // empty scope and its `operation_map` was refused as naming members of nothing.
-        if let TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } = &pb.spec {
-            let written = self.remap_name(name);
-            match self.read_spec_alias(written, name.span) {
-                Err(_) => return,
-                Ok((sort, _)) if sort != written => {
-                    self.errors.push(LoadError::SpecAliasRefused {
-                        alias: self.kb.qualified_name_of(written).to_string(),
-                        reason: format!(
-                            "but a `provides … language … end` block names the sort it \
-                             realizes and does not read an alias: write '{}'",
-                            self.kb.qualified_name_of(sort),
-                        ),
-                        span: name.span,
-                    });
-                    return;
+        // WI-20260924-SNJPR — A BINDING BLOCK READS A TYPE ALIAS THROUGH, as every spec
+        // clause does: `provides StackAlias language rust … end` realizes `Stack`. Where
+        // its clauses land is decided twice — here, and by the scan-time 059 R3 census
+        // (`RuleHeadCollectPass::collect_provides_block`) — and both read the alias the
+        // same way: the census through the scan's alias head, this through
+        // `read_spec_alias`, which follow one chain to one sort. (F8PYZ refused the block
+        // while the census read the written name: reading through here alone let
+        // `provides RecAlias language … rule freshp … end` beside `namespace Rec`'s own
+        // `freshp` put two parties' clauses on one predicate, where `provides Rec` is
+        // refused.) An alias the reading refuses is reported there, and the block skipped.
+        let spec_domain = match &pb.spec {
+            TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => {
+                let written = self.remap_name(name);
+                match self.read_spec_alias(written, name.span) {
+                    Err(_) => return,
+                    Ok((sort, _)) => sort,
                 }
-                Ok(_) => {}
             }
-        }
+            _ => self.kb.intern("?"),
+        };
         // The provides-block spec is used only as a ground scope identity (and the
         // `Implementation` fact target), so it needs a `TermId`. WI-366: a
         // denoted-bearing spec (a value-in-type binding, e.g. `Foo[Int64, 3]`)
@@ -35885,10 +36750,6 @@ impl<'a> Loader<'a> {
         // form the grammar's own doc comment shows — lowers to a SortView
         // APPLICATION, not a bare name, so unwrapping it aborted the loader. The
         // domain is the sort a clause BELONGS to, which is `Stack` either way.
-        let spec_domain = match &pb.spec {
-            TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => self.remap_name(name),
-            _ => self.kb.intern("?"),
-        };
         // Resolved ABOVE the scope switch: `remap_name` resolves in `current_scope`,
         // and inside the block that is the spec sort.
         let prev_scope = self.current_scope;
@@ -37066,6 +37927,7 @@ end
         let source_id = register_source(&mut kb, &file);
         let mut errors = Vec::new();
         let mut pending = Vec::new();
+        let mut deferred = Vec::new();
         let mut pass = ImportPass {
             kb: &mut kb,
             parse_sym: &file.symbols,
@@ -37073,6 +37935,7 @@ end
             pending: &mut pending,
             file_idx: 0,
             origin: ImportOrigin::File(source_id),
+            deferred: &mut deferred,
         };
         walk_scopes(&mut pass, &file.items, global);
 

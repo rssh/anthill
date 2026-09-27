@@ -900,6 +900,18 @@ pub(crate) enum ReifyCarrier {
     Transient,
 }
 
+/// WI-20260924-SNJPR — one type alias the scan declared, awaiting its head
+/// ([`KnowledgeBase::alias_heads`]).
+#[derive(Clone, Debug)]
+pub(crate) struct ScanAliasDecl {
+    /// The scope the declaration is written in — where its target name resolves.
+    pub(crate) scope: ScopeId,
+    /// The file that wrote it, so the target resolves through that file's imports.
+    pub(crate) source: crate::span::SourceId,
+    /// The target's base name as written (`Store` of `Store[State = WIS]`).
+    pub(crate) target: String,
+}
+
 pub struct KnowledgeBase {
     // Term storage (hash-consed, refcounted)
     pub(crate) terms: TermStore,
@@ -1415,9 +1427,9 @@ pub struct KnowledgeBase {
     /// `Store`), written by the loader's one `SortAlias` emitter
     /// (`Loader::assert_sort_alias`) beside the fact, for the reader that asks while files
     /// are still loading: a spec clause reads an alias as the spec it stands for
-    /// ([`typing::alias_expansion`]). The scan passes run before it is written, so the names
-    /// they resolve — imports, a `requires`'s scope parents, rule-head addresses — cannot
-    /// read an alias through it (WI-20260924-SNJPR).
+    /// ([`typing::alias_expansion`]), and so do the TYPE positions and the bare-spec sugar
+    /// (WI-20260924-SNJPR). The scan passes run before it is written; the names they
+    /// resolve read an alias through [`Self::alias_heads`] instead.
     ///
     /// ONLY an alias: a `sort T = ?` parameter or opaque sort, whose target is a logic
     /// variable, is not one and is not here. A SECOND map of the `SortAlias` relation,
@@ -1426,11 +1438,39 @@ pub struct KnowledgeBase {
     /// existential carriers add DURING the load pass — it has no fallback on a miss. One
     /// map kept by this same emitter for every target could serve both and retire the
     /// load-time scan; that is not done here. This one needs no fallback: every alias is
-    /// declared before any clause loads (the WI-936 declaration pass pre-loads every `sort X
-    /// = …` of every file), and a miss means "not an alias", exactly. O(1), where the
+    /// declared before any clause loads (`load::declare_type_aliases` records every `sort X =
+    /// …` of every file ahead of the WI-936 declaration pass, an alias after the aliases it
+    /// names), and a miss means "not an alias", exactly. O(1), where the
     /// pre-index `resolve_sort_alias` scans every `SortAlias` fact — MEASURED ~110 in a
     /// stdlib load, one of them an alias, against ~165 spec clauses asking.
     pub(crate) alias_targets: HashMap<Symbol, TermId>,
+
+    /// WI-20260924-SNJPR — each TYPE ALIAS's target HEAD, as a SYMBOL (`sort WisStore =
+    /// Store[State = WIS]` ↦ `Store`), known from the SCAN on: the scan resolves each
+    /// alias's written target in the scope that declares it once imports are wired
+    /// (`resolve_scan_alias_heads`). The readers that answer a NAME read an alias through
+    /// it — a member reached through an alias, an import path, the scope parent a
+    /// `requires`/`provides` clause wires, a binding block — so the name means the same
+    /// thing in the scan as in the load pass. [`Self::alias_targets`] is the TERM reading
+    /// (bindings included) the load pass and the typer read; the two are kept by the same
+    /// declarations, and an alias whose target is no sort application (a tuple, an arrow)
+    /// is in neither as a head.
+    ///
+    /// One link per alias: the target head AS WRITTEN, which may itself be an alias; a
+    /// reader follows the chain with [`Self::alias_head`].
+    pub(crate) alias_heads: HashMap<Symbol, Symbol>,
+
+    /// WI-20260924-SNJPR — the aliases whose definition APPLIES its target (`sort WisStore
+    /// = Store[State = WIS]`), recorded by the scan's pass 1. A `provides` naming one is
+    /// not known, at scan time, to speak only of the providing sort's own parameters —
+    /// the bindings it fixes are types the scan has not lowered — so it lends no names
+    /// (`wire_provides_scope_parent`'s gate), as the same clause written out may not.
+    pub(crate) aliases_applying: HashSet<Symbol>,
+
+    /// WI-20260924-SNJPR — the aliases THIS scan declared, with what the head resolution
+    /// needs: the scope the target is written in, the file asking, and the written target
+    /// name. Filled by pass 1, drained by `resolve_scan_alias_heads`; empty outside a scan.
+    pub(crate) scan_alias_decls: HashMap<Symbol, ScanAliasDecl>,
 
     /// WI-660 — the SortProvidesInfo (provider/coherence) index: providers keyed
     /// BOTH by canonical spec-base symbol AND by canonical carrier symbol, built once at
@@ -2365,6 +2405,31 @@ pub(crate) enum SlotReading {
 }
 
 impl KnowledgeBase {
+    /// WI-20260924-SNJPR — the sort `sym` names once every type-alias link is followed
+    /// (`sort A2 = A`, `sort A = Store[…]` ↦ `Store`), or `None` when `sym` is no alias
+    /// with a known head — including an alias whose chain comes back to itself, which the
+    /// spec-clause reader refuses by name (`alias_expansion`), and one whose chain ends at
+    /// an alias the scan has not resolved yet (its target an import still waiting), which
+    /// a reader must wait for rather than read as a sort.
+    pub(crate) fn alias_head(&self, sym: Symbol) -> Option<Symbol> {
+        let mut cur = *self.alias_heads.get(&sym)?;
+        let mut seen = vec![sym];
+        while let Some(&next) = self.alias_heads.get(&cur) {
+            if seen.contains(&cur) {
+                return None;
+            }
+            seen.push(cur);
+            cur = next;
+        }
+        (!seen.contains(&cur) && !self.scan_alias_decls.contains_key(&cur)).then_some(cur)
+    }
+
+    /// WI-20260924-SNJPR — is `sym` a type alias the scan declared (its head resolved or
+    /// not yet)?
+    pub(crate) fn is_scan_alias(&self, sym: Symbol) -> bool {
+        self.alias_heads.contains_key(&sym) || self.scan_alias_decls.contains_key(&sym)
+    }
+
     /// WI-628 — the carrier-`eq` sub-proof depth budget used in production
     /// ([`Self::prove_rule_predicate`]); a `cfg(test)` field overrides it in tests.
     pub(crate) const DEFAULT_SEM_EQ_SUB_DEPTH: usize = 100_000;
@@ -2422,6 +2487,9 @@ impl KnowledgeBase {
             provision_member_cache: RefCell::new(HashMap::new()),
             sort_alias_index: None,
             alias_targets: HashMap::new(),
+            alias_heads: HashMap::new(),
+            aliases_applying: HashSet::new(),
+            scan_alias_decls: HashMap::new(),
             provides_index: None,
             sort_info_index: None,
             requires_index: None,
