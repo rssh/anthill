@@ -3030,6 +3030,19 @@ fn pinned_goal_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
     if !pinned {
         return None;
     }
+    goal_carrier_sort(kb, goal)
+}
+
+/// Condition 2 of [`unprovided_provision`] ALONE: the sort a goal names in its spec's
+/// carrier parameter, whatever the other parameters hold.
+///
+/// Split out for [`unclassified_goal_carrier`] (WI-20260926-0RPRV), whose verdict —
+/// "not an instance BY ANY ROUTE, at any bindings" — never reads the other parameters, so
+/// requiring them pinned only hid the carrier it is about. A carrier providing NOTHING of
+/// the spec has no provision to project them from: `FiniteCollection.size(n)` at a bare
+/// `Nats` leaves `Element` and `E` open, the fully-pinned test answered `None`, and the
+/// call was refused only by the effect error its open `E` left behind.
+fn goal_carrier_sort(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
     // WHICH parameter the carrier goes in, on the two-rung ladder the established reader
     // cannot answer for the spec this ticket is about: [`spec_carrier_param`] finds the
     // param some declared OPERATION receives on, and `Eq` declares no operation at all
@@ -3158,7 +3171,8 @@ pub(super) fn host_implements(kb: &KnowledgeBase, op: Symbol) -> bool {
 }
 
 /// WI-883 — the carrier a spec-op call names through its GOAL when nothing classified one:
-/// the sort bound at the spec's carrier parameter ([`pinned_goal_carrier`]).
+/// the sort bound at the spec's carrier parameter ([`goal_carrier_sort`]), the other
+/// parameters left as they are (WI-20260926-0RPRV).
 ///
 /// WHY NOT THE CLASSIFIER'S. `carrier_param_receiver` recognizes a carrier only through a
 /// provision view, so a carrier providing NOTHING — the case [`unprovided_spec_at_carrier`]
@@ -3178,7 +3192,7 @@ pub(super) fn host_implements(kb: &KnowledgeBase, op: Symbol) -> bool {
 /// cheap, where the two filters after it walk every operation of the spec and scan the
 /// symbol table (`sort_has_constructors`). Found by /code-review on the typer's hot path.
 pub(super) fn unclassified_goal_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> Option<Symbol> {
-    let from_goal = pinned_goal_carrier(kb, goal)?;
+    let from_goal = goal_carrier_sort(kb, goal)?;
     if carrier_is_an_instance(kb, from_goal, goal.spec_sort)
         || spec_is_self_representing(kb, kb.canonical_sort_sym(goal.spec_sort))
     {

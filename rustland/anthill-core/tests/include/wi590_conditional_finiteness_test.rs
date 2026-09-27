@@ -434,6 +434,122 @@ end
     );
 }
 
+/// WI-20260926-0RPRV — the SOURCE itself as the carrier, no combinator in between.
+/// `Nats` provides `Stream` and NOTHING of `FiniteCollection` — no row at all, not even
+/// a conditional one — so where the mapped rows above ask a witness's CONDITION, these
+/// ask whether the carrier is an instance at all. `Fin` is the finite twin again.
+const BARE_PROBE: &str = r#"
+namespace wi590.conditional.bare
+  import anthill.prelude.{List, Int64, Stream, Option, Pair, FiniteCollection}
+  import anthill.prelude.Option.{some, none}
+  import anthill.prelude.Pair.{pair}
+
+  sort Nats
+    import anthill.prelude.{Int64, Stream, Option, Pair}
+    import anthill.prelude.Option.{some}
+    import anthill.prelude.Pair.{pair}
+    entity nats(from: Int64)
+    provides Stream[T = Int64, E = {}]
+    operation splitFirst(n: Nats)
+      -> Option[Pair[A = Int64, B = Stream[T = Int64, E = {}]]] =
+      match n
+        case nats(k) -> some(pair(k, nats(from: k + 1)))
+  end
+
+  sort Fin
+    import anthill.prelude.{Int64, List, Stream, Option, Pair, FiniteCollection}
+    import anthill.prelude.Option.{some, none}
+    import anthill.prelude.Pair.{pair}
+    entity fin(xs: List[T = Int64])
+    provides Stream[T = Int64, E = {}]
+    provides FiniteCollection[C = Fin, Element = Int64, E = {}]
+    operation splitFirst(f: Fin)
+      -> Option[Pair[A = Int64, B = Stream[T = Int64, E = {}]]] =
+      match f
+        case fin(l) ->
+          match List.splitFirst(l)
+            case none() -> none
+            case some(pair(h, t)) -> some(pair(h, fin(xs: t)))
+    operation collect(f: Fin) -> List[T = Int64] =
+      match f
+        case fin(l) -> l
+  end
+
+  operation addp(a: Int64, b: Int64) -> Int64 = a + b
+
+  operation probe(m: {SOURCE}) -> {RET} =
+    {CONSUMER}
+end
+"#;
+
+/// WI-20260926-0RPRV — the bare-carrier REFUSAL, all four consumers. Each must name the
+/// missing provision (`Nats provides no FiniteCollection`), not merely fail: before the
+/// fix `size` / `foldLeft` / `foldRight` were refused ONLY by `probe.effects: undeclared
+/// effect ?_` — the access row a carrier with no provision leaves open — which says
+/// nothing about finiteness and would vanish the day that row got grounded some other
+/// way, leaving a diverging count that loads.
+///
+/// BACK-OUT: make `unclassified_goal_carrier` (dict.rs) read `pinned_goal_carrier` again
+/// instead of `goal_carrier_sort` and every cell goes red — the three defaulted members
+/// back to the effect error alone, `collect` back to a `requires` error that names no
+/// provision. MEASURED. `m.size()` is not a cell: dot dispatch refuses it as "no such
+/// member" either way, which is correct and not this ticket's.
+#[test]
+fn defaulted_members_at_a_bare_infinite_carrier_name_the_missing_provision() {
+    for c in DEFAULTED.iter().chain([&COLLECT]).filter(|c| c.name != "m.size()") {
+        let errs = stdlib_plus_source_errors(&fill(BARE_PROBE, "Nats", c));
+        assert!(
+            errs.iter().any(|e| e.contains(
+                "`wi590.conditional.bare.Nats` provides no `anthill.prelude.FiniteCollection`"
+            )),
+            "`{}` at a bare `Nats` must be refused naming the missing FiniteCollection \
+             provision; got: {errs:?}",
+            c.name
+        );
+    }
+}
+
+/// WI-20260926-0RPRV — the CONTROL, loaded AND driven: the same four consumers at the
+/// finite twin `Fin`, which differs from `Nats` by its `provides FiniteCollection` line.
+/// `fin([1, 2, 3])`: collect is the list, size 3, both folds 6.
+///
+/// Passes with and without the fix, by design — it is what makes the refusal above
+/// about the provision rather than about calling a spec op at a hand-written carrier.
+#[test]
+fn defaulted_members_at_a_bare_finite_carrier_load_and_evaluate() {
+    for c in DEFAULTED.iter().chain([&COLLECT]) {
+        let errs = stdlib_plus_source_errors(&fill(BARE_PROBE, "Fin", c));
+        assert!(errs.is_empty(), "`{}` at a bare `Fin` must load; got: {errs:?}", c.name);
+    }
+    let src = BARE_PROBE
+        .replace("{SOURCE}", "Fin")
+        .replace("{RET}", "Int64")
+        .replace("{CONSUMER}", "FiniteCollection.size(m)")
+        .replace(
+            "  operation addp(",
+            r#"  operation mk() -> Fin = fin(xs: [1, 2, 3])
+  operation dot_size(m: Fin) -> Int64 = m.size()
+  operation fold_l(m: Fin) -> Int64 = FiniteCollection.foldLeft(m, 0, addp)
+  operation fold_r(m: Fin) -> Int64 = FiniteCollection.foldRight(m, 0, addp)
+  operation collected_len(m: Fin) -> Int64 = List.length(FiniteCollection.collect(m))
+  operation addp("#,
+        );
+    let mut interp = crate::common::interp_for(&src);
+    let fin = interp
+        .call("wi590.conditional.bare.mk", &[])
+        .expect("build the finite carrier");
+    for (op, want) in [
+        ("probe", 3),
+        ("dot_size", 3),
+        ("fold_l", 6),
+        ("fold_r", 6),
+        ("collected_len", 3),
+    ] {
+        let qn = format!("wi590.conditional.bare.{op}");
+        assert_eq!(int_of(&mut interp, &qn, &[fin.clone()]), want, "{op}");
+    }
+}
+
 /// The provision DRIVEN, not merely accepted: the drain the witness supplies runs
 /// and applies the transform. Its own source, so the two contrast rows above keep
 /// differing in exactly one token, and it builds the carrier the way the stdlib does
