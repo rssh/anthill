@@ -2555,7 +2555,8 @@ fn self_supplied_entries(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<RequiresEn
 ///
 /// The one walk under the term-level σ substitutions, each of which spelled it. `leaf`
 /// carries the site's LEAF SET, and the sets differ on purpose: {`Ref`, nullary `Fn`} for
-/// [`substitute_in_spec`] and [`substitute_spec_via_subst`]; those plus `Ident` where the
+/// [`substitute_in_spec`], and a bare `Global` var besides for [`substitute_spec_via_subst`]
+/// (the bare-spec sugar's carrier, WI-20260927-YCPAJ); those plus `Ident` where the
 /// leaf is read through [`view_ref_symbol`] (`substitute_impl_params_alloc`,
 /// `subst_requires_value`); a bare `Ref` (and `Ident`) beside a `var_ref` wrapper that is
 /// kept or replaced WHOLE, never descended, in the two binder-aware passes
@@ -2616,7 +2617,7 @@ pub(super) fn rewrite_spec_value(
 
 /// The bare-name symbol of a `Ref(s)` or the nullary `Fn{s}` — the loader's alternative
 /// encoding for a bare name (see WI-224's `substitute_impl_params_alloc`) — and NOT of an
-/// `Ident`: the {`Ref`, nullary `Fn`} LEAF SET the two spec substitutions read (see
+/// `Ident`: the {`Ref`, nullary `Fn`} LEAF SET the two spec substitutions share (see
 /// [`rewrite_term_leaves`] for why that set is theirs and not [`view_ref_symbol`]'s).
 pub(super) fn ref_or_nullary_name(term: &Term) -> Option<Symbol> {
     match term {

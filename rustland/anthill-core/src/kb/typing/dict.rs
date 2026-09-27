@@ -2097,43 +2097,68 @@ pub(super) fn build_op_scoped_dicts(
                         unprovided: Some(unprovided),
                         untied: None,
                     }),
-                    // WI-20260920-XSVCS — THE FORWARD: the carrier is a type parameter
-                    // of the CALLER, and the caller declared no `requires` that covers
-                    // it. See [`caller_rigid_carrier`] for why that is a verdict and not
-                    // a gap.
+                    // WI-20260927-YCPAJ — a PARTLY pinned dep that no provision row
+                    // agrees with at the elements it does pin. See
+                    // [`no_provision_agrees_with_pins`].
+                    // FIRST in this arm, and only a `NoMatch` asks it; a `None` falls
+                    // through to the two verdicts below.
                     None => {
-                        let rigid = site.enclosing_op.and_then(|enclosing_op| {
-                            caller_rigid_carrier(kb, &dep, &disambig, enclosing_op).map(|c| {
-                                RequirementRefusal {
-                                    // RENDERED IN THE CALLER'S SPELLING, not `dep`'s. The entry
-                                    // still names the CALLEE's formal (`tyOf.B`), and an author
-                                    // told to declare `requires TT[T = tyOf.B]` would be copying
-                                    // a parameter of a declaration that is not theirs. Same rule,
-                                    // and the same reason, as the projection arm above.
-                                    no_scope_route: false,
-                                    construction_carries_repair: false,
-                                    dep_text: c.clause.clone(),
-                                    unconstrained: Vec::new(),
-                                    refused_covers: Vec::new(),
-                                    construction: format!(
-                                        "its carrier is `{}`, a type parameter of the CALLING \
+                        let partly_pinned = match &s3_failure {
+                            Some(ResolutionResult::NoMatch { .. }) => {
+                                no_provision_agrees_with_pins(kb, &dep).map(|construction| {
+                                    RequirementRefusal {
+                                        no_scope_route: false,
+                                        construction_carries_repair: true,
+                                        dep_text: render_requires_entry(kb, &dep),
+                                        unconstrained: Vec::new(),
+                                        refused_covers: Vec::new(),
+                                        construction,
+                                        pinned: None,
+                                        unprovided: None,
+                                        untied: None,
+                                    }
+                                })
+                            }
+                            _ => None,
+                        };
+                        // WI-20260920-XSVCS — THE FORWARD: the carrier is a type
+                        // parameter of the CALLER, and the caller declared no `requires`
+                        // that covers it. See [`caller_rigid_carrier`] for why that is a
+                        // verdict and not a gap.
+                        let rigid = partly_pinned.or_else(|| {
+                            site.enclosing_op.and_then(|enclosing_op| {
+                                caller_rigid_carrier(kb, &dep, &disambig, enclosing_op).map(|c| {
+                                    RequirementRefusal {
+                                        // RENDERED IN THE CALLER'S SPELLING, not `dep`'s. The entry
+                                        // still names the CALLEE's formal (`tyOf.B`), and an author
+                                        // told to declare `requires TT[T = tyOf.B]` would be copying
+                                        // a parameter of a declaration that is not theirs. Same rule,
+                                        // and the same reason, as the projection arm above.
+                                        no_scope_route: false,
+                                        construction_carries_repair: false,
+                                        dep_text: c.clause.clone(),
+                                        unconstrained: Vec::new(),
+                                        refused_covers: Vec::new(),
+                                        construction: format!(
+                                            "its carrier is `{}`, a type parameter of the CALLING \
                                      operation `{}`, which declares no `requires` that \
                                      covers it — the caller's frame is the only thing that \
                                      could ever fill this slot, and it holds nothing for \
                                      `{}`. Declare `requires {}` on `{}` so the evidence is \
                                      passed in, or call `{}` with a type whose provision is \
                                      known here",
-                                        c.carrier,
-                                        kb.qualified_name_of(enclosing_op),
-                                        c.carrier,
-                                        c.clause,
-                                        kb.qualified_name_of(c.declare_on),
-                                        kb.qualified_name_of(callee_op),
-                                    ),
-                                    pinned: None,
-                                    unprovided: None,
-                                    untied: None,
-                                }
+                                            c.carrier,
+                                            kb.qualified_name_of(enclosing_op),
+                                            c.carrier,
+                                            c.clause,
+                                            kb.qualified_name_of(c.declare_on),
+                                            kb.qualified_name_of(callee_op),
+                                        ),
+                                        pinned: None,
+                                        unprovided: None,
+                                        untied: None,
+                                    }
+                                })
                             })
                         });
                         // PROPOSAL 065 OPEN QUESTION 3 — LAST, because it is the arm for
@@ -3013,6 +3038,81 @@ fn unprovided_provision(
     })
 }
 
+/// WI-20260927-YCPAJ — the verdict [`unprovided_provision`] cannot give for a dep the call
+/// pins only PART of (`Spec2[B = WIS]` with `A` left open — the bare-spec sugar's `b:
+/// Spec2.B`, or the explicit `requires Spec2[B = P]`): `Some(account)` when EVERY provision
+/// row of the spec names another GROUND type at some element the call did pin, so no
+/// completion of the open ones can answer.
+///
+/// NOT THE SEARCH'S `NoMatch`, which is not evidence here: a goal that omits a type
+/// parameter matches no candidate at all (see [`unique_provider_completion`]'s doc), so it
+/// ends `NoMatch` although `Both provides Spec2[A = WIS, B = NoSp]` answers `Spec2[B =
+/// NoSp]`. MEASURED — both calls reached this arm with the identical `NoMatch`. So the rows
+/// are read, and only a PROVABLY ground mismatch excludes one — the filter
+/// [`unique_provider_completion`] applies to its rivals. Any row this cannot read (a rule
+/// rather than a fact, a head it cannot decode) or does not provably exclude (a binding
+/// that is not ground — a transitive `provides Base[T = T]`, a conditional row) keeps the
+/// call admitted: this may only refuse what no row could answer.
+///
+/// `None` also for a dep with nothing pinned (no row can be excluded) and for a fully
+/// pinned one, which [`unprovided_provision`] answers with its carrier.
+fn no_provision_agrees_with_pins(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Option<String> {
+    let goal = goal_from_requires_entry(kb, dep)?;
+    let pinned: Vec<(String, TermId)> = goal
+        .bindings
+        .iter()
+        .filter(|(_, v)| type_value_is_ground(kb, *v))
+        .map(|(k, v)| (kb.local_name_of(*k).to_string(), *v))
+        .collect();
+    let tparams = kb.type_params_of_sort(goal.spec_sort);
+    if pinned.is_empty() || tparams.iter().all(|tp| pinned.iter().any(|(k, _)| k == tp)) {
+        return None;
+    }
+    let spec_canon = kb.canonical_sort_sym(goal.spec_sort);
+    let mut rows: Vec<String> = Vec::new();
+    for rid in provides_rids_by_spec(kb, spec_canon) {
+        if !kb.is_fact(rid) {
+            return None;
+        }
+        let head_named = kb.fact_head_named_args(rid)?;
+        let spec_view_tid = get_named_arg(kb, &head_named, "spec")?;
+        let (base, row_bindings) = unwrap_spec_view(kb, spec_view_tid)?;
+        if kb.canonical_sort_sym(base) != spec_canon {
+            continue;
+        }
+        let excluded = pinned.iter().any(|(short, goal_value)| {
+            row_bindings.iter().any(|(k, cand)| {
+                kb.local_name_of(*k) == short.as_str()
+                    && type_value_is_ground(kb, *cand)
+                    && !dispatch_values_match(kb, *goal_value, *cand)
+            })
+        });
+        if !excluded {
+            return None;
+        }
+        let provider = get_named_arg(kb, &head_named, "sort_ref")
+            .and_then(|t| ref_or_nullary_name(kb.get_term(t)))
+            .map(|p| kb.qualified_name_of(p).to_string())?;
+        let row = SortGoal {
+            spec_sort: base,
+            bindings: row_bindings,
+            ..goal.clone()
+        };
+        rows.push(format!("`{provider}` provides `{}`", format_goal(kb, &row)));
+    }
+    let spec = kb.qualified_name_of(goal.spec_sort);
+    Some(if rows.is_empty() {
+        format!("nothing provides `{spec}` at any bindings")
+    } else {
+        format!(
+            "no provision of `{spec}` answers at these bindings, whatever the elements they \
+             leave open: {} — pass arguments of a provided type, or declare the provision \
+             this call needs",
+            rows.join(", "),
+        )
+    })
+}
+
 /// Conditions 1 and 2 of [`unprovided_provision`], on a goal: the sort a FULLY PINNED
 /// goal names in its spec's carrier parameter, or `None` when some parameter is still
 /// open or the carrier is not a sort. Shared with [`unprovided_spec_at_carrier`] so the
@@ -3502,7 +3602,9 @@ fn caller_param_rigids(
 /// structural walk, but resolves the param→value mapping through
 /// `resolve_sort_alias` + the live `subst` (no precomputed qualified-name
 /// map, so it makes no assumption about how the param symbol is spelled). A
-/// param left abstract (`is_type_param_value`) or unbound is preserved.
+/// param left abstract (`is_type_param_value`) or unbound is preserved. A bare `Global`
+/// var leaf — the bare-spec sugar's minted carrier, which has no param symbol — is read
+/// from `subst` directly, under the same preservation rule (WI-20260927-YCPAJ).
 ///
 /// A denoted spec is walked carrier-faithfully ([`rewrite_spec_value`], WI-662): a
 /// co-carried type-param binding (`Foo[T = ParentT, E = Modify[c]]`) must still be
@@ -3515,6 +3617,13 @@ pub(super) fn substitute_spec_via_subst(
 ) -> Value {
     rewrite_spec_value(kb, spec, &|kb, t| {
         rewrite_term_leaves(kb, t, &|kb, t| {
+            // WI-20260927-YCPAJ — the bare-spec sugar's carrier (`b: Spec.B`, WI-201) is a
+            // BARE `Global` var with no declared symbol, so the name rung below never saw
+            // it: the synthesized `requires Spec[B = ?P]` stayed unpinned at every call and
+            // was skipped, where the explicit `[P] … requires Spec[B = P]` is checked.
+            if let Some(Var::Global(vid)) = t.index_var(kb) {
+                return Some(resolve_var_value_via_subst(kb, vid, subst).unwrap_or(t));
+            }
             let s = ref_or_nullary_name(kb.get_term(t))?;
             Some(resolve_param_value_via_subst(kb, s, subst).unwrap_or(t))
         })
@@ -3542,6 +3651,15 @@ pub(super) fn resolve_param_value_via_subst(
     // `SortAlias` but declares no parameter, and this reader (unlike the alias
     // ladder's other callers) never gated on `is_sort_param_symbol`.
     let vid = type_param_global_var(kb, sym)?;
+    resolve_var_value_via_subst(kb, vid, subst)
+}
+
+/// [`resolve_param_value_via_subst`] from the parameter's variable itself.
+fn resolve_var_value_via_subst(
+    kb: &KnowledgeBase,
+    vid: VarId,
+    subst: &Substitution,
+) -> Option<TermId> {
     match subst.resolve_as_value(vid) {
         Some(Value::Term { id: val, .. }) => {
             let val = *val;

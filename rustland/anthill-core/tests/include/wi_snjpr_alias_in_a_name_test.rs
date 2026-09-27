@@ -214,9 +214,8 @@ fn the_sugar_through_an_alias_keeps_what_it_fixes() {
 
 /// … and the requirement the sugar synthesizes names what the alias fixes: `useB`'s
 /// `requires` is `Spec2[A = WIS, B = ?P]`, as if the explicit `[P] … requires Spec2[A =
-/// WIS, B = P]` were written — read off the operation's recorded clauses, because a call
-/// does not observe the difference (dispatch is by the arguments' types), and the
-/// requirement at a call is checked for the direct `Spec2.B` no more than for `S2A.B`.
+/// WIS, B = P]` were written — read off the operation's recorded clauses. That a call
+/// owes it is driven by `wi_ycpaj_bare_spec_sugar_call_requirement_test`.
 /// Was: refused as a projection off the alias.
 #[test]
 fn the_sugar_through_an_alias_requires_what_it_fixes() {

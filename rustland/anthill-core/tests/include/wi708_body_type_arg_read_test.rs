@@ -141,6 +141,13 @@ namespace test.wi708coll
     entity wis(n: Int64)
   end
 
+  -- The call below owes `Store[State = WIS]`, the requirement the sugar synthesizes, which
+  -- a call must be able to supply since WI-20260927-YCPAJ.
+  sort WisStore
+    provides Store[State = WIS]
+    operation peek(s: WIS) -> Int64 = s.n
+  end
+
   -- `s: Store.State` mints a bare-spec carrier `?P` named `State` into probe's type_params;
   -- the body reads the top-level `sort State` as a value.
   operation probe(s: Store.State) -> Type = Cell[V = State]

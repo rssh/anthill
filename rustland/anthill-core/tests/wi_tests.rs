@@ -1872,3 +1872,5 @@ mod wi_p5g39_provision_assumptions_test;
 mod wi_4zzkz_spec_half_refusal_test;
 #[path = "include/wi_7fp1m_query_type_names_test.rs"]
 mod wi_7fp1m_query_type_names_test;
+#[path = "include/wi_ycpaj_bare_spec_sugar_call_requirement_test.rs"]
+mod wi_ycpaj_bare_spec_sugar_call_requirement_test;

@@ -3,9 +3,9 @@
 - id: WI-20260927-YCPAJ-the-bare-spec-sugar-s
 - created: 2026-09-27T09:34:42Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-27T09:34:42Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-27T10:24:10Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
