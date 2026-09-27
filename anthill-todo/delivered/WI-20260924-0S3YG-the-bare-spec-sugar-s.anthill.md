@@ -3,9 +3,9 @@
 - id: WI-20260924-0S3YG-the-bare-spec-sugar-s
 - created: 2026-09-24T07:50:38Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-24T07:50:38Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-27T14:57:27Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

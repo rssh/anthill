@@ -31,6 +31,11 @@
 //!    [`a_partly_pinned_call_no_row_agrees_with_is_refused`], at its explicit spelling (the
 //!    first the loop reaches).
 //!
+//!    Back-out 1 also fails WI-20260924-0S3YG's two rows on their sugar spelling:
+//!    [`a_call_whose_conditional_provision_fails_is_refused`] loads clean, and
+//!    [`a_call_whose_conditional_provision_holds_runs`] dies at eval, `__req_store not
+//!    bound in caller frame` — even a SUPPLIED sugar call built no dictionary.
+//!
 //! [`a_provided_call_runs_in_every_spelling`] passes under both back-outs, by design —
 //! neither change may refuse a call a provider meets.
 
@@ -163,6 +168,61 @@ fn a_row_leaving_the_pinned_element_open_keeps_the_call() {
         ));
         match interp.call("t.go", &[]) {
             Ok(Value::Int(n)) => assert_eq!(n, 4, "{decl}"),
+            other => panic!("{decl}: `t.go` must run to an Int64: {other:?}"),
+        }
+    }
+}
+
+/// WI-20260924-0S3YG — the same class through a CONDITIONAL provision: `Box` provides
+/// `Store` at `Box[E = E]` only `:- Special[T = E]`, and `Special` is provided at `WIS`
+/// alone.
+const CONDITIONAL: &str =
+    "  sort Special\n    sort T = ?\n    operation tag(x: T) -> Int64\n  end\n  \
+                           sort WisSpecial\n    provides Special[T = WIS]\n    \
+                           operation tag(x: WIS) -> Int64 = 1\n  end\n  \
+                           sort Box\n    sort E = ?\n    entity box(e: E)\n    \
+                           provides Store[State = Box[E = E]] :- Special[T = E]\n    \
+                           operation peek(s: Box[E = E]) -> Int64 = 100\n  end\n";
+
+const CONDITIONAL_SPELLINGS: [&str; 2] = [
+    "  operation usePeek[P](s: P) -> Int64 requires Store[State = P] = Store.peek(s)",
+    "  operation usePeek(s: Store.State) -> Int64 = Store.peek(s)",
+];
+
+/// At `Box[E = NoSp]` the condition fails, so `Store[State = Box[E = NoSp]]` has no
+/// provider. Was (sugar): a clean load that died at eval, `__req_store not bound in caller
+/// frame`.
+#[test]
+fn a_call_whose_conditional_provision_fails_is_refused() {
+    for decl in CONDITIONAL_SPELLINGS {
+        let errs = try_load_kb_with(&program(
+            &format!("{CONDITIONAL}{decl}"),
+            "usePeek(box(e: nosp(n: 1)))",
+        ))
+        .err()
+        .unwrap_or_default();
+        assert_refused_naming(
+            &errs,
+            &[
+                "t.Store[State = t.Box[E = t.NoSp]]",
+                "cannot be supplied",
+                "t.usePeek",
+            ],
+            decl,
+        );
+    }
+}
+
+/// … and at `Box[E = WIS]` it holds, so the call loads and dispatches to `Box`.
+#[test]
+fn a_call_whose_conditional_provision_holds_runs() {
+    for decl in CONDITIONAL_SPELLINGS {
+        let mut interp = interp_for(&program(
+            &format!("{CONDITIONAL}{decl}"),
+            "usePeek(box(e: wis(n: 1)))",
+        ));
+        match interp.call("t.go", &[]) {
+            Ok(Value::Int(n)) => assert_eq!(n, 100, "{decl}"),
             other => panic!("{decl}: `t.go` must run to an Int64: {other:?}"),
         }
     }
