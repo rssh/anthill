@@ -1593,9 +1593,9 @@ positional binding after it binds the next parameter the alias left open. A bind
 names a type parameter of the declaring sort (`sort StoreOfS = Store[State = S]` inside the
 sort that declares `S`) is that parameter, as the clause spelled directly has it. A chain
 of bare aliases is followed to the sort at its end; an alias written over another alias's
-APPLICATION (`sort B = A[X = …]`) is refused where it is declared, a name that declares no
-parameters being applied. It does not matter where the alias is declared — below the
-clause, or in a later file. Before, each of these spellings loaded as something other than
+APPLICATION (`sort S2AB = S2A[B = NoSp]` over `sort S2A = Spec2[A = WIS]`) stands for the
+sort the inner alias stands for with both binding lists — `Spec2[A = WIS, B = NoSp]`. It
+does not matter where the alias is declared — below the clause, or in a later file. Before, each of these spellings loaded as something other than
 what it reads as: a provision was never found by dispatch (the first call died "operation
 has no body"), its `default` mark let another provider answer, an alias of a data sort
 walked past the rule above, a condition conditioned nothing — the provision held at an
@@ -1611,12 +1611,34 @@ which has two readings. And a spec's qualified name is resolved WHOLE: `provides
 written in another namespace is refused under the rule above, where the last segment alone
 had been resolved in the writing scope, found nothing, and let the clause through.
 
-**Not read through yet** — each is loud, and each is WI-20260924-SNJPR: a member reached
-through an alias (`StoreAlias.peek(…)` is an unknown functor; the bare-spec sugar
-`StoreAlias.State` is refused), the names a `requires StoreAlias[…]` would bring into scope
-bare, an alias in a type position applied to further arguments, an import through an
-alias, and a `provides … language … end` binding block, which refuses an alias and names
-the sort to write instead.
+**An alias in a name is read through** (WI-20260924-SNJPR) — wherever the name is USED:
+
+- a member reached through it: `StoreAlias.peek(…)`, `WisStore.peek(…)`, `qa.StoreAlias.peek(…)`
+  are `Store.peek`; a value typed by an alias has the fields and dot-operations of the type
+  it stands for (`p.l` with `p: IntPair`);
+- the bare-spec sugar: `StoreAlias.State` is `Store.State`; a member the alias FIXES is its
+  type (`WisStore.State` is `WIS`); a member it leaves open keeps what it fixes in the
+  synthesized requirement (`S2A.B` requires `Spec2[A = WIS, B = ?P]`);
+- the names a clause brings into scope: `requires StoreAlias[State = S]` makes `Store`'s
+  names bare, and `sort Mid provides BaseAlias[T = T]` lends `Mid` `Base`'s;
+- a binding block: `provides StackAlias language rust … end` realizes `Stack`;
+- an import: `import qa.StoreAlias.{peek}` is `import qa.Store.{peek}`;
+- a call-site bracket key: `usePeek[StoreAlias = FileStore]` selects for `Store`;
+- a type position applying an alias further: `IntPair[R = String]` over `sort IntPair =
+  Pair[L = Int64]` is `Pair[L = Int64, R = String]`, and a positional binds the next
+  parameter the alias left open. Binding again what the alias fixes (`IntPair[L = Bool]`)
+  is refused, naming both.
+
+It does not matter where the alias is declared: every alias of every file is recorded
+before any other declaration reads one, an alias after the aliases its definition names —
+so `x: WisStore.State` and `sort Y = WisStore.State` read an alias declared below them or
+in a later file. A NAME'S ANSWER DOES NOT DEPEND ON THE PHASE that asks: the scan resolves
+each alias's target sort once imports are wired, and the imports, scope parents and
+binding-block census it decides read the alias through that, as the load pass reads it
+through the recorded target. **A name is never read through where one is DECLARED**: a rule
+head `rule RecAlias.freshp(…)` names the address it spells, and a `namespace X` entry at an
+alias's address is the alias's own (WI-20260924-FS8M3). An alias that also owns members
+(`namespace X` beside `sort X = …`) has two readings and is read as written.
 
 **One spec operation, one symbol** — WITHDRAWN by WI-20260825-KD9SW, and the paragraph that stood here is gone rather than amended.
 
@@ -1902,7 +1924,7 @@ sort Money = Int64                     -- Money is an alias for Int64
 sort Velocity = Float                -- Velocity is an alias for Float
 ```
 
-An alias stands for its type in a type position, and for the spec it names in a spec clause: `provides StoreAlias[…]` over `sort StoreAlias = Store` provides `Store` (§5.1, which lists the clauses, what is refused, and where an alias is not read through yet).
+An alias stands for its type in a type position, and for the spec it names in a spec clause: `provides StoreAlias[…]` over `sort StoreAlias = Store` provides `Store` — and in a name, wherever the name is used (§5.1, which lists the clauses, the names, and what is refused).
 
 Unspecified properties are expressed as accessor operations within the enclosing sort body:
 

@@ -539,7 +539,18 @@ pub(super) fn build_type(
             // the child's result type directly (don't depend on the receiver's
             // `Stamp` frame ordering). WI-342: widen the carrier-agnostic `ty`
             // in place — a `Value::Node` receiver type need not be re-grounded.
-            let recv_sort = sort_functor_of_view(kb, &recv.ty);
+            // WI-20260924-SNJPR — a receiver typed by a type ALIAS dispatches on the sort
+            // the alias stands for: `c.bump()` with `c: CA` over `sort CA = Counter` is
+            // `Counter`'s `bump`, as it is with `c: Counter`. Only the sort searched for
+            // members is read through (`resolve_alias_shape`, which keeps an alias opaque
+            // where it has no finite ground shape); a field read does the same in
+            // `resolve_projected_member`, and the call built below checks the receiver
+            // against the member's parameter, where the alias already meant its type.
+            let recv_sort = sort_functor_of_view(kb, &recv.ty).map(|s| {
+                resolve_alias_shape(kb, s)
+                    .and_then(|shape| sort_functor_of_view(kb, &TermIdView(shape)))
+                    .unwrap_or(s)
+            });
             let dot_span = Some(occ.span.span);
 
             // WI-20260824-PAPX0 (proposal 055 umbrella A step 4; design

@@ -1016,6 +1016,15 @@ pub(super) fn resolve_projected_member(
     field_name: &str,
     span: Option<Span>,
 ) -> Result<ProjectedMember, MemberMiss> {
+    // WI-20260924-SNJPR — a receiver typed by a type ALIAS projects the members of the
+    // type it stands for: `p.l` with `p: IntPair` over `sort IntPair = Pair[L = Int64]`
+    // is `Pair[L = Int64]`'s `l`, in both directions of the projection. An alias with no
+    // finite ground shape stays opaque (`resolve_alias_shape`), and so has no fields.
+    if let Some(shape) =
+        extract_sort_ref_sym(kb, recv_ty).and_then(|s| resolve_alias_shape(kb, s))
+    {
+        return resolve_projected_member(kb, &Value::term(shape), field_name, span);
+    }
     if let TypeExtractor::NamedTuple(fields) = extract_type(kb, recv_ty) {
         return fields
             .iter()
