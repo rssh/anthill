@@ -666,10 +666,10 @@ mod tests {
         // …BUT THEY KEY ALIKE, and that is a narrowing WI-20260902-CZJ2N makes rather
         // than an oversight. The key is read off the HEAD, and `functor_view_head` has
         // no second head to give a bare name any more, so both spellings read as
-        // `Functor{Color, 0, 0}`. The type-level distinction is read from the TERM by
-        // the site that owns it (`typing::impl_param_ref` matches `Term::Ref` /
-        // `Term::Ident` directly), never from a `MapKey` — so nothing that decides
-        // dispatch is on this path. Asserted rather than left implicit: a `Map` keyed
+        // `Functor{Color, 0, 0}`. Dispatch never needed the spelling: its wildcard test
+        // (`typing::impl_param_ref`) decides by the symbol's ROLE and reads both
+        // spellings alike (WI-20260829-7QVD5) — so nothing that decides dispatch is on
+        // this path. Asserted rather than left implicit: a `Map` keyed
         // by TYPE values cannot tell `S` from `S()`, and this is where a reader finds
         // that out.
         assert_eq!(

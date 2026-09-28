@@ -870,7 +870,7 @@ pub(super) fn match_candidate_against_goal(
     // with an earlier binding). Both σ modes live in [`match_impl_param`] so
     // they cannot drift (mirrors [`binding_pair_covers`]); an impl-param ref
     // contributes no specificity weight.
-    if let Some(p) = impl_param_ref(kb, candidate_value, impl_params) {
+    if let Some(p) = impl_param_ref(kb, &TermIdView(candidate_value), impl_params) {
         return match_impl_param(kb, sigma, p, per_call_value, impl_subst);
     }
     // (2) Candidate side is a parametric Fn — recurse into its bindings.
@@ -1175,22 +1175,35 @@ fn match_impl_param(
     sigma_pair_precise(kb, ctx, stored, per_call_value)
 }
 
-/// If `value` is `Ref(sym)` / `Ident(sym)` where `sym` is one of
-/// `impl_params`, return `Some(sym)`. None otherwise.
-pub(super) fn impl_param_ref(
+/// The impl param a candidate head value NAMES, if it names one: a bare name — any
+/// spelling of it, read through the view (`Ref`, the nullary `Fn`, `Ident`) — whose
+/// symbol is one of `impl_params`. `None` otherwise.
+///
+/// WI-20260829-7QVD5 — CLASSIFIED BY THE SYMBOL'S ROLE, NOT ITS SPELLING. This read the
+/// raw term and accepted only `Ref`/`Ident`, and a test pinned the nullary `Fn{S}` of a
+/// param as "the concrete identity" (wi210). That distinction was never this function's
+/// to draw: the loader already decides it by role — `sort_inst_to_value` lowers a
+/// type-param name to `Ref(param)` and every other sort to `Fn{S}` — and `impl_params`
+/// holds only the impl sort's declared type params, so a `Fn{S}` of a NON-param was
+/// refused here by the membership test, not by its spelling. What wi210 needs is that a
+/// universal `provides Spec[T = T]` and a `fact Spec[T = T]` emit the same binding,
+/// which the loader owns. Reading the raw shape made the goal side's spelling a
+/// contract every producer had to honour — the asymmetry this ticket was opened for.
+pub(super) fn impl_param_ref<V: TermView>(
     kb: &KnowledgeBase,
-    value: TermId,
+    value: &V,
     impl_params: &[Symbol],
 ) -> Option<Symbol> {
-    let sym = match kb.get_term(value) {
-        Term::Ref(s) | Term::Ident(s) => *s,
+    let sym = match value.head(kb) {
+        ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            named_arity: 0,
+        }
+        | ViewHead::Ident(s) => s,
         _ => return None,
     };
-    if impl_params.contains(&sym) {
-        Some(sym)
-    } else {
-        None
-    }
+    impl_params.contains(&sym).then_some(sym)
 }
 
 /// Decompose a parametric value `Functor(named: [(k, v), ...])` into

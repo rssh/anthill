@@ -3285,7 +3285,7 @@ impl KnowledgeBase {
     /// and among them the SORTS carry a distinction the type layer depends on. §8.3 and
     /// WI-391/WI-387 make `Ref(S)` the DISPATCH WILDCARD and a nullary `Fn{S}` the
     /// CONCRETE spec identity (`sort_inst_to_value`'s bare-`Simple` arm builds each
-    /// deliberately, `impl_param_ref` reads only `Ref`/`Ident` as a wildcard), and
+    /// deliberately, by the symbol's role), and
     /// [`Self::register_self_sort`] records the same thing from the other side — its
     /// note reports 24 tests failing `expected Type, got WorkItem` when a free-standing
     /// entity's name term was re-spelled. Collapsing the two therefore turns a

@@ -17384,7 +17384,7 @@ fn expand_unwritten_type_params(kb: &mut KnowledgeBase, t: TermId) -> TermId {
             // `changed` and really replaces the stored bound. The two are one spelling for
             // THIS question and not for every question: `type_head`'s own doc keeps them
             // apart, `Fn{S}` being the concrete spec identity the loader builds
-            // deliberately and `Ref(S)` the dispatch wildcard `impl_param_ref` matches on.
+            // deliberately and `Ref(S)` the spelling it gives a dispatch wildcard.
             // So a WI-582 spec bound stored as `Fn{Eq}` silently became a wildcard.
             // Found by `/code-review`.
             if pos_args.is_empty() && named_args.is_empty() {
@@ -31485,7 +31485,9 @@ impl<'a> Loader<'a> {
             // type, so carrier grounding (`substitute_carrier_params`) grounds and
             // compares it against a user-written `Pair[…]` (also a plain `Fn`)
             // directly, with no SortView→Fn rebuild. The leaves stay canonical `Ref`s
-            // (the dispatch matcher's `impl_param_ref` wildcard contract, WI-387).
+            // (WI-387; the dispatch matcher's `impl_param_ref` reads a param by role in
+            // either spelling since WI-20260829-7QVD5, so this is the loader's canon and
+            // no longer a contract the matcher depends on).
             // A denoted-bearing child (a value-in-type) can't ride a hash-consed
             // `Fn`, so that exotic case keeps the faithful `SortView` `Value::Entity`
             // carrier via `assemble_sort_view_value`. (The `fact` twin this matched,
@@ -31612,11 +31614,12 @@ impl<'a> Loader<'a> {
                 // Stream[T = T]`) must lower to a `Ref(param)` — the SAME shape
                 // the `fact`-head path (`maybe_emit_fact_provides_info` over
                 // `convert_term`) emits — not the nullary `Fn` `name_to_sort_term`
-                // builds. Only `Ref`/`Ident` is recognized as a dispatch type-param
-                // WILDCARD (`impl_param_ref`); a nullary `Fn` scores CONCRETE
-                // specificity, so a `provides`-clause provider out-ranks an
-                // equivalent `fact` provider and breaks carrier-less `Ambiguous`
-                // dispatch (wi210). A universal `provides Spec[T = T]` IS a wildcard
+                // builds. (Before WI-20260829-7QVD5 only `Ref`/`Ident` was recognized
+                // as a dispatch type-param WILDCARD (`impl_param_ref`), so a nullary
+                // `Fn` scored CONCRETE specificity and a `provides`-clause provider
+                // out-ranked an equivalent `fact` provider — wi210. The wildcard test
+                // now reads the param by role in either spelling; this arm keeps the
+                // one canon anyway, so the two provisions stay the same term.) A universal `provides Spec[T = T]` IS a wildcard
                 // provision, exactly like `fact Spec[T = T]` — the two must emit
                 // structurally identical `SortProvidesInfo` bindings.
                 //
