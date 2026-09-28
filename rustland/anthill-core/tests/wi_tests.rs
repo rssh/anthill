@@ -1094,6 +1094,8 @@ mod wi907_ambiguous_name_ladder_test;
 
 #[path = "include/wi908_global_name_ladder_test.rs"]
 mod wi908_global_name_ladder_test;
+#[path = "include/wi912_persisted_name_ladder_test.rs"]
+mod wi912_persisted_name_ladder_test;
 
 #[path = "include/wi916_external_ref_symbol_test.rs"]
 mod wi916_external_ref_symbol_test;

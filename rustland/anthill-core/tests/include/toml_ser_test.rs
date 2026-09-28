@@ -51,6 +51,10 @@ sort Task {
 sort Project {
     entity Project(name: String, language: String)
 }
+
+sort Check {
+    entity Check(id: String, acceptance: List[T = Acceptance])
+}
 end
 "#,
     )
@@ -220,17 +224,50 @@ fn load_toml_constructor_with_fields() {
 
     let toml_src = r#"
 [meta]
-entity = "test.Task"
+entity = "test.Check"
 
 [data]
 id = "T-001"
-description = "Test"
-status = "Open"
-tags = [{ ToolPasses = "cargo-test" }, { Compiles = "src" }]
+acceptance = [{ ToolPasses = "cargo-test" }, { Compiles = "src" }]
 "#;
 
     let count = term_ser::load_toml(&mut kb, toml_src, domain).expect("load with constructors");
     assert_eq!(count, 1);
+
+    // WI-912: this row used to write the constructors into `Task.tags: List[T = String]`,
+    // where neither is a constructor of the element sort — and it passed, because the
+    // reader INTERNED the unresolvable key into a bare `ToolPasses` no source fact uses.
+    // A variant is now resolved among its declared sort's constructors, so the field has
+    // to declare `Acceptance` for the row to load, and each element must land on it.
+    let check = kb.try_resolve_symbol("test.Check").expect("Check resolved");
+    let rid = kb.rules_by_functor(check)[0];
+    let printed = TermPrinter::new(&kb).print_term(kb.rule_head(rid));
+    for ctor in ["ToolPasses", "Compiles"] {
+        let sym = kb
+            .try_resolve_symbol(&format!("test.Acceptance.{ctor}"))
+            .expect("declared constructor");
+        assert!(
+            term_mentions(&kb, kb.rule_head(rid), sym),
+            "`{ctor}` must land on test.Acceptance.{ctor}; fact: {printed}",
+        );
+    }
+}
+
+/// Does `sym` occur as a functor anywhere under `t`?
+fn term_mentions(kb: &KnowledgeBase, t: TermId, sym: Symbol) -> bool {
+    match kb.get_term(t) {
+        Term::Ref(s) => *s == sym,
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
+            *functor == sym
+                || pos_args.iter().any(|a| term_mentions(kb, *a, sym))
+                || named_args.iter().any(|(_, a)| term_mentions(kb, *a, sym))
+        }
+        _ => false,
+    }
 }
 
 // ── Variable handling ───────────────────────────────────────────

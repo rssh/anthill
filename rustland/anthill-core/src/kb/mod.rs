@@ -9792,6 +9792,16 @@ impl KnowledgeBase {
         crate::kb::load::resolve_name_in_kb(self, name, global)
     }
 
+    /// The ladder's DIAGNOSTIC half at `<global>` (WI-911): for a name
+    /// [`Self::resolve_name_in_global`] found `NotFound`, the scope an `internal` symbol it
+    /// WOULD denote is declared in — so a KB-external name that exists and is hidden is
+    /// refused as hidden, not as absent. Read by every host-name position with an error
+    /// channel: an extent mount and a persisted `meta.entity` (WI-912).
+    pub fn hidden_internal_in_global(&self, name: &str) -> Option<String> {
+        let hidden = crate::kb::load::hidden_dotted_internal(self, name, self.global_scope())?;
+        Some(crate::kb::load::internal_declared_in(self, hidden))
+    }
+
     /// Check if a qualified name has a defined symbol in the symbol table.
     pub fn has_qualified_name(&self, name: &str) -> bool {
         self.symbols.by_qualified_name.contains_key(name)

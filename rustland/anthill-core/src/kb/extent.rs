@@ -1084,15 +1084,13 @@ impl KnowledgeBase {
             }),
             // WI-911: the ladder's DIAGNOSTIC half, the same re-read a loader position
             // makes — a name that exists and is hidden is not reported as absent.
-            ResolveResult::NotFound => Err(
-                match crate::kb::load::hidden_dotted_internal(self, name, self.global_scope()) {
-                    Some(hidden) => ExtentRegError::ForbiddenInternal {
-                        functor: name.to_owned(),
-                        declared_in: crate::kb::load::internal_declared_in(self, hidden),
-                    },
-                    None => ExtentRegError::UnresolvableName(name.to_owned()),
+            ResolveResult::NotFound => Err(match self.hidden_internal_in_global(name) {
+                Some(declared_in) => ExtentRegError::ForbiddenInternal {
+                    functor: name.to_owned(),
+                    declared_in,
                 },
-            ),
+                None => ExtentRegError::UnresolvableName(name.to_owned()),
+            }),
         }
     }
 

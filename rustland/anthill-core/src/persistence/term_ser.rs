@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
-use crate::intern::{positional_label, Symbol};
+use crate::intern::{positional_label, ResolveResult, Symbol};
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
 use crate::kb::ClauseKind;
 use crate::kb::{KnowledgeBase, RuleId};
@@ -31,6 +31,25 @@ pub enum SerError {
     Format(String),
     MissingMeta(String),
     UnknownEntity(String),
+    /// WI-912: a persisted name (`meta.entity`, or a variant key with no declared sort)
+    /// resolved to SEVERAL symbols at `<global>` — the ladder's ambiguity stop (WI-907).
+    /// Qualify the name in the data file.
+    AmbiguousName {
+        name: String,
+        candidates: Vec<String>,
+    },
+    /// WI-912: `meta.entity` names a symbol that EXISTS but is `internal` to
+    /// `declared_in`, so a data file — outside code — may not name it.
+    ForbiddenInternalEntity {
+        entity: String,
+        declared_in: String,
+    },
+    /// WI-912: a variant key names no constructor — of the field's declared `sort`
+    /// when there is one, or of anything at `<global>` when there is none.
+    UnknownConstructor {
+        name: String,
+        sort: Option<String>,
+    },
     /// WI-926: `meta.entity` resolved to a symbol that declares no fields. The
     /// name is not an entity — typically a multi-constructor sort, which has no
     /// single row shape to deserialize against.
@@ -55,6 +74,24 @@ impl std::fmt::Display for SerError {
             SerError::Format(msg) => write!(f, "format error: {msg}"),
             SerError::MissingMeta(msg) => write!(f, "missing meta: {msg}"),
             SerError::UnknownEntity(name) => write!(f, "unknown entity: {name}"),
+            SerError::AmbiguousName { name, candidates } => write!(
+                f,
+                "ambiguous name '{name}': candidates {candidates:?}; qualify it in the data file"
+            ),
+            SerError::ForbiddenInternalEntity {
+                entity,
+                declared_in,
+            } => write!(
+                f,
+                "entity '{entity}' is internal to '{declared_in}' and cannot be named by a data file"
+            ),
+            SerError::UnknownConstructor {
+                name,
+                sort: Some(sort),
+            } => write!(f, "'{name}' is not a constructor of sort '{sort}'"),
+            SerError::UnknownConstructor { name, sort: None } => {
+                write!(f, "unknown constructor: {name}")
+            }
             SerError::NoFieldSchema {
                 entity,
                 constructors,
@@ -271,8 +308,7 @@ fn load_section(
         .ok_or_else(|| vec![SerError::MissingMeta("meta.entity must be a string".into())])?;
 
     // Resolve entity functor in KB
-    let functor = resolve_entity_functor(kb, entity_name)
-        .ok_or_else(|| vec![SerError::UnknownEntity(entity_name.into())])?;
+    let functor = resolve_entity_functor(kb, entity_name).map_err(|e| vec![e])?;
 
     // Get field schema. A MISS IS FATAL (WI-926).
     //
@@ -352,18 +388,29 @@ fn load_section(
     }
 }
 
-/// Resolve an entity name to its functor Symbol.
-fn resolve_entity_functor(kb: &mut KnowledgeBase, name: &str) -> Option<Symbol> {
-    // Try qualified name first
-    if let Some(sym) = kb.try_resolve_symbol(name) {
-        return Some(sym);
+/// Resolve a `meta.entity` name to its functor Symbol — by THE NAME LADDER AT
+/// `<global>` (WI-912), the question a host-supplied extent-owner name asks (WI-908).
+/// A data file is KB-external text written in no scope, so it gets the same reading and
+/// the same three refusals: absent, ambiguous, or hidden by `internal`.
+///
+/// There is NO short-name fallback. This used to retry the name's LAST SEGMENT as a
+/// qualified name — the WI-476 global scan — so `a.b.Rec`, declared nowhere, loaded its
+/// rows onto a top-level `Rec` the file never named.
+fn resolve_entity_functor(kb: &KnowledgeBase, name: &str) -> Result<Symbol, SerError> {
+    match kb.resolve_name_in_global(name) {
+        ResolveResult::Found(sym) => Ok(sym),
+        ResolveResult::Ambiguous(cands) => Err(SerError::AmbiguousName {
+            name: name.to_owned(),
+            candidates: kb.candidate_names(&cands),
+        }),
+        ResolveResult::NotFound => Err(match kb.hidden_internal_in_global(name) {
+            Some(declared_in) => SerError::ForbiddenInternalEntity {
+                entity: name.to_owned(),
+                declared_in,
+            },
+            None => SerError::UnknownEntity(name.to_owned()),
+        }),
     }
-    // Try short name
-    let short = name.rsplit('.').next().unwrap_or(name);
-    if let Some(sym) = kb.try_resolve_symbol(short) {
-        return Some(sym);
-    }
-    None
 }
 
 /// Load a single data entry into a KB term, reconstructing each field
@@ -608,16 +655,16 @@ fn string_to_term_typed(
     // fall through to the global entity heuristic below, which would mis-type it).
     if let Some(t) = ty {
         if let (Some(sort), _) = type_head_and_inner(kb, t) {
-            let qualified = format!("{}.{}", kb.qualified_name_of(sort), s);
-            if let Some(vsym) = kb.try_resolve_symbol(&qualified) {
+            if let Some(vsym) = constructor_of_sort_named(kb, sort, s) {
                 return Ok(kb.alloc(Term::Ref(vsym)));
             }
         }
         return Ok(kb.alloc(Term::Const(Literal::String(s.to_string()))));
     }
-    // No declared type (schema-less): a globally-known nullary entity is a `Ref`
-    // (matching the loader); otherwise a plain string literal.
-    if let Some(sym) = kb.try_resolve_symbol(s) {
+    // No declared type (schema-less): a nullary entity the name denotes at `<global>`
+    // is a `Ref` (matching the loader); otherwise a plain string literal. The ladder,
+    // not an absolute lookup, for `resolve_entity_functor`'s reason (WI-912).
+    if let ResolveResult::Found(sym) = kb.resolve_name_in_global(s) {
         if kb.entity_field_names(sym).map_or(false, |f| f.is_empty()) {
             return Ok(kb.alloc(Term::Ref(sym)));
         }
@@ -666,9 +713,9 @@ fn some_wrap(kb: &mut KnowledgeBase, inner: TermId) -> TermId {
 
 /// Convert a single-key JSON object `{ Variant: payload }` to a constructor /
 /// enum-variant term (WI-501, type-directed). The variant name is resolved
-/// within the declared sort `ty`'s namespace first (so `{ Verified: … }` under a
-/// `WorkStatus` field becomes `anthill.stage0.WorkStatus.Verified`), then
-/// globally, then interned.
+/// among the declared sort `ty`'s constructors (so `{ Verified: … }` under a
+/// `WorkStatus` field becomes `anthill.stage0.WorkStatus.Verified`), or at
+/// `<global>` when there is no declared sort — see [`resolve_variant_sym`].
 fn object_to_term_typed(
     kb: &mut KnowledgeBase,
     map: &serde_json::Map<String, serde_json::Value>,
@@ -677,7 +724,7 @@ fn object_to_term_typed(
 ) -> Result<TermId, SerError> {
     if map.len() == 1 {
         let (key, value) = map.iter().next().unwrap();
-        let ctor_sym = resolve_variant_sym(kb, key, ty);
+        let ctor_sym = resolve_variant_sym(kb, key, ty)?;
         return build_constructor_term_typed(kb, ctor_sym, value, var_map);
     }
 
@@ -687,21 +734,53 @@ fn object_to_term_typed(
     ))
 }
 
-/// Resolve a constructor/variant name: within the declared sort `ty`'s namespace
-/// first, then as a global name, finally interning it.
-fn resolve_variant_sym(kb: &mut KnowledgeBase, key: &str, ty: Option<TermId>) -> Symbol {
-    if let Some(t) = ty {
-        if let (Some(sort), _) = type_head_and_inner(kb, t) {
-            let qualified = format!("{}.{}", kb.qualified_name_of(sort), key);
-            if let Some(vsym) = kb.try_resolve_symbol(&qualified) {
-                return vsym;
+/// Resolve a constructor/variant KEY (WI-912).
+///
+/// UNDER A DECLARED SORT the question is not a name lookup at all: the key must be one of
+/// THAT sort's constructors, which the serializer wrote by local name. So it is asked of
+/// the constructor set ([`constructor_of_sort_named`]) — never as a `"<sort>.<key>"`
+/// string join, and never re-asked globally on a miss: a key outside the declared sort
+/// is a wrong-typed value, and taking a same-spelled top-level entity instead put a
+/// foreign constructor into a sort-typed field.
+///
+/// WITH NO DECLARED SORT the key is a name read at `<global>`, like `meta.entity`.
+///
+/// Either way a miss is LOUD. It used to `intern` the key — WI-894's hazard: a bare
+/// global symbol that two scopes' same-spelled names collapse onto, and that no source
+/// fact is written with, so the row loaded clean and matched nothing.
+fn resolve_variant_sym(
+    kb: &KnowledgeBase,
+    key: &str,
+    ty: Option<TermId>,
+) -> Result<Symbol, SerError> {
+    if let Some(sort) = ty.and_then(|t| type_head_and_inner(kb, t).0) {
+        return constructor_of_sort_named(kb, sort, key).ok_or_else(|| {
+            SerError::UnknownConstructor {
+                name: key.to_owned(),
+                sort: Some(kb.qualified_name_of(sort).to_string()),
             }
-        }
+        });
     }
-    match kb.try_resolve_symbol(key) {
-        Some(s) => s,
-        None => kb.intern(key),
+    match kb.resolve_name_in_global(key) {
+        ResolveResult::Found(sym) => Ok(sym),
+        ResolveResult::Ambiguous(cands) => Err(SerError::AmbiguousName {
+            name: key.to_owned(),
+            candidates: kb.candidate_names(&cands),
+        }),
+        ResolveResult::NotFound => Err(SerError::UnknownConstructor {
+            name: key.to_owned(),
+            sort: None,
+        }),
     }
+}
+
+/// The constructor of `sort` whose local name is `name` — the one question a persisted
+/// variant under a declared sort asks. `field_constructors_of_sort` so a free-standing
+/// or eponymous entity (§6.3: `sort S { entity S(…) }` is ONE symbol) answers for itself.
+fn constructor_of_sort_named(kb: &KnowledgeBase, sort: Symbol, name: &str) -> Option<Symbol> {
+    kb.field_constructors_of_sort(sort)
+        .into_iter()
+        .find(|c| kb.local_name_of(*c) == name)
 }
 
 /// Build a constructor term, reconstructing each field type-directedly from the
