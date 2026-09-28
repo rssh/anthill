@@ -272,10 +272,12 @@ pub(super) fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
         // THAT IS THE RIGHT ANSWER, and it is not what keeps the dispatch distinction:
         // `Fn{S}` is a spec identity the loader BUILDS deliberately, so classifying it
         // malformed was never a check anything relied on. What separates the concrete
-        // identity from the WILDCARD `Ref(S)` is `impl_param_ref`, which matches
-        // `Term::Ref` / `Term::Ident` on the raw term and never asks this function —
-        // driven by `type_head_reads_both_nullary_sort_spellings_alike` below, whose
-        // second half asserts the wildcard test still tells them apart.
+        // identity from the WILDCARD is the symbol's ROLE, not its spelling:
+        // `impl_param_ref` answers "is this name one of the impl sort's type params",
+        // in either spelling (WI-20260829-7QVD5), and the loader spells a param `Ref`
+        // and a non-param `Fn{S}` — driven by
+        // `type_head_reads_both_nullary_sort_spellings_alike` below, whose second half
+        // asserts that rule on both spellings.
         //
         // The trailing `_ => Error` is therefore NOT unreachable, which this ticket's
         // plan predicted it would be: `Fn{f, [x], []}` still lands there, and

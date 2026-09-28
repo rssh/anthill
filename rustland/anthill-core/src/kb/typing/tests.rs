@@ -180,6 +180,150 @@ end
     }
 }
 
+/// WI-20260829-7QVD5 — a `SortGoal` binding answers the same in either spelling of a bare
+/// sort, whichever producer built it.
+#[cfg(test)]
+mod q7vd5_goal_spelling_test {
+    //! THE TICKET'S SHAPE, DRIVEN. The witness leg ([`super::super::witness_provides_admissibly`])
+    //! puts the RAW actual type into its goal's carrier slot, where declared-field validation
+    //! used to canonicalize every bare sort into `Ref(S)` first. The actual here is
+    //! `Wrap[S = Direct]` with `Direct` spelled as the nullary `Fn{Direct}` — the spelling
+    //! the storage canon keeps for a sort name, and the one the loader gives a concrete
+    //! sort in a provision head — so the goal the leg builds is exactly the one the ticket
+    //! said would match no candidate.
+    //!
+    //! WHAT IT FOUND: it does match — the per-call readers were already spelling-neutral
+    //! (see [`super::super::spec_resolves_at_bindings`]'s doc for which). A census of every
+    //! actual reaching the leg across the `anthill-core` suite found 0 of 42 in a
+    //! non-canonical spelling, so no PROGRAM produces this shape today; the rows build the
+    //! term directly because that is the only way to reach it.
+    //!
+    //! WHAT FAILS WHEN BACKED OUT — measured by giving the goal side a RAW-SHAPE reader:
+    //! `dispatch_values_match` refusing a bare-sort pair whose two sides are spelled
+    //! differently (`Ref` against the nullary `Fn`). Row 1's `Fn{Direct}` half fails, and
+    //! nothing else in the stdlib load does — that mutation fired twice, both times in
+    //! this row. (Answering by `TermId` identity outright is too blunt to measure this:
+    //! the stdlib itself stops loading.) That is the regression this module is for: a new
+    //! raw read on the goal side makes the spelling a contract again, and no producer is
+    //! asked to honour it any more. Deleting `canonicalize_goal_value` itself moves
+    //! nothing here, which is the point — it was compensating for readers that no longer
+    //! need it.
+    //!
+    //! Row 2 passes either way BY DESIGN: it is the control that says the spelling-neutral
+    //! read did not become an accept-anything read.
+    use super::super::{types_compatible, TermIdView};
+    use crate::intern::Symbol;
+    use crate::kb::subst::Substitution;
+    use crate::kb::term::{Term, TermId};
+    use crate::kb::test_support::load_stdlib;
+    use crate::kb::KnowledgeBase;
+    use smallvec::{smallvec, SmallVec};
+
+    const SRC: &str = r#"
+namespace q7vd5
+  sort Cap
+    sort C = ?
+    import anthill.prelude.Int64
+    operation tag(c: C) -> Int64
+  end
+
+  sort Direct
+    import anthill.prelude.Int64
+    import q7vd5.Cap
+    entity direct(v: Int64)
+    provides Cap[C = Direct]
+    operation tag(d: Direct) -> Int64 = match d case direct(x) -> x
+  end
+
+  sort Opaque
+    import anthill.prelude.Int64
+    entity opaque(v: Int64)
+  end
+
+  sort Wrap
+    sort S = ?
+    entity wrap(inner: S)
+  end
+
+  sort WrapWitness
+    import anthill.prelude.Int64
+    import q7vd5.{Cap, Wrap}
+    import q7vd5.Wrap.wrap
+    sort S = ?
+    requires Cap[C = S]
+    provides Cap[C = Wrap[S = S]]
+    operation tag(w: Wrap[S = S]) -> Int64 = match w case wrap(i) -> Cap.tag(i)
+  end
+end
+"#;
+
+    fn sym(kb: &KnowledgeBase, qn: &str) -> Symbol {
+        kb.try_resolve_symbol(qn)
+            .unwrap_or_else(|| panic!("resolve {qn}"))
+    }
+
+    /// The two spellings of the bare sort `qn`: `Ref(S)` and the nullary `Fn{S}`.
+    fn both_spellings(kb: &mut KnowledgeBase, qn: &str) -> [(&'static str, TermId); 2] {
+        let s = sym(kb, qn);
+        let bare = kb.alloc(Term::Ref(s));
+        let nullary = kb.alloc(Term::Fn {
+            functor: s,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::new(),
+        });
+        assert_ne!(
+            bare, nullary,
+            "premise: the storage canon exempts a sort name, so both spellings exist — \
+             else these rows compare one term with itself and measure nothing"
+        );
+        [("Ref", bare), ("nullary Fn", nullary)]
+    }
+
+    /// `Wrap[S = inner]`, compared against the bare spec `Cap`.
+    fn wrap_conforms(kb: &mut KnowledgeBase, inner: TermId) -> bool {
+        let wrap = sym(kb, "q7vd5.Wrap");
+        let s = sym(kb, "q7vd5.Wrap.S");
+        let actual = kb.alloc(Term::Fn {
+            functor: wrap,
+            pos_args: SmallVec::new(),
+            named_args: smallvec![(s, inner)],
+        });
+        let cap = sym(kb, "q7vd5.Cap");
+        let expected = kb.make_sort_ref(cap);
+        let mut subst = Substitution::new();
+        types_compatible(kb, &mut subst, &TermIdView(actual), &TermIdView(expected))
+    }
+
+    /// ROW 1 — the witness leg's goal carries `Wrap[S = Direct]` in both spellings of
+    /// `Direct`, and both resolve: through `WrapWitness`'s head, then its `requires
+    /// Cap[C = S]` at `S := Direct` against `Direct`'s own provision.
+    #[test]
+    fn a_witness_goal_resolves_in_either_spelling_of_its_carrier() {
+        let mut kb = load_stdlib(Some(SRC));
+        for (label, direct) in both_spellings(&mut kb, "q7vd5.Direct") {
+            assert!(
+                wrap_conforms(&mut kb, direct),
+                "`Wrap[S = Direct]` with `Direct` spelled {label} must conform to `Cap` \
+                 through the witness — a refusal here is a goal-side reader reading the \
+                 spelling"
+            );
+        }
+    }
+
+    /// ROW 2 — CONTROL, passes either way by design: the witness's condition stays
+    /// enforced in both spellings. `Opaque` provides no `Cap`.
+    #[test]
+    fn an_unmet_witness_condition_is_refused_in_either_spelling() {
+        let mut kb = load_stdlib(Some(SRC));
+        for (label, opaque) in both_spellings(&mut kb, "q7vd5.Opaque") {
+            assert!(
+                !wrap_conforms(&mut kb, opaque),
+                "`Wrap[S = Opaque]` ({label}) must not conform: `Opaque` provides no `Cap`"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod wi_1ssxm_surviving_dot_backstop_tests {
     //! WI-20260829-1SSXM — THE BACKSTOP'S ONLY COVERAGE, and it is a unit test because
@@ -5276,14 +5420,21 @@ mod czj2n_nullary_sort_type_head_test {
     //! `matches!(head, ViewHead::Ref(_))` and is now "nullary functor head", so the
     //! concrete spelling moved from `TypeHead::Error` to `TypeHead::SortRef(S)`. That is
     //! the reclassification this module pins, together with the reason it is harmless —
-    //! the wildcard test is [`super::super::impl_param_ref`], which matches the RAW term
-    //! and never asks `type_head` at all.
+    //! the wildcard test [`super::super::impl_param_ref`] decides by the symbol's ROLE
+    //! (is it one of the impl sort's type params?), and the loader already spells a param
+    //! `Ref` and a non-param `Fn{S}` — so no reader needs the spelling to say which.
+    //!
+    //! WI-20260829-7QVD5 CHANGED THE CONTROL. It used to assert that `impl_param_ref`
+    //! refused `Fn{S}` for a PARAM `S` — a raw-term read that made the goal side's
+    //! spelling a contract every `SortGoal` producer had to honour. It now asserts the
+    //! rule by role on both spellings, and the non-param half is what still keeps a
+    //! concrete identity out of the wildcard arm.
     //!
     //! BACKED OUT (restore `is_bare_ref` to a `ViewHead::Ref` match — which no longer
     //! compiles, so: gate the arm on the term being a `Term::Ref`): the first row's
-    //! `Fn{S}` half reports `TypeHead::Error` again. The second row passes either way BY
-    //! DESIGN — it is the control that says the dispatch distinction is not on this
-    //! path, and it is the reason the first row's widening costs nothing.
+    //! `Fn{S}` half reports `TypeHead::Error` again. Restoring `impl_param_ref`'s raw
+    //! `Term::Ref | Term::Ident` read fails the control's `Fn{S}`-param assertion; its
+    //! non-param assertions pass either way BY DESIGN.
     use super::super::*;
     use crate::intern::SymbolKind;
     use smallvec::SmallVec;
@@ -5312,20 +5463,24 @@ mod czj2n_nullary_sort_type_head_test {
             );
         }
 
-        // THE CONTROL, and the reason the row above is not a loss: the WILDCARD test is
-        // a RAW-TERM read and still separates them.
-        let params = [s];
-        assert_eq!(
-            impl_param_ref(&kb, bare, &params),
-            Some(s),
-            "`Ref(S)` is the dispatch wildcard"
-        );
-        assert_eq!(
-            impl_param_ref(&kb, concrete, &params),
-            None,
-            "…and `Fn{{S}}` is the concrete identity, which is what keeps a \
-             `provides Spec[T = T]` from out-ranking a concrete provider (wi210)"
-        );
+        // THE CONTROL, and the reason the row above is not a loss: the WILDCARD test
+        // decides by ROLE. A param is the wildcard however it is spelled…
+        for (label, t) in [("bare", bare), ("concrete", concrete)] {
+            assert_eq!(
+                impl_param_ref(&kb, &TermIdView(t), &[s]),
+                Some(s),
+                "{label}: a name that IS an impl param is the dispatch wildcard"
+            );
+        }
+        // …and a sort that is NOT one is concrete however it is spelled, which is what
+        // keeps a concrete provider's head out of the wildcard arm (wi210).
+        for (label, t) in [("bare", bare), ("concrete", concrete)] {
+            assert_eq!(
+                impl_param_ref(&kb, &TermIdView(t), &[]),
+                None,
+                "{label}: a sort that is not an impl param is never the wildcard"
+            );
+        }
     }
 
     /// And a head with POSITIONAL arguments is still malformed as a type — the arm this

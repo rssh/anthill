@@ -3597,10 +3597,10 @@ mod nullary_head_tests {
         // here because it is a real narrowing of where the distinction lives and it
         // was not obvious. `functor_view_head` no longer has a second head to give a
         // bare name, so both spellings read as `Functor{S, 0, 0}` and compare
-        // structurally equal. Every consumer that must keep them apart therefore reads
-        // the TERM: `sort_inst_to_value` builds each deliberately and `impl_param_ref`
-        // decides dispatch specificity off `Term::Ref`/`Term::Ident`. That the stdlib
-        // loads is the measurement that no type-level reader was on the view path.
+        // structurally equal. `sort_inst_to_value` builds each deliberately, by the
+        // symbol's role; dispatch's wildcard test `impl_param_ref` reads the same role
+        // through the view, in either spelling (WI-20260829-7QVD5). That the stdlib
+        // loads is the measurement that no type-level reader needs the store's split.
         assert!(
             views_structurally_equal(&kb, &shape_ref, &shape_fn),
             "the VIEW merges what the STORE keeps apart — see above"
