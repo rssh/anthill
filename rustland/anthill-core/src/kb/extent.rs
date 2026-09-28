@@ -215,7 +215,8 @@ pub trait ExtentSource {
     /// pairs this source owns. **This is the ONLY place a source's names are read**:
     /// [`KnowledgeBase::register_extent_owner`] resolves each to a `Symbol` (a name that
     /// denotes nothing is a loud [`ExtentRegError::UnresolvableName`], one that denotes
-    /// several a loud [`ExtentRegError::AmbiguousName`]), and everything downstream —
+    /// several a loud [`ExtentRegError::AmbiguousName`], one that denotes an `internal`
+    /// symbol a loud [`ExtentRegError::ForbiddenInternal`]), and everything downstream —
     /// mounts, profiles, and every external [`FactRef`] — is `Symbol`-keyed from there.
     /// A backend can only speak names, so the boundary is String HERE and `Symbol` past
     /// registration; a second reading is a second chance to disagree with the first
@@ -402,6 +403,15 @@ pub enum ExtentRegError {
         functor: String,
         candidates: Vec<String>,
     },
+    /// An `owned()` name denotes a symbol that EXISTS but is `internal` to `declared_in`,
+    /// so it is invisible from `<global>`, where a host name is read. Distinct from
+    /// `UnresolvableName` because the repairs differ — declaring the name cannot fix
+    /// this one; exporting the member (dropping `internal`) or not mounting it can
+    /// (WI-911).
+    ForbiddenInternal {
+        functor: String,
+        declared_in: String,
+    },
     /// The functor already has a registered extent owner (single-owner rule).
     AlreadyOwned { functor: String },
     /// The functor already has resident facts/rules in `kb.rules` — mounting an
@@ -440,6 +450,14 @@ impl std::fmt::Display for ExtentRegError {
                     "register_extent_owner: unresolvable functor name '{name}'"
                 )
             }
+            ExtentRegError::ForbiddenInternal {
+                functor,
+                declared_in,
+            } => write!(
+                f,
+                "register_extent_owner: functor '{functor}' is internal to '{declared_in}' \
+                 and cannot be mounted from outside it"
+            ),
             ExtentRegError::AmbiguousName {
                 functor,
                 candidates,
@@ -1045,7 +1063,7 @@ impl KnowledgeBase {
     ///
     /// One spelling for both registration paths — a source's `owned()` functor and a
     /// mirror's `owned_monotonicity()` functor are the same question asked by the same
-    /// kind of author, so they get the same answer and the same two refusals. They were
+    /// kind of author, so they get the same answer and the same refusals. They were
     /// briefly two copies of this match; the second one is what WI-919 was.
     ///
     /// WI-1075 — A HOST NAME IS READ RELATIVE TO THE TOP-LEVEL SCOPE, like source text
@@ -1064,7 +1082,17 @@ impl KnowledgeBase {
                 functor: name.to_owned(),
                 candidates: self.candidate_names(&cands),
             }),
-            ResolveResult::NotFound => Err(ExtentRegError::UnresolvableName(name.to_owned())),
+            // WI-911: the ladder's DIAGNOSTIC half, the same re-read a loader position
+            // makes — a name that exists and is hidden is not reported as absent.
+            ResolveResult::NotFound => Err(
+                match crate::kb::load::hidden_dotted_internal(self, name, self.global_scope()) {
+                    Some(hidden) => ExtentRegError::ForbiddenInternal {
+                        functor: name.to_owned(),
+                        declared_in: crate::kb::load::internal_declared_in(self, hidden),
+                    },
+                    None => ExtentRegError::UnresolvableName(name.to_owned()),
+                },
+            ),
         }
     }
 
@@ -1331,7 +1359,8 @@ impl KnowledgeBase {
     ///
     /// Rules, per owned `(name, profile)`, in order:
     /// 1. `name` must resolve to exactly ONE symbol → else
-    ///    [`ExtentRegError::UnresolvableName`] / [`ExtentRegError::AmbiguousName`].
+    ///    [`ExtentRegError::UnresolvableName`] / [`ExtentRegError::AmbiguousName`] /
+    ///    [`ExtentRegError::ForbiddenInternal`] (exists, but hidden from `<global>`).
     /// 2. the functor must be unowned → else [`ExtentRegError::AlreadyOwned`]
     ///    (single-owner), AND have no resident facts/rules → else
     ///    [`ExtentRegError::ResidentCollision`] (WI-797, the load-then-mount

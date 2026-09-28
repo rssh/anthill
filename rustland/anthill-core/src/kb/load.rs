@@ -20839,6 +20839,41 @@ fn resolve_dotted_in_kb(
     resolve_dotted_in_kb_with(kb, name, scope, vis, AliasReading::ReadThrough)
 }
 
+/// **THE LADDER'S DIAGNOSTIC HALF** (WI-911): the symbol a dotted `name` would denote
+/// at `scope` were `internal` not in the way, for a caller whose `VisibleOnly` read came
+/// up `NotFound`. `Some` means the name EXISTS and is HIDDEN — a forbidden reference, not
+/// an absent one — which every position with an error channel reports as such.
+///
+/// A free function over `&KnowledgeBase` rather than a `Loader` method because not every
+/// such position is the loader's: a host mount (`KnowledgeBase::registration_symbol`)
+/// has its own channel, `ExtentRegError::ForbiddenInternal`, and could not reach the
+/// `Loader` copy — so it reported a hidden functor as an unresolvable one.
+///
+/// `vis` filters a HIT, never the head, so the `Any` read answers `Ambiguous` exactly
+/// when the `VisibleOnly` read did — a case the caller has already reported.
+pub(crate) fn hidden_dotted_internal(
+    kb: &KnowledgeBase,
+    name: &str,
+    scope: ScopeId,
+) -> Option<Symbol> {
+    match resolve_dotted_in_kb(kb, name, scope, DottedVisibility::Any) {
+        ResolveResult::Found(hidden) => Some(hidden),
+        ResolveResult::Ambiguous(_) | ResolveResult::NotFound => None,
+    }
+}
+
+/// The scope an `internal` symbol belongs to, as a forbidden-access diagnostic names it:
+/// the qualified name minus its last segment (`a.b.Vault` for `a.b.Vault.secret`).
+pub(crate) fn internal_declared_in(kb: &KnowledgeBase, sym: Symbol) -> String {
+    match kb.symbols.get(sym) {
+        SymbolDef::Resolved { qualified_name, .. } => qualified_name
+            .rsplit_once('.')
+            .map(|(p, _)| p.to_owned())
+            .unwrap_or_else(|| qualified_name.clone()),
+        SymbolDef::Unresolved { name } => name.clone(),
+    }
+}
+
 /// WI-20260924-SNJPR — whether the dotted ladder reads a type ALIAS among a path's
 /// segments as the sort it stands for (`StoreAlias.peek` is `Store.peek`).
 ///
@@ -22478,16 +22513,9 @@ impl<'a> Loader<'a> {
     /// well-formed; the load fails on the recorded (load-blocking) error.
     /// `declared_in` is derived from the symbol's qualified name.
     fn push_forbidden_internal(&mut self, sym: Symbol, name: &str, span: Span) -> Symbol {
-        let declared_in = match self.kb.symbols.get(sym) {
-            SymbolDef::Resolved { qualified_name, .. } => qualified_name
-                .rsplit_once('.')
-                .map(|(p, _)| p.to_owned())
-                .unwrap_or_else(|| qualified_name.clone()),
-            SymbolDef::Unresolved { name } => name.clone(),
-        };
         self.errors.push(LoadError::ForbiddenInternalAccess {
             name: name.to_owned(),
-            declared_in,
+            declared_in: internal_declared_in(self.kb, sym),
             scope_name: self.scope_display_name(),
             span,
         });
@@ -22850,15 +22878,8 @@ impl<'a> Loader<'a> {
             // Split from the resolving read — rather than gating each rung in place, as
             // WI-369's `accept_qualified_hit` did — because a hidden hit must not
             // TERMINATE the descent (see [`DottedVisibility::VisibleOnly`]).
-            ResolveResult::NotFound => match self.resolve_dotted(name, DottedVisibility::Any) {
-                ResolveResult::Found(hidden) => {
-                    Some(self.push_forbidden_internal(hidden, name, span))
-                }
-                // `vis` filters a HIT, never the head, so the `Any` read answers
-                // `Ambiguous` exactly when the `VisibleOnly` read above did — and that
-                // arm already returned.
-                ResolveResult::Ambiguous(_) | ResolveResult::NotFound => None,
-            },
+            ResolveResult::NotFound => hidden_dotted_internal(self.kb, name, self.current_scope)
+                .map(|hidden| self.push_forbidden_internal(hidden, name, span)),
         }
     }
 

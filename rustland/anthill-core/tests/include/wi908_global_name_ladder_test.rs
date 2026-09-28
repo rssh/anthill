@@ -55,8 +55,8 @@ fn fixture() -> KnowledgeBase {
     kb
 }
 
-/// `name` must not denote at `<global>`, so the mount is refused BY NAME RESOLUTION —
-/// loudly, though not yet precisely (see the `internal` test).
+/// `name` must not denote at `<global>` — not even as a hidden `internal` symbol — so the
+/// mount is refused BY NAME RESOLUTION as absent.
 fn assert_unmountable(kb: &mut KnowledgeBase, name: &str, why: &str) {
     let err = mount(kb, name).expect_err(why);
     assert!(
@@ -115,13 +115,12 @@ fn a_name_qualified_by_an_imported_head_mounts() {
 /// position too. `internal` is the declaration's statement that outside code has no
 /// business naming the member; a host string is outside code.
 ///
-/// The refusal is loud but NOT yet precise: the mount takes only the ladder's
-/// `VisibleOnly` half, so a name that exists-and-is-hidden reports as one that does not
-/// exist. The diagnostic half (the `Any` re-read in `Loader::resolve_dotted_reported`) is
-/// a `Loader` method this seam cannot reach — WI-911. (Its AMBIGUITY half needs no such
-/// lift and no longer has one: WI-917 moved that answer into the ladder itself, which is
-/// why `an_ambiguous_host_name_is_refused_as_ambiguous_not_absent` can assert precision
-/// here while this test cannot.)
+/// WI-911 — and the refusal is PRECISE: the mount runs the ladder's diagnostic half
+/// (`load::hidden_dotted_internal`, the same `Any` re-read a loader position makes), so a
+/// name that exists-and-is-hidden reports as `ForbiddenInternal` naming its owner, not
+/// as one that does not exist. BACKED OUT (registration_symbol's `NotFound` arm mapping
+/// straight to `UnresolvableName`), this test fails; the `UnresolvableName` rows around
+/// it pass either way — their names have no hidden reading.
 #[test]
 fn an_internal_member_is_not_mountable_from_global() {
     let mut kb = fixture();
@@ -131,10 +130,33 @@ fn an_internal_member_is_not_mountable_from_global() {
          about a missing declaration",
     );
 
+    let err = mount(&mut kb, "wi908.priv.Vault.secret")
+        .expect_err("an `internal` member is invisible from `<global>`");
+    let ExtentRegError::ForbiddenInternal {
+        functor,
+        declared_in,
+    } = &err
+    else {
+        panic!("a hidden member must be refused AS HIDDEN, not as absent; got {err:?}");
+    };
+    assert_eq!(functor, "wi908.priv.Vault.secret");
+    assert_eq!(declared_in, "wi908.priv.Vault");
+    assert!(
+        kb.extent_owner(kb.resolve_symbol("wi908.priv.Vault.secret"))
+            .is_none(),
+        "the refusal must leave the functor unmounted",
+    );
+}
+
+/// The diagnostic half answers only for a name that EXISTS: a dotted path nobody
+/// declares, hidden or not, stays `UnresolvableName` (the other side of the split above).
+#[test]
+fn a_missing_dotted_member_stays_unresolvable() {
+    let mut kb = fixture();
     assert_unmountable(
         &mut kb,
-        "wi908.priv.Vault.secret",
-        "an `internal` member is invisible from `<global>`",
+        "wi908.priv.Vault.nosuch",
+        "no such member exists, hidden or visible",
     );
 }
 
