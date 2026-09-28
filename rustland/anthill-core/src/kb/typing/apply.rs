@@ -592,6 +592,28 @@ pub(super) fn check_apply_iter(
         // against one parameter while the runtime bound it to another.
         let pos_call_params = positional_param_indices(kb, &op.params, pos_args.len(), named_args);
 
+        // WI-20260926-NEKR0: a type parameter several arguments bind takes their JOIN, bound
+        // here BEFORE the loops below unify in parameter order — which is what made the first
+        // argument decide it. A projection-bearing parameter is deferred there and here alike.
+        if !op.type_params.is_empty() {
+            let mut arg_pairs: Vec<(Symbol, Value, Value)> = Vec::new();
+            for (i, res) in pos_results.iter().enumerate() {
+                if let (Ok(r), Some((p, pty))) = (res, pos_call_params[i].and_then(|p| op.params.get(p))) {
+                    arg_pairs.push((*p, pty.clone(), r.ty.clone()));
+                }
+            }
+            for (i, (arg_name, _)) in named_args.iter().enumerate() {
+                if let (Ok(r), Some((p, pty))) = (&named_results[i], match_named_arg_param(kb, &op.params, *arg_name)) {
+                    arg_pairs.push((*p, pty.clone(), r.ty.clone()));
+                }
+            }
+            arg_pairs.retain(|(_, pty, _)| !(op_has_projection && value_contains_projection(kb, pty)));
+            let refs: Vec<(Symbol, &Value, &Value)> = arg_pairs.iter().map(|(p, d, a)| (*p, d, a)).collect();
+            if let Err(no_join) = join_repeated_type_params(kb, &mut subst, JoinCandidates::TypeParams(&op.type_params), &refs) {
+                return Err(no_join.into_call_error(kb, fn_sym, span));
+            }
+        }
+
         for (i, arg_occ) in pos_args.iter().enumerate() {
             if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
                 if let Some((param_sym, _)) = pos_call_params[i].and_then(|p| op.params.get(p)) {

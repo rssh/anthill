@@ -405,7 +405,9 @@ fn wi9c2pz_a_variable_joins_every_class_its_calls_link_it_to() {
         .expect("`chain(2, 2, \"x\")` violates the transitive link and must be refused");
     let text = errs.join("\n");
     assert!(
-        text.contains("argument binding column `z` has an incompatible type"),
+        // WI-20260926-NEKR0: the three columns share one variable, so the citation joins
+        // their arguments and the refusal names each — `z`'s `String` is the one with no join.
+        text.contains("have incompatible types: no common type for Int64 (x), Int64 (y), String (z)"),
         "the refusal must name column `z`, which only the `eq`→`gt` link types; got:\n{text}"
     );
 }

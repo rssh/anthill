@@ -287,18 +287,20 @@ fn general_free_op_grounds_its_element_from_the_arguments_provision() {
 /// RED BOTH WAYS, and the two reds are different messages — which is the point, and why the
 /// token asserted is the clause's own answer rather than "something failed". With the pass
 /// backed out `S` is unconstrained (`gmap.type_arg`); with the search widened to the first
-/// argument the program LOADS. Only reading the clause produces `expected Bool -> ?Dst`.
+/// argument the program LOADS. Only reading the clause produces `expected Bool -> Int64`
+/// (the callback's result `Dst` is a covariant occurrence, so since WI-20260926-NEKR0 it is
+/// instantiated from the lambda's `Int64` before the check, where it used to print `?Dst`).
 #[test]
 fn a_clause_about_another_parameter_names_that_parameters_element() {
     let errs = crate::common::try_load_kb_with(&general_free_op("Other", ""))
         .err()
         .unwrap_or_default();
-    // `expected Bool -> ?Dst` is the clause READ: `S` came from the `List[T = Bool]` the
+    // `expected Bool -> Int64` is the clause READ: `S` came from the `List[T = Bool]` the
     // clause names, so the `(n: Int64)` callback contradicts it. Reading the first argument
     // instead grounds `S = Int64` and the program loads with no message at all.
     assert_refused_naming(
         &errs,
-        &["expected Bool -> ?Dst"],
+        &["expected Bool -> Int64"],
         "the clause names WHICH argument's provision answers; reading the first argument \
          instead would accept an `Int64` callback over a `List[T = Bool]` source",
     );
@@ -324,7 +326,7 @@ fn a_written_bracket_outranks_the_clause() {
     // the clause grounds `S = Int64` and the program loads.
     assert_refused_naming(
         &errs,
-        &["expected Bool -> ?Dst"],
+        &["expected Bool -> Int64"],
         "a written bracket is the author's answer and the clause must not overwrite it",
     );
 }

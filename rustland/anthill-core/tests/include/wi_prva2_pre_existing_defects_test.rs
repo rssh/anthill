@@ -506,25 +506,33 @@ fn a_slot_route_follows_the_typers_instantiation() {
     );
 }
 
-/// (e) CONTROL — passes either way, BY DESIGN: it pins why the order the ticket named is not
-/// reachable. At `(Circle, Shape)` the typer itself refuses — the citation's column typing and
-/// the operation-body call both take `A` from the FIRST argument, and `Shape` is no `Circle` —
-/// so no slot route is ever asked at that order. Instantiating a repeated type parameter at the
-/// JOIN of its arguments, which would admit both orders, is the typer's question and
-/// WI-20260926-NEKR0's; that change flips this row.
+/// (e) THE OTHER ORDER — `(Circle, Shape)`. It used to be refused by the typer itself: the
+/// citation's column typing and the operation-body call both took `A` from the FIRST argument,
+/// and `Shape` is no `Circle`, so no slot route was ever asked at that order. WI-20260926-NEKR0
+/// instantiates `A` at the JOIN of the arguments (§8.1), so both load at `A = Shape`, and the
+/// route — joined the same way — routes the caller's `Cmp[T = Shape]`: `2` both ways. FAILS with
+/// the join removed from the typer: the load is refused ("column `b` has an incompatible type",
+/// "expected Circle, got Shape"); with it removed from `op_slot_route` alone, the citation routes
+/// nothing and answers `Circle`'s `1`.
 #[test]
-fn the_other_order_is_refused_by_the_typer() {
+fn the_other_order_loads_and_routes_as_the_typer_instantiates() {
     let src = extended(
         ROUTE,
         "  sort Driver2\n    \
          operation citeCS(c: Circle, s: Shape) -> Int64 effects {Error, Error[EmptyStream]}\n      \
          requires Cmp[T = Shape] = via(c, s).head.c\n    \
-         operation bodyCS(c: Circle, s: Shape) -> Int64 = Util.cmp2(c, s)\n  \
+         operation bodyCS(c: Circle, s: Shape) -> Int64 = Util.cmp2(c, s)\n    \
+         operation goCite() -> Int64 effects {Error, Error[EmptyStream]} = citeCS(circle(), circle())\n    \
+         operation goBody() -> Int64 = bodyCS(circle(), circle())\n  \
          end\n",
     );
-    crate::common::expect_load_errors(
-        crate::common::try_load_kb_with(&src),
-        &["column `b` has an incompatible type", "expected Circle, got Shape"],
+    assert_eq!(
+        (
+            drive_int(&src, "wiprva2.route.Driver2.goCite"),
+            drive_int(&src, "wiprva2.route.Driver2.goBody"),
+        ),
+        (2, 2),
+        "both orders instantiate `A = Shape` and route `ShapeCmp`",
     );
 }
 

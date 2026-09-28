@@ -3,9 +3,9 @@
 - id: WI-20260926-NEKR0-a-repeated-type-parameter-is
 - created: 2026-09-26T10:01:36Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-26T10:01:36Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-28T08:32:33Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
