@@ -48,7 +48,7 @@ end
 
 #[test]
 fn head_span_keys_on_occurrence_not_hashconsed_termid() {
-    let mut kb = load_kb(&[FILE_A, FILE_B]);
+    let kb = load_kb(&[FILE_A, FILE_B]);
 
     // The DECLARED predicate, by qualified name — both files' clauses land on it.
     let enabled = kb

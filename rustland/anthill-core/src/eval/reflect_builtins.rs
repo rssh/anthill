@@ -809,7 +809,7 @@ pub(super) fn scope_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     //
     // The global scope IS the top level, so it is the `None` the declaration promises —
     // the same rule `resolve::builtin_scope` applies.
-    let global = interp.kb_mut().global_scope();
+    let global = interp.kb().global_scope();
     let scope_sym = interp
         .kb()
         .declaring_scope_symbol(sym)

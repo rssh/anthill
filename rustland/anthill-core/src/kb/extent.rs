@@ -1057,7 +1057,7 @@ impl KnowledgeBase {
     /// source does, by embedding the marker in its string: `"..a.b.Rel"`. Nothing
     /// in-tree registers a functor name today, so this is API surface rather than a
     /// migration.
-    fn registration_symbol(&mut self, name: &str) -> Result<Symbol, ExtentRegError> {
+    fn registration_symbol(&self, name: &str) -> Result<Symbol, ExtentRegError> {
         match self.resolve_name_in_global(name) {
             ResolveResult::Found(sym) => Ok(sym),
             ResolveResult::Ambiguous(cands) => Err(ExtentRegError::AmbiguousName {

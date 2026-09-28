@@ -3592,9 +3592,12 @@ impl KnowledgeBase {
     /// sentinel is only unspellable if there is ONE of it, so they were folded in here
     /// and this is the sole site that names it. Each asks for `.owner()`, which is what
     /// a clause's `domain: Symbol` slot is — the shape `body_specialize` already used.
-    pub fn global_scope(&mut self) -> ScopeId {
-        let sym = self.symbols.intern(crate::intern::GLOBAL_SCOPE_NAME);
-        self.symbols.scope_id(sym)
+    ///
+    /// WI-915 — a READ, not a mint: [`crate::intern::SymbolTable::new`] interns the
+    /// sentinel once, so this takes `&self` and so does every caller that only asks
+    /// (notably [`Self::resolve_name_in_global`]).
+    pub fn global_scope(&self) -> ScopeId {
+        self.symbols.global_scope()
     }
 
     /// The type parameters `sort_sym` DECLARES, as their own symbols, in source
@@ -9784,7 +9787,7 @@ impl KnowledgeBase {
     /// Driven by `wi908_global_name_ladder_test::
     /// a_short_name_with_no_scope_presence_no_longer_mounts`, which is this row inverted:
     /// a bare `cons` no longer mounts and the qualified name still does.
-    pub fn resolve_name_in_global(&mut self, name: &str) -> ResolveResult {
+    pub fn resolve_name_in_global(&self, name: &str) -> ResolveResult {
         let global = self.global_scope();
         crate::kb::load::resolve_name_in_kb(self, name, global)
     }
@@ -15416,7 +15419,7 @@ mod wi913_host_name_ladder_tests {
     /// count would fail for the wrong reason. The claim is the CLASSIFICATION.
     #[test]
     fn wi913_every_dotted_name_is_reachable_or_explained() {
-        let mut kb = crate::kb::test_support::load_stdlib(None);
+        let kb = crate::kb::test_support::load_stdlib(None);
         let global = kb.global_scope();
         let dotted: Vec<(String, Symbol)> = kb
             .symbols

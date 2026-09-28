@@ -100,7 +100,7 @@ fn unparameterized_provides_block_loads() {
 #[test]
 fn both_spec_shapes_file_the_implementation_fact_under_the_base_sort() {
     let domain_of = |source: &str| -> Vec<String> {
-        let mut kb: KnowledgeBase = crate::common::load_kb_with(source);
+        let kb: KnowledgeBase = crate::common::load_kb_with(source);
         // WI-922: found by HEAD FUNCTOR. These clauses used to be filed under a
         // raw intern of `anthill.realization.Implementation` as their clause
         // KEY, so the key doubled as the functor question; they now carry the
