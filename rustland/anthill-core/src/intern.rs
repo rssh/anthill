@@ -502,8 +502,13 @@ pub struct Scope {
 
 // ── SymbolTable ─────────────────────────────────────────────────
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SymbolTable {
+    /// WI-915 — the TOP-LEVEL scope ([`GLOBAL_SCOPE_NAME`]), minted once by
+    /// [`Self::new`] and read by [`Self::global_scope`]. A field rather than a
+    /// re-intern per ask, so asking needs no `&mut` and the table is never without it
+    /// (`Default` delegates to `new`, so no constructor skips the mint).
+    global: ScopeId,
     defs: Vec<SymbolDef>,
     /// Dedup map for Unresolved symbols: name → Symbol
     pub(crate) intern_map: HashMap<String, Symbol>,
@@ -539,8 +544,8 @@ pub struct SymbolTable {
     /// `SymbolTable` also rides inside `ParsedFile`, which the test suites hold in a
     /// `LazyLock` static and so must stay `Sync`.
     ///
-    /// Stored as `SourceId::raw() + 1`, so the `Default` zero is "no asking file" and
-    /// the derived `Default` stays honest — source 0 is a real file.
+    /// Stored as `SourceId::raw() + 1`, so the zero [`Self::new`] starts it at is "no
+    /// asking file" — source 0 is a real file.
     asking_file_plus_one: std::sync::atomic::AtomicU32,
     /// WI-995 — is [`Self::import_audit`] live? Read on every resolution, so it is a
     /// relaxed atomic load rather than a mutex acquisition: the audit is off in every
@@ -801,6 +806,8 @@ impl SymbolTable {
     /// remember.
     pub(crate) fn snapshot_scoped(&self) -> SymbolScopeSnapshot {
         let SymbolTable {
+            // IMMUTABLE — fixed by `new` to symbol 0, which every `defs_prefix` holds.
+            global: _,
             defs,
             // MONOTONE — see [`SymbolScopeSnapshot`]: rolling back the intern dedup would
             // let one name acquire a second symbol.
@@ -864,9 +871,39 @@ impl SymbolTable {
     }
 }
 
+impl Default for SymbolTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SymbolTable {
+    /// A table holding exactly one symbol: the owner of the TOP-LEVEL scope
+    /// ([`GLOBAL_SCOPE_NAME`]), interned here so [`Self::global_scope`] is a read.
     pub fn new() -> Self {
-        Self::default()
+        let global_owner = Symbol(0);
+        let mut st = Self {
+            global: ScopeId(global_owner),
+            defs: Vec::new(),
+            intern_map: HashMap::new(),
+            by_qualified_name: HashMap::new(),
+            scopes: HashMap::new(),
+            internal_syms: HashSet::new(),
+            import_origin: HashMap::new(),
+            import_parent_origin: HashMap::new(),
+            asking_file_plus_one: std::sync::atomic::AtomicU32::new(0),
+            auditing: std::sync::atomic::AtomicBool::new(false),
+            import_audit: std::sync::Mutex::new(None),
+        };
+        let interned = st.intern(GLOBAL_SCOPE_NAME);
+        debug_assert_eq!(interned, global_owner);
+        st
+    }
+
+    /// WI-915 — the TOP-LEVEL scope. THE sole owner of the sentinel: minted once in
+    /// [`Self::new`], so every caller reads the same scope and none needs `&mut`.
+    pub fn global_scope(&self) -> ScopeId {
+        self.global
     }
 
     /// WI-984 — mint the [`ScopeId`] of the scope `owner` opens. THE ONLY
@@ -2506,7 +2543,8 @@ pub fn is_positional_label_at(label: &str, index: usize) -> bool {
 pub const ABSOLUTE_PATH_MARKER: &str = "..";
 
 /// The name of the SYNTHETIC TOP-LEVEL SCOPE — the one a file's top-level
-/// declarations land in, minted by [`crate::kb::KnowledgeBase::global_scope`].
+/// declarations land in, minted once by [`SymbolTable::new`] and read through
+/// [`SymbolTable::global_scope`] / [`crate::kb::KnowledgeBase::global_scope`].
 ///
 /// UNSPELLABLE BY THE SAME RULE [`ABSOLUTE_PATH_MARKER`] IS (WI-987). It used to be
 /// `_global`, an ordinary identifier under both grammars (`grammar.js`'s
@@ -2549,6 +2587,20 @@ pub fn absolute_path_target(name: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WI-915 — a fresh table already HOLDS the top-level scope, and asking for it is
+    /// a read: `global_scope` takes `&self` (a `&mut` signature fails to compile at the
+    /// first call below), and it names the same symbol interning the sentinel would.
+    #[test]
+    fn a_fresh_table_owns_the_global_scope() {
+        let st = SymbolTable::new();
+        let g = st.global_scope();
+        assert_eq!(st.local_name(g.owner()), GLOBAL_SCOPE_NAME);
+        let mut st = st;
+        let interned = st.intern(GLOBAL_SCOPE_NAME);
+        assert_eq!(st.scope_id(interned), g, "one owner, not a second mint");
+        assert_eq!(SymbolTable::default().global_scope(), g);
+    }
 
     #[test]
     fn intern_dedup() {

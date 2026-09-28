@@ -1487,7 +1487,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 eprintln!("error: --mode functor requires a pattern argument (functor name)");
                 1
             })?;
-            let sym = resolve_listing_name(&mut kb, name, "functor", None)?;
+            let sym = resolve_listing_name(&kb, name, "functor", None)?;
             let results = kb.program_clauses_by_functor(sym);
             print_program_clause_results(&kb, &results, args.max_results);
         }
@@ -1518,7 +1518,7 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                 kb.intern(name)
             } else {
                 resolve_listing_name(
-                    &mut kb,
+                    &kb,
                     name,
                     "domain",
                     // WI-987 — the clauses loaded outside any namespace (242 on the
@@ -2091,7 +2091,7 @@ fn report_unresolved_name(
 /// argument. Not of every listing ARGUMENT, though: `--mode domain`'s reserved
 /// `<global>` spelling still bypasses it by hand, and WI-923 owns that.
 fn resolve_listing_name(
-    kb: &mut KnowledgeBase,
+    kb: &KnowledgeBase,
     name: &str,
     kind: &str,
     hint: Option<&str>,
