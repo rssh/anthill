@@ -499,6 +499,41 @@ pub(super) fn relation_reference_type_applied(
     // S2: the type each bound column takes AT THIS CITATION — its argument's — read by the
     // edge check below, which routes the relation's requirement reads over them.
     let mut bound_types: Vec<(Symbol, Value)> = Vec::with_capacity(bound.len());
+    // WI-20260926-NEKR0: columns sharing a variable take the JOIN of their arguments, bound
+    // before the loop below pins each column in order — which made the first argument decide
+    // it (`via(c, s)` refused where `via(s, c)` loaded). The operation-body call asks the same.
+    {
+        let arg_pairs: Vec<(Symbol, Value, Value)> = bound
+            .iter()
+            .enumerate()
+            .filter_map(|(i, cname)| {
+                let arg_res = if i < pos_results.len() {
+                    &pos_results[i]
+                } else {
+                    &named_results[i - pos_results.len()]
+                };
+                let arg = arg_res.as_ref().ok()?;
+                let col = columns.iter().find(|c| c.name == *cname)?;
+                Some((*cname, col.ty.clone(), arg.ty.clone()))
+            })
+            .collect();
+        let refs: Vec<(Symbol, &Value, &Value)> = arg_pairs.iter().map(|(c, d, a)| (*c, d, a)).collect();
+        if let Err(no_join) = join_repeated_type_params(kb, &mut subst, JoinCandidates::AnyFree, &refs) {
+            return Err(arg_err(
+                kb,
+                format!(
+                    "argument binding columns {} have incompatible types: no common type for {}",
+                    no_join
+                        .contributions
+                        .iter()
+                        .map(|(c, _)| format!("`{}`", kb.local_name_of(*c)))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    no_join.listed(kb)
+                ),
+            ));
+        }
+    }
     for (i, cname) in bound.iter().enumerate() {
         let col_ty = columns
             .iter()
@@ -876,6 +911,14 @@ fn op_slot_route(
     // failed trial's partial bindings are dropped with it. Refusing the whole route there sent
     // the call back to the value's own dictionary where the caller had chosen one.
     let mut pins = Substitution::new();
+    // WI-20260926-NEKR0 — BUT A TYPE PARAMETER SEVERAL ARGUMENTS BIND IS THEIR JOIN, first, as
+    // the typer instantiates it; the loop below then pins only what that leaves free. A call
+    // with no join routes nothing — the typer has refused it.
+    let refs: Vec<(Symbol, &Value, &Value)> =
+        rec.params.iter().zip(arg_types).map(|((p, pty), aty)| (*p, pty, aty)).collect();
+    if join_repeated_type_params(kb, &mut pins, JoinCandidates::TypeParams(&rec.type_params), &refs).is_err() {
+        return None;
+    }
     for ((_, pty), aty) in rec.params.iter().zip(arg_types) {
         let mut trial = pins.clone();
         if unify_types(kb, &mut trial, pty, aty) {
@@ -889,9 +932,9 @@ fn op_slot_route(
     // derived from the values (`Circle`'s own) where the typer instantiates `A = Shape` for the
     // same call (`Shape`'s). And a pin is not a verdict: `unify_types` answers a mismatch of
     // two sorts with a ONE-WAY subtype test, so at `(Circle, Shape)` it pinned `A = Circle` and
-    // accepted the `Shape` beside it — a route for a type one argument is not. That order is
-    // refused at load today (the citation's column typing takes `A` from the first argument,
-    // and `Shape` is no `Circle`), and it is a route nothing here may produce either way.
+    // accepted the `Shape` beside it — a route for a type one argument is not. Since
+    // WI-20260926-NEKR0 the join above pins `A = Shape` at that order first, so the pin this
+    // check refuses is one only a join-less call could reach — and the typer refuses that.
     //
     // THE TYPER'S OWN QUESTION, `validate_arg_against_param`, and not a bare
     // `types_compatible`: it walks BOTH sides through the pins — an argument's type is itself a

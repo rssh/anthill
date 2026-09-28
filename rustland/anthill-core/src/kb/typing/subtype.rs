@@ -1477,7 +1477,7 @@ fn more_specific_type(kb: &KnowledgeBase, a: &Value, b: &Value) -> Value {
 /// parameterized LUB/GLB to keep that binding (else the whole type falls back to
 /// its conservative bound). Context-free, like [`is_subtype`]: a fresh subst per
 /// direction.
-fn types_equivalent(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> bool {
+pub(super) fn types_equivalent(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> bool {
     let mut s1 = Substitution::new();
     if !types_compatible(kb, &mut s1, a, b) {
         return false;

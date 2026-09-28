@@ -98,15 +98,19 @@ const SAME_PRELUDE: &str = r#"
 
 /// THE HEADLINE. `X` is pinned to `Int64` by the FIRST argument; the second is a
 /// `List[String]` and nothing objected.
+///
+/// WI-20260926-NEKR0: `List.T` is covariant, so both arguments CONTRIBUTE to `X` and the
+/// refusal is the join's — `Int64` and `String` have none — naming each argument, rather
+/// than the second one's mismatch against a pin the first argument made.
 #[test]
 fn two_arguments_sharing_an_op_type_param_must_agree() {
-    assert_refused_naming(
+    assert_refused_with(
         &format!(
             "namespace test.wi836.infer\n{SAME_PRELUDE}\
              \n  operation go() -> Int64 = same(li(), ls())\nend\n"
         ),
-        "List[T = Int64]",
-        "List[T = String]",
+        &["no common type for type parameter `X` of `same`: Int64 (a), String (b)"],
+        "rejection must name both arguments' contributions to `X`",
     );
 }
 

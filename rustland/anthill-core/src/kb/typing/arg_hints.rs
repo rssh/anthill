@@ -521,8 +521,14 @@ fn type_term_mentions_op_tp(kb: &KnowledgeBase, tid: TermId, tp_vars: &[VarId]) 
 /// nothing is known or nothing BINDS (a monomorphic callee's pairs unify
 /// without binding, and an empty σ would only buy every hint a no-op deep
 /// rebuild) — the hint then stays as declared.
+///
+/// WI-20260926-NEKR0: a type parameter several known arguments bind is their JOIN, bound
+/// first — the instantiation `check_apply_iter` makes — so a hint cannot carry the first
+/// argument's type where the call instantiates a wider one. A call with no join hints as
+/// declared; the call itself refuses it.
 pub(super) fn hint_instantiation_subst(
     kb: &mut KnowledgeBase,
+    functor: Symbol,
     ps: &[(Symbol, Value)],
     known: &HashMap<Symbol, Value>,
 ) -> Option<Substitution> {
@@ -530,6 +536,16 @@ pub(super) fn hint_instantiation_subst(
         return None;
     }
     let mut s = Substitution::new();
+    if let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) {
+        let refs: Vec<(Symbol, &Value, &Value)> = ps
+            .iter()
+            .filter_map(|(p, d)| known.get(p).map(|a| (*p, d, a)))
+            .collect();
+        let mut probe = s.clone();
+        if join_repeated_type_params(kb, &mut probe, JoinCandidates::TypeParams(&rec.type_params), &refs).is_ok() {
+            s = probe;
+        }
+    }
     for (psym, declared) in ps {
         if let Some(arg_ty) = known.get(psym) {
             // Probe on a CLONE of the accumulated σ and commit atomically: a
@@ -698,7 +714,7 @@ pub(super) fn apply_arg_hints(
     // projection elimination nor the pairwise pinning above can reach. See
     // [`bind_spec_params_for_hint`].
     let inst = op_params.and_then(|ps| {
-        let mut s = hint_instantiation_subst(kb, ps, known).unwrap_or_else(Substitution::new);
+        let mut s = hint_instantiation_subst(kb, functor, ps, known).unwrap_or_else(Substitution::new);
         bind_spec_params_for_hint(kb, &mut s, functor, ps, pos_args, named_args, known);
         (!s.is_empty()).then_some(s)
     });

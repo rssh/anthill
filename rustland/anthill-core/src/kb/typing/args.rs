@@ -521,7 +521,7 @@ fn nominal_head_mismatch(
 /// alias chain and STOPS at a `Term::Fn`, so an application's FUNCTOR is never resolved
 /// (which is exactly why a bare `T` reaches here already resolved to its var, and a
 /// higher-kinded `F[…]` does not).
-fn nominal_head_parts(kb: &KnowledgeBase, ty: &Value) -> Option<(Symbol, Vec<(Symbol, Value)>)> {
+pub(super) fn nominal_head_parts(kb: &KnowledgeBase, ty: &Value) -> Option<(Symbol, Vec<(Symbol, Value)>)> {
     let (base, bindings) = match extract_type(kb, ty) {
         TypeExtractor::SortRef(s) => (s, Vec::new()),
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
