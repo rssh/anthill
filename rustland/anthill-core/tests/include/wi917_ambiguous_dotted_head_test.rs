@@ -30,7 +30,7 @@
 //!
 //! STDLIB LOADS: one per `#[test]`.
 
-use anthill_core::intern::ResolveResult;
+use anthill_core::intern::{Contested, ResolveResult};
 use anthill_core::kb::extent::ExtentRegError;
 use anthill_core::kb::{load, KnowledgeBase};
 
@@ -108,6 +108,14 @@ fn an_ambiguous_dotted_head_at_a_reference_refuses_the_load() {
         joined.contains("ambiguous symbol 'Widget917.w917a'"),
         "the refusal must be the AMBIGUITY, named against the path as written; got:\n{joined}",
     );
+    // WI-918: the candidates are the HEAD's readings, strictly shorter than the path they
+    // are reported against — so the message says which segment they are readings of.
+    // Fails with the pre-WI-918 wording (`… : candidates [..]`).
+    assert!(
+        joined.contains("its head segment 'Widget917' has candidates"),
+        "the refusal must name the CONTESTED SEGMENT, so the head-length candidates line \
+         up with something in the path as written; got:\n{joined}",
+    );
     for candidate in ["wi917.alpha.Widget917", "wi917.beta.Widget917"] {
         assert!(
             joined.contains(candidate),
@@ -144,12 +152,15 @@ fn an_ambiguous_dotted_head_at_a_query_pattern_reads_as_ambiguous() {
 
     let verdict = load::resolve_name_in_kb(&kb, "SortInfo.si917a", scope);
 
-    let ResolveResult::Ambiguous(candidates) = verdict else {
+    let ResolveResult::Ambiguous(candidates, contested) = verdict else {
         panic!(
             "the ladder must answer AMBIGUOUS, not {verdict:?} — the CLI reports what \
                 this returns, and `NotFound` is the false 'nothing is in scope for it'"
         );
     };
+    // WI-918: the answer carries the segment the ladder split off, which is what lets
+    // both reporters name it without splitting the path a second time.
+    assert_eq!(contested, Contested::Head("SortInfo".to_owned()));
     assert_eq!(
         kb.candidate_names(&candidates),
         &[
@@ -179,6 +190,13 @@ fn an_ambiguous_dotted_host_name_is_refused_as_ambiguous_not_absent() {
             "wi917.alpha.Widget917".to_owned(),
             "wi917.beta.Widget917".to_owned()
         ],
+    );
+    // WI-918: this reporter, too, says the candidates are the HEAD's. Fails if the mount
+    // drops the ladder's `Contested` and prints the list against the whole path.
+    assert!(
+        err.to_string()
+            .contains("its head segment 'Widget917' has candidates"),
+        "the mount refusal must name the contested segment; got {err}",
     );
 }
 

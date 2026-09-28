@@ -187,7 +187,7 @@ fn render(kb: &KnowledgeBase, r: &anthill_core::intern::ResolveResult) -> String
     use anthill_core::intern::ResolveResult::*;
     match r {
         Found(s) => format!("Found({})", kb.qualified_name_of(*s)),
-        Ambiguous(c) => format!("Ambiguous({:?})", kb.candidate_names(c)),
+        Ambiguous(c, _) => format!("Ambiguous({:?})", kb.candidate_names(c)),
         NotFound => "NotFound".to_string(),
     }
 }

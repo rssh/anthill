@@ -5142,7 +5142,7 @@ impl KnowledgeBase {
         if let Some(sym) = self.undefined_functor(view) {
             let ambiguous = matches!(
                 load::resolve_name_in_kb(self, self.local_name_of(sym), scope),
-                ResolveResult::Ambiguous(_)
+                ResolveResult::Ambiguous(..)
             );
             if ambiguous
                 && !out.contains(&sym)
@@ -10394,7 +10394,7 @@ impl KnowledgeBase {
     pub fn try_make_sort_ref_by_name(&mut self, name: &str) -> Option<TermId> {
         match self.resolve_name_in_global(name) {
             crate::intern::ResolveResult::Found(s) => Some(self.make_sort_ref(s)),
-            crate::intern::ResolveResult::Ambiguous(_) | crate::intern::ResolveResult::NotFound => {
+            crate::intern::ResolveResult::Ambiguous(..) | crate::intern::ResolveResult::NotFound => {
                 None
             }
         }
@@ -15453,7 +15453,7 @@ mod wi913_host_name_ladder_tests {
                 crate::intern::ResolveResult::Found(sym) => {
                     wrong_symbol.push(format!("{name} -> {}", kb.qualified_name_of(sym)))
                 }
-                crate::intern::ResolveResult::Ambiguous(_) => {
+                crate::intern::ResolveResult::Ambiguous(..) => {
                     unexplained.push(format!("{name} (ambiguous)"))
                 }
                 crate::intern::ResolveResult::NotFound => {
