@@ -1,0 +1,17 @@
+## Attributes
+
+- id: WI-20260929-PFAGY-a-two-hop-chain-to-a-type
+- created: 2026-09-29T20:16:20Z
+
+- status: Open
+- status_agent: user
+- status_at: 2026-09-29T20:16:20Z
+
+- acceptance: cargo-test, scaland-sbt-test
+
+- tags: typing
+
+## Description
+
+A TWO-HOP σ CHAIN TO A TYPE HOLDING A VALUE IS READ AS UNBOUND, SO A CALL WHOSE REQUIREMENT NOTHING SUPPLIES LOADS CLEAN AND DIES AT RUN TIME WHERE ITS TYPED TWIN IS REFUSED. `sort User { sort S = ?; sort U = ?; requires Store[State = S]; operation mkS() -> Option[T = S] = none(); operation go13(o: Option[T = U], u: U, s: S) -> Int64 = Store.peek(s) }`, providers only at `Buf[T = Int64, N = 4]` and `Buf[T = String, N = Bool]`, and `run(b: Buf[T = Int64, N = 3], c: Buf[T = String, N = Bool]) = User.go13(User.mkS(), b, b)`: loads, and `anthill run` fails "DeferToRequirement: requirement param `__req_store` not bound in caller frame"; the typed twin (`N = Bool` against providers at `N = String` / `Buf[T = String, N = Bool]`) is refused at load. MEASURED before and after WI-20260929-WBHTM. MECHANISM: `mkS()` leaks `S` into `go13`'s `U`, so σ holds `S ↦ U ↦ Buf[…, N = 3]`; the callee-supply substitution reads σ one hop and keeps `S` abstract, and `sigma_class_terminal` (typing/dep_projection.rs ~587) chases only `Value::Term` bindings, so it reads `U`, bound to an occurrence-carried type, as an UNBOUND root `(U, false)`; `drop_unpinned_demand_keys` (dict.rs ~2592) then drops the key as "the call says nothing about it" and route 4 discharges the requirement with no dictionary. The one-hop shape (`S ↦ Buf[…]`) no longer reaches it since WBHTM, whose supply lowers first. FIX: in `sigma_class_terminal`, a non-`Term` binding ends the chase as CONCRETE (no σ-class), not as an unbound root; or resolve the chain before the σ-class readers. FOUND by WI-20260929-WBHTM's /code-review (V11). ACCEPTANCE: the value program refused at load as its typed twin is; full workspace green via rustland/scripts/test.sh.
+
