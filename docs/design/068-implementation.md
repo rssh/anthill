@@ -2,7 +2,7 @@
 
 ## Status: Draft (2026-09-29), owned by WI-20260926-ACG10. The proposal is
 [`../proposals/068-rule-body-operation-applications.md`](../proposals/068-rule-body-operation-applications.md);
-this document owns HOW. Decided with the user (2026-09-29): D1–D6 (§3).
+this document owns HOW. Decided with the user (2026-09-29): D1–D7 (§3).
 
 ## 0. The sequence
 
@@ -16,6 +16,7 @@ Tag `proposal-068`; every edge is technical.
 | C1 | WI-20260926-7D48J | one rule-clause typing for 060's inference and 068's fragments | WI-20260925-P7VP4 |
 | D1 | WI-20260926-DSEXA | dictionary blockers; the per-consumer reductions retired; the unfold threads dictionaries | K4JGC, 7D48J |
 | — | WI-20260926-QCJ0B | `Set`'s library route (implementation or quoted algebra) | — |
+| — | WI-20260929-QA700 | `Lattice`'s `less_bottom` / `less_top` clauses shadow a carrier's `less` (a defect today; §1.3) | — |
 
 Waiting on the sequence: WI-20260924-35E14 → CYNPE, WI-20260827-XBHX3 → DSEXA,
 WI-20260926-Y6ZCD → 7D48J (one dispatch decision for operation and rule bodies).
@@ -68,20 +69,54 @@ It is NOT fixed for an ordinary BODIED operation, which P7VP4 does not weave:
 `fact p(3)`) cannot be seen today: head matching fails `p(add(…))` structurally even with `?x`
 bound first. It appears once K4JGC evaluates goal arguments, and K4JGC owns it.
 
-### 1.2 Fragments by position and callee (D5) — to measure
+### 1.2 Fragments by position and callee (D5)
 
-A walk over every rule body of stdlib, examples and anthill-todo, with no typing: each operation
-application counted by POSITION (goal argument / `<=>` operand / `=` / `===` / cmp / arith
-operand / nested under a constructor) and by CALLEE (bodied / host-mapped / spec op with a
-provider / body-less with no implementation). This is the population K4JGC changes. The count of
-TYPING reports over those fragments needs 7D48J's clause typing and moves to its acceptance.
+MEASURED on `main` at `145457c7` by `wi_acg10_census_test::acg10_census` (`#[ignore]`d — a
+measurement: `scripts/test.sh -p anthill-core --test wi_tests -- --ignored acg10_census
+--nocapture`). Each project loads with stdlib; only rules whose source file is the project's own
+are counted. A FRAGMENT ROOT is an operation application in a value position (068 §1); calls
+inside a root's own arguments belong to that fragment. Callee: `builtin` (a resolver builtin
+backs it), `bodied`, `host` (an `operation_map`), `spec` (dispatched through a provider — none of
+these rule-body calls carries a typer pin today), `none` (no implementation reachable).
 
-### 1.3 Library code that compares an unevaluated application as data — to list
+| project | rules | roots | where |
+|---|---|---|---|
+| stdlib (+ rust stl bindings) | 434 | 28 | `<=>` operand 5 (4 `spec` — the `splitFirst(?s) <=> some(…)` guards — 1 `host`); `===` operand 3; `>` / `>=` operand 2; a higher-order goal `?P(…)`'s argument 9 (3 `builtin` — the induction schemas' `?P(add(?n, 1))` / `?P(sub(?n, …))`, 4 binder forms, 1 dot, 1 woven); the goal itself a call 9 (5 `spec`, 4 `none`) |
+| examples/webots-modelling/lf1 | 84 | 55 | `=` operand 47 (43 `builtin` arithmetic, 4 dot calls); `<=` operand 6 `host`; the goal itself a call 2 `bodied` |
+| anthill-todo, classic-mini ×4, github-todo, sql-store, guardians/lib | 157 | 0 | — |
 
-Known: `Set`'s `eq` / `contains` / `subset` rules matching `insert` / `empty` in their heads, and
-the five `wi616_semantic_eq_test` rows over them (QCJ0B); `reduce_operand`'s `dispatch_body_less:
-false` (WI-1057), which exists to keep that working; P7VP4's refusal to weave an unpinned
-body-less spec op in a value slot ("symbolic algebra"). The walk of §1.2 lists the rest.
+**What this says about K4JGC.** No predicate goal in the shipped corpus has a call in its
+arguments: D3's population is the higher-order goals of the induction schemas, and the test
+fixtures. The operand population is small and concentrated — `lf1`'s `=` over arithmetic (which
+today's top-of-operand reduction already handles) and stdlib's guarded-equation guards. The
+defects of §1.1 live in programs the corpus does not yet contain; the test fixtures are where
+K4JGC's rows are driven. No set literal occurs in a shipped rule body.
+
+Heads, for §1.3: 53 equation heads (`lhs <=> rhs`) and 15 guarded equations (`lhs = rhs :- g`)
+hold an application inside their subject's arguments — rewrite patterns, which 068 §5 leaves
+alone; 3 quantified-guard consequents in `lf1` (`-: lte(?n_sum, ?na + ?nb)`) are comparisons,
+evaluated as goals.
+
+### 1.3 Library code that compares an unevaluated application as data
+
+From the walk of §1.2 — every RELATIONAL head holding an operation application, and every call
+whose callee has no implementation:
+
+- **`Set`** — `set.anthill:50–53`: `subset(empty, …)`, `subset(insert(…), …)`,
+  `contains(insert(…), …)` match unevaluated `insert` / `empty` in their heads; the five
+  `wi616_semantic_eq_test` rows ride on them. Route: WI-20260926-QCJ0B.
+- **`Lattice`** — `lattice.anthill:44–45`: `less(bottom, ?a) :- true` and `less(?a, top) :- true`
+  are clauses of `Lattice.less` over the TERM `bottom` / `top`. A defect TODAY, measured with a
+  two-point lattice (`bottom() = lo()`): `Lattice.less(BoundedLattice.bottom(), hi())` holds
+  through the clause, `Lattice.less(lo(), hi())` answers nothing — the clauses shadow the
+  carrier's own `less` — and `not(...)` over it proves a falsehood. Once goal arguments are
+  evaluated (D3) even the `bottom()` spelling stops matching. WI-20260929-QA700.
+- **`Filesystem`** — `platform.anthill:152–155`: `needs_rebuild` calls `exists` / `status` as
+  goals, and nothing in the corpus provides `Filesystem`. Today the goal falls to candidate
+  selection and fails silently; under 068 it is UNREDUCED — undecided, parked (§2).
+- **The guards that keep today's reading:** `reduce_operand`'s `dispatch_body_less: false`
+  (WI-1057), and P7VP4's refusal to weave an unpinned body-less spec op in a value slot — both
+  exist to keep the `Set` reading, and both go with K4JGC.
 
 ## 2. Code map — where each consumer evaluates today
 
@@ -151,6 +186,17 @@ body-less spec op in a value slot ("symbolic algebra"). The walk of §1.2 lists 
   consumer; `Set`'s rows flip), so it may go first or in parallel.
 - **D5 — the census counts fragments by syntax** (DECIDED; §1.2).
 - **D6 — 35E14 narrows to the bodied-operation population** (DECIDED, recorded on 35E14; §1.1).
+- **D7 — a call stuck only on a RIGID variable stays a symbolic term** (DECIDED; found by the
+  census, §1.2). In a proof, `forall(?n)` introduces an eigenvariable — a rigid skolem — and the
+  induction schemas' consequent `?P(add(?n, 1))` then holds `add(n, 1)`, which can never run: it
+  is neither SUSPENDED (no binding can reach a rigid variable) nor UNREDUCED (`add` has an
+  implementation), and it is the most precise name its value has. Proposed: such a call is kept
+  as a SYMBOLIC term — not replaced by a fresh variable, since §1.2's pending equation could never
+  be discharged — and compared structurally: identical subtrees are equal (§1.1's reflexivity),
+  and a structural mismatch against anything else is UNDECIDED, because the verdict depends on
+  what the eigenvariable stands for. That is the rule the resolver already applies to a skolem
+  verdict (`skolem_verdict_is_value_dependent`: an `eq` / `unify` FAILURE over a skolem becomes
+  `Unknown`), extended from the comparison to the call.
 
 ## 4. CYNPE — blockers and parking
 

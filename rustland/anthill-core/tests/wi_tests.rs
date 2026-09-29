@@ -1885,3 +1885,5 @@ mod wi_ycpaj_bare_spec_sugar_call_requirement_test;
 mod wi_fs8m3_provides_at_alias_address_test;
 #[path = "include/wi_nekr0_repeated_type_param_join_test.rs"]
 mod wi_nekr0_repeated_type_param_join_test;
+#[path = "include/wi_acg10_census_test.rs"]
+mod wi_acg10_census_test;
