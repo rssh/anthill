@@ -3,9 +3,9 @@
 - id: WI-20260926-ACG10-proposal-068-an-operation
 - created: 2026-09-26T08:20:13Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-26T08:20:13Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-29T07:44:43Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -49,4 +49,8 @@ FOUR MORE ROWS FOR 068, found reviewing WI-20260925-PRVA2 (2026-09-26); each pre
 ### 2026-09-26T13:26:49Z — feedback — user
 
 ROUTED (2026-09-26, user: 'go ahead'). The PRVA2 review's rows above are in 068's problem section (a new table and the open-time refutation paragraph; the consumer table and §4's list gain WI-670's refutation), and each went to the ticket that fixes it: PRVA2 (d) — a body-less spec op in a value slot compared as data — and row (4) — WI-670's open-time refutation keying a call structurally — to WI-20260926-K4JGC; row (2) — a @[simp] law's right side left unpinned — and the load-time half of row (3) to WI-20260926-7D48J; row (3)'s run-time half — a call value dispatch cannot evaluate answers nothing — to WI-20260926-CYNPE. Row (1) — a body-less spec Bool op as a GOAL answered nothing and NAF over it held — was FIXED INLINE: KnowledgeBase::dispatched_bool_relation reads the typer's pin, as dispatched_relation_arity does for the arity+1 view, at BOTH readers (step_init's Bool-view gate, and WI-670's open-time refutation — fixing the gate alone left a clause opened with its caller variable unbound refuted, and NAF over it proved a falsehood). Driven by wi1043_bodyless_rule_body_test::a_pinned_body_less_bool_goal_decides; each half's back-out run and failing its own row.
+
+### 2026-09-29T07:44:23Z — feedback — user
+
+DELIVERED (2026-09-29, user). The narrowed scope is met: the review's outcome is recorded in 068's Status line; docs/design/068-implementation.md is written and reviewed — decisions D1–D7 settled with the user; and the census is recorded in it (§1.1 the problem rows re-measured on main at 2b6cac2c, §1.2 fragments by position and callee measured at 145457c7 by wi_acg10_census_test::acg10_census, §1.3 the library code over unevaluated calls). Filed from the census: WI-20260929-QA700 (Lattice's less_bottom / less_top shadow a carrier's less — a defect today). Next in the proposal-068 sequence: WI-20260926-K4JGC (the evaluation strategy — may go first, D4) and WI-20260926-CYNPE (blockers and parking), both unblocked.
 

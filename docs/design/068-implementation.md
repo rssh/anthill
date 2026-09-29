@@ -1,6 +1,6 @@
 # 068 implementation — an operation application in a rule body is a computation
 
-## Status: Draft (2026-09-29), owned by WI-20260926-ACG10. The proposal is
+## Status: Reviewed (2026-09-29; WI-20260926-ACG10, delivered). The proposal is
 [`../proposals/068-rule-body-operation-applications.md`](../proposals/068-rule-body-operation-applications.md);
 this document owns HOW. Decided with the user (2026-09-29): D1–D7 (§3).
 
