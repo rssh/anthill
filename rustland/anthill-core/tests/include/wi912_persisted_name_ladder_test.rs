@@ -209,7 +209,9 @@ fn an_ambiguous_entity_name_is_refused_as_ambiguous() {
 
     let errs = load(&mut kb, "[meta]\nentity = \"Rec\"\n\n[data]\nid = 1\n")
         .expect_err("`Rec` is contested");
-    let Some(SerError::AmbiguousName { name, candidates }) = errs
+    let Some(SerError::AmbiguousName {
+        name, candidates, ..
+    }) = errs
         .iter()
         .find(|e| matches!(e, SerError::AmbiguousName { .. }))
     else {

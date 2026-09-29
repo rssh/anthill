@@ -104,6 +104,9 @@ fn assert_answered(out: &crate::common::Output, line: &str) {
 /// THE DOTTED CASE. The candidates named are the HEAD's, because the head is the only
 /// segment the ladder resolves — the tail is appended to whatever it denotes, never
 /// looked up on its own.
+///
+/// WI-918: and the message SAYS they are the head's. Fails with the pre-WI-918 wording,
+/// which printed the head-length candidates against the whole path as `candidates [..]`.
 #[test]
 fn a_contested_dotted_head_is_refused_as_ambiguous() {
     let out = query_both(&["Widget917.w917a(v: ?x)"]);
@@ -111,6 +114,14 @@ fn a_contested_dotted_head_is_refused_as_ambiguous() {
         &out,
         "Widget917.w917a",
         &["wi917.alpha.Widget917", "wi917.beta.Widget917"],
+    );
+    assert!(
+        out.has_diagnostic(
+            "error:",
+            "is ambiguous — its head segment 'Widget917' has candidates"
+        ),
+        "the refusal must name the contested SEGMENT; stderr:\n{}",
+        out.stderr
     );
 }
 
@@ -143,6 +154,14 @@ fn a_contested_name_in_a_bare_disjunction_branch_is_refused() {
         &out,
         "contested917",
         &["wi917.alpha.contested917", "wi917.beta.contested917"],
+    );
+    // WI-918 CONTROL, green on both sides: a contested WHOLE name keeps the plain
+    // wording — only a dotted head's ambiguity is narrowed to a segment.
+    assert!(
+        out.has_diagnostic("error:", "is ambiguous — candidates [")
+            && !out.has_diagnostic("error:", "head segment"),
+        "a whole-name ambiguity must not be described as a head's; stderr:\n{}",
+        out.stderr
     );
 }
 

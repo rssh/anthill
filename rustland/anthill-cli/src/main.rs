@@ -2054,10 +2054,11 @@ fn report_unresolved_name(
     noun: &str,
     hint: Option<&str>,
 ) {
-    if let ResolveResult::Ambiguous(cands) = read {
+    if let ResolveResult::Ambiguous(cands, contested) = read {
         eprintln!(
-            "error: '{name}' in {position} is ambiguous — candidates {:?}. Qualify \
+            "error: '{name}' in {position} is ambiguous — {} {:?}. Qualify \
              the name, or drop one of the imports that brought them into scope.",
+            contested.candidates_label(),
             kb.candidate_names(cands),
         );
         return;

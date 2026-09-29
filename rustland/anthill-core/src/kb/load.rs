@@ -25,7 +25,7 @@ use super::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
 use super::{ClauseKind, KnowledgeBase, SortKind};
 use crate::eval::value::Value;
 use crate::intern::{
-    absolute_path_target, positional_label, positional_label_index, ImportOrigin, ResolveResult,
+    absolute_path_target, positional_label, positional_label_index, Contested, ImportOrigin, ResolveResult,
     ScopeId, ScopeInclusion, Symbol, SymbolDef, SymbolKind,
 };
 use crate::parse::desugar_target as dt;
@@ -469,9 +469,15 @@ pub enum LoadError {
     },
     /// A name reachable by two or more paths. Dispatch has no sound choice, so
     /// loading would silently pick a referent the author never named.
+    ///
+    /// `name` is the path AS WRITTEN and `candidates` are readings of the part `contested`
+    /// names, which for a contested dotted HEAD is only the head (WI-918): both renderers
+    /// say so through [`Contested::candidates_label`], so the list never reads as readings
+    /// of the whole, longer path.
     AmbiguousSymbol {
         name: String,
         candidates: Vec<String>,
+        contested: Contested,
         span: Span,
         scope_name: String,
     },
@@ -2737,14 +2743,16 @@ impl LoadError {
             LoadError::AmbiguousSymbol {
                 name,
                 candidates,
+                contested,
                 span,
                 scope_name,
             } => {
                 format!(
-                    "{}: ambiguous symbol '{}' in scope '{}': candidates {:?}",
+                    "{}: ambiguous symbol '{}' in scope '{}': {} {:?}",
                     loc.format_start(*span),
                     name,
                     scope_name,
+                    contested.candidates_label(),
                     candidates
                 )
             }
@@ -4103,13 +4111,19 @@ impl std::fmt::Display for LoadError {
             LoadError::AmbiguousSymbol {
                 name,
                 candidates,
+                contested,
                 span,
                 scope_name,
             } => {
                 write!(
                     f,
-                    "ambiguous symbol '{}' in scope '{}' at {}..{}: candidates {:?}",
-                    name, scope_name, span.start, span.end, candidates
+                    "ambiguous symbol '{}' in scope '{}' at {}..{}: {} {:?}",
+                    name,
+                    scope_name,
+                    span.start,
+                    span.end,
+                    contested.candidates_label(),
+                    candidates
                 )
             }
             LoadError::TypeMismatch {
@@ -5443,7 +5457,7 @@ pub fn scan_definitions_with_sources(
         if owners.is_empty() {
             continue;
         }
-        let ambiguous = matches!(answer, ResolveResult::Ambiguous(_));
+        let ambiguous = matches!(answer, ResolveResult::Ambiguous(..));
         match absorbed.entry((head.scope, head.name)) {
             std::collections::hash_map::Entry::Vacant(e) => {
                 e.insert((idx, owners, ambiguous));
@@ -5938,12 +5952,15 @@ fn query_type_name_errors(
                     span,
                     scope_name: kb.scope_display_name(scope).to_owned(),
                 }),
-                ResolveResult::Ambiguous(candidates) => Some(LoadError::AmbiguousSymbol {
-                    name: name.to_owned(),
-                    candidates: kb.candidate_names(&candidates),
-                    span,
-                    scope_name: kb.scope_display_name(scope).to_owned(),
-                }),
+                ResolveResult::Ambiguous(candidates, contested) => {
+                    Some(LoadError::AmbiguousSymbol {
+                        name: name.to_owned(),
+                        candidates: kb.candidate_names(&candidates),
+                        contested,
+                        span,
+                        scope_name: kb.scope_display_name(scope).to_owned(),
+                    })
+                }
             };
             if let Some(error) = error {
                 errors.push(error.located_in(file));
@@ -10199,7 +10216,7 @@ fn judge_secondary_entry_rules<'f>(
         if let Some(&(k, i)) = members.iter().find(|&&(_, i)| denotes[i]) {
             let landed_on = match &resolved[i] {
                 ResolveResult::Found(sym) => format!("'{}'", kb.qualified_name_of(*sym)),
-                ResolveResult::Ambiguous(cands) => {
+                ResolveResult::Ambiguous(cands, _) => {
                     let mut names: Vec<String> = cands
                         .iter()
                         .map(|s| format!("'{}'", kb.qualified_name_of(*s)))
@@ -10754,7 +10771,7 @@ fn head_name_reach(
         // AMBIGUOUS is still resolving (§"the same ladder, to the rung", WI-900): every
         // candidate among the alternatives is a scope that introduces the name and is
         // visible from here, so all of them collide.
-        ResolveResult::Ambiguous(cands) => cands.iter().filter_map(|s| of_symbol(*s)).collect(),
+        ResolveResult::Ambiguous(cands, _) => cands.iter().filter_map(|s| of_symbol(*s)).collect(),
     }
 }
 
@@ -18829,7 +18846,7 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
                 // An AMBIGUITY is captured too: the name meant several things and the
                 // declaration silently makes it mean one, so every candidate has to be
                 // excused for the declaration to stand.
-                crate::intern::ResolveResult::Ambiguous(cands) => {
+                crate::intern::ResolveResult::Ambiguous(cands, _) => {
                     SmallVec::<[Symbol; 2]>::from_vec(cands)
                 }
             };
@@ -20140,7 +20157,7 @@ fn convert_query_term_expecting(
             let name = parse_symbols.local_name(sym);
             match resolve_name_in_kb(kb, name, scope) {
                 ResolveResult::Found(resolved) => Expr::Ref(resolved),
-                ResolveResult::Ambiguous(_) | ResolveResult::NotFound => {
+                ResolveResult::Ambiguous(..) | ResolveResult::NotFound => {
                     Expr::Ident(kb.intern(name))
                 }
             }
@@ -20266,7 +20283,7 @@ fn build_query_list(kb: &mut KnowledgeBase, items: &[Rc<NodeOccurrence>]) -> Rc<
 fn resolve_query_name(kb: &mut KnowledgeBase, name: &str, scope: ScopeId) -> Symbol {
     match resolve_name_in_kb(kb, name, scope) {
         ResolveResult::Found(sym) => sym,
-        ResolveResult::Ambiguous(_) | ResolveResult::NotFound => kb.intern(name),
+        ResolveResult::Ambiguous(..) | ResolveResult::NotFound => kb.intern(name),
     }
 }
 
@@ -20363,7 +20380,7 @@ fn equation_subject_lands_on_predicate(
     // the very path phase 2 keeps its answer to protect (found by `/code-review`).
     let syms: SmallVec<[Symbol; 1]> = match resolved {
         ResolveResult::Found(s) => smallvec::smallvec![*s],
-        ResolveResult::Ambiguous(v) => v.iter().copied().collect(),
+        ResolveResult::Ambiguous(v, _) => v.iter().copied().collect(),
         ResolveResult::NotFound => return Vec::new(),
     };
     let mut owners: Vec<ScopeId> = Vec::new();
@@ -20829,7 +20846,9 @@ enum DottedVisibility {
 /// it") at a query pattern.
 ///
 /// The candidates are the HEAD's, because the head is the only segment resolved here: the
-/// tail is appended to whatever the head denotes and is never looked up on its own.
+/// tail is appended to whatever the head denotes and is never looked up on its own. The
+/// answer says so — [`Contested::Head`] carries the head this function split off, so a
+/// reporter names the contested segment without a second spelling of the split (WI-918).
 fn resolve_dotted_in_kb(
     kb: &KnowledgeBase,
     name: &str,
@@ -20858,7 +20877,7 @@ pub(crate) fn hidden_dotted_internal(
 ) -> Option<Symbol> {
     match resolve_dotted_in_kb(kb, name, scope, DottedVisibility::Any) {
         ResolveResult::Found(hidden) => Some(hidden),
-        ResolveResult::Ambiguous(_) | ResolveResult::NotFound => None,
+        ResolveResult::Ambiguous(..) | ResolveResult::NotFound => None,
     }
 }
 
@@ -20947,7 +20966,9 @@ fn resolve_dotted_in_kb_with(
         // Returned rather than passed down, so the reading below cannot be reached under
         // a contested head — the state it used to have to guard against is now
         // unrepresentable (`head_owns_path` lost its `Ambiguous` arm to this line).
-        ResolveResult::Ambiguous(candidates) => return ResolveResult::Ambiguous(candidates),
+        ResolveResult::Ambiguous(candidates, _) => {
+            return ResolveResult::Ambiguous(candidates, Contested::Head(head.to_owned()))
+        }
         ResolveResult::NotFound => None,
     };
     // WI-20260924-SNJPR — below the declared-member join: a path that joins as written
@@ -21216,7 +21237,7 @@ fn dotted_by_provision(
         match hits.len() {
             0 => {}
             1 => return ResolveResult::Found(hits[0]),
-            _ => return ResolveResult::Ambiguous(hits),
+            _ => return ResolveResult::Ambiguous(hits, Contested::Whole),
         }
         frontier = next;
     }
@@ -22792,8 +22813,8 @@ impl<'a> Loader<'a> {
             ResolveResult::Found(resolved) => resolved,
             // An ambiguity ENDS the ladder (kernel-language.md §8.6). This is the
             // position that HAS a channel, so it is where the conflict is named.
-            ResolveResult::Ambiguous(candidates) => {
-                self.push_ambiguous_symbol(name, &candidates, span)
+            ResolveResult::Ambiguous(candidates, contested) => {
+                self.push_ambiguous_symbol(name, &candidates, &contested, span)
             }
             ResolveResult::NotFound => {
                 // WI-752: THE dotted ladder — head-qualification, then the absolute
@@ -22868,8 +22889,8 @@ impl<'a> Loader<'a> {
     fn resolve_dotted_reported(&mut self, name: &str, span: Span) -> Option<Symbol> {
         match self.resolve_dotted(name, DottedVisibility::VisibleOnly) {
             ResolveResult::Found(sym) => Some(sym),
-            ResolveResult::Ambiguous(candidates) => {
-                Some(self.push_ambiguous_symbol(name, &candidates, span))
+            ResolveResult::Ambiguous(candidates, contested) => {
+                Some(self.push_ambiguous_symbol(name, &candidates, &contested, span))
             }
             // No rung had a VISIBLE answer. If one had a hidden-`internal` answer, that
             // is the precise diagnostic — reported here, ahead of the fallbacks, exactly
@@ -22887,10 +22908,17 @@ impl<'a> Loader<'a> {
     /// the WI-476 bare intern the caller still owes its caller. One spelling for every
     /// position that can report an ambiguity, so the message, the candidate rendering and
     /// the returned symbol cannot drift apart between them.
-    fn push_ambiguous_symbol(&mut self, name: &str, candidates: &[Symbol], span: Span) -> Symbol {
+    fn push_ambiguous_symbol(
+        &mut self,
+        name: &str,
+        candidates: &[Symbol],
+        contested: &Contested,
+        span: Span,
+    ) -> Symbol {
         self.errors.push(LoadError::AmbiguousSymbol {
             name: name.to_owned(),
             candidates: self.kb.candidate_names(candidates),
+            contested: contested.clone(),
             span,
             scope_name: self.scope_display_name(),
         });
@@ -22930,8 +22958,8 @@ impl<'a> Loader<'a> {
         let scope = self.current_scope;
         match self.kb.symbols.resolve_in_scope(name, scope) {
             ResolveResult::Found(resolved) => resolved,
-            ResolveResult::Ambiguous(candidates) => {
-                self.push_ambiguous_symbol(name, &candidates, span)
+            ResolveResult::Ambiguous(candidates, contested) => {
+                self.push_ambiguous_symbol(name, &candidates, &contested, span)
             }
             ResolveResult::NotFound => {
                 // WI-752: THE dotted ladder. A `Term::Ref` reaching here can carry a
@@ -22975,8 +23003,8 @@ impl<'a> Loader<'a> {
         let scope = self.current_scope;
         match self.kb.symbols.resolve_in_scope(&lookup_name, scope) {
             ResolveResult::Found(resolved) => resolved,
-            ResolveResult::Ambiguous(candidates) => {
-                self.push_ambiguous_symbol(&lookup_name, &candidates, name.span)
+            ResolveResult::Ambiguous(candidates, contested) => {
+                self.push_ambiguous_symbol(&lookup_name, &candidates, &contested, name.span)
             }
             ResolveResult::NotFound => {
                 // WI-752: THE dotted ladder — the SAME one the term positions read.
@@ -30585,9 +30613,10 @@ impl<'a> Loader<'a> {
                 // left to fall through, because the projection path's "has no member" is
                 // the opposite verdict: it says the name denotes nothing, and here it
                 // denotes two things.
-                ResolveResult::Ambiguous(candidates) => {
+                ResolveResult::Ambiguous(candidates, contested) => {
                     let joined = format!("{head_name}.{member_name}");
-                    let picked = self.push_ambiguous_symbol(&joined, &candidates, span.span);
+                    let picked =
+                        self.push_ambiguous_symbol(&joined, &candidates, &contested, span.span);
                     return Some(node_occurrence::TypeChild::Interned(
                         self.kb.make_sort_ref(picked),
                     ));
@@ -30611,7 +30640,7 @@ impl<'a> Loader<'a> {
                             // reference none of them, so the ambiguity between them is
                             // moot, and the walk's candidates are sorted and deduped so the
                             // choice is deterministic.
-                            ResolveResult::Ambiguous(c) => c.first().copied(),
+                            ResolveResult::Ambiguous(c, _) => c.first().copied(),
                             ResolveResult::NotFound => None,
                         }
                     };

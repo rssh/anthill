@@ -352,7 +352,11 @@ end
         assert!(
             errs.iter().any(|e| e.contains("ambiguous symbol 'Mid.b'")
                 && e.contains("test.x9rrn.amb.L.b")
-                && e.contains("test.x9rrn.amb.R.b")),
+                && e.contains("test.x9rrn.amb.R.b")
+                // WI-918: these candidates are readings of the WHOLE path, not of its
+                // head (`Mid` names one sort), so the message must not blame the head.
+                // Fails if the provision rung's tie is tagged `Contested::Head`.
+                && !e.contains("head segment")),
             "with `provides {a}` before `provides {b}`, `Mid.b` reaches two declarations \
              and must SAY so rather than pick by clause order (WI-20260825-EBMG8); got \
              {errs:?}"

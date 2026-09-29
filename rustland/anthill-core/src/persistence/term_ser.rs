@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
-use crate::intern::{positional_label, ResolveResult, Symbol};
+use crate::intern::{positional_label, Contested, ResolveResult, Symbol};
 use crate::kb::term::{Literal, Term, TermId, Var, VarId};
 use crate::kb::ClauseKind;
 use crate::kb::{KnowledgeBase, RuleId};
@@ -37,6 +37,9 @@ pub enum SerError {
     AmbiguousName {
         name: String,
         candidates: Vec<String>,
+        /// What `candidates` are readings of — only the HEAD of a dotted `name` when that
+        /// is the contested segment (WI-918).
+        contested: Contested,
     },
     /// WI-912: `meta.entity` names a symbol that EXISTS but is `internal` to
     /// `declared_in`, so a data file — outside code — may not name it.
@@ -74,9 +77,14 @@ impl std::fmt::Display for SerError {
             SerError::Format(msg) => write!(f, "format error: {msg}"),
             SerError::MissingMeta(msg) => write!(f, "missing meta: {msg}"),
             SerError::UnknownEntity(name) => write!(f, "unknown entity: {name}"),
-            SerError::AmbiguousName { name, candidates } => write!(
+            SerError::AmbiguousName {
+                name,
+                candidates,
+                contested,
+            } => write!(
                 f,
-                "ambiguous name '{name}': candidates {candidates:?}; qualify it in the data file"
+                "ambiguous name '{name}': {} {candidates:?}; qualify it in the data file",
+                contested.candidates_label()
             ),
             SerError::ForbiddenInternalEntity {
                 entity,
@@ -399,9 +407,10 @@ fn load_section(
 fn resolve_entity_functor(kb: &KnowledgeBase, name: &str) -> Result<Symbol, SerError> {
     match kb.resolve_name_in_global(name) {
         ResolveResult::Found(sym) => Ok(sym),
-        ResolveResult::Ambiguous(cands) => Err(SerError::AmbiguousName {
+        ResolveResult::Ambiguous(cands, contested) => Err(SerError::AmbiguousName {
             name: name.to_owned(),
             candidates: kb.candidate_names(&cands),
+            contested,
         }),
         ResolveResult::NotFound => Err(match kb.hidden_internal_in_global(name) {
             Some(declared_in) => SerError::ForbiddenInternalEntity {
@@ -763,9 +772,10 @@ fn resolve_variant_sym(
     }
     match kb.resolve_name_in_global(key) {
         ResolveResult::Found(sym) => Ok(sym),
-        ResolveResult::Ambiguous(cands) => Err(SerError::AmbiguousName {
+        ResolveResult::Ambiguous(cands, contested) => Err(SerError::AmbiguousName {
             name: key.to_owned(),
             candidates: kb.candidate_names(&cands),
+            contested,
         }),
         ResolveResult::NotFound => Err(SerError::UnknownConstructor {
             name: key.to_owned(),

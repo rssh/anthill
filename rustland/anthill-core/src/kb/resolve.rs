@@ -6402,7 +6402,7 @@ impl KnowledgeBase {
                 let ref_term = self.alloc(Term::Ref(sym));
                 self.finish_result(target, ref_term)
             }
-            crate::intern::ResolveResult::Ambiguous(_) | crate::intern::ResolveResult::NotFound => {
+            crate::intern::ResolveResult::Ambiguous(..) | crate::intern::ResolveResult::NotFound => {
                 BuiltinResult::Failure
             }
         }

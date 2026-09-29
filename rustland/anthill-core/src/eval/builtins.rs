@@ -6490,13 +6490,14 @@ pub fn resolve_host_name(
 ) -> Result<crate::intern::Symbol, EvalError> {
     match interp.kb.resolve_name_in_global(name) {
         crate::intern::ResolveResult::Found(sym) => Ok(sym),
-        crate::intern::ResolveResult::Ambiguous(cands) => {
+        crate::intern::ResolveResult::Ambiguous(cands, contested) => {
             let names: Vec<&str> = cands
                 .iter()
                 .map(|&s| interp.kb.qualified_name_of(s))
                 .collect();
             Err(EvalError::Internal(format!(
-                "{ctx}: `{name}` is ambiguous at <global> — {}",
+                "{ctx}: `{name}` is ambiguous at <global> — {} {}",
+                contested.candidates_label(),
                 names.join(", ")
             )))
         }

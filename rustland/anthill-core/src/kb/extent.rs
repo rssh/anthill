@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 
 use crate::eval::value::Value;
-use crate::intern::{ResolveResult, Symbol};
+use crate::intern::{Contested, ResolveResult, Symbol};
 use crate::kb::term::{Var, VarId};
 use crate::kb::term_view::{views_structurally_equal, TermView};
 use crate::kb::ClauseKind;
@@ -402,6 +402,9 @@ pub enum ExtentRegError {
     AmbiguousName {
         functor: String,
         candidates: Vec<String>,
+        /// What `candidates` are readings of — only the HEAD of a dotted `functor` when
+        /// that is the contested segment (WI-918).
+        contested: Contested,
     },
     /// An `owned()` name denotes a symbol that EXISTS but is `internal` to `declared_in`,
     /// so it is invisible from `<global>`, where a host name is read. Distinct from
@@ -461,10 +464,12 @@ impl std::fmt::Display for ExtentRegError {
             ExtentRegError::AmbiguousName {
                 functor,
                 candidates,
+                contested,
             } => write!(
                 f,
-                "register_extent_owner: ambiguous functor name '{functor}': candidates \
-                 {candidates:?}; mount it by qualified name"
+                "register_extent_owner: ambiguous functor name '{functor}': {} \
+                 {candidates:?}; mount it by qualified name",
+                contested.candidates_label()
             ),
             ExtentRegError::AlreadyOwned { functor } => write!(
                 f,
@@ -1078,9 +1083,10 @@ impl KnowledgeBase {
     fn registration_symbol(&self, name: &str) -> Result<Symbol, ExtentRegError> {
         match self.resolve_name_in_global(name) {
             ResolveResult::Found(sym) => Ok(sym),
-            ResolveResult::Ambiguous(cands) => Err(ExtentRegError::AmbiguousName {
+            ResolveResult::Ambiguous(cands, contested) => Err(ExtentRegError::AmbiguousName {
                 functor: name.to_owned(),
                 candidates: self.candidate_names(&cands),
+                contested,
             }),
             // WI-911: the ladder's DIAGNOSTIC half, the same re-read a loader position
             // makes — a name that exists and is hidden is not reported as absent.

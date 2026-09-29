@@ -408,8 +408,44 @@ pub type ScopeNameOverlay<'a> = dyn Fn(ScopeId) -> Option<Symbol> + 'a;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResolveResult {
     Found(Symbol),
-    Ambiguous(Vec<Symbol>),
+    /// Two or more readings, and [`Contested`] says of WHAT: the candidates of a dotted
+    /// path's contested head are strictly shorter than the path, so a reporter that
+    /// printed them against the whole name would list readings that do not line up with
+    /// it (WI-918).
+    Ambiguous(Vec<Symbol>, Contested),
     NotFound,
+}
+
+/// WHICH PART of a name an [`ResolveResult::Ambiguous`] answer's candidates are readings
+/// of (WI-918).
+///
+/// Carried in the answer rather than recovered by the reporter, because the one place
+/// that knows is the dotted ladder's `split_once('.')` (`load::resolve_dotted_in_kb`):
+/// a reporter re-splitting the name would be a second spelling of that split, and could
+/// not tell a contested HEAD from the provision rung's tie, whose candidates are dotted
+/// readings of the whole path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Contested {
+    /// The name as written — each candidate is a reading of all of it.
+    Whole,
+    /// Only a dotted path's HEAD segment, the one segment the ladder resolves: the tail is
+    /// appended to whatever the head denotes and never looked up on its own, so the
+    /// candidates are the head's readings. Listing `<candidate>.<tail>` instead would name
+    /// paths that may resolve to nothing (`wi917.beta.Widget917.w917a` does not exist).
+    Head(String),
+}
+
+impl Contested {
+    /// THE ONE SPELLING of what the candidate list is a list of, for every reporter that
+    /// prints one — so a load error and a CLI refusal cannot describe the same ambiguity
+    /// differently. Reads in front of the rendered list: `candidates [..]`, or `its head
+    /// segment 'W' has candidates [..]`.
+    pub fn candidates_label(&self) -> String {
+        match self {
+            Contested::Whole => "candidates".to_owned(),
+            Contested::Head(head) => format!("its head segment '{head}' has candidates"),
+        }
+    }
 }
 
 impl ResolveResult {
@@ -1987,7 +2023,7 @@ impl SymbolTable {
                     ResolveResult::NotFound
                 }
             }
-            ResolveResult::Ambiguous(cands) => {
+            ResolveResult::Ambiguous(cands, contested) => {
                 let kept: Vec<Symbol> = cands
                     .into_iter()
                     .filter(|&s| self.internal_visible_from(s, from_scope))
@@ -1995,7 +2031,7 @@ impl SymbolTable {
                 match kept.len() {
                     0 => ResolveResult::NotFound,
                     1 => ResolveResult::Found(kept[0]),
-                    _ => ResolveResult::Ambiguous(kept),
+                    _ => ResolveResult::Ambiguous(kept, contested),
                 }
             }
             ResolveResult::NotFound => ResolveResult::NotFound,
@@ -2370,7 +2406,7 @@ impl SymbolTable {
                 overlay,
             ) {
                 ResolveResult::Found(sym) => matches.push(sym),
-                ResolveResult::Ambiguous(mut candidates) => matches.append(&mut candidates),
+                ResolveResult::Ambiguous(mut candidates, _) => matches.append(&mut candidates),
                 ResolveResult::NotFound => {}
             }
         }
@@ -2382,7 +2418,7 @@ impl SymbolTable {
         match matches.len() {
             0 => ResolveResult::NotFound,
             1 => ResolveResult::Found(matches[0]),
-            _ => ResolveResult::Ambiguous(matches),
+            _ => ResolveResult::Ambiguous(matches, Contested::Whole),
         }
     }
 
@@ -2818,7 +2854,7 @@ mod tests {
         );
 
         match st.resolve_in_scope("foo", c) {
-            ResolveResult::Ambiguous(candidates) => assert_eq!(candidates.len(), 2),
+            ResolveResult::Ambiguous(candidates, _) => assert_eq!(candidates.len(), 2),
             other => panic!("expected Ambiguous, got {:?}", other),
         }
     }
