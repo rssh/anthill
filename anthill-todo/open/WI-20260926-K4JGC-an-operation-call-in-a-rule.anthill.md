@@ -9,8 +9,6 @@
 
 - acceptance: cargo-test
 
-- depends_on: WI-20260926-CYNPE-a-waiting-goal-is-re-evaluated
-
 - tags: proposal-068
 
 ## Description
@@ -39,4 +37,8 @@ ACCEPTANCE (cargo-test via rustland/scripts/test.sh; every row driven, back-out 
 ### 2026-09-26T13:25:37Z — feedback — user
 
 ROWS ADDED FROM THE PRVA2 REVIEW (filed on ACG10 2026-09-26, now in 068's problem section). (1) A BODY-LESS SPEC OP in a value slot is compared as data wherever it is written, measured at 028e13f8: WeakOrd.compare(1, 5) = -1 answers (0, 0); rule below(?a, ?b) :- PartialEq.eq(WeakOrd.compare(?a, ?b), -1) answers below(1, 5) (0, 0) and not(below(1, 5)) HOLDS; ?r <=> WeakOrd.compare(1, 5) binds ?r to the unreduced compare(1, 5) as a DEFINITE answer; the functional-relation form WeakOrd.compare(1, 5, ?r) answers -1 (control). Under 068 §1 a ground carrier dispatches — so this ticket's strategy must evaluate a body-less spec op on the operand path too (today reduce_operand passes dispatch_body_less: false, the WI-1057 symbolic-algebra guard, which 068 §2.3 retires in favour of UNREDUCED / quoted). (2) WI-670's OPEN-TIME REFUTATION (body_refuted_by_ground_conjunct) judges a conjunct by its discrim candidates behind a hand-kept list of off-tree routes: rule r(?x) :- ground(?x), p(add(?x, 1)) over fact p(3) keys add structurally and refutes where the strategy would evaluate and answer. It is a consumer like head matching (068 §4): teach it the fragments, or have it refuse to judge an atom holding one. Both rows join this ticket's acceptance, driven, with back-outs.
+
+### 2026-09-29T06:45:59Z — feedback — user
+
+NO LONGER WAITS ON WI-20260926-CYNPE (user, 2026-09-29, 068-implementation D4): a pending equation is a delayed unify(?t, call) goal that today's rotation already re-tries — slower, not wrong — so this ticket, the risky one (every consumer; Set's rows flip), may go first or in parallel. CYNPE makes the waiting cheap and splits the WI-938 declines; it is not a prerequisite.
 

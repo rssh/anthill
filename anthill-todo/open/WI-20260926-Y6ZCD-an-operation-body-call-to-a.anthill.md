@@ -9,7 +9,9 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- tags: typing
+- depends_on: WI-20260926-7D48J-one-typing-of-a-rule-clause
+
+- tags: typing, proposal-068
 
 ## Description
 
@@ -22,4 +24,10 @@ So one call is refused in a rule body and dispatched to the wrong instance in an
 PROPOSED: the operation-body dispatch asks the provision at ALL the call's carriers, as the rule-body guard does — one question for both bodies (`provision_admits_carriers`, or the dictionary resolver at the call's full types) — and refuses at load where no provision binds them: the operation-body twin of `NoProvisionAtCarriers`.
 
 ACCEPTANCE: both measured calls refused at load, naming the carriers no provision binds; `Conv.conv(leaf(), 4)` (the binding `W` has) still answers 9; full workspace green via rustland/scripts/test.sh; scaland testFull.
+
+## Changes
+
+### 2026-09-29T06:24:50Z — feedback — user
+
+DEPENDS ON WI-20260926-7D48J (user, 2026-09-29: 'Y6ZCD also should depend from 068'). The defect is one call answered by TWO dispatch paths — the rule-body guard (PRVA2 (c), NoProvisionAtCarriers / provision_admits_carriers) asks the provision at every carrier argument, the operation-body dispatch keys on the carrier parameter alone. Proposal 068 §3 types rule-body fragments with the OPERATION-BODY typer, and 7D48J builds that one clause typing, so after it the two bodies share one dispatch decision and this fix lands ONCE, in the shared path, rather than a second time in the operation-body branch before the paths merge. Measured rows unchanged: Conv.conv(leaf(), "s") answers 9 in an operation body (W.conv run with a String in its Int64 parameter), refused at load in a rule body.
 
