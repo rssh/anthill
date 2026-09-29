@@ -1424,21 +1424,30 @@ pub(super) fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
 
     for (psym, value) in &bindings {
         // Classify the binding value up front so the `format!` + symbol-resolve
-        // below runs ONLY for a value that actually binds the alias Var. Two bind:
+        // below runs ONLY for a value that actually binds the alias Var. Three bind:
         //  - a ground (`Value::Term`) value;
         //  - WI-375: a Node-carried EFFECT-ROW — a WRITTEN row `E = {Modify[c]}`
         //    whose `effects_rows(…)` carries the `c` occurrence (the whole binding
         //    is a `Value::Node`). Bound via `bind_value` so the row threads into a
         //    bare-`Stream` consumer param instead of being dropped, which left `E`
         //    an unresolved `?_` that leaked as a spurious `undeclared effect`.
-        // Every other carrier (a non-effect-row value-in-type `Value::Node` — a
-        // denoted `Vector[Int, 3]` size — a `Var`, a scalar) binds nothing here:
-        // skip it without the symbol work (the pre-WI-375 leading-`continue`
-        // early-out). Out of WI-375 scope, those ride on their own SortRequiresInfo
-        // / SortAlias value fact (WI-366); binding them here would perturb it.
+        //  - WI-20260929-WBHTM: any other TYPE on the occurrence or entity carrier — one
+        //    holding a value (`User[S = Buf[T = Int64, N = 3]]` against a parameter
+        //    declared as the bare `User`), or the spine `fn_value` rebuilds around one. It
+        //    was skipped, on the grounds that it rode "on its own SortRequiresInfo /
+        //    SortAlias value fact (WI-366)" which binding would perturb — written before
+        //    WI-390 filed those specs as term facts, and σ is per call. MEASURED: `S`
+        //    stayed unbound, so `User.via(u)` was refused "element `State = User.S` is
+        //    unconstrained" where `via(u: User[S = S])` — which binds this very σ through
+        //    `unify_types` — ran, and `first(u: User) -> S` let a wrong annotation through.
+        // A `Var` or a scalar binds nothing here: skip it without the symbol work (the
+        // pre-WI-375 leading-`continue` early-out).
         let is_effect_row_node = matches!(value, Value::Node(_))
             && matches!(type_head(kb, value), TypeHead::EffectsRows);
-        if !matches!(value, Value::Term { .. }) && !is_effect_row_node {
+        if !matches!(
+            value,
+            Value::Term { .. } | Value::Node(_) | Value::Entity { .. }
+        ) {
             continue;
         }
         let qualified = format!(
@@ -1465,11 +1474,17 @@ pub(super) fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
                     bind_or_refine_member_param(kb, subst, vid, *t);
                 }
             }
-            // Guaranteed an effect-row Node by `is_effect_row_node` above. (The
-            // occurs-check is term-only; a freshly-opened alias Var never occurs
+            // An effect-row Node (WI-375). (A freshly-opened alias Var never occurs
             // inside a user-written row, so no cycle arises here.)
-            _ => {
+            _ if is_effect_row_node => {
                 subst.bind_value(kb, vid, value.clone());
+            }
+            // A type on another carrier (WBHTM), occurs-checked as a term is: an argument
+            // type written inside the sort's own scope can mention the member's own var.
+            _ => {
+                if !occurs_in_view(kb, vid, value) {
+                    subst.bind_value(kb, vid, value.clone());
+                }
             }
         }
     }

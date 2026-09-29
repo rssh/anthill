@@ -1607,58 +1607,6 @@ pub(super) fn compose_reached_carrier_map(
     out
 }
 
-/// WI-653 — the deferred spec-op call's carrier per `spec_sort` type-param, resolved
-/// through the per-call `subst`: `{canonical spec type-param ↦ carrier}`. A param the
-/// call left unbound (`None` — an equivalence-class root) is omitted — a wildcard for
-/// coverage. An EMPTY result means the call pinned no carrier (the fully-open case),
-/// which [`op_requires_covers`] treats as the pre-WI-653 carrier-blind license.
-///
-/// INVARIANT this fix rests on: `empty call_carriers ⟺ the call pinned no real carrier`.
-/// It holds because only a FAILED abstract dispatch reaches the arms that call this —
-/// there the spec op's params are FRESH vars unified AGAINST the arg types, so a real
-/// carrier resolves to a `Value::Term` (the arg's `List.T` / `Host.A`) while a genuinely
-/// unpinned param resolves to `None`. This is deliberately less eager than the
-/// abstract-param DIAGNOSTIC loop in `check_apply` (which treats a `None`-resolved param
-/// as still-abstract for a WI-325 flag): omitting it is sound here because the `blind`
-/// fallback defers to value-directed eval, not a wrong-carrier license. A future denoted
-/// / value-in-type param representation (WI-302 / WI-348 Phase C) is where this invariant
-/// would need re-checking — hence the loud `debug_assert` on the non-`Term` carrier below
-/// (mirroring `entry_type_param_bindings`).
-fn call_carriers_from_subst(
-    kb: &KnowledgeBase,
-    subst: &Substitution,
-    spec_sort: Symbol,
-) -> SmallVec<[(Symbol, TermId); 2]> {
-    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
-    let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    for short in kb.type_params_of_sort(spec_sort) {
-        let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) else {
-            continue;
-        };
-        let Some(alias_target) = resolve_sort_alias(kb, param) else {
-            continue;
-        };
-        let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) else {
-            continue;
-        };
-        match subst.resolve_as_value(*vid) {
-            // Unbound spec param — the call did not pin this carrier; a wildcard.
-            None => {}
-            Some(Value::Term { id, .. }) => out.push((param, *id)),
-            // A denoted `Value::Node` carrier: carrier-agnostic alignment is WI-348
-            // Phase C. Omitting it lets coverage fall to the `blind` license (deferred
-            // to value-directed eval, the module's FAILED-dispatch stance); flag loudly
-            // in debug so the gap surfaces, mirroring `entry_type_param_bindings`.
-            Some(other) => debug_assert!(
-                false,
-                "WI-348/WI-653: denoted {} call carrier — carrier-agnostic alignment is Phase C",
-                other.type_name(),
-            ),
-        }
-    }
-    out
-}
-
 /// WI-653 — does the reached target-spec carrier map σ-align with the deferred call's
 /// carriers? Every target type-param the call PINNED that the reached map also bound
 /// must share a σ-class ([`sigma_pair_precise`] — type-param↔type-param by σ, concrete↔
@@ -1762,17 +1710,34 @@ pub(super) fn op_requires_covers(
 /// deferred call's carriers from the per-call `subst`, then run carrier-aware coverage.
 /// Factors the identical wiring the `NoMatch` / `NoCandidates` arms of `check_apply_iter`
 /// share.
+///
+/// The call's carriers are its [`spec_param_bindings`]: `{spec type-param ↦ carrier}`, a
+/// param σ left unbound omitted — a wildcard for coverage. EMPTY means the call pinned no
+/// carrier (the fully-open case), which [`op_requires_covers`] treats as the pre-WI-653
+/// carrier-blind licence. Deliberately less eager than the abstract-param DIAGNOSTIC loop
+/// in `check_apply` (which treats a `None`-resolved param as still-abstract for a WI-325
+/// flag): omitting an unbound param is sound here because the `blind` fallback defers to
+/// value-directed eval, not a wrong-carrier licence. A pinned carrier that is not a term —
+/// a type holding a value, or an effect row carrying one — counts like any other
+/// (WI-20260929-WBHTM). It used to be omitted, and an omitted PINNED carrier is not that
+/// wildcard: with nothing else pinned the licence went `blind`, carrier and all, and a call
+/// on a `Buf` was licensed by `requires Store[State = S]` and ran another sort's provider.
 pub(super) fn op_requires_covers_call(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     subst: &Substitution,
     spec_sort: Symbol,
 ) -> bool {
+    // No op-scoped `requires` covers nothing — [`op_requires_covers`] answers `false` on an
+    // empty chain without reading the carriers, so they are not built for it.
+    if env.op_requires().is_empty() {
+        return false;
+    }
     let ctx = SigmaCtx {
         subst,
         param_rigids: env.param_rigids(),
     };
-    let call_carriers = call_carriers_from_subst(kb, subst, spec_sort);
+    let call_carriers = spec_param_bindings(kb, subst, spec_sort);
     op_requires_covers(kb, &ctx, env.op_requires(), spec_sort, &call_carriers)
 }
 

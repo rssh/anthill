@@ -3634,10 +3634,12 @@ pub(super) fn substitute_spec_via_subst(
 /// bound to in `subst`, or `None` when `sym` is not a sort parameter, is
 /// unbound, or is bound to another abstract type parameter (the call is not
 /// concrete in that position — the enclosing sort's own `requires` carries
-/// it). Mirrors how `sort_goal_from_subst` reads a binding: alias → `Global`
-/// var → subst value.
+/// it). The σ read is the dispatch goal's own, [`spec_param_binding_term`] — so a type
+/// holding a value (`User.S ↦ Buf[T = Int64, N = 3]`) is substituted LOWERED, where it
+/// was left abstract and the supply refused its element as "unconstrained" while the typed
+/// twin ran (WI-20260929-WBHTM, MEASURED).
 pub(super) fn resolve_param_value_via_subst(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     sym: Symbol,
     subst: &Substitution,
 ) -> Option<TermId> {
@@ -3654,22 +3656,20 @@ pub(super) fn resolve_param_value_via_subst(
     resolve_var_value_via_subst(kb, vid, subst)
 }
 
-/// [`resolve_param_value_via_subst`] from the parameter's variable itself.
+/// [`resolve_param_value_via_subst`] from the parameter's variable itself — read through
+/// the same [`spec_param_binding_term`], so the bare-spec sugar's minted carrier
+/// (WI-20260927-YCPAJ) substitutes a type holding a value lowered, as a declared parameter
+/// does (WI-20260929-WBHTM).
 fn resolve_var_value_via_subst(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     vid: VarId,
     subst: &Substitution,
 ) -> Option<TermId> {
-    match subst.resolve_as_value(vid) {
-        Some(Value::Term { id: val, .. }) => {
-            let val = *val;
-            if is_type_param_value(kb, val) {
-                None
-            } else {
-                Some(val)
-            }
-        }
-        _ => None,
+    let val = spec_param_binding_term(kb, subst, vid)?;
+    if is_type_param_value(kb, val) {
+        None
+    } else {
+        Some(val)
     }
 }
 

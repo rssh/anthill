@@ -1603,13 +1603,19 @@ fn anchor_guard(kb: &KnowledgeBase, spec_sort: Symbol, arg_types: &[Value]) -> F
 /// loop, and the shared wildcard tail), which is two too many for a rule whose whole
 /// content is "both carriers key alike" — a producer that spelled it differently put one
 /// slot under two `Symbol`s, latent for exactly as long as every reader compared by local
-/// name. `/code-review` asked for one owner; this is it.
+/// name. `/code-review` asked for one owner; this is it. The typer's own producer,
+/// [`sort_goal_from_subst`], spelled it inline a fourth time until WI-20260929-WBHTM.
 ///
 /// `fallback` is what stands in when the spec-qualified name does not resolve. It differs
 /// per caller and is therefore passed rather than chosen here: the pinned producers fall
 /// back to the parameter symbol they already hold, while the wildcard tail declines to
 /// synthesize at all and never reaches this function.
-fn spec_param_key(kb: &KnowledgeBase, spec_qn: &str, short: &str, fallback: Symbol) -> Symbol {
+pub(super) fn spec_param_key(
+    kb: &KnowledgeBase,
+    spec_qn: &str,
+    short: &str,
+    fallback: Symbol,
+) -> Symbol {
     let qualified = kb
         .try_resolve_symbol(&format!("{spec_qn}.{short}"))
         .unwrap_or(fallback);

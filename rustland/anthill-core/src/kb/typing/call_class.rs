@@ -818,12 +818,12 @@ pub fn find_requires_slot(
 
 /// WI-613 — resolve `entry`'s type-param bindings against the per-call `subst`,
 /// yielding one `(per_call_value, entry_value)` pair per CONSTRAINING binding
-/// (a spec param that resolved through `subst` to a concrete `Value::Term`).
+/// (a spec param `subst` binds — read as a `TermId` by [`spec_param_binding_term`],
+/// which lowers a type on another carrier, WI-20260929-WBHTM).
 /// Non-constraining bindings are dropped, exactly as the pre-WI-613
 /// `entry_matches_subst` per-binding `continue` did:
 ///   * an unbound spec param — the OPEN-T defer trigger (impl picked at runtime
 ///     from the caller's requirement value);
-///   * a denoted-`Node` carrier (WI-348 Phase C; flagged loudly in debug);
 ///   * a non-type-param binding (an auto-bound op like `eq`/`neq`), or an
 ///     unresolvable alias.
 ///
@@ -890,21 +890,14 @@ fn entry_type_param_bindings(
             Term::Var(Var::Global(v)) => *v,
             _ => continue,
         };
-        let per_call_value = match subst.resolve_as_value(vid) {
+        // A type on another carrier (`State ↦ Buf[T = Int64, N = 4]`, which holds a value)
+        // is compared LOWERED, as the dispatch goal compares it. It was dropped here (a
+        // WI-348 "Phase C" `debug_assert`), which left the pair nothing to refute: MEASURED,
+        // a call on a `Buf` deferred to `requires Store[State = Other]` and ran `Other`'s
+        // provider on it (WI-20260929-WBHTM).
+        let Some(per_call_value) = spec_param_binding_term(kb, subst, vid) else {
             // Unbound spec param — the OPEN-T defer trigger; no constraint.
-            None => continue,
-            Some(Value::Term { id: v, .. }) => *v,
-            // A denoted `Value::Node` param: carrier-agnostic entry match is
-            // WI-348 Phase C. Conservatively drop (sound — resolved at runtime),
-            // but flag loudly in debug so the gap surfaces.
-            Some(other) => {
-                debug_assert!(
-                    false,
-                    "WI-348: denoted {} spec param in defer-match — carrier-agnostic entry match is Phase C",
-                    other.type_name(),
-                );
-                continue;
-            }
+            continue;
         };
         out.push((per_call_value, *entry_value));
     }

@@ -3162,8 +3162,8 @@ pub(super) fn check_apply_iter(
                     //
                     // Why we walk type_params directly instead of consuming
                     // `sort_goal_from_subst`: `sort_goal_from_subst` only
-                    // emits a binding when the spec var resolves to a
-                    // `Value::Term` — but unification often binds the
+                    // emits a binding when the spec var is BOUND — but
+                    // unification often binds the
                     // *caller's* var to the spec's var (e.g. `Container.T
                     // → Eq.T`), leaving the spec's var as the equivalence-
                     // class root with no direct binding. Resolving the
@@ -3329,7 +3329,16 @@ pub(super) fn check_apply_iter(
                             if !signature_mentions && !has_receiver {
                                 continue;
                             }
-                            let is_abstract = match subst.resolve_as_value(vid) {
+                            // Read as the dispatch readers read it — through
+                            // [`spec_param_binding_term`], so a type on another carrier (one
+                            // holding a value, or an effect row carrying one, WI-477) is
+                            // resolved and lowered and then held to the same test as a term.
+                            // It was read ABSTRACT for not being a term, which refused a
+                            // concrete call "missing `requires`" where its term-carried twin
+                            // loaded — MEASURED on `s: Src[E = {Modify[c]}]`, and, once the
+                            // defer-match compared that row, under the very `requires` the
+                            // message asked for (WI-20260929-WBHTM).
+                            let is_abstract = match spec_param_binding_term(kb, &subst, vid) {
                                 None => true,
                                 // WI-1059: a NEUTRAL is abstract too, and it is the form a
                                 // materialized unwritten slot takes. `drive(w: Widget) =
@@ -3342,22 +3351,13 @@ pub(super) fn check_apply_iter(
                                 // spec (measured). A projection is not concrete: it is the
                                 // OTHER spelling of "still abstract", so it demands a
                                 // `requires` exactly as the bare param does.
-                                Some(Value::Term { id: bound, .. }) => {
-                                    is_type_param_value(kb, *bound)
+                                Some(bound) => {
+                                    is_type_param_value(kb, bound)
                                         || matches!(
-                                            type_head(kb, &TermIdView(*bound)),
+                                            type_head(kb, &TermIdView(bound)),
                                             TypeHead::ExprCarried | TypeHead::RigidProjection
                                         )
                                 }
-                                // A non-`Term` carrier (a denoted `Value::Node`
-                                // / value-in-type param, WI-302) can't be
-                                // introspected for type-param-ness here, so —
-                                // like the loader-inconsistency arms above and
-                                // per this loop's documented stance — assume
-                                // abstract rather than silently disable the
-                                // WI-325 protection. Carrier-agnostic
-                                // introspection is WI-348 Phase C.
-                                Some(_) => true,
                             };
                             if is_abstract {
                                 abstract_params.push(short_qn_sym);

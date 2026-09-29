@@ -3,6 +3,91 @@
 
 use super::*;
 
+/// WI-20260929-WBHTM — the binding σ holds for a spec parameter at a call, as the `TermId`
+/// the dispatch readers compare a provision's against; `None` when σ leaves it unbound.
+///
+/// A `Term` binding is returned as σ holds it — one hop, exactly as these readers always
+/// read it. A binding on another carrier is a type the term store could not hold when σ
+/// bound it: one carrying a VALUE (`Buf[T = Int64, N = 3]` rides as an occurrence, WI-477),
+/// or an entity spine `fn_value` rebuilt around one. It is first resolved through σ — the
+/// variables inside it, which a call-site bracket leaves to the argument
+/// (`[State = Buf[T = ?, N = 4]]`), otherwise stay variables and a specific provider is
+/// refused on them — and then LOWERED to its term twin ([`dispatch_type_term`]). That twin is
+/// what its provision was filed as (`lower_value_or_gate`), so the matchers relate the two
+/// as any two types, a value leaf by value. Lowering, not carrying the occurrence, because
+/// every reader of this is `TermId`-keyed at the boundary: a `SortGoal` is the resolve memo's
+/// key, and what it is matched against is a term fact.
+///
+/// Such a binding used to be DROPPED by every one of these readers (a WI-348 "Phase C"
+/// `debug_assert` in the dispatch goal, the defer-match and the op-scoped licence; a
+/// silent `None` in a callee requirement's substitution) — a debug panic, and in release a
+/// wrong provider RUN: MEASURED, a call on a `Buf` deferred to `requires Store[State =
+/// Other]`, and another licensed "blind" by an op-scoped `requires Store[State = S]`, each
+/// ran `Other`'s provider on the `Buf`.
+pub(super) fn spec_param_binding_term(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    vid: VarId,
+) -> Option<TermId> {
+    match subst.resolve_as_value(vid)? {
+        Value::Term { id, .. } => Some(*id),
+        other => {
+            let resolved = walk_type_deep_value(kb, subst, other);
+            Some(dispatch_type_term(kb, &resolved))
+        }
+    }
+}
+
+/// WI-20260929-WBHTM — a type on any carrier as the `TermId` the dispatch matchers compare:
+/// a term as it is, anything else through [`value_to_term`], lossless for a type since
+/// WI-390. TOTAL on types — an occurrence, a variable and an entity spine all lower — so a
+/// failure is a non-type standing where a type goes, which is a typer bug, and it stops
+/// here rather than let a dispatch go ahead on a binding it could not state. The same call
+/// [`crate::kb::node_occurrence::type_denoted_by`] makes about a leaf that does not lower,
+/// and `surface_node_binding_to_term` about exactly this case ("a malformation, not a
+/// benign miss").
+pub(super) fn dispatch_type_term(kb: &mut KnowledgeBase, ty: &Value) -> TermId {
+    match ty {
+        Value::Term { id, .. } => *id,
+        other => value_to_term(kb, other).unwrap_or_else(|e| {
+            panic!(
+                "a type carried as a {} has no term form ({e:?}): only a type reaches here",
+                other.type_name()
+            )
+        }),
+    }
+}
+
+/// WI-20260929-WBHTM — every parameter of `spec_sort` σ binds at a call, keyed by the
+/// parameter's declared (qualified) symbol and read through [`spec_param_binding_term`].
+/// The one walk the dispatch goal ([`sort_goal_from_subst`], which re-keys it) and the
+/// op-scoped licence's carriers ([`op_requires_covers_call`]) share, so the two cannot
+/// disagree about which parameters a call pinned.
+pub(super) fn spec_param_bindings(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+) -> SmallVec<[(Symbol, TermId); 2]> {
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let mut out: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for short in kb.type_params_of_sort(spec_sort) {
+        let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) else {
+            continue;
+        };
+        let Some(alias_target) = resolve_sort_alias(kb, param) else {
+            continue;
+        };
+        let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) else {
+            continue;
+        };
+        let vid = *vid;
+        if let Some(value) = spec_param_binding_term(kb, subst, vid) {
+            out.push((param, value));
+        }
+    }
+    out
+}
+
 /// Build a `SortGoal` from a per-call substitution at a spec sort,
 /// reading each declared spec param via its SortAlias-to-Var. Used by
 /// `find_unique_impl_op` (compat wrapper) and by external callers
@@ -14,44 +99,17 @@ pub fn sort_goal_from_subst(
     carrier: Option<GoalCarrier>,
 ) -> SortGoal {
     let spec_qn = kb.qualified_name_of(spec_sort).to_string();
-    let mut bindings: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    for short in kb.type_params_of_sort(spec_sort) {
-        let short_sym = match kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) {
-            Some(s) => s,
-            None => continue,
-        };
-        let alias_target = match resolve_sort_alias(kb, short_sym) {
-            Some(t) => t,
-            None => continue,
-        };
-        let vid = match kb.get_term(alias_target) {
-            Term::Var(Var::Global(v)) => *v,
-            _ => continue,
-        };
-        match subst.resolve_as_value(vid) {
-            Some(Value::Term { id: val, .. }) => {
-                let val = *val;
-                let short_intern = kb.try_resolve_symbol(&short).unwrap_or_else(|| {
-                    // Spec param's *short* name (e.g. "T") may not be registered
-                    // as a top-level symbol; fall back to its qualified form.
-                    short_sym
-                });
-                // WI-361: a binding value is already canonical (`Ref(S)` / `Fn{S, named}`)
-                // — no `parameterized(base, bindings)` wrapper left to unwrap.
-                bindings.push((short_intern, val));
-            }
-            // A denoted `Value::Node` binding can't ride in the `TermId`-keyed
-            // `SortGoal.bindings`; carrying it is WI-348 Phase C. Omitting it is
-            // sound (the dispatch goal sees one fewer constraint — a safe
-            // over-approximation), but flag loudly in debug.
-            Some(other) => debug_assert!(
-                false,
-                "WI-348: denoted {} in SortGoal bindings — carrier-agnostic SortGoal is Phase C",
-                other.type_name(),
-            ),
-            None => {}
-        }
-    }
+    // WI-361: a binding value is already canonical (`Ref(S)` / `Fn{S, named}`) — no
+    // `parameterized(base, bindings)` wrapper left to unwrap. Keyed by the parameter's short
+    // name where that is registered, else its qualified form — [`spec_param_key`], the one
+    // owner of the key spelling every goal producer uses.
+    let bindings: SmallVec<[(Symbol, TermId); 2]> = spec_param_bindings(kb, subst, spec_sort)
+        .into_iter()
+        .map(|(param, value)| {
+            let key = spec_param_key(kb, &spec_qn, kb.local_name_of(param), param);
+            (key, value)
+        })
+        .collect();
     // WI-20260828-EKWDC — THE CARRIER'S ARGUMENTS ARE RESOLVED HERE, WITH THE BINDINGS,
     // and that is the whole reason this walk is not left at the capture site. A binding
     // above is read out of σ at THIS moment; a carrier argument was read off the receiver
@@ -94,7 +152,7 @@ pub fn sort_goal_from_subst(
 /// - Receiver's base sort is a concrete carrier (`s : List[Int]` → `List`)
 ///   ⇒ [`ReceiverCarrier::Concrete`].
 pub(super) fn receiver_carrier(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     op: &OperationInfoFull,
     spec_sort: Symbol,
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
@@ -184,32 +242,28 @@ pub(super) fn receiver_carrier(
 /// the arguments had the lower minimum, i.e. the difference is under this box's noise
 /// floor for one unchanged binary. Two of the four `receiver_carrier` call sites keep
 /// only `.sort`; deferring the walk for them would buy 2 SmallVec clones per load and
-/// cost a second spelling of this question.
+/// cost a second spelling of this question. (That count and timing are the TERM carrier's.
+/// A receiver type on another carrier also pays the lowering below — a hash-consed walk,
+/// CPU only — on the rarer still shape of a statically concrete receiver holding a value.)
 ///
-/// EMPTY for a bare sort reference (`s : List`, nothing written) and for every
-/// non-application carrier, which is the honest answer: the receiver said nothing about
-/// the carrier's parameters, so nothing is added to what the provision head already
-/// pinned.
+/// EMPTY for a bare sort reference (`s : List`, nothing written) and for any type that is
+/// not an application, which is the honest answer: the receiver said nothing about the
+/// carrier's parameters, so nothing is added to what the provision head already pinned.
 ///
-/// EMPTY, TOO, FOR AN OCCURRENCE-CARRIED TYPE (a `Value::Node`, WI-477), and this is a
-/// stated gap rather than a silence — the WI-348 Phase C one [`SortGoal::bindings`]
-/// records from the other side. It is NOT asserted against the way that sibling's is:
-/// this walk sees EVERY named argument of a receiver's own type, and
-/// [`witness_sort_goal`] feeds it types read back off runtime values, so a `Value::Node`
-/// here is a shape the language admits and the `TermId`-keyed channel cannot carry — a
-/// `debug_assert` would turn that into a dev-build panic on a legal program. Dropping one
-/// argument leaves its parameter exactly as the provision head left it, which is the
-/// pre-WI-EKWDC behaviour for that parameter and a refusal downstream, never a wrong
-/// binding. (`witness_sort_goal` reaches the same verdict for its own bindings three
-/// lines on, through `type_value_as_term`.)
+/// A TYPE ON ANOTHER CARRIER — an occurrence (a receiver whose type holds a value,
+/// `Pairer[Src = Heavy, Out = Int64, N = 3]`, WI-477) or the entity spine `fn_value` builds
+/// when a return type is instantiated around one (`mkp[S](s: S) -> Pairer[Src = S, …]` at an
+/// `S` holding a value) — is read LOWERED ([`dispatch_type_term`]), as the goal's own
+/// bindings are ([`spec_param_binding_term`], WI-20260929-WBHTM). It was EMPTY, which asked
+/// the carrier's `requires` in its declaration scope and refused the call naming
+/// `Tagger[T = Pairer.Src]` where the ground twin ran (MEASURED on both carriers; on the
+/// entity, even an argument that was a plain term was lost with the rest).
 pub(super) fn receiver_type_args(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     ty: &Value,
 ) -> SmallVec<[(Symbol, TermId); 2]> {
-    let Value::Term { id, .. } = ty else {
-        return SmallVec::new();
-    };
-    parametric_value_parts(kb, *id)
+    let id = dispatch_type_term(kb, ty);
+    parametric_value_parts(kb, id)
         .map(|(_, args)| args)
         .unwrap_or_default()
 }

@@ -70,11 +70,12 @@
 //! "a ground nested binding loads", which never took the wrapper.
 //!
 //! NOT COVERED HERE, and why: a spec operation called with an argument whose STATIC type
-//! carries a value-in-type (`s: Buf[T = Int64, N = 3]; Store.peek(s)`) trips the typer's
-//! WI-348 "Phase C" `debug_assert` (`carrier.rs`, `call_class.rs`: a denoted `Value::Node`
-//! in a `SortGoal` binding). MEASURED independent of this fix: it fires with the fix backed
-//! out, with a GROUND provision, and with no provision at all. The rows call with
-//! `buf(v: …)`, whose inferred type carries no denoted (WI-20260929-WBHTM). A value-in-type
+//! carries a value-in-type (`s: Buf[T = Int64, N = 3]; Store.peek(s)`) is a different
+//! question — how the CALL's binding reaches dispatch, not the provision's — and it tripped
+//! the typer's WI-348 "Phase C" `debug_assert` independent of this fix (with it backed out,
+//! with a GROUND provision, with no provision at all). The rows call with `buf(v: …)`, whose
+//! inferred type carries no denoted; that call is `wi_wbhtm_value_in_type_call_test`'s
+//! (WI-20260929-WBHTM). A value-in-type
 //! written as a NAME (`N = size`, a zero-arg operation) still lowers to `Ref(size)` in a
 //! binding where a signature reads `denoted(size)` — the same divergence one spelling over,
 //! not closed here (WI-20260929-9WXK2).
