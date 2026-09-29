@@ -984,9 +984,10 @@ pub(super) fn term_as_sort(interp: &mut Interpreter, args: &[Value]) -> Result<V
 // ── Field access / sort instantiation ────────────────────────────
 
 /// `resolve_sort_instantiation_param(inst: Term, param: Term) -> Term` —
-/// given a `SortView(sort, param1=val1, …)` term and a `Ref(param)` term,
-/// return the bound value. Currently implemented as a named-arg lookup
-/// over the SortView's named args.
+/// given a sort instantiation (a `SortView(sort, param1=val1, …)` spec view, or the
+/// plain parameterized application a nested binding value is) and a `Ref(param)` term,
+/// return the bound value: a named-arg lookup off either head. The SLD builtin
+/// (`SearchStream::builtin_resolve_sort_inst_param`) reads the same heads.
 pub(super) fn resolve_sort_instantiation_param(
     interp: &mut Interpreter,
     args: &[Value],
@@ -1010,7 +1011,7 @@ pub(super) fn resolve_sort_instantiation_param(
                 ))
             }),
         _ => Err(EvalError::TypeMismatch {
-            expected: "SortView Term",
+            expected: "a sort instantiation (a SortView or a parameterized application)",
             got: inst.type_name().to_string(),
         }),
     }

@@ -190,8 +190,13 @@ fn type_value_needs_occurrence(v: &Value) -> bool {
 /// [`KnowledgeBase::make_parameterized_occ`] so the poisoned child is CARRIED,
 /// not re-grounded; otherwise the hash-consed [`KnowledgeBase::make_parameterized_type`].
 /// `base` is the ground `sort_ref` (`List`/`Set`/…); `span`/`owner` stamp the new
-/// occurrence when Node-carried.
-pub(super) fn parameterized_value(
+/// occurrence when Node-carried. The loader builds a provision's nested binding value
+/// here too (`assemble_binding_value`, WI-20260924-F3FYJ): the split the loader's type
+/// position makes for a SORT head, so a binding and the same type written in a signature
+/// agree there. (The type position keeps its own copy of the split, which differs for a
+/// head it does not check — it drops an over-applied positional after deciding;
+/// WI-20260929-AAQT5.)
+pub(crate) fn parameterized_value(
     kb: &mut KnowledgeBase,
     base: TermId,
     bindings: &[(Symbol, Value)],

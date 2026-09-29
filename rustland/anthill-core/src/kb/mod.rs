@@ -10412,9 +10412,23 @@ impl KnowledgeBase {
         // sort is the discriminating functor (native `rules_by_functor`/discrim
         // selectivity, produced directly). `base` is a sort reference `Ref(S)` (post
         // make_sort_ref flip), read via the reader.
-        let base_sym =
-            crate::kb::typing::extract_sort_ref_sym(self, &crate::kb::term_view::TermIdView(base))
-                .expect("make_parameterized_type: base must be a sort reference");
+        //
+        // WI-20260924-F3FYJ — OR THE DECLARED BOTTOM SORT. `type_head` classifies
+        // `anthill.prelude.Nothing` as the bottom rather than a sort reference, so
+        // `extract_sort_ref_sym` refused it and this `expect` fired — yet the loader applies
+        // it when the source does (`Nothing[X = Int64]`), reports the arguments
+        // (`check_sort_type_args`, since it IS a sort) and keeps building, as it does after
+        // every refusal. MEASURED: `provides Store[State = Nothing[X = 3]]`, the ground
+        // `Nothing[X = Int64]` in a binding, a signature and an alias target each crashed
+        // the loader instead of reporting. NOTHING WIDER: a TypeExtractor meta-constructor
+        // (`TypeExtractor.TypeVar[name = Int64]`) is not a sort, so nothing reports it, and
+        // a read that admitted any bare head built it — a signature parameter typed as a
+        // FORGED type variable loaded clean (MEASURED); refused where it is written by
+        // WI-20260929-AAQT5, it still panics here.
+        let view = crate::kb::term_view::TermIdView(base);
+        let base_sym = crate::kb::typing::extract_sort_ref_sym(self, &view)
+            .or_else(|| crate::kb::typing::bottom_sort_sym(self, &view))
+            .expect("make_parameterized_type: base must be a sort reference");
         if bindings.is_empty() {
             // A parameterized type with no bindings IS the bare sort (`List[]` ≡
             // `List`) — emit `Ref(S)`, never a degenerate no-arg `Fn{S}` (which

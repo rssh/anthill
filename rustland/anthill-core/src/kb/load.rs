@@ -19214,12 +19214,13 @@ fn sort_view_substitution(
     let mut sub: Vec<(String, String)> = named_args
         .iter()
         .filter_map(|(k_sym, v_tid)| {
-            // The base sort the binding names. WI-449: a parameterized binding value
-            // rides a `SortView(base, …)` wrapper (`C = List[T]` → `SortView(List, …)`)
-            // on BOTH the `provides` and the now-aligned `fact` path — `provides_spec_base_sym`
-            // unwraps it to `List`, where a raw functor read would yield the literal
-            // `SortView`. A bare op-valued binding stays its own functor, so the
-            // operation skip below is unaffected.
+            // The base sort the binding names. A parameterized binding value is the
+            // plain application (`C = List[T]` → `List[T = T]`, WI-600; a value-in-type
+            // one too, WI-20260924-F3FYJ); only an OVER-APPLIED one still rides a
+            // `SortView(base, …)` wrapper, which `provides_spec_base_sym` unwraps to its
+            // base where a raw functor read would yield the literal `SortView`. A bare
+            // op-valued binding stays its own functor, so the operation skip below is
+            // unaffected.
             let value_sym = provides_spec_base_sym(kb, *v_tid);
             if let Some(vs) = value_sym {
                 if matches!(kb.kind_of(vs), Some(SymbolKind::Operation)) {
@@ -30879,13 +30880,29 @@ impl<'a> Loader<'a> {
             // (`prelowered_provision_specs` says why), so this and the provision read one
             // value — positionals already mapped onto the spec's declared parameters.
             let spec = self.sort_inst_to_value(&pc.spec);
+            // DECODED LOWERED — the term `load_provides_clause` files (`lower_value_or_gate`
+            // on this same value) and an alias's recorded reading already is — so a binding
+            // that HOLDS a value-in-type (`Buf[T = Int64, N = 3]`, an occurrence until it is
+            // lowered) comes back as the type it is. WI-20260924-F3FYJ: decoded unlowered it
+            // was dropped, so the bracketed spelling kept the generic reading while `provides
+            // BufStore` over `sort BufStore = Store[State = Buf[T = Int64, N = 3]]` narrowed —
+            // MEASURED, one provision meaning two types in its block by how it was spelled.
+            // The lowered spec is what is left for `load_provides_clause`, so the clause is
+            // walked once. A spec that does not lower is left as written, for that clause's
+            // own lowering to refuse (`ValueInTypeNotResolved`, load-blocking) — and nothing
+            // narrows from it, not even a member it binds to a plain type: the provision is
+            // refused.
+            let key = (pc.span.start, pc.span.end);
+            let Ok(spec_term) = node_occurrence::value_to_term(&mut self.kb, &spec) else {
+                self.prelowered_provision_specs.insert(key, spec);
+                continue;
+            };
             self.prelowered_provision_specs
-                .insert((pc.span.start, pc.span.end), spec.clone());
+                .insert(key, Value::term(spec_term));
             // A named spec lowers to a `SortView` over its base, or to the bare base, and
-            // either decodes. A binding carried as a VALUE — a denoted one (`E =
-            // {Modify[c]}`), or a type holding one (`Vec[Int64, 3]`) — has no term and
-            // does not come back, so its member keeps the generic reading.
-            let Some((spec_sym, bindings)) = super::typing::unwrap_spec_view_value(&self.kb, &spec)
+            // either decodes.
+            let Some((spec_sym, bindings)) =
+                super::typing::unwrap_spec_view_value(&self.kb, &Value::term(spec_term))
             else {
                 // The one BARE spec that decodes to nothing is the reflect wrapper itself,
                 // `provides anthill.reflect.SortView` — a view with no base, binding no
@@ -30909,7 +30926,16 @@ impl<'a> Loader<'a> {
         seen.into_iter()
             .map(|(key, values)| {
                 let binding = match values.as_slice() {
-                    [one] if self.is_nameable_carrier(*one) => BlockMemberBinding::Carrier(*one),
+                    // A VALUE bound at the root (`Sized[WIS, 3]`'s `N = 3`) is no type a
+                    // signature could spell — `x: 3` does not parse — so it narrows nothing
+                    // (kernel-language §5.4). Beneath an applied type (`Buf[T = Int64, N =
+                    // 3]`) it is spelled with its type, which `is_nameable_carrier` admits.
+                    [one]
+                        if !super::typing::is_denoted_type(&self.kb, &TermIdView(*one))
+                            && self.is_nameable_carrier(*one) =>
+                    {
+                        BlockMemberBinding::Carrier(*one)
+                    }
                     [_] => BlockMemberBinding::Unnameable,
                     _ => BlockMemberBinding::Several,
                 };
@@ -31507,9 +31533,9 @@ impl<'a> Loader<'a> {
     /// WI-391: lower a spec BINDING VALUE (the `Int` in `provides Spec[T = Int]`, or a
     /// positional binding) to its CANONICAL type shape. A bare sort lowers to `Ref(S)` —
     /// the one extractable bare-sort shape (`type_head` classifies a no-arg `Fn{S}` as
-    /// MALFORMED → `TypeExtractor::Error`; only `Ref(S)` is a bare sort) and byte-identical
-    /// to the `fact`-head path (parse `convert_type_value` → `Ref(S)`), never the
-    /// `name_to_sort_term` nullary `Fn`. This is the binding-VALUE counterpart of
+    /// MALFORMED → `TypeExtractor::Error`; only `Ref(S)` is a bare sort), never the
+    /// `name_to_sort_term` nullary `Fn`. (It was also byte-identical to the `fact`-head
+    /// provision WI-20260917-S8JYF retired.) This is the binding-VALUE counterpart of
     /// [`sort_inst_to_value`]'s spec-IDENTITY lowering, whose bare-`Simple` arm must stay
     /// the `Fn{S}` functor the spec readers (`unwrap_spec_view`) require — the two slots
     /// carry the same syntax (`Spec`) but different roles. Whether `S` is a type-PARAM (a
@@ -31518,8 +31544,11 @@ impl<'a> Loader<'a> {
     /// shape, so one canonical `Ref` serves both. Normalizing here — at the producer — is
     /// the "normalize early" point that lets type-position consumers drop the late
     /// `Fn{S}→Ref(S)` patch (`normalize_ground_leaf`); subsumes WI-387 (which aligned only
-    /// the `T = T` param half). A parameterized / effect-row / other binding delegates to
-    /// [`sort_inst_to_value`] unchanged.
+    /// the `T = T` param half). A parameterized binding is the plain application a type
+    /// position builds ([`Self::assemble_binding_value`]), never the spec-identity
+    /// `SortView`; any other binding (effect row, tuple, arrow, variable, value) falls
+    /// through [`sort_inst_to_value`] to its catch-all, [`Self::type_expr_to_value`] — never
+    /// to its name arms, which read a type alias as a SPEC.
     fn sort_binding_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         match ty {
@@ -31528,21 +31557,23 @@ impl<'a> Loader<'a> {
                 Value::term(self.kb.make_sort_ref(sort_sym))
             }
             // WI-600: a NESTED parameterized binding VALUE (`Element = Pair[A = K, B
-            // = V]`) is lowered to the PLAIN parameterized term `Fn{Pair, named}` —
-            // NOT a `reflect.SortView` wrapper. Only the OUTER spec view is a
-            // `SortView` (assembled by the top-level `sort_inst_to_value` /
-            // `maybe_emit_fact_provides_info`); a nested type argument is an ordinary
-            // type, so carrier grounding (`substitute_carrier_params`) grounds and
-            // compares it against a user-written `Pair[…]` (also a plain `Fn`)
-            // directly, with no SortView→Fn rebuild. The leaves stay canonical `Ref`s
-            // (WI-387; the dispatch matcher's `impl_param_ref` reads a param by role in
-            // either spelling since WI-20260829-7QVD5, so this is the loader's canon and
-            // no longer a contract the matcher depends on).
-            // A denoted-bearing child (a value-in-type) can't ride a hash-consed
-            // `Fn`, so that exotic case keeps the faithful `SortView` `Value::Entity`
-            // carrier via `assemble_sort_view_value`. (The `fact` twin this matched,
-            // `canonicalize_fact_binding_value`, went with the `fact` spelling of a
-            // provision, WI-20260917-S8JYF.)
+            // = V]`) is lowered to the PLAIN parameterized application `Pair[A = K, B =
+            // V]` — NOT a `reflect.SortView` wrapper. Only the OUTER spec view is a
+            // `SortView` (assembled by the top-level `sort_inst_to_value`); a nested type
+            // argument is an ordinary type, so carrier grounding
+            // (`substitute_carrier_params`) grounds and compares it against a
+            // user-written `Pair[…]` directly, with no SortView→Fn rebuild. The leaves
+            // stay canonical `Ref`s (WI-387; the dispatch matcher's `impl_param_ref` reads
+            // a param by role in either spelling since WI-20260829-7QVD5, so this is the
+            // loader's canon and no longer a contract the matcher depends on). A
+            // value-in-type LITERAL child is no exception (WI-20260924-F3FYJ): it takes the
+            // occurrence carrier, as it does in a type position — `assemble_binding_value`
+            // says why the wrapper it used to take was wrong. A value written as a NAME
+            // (`N = size`, a zero-arg operation) is still the `Simple` arm's `Ref(size)`
+            // here, where a type position reads `denoted(size)`: the same divergence, one
+            // spelling over, and not closed by this arm (WI-20260929-9WXK2). (The `fact`
+            // twin this matched, `canonicalize_fact_binding_value`, went with the `fact`
+            // spelling of a provision, WI-20260917-S8JYF.)
             TypeExpr::Parameterized { name, bindings } => {
                 // WI-20260924-SNJPR — an ALIAS applied to further arguments is the sort it
                 // stands for with the bindings it fixes, as in a type position
@@ -31561,7 +31592,8 @@ impl<'a> Loader<'a> {
                 // Explicit named bindings first, then each positional onto the next
                 // declared param no name took. An OVERFLOW positional diverts to `pos`,
                 // which `assemble_binding_value` preserves (via the `SortView` carrier)
-                // rather than dropping — and which the arity check below reports.
+                // rather than dropping — and which the arity check below reports for a
+                // SORT head (it does not check any other head).
                 let mut named: Vec<(Symbol, Value)> =
                     fixed.iter().map(|&(p, t)| (p, Value::term(t))).collect();
                 let mut positionals: Vec<Value> = Vec::new();
@@ -31600,7 +31632,7 @@ impl<'a> Loader<'a> {
                     let detail = problem.describe(&self.kb, base_sym);
                     self.errors.push(LoadError::InvalidTypeArgument {
                         detail,
-                        span: Some(self.type_expr_span(ty).span),
+                        span: Some(span.span),
                     });
                 }
                 let slots = KnowledgeBase::positional_param_slots(
@@ -31631,9 +31663,9 @@ impl<'a> Loader<'a> {
                     .record_parameterized_type_site(crate::kb::ParameterizedSite {
                         base: base_sym,
                         bindings: named.iter().map(|(s, v)| (*s, v.clone())).collect(),
-                        span: self.type_expr_span(ty),
+                        span,
                     });
-                self.assemble_binding_value(base_sym, named, pos)
+                self.assemble_binding_value(base_sym, named, pos, span)
             }
             _ => self.sort_inst_to_value(ty),
         }
@@ -31660,18 +31692,16 @@ impl<'a> Loader<'a> {
         use crate::eval::value::Value;
         match ty {
             TypeExpr::Simple(name) => {
-                // WI-387: a type-param binding value (the `T` in `provides
-                // Stream[T = T]`) must lower to a `Ref(param)` — the SAME shape
-                // the `fact`-head path (`maybe_emit_fact_provides_info` over
-                // `convert_term`) emits — not the nullary `Fn` `name_to_sort_term`
-                // builds. (Before WI-20260829-7QVD5 only `Ref`/`Ident` was recognized
-                // as a dispatch type-param WILDCARD (`impl_param_ref`), so a nullary
-                // `Fn` scored CONCRETE specificity and a `provides`-clause provider
-                // out-ranked an equivalent `fact` provider — wi210. The wildcard test
-                // now reads the param by role in either spelling; this arm keeps the
-                // one canon anyway, so the two provisions stay the same term.) A universal `provides Spec[T = T]` IS a wildcard
-                // provision, exactly like `fact Spec[T = T]` — the two must emit
-                // structurally identical `SortProvidesInfo` bindings.
+                // WI-387: a type-param NAME lowers to a `Ref(param)`, not the nullary
+                // `Fn` `name_to_sort_term` builds. (Before WI-20260829-7QVD5 only
+                // `Ref`/`Ident` was recognized as a dispatch type-param WILDCARD
+                // (`impl_param_ref`), so a nullary `Fn` scored CONCRETE specificity —
+                // wi210; the wildcard test now reads the param by role in either
+                // spelling, and this arm keeps the one canon anyway.) WI-387 was written
+                // for a binding VALUE — the `T` in `provides Stream[T = T]` — and its twin
+                // on the `fact`-head path; a binding value is `sort_binding_to_value`'s
+                // since WI-391 and never reaches this arm, and the `fact` spelling of a
+                // provision went with WI-20260917-S8JYF.
                 //
                 // A concrete bare spec is the `Fn{S}` functor here — the spec-IDENTITY
                 // slot the spec readers read. (A bare sort as a binding VALUE is
@@ -31805,8 +31835,8 @@ impl<'a> Loader<'a> {
     /// Assemble a `SortView` carrier from its positional slot (the base sort's name
     /// term in `pos[0]`, plus any binding left unmapped) and its named bindings,
     /// choosing the faithful representation: a `Value::Entity` when ANY binding
-    /// carries a non-`Term` value (a denoted `Node`, a nested value `SortView` —
-    /// information a hash-consed `Term` cannot hold), else the all-ground
+    /// carries a non-`Term` value (a denoted `Node`, a type holding one, a value-carried
+    /// nested `SortView` — information a hash-consed `Term` cannot hold), else the all-ground
     /// hash-consed `Value::Term(SortView…)`. The single decision point of
     /// [`sort_inst_to_value`] (the `provides` / `requires` path), so a binding's value is
     /// never silently dropped. (It was shared with the `fact` path's
@@ -33383,37 +33413,66 @@ impl<'a> Loader<'a> {
     }
 
     /// WI-600 — assemble a NESTED parameterized binding VALUE (`Element = Pair[A =
-    /// K, B = V]`), choosing the faithful representation: the PLAIN parameterized
-    /// term `Fn{base, named}` when every binding is ground and no stray positional
-    /// remains, else the `reflect.SortView` `Value::Entity` carrier (a denoted child
-    /// — value-in-type — a stray/overflow positional, or a double-bind can't ride a
-    /// hash-consed `Fn`; a `SortView` Entity carries them faithfully rather than
-    /// silently dropping, per the repo's loud-over-silent rule). The decision point of
+    /// K, B = V]`) as the PLAIN parameterized application a type position builds for the
+    /// same text: hash-consed when every child is, the occurrence carrier when a child is a
+    /// denoted or a variable — [`super::typing::parameterized_value`] decides, the typer's
+    /// own carrier choice. For a sort head and a LITERAL value-in-type, a provision's
+    /// binding and a signature's type are then one type — the one carrier grounding and
+    /// the σ readers compare. (A value written as a NAME is not: see the arm comment in
+    /// [`sort_binding_to_value`].) The decision point of
     /// [`sort_binding_to_value`] (the `provides` path; its `fact` twin
-    /// `canonicalize_fact_binding_value` went with WI-20260917-S8JYF) — the plain `Fn` only
-    /// replaces the former nested `SortView` for the clean, well-formed case, exactly where
-    /// carrier grounding compares it against a user-written `Pair[…]` (also a plain
-    /// `Fn`) with no SortView→Fn rebuild. `pos` holds only the OVERFLOW positionals (a
-    /// positional never double-binds: it takes the next parameter no name took,
-    /// WI-20260923-N3W68); the base name term is prepended for the SortView subject slot,
-    /// mirroring the outer spec view.
+    /// `canonicalize_fact_binding_value` went with WI-20260917-S8JYF).
+    ///
+    /// WI-20260924-F3FYJ — A DENOTED CHILD USED TO TAKE THE `SortView` WRAPPER, on the
+    /// premise that it "can't ride a hash-consed `Fn`". True of this function's own
+    /// output, false of the fact it feeds: `lower_value_or_gate` lowers the whole spec to a
+    /// term (WI-390), wrapper and all, so the stored binding read `SortView(Buf)[T = Int64,
+    /// N = 3]` where every signature writes `Buf[T = Int64, N = 3]`. σ carried the wrapper
+    /// into the member-fit check, which refused the correct member and the wrong one with
+    /// one message. MEASURED: `provides Store[State = Buf[T = Int64, N = 3]]` refused a
+    /// member `peek(s: Buf[T = Int64, N = 3])`, `N = 4` got the identical refusal, and the
+    /// ground `Buf[T = Int64]` loaded (`wi_f3fyj_value_in_type_binding_test`).
+    ///
+    /// The `reflect.SortView` carrier is left for what no type position builds: an
+    /// OVERFLOW positional (`pos` — a positional never double-binds, it takes the next
+    /// parameter no name took, WI-20260923-N3W68), and a child that is itself such a view
+    /// ON THE VALUE CARRIER (`Value::Entity`), which the type builder cannot take. A GROUND
+    /// over-applied child is a hash-consed `SortView` term and is embedded like any other
+    /// term child. Both are over-applications: `check_sort_type_args` has reported them for
+    /// a SORT head, and for any other head (`foo[3]`, an entity) nothing has, so the view is
+    /// what keeps the stray argument from being dropped silently (WI-20260929-AAQT5 reports
+    /// it where it is written, which retires this branch). The base name term is
+    /// prepended for the SortView subject slot, mirroring the outer spec view.
     fn assemble_binding_value(
         &mut self,
         base_sym: Symbol,
         named: Vec<(Symbol, crate::eval::value::Value)>,
         pos: Vec<crate::eval::value::Value>,
+        span: SourceSpan,
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
-        if pos.is_empty() && named.iter().all(|(_, v)| matches!(v, Value::Term { .. })) {
-            let base_ref = self.kb.make_sort_ref(base_sym);
-            let ground: Vec<(Symbol, TermId)> =
-                named.iter().map(|(s, v)| (*s, v.expect_term())).collect();
-            Value::term(self.kb.make_parameterized_type(base_ref, &ground))
-        } else {
+        // A child is a type carrier, or the value-carried view this builds below, one level
+        // down. EXHAUSTIVE on purpose: the type builder takes Term / Node / Var only, and a
+        // gate that sent "anything but a view" to it would crash on, or (beside a Node
+        // sibling) silently erase to `?ungrounded`, a carrier nobody meant to reach it.
+        let mut over_applied = !pos.is_empty();
+        for (_, v) in &named {
+            match v {
+                Value::Term { .. } | Value::Node(_) | Value::Var(_) => {}
+                Value::Entity { .. } => over_applied = true,
+                other => unreachable!(
+                    "a nested binding value is a type or an over-applied view, got {other:?}"
+                ),
+            }
+        }
+        if over_applied {
             let name_term = self.kb.make_name_term_from_sym(base_sym);
             let mut all_pos = vec![Value::term(name_term)];
             all_pos.extend(pos);
             self.assemble_sort_view_value(all_pos, named)
+        } else {
+            let base_ref = self.kb.make_sort_ref(base_sym);
+            super::typing::parameterized_value(self.kb, base_ref, &named, span, self.current_owner)
         }
     }
 

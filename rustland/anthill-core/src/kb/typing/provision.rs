@@ -496,8 +496,7 @@ fn written_spec_binds_param(
 /// the dictionary entry that backs the spec op — read at the fact-coverage check
 /// (loader) and at spec-op dispatch (eval) through this one accessor. The bound
 /// value's base symbol is read via `provides_spec_base_sym` (the same
-/// op-discriminator [`sort_view_substitution`](crate::kb::load) uses, which also
-/// unwraps a `SortView`-wrapped parameterized value); a type-valued binding
+/// op-discriminator [`sort_view_substitution`](crate::kb::load) uses); a type-valued binding
 /// (`F = Option`, a `Sort`) yields `None`, so a plain type-only provision
 /// (`provides Stream[T = X]`) never matches.
 fn instance_fact_op_in_bindings(
@@ -517,9 +516,9 @@ fn instance_fact_op_in_bindings(
 /// (`pure = optionPure` ⇒ `optionPure`), or `None` when the binding is not
 /// op-valued (a type binding `F = Option`, a `Sort`). The single op-discriminator
 /// shared by fact-coverage (rule 1), eval dispatch (increment 2), and coherence
-/// (rule 2): a binding backs a spec op iff its base symbol — read via
-/// `provides_spec_base_sym`, which also unwraps a parameterized `SortView` — is an
-/// `Operation`. Folding all three callers through this one predicate keeps them
+/// (rule 2): a binding backs a spec op iff its head symbol, read via
+/// `provides_spec_base_sym`, is an `Operation`. Folding all three callers through this
+/// one predicate keeps them
 /// from disagreeing about what an op-valued binding is.
 pub(crate) fn binding_op_symbol(kb: &KnowledgeBase, value: TermId) -> Option<Symbol> {
     crate::kb::load::provides_spec_base_sym(kb, value)

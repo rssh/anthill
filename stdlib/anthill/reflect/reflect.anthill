@@ -501,7 +501,8 @@ namespace anthill.reflect
   operation nonvar(x: Term) -> Bool @[host_implemented]
   operation ground(x: Term) -> Bool @[host_implemented]
 
-  -- Extract a named binding from a SortView instantiation term.
+  -- Extract a named binding from a sort instantiation: a SortView spec view, or the
+  -- plain parameterized application a NESTED binding value is (`Buf[T = Int64, N = 3]`).
   -- Given spec = SortView(Monoid(), T=Int64(), combine=Ref(add)),
   -- resolve_sort_instantiation_param(spec, Ref(T), ?val) binds ?val to Int64().
   operation resolve_sort_instantiation_param(inst: Term, param: Term) -> Term @[host_implemented]

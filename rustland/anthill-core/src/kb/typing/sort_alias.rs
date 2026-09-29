@@ -549,11 +549,14 @@ pub(crate) fn owns_members(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// An alias's recorded reading as a sort application — `(sort, named bindings)` — or
 /// `None` for a type that is not one, by the typer's own classification (`type_head`,
 /// which also keeps the tuple, arrow and effect-row meta-constructors out): a bare sort
-/// reference, a sort applied by name (the plain term a clause binding lowers to), or the
-/// `SortView` over a base that a binding carried as a VALUE lowers to, decoded by
-/// [`unwrap_spec_view`]. A positional left over is an argument no parameter took, which
-/// the alias declaration has already refused, so it reads as no application rather than
-/// a partial one.
+/// reference, a sort applied by name (the plain term a clause binding lowers to, a
+/// value-in-type one included since WI-20260924-F3FYJ), or the `SortView` over a base
+/// that a VALUE-carried over-applied binding beneath lowers to, decoded by
+/// [`unwrap_spec_view`] — reachable from a program that LOADS when the over-applied head
+/// is not a sort (`Store[State = foo[3]]`, an entity `foo`: `check_sort_type_args` checks
+/// sort heads only, WI-20260929-AAQT5). A positional left over at this level is an argument
+/// no parameter took, which the alias declaration has already refused, so it reads as no
+/// application rather than a partial one.
 fn sort_application(
     kb: &KnowledgeBase,
     tid: TermId,

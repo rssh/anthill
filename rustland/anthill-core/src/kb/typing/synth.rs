@@ -1903,6 +1903,13 @@ pub(super) fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
     if let Some(sym) = extract_sort_ref_sym(kb, &TermIdView(t)) {
         return kb.qualified_name_of(sym).to_string();
     }
+    // WI-20260924-F3FYJ — a value-in-type renders as the value it carries (`N = 3`), as
+    // every type diagnostic renders it ([`type_display_name`]'s `Denoted` arm) — not as the
+    // raw extractor application `TypeExtractor.Denoted[value = 3]` the arms below produced.
+    // A provision at such a binding reaches a requirement refusal now that it loads.
+    if is_denoted_type(kb, &TermIdView(t)) {
+        return type_display_name(kb, t);
+    }
     match kb.get_term(t) {
         // bare `Ref` is named above via `extract_sort_ref_sym` (WI-361); a still-
         // unresolved `Ident` falls here.

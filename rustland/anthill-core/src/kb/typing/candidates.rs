@@ -773,11 +773,12 @@ pub(super) fn unwrap_spec_view(
 /// `Value`. A ground `Value::Term` delegates to the TermId decode above
 /// (byte-identical). A denoted spec (`Value::Entity` / `Value::Node`, e.g.
 /// `Foo[E = Modify[c]]`) is decoded via [`TermView`] with the SAME SortView
-/// logic. A denoted BINDING value (`E = Modify[c]`) has no `TermId` and is
-/// dropped from the returned bindings — every caller filters to type-param
-/// bindings (`is_type_param_binding`) and threads `TermId`s into `SortGoal` /
-/// the child subst map, so an effect binding is never one they consume; the full
-/// denoted spec stays preserved on `RequiresEntry.spec` regardless.
+/// logic. A BINDING carried as a value (`E = {Modify[c]}`, or a type holding a
+/// value-in-type, `State = Buf[T = Int64, N = 3]`) has no `TermId` and is dropped from
+/// the returned bindings; the full spec stays preserved on `RequiresEntry.spec`
+/// regardless. A reader that needs such a binding decodes the LOWERED spec
+/// (`node_occurrence::value_to_term`) instead — as the loader's carrier pre-scan does
+/// since WI-20260924-F3FYJ, which lost `State` here and kept the generic reading.
 pub(crate) fn unwrap_spec_view_value(
     kb: &KnowledgeBase,
     spec: &Value,
@@ -874,7 +875,25 @@ pub(super) fn match_candidate_against_goal(
         return match_impl_param(kb, sigma, p, per_call_value, impl_subst);
     }
     // (2) Candidate side is a parametric Fn — recurse into its bindings.
-    if let Some((c_base, c_bindings)) = parametric_value_parts(kb, candidate_value) {
+    //
+    // A VALUE standing in a type position — the `3` of `provides Store[State = Buf[T =
+    // Int64, N = 3]]` — is NOT one: it is a LEAF, left to arm (3), which relates it by
+    // value (`dispatch_values_match`). WI-20260924-F3FYJ: `denoted(value: 3)` is an
+    // application of the `Denoted` extractor, so it fell in here as a STRUCTURED head, and
+    // WI-824's rule below (a bare element does not match a structured head) refused it
+    // against the call's open `N` — every provision at a value-in-type binding was
+    // invisible to load-time arbitration. MEASURED: two carriers at `N = 3` / `N = 4`
+    // loaded clean and died "ambiguous dispatch" at run time, where the typed twin (`N =
+    // Int64` / `String`) is a load error; a `[Store = C2]` bracket was dropped; beside a
+    // typed provider the call silently took the typed one. `value` is a field of the
+    // extractor, not a spec parameter — the reason `parametric_value_parts` keeps
+    // `effects_rows` out of this arm too.
+    let candidate_parts = if is_denoted_type(kb, &TermIdView(candidate_value)) {
+        None
+    } else {
+        parametric_value_parts(kb, candidate_value)
+    };
+    if let Some((c_base, c_bindings)) = candidate_parts {
         // Per-call side must also be parametric with the same base.
         let (p_base, p_bindings) = match parametric_value_parts(kb, per_call_value) {
             Some(parts) => parts,

@@ -149,7 +149,8 @@ pub enum BuiltinTag {
     /// `anthill.kernel.not(goal)` — negation-as-failure.
     Not,
     /// `anthill.reflect.resolve_sort_instantiation_param(?spec_inst, ?param_name, ?value)` —
-    /// extract a named arg value from a ParameterizedType term by parameter name.
+    /// extract a named arg value from a sort instantiation (a `SortView` spec view or a
+    /// plain parameterized application) by parameter name.
     ResolveSortInstParam,
     /// `anthill.reflect.scope(?sym, ?result)` — Symbol → enclosing scope symbol.
     Scope,
@@ -7763,15 +7764,18 @@ impl KnowledgeBase {
         let Some(param_sym) = param_val.head(self).functor_sym() else {
             return BuiltinResult::Failure;
         };
-        // The instance must be `SortView(sort_name, named_args…)`; find the
-        // named binding for `param_sym`. Head + named child, no reify — the
-        // binding is handed back in its own carrier, so a value-in-type binding
-        // (a `Value::Node` denoted) keeps its identity instead of being
-        // flattened into the term store on the way to `?value`.
-        let Some(functor) = inst_val.head(self).functor_sym() else {
-            return BuiltinResult::Failure;
-        };
-        if self.symbols.local_name(functor) != "SortView" {
+        // The instance is a sort instantiation — a spec view `SortView(sort_name,
+        // named_args…)`, or a plain parameterized application `Buf[T = …, N = …]`, which
+        // is what a NESTED binding value is (WI-600; a value-in-type one too since
+        // WI-20260924-F3FYJ) — and the named binding for `param_sym` is read off either
+        // head, as the eval twin (`reflect_builtins::resolve_sort_instantiation_param`)
+        // reads it. This demanded the `SortView` head and nothing else, so reading INTO a
+        // provision's nested binding answered in an operation body and failed in a rule —
+        // MEASURED, and widened by F3FYJ from ground nested bindings to value-in-type ones.
+        // Head + named child, no reify — the binding is handed back in its own carrier, so
+        // a value-in-type binding (a `Value::Node` denoted) keeps its identity instead of
+        // being flattened into the term store on the way to `?value`.
+        if inst_val.head(self).functor_sym().is_none() {
             return BuiltinResult::Failure;
         }
         let binding = inst_val

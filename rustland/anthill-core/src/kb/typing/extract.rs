@@ -185,6 +185,30 @@ pub(crate) fn type_var_name_of_view<V: TermView>(kb: &KnowledgeBase, ty: &V) -> 
     }
 }
 
+/// WI-20260924-F3FYJ — is `ty` a VALUE standing where a type goes (`denoted(value: …)`, the
+/// `3` of `Sized[WIS, 3]`) at its ROOT? A value beneath an applied type (`Buf[T = Int64,
+/// N = 3]`) does not count: that whole is a type. Asked where a value must not pass for a
+/// type: the loader's carrier pre-scan (a type member bound to a bare value names no type a
+/// signature could spell), the dispatch matcher (a value is a leaf, matched by value —
+/// `match_candidate_against_goal`, `dispatch_values_match`), and the goal renderer.
+pub(crate) fn is_denoted_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    matches!(type_head(kb, ty), TypeHead::Denoted)
+}
+
+/// WI-20260924-F3FYJ — the declared bottom SORT a bare reference names
+/// (`anthill.prelude.Nothing`), which [`type_head`] classifies as the bottom rather than as a
+/// sort reference; `None` for anything else — the meta-constructor spelling
+/// `TypeExtractor.Nothing` included, a constructor and not a sort. The one base
+/// [`KnowledgeBase::make_parameterized_type`] admits beside a sort reference.
+pub(crate) fn bottom_sort_sym<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<Symbol> {
+    if !matches!(type_head(kb, ty), TypeHead::Nothing) {
+        return None;
+    }
+    ty.head(kb)
+        .functor_sym()
+        .filter(|s| kb.has_kind(*s, crate::intern::SymbolKind::Sort))
+}
+
 pub(super) fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
     // WI-436: a 0-ary TypeExtractor meta-ctor (`Nothing`) canonicalizes to a bare
     // `Ref` head, so classify by the functor SYMBOL read off either spelling

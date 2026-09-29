@@ -285,8 +285,9 @@ pub(super) fn declared_type_param_vid(kb: &KnowledgeBase, pty: &Value) -> Option
 /// carrier `List`; false for `Element`'s)? Shared by the typer's
 /// [`carrier_param_receiver`] and eval's [`carrier_param_receiver_for_values`]
 /// so the two classifications cannot disagree about which argument names the
-/// carrier. The binding value rides a `SortView(List[T], …)` wrapper — unwrap
-/// via the same reader the provider machinery uses.
+/// carrier. The binding value is the plain application (`List[T = T]`, WI-600) or a
+/// bare `Ref(List)`; `provides_spec_base_sym` reads its head either way (its `SortView`
+/// unwrap serves the OUTER spec — a binding rides one only when over-applied).
 pub(super) fn provision_binds_param_to_carrier(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
@@ -1849,7 +1850,7 @@ pub(super) fn bind_spec_params_from_carrier_param(
         // The CARRIER param itself (`FiniteCollection.C`) is bound by ordinary
         // argument unification against the receiver, NOT from the provision: its
         // provider binding is the carrier-sort application (`C ↦ Map`, or the
-        // transitive `C ↦ SortView[T = T]` for a List), and grounding+binding that
+        // transitive `C ↦ List[T = T]` for a List), and grounding+binding that
         // would pin `C` to the wrong sort and conflict with the receiver arg. Skip
         // it. (Pre-WI-593 a non-ground, non-ref `C` binding fell through the `None`
         // arm; the explicit skip preserves that intent now that the WI-593 compound
@@ -1975,11 +1976,11 @@ pub(super) fn bind_spec_params_from_carrier_param(
 ///
 /// WI-600: the provider fact now stores a compound binding as the PLAIN
 /// parameterized term `Fn{Pair, A = K, B = V}` (the loader no longer wraps a nested
-/// binding value in a `reflect.SortView`; see `sort_binding_to_value`). A ground
-/// provider spec view carries only ground `TermId` bindings (a denoted-bearing
-/// spec rides as a `Value::Entity` value fact, which `provider_spec_view_bindings`
-/// skips), so a compound reaching here is always this plain `Fn` — the generic-Fn
-/// recursion below handles it with no `SortView` unwrap / rebuild.
+/// binding value in a `reflect.SortView`; see `sort_binding_to_value`) — a value-in-type
+/// one too since WI-20260924-F3FYJ, whose provision `lower_value_or_gate` files as a term
+/// fact like any other. So a compound reaching here is always this plain `Fn` (bar an
+/// over-application, which the loader refuses) — the generic-Fn recursion below handles
+/// it with no `SortView` unwrap / rebuild.
 pub(super) fn substitute_carrier_params(
     kb: &mut KnowledgeBase,
     tid: TermId,
@@ -3131,6 +3132,11 @@ pub(super) fn resolve_at_goal(
 /// recurses into its bindings — so a `true` here is not binding-level agreement, and a
 /// caller that needs that must not read it as such. Tightening the structured arm is a
 /// design change with that census as its blast radius, not a correction of this one.
+///
+/// ONE EXCEPTION, and it is not a tightening of the structured arm: a VALUE in a type
+/// position (`denoted(value: 3)`) is related by value alone — `types_lesseq` decides it and
+/// the coarse head never does, because every value-in-type shares the one head `Denoted`
+/// (WI-20260924-F3FYJ).
 pub(super) fn dispatch_values_match(
     kb: &mut KnowledgeBase,
     per_call_value: TermId,
@@ -3157,6 +3163,15 @@ pub(super) fn dispatch_values_match(
     let mut subst = Substitution::new();
     if types_lesseq(kb, &mut subst, per_call_value, candidate_value) {
         return true;
+    }
+    // A VALUE in a type position is related by VALUE, which `types_lesseq` has just
+    // decided — never by the coarse head below, where every value-in-type has the one
+    // head `Denoted` and `N = 4` would match `N = 3` (WI-20260924-F3FYJ, beside the
+    // leaf arm it serves in `match_candidate_against_goal`).
+    if is_denoted_type(kb, &TermIdView(per_call_value))
+        || is_denoted_type(kb, &TermIdView(candidate_value))
+    {
+        return false;
     }
     let per_call_sym = sort_sym_of_term(kb, per_call_value);
     let candidate_sym = sort_sym_of_term(kb, candidate_value);
