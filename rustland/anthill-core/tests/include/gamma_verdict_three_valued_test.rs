@@ -275,14 +275,15 @@ fn a_discharging_contract_is_unaffected() {
 // Every row above resolves a goal that is the ONLY goal in its frame, so each takes
 // `step_init`'s `goals.len() == 1` shortcut: it yields its `Solution` on the spot,
 // carrying the cause directly. That path exercises none of the machinery that exists
-// for the other case — `ResolverFrame::undecided`, `record_undecided_on_frame`, the
-// `consecutive_delays >= goals.len()` gate's `frame.undecided.clone()`, and
-// `step_naf`'s cause plumbing were ALL dead in the corpus, measured by probe.
+// for the other case — the cause carried on a rotated goal's wait state (WI-20260926-CYNPE;
+// a per-frame `undecided` list before it), the `consecutive_delays >= goals.len()` gate
+// that reads it, and `step_naf`'s cause plumbing were ALL dead in the corpus, measured by
+// probe.
 //
 // A rule body puts two goals in one frame. Both mention parameters, so both answer
-// `Unknown` and both ROTATE: the first records and rotates (cd=1), the second records
-// and rotates (cd=2), and `cd >= goals.len()` then fires the gate — which is the only
-// site that reads the frame's list.
+// `Unknown` and both ROTATE: the first rotates with its cause (cd=1), the second rotates
+// with its cause (cd=2), and `cd >= goals.len()` then fires the gate — which is the only
+// site that reads the causes.
 //
 // WHAT IT DISCRIMINATES, and why the assertion is on `universal` rather than on
 // "failed": if the frame channel is dead, the gate still yields a Solution whose
@@ -328,7 +329,7 @@ fn an_undecided_goal_survives_rotation_in_a_multi_goal_frame() {
         multi_goal_verdict("gv.multi"),
         GammaVerdict::Undecided { universal: true },
         "both body goals answer `Unknown` and ROTATE, so the cause reaches the drain \
-         only through `ResolverFrame::undecided`. A dead frame channel yields the same \
+         only through each goal's wait state (`Wait::cause`). A dead channel yields the same \
          residual with an empty `undecided` — i.e. `universal: false`, the wrong verdict"
     );
 }

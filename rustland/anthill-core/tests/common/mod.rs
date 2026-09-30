@@ -1131,6 +1131,21 @@ pub fn one_definite_int(kb: &mut KnowledgeBase, qn: &str) -> Option<i64> {
     }
 }
 
+/// The UNDECIDED causes of each answer of the unary relation `qn` (`qn(?r)`), in answer order
+/// — what tells an undecided row from a merely suspended one, which [`query_unary`] reports
+/// alike as indefinite (WI-20260926-CYNPE).
+#[allow(dead_code)]
+pub fn undecided_causes(
+    kb: &mut KnowledgeBase,
+    qn: &str,
+) -> Vec<Vec<anthill_core::kb::resolve::UnknownCause>> {
+    let goal = query_pattern_term(kb, &format!("{qn}(?r)"));
+    kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
+        .iter()
+        .map(|sol| sol.undecided.iter().map(|(_, cause)| *cause).collect())
+        .collect()
+}
+
 /// A row value as `.anthill` text: an occurrence or a term through `TermPrinter`, any other
 /// carrier by its `Debug` form.
 #[allow(dead_code)]

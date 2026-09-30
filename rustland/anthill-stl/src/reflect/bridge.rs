@@ -1645,7 +1645,7 @@ namespace rstl.match
 
   operation rank(c: Colour) -> Int64 = match c case red() -> 1
 
-  rule bad :- rank(green(), 1)
+  rule bad :- rank(green(), 1), 1 = 2
 
   rule both :- rank(green(), 1)
   rule both :- rank(red(), 1)
@@ -1692,10 +1692,13 @@ end
     }
 
     /// THE OTHER HALF: a fault on a branch that yielded NOTHING, followed by exhaustion.
-    /// `rule bad :- rank(green(), 1)` faults and yields nothing with `definite_only` off,
-    /// because the WI-938 relational hook falls through to ordinary candidate selection
-    /// when the reduction is undecided, and `rank` heads no clauses — so the branch FAILS
-    /// rather than residualizing.
+    /// `rule bad :- rank(green(), 1), 1 = 2` faults on its first goal, which WAITS — a call
+    /// that did not run delays its goal (WI-20260926-CYNPE) — and its
+    /// sibling then FAILS the branch, so it yields nothing even with `definite_only` off.
+    /// (Written as `rank(green(), 1)` alone, as it was, the goal now RESIDUALIZES, and the
+    /// fault displaces that answer at the first pull instead — the arm the row above
+    /// drives. Before CYNPE the WI-938 hook sent the call to candidate selection, where
+    /// `rank` heads no clauses, and the lone goal failed by itself.)
     ///
     /// This row used to PIN `Ok(None)`: `SearchStream::split_first` consumed the stream on
     /// exhaustion and dropped the recorded fault with it, and no consumer could close

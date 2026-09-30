@@ -45,7 +45,7 @@
 //! | [`the_selected_impls_own_requirement_is_filled_from_the_dictionary`] | FAILS — `[]` | FAILS — a residual | ok |
 //! | [`the_filled_requirement_follows_the_element_and_is_not_a_constant`] | FAILS — `[]` | FAILS — a residual | ok |
 //! | [`a_dictionary_crossing_a_rule_head_is_read_on_its_own_carrier`] | FAILS — `[]` | FAILS — a residual | **FAILS — a residual** |
-//! | [`the_same_clause_without_the_require_answers_nothing`] | ok | ok | ok |
+//! | [`the_same_clause_without_the_require_has_no_definite_answer`] | ok | ok | ok |
 //! | [`a_carrier_bearing_call_answers_the_same_number_either_way`] | ok | ok | ok |
 //! | [`a_builtin_backed_spec_op_is_still_not_woven`] | ok | ok | ok |
 //!
@@ -186,19 +186,25 @@ fn the_carrier_less_call_answers_the_carriers_own_number() {
 /// classification (WI-1044), which is what carries the equivalent carrier-BEARING
 /// row below.
 ///
-/// Delete the `require` and the identical clause answers NOTHING — because
-/// value-direction reads the operands' carried types and a nullary call has none.
+/// Delete the `require` and the identical clause has NO DEFINITE answer — because
+/// value-direction reads the operands' carried types and a nullary call has none, so
+/// `Sum` and `Prod` TIE and no implementation is reachable. The call is UNREDUCED
+/// (proposal 068 §2): one undecided row naming that cause. It answered nothing, silently,
+/// until WI-20260926-CYNPE made the WI-938 hook route a call that did not run instead of
+/// sending it to candidate selection — so this row is ALSO the run-time supplier-TIE row
+/// of that ticket (a tie at a carrier the typer sees is refused at load).
 #[test]
-fn the_same_clause_without_the_require_answers_nothing() {
+fn the_same_clause_without_the_require_has_no_definite_answer() {
     let src = two_carriers(
         "  rule via(?x, ?r) :- Zeroable.tag(?x, ?t), Zeroable.zero(?r)\n  \
            rule answer(?r) :- via(sum(), ?r)\n",
     );
-    let got = answers(&src);
-    assert!(
-        got.is_empty(),
-        "without the clause dictionary nothing can name an implementation of a \
-         nullary spec op; got {got:?}",
+    let mut kb = crate::common::load_kb_with(&src);
+    assert_eq!(
+        crate::common::undecided_causes(&mut kb, "test.nar1x.answer"),
+        vec![vec![anthill_core::kb::resolve::UnknownCause::Unreduced]],
+        "without the clause dictionary nothing can name an implementation of a nullary spec \
+         op: one undecided row, naming the cause",
     );
 }
 

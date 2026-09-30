@@ -971,6 +971,16 @@ enum DelayMode {
     Delayed { consecutive_delays: usize },
 }
 
+/// The `consecutive_delays` a goal that WAITS continues its frame's rotation with: the
+/// first wait of a rotation is `1`, each one after it adds one — so the residualization
+/// gate (`consecutive_delays >= goals.len()`) is reached and the rotation terminates.
+fn next_consecutive(delay_mode: &DelayMode) -> usize {
+    match delay_mode {
+        DelayMode::Normal => 1,
+        DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
+    }
+}
+
 impl DelayMode {
     /// Reset the consecutive delay counter (Normal stays Normal).
     fn reset(&self) -> DelayMode {
@@ -1042,7 +1052,7 @@ struct ResolverFrame {
     // WI-246: goals carry `Value` so rule-body occurrences flow into SLD as
     // `Value::Node` without lowering to hash-consed Term. During the
     // behavior-preserving carrier swap every goal is still `Value::Term`.
-    goals: Vec<Value>,
+    goals: Vec<FrameGoal>,
     subst: Substitution,
     depth: usize,
     state: FrameState,
@@ -1053,23 +1063,78 @@ struct ResolverFrame {
     /// keeps its occurrence), matched via `match_view_value_pattern` — parity
     /// with the already-`Value` Γ overlay, no lowering to a hash-consed term.
     assumed_facts: Vec<Value>,
-    /// Goals in THIS frame a builtin answered [`BuiltinResult::Unknown`] on, with the
-    /// cause it named — carried so the residual can say WHY it has no answer.
+}
+
+/// WI-20260926-CYNPE — one goal of a frame's resolvent, with its WAIT STATE (proposal 068
+/// §2.2, `docs/design/068-implementation.md` §4).
+///
+/// THE STATE RIDES WITH ITS GOAL — through every rotation, every splice and every frame
+/// push — so it cannot drift from it. It used to live nowhere: a delayed goal was asked
+/// again from scratch on every turn, however little had changed; and the one thing that
+/// was remembered, an `Unknown` goal's cause, sat in a separate per-frame list that had to
+/// be filtered back against the residual and hand-inherited by the one push that resumed a
+/// rotation.
+///
+/// FRAME-LOCAL, NEVER ON THE OCCURRENCE: occurrences are `Rc`-shared across derivations and
+/// branches, and blockers are variables of THIS derivation — a mark on the node would leak
+/// into another branch.
+#[derive(Clone)]
+struct FrameGoal {
+    goal: Value,
+    wait: Wait,
+}
+
+impl FrameGoal {
+    /// A goal that has not been asked yet.
+    fn ready(goal: Value) -> Self {
+        FrameGoal {
+            goal,
+            wait: Wait::Ready,
+        }
+    }
+}
+
+/// Whether a goal is ASKED on its turn (068 §2.2).
+#[derive(Clone)]
+enum Wait {
+    /// Asked on its turn: not asked yet, or something it waited on has changed.
+    Ready,
+    /// SUSPENDED: its last answer — a delay, an undecided answer over a universal, a
+    /// fault — could change only by binding one of `blockers`, so on its turn it is PASSED
+    /// OVER, not asked, until one of them is bound.
     ///
-    /// FRAME-LOCAL AND MUTATED IN PLACE. An `Unknown` goal rotates behind the tail like
-    /// a delayed one and is only materialized much later, at `step_init`'s
-    /// `consecutive_delays >= goals.len()` gate, by which point the outcome that produced
-    /// it is long gone. Rotation mutates the frame rather than rebuilding it, so this
-    /// list survives it. Not stream-level (`self.truncated`'s home): a goal answered
-    /// `Unknown` on a branch that later BACKTRACKS must not colour a solution from a
-    /// different branch.
+    /// The blockers are design D1's COARSE ones: the unbound variables of the whole goal
+    /// under σ when it waited ([`KnowledgeBase::collect_unbound_vars_value`], the reader the
+    /// WI-322 pre-check trusts with the same question). A superset of what the answer
+    /// depends on, which is the safe direction: a missing blocker would pass a goal over
+    /// that a binding had made answerable. "Bound" includes a binding to another variable
+    /// — `?x <=> ?y` can decide `neq(?x, ?y)`.
     ///
-    /// THE INVARIANT FOR A FRAME PUSH: a push that RESUMES this goal list's rotation
-    /// (one carrying `consecutive_delays + 1` rather than `delay_mode.reset()`) must
-    /// inherit this list, because the gate it is marching toward is the list's only
-    /// reader. Exactly one push does — `step_choice_point`'s delay fallback, which says
-    /// so at its site; every other resets the counter and rightly starts empty.
-    undecided: Vec<(Value, UnknownCause)>,
+    /// `cause` is the answer's [`UnknownCause`] when it was undecided rather than delayed —
+    /// what [`Solution::undecided`] reports if the goal is still waiting at the drain.
+    Suspended {
+        blockers: Rc<[VarId]>,
+        cause: Option<UnknownCause>,
+    },
+    /// PARKED: UNREDUCED — no implementation is reachable for a call the goal needs
+    /// ([`UnknownCause::Unreduced`]), so no binding can ever change its answer. Never asked
+    /// again. It keeps its place behind its siblings, because a sibling that FAILS still
+    /// refutes the clause, and a refutation must win over an undecided answer; it joins the
+    /// residual with its cause.
+    Parked,
+}
+
+impl Wait {
+    /// The cause the drain reports for a goal still waiting — `None` for an ordinary
+    /// delay and for a fault (a fault is recorded on the stream, and is no statement about
+    /// a parameter, which is what [`Solution::undecided`] feeds).
+    fn cause(&self) -> Option<UnknownCause> {
+        match self {
+            Wait::Ready => None,
+            Wait::Suspended { cause, .. } => *cause,
+            Wait::Parked => Some(UnknownCause::Unreduced),
+        }
+    }
 }
 
 // THE `Value` → `TermId` REIFY IS GONE from this module (`reify_goal_value` /
@@ -1248,6 +1313,14 @@ pub struct ResolveStats {
     /// time in `step_init`. Should scale linearly with body size — i.e.
     /// roughly one walk per goal consumed (WI-030).
     pub lazy_walk_calls: u64,
+    /// WI-20260926-CYNPE — the number of turns on which `goals[0]` was ASKED: classified and
+    /// run (a builtin, an operation view, candidate selection). A WAITING goal passed over on
+    /// its turn is not asked (proposal 068 §2.2) — which is the point of counting: a goal
+    /// suspended on a variable nothing binds is asked once, however many siblings make
+    /// progress around it. A goal a view REWRITES in place — the Bool view to `eq`, the
+    /// functional-relation view of a call that ran to `unify`, a projection to `eq` — is
+    /// asked again as the rewrite, and counts again.
+    pub goals_asked: u64,
     /// WI-628 — the search abandoned at least one branch at the `max_depth`
     /// limit, so it is INCOMPLETE: an empty / short result is UNDECIDED, not a
     /// refutation. Not a cost counter like the others — a completeness signal
@@ -1676,6 +1749,37 @@ impl SearchStream {
         }
     }
 
+    /// Local hypotheses that match `goal_val`, as zero-body `Assumption` candidates —
+    /// resolved *inside* the normal SLD search, so they chain through KB rules and obey
+    /// backtracking / floundering with no duplicated logic. Two sources:
+    ///   • the frame's `assumed_facts` (WI-108) — `forall_impl` antecedents, a per-frame
+    ///     list (push/pop with the discharge);
+    ///   • the Γ overlay (WI-537 / proposal 050) — the typer's local-interpretation
+    ///     context, a discrimination-tree index global to this resolve call
+    ///     (`config.gamma`), matched structurally by [`Self::gamma_candidates_for`].
+    ///
+    /// Both reify the goal through the current σ carrier-faithfully (WI-348), so a goal
+    /// carrying a `Value::Node` matches by structure rather than being lowered to a
+    /// hash-consed term that drops the occurrence. Asked by candidate selection for a
+    /// NON-builtin goal (a builtin goal's Γ discharge is the pre-`execute_builtin` check),
+    /// and by the WI-938 hook for a call that did not run.
+    fn hypothesis_candidates(&self, kb: &mut KnowledgeBase, goal_val: &Value) -> Vec<Candidate> {
+        let frame = self.stack.last().unwrap();
+        if frame.assumed_facts.is_empty() && self.config.gamma.is_none() {
+            return Vec::new();
+        }
+        let goal_value = kb.reify_value(goal_val, &frame.subst);
+        let mut candidates: Vec<Candidate> = frame
+            .assumed_facts
+            .iter()
+            .filter_map(|fact| kb.match_view_value_pattern(fact, &goal_value))
+            .filter(|subst| !subst.is_contradiction())
+            .map(Candidate::Assumption)
+            .collect();
+        candidates.extend(self.gamma_candidates_for(kb, &goal_value));
+        candidates
+    }
+
     /// Proposal 050 (WI-537) — the Γ-overlay candidates for a goal: each
     /// local-interpretation fact that unifies with the (already σ-reified)
     /// `goal_value`, as a zero-body [`Candidate::Assumption`]. The
@@ -1726,7 +1830,7 @@ impl SearchStream {
         delay_mode: DelayMode,
     ) -> Option<StepResult> {
         let frame = self.stack.last().unwrap();
-        let mut new_goals = goals;
+        let mut new_goals: Vec<FrameGoal> = goals.into_iter().map(FrameGoal::ready).collect();
         new_goals.extend_from_slice(&frame.goals[1..]);
         let mut new_subst = frame.subst.clone();
         // WI-502 Step 2 (M7(b)) — carry `extra`'s TOP-LEVEL constraint
@@ -1828,11 +1932,9 @@ impl SearchStream {
         };
         let evaluated = evaluated?;
         if holes.entries.iter().any(|h| h.state == Stuck::Unreduced) {
-            let goals_len = self.stack.last().unwrap().goals.len();
             return Some(self.schedule_unanswerable_goal(
-                goal_val,
-                goals_len,
-                subst,
+                kb,
+                within.unwrap_or(goal_val),
                 depth,
                 delay_mode.clone(),
                 Some(UnknownCause::Unreduced),
@@ -1883,38 +1985,17 @@ impl SearchStream {
                 // WI-348: residual carries the delayed goals as `Value` — no
                 // materialize-to-`TermId`, so a goal mentioning a `Value::Node`
                 // keeps its occurrence identity.
-                let residual: Vec<Value> = frame.goals.clone();
-                // WHICH of those goals had no answer as opposed to no BINDING — recorded
-                // when each was answered, because the outcome is long gone by here.
-                // This is the ONE gate an `Unknown` goal reaches after rotating, so
-                // dropping it here would make every undecided answer indistinguishable
-                // from a floundered one at the drain.
-                //
-                // FILTERED TO THE GOALS STILL PENDING, because the list is append-only
-                // and a recorded goal can later be DISCHARGED. The Γ consult re-reifies
-                // each goal under the current σ on every pass, so one that answered
-                // `Unknown` on pass 1 (nothing structurally matched it yet) can match a
-                // Γ fact on pass 2 once a sibling binds its variable, and leave the
-                // list. Its stale cause would then colour a residual it is not in —
-                // reporting an ordinary flounder as a universal, the two verdicts this
-                // channel exists to separate, swapped.
-                //
-                // NOT DRIVEN, said plainly. Reaching it needs a goal that answers
-                // `Unknown` on one pass and is discharged from Γ on a later one, in a
-                // frame that then exhausts on a DIFFERENT goal; nothing in the corpus
-                // does, and I did not build one. The filter is cheap and the invariant
-                // it restores is the one this field's doc claims ("the subset of
-                // `residual`"), which the append-only list did not maintain — but no row
-                // fails if it is removed.
+                let residual: Vec<Value> = frame.goals.iter().map(|g| g.goal.clone()).collect();
+                // WHICH of those goals had no answer as opposed to no BINDING — read off
+                // each goal's own wait state (WI-20260926-CYNPE), which recorded the
+                // cause when the goal was answered: the outcome is long gone by here, and
+                // without it every undecided answer would arrive indistinguishable from a
+                // floundered one. A goal a later pass DISCHARGED took its cause with it,
+                // so nothing stale can colour this residual.
                 let undecided: Vec<(Value, UnknownCause)> = frame
-                    .undecided
+                    .goals
                     .iter()
-                    .filter(|(g, _)| {
-                        residual
-                            .iter()
-                            .any(|r| crate::kb::term_view::views_structurally_equal(kb, g, r))
-                    })
-                    .cloned()
+                    .filter_map(|g| g.wait.cause().map(|c| (g.goal.clone(), c)))
                     .collect();
                 self.stack.pop();
                 // WI-519: this is a FLOUNDERED branch (delay-and-rotate exhausted
@@ -1969,6 +2050,17 @@ impl SearchStream {
             return Some(StepResult::YieldSolution(sol));
         }
 
+        // WI-20260926-CYNPE (068 §2.2) — A WAITING GOAL IS PASSED OVER, NOT ASKED AGAIN.
+        // Its last answer said what could change it: a SUSPENDED goal nothing but a binding of
+        // one of its blockers, a PARKED one nothing at all. So on its turn it rotates behind
+        // the tail as a delay would — the turn still counts toward the residualization gate
+        // below — without being walked or evaluated. Asked from scratch instead, it re-ran
+        // its evaluation, which can include a bridge run, once per sibling that made progress.
+        if let Some(step) = self.pass_over_waiting_goal(depth, &delay_mode) {
+            return step;
+        }
+        self.stats.goals_asked += 1;
+
         // [WI-030] Lazy substitution. σ already carries every binding
         // accumulated up to this point (merged via `bind_compressed` in
         // `step_choice_point`). Walking goals[0] here — instead of eagerly
@@ -2010,12 +2102,12 @@ impl SearchStream {
         let mut goal_val: Value = {
             let f = self.stack.last().unwrap();
             if f.subst.is_empty() {
-                f.goals[0].clone()
+                f.goals[0].goal.clone()
             } else {
                 let subst = f.subst.clone();
-                let g0 = f.goals[0].clone();
+                let g0 = f.goals[0].goal.clone();
                 let walked = kb.reify_value_transient(&g0, &subst);
-                self.stack.last_mut().unwrap().goals[0] = walked.clone();
+                self.stack.last_mut().unwrap().goals[0].goal = walked.clone();
                 walked
             }
         };
@@ -2146,7 +2238,7 @@ impl SearchStream {
                 let fr = self.stack.last_mut().unwrap();
                 // Same discipline as the WI-580 hook above: goal[0] in place, same goal
                 // count, `delay_mode` threaded through unchanged rather than reset.
-                fr.goals[0] = eq_goal;
+                fr.goals[0].goal = eq_goal;
                 fr.state = FrameState::Init { delay_mode };
                 return Some(StepResult::Continue);
             }
@@ -2175,12 +2267,9 @@ impl SearchStream {
                         // is: recorded where a caller reads it, then scheduled like an
                         // unanswerable goal rather than refuted.
                         ApplyDomainLowering::Error(message) => {
-                            let goals_len = frame.goals.len();
-                            let subst = frame.subst.clone();
                             self.record_error(ResolveError::new(message).located_at(&goal_val));
-                            return self.schedule_unanswerable_goal(
-                                &goal_val, goals_len, subst, depth, delay_mode, None,
-                            );
+                            return self
+                                .schedule_unanswerable_goal(kb, &goal_val, depth, delay_mode, None);
                         }
                         ApplyDomainLowering::NotYet => None,
                     };
@@ -2199,7 +2288,7 @@ impl SearchStream {
                     f.subst = new_subst;
                     match replacement {
                         Some(goal) => {
-                            f.goals[0] = goal;
+                            f.goals[0].goal = goal;
                             f.state = FrameState::Init { delay_mode };
                         }
                         None => {
@@ -2217,7 +2306,7 @@ impl SearchStream {
                 let subst = frame.subst.clone();
                 if let Some(applied) = Self::lower_ho_apply(kb, &goal_val, &subst) {
                     let f = self.stack.last_mut().unwrap();
-                    f.goals[0] = Value::term(applied);
+                    f.goals[0].goal = Value::term(applied);
                     f.state = FrameState::Init { delay_mode };
                     return Some(StepResult::Continue);
                 } else {
@@ -2507,23 +2596,23 @@ impl SearchStream {
                     // FALSE. That is why this is not the early exit it looks like it
                     // should be — an `Unknown` costs the same rotations a `Delay` does.
                     //
-                    // WHAT DIFFERS is the record: the goal and its cause go on the FRAME,
-                    // the only channel that survives the rotation. The goal is
+                    // WHAT DIFFERS is the record: the cause rides on the goal's own WAIT
+                    // STATE, the only channel that survives the rotation. The goal is
                     // materialized much later, at the `consecutive_delays >= goals.len()`
                     // gate above, by which point this outcome is long gone — and without
                     // the record every undecided answer arrives there byte-identical to a
                     // floundered one, which is the conflation this variant exists to end.
+                    // And what it ROTATES AS differs (WI-20260926-CYNPE): an UNREDUCED goal
+                    // is parked, never asked again; an undecided one over a universal waits
+                    // for its blockers like a delay.
                     //
                     // `self.truncated` is deliberately NOT set. Truncation means the
                     // search was CUT SHORT and might have found more; this search was
                     // complete and the answer is genuinely undecided. Folding one into
                     // the other is how the two got confused in the first place.
-                    let goals_len = frame.goals.len();
-                    let subst = frame.subst.clone();
                     return self.schedule_unanswerable_goal(
+                        kb,
                         &goal_val,
-                        goals_len,
-                        subst,
                         depth,
                         delay_mode,
                         Some(cause),
@@ -2545,14 +2634,8 @@ impl SearchStream {
                     // `Solution::undecided` entry, because that field feeds
                     // `GammaVerdict::universal` and a fault is not a statement about a
                     // parameter.
-                    // Frame reads BEFORE the `&mut self` recorder — `frame` is a shared
-                    // borrow of `self.stack`.
-                    let goals_len = frame.goals.len();
-                    let subst = frame.subst.clone();
                     self.record_error(err.located_at(&goal_val));
-                    return self.schedule_unanswerable_goal(
-                        &goal_val, goals_len, subst, depth, delay_mode, None,
-                    );
+                    return self.schedule_unanswerable_goal(kb, &goal_val, depth, delay_mode, None);
                 }
                 BuiltinResult::Delay { truncated } => {
                     // WI-628: a carrier `eq`/`neq` whose closed sub-proof TRUNCATED
@@ -2560,58 +2643,7 @@ impl SearchStream {
                     // handling, so an eager NAF/guard consumer draining this stream
                     // sees the incomplete search rather than reading empty-as-refute.
                     self.truncated |= truncated;
-                    match delay_mode {
-                        DelayMode::Normal => {
-                            if frame.goals.len() == 1 {
-                                // Only goal — residualize (WI-519: or skip in
-                                // definite-only mode — a floundered residual is
-                                // not a definite solution).
-                                let subst = frame.subst.clone();
-                                let residual = vec![goal_val.clone()];
-                                self.stack.pop();
-                                if self.config.definite_only {
-                                    return Some(StepResult::Continue);
-                                }
-                                self.record_solution_in_nearest_choice_point();
-                                return Some(StepResult::YieldSolution(Solution {
-                                    subst,
-                                    residual,
-                                    // A DELAY: the operands may yet be bound by a
-                                    // caller. The `Unknown` arm below builds its own.
-                                    undecided: vec![],
-                                }));
-                            } else {
-                                // Rotate to end, enter Delayed mode
-                                let mut rotated: Vec<Value> = frame.goals[1..].to_vec();
-                                rotated.push(goal_val.clone());
-                                let new_depth = depth + 1;
-                                let f = self.stack.last_mut().unwrap();
-                                f.goals = rotated;
-                                f.depth = new_depth;
-                                f.state = FrameState::Init {
-                                    delay_mode: DelayMode::Delayed {
-                                        consecutive_delays: 1,
-                                    },
-                                };
-                                return Some(StepResult::Continue);
-                            }
-                        }
-                        DelayMode::Delayed { consecutive_delays } => {
-                            // Rotate to end, increment consecutive_delays
-                            let mut rotated: Vec<Value> = frame.goals[1..].to_vec();
-                            rotated.push(goal_val.clone());
-                            let new_depth = depth + 1;
-                            let f = self.stack.last_mut().unwrap();
-                            f.goals = rotated;
-                            f.depth = new_depth;
-                            f.state = FrameState::Init {
-                                delay_mode: DelayMode::Delayed {
-                                    consecutive_delays: consecutive_delays + 1,
-                                },
-                            };
-                            return Some(StepResult::Continue);
-                        }
-                    }
+                    return self.delay_goal(kb, goal_val, None, depth, delay_mode);
                 }
             }
         }
@@ -2838,7 +2870,7 @@ impl SearchStream {
                 // the delay-mode residualization check (`consecutive_delays >=
                 // goals.len()`) can bite — a ground `member` reaches its `eq` and
                 // decides; an unground one residualizes either way.
-                fr.goals[0] = eq_goal;
+                fr.goals[0].goal = eq_goal;
                 fr.state = FrameState::Init { delay_mode };
                 return Some(StepResult::Continue);
             }
@@ -2853,21 +2885,19 @@ impl SearchStream {
         // `unify`, not `eq`: `eq` is a test that never binds (§8.3), so an unbound
         // `?r` could only delay — measured, before this hook the goal residualized
         // with `?r` free, which is what made `anthill.geometry`'s deleted
-        // `vec_add/3` clauses look necessary. A non-ground call still delays, via
-        // `unify`'s own Delay path, so this is a generator only where the body can
-        // actually reduce.
+        // `vec_add/3` clauses look necessary.
         //
         // Same rewrite discipline as the Bool hook: goal[0] in place, same goal
         // count, `delay_mode` threaded through unchanged.
         // The gate is [`KnowledgeBase::functional_relation_goal`], which WI-670's open-time
         // refutation asks too: a goal this hook answers is no refutation for its zero
         // candidates, and the two readers must not disagree about which goals those are.
+        // The hypotheses the hook below found for a call that did not run, handed to
+        // candidate selection rather than matched a second time.
+        let mut hypotheses: Option<Vec<Candidate>> = None;
         if let Some((f, n)) = kb.functional_relation_goal(&goal_val) {
-            if let Some(FunctionalRelationCall {
-                call,
-                result,
-                woven,
-            }) = kb.functional_relation_call(&goal_val, f, n)
+            if let Some(FunctionalRelationCall { call, result }) =
+                kb.functional_relation_call(&goal_val, f, n)
             {
                 let subst = self.stack.last().unwrap().subst.clone();
                 // WI-20260926-K4JGC — the goal IS its call, EVALUATED by 068 §1.1's one
@@ -2877,10 +2907,8 @@ impl SearchStream {
                 // own raise); a body-less spec op dispatched by its carrier (WI-1057).
                 // WI-20260911-0V0F7 — the WI-938 hook is DECIDING this
                 // call, so a bridged callee that raised is this goal's
-                // own fault, not an unrelated branch's. Drained here
-                // rather than at the builtin dispatch above because this
-                // site never reaches it — it either rewrites the goal to
-                // `unify` or falls through to candidate selection.
+                // own fault, not an unrelated branch's. Drained here, where the
+                // fault is located at the goal as written.
                 let mut faults = ReduceFaults::default();
                 let evaluated = kb.evaluate_value(Value::Node(Rc::clone(&call)), &subst, &mut faults);
                 if !faults.is_empty() {
@@ -2892,30 +2920,59 @@ impl SearchStream {
                         &goal_val,
                     );
                 }
-                // ONLY route once the call produced a VALUE. A call that did not run
-                // falls through to ordinary candidate selection, which is the pre-WI-938
-                // behaviour (no answer) rather than a wrong one — making that case WAIT
-                // instead is WI-20260926-CYNPE's (WI-20260924-35E14's population).
-                // WI-1040 — a WOVEN call routes to `unify` even when it did not run:
-                // `<=>` never binds a call that did not run, and a woven call whose
-                // dictionary is unbound is SUSPENDED on it (`unify_evaluated`), so the
-                // goal waits and re-fires once a later goal binds the carrier. Falling
-                // through instead would answer NOTHING for it — a silent failure where
-                // the clause must DELAY.
-                let operand = match evaluated {
-                    Ok(value) => Some(value),
-                    Err(_) if woven => Some(Value::Node(call)),
-                    Err(_) => None,
+                // WI-20260926-CYNPE — A CALL THAT DID NOT RUN IS THE GOAL'S ANSWER, in its
+                // state (068 §2): one waiting on an argument (SUSPENDED, or SYMBOLIC) waits
+                // as a delay does, on its blockers, and is asked again — through this hook —
+                // once a later goal binds one: `rule late(x: Colour) :- Colour.score(x, 3)`
+                // answers `blue` though its typed head's generator runs after the call. One
+                // no implementation reaches (UNREDUCED: no supplier, a supplier tie) is
+                // undecided; one with no value (ABSENT) fails. It used to fall through to
+                // candidate selection instead, where no clause is written for `f/n+1`: the
+                // three reasons a call does not run all answered NOTHING, silently
+                // (WI-20260924-35E14) — a WOVEN call (WI-1040) excepted, which was routed to
+                // `unify` to wait. The goal keeps its own spelling and is not rewritten to
+                // `unify`, so a re-ask evaluates the call once, here, and asks the
+                // hypothesis question below again under what has been bound since.
+                //
+                // EXCEPT WHERE A HYPOTHESIS ANSWERS IT: a `forall_impl` antecedent or a Γ
+                // fact about the goal as written — `(forall(?c), Colour.score(?c, 3) -:
+                // Colour.score(?c, 3))`, whose consequent's call is stuck on an
+                // eigenvariable. Candidate selection matches the goal against those, as it
+                // did before this hook waited; the stuck call's value is all the hypothesis
+                // is about. With none, there is nothing below to answer it.
+                let state = match evaluated {
+                    Ok(value) => {
+                        let unify_sym = kb.unify_functor();
+                        let unify_goal =
+                            kb.make_goal_value(unify_sym, vec![Value::Node(result), value]);
+                        let fr = self.stack.last_mut().unwrap();
+                        fr.goals[0].goal = unify_goal;
+                        fr.state = FrameState::Init { delay_mode };
+                        return Some(StepResult::Continue);
+                    }
+                    Err(state) => state,
                 };
-                if let Some(operand) = operand {
-                    let unify_sym = kb.unify_functor();
-                    let unify_goal =
-                        kb.make_goal_value(unify_sym, vec![Value::Node(result), operand]);
-                    let fr = self.stack.last_mut().unwrap();
-                    fr.goals[0] = unify_goal;
-                    fr.state = FrameState::Init { delay_mode };
-                    return Some(StepResult::Continue);
+                let found = self.hypothesis_candidates(kb, &goal_val);
+                if found.is_empty() {
+                    let goal = within.clone().unwrap_or_else(|| goal_val.clone());
+                    return match state {
+                        Stuck::Absent => {
+                            self.stack.pop();
+                            Some(StepResult::Continue)
+                        }
+                        Stuck::Unreduced => self.schedule_unanswerable_goal(
+                            kb,
+                            &goal,
+                            depth,
+                            delay_mode,
+                            Some(UnknownCause::Unreduced),
+                        ),
+                        Stuck::Suspended | Stuck::Symbolic => {
+                            self.delay_goal(kb, goal, None, depth, delay_mode)
+                        }
+                    };
                 }
+                hypotheses = Some(found);
             }
         }
 
@@ -3037,36 +3094,10 @@ impl SearchStream {
             None => Vec::new(),
         };
 
-        // Local hypotheses, matched against the goal and added as zero-body
-        // `Assumption` candidates — resolved *inside* the normal SLD search, so
-        // they chain through KB rules and obey backtracking / floundering with
-        // no duplicated logic. Two sources:
-        //   • the frame's `assumed_facts` (WI-108) — `forall_impl` antecedents,
-        //     a per-frame `Vec<TermId>` (push/pop with the discharge);
-        //   • the Γ overlay (WI-537 / proposal 050) — the typer's
-        //     local-interpretation context, a discrimination-tree index global
-        //     to this resolve call (`config.gamma`).
-        // Both reify the goal through the current σ carrier-faithfully (WI-348),
-        // so a goal carrying a `Value::Node` matches by structure rather than
-        // being lowered to a hash-consed term that drops the occurrence.
-        let assumed = self.stack.last().unwrap().assumed_facts.clone();
-        if !assumed.is_empty() || self.config.gamma.is_some() {
-            let frame_subst = self.stack.last().unwrap().subst.clone();
-            let goal_value = kb.reify_value(&goal_val, &frame_subst);
-            for assumed_fact in &assumed {
-                if let Some(subst) = kb.match_view_value_pattern(assumed_fact, &goal_value) {
-                    if !subst.is_contradiction() {
-                        candidates.push(Candidate::Assumption(subst));
-                    }
-                }
-            }
-            // The Γ overlay (WI-537) joins the candidates for a NON-builtin goal
-            // here, alongside the KB rules — `gamma_candidates_for` matches each
-            // local fact structurally (the discrim tree is the unifier). A
-            // builtin goal is handled earlier (it never reaches here); a Γ fact
-            // discharging it is the pre-`execute_builtin` check above.
-            candidates.extend(self.gamma_candidates_for(kb, &goal_value));
-        }
+        candidates.extend(match hypotheses {
+            Some(found) => found,
+            None => self.hypothesis_candidates(kb, &goal_val),
+        });
 
         // Transition to ChoicePoint
         let f = self.stack.last_mut().unwrap();
@@ -3180,12 +3211,20 @@ impl SearchStream {
         // antecedents go out of scope before the surrounding rule's remaining
         // goals run (WI-108 scoping invariant).
         let n_assumed = skolemized_antecedents.len();
-        let mut new_goals: Vec<Value> = skolemized_consequents;
+        let mut new_goals: Vec<FrameGoal> = skolemized_consequents
+            .into_iter()
+            .map(FrameGoal::ready)
+            .collect();
         if n_assumed > 0 {
             let marker = Self::make_pop_assumption_marker(kb, n_assumed);
-            new_goals.push(Value::term(marker));
+            new_goals.push(FrameGoal::ready(Value::term(marker)));
         }
         let frame = self.stack.last().unwrap();
+        // WI-20260926-CYNPE — the tail keeps its wait states. The antecedents assumed here
+        // are candidates of a rule goal, and so could answer one waiting in the tail without
+        // any of its blockers being bound — but the tail sits BEHIND the pop marker, and
+        // rotation only moves the head to the back, so no tail goal is asked before the
+        // assumptions are gone again: it is asked under the set it waited under.
         new_goals.extend(frame.goals[1..].iter().cloned());
         let mut new_assumed = frame.assumed_facts.clone();
         new_assumed.extend(skolemized_antecedents);
@@ -3201,7 +3240,6 @@ impl SearchStream {
                 delay_mode: new_delay,
             },
             assumed_facts: new_assumed,
-            undecided: Vec::new(),
         });
         Some(StepResult::Continue)
     }
@@ -3404,7 +3442,7 @@ impl SearchStream {
         // arrive as a partial `cons(a, ?t)` with `?t` bound elsewhere). `None` ⇒
         // spine not ground ⇒ delay (floundering residual), never silently decided.
         let Some(elements) = Self::bounded_list_elements(kb, &collection, &subst) else {
-            return self.delay_goal(depth, delay_mode);
+            return self.delay_goal(kb, goal.clone(), None, depth, delay_mode);
         };
 
         // body[?x := element_i] for each element, binding only the binder — as a
@@ -3424,7 +3462,11 @@ impl SearchStream {
         if is_forall {
             // Conjunction: flatten all element bodies, prepend, replace frame.
             let frame = self.stack.last().unwrap();
-            let mut new_goals: Vec<Value> = per_element.into_iter().flatten().collect();
+            let mut new_goals: Vec<FrameGoal> = per_element
+                .into_iter()
+                .flatten()
+                .map(FrameGoal::ready)
+                .collect();
             new_goals.extend(frame.goals[1..].iter().cloned());
             let new_subst = frame.subst.clone();
             let new_assumed = frame.assumed_facts.clone();
@@ -3437,7 +3479,6 @@ impl SearchStream {
                     delay_mode: delay_mode.reset(),
                 },
                 assumed_facts: new_assumed,
-                undecided: Vec::new(),
             });
             Some(StepResult::Continue)
         } else {
@@ -3450,7 +3491,7 @@ impl SearchStream {
                 .into_iter()
                 .map(Candidate::Continuation)
                 .collect();
-            let original_goal = self.stack.last().unwrap().goals[0].clone();
+            let original_goal = self.stack.last().unwrap().goals[0].goal.clone();
             let f = self.stack.last_mut().unwrap();
             f.state = FrameState::ChoicePoint {
                 delay_mode,
@@ -3469,48 +3510,113 @@ impl SearchStream {
         }
     }
 
-    /// Delay the current frame's `goals[0]` — rotate it to the back, entering or
-    /// continuing `Delayed` mode so a not-yet-ground goal gets another chance
-    /// after its variables may bind. If it is the ONLY goal, residualize it
-    /// (WI-519: a floundered residual, skipped under `definite_only`). Mirrors
-    /// the builtin delay/rotate path so bounded quantifiers flounder the same way.
-    fn delay_goal(&mut self, depth: usize, delay_mode: DelayMode) -> Option<StepResult> {
-        let frame = self.stack.last().unwrap();
-        let goal_val = frame.goals[0].clone();
-        let consecutive = match delay_mode {
-            DelayMode::Normal => {
-                if frame.goals.len() == 1 {
-                    let subst = frame.subst.clone();
-                    let residual = vec![goal_val];
-                    self.stack.pop();
-                    if self.config.definite_only {
-                        return Some(StepResult::Continue);
-                    }
-                    self.record_solution_in_nearest_choice_point();
-                    return Some(StepResult::YieldSolution(Solution {
-                        subst,
-                        residual,
-                        // A DELAY, not an Unknown: this goal's operands may yet be
-                        // bound by a caller — nothing here is undecided.
-                        undecided: vec![],
-                    }));
-                }
-                1
-            }
-            DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
-        };
-        let mut rotated: Vec<Value> = frame.goals[1..].to_vec();
-        rotated.push(goal_val);
-        let new_depth = depth + 1;
+    /// Delay the current frame's `goals[0]`, asked as `goal` and answered with `cause`
+    /// (`None` for a plain delay) — rotate it to the back, entering or continuing `Delayed`
+    /// mode, SUSPENDED on its blockers (068 §2.2) so it is asked again only once one of them
+    /// is bound. If it is the ONLY goal in `Normal` mode, it is the answer's residual
+    /// ([`Self::yield_sole_goal`]). The one delay path: a builtin's `Delay`, a call the
+    /// WI-938 hook could not run, a bounded quantifier over an open spine and a NAF goal
+    /// over an open inner goal flounder the same way.
+    fn delay_goal(
+        &mut self,
+        kb: &KnowledgeBase,
+        goal: Value,
+        cause: Option<UnknownCause>,
+        depth: usize,
+        delay_mode: DelayMode,
+    ) -> Option<StepResult> {
+        if matches!(delay_mode, DelayMode::Normal) && self.stack.last().unwrap().goals.len() == 1 {
+            return self.yield_sole_goal(goal, cause);
+        }
+        let wait = self.suspended_on_blockers(kb, &goal, cause);
+        self.rotate_first(goal, wait, depth, next_consecutive(&delay_mode));
+        Some(StepResult::Continue)
+    }
+
+    /// The current frame's only goal, which waits with nothing left to wait behind, IS the
+    /// answer's residual: pop the frame and yield it — undecided with `cause` if it has one
+    /// — or, under `definite_only`, skip it (WI-519: a floundered residual is not a
+    /// definite solution).
+    fn yield_sole_goal(&mut self, goal: Value, cause: Option<UnknownCause>) -> Option<StepResult> {
+        let subst = self.stack.pop().unwrap().subst;
+        if self.config.definite_only {
+            return Some(StepResult::Continue);
+        }
+        self.record_solution_in_nearest_choice_point();
+        Some(StepResult::YieldSolution(Solution {
+            subst,
+            undecided: cause.map(|c| vec![(goal.clone(), c)]).unwrap_or_default(),
+            residual: vec![goal],
+        }))
+    }
+
+    /// The SUSPENDED wait of `goal`, answered with `cause` (`None` for a delay): its
+    /// blockers are its unbound variables under the current frame's σ — design D1's coarse
+    /// blockers ([`Wait::Suspended`]).
+    fn suspended_on_blockers(
+        &self,
+        kb: &KnowledgeBase,
+        goal: &Value,
+        cause: Option<UnknownCause>,
+    ) -> Wait {
+        let mut blockers = Vec::new();
+        kb.collect_unbound_vars_value(goal, &self.stack.last().unwrap().subst, &mut blockers);
+        Wait::Suspended {
+            blockers: Rc::from(blockers),
+            cause,
+        }
+    }
+
+    /// Rotate the current frame's `goals[0]` behind the tail as `goal` (the value it was
+    /// asked as) with `wait`, re-entering `Init` in `Delayed` mode at `new_consecutive`.
+    /// The ONE rotate primitive: every goal that waits — a delay, an undecided or faulted
+    /// goal, a NAF goal, a rule goal whose every candidate delayed, a goal passed over on
+    /// its turn — goes behind the tail here. Callers own the counter policy
+    /// ([`next_consecutive`]), so the `consecutive_delays >= goals.len()` gate in
+    /// [`Self::step_init`] advances and the rotation terminates; a hard-coded `1` would pin
+    /// it and spin (WI-629).
+    fn rotate_first(&mut self, goal: Value, wait: Wait, depth: usize, new_consecutive: usize) {
         let f = self.stack.last_mut().unwrap();
-        f.goals = rotated;
-        f.depth = new_depth;
+        f.goals.remove(0);
+        f.goals.push(FrameGoal { goal, wait });
+        f.depth = depth + 1;
         f.state = FrameState::Init {
             delay_mode: DelayMode::Delayed {
-                consecutive_delays: consecutive,
+                consecutive_delays: new_consecutive,
             },
         };
-        Some(StepResult::Continue)
+    }
+
+    /// WI-20260926-CYNPE (068 §2.2) — `goals[0]`'s turn when it is WAITING: `None` when it
+    /// is to be asked (it was ready, or a blocker of its suspension is now bound — then it
+    /// is made `Ready`, since what it is about to answer replaces what it answered);
+    /// otherwise the step that passes it over, exactly as a delay would rotate it — the
+    /// only goal in `Normal` mode residualizes, anything else rotates with its wait
+    /// unchanged and counts toward the gate.
+    fn pass_over_waiting_goal(
+        &mut self,
+        depth: usize,
+        delay_mode: &DelayMode,
+    ) -> Option<Option<StepResult>> {
+        let frame = self.stack.last_mut().unwrap();
+        let waiting = match &frame.goals[0].wait {
+            Wait::Ready => false,
+            Wait::Suspended { blockers, .. } => !blockers
+                .iter()
+                .any(|b| frame.subst.resolve_as_value(*b).is_some()),
+            Wait::Parked => true,
+        };
+        if !waiting {
+            frame.goals[0].wait = Wait::Ready;
+            return None;
+        }
+        let head = frame.goals[0].clone();
+        if matches!(delay_mode, DelayMode::Normal) && frame.goals.len() == 1 {
+            let cause = head.wait.cause();
+            return Some(self.yield_sole_goal(head.goal, cause));
+        }
+        self.rotate_first(head.goal, head.wait, depth, next_consecutive(delay_mode));
+        Some(Some(StepResult::Continue))
     }
 
     /// If `goal` is a top-level `ho_apply(?P, args…)` whose predicate `?P` walks
@@ -4044,87 +4150,50 @@ impl SearchStream {
     /// refute the clause, and a refutation is a real verdict that must beat "no answer".
     /// Residualizing early would report undecided for a clause that is definitely FALSE.
     ///
-    /// `cause` distinguishes the two callers. `Some` — a universal, whose cause reaches
+    /// `cause` distinguishes the callers. `Some` — undecided, whose cause reaches
     /// `prove_from_gamma_verdict`. `None` — a FAULT, already recorded on the stream by
     /// `record_error`; it must NOT populate `undecided`, because that field feeds
     /// `GammaVerdict::universal` and an ill-typed comparison is not a statement about a
     /// parameter.
+    ///
+    /// WHAT IT WAITS AS (WI-20260926-CYNPE, 068 §2.2): an UNREDUCED goal is PARKED — no
+    /// implementation is reachable, so it is never asked again — unless a call in it still
+    /// waits on a variable: `div(1, ?z) = Conv.tag("km")` is UNREDUCED until `?z` is bound
+    /// to `0`, and then ABSENT, a failure that must refute the clause rather than leave it
+    /// undecided. Such a goal, and anything else — an undecided answer over a universal, a
+    /// fault — is SUSPENDED on its blockers, since binding one may still change what it
+    /// answers (a Γ fact can match it then).
     fn schedule_unanswerable_goal(
         &mut self,
+        kb: &KnowledgeBase,
         goal_val: &Value,
-        goals_len: usize,
-        subst: Substitution,
         depth: usize,
         delay_mode: DelayMode,
         cause: Option<UnknownCause>,
     ) -> Option<StepResult> {
-        if goals_len == 1 {
+        let frame = self.stack.last().unwrap();
+        if frame.goals.len() == 1 {
             // Nothing to rotate behind: no sibling can refute, so this answer is as
             // decided as it will ever get.
-            self.stack.pop();
-            if self.config.definite_only {
-                return Some(StepResult::Continue);
+            return self.yield_sole_goal(goal_val.clone(), cause);
+        }
+        let wait = match cause {
+            Some(UnknownCause::Unreduced) => {
+                let mut in_calls = Vec::new();
+                kb.unbound_vars_in_goal_calls(goal_val, &frame.subst, &mut in_calls);
+                if in_calls.is_empty() {
+                    Wait::Parked
+                } else {
+                    Wait::Suspended {
+                        blockers: Rc::from(in_calls),
+                        cause,
+                    }
+                }
             }
-            self.record_solution_in_nearest_choice_point();
-            return Some(StepResult::YieldSolution(Solution {
-                subst,
-                residual: vec![goal_val.clone()],
-                undecided: cause
-                    .map(|c| vec![(goal_val.clone(), c)])
-                    .unwrap_or_default(),
-            }));
-        }
-        let new_consecutive = match delay_mode {
-            DelayMode::Normal => 1,
-            DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
+            _ => self.suspended_on_blockers(kb, goal_val, cause),
         };
-        self.record_undecided_on_frame(goal_val, cause);
-        self.rotate_naf_goal_behind_tail(goal_val, depth, new_consecutive);
+        self.rotate_first(goal_val.clone(), wait, depth, next_consecutive(&delay_mode));
         Some(StepResult::Continue)
-    }
-
-    /// Remember, on the CURRENT frame, that `goal` is being rotated with no ANSWER
-    /// rather than with no binding — `None` records nothing, which is the ordinary
-    /// delay.
-    ///
-    /// Paired with [`Self::rotate_naf_goal_behind_tail`] at every site that rotates a
-    /// possibly-undecided goal: the rotation is what makes the record necessary, since
-    /// the goal is materialized much later, at `step_init`'s
-    /// `consecutive_delays >= goals.len()` gate, where its cause is no longer in hand.
-    ///
-    /// A MULTISET, not a set: a goal that rotates more than once is recorded on each
-    /// pass, so one undecided goal may appear several times in
-    /// [`Solution::undecided`]. Its readers ask only whether the list is NON-EMPTY
-    /// (`typing::prove_from_gamma_verdict` takes the FIRST cause and stops), so the
-    /// repetition is inert — said here rather
-    /// than deduplicated, because a dedup needs a `Value` equality this carrier has
-    /// no cheap form of, and the repetition is bounded by the rotation count that
-    /// already bounds the search.
-    fn record_undecided_on_frame(&mut self, goal: &Value, cause: Option<UnknownCause>) {
-        if let (Some(cause), Some(f)) = (cause, self.stack.last_mut()) {
-            f.undecided.push((goal.clone(), cause));
-        }
-    }
-
-    /// Rotate the current frame's `goals[0]` (a delayed / undecided NAF goal)
-    /// behind the rest of the goal list, re-entering `Init` in `Delayed` mode with
-    /// the given consecutive-delay count. The single rotate primitive shared by
-    /// `step_naf`'s groundness-gate Delay branch (non-ground inner) and its
-    /// ground/inner-floundered branch (WI-629). Callers own the counter policy —
-    /// `Normal → 1`, `Delayed{n} → n + 1` — so the `consecutive_delays >=
-    /// goals.len()` residual gate in [`step_init`] advances and the rotation
-    /// terminates; a hard-coded `1` would pin it and spin (WI-629 regression).
-    fn rotate_naf_goal_behind_tail(&mut self, goal: &Value, depth: usize, new_consecutive: usize) {
-        let f = self.stack.last_mut().unwrap();
-        let mut rotated: Vec<Value> = f.goals[1..].to_vec();
-        rotated.push(goal.clone());
-        f.goals = rotated;
-        f.depth = depth + 1;
-        f.state = FrameState::Init {
-            delay_mode: DelayMode::Delayed {
-                consecutive_delays: new_consecutive,
-            },
-        };
     }
 
     fn step_naf(
@@ -4172,37 +4241,10 @@ impl SearchStream {
             // refutation beats an undecided answer); what differs is only what the
             // residual remembers.
             let cause = open_world_param.then_some(UnknownCause::OpenWorldParameter);
-            // Delay — same mechanism as other builtins
-            match delay_mode {
-                DelayMode::Normal => {
-                    if goals_len == 1 {
-                        self.stack.pop();
-                        // WI-519: a floundered `not(P)` (non-ground inner) is not
-                        // a definite solution — skip in definite-only mode.
-                        if self.config.definite_only {
-                            return Some(StepResult::Continue);
-                        }
-                        let residual = vec![goal.clone()];
-                        let undecided = cause.map(|c| vec![(goal.clone(), c)]).unwrap_or_default();
-                        self.record_solution_in_nearest_choice_point();
-                        return Some(StepResult::YieldSolution(Solution {
-                            subst,
-                            residual,
-                            undecided,
-                        }));
-                    } else {
-                        // First delay of this goal — start the rotation counter at 1.
-                        self.record_undecided_on_frame(goal, cause);
-                        self.rotate_naf_goal_behind_tail(goal, depth, 1);
-                        return Some(StepResult::Continue);
-                    }
-                }
-                DelayMode::Delayed { consecutive_delays } => {
-                    self.record_undecided_on_frame(goal, cause);
-                    self.rotate_naf_goal_behind_tail(goal, depth, consecutive_delays + 1);
-                    return Some(StepResult::Continue);
-                }
-            }
+            // Delay — same mechanism as other builtins (WI-519: a floundered `not(P)` over a
+            // non-ground inner goal is not a definite solution, and is skipped in
+            // definite-only mode).
+            return self.delay_goal(kb, goal.clone(), cause, depth, delay_mode);
         } else {
             // Ground: classify the inner goal P — DEFINITE (P holds → not(P)
             // fails), FLOUNDERED or TRUNCATED (undecided → not(P) undecided), or
@@ -4310,44 +4352,32 @@ impl SearchStream {
                     return Some(StepResult::Continue);
                 }
                 if goals_len == 1 {
-                    // `not(P)` is the sole goal — the residual `[not(P)]` is the
-                    // honest whole-query answer.
-                    self.stack.pop();
-                    let residual = vec![goal.clone()];
-                    self.record_solution_in_nearest_choice_point();
-                    return Some(StepResult::YieldSolution(Solution {
-                        subst,
-                        residual,
-                        // THE INNER SEARCH'S CAUSE, carried up through
-                        // `DrainVerdict::undecided`. `not(P)` over a universal
-                        // sub-resolves `P`, which answers `Unknown` and residualizes
-                        // correctly — and this yield used to drop that, so the goal came
-                        // out wearing the flounder wording.
-                        //
-                        // THE GAP WAS WIDER THAN THE NOTE THAT STOOD HERE, which framed
-                        // it as reachable only through a RULE BODY on the theory that
-                        // `open_world_param` covers anything present in `inner`. It does
-                        // not: that gate tests `value_has_open_world_ref` only, so an
-                        // opaque SKOLEM in `inner` walks straight past it into the ground
-                        // branch. MEASURED — `ensures not(eq(x, 1))` reported "delayed on
-                        // a variable nothing bound" for an eigenvariable.
-                        //
-                        // The cause is attached to `not(P)`, the goal actually
-                        // residualizing here, rather than to the inner goal that produced
-                        // it: `residual` holds `not(P)`, and `Solution::undecided`'s
-                        // readers intersect the two.
-                        undecided: v
-                            .undecided
-                            .map(|cause| vec![(goal.clone(), cause)])
-                            .unwrap_or_default(),
-                    }));
+                    // `not(P)` is the sole goal — the residual `[not(P)]` is the honest
+                    // whole-query answer, with THE INNER SEARCH'S CAUSE, carried up through
+                    // `DrainVerdict::undecided`. `not(P)` over a universal sub-resolves `P`,
+                    // which answers `Unknown` and residualizes correctly — and this yield
+                    // used to drop that, so the goal came out wearing the flounder wording.
+                    //
+                    // THE GAP WAS WIDER THAN THE NOTE THAT STOOD HERE, which framed it as
+                    // reachable only through a RULE BODY on the theory that
+                    // `open_world_param` covers anything present in `inner`. It does not:
+                    // that gate tests `value_has_open_world_ref` only, so an opaque SKOLEM
+                    // in `inner` walks straight past it into the ground branch. MEASURED —
+                    // `ensures not(eq(x, 1))` reported "delayed on a variable nothing
+                    // bound" for an eigenvariable.
+                    //
+                    // The cause is attached to `not(P)`, the goal actually residualizing
+                    // here, rather than to the inner goal that produced it: `residual` holds
+                    // `not(P)`, and `Solution::undecided`'s readers intersect the two.
+                    return self.yield_sole_goal(goal.clone(), v.undecided);
                 } else {
-                    // The tail case records the cause on the FRAME before rotating, for
-                    // the reason `record_undecided_on_frame` exists: the goal is
+                    // The tail case keeps the cause on the goal's WAIT STATE: the goal is
                     // materialized much later, at `step_init`'s exhaustion gate, where
-                    // `v` is long gone. Without this the sole-goal case above would carry
-                    // the cause and the multi-goal one would silently drop it.
-                    self.record_undecided_on_frame(goal, v.undecided);
+                    // `v` is long gone. Without it the sole-goal case above would carry
+                    // the cause and the multi-goal one would silently drop it. `P` is
+                    // ground, so the goal has no blockers and is never asked again
+                    // (WI-20260926-CYNPE) — re-resolving it binds nothing new.
+                    let wait = self.suspended_on_blockers(kb, goal, v.undecided);
                     // Rotate the undecided `not(P)` behind the tail — but THREAD the
                     // incoming `delay_mode` into the counter (like the groundness-gate
                     // Delayed branch above), NOT a hard `1`. A ground-floundering
@@ -4357,11 +4387,7 @@ impl SearchStream {
                     // ever reaching the `consecutive_delays >= goals.len()` residual
                     // gate in `step_init` (it would burn to the depth limit and return
                     // NO solution — the exact verdict dishonesty WI-629 fixes).
-                    let new_consecutive = match delay_mode {
-                        DelayMode::Normal => 1,
-                        DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
-                    };
-                    self.rotate_naf_goal_behind_tail(goal, depth, new_consecutive);
+                    self.rotate_first(goal.clone(), wait, depth, next_consecutive(&delay_mode));
                     return Some(StepResult::Continue);
                 }
             } else {
@@ -4569,56 +4595,18 @@ impl SearchStream {
         let candidate = match self.next_candidate(kb) {
             Some(c) => c,
             None => {
-                let frame = self.stack.last().unwrap();
                 if child_solutions == 0 && any_delayed {
-                    // Delay fallback: rotate goal to end, push new Init frame
-                    let goals = &frame.goals;
-                    let mut rotated: Vec<Value> = goals[1..].to_vec();
-                    rotated.push(original_goal.clone());
-                    let new_depth = frame.depth + 1;
-                    let new_subst = frame.subst.clone();
-                    let new_consecutive = match &delay_mode {
-                        DelayMode::Normal => 1,
-                        DelayMode::Delayed { consecutive_delays } => consecutive_delays + 1,
-                    };
-                    let inherited = frame.assumed_facts.clone();
-                    // INHERITED, exactly as `assumed_facts` is, and for a reason the
-                    // counter beside it makes precise: this push CONTINUES the current
-                    // goal list's rotation (`consecutive_delays + 1`) rather than
-                    // starting a fresh one. The `cd >= goals.len()` gate that will
-                    // eventually fire reads the frame's `undecided`, so resetting it
-                    // here loses every cause recorded before this rotation while the
-                    // counter keeps marching toward that gate — the answer arrives with
-                    // the undecided goal in `residual` and NOTHING in `undecided`, and
-                    // `prove_from_gamma_verdict` then reports the universal case as
-                    // "delayed on a variable nothing bound". Precisely the confusion
-                    // this channel exists to end.
-                    //
-                    // THE ONLY PUSH THAT NEEDS THIS, censused: the other six either
-                    // `delay_mode.reset()` (2535, 2771, 3771, 3899, 4066) or start
-                    // `Normal` (4481), so their frames begin a rotation rather than
-                    // resume one and an empty list is right for them.
-                    //
-                    // LATENT, NOT DRIVEN — said plainly rather than credited to a
-                    // neighbouring test. Reaching it needs a frame that has already
-                    // recorded an `Unknown` and then meets a rule goal whose every
-                    // candidate delays; nothing in the corpus does, and I could not
-                    // build one. What argues the fix is complete is the census above,
-                    // not a row.
-                    let inherited_undecided = frame.undecided.clone();
-                    self.stack.pop();
-                    self.stack.push(ResolverFrame {
-                        goals: rotated,
-                        subst: new_subst,
-                        depth: new_depth,
-                        state: FrameState::Init {
-                            delay_mode: DelayMode::Delayed {
-                                consecutive_delays: new_consecutive,
-                            },
-                        },
-                        assumed_facts: inherited,
-                        undecided: inherited_undecided,
-                    });
+                    // Delay fallback: rotate the goal behind the tail, in place — the frame
+                    // leaves its choice point for `Init`, continuing the rotation. The goal
+                    // WAITS on its blockers (WI-20260926-CYNPE, 068 §2.2): its candidates
+                    // delayed on the caller's variables, so until one of the goal's own is
+                    // bound, asking again only re-opens the same clauses to delay again.
+                    // The tail's goals carry their own wait states — and with them any
+                    // cause recorded before this rotation, which the `cd >= goals.len()`
+                    // gate this rotation continues toward reads.
+                    let wait = self.suspended_on_blockers(kb, &original_goal, None);
+                    let depth = self.stack.last().unwrap().depth;
+                    self.rotate_first(original_goal, wait, depth, next_consecutive(&delay_mode));
                     return Some(StepResult::Continue);
                 }
                 // Backtrack — pop this frame
@@ -4634,8 +4622,8 @@ impl SearchStream {
         if let Candidate::Continuation(body) = candidate {
             let frame = self.stack.last().unwrap();
             let tail = &frame.goals[1..];
-            let mut new_goals: Vec<Value> = Vec::with_capacity(body.len() + tail.len());
-            new_goals.extend(body);
+            let mut new_goals: Vec<FrameGoal> = Vec::with_capacity(body.len() + tail.len());
+            new_goals.extend(body.into_iter().map(FrameGoal::ready));
             new_goals.extend(tail.iter().cloned());
             self.stack.push(ResolverFrame {
                 goals: new_goals,
@@ -4645,7 +4633,6 @@ impl SearchStream {
                     delay_mode: delay_mode.reset(),
                 },
                 assumed_facts: frame.assumed_facts.clone(),
-                undecided: Vec::new(),
             });
             return Some(StepResult::Continue);
         }
@@ -4773,7 +4760,6 @@ impl SearchStream {
                     delay_mode: new_delay,
                 },
                 assumed_facts: inherited,
-                undecided: Vec::new(),
             });
         } else {
             // Rule with body
@@ -4946,7 +4932,8 @@ impl SearchStream {
             // matched/resolved through `TermView` — no lowering to terms. A cut
             // marker is the exception: it is baked to a `Value::Term(cut(B))` so
             // it carries the barrier down the spine wherever the goal flows.
-            let mut new_goals: Vec<Value> = Vec::with_capacity(fresh_nodes.len() + remaining.len());
+            let mut new_goals: Vec<FrameGoal> =
+                Vec::with_capacity(fresh_nodes.len() + remaining.len());
             match cut_functor {
                 Some(cut_sym) => {
                     // Allocate a fresh barrier, tag the opening choice point (the
@@ -4963,13 +4950,17 @@ impl SearchStream {
                     let baked = Self::bake_cut_term(kb, cut_sym, barrier);
                     for n in fresh_nodes {
                         if Self::cut_marker_functor(kb, &n).is_some() {
-                            new_goals.push(Value::term(baked));
+                            new_goals.push(FrameGoal::ready(Value::term(baked)));
                         } else {
-                            new_goals.push(Value::Node(n));
+                            new_goals.push(FrameGoal::ready(Value::Node(n)));
                         }
                     }
                 }
-                None => new_goals.extend(fresh_nodes.into_iter().map(Value::Node)),
+                None => new_goals.extend(
+                    fresh_nodes
+                        .into_iter()
+                        .map(|n| FrameGoal::ready(Value::Node(n))),
+                ),
             }
             new_goals.extend(remaining);
             self.stack.push(ResolverFrame {
@@ -4980,7 +4971,6 @@ impl SearchStream {
                     delay_mode: new_delay,
                 },
                 assumed_facts: inherited,
-                undecided: Vec::new(),
             });
         }
 
@@ -5408,14 +5398,13 @@ impl KnowledgeBase {
         // popped before any solution is yielded.
         let query_goals = goals.clone();
         let initial_frame = ResolverFrame {
-            goals,
+            goals: goals.into_iter().map(FrameGoal::ready).collect(),
             subst: Substitution::new(),
             depth: 0,
             state: FrameState::Init {
                 delay_mode: DelayMode::Normal,
             },
             assumed_facts: Vec::new(),
-            undecided: Vec::new(),
         };
         SearchStream {
             stack: vec![initial_frame],
@@ -12586,7 +12575,6 @@ impl KnowledgeBase {
         Some(FunctionalRelationCall {
             call,
             result: Rc::clone(&args[n]),
-            woven: !requirements.is_empty(),
         })
     }
 
@@ -12610,7 +12598,7 @@ impl KnowledgeBase {
         if !self.value_deep_ground(goal, subst) {
             return false;
         }
-        let Some(FunctionalRelationCall { call, result, .. }) =
+        let Some(FunctionalRelationCall { call, result }) =
             self.functional_relation_call(goal, f, n)
         else {
             return false;
@@ -14119,8 +14107,6 @@ pub(crate) struct FunctionalRelationCall {
     pub(crate) call: Rc<NodeOccurrence>,
     /// The goal's last column, `?r`.
     pub(crate) result: Rc<NodeOccurrence>,
-    /// The goal carried its dictionary (`Expr::ApplyWithin`, WI-1040).
-    pub(crate) woven: bool,
 }
 
 /// The call a goal makes — `(callee, positional arity, named arity)` — for `step_init`'s two

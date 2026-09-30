@@ -439,18 +439,16 @@ fn a_fact_route_supplier_answers_from_a_rule_body() {
 /// then BINDS `?r` to the call term and reports it as a definite answer — a wrong
 /// answer where there had merely been a missing one.
 ///
-/// `reduction_left_body_less_call` is what stops it, and this drives that: the goal
-/// must answer NOTHING (the pre-WI-1057 outcome for this shape) rather than one
-/// solution binding `?r` to a `describe(...)` node. Answering nothing rather than
-/// DELAYING is the WI-938 hook's own standing open half, recorded at its site; this
-/// test pins only that no residual is bound.
+/// `reduction_left_body_less_call` was what stopped it, and this drives what replaced it:
+/// the goal must not answer with `?r` bound to a `describe(...)` node. It answered NOTHING
+/// until WI-20260926-CYNPE closed the WI-938 hook's open half: the hook now answers a
+/// stuck call with its state instead of sending it to candidate selection — a SUSPENDED
+/// call delays the goal, and nothing binds `?r` to it — so the call WAITS on `?x` and the
+/// answer is CONDITIONAL, `?r` free, never a definite answer holding the call.
 ///
-/// CONTROL: route a call the hook's evaluation left STUCK to `unify` anyway (its
-/// `Err(_) => None` arm, WI-20260926-K4JGC; it was `reduction_left_body_less_call` in the
-/// hook's `undecided` before) and this test fails with one solution — MEASURED — while
-/// `a_fact_route_supplier_answers_from_a_rule_body` still passes — there the bridge
-/// DOES answer, so the guard is never consulted. That asymmetry is the point: it is
-/// the only one of WI-1057's four pieces this test can see.
+/// BACK-OUT: the hook's fall-through restored (a stuck call sent to candidate selection)
+/// and this test fails with NO answer, while `a_fact_route_supplier_answers_from_a_rule_body`
+/// still passes — there the bridge DOES answer, so the stuck path is never taken.
 ///
 /// NO SUPPLIER AT ALL, since WI-20260925-P7VP4, and that is what keeps this row on the
 /// hook. With the fact-route supplier this fixture used to carry, the call's carrier is
@@ -467,8 +465,11 @@ fn an_unground_body_less_goal_binds_no_residual() {
     let unground_rule = "  rule answer(?r) :- Desc.describe(?x, ?r)\n";
     let mut kb = crate::common::load_kb_with(&body_less(ns, NO_SUPPLIER_LEAF, "", unground_rule));
     let answers = crate::common::query_unary(&mut kb, &format!("{ns}.answer"));
+    assert_eq!(answers.len(), 1, "one conditional answer; got {answers:?}");
+    let (r, definite) = &answers[0];
+    assert!(!definite, "the call never ran, so the answer is conditional; got {answers:?}");
     assert!(
-        answers.is_empty(),
+        crate::common::entity_functor(&kb, r).is_none(),
         "an un-ground body-less spec-op goal must not bind `?r` to the un-reduced call: \
          got {answers:?}",
     );

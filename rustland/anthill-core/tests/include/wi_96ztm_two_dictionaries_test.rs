@@ -629,16 +629,29 @@ fn the_control_one_require_of_the_pair_answers_its_own_number() {
 fn the_control_without_either_require_neither_call_answers() {
     // THE ROW THE NUMBERS ABOVE ARE READ AGAINST. Both spec ops are BODY-LESS, so with no
     // `require` in the clause there is no instance and no default and the clause has NO
-    // solutions — which is what says every number above arrived through a dictionary.
+    // DEFINITE solution — which is what says every number above arrived through a
+    // dictionary. Each call is UNREDUCED (proposal 068 §2), so every row `combo` enumerates
+    // around them is UNDECIDED, naming that cause.
     //
-    // PASSES EITHER WAY BY DESIGN: it describes the fixture.
+    // It describes the fixture, and did so before WI-20260926-CYNPE too — as NO rows: the
+    // WI-938 hook sent such a call to candidate selection and the clause answered nothing,
+    // silently. FAILS against that tree, on the rows being there.
     let mut kb = crate::common::load_kb_with(&two_specs(
         "test.twospec.none",
         "  rule p(x: Red, y: Blue, ?r) :- Ord.otag(?a), Eqq.etag(?b), combo(?a, ?b, ?r)\n  \
          rule answer(?r) :- p(red(), blue(), ?r)\n",
     ));
-    let got = crate::common::query_unary(&mut kb, "test.twospec.none.answer");
-    assert!(got.is_empty(), "expected no solutions, got {got:?}");
+    let causes = crate::common::undecided_causes(&mut kb, "test.twospec.none.answer");
+    assert!(
+        !causes.is_empty()
+            && causes.iter().all(|row| {
+                !row.is_empty()
+                    && row
+                        .iter()
+                        .all(|c| *c == anthill_core::kb::resolve::UnknownCause::Unreduced)
+            }),
+        "expected only UNDECIDED rows, each naming `Unreduced`; got {causes:?}"
+    );
 }
 
 #[test]

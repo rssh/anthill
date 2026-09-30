@@ -129,7 +129,7 @@ whose callee has no implementation:
 | Bool view / arity+1 view | `dispatched_bool_relation`, `functional_relation_goal` | the goal's own call, through the bridge | unchanged readers |
 | WI-580 unfold | `unfold_eq_operand`, `body_specialize::folded_call_match` | case-split on a flex scrutinee | DSEXA reads OTHER through the strategy |
 | the bridge | `run_in_bridge_interp` (a fresh interpreter per call) | the operation body | the strategy's only evaluator |
-| delay | `delay_goal` | re-evaluates from scratch on every rotation | CYNPE: skip unless a blocker was bound |
+| delay | `delay_goal` | re-evaluated from scratch on every rotation | CYNPE (§4.1): passed over unless a blocker was bound |
 | typing | `type_rule_bodies`, `collect_rule_var_types`; `infer_rule_body_requirements` (P7VP4) | variable types; goal shapes; no data slot | 7D48J |
 
 ## 3. Decisions
@@ -213,6 +213,66 @@ whose callee has no implementation:
 - **Rows.** 35E14's bodied rows (`Colour.score(x, 3)`, `Colour.score(?v, ?r)`); the run-time half
   of `Conv.tag(?s, ?r)`; a suspended goal evaluated once, not once per rotation (counted); a
   parked goal behind a failing sibling still refutes the clause.
+
+### 4.1 As delivered (WI-20260926-CYNPE, 2026-09-30)
+
+`ResolverFrame.goals: Vec<FrameGoal>`, `FrameGoal { goal, wait }`, `Wait::{Ready, Suspended {
+blockers, cause }, Parked}` (`kb/resolve.rs`); `ResolverFrame::undecided` is gone — the gate reads
+each residual goal's cause off its wait, so neither its "filter to the goals still pending" nor
+the delay fallback's hand-inherited copy is needed. What differs from the sketch above, each
+driven by `wi_cynpe_waiting_goals_test` (back-outs stated at its sites):
+
+- **Blockers are computed where the goal waits, not carried by the answer.** `BuiltinResult::Delay`
+  gains no blockers (it keeps its `truncated` flag): D1's coarse blockers are the goal's unbound
+  variables under σ (`collect_unbound_vars_value`, the WI-322 pre-check's reader), computed when
+  the goal ROTATES. Every waiting goal — a builtin's `Delay`, `Unknown` or `Error`, a call the
+  WI-938 hook could not run, a NAF goal, a bounded quantifier over an open spine, a rule goal whose
+  every candidate delayed — rotates through one primitive, `rotate_first`, and so does a goal
+  passed over on its turn (`pass_over_waiting_goal`), with its wait unchanged. The sole-goal case
+  residualizes through one helper, `yield_sole_goal`.
+- **UNREDUCED parks — unless a call beside it still waits.** An undecided answer over a UNIVERSAL
+  (`OpenWorldParameter`, `OpaqueSkolem`) and a FAULT are SUSPENDED on their blockers with their
+  cause: a binding can still change such an answer (a Γ fact can match the goal then). An
+  UNREDUCED call never runs, but a SUSPENDED call in the same goal may, and turn out ABSENT — which
+  outranks UNREDUCED (`Stuck::join`) and fails the goal: `Int64.div(1, ?z) = Conv.tag("km")`,
+  `?z` later bound to `0`, must refute its clause. So an UNREDUCED goal is PARKED only when no
+  call written in its arguments holds an unbound variable (`unbound_vars_in_goal_calls` — a
+  variable outside every call cannot matter, since no binding holds a call); otherwise it is
+  SUSPENDED on exactly those, with its cause. Found by this ticket's `/code-review`.
+- **The WI-938 hook answers a stuck call with the call's state, on the goal as written.** A call
+  that ran is routed to `unify(?r, value)` as before. One that did not is no longer sent to
+  candidate selection (where no clause is written for `f/n+1`): SUSPENDED and SYMBOLIC delay the
+  goal, UNREDUCED is scheduled as undecided, ABSENT fails. The goal keeps its own spelling — not
+  rewritten to `unify(?r, call)`, which the first cut did — so a re-ask evaluates the call ONCE, in
+  the hook, where the first cut evaluated it twice (in the hook, then again in `<=>`). WI-1040's
+  woven route is subsumed, and `FunctionalRelationCall::woven` is gone. A supplier TIE at a
+  carrier the typer sees is refused at load ("ambiguous dispatch"); one that reaches run time — a
+  carrier-less call with two providers, NAR1X's no-`require` row — is UNREDUCED through
+  `stuck_state`, like no supplier.
+- **A hypothesis still answers a stuck call.** A call that did not run goes to candidate selection
+  when a HYPOTHESIS in scope — a `forall_impl` antecedent, a Γ fact — matches the goal as written
+  (`hypothesis_candidates`, found once and handed to candidate selection).
+  `(forall(?c), Colour.score(?c, 3) -: Colour.score(?c, 3))` answered 1 through its antecedent by
+  the old fall-through; without the exception the consequent's call, stuck on the eigenvariable,
+  waited and the tautology came back conditional. Because the goal is not rewritten, the question
+  is asked again at every re-ask, under what has been bound since — a Γ fact matches only a goal
+  identical up to variable identity. (The Bool view never consulted hypotheses, before or after.)
+- **No goal is made ready by an assumption.** `forall_impl`'s antecedents could in principle
+  answer a rule goal waiting in the tail without binding its blockers — but the tail sits behind
+  the `__pop_assumption` marker, and rotation only moves the head to the back, so no tail goal is
+  asked before the assumptions are gone again. (A first cut reset the tail to `Ready` there; the
+  review found it could never fire.)
+- **Counted, not timed:** `ResolveStats::goals_asked`. A goal suspended on a variable nothing binds,
+  among three siblings that progress one at a time, is asked once (4 times before).
+- **What waiting costs where failing was free.** A functional-relation call over an argument
+  nothing binds used to fail at once; it now waits, so a recursive clause that relied on the
+  failure (`rule chain(?r) :- f(?x, ?r), chain(?x)`) recurses to `max_depth` and the search
+  reports itself TRUNCATED — undecided where it was a (wrong) complete 0. The same holds of any
+  delayed builtin in that position today; recorded, not changed.
+- **Rows moved outside the module:** five rows that pinned the silent empty answer now pin its
+  honest replacement — NAR1X's and S8CBV's no-`require` controls (UNDECIDED, `Unreduced`), 96ZTM's
+  (every `combo` row UNDECIDED), WI-1043's un-ground body-less goal (conditional, `?r` free), and
+  `anthill-stl`'s exhaustion-door row, whose fixture now fails its branch by a sibling instead.
 
 ## 5. K4JGC — the evaluation strategy
 

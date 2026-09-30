@@ -661,6 +661,58 @@ impl KnowledgeBase {
         })
     }
 
+    /// The unbound variables under `subst` of the calls written in the ARGUMENTS of the goal
+    /// `goal` — the goal's own functor is not an operand, whether it is `unify`, `eq` or the
+    /// functional-relation view's callee. What can still change an UNREDUCED verdict: the
+    /// unreduced call itself never runs, but a SUSPENDED call beside it can run once these
+    /// are bound, and turn out ABSENT — which outranks UNREDUCED ([`Stuck::join`]) and fails
+    /// the goal. A variable outside every call cannot: no binding holds a call (068 §1.2).
+    pub(super) fn unbound_vars_in_goal_calls(
+        &self,
+        goal: &Value,
+        subst: &Substitution,
+        out: &mut Vec<VarId>,
+    ) {
+        let ViewHead::Functor { pos_arity, .. } = goal.head(self) else {
+            return;
+        };
+        for i in 0..pos_arity {
+            if let Some(c) = goal.pos_arg(self, i) {
+                self.unbound_vars_in_calls(&c.to_value(), subst, out);
+            }
+        }
+        for k in goal.named_keys(self) {
+            if let Some(c) = goal.named_arg(self, k) {
+                self.unbound_vars_in_calls(&c.to_value(), subst, out);
+            }
+        }
+    }
+
+    /// The unbound variables under `subst` of every call written in `v`, arguments included.
+    fn unbound_vars_in_calls(&self, v: &Value, subst: &Substitution, out: &mut Vec<VarId>) {
+        let v = self.chase_value(v.clone(), subst);
+        if self.is_written_call(&v) {
+            self.collect_unbound_vars_value(&v, subst, out);
+            return;
+        }
+        if !self.evaluation_descends(&v) {
+            return;
+        }
+        let ViewHead::Functor { pos_arity, .. } = v.head(self) else {
+            return;
+        };
+        for i in 0..pos_arity {
+            if let Some(c) = v.pos_arg(self, i) {
+                self.unbound_vars_in_calls(&c.to_value(), subst, out);
+            }
+        }
+        for k in v.named_keys(self) {
+            if let Some(c) = v.named_arg(self, k) {
+                self.unbound_vars_in_calls(&c.to_value(), subst, out);
+            }
+        }
+    }
+
     /// A call's arguments, evaluated — strictly: a stuck argument makes the call stuck.
     /// The call comes back rebuilt only if an argument changed; an occurrence is rebuilt
     /// on its own node so the typer's stamps stay with it.

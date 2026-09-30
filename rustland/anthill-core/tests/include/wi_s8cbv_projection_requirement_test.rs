@@ -467,24 +467,39 @@ fn a_rule_with_no_require_has_no_dictionary_at_all() {
     // THE CONTROL THE NUMBERS ABOVE ARE READ AGAINST, and the rule-body twin of
     // [`without_the_requirement_the_body_has_no_dictionary_at_all`]. `Desc.tag()` is
     // body-less, so with no `require` in the clause there is no instance and no default:
-    // the call answers NOTHING. Every `7` / `9` above therefore arrived through the
-    // dictionary rather than through the spec.
+    // the call is UNREDUCED (proposal 068 §2) and the clause's one row is UNDECIDED, naming
+    // that cause. Every `7` / `9` above therefore arrived through the dictionary rather than
+    // through the spec.
     //
-    // ZERO ROWS, not "no definite row", and the distinction is load-bearing twice over:
-    // it is what says the clause FAILED rather than residualized, and it is the control
-    // the two DELAY rows — [`an_unbound_carrier_suspends_too`] and
-    // [`a_spec_bound_keeps_the_runtime_delay`] — read their single INDEFINITE row against.
-    // Asserted on the raw rows for that reason: [`one_definite`] maps both shapes to
-    // `None`, so it cannot tell a failed clause from a delayed one.
+    // UNDECIDED, not merely "no definite row", and the distinction is load-bearing: the two
+    // DELAY rows — [`an_unbound_carrier_suspends_too`] and
+    // [`a_spec_bound_keeps_the_runtime_delay`] — read their single INDEFINITE row, suspended
+    // with no cause, against this one. It was ZERO rows until WI-20260926-CYNPE: the WI-938
+    // hook sent the call that could not run to candidate selection, and the clause FAILED.
     //
     // PASSES EITHER WAY BY DESIGN — it describes the fixture, not gate (1).
     const NO_REQ: &str = "  rule anchored(p: Box, ?r) :- Desc.tag(?r)\n";
-    assert!(
-        rows("test.s8cbv.rule.none.r", NO_REQ, "anchored(box(v: red()), ?r)").is_empty(),
-    );
-    assert!(
-        rows("test.s8cbv.rule.none.b", NO_REQ, "anchored(box(v: blue()), ?r)").is_empty(),
-    );
+    for (ns, query) in [
+        ("test.s8cbv.rule.none.r", "anchored(box(v: red()), ?r)"),
+        ("test.s8cbv.rule.none.b", "anchored(box(v: blue()), ?r)"),
+    ] {
+        assert_eq!(
+            undecided_causes(ns, NO_REQ, query),
+            vec![vec![anthill_core::kb::resolve::UnknownCause::Unreduced]],
+            "{query}: one UNDECIDED row",
+        );
+    }
+}
+
+/// The undecided causes of each row of `<ns>.answer` ([`crate::common::undecided_causes`]).
+fn undecided_causes(
+    ns: &str,
+    decl: &str,
+    query: &str,
+) -> Vec<Vec<anthill_core::kb::resolve::UnknownCause>> {
+    let src = fixture(ns, &format!("{decl}  rule answer(?r) :- {query}\n"));
+    let mut kb = crate::common::load_kb_with(&src);
+    crate::common::undecided_causes(&mut kb, &format!("{ns}.answer"))
 }
 
 #[test]

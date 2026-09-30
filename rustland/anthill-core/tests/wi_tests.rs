@@ -1895,3 +1895,5 @@ mod wi_nekr0_repeated_type_param_join_test;
 mod wi_acg10_census_test;
 #[path = "include/wi_k4jgc_evaluation_strategy_test.rs"]
 mod wi_k4jgc_evaluation_strategy_test;
+#[path = "include/wi_cynpe_waiting_goals_test.rs"]
+mod wi_cynpe_waiting_goals_test;
