@@ -132,9 +132,9 @@ pub(super) fn value_contains_projection(kb: &KnowledgeBase, ty: &Value) -> bool 
 /// Both projection forms are answered AT THE NODE, and neither is descended into (see
 /// [`type_any_part`]'s stop). The ∀ is walked body and context: an eta'd member's ∀ body
 /// carries its receiver projections (`mapElems(xs: List, f: (x: xs.T) -> Dst)`, WI-1083),
-/// and this reader DECIDES whether `eliminate_node_projections` is asked to rewrite the
-/// node, so a projection hiding in a constraint (WI-20260904-50B2K (c)) would never be
-/// eliminated — the assert guarding that path is debug-only. A logical variable of either
+/// and this reader GATES [`eliminate_type_projections`], so a projection hiding in a
+/// constraint (WI-20260904-50B2K (c)) it did not see would never reach the walk's refusal
+/// of it. A logical variable of either
 /// kind is a leaf: no children to hide a projection in, and not one.
 fn contains_projection(kb: &KnowledgeBase, ty: &Value, rigid_counts: bool) -> bool {
     type_any_part(kb, ty, &|te| match te {
@@ -560,8 +560,10 @@ fn nullary_constructor_arg(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Opti
 /// (`let y = z ⟹ y.M ≡ z.M`, the Scala divergence). A no-op when `aliases` is empty (the
 /// common case) or the receiver head is not aliased. Handles the TOP-LEVEL projection
 /// (the let-annotation shape `let k: y.M`); a projection NESTED inside a parameterized /
-/// denoted type is left unchanged — the same carrier-promotion boundary `eliminate_type_-
-/// projections` already documents as a follow-on.
+/// denoted type is left unchanged, so `let k: Option[T = y.M]` keeps a `y`-keyed neutral
+/// that the ζ arm will not equate with `z.M` (a loud over-rejection, never a wrong accept).
+/// That boundary is this function's own now: [`eliminate_type_projections`] rebuilds a
+/// nested projection on either carrier since WI-20260929-0RP29.
 pub(super) fn canonicalize_projection_receivers(
     kb: &mut KnowledgeBase,
     aliases: &HashMap<Symbol, Vec<Symbol>>,
@@ -768,6 +770,12 @@ fn dfs_projection_cycle(
 /// member is not concretely known (a bare / abstract receiver), is a loud
 /// [`TypeError`] — never a silent fresh var, which would unsoundly absorb any demand
 /// downstream. Non-projection types pass through unchanged.
+///
+/// ONE WALK, ON ANY CARRIER (WI-20260929-0RP29) — see [`eliminate_in`]. The gate is
+/// load-bearing, not only the >99% fast path: the walk re-keys a `denoted` BESIDE a
+/// projection (WI-481), and a projection-free type is re-keyed by its callers' own gates
+/// (`check_apply_iter`'s return and effect re-keys), so walking it here too would re-key
+/// it twice.
 pub(super) fn eliminate_type_projections(
     kb: &mut KnowledgeBase,
     ty: &Value,
@@ -776,299 +784,477 @@ pub(super) fn eliminate_type_projections(
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
-    match ty {
-        Value::Term { id: t, .. } => {
-            // WI-475: a TOP-LEVEL single-ref `ExprCarried` (`effects s.E`, or a projection-
-            // typed return `-> s.Sort`) may project to a `Value::Node` (e.g. the effect row
-            // `{Modify[p]}`) — representable here (the result IS the whole eliminated value),
-            // unlike a projection NESTED in a `Term` tree (which `rewrite_term_projections`
-            // cannot hold mid-tree). Return the projected `Value` directly so the effect-row
-            // / return Node threads to the caller (the undeclared-effect check then fires).
-            if matches!(type_head(kb, &TermIdView(*t)), TypeHead::ExprCarried) {
-                return eliminate_expr_carried_projection(kb, *t, arg_types, arg_syms, ctx, span);
-            }
-            Ok(Value::term(rewrite_term_projections(
-                kb, *t, arg_types, arg_syms, ctx, span,
-            )?))
-        }
-        Value::Node(occ) => {
-            // WI-397: a top-level COMPOUND-receiver projection (`a.b.T`) rides a
-            // `TypeNode::ExprCarried` Node carrier (its receiver is a field-access
-            // occurrence). Resolve the receiver path's static type and project the
-            // member — the Node twin of the `Value::Term` path above.
-            if let TypeExtractor::ExprCarried { value, member } = extract_type(kb, ty) {
-                return match resolve_compound_projection(kb, &value, member, arg_types, ctx, span)?
-                {
-                    ProjResult::Grounded(v) => Ok(v),
-                    // WI-400: abstract receiver, member declared — keep the original
-                    // compound `ExprCarried` Node as the rigid neutral. WI-459 NOTE: unlike
-                    // the single-`Ref` `Value::Term` path, this compound (`a.b.T`) neutral is
-                    // NOT re-keyed to the caller's argument (`arg_syms` is not threaded into
-                    // `resolve_compound_projection`). A forwarded compound projection through
-                    // a call therefore stays callee-keyed and fails the ζ identity check —
-                    // a LOUD over-rejection (sound, never a wrong accept), not a regression
-                    // (the compound path never re-keyed). The WI-447 stdlib threading uses
-                    // only single-`Ref` receivers (`s`/`xs`/`rest`); compound-receiver
-                    // re-keying is a recorded follow-on.
-                    ProjResult::Neutral => Ok(ty.clone()),
-                };
-            }
-            // WI-460: a projection nested INSIDE a denoted-bearing `Value::Node` — e.g.
-            // `s.T` in the param of a callback arrow `(x: s.T) -> Bool @ {EffP, -Modify[x]}`,
-            // or `l.T` in `Stream[T = l.T, E = {Modify[c]}]` — is rewritten THROUGH the Node
-            // carrier rather than bailed: descend the occurrence tree, eliminate each
-            // projection child against the receiver's argument type (the same discharge the
-            // `Value::Term` path does), and rebuild the carrier with the denoted children
-            // (`-Modify[x]`, `Modify[c]`) preserved. A Node with no projection is a plain
-            // denoted type, returned as-is. An UNSUPPORTED nested shape (a projection inside a
-            // `named_tuple` carrier) still bails loudly in the descent — never a silent leak.
-            if value_contains_projection(kb, ty) {
-                return eliminate_node_projections(kb, occ, arg_types, arg_syms, ctx, span);
-            }
-            Ok(ty.clone())
-        }
-        other => Ok(other.clone()),
+    if !value_contains_projection(kb, ty) {
+        return Ok(ty.clone());
+    }
+    let cx = Discharge {
+        arg_types,
+        arg_syms,
+        ctx,
+        span,
+    };
+    Ok(eliminate_in(kb, ty, &cx)?.unwrap_or_else(|| ty.clone()))
+}
+
+/// The call a projection is discharged against, and where a refusal is reported.
+struct Discharge<'a> {
+    arg_types: &'a HashMap<Symbol, Value>,
+    arg_syms: Option<&'a HashMap<Symbol, Symbol>>,
+    ctx: &'a TypeErrorContext,
+    span: Option<Span>,
+}
+
+impl Discharge<'_> {
+    fn refuse(&self, msg: &str) -> TypeError {
+        projection_type_error(self.ctx, self.span, msg)
     }
 }
 
-/// WI-460: eliminate expression-carried projections nested INSIDE a denoted-bearing
-/// `Value::Node` carrier — an arrow / parameterized / effect-row occurrence that also
-/// carries a `denoted` value-in-type, e.g. the callback param `(x: s.T) -> Bool @
-/// {EffP, -Modify[x]}` or `Stream[T = l.T, E = {Modify[c]}]`. The Node twin of
-/// [`rewrite_term_projections`]'s recursion into `Term::Fn` children: descend the
-/// occurrence tree, route each GROUND (`TypeChild::Interned`) child through
-/// `rewrite_term_projections` and each NODE child through this function, then rebuild the
-/// carrier with the `make_*_occ` builders. A child that GROUNDS from a Node to a concrete
-/// `Term` (a compound `a.b.T` reducing to `Int64`) collapses to `TypeChild::Interned` via
-/// [`value_to_type_child`]. `denoted` values (`Modify[c]`, `-Modify[x]`) carry no type
-/// projection and are returned untouched. A `named_tuple` carrier holding a projection is
-/// NOT yet rewritten (its fields ride a `Value`-carried list the `TypeChild` descent does
-/// not reach) — it bails loudly, never leaking an un-eliminated projection.
-fn eliminate_node_projections(
+/// WI-20260929-0RP29 — THE elimination walk. Each form is read through [`extract_type`], so
+/// a term, an occurrence and an entity spine are walked by the same code; its children are
+/// eliminated; and it is rebuilt only when one changed — `None` when `ty` comes back as it
+/// was, so an unchanged subtree keeps its term or its occurrence as it is.
+///
+/// A REBUILT FORM IS THE OCCURRENCE, LOWERED WHEN IT IS CLOSED ([`settle`]): built from its
+/// children (an occurrence child is one it can hold), then lowered through the one
+/// occurrence→term lowering when every child is a term. So a form has one term shape, the
+/// lowering's — `make_poly_type_occ` records why a second builder must not exist — and the
+/// applications keep their own carrier-choosing builders (`parameterized_value`,
+/// `named_tuple_value`), which make the same choice.
+///
+/// It replaces a walk per carrier, and the split was the bug. The term half walked
+/// `Term::Fn` and answered a `TermId`, so a projection nested in a term-carried type that
+/// grounded to a type the term store does not hold — `xs.T` over `xs: List[T = Buf[T =
+/// Int64, N = 3]]` is the occurrence-carried `Buf[…, N = 3]` (a type holding a VALUE,
+/// WI-477) — was refused "resolved to a non-term carrier": `List.splitFirst(xs)`'s
+/// `Option[Pair[A = xs.T, …]]` failed where the top-level `-> xs.T` ran, and the `N = Bool`
+/// twin ran everywhere. The occurrence half (WI-460/714/1083) rebuilt every form by hand
+/// beside it, and an entity-carried type took neither and passed through un-eliminated.
+///
+/// Carried over from those halves, each at the form that owns it:
+/// * a single-ref projection's receiver is RE-KEYED to the caller's argument (WI-459) —
+///   [`project_expr_carried`];
+/// * a `denoted` beside a projection is re-keyed through `arg_syms` (WI-481);
+/// * a projection in a `PolyType` CONTEXT is refused, not rewritten (WI-20260904-50B2K (c)).
+///
+/// Every child is walked, not only projection-bearing ones: the gate
+/// ([`eliminate_type_projections`]) asks once, and a `denoted` SIBLING of a projection must
+/// still be reached for its re-key.
+fn eliminate_in(
     kb: &mut KnowledgeBase,
-    occ: &Rc<NodeOccurrence>,
-    arg_types: &HashMap<Symbol, Value>,
-    arg_syms: Option<&HashMap<Symbol, Symbol>>,
-    ctx: &TypeErrorContext,
-    span: Option<Span>,
+    ty: &Value,
+    cx: &Discharge,
+) -> Result<Option<Value>, TypeError> {
+    let (sp, owner) = site_of(ty);
+    match extract_type(kb, ty) {
+        TypeExtractor::ExprCarried { value, member } => project_expr_carried(kb, &value, member, cx),
+        // WI-428: a rigid type-receiver projection (`P.Key` / `MemStore.Key`) — validated
+        // and δ-grounded (or kept as the rigid neutral) against the declaring sort's
+        // `requires` chain / the subject's own manifest bindings; no `arg_types` receiver
+        // lookup (the subject is a TYPE, not a value parameter).
+        TypeExtractor::RigidTypeProjection {
+            sort,
+            subject,
+            member,
+        } => Ok(
+            match resolve_rigid_projection(kb, sort, &subject, member, cx.ctx, cx.span)? {
+                ProjResult::Grounded(v) => Some(v),
+                ProjResult::Neutral => None,
+            },
+        ),
+        // `extract_type` reads ANY head with named arguments as an application: a spec view
+        // and an effect-expression node are told apart here.
+        TypeExtractor::Parameterized { base, bindings } if is_sort_view_functor(kb, base) => {
+            eliminate_spec_view(kb, ty, bindings, cx)
+        }
+        TypeExtractor::Parameterized { base, bindings } => match effect_expr_form(kb, base) {
+            Some(form) => eliminate_effect_expr(kb, form, &bindings, sp, owner, cx),
+            None => {
+                let Some(bindings) = eliminate_named(kb, bindings, cx)? else {
+                    return Ok(None);
+                };
+                // A head that is not a sort has no application to rebuild into: building
+                // one would invent a sort. Refused, as a changed child under it cannot be
+                // dropped.
+                if !kb.has_kind(base, crate::intern::SymbolKind::Sort) {
+                    return Err(cx.refuse(&format!(
+                        "a type projection sits under `{}`, which is not a sort, and the \
+                         elimination has no form to rebuild it into",
+                        kb.qualified_name_of(base),
+                    )));
+                }
+                let base_ref = kb.make_sort_ref(base);
+                Ok(Some(parameterized_value(kb, base_ref, &bindings, sp, owner)))
+            }
+        },
+        // WI-714: the named tuple's fields — the two-row `join` lambda's `(c: r1.T, q: r2.T)`.
+        TypeExtractor::NamedTuple(fields) => {
+            let Some(fields) = eliminate_named(kb, fields, cx)? else {
+                return Ok(None);
+            };
+            Ok(Some(named_tuple_value(kb, &fields, sp, owner)))
+        }
+        // WI-460: a callback arrow's parameter — `(x: s.T) -> Bool @ {EffP, -Modify[x]}`.
+        // WI-791: elimination rewrites the parameter TYPE and never the parameter COUNT, so
+        // the arrow's own `arity` child crosses unchanged.
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            ..
+        } => {
+            let Some(children) = eliminate_children(kb, &[param, result, effects], cx)? else {
+                return Ok(None);
+            };
+            let arity = required_child(kb, ty, "arity", cx)?;
+            let closed = all_terms(&children);
+            let [p, r, e] = <[Value; 3]>::try_from(children).expect("three children in, three out");
+            let p = value_to_type_child_at(kb, &p, sp, owner);
+            let r = value_to_type_child_at(kb, &r, sp, owner);
+            let e = value_to_type_child_at(kb, &e, sp, owner);
+            let arity = value_to_type_child_at(kb, &arity, sp, owner);
+            let occ = kb.make_arrow_occ_child(p, r, e, arity, sp, owner);
+            settle(kb, occ, closed, cx).map(Some)
+        }
+        TypeExtractor::EffectsRows(expr) => {
+            let Some(e) = eliminate_children(kb, &[expr], cx)? else {
+                return Ok(None);
+            };
+            let closed = all_terms(&e);
+            let e = value_to_type_child_at(kb, &e[0], sp, owner);
+            let occ = kb.make_effects_rows_occ(e, sp, owner);
+            settle(kb, occ, closed, cx).map(Some)
+        }
+        // WI-1083: eliminate inside the quantified body and REBUILD the ∀ — the eta arrow of
+        // a member whose signature projects its receiver (`mapElems(xs: List, f: (x: xs.T) ->
+        // Dst)`) carries projections under the binders. Elimination rewrites TYPES, never
+        // binders, so the binder list crosses unchanged.
+        TypeExtractor::PolyType { context, body, .. } => {
+            // WI-20260904-50B2K part (c): the CONTEXT crosses unchanged, which is correct
+            // only while it holds no projection — a constraint is a type, and one inside it
+            // would need eliminating exactly as the body's does. The question is whether the
+            // context HOLDS a projection, not whether it is non-empty: the body alone can
+            // route a ∀ here, and a projection-free context beside it is fine.
+            if context.iter().any(|c| value_contains_projection(kb, c)) {
+                return Err(cx.refuse(
+                    "a type projection sits in a `PolyType` context, which the elimination \
+                     does not yet rewrite (WI-20260904-50B2K part (c))",
+                ));
+            }
+            let Some(b) = eliminate_children(kb, &[body], cx)? else {
+                return Ok(None);
+            };
+            let binders = required_child(kb, ty, "binders", cx)?;
+            // A ∀ without a `context` reads as the empty one (`extract_type`), and is rebuilt
+            // with the empty one every producer writes.
+            let context = view_child_value(kb, ty, "context")
+                .unwrap_or_else(|| crate::kb::load::build_value_list(kb, Vec::new()));
+            let closed = all_terms(&b) && all_terms(&[binders.clone(), context.clone()]);
+            let body = value_to_type_child_at(kb, &b[0], sp, owner);
+            let occ = kb.make_poly_type_occ(binders, context, body, sp, owner);
+            settle(kb, occ, closed, cx).map(Some)
+        }
+        // A `denoted` value-in-type (`Modify[c]`) carries no type projection, but it DOES
+        // carry a callee-parameter reference by VALUE. WI-481: re-key it to the caller's
+        // argument via `arg_syms` — the very rewrite the projection-free return path applies
+        // at the call site (`substitute_ref_syms_value`, on either carrier) — so a `Modify[p]`
+        // beside a projection in a MIXED return (`Strm[T = s.T, E = {Modify[p]}]`) is re-keyed
+        // here too, not left bearing the callee's `p`. No projection inside ⇒ no neutral
+        // receiver to corrupt. A re-key that renamed nothing is no change.
+        TypeExtractor::Denoted(_) => {
+            let Some(map) = cx.arg_syms else {
+                return Ok(None);
+            };
+            let v = substitute_ref_syms_value(kb, ty, map);
+            Ok((!views_structurally_equal(kb, &v, ty)).then_some(v))
+        }
+        // A projection head whose receiver or member does not read. The gate reads such a
+        // head as no projection at all, so it is reached only as a CHILD of a type that holds
+        // a well-formed one — and refused there rather than passed through un-eliminated.
+        TypeExtractor::Error
+            if matches!(
+                type_head(kb, ty),
+                TypeHead::ExprCarried | TypeHead::RigidProjection
+            ) =>
+        {
+            Err(cx.refuse(
+                "a type projection whose receiver or member does not read (malformed carrier)",
+            ))
+        }
+        TypeExtractor::SortRef(_)
+        | TypeExtractor::TypeVar(_)
+        | TypeExtractor::FlexVar { .. }
+        | TypeExtractor::Skolem { .. }
+        | TypeExtractor::Nothing
+        | TypeExtractor::Error => Ok(None),
+    }
+}
+
+/// WI-20260929-0RP29 — a SPEC VIEW (`SortView(Desc)[T = x.E]`, a `requires` entry's spec)
+/// with its projections eliminated. It is no type: [`extract_type`] reads it as an
+/// application of `SortView` and drops its positional `sort` slot, and rebuilding it as one
+/// left `SortView[T = Red]`, a requirement naming no spec — no dictionary was built for it and
+/// eval died `__req_desc not bound` (the four WI-20260909-S8CBV rows, MEASURED). The slot is
+/// read and kept here.
+///
+/// AND IT IS REBUILT AS THE TERM every reader of a spec keys on, each child LOWERED: a
+/// binding left on another carrier is dropped by `unwrap_spec_view_value`, and a requirement
+/// that lost its binding demands nothing, so a caller's `requires` at ANY binding covered it
+/// (a wrong dictionary, not a refusal). The rule WI-20260929-WBHTM set for a spec binding
+/// (`dispatch_type_term`); a child with no term form is refused.
+fn eliminate_spec_view(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    bindings: Vec<(Symbol, Value)>,
+    cx: &Discharge,
+) -> Result<Option<Value>, TypeError> {
+    let ViewHead::Functor {
+        functor: Some(functor),
+        pos_arity,
+        ..
+    } = ty.head(kb)
+    else {
+        return Err(cx.refuse("a spec view has no head (malformed carrier)"));
+    };
+    let pos: Vec<Value> = (0..pos_arity)
+        .map(|i| ty.pos_arg(kb, i).map(|item| view_item_value(&item)))
+        .collect::<Option<_>>()
+        .ok_or_else(|| cx.refuse("a spec view's positional slot does not read (malformed carrier)"))?;
+    let new_pos = eliminate_children(kb, &pos, cx)?;
+    let new_named = eliminate_named(kb, bindings.clone(), cx)?;
+    if new_pos.is_none() && new_named.is_none() {
+        return Ok(None);
+    }
+    let lower = |kb: &mut KnowledgeBase, v: &Value| {
+        value_to_term(kb, v).map_err(|e| {
+            cx.refuse(&format!("a spec view's child has no term form ({e:?})"))
+        })
+    };
+    let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+    for v in new_pos.as_ref().unwrap_or(&pos) {
+        pos_args.push(lower(kb, v)?);
+    }
+    let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    for (k, v) in new_named.as_ref().unwrap_or(&bindings) {
+        named_args.push((*k, lower(kb, v)?));
+    }
+    Ok(Some(Value::term(kb.alloc(Term::Fn {
+        functor,
+        pos_args,
+        named_args,
+    }))))
+}
+
+/// WI-20260929-0RP29 — the `EffectExpression` node forms that hold children (`empty_row`
+/// holds none and reads as a sort reference).
+#[derive(Clone, Copy)]
+enum EffectForm {
+    Merge,
+    Present,
+    Absent,
+    Guarded,
+    Open,
+}
+
+/// The `EffectExpression` form headed by `f`, or `None` for any other head. A constructor
+/// this does not list falls to the application arm, which refuses to rebuild under it.
+fn effect_expr_form(kb: &KnowledgeBase, f: Symbol) -> Option<EffectForm> {
+    Some(
+        match kb
+            .qualified_name_of(f)
+            .strip_prefix("anthill.prelude.EffectExpression.")?
+        {
+            "merge" => EffectForm::Merge,
+            "present" => EffectForm::Present,
+            "absent" => EffectForm::Absent,
+            "guarded" => EffectForm::Guarded,
+            "open" => EffectForm::Open,
+            _ => return None,
+        },
+    )
+}
+
+/// WI-20260929-0RP29 — an `EffectExpression` node (`{s.E, Error[EmptyStream]}` nested in a
+/// type, `s.E` grounding to `{Modify[p]}`), its children eliminated and the node rebuilt
+/// ([`settle`]). A `merge`'s halves, a label and a tail all go back through [`eliminate_in`].
+/// A `guarded` node's guard crosses as it is — it holds goals, not types, and a projection in
+/// it is refused rather than passed through — and on the occurrence it is the value-list
+/// spine that carrier holds (`build_value_list`), which the printer reads.
+fn eliminate_effect_expr(
+    kb: &mut KnowledgeBase,
+    form: EffectForm,
+    bindings: &[(Symbol, Value)],
+    sp: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+    cx: &Discharge,
+) -> Result<Option<Value>, TypeError> {
+    let child = |kb: &KnowledgeBase, key: &str| {
+        bindings
+            .iter()
+            .find(|(k, _)| kb.local_name_of(*k) == key)
+            .map(|(_, v)| v.clone())
+            .ok_or_else(|| {
+                cx.refuse(&format!("an effect-row node has no `{key}` child (malformed carrier)"))
+            })
+    };
+    let keys: &[&str] = match form {
+        EffectForm::Merge => &["left", "right"],
+        EffectForm::Open => &["tail"],
+        EffectForm::Present | EffectForm::Absent | EffectForm::Guarded => &["label"],
+    };
+    let children = keys
+        .iter()
+        .map(|k| child(kb, k))
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(children) = eliminate_children(kb, &children, cx)? else {
+        return Ok(None);
+    };
+    let mut closed = all_terms(&children);
+    let mut tc: Vec<TypeChild> = children
+        .iter()
+        .map(|v| value_to_type_child_at(kb, v, sp, owner))
+        .collect();
+    let node = match form {
+        EffectForm::Merge => {
+            let right = tc.pop().expect("two children");
+            let left = tc.pop().expect("two children");
+            EffectExprNode::Merge { left, right }
+        }
+        EffectForm::Open => EffectExprNode::Open {
+            tail: tc.pop().expect("one child"),
+        },
+        EffectForm::Present => EffectExprNode::Present {
+            label: tc.pop().expect("one child"),
+        },
+        EffectForm::Absent => EffectExprNode::Absent {
+            label: tc.pop().expect("one child"),
+        },
+        EffectForm::Guarded => {
+            let guard = child(kb, "guard")?;
+            if value_contains_projection(kb, &guard) {
+                return Err(cx.refuse(
+                    "a type projection sits in an effect guard, which holds goals and is not \
+                     rewritten",
+                ));
+            }
+            closed &= matches!(guard, Value::Term { .. });
+            let guard = if closed {
+                guard
+            } else {
+                let goals = value_list_elements(kb, &guard);
+                crate::kb::load::build_value_list(kb, goals)
+            };
+            EffectExprNode::Guarded {
+                label: tc.pop().expect("one child"),
+                guard,
+            }
+        }
+    };
+    let occ = NodeOccurrence::new_effect_expr(node, sp, owner);
+    settle(kb, occ, closed, cx).map(Some)
+}
+
+/// A rebuilt form on its carrier: the occurrence as built, or — when every child was a term —
+/// its term twin, through the one occurrence→term lowering.
+fn settle(
+    kb: &mut KnowledgeBase,
+    occ: Rc<NodeOccurrence>,
+    closed: bool,
+    cx: &Discharge,
 ) -> Result<Value, TypeError> {
-    // Eliminate one structural child: a ground term rewrites via the `Term` path; a Node
-    // child recurses (and may collapse Node→Term when a compound projection grounds).
-    fn elim_child(
-        kb: &mut KnowledgeBase,
-        c: &TypeChild,
-        arg_types: &HashMap<Symbol, Value>,
-        arg_syms: Option<&HashMap<Symbol, Symbol>>,
-        ctx: &TypeErrorContext,
-        span: Option<Span>,
-    ) -> Result<TypeChild, TypeError> {
-        match c {
-            TypeChild::Interned(t) => Ok(TypeChild::Interned(rewrite_term_projections(
-                kb, *t, arg_types, arg_syms, ctx, span,
-            )?)),
-            TypeChild::Node(n) => {
-                let v = eliminate_node_projections(kb, n, arg_types, arg_syms, ctx, span)?;
-                Ok(value_to_type_child(kb, &v))
+    if !closed {
+        return Ok(Value::Node(occ));
+    }
+    crate::kb::node_occurrence::try_occurrence_to_term(kb, &occ)
+        .map(Value::term)
+        .ok_or_else(|| cx.refuse("a rebuilt type has no term form"))
+}
+
+/// Is every value a term? Asked of the `Value`s, not of the `TypeChild`s they become: a
+/// `DeBruijn` variable rides a child as `Interned`, and is not a term here.
+fn all_terms(vs: &[Value]) -> bool {
+    vs.iter().all(|v| matches!(v, Value::Term { .. }))
+}
+
+/// A form's child by key, which the form's builder always writes.
+fn required_child(
+    kb: &KnowledgeBase,
+    ty: &Value,
+    key: &str,
+    cx: &Discharge,
+) -> Result<Value, TypeError> {
+    view_child_value(kb, ty, key)
+        .ok_or_else(|| cx.refuse(&format!("a type has no `{key}` child (malformed carrier)")))
+}
+
+/// [`eliminate_children`] over labelled children (bindings, fields), keeping the labels.
+fn eliminate_named(
+    kb: &mut KnowledgeBase,
+    children: Vec<(Symbol, Value)>,
+    cx: &Discharge,
+) -> Result<Option<Vec<(Symbol, Value)>>, TypeError> {
+    let (labels, values): (Vec<Symbol>, Vec<Value>) = children.into_iter().unzip();
+    Ok(eliminate_children(kb, &values, cx)?.map(|vs| labels.into_iter().zip(vs).collect()))
+}
+
+/// Eliminate each child. `None` when every one came back as it was; otherwise all of them,
+/// each on a carrier a builder takes ([`child_type_value`]).
+fn eliminate_children(
+    kb: &mut KnowledgeBase,
+    children: &[Value],
+    cx: &Discharge,
+) -> Result<Option<Vec<Value>>, TypeError> {
+    let mut out: Option<Vec<Value>> = None;
+    for (i, c) in children.iter().enumerate() {
+        match eliminate_in(kb, c, cx)? {
+            Some(v) => out.get_or_insert_with(|| children[..i].to_vec()).push(v),
+            None => {
+                if let Some(o) = out.as_mut() {
+                    o.push(c.clone());
+                }
             }
         }
     }
-    let sp = occ.span;
-    let owner = occ.owner;
-    match &occ.kind {
-        NodeKind::Type(node) => match node {
-            // WI-20260904-02ERR: a variable carries no projection to eliminate — and it
-            // leaves through the choke point, not as a bare `Value::Node`.
-            TypeNode::Var(_) => Ok(crate::kb::node_occurrence::occurrence_as_type_value(occ)),
-            TypeNode::Arrow {
-                param,
-                result,
-                effects,
-                arity,
-            } => {
-                let p = elim_child(kb, param, arg_types, arg_syms, ctx, span)?;
-                let r = elim_child(kb, result, arg_types, arg_syms, ctx, span)?;
-                let e = elim_child(kb, effects, arg_types, arg_syms, ctx, span)?;
-                // WI-791: projection elimination REBUILDS the arrow, so it carries
-                // the same arity across. This is the path the ticket named as the
-                // reverted wrapper's unconfirmed leak (c): `(x: T) -> R` whose slot
-                // BECOMES a tuple once `T`/`xs.T` is projected away. It is a
-                // non-event now — eliminating a projection rewrites the param TYPE
-                // and never the parameter COUNT.
-                let arity = arity.clone();
-                Ok(Value::Node(
-                    kb.make_arrow_occ_child(p, r, e, arity, sp, owner),
-                ))
-            }
-            TypeNode::Parameterized { base, bindings } => {
-                let b = elim_child(kb, base, arg_types, arg_syms, ctx, span)?;
-                let mut bs: Vec<(Symbol, TypeChild)> = Vec::with_capacity(bindings.len());
-                for (s, c) in bindings {
-                    bs.push((*s, elim_child(kb, c, arg_types, arg_syms, ctx, span)?));
-                }
-                Ok(Value::Node(kb.make_parameterized_occ(b, bs, sp, owner)))
-            }
-            TypeNode::EffectsRows { effects_expr } => {
-                let e = elim_child(kb, effects_expr, arg_types, arg_syms, ctx, span)?;
-                Ok(Value::Node(kb.make_effects_rows_occ(e, sp, owner)))
-            }
-            // A `denoted` value-in-type (`Modify[c]`) carries no type projection, but it
-            // DOES carry a callee-parameter reference by VALUE. WI-481: re-key it to the
-            // caller's argument via `arg_syms` (the same `param_to_arg_sym` rewrite the
-            // projection-free return path applies at the call site), so a `Modify[p]`
-            // sitting beside a projection in a MIXED return (`Strm[T = s.T, E = {Modify[p]}]`)
-            // is re-keyed here too — not left bearing the callee's `p`. No projection
-            // inside ⇒ no neutral receiver to corrupt, so re-key unconditionally when a
-            // map is present.
-            TypeNode::Denoted { .. } => match arg_syms {
-                Some(map) => Ok(Value::Node(
-                    crate::kb::node_occurrence::substitute_ref_syms_occ(occ, map),
-                )),
-                None => Ok(Value::Node(Rc::clone(occ))),
-            },
-            // A nested COMPOUND projection (`a.b.T`) Node — resolve it exactly as the
-            // top-level `ExprCarried` arm of `eliminate_type_projections` does (callee-keyed;
-            // the WI-459 re-key is single-`Ref` only, see that arm's note).
-            TypeNode::ExprCarried { .. } => {
-                if let TypeExtractor::ExprCarried { value, member } =
-                    extract_type(kb, &Value::Node(Rc::clone(occ)))
-                {
-                    match resolve_compound_projection(kb, &value, member, arg_types, ctx, span)? {
-                        ProjResult::Grounded(v) => Ok(v),
-                        ProjResult::Neutral => Ok(Value::Node(Rc::clone(occ))),
-                    }
-                } else {
-                    // An `ExprCarried` carrier whose `member` is not a ground `Ref` is
-                    // malformed (the builders always store a ground `Ref` member). Bail
-                    // loudly rather than silently passing the projection through — `value_-
-                    // contains_projection` already classified this node as projection-bearing.
-                    Err(projection_type_error(
-                        ctx,
-                        span,
-                        "a type projection nested in a denoted-bearing type has a non-Ref \
-                         projection member (malformed carrier)",
-                    ))
-                }
-            }
-            // WI-714: a projection nested in a `named_tuple` carrier — the two-row `join`
-            // lambda's param type `(c: r1.T, q: r2.T)`. Its `fields` ride a `Value`-carried
-            // list (not `TypeChild` children), so the structural descent above does not
-            // reach them; instead READ the fields (`extract_type`), eliminate each field's
-            // TYPE (the full dispatcher, so a `Term`-carried single-ref projection `r1.T`
-            // and a `Node`-carried one both resolve), and REBUILD the named tuple. An
-            // operand projection that cannot resolve still bails loudly inside the per-field
-            // elimination — never a silent leak.
-            TypeNode::NamedTuple { .. } => {
-                let fields = match extract_type(kb, &Value::Node(Rc::clone(occ))) {
-                    TypeExtractor::NamedTuple(f) => f,
-                    _ => {
-                        return Err(projection_type_error(
-                            ctx,
-                            span,
-                            "a named-tuple type carrier did not extract as a named tuple",
-                        ))
-                    }
-                };
-                let mut reduced: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());
-                for (name, fty) in fields {
-                    let f = eliminate_type_projections(kb, &fty, arg_types, arg_syms, ctx, span)?;
-                    reduced.push((name, f));
-                }
-                Ok(named_tuple_value(kb, &reduced, sp, owner))
-            }
-            // WI-1083: eliminate inside the quantified body and REBUILD the ∀ —
-            // the eta arrow of a member whose signature projects its receiver
-            // (`mapElems(xs: List, f: (x: xs.T) -> Dst)`) carries projections under
-            // the binders. Elimination rewrites TYPES, never binders, so the binder
-            // list crosses unchanged.
-            TypeNode::PolyType {
-                binders,
-                context,
-                body,
-            } => {
-                let b = elim_child(kb, body, arg_types, arg_syms, ctx, span)?;
-                // WI-20260904-50B2K part (c): the context crosses UNCHANGED, and that is
-                // correct only while it is empty — a constraint is a TYPE, so a projection
-                // inside one would need eliminating exactly as the body's does.
-                //
-                // AND THIS NODE IS NOW ROUTED HERE *BECAUSE OF* THE CONTEXT: the same change
-                // widened `value_contains_projection` to look inside it, and that predicate
-                // is the one that DECIDES whether a node is handed to this function. So a
-                // context-borne projection arrives here by design, and a `debug_assert`
-                // alone would carry it un-eliminated into a stored type in release — the
-                // silent-in-release shape `check_bare_ref` was corrected for two passes ago.
-                // Loud, through the same helper the malformed-`ExprCarried` arm above uses.
-                // /code-review found it.
-                // THE QUESTION IS WHETHER THE *CONTEXT* HOLDS A PROJECTION, not whether it
-                // is non-empty — the first cut asked the second and asserted the first in
-                // its own message. What ROUTES a node here is `value_contains_projection`,
-                // which the BODY alone satisfies (an eta'd member's ∀ body carrying
-                // `(x: xs.T)` is the shape its doc names), so a projection-free context
-                // beside a body projection the line above just eliminated would be refused,
-                // and told the author the projection was somewhere it is not. A
-                // projection-free context passes through unchanged and correctly.
-                // /code-review found it.
-                if value_list_elements(kb, context)
-                    .iter()
-                    .any(|c| value_contains_projection(kb, c))
-                {
-                    return Err(projection_type_error(
-                        ctx,
-                        span,
-                        "a type projection sits in a `PolyType` context, which the \
-                         elimination does not yet rewrite (WI-20260904-50B2K part (c))",
-                    ));
-                }
-                Ok(Value::Node(kb.make_poly_type_occ(
-                    binders.clone(),
-                    context.clone(),
-                    b,
-                    sp,
-                    owner,
-                )))
-            }
-        },
-        NodeKind::EffectExpr(node) => match node {
-            EffectExprNode::Merge { left, right } => {
-                let l = elim_child(kb, left, arg_types, arg_syms, ctx, span)?;
-                let r = elim_child(kb, right, arg_types, arg_syms, ctx, span)?;
-                Ok(Value::Node(kb.make_merge_occ(l, r, sp, owner)))
-            }
-            EffectExprNode::Present { label } => {
-                let l = elim_child(kb, label, arg_types, arg_syms, ctx, span)?;
-                Ok(Value::Node(kb.make_present_occ(l, sp, owner)))
-            }
-            EffectExprNode::Guarded { label, guard } => {
-                // Only the label participates in projection elimination (type-param
-                // substitution in the effect label); the guard is carried through
-                // unchanged (conservatively-present metadata, no discharge in phase 1).
-                let l = elim_child(kb, label, arg_types, arg_syms, ctx, span)?;
-                Ok(Value::Node(kb.make_guarded_occ(
-                    l,
-                    guard.clone(),
-                    sp,
-                    owner,
-                )))
-            }
-            EffectExprNode::Absent { label } => {
-                let l = elim_child(kb, label, arg_types, arg_syms, ctx, span)?;
-                Ok(Value::Node(kb.make_absent_occ(l, sp, owner)))
-            }
-            EffectExprNode::Open { tail } => {
-                let t = elim_child(kb, tail, arg_types, arg_syms, ctx, span)?;
-                Ok(Value::Node(kb.make_open_occ(t, sp, owner)))
-            }
-            EffectExprNode::EmptyRow => Ok(Value::Node(Rc::clone(occ))),
-        },
-        // A non-type / non-effect occurrence (Expr / Pattern) in a type position is not a
-        // projection carrier — return as-is (defensive; the descent never targets one).
-        _ => Ok(Value::Node(Rc::clone(occ))),
+    let Some(out) = out else {
+        return Ok(None);
+    };
+    out.into_iter()
+        .map(|v| child_type_value(kb, v, cx))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+/// Where a rebuilt node is stamped: an occurrence keeps the one it was rebuilt from; a node
+/// rebuilt from a term has no recorded location.
+fn site_of(ty: &Value) -> (crate::span::SourceSpan, Option<Symbol>) {
+    match ty {
+        Value::Node(occ) => (occ.span, occ.owner),
+        _ => (crate::kb::node_occurrence::empty_span(), None),
+    }
+}
+
+/// WI-20260929-0RP29 — a child on a carrier the type builders take. A term, an occurrence and
+/// a variable are children as they are. Anything else is LOWERED to the term it is (lossless
+/// for a type since WI-390): an entity spine — the application `fn_value` rebuilds around an
+/// occurrence, which σ hands back for one — which no builder takes (`parameterized_value`
+/// would read it as a term and panic), and a leaf a σ walk left raw (`Value::SymbolRef`,
+/// the `Term::Ref` not yet interned). What has no term form is not a type, and is refused.
+fn child_type_value(kb: &mut KnowledgeBase, v: Value, cx: &Discharge) -> Result<Value, TypeError> {
+    match v {
+        Value::Term { .. } | Value::Node(_) | Value::Var(_) => Ok(v),
+        other => value_to_term(kb, &other).map(Value::term).map_err(|e| {
+            cx.refuse(&format!(
+                "a type projection grounded to a {} with no term form ({e:?})",
+                other.type_name()
+            ))
+        }),
     }
 }
 
 /// WI-397: resolve a COMPOUND-receiver projection (`a.b.T`) — the receiver `value`
 /// is a field-access occurrence (`Value::Node`), not a single value reference.
 /// Resolve the receiver path's static type, then project the `member` off it. The
-/// Node twin of the single-`Ref` path in [`rewrite_term_projections`].
+/// compound twin of the single-`Ref` path in [`project_expr_carried`].
 fn resolve_compound_projection(
     kb: &mut KnowledgeBase,
     receiver: &Value,
@@ -1279,178 +1465,74 @@ pub(super) fn resolve_field_type(
     Ok((resolved, decl_sort))
 }
 
-/// WI-475: project a single-ref `ExprCarried` term (`s.M`) against the receiver's
-/// argument type, returning the eliminated type as a `Value` — which MAY be a
-/// `Value::Node` (e.g. `s.E` projecting to a Modify-bearing effect row `{Modify[p]}`,
-/// or `s.Sort` of a denoted-bearing argument). A Node result is only representable at
-/// the TOP level of an eliminated type (an effect-row / return type that IS the whole
-/// projected value); [`eliminate_type_projections`] returns it directly there, while
-/// [`rewrite_term_projections`] (rebuilding a `Term` tree) can use only the `Value::Term`
-/// case. Shared by both so the projection + WI-459 re-keying logic lives in one place.
-fn eliminate_expr_carried_projection(
+/// WI-475: project an expression-carried projection (`s.M`: the receiver `value`, the member
+/// `member`) against the receiver's argument type. `None` when it stays the neutral it was;
+/// otherwise the projected type, on whatever carrier the receiver's type binds the member on
+/// — an occurrence included (`s.E` projecting to a Modify-bearing effect row `{Modify[p]}`,
+/// or `xs.T` to a type holding a value); the enclosing form rebuilds around it
+/// ([`eliminate_in`]).
+fn project_expr_carried(
     kb: &mut KnowledgeBase,
-    t: TermId,
-    arg_types: &HashMap<Symbol, Value>,
-    arg_syms: Option<&HashMap<Symbol, Symbol>>,
-    ctx: &TypeErrorContext,
-    span: Option<Span>,
-) -> Result<Value, TypeError> {
-    let TypeExtractor::ExprCarried { value, member } = extract_type(kb, &TermIdView(t)) else {
-        return Ok(Value::term(t));
-    };
+    value: &Value,
+    member: Symbol,
+    cx: &Discharge,
+) -> Result<Option<Value>, TypeError> {
     // A single value reference `Ref(s)` (classified as `SortRef`) is the common
     // receiver and is resolved below.
     //
-    // WI-819: a COMPOUND receiver (`s.cell.T`, a field-access path) is delegated
-    // to `resolve_compound_projection` — the SAME resolver the `Value::Node` arm
-    // of `eliminate_type_projections` uses for the same shape. It used to be a
-    // loud error here, on the stated ground that "a compound receiver is rejected
-    // at load, so this is defensive"; that was true only because a compound
-    // projection could reach this function on the NODE carrier alone. Once a
-    // `let`'s annotation rides its pattern term (WI-819), the identical type
-    // arrives here as a `Value::Term`, and refusing it made the answer depend on
-    // WHICH CARRIER the annotation happened to have — a carrier-dependent
-    // verdict, which is the thing carrier-neutrality exists to prevent (WI-425).
-    // Delegating makes the two carriers agree; it can only turn a former error
-    // into the answer the Node carrier already gave, never accept more than that
-    // arm does.
-    let Some(receiver) = extract_sort_ref_sym(kb, &value) else {
-        return match resolve_compound_projection(kb, &value, member, arg_types, ctx, span)? {
-            ProjResult::Grounded(v) => Ok(v),
-            // Abstract receiver with the member declared: keep the original
-            // `ExprCarried` as the rigid neutral, exactly as the Node arm does.
-            ProjResult::Neutral => Ok(Value::term(t)),
-        };
+    // WI-819: a COMPOUND receiver (`s.cell.T`, a field-access path) is delegated to
+    // `resolve_compound_projection`, whichever carrier the projection rides — it rode
+    // the occurrence alone until a `let`'s annotation came to ride its pattern term, and
+    // refusing the term spelling then made the answer depend on WHICH CARRIER the
+    // annotation happened to have (the carrier-dependent verdict WI-425 exists to
+    // prevent). WI-459 NOTE: the compound neutral is NOT re-keyed to the caller's
+    // argument (`arg_syms` is not threaded into `resolve_compound_projection`), so a
+    // forwarded compound projection stays callee-keyed and fails the ζ identity check —
+    // a LOUD over-rejection, never a wrong accept; compound re-keying is a recorded
+    // follow-on.
+    let Some(receiver) = extract_sort_ref_sym(kb, value) else {
+        return Ok(
+            match resolve_compound_projection(kb, value, member, cx.arg_types, cx.ctx, cx.span)? {
+                ProjResult::Grounded(v) => Some(v),
+                // Abstract receiver with the member declared: the projection stays the
+                // rigid neutral it is.
+                ProjResult::Neutral => None,
+            },
+        );
     };
-    let arg_ty = match arg_types.get(&receiver) {
-        Some(v) => v.clone(),
-        None => {
-            return Err(projection_type_error(
-                ctx,
-                span,
-                &format!(
-                    "type projection receiver '{}' is not an argument-bound parameter of this call",
-                    kb.local_name_of(receiver),
-                ),
-            ));
-        }
+    let Some(arg_ty) = cx.arg_types.get(&receiver).cloned() else {
+        return Err(cx.refuse(&format!(
+            "type projection receiver '{}' is not an argument-bound parameter of this call",
+            kb.local_name_of(receiver),
+        )));
     };
     let member_str = kb.local_name_of(member).to_owned();
     // Single-ref receiver: the arg's inferred type (a concrete sort, or a bound
     // type-param). No abstract-type-param declaring sort is in hand here (that arises
     // only on the compound field-projection path) — `None`.
-    match project_type_member(kb, &arg_ty, &member_str, None, ctx, span)? {
-        // Term OR Node — the caller decides whether a Node is representable in its position.
-        ProjResult::Grounded(v) => Ok(v),
-        // WI-400: the receiver is abstract but the member is declared — the rigid
-        // NEUTRAL (path-identity). WI-459: RE-KEY its receiver from the callee's formal
-        // parameter to the CALLER's argument value-reference when this is a call-site
-        // elimination (`arg_syms` present) and the argument is a simple value reference.
-        // The projection stayed abstract precisely because the argument's TYPE did not
-        // bind the member (`sfd(xs)` with the bare `xs : List`), so the receiver VALUE
-        // is exactly that argument — `sfd.xs.T` is definitionally `collectd.xs.T`. The
-        // grounded arm above never reaches here, so a member the argument's type DID bind
-        // (the recursive `collectd(rest)`, where `rest : List[T = xs.T]` δ-reduces `T`
-        // to `xs.T`) keeps its δ-reduced value un-re-keyed. A non-value-ref argument has
-        // no `arg_syms` entry → left as the callee-keyed neutral (deferred-receiver
-        // follow-on). Re-forming `ExprCarried{Ref(arg_sym), member}` here is what makes
-        // the SAME definitional projection compare EQUAL under the non-decomposing ζ arm
-        // (WI-400) instead of two identically-printed-yet-distinct neutrals.
-        ProjResult::Neutral => Ok(Value::term(match arg_syms.and_then(|m| m.get(&receiver)) {
-            Some(&arg_sym) => {
+    Ok(
+        match project_type_member(kb, &arg_ty, &member_str, None, cx.ctx, cx.span)? {
+            ProjResult::Grounded(v) => Some(v),
+            // WI-400: the receiver is abstract but the member is declared — the rigid
+            // NEUTRAL (path-identity). WI-459: RE-KEY its receiver from the callee's formal
+            // parameter to the CALLER's argument value-reference when this is a call-site
+            // elimination (`arg_syms` present) and the argument is a simple value reference.
+            // The projection stayed abstract precisely because the argument's TYPE did not
+            // bind the member (`sfd(xs)` with the bare `xs : List`), so the receiver VALUE
+            // is exactly that argument — `sfd.xs.T` is definitionally `collectd.xs.T`. The
+            // grounded arm above never reaches here, so a member the argument's type DID
+            // bind (the recursive `collectd(rest)`, where `rest : List[T = xs.T]` δ-reduces
+            // `T` to `xs.T`) keeps its δ-reduced value un-re-keyed. A non-value-ref argument
+            // has no `arg_syms` entry → left as the callee-keyed neutral (deferred-receiver
+            // follow-on). Re-forming `ExprCarried{Ref(arg_sym), member}` here is what makes
+            // the SAME definitional projection compare EQUAL under the non-decomposing ζ arm
+            // (WI-400) instead of two identically-printed-yet-distinct neutrals.
+            ProjResult::Neutral => cx.arg_syms.and_then(|m| m.get(&receiver)).map(|&arg_sym| {
                 let recv_term = kb.alloc(Term::Ref(arg_sym));
-                kb.make_expr_carried(recv_term, member)
-            }
-            None => t,
-        })),
-    }
-}
-
-/// Recursive term rewrite for [`eliminate_type_projections`]: an `ExprCarried` head is
-/// projected and replaced; any other `Fn` is rebuilt only if a child changed; leaves
-/// pass through.
-fn rewrite_term_projections(
-    kb: &mut KnowledgeBase,
-    t: TermId,
-    arg_types: &HashMap<Symbol, Value>,
-    arg_syms: Option<&HashMap<Symbol, Symbol>>,
-    ctx: &TypeErrorContext,
-    span: Option<Span>,
-) -> Result<TermId, TypeError> {
-    // WI-428: a rigid type-receiver projection (`P.Key` / `MemStore.Key`) — validated
-    // and δ-grounded (or kept as the rigid neutral) against the declaring sort's
-    // `requires` chain / the subject's own manifest bindings; no `arg_types` receiver
-    // lookup (the subject is a TYPE, not a value parameter).
-    if matches!(type_head(kb, &TermIdView(t)), TypeHead::RigidProjection) {
-        let TypeExtractor::RigidTypeProjection {
-            sort,
-            subject,
-            member,
-        } = extract_type(kb, &TermIdView(t))
-        else {
-            return Ok(t);
-        };
-        return match resolve_rigid_projection(kb, sort, &subject, member, ctx, span)? {
-            ProjResult::Grounded(Value::Term { id: pt, .. }) => Ok(pt),
-            ProjResult::Grounded(_) => Err(projection_type_error(
-                ctx,
-                span,
-                "type projection resolved to a non-term carrier, which is not yet supported",
-            )),
-            ProjResult::Neutral => Ok(t),
-        };
-    }
-    if matches!(type_head(kb, &TermIdView(t)), TypeHead::ExprCarried) {
-        // WI-475: a single-ref `ExprCarried` (`s.M`) projects to a `Value` that MAY be a
-        // Node carrier (e.g. `s.E` → a Modify-bearing effect row `{Modify[p]}`). A Node
-        // cannot be embedded mid-`Term`-tree, so it is representable only at the TOP level
-        // (`eliminate_type_projections` handles that and returns the Node `Value`). Reaching
-        // here means the `ExprCarried` is NESTED inside a larger `Term` — a Node result
-        // there is the genuine follow-on (loud, never silently dropped).
-        return match eliminate_expr_carried_projection(kb, t, arg_types, arg_syms, ctx, span)? {
-            Value::Term { id: pt, .. } => Ok(pt),
-            _ => Err(projection_type_error(
-                ctx,
-                span,
-                "type projection resolved to a non-term carrier, which is not yet supported",
-            )),
-        };
-    }
-    // Recurse into `Fn` children, rebuilding only if a child changed. Index-based so
-    // each child is read (a `Copy` `TermId`) before the `&mut kb` recursive call and
-    // written after — no borrow of the owned (cloned) arg vectors across the call.
-    if let Term::Fn {
-        functor,
-        pos_args,
-        named_args,
-    } = kb.get_term(t).clone()
-    {
-        let mut changed = false;
-        let mut new_pos = pos_args;
-        for i in 0..new_pos.len() {
-            let nc = rewrite_term_projections(kb, new_pos[i], arg_types, arg_syms, ctx, span)?;
-            if nc != new_pos[i] {
-                new_pos[i] = nc;
-                changed = true;
-            }
-        }
-        let mut new_named = named_args;
-        for i in 0..new_named.len() {
-            let nc = rewrite_term_projections(kb, new_named[i].1, arg_types, arg_syms, ctx, span)?;
-            if nc != new_named[i].1 {
-                new_named[i].1 = nc;
-                changed = true;
-            }
-        }
-        if changed {
-            return Ok(kb.alloc(Term::Fn {
-                functor,
-                pos_args: new_pos,
-                named_args: new_named,
-            }));
-        }
-    }
-    Ok(t)
+                Value::term(kb.make_expr_carried(recv_term, member))
+            }),
+        },
+    )
 }
 
 /// WI-400: outcome of projecting a member off a receiver's type. A projection either
@@ -1471,7 +1553,7 @@ pub(super) enum ProjResult {
 }
 
 /// Project a single type member (`T`, `E`, `Sort`, …) off the receiver's argument
-/// type for [`rewrite_term_projections`].
+/// type for [`project_expr_carried`].
 ///
 /// `recv_decl_sort` is the sort whose `requires` chain lends an ABSTRACT type-variable
 /// receiver its declared interface — supplied by [`resolve_field_type`] when the

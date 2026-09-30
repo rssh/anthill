@@ -19633,7 +19633,7 @@ fn wrap_places_as_var_ref(
         // WHY IT MATTERS, and it was measured rather than reasoned: with the descent, a
         // `requires Desc[T = x.E]` stored `ExprCarried(var_ref(pick.x), E)` while the
         // very same projection one line up (`e: x.E`, a parameter type) stored
-        // `ExprCarried(Ref(pick.x), E)`. `eliminate_expr_carried_projection` reads the
+        // `ExprCarried(Ref(pick.x), E)`. `project_expr_carried` reads the
         // receiver as a `Ref` and keys the per-call argument-type map by that symbol, so
         // the requires copy silently eliminated to itself, the slot was never pinned, and
         // eval died `__req_desc not bound in caller frame`. One projection, two spellings,

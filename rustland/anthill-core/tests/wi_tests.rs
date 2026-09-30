@@ -1881,6 +1881,8 @@ mod wi_4zzkz_spec_half_refusal_test;
 mod wi_f3fyj_value_in_type_binding_test;
 #[path = "include/wi_wbhtm_value_in_type_call_test.rs"]
 mod wi_wbhtm_value_in_type_call_test;
+#[path = "include/wi_0rp29_nested_projection_value_in_type_test.rs"]
+mod wi_0rp29_nested_projection_value_in_type_test;
 #[path = "include/wi_7fp1m_query_type_names_test.rs"]
 mod wi_7fp1m_query_type_names_test;
 #[path = "include/wi_ycpaj_bare_spec_sugar_call_requirement_test.rs"]

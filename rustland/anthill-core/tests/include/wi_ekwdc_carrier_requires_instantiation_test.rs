@@ -439,27 +439,35 @@ fn and_a_requirement_one_hop_away_is_still_refused_at_a_value_that_cannot_meet_i
     );
 }
 
-/// THE NEIGHBOURING GAP THIS DOES **NOT** CLOSE, pinned so its repair is visible rather
-/// than discovered. An impl reached across a hop whose declared return is written as a
-/// RECEIVER PROJECTION (`m.Out`, the `Relation.splitFirst` spelling) leaves that
-/// projection un-eliminated — `expected Int64, got w.Out`. The rows above use the bare
-/// `Out` spelling (`MappedStream.splitFirst`'s) and are clean, so the two are separable.
+/// A RECEIVER PROJECTION ACROSS A HOP — an impl reached across a provider hop whose declared
+/// return is written as a RECEIVER PROJECTION (`w.Out`, the `Relation.splitFirst` spelling).
+/// The rows above use the bare `Out` spelling (`MappedStream.splitFirst`'s), so the two are
+/// separable.
 ///
-/// IT IS NOT THIS TICKET'S, and that is measured rather than asserted: the fixture here
-/// carries NO `requires` ANYWHERE, so nothing [`carrier_arg_impl_subst`] does can run,
-/// and it fails identically with the whole change backed out. It is the WI-376
-/// `ExprCarried` elimination over a transitively-dispatched impl.
+/// THIS WAS PINNED HERE AS A NEIGHBOURING GAP this ticket did not close — `expected Int64,
+/// got w.Out`: the call reaches `Wrapper.splitFirst` through the WI-606 fallback, which
+/// threaded the override's return with its projection un-eliminated. It was never this
+/// ticket's (the fixture carries NO `requires`, so nothing [`carrier_arg_impl_subst`] does can
+/// run). WI-20260929-0RP29 CLOSED it: the fallback eliminates the override's own projections
+/// against the call. Now DRIVEN — the call runs to the wrapped value — with its CONTROL: a
+/// wrapped `Bool` is refused where the `Int64` is taken, so `w.Out` really grounds to the
+/// receiver's `Out` rather than to anything at all.
+///
+/// BACKED OUT (the fallback threading the override's return as written, WI-20260929-0RP29's
+/// test ledger): the run arm fails to load with the old `got w.Out`; the control passes
+/// either way, refused both times.
 #[test]
-fn a_receiver_projection_across_a_hop_is_a_separate_open_gap() {
-    let src = format!(
-        "namespace wiekwdc4\n  \
-         import anthill.prelude.{{Int64, List, Option, Pair, Stream}}\n  \
-         import anthill.prelude.Option.{{some, none}}\n  \
-         import anthill.prelude.Pair.{{pair}}\n{}\n  \
-         operation w() -> Int64 =\n    \
-         match Stream.splitFirst(wrapper(42))\n      \
-         case some(pair(v, _)) -> v\n      case none() -> 0\nend\n",
-        r#"
+fn a_receiver_projection_across_a_hop_is_eliminated() {
+    let src = |ns: &str, value: &str| {
+        format!(
+            "namespace {ns}\n  \
+             import anthill.prelude.{{Int64, List, Option, Pair, Stream, Bool}}\n  \
+             import anthill.prelude.Option.{{some, none}}\n  \
+             import anthill.prelude.Pair.{{pair}}\n{}\n  \
+             operation w() -> Int64 =\n    \
+             match Stream.splitFirst(wrapper({value}))\n      \
+             case some(pair(v, _)) -> v\n      case none() -> 0\nend\n",
+            r#"
   sort Plain
     import anthill.prelude.{Int64, Stream, Option, Pair}
     sort Out = ?
@@ -480,12 +488,14 @@ fn a_receiver_projection_across_a_hop_is_a_separate_open_gap() {
     operation tail() -> List[T = Out] = []
   end
 "#
-    );
-    let errs = chain_errors(&src);
+        )
+    };
+    let mut interp = crate::common::interp_for(&src("wiekwdc4", "42"));
+    assert_eq!(int_of(&mut interp, "wiekwdc4.w", &[]), 42);
+    let errs = chain_errors(&src("wiekwdc4b", "true"));
     assert!(
-        errs.iter().any(|e| e.contains("got w.Out")),
-        "a receiver projection across a provider hop is still un-eliminated; if this row \
-         has gone green the gap is closed and the test should say so — got: {errs:?}"
+        errs.iter().any(|e| e.contains("expected Int64, got Bool")),
+        "a wrapped Bool is not the Int64 `w` returns; got: {errs:?}"
     );
 }
 

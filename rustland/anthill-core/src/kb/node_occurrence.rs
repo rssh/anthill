@@ -1763,7 +1763,9 @@ pub enum TypeChild {
 ///
 /// EVERY WIDENING OUT OF THE SPINE MUST GO THROUGH HERE. `/code-review` found two that did
 /// not — `typing::view_item_value` (reached from `type_child_view_item`, i.e. any
-/// `TermView` read of an arrow's param) and `eliminate_node_projections` — and the symptom
+/// `TermView` read of an arrow's param) and the projection elimination's occurrence walk
+/// (since WI-20260929-0RP29 one walk over `extract_type`, whose reads come through here) —
+/// and the symptom
 /// is a WRONG ACCEPT, not a crash: an un-annotated lambda's param read back as
 /// `Value::Node(var)` is not resolved by `walk_type_deep_value`, so `resolved_type_is_ground`
 /// answers false and `arrow_params_compatible` never runs. That is the WI-836 / WI-1084 hole

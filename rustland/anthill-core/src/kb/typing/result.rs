@@ -126,7 +126,7 @@ fn effect_binding_resource<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Sym
 /// WI-20260904-02ERR: [`value_to_type_child`] with the caller's provenance. A type
 /// VARIABLE is the only child whose carrier is minted here rather than carried in, so it is
 /// the only one whose span this decides; every other arm ignores it.
-fn value_to_type_child_at(
+pub(super) fn value_to_type_child_at(
     kb: &mut KnowledgeBase,
     v: &Value,
     span: crate::span::SourceSpan,

@@ -207,8 +207,8 @@ fn poly_type_body<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> Option<Value> 
     }
     match extract_type(kb, ty) {
         // WI-20260904-50B2K part (c) — THE THIRD ∀-READER, AND IT REFUSES RATHER THAN
-        // DROPPING. `check_bare_ref` returns a `TypeError` on a non-empty context and
-        // `eliminate_node_projections` asserts emptiness; this reader patterned `{ body, .. }`
+        // DROPPING. `check_bare_ref` returns a `TypeError` on a non-empty context and the
+        // projection elimination refuses a projection in one; this reader patterned `{ body, .. }`
         // and discarded one WITHOUT A WORD, which in a release build is the wrong accept the
         // whole slice exists to prevent. An eta'd op reference goes through both paths, so
         // step 2 reaches here on its first program. /code-review found it twice — once for

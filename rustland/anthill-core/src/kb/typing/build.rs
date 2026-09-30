@@ -2442,12 +2442,40 @@ pub(super) fn concrete_self_receiver_override(
 /// binds the carrier's canonical sort params via `unify_parameterized_with_sort_-
 /// ref`; a parameterized one (`f: FilteredStream[T = Elem, …]`) binds the op's own
 /// `[Elem, …]` params.
+///
+/// WI-20260929-0RP29 — AND THE OVERRIDE'S OWN PROJECTIONS ARE ELIMINATED, against this
+/// call's arguments. An override may write its return with projections on ITS parameters
+/// (`Cnt.splitFirst(c: Cnt) -> Option[Pair[A = c.T, …]]`), and those were threaded as
+/// written: a pattern binder then held `c.T` — a projection off a parameter of an operation
+/// the caller is not inside — and the refusal the caller saw named neither the call nor the
+/// cause ("expected Buf[T = Int64, N = Bool], got c.T", MEASURED; a projection across a
+/// provider hop, `w.Out`, likewise). Four rules, each MEASURED against a wrong answer:
+///
+/// * δ BEFORE σ. The DECLARED return and effects are eliminated, then σ ties the
+///   override's own sort parameters to the receiver. σ first put the CALLER's projections
+///   into the type (`T ↦ x.T` for a receiver that leaves `T` to its WI-1059 slot), which are
+///   not this call's to eliminate, and the fallback declined a program it used to thread —
+///   the stdlib's own `Stream.splitFirst(MappedStream.map(s, f))` over `s: Stream[T = Int64]`.
+/// * BY POSITION, and only so. The call's arguments arrive keyed by the SPEC op's parameters
+///   (`param_to_arg_type`, `arg_syms`), and the override's align with those by position — the
+///   run-time binding, and how [`dispatched_impl_effects`] reads the same call. Keying the
+///   receiver's type to the first carrier-typed override parameter as well overwrote the
+///   right entry whenever that parameter was not the receiver (`pick(x: Car, s: Car)` for a
+///   spec `pick(x: T, s: Sp)`): a program adding 1 to a `String` loaded and failed at run time.
+/// * A `denoted` naming an override parameter is re-keyed to the caller's argument wherever it
+///   sits — the elimination re-keys only beside a projection — which is
+///   [`dispatched_impl_effects`]' rule for the same override at the same call.
+/// * A projection that does not eliminate DECLINES the fallback (`None`), so the call keeps
+///   the refusal it had rather than threading a type that names another operation's
+///   parameter.
 pub(super) fn concrete_override_threaded(
     kb: &mut KnowledgeBase,
     op: &OperationInfoFull,
     fn_sym: Symbol,
     self_recv_spec: Option<Symbol>,
     pos_results: &[Result<TypeResult, TypeError>],
+    param_to_arg_type: &HashMap<Symbol, Value>,
+    arg_syms: Option<&HashMap<Symbol, Symbol>>,
 ) -> Option<(Value, Vec<Value>, Symbol)> {
     // Self-receiver spec ops only (`splitFirst(s: Stream)`): the carrier-param
     // shape (`collect(c: C)`) does not write a receiver-projected return.
@@ -2477,11 +2505,51 @@ pub(super) fn concrete_override_threaded(
     let impl_info = lookup_operation_info_full(kb, impl_op)?;
     let impl_idx = self_receiver_param_index(kb, &impl_info.params, carrier_sym)?;
     let self_param_ty = impl_info.params[impl_idx].1.clone();
-    let mut subst = Substitution::new();
-    unify_types(kb, &mut subst, &recv_ty, &self_param_ty);
-    let ret = resolve_type_deep_value(kb, &subst, &impl_info.return_type);
+    // WI-20260929-0RP29 — δ, on the DECLARED types (see the doc): the override's parameters
+    // keyed as the call's arguments are, by position.
+    let mut impl_arg_types: HashMap<Symbol, Value> = HashMap::new();
+    let mut impl_arg_syms: HashMap<Symbol, Symbol> = HashMap::new();
+    for ((spec_p, _), (impl_p, _)) in op.params.iter().zip(impl_info.params.iter()) {
+        if let Some(t) = param_to_arg_type.get(spec_p) {
+            impl_arg_types.insert(*impl_p, t.clone());
+        }
+        if let Some(&a) = arg_syms.and_then(|m| m.get(spec_p)) {
+            impl_arg_syms.insert(*impl_p, a);
+        }
+    }
+    let impl_syms = (!impl_arg_syms.is_empty()).then_some(&impl_arg_syms);
+    let ctx = TypeErrorContext::OperationReturn {
+        op_name: impl_op,
+        surface: None,
+    };
+    let discharge = |kb: &mut KnowledgeBase, ty: &Value| -> Option<Value> {
+        let v = eliminate_type_projections(kb, ty, &impl_arg_types, impl_syms, &ctx, None).ok()?;
+        Some(match impl_syms {
+            Some(map) => substitute_ref_syms_value(kb, &v, map),
+            None => v,
+        })
+    };
+    let ret = discharge(kb, &impl_info.return_type)?;
     let effs = impl_info
         .effects
+        .iter()
+        .map(|e| discharge(kb, e))
+        .collect::<Option<Vec<Value>>>()?;
+    // σ: thread the impl's return + effects through the receiver. The receiver is
+    // the ground truth for the impl's element/effect params, and the deep resolve below
+    // reads THIS σ — so what a failed unify leaves in it is this site's business.
+    // WI-20260904-60143: "a failed unify leaves them free" is what this said, and it was
+    // never true. `unify_types` does not roll back; it binds every component that AGREED
+    // and answers `false` for the rest (see its "what survives a `false`" note). So a shape
+    // mismatch leaves the params PARTIALLY pinned and the resolve returns a type built from
+    // the agreeing half — which is the intended reading here, the receiver being ground
+    // truth for exactly as much as it determines, but it is a different statement from
+    // "free". What that ticket changed is that the surviving half no longer depends on the
+    // order the receiver's type-args happened to be written in.
+    let mut subst = Substitution::new();
+    unify_types(kb, &mut subst, &recv_ty, &self_param_ty);
+    let ret = resolve_type_deep_value(kb, &subst, &ret);
+    let effs = effs
         .iter()
         .map(|e| resolve_type_deep_value(kb, &subst, e))
         .collect();

@@ -1086,7 +1086,7 @@ pub(super) fn check_apply_iter(
             };
             // WI-459: pass the formal→argument value-reference map so a projection NEUTRAL
             // formed off a formal param is RE-KEYED to the caller's actual receiver (see
-            // `rewrite_term_projections`).
+            // `project_expr_carried`).
             let arg_syms = (!param_to_arg_sym.is_empty()).then_some(&param_to_arg_sym);
             // WI-606: a body-less self-receiver spec op whose RETURN (and observation
             // effect row) is WRITTEN with path-dependent projections on the receiver
@@ -1127,7 +1127,15 @@ pub(super) fn check_apply_iter(
                     (rt, effs)
                 }
                 Err(e) => {
-                    match concrete_override_threaded(kb, &op, fn_sym, self_recv_spec, pos_results) {
+                    match concrete_override_threaded(
+                        kb,
+                        &op,
+                        fn_sym,
+                        self_recv_spec,
+                        pos_results,
+                        &param_to_arg_type,
+                        arg_syms,
+                    ) {
                         Some((rt, effs, impl_op)) => {
                             return_owner = impl_op;
                             (rt, effs)
