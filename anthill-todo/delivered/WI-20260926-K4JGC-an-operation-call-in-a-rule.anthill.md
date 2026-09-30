@@ -3,9 +3,9 @@
 - id: WI-20260926-K4JGC-an-operation-call-in-a-rule
 - created: 2026-09-26T09:49:55Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-26T09:49:55Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-09-30T06:58:23Z
 
 - acceptance: cargo-test
 
@@ -41,4 +41,8 @@ ROWS ADDED FROM THE PRVA2 REVIEW (filed on ACG10 2026-09-26, now in 068's proble
 ### 2026-09-29T06:45:59Z — feedback — user
 
 NO LONGER WAITS ON WI-20260926-CYNPE (user, 2026-09-29, 068-implementation D4): a pending equation is a delayed unify(?t, call) goal that today's rotation already re-tries — slower, not wrong — so this ticket, the risky one (every consumer; Set's rows flip), may go first or in parallel. CYNPE makes the waiting cheap and splits the WI-938 declines; it is not a prerequisite.
+
+### 2026-09-30T06:58:21Z — feedback — user
+
+DELIVERED in b21f488d (2026-09-30). kb/resolve/evaluate.rs: ONE strategy for <=>, =/neq, ===, cmp, arith and a goal's arguments (design D3) — evaluate strictly, arguments first, until a variable or a stuck call; four states (SUSPENDED, UNREDUCED -> UnknownCause::Unreduced, SYMBOLIC for D7 and goal-only builtins written as data, ABSENT for a builtin over numbers with no answer: div(1, 0) fails as div(1, 0, ?r) does). <=> holes a stuck call (fresh var + pending unify(?t, call), BuiltinResult::SuccessSplicing, push_and shares the splice); identical stuck calls share a hole. Every ticket row answers its truth column, the no-implementation rows UNDECIDED; PRVA2's rows (WeakOrd.compare dispatches; WI-670 skips an atom holding a call) driven. Beyond the rows: value-returning builtins compute in a value slot (1 + 2), a dotted NAME stays the chain in a data slot, the WI-938 hook evaluates arguments first (0v0f7: one fault). Controls unchanged (box(v: ?n) <=> …, ?v <=> C.tag(?c), the WI-580 narrowing, classic-mini). LIBRARY CONSEQUENCE: 18 Set rows now assert UNDECIDED — listed on QCJ0B with the pre-existing rule-body set-literal row. KEPT: P7VP4's weave refusal (recorded on DSEXA, user decision). Spec: kernel-language §8.3 and §5.3 (user-approved text); design 068-implementation §5.1. Tests: wi_k4jgc_evaluation_strategy_test (18 rows, back-outs measured); anthill-core green on the delivered tree (wi_tests 5341 passed), rest of the workspace green on the tree before the final evaluate.rs identity fix.
 

@@ -32,3 +32,9 @@ DECIDE WITH THE USER — the library route (068 §2.3):
 
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh; every row driven): the four rows above answer their truth column — or UNDECIDED, never false, where the route leaves an operation unimplemented; after A2 the five wi616 rows answer their truth or undecided, stated per row. CONTROLS: `SortedSet`'s rows unchanged; `Set`'s `eq` / `contains` / `subset` rules' own tests restated for the chosen route.
 
+## Changes
+
+### 2026-09-30T04:03:39Z — feedback — user
+
+ROWS FROM WI-20260926-K4JGC (user, 2026-09-30). (1) THE POPULATION IS WIDER THAN wi616's FIVE: after K4JGC, 18 rows assert UNDECIDED over the insert/empty algebra and are this ticket's acceptance to restore — wi616_semantic_eq_test (Set section, 4 rows + larger_set), wi625_eval_semantic_eq_test (6 eval-side rows: PartialEq.eq/neq and Set.eq over insert chains, refused loudly 'could not be decided'), wi625_sld_eval_bridge_test::typed_op_body_eq_over_set_evaluates_via_bridge (a TYPED op body's eq over Set), wi939_contains_rename_test (set_contains / set_equality — the contains rename's composition row), wi880_reflect_mapping_test::a_nested_host_call_reduces (its algebra guard) and wi_vpewk_host_op_operand_test::symbolic_algebra_at_an_operand_is_still_left_as_data. (2) PRE-EXISTING, measured on main at dc576716 before K4JGC: a rule-body set LITERAL never reaches Set.eq's insert-headed rules — rule l1(1) :- {1, 2} = {2, 1} answers NO solutions (a definite refutation; not(...) over it would prove a falsehood), while kernel-language §8.3 says eq({1,2}, {2,1}) holds. SetLiteral stays a reflect SetLiteral term (convert.rs BuildFrame::SetLiteral), not an insert chain. Whichever route this ticket takes must cover the literal too.
+

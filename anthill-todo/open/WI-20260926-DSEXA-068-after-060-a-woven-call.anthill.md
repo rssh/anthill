@@ -24,3 +24,9 @@
 
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh; every row driven, back-out stated at its site): a woven call whose dictionary is bound only by a LATER goal answers once it is bound, and conditionally if never; KCNA0's rows name their cause; XBHX3's three rows as above; no consumer reduces an operand by its own path (the retired functions are gone, not bypassed). CONTROLS: P7VP4's and SHED7's rows unchanged; classic-mini unchanged (tiny-sat 2, alphabet-words 27/12/100, map-colouring 6).
 
+## Changes
+
+### 2026-09-30T04:03:44Z — feedback — user
+
+FROM WI-20260926-K4JGC (user, 2026-09-30): P7VP4's load-time refusal to weave an UNPINNED body-less spec op in a value slot (inferred_demand) was KEPT, although 068-implementation §1.3 says it 'goes with K4JGC'. Removing it gives a call like Set.insert(...) a find_dictionary(…, out: ?d) condition that DontFires at a ground carrier no provider supplies — a DEFINITE failure, where 068 §2 says such a call is UNREDUCED (undecided, never false). K4JGC dispatches the call at run time by its ground carrier instead (reduce_op_value's dispatch_body_less, now on for every evaluated call), which gives the right value where a provider exists (wi_p7vp4_rule_body_requirements_test::a_body_less_operand_stays_the_term_the_rule_wrote: ?s = num(v: 9)). Retiring the refusal belongs here, with dictionary blockers: a find_dictionary that finds NO provider at a ground carrier must answer UNREDUCED, not fail.
+
