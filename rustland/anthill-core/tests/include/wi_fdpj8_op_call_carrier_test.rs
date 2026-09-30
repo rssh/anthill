@@ -44,8 +44,12 @@
 //!
 //! Widening (2) alone is wrong and is why this was not fixed when it was found: nothing
 //! else reduces such an operand, so it would delay for ever — a never-answer traded for
-//! a sometimes-wrong one. The CARRIER is widened, never the DISPATCH: `reduce_operand`
-//! still passes `dispatch_body_less: false` (WI-1057's `reduce_dispatched_goal_call`
+//! a sometimes-wrong one. (History since WI-20260926-K4JGC: `reduce_operand` and the
+//! WI-1057 split are retired — every operand is EVALUATED by proposal 068 §1.1's one
+//! strategy, a body-less spec op dispatches by its ground carrier, and `Set`'s algebra is
+//! UNDECIDED (068 §2.3). What follows is what held when this ticket landed.) The CARRIER
+//! is widened, never the DISPATCH: `reduce_operand`
+//! still passed `dispatch_body_less: false` (WI-1057's `reduce_dispatched_goal_call`
 //! split), so `anthill.prelude.Set`'s body-less `insert`/`empty` — SYMBOLIC ALGEBRA
 //! that `eq` must keep comparing structurally — are as un-reduced on a term as they
 //! were on an occurrence. That is the trap this door has been walked through before:
@@ -396,7 +400,8 @@ fn an_unreducible_entity_carried_op_call_still_delays() {
 /// — structural only".
 ///
 /// They share ONE operand pipeline with `eq`/`cmp`/`arith` (`reduce_operand`, reached
-/// from `eq_operands` and `unify_values` alike), and it has reduced op-call operands
+/// from `eq_operands` and `unify_values` alike — since WI-20260926-K4JGC the one
+/// evaluation strategy, `evaluate.rs`), and it has reduced op-call operands
 /// since WI-483/WI-738. So the claim to check is not whether folding is right — that
 /// decision is years old — but whether this ticket introduced it. It did not: both rows
 /// answer 1 at HEAD and here. What the ticket changed is that the `Term` and `Entity`

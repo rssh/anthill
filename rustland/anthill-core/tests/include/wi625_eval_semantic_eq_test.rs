@@ -78,71 +78,72 @@ fn call2(i: &mut Interpreter, op: &str, a: Value, b: Value) -> bool {
         .unwrap_or_else(|| panic!("call {op}: not a Bool"))
 }
 
+/// WI-20260926-K4JGC (proposal 068 §2.3) — the call is refused LOUDLY as undecided: an
+/// `insert` / `empty` chain is an operation application no implementation runs, so the
+/// comparison `Set.eq`'s rules make over it has no verdict, and eval — which has no third
+/// truth value — must not invent one. `Set`'s route back is WI-20260926-QCJ0B's.
+fn call2_undecided(i: &mut Interpreter, op: &str, a: Value, b: Value) {
+    match i.call(op, &[a, b]) {
+        Err(e) => assert!(
+            format!("{e:?}").contains("could not be decided"),
+            "call {op}: an undecided comparison, not another error; got {e:?}",
+        ),
+        Ok(v) => panic!("call {op}: must not decide over the symbolic algebra; got {v:?}"),
+    }
+}
+
 const EQ: &str = "anthill.prelude.PartialEq.eq";
 const NEQ: &str = "anthill.prelude.PartialEq.neq";
 const SET_EQ: &str = "anthill.prelude.Set.eq";
 
 // ── Site A: the `PartialEq.eq`/`neq` builtin dispatches semantically ──────
 
+// ── Site A over `Set`: UNDECIDED since WI-20260926-K4JGC ──────────────────────
+//
+// These rows answered by membership through `Set.eq`'s relational rules over the
+// unevaluated `insert` terms. Under 068 §2.3 those terms are UNREDUCED calls, and every
+// row below is undecided — in both directions, so a regression to deciding either way
+// shows. FAILS with K4JGC backed out: each call returns its old Bool.
+
 #[test]
 fn eval_eq_set_ignores_insertion_order() {
     let mut i = interp();
     let (a, b) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[2, 1]));
-    assert!(
-        call2(&mut i, EQ, a, b),
-        "eq({{1,2}},{{2,1}}) must hold at eval"
-    );
+    call2_undecided(&mut i, EQ, a, b);
 }
 
 #[test]
 fn eval_eq_set_ignores_duplicates() {
     let mut i = interp();
     let (a, b) = (set_val(&mut i, &[1]), set_val(&mut i, &[1, 1]));
-    assert!(
-        call2(&mut i, EQ, a, b),
-        "eq({{1}},{{1,1}}) must hold at eval"
-    );
+    call2_undecided(&mut i, EQ, a, b);
 }
 
 #[test]
 fn eval_eq_set_distinguishes_members() {
     let mut i = interp();
     let (a, b) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[1, 3]));
-    assert!(
-        !call2(&mut i, EQ, a, b),
-        "eq({{1,2}},{{1,3}}) must not hold"
-    );
+    call2_undecided(&mut i, EQ, a, b);
 }
 
 #[test]
 fn eval_neq_set() {
     let mut i = interp();
     let (a, b) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[2, 1]));
-    assert!(
-        !call2(&mut i, NEQ, a, b),
-        "neq({{1,2}},{{2,1}}) must be false (equal by membership)"
-    );
+    call2_undecided(&mut i, NEQ, a, b);
     let (c, d) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[1, 3]));
-    assert!(
-        call2(&mut i, NEQ, c, d),
-        "neq({{1,2}},{{1,3}}) must be true"
-    );
+    call2_undecided(&mut i, NEQ, c, d);
 }
 
 #[test]
 fn eval_eq_nested_set_dispatches_elementwise() {
-    // Set[Set[Int]]: inner sets compare by membership too (the element compare
-    // in `member` is the SEMANTIC eq, so dispatch recurses).
     let mut i = interp();
     let i12 = set_term(&mut i, &[1, 2]);
     let i21 = set_term(&mut i, &[2, 1]);
     let i3 = set_term(&mut i, &[3]);
     let a = Value::term(nest(&mut i, &[i12, i3]));
     let b = Value::term(nest(&mut i, &[i3, i21]));
-    assert!(
-        call2(&mut i, EQ, a, b),
-        "eq({{{{1,2}},{{3}}}},{{{{3}},{{2,1}}}}) must hold elementwise"
-    );
+    call2_undecided(&mut i, EQ, a, b);
 }
 
 // WI-650 reconciliation: `eval_eq_map_honors_membership_and_shadowing` (map eq via
@@ -171,17 +172,13 @@ fn eval_eq_ints_unchanged() {
 
 #[test]
 fn eval_rule_backed_set_eq_runs_via_bridge() {
+    // `Set.eq` directly: the eval→SLD bridge still runs it, and the sub-proof is undecided
+    // for the same reason as the rows above (WI-20260926-K4JGC).
     let mut i = interp();
     let (a, b) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[2, 1]));
-    assert!(
-        call2(&mut i, SET_EQ, a, b),
-        "Set.eq({{1,2}},{{2,1}}) must run via the eval→SLD bridge"
-    );
+    call2_undecided(&mut i, SET_EQ, a, b);
     let (c, d) = (set_val(&mut i, &[1, 2]), set_val(&mut i, &[1, 3]));
-    assert!(
-        !call2(&mut i, SET_EQ, c, d),
-        "Set.eq({{1,2}},{{1,3}}) must be false"
-    );
+    call2_undecided(&mut i, SET_EQ, c, d);
 }
 
 // ── buried override under non-carrier structure: eval answers STRUCTURALLY

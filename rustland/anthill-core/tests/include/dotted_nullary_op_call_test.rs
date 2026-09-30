@@ -37,8 +37,12 @@
 //!
 //! NOT IN SCOPE, and uniform across spellings rather than a dotted-name gap: a QUERY
 //! pattern calls nothing (`?y <=> pc.Box.zero()` binds the term there too — a pattern is
-//! data); arithmetic in a rule is not evaluated (`?z <=> 3 + 1` suspends); and a call in a
-//! goal ARGUMENT is matched as a term (`:- factV(seven())` misses `fact factV(7)`).
+//! data). Two more rows stood here — arithmetic in a rule is not evaluated (`?z <=> 3 + 1`
+//! suspends), and a call in a goal ARGUMENT is matched as a term (`:- factV(seven())`
+//! misses `fact factV(7)`) — and WI-20260926-K4JGC retired both: an operation application
+//! in a rule body is its value at any depth, goal arguments included (proposal 068 §1).
+//! A dotted NAME in a goal argument or a data slot still stays the chain
+//! (`the_term_still_matches_its_fact`): it is a name, not a call.
 
 use anthill_core::kb::KnowledgeBase;
 

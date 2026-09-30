@@ -32,6 +32,9 @@ use crate::eval::{EvalConfig, EvalError, Interpreter};
 use crate::intern::Symbol;
 use crate::parse::desugar_target as dt;
 
+mod evaluate;
+use evaluate::{Holes, Stuck};
+
 /// WI-625 gap 1: max eval↔SLD bridge crossings before
 /// [`KnowledgeBase::bridge_op_to_eval`] residualizes instead of recursing
 /// further. Each crossing (bridge → eval → `prove_rule_predicate` → resolve →
@@ -188,9 +191,10 @@ pub enum BuiltinTag {
     ///
     /// "NEVER DISPATCHES" IS ABOUT THE COMPARISON, NOT THE OPERANDS. It selects no
     /// carrier's `Eq` member — the contrast with [`Self::SemEq`] below. It does NOT
-    /// compare raw terms: `eq_operands` runs [`KnowledgeBase::reduce_operand`] on both
-    /// sides, so a CALL is reduced to its value first and an undecidable one DELAYS
-    /// (WI-483 / WI-738). MEASURED in a rule body, unchanged by
+    /// compare raw terms: `eq_operands` EVALUATES both sides (WI-20260926-K4JGC — every
+    /// call, at every depth), so a CALL is replaced by its value first, and one that did
+    /// not run takes its state: it DELAYS, or is undecided when nothing can ever run it
+    /// (WI-483 / WI-738, proposal 068 §2). MEASURED in a rule body, unchanged by
     /// WI-20260910-FDPJ8: `struct_eq(dbl(2), 4)` SUCCEEDS. That ticket made the same
     /// true on the `Term` and `Entity` carriers, which is what put a reader in front
     /// of the older unqualified wording.
@@ -484,6 +488,18 @@ enum BuiltinResult {
     Success,
     /// Builtin succeeded and produced new variable bindings to merge.
     SuccessWithBindings(Substitution),
+    /// WI-20260926-K4JGC (068-implementation D2) — the goal succeeded with `bindings`,
+    /// and `goals` take its place, run next and in this order.
+    ///
+    /// `<=>` is why it exists: its walk finds a stuck call partway through, and 068 §1.2
+    /// puts a fresh variable where the call stood and the call in a pending
+    /// `unify(?t, call)` here — so no binding ever holds an unevaluated call. `push_and`
+    /// is the other producer (its two operands, no bindings), so the frame has ONE splice
+    /// path: [`SearchStream::continue_with_goals`].
+    SuccessSplicing {
+        bindings: Substitution,
+        goals: Vec<Value>,
+    },
     /// Builtin cannot evaluate yet; delay this goal. WI-628 — `truncated` marks a
     /// delay an EAGER consumer must not decide from, as opposed to an ordinary flex-var
     /// flounder (`truncated: false`, the common case — see [`BuiltinResult::delay`]).
@@ -593,6 +609,15 @@ pub enum UnknownCause {
     /// `eq(c, 1)` came back FALSE, and an author was told their contract was refuted
     /// when nothing had decided it.
     OpaqueSkolem,
+    /// WI-20260926-K4JGC — an operand holds an UNREDUCED call (proposal 068 §2): an
+    /// operation application no implementation will ever run — none of any kind, or a
+    /// body-less spec operation whose ground carrier no provider supplies. The call has
+    /// no value, so no comparison over it has a verdict; comparing it as data is what
+    /// answered `intersection({1, 2}, {2}) = {2}` FALSE.
+    ///
+    /// NOT A UNIVERSAL: nothing here ranges over every input — the program asked for a
+    /// computation it did not provide.
+    Unreduced,
 }
 
 impl UnknownCause {
@@ -609,6 +634,8 @@ impl UnknownCause {
             UnknownCause::OpenWorldParameter => true,
             // A contract σ's eigenvariable.
             UnknownCause::OpaqueSkolem => true,
+            // A computation the program does not provide.
+            UnknownCause::Unreduced => false,
         }
     }
 }
@@ -1081,6 +1108,9 @@ struct ResolverFrame {
 enum EqOperands {
     Ready(Value, Value),
     Delay,
+    /// WI-20260926-K4JGC — an operand holds a call that did not run (068 §1.1): the
+    /// comparison takes its state ([`Stuck::verdict`]).
+    Stuck(Stuck),
     Absent,
 }
 
@@ -1117,6 +1147,19 @@ enum UnifyOutcome {
     Ok,
     Fail,
     Delay,
+}
+
+/// WI-20260926-K4JGC — what `<=>` answers ([`KnowledgeBase::unify_evaluated`]): the
+/// structural outcome plus what 068 §1.1 adds to it.
+enum Unification {
+    /// Unified; `work` holds the bindings, and each stuck call a binding reached is a
+    /// pending `unify(?t, call)` goal (068 §1.2).
+    Unified { pending: Vec<Value> },
+    /// No unifier: a mismatch somewhere, which no value of a stuck call could repair.
+    Fail,
+    /// A side is a call that did not run, and nothing else was decided: the goal takes
+    /// its state ([`Stuck::verdict`]).
+    Stuck(Stuck),
 }
 
 /// A comparable number extracted from a goal-arg `Value` for `cmp` (WI-246).
@@ -1666,6 +1709,156 @@ impl SearchStream {
             .collect()
     }
 
+    /// A goal DISCHARGED: merge `extra`'s bindings into σ and replace the goal with
+    /// `goals` (none for an ordinary success), which run next and in order — the one
+    /// path a builtin's success, `<=>`'s pending equations (WI-20260926-K4JGC, 068 §1.2)
+    /// and `push_and`'s conjunction all take.
+    ///
+    /// `delay_mode` is RESET: progress was made, and where goals were spliced the goal
+    /// COUNT changed, so a carried-over `consecutive_delays` would be measured against a
+    /// queue it was never counted on.
+    fn continue_with_goals(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        extra: Substitution,
+        goals: Vec<Value>,
+        depth: usize,
+        delay_mode: DelayMode,
+    ) -> Option<StepResult> {
+        let frame = self.stack.last().unwrap();
+        let mut new_goals = goals;
+        new_goals.extend_from_slice(&frame.goals[1..]);
+        let mut new_subst = frame.subst.clone();
+        // WI-502 Step 2 (M7(b)) — carry `extra`'s TOP-LEVEL constraint
+        // store through the merge. This lift is the single funnel for
+        // every builtin `extra` plus `builtin_unify`'s `work`, and it
+        // previously threaded `extra.bindings` ONLY — silently dropping
+        // any constraint a builtin recorded. (No-op until a resolver-side
+        // producer exists in Step 3; mirrors ignoring `extra.parent`.)
+        new_subst.absorb_constraints(&extra);
+        // Iterate Value-typed bindings; use bind_waking so we don't force everything
+        // through Value::Term AND so any constraint carried on a bound var wakes
+        // (WI-502 Step 2).
+        //
+        // WI-1017 — OCCURS-CHECKED, the guard the note that stood here
+        // prescribed for "if a producer ever appears". It said this
+        // bind was "safe today only by ABSENCE OF A PRODUCER: every
+        // builtin that writes a non-`Term` `extra` binding is either
+        // occurs-checked already (`builtin_unify`) or has no live
+        // anthill caller".
+        //
+        // THAT ARGUMENT WAS ALREADY FALSE, and its carrier framing is
+        // what hid it: the loop is un-occurs-checked for EVERY carrier,
+        // not just non-`Term`, and `field_access` — the desugaring of
+        // every `?x.y`, live caller and all — reaches it through
+        // `finish_result`. MEASURED before this guard, on the plain
+        // hash-consed path: `field_access(Point(x: g(?r)), "x", ?r)`
+        // returns ONE solution with `?r ↦ g(?r)` and no contradiction
+        // flagged, and reifying that answer overflows the stack and
+        // ABORTS THE PROCESS. So this is not a latent hole a later
+        // carrier would open; it was reachable from ordinary dot
+        // projection, and the non-`Term` producers WI-1015 added only
+        // widened it.
+        //
+        // A positive check drops the branch exactly as
+        // `BuiltinResult::Failure` does: a binding that mentions its own
+        // var is no unifier, so this branch has no solution. Checked
+        // against `new_subst` as it accumulates, so a cycle formed
+        // ACROSS two bindings of one `extra` is caught too.
+        for (var, val) in extra.bindings.iter() {
+            if kb.occurs_in_value(*var, val, &new_subst) {
+                self.stack.pop();
+                return Some(StepResult::Continue);
+            }
+            new_subst.bind_waking(kb, *var, val.clone());
+        }
+        let f = self.stack.last_mut().unwrap();
+        f.goals = new_goals;
+        f.subst = new_subst;
+        f.depth = depth + 1;
+        f.state = FrameState::Init {
+            delay_mode: delay_mode.reset(),
+        };
+        Some(StepResult::Continue)
+    }
+
+    /// Design D3 — evaluate the calls written in `goal_val`'s arguments (see the call site
+    /// in [`Self::step_init`]). `None` when there is nothing to evaluate, or nothing ran
+    /// and nothing is pending: the goal goes to candidate selection as it stands.
+    /// Otherwise the step: the goal rewritten in place (re-wrapped in its citation's
+    /// marker, `within`, so its implicit arguments stay with it) with its pending
+    /// equations after it, or the goal scheduled as undecided.
+    fn evaluate_goal_arguments(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        goal_val: &Value,
+        within: Option<&Value>,
+        depth: usize,
+        delay_mode: &DelayMode,
+    ) -> Option<Option<StepResult>> {
+        let ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            ..
+        } = goal_val.head(kb)
+        else {
+            return None;
+        };
+        if kb.is_goal_connective(f, pos_arity) || !kb.goal_args_hold_call(goal_val) {
+            return None;
+        }
+        let subst = self.stack.last().unwrap().subst.clone();
+        let mut faults = ReduceFaults::default();
+        let mut holes = Holes::default();
+        let evaluated = kb.evaluate_goal_args(goal_val, &subst, &mut faults, &mut holes);
+        if !faults.is_empty() {
+            Self::absorb_reduce_faults(
+                &mut self.errors,
+                &mut self.faults,
+                &mut self.truncated,
+                faults,
+                goal_val,
+            );
+        }
+        // An argument holding a call with NO value (`p(div(1, 0))`): the goal fails, as the
+        // flattened `div(1, 0, ?t), p(?t)` does.
+        let Ok(evaluated) = evaluated else {
+            self.stack.pop();
+            return Some(Some(StepResult::Continue));
+        };
+        let evaluated = evaluated?;
+        if holes.entries.iter().any(|h| h.state == Stuck::Unreduced) {
+            let goals_len = self.stack.last().unwrap().goals.len();
+            return Some(self.schedule_unanswerable_goal(
+                goal_val,
+                goals_len,
+                subst,
+                depth,
+                delay_mode.clone(),
+                Some(UnknownCause::Unreduced),
+            ));
+        }
+        let unify_sym = kb.unify_functor();
+        let goal = match within {
+            Some(marker) => kb.with_pos_arg(marker, 0, evaluated),
+            None => evaluated,
+        };
+        let mut goals = vec![goal];
+        for hole in holes.entries {
+            goals.push(kb.make_goal_value(
+                unify_sym,
+                vec![Value::Var(Var::Global(hole.var)), hole.call],
+            ));
+        }
+        Some(self.continue_with_goals(
+            kb,
+            Substitution::new(),
+            goals,
+            depth,
+            delay_mode.clone(),
+        ))
+    }
+
     /// Handle a frame in `Init` state — classify the current goal.
     fn step_init(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
         let frame = self.stack.last().unwrap();
@@ -1806,7 +1999,8 @@ impl SearchStream {
         //
         // WHAT IT COST was making `Value::Entity` a GOAL carrier, which four readers
         // did not fold — the Bool relational view, the arity+1 functional view,
-        // `is_unreduced_builtin_call` and `op_call_as_occ`, each fixed with its own
+        // `is_unreduced_builtin_call` (whose test is now `is_written_call`'s) and
+        // `op_call_as_occ`, each fixed with its own
         // row in that file (and, for the first, in `wi_dqd5w_spec_op_relational_view_test`).
         // An `Entity` and its interned twin read identically through `TermView`,
         // index to the same `DiscrimKey`s and fingerprint to the same `GoalKey`, so
@@ -2077,20 +2271,20 @@ impl SearchStream {
             // `delay_mode` is RESET, unlike the `push_choice` / Bool-relation rewrites
             // that thread it through: those replace one goal with one goal, so the
             // frame's delay accounting still lines up with `goals.len()`. This one
-            // changes the goal COUNT, so a carried-over `consecutive_delays` would be
-            // measured against a queue it was never counted on.
+            // changes the goal COUNT — the splice path it shares with `<=>`'s pending
+            // equations (WI-20260926-K4JGC) resets it for exactly that reason.
             if tag == BuiltinTag::PushAnd {
                 let subst = frame.subst.clone();
                 if let Some((goal_a, goal_b)) =
                     Self::resolve_binary_goal_args(kb, &goal_val, &subst)
                 {
-                    let f = self.stack.last_mut().unwrap();
-                    f.goals.splice(0..1, [goal_a, goal_b]);
-                    f.depth += 1;
-                    f.state = FrameState::Init {
-                        delay_mode: delay_mode.reset(),
-                    };
-                    return Some(StepResult::Continue);
+                    return self.continue_with_goals(
+                        kb,
+                        Substitution::new(),
+                        vec![goal_a, goal_b],
+                        depth,
+                        delay_mode,
+                    );
                 } else {
                     self.stack.pop();
                     return Some(StepResult::Continue);
@@ -2237,7 +2431,7 @@ impl SearchStream {
                 }
             }
             // WI-20260911-0V0F7 — the sink the operand reduction writes into. It reaches
-            // the SLD→eval bridge through every `reduce_operand` below this dispatch, and
+            // the SLD→eval bridge through every operand evaluation below this dispatch, and
             // what the bridge learned cannot ride the reduced `Value` back: a callee that
             // RAN AND RAISED returns the same un-reduced operand a callee the fold merely
             // declined does. Drained onto the stream before the verdict is acted on, so a
@@ -2291,66 +2485,10 @@ impl SearchStream {
                     return Some(StepResult::Continue);
                 }
                 BuiltinResult::SuccessWithBindings(extra) => {
-                    // Merge extra bindings into the current substitution.
-                    // Iterate Value-typed bindings; use bind_waking so we
-                    // don't force everything through Value::Term AND so any
-                    // constraint carried on a bound var wakes (WI-502 Step 2).
-                    let new_goals = frame.goals[1..].to_vec();
-                    let mut new_subst = frame.subst.clone();
-                    // WI-502 Step 2 (M7(b)) — carry `extra`'s TOP-LEVEL constraint
-                    // store through the merge. This lift is the single funnel for
-                    // every builtin `extra` plus `builtin_unify`'s `work`, and it
-                    // previously threaded `extra.bindings` ONLY — silently dropping
-                    // any constraint a builtin recorded. (No-op until a resolver-side
-                    // producer exists in Step 3; mirrors ignoring `extra.parent`.)
-                    new_subst.absorb_constraints(&extra);
-                    // WI-1017 — OCCURS-CHECKED, the guard the note that stood here
-                    // prescribed for "if a producer ever appears". It said this
-                    // bind was "safe today only by ABSENCE OF A PRODUCER: every
-                    // builtin that writes a non-`Term` `extra` binding is either
-                    // occurs-checked already (`builtin_unify`) or has no live
-                    // anthill caller".
-                    //
-                    // THAT ARGUMENT WAS ALREADY FALSE, and its carrier framing is
-                    // what hid it: the loop is un-occurs-checked for EVERY carrier,
-                    // not just non-`Term`, and `field_access` — the desugaring of
-                    // every `?x.y`, live caller and all — reaches it through
-                    // `finish_result`. MEASURED before this guard, on the plain
-                    // hash-consed path: `field_access(Point(x: g(?r)), "x", ?r)`
-                    // returns ONE solution with `?r ↦ g(?r)` and no contradiction
-                    // flagged, and reifying that answer overflows the stack and
-                    // ABORTS THE PROCESS. So this is not a latent hole a later
-                    // carrier would open; it was reachable from ordinary dot
-                    // projection, and the non-`Term` producers WI-1015 added only
-                    // widened it.
-                    //
-                    // A positive check drops the branch exactly as
-                    // `BuiltinResult::Failure` does: a binding that mentions its own
-                    // var is no unifier, so this branch has no solution. Checked
-                    // against `new_subst` as it accumulates, so a cycle formed
-                    // ACROSS two bindings of one `extra` is caught too.
-                    let mut cyclic = false;
-                    for (var, val) in extra.bindings.iter() {
-                        if kb.occurs_in_value(*var, val, &new_subst) {
-                            cyclic = true;
-                            break;
-                        }
-                        new_subst.bind_waking(kb, *var, val.clone());
-                    }
-                    if cyclic {
-                        self.stack.pop();
-                        return Some(StepResult::Continue);
-                    }
-                    let new_depth = depth + 1;
-                    let new_delay = delay_mode.reset();
-                    let f = self.stack.last_mut().unwrap();
-                    f.goals = new_goals;
-                    f.subst = new_subst;
-                    f.depth = new_depth;
-                    f.state = FrameState::Init {
-                        delay_mode: new_delay,
-                    };
-                    return Some(StepResult::Continue);
+                    return self.continue_with_goals(kb, extra, Vec::new(), depth, delay_mode);
+                }
+                BuiltinResult::SuccessSplicing { bindings, goals } => {
+                    return self.continue_with_goals(kb, bindings, goals, depth, delay_mode);
                 }
                 BuiltinResult::Failure => {
                     // Builtin definitively failed — no solutions from this branch
@@ -2732,10 +2870,11 @@ impl SearchStream {
             }) = kb.functional_relation_call(&goal_val, f, n)
             {
                 let subst = self.stack.last().unwrap().subst.clone();
-                // WI-1057 — `reduce_dispatched_goal_call`, not
-                // `reduce_operand`: this frame BUILT the call and is
-                // deciding it, which is the one context in which a
-                // body-less spec op may be dispatched. See that method.
+                // WI-20260926-K4JGC — the goal IS its call, EVALUATED by 068 §1.1's one
+                // strategy: arguments first, so `guardExhaustible(0 - 5, ?r)` runs the
+                // callee on `-5` rather than on the unevaluated `0 - 5` (which the bridge
+                // met as a `Node` against an `Int64` — a type mismatch, not the callee's
+                // own raise); a body-less spec op dispatched by its carrier (WI-1057).
                 // WI-20260911-0V0F7 — the WI-938 hook is DECIDING this
                 // call, so a bridged callee that raised is this goal's
                 // own fault, not an unrelated branch's. Drained here
@@ -2743,8 +2882,7 @@ impl SearchStream {
                 // site never reaches it — it either rewrites the goal to
                 // `unify` or falls through to candidate selection.
                 let mut faults = ReduceFaults::default();
-                let reduced =
-                    kb.reduce_dispatched_goal_call(Value::Node(call), &subst, &mut faults);
+                let evaluated = kb.evaluate_value(Value::Node(Rc::clone(&call)), &subst, &mut faults);
                 if !faults.is_empty() {
                     Self::absorb_reduce_faults(
                         &mut self.errors,
@@ -2754,62 +2892,50 @@ impl SearchStream {
                         &goal_val,
                     );
                 }
-                // ONLY route once the body actually reduced. `unify` is
-                // structural and never dispatches (proposal 049's
-                // invariant), so handing it an unreduced call would bind
-                // the result var to the CALL TERM — measured, and a
-                // definite-looking wrong answer. An unreduced call falls
-                // through to ordinary candidate selection instead, which
-                // is the pre-WI-938 behaviour (no answer) rather than a
-                // wrong one. Making that case DELAY instead of answering
-                // nothing is the open half — see WI-938's feedback.
-                // WI-1040 — a WOVEN call routes to `unify` even when it
-                // did NOT reduce, and that is safe for the exact reason
-                // the comment above gives for why it is otherwise not:
-                // `unify_values` delays on an unevaluated call
-                // (`operand_is_unevaluated_call`, which counts an
-                // `ApplyWithin` as one), so the result variable is never
-                // bound to the call term. Falling through instead would
-                // answer NOTHING for a woven call whose dictionary is not
-                // bound yet — a silent failure where the clause must
-                // DELAY and re-fire once a later goal binds the carrier.
-                // WI-1057 — the third way the reduction can come back
-                // undecided, and the one WI-1057's own goal shape newly
-                // admits: a BODY-LESS spec op whose eval bridge declined
-                // (an un-ground argument, no supplier, or a supplier tie).
-                // Its own predicate rather than a clause inside
-                // `is_unreduced_op_call`, because that one also decides
-                // `eq`'s domain, where a body-less spec op may be symbolic
-                // ALGEBRA — measured, folding the two broke 5 wi616 cases.
-                let undecided = kb.is_unreduced_op_call(&reduced)
-                    || kb.reduction_left_body_less_call(&reduced);
-                // THE WOVEN BYPASS NEEDS NO NARROWING, and the one WI-1057 gave
-                // it is gone because it could no longer match. An undecided
-                // woven call comes back as the `Expr::ApplyWithin` it went in
-                // as — one exit for `reduce_op_value`'s dispatch and slot arms
-                // (WI-20260925-P7VP4) — never as the plain member call
-                // `reduction_left_body_less_call` reads, so `unify` always
-                // meets a call it DELAYS on (`operand_is_unevaluated_call`
-                // counts an `ApplyWithin`) and the result variable is never
-                // bound to it. "Never `unify` on an undecided call it would
-                // bind" holds here by that exit, not by a clause.
-                //
-                // THE RETRY'S LIMIT, stated rather than rediscovered: `unify`
-                // re-reduces its operand through `reduce_operand`, whose
-                // `dispatch_body_less` is OFF, so a dictionary that selects a
-                // BODY-LESS member only the bridge runs is re-asked without the
-                // bridge and waits. Reaching it needs a concrete provider with a
-                // body-less member, which WI-818's backing check refuses.
-                if woven || !undecided {
+                // ONLY route once the call produced a VALUE. A call that did not run
+                // falls through to ordinary candidate selection, which is the pre-WI-938
+                // behaviour (no answer) rather than a wrong one — making that case WAIT
+                // instead is WI-20260926-CYNPE's (WI-20260924-35E14's population).
+                // WI-1040 — a WOVEN call routes to `unify` even when it did not run:
+                // `<=>` never binds a call that did not run, and a woven call whose
+                // dictionary is unbound is SUSPENDED on it (`unify_evaluated`), so the
+                // goal waits and re-fires once a later goal binds the carrier. Falling
+                // through instead would answer NOTHING for it — a silent failure where
+                // the clause must DELAY.
+                let operand = match evaluated {
+                    Ok(value) => Some(value),
+                    Err(_) if woven => Some(Value::Node(call)),
+                    Err(_) => None,
+                };
+                if let Some(operand) = operand {
                     let unify_sym = kb.unify_functor();
                     let unify_goal =
-                        kb.make_goal_value(unify_sym, vec![Value::Node(result), reduced]);
+                        kb.make_goal_value(unify_sym, vec![Value::Node(result), operand]);
                     let fr = self.stack.last_mut().unwrap();
                     fr.goals[0] = unify_goal;
                     fr.state = FrameState::Init { delay_mode };
                     return Some(StepResult::Continue);
                 }
             }
+        }
+
+        // WI-20260926-K4JGC (068-implementation D3) — A GOAL'S ARGUMENTS ARE EVALUATED
+        // BEFORE CANDIDATE SELECTION. Candidate selection matches the goal against clause
+        // heads structurally, so a call written in an argument met them as DATA:
+        // `p(C.tag(red()))` answered nothing over `fact p(1)`, and `not(...)` over it
+        // proved a falsehood. Each call is evaluated by 068 §1.1's strategy; one that
+        // cannot run yet is a fresh variable here and a pending `unify(?t, call)` spliced
+        // right after the goal (068 §1.2). One that can NEVER run (UNREDUCED) leaves the
+        // goal undecided. A SYMBOLIC call (design D7 — an eigenvariable's `add(n, 1)`)
+        // stays in place and is matched structurally, as before.
+        //
+        // HERE, at run time and not at load (D3): the arguments name variables earlier
+        // goals bind, and a CLI query or a run-time goal takes this one path too. A goal
+        // CONNECTIVE's arguments are goals, not values — they are scanned when a branch
+        // becomes a goal of its own.
+        if let Some(step) = self.evaluate_goal_arguments(kb, &goal_val, within.as_ref(), depth, &delay_mode)
+        {
+            return step;
         }
 
         // 5. (WI-251) Expression-typed query path: the legacy
@@ -3846,8 +3972,8 @@ impl SearchStream {
     /// the whole corpus; a third copy of that knowledge is a third chance to drift.
     ///
     /// REDUCED FIRST, with the builtin's own reducer. THE VERDICT BEING SECOND-GUESSED
-    /// IS ABOUT THE REDUCED OPERANDS: `builtin_cmp` and `sem_eq_values` both
-    /// `reduce_operand` before comparing, so a projection or op-call is already folded
+    /// IS ABOUT THE REDUCED OPERANDS: `builtin_cmp` and `sem_eq_values` both read their
+    /// operands EVALUATED before comparing, so a projection or op-call is already folded
     /// by the time they answer. Walking the RAW goal asks about different terms — and
     /// UNSOUNDLY: `ensures neq(result.value, 1)` on `wrap(x) = box(value: x)` arrives as
     /// `neq(box(value: c).value, 1)`, whose unreduced operands are a `dot_apply` node
@@ -3866,15 +3992,18 @@ impl SearchStream {
         faults: &mut ReduceFaults,
     ) -> bool {
         // Read both operands out to owned `Value`s first — `pos_arg` borrows `kb`, and
-        // `reduce_operand` needs it mutably.
+        // `evaluate_value` needs it mutably.
         let (Some(a), Some(b)) = (
             goal.pos_arg(kb, 0).map(|v| v.to_value()),
             goal.pos_arg(kb, 1).map(|v| v.to_value()),
         ) else {
             return false; // not a two-operand comparison — nothing to compare
         };
-        let a = kb.reduce_operand(a, subst, faults);
-        let b = kb.reduce_operand(b, subst, faults);
+        // WI-20260926-K4JGC — evaluated as the comparison itself read them; a side holding
+        // a call that did not run is compared as it stands, and the structural core below
+        // waits on it rather than failing.
+        let a = kb.evaluate_operand(a.clone(), subst, faults).unwrap_or(a);
+        let b = kb.evaluate_operand(b.clone(), subst, faults).unwrap_or(b);
         // Every eigenvariable becomes a fresh unknown. `substitute_ref_terms` is the
         // carrier-neutral σ (`Value::Term` grounds in term-land, a denoted `Value::Node`
         // is rebuilt through the View layer) and its term core replaces exactly
@@ -3896,7 +4025,7 @@ impl SearchStream {
         let b = super::typing::substitute_ref_terms(kb, &b, &map);
         let mut work = Substitution::new();
         matches!(
-            kb.unify_values(a, b, &mut work, faults),
+            kb.unify_values(a, b, &mut work),
             UnifyOutcome::Fail
         )
     }
@@ -5209,7 +5338,7 @@ impl HeadCheck {
                     // so it is sound; the cost is completeness, and the cost is real:
                     // `:- Colour.isRed(?c) = String.contains("abc","b")` went from 1
                     // DEFINITE to a suspension, because OTHER holds a host call that
-                    // `reduce_operand` would have reduced before any structural compare.
+                    // the operand evaluation reduces before any structural compare.
                     // The gate cannot currently tell "un-reduced and will stay so" from
                     // "not yet reduced", which is the distinction it needs.
                     //
@@ -5855,7 +5984,7 @@ impl KnowledgeBase {
             BuiltinTag::OccurrenceOwner => self.builtin_occurrence_owner(goal, answer_subst),
             BuiltinTag::SubOccurrences => self.builtin_sub_occurrences(goal, answer_subst),
             BuiltinTag::OperationBody => self.builtin_operation_body(goal, answer_subst),
-            BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst, faults),
+            BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst),
             BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst, false),
             BuiltinTag::TypeDomainGuard => self.builtin_type_domain(goal, answer_subst, true),
             // `apply_domain` that `step_init` could not lower DELAYS. It is reached only on that
@@ -7801,6 +7930,7 @@ impl KnowledgeBase {
     ) -> BuiltinResult {
         match self.eq_operands(goal, subst, faults) {
             EqOperands::Delay => BuiltinResult::delay(),
+            EqOperands::Stuck(state) => state.verdict(),
             EqOperands::Ready(a, b) => {
                 if self.values_equal(&a, &b) {
                     BuiltinResult::Success
@@ -7868,6 +7998,7 @@ impl KnowledgeBase {
     ) -> BuiltinResult {
         match self.eq_operands(goal, subst, faults) {
             EqOperands::Delay => BuiltinResult::delay(),
+            EqOperands::Stuck(state) => state.verdict(),
             EqOperands::Absent => BuiltinResult::Failure,
             EqOperands::Ready(a, b) => self.sem_eq_values(a, b, subst, positive),
         }
@@ -8001,7 +8132,9 @@ impl KnowledgeBase {
                 // nobody evaluated. Return it and let the caller record it once.
                 BuiltinResult::Error(err) => return Some(BuiltinResult::Error(err)),
                 // `eq` never binds; a surprise binding can't be trusted as a verdict.
-                BuiltinResult::SuccessWithBindings(_) => saw_delay = true,
+                BuiltinResult::SuccessWithBindings(_) | BuiltinResult::SuccessSplicing { .. } => {
+                    saw_delay = true
+                }
             }
         }
         // DELAY DOMINATES UNKNOWN — asked FIRST, and the order is the whole rule.
@@ -8449,19 +8582,20 @@ impl KnowledgeBase {
             (Some(a), Some(b)) => (a, b),
             _ => return EqOperands::Absent,
         };
-        // WI-482: project a dispatched dot operand (`eq(?v, ?p.x)`); WI-483: fold a
-        // dispatched method-op operand (`eq(?v, ?b.peek())`) to its value.
-        let a = self.reduce_operand(a, subst, faults);
-        let b = self.reduce_operand(b, subst, faults);
-        // WI-483/WI-738: an operand that is an unevaluated CALL — a complex
-        // op-call body that did not fold, or a builtin nested in operand position
-        // (`eq(?y, add(?x,?x))`) — is treated as un-ground: delay rather than
-        // decide, so it residualizes (substitution transparency) instead of
-        // silently mismatching against its own unevaluated term. A `Value::Node`
-        // op-call carrier reads directly in its native carrier (WI-685).
-        if self.operand_is_unevaluated_call(&a) || self.operand_is_unevaluated_call(&b) {
-            return EqOperands::Delay;
-        }
+        // WI-20260926-K4JGC — 068 §1.1's one strategy: each operand EVALUATED, at every
+        // depth (a dot projection, a call under a constructor), until a variable or a
+        // stuck call is left. It used to reduce only the TOP of an operand, so
+        // `box(v: C.tag(red())) = box(v: 1)` compared the unevaluated `tag(red())` as data
+        // and answered a definite FALSE; and a stuck call is never compared as data — the
+        // comparison takes its state (WI-483/WI-738's delay, now with 068 §2's UNREDUCED).
+        let (a, b) = match (
+            self.evaluate_operand(a, subst, faults),
+            self.evaluate_operand(b, subst, faults),
+        ) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(s), Ok(_)) | (Ok(_), Err(s)) => return EqOperands::Stuck(s),
+            (Err(s), Err(t)) => return EqOperands::Stuck(s.join(t)),
+        };
         // WI-685: operands ride in their native carrier — a `Value::Node`
         // occurrence is compared structurally by [`Self::values_equal`] and gated
         // by the carrier-neutral `value_deep_ground` / `value_reaches_eq_override`,
@@ -8486,10 +8620,9 @@ impl KnowledgeBase {
     /// `Failure` on a mismatch or occurs-check violation. Carrier-agnostic, and
     /// "never dispatches" in the sense [`BuiltinTag::Eq`] spells out: the proposal
     /// Invariant is that no carrier's `Eq` member is selected. It is NOT "compares raw
-    /// terms" — [`Self::unify_values`] opens with [`Self::reduce_operand`] on both
-    /// sides and delays on an undecidable call (WI-483 / WI-738), so
-    /// `unify(dbl(2), 4)` succeeds. WI-20260910-FDPJ8 made that true on every carrier
-    /// rather than only on occurrences.
+    /// terms" — [`Self::unify_evaluated`] EVALUATES both sides first (WI-20260926-K4JGC,
+    /// proposal 068 §1.1) and never binds a call that did not run, so `unify(dbl(2), 4)`
+    /// succeeds on every carrier (WI-20260910-FDPJ8).
     fn builtin_unify<V: TermView>(
         &mut self,
         goal: &V,
@@ -8509,15 +8642,27 @@ impl KnowledgeBase {
         // top-level bindings travel back via `SuccessWithBindings` (the resolver
         // lifts `extra.bindings`, never the parent).
         let mut work = Substitution::with_parent(subst.clone());
-        match self.unify_values(a, b, &mut work, faults) {
-            UnifyOutcome::Delay => BuiltinResult::delay(),
-            UnifyOutcome::Fail => BuiltinResult::Failure,
+        match self.unify_evaluated(a, b, &mut work, faults) {
+            Unification::Stuck(state) => state.verdict(),
+            Unification::Fail => BuiltinResult::Failure,
             // A binding to two structurally-distinct values surfaces as a
             // `work` contradiction (the chase prevents it on the linear-var
             // path; this is the carrier-edge backstop) — no unifier.
-            UnifyOutcome::Ok if work.is_contradiction() => BuiltinResult::Failure,
-            UnifyOutcome::Ok if work.bindings.is_empty() => BuiltinResult::Success,
-            UnifyOutcome::Ok => BuiltinResult::SuccessWithBindings(work),
+            Unification::Unified { .. } if work.is_contradiction() => BuiltinResult::Failure,
+            Unification::Unified { pending } if pending.is_empty() => {
+                if work.bindings.is_empty() {
+                    BuiltinResult::Success
+                } else {
+                    BuiltinResult::SuccessWithBindings(work)
+                }
+            }
+            // WI-20260926-K4JGC — a binding reached a stuck call, which 068 §1.2 put in a
+            // fresh variable: its pending equation runs next, and a later binding of its
+            // blocker lets it evaluate within this derivation.
+            Unification::Unified { pending } => BuiltinResult::SuccessSplicing {
+                bindings: work,
+                goals: pending,
+            },
         }
     }
 
@@ -8536,12 +8681,7 @@ impl KnowledgeBase {
     /// turns into either the ≥2-arg form or a hard load error, so it is unreachable
     /// from a clean load; only a direct hand-written call reaches it — declines to
     /// fire (returns `Failure`) rather than wrongly succeeding.
-    fn builtin_find_dictionary<V: TermView>(
-        &mut self,
-        goal: &V,
-        subst: &Substitution,
-        faults: &mut ReduceFaults,
-    ) -> BuiltinResult {
+    fn builtin_find_dictionary<V: TermView>(&mut self, goal: &V, subst: &Substitution) -> BuiltinResult {
         let pos_arity = match goal.head(self) {
             ViewHead::Functor { pos_arity, .. } => pos_arity,
             _ => return BuiltinResult::Failure,
@@ -8638,9 +8778,9 @@ impl KnowledgeBase {
         // what makes it the σ-VALUE rather than the variable leaf.
         let out_slot = goal.named_arg(self, out_sym);
         match self.walk_arg(out_slot, subst) {
-            Some(out) => self.read_dictionary_into(
-                subst, spec_sort, op_functor, &arg_vals, out, &bracket, faults,
-            ),
+            Some(out) => {
+                self.read_dictionary_into(subst, spec_sort, op_functor, &arg_vals, out, &bracket)
+            }
             None => unreachable!("`named_keys` listed `out` but `named_arg` has no child for it"),
         }
     }
@@ -8679,7 +8819,6 @@ impl KnowledgeBase {
         // the FETCH sees the same carrier type the GUARD did AND the elements the author
         // named.
         bracket: &super::typing::RequirementBracket,
-        faults: &mut ReduceFaults,
     ) -> BuiltinResult {
         use super::typing::{DefaultRung, FindDictFetch, FindDictOutcome};
         // WI-20260911-5G28A S2 — A SUPPLIED DICTIONARY IS CHECKED AGAINST A UNIQUE ROW
@@ -8717,7 +8856,7 @@ impl KnowledgeBase {
             return match self.domain_evidence(ty, subst) {
                 DomainEvidence::Dict { value, .. } => {
                     let mut work = Substitution::with_parent(subst.clone());
-                    match self.unify_values(out, value, &mut work, faults) {
+                    match self.unify_values(out, value, &mut work) {
                         UnifyOutcome::Ok if !work.is_contradiction() => {
                             BuiltinResult::SuccessWithBindings(work)
                         }
@@ -8768,8 +8907,8 @@ impl KnowledgeBase {
                 //
                 // `detail` IS DROPPED, and the reason is no longer the one WI-1040
                 // recorded ("a resolver builtin has no diagnostic channel"). TWO have
-                // arrived since: `faults` — this very function's `&mut ReduceFaults`
-                // parameter, drained onto the stream before the verdict is acted on —
+                // arrived since: `faults` — the `&mut ReduceFaults` sink this function's
+                // caller holds, drained onto the stream before the verdict is acted on —
                 // and `BuiltinResult::Error`, which the `Defect` arm below now takes.
                 // NEITHER FITS THIS ARM, and that is the point: both are TERMINAL —
                 // they mark the stream incomplete and a drain reads a recorded fault
@@ -8820,7 +8959,7 @@ impl KnowledgeBase {
         // IS both: against an unbound variable it binds, against a supplied
         // dictionary it compares structurally through the WI-1019 view.
         let mut work = Substitution::with_parent(subst.clone());
-        match self.unify_values(out, dict, &mut work, faults) {
+        match self.unify_values(out, dict, &mut work) {
             UnifyOutcome::Delay => BuiltinResult::delay(),
             UnifyOutcome::Fail => BuiltinResult::Failure,
             UnifyOutcome::Ok if work.is_contradiction() => BuiltinResult::Failure,
@@ -8840,9 +8979,10 @@ impl KnowledgeBase {
     /// [`UnifyOutcome::Delay`] onto `None` — which at this face MEANS "these terms do
     /// not unify". The old doc ring-fenced that as safe with a CARRIER claim, "a
     /// delaying op-call operand (only reachable from occurrence-carried inputs) reads
-    /// as non-unifiable here", and FDPJ8 falsified exactly that claim: `unify_values`
-    /// reaches [`Self::reduce_operand`] and [`Self::operand_is_unevaluated_call`], both
-    /// carrier-neutral since that ticket, so a TERM-carried op call now delays too.
+    /// as non-unifiable here", and FDPJ8 falsified exactly that claim: the operand
+    /// reduction and the unevaluated-call test were carrier-neutral since that ticket, so
+    /// a TERM-carried op call delays too. Since WI-20260926-K4JGC both are one step,
+    /// [`Self::unify_evaluated`]'s evaluation.
     /// MEASURED over `operation dbl(n: Int64) -> Int64 = add(n, n)`:
     /// `unify_terms(dbl(?x), dbl(?y))` answered `None` — "no unifier" for two terms
     /// that plainly unify structurally — and `reflect_unify` handed that to the
@@ -8870,40 +9010,118 @@ impl KnowledgeBase {
         // that mapping for `Delay` and WI-20260911-0V0F7 came within a variant of
         // reopening it (a `Faulted` arm would have landed here as `NoUnifier`), which is
         // why the sink carries faults instead and why this list now names every case.
-        match self.unify_values(Value::term(a), Value::term(b), &mut work, faults) {
-            UnifyOutcome::Ok if !work.is_contradiction() => TermUnification::Unifier(work),
+        match self.unify_evaluated(Value::term(a), Value::term(b), &mut work, faults) {
             // A contradictory σ is no unifier — the terms do not unify.
-            UnifyOutcome::Ok => TermUnification::NoUnifier,
-            UnifyOutcome::Delay => TermUnification::Undecided,
-            UnifyOutcome::Fail => TermUnification::NoUnifier,
+            Unification::Unified { .. } if work.is_contradiction() => TermUnification::NoUnifier,
+            Unification::Unified { pending } if pending.is_empty() => {
+                TermUnification::Unifier(work)
+            }
+            // WI-20260926-K4JGC — the unifier binds a variable standing for a call that
+            // has not run (068 §1.2): a unifier CONDITIONAL on its pending equation, which
+            // this face has no way to hand back. Not "no unifier" either.
+            Unification::Unified { .. } => TermUnification::Undecided,
+            // A side with no value (`div(1, 0)`) unifies with nothing.
+            Unification::Stuck(Stuck::Absent) => TermUnification::NoUnifier,
+            Unification::Stuck(_) => TermUnification::Undecided,
+            Unification::Fail => TermUnification::NoUnifier,
         }
     }
 
-    /// The recursive core (proposal 049 steps 1–6). Chases each side's head var
-    /// through `work`, head-normalizes it on reach (project `?p.x` / fold a
-    /// foldable `peek(?b)` — head-only, no descent into constructor args), then:
-    /// a complex op-call head delays; a flex var head binds (occurs-checked) to
-    /// the other side; two concrete heads compare structurally and recurse on a
-    /// functor match. Children are head-normalized on their own reach (the
-    /// laziness — a bound cell keeps its interior unreduced).
-    fn unify_values(
+    /// WI-20260926-K4JGC — `<=>` by proposal 068 §1.1's one strategy: both sides
+    /// EVALUATED ([`Self::evaluate_with_holes`]), then unified STRUCTURALLY
+    /// ([`Self::unify_values`]).
+    ///
+    /// A stuck call inside a side is a HOLE — a fresh variable, shared by identical calls —
+    /// so a mismatch anywhere else still fails definitely, and what a bind stores is never
+    /// the call (068 §1.2): `?v <=> box(v: C.tag(?c))` binds `?v = box(v: ?t)` and hands
+    /// back the pending `unify(?t, tag(?c))`, which a later binding of `?c` evaluates. A
+    /// hole nothing reached — its variable neither bound nor inside a binding — pends
+    /// nothing: two identical stuck calls unify by reflexivity, whatever their value.
+    ///
+    /// A WHOLE side that is a stuck call is the pending equation itself, and binding the
+    /// other side to a hole would restate it: the goal takes the call's state
+    /// ([`Unification::Stuck`]) — `?v <=> C.tag(?c)` waits for `?c`, as it always did.
+    ///
+    /// Before this, `<=>` reduced only the node its walk was at, and a BIND stored the rest
+    /// unvisited: `?v <=> box(v: C.tag(red()))` bound `?v` to the call as a definite
+    /// answer.
+    fn unify_evaluated(
         &mut self,
         a: Value,
         b: Value,
         work: &mut Substitution,
         faults: &mut ReduceFaults,
-    ) -> UnifyOutcome {
+    ) -> Unification {
+        let mut holes = Holes::default();
+        // A side holding a call with NO value (`div(1, 0)`) fails the unification as its
+        // relation fails: there is nothing to bind.
+        let a = match self.evaluate_operand_with_holes(a, work, faults, &mut holes) {
+            Ok(a) => a,
+            Err(state) => return Unification::Stuck(state),
+        };
+        let b = match self.evaluate_operand_with_holes(b, work, faults, &mut holes) {
+            Ok(b) => b,
+            Err(state) => return Unification::Stuck(state),
+        };
+        let whole_a = holes.hole_of(self, &a).map(|h| (h.var, h.state));
+        let whole_b = holes.hole_of(self, &b).map(|h| (h.var, h.state));
+        match (whole_a, whole_b) {
+            // One call on both sides: reflexivity.
+            (Some((x, _)), Some((y, _))) if x == y => {
+                return Unification::Unified {
+                    pending: Vec::new(),
+                }
+            }
+            (Some((_, s)), Some((_, t))) => return Unification::Stuck(s.join(t)),
+            (Some((_, s)), None) | (None, Some((_, s))) => return Unification::Stuck(s),
+            (None, None) => {}
+        }
+        match self.unify_values(a, b, work) {
+            UnifyOutcome::Fail => Unification::Fail,
+            // A SYMBOLIC call (design D7) against anything but itself.
+            UnifyOutcome::Delay => Unification::Stuck(Stuck::Symbolic),
+            UnifyOutcome::Ok => {
+                let unify_sym = self.unify_functor();
+                let mut pending = Vec::new();
+                for hole in holes.entries {
+                    let reached = work.resolve_as_value(hole.var).is_some()
+                        || work
+                            .bindings
+                            .iter()
+                            .any(|(_, val)| self.occurs_in_value(hole.var, val, work));
+                    if reached {
+                        pending.push(self.make_goal_value(
+                            unify_sym,
+                            vec![Value::Var(Var::Global(hole.var)), hole.call],
+                        ));
+                    }
+                }
+                Unification::Unified { pending }
+            }
+        }
+    }
+
+    /// The STRUCTURAL core of `<=>` (proposal 049 steps 3–6) over values
+    /// [`Self::unify_evaluated`] has already evaluated. Chases each side's head var
+    /// through `work`; a flex var head binds (occurs-checked) to the other side; two
+    /// concrete heads compare structurally and recurse on a functor match.
+    ///
+    /// A call that is still here is one evaluation left in place — a SYMBOLIC call
+    /// (design D7), or a value a caller handed over unevaluated. It is never compared or
+    /// bound as data: against itself it unifies by reflexivity, against anything else the
+    /// whole unification waits ([`UnifyOutcome::Delay`], WI-483 / WI-738).
+    fn unify_values(&mut self, a: Value, b: Value, work: &mut Substitution) -> UnifyOutcome {
         // Step 1: chase head vars through σ (including bindings made earlier in
-        // THIS unify), then head-normalize on reach.
+        // THIS unify).
         let a = self.chase_value(a, work);
         let b = self.chase_value(b, work);
-        let a = self.reduce_operand(a, work, faults);
-        let b = self.reduce_operand(b, work, faults);
-        // Step 2: an unreduced op-call head (a complex body, or a builtin in
-        // operand position — WI-738) ⇒ delay the whole goal (never commit to a
-        // structural verdict over an uninterpreted callee).
-        if self.operand_is_unevaluated_call(&a) || self.operand_is_unevaluated_call(&b) {
-            return UnifyOutcome::Delay;
+        // Step 2: a call left unevaluated.
+        if self.is_written_call(&a) || self.is_written_call(&b) {
+            return if crate::kb::term_view::views_structurally_equal(self, &a, &b) {
+                UnifyOutcome::Ok
+            } else {
+                UnifyOutcome::Delay
+            };
         }
         // Step 3: a flex var on either side ⇒ occurs-checked bind-and-stop.
         if let Some(vid) = self.value_global_var(&a) {
@@ -8913,7 +9131,7 @@ impl KnowledgeBase {
             return self.unify_bind(vid, a, work);
         }
         // Steps 4–6: both heads concrete — structural compare + recurse.
-        self.unify_concrete(&a, &b, work, faults)
+        self.unify_concrete(&a, &b, work)
     }
 
     /// Step 3: bind flex `vid` to the head-normalized `other` side, occurs-checked.
@@ -8936,13 +9154,7 @@ impl KnowledgeBase {
     /// functor/arity/scalar/head-kind mismatch BEFORE reducing children — the
     /// work a bottom-first derive pass would forfeit. The bind-enabled twin of
     /// [`views_structurally_equal`] (which only tests).
-    fn unify_concrete(
-        &mut self,
-        a: &Value,
-        b: &Value,
-        work: &mut Substitution,
-        faults: &mut ReduceFaults,
-    ) -> UnifyOutcome {
+    fn unify_concrete(&mut self, a: &Value, b: &Value, work: &mut Substitution) -> UnifyOutcome {
         let eq_or = |same: bool| {
             if same {
                 UnifyOutcome::Ok
@@ -8988,7 +9200,7 @@ impl KnowledgeBase {
                         (Some(ca), Some(cb)) => (ca.to_value(), cb.to_value()),
                         _ => return UnifyOutcome::Fail,
                     };
-                    match self.unify_values(ca, cb, work, faults) {
+                    match self.unify_values(ca, cb, work) {
                         UnifyOutcome::Ok => {}
                         other => return other,
                     }
@@ -9001,7 +9213,7 @@ impl KnowledgeBase {
                         (Some(ca), Some(cb)) => (ca.to_value(), cb.to_value()),
                         _ => return UnifyOutcome::Fail,
                     };
-                    match self.unify_values(ca, cb, work, faults) {
+                    match self.unify_values(ca, cb, work) {
                         UnifyOutcome::Ok => {}
                         other => return other,
                     }
@@ -9180,6 +9392,31 @@ impl KnowledgeBase {
         }
     }
 
+    /// WI-20260926-K4JGC — the two operands of a comparison or an arithmetic relation,
+    /// EVALUATED (068 §1.1). `Err` is the goal's verdict when they cannot be compared yet:
+    /// an operand still an unbound variable delays; one holding a call that did not run
+    /// gives that call's state ([`Stuck::verdict`] — UNREDUCED is undecided).
+    fn evaluate_operand_pair(
+        &mut self,
+        a: Value,
+        b: Value,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> Result<(Value, Value), BuiltinResult> {
+        let (a, b) = match (
+            self.evaluate_operand(a, subst, faults),
+            self.evaluate_operand(b, subst, faults),
+        ) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(s), Ok(_)) | (Ok(_), Err(s)) => return Err(s.verdict()),
+            (Err(s), Err(t)) => return Err(s.join(t).verdict()),
+        };
+        if self.value_is_unbound_var(&a) || self.value_is_unbound_var(&b) {
+            return Err(BuiltinResult::delay());
+        }
+        Ok((a, b))
+    }
+
     /// Generic comparison builtin for gt/lt/gte/lte.
     /// Compares every ORDERED LITERAL carrier-neutrally ([`Self::value_ord`]); delays if
     /// unbound, and delays LOUDLY on an operand pair it has no order for.
@@ -9222,20 +9459,14 @@ impl KnowledgeBase {
             (Some(a), Some(b)) => (a, b),
             _ => return BuiltinResult::Failure,
         };
-        // WI-482: project a dispatched dot operand (`lt(?p.x, ?limit)`); WI-483:
-        // fold a method-op operand (`lt(?b.peek(), ?limit)`).
-        let a = self.reduce_operand(a, subst, faults);
-        let b = self.reduce_operand(b, subst, faults);
-        // WI-483/WI-738: an operand that is an unevaluated call (complex body, or
-        // a builtin nested in operand position — `lt(sub(?x,?y), 1)`) is
-        // un-ground → delay.
-        if self.value_is_unbound_var(&a)
-            || self.value_is_unbound_var(&b)
-            || self.operand_is_unevaluated_call(&a)
-            || self.operand_is_unevaluated_call(&b)
-        {
-            return BuiltinResult::delay();
-        }
+        // WI-20260926-K4JGC — each operand evaluated by 068 §1.1's one strategy (a dot
+        // projection, a method call, nested arithmetic — `lt(sub(?x, ?y), 1)` — at every
+        // depth); an operand holding a call that did not run gives its state, an unbound
+        // one delays.
+        let (a, b) = match self.evaluate_operand_pair(a, b, subst, faults) {
+            Ok(pair) => pair,
+            Err(result) => return result,
+        };
         let verdict = match self.value_ord(&a, &b) {
             OrdVerdict::Ordered(o) => pred(o),
             // WI-644 / proposal 004: an IEEE-UNORDERED Float pair (a NaN operand) is a
@@ -9658,20 +9889,13 @@ impl KnowledgeBase {
             Some(b) => b,
             None => return BuiltinResult::Failure,
         };
-        // WI-482: project a dispatched dot operand (`mul(?p.x, ?dt)`); WI-483:
-        // fold a method-op operand (`mul(?b.peek(), ?dt)`).
-        let a = self.reduce_operand(a, subst, faults);
-        let b = self.reduce_operand(b, subst, faults);
-        // WI-483/WI-738: an operand that is an unevaluated call is un-ground →
-        // delay. Includes a NESTED arithmetic builtin (`add(sub(?x,?y), 1, ?z)`),
-        // so nested arithmetic composes: the inner call delays until it grounds.
-        if self.value_is_unbound_var(&a)
-            || self.value_is_unbound_var(&b)
-            || self.operand_is_unevaluated_call(&a)
-            || self.operand_is_unevaluated_call(&b)
-        {
-            return BuiltinResult::delay();
-        }
+        // WI-20260926-K4JGC — each operand evaluated by 068 §1.1's one strategy, so nested
+        // arithmetic (`add(sub(?x, ?y), 1, ?z)`) COMPUTES once its operands are bound
+        // instead of delaying on the inner call for ever.
+        let (a, b) = match self.evaluate_operand_pair(a, b, subst, faults) {
+            Ok(pair) => pair,
+            Err(result) => return result,
+        };
         let target =
             (pos_arity >= 3).then(|| self.resolve_result_target(goal.pos_arg(self, 2), subst));
 
@@ -10453,8 +10677,8 @@ impl KnowledgeBase {
     /// intended reading. What the gate buys elsewhere is not building an occurrence
     /// SPINE for the operands that are plainly not op-calls — `eq(?x, cons(1, cons(2, nil)))` walks its whole list through
     /// [`node_occurrence::value_as_occurrence`] otherwise, once per `eq` goal, and
-    /// `reduce_operand` runs on BOTH operands of every `eq` / `neq` / `cmp` / `arith` /
-    /// `unify`. Each leg is therefore the same question that function asks, on the
+    /// the operand evaluation reaches every call in BOTH operands of every `eq` / `neq` /
+    /// `cmp` / `arith` / `unify`. Each leg is therefore the same question that function asks, on the
     /// SPELLED functor:
     ///
     ///  * **APPLIED (`pos + named > 0`)** — the carrier canon collapses a nullary
@@ -10466,8 +10690,8 @@ impl KnowledgeBase {
     ///    and folding one would turn a function VALUE into its result. The site that
     ///    HAS the reading (the WI-580 goal hook) rebuilds the `Expr::Apply` itself
     ///    before calling, and arrives on the `Node` arm above. This is
-    ///    [`Self::is_unreduced_builtin_call`]'s test, for the same reason and on the
-    ///    same carriers.
+    ///    [`Self::is_written_call`]'s test, for the same reason and on the same
+    ///    carriers.
     ///
     ///    **THIS LEG ALONE DRIVES NO ROW, and the honest reason is that
     ///    `value_as_occurrence` mostly makes it redundant** — measured, not assumed:
@@ -10563,16 +10787,18 @@ impl KnowledgeBase {
     /// FOLDABLE (the folded body collapses to a value — a `field_access` chain):
     /// returns that value. COMPLEX (arithmetic / `match` / `if` / `let` /
     /// recursion — the folded body does not collapse): returns the call
-    /// UNCHANGED. The operand sites then treat a residual op-call as un-ground
-    /// (delay) via [`Self::is_unreduced_op_call`], per the WI-483 decision —
+    /// UNCHANGED. The operand evaluation then reports the call STUCK (`evaluate.rs`:
+    /// SUSPENDED, UNREDUCED or SYMBOLIC — never data), per the WI-483 decision —
     /// leave a complex callee uninterpreted, NEVER loud, so a rule's validity
     /// never depends on its callee's body complexity (substitution transparency).
     /// The interpreter bridge for complex bodies is a deferred follow-up.
     ///
-    /// WI-1057 — `dispatch_body_less` is asked by ONE caller,
-    /// [`Self::reduce_dispatched_goal_call`], and it is the difference between
-    /// reducing an operand a rule WROTE and deciding a call the WI-938 hook BUILT.
-    /// See that method for why the shared operand pipeline must not ask for it.
+    /// WI-1057 — `dispatch_body_less` lets a BODY-LESS spec op be run by its carrier's
+    /// supplier. WI-1057 asked for it only where the WI-938 hook decided a call it BUILT,
+    /// keeping it off the operand path so `Set`'s symbolic `insert` / `empty` stayed data;
+    /// proposal 068 §2.3 retired that reading (WI-20260926-K4JGC), and the one evaluation
+    /// strategy (`evaluate.rs`) asks for it at every call it evaluates. A nested fold
+    /// (`depth > 0`) still does not: it rides its enclosing op's bridge.
     ///
     /// WI-1044 — a call the TYPER NEVER SAW is classified here, by value
     /// ([`Self::classify_unstamped_spec_op_call`]), so an unstamped occurrence stops
@@ -10874,8 +11100,10 @@ impl KnowledgeBase {
             // this site asked `dispatch_body_less`, i.e. "a body and nothing else".
             // J38JE fixed the goal position and the operand kept the old question.
             //
-            // WHY THIS DOES NOT DELETE WHAT `dispatch_body_less` PROTECTS. That flag
-            // guards a body-less SPEC op at an operand — a term a RULE WROTE, which may
+            // WHY THIS DID NOT DELETE WHAT `dispatch_body_less` PROTECTED — history since
+            // WI-20260926-K4JGC turned the flag on for every evaluated call (068 §2.3), so
+            // the symbolic-algebra reading below is gone. That flag
+            // guarded a body-less SPEC op at an operand — a term a RULE WROTE, which may
             // be SYMBOLIC ALGEBRA rather than a computation; `anthill.prelude.Set`'s
             // `insert` / `empty` are the case, and dispatching them would reduce DATA
             // (the five wi616 regressions `is_unreduced_op_call` records, through the
@@ -11043,7 +11271,7 @@ impl KnowledgeBase {
         // check on every arg — and, exactly as there, a `None` leaves the ORIGINAL
         // call `v`. That fall-back is what makes this safe rather than the naive
         // widening the ticket measured: an un-answered call stays a call, and
-        // [`Self::reduction_left_body_less_call`] reports it as one, so the WI-938
+        // the evaluation reports it STUCK (`evaluate.rs`), so the WI-938
         // hook declines to `unify` on it instead of binding the result variable to
         // the call term and calling that a definite answer.
         let Some(body) = body else {
@@ -11552,53 +11780,6 @@ impl KnowledgeBase {
         }
     }
 
-    /// WI-482 + WI-483: reduce a builtin operand to its value — project a
-    /// dispatched `field_access` dot (`?p.x`), then fold a dispatched method-op
-    /// call (`?b.peek()`). The single operand-reduction pipeline shared by
-    /// `eq`/`cmp`/`arith`. A residual (complex) op-call is left as-is here; the
-    /// caller delays on it via [`Self::is_unreduced_op_call`].
-    fn reduce_operand(
-        &mut self,
-        v: Value,
-        subst: &Substitution,
-        faults: &mut ReduceFaults,
-    ) -> Value {
-        let v = self.reduce_dot_value(v, subst);
-        self.reduce_op_value(v, subst, 0, false, None, faults)
-    }
-
-    /// WI-1057 — [`Self::reduce_operand`] for the ONE site that is deciding a call
-    /// rather than reading an operand: the WI-938 functional-relation hook, which
-    /// built `f(a…)` itself out of the goal `f(a…, ?r)` and must know what it
-    /// evaluates to before it may `unify` the result column with it.
-    ///
-    /// **The difference is `dispatch_body_less`, and keeping it OFF the shared operand
-    /// pipeline is a correctness rule, not a cost tweak.** `reduce_operand` serves
-    /// `eq`/`cmp`/`arith`/`unify`, whose operands are terms a RULE WROTE — and a
-    /// body-less spec op there may be SYMBOLIC ALGEBRA rather than a computation.
-    /// `anthill.prelude.Set`'s `insert`/`empty` are exactly that: parametric parent,
-    /// no body, a real signature, and the terms the membership rules resolve over.
-    /// Dispatching them would reduce data, which is the same failure as the 5 wi616
-    /// regressions [`Self::is_unreduced_op_call`] records, reached through the other
-    /// door. It is also what keeps [`Self::body_less_dispatchable`]'s
-    /// `sort_is_parametric` leg and a whole `run_in_bridge_interp` off the per-operand
-    /// path: this flag is read BEFORE either, so an `eq` over a Set literal pays
-    /// neither. (That leg was 51 µs and O(|symbols|) when this was written; WI-954 made
-    /// it an O(1) owner-scope read, so the `run_in_bridge_interp` half is now the whole
-    /// of what this saves.)
-    ///
-    /// The goal shape ([`Self::body_less_relation_arity`]) and this reduction are the
-    /// admitting and the deciding half of one decision, and they have one reader each.
-    fn reduce_dispatched_goal_call(
-        &mut self,
-        v: Value,
-        subst: &Substitution,
-        faults: &mut ReduceFaults,
-    ) -> Value {
-        let v = self.reduce_dot_value(v, subst);
-        self.reduce_op_value(v, subst, 0, true, None, faults)
-    }
-
     /// WI-483: is `v` a residual (unfolded) method-op call operand — a
     /// `Value::Node` applying a CONCRETE operation that [`Self::reduce_op_value`]
     /// left un-reduced (a complex body)? Such an operand is treated as un-ground
@@ -11607,10 +11788,13 @@ impl KnowledgeBase {
     ///
     /// BODIED ops only: this also gates [`Self::op_call_as_occ`], which UNFOLDS
     /// the callee's body to case-split, and a builtin has no body to unfold. The
-    /// delay sites want the wider [`Self::operand_is_unevaluated_call`].
+    /// operand sites want the wider [`Self::is_written_call`].
     ///
     /// **WI-1057 — BODY-LESS SPEC OPS ARE DELIBERATELY NOT HERE, AND THAT WAS
-    /// MEASURED.** "Has a body to fold" and "the reduction decided it" look like one
+    /// MEASURED.** (History since WI-20260926-K4JGC: this predicate no longer decides
+    /// `eq`'s domain — the one evaluation strategy does, and 068 §2.3 retired the
+    /// symbolic-algebra reading — and its one reader is the WI-580 unfold,
+    /// [`Self::op_call_as_occ`].) "Has a body to fold" and "the reduction decided it" look like one
     /// question and are not, so the obvious widening — a body-less spec op whose eval
     /// bridge declined is as undecided as a complex body — was written and DRIVEN.
     /// It broke 5 `wi616_semantic_eq_test` cases, each turning a definite FAILURE into
@@ -11620,8 +11804,8 @@ impl KnowledgeBase {
     /// body-less spec ops that are SYMBOLIC ALGEBRA — data in all but declaration,
     /// which the membership rules resolve over and which `eq` must keep comparing
     /// structurally. Whether a call was DECIDED is the WI-938 hook's question about a
-    /// call it built itself, and it asks it there
-    /// ([`Self::reduction_left_body_less_call`]).
+    /// call it built itself, and it asked it there (`reduction_left_body_less_call`,
+    /// retired with the per-consumer reductions by WI-20260926-K4JGC).
     ///
     /// **CARRIER-NEUTRAL SINCE WI-20260910-FDPJ8, and it was a WRONG ANSWER before,
     /// not a missing one.** Until that ticket this opened `let Value::Node(occ) = v
@@ -11647,11 +11831,9 @@ impl KnowledgeBase {
     /// reduction genuinely left behind.
     ///
     /// **WHAT STAYS OUT IS UNCHANGED, and it is what the wi616 paragraph above is
-    /// about**: this widens the CARRIER, never the DISPATCH. `reduce_operand` still
-    /// passes `dispatch_body_less: false`, so `Set.insert` / `Set.empty` are as
-    /// un-reduced and as structurally compared on a term as they were on an occurrence,
-    /// and the `op_body_node(..).is_some() || is_interpreter_mapped_op(..)` test below
-    /// is the same set of callees it was.
+    /// about**: this widens the CARRIER, never the DISPATCH — the
+    /// `op_body_node(..).is_some() || is_interpreter_mapped_op(..)` test below is the
+    /// same set of callees it was.
     ///
     /// **TWO SHAPES ARE ASKED ON THE `Node` CARRIER BEFORE THE VIEW READ**, because the
     /// view cannot express them — not because a carrier list is being kept:
@@ -11667,7 +11849,7 @@ impl KnowledgeBase {
     ///  * A NULLARY `Expr::Apply` is a call unambiguously, where every other carrier
     ///    collapses `Fn{f}` to `Ref(f)` (WI-436) and cannot tell one from §5.4's
     ///    unapplied function value. The view arm therefore carries
-    ///    [`Self::is_unreduced_builtin_call`]'s `pos + named > 0` test — delaying on a
+    ///    [`Self::is_written_call`]'s `pos + named > 0` test — delaying on a
     ///    bare name would lose an answer, not refuse one — while this arm keeps
     ///    answering for the shape that says it is a call. `reduce_op_value` draws the
     ///    line in exactly the same place, for the same WI-20260902-VZC2C reason.
@@ -11731,7 +11913,7 @@ impl KnowledgeBase {
     fn functor_leaves_an_unreduced_op_call(&self, functor: Symbol) -> bool {
         // WI-20260826-VPEWK — the HOST leg, and it is admissible here where
         // WI-1057's body-less one explicitly was not. That ticket kept
-        // `reduction_left_body_less_call` a SEPARATE predicate precisely
+        // `reduction_left_body_less_call` (since retired) a SEPARATE predicate precisely
         // because this one "also decides `eq`'s domain, where a body-less spec
         // op may be symbolic ALGEBRA — measured, folding the two broke 5 wi616
         // cases". A HOST-IMPLEMENTED op cannot be that: `is_interpreter_mapped_op`
@@ -11753,121 +11935,6 @@ impl KnowledgeBase {
         // from under exactly the calls the widening newly admits.
         self.builtins.get(&functor).is_none()
             && (self.op_body_node(functor).is_some() || self.is_interpreter_mapped_op(functor))
-    }
-
-    /// WI-738: is `v` an operand that is an unevaluated BUILTIN call — the
-    /// `sub(?x, ?y)` inside `neq(sub(?x, ?y), 1)`?
-    ///
-    /// [`Self::reduce_op_value`] returns a builtin call UNCHANGED ("reduced by
-    /// its own path, not folded") — but that path only exists when the builtin is
-    /// the goal's OWN functor. Nested as an OPERAND there is no such path, so the
-    /// call reaches the comparison still an `Apply`. It must not be compared
-    /// structurally: `sub(2,1)` and `1` are different TERMS but equal VALUES, so a
-    /// structural verdict made `neq(sub(?x,?y), 1)` silently, unconditionally TRUE
-    /// (and `eq(?y, add(?x,?x))` silently FALSE — the same root cause reads as a
-    /// false positive under `neq` and a false negative under `eq`). Deciding an
-    /// uninterpreted call is a WRONG ANSWER; delaying is honest — the goal
-    /// residualizes, and a residual that never grounds surfaces as a flounder
-    /// (loudly, per WI-737) instead of a silent lie.
-    ///
-    /// This is the SOUNDNESS FLOOR only: it makes an unevaluated call delay, it
-    /// does not make it compute. Evaluating one — flattening `eq(?z, add(?x,?y))`
-    /// to the graph form `add(?x, ?y, ?z)`, which the 3-arg arithmetic builtin
-    /// already binds — is additive and separate.
-    ///
-    /// A DATA constructor (`cons(head: ?h, tail: ?t)`, `some(?x)`) is NOT a
-    /// builtin and NOT bodied, so it still compares structurally, as it must.
-    /// Anthill can draw that line because an `operation` and an `entity`
-    /// constructor are distinct declarations — unlike Prolog, where `1+2` is
-    /// legitimately a term and `X = 1+2` must not evaluate.
-    ///
-    /// ALL THREE STRUCTURAL CARRIERS, mirroring [`Self::op_call_as_occ`]: a
-    /// rule-body operand reaches here as a `Value::Term` (a term-lowered goal —
-    /// `walk_view` yields `Value::term` for any `Term::Fn`), NOT only as a
-    /// `Value::Node`. Checking just the Node arm misses the very case that
-    /// motivated this — the `sub(?x,?y)` of `neq(sub(?x,?y), 1)` arrives
-    /// Term-carried.
-    ///
-    /// WI-20260906-7YPGM MADE IT A VIEW READ, and the `Entity` carrier it thereby
-    /// gained was a WRONG ANSWER rather than a missing one — which is what makes it
-    /// this predicate's business and not a carrier tidy-up. The goal walk keeps a
-    /// σ-moved application off the store, so the operand of a term-carried
-    /// `neq(sub(?x,?y), 1)` whose `?x` σ has bound arrives as an `Entity` spine;
-    /// answering `false` for it is exactly the "silently, unconditionally TRUE"
-    /// verdict the paragraph above forbids. DRIVEN by
-    /// `wi_7ypgm_goal_walk_flatness_test::an_entity_carried_builtin_operand_still_delays`.
-    ///
-    /// **THE ARITY TEST IS WHAT THE OLD CARRIER MATCH WAS ENCODING, so it is written
-    /// out rather than lost in the rewrite.** That match accepted `Expr::Apply` and
-    /// `Term::Fn` — the two spellings that ARE applications — and the storage canon
-    /// collapses a nullary `Fn{f}` to `Ref(f)` (WI-436), so `pos + named > 0` is the
-    /// same set said carrier-neutrally. Dropping it was tried and is wrong in
-    /// PRINCIPLE even though `wi_tests` stayed green: `head` canonicalizes
-    /// `Term::Ref` / `Value::SymbolRef` / `Expr::Ref` to `ViewHead::nullary`, and a
-    /// bare name in OPERAND position is §5.4's unapplied function value — DATA, and
-    /// the carrier an `OpRef` / dictionary mint rides (WI-20260902-VZC2C). Delaying
-    /// on it would lose an answer, not refuse one. `op_call_as_occ` reads the same
-    /// head WITHOUT this test, deliberately: a bare nullary BODIED-op call is a call
-    /// there (WI-20260902-CZJ2N measured `tau()`), and the difference between the two
-    /// is that this one has no way to tell the reading apart while that one has
-    /// already been given it.
-    fn is_unreduced_builtin_call(&self, v: &Value) -> bool {
-        match v.head(self) {
-            ViewHead::Functor {
-                functor: Some(f),
-                pos_arity,
-                named_arity,
-            } => pos_arity + named_arity > 0 && self.builtins.get(&f).is_some(),
-            _ => false,
-        }
-    }
-
-    /// WI-1057 — did [`Self::reduce_op_value`] hand back a BODY-LESS SPEC-OP CALL it
-    /// could not decide? The WI-938 hook's own question about the call the hook itself
-    /// built, and the second half of this ticket's fix.
-    ///
-    /// The hook may only rewrite `f(a…, ?r)` to `unify(?r, f(a…))` once the reduction
-    /// produced a VALUE: `unify` is structural and never dispatches, so handing it an
-    /// undecided call BINDS `?r` to the call term and reports a definite answer.
-    /// WI-1057's goal shape ([`Self::body_less_relation_arity`]) admits a body-less
-    /// spec op, whose reduction is the eval bridge — and the bridge declines whenever
-    /// an argument is not deeply ground, or no carrier supplies the op, or the
-    /// suppliers tie. Each of those leaves the ORIGINAL call, and each must fall
-    /// through to ordinary candidate selection (the pre-WI-1057 outcome, no answer)
-    /// rather than answer wrongly. DRIVEN by
-    /// `an_unground_body_less_goal_binds_no_residual`; without this the un-ground
-    /// fixture answers one solution binding `?r` to a `describe(…)` node.
-    ///
-    /// **Asked HERE and not folded into [`Self::is_unreduced_op_call`]** — see that
-    /// predicate's WI-1057 paragraph for the 5 measured failures folding it caused.
-    /// The two questions differ in their subject: this one is about a call the hook
-    /// CONSTRUCTED and tried to reduce; that one is about an operand a rule WROTE,
-    /// where a body-less spec op may legitimately be symbolic data.
-    ///
-    /// **What makes this cheap is the `op_record` probe inside
-    /// [`Self::body_less_dispatchable`], NOT the caller's `||` ordering.** An earlier
-    /// draft of this paragraph claimed the latter and had it backwards: `a || b` skips
-    /// `b` only when `a` is TRUE, so this predicate runs on precisely the common case —
-    /// a reduction that DID decide. It is affordable because a `reduced` that is not a
-    /// `Value::Node` `Apply` leaves in two lines, and one that is leaves at the
-    /// signature probe unless it is a real declared operation. Do not reorder on the
-    /// assumption that the first operand shields it.
-    fn reduction_left_body_less_call(&self, v: &Value) -> bool {
-        let Value::Node(occ) = v else { return false };
-        let Some(Expr::Apply { functor, .. }) = occ.as_expr() else {
-            return false;
-        };
-        self.builtins.get(functor).is_none() && self.body_less_dispatchable(*functor)
-    }
-
-    /// WI-738: an operand that is an unevaluated CALL of EITHER kind — a bodied
-    /// op whose body did not fold ([`Self::is_unreduced_op_call`], WI-483) or a
-    /// builtin nested in operand position ([`Self::is_unreduced_builtin_call`]).
-    /// Both are un-ground: a call is not data, so no structural verdict may be
-    /// committed over one. The delay sites (`eq` / `unify` / `cmp` / `arith`) all
-    /// ask this; `op_call_as_occ`'s case-split asks the narrower bodied-op form.
-    fn operand_is_unevaluated_call(&self, v: &Value) -> bool {
-        self.is_unreduced_op_call(v) || self.is_unreduced_builtin_call(v)
     }
 
     /// The occurrence of a bodied (non-builtin) op-call operand, from ANY of the
@@ -11961,7 +12028,7 @@ impl KnowledgeBase {
             // `eq(?r, f(?x))` once σ binds `?x` — fell to `_ => None` and abandoned
             // that same case-split.
             //
-            // NO ARITY TEST, unlike [`Self::is_unreduced_builtin_call`]: CZJ2N's
+            // NO ARITY TEST, unlike [`Self::is_written_call`]: CZJ2N's
             // `tau()` IS the nullary case, and admitting it here is that ticket's
             // measured decision.
             //
@@ -12548,18 +12615,19 @@ impl KnowledgeBase {
         else {
             return false;
         };
+        // Evaluated as the hook evaluates it (WI-20260926-K4JGC: arguments first, by the
+        // one strategy); a call that did not run, or faulted, refutes nothing.
         let mut faults = ReduceFaults::default();
-        let reduced = self.reduce_dispatched_goal_call(Value::Node(call), subst, &mut faults);
-        if !faults.is_empty()
-            || self.is_unreduced_op_call(&reduced)
-            || self.reduction_left_body_less_call(&reduced)
-        {
+        let Ok(value) = self.evaluate_value(Value::Node(call), subst, &mut faults) else {
+            return false;
+        };
+        if !faults.is_empty() {
             return false;
         }
         let mut work = Substitution::with_parent(subst.clone());
         matches!(
-            self.unify_values(Value::Node(result), reduced, &mut work, &mut faults),
-            UnifyOutcome::Fail
+            self.unify_evaluated(Value::Node(result), value, &mut work, &mut faults),
+            Unification::Fail
         )
     }
 
@@ -12683,7 +12751,7 @@ impl KnowledgeBase {
     /// resolves via those ("rules win while both exist" during migration).
     fn unfold_eq_operand(&mut self, goal: &Value, subst: &Substitution) -> Option<Vec<Candidate>> {
         // Detect an op-call operand on the WALKED value directly — no
-        // `reduce_operand` here (it would double the operand-reduction every
+        // operand evaluation here (it would double the operand-reduction every
         // plain `SemEq` goal pays, and the builtin recomputes it on the decline
         // path anyway). A ground op-call is still recognized syntactically but
         // declines below at `folded_call_match`'s flex-scrutinee check, so only a
@@ -13628,6 +13696,13 @@ impl KnowledgeBase {
                 if self.functional_relation_refuted(&walked, f, n, subst) {
                     return true;
                 }
+                continue;
+            }
+            // WI-20260926-K4JGC — an atom holding a call in its arguments is not judged:
+            // candidate selection evaluates the call first (design D3), so its discrim
+            // candidates here would be the call's, read as data. MEASURED: `r(?x) :-
+            // ground(?x), p(Int64.add(?x, 1))` over `fact p(3)` was refuted at opening.
+            if self.goal_args_hold_call(&walked) {
                 continue;
             }
             // Zero non-equation candidates ⇒ provably unsatisfiable ⇒ the rule is

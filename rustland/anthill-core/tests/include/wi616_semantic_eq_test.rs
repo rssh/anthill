@@ -10,6 +10,11 @@
 //! A carrier with no override keeps the structural compare (that IS its `Eq`
 //! instance). `===` (struct_eq) stays structural on every carrier.
 //!
+//! SINCE WI-20260926-K4JGC (proposal 068 §2.3) the `Set` rows answer UNDECIDED: an
+//! `insert` / `empty` chain is an operation application no implementation runs, not data,
+//! so no comparison over it is decided either way. The dispatch rows over `Int64` and
+//! entities are unchanged. `Set`'s route back is WI-20260926-QCJ0B's.
+//!
 //! `Map` also `provides Eq[T = Map]`, but WI-650 dropped its relational eq and
 //! left the override a bodyless placeholder (the WI-625 host bridge will fill
 //! it); comparing two Maps is now a LOUD load error, exercised in
@@ -125,129 +130,80 @@ fn eq_on_entities_without_instance_stays_structural() {
     );
 }
 
-// ── Set: membership equality via the dispatched carrier eq ────────────────
+// ── Set: UNDECIDED since WI-20260926-K4JGC (proposal 068 §2.3) ─────────────
+//
+// These rows used to answer by MEMBERSHIP: `Set.eq`'s relational rules matched the
+// unevaluated `insert` / `empty` terms in their heads. Under 068 an operation application
+// is a computation, not data: `Set.insert` / `Set.empty` have no body, no host mapping and
+// no provider, so each `insert` chain is an UNREDUCED call and every comparison over one is
+// UNDECIDED — never true, never false (068 §2: an UNREDUCED operand makes the comparison
+// UNREDUCED). The rows now pin that reading, both directions, so a regression to deciding
+// either way shows. `Set`'s own route back to deciding — an implementation, or a quoted
+// algebra (068 §1.3) — is WI-20260926-QCJ0B's, and these rows are its acceptance.
+//
+// FAILS with K4JGC backed out: every row below decides again (`(1, 0)` for an equal pair,
+// `(0, 0)` for a different one).
+
+/// `(0, 1)`: no definite answer, one undecided — what every comparison over the symbolic
+/// algebra answers now.
+const UNDECIDED: (usize, usize) = (0, 1);
 
 #[test]
-fn set_eq_ignores_insertion_order() {
+fn set_eq_over_the_symbolic_algebra_is_undecided() {
     let mut kb = load_kb();
-    let a = int_set(&mut kb, &[1, 2]);
-    let b = int_set(&mut kb, &[2, 1]);
-    assert_eq!(
-        solutions(&mut kb, "se", a, b),
-        1,
-        "eq({{1,2}}, {{2,1}}) must hold EXACTLY ONCE — membership equality, and \
-         the dispatch sub-resolution keeps eq semi-deterministic (no duplicate \
-         proofs leak from overlapping member/subset rules)"
-    );
+    for (x, y) in [(&[1, 2][..], &[2, 1][..]), (&[1], &[1, 1]), (&[1, 2], &[1, 2])] {
+        let (a, b) = (int_set(&mut kb, x), int_set(&mut kb, y));
+        assert_eq!(
+            solution_split(&mut kb, "se", a, b),
+            UNDECIDED,
+            "eq({x:?}, {y:?}) over `insert` chains: undecided, not held",
+        );
+    }
+    for (x, y) in [(&[1, 2][..], &[1, 3][..]), (&[1], &[1, 2])] {
+        let (a, b) = (int_set(&mut kb, x), int_set(&mut kb, y));
+        assert_eq!(
+            solution_split(&mut kb, "se", a, b),
+            UNDECIDED,
+            "eq({x:?}, {y:?}) over `insert` chains: undecided, not refuted",
+        );
+    }
 }
 
 #[test]
-fn set_eq_ignores_duplicates() {
+fn set_neq_over_the_symbolic_algebra_is_undecided() {
     let mut kb = load_kb();
-    let a = int_set(&mut kb, &[1]);
-    let b = int_set(&mut kb, &[1, 1]);
-    assert_eq!(
-        solutions(&mut kb, "se", a, b),
-        1,
-        "eq({{1}}, {{1,1}}) must hold exactly once — insert is idempotent"
-    );
+    for (x, y) in [(&[1, 2][..], &[1, 3][..]), (&[1, 2], &[2, 1])] {
+        let (a, b) = (int_set(&mut kb, x), int_set(&mut kb, y));
+        assert_eq!(
+            solution_split(&mut kb, "sne", a, b),
+            UNDECIDED,
+            "neq({x:?}, {y:?}) over `insert` chains is undecided",
+        );
+    }
 }
 
 #[test]
-fn set_eq_distinguishes_different_members() {
-    let mut kb = load_kb();
-    let a = int_set(&mut kb, &[1, 2]);
-    let b = int_set(&mut kb, &[1, 3]);
-    assert_eq!(
-        solutions(&mut kb, "se", a, b),
-        0,
-        "eq({{1,2}}, {{1,3}}) must not hold"
-    );
-    let a = int_set(&mut kb, &[1]);
-    let b = int_set(&mut kb, &[1, 2]);
-    assert_eq!(
-        solutions(&mut kb, "se", a, b),
-        0,
-        "eq({{1}}, {{1,2}}) must not hold"
-    );
-}
-
-#[test]
-fn set_eq_structurally_identical_sets_hold_by_reflexivity() {
-    let mut kb = load_kb();
-    let a = int_set(&mut kb, &[1, 2]);
-    let b = int_set(&mut kb, &[1, 2]);
-    assert_eq!(
-        solutions(&mut kb, "se", a, b),
-        1,
-        "eq({{1,2}}, {{1,2}}) must hold"
-    );
-}
-
-#[test]
-fn set_neq_negates_membership_equality() {
-    let mut kb = load_kb();
-    let a = int_set(&mut kb, &[1, 2]);
-    let b = int_set(&mut kb, &[1, 3]);
-    assert_eq!(
-        solutions(&mut kb, "sne", a, b),
-        1,
-        "neq({{1,2}}, {{1,3}}) must hold"
-    );
-    let a = int_set(&mut kb, &[1, 2]);
-    let b = int_set(&mut kb, &[2, 1]);
-    assert_eq!(
-        solutions(&mut kb, "sne", a, b),
-        0,
-        "neq({{1,2}}, {{2,1}}) must not hold — the sets are equal by membership"
-    );
-}
-
-#[test]
-fn nested_set_eq_dispatches_elementwise() {
-    // Set[Set[Int]]: inner sets compare by membership too — the element compare
-    // in `member` is the SEMANTIC `Eq.eq`, so dispatch recurses.
+fn nested_set_eq_over_the_symbolic_algebra_is_undecided() {
     let mut kb = load_kb();
     let i12 = int_set(&mut kb, &[1, 2]);
     let i21 = int_set(&mut kb, &[2, 1]);
     let i3 = int_set(&mut kb, &[3]);
     let a = set_of(&mut kb, &[i12, i3]);
     let b = set_of(&mut kb, &[i3, i21]);
-    assert_eq!(
-        solutions(&mut kb, "se", a, b),
-        1,
-        "eq({{{{1,2}},{{3}}}}, {{{{3}},{{2,1}}}}) must hold — elementwise membership equality"
-    );
-    let i13 = int_set(&mut kb, &[1, 3]);
-    let c = set_of(&mut kb, &[i13]);
-    let i12b = int_set(&mut kb, &[1, 2]);
-    let d = set_of(&mut kb, &[i12b]);
-    assert_eq!(
-        solutions(&mut kb, "se", c, d),
-        0,
-        "eq({{{{1,3}}}}, {{{{1,2}}}}) must not hold"
-    );
+    assert_eq!(solution_split(&mut kb, "se", a, b), UNDECIDED);
 }
 
 #[test]
-fn struct_eq_on_sets_stays_structural() {
-    // `===` never dispatches: two membership-equal but structurally distinct
-    // sets are NOT `===`.
+fn struct_eq_over_the_symbolic_algebra_is_undecided() {
+    // `===` compares the VALUES of its operands (068 §5), and an unreduced call has none —
+    // not even two identical spellings are `===` any more.
     let mut kb = load_kb();
     let a = int_set(&mut kb, &[1, 2]);
     let b = int_set(&mut kb, &[2, 1]);
-    assert_eq!(
-        solutions(&mut kb, "sid", a, b),
-        0,
-        "{{1,2}} === {{2,1}} must not hold — `===` is structural"
-    );
+    assert_eq!(solution_split(&mut kb, "sid", a, b), UNDECIDED);
     let c = int_set(&mut kb, &[1, 2]);
     let d = int_set(&mut kb, &[1, 2]);
-    assert_eq!(
-        solutions(&mut kb, "sid", c, d),
-        1,
-        "identical spellings are `===`"
-    );
+    assert_eq!(solution_split(&mut kb, "sid", c, d), UNDECIDED);
 }
 
 // ── Map: `Eq[Map]` declared-but-unimplemented is a LOUD type error (WI-650) ──
@@ -549,42 +505,19 @@ fn buried_override_suspends_instead_of_structural_verdict() {
 }
 
 #[test]
-fn larger_set_eq_uses_fresh_sub_budget() {
-    // 12-element sets in reversed insertion order: the relational derivation
-    // consumes O(n²) resolution steps — far past the outer default max_depth
-    // of 100. The dispatch sub-resolution runs on its OWN generous budget, so
-    // this must still be a definite verdict, not a truncation flounder.
+fn larger_set_eq_over_the_symbolic_algebra_is_undecided() {
+    // It measured the dispatch sub-resolution's own budget (a 12-element permutation took
+    // O(n²) steps and must not truncate). Under 068 §2.3 the comparison never reaches that
+    // sub-resolution — its operands are UNREDUCED calls — so it is undecided, the same as
+    // the small rows above; the budget is re-measured when WI-20260926-QCJ0B gives `Set` a
+    // route back.
     let mut kb = load_kb();
     let fwd: Vec<i64> = (1..=12).collect();
     let rev: Vec<i64> = (1..=12).rev().collect();
     let a = int_set(&mut kb, &fwd);
     let b = int_set(&mut kb, &rev);
-    assert_eq!(
-        solutions(&mut kb, "se", a, b),
-        1,
-        "12-element permuted sets are equal"
-    );
+    assert_eq!(solution_split(&mut kb, "se", a, b), UNDECIDED);
     let a2 = int_set(&mut kb, &fwd);
     let b2 = int_set(&mut kb, &rev);
-    assert_eq!(
-        solutions(&mut kb, "sne", a2, b2),
-        0,
-        "equal 12-element sets are not neq"
-    );
-    let mut fwd13 = fwd.clone();
-    fwd13.push(13);
-    let c = int_set(&mut kb, &fwd13);
-    let d = int_set(&mut kb, &rev);
-    assert_eq!(
-        solutions(&mut kb, "se", c, d),
-        0,
-        "13-vs-12-element sets differ"
-    );
-    let c2 = int_set(&mut kb, &fwd13);
-    let d2 = int_set(&mut kb, &rev);
-    assert_eq!(
-        solutions(&mut kb, "sne", c2, d2),
-        1,
-        "13-vs-12-element sets are neq"
-    );
+    assert_eq!(solution_split(&mut kb, "sne", a2, b2), UNDECIDED);
 }

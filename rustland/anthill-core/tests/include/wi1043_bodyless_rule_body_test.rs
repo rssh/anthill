@@ -117,8 +117,11 @@
 //! * **the host entry** (`invoke_op_with_requirements`) gains the value-directed
 //!   escape the in-body path had at its step 3b — the bridge calls the host entry, so
 //!   without this the rule body asked the one crossing that could not answer.
-//! * **the hook's guard** (`reduction_left_body_less_call`) keeps an UNDECIDED call
-//!   from being `unify`d with the result variable. This is the piece that makes the
+//! * **the hook's guard** (`reduction_left_body_less_call`) kept an UNDECIDED call
+//!   from being `unify`d with the result variable. Since WI-20260926-K4JGC the hook
+//!   EVALUATES its call by proposal 068 §1.1's one strategy, and a call that did not run
+//!   comes back STUCK rather than recognized by shape — the guard is that `Err` arm, and
+//!   `reduction_left_body_less_call` / `reduce_dispatched_goal_call` are retired. This is the piece that makes the
 //!   naive widening safe, and it is deliberately NOT a clause in
 //!   `is_unreduced_op_call` — folding the two broke 5 `wi616_semantic_eq_test` cases,
 //!   because `Set.insert`/`Set.empty` are body-less spec ops that are symbolic ALGEBRA.
@@ -442,8 +445,9 @@ fn a_fact_route_supplier_answers_from_a_rule_body() {
 /// DELAYING is the WI-938 hook's own standing open half, recorded at its site; this
 /// test pins only that no residual is bound.
 ///
-/// CONTROL: drop `reduction_left_body_less_call` from the hook's `undecided` and this
-/// test fails with one solution, while
+/// CONTROL: route a call the hook's evaluation left STUCK to `unify` anyway (its
+/// `Err(_) => None` arm, WI-20260926-K4JGC; it was `reduction_left_body_less_call` in the
+/// hook's `undecided` before) and this test fails with one solution — MEASURED — while
 /// `a_fact_route_supplier_answers_from_a_rule_body` still passes — there the bridge
 /// DOES answer, so the guard is never consulted. That asymmetry is the point: it is
 /// the only one of WI-1057's four pieces this test can see.

@@ -237,6 +237,41 @@ whose callee has no implementation:
 - **The spec edit** — kernel-language §8.3's `<=>` bullet and evaluation paragraph — lands with
   this ticket.
 
+### 5.1 As delivered (WI-20260926-K4JGC, 2026-09-30)
+
+`kb/resolve/evaluate.rs`. What differs from the sketch above, each measured and driven by
+`wi_k4jgc_evaluation_strategy_test` (back-outs stated at its sites):
+
+- **Two entries, not one `normalize`.** `evaluate_value` for a TEST (a stuck call makes the
+  operand stuck, the comparison takes its state) and `evaluate_with_holes` for a value that is
+  BUILT (`<=>`'s operands, a goal's arguments). A WHOLE side that is a stuck call is not holed —
+  it is the pending equation itself, and `<=>` waits as it always did.
+- **A hole nothing reached pends nothing** — its variable neither bound nor inside a binding —
+  which is how identical stuck calls unify by reflexivity.
+- **Four states, not two.** SUSPENDED and UNREDUCED as §2; SYMBOLIC (D7's rigid-variable call,
+  and a ground call the evaluator declined — an effect row, a fault) is kept as the term and a
+  test over it waits; ABSENT — an arithmetic builtin over NUMBERS with no answer, `div(1, 0)` —
+  fails whatever reads it, as the relation `div(1, 0, ?r)` fails.
+- **Builtins in a value slot compute** through their result column (`add(a, b)` as
+  `add(a, b, ?r)`): arithmetic in an operand or a goal argument answered nothing before, and the
+  WI-670 row needed it. A GOAL-ONLY builtin (`eq`, `not`, …) written as data is SYMBOLIC — a goal
+  passed to a relation stays the term.
+- **A dotted NAME is not a call** (`Box.zero`, `ns.inner.rel` — a receiver that names a scope):
+  at the top of an operand it is read as before (`reduce_dot_value`: a nullary operation's call,
+  else the name); in a data slot and a goal argument it stays the chain, so `fact holds(ns.rel)`
+  and the goal `holds(ns.rel)` still spell one term. A projection of a VALUE (`?p.x`) is a call.
+- **The WI-938 hook and WI-670's functional-relation check** evaluate their call by the same
+  strategy, arguments first; `reduce_operand`, `reduce_dispatched_goal_call` and
+  `reduction_left_body_less_call` are retired.
+- **Kept, not retired:** P7VP4's load-time refusal to weave an unpinned body-less spec op in a
+  value slot — removing it makes a no-provider call FAIL at its `find_dictionary`, where §2 says
+  UNREDUCED; run-time dispatch by the ground carrier gives the value. Recorded on DSEXA.
+- **`Set`:** 18 rows (not 5) assert UNDECIDED, including `Set` equality reached from an operation
+  body through the eval bridge; listed on QCJ0B, with the pre-existing rule-body set-literal row.
+- **Cost:** no measurable difference on `classic_mini`, `github_todo`, `guardians` (§8.1; a busy
+  machine, so a coarse bound). A SYMBOLIC call in a delayed goal is re-evaluated per rotation —
+  CYNPE's blockers make that cheap.
+
 ## 6. 7D48J and DSEXA
 
 Their tickets hold their design questions: 7D48J — the clause environment, how far data is typed

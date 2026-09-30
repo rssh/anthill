@@ -12,11 +12,13 @@
 //! rule control(?r) :- guardExhaustible(5, ?r)    ->  ?r = 5
 //! ```
 //!
-//! THE ARGUMENT MUST BE A LITERAL, and three fixtures were written wrong before that
-//! was known. Spelled `guardExhaustible(0 - 5, ?r)` the operand reaches the bridge
-//! UN-REDUCED, so the guard compares a `Node` against an `Int64` and the bridge answers
+//! THE ARGUMENT HAD TO BE A LITERAL, and three fixtures were written wrong before that
+//! was known. Spelled `guardExhaustible(0 - 5, ?r)` the operand reached the bridge
+//! UN-REDUCED, so the guard compared a `Node` against an `Int64` and the bridge answered
 //! `TypeMismatch { expected: "Ord scalars of matching type", got: "Node and Int64" }` —
-//! a DIFFERENT defect that presents as the same silent `no solutions`.
+//! a DIFFERENT defect that presented as the same silent `no solutions`. Since
+//! WI-20260926-K4JGC the call is evaluated arguments first (proposal 068 §1.1), so the
+//! two spellings reach the callee with the same `-5` and raise the same fault.
 //! `the_literal_and_the_unreduced_operand_are_two_different_faults` pins both, so the
 //! next reader does not have to find that out with a probe inside the bridge's `Err`
 //! arm the way this one did.
@@ -125,29 +127,26 @@ fn a_bridged_operation_that_returns_reports_nothing() {
 
 #[test]
 fn the_literal_and_the_unreduced_operand_are_two_different_faults() {
-    // BOTH present as `no solutions` and they are NOT the same defect. `0 - 5` reaches
-    // the bridge un-reduced, so the guard `k > 0` compares a `Node` against an `Int64`
-    // and the callee dies a TypeMismatch before it can raise. Only a probe inside the
-    // bridge's `Err` arm told them apart when this was first measured; now the channel
-    // does, which is the whole point of having one.
-    //
-    // CONTROL: this row passes under the back-out too, on its emptiness assertion
-    // alone — so it is the `contains` pair that measures the channel.
+    // They WERE two different faults: `0 - 5` reached the bridge un-reduced, so the guard
+    // `k > 0` compared a `Node` against an `Int64` and the callee died a TypeMismatch
+    // before it could raise. Since WI-20260926-K4JGC the goal's call is evaluated
+    // ARGUMENTS FIRST (068 §1.1): `0 - 5` is `-5` before the callee runs, and the callee
+    // raises the same `match_failed` the literal spelling raises — ONE fault, the true
+    // one. FAILS with K4JGC backed out: the fault is the type mismatch.
     let (sols, errors) = resolve(GUARD_EXHAUSTIBLE, "bru.guard.unreduced(?r)");
     assert!(
         sols.iter().all(|s| !s.is_definite()),
-        "an un-reduced operand still yields no definite answer"
+        "the raising call still yields no definite answer"
     );
     assert_eq!(errors.len(), 1, "one fault; got {errors:?}");
     assert!(
-        errors[0].contains("type mismatch"),
-        "the un-reduced operand is a TYPE MISMATCH inside the callee, not a raise; \
-         got: {}",
+        errors[0].contains("match_failed") && errors[0].contains("-5"),
+        "the operand is evaluated first, so the callee raises on `-5`; got: {}",
         errors[0]
     );
     assert!(
-        !errors[0].contains("match_failed"),
-        "and it must not be reported as the raise it is not; got: {}",
+        !errors[0].contains("type mismatch"),
+        "and no un-reduced `Node` reaches the callee; got: {}",
         errors[0]
     );
 }

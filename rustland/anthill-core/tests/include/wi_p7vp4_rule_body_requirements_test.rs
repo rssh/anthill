@@ -676,13 +676,17 @@ fn an_unground_slot_call_delays() {
 
 // ── Review fixes, round 2: each row drives one fix, and fails with it backed out ─────
 
-/// An UNPINNED body-less spec op in a VALUE slot is symbolic algebra — the term the rule wrote
-/// (kernel-language §5.3, "what the gate still declines") — so it gets no condition: `mk`
-/// binds `?s` to the written `Shape.circle(num(v: 1))`, not to `Num.circle`'s result, although
-/// `Num` provides `Shape`. (A call whose carrier is known at load is PINNED by the typer and
-/// dispatched — `?s <=> Shape.circle(num(v: 1))` binds `num(v: 9)` — and is no demand of the
-/// inference either way.) FAILS with `inferred_demand` admitting a body-less op in a value
-/// slot: the operand is woven and dispatched, and `?s` is `num(v: 9)`.
+/// An UNPINNED body-less spec op in a VALUE slot gets no condition from the inference: `mk`'s
+/// call is not woven. (A call whose carrier is known at load is PINNED by the typer and
+/// dispatched, and is no demand of the inference either way.) FAILS with `inferred_demand`
+/// admitting a body-less op in a value slot: the call is woven behind a `find_dictionary`.
+///
+/// What it EVALUATES TO changed with WI-20260926-K4JGC. It was the term the rule wrote —
+/// "symbolic algebra", kernel-language §5.3's "what the gate still declines" — and `?s` was
+/// `Shape.circle(num(v: 1))`. Proposal 068 §1 retired that reading: an operation application
+/// is a computation, and a body-less spec op at a ground carrier DISPATCHES by that carrier
+/// wherever it is written, so `?s` is `Num.circle`'s `num(v: 9)`. FAILS with K4JGC backed
+/// out: `?s` is the written term again.
 #[test]
 fn a_body_less_operand_stays_the_term_the_rule_wrote() {
     const PROGRAM: &str = r#"
@@ -705,10 +709,24 @@ namespace wip7vp4.symbolic
 end
 "#;
     let mut kb = crate::common::load_kb_with(PROGRAM);
-    let shown = crate::common::shown_rows(&mut kb, "wip7vp4.symbolic.mkOne");
-    assert!(
-        shown.len() == 1 && shown[0].1 && shown[0].0.contains("circle(num(v: 1))"),
-        "`?s` is the term `mk` wrote, not `Num.circle`'s `num(v: 9)`; got {shown:?}",
+    assert_eq!(
+        crate::common::body_calls(&kb, "wip7vp4.symbolic.mk"),
+        vec![
+            ("circle".to_string(), false, Vec::new()),
+            ("unify".to_string(), false, Vec::new()),
+        ],
+        "the body-less operand is not woven: no `find_dictionary` is inferred for it",
+    );
+    let rows = crate::common::query_unary(&mut kb, "wip7vp4.symbolic.mkOne");
+    let [(s, true)] = rows.as_slice() else {
+        panic!("one definite row; got {rows:?}");
+    };
+    let functor = crate::common::entity_functor(&kb, s).map(|f| kb.local_name_of(f).to_string());
+    let v = crate::common::entity_field(&kb, s, "v", 0);
+    assert_eq!(
+        (functor.as_deref(), crate::common::scalar_int(&kb, &v)),
+        (Some("num"), Some(9)),
+        "`?s` is `Num.circle`'s value `num(v: 9)`, dispatched by the ground carrier",
     );
 }
 

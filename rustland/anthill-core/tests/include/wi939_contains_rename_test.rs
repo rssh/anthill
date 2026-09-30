@@ -122,10 +122,15 @@ end
 }
 
 /// `Set.contains` is CLAUSE-defined (no body), and `Set` is an ABSTRACT typeclass —
-/// `empty` / `insert` have no runnable bodies, so its algebra lives in the SLD world
-/// over the symbolic `insert`/`empty` normal form, not in eval. Driving it through
-/// the interpreter fails `operation has no body: Set.empty`, which is the carrier
-/// being abstract and not a fault in the rename.
+/// `empty` / `insert` have no runnable bodies, so its algebra lived in the SLD world over
+/// the symbolic `insert`/`empty` normal form.
+///
+/// SINCE WI-20260926-K4JGC (proposal 068 §2.3) that normal form is UNREDUCED calls, not
+/// data: a goal argument is evaluated before its head is matched, `insert(…)` cannot run,
+/// and the goal is UNDECIDED — `yes` and `no` alike are one conditional row, neither
+/// answered nor refuted. The renamed clauses' composition is re-driven when
+/// WI-20260926-QCJ0B gives `Set` a route back. FAILS with K4JGC backed out: `yes` is
+/// definite and `no` empty.
 #[test]
 fn set_contains_answers_over_the_symbolic_algebra() {
     let src = r#"
@@ -137,23 +142,22 @@ namespace cr4
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
-    assert_eq!(
-        crate::common::definite_unary(&mut kb, "cr4.yes").len(),
-        1,
-        "2 IS in the set — the renamed clauses must still answer"
-    );
-    assert_eq!(
-        crate::common::definite_unary(&mut kb, "cr4.no").len(),
-        0,
-        "9 is NOT in the set — a predicate answering here would be vacuous"
-    );
+    for rel in ["cr4.yes", "cr4.no"] {
+        let rows = crate::common::query_unary(&mut kb, rel);
+        assert!(
+            rows.len() == 1 && !rows[0].1,
+            "{rel}: one UNDECIDED row over the symbolic algebra; got {rows:?}",
+        );
+    }
 }
 
 /// THE CONTROL FOR THE ALGEBRA: `Set.eq` is defined THROUGH `subset`, and `subset`'s
-/// clause calls `contains` — so this is what proves the renamed clauses still
-/// COMPOSE. Two spellings of one set must compare EQUAL (WI-616 extensional
-/// equality); had the `subset` clause's argument swap been wrong, this is where it
-/// would show and the row above would not.
+/// clause calls `contains` — so this was what proved the renamed clauses COMPOSE.
+///
+/// SINCE WI-20260926-K4JGC it is undecided in both directions, for the reason
+/// [`set_contains_answers_over_the_symbolic_algebra`] gives; the composition is re-driven
+/// with WI-20260926-QCJ0B. FAILS with K4JGC backed out: `same` is definite and
+/// `different` empty.
 #[test]
 fn set_equality_still_decides_by_membership() {
     let src = r#"
@@ -166,15 +170,11 @@ namespace cr5
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
-    assert_eq!(
-        crate::common::definite_unary(&mut kb, "cr5.same").len(),
-        1,
-        "two spellings of one set are EQUAL — extensional equality, which reaches \
-         `contains` through `subset`"
-    );
-    assert_eq!(
-        crate::common::definite_unary(&mut kb, "cr5.different").len(),
-        0,
-        "different sets are not equal"
-    );
+    for rel in ["cr5.same", "cr5.different"] {
+        let rows = crate::common::query_unary(&mut kb, rel);
+        assert!(
+            rows.len() == 1 && !rows[0].1,
+            "{rel}: one UNDECIDED row over the symbolic algebra; got {rows:?}",
+        );
+    }
 }

@@ -385,10 +385,12 @@ end
 ///
 /// "It loads" is not the evidence and neither is "the tag is present": this asserts
 /// the VALUE the law computes. The guard `lt(-1, 0)` is discharged by the ordinary
-/// `PartialOrd` builtin, which is why THIS law is the one driven — `nth_oob_hi`'s
-/// `gte(?i, length(?xs))` needs `IndexedSeq.length` to run on a bare spec-op term,
-/// which is WI-567's wall and is asserted as UNDISCHARGED below rather than assumed
-/// either way.
+/// `PartialOrd` builtin, which is why THIS law is the one driven. `nth_oob_hi`'s
+/// `gte(?i, length(?xs))` needed `IndexedSeq.length` to run on a bare spec-op term —
+/// WI-567's wall, asserted here as UNDISCHARGED until WI-20260926-K4JGC: a body-less spec
+/// op at a ground carrier now dispatches wherever it is written (proposal 068 §1), so
+/// `length(nil)` is `0` and `nth(nil, 0)` is out of bounds — `none`. FAILS with K4JGC
+/// backed out: `nth(nil, 0)` stays unrewritten.
 ///
 /// `IndexedSeq` declares no `requires`, so `equation_is_requires_guarded` is false for
 /// it and the resolver fires without needing a carrier that provides the spec — unlike
@@ -409,15 +411,29 @@ fn stdlib_indexed_seq_out_of_bounds_law_fires_to_a_value() {
         kb.get_term(out),
     );
 
-    // The guard direction, on the same law: index 0 refutes `lt(0, 0)`.
+    // `nth_oob_hi`, DISCHARGED: `gte(0, length(nil))` holds once `length(nil)` runs.
     let zero = int(&mut kb, 0);
-    let in_range = call(&mut kb, "anthill.prelude.IndexedSeq.nth", &[nil, zero]);
+    let past_end = call(&mut kb, "anthill.prelude.IndexedSeq.nth", &[nil, zero]);
+    let out = kb.simplify(past_end);
+    assert_eq!(
+        head_name(&kb, out),
+        "anthill.prelude.Option.none",
+        "`nth(nil, 0)` is past the end: `nth_oob_hi`'s guard `gte(0, length(nil))` is \
+         decided now that `length(nil)` runs; got {:?}",
+        kb.get_term(out),
+    );
+
+    // The guard direction, on both laws: index 0 of a ONE-element list refutes
+    // `lt(0, 0)` and `gte(0, length(cons(1, nil)))` alike, so nothing fires.
+    let one = int(&mut kb, 1);
+    let nil2 = call(&mut kb, "anthill.prelude.List.nil", &[]);
+    let single = call(&mut kb, "anthill.prelude.List.cons", &[one, nil2]);
+    let zero2 = int(&mut kb, 0);
+    let in_range = call(&mut kb, "anthill.prelude.IndexedSeq.nth", &[single, zero2]);
     assert_eq!(
         kb.simplify(in_range),
         in_range,
-        "`lt(0, 0)` is refuted, so `nth_oob_lo` must not fire — and `nth_oob_hi`'s \
-         `gte(0, length(nil))` is UNDISCHARGED on a bare spec-op term (WI-567), so \
-         nothing else fires here either",
+        "`nth(cons(1, nil), 0)` is in range: neither out-of-bounds law may fire",
     );
 }
 

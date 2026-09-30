@@ -1487,8 +1487,17 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
                             i.kb().local_name_of(target),
                             err.message
                         ),
-                        None => format!(
+                        // WI-20260926-K4JGC — say WHICH non-answer: a depth cut, or a
+                        // sub-proof that ended with a goal undischarged (an operand is a
+                        // call that did not run — `Set`'s `insert` chains since 068 §2.3 —
+                        // or a variable nothing binds). Both were "proof truncated".
+                        None if truncated => format!(
                             "semantic eq over `{}` could not be decided (proof truncated)",
+                            i.kb().local_name_of(target)
+                        ),
+                        None => format!(
+                            "semantic eq over `{}` could not be decided (its sub-proof left \
+                             a goal undischarged)",
                             i.kb().local_name_of(target)
                         ),
                     };

@@ -232,11 +232,13 @@ fn a_namespace_level_mapping_is_registered_and_reduces() {
 /// WHAT STILL DOES NOT REDUCE is the binding case, and it is a different question —
 /// [`an_unbound_right_hand_side_still_suspends`].
 ///
-/// TWO GUARDS, both measured across the fix and both UNMOVED, because widening
+/// TWO GUARDS, both measured across the fix and both UNMOVED by it, because widening
 /// reduction is exactly where a regression would hide: `:- Set.insert(Set.empty(), 1) =
-/// Set.insert(Set.empty(), 1)` still answers 1 AS DATA (the wi616 five — those callees
-/// are in no interpreter registry, so the recursion bails on them), and
-/// `Colour.isRed(?c) = String.contains("abc", "b")` is unchanged.
+/// Set.insert(Set.empty(), 1)`, and `Colour.isRed(?c) = String.contains("abc", "b")`.
+/// The first was 1 AS DATA; WI-20260926-K4JGC (proposal 068 §2.3) retired that reading on
+/// purpose — `Set.insert` is an UNREDUCED call, so the comparison is UNDECIDED, one
+/// conditional answer — and the guard now pins THAT, so a return to comparing the terms
+/// as data still shows.
 #[test]
 fn a_nested_host_call_reduces() {
     let mut kb = crate::common::load_kb_with(
@@ -273,10 +275,9 @@ end
          `none()`. A wrong value asserted, not a missing answer"
     );
     assert_eq!(
-        answers(&mut kb, "wi880.refl2.algebra(1)"),
-        1,
-        "THE GUARD: `Set.insert`/`Set.empty` are mapped in no interpreter registry, so \
-         the argument recursion bails and leaves them as DATA. Widening reduction \
-         without this row is how the wi616 five would break"
+        (answers(&mut kb, "wi880.refl2.algebra(1)"), total(&mut kb, "wi880.refl2.algebra(1)")),
+        (0, 1),
+        "THE GUARD: `Set.insert`/`Set.empty` have no implementation, so the comparison is \
+         UNDECIDED (068 §2.3, WI-20260926-K4JGC) — neither decided as data nor refuted"
     );
 }

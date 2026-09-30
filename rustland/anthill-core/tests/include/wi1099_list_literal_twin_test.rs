@@ -184,7 +184,12 @@ namespace wi1099.vocab
   import anthill.reflect.{Expr, occurrence_term}
   import anthill.reflect.Expr.{apply, constructor}
   import anthill.prelude.{Int64}
-  operation foo(x: Int64) -> Int64 = x
+  -- DATA, by declaration (WI-20260926-K4JGC): an OPERATION call written in a goal's
+  -- argument is evaluated before the head is matched (proposal 068 §1), so `foo(1)` would
+  -- reach `synth_twin` as `1`. A call is data only inside a quote (068 §1.3, WI-189).
+  sort Foo
+    entity foo(x: Int64)
+  end
 
   rule synth_twin(?e, 1)  :- occurrence_term(?e, foo(?x))
   rule synth_apply(?e, 1) :- occurrence_term(?e, apply(fn: ?f, args: ?a))
@@ -346,7 +351,9 @@ fn the_literal_wrapper_is_still_the_lenss_own() {
 }
 
 /// THE SCOPE BOUNDARY, DRIVEN — what the goal form matches is the TERM TWIN, and
-/// NOT the reflect-DATA vocabulary. MEASURED on one `foo(1)` occurrence: the twin
+/// NOT the reflect-DATA vocabulary. `foo` is an ENTITY since WI-20260926-K4JGC: as an
+/// operation, `foo(1)` in `synth_twin`'s argument is now its value (proposal 068 §1).
+/// MEASURED on one `foo(1)` occurrence: the twin
 /// spelling `foo(?x)` answers, while `apply(fn: ?f, args: ?a)` and
 /// `constructor(name: ?c, args: ?a)` — what `docs/proposals/typing_pass_spec.
 /// anthill`'s `synth` rules are written in — do not.

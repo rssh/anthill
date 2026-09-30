@@ -849,37 +849,28 @@ fn typed_op_body_eq_over_map_rejected_nested_set_loads() {
 fn typed_op_body_eq_over_set_evaluates_via_bridge() {
     // END-TO-END: the LOAD fix makes gaps 4/5/6 reachable via the TYPED path. The
     // op body's `eq(a, b)` dispatches to the carrier's rule-backed `Set.eq`, which
-    // the interpreter runs through the delivered eval→SLD semantic-eq bridge — so
-    // membership-equal sets compare EQUAL even though their `insert` spellings
-    // differ, and distinct-member sets compare UNEQUAL.
+    // the interpreter runs through the eval→SLD semantic-eq bridge.
+    //
+    // WI-20260926-K4JGC (proposal 068 §2.3): the bridge still RUNS — the typed dispatch
+    // reaches `Set.eq`'s rules — but those rules now meet the `insert` chains as UNREDUCED
+    // calls, so the comparison is undecided and the call is refused loudly, in both
+    // directions, rather than answering by membership. `Set`'s route back is
+    // WI-20260926-QCJ0B's. FAILS with K4JGC backed out: `Some(true)` / `Some(false)`.
     let kb = common::load_kb_with(TYPED_SET_EQ_SRC);
     let mut i = Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut i)
         .expect("register standard eval builtins");
-
-    let a = Value::term(set_term(i.kb_mut(), &[1, 2]));
-    let b = Value::term(set_term(i.kb_mut(), &[2, 1]));
-    let eq = i
-        .call("test.wi625.typedeq.setsEqual", &[a, b])
-        .expect("setsEqual({1,2},{2,1})")
-        .literal_bool(i.kb());
-    assert_eq!(
-        eq,
-        Some(true),
-        "membership-equal sets must be EQUAL through the typed op"
-    );
-
-    let c = Value::term(set_term(i.kb_mut(), &[1, 2]));
-    let d = Value::term(set_term(i.kb_mut(), &[1, 3]));
-    let neq = i
-        .call("test.wi625.typedeq.setsEqual", &[c, d])
-        .expect("setsEqual({1,2},{1,3})")
-        .literal_bool(i.kb());
-    assert_eq!(
-        neq,
-        Some(false),
-        "distinct-member sets must be UNEQUAL through the typed op"
-    );
+    for (x, y) in [(&[1, 2][..], &[2, 1][..]), (&[1, 2], &[1, 3])] {
+        let a = Value::term(set_term(i.kb_mut(), x));
+        let b = Value::term(set_term(i.kb_mut(), y));
+        match i.call("test.wi625.typedeq.setsEqual", &[a, b]) {
+            Err(e) => assert!(
+                format!("{e:?}").contains("could not be decided"),
+                "setsEqual({x:?}, {y:?}): an undecided comparison; got {e:?}",
+            ),
+            Ok(v) => panic!("setsEqual({x:?}, {y:?}) must not decide; got {v:?}"),
+        }
+    }
 }
 
 // ── WI-653: carrier-aware transitive `requires` coverage ──────────────────────

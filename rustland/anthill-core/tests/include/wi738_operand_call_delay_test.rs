@@ -23,6 +23,13 @@
 //! FLATTENING to the graph form `add(?x,?y,?z)`, which the 3-arg arithmetic
 //! builtin already binds (pinned below) — additive, and separate.
 //!
+//! SINCE WI-20260926-K4JGC THE OPERAND COMPUTES. Proposal 068 §1.1 evaluates every
+//! operand before a comparison reads it, and a value-returning builtin runs through
+//! its result column — the flattening above, done by the evaluator — so
+//! `eq(2, add(1, 1))` is now PROVED rather than delayed. The floor still stands for
+//! the call that CANNOT run yet: an operand holding an unbound argument delays, and
+//! nothing here decides a call as data.
+//!
 //! WHY THESE TESTS ARE RESOLVER-LEVEL. The floor's contract is about DEFINITENESS,
 //! which `isEmpty` cannot see: a delayed goal rotates, flounders, and yields a
 //! RESIDUAL solution, and the Relation drain currently materializes that residual
@@ -135,23 +142,25 @@ fn wi738_nested_builtin_under_neq_is_not_silently_proved() {
     );
 }
 
-/// The same root cause, opposite direction. `eq(2, add(1,1))` must not be proved
-/// either — not because 1+1 ≠ 2, but because `eq` cannot decide an unevaluated
-/// call and `=` never binds. Before the fix this was a definite REFUTATION (it
-/// compared 2 against the term `add(1,1)`); now it delays.
-///
-/// Pinned as "not proved" rather than "proved": the floor's contract is that the
-/// goal stops DECIDING, and computing it is the separate flattening step.
+/// The same root cause, opposite direction. Before WI-738 `eq(2, add(1,1))` was a
+/// definite REFUTATION (it compared 2 against the term `add(1,1)`); WI-738's floor made
+/// it delay — the goal stopped DECIDING. WI-20260926-K4JGC makes it COMPUTE: the operand
+/// is evaluated (proposal 068 §1.1), `1 + 1` is `2`, and the goal is PROVED — and
+/// `eq(3, add(1, 1))` is refuted, definitely, by the value rather than by the term.
+/// FAILS with K4JGC backed out: `doubled(1, 2)` has no definite solution (the floor's
+/// delay), which is what this row pinned before.
 #[test]
-fn wi738_nested_builtin_under_eq_is_not_silently_decided() {
+fn wi738_nested_builtin_under_eq_is_computed() {
     let mut kb = load_kb();
     let sols = definite_solutions(&mut kb, "wi738.operand.doubled", &[1, 2]);
-    assert!(
-        sols.is_empty(),
-        "eq(?y, add(?x,?x)) cannot be decided by comparing against the unevaluated \
-         term add(1,1) — it must delay. Got {} definite solution(s).",
+    assert_eq!(
         sols.len(),
+        1,
+        "eq(?y, add(?x,?x)) at x = 1, y = 2: the operand evaluates to 2 and the goal is \
+         proved",
     );
+    let sols = definite_solutions(&mut kb, "wi738.operand.doubled", &[1, 3]);
+    assert!(sols.is_empty(), "at y = 3 the value 2 refutes it");
 }
 
 /// THE LINE THE FIX MUST NOT CROSS. A data constructor is NOT a call: `some(?x)`

@@ -112,22 +112,17 @@ fn a_host_backed_bool_op_reduces_at_an_operand() {
     }
 }
 
-/// THE CONTROL THAT SAYS THE GATE IS NOT "DISPATCH BODY-LESS OPS TOO".
+/// THE SYMBOLIC-ALGEBRA ROW, RE-READ BY WI-20260926-K4JGC.
 ///
-/// `reduce_op_value`'s `dispatch_body_less` flag protects SYMBOLIC ALGEBRA: an
-/// operand is a term a RULE WROTE, and a body-less spec op there may be data rather
-/// than a computation. `anthill.prelude.Set`'s `insert` / `empty` are the named
-/// case — parametric parent, no body, a real signature, and the terms the membership
-/// rules resolve over; reducing them would destroy the data (the five wi616
-/// regressions `is_unreduced_op_call` records, through the other door).
-///
-/// The host arm cannot reach them: `Set` has no `operation_map` and no hardcoded
-/// registration, so `is_interpreter_mapped_op` answers FALSE and the flag's own arm
-/// still owns every op it owned before.
-///
-/// PASSES EITHER WAY BY DESIGN — that is the point of a control. It is here to fail
-/// if a future widening replaces the predicate with "body-less", which is the one
-/// change that would look like a simplification and would silently reduce data.
+/// It was the control that said the host gate is not "dispatch body-less ops too":
+/// `reduce_op_value`'s `dispatch_body_less` flag kept `anthill.prelude.Set`'s `insert` /
+/// `empty` as DATA at an operand, and two identical spellings compared equal. Proposal 068
+/// §2.3 retired that reading on purpose: an operation application is a computation, the
+/// flag is on for every evaluated call, and `Set.insert` — no body, no host mapping, no
+/// provider — is an UNREDUCED call, so both comparisons are UNDECIDED. The row pins that,
+/// so a return to comparing the terms as data (or a refutation) still shows; `Set`'s route
+/// back is WI-20260926-QCJ0B's. FAILS with K4JGC backed out: `same` holds, `diff` is
+/// refuted.
 #[test]
 fn symbolic_algebra_at_an_operand_is_still_left_as_data() {
     let mut kb = crate::common::load_kb_with(
@@ -135,17 +130,14 @@ fn symbolic_algebra_at_an_operand_is_still_left_as_data() {
          rule same(1) :- Set.insert(Set.empty(), 1) = Set.insert(Set.empty(), 1)\n  \
          rule diff(1) :- Set.insert(Set.empty(), 1) = Set.insert(Set.empty(), 2)\nend\n",
     );
-    assert_eq!(
-        answers(&mut kb, "vpewkb.same(1)"),
-        1,
-        "two structurally identical `Set.insert` terms are EQUAL AS DATA — the \
-         operand path must not dispatch them"
-    );
-    assert_eq!(
-        answers(&mut kb, "vpewkb.diff(1)"),
-        0,
-        "…and different data is not equal: the row above is not vacuous"
-    );
+    for rel in ["vpewkb.same", "vpewkb.diff"] {
+        let rows = crate::common::query_unary(&mut kb, rel);
+        assert!(
+            rows.len() == 1 && !rows[0].1,
+            "{rel}: one UNDECIDED row — an unreduced call is neither equal nor unequal; \
+             got {rows:?}",
+        );
+    }
 }
 
 /// THE ROUTE J38JE OPENED, NOW REACHABLE. `String.contains` is `operation_map`ped
