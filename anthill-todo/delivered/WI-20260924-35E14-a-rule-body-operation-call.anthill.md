@@ -3,9 +3,9 @@
 - id: WI-20260924-35E14-a-rule-body-operation-call
 - created: 2026-09-24T15:53:12Z
 
-- status: Open
+- status: Delivered
 - status_agent: user
-- status_at: 2026-09-24T15:53:12Z
+- status_at: 2026-09-30T20:00:38Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -38,4 +38,8 @@ DEPENDS ON PROPOSAL 068 (WI-20260926-ACG10), decided in review 2026-09-26. Same 
 ### 2026-09-29T06:46:18Z — feedback — user
 
 NARROWED (user, 2026-09-29, 068-implementation D6). RE-MEASURED on main at 2b6cac2c: for a SPEC operation this is FIXED by P7VP4's weaving — rule late(x: Colour) :- Score.score(x, 3) answers blue, and rule unbound(?r) :- Score.score(?v, ?r) is a conditional answer carrying find_dictionary(...), unify(?_, score(?_)). For an ordinary BODIED operation, which P7VP4 does not weave, it is NOT: with operation score(x: Colour) -> Int64 = match x ... declared in sort Colour, rule late(x: Colour) :- Colour.score(x, 3) and rule unbound(?r) :- Colour.score(?v, ?r) answer NO SOLUTIONS, silently, while rule lateEq(x: Colour) :- Colour.score(x) = 3 answers blue. This ticket's population is that functional-relation form of a bodied operation with an unbound argument; WI-20260926-CYNPE (the WI-938 hook's unbound-argument decline becomes SUSPENDED) fixes it.
+
+### 2026-09-30T20:00:17Z — feedback — user
+
+DELIVERED with WI-20260926-CYNPE in 049118a8 (2026-09-30). The WI-938 hook no longer sends a call that did not run to candidate selection: a SUSPENDED call delays its goal and is asked again once its argument is bound. rule late(x: Colour) :- Colour.score(x, 3) answers blue, definite; rule unbound(?r) :- Colour.score(?v, ?r) answers one CONDITIONAL row carrying the call. Driven in wi_cynpe_waiting_goals_test (a_bodied_call_waits_for_its_argument, a_call_that_never_gets_its_argument_is_a_conditional_answer; controls early / lateEq). scaland has no functional-relation view or eval bridge, so nothing there changes; kernel-language §5.3's fall-through sentence is replaced.
 

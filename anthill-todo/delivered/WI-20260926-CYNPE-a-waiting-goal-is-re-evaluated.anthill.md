@@ -3,9 +3,9 @@
 - id: WI-20260926-CYNPE-a-waiting-goal-is-re-evaluated
 - created: 2026-09-26T09:48:10Z
 
-- status: Open
+- status: Delivered
 - status_agent: user
-- status_at: 2026-09-26T09:48:10Z
+- status_at: 2026-09-30T19:59:56Z
 
 - acceptance: cargo-test
 
@@ -28,4 +28,8 @@ ACCEPTANCE (cargo-test via rustland/scripts/test.sh; every row driven, back-out 
 ### 2026-09-26T13:26:23Z — feedback — user
 
 ROW ADDED FROM THE PRVA2 REVIEW (filed on ACG10 2026-09-26): a rule-body call value dispatch cannot evaluate answers NOTHING, silently — Conv.tag(b: B) has no argument at Conv's carrier parameter A, so ?s <=> "km", Conv.tag(?s, ?r) answers no solutions (the operation-body twin fails at run time, 'operation has no body'); with require[Conv[A = Meters, B = String]] it answers 3. The 35E14 class. Whatever reaches run time here is UNREDUCED or SUSPENDED under 068 §2 — a named undecided residual, never an empty answer; the load-time half (060 §3's anchor rule) is WI-20260926-7D48J's. Joins the acceptance, driven.
+
+### 2026-09-30T19:59:34Z — feedback — user
+
+DELIVERED in 049118a8 (2026-09-30). Frame goals carry their wait state (FrameGoal { goal, wait }, Wait::{Ready, Suspended { blockers, cause }, Parked}), frame-local; ResolverFrame::undecided removed (the gate reads causes off waits). Blockers are D1's coarse ones, computed where the goal waits (BuiltinResult::Delay gains none); a waiting goal whose blockers are unbound is PASSED OVER on its turn, counting toward the gate. UNREDUCED parks unless a call in its arguments still waits on a variable (ABSENT outranks UNREDUCED — found by /code-review: div(1, ?z) = Conv.tag("km"), ?z later 0, must refute). Universal-undecided and faults wait on blockers with their cause. The WI-938 hook answers a stuck call with its state on the goal as written (SUSPENDED/SYMBOLIC delay, UNREDUCED undecided, ABSENT fails) instead of candidate selection; a hypothesis in scope (forall_impl antecedent, Γ fact) still answers it — found by probe, the old fall-through let (forall(?c), score(?c, 3) -: score(?c, 3)) answer 1. Rows: 35E14's late -> blue, unbound -> conditional carrying the call; Conv.tag(?s, ?r) -> UNDECIDED naming Unreduced; a suspended goal asked once among progressing siblings (4 before, counted by ResolveStats::goals_asked); a parked goal behind a failing sibling -> 0 definitely. Supplier TIE: refused at load where the typer sees the carrier; at run time (NAR1X's carrier-less no-require row, two providers) UNREDUCED. Controls: wi519, classic-mini unchanged. Five rows that pinned the silent empty answer now pin UNDECIDED (nar1x, s8cbv, 96ztm, wi1043, anthill-stl exhaustion row). Spec: kernel-language §5.3/§8.3 (user-approved); design 068-implementation §4.1. Recorded, not changed: a recursive clause relying on a stuck call's failure now recurses to max_depth (TRUNCATED instead of a wrong complete 0). Workspace green: 7864 passed.
 
