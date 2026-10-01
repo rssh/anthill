@@ -2203,20 +2203,39 @@ fn prove_args_for_check(args: &CheckArgs) -> ProveArgs {
 /// a structural `Value::Entity`/`Tuple`. Reading it "as a term" (`rule_head`, or
 /// narrowing a binding to `Value::Term`) panics on a value head and drops `Node`
 /// bindings, so the query output reads the `Value` and renders each carrier here.
+///
+/// A LITERAL is read and written carrier-neutrally, before any carrier is named
+/// (WI-20260907-VM9Q7): `TermView::as_literal` answers the same `Literal` for a native
+/// scalar, a `Value::Term` over `Term::Const` and a `Const` occurrence, and
+/// `write_literal` is the surface spelling `TermPrinter` and the load diagnostics
+/// already share. This used to have per-carrier arms, and the native ones had their
+/// own spellings, so one answer printed two ways depending on its carrier. Per
+/// `Literal` variant, the native arms against `write_literal`:
+///
+///   * `Float` — DIFFERED: `f.to_string()` drops the decimal point, so
+///     `rule r(?x) :- ?x <=> 3.0` printed `?x = 3` while the fact spelling
+///     `code(n: ?x)` over `fact code(n: 3.0)` printed `3.0`;
+///   * `String` — DIFFERED: `{:?}` is Rust's escaping, not anthill's, and the
+///     hash-consed twin wrote a control character RAW — so a fact holding ESC put a
+///     live terminal sequence on stdout. Both now go through `write_anthill_string`,
+///     which spells a control character `\u{…}`, an escape the lexer reads back
+///     (spec §2.4, added for this);
+///   * `Int`, `BigInt`, `Bool` — agreed, same text either way.
 fn render_value(
     printer: &TermPrinter<'_, KnowledgeBase>,
     kb: &KnowledgeBase,
     v: &anthill_core::eval::Value,
 ) -> String {
     use anthill_core::eval::Value;
+    use anthill_core::kb::term_view::TermView;
+    if let Some(lit) = v.as_literal(kb) {
+        let mut buf = String::new();
+        anthill_core::persistence::print::write_literal(&lit, &mut buf);
+        return buf;
+    }
     match v {
         Value::Term { id: t, .. } => printer.print_term(*t),
         Value::Node(occ) => printer.print_occurrence(occ),
-        Value::Int(n) => n.to_string(),
-        Value::BigInt(n) => n.to_string(),
-        Value::Float(f) => f.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Str(s) => format!("{s:?}"),
         Value::Entity {
             functor,
             pos,

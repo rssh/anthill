@@ -1897,3 +1897,5 @@ mod wi_acg10_census_test;
 mod wi_k4jgc_evaluation_strategy_test;
 #[path = "include/wi_cynpe_waiting_goals_test.rs"]
 mod wi_cynpe_waiting_goals_test;
+#[path = "include/wi_vm9q7_string_escape_test.rs"]
+mod wi_vm9q7_string_escape_test;

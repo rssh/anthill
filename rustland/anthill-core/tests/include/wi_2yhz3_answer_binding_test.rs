@@ -110,12 +110,12 @@ fn one_answer(kb: &mut KnowledgeBase, name: &str) -> (VarId, anthill_core::kb::r
 /// what the broken reader produces.
 ///
 /// Read through `TermView`, which is the point rather than a convenience.
-/// `answer_binding` is CARRIER-FAITHFUL by contract (WI-348), and a rule body's
-/// atoms ride as occurrences (WI-246) — so `?x <=> 6` binds `?x` to a
-/// `Value::Node` carrying `6`, while `B(v: ?x)` binds a hash-consed
-/// `Value::Term`. Both are the same answer; a carrier-specific read would make
-/// this suite pass for one path and fail for the other for reasons that have
-/// nothing to do with what it is measuring.
+/// Which carrier `answer_binding` hands out is not this suite's subject, and it has
+/// moved under it: a rule body's atoms ride as occurrences (WI-246), so `?x <=> 6`
+/// bound `?x` to a `Value::Node` carrying `6` while `B(v: ?x)` bound a hash-consed
+/// `Value::Term` — and since WI-20260904-EMVCB / WI-20260907-VM9Q7 both fold to the
+/// native `Value::Int(6)`. A carrier-specific read would make this suite pass or fail
+/// for reasons that have nothing to do with what it is measuring.
 fn as_int(kb: &KnowledgeBase, v: &Value) -> Option<i64> {
     match v.head(kb) {
         ViewHead::Const(Literal::Int(n)) => Some(n),

@@ -1526,14 +1526,92 @@ end
       case other => fail(s"expected StringLit, got $other")
   }
 
-  test("string escapes: `\\n` `\\t` `\\\\` decode, an unknown escape passes through") {
-    val (pf, term) = factTerm("""fact F(x: "a\nb\tc\\d\qe")""")
+  test("string escapes: `\\n` `\\t` `\\\\` decode") {
+    val (pf, term) = factTerm("""fact F(x: "a\nb\tc\\d")""")
     val named = term match
       case fn: Term.Fn => fn.namedArgs.head._2
       case other => fail(s"expected Fn, got $other")
     pf.terms.get(named) match
-      case Term.Const(Literal.StringLit(s)) => assertEquals(s, "a\nb\tc\\dqe")
+      case Term.Const(Literal.StringLit(s)) => assertEquals(s, "a\nb\tc\\d")
       case other => fail(s"expected StringLit, got $other")
+  }
+
+  /** WI-20260907-VM9Q7 (spec §2.4): `\u{HEX}` names a character by code point. Mirrors
+    * rustland's `wi_vm9q7_string_escape_test`. Fails on the pass-through decoder, which
+    * read `"\u{1b}"` as `"u{1b}"`. */
+  test("string escapes: `\\u{HEX}` reads the character it names") {
+    for (lit, want) <- Seq(
+        ("\"a\\u{1b}b\"", "a\u001bb"),
+        ("\"\\u{0}\"", "\u0000"),
+        ("\"\\u{1F600}\"", "\uD83D\uDE00"),
+        ("\"\\u{7F}\\u{7f}\"", "\u007f\u007f"))
+    do
+      val (pf, term) = factTerm(s"fact F(x: $lit)")
+      val named = term match
+        case fn: Term.Fn => fn.namedArgs.head._2
+        case other => fail(s"expected Fn, got $other")
+      pf.terms.get(named) match
+        case Term.Const(Literal.StringLit(s)) => assertEquals(s, want, lit)
+        case other => fail(s"expected StringLit, got $other")
+  }
+
+  /** WI-20260907-VM9Q7: every escape the language does not define is a PARSE error,
+    * located at the literal — it used to pass its trailing char through, so `"\q"` read
+    * as `"q"` with nothing said. Fails on the pass-through decoder. */
+  test("string escapes: an unknown or malformed escape is refused at its literal") {
+    for (lit, needle) <- Seq(
+        ("\"a\\qb\"", "unknown escape `\\q`"),
+        ("\"\\x1b\"", "unknown escape `\\x`"),
+        ("\"\\u1b\"", "malformed `\\u` escape"),
+        ("\"\\u{}\"", "malformed `\\u` escape"),
+        ("\"\\u{1234567}\"", "malformed `\\u` escape"),
+        ("\"\\u{+1b}\"", "malformed `\\u` escape"),
+        ("\"\\u{1b\"", "malformed `\\u` escape"),
+        ("\"\\u{d800}\"", "not a Unicode scalar value"),
+        ("\"\\u{110000}\"", "not a Unicode scalar value"))
+    do
+      val src = s"fact F(x: $lit)"
+      Parser.parse(src, "<fact>") match
+        case Right(_) => fail(s"$lit must be refused; it parsed clean")
+        case Left(errs) =>
+          val hit = errs.find(_.message.contains(needle))
+            .getOrElse(fail(s"$lit: expected `$needle`, got ${errs.map(_.message)}"))
+          assertEquals(src.substring(hit.span.start, hit.span.end), lit, s"$lit: located AT the literal")
+          assertEquals(errs.count(_.message.contains(needle)), 1, s"$lit: reported once")
+  }
+
+  /** WI-20260907-VM9Q7: the encoder and decoder are one contract — whatever
+    * `encodeStringLiteral` prints, `decodeStringEscapes` reads back, and no control
+    * character is ever printed raw. Mirrors rustland's
+    * `printed_text_reads_back_as_the_string`. Fails, measured, when
+    * `encodeStringLiteral`'s control-character arm is backed out. */
+  test("string escapes: printed text reads back as the string") {
+    for original <- Seq(
+        "plain",
+        "quote \" and backslash \\",
+        "newline \n return \r tab \t",
+        "ESC \u001b[31mred\u001b[0m",
+        "NUL \u0000 BEL \u0007 DEL \u007f",
+        "C1 NEL \u0085 CSI \u009b",
+        "non-ASCII \u00e9 \u2713 \uD83D\uDE00",
+        "a literal \\u{1b} stays text")
+    do
+      val lit = Tokens.encodeStringLiteral(original)
+      assert(!lit.exists(Character.isISOControl), s"no raw control character in $lit")
+      assertEquals(Tokens.decodeStringEscapes(lit.substring(1, lit.length - 1)), Right(original), lit)
+  }
+
+  /** WI-20260907-VM9Q7: a Float prints as rustland's `write_literal` prints it — the IEEE
+    * specials by their const names, a finite value in plain decimal. Fails, measured,
+    * when the three special arms are backed out. */
+  test("float surface: specials by name, finite values in plain decimal") {
+    for (d, want) <- Seq(
+        (3.0, "3.0"), (3.14, "3.14"), (0.1, "0.1"), (1e20, "100000000000000000000.0"),
+        (1e-7, "0.0000001"), (0.0, "0.0"), (-0.0, "-0.0"), (-2.5, "-2.5"),
+        (Double.PositiveInfinity, "Float.infinity"),
+        (Double.NegativeInfinity, "Float.negativeInfinity"),
+        (Double.NaN, "Float.nan"))
+    do assertEquals(Tokens.floatSurface(d), want, d.toString)
   }
 
   test("string escapes: an ordinary literal is unchanged") {

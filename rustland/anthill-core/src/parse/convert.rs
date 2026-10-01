@@ -355,6 +355,16 @@ impl<'a> Converter<'a> {
         self.errors.push(ParseError::new(msg, span));
     }
 
+    /// The string a `string_literal` node denotes, a malformed escape reported AT the
+    /// node ([`decode_string_lit`]). The empty string stands in only so conversion can
+    /// go on collecting errors; the recorded error fails the parse, so it is never read.
+    fn string_lit(&mut self, node: Node) -> String {
+        decode_string_lit(self.text(node)).unwrap_or_else(|msg| {
+            self.err(msg, node);
+            String::new()
+        })
+    }
+
     /// WI-446: dangling-`case` attachment hazard. The grammar attaches a
     /// trailing `case` arm to the innermost open `match` (`match_expr` is
     /// `prec.right(repeat1(match_branch))`, with no indentation awareness),
@@ -1057,7 +1067,7 @@ impl<'a> Converter<'a> {
         let span = self.span(node);
         match node.kind() {
             "string_literal" => {
-                let term = Term::Const(Literal::String(decode_string_lit(self.text(node))));
+                let term = Term::Const(Literal::String(self.string_lit(node)));
                 results.push(self.terms.alloc(term, span));
             }
             "integer_literal" => {
@@ -5465,7 +5475,7 @@ impl<'a> Converter<'a> {
     /// literals, name references, and nested tactic applications.
     fn convert_tactic_term_node(&mut self, node: Node) -> Option<TacticArgValue> {
         match node.kind() {
-            "string_literal" => Some(TacticArgValue::String(decode_string_lit(self.text(node)))),
+            "string_literal" => Some(TacticArgValue::String(self.string_lit(node))),
             "integer_literal" => self.text(node).parse::<i64>().ok().map(TacticArgValue::Int),
             "boolean_literal" => Some(TacticArgValue::Bool(self.text(node) == "true")),
             "identifier" => {
@@ -5514,7 +5524,7 @@ impl<'a> Converter<'a> {
                     continue;
                 }
                 if child.kind() == "string_literal" {
-                    return Some(Tactic::Raw(decode_string_lit(self.text(child))));
+                    return Some(Tactic::Raw(self.string_lit(child)));
                 }
             }
             return None;
@@ -5569,8 +5579,7 @@ impl<'a> Converter<'a> {
         }
         // Query case: string_literal field named "query"
         if let Some(q_node) = self.field(proof_node, "query") {
-            let raw = self.text(q_node);
-            let text = decode_string_lit(raw);
+            let text = self.string_lit(q_node);
             let mapping = self
                 .field(proof_node, "mapping")
                 .map(|n| self.convert_mapping_block(n));
@@ -5673,13 +5682,11 @@ impl<'a> Converter<'a> {
             .field(node, "source")
             .map(|n| self.convert_name(n))
             .unwrap_or_else(|| Name::simple(self.intern("?"), self.span(node)));
-        let target = self
-            .field(node, "target")
-            .map(|n| match n.kind() {
-                "string_literal" => decode_string_lit(self.text(n)),
-                _ => self.text(n).to_string(),
-            })
-            .unwrap_or_default();
+        let target = match self.field(node, "target") {
+            Some(n) if n.kind() == "string_literal" => self.string_lit(n),
+            Some(n) => self.text(n).to_string(),
+            None => String::new(),
+        };
         MappingEntry { source, target }
     }
 
@@ -5800,7 +5807,7 @@ impl<'a> Converter<'a> {
                 }
                 "artifact_clause" => {
                     if let Some(p) = self.field(child, "path") {
-                        items.push(ProvidesItem::Artifact(decode_string_lit(self.text(p))));
+                        items.push(ProvidesItem::Artifact(self.string_lit(p)));
                     }
                 }
                 "carrier_clause" => {
@@ -6097,7 +6104,8 @@ fn strip_description_delimiters(raw: &str) -> String {
 }
 
 /// Strip surrounding quotes from a `string_literal` token and decode escapes.
-fn decode_string_lit(raw: &str) -> String {
+/// `Err` names the first malformed escape (see [`decode_string_escapes`]).
+fn decode_string_lit(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     let inner = if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
         &trimmed[1..trimmed.len() - 1]
@@ -6107,31 +6115,66 @@ fn decode_string_lit(raw: &str) -> String {
     if inner.contains('\\') {
         decode_string_escapes(inner)
     } else {
-        inner.to_string()
+        Ok(inner.to_string())
     }
 }
 
-/// Decode the `\\.`-style escape sequences the grammar accepts inside
-/// string literals. The matching encoder is `persistence::print`'s
-/// String case (\" \\ \n \r \t). Unknown escapes pass the trailing
-/// char through; a lone trailing backslash is kept literal.
-fn decode_string_escapes(inner: &str) -> String {
+/// Decode the escape sequences of a string literal (spec §2.4): `\"` `\\` `\n` `\r`
+/// `\t`, and `\u{HEX}` — one to six hex digits naming a Unicode scalar value. The
+/// matching encoder is `persistence::print::write_anthill_string`, which spells every
+/// control character other than the three named ones as `\u{…}`, so printed text reads
+/// back as the string it printed.
+///
+/// ANY OTHER ESCAPE IS AN ERROR (WI-20260907-VM9Q7). It used to pass the trailing char
+/// through — `"\u{1b}"` read as `"u{1b}"`, silently a different string — and a lone
+/// trailing backslash was kept literal. Both were a malformed literal read as a
+/// well-formed one.
+fn decode_string_escapes(inner: &str) -> Result<String, String> {
+    const KNOWN: &str = "the escapes are \\\" \\\\ \\n \\r \\t \\u{HEX}";
     let mut decoded = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('"') => decoded.push('"'),
-                Some('\\') => decoded.push('\\'),
-                Some('n') => decoded.push('\n'),
-                Some('r') => decoded.push('\r'),
-                Some('t') => decoded.push('\t'),
-                Some(other) => decoded.push(other),
-                None => decoded.push('\\'),
-            }
-        } else {
+        if c != '\\' {
             decoded.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => decoded.push('"'),
+            Some('\\') => decoded.push('\\'),
+            Some('n') => decoded.push('\n'),
+            Some('r') => decoded.push('\r'),
+            Some('t') => decoded.push('\t'),
+            Some('u') => {
+                let rest = chars.as_str();
+                let hex = rest
+                    .strip_prefix('{')
+                    .and_then(|r| r.split_once('}'))
+                    .map(|(hex, _)| hex)
+                    // Digits checked here, not left to `from_str_radix`: it takes a
+                    // leading `+`, so `\u{+1b}` would read as ESC.
+                    .filter(|hex| {
+                        (1..=6).contains(&hex.len()) && hex.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+                    .ok_or_else(|| {
+                        format!("malformed `\\u` escape in string literal: expected `\\u{{HEX}}` with 1 to 6 hex digits; {KNOWN}")
+                    })?;
+                let ch = u32::from_str_radix(hex, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .ok_or_else(|| {
+                        format!("`\\u{{{hex}}}` in string literal is not a Unicode scalar value")
+                    })?;
+                decoded.push(ch);
+                // Past `{`, the digits and `}`.
+                chars = rest[hex.len() + 2..].chars();
+            }
+            Some(other) => {
+                return Err(format!(
+                    "unknown escape `\\{other}` in string literal; {KNOWN}"
+                ))
+            }
+            None => return Err(format!("string literal ends in a lone `\\`; {KNOWN}")),
         }
     }
-    decoded
+    Ok(decoded)
 }

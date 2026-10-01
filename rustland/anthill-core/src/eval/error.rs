@@ -637,15 +637,6 @@ pub fn render_raised_payload(kb: &crate::kb::KnowledgeBase, v: &Value) -> String
 fn render_payload_at(kb: &crate::kb::KnowledgeBase, v: &Value, depth: usize) -> String {
     const MAX_DEPTH: usize = 6;
     match v {
-        // A bare top-level Str (store-I/O raises these) prints verbatim, as it
-        // did before; a Str nested in an entity field is quoted so the field
-        // reads as a string literal (`op: "Int64.div"`).
-        Value::Str(s) if depth == 0 => s.clone(),
-        Value::Str(s) => format!("{s:?}"),
-        Value::Int(n) => n.to_string(),
-        Value::BigInt(n) => n.to_string(),
-        Value::Float(x) => x.to_string(),
-        Value::Bool(b) => b.to_string(),
         Value::Unit => "()".to_string(),
         Value::Entity {
             functor,
@@ -680,9 +671,10 @@ fn render_payload_at(kb: &crate::kb::KnowledgeBase, v: &Value, depth: usize) -> 
         // which is how the rest of the codebase reads a value whose carrier it does not
         // care about.
         //
-        // The arms above are NOT rewritten to go through the view: `Value::Str`'s
-        // depth-0 spelling is a decision about the payload, not about the carrier, and
-        // a view head would flatten it.
+        // A LITERAL comes here too, on every carrier — native scalars included
+        // (WI-20260907-VM9Q7). They had arms of their own above, mirroring
+        // `render_literal_at` by hand; the depth-0 `String` spelling those arms were
+        // kept for lives in `render_literal_at`, which takes the depth.
         other => {
             use crate::kb::term_view::{TermView, ViewHead};
             match other.head(kb) {
@@ -725,18 +717,22 @@ fn render_payload_at(kb: &crate::kb::KnowledgeBase, v: &Value, depth: usize) -> 
     }
 }
 
-/// A literal read off a [`crate::kb::term_view::ViewHead`], spelled exactly as the
-/// `Value` arms above spell the same thing — so `div(1, 0)`'s operands print the same
-/// whether they reached the payload boxed or hash-consed.
+/// A literal in a payload, on whatever carrier it arrived — so `div(1, 0)`'s operands
+/// print the same whether they reached the payload boxed or hash-consed.
+///
+/// A bare top-level `String` prints VERBATIM (store-I/O raises these, and they are the
+/// message); every other literal is spelled by `write_literal`, the one surface
+/// spelling the CLI's answer printer and `TermPrinter` share (WI-20260907-VM9Q7). This
+/// used to be a copy of its own — `Float` through `Display`, so `f(v: 3.0)` printed
+/// `f(v: 3)`, and a nested `String` through Rust's `{:?}`.
 fn render_literal_at(lit: &crate::kb::term::Literal, depth: usize) -> String {
-    use crate::kb::term::Literal;
     match lit {
-        Literal::String(s) if depth == 0 => s.clone(),
-        Literal::String(s) => format!("{s:?}"),
-        Literal::Int(n) => n.to_string(),
-        Literal::BigInt(n) => n.to_string(),
-        Literal::Float(x) => x.to_string(),
-        Literal::Bool(b) => b.to_string(),
+        crate::kb::term::Literal::String(s) if depth == 0 => s.clone(),
+        other => {
+            let mut buf = String::new();
+            crate::persistence::print::write_literal(other, &mut buf);
+            buf
+        }
     }
 }
 

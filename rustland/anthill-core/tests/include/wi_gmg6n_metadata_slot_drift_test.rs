@@ -105,9 +105,10 @@ fn subject_kb() -> KnowledgeBase {
 
 /// The `TermId` a solution carries.
 ///
-/// A loader-emitted reflect field rides as a HASH-CONSED `Value::Term`, not as the
-/// entity carrier `common::list_heads` / `Value::Str` expect — so these assertions walk
-/// term-side. LOUD on any other carrier: a lenient fallback would turn a carrier change
+/// A loader-emitted COMPOUND reflect field (a cons-list of names) rides as a
+/// HASH-CONSED `Value::Term`, not as the entity carrier `common::list_heads` expects —
+/// so these assertions walk term-side. A LITERAL field does not: it answers on its
+/// native carrier, read by [`string_in`]. LOUD on any other carrier: a lenient fallback would turn a carrier change
 /// into a mysteriously-failing (or worse, vacuously passing) assertion.
 fn term_of(v: &Value) -> anthill_core::kb::term::TermId {
     match v {
@@ -128,12 +129,11 @@ fn names_in(kb: &KnowledgeBase, v: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The `String` literal a term-carried field holds.
+/// The `String` a field denotes, on whatever carrier it rides. Not through
+/// [`term_of`]: an answered literal folds to its native carrier (WI-20260907-VM9Q7), so
+/// only the compound fields above are still term-side.
 fn string_in(kb: &KnowledgeBase, v: &Value) -> String {
-    match kb.get_term(term_of(v)) {
-        Term::Const(anthill_core::kb::term::Literal::String(s)) => s.clone(),
-        other => panic!("expected a String literal term, got {other:?}"),
-    }
+    crate::common::scalar_str(kb, v).unwrap_or_else(|| panic!("expected a String, got {v:?}"))
 }
 
 #[test]

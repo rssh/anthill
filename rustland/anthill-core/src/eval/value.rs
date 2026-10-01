@@ -460,7 +460,7 @@ impl Value {
     /// Total, and deliberately so: every `Literal` variant has an unboxed `Value`
     /// twin, which is what lets a `Const` head be folded to a value without asking
     /// whether it can be. `eval::Interpreter::literal_to_value` and
-    /// `KnowledgeBase::fold_const_occurrences` both read it here rather than re-listing
+    /// `KnowledgeBase::fold_literals` both read it here rather than re-listing
     /// the five arms — a second copy is how the two would drift. (NOT `reify_value`,
     /// which deliberately has no `Const` fold: it is shared with the ACCEPT side and
     /// its own site argues at length that it must not have one.)

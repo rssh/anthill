@@ -244,6 +244,38 @@ fn make_fn_still_resolves_a_qualified_functor() {
     );
 }
 
+/// WI-20260907-VM9Q7 — an element on the NATIVE carrier builds the same term its
+/// `Term::Const` twin does. An answered literal folds to its native scalar, so a value
+/// read back through `Substitution.lookup` (or a relation column) and handed on to
+/// `make_fn` is a `Value::Str`, not the hash-consed `Term::Const` it used to be. Fails
+/// on a back-out (`type mismatch: expected Term, got String`).
+#[test]
+fn make_fn_takes_a_native_literal_as_its_term_twin() {
+    let mut interp = interp_for(FIXTURE);
+    for native in [Value::Str("alice".into()), Value::Int(7)] {
+        let args = one_arg_list(&mut interp, native.clone());
+        let built = interp
+            .call(
+                "anthill.reflect.make_fn",
+                &[Value::Str("test.wi913.Color.red".into()), args],
+            )
+            .unwrap_or_else(|e| panic!("{native:?} is a term's literal, not a refusal: {e}"));
+        let Value::Term { id, .. } = built else {
+            panic!("make_fn builds a Value::Term, got {built:?}");
+        };
+        let arg = match interp.kb().get_term(id) {
+            Term::Fn { pos_args, .. } if pos_args.len() == 1 => pos_args[0],
+            other => panic!("expected a one-argument Term::Fn, got {other:?}"),
+        };
+        let want = match &native {
+            Value::Str(s) => Term::Const(Literal::String(s.clone())),
+            Value::Int(n) => Term::Const(Literal::Int(*n)),
+            _ => unreachable!(),
+        };
+        assert_eq!(interp.kb().get_term(arg), &want, "{native:?} lowers to its Term::Const");
+    }
+}
+
 /// FAILS PRE-FIX (`EvalError::Internal("make_apply: unknown symbol `cons`")`).
 /// `make_apply` is `make_fn`'s occurrence-building twin (WI-722); it took the same
 /// absolute-only reading of the same kind of name.

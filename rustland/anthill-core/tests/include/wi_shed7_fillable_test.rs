@@ -406,7 +406,9 @@ end
 "#;
     let mut kb = crate::common::load_kb_with(CUT);
     let answers = crate::common::shown_rows(&mut kb, "shed7cut.cls");
-    assert_eq!(answers, vec![("Int(2)".to_string(), true)], "`5` is no `Colour`: the second clause answers");
+    // `2`, not `Int(2)`: `show_value` renders a literal's surface spelling on every
+    // carrier since WI-20260907-VM9Q7; this row had pinned the old `Debug` fallback.
+    assert_eq!(answers, vec![("2".to_string(), true)], "`5` is no `Colour`: the second clause answers");
 }
 
 // ── Review fixes, round 2: each row drives one fix, and fails with it backed out ─────

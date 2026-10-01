@@ -631,15 +631,16 @@ impl Interpreter {
     /// Recursive helper for [`Self::store_canonical_key`].
     fn write_value_canonical(&self, v: &Value, buf: &mut String) -> Result<(), EvalError> {
         match v {
-            Value::Int(n) => buf.push_str(&n.to_string()),
-            Value::BigInt(n) => buf.push_str(&n.to_string()),
-            Value::Float(f) => {
-                let s = f.to_string();
-                buf.push_str(&s);
-                if !s.contains('.') { buf.push_str(".0"); }
+            // Through `write_literal`, the spelling the `Value::Term` arm below reaches
+            // via `print_term` — so the two carriers of one literal key identically by
+            // construction. This was an inline copy of it (WI-20260907-VM9Q7).
+            Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) => {
+                use crate::kb::term_view::TermView;
+                let lit = v
+                    .as_literal(&self.kb)
+                    .expect("a native scalar views as the literal it holds");
+                crate::persistence::print::write_literal(&lit, buf);
             }
-            Value::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),
-            Value::Str(s) => crate::persistence::print::write_anthill_string(s, buf),
             Value::Entity { functor, pos, named, .. } => {
                 buf.push_str(self.kb.local_name_of(*functor));
                 if pos.is_empty() && named.is_empty() {
@@ -2373,9 +2374,12 @@ impl Interpreter {
             // IT ON — a hash-consed `Value::Term` from a fact match, a `Value::Node`
             // occurrence from a rule-body builtin (WI-246: a rule body's atoms ride as
             // occurrences), a native `Value::Entity` from an external extent row —
-            // and it is handed on unconverted. See this method's doc for why the
-            // column is a HANDLE the reader views through rather than a reified
-            // native value (WI-20260827-3ZNBC, replacing WI-714's contract).
+            // and it is handed on unconverted, with ONE exception `answer_binding`
+            // owns: a LITERAL on either of the first two carriers folds to its native
+            // scalar (WI-20260904-EMVCB for the occurrence, WI-20260907-VM9Q7 for the
+            // hash-consed term). See this method's doc for why the column is a HANDLE
+            // the reader views through rather than a reified native value
+            // (WI-20260827-3ZNBC, replacing WI-714's contract).
             //
             // An unbound free var still carries as itself. Post-WI-737 this is no
             // longer the flounder path (that raised above) but the narrower DEFINITE-

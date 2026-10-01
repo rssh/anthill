@@ -220,17 +220,12 @@ fn a_bare_or_branch_and_a_quantifier_body_are_left_to_resolution() {
         "exactly the surviving branch answers: {raw:?}"
     );
     assert!(raw[0].1, "and definitely, not as a residual: {raw:?}");
-    // Rendered, not matched on `Value::Int`: an `or` answer comes back through the
-    // resolver as a `Value::Term` carrier, and a carrier test here would be asserting
-    // which carrier the disjunction happens to use rather than what it answered.
-    let rendered = match &raw[0].0 {
-        anthill_core::eval::Value::Term { id, .. } => {
-            anthill_core::persistence::print::TermPrinter::over(&kb).print_term(*id)
-        }
-        other => format!("{other:?}"),
-    };
+    // Read carrier-neutrally, not matched on a `Value` variant: a carrier test here would
+    // be asserting which carrier the disjunction happens to use rather than what it
+    // answered. (It did exactly that until WI-20260907-VM9Q7 folded the answer.)
     assert_eq!(
-        rendered, "7",
+        crate::common::scalar_int(&kb, &raw[0].0),
+        Some(7),
         "the surviving branch must answer its own row: {raw:?}"
     );
     let vacuous = crate::common::query_unary(&mut kb, &format!("{ns}.quantified"));

@@ -4861,12 +4861,24 @@ fn term_as_entity(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
     // own claim ("both representations inhabit the abstract `reflect.Term` via
     // `TermView`") that the carrier match used to contradict, and which
     // `materialize_entity` can now honour because it reads through `TermView`
-    // (WI-20260827-2YHZ3). A carrier that is NOT a term handle still refuses
-    // LOUDLY rather than falling through to `none()`: `term_as_entity(5)` is a
-    // caller mistake, not an absent entity.
+    // (WI-20260827-2YHZ3). A NATIVE scalar is admitted since WI-20260907-VM9Q7, because
+    // an answered literal now arrives on one: `Substitution.lookup` of a fact-bound `?x`
+    // hands out `Value::Int(7)` where it handed out the hash-consed `Term::Const(7)`, and
+    // the two must answer the same `none()`. Named variant by variant rather than judged
+    // by `reads_as_term`: that predicate also admits a `Var` and a `SymbolRef` and
+    // refuses an `Opaque`-headed occurrence, which would move this op's contract in
+    // directions nothing asked for. A carrier that is NOT a term still refuses LOUDLY
+    // rather than falling through to `none()`: a closure is a caller mistake, not an
+    // absent entity.
     let materialized: Option<Value> = match arg {
         Value::Entity { .. } => Some(arg),
-        Value::Term { .. } | Value::Node(_) => materialize_entity(interp, &arg),
+        Value::Term { .. }
+        | Value::Node(_)
+        | Value::Int(_)
+        | Value::BigInt(_)
+        | Value::Float(_)
+        | Value::Bool(_)
+        | Value::Str(_) => materialize_entity(interp, &arg),
         other => return Err(type_mismatch("Term", &other, None)),
     };
 
@@ -5254,11 +5266,25 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let functor = resolve_host_name(interp, "make_fn", &name)?;
 
-    let pos_vec: Vec<TermId> =
-        reflect_cons_to_vec(interp, args_arg, "make_fn", "List[Term]", |v| match v {
-            Value::Term { id, .. } => Ok(id),
-            other => Err(type_mismatch("Term", &other, None)),
-        })?;
+    let elems: Vec<Value> = reflect_cons_to_vec(interp, args_arg, "make_fn", "List[Term]", Ok)?;
+    let mut pos_vec: Vec<TermId> = Vec::with_capacity(elems.len());
+    for v in elems {
+        pos_vec.push(match v {
+            Value::Term { id, .. } => id,
+            // WI-20260907-VM9Q7 — a NATIVE scalar is a `Term::Const`'s twin, and since
+            // VM9Q7 it is how an answered literal arrives: `Substitution.lookup` of a
+            // fact-bound var hands out `Value::Str("alice")` where it handed out the
+            // hash-consed `Term::Const`, and building a follow-up goal from it must not
+            // become a type error. Lowered through `alloc_from_value`'s leaf arms.
+            Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) => {
+                interp.kb.alloc_from_value(&v).map_err(|e| EvalError::TypeMismatch {
+                    expected: "Term",
+                    got: format!("{} (passed to `make_fn`: {e:?})", v.type_name()),
+                })?
+            }
+            other => return Err(type_mismatch("Term", &other, None)),
+        });
+    }
 
     let pos_args = smallvec::SmallVec::from_vec(pos_vec);
     let tid = interp.kb.alloc(Term::Fn {

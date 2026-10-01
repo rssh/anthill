@@ -146,6 +146,45 @@ end
     }
 }
 
+/// WI-20260907-VM9Q7 — the NATIVE twin of the row above answers the same `none()`. An
+/// answered literal folds to its native carrier, so `Substitution.lookup` of a
+/// fact-bound var now hands `term_as_entity` a `Value::Str` where it handed a
+/// `Term::Const`. Fails on a back-out (the carrier list raised `type_mismatch("Term")`).
+///
+/// And the bound on that repair: a value with NO term reading still raises rather than
+/// answering `none()`. Passes either way by design.
+#[test]
+fn term_as_entity_reads_a_native_literal_as_its_term_twin() {
+    let src = r#"
+namespace test.wi260_native
+  import anthill.prelude.Option.{none}
+  operation main() -> Int64 = 0
+end
+"#;
+    let mut interp = interp_for(src);
+    let none_sym = interp
+        .kb()
+        .try_resolve_symbol("anthill.prelude.Option.none")
+        .expect("Option.none present");
+
+    for native in [Value::Str("not-an-entity".into()), Value::Int(7)] {
+        let result = interp
+            .call("anthill.reflect.term_as_entity", &[native.clone()])
+            .unwrap_or_else(|e| panic!("{native:?} is a term's literal, not a refusal: {e}"));
+        assert!(
+            matches!(&result, Value::Entity { functor, named, .. } if *functor == none_sym && named.is_empty()),
+            "{native:?} must answer none(), as its Term::Const twin does; got {result:?}"
+        );
+    }
+
+    assert!(
+        interp
+            .call("anthill.reflect.term_as_entity", &[Value::Unit])
+            .is_err(),
+        "a value with no term reading is a caller mistake, not an absent entity"
+    );
+}
+
 #[test]
 fn term_as_entity_returns_none_for_unregistered_functor() {
     // Fn whose functor is not a registered constructor — should return

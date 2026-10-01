@@ -277,20 +277,17 @@ fn assert_names_the_rule_clause(errs: &str) {
 /// rows below measure nothing, since the whole claim is that a WORKING read stops
 /// working — and WI-939's own measurement was ONE solution going silently to ZERO.
 ///
-/// Reads the answer as a TERM, not as a `Value::Int`: a rule answers by unification,
-/// so the binding that comes back is the literal term the goal carried, and the
-/// eval-side `Int` carrier never appears on this path.
+/// Read carrier-neutrally ([`crate::common::scalar_int`]): which carrier the
+/// answer rides is not this file's subject. It used to narrow to a hash-consed
+/// `Value::Term`, and panicked on a correct `Int(7)` once an answered literal folded
+/// to its native carrier (WI-20260907-VM9Q7).
 fn uses_answers(src: &str, qn: &str) -> i64 {
-    use anthill_core::kb::term::{Literal, Term};
     let mut kb = crate::common::load_kb_with(src);
     let answers = crate::common::query_unary(&mut kb, qn);
-    let bound = match answers.as_slice() {
-        [(Value::Term { id, .. }, true)] => *id,
-        other => panic!("`{qn}` must answer exactly one definite term, got {other:?}\n{src}"),
-    };
-    match kb.get_term(bound) {
-        Term::Const(Literal::Int(i)) => *i,
-        other => panic!("`{qn}` must answer an Int literal, got {other:?}\n{src}"),
+    match answers.as_slice() {
+        [(v, true)] => crate::common::scalar_int(&kb, v)
+            .unwrap_or_else(|| panic!("`{qn}` must answer an Int64, got {v:?}\n{src}")),
+        other => panic!("`{qn}` must answer exactly one definite row, got {other:?}\n{src}"),
     }
 }
 

@@ -100,32 +100,87 @@ private object Tokens:
     * ended at the first inner quote and the rest of the line was a syntax error. */
   def stringToken[$: P]: P[String] =
     P("\"" ~ (CharsWhile(c => c != '"' && c != '\\', 1) | ("\\" ~ AnyChar)).rep.! ~ "\"")
-      .map(decodeStringEscapes)
 
-  /** Decode the `\.`-style escapes the token above accepts. Mirrors rustland's
-    * `decode_string_escapes`, down to its two fall-through rules: an UNKNOWN escape
-    * passes the trailing char through, and a lone trailing `\` is kept literal. The
-    * matching encoder is `persistence::print`'s String case (\" \\ \n \r \t). */
-  private def decodeStringEscapes(raw: String): String =
-    if !raw.contains('\\') then raw
+  /** Decode the escapes of a string literal's RAW text (what [[stringToken]] captures),
+    * spec §2.4: `\"` `\\` `\n` `\r` `\t`, and `\u{HEX}` — one to six hex digits
+    * naming a Unicode scalar value. Mirrors rustland's `decode_string_escapes`, message
+    * for message. `Left` names the first malformed escape: ANY OTHER ESCAPE IS AN ERROR
+    * (WI-20260907-VM9Q7) — it used to pass its trailing char through, so `"\u{1b}"`
+    * read as `"u{1b}"`, and the decoder ran inside this token where no error could be
+    * reported. The matching encoder is [[encodeStringLiteral]]. */
+  def decodeStringEscapes(raw: String): Either[String, String] =
+    val known = "the escapes are \\\" \\\\ \\n \\r \\t \\u{HEX}"
+    if !raw.contains('\\') then Right(raw)
     else
       val out = new StringBuilder(raw.length)
       var i = 0
-      while i < raw.length do
+      var err: Option[String] = None
+      while err.isEmpty && i < raw.length do
         val c = raw.charAt(i)
-        if c == '\\' && i + 1 < raw.length then
-          raw.charAt(i + 1) match
-            case '"'  => out += '"'
-            case '\\' => out += '\\'
-            case 'n'  => out += '\n'
-            case 'r'  => out += '\r'
-            case 't'  => out += '\t'
-            case other => out += other
-          i += 2
-        else
+        if c != '\\' then
           out += c
           i += 1
-      out.toString
+        else if i + 1 >= raw.length then
+          err = Some(s"string literal ends in a lone `\\`; $known")
+        else
+          raw.charAt(i + 1) match
+            case '"'  => out += '"'; i += 2
+            case '\\' => out += '\\'; i += 2
+            case 'n'  => out += '\n'; i += 2
+            case 'r'  => out += '\r'; i += 2
+            case 't'  => out += '\t'; i += 2
+            case 'u'  =>
+              val close = raw.indexOf('}', i + 2)
+              val hex =
+                if raw.startsWith("{", i + 2) && close > 0 then raw.substring(i + 3, close) else ""
+              // ASCII hex checked here rather than left to `parseInt`, which takes a sign
+              // and, through `Character.digit`, non-ASCII digits (rustland's check is ASCII).
+              if hex.isEmpty || hex.length > 6 || !hex.forall(c => "0123456789abcdefABCDEF".contains(c)) then
+                err = Some(
+                  s"malformed `\\u` escape in string literal: expected `\\u{HEX}` with 1 to 6 hex digits; $known")
+              else
+                val cp = Integer.parseInt(hex, 16)
+                if !Character.isValidCodePoint(cp) || (cp >= 0xD800 && cp <= 0xDFFF) then
+                  err = Some(s"`\\u{$hex}` in string literal is not a Unicode scalar value")
+                else
+                  out.appendAll(Character.toChars(cp))
+                  i = close + 1
+            case other =>
+              err = Some(s"unknown escape `\\$other` in string literal; $known")
+      err.toLeft(out.toString)
+
+  /** A string as a quoted literal — rustland's `write_anthill_string`, escape for
+    * escape, and the inverse of [[decodeStringEscapes]]: `\"` `\\` `\n` `\r` `\t` by
+    * name, every other control character as `\u{…}` (spec §2.4, WI-20260907-VM9Q7), so
+    * the text reads back as the string and a control character is never printed raw. */
+  def encodeStringLiteral(s: String): String =
+    val out = new StringBuilder(s.length + 2)
+    out += '"'
+    s.foreach {
+      case '"'  => out ++= "\\\""
+      case '\\' => out ++= "\\\\"
+      case '\n' => out ++= "\\n"
+      case '\r' => out ++= "\\r"
+      case '\t' => out ++= "\\t"
+      case c if Character.isISOControl(c) => out ++= s"\\u{${Integer.toHexString(c.toInt)}}"
+      case c    => out += c
+    }
+    out += '"'
+    out.toString
+
+  /** A Float's surface spelling — rustland's `write_literal`, case for case: the IEEE
+    * specials as the consts the language names them by (they have no literal, spec
+    * §2.4), a finite value in plain decimal with a decimal point. Java's own
+    * `Double.toString` gave `Infinity` / `NaN` / `1.0E20`, which neither parser reads. */
+  def floatSurface(d: Double): String =
+    if d.isNaN then "Float.nan"
+    else if d.isPosInfinity then "Float.infinity"
+    else if d.isNegInfinity then "Float.negativeInfinity"
+    else
+      // Shortest round-trip digits (`Double.toString`), re-spelled without an exponent.
+      val plain = java.math.BigDecimal(java.lang.Double.toString(d)).stripTrailingZeros.toPlainString
+      val signed = if d == 0.0 && 1.0 / d < 0 then "-" + plain else plain
+      if signed.contains('.') then signed else signed + ".0"
 
   def floatToken[$: P]: P[String] =
     P(("-".? ~ CharsWhileIn("0-9", 1) ~ "." ~ CharsWhileIn("0-9", 1)).!)
@@ -520,8 +575,8 @@ private class AnthillParserImpl(
   // `spanOfToken`/`located` make for being two functions.
 
   private def stringLiteral[$: P]: P[TermId] =
-    P(located(Tokens.stringToken)).map { case (s, span) =>
-      terms.allocAt(Term.Const(Literal.StringLit(s)), span) }
+    P(located(Tokens.stringToken)).map { case (raw, span) =>
+      terms.allocAt(Term.Const(Literal.StringLit(decodeStringAt(raw, span))), span) }
 
   private def floatLiteral[$: P]: P[TermId] =
     P(located(Tokens.floatToken)).map { case (s, span) =>
@@ -2450,24 +2505,12 @@ private class AnthillParserImpl(
       s"${symbols.name(fn.functor)}(${(pos ++ named).mkString(", ")})"
 
   private def renderLiteral(lit: Literal): String = lit match
-    // Re-encode the escapes `Tokens.decodeStringEscapes` decoded, so the quoted
-    // default is anthill source the author could paste back.
-    case Literal.StringLit(s) =>
-      val out = new StringBuilder(s.length + 2)
-      out += '"'
-      s.foreach {
-        case '"'  => out ++= "\\\""
-        case '\\' => out ++= "\\\\"
-        case '\n' => out ++= "\\n"
-        case '\r' => out ++= "\\r"
-        case '\t' => out ++= "\\t"
-        case c    => out += c
-      }
-      out += '"'
-      out.toString
+    // Through the `Tokens` spellings, so a quoted default is anthill source the author
+    // could paste back.
+    case Literal.StringLit(s) => Tokens.encodeStringLiteral(s)
     case Literal.IntLit(v)    => v.toString
     case Literal.BigIntLit(v) => v.toString
-    case Literal.FloatLit(v)  => v.value.toString
+    case Literal.FloatLit(v)  => Tokens.floatSurface(v.value)
     case Literal.BoolLit(v)   => v.toString
 
   /** The accumulated operation clauses. `slotBinders` (WI-840) are the NAMED
@@ -2653,7 +2696,23 @@ private class AnthillParserImpl(
         ProofStrategy(n, rawArgs, span)
     }
 
-  private def stringText[$: P]: P[String] = P(Tokens.stringToken)
+  private def stringText[$: P]: P[String] =
+    P(located(Tokens.stringToken)).map { case (raw, span) => decodeStringAt(raw, span) }
+
+  /** The string a literal's raw text denotes, a malformed escape reported AT the literal
+    * ([[Tokens.decodeStringEscapes]]). The empty string stands in only so the parse can
+    * go on collecting errors; the recorded error fails it, so it is never read.
+    *
+    * Recorded ONCE per literal: this runs in a `.map`, and a literal re-parsed after a
+    * backtrack that the WI-950 rollback does not undo (its enclosing `P` succeeded on
+    * another alternative) would otherwise report the same escape twice. */
+  private def decodeStringAt(raw: String, span: Span): String =
+    Tokens.decodeStringEscapes(raw) match
+      case Right(s) => s
+      case Left(msg) =>
+        val err = ParseError(msg, span)
+        if !errors.contains(err) then errors += err
+        ""
 
   private def proofBody[$: P]: P[ProofBody] =
     P(

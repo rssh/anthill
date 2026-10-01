@@ -63,11 +63,26 @@ identifier, so it names nothing and can itself never be shadowed.
 **Primitive literals** (the four built-in types):
 
 ```
-StringLit   ::= '"' [^"]* '"'
+StringLit   ::= '"' (StringChar | Escape)* '"'
+StringChar  ::= any character except '"' and '\'
+Escape      ::= '\"' | '\\' | '\n' | '\r' | '\t'
+              | '\u{' HexDigit{1,6} '}'              -- a Unicode scalar value
 IntLit      ::= '-'? Digit+
 FloatLit    ::= '-'? Digit+ '.' Digit+
 BoolLit     ::= 'true' | 'false'
 ```
+
+`\u{…}` names a character by its code point in hex — `"\u{1b}"` is ESC — and must name
+a Unicode scalar value (no surrogate, nothing above `10FFFF`). **Any other escape is an
+error**, as is a malformed `\u`: `"\q"` does not read as `"q"`. A string printed as a
+literal — a query answer, a persisted fact — uses the same escapes, spelling every
+control character other than `\n` `\r` `\t` as `\u{…}`, so the text reads back as the
+string it printed and a control character in data never reaches a terminal raw
+(WI-20260907-VM9Q7). A string printed as a *message* (a raised `String` payload) is not a
+literal and prints as written.
+
+`Float` has no literal for its IEEE specials; they are the consts `Float.infinity`,
+`Float.negativeInfinity` and `Float.nan`, and a printed one is spelled by that name.
 
 **Compound literal sugar** (desugars to `Fn` terms using prelude constructors):
 

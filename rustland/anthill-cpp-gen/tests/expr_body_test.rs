@@ -55,6 +55,30 @@ fn literal_float_and_string_bodies() {
     );
 }
 
+/// WI-20260907-VM9Q7 — a control character in a string literal reaches the generated
+/// C++ ESCAPED, as three-digit octal. The `\u{…}` escape (spec §2.4) made one easy to
+/// write, and it used to land raw in the C++ source. Octal because a `\x` escape would
+/// swallow the following `b`. Fails when `escape_cpp_str`'s control arm is backed out.
+#[test]
+fn a_control_character_in_a_string_body_is_escaped() {
+    let source = r#"
+        namespace test.expr_a
+          import anthill.prelude.{String}
+          sort Ansi
+            operation red() -> String = "\u{1b}b"
+          end
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Ansi").expect("emit Ansi");
+
+    assert!(
+        cpp.contains("return \"\\033b\";"),
+        "ESC must be the octal escape `\\033`:\n{cpp}"
+    );
+    assert!(!cpp.contains('\u{1b}'), "no raw ESC in the generated C++:\n{cpp}");
+}
+
 #[test]
 fn parameter_reference_body() {
     // `id(x: Int64) -> Int64 = x` — body is just a variable reference,

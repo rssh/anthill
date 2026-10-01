@@ -179,15 +179,9 @@ fn answers(kb: &mut KnowledgeBase, qn: &str) -> Vec<Value> {
         .collect()
 }
 
+/// The `String` an answer denotes, on whatever carrier it rides (WI-20260907-VM9Q7).
 fn text_of(kb: &KnowledgeBase, v: &Value) -> String {
-    use anthill_core::kb::term::{Literal, Term};
-    match v {
-        Value::Term { id } => match kb.get_term(*id) {
-            Term::Const(Literal::String(s)) => s.clone(),
-            other => panic!("expected a string literal, got {other:?}"),
-        },
-        other => panic!("expected a term, got {other:?}"),
-    }
+    crate::common::scalar_str(kb, v).unwrap_or_else(|| panic!("expected a String, got {v:?}"))
 }
 
 /// Run `probe` against BOTH file orders and return the two results, so every subject

@@ -4905,10 +4905,21 @@ fn pattern_var_name_occ(
 }
 
 /// Escape the CONTENTS of a C++ narrow string literal (no surrounding quotes):
-/// the `\"` / `\\` / `\n` / `\r` / `\t` set the printer uses. Shared by
-/// `lower_literal` and the WI-891 `static_assert` degrade payload, whose message
-/// is arbitrary error text that may carry a quote or newline.
+/// `\"` / `\\` / `\n` / `\r` / `\t` by name, and every OTHER control character as a
+/// three-digit octal escape. Shared by `lower_literal` and the WI-891 `static_assert`
+/// degrade payload, whose message is arbitrary error text that may carry a quote or
+/// newline.
+///
+/// The control characters are the `.anthill` printer's rule too
+/// (`persistence::print::write_anthill_string`, which spells them `\u{…}`), and
+/// since WI-20260907-VM9Q7 gave the language that escape, a NUL or ESC is one
+/// keystroke away in source — it reached the generated C++ raw before. OCTAL, not
+/// `\x`: a hex escape runs on through every following hex digit, so `"\x1bb"` is ONE
+/// character in C++; an octal escape stops at three. (A NUL is spelled correctly
+/// but still ends a `const char*`-built `std::string` early — the literal's C++
+/// semantics, not its spelling.)
 fn escape_cpp_str(s: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -4917,14 +4928,21 @@ fn escape_cpp_str(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            // A C1 control (U+0080..U+009F) is two UTF-8 bytes; each gets its own escape.
+            c if c.is_control() => {
+                let mut bytes = [0u8; 4];
+                for b in c.encode_utf8(&mut bytes).bytes() {
+                    write!(out, "\\{b:03o}").expect("writing to a String cannot fail");
+                }
+            }
             _ => out.push(c),
         }
     }
     out
 }
 
-/// Lower a `Literal` to its C++ source spelling. String literals get
-/// the same `\"` / `\\` / `\n` / `\r` / `\t` escaping the printer uses.
+/// Lower a `Literal` to its C++ source spelling. String literals are escaped by
+/// [`escape_cpp_str`].
 fn lower_literal(lit: &Literal) -> String {
     match lit {
         Literal::Int(n) => n.to_string(),

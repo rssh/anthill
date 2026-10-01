@@ -570,18 +570,13 @@ fn two_specs(ns: &str, tail: &str) -> String {
     )
 }
 
-/// The single definite `Int` of a solution list. A fact column arrives TERM-carried
-/// (`Value::Term`) rather than as a `Value::Int`, unlike an operation's return — so this
-/// reads through the term store and [`one_definite`] above cannot be reused.
+/// The single definite `Int` of a solution list, read carrier-neutrally. A fact column
+/// used to arrive TERM-carried (`Value::Term`) where an operation's return was a
+/// `Value::Int`; since WI-20260907-VM9Q7 an answered literal folds to the native carrier
+/// either way, and which carrier it rides is not this file's subject.
 fn one_definite_term(kb: &anthill_core::kb::KnowledgeBase, got: &[(Value, bool)]) -> Option<i64> {
     match got {
-        [(Value::Int(i), true)] => Some(*i),
-        [(Value::Term { id, .. }, true)] => match kb.get_term(*id) {
-            anthill_core::kb::term::Term::Const(anthill_core::kb::term::Literal::Int(i)) => {
-                Some(*i)
-            }
-            _ => None,
-        },
+        [(v, true)] => crate::common::scalar_int(kb, v),
         _ => None,
     }
 }

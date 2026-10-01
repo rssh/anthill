@@ -31,6 +31,22 @@ pub fn write_literal(lit: &Literal, buf: &mut String) {
         Literal::BigInt(n) => {
             buf.push_str(&n.to_string());
         }
+        // The IEEE specials have NO literal (`float_literal` is digits-dot-digits); the
+        // language names them as the consts `Float.infinity` / `negativeInfinity` / `nan`
+        // (spec §2.4), and that name is what prints (WI-20260907-VM9Q7). Every other
+        // spelling was worse: Rust's `inf` reloads SILENTLY as an identifier, and the
+        // `.0` fix-up below garbled it into `inf.0`.
+        //
+        // NOT YET RELOAD-FAITHFUL: a persisted `f(v: Float.infinity)` loads as
+        // `field_access(Float, infinity)` rather than as the Float, because the loader
+        // does not fold a const in fact data (WI-20261001-KDMQS). That is the loader's
+        // gap, not a reason to print a spelling that names nothing.
+        Literal::Float(f) if f.is_nan() => buf.push_str("Float.nan"),
+        Literal::Float(f) if f.is_infinite() => buf.push_str(if f.is_sign_positive() {
+            "Float.infinity"
+        } else {
+            "Float.negativeInfinity"
+        }),
         Literal::Float(f) => {
             let s = f.to_string();
             buf.push_str(&s);
@@ -46,10 +62,18 @@ pub fn write_literal(lit: &Literal, buf: &mut String) {
     }
 }
 
-/// Append `s` quoted with `.anthill`-syntax escapes for `"`, `\`, `\n`,
-/// `\r`, `\t`. Shared by `TermPrinter` and any other code that needs to
-/// emit a string literal in canonical form.
+/// Append `s` quoted with `.anthill`-syntax escapes (spec §2.4): `"`, `\`, `\n`, `\r`,
+/// `\t` by name, and EVERY OTHER control character as `\u{…}`. Shared by `TermPrinter`
+/// and any other code that needs to emit a string literal in canonical form; the
+/// matching decoder is `parse::convert::decode_string_escapes`.
+///
+/// WHY CONTROL CHARACTERS ARE ESCAPED (WI-20260907-VM9Q7): they used to be written raw,
+/// because the language had no escape that could spell one. That made a printed string
+/// a carrier for live terminal sequences — `anthill query` over a fact holding ESC
+/// emitted ESC — and a raw one is invisible in a file even where it is harmless. With
+/// `\u{…}` in the grammar, the escaped text reads back as the same string.
 pub fn write_anthill_string(s: &str, buf: &mut String) {
+    use std::fmt::Write as _;
     buf.push('"');
     for ch in s.chars() {
         match ch {
@@ -58,6 +82,9 @@ pub fn write_anthill_string(s: &str, buf: &mut String) {
             '\n' => buf.push_str("\\n"),
             '\r' => buf.push_str("\\r"),
             '\t' => buf.push_str("\\t"),
+            c if c.is_control() => {
+                write!(buf, "\\u{{{:x}}}", c as u32).expect("writing to a String cannot fail")
+            }
             _ => buf.push(ch),
         }
     }

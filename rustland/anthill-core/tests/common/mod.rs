@@ -1146,11 +1146,21 @@ pub fn undecided_causes(
         .collect()
 }
 
-/// A row value as `.anthill` text: an occurrence or a term through `TermPrinter`, any other
-/// carrier by its `Debug` form.
+/// A row value as `.anthill` text: a LITERAL on any carrier through `write_literal`, an
+/// occurrence or a term through `TermPrinter`, any other carrier by its `Debug` form.
+///
+/// The literal row comes first and reads carrier-neutrally, as the CLI's `render_value`
+/// does (WI-20260907-VM9Q7): an answered literal folds to its NATIVE carrier, and this
+/// helper used to send that to the `Debug` arm — so a correct `1` read `"Int(1)"`.
 #[allow(dead_code)]
 pub fn show_value(kb: &KnowledgeBase, v: &eval::Value) -> String {
-    use anthill_core::persistence::print::TermPrinter;
+    use anthill_core::kb::term_view::TermView;
+    use anthill_core::persistence::print::{write_literal, TermPrinter};
+    if let Some(lit) = v.as_literal(kb) {
+        let mut buf = String::new();
+        write_literal(&lit, &mut buf);
+        return buf;
+    }
     match v {
         eval::Value::Node(occ) => TermPrinter::new(kb).print_occurrence(occ),
         eval::Value::Term { id, .. } => TermPrinter::new(kb).print_term(*id),

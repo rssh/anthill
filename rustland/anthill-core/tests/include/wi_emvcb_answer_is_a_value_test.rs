@@ -26,25 +26,30 @@
 //!
 //! ── CONTROL ─────────────────────────────────────────────────────────────
 //!
-//! WHICH ROWS FAIL ON A BACK-OUT. Two independent halves, and each has its own:
+//! WHICH ROWS FAIL ON A BACK-OUT. Three independent halves, and each has its own:
 //!
-//!   * replace `Some(Self::fold_const_occurrences(reified))` with `Some(reified)` in
-//!     `answer_binding` and FOUR fail: `the_lambda_row_answers_the_value`,
+//!   * replace `Some(self.fold_literals(reified))` with `Some(reified)` in
+//!     `answer_binding` and FIVE fail: `the_lambda_row_answers_the_value`,
 //!     `a_bare_eq_answers_the_value`, `a_relation_column_answers_the_value`,
-//!     `a_const_nested_in_an_entity_answers_the_value`;
-//!   * delete only the `Entity`/`Tuple` arms of `fold_const_occurrences` (keeping the
-//!     top-level `Const` fold) and exactly ONE fails:
+//!     `a_const_nested_in_an_entity_answers_the_value`,
+//!     `a_fact_matched_literal_answers_the_value`;
+//!   * drop only the `Entity`/`Tuple` recursion of `KnowledgeBase::folded` (keeping
+//!     the top-level fold) and exactly ONE fails:
 //!     `a_const_nested_in_an_entity_answers_the_value`. Measured — without that row the
-//!     recursion would be a branch nothing drives.
+//!     recursion would be a branch nothing drives;
+//!   * delete only `carried_literal`'s `Value::Term` arm (WI-20260907-VM9Q7's half) and
+//!     exactly ONE fails: `a_fact_matched_literal_answers_the_value`.
 //!
-//! PASS EITHER WAY, BY DESIGN — the two the ticket names as its controls, and one more:
+//! PASS EITHER WAY, BY DESIGN — the two EMVCB named as its controls, and two bounds:
 //!   * `the_operation_body_twin_is_unmoved` — never crossed the resolver boundary;
 //!   * `a_computed_result_is_unmoved` — `x + x` answers 4, a value the builtin computed,
 //!     which has no occurrence to keep. A repair that moved EITHER would have shifted
 //!     the boundary rather than normalized across it, which is the ticket's own test;
 //!   * `a_non_const_occurrence_is_not_folded` — this is the one that says the fold is
 //!     `Const`-ONLY rather than "no occurrence may be an answer". A too-broad repair
-//!     passes every other row here and fails this one.
+//!     passes every other row here and fails this one;
+//!   * `a_fact_matched_compound_keeps_its_hash_consed_carrier` — the same bound on the
+//!     hash-consed side (WI-20260907-VM9Q7): `Term::Const` folds, `Term::Fn` does not.
 
 use crate::common::{definite_unary, interp_for, try_load_kb_with};
 use anthill_core::eval::Value;
@@ -69,11 +74,9 @@ fn load(ns: &str, body: &str) -> KnowledgeBase {
 /// WI-20260827-14EV6 is what made it do so). This is the one place in the corpus where
 /// naming the variant is the point rather than a mistake.
 ///
-/// SCOPED TO THE `<=>` SPELLING, and that is a real limit rather than a convenience:
-/// the same query written as a FACT MATCH answers a hash-consed `Value::Term`, which
-/// this fold does not touch, so this helper would panic on it. See
-/// `a_fact_matched_literal_keeps_its_hash_consed_carrier`, which pins exactly that and
-/// carries the measurement behind the decision.
+/// Holds for the FACT-MATCH spelling too since WI-20260907-VM9Q7 — before it, a fact
+/// match answered a hash-consed `Value::Term` and this helper was `<=>`-scoped. See
+/// `a_fact_matched_literal_answers_the_value`.
 fn sole_native_int(kb: &mut KnowledgeBase, qn: &str) -> i64 {
     let vs = definite_unary(kb, qn);
     match vs.as_slice() {
@@ -133,7 +136,7 @@ fn a_relation_column_answers_the_value() {
 
 /// AN ANSWER IS VALUE-SHAPED ALL THE WAY DOWN. `rule mk(pt(x: ?v)) :- ?v <=> 2` binds
 /// the head's field to the occurrence, so the answer is an `Entity` CARRIER holding a
-/// `Node(Const)` child — the shape that drives `fold_const_occurrences`' recursion, and
+/// `Node(Const)` child — the shape that drives `KnowledgeBase::folded`'s recursion, and
 /// the only row that fails when that recursion alone is backed out.
 ///
 /// Note it is NOT reached by `?r <=> some(2)`: that answers ONE occurrence whose expr is
@@ -215,38 +218,55 @@ fn a_non_const_occurrence_is_not_folded() {
     );
 }
 
-/// THE OTHER HALF OF "AN ANSWER IS A VALUE", PINNED AS THE DECISION IT IS.
+/// THE OTHER HALF OF "AN ANSWER IS A VALUE" — WI-20260907-VM9Q7.
 ///
-/// A literal answer has two non-native carriers. This ticket folds the `Value::Node`
-/// occurrence; a FACT-matched column rides a hash-consed `Value::Term` over
-/// `Term::Const` and is left alone — so the contract holds for `?r <=> 2` and not for
-/// the fact spelling of the same query. /code-review named the asymmetry, and it is
-/// real.
+/// A literal answer has two non-native carriers. EMVCB folded the `Value::Node`
+/// occurrence; a FACT-matched column rode a hash-consed `Value::Term` over `Term::Const`
+/// and was left alone, so the contract held for `?r <=> 2` and not for the fact spelling
+/// of the same query. This row asserted that asymmetry until VM9Q7 closed it, and is
+/// re-spelled rather than deleted so the measurement stays where a reader meets it.
 ///
-/// FOLDING IT TOO WAS BUILT AND MEASURED, not argued: 9 of 6531 fail, and the first one
-/// is why this row asserts the CURRENT behaviour instead of the symmetric one —
-/// `wi863_operator_arithmetic_test::float_division_computes` has `6.0 / 2.0` print
-/// `?r = 3` rather than `3.0`, because `TermPrinter` renders `Term::Const(Float)` with
-/// its decimal point and a native `Value::Float` renders through Rust's `Display`,
-/// which drops it. The hash-consed carrier holds a printable form the native one does
-/// not reproduce. The rest were stale carrier-enumerating helpers (`wi999`, `wi936`,
-/// `wi1034`, `wi_gmg6n`) — the `wi_p9y67` shape again.
+/// WHAT HELD IT BACK was a printer, not this fold. Folding the `Term` carrier made 9 of
+/// 6531 fail: `wi863_operator_arithmetic_test::float_division_computes` printed `6.0 /
+/// 2.0` as `?r = 3`, because the CLI's `render_value` spelled a native `Value::Float`
+/// through Rust's `Display` and the hash-consed twin through `write_literal`; the other
+/// eight were stale carrier-enumerating test helpers (`wi999`, `wi936`, `wi1034`,
+/// `wi_gmg6n`). The printer now reads every literal carrier-neutrally
+/// (`anthill-cli`'s `wi_vm9q7_literal_rendering_test` drives it per `Literal` variant)
+/// and the helpers read through `common::scalar_*`.
 ///
-/// So this row is a SCOPE MARKER: it fails the day someone closes that half, which is
-/// when they should be reading the float-rendering note above. Passes either way under
-/// this ticket's own back-outs, by design.
+/// Asserts the CARRIER, as `sole_native_int` does, because the carrier is the subject:
+/// a carrier-neutral read passes either way. Fails when `carried_literal`'s
+/// `Value::Term` arm is backed out.
 #[test]
-fn a_fact_matched_literal_keeps_its_hash_consed_carrier() {
+fn a_fact_matched_literal_answers_the_value() {
     let mut kb = load(
         "emvcb.fact",
         "  sort C\n    entity code(n: Int64)\n  end\n  \
          fact code(n: 7)\n  \
          rule value(?r) :- code(n: ?r)\n",
     );
-    let vs = definite_unary(&mut kb, "emvcb.fact.value");
+    assert_eq!(sole_native_int(&mut kb, "emvcb.fact.value"), 7);
+}
+
+/// THE ROW THAT BOUNDS VM9Q7's HALF, as `a_non_const_occurrence_is_not_folded` bounds
+/// EMVCB's: a fact-matched COMPOUND answers a hash-consed `Term::Fn` and keeps it. The
+/// fold is "a literal has a native carrier", not "an answer may not be a term" — the
+/// `7` inside `pt(x: 7)` lives in the term's own structure, not in a `Value` child, just
+/// as `some(2)`'s payload lives in an `Apply` occurrence's `Expr`. Passes either way by
+/// design; a repair that rebuilt every hash-consed answer as an `Entity` fails it.
+#[test]
+fn a_fact_matched_compound_keeps_its_hash_consed_carrier() {
+    let mut kb = load(
+        "emvcb.factfn",
+        "  sort D\n    entity pt(x: Int64)\n  end\n  \
+         sort H\n    entity holds(p: D)\n  end\n  \
+         fact holds(p: pt(x: 7))\n  \
+         rule value(?r) :- holds(p: ?r)\n",
+    );
+    let vs = definite_unary(&mut kb, "emvcb.factfn.value");
     assert!(
         matches!(vs.as_slice(), [Value::Term { .. }]),
-        "a fact-matched literal is NOT folded — see this row's doc for the measurement \
-         behind that decision; got {vs:?}"
+        "a compound hash-consed answer keeps its carrier; got {vs:?}"
     );
 }
