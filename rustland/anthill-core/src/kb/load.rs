@@ -22,7 +22,7 @@ use super::resolve::{BuiltinTag, PositionalPlan};
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::term_view::{TermIdView, TermView};
 use super::typing::{extract_sort_ref_sym, extract_type, TypeExtractor};
-use super::{ClauseKind, KnowledgeBase, SortKind};
+use super::{const_value, ClauseKind, KnowledgeBase, SortKind};
 use crate::eval::value::Value;
 use crate::intern::{
     absolute_path_target, positional_label, positional_label_index, Contested, ImportOrigin, ResolveResult,
@@ -2214,6 +2214,16 @@ pub enum LoadError {
         var_name: String,
         span: Span,
     },
+    /// WI-20261001-KDMQS — a clause DATA SLOT names a `const` whose value the loader
+    /// cannot know when the clause converts (`kb::const_value` says which consts have
+    /// one). Refused, not stored as the symbol: a stored symbol matches only another
+    /// occurrence of the same symbol, never the value the const denotes, and that silent
+    /// miss is what folding the slot removes.
+    ConstValueUnavailableInDataSlot {
+        name: String,
+        reason: String,
+        span: Span,
+    },
     /// WI-525 (proposal 049, NAF discipline): a BINDING `<=>` / `let` goal (both
     /// lower to `unify(?v, e)`) appears in a contract position — an operation
     /// `requires` / `ensures` clause, or a `constraint` body. Contracts TEST
@@ -2567,6 +2577,7 @@ impl LoadError {
             | LoadError::InvalidFieldProjection { span, .. }
             | LoadError::ForbiddenInternalAccess { span, .. }
             | LoadError::UnsafeNegatedUnify { span, .. }
+            | LoadError::ConstValueUnavailableInDataSlot { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
             | LoadError::ParenLessCitationOfNonRule { span, .. }
@@ -3689,6 +3700,13 @@ impl LoadError {
                     name,
                     declared_in,
                     scope_name,
+                )
+            }
+            LoadError::ConstValueUnavailableInDataSlot { name, reason, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    const_unavailable_message(name, reason),
                 )
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
@@ -4908,6 +4926,15 @@ impl std::fmt::Display for LoadError {
                     f,
                     "'{}' is internal to '{}' and cannot be referenced from scope '{}' at {}..{}",
                     name, declared_in, scope_name, span.start, span.end,
+                )
+            }
+            LoadError::ConstValueUnavailableInDataSlot { name, reason, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    const_unavailable_message(name, reason),
+                    span.start,
+                    span.end,
                 )
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
@@ -7972,6 +7999,17 @@ fn ambiguous_spec_member_message(
          `{short}.{member}`, or take it as a parameter: `[P](…) requires \
          {short}[{member} = P]`.",
         bound.join(", ")
+    )
+}
+
+/// WI-20261001-KDMQS — the sentence for [`LoadError::ConstValueUnavailableInDataSlot`],
+/// one owner for its two rendering paths.
+fn const_unavailable_message(name: &str, reason: &str) -> String {
+    format!(
+        "the const `{name}` is written in a data slot, where it stands for its value, and \
+         that value is not known when the clause loads: {reason}. Write the value itself, \
+         or move the computation into an operation body, where a const is folded when it \
+         is evaluated"
     )
 }
 
@@ -14421,6 +14459,9 @@ fn load_phase_inner(
     // the mapped const's own declaration must be resolvable.
     all_errors.extend(build_host_const_mappings(kb));
     mark!("build_host_const_mappings");
+    // WI-20261001-KDMQS — the declaration pass read the same `const_map` entries early,
+    // for the clause data slots that folded a const; the two readings must agree.
+    all_errors.extend(check_const_sources_agree(kb));
     // WI-20260923-9R5HN — one member, two mappings in one language: after BOTH caches.
     all_errors.extend(check_host_mapping_duplicates(kb, phase_first_rule));
     mark!("check_host_mapping_duplicates");
@@ -17818,6 +17859,51 @@ pub fn build_host_const_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     errors
 }
 
+/// WI-20261001-KDMQS — TWO READERS OF ONE `const_map` CLAUSE, compared. The declaration
+/// pass records each `language rust` entry as a const's value source before any clause
+/// converts (`Loader::declare_const_map_sources`), because a data slot folds the const
+/// then; [`build_host_const_mappings`] reads the same entries from their facts after every
+/// file is loaded, because that is the interpreter's table. They resolve the carrier by
+/// different routes (a written name in its scope vs. the converted spec term), so a case
+/// one reads and the other does not would let a data slot hold a value the interpreter
+/// does not give the const, or a different one. Refused, naming the const.
+///
+/// A const with TWO interpreter mappings is skipped: `check_host_mapping_duplicates`
+/// refuses it already, and comparing either entry here would add a second, misleading
+/// "internal" error to the same load.
+fn check_const_sources_agree(kb: &KnowledgeBase) -> Vec<LoadError> {
+    let interpreter: Vec<&HostConstMapping> = kb
+        .host_const_mappings()
+        .iter()
+        .filter(|m| m.lang == INTERPRETER_LANG)
+        .collect();
+    interpreter
+        .iter()
+        .filter(|m| {
+            interpreter
+                .iter()
+                .filter(|o| o.const_sym == m.const_sym)
+                .count()
+                == 1
+        })
+        .filter_map(|m| {
+            let sym = m.const_sym?;
+            match kb.const_sources.get(&sym) {
+                Some(const_value::ConstSource::Host(key)) if *key == m.host_fn => None,
+                recorded => Some(LoadError::Other {
+                    message: format!(
+                        "internal: `{}`'s `const_map` entry names host value {:?}, but the \
+                         declaration pass recorded {:?} as its value source, so a data slot \
+                         naming it may have folded a value the interpreter does not give it \
+                         (WI-20261001-KDMQS)",
+                        m.const_qn, m.host_fn, recorded,
+                    ),
+                }),
+            }
+        })
+        .collect()
+}
+
 /// WI-616 — build the semantic-equality dispatch index. Must run right AFTER
 /// [`build_sort_ops_table`], whose table it reads.
 ///
@@ -19911,6 +19997,7 @@ pub fn convert_query_term(
         scope,
         var_map,
         None,
+        ConstFold::Goal,
     );
     // WI-20260902-CZJ2N — §8.3'S EXPANSION AT THE QUERY PATTERN, the fifth logical
     // position. `anthill query 'account'` searches for the same all-fields-fresh pattern
@@ -19957,6 +20044,44 @@ fn expand_bare_entity_query_name(
     })
 }
 
+/// WI-20261001-KDMQS — the query twin of `Loader::data_slot_const_value`: `sym`'s value
+/// when the pattern walk is in a data slot and `sym` is a const.
+///
+/// A QUERY CAN EVALUATE, which a clause conversion cannot: it converts against a LOADED
+/// program. So a const with no load-time value (a computed body) is asked of the
+/// evaluator, 039's own value source. It must be, because a fact can hold such a const's
+/// value without any clause naming it: one asserted at run time by an operation body
+/// (which folds the const), or one reloaded from a store (which wrote the value). Keeping
+/// the symbol would answer `f(v: LIMIT)` with nothing while `f(v: 3.0)` is stored.
+///
+/// What the evaluator cannot produce either (no value source in this runtime, a body that
+/// raises, a value that is not a literal) keeps the symbol, because a query pattern has no
+/// error channel. Its empty answer is then true: no stored clause holds that value.
+fn query_data_slot_const(kb: &mut KnowledgeBase, sym: Symbol, fold: ConstFold) -> Option<Literal> {
+    if fold != ConstFold::Data || kb.kind_of(sym) != Some(SymbolKind::Const) {
+        return None;
+    }
+    match kb.const_slot_value(sym) {
+        Ok(lit) => Some(lit),
+        Err(_) => kb.evaluated_const_literal(sym),
+    }
+}
+
+/// WI-20261001-KDMQS — a query child's const-fold state: `ConstFold::child`, except that a
+/// field declared `anthill.reflect.Term` holds a QUOTED pattern, the twin of
+/// `Loader::convert_arg_value`'s rule.
+fn query_child_fold(
+    kb: &KnowledgeBase,
+    fold: ConstFold,
+    slot: Option<&super::GoalSlot>,
+    expected: Option<TermId>,
+) -> ConstFold {
+    if expected.is_some_and(|e| super::typing::is_reflect_term_type(kb, &TermIdView(e))) {
+        return ConstFold::Off;
+    }
+    fold.child(slot)
+}
+
 /// [`convert_query_term`] carrying the enclosing argument position's declared type —
 /// the query-side twin of `Loader::convert_term_with_expected`'s `expected`.
 #[allow(clippy::too_many_arguments)]
@@ -19968,6 +20093,10 @@ fn convert_query_term_expecting(
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
     expected: Option<TermId>,
+    // WI-20261001-KDMQS — this node's const-fold state (`ConstFold`): the pattern itself is
+    // a goal, its arguments data slots, where a const is its value — so a pattern and the
+    // fact it searches for fold alike.
+    fold: ConstFold,
 ) -> Rc<NodeOccurrence> {
     let parse_term = parse_terms.get(parse_id).clone();
     let expr = match parse_term {
@@ -20003,8 +20132,23 @@ fn convert_query_term_expecting(
             // position with no load-error channel to be loud from. The mint carries its
             // ADDRESS now, which outranks scope by construction, so the ordinary query
             // ladder is the whole answer and no producer has to be enumerated.
+            // WI-20261001-KDMQS — a dotted chain naming a const, in a data slot, is the
+            // const's value: the query twin of the loader's arm.
+            if fold == ConstFold::Data {
+                if let Some(c) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
+                    .and_then(|name| const_named(kb, &name, scope))
+                {
+                    if let Some(lit) = query_data_slot_const(kb, c, fold) {
+                        return expr_node(Expr::Const(lit));
+                    }
+                }
+            }
             let functor_name = parse_symbols.local_name(functor);
             let kb_functor = resolve_query_name(kb, functor_name, scope);
+            let goal_slots = match fold {
+                ConstFold::Goal => const_fold_goal_slots(kb, kb_functor, pos_args.len()),
+                _ => SmallVec::new(),
+            };
 
             // WI-1096: a `[…]` here becomes what the LOADER would have stored in this
             // position — same decision function, same declared-type hint — so a query
@@ -20027,6 +20171,7 @@ fn convert_query_term_expecting(
                             scope,
                             var_map,
                             elem_expected,
+                            fold.child(None),
                         )
                     })
                     .collect();
@@ -20081,6 +20226,8 @@ fn convert_query_term_expecting(
                 .enumerate()
                 .map(|(i, &id)| {
                     let exp = pos_field_type(kb, i);
+                    let child =
+                        query_child_fold(kb, fold, goal_slots.iter().find(|s| s.index == i), exp);
                     convert_query_term_expecting(
                         kb,
                         parse_terms,
@@ -20089,6 +20236,7 @@ fn convert_query_term_expecting(
                         scope,
                         var_map,
                         exp,
+                        child,
                     )
                 })
                 .collect();
@@ -20098,6 +20246,7 @@ fn convert_query_term_expecting(
                     let n = parse_symbols.local_name(sym);
                     let kb_sym = kb.intern(n);
                     let exp = declared_field_type(kb, kb_functor, kb_sym);
+                    let child = query_child_fold(kb, fold, None, exp);
                     (
                         kb_sym,
                         convert_query_term_expecting(
@@ -20108,6 +20257,7 @@ fn convert_query_term_expecting(
                             scope,
                             var_map,
                             exp,
+                            child,
                         ),
                     )
                 })
@@ -20157,7 +20307,10 @@ fn convert_query_term_expecting(
         Term::Ident(sym) => {
             let name = parse_symbols.local_name(sym);
             match resolve_name_in_kb(kb, name, scope) {
-                ResolveResult::Found(resolved) => Expr::Ref(resolved),
+                ResolveResult::Found(resolved) => match query_data_slot_const(kb, resolved, fold) {
+                    Some(lit) => Expr::Const(lit),
+                    None => Expr::Ref(resolved),
+                },
                 ResolveResult::Ambiguous(..) | ResolveResult::NotFound => {
                     Expr::Ident(kb.intern(name))
                 }
@@ -20165,7 +20318,11 @@ fn convert_query_term_expecting(
         }
         Term::Ref(sym) => {
             let name = parse_symbols.local_name(sym);
-            Expr::Ref(resolve_query_name(kb, name, scope))
+            let resolved = resolve_query_name(kb, name, scope);
+            match query_data_slot_const(kb, resolved, fold) {
+                Some(lit) => Expr::Const(lit),
+                None => Expr::Ref(resolved),
+            }
         }
         Term::Bottom => Expr::Bottom,
         Term::ParseAux(aux) => {
@@ -20312,6 +20469,32 @@ fn resolve_query_name(kb: &mut KnowledgeBase, name: &str, scope: ScopeId) -> Sym
 /// query` could bind the same dotted text to a DIFFERENT symbol than the program it
 /// queries. Queries run at `<global>`, where the two readings almost always coincide —
 /// which is exactly why the divergence survived four fixes unnoticed.
+/// WI-20261001-KDMQS — the slots of a connective node that hold GOALS for the const fold:
+/// every non-data slot but a discharge's BINDER tuple, which holds variables.
+/// [`KnowledgeBase::goal_arg_slots`] is narrower (`Proved` only) and would read a
+/// discharge's ASSUMED antecedent as data. Free, because the query walk has no `Loader`.
+fn const_fold_goal_slots(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_arity: usize,
+) -> SmallVec<[super::GoalSlot; 3]> {
+    kb.goal_slot_readings(functor, pos_arity)
+        .into_iter()
+        .filter(|s| s.reading != super::SlotReading::Binders)
+        .collect()
+}
+
+/// WI-20261001-KDMQS — the `const` a one-segment or dotted `name` denotes at `scope`, or
+/// `None` when it denotes anything else or nothing. Quiet: no diagnostic, no bare intern,
+/// because every caller asks only whether to FOLD, and the name's ordinary reading (with
+/// its diagnostics) is made by the walk the caller is part of.
+fn const_named(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Option<Symbol> {
+    match resolve_name_in_kb(kb, name, scope) {
+        ResolveResult::Found(sym) if kb.kind_of(sym) == Some(SymbolKind::Const) => Some(sym),
+        _ => None,
+    }
+}
+
 pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> ResolveResult {
     kb.symbols
         .resolve_in_scope(name, scope)
@@ -21489,6 +21672,47 @@ impl ClauseHead {
     }
 }
 
+/// WI-20261001-KDMQS — where a walk stands with respect to a CLAUSE, which decides whether
+/// a `const` written there is folded to its value (`kb::const_value`).
+///
+/// One field the three clause walks share (the term walk, the rule-body occurrence walk,
+/// and through a parameter the query walk), because the body walk hands an entity atom to
+/// the term walk mid-clause and the two must agree about what a slot is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ConstFold {
+    /// Not inside a clause: an operation body, a type, a contract clause, a proof, a meta
+    /// block, a quoted `Term` field, an equation's subject or replacement. A const stays
+    /// the symbol here. Where it is evaluated (an operation body) eval folds it on demand.
+    Off,
+    /// A GOAL position: a clause head itself, a body goal, a connective's goal slot. A
+    /// bare const here is a goal, not a value, and whether it may be one is
+    /// WI-20260822-NDG34's question, not this one's.
+    Goal,
+    /// A conjunction WRAPPER in a goal slot (`forall_impl`'s `tuple(…)`): each of its
+    /// components is a goal.
+    GoalTuple,
+    /// A DATA slot of a clause: an argument of a head, of a goal, or of anything inside
+    /// one. A const here is its value.
+    Data,
+}
+
+impl ConstFold {
+    /// The state a child converts under. `slot` is the child's goal-slot reading in its
+    /// parent, when the parent is a connective (`KnowledgeBase::goal_arg_slots`).
+    /// `Data` is sticky: a connective-shaped term inside a data slot is data, and so is
+    /// everything in it.
+    fn child(self, slot: Option<&crate::kb::GoalSlot>) -> ConstFold {
+        match (self, slot) {
+            (ConstFold::Off, _) => ConstFold::Off,
+            (ConstFold::Data, _) => ConstFold::Data,
+            (ConstFold::GoalTuple, _) => ConstFold::Goal,
+            (ConstFold::Goal, Some(s)) if s.tuple_wrapped => ConstFold::GoalTuple,
+            (ConstFold::Goal, Some(_)) => ConstFold::Goal,
+            (ConstFold::Goal, None) => ConstFold::Data,
+        }
+    }
+}
+
 struct Loader<'a> {
     kb: &'a mut KnowledgeBase,
     parsed: &'a ParsedFile,
@@ -21645,6 +21869,10 @@ struct Loader<'a> {
     // [`Self::convert_arg_value`], which is the one place the field's declared type is in
     // hand.
     in_quoted_term: bool,
+    // WI-20261001-KDMQS — see [`ConstFold`]. `Off` outside a clause; the clause entry
+    // points (`load_fact`, `load_rule_inner`, `load_constraint`) set `Goal`, and each walk
+    // moves it per child.
+    const_fold: ConstFold,
     // WI-710: nesting depth inside `convert_term_with_expected` — 1 while converting a
     // TOP-LEVEL term (a `fact` head, a rule head / body goal), >1 for a term nested as
     // another term's argument. It tells the two readings of one syntax apart: a
@@ -22097,6 +22325,7 @@ impl<'a> Loader<'a> {
             in_rule_head: false,
             clause_head: None,
             in_quoted_term: false,
+            const_fold: ConstFold::Off,
             term_depth: 0,
             in_value_position: false,
             rule_head_type_bounds: Vec::new(),
@@ -23442,12 +23671,24 @@ impl<'a> Loader<'a> {
     /// (WI-20260909-C7ANM) — see [`Self::rule_head_written_columns`], which owns that
     /// half and the measurement behind it.
     fn convert_rule_head_with_params(&mut self, parse_id: TermId) -> Option<TermId> {
+        // WI-20261001-KDMQS — this builds the head NODE itself rather than through
+        // `convert_term_inner`'s `Fn` arm, so it moves the const-fold state the way that
+        // arm does (its arguments are DATA slots) and gives the caller's back.
+        let saved_fold = self.const_fold;
+        let head = self.convert_rule_head_with_params_inner(parse_id);
+        self.const_fold = saved_fold;
+        head
+    }
+
+    fn convert_rule_head_with_params_inner(&mut self, parse_id: TermId) -> Option<TermId> {
         let RuleHeadParams {
             head_sym,
             pos_args,
             named_args,
             params,
         } = self.classify_rule_head_params(parse_id)?;
+        let data_fold = self.const_fold.child(None);
+        self.const_fold = data_fold;
         // CONVERSION ORDER IS UNCHANGED — the positional args first, then the
         // parameters — and only the ASSEMBLY below moves. That matters: a bare name
         // written positionally resolves BEFORE any parameter enters
@@ -23543,7 +23784,11 @@ impl<'a> Loader<'a> {
             // shared [`Self::parse_arg_sort_symbol`].
             let saved_bound_ctx = std::mem::replace(&mut self.in_rule_head_bound, true);
             let bound = if self.parse_arg_type_is_applied(value) {
-                self.convert_term(value)
+                // A TYPE, converted as the term it is written as: not a data slot.
+                self.const_fold = ConstFold::Off;
+                let bound = self.convert_term(value);
+                self.const_fold = data_fold;
+                bound
             } else {
                 // Read through the SAME name reader the discriminator used — one
                 // spelling of the question, so a shape it admits cannot be one this
@@ -24374,6 +24619,55 @@ impl<'a> Loader<'a> {
         self.kb.alloc(term)
     }
 
+    /// WI-20261001-KDMQS — `sym`'s value when this walk is in a clause DATA slot and `sym`
+    /// is a `const`, else `None`. A value the loader cannot know is reported HERE, at the
+    /// slot that asked for it, and the caller keeps the symbol: the load has failed, and
+    /// the stored shape no longer matters.
+    fn data_slot_const_value(&mut self, sym: Symbol, parse_id: TermId) -> Option<Literal> {
+        if self.const_fold != ConstFold::Data || self.kb.kind_of(sym) != Some(SymbolKind::Const) {
+            return None;
+        }
+        match self.kb.const_slot_value(sym) {
+            Ok(lit) => Some(lit),
+            Err(unavailable) => {
+                let reason = unavailable.describe(self.kb, sym);
+                self.errors
+                    .push(LoadError::ConstValueUnavailableInDataSlot {
+                        name: self.kb.qualified_name_of(sym).to_string(),
+                        reason,
+                        span: self.parsed.terms.span(parse_id),
+                    });
+                None
+            }
+        }
+    }
+
+    /// WI-20261001-KDMQS — the `const` a converter-minted dotted chain (`Float.infinity`)
+    /// names, when this walk is in a clause DATA slot. §6.7 leaves a dotted chain standing
+    /// in a data slot so that the fact and the query spelling it build one term, and they
+    /// still do: both walks fold it here. Every OTHER reading of the chain (a projection,
+    /// a rule citation, a nullary operation's call) belongs to the chain's own walk, which
+    /// is why this resolves QUIETLY and answers only "is it a const".
+    ///
+    /// A chain rooted at a clause parameter or a local binder is a projection on that
+    /// binding and never names a const, however its root is spelled.
+    fn data_slot_dotted_const(&self, parse_id: TermId) -> Option<Symbol> {
+        if self.const_fold != ConstFold::Data {
+            return None;
+        }
+        let name = dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id)?;
+        let root = name.split('.').next()?;
+        if self.rule_param_vars.contains_key(root)
+            || self
+                .local_names_stack
+                .iter()
+                .any(|frame| frame.contains_key(root))
+        {
+            return None;
+        }
+        const_named(self.kb, &name, self.current_scope)
+    }
+
     /// Convert a parse-time TermId to a KB TermId, re-allocating into the hash-consed store.
     fn convert_term(&mut self, parse_id: TermId) -> TermId {
         self.convert_term_with_expected(parse_id, None)
@@ -24405,6 +24699,12 @@ impl<'a> Loader<'a> {
         // that says "do not resolve this".
         let prev_quoted = self.in_quoted_term;
         self.in_quoted_term = prev_quoted || quoted;
+        // WI-20261001-KDMQS — and a const inside one is QUOTED, not a value: a stored
+        // pattern `FactHolds(pattern: E(v: D_MIN))` means what its author wrote.
+        let prev_fold = self.const_fold;
+        if quoted {
+            self.const_fold = ConstFold::Off;
+        }
         let r = if quoted && self.in_value_position {
             self.in_value_position = false;
             let r = self.convert_term_with_expected(parse_id, expected);
@@ -24414,6 +24714,7 @@ impl<'a> Loader<'a> {
             self.convert_term_with_expected(parse_id, expected)
         };
         self.in_quoted_term = prev_quoted;
+        self.const_fold = prev_fold;
         r
     }
 
@@ -24431,11 +24732,17 @@ impl<'a> Loader<'a> {
     /// term (an instance claim) from a nested one (a type). A wrapper rather than
     /// bookkeeping inside the body, which has several early returns that would each
     /// have to restore the counter.
+    ///
+    /// WI-20261001-KDMQS: and `const_fold` the same way. A node sets its children's state
+    /// before converting each one, so the CALLER's state must come back when the node is
+    /// done.
     fn convert_term_with_expected(&mut self, parse_id: TermId, expected: Option<TermId>) -> TermId {
         let saved = self.term_depth;
+        let saved_fold = self.const_fold;
         self.term_depth = saved + 1;
         let converted = self.convert_term_inner(parse_id, expected);
         self.term_depth = saved;
+        self.const_fold = saved_fold;
         converted
     }
 
@@ -24467,6 +24774,35 @@ impl<'a> Loader<'a> {
                 pos_args,
                 named_args,
             } => {
+                // WI-20261001-KDMQS — a dotted chain that names a const (`Float.infinity`)
+                // in a clause DATA slot is the const's value, exactly as the one-segment
+                // spelling is in the `Term::Ident` arm. Asked before anything reads the
+                // node as an application, which a chain is not.
+                //
+                // A compound expression (`if` / `let` / `match` / `lambda` / `proof`) is
+                // EVALUATED, so a const inside one stays the symbol for eval to fold. The
+                // twin of the rule-body walk's rule for the same markers
+                // (`compound_expression_occurrence`), so one expression is not folded in a
+                // fact or a constraint and left alone in a rule body.
+                let node_fold = if self.parsed.terms.is_minted(parse_id)
+                    && is_compound_expression_marker(self.parsed.symbols.local_name(functor))
+                {
+                    ConstFold::Off
+                } else {
+                    self.const_fold
+                };
+                self.const_fold = node_fold;
+                if let Some(c) = self.data_slot_dotted_const(parse_id) {
+                    if let Some(lit) = self.data_slot_const_value(c, parse_id) {
+                        let kb_id = self.kb.alloc(Term::Const(lit));
+                        self.term_map.insert(parse_id.raw(), kb_id);
+                        return kb_id;
+                    }
+                }
+                // Every child of this node is a DATA slot unless the node is a connective
+                // in goal position, whose goal slots the positional loop below sets per
+                // child. `convert_term_with_expected` restores the caller's state.
+                self.const_fold = node_fold.child(None);
                 // WI-582: a `typed_var(?x, type: T)` marker — the converter's
                 // lowering of a `?x: T` rule-pattern arg. STRIP it: convert the
                 // inner variable so the head term stays structurally the bare
@@ -24740,6 +25076,26 @@ impl<'a> Loader<'a> {
                     }
                 }
 
+                // WI-20261001-KDMQS — which state each child converts under, now that the
+                // functor is known. An EQUATION head's subject and replacement do not fold
+                // (`<=>`, `=`, `===` written as a clause head): the subject is a rewrite
+                // pattern matched against operation bodies, which keep the symbol, and the
+                // replacement is spliced into them. A connective in GOAL position keeps its
+                // goal slots goals (`goal_slots`, read in the positional loop below).
+                let equation_head = node_fold == ConstFold::Goal
+                    && self.clause_head.is_some_and(|h| h.node == parse_id)
+                    && self.kb.is_equality_family_connective(new_functor);
+                let child_fold = if equation_head {
+                    ConstFold::Off
+                } else {
+                    node_fold.child(None)
+                };
+                let goal_slots = match node_fold {
+                    ConstFold::Goal => const_fold_goal_slots(self.kb, new_functor, pos_args.len()),
+                    _ => SmallVec::new(),
+                };
+                self.const_fold = child_fold;
+
                 // WI-007 context-aware ListLiteral desugaring: rewrite
                 // `ListLiteral → cons/nil` unless a DECLARED type says the position
                 // holds some other collection. A List-shaped declared type (recursing
@@ -24930,6 +25286,10 @@ impl<'a> Loader<'a> {
                     .iter()
                     .enumerate()
                     .map(|(i, &id)| {
+                        self.const_fold = match goal_slots.iter().find(|s| s.index == i) {
+                            Some(slot) => node_fold.child(Some(slot)),
+                            None => child_fold,
+                        };
                         if let Some((pat_idx, first_scoped)) = binder_layout {
                             let scoped = i == pat_idx || i >= first_scoped;
                             if scoped && !binder_pushed {
@@ -24998,6 +25358,9 @@ impl<'a> Loader<'a> {
                     .filter(|&&(_, id)| self.named_child_survives_walk(id))
                     .copied()
                     .collect();
+                // WI-20261001-KDMQS — a named argument is never a goal slot; the
+                // positional loop above left the state at its LAST slot's.
+                self.const_fold = child_fold;
                 // WI-20260902-2SZ88 — WHICH PARSE CHILD PRODUCED EACH NAMED SLOT.
                 // Recorded at the three sites that ASSIGN one — this by-name pass, the
                 // `some(x)` coercion below, and WI-433's positional plan — and never
@@ -25420,7 +25783,11 @@ impl<'a> Loader<'a> {
                     }
                 }
                 let new_sym = self.remap_symbol_strict(sym, span);
-                self.bare_contract_spec(new_sym, span)
+                // WI-20261001-KDMQS — a const in a clause data slot is its value.
+                match self.data_slot_const_value(new_sym, parse_id) {
+                    Some(lit) => Term::Const(lit),
+                    None => self.bare_contract_spec(new_sym, span),
+                }
             }
             Term::Bottom => Term::Bottom,
             Term::Ident(sym) => {
@@ -25434,9 +25801,13 @@ impl<'a> Loader<'a> {
                 } else {
                     let span = self.parsed.terms.span(parse_id);
                     let new_sym = self.remap_symbol(sym, span);
-                    // Promote to Ref if the symbol resolved to a defined name
+                    // Promote to Ref if the symbol resolved to a defined name — or, for a
+                    // const in a clause data slot, to its value (WI-20261001-KDMQS).
                     if self.kb.symbols.is_resolved(new_sym) {
-                        self.bare_contract_spec(new_sym, span)
+                        match self.data_slot_const_value(new_sym, parse_id) {
+                            Some(lit) => Term::Const(lit),
+                            None => self.bare_contract_spec(new_sym, span),
+                        }
                     } else {
                         Term::Ident(new_sym)
                     }
@@ -27974,9 +28345,13 @@ impl<'a> Loader<'a> {
     /// (`is_modifiable(Cell[V = Int64])`).
     fn build_body_atom_occurrence(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
         let saved = self.term_depth;
+        // WI-20261001-KDMQS — restored like `term_depth`, for the reason
+        // `convert_term_with_expected` gives.
+        let saved_fold = self.const_fold;
         self.term_depth = saved + 1;
         let occ = self.build_body_atom_occurrence_inner(parse_id);
         self.term_depth = saved;
+        self.const_fold = saved_fold;
         occ
     }
 
@@ -28694,6 +29069,21 @@ impl<'a> Loader<'a> {
     /// The child loops of [`Self::entity_ctor_expr`], split out only so the
     /// `descs_emitted_by_convert` save/restore around them cannot be skipped by an early
     /// `return` added later.
+    /// WI-20261001-KDMQS — is `functor`'s field `field` declared `anthill.reflect.Term`,
+    /// i.e. does it hold a QUOTED pattern? The same reading of the same declaration the
+    /// term walk takes for the field's expected type, so the two walks quote one set of
+    /// fields.
+    fn entity_field_is_quoted(&self, functor: Symbol, field: Symbol) -> bool {
+        let Some(ft) = self.kb.written_entity_field_types(functor) else {
+            return false;
+        };
+        ft.iter().any(|(s, t)| {
+            *s == field
+                && matches!(t, Value::Term { id, .. }
+                    if super::typing::is_reflect_term_type(self.kb, &TermIdView(*id)))
+        })
+    }
+
     fn entity_ctor_children(
         &mut self,
         parse_id: TermId,
@@ -28740,6 +29130,17 @@ impl<'a> Loader<'a> {
         }
         let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::with_capacity(kb_named.len());
         for &(field, kb_child) in kb_named.iter() {
+            // WI-20261001-KDMQS — A QUOTED FIELD IS RE-WALKED UNDER THE STATE ITS TERM WAS
+            // BUILT UNDER. `lowered_child_occurrence` rebuilds a passed-through child from
+            // its parse node with the OCCURRENCE walk, and the term walk converted a field
+            // declared `anthill.reflect.Term` with the const fold off
+            // (`convert_arg_value`). Re-walked with it on, the occurrence folded a const
+            // the stored term kept. MEASURED: `:- holds(pattern: f(v: D_MIN))` stopped
+            // matching `fact holds(pattern: f(v: D_MIN))`, the two spellings being one.
+            let prev_fold = self.const_fold;
+            if self.entity_field_is_quoted(functor, field) {
+                self.const_fold = ConstFold::Off;
+            }
             let occ = match origins.iter().find(|(s, _)| *s == field) {
                 Some(&(_, pid)) => self.lowered_child_occurrence(pid, kb_child),
                 // AN INVENTED SLOT — `entity_slots::complete_named_slots`'s fresh var
@@ -28751,6 +29152,7 @@ impl<'a> Loader<'a> {
                 // which is the failure the wrapped case above was measured to have.
                 None => node_occurrence::materialize_from_handle(self.kb, kb_child),
             };
+            self.const_fold = prev_fold;
             named.push((field, occ));
         }
 
@@ -28940,7 +29342,11 @@ impl<'a> Loader<'a> {
                         return occ;
                     }
                 }
-                self.nullary_op_call_or_ref(s, parse_id)
+                // WI-20261001-KDMQS — a const in a rule-body data slot is its value.
+                match self.data_slot_const_value(s, parse_id) {
+                    Some(lit) => Expr::Const(lit),
+                    None => self.nullary_op_call_or_ref(s, parse_id),
+                }
             }
             Term::Ident(sym) => {
                 // WI-742 §2.1 — the occurrence twin of `convert_term_inner`'s arm: a
@@ -28971,7 +29377,12 @@ impl<'a> Loader<'a> {
                             return occ;
                         }
                     }
-                    self.nullary_op_call_or_ref(new_sym, parse_id)
+                    // WI-20261001-KDMQS — and a const in a DATA slot is its value, the
+                    // twin of `convert_term_inner`'s arm (a rule's head rides that walk).
+                    match self.data_slot_const_value(new_sym, parse_id) {
+                        Some(lit) => Expr::Const(lit),
+                        None => self.nullary_op_call_or_ref(new_sym, parse_id),
+                    }
                 } else {
                     Expr::Ident(new_sym)
                 }
@@ -28991,15 +29402,36 @@ impl<'a> Loader<'a> {
                 // decides which of this node's arguments are themselves goals.
                 let at_goal = std::mem::replace(&mut self.in_body_goal, false);
                 let is_wrapper = std::mem::replace(&mut self.in_body_goal_wrapper, false);
+                // WI-20261001-KDMQS — this node's const-fold state, read before anything
+                // below moves it for the children.
+                let node_fold = self.const_fold;
                 // WI-20260903-FC2X4 — A COMPOUND EXPRESSION IS LOWERED BY THE WALK THAT
                 // OWNS ITS LAYOUT. Asked FIRST, before any reading below: a marker's
                 // functor IS a reflect-form name, so leaving it to the round-trip is what
                 // built `lambda_expr(param: ⊥, body: ⊥)`. Asked AFTER the two flags are
                 // consumed, so the delegated subtree is entered as the value expression it
                 // is — a lambda body is not a goal, and neither is an `if` branch.
+                // WI-20261001-KDMQS: and it is EVALUATED, so a const inside one stays the
+                // symbol for eval to fold, as it does in an operation body.
+                self.const_fold = ConstFold::Off;
                 if let Some(occ) = self.compound_expression_occurrence(parse_id) {
                     return occ;
                 }
+                self.const_fold = node_fold;
+                // WI-20261001-KDMQS — a dotted chain naming a const in a DATA slot is its
+                // value: the twin of `convert_term_inner`'s arm, so a fact holding
+                // `Float.infinity` and a body goal spelling it build one term.
+                if let Some(c) = self.data_slot_dotted_const(parse_id) {
+                    if let Some(lit) = self.data_slot_const_value(c, parse_id) {
+                        return NodeOccurrence::new_expr(Expr::Const(lit), span, None);
+                    }
+                }
+                // Every child is a DATA slot unless this node is a connective in goal
+                // position (its goal slots are set per child in the positional loop). The
+                // entity and reflect-form paths below hand the WHOLE node to the term
+                // walk, which reads this as the node's own state; an entity constructor is
+                // never a connective, so its children come out the same either way.
+                self.const_fold = node_fold.child(None);
                 // WI-20260901-719FJ — A BODY GOAL IS A LOGICAL SUBJECT, so a dotted
                 // paren-less citation written here is the NAME, exactly as the
                 // one-segment `:- tgt` already is (P85Z7). Asked at the GOAL and not in
@@ -29190,8 +29622,15 @@ impl<'a> Loader<'a> {
                     // written on one walk alone is a rule that does not hold.
                     let spec_instance_slot =
                         self.parsed.symbols.local_name(functor) == dt::FIND_DICTIONARY;
+                    let fold_slots = match node_fold {
+                        ConstFold::Goal => {
+                            const_fold_goal_slots(self.kb, new_functor, pos_args.len())
+                        }
+                        _ => SmallVec::new(),
+                    };
                     let mut pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(pos_args.len());
                     for (i, &pid) in pos_args.iter().enumerate() {
+                        self.const_fold = node_fold.child(fold_slots.iter().find(|s| s.index == i));
                         if spec_instance_slot && i == 0 {
                             pos.push(self.build_require_spec_occurrence(pid));
                             continue;
@@ -29214,6 +29653,7 @@ impl<'a> Loader<'a> {
                         self.in_body_goal_wrapper = false;
                     }
                     let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
+                    self.const_fold = node_fold.child(None);
                     for &(sym, pid) in named_args.iter() {
                         if let Some(child) = self.lower_effect_row_aux_occ(pid) {
                             named.push((self.reintern(sym), child));
@@ -30970,7 +31410,12 @@ impl<'a> Loader<'a> {
         // `UnresolvedTypeName` arm). Save/restore (not just set) so a value
         // sub-context a future arm introduces can opt back out.
         let saved_type_pos = std::mem::replace(&mut self.in_type_position, true);
+        // WI-20261001-KDMQS: and no const folds here. A type argument (`Vector[Int64, N]`)
+        // is not a clause data slot, even when the type is written inside one (`fact
+        // f[T = …]`, `?x: T`).
+        let saved_fold = std::mem::replace(&mut self.const_fold, ConstFold::Off);
         let child = self.type_expr_to_child_inner(ty, span, owner);
+        self.const_fold = saved_fold;
         self.in_type_position = saved_type_pos;
         child
     }
@@ -31978,6 +32423,87 @@ impl<'a> Loader<'a> {
         // phantom row. The reflect readers (`KB.fields`, `sort_query`) resolve
         // the entity BY REFERENCE (WI-632) and read this registry by functor.
         self.kb.register_entity_field_types(functor, field_types);
+    }
+
+    /// WI-20261001-KDMQS — record const `c`'s LOAD-TIME value source
+    /// (`kb::const_value`). In the declaration pass, so that a data slot in any file can
+    /// fold `c` whatever order the files load in: the WI-936 reason, one registry over.
+    ///
+    /// A bodyless const records nothing here. Its source is a binding block's
+    /// `const_map`, recorded by [`Self::declare_const_map_sources`].
+    fn declare_const_source(&mut self, c: &Const) {
+        let Some(body) = c.value else {
+            return;
+        };
+        let sym = self.remap_name(&c.name);
+        let source = match self.parsed.terms.get(body) {
+            Term::Const(lit) => const_value::ConstSource::Literal(lit.clone()),
+            _ => match self.parse_const_reference(body) {
+                Some(other) => const_value::ConstSource::Alias(other),
+                None => const_value::ConstSource::Computed,
+            },
+        };
+        self.kb.record_const_source(sym, source);
+    }
+
+    /// The const a const BODY names when the body is nothing but a name (`= B`,
+    /// `= Float.infinity`): a one-segment name, or a converter-minted dotted chain.
+    fn parse_const_reference(&self, body: TermId) -> Option<Symbol> {
+        let name = match self.parsed.terms.get(body) {
+            Term::Ident(s) => self.parsed.symbols.local_name(*s).to_owned(),
+            Term::Fn { .. } => {
+                dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, body)?
+            }
+            _ => return None,
+        };
+        const_named(self.kb, &name, self.current_scope)
+    }
+
+    /// WI-20261001-KDMQS — record the host value source of every const a `language rust`
+    /// binding block's `const_map` realizes. The interpreter's language only: a C++
+    /// `const_map` names a C++ expression, which no load-time fold can run.
+    ///
+    /// The SAME `const_map` entry is read again after every file is loaded, by
+    /// [`build_host_const_mappings`] for the interpreter. Each entry this cannot resolve is
+    /// skipped quietly because that later reader reports it, and the two readings are
+    /// compared by [`check_const_sources_agree`], so they cannot drift apart unnoticed.
+    fn declare_const_map_sources(&mut self, pb: &ProvidesBlock) {
+        if self.parsed.symbols.local_name(pb.language) != INTERPRETER_LANG
+            || !pb
+                .items
+                .iter()
+                .any(|i| matches!(i, ProvidesItem::ConstMap(_)))
+        {
+            return;
+        }
+        let base = type_expr_base_name(&self.parsed.symbols, &pb.spec);
+        let ResolveResult::Found(carrier) = resolve_name_in_kb(self.kb, &base, self.current_scope)
+        else {
+            return;
+        };
+        let carrier_qn = self.kb.qualified_name_of(carrier).to_string();
+        for item in &pb.items {
+            let ProvidesItem::ConstMap(entries) = item else {
+                continue;
+            };
+            for e in entries {
+                let Term::Const(Literal::String(key)) = self.parsed.terms.get(e.host_fn) else {
+                    continue;
+                };
+                let const_qn = format!(
+                    "{carrier_qn}.{}",
+                    self.parsed.symbols.local_name(e.const_name)
+                );
+                if let Some(sym) = self
+                    .kb
+                    .try_resolve_symbol(&const_qn)
+                    .filter(|&s| self.kb.kind_of(s) == Some(SymbolKind::Const))
+                {
+                    let source = const_value::ConstSource::Host(key.clone());
+                    self.kb.record_const_source(sym, source);
+                }
+            }
+        }
     }
 
     /// WI-936 — `e`'s field types in declared order, as the declaration pass
@@ -33320,7 +33846,11 @@ impl<'a> Loader<'a> {
         // WI-20260901-719FJ: a fact head is a LOGICAL SUBJECT too — `fact nsx.tgt` is
         // the same reference `fact nsx.tgt()` is, and used to file its clause under
         // `field_access` (measured: 1 clause on `nsx.tgt` where the twin filed 2).
+        // WI-20261001-KDMQS — a fact is a CLAUSE: its head is a goal position and every
+        // argument a data slot, where a const is its value.
+        let prev_fold = std::mem::replace(&mut self.const_fold, ConstFold::Goal);
         let term = self.convert_subject_term(f.term);
+        self.const_fold = prev_fold;
         self.clause_head = prev_clause_head;
         // WI-20260903-FCZ3N — A `fact lhs <=> rhs` IS A BODYLESS EQUATION, so it fires
         // like the `rule` spelling and needs its RHS occurrence for the same reason. The
@@ -34174,15 +34704,23 @@ impl<'a> Loader<'a> {
                     // carve-out: it is a TEST that fires in NEITHER spelling, so
                     // reclassifying its LHS puts it on the same path its sigil twin
                     // already takes.
+                    //
+                    // WI-20261001-KDMQS — the equation's SUBJECT converts with no const
+                    // fold (an equation's sides keep the symbol, see `convert_term_inner`),
+                    // and it is memoized here, so the connective walk below must agree —
+                    // which its `equation_head` test does. Every other head is a GOAL
+                    // position whose arguments are data slots.
                     if let Some((_, lhs, _)) =
                         parse_connective_head(&self.parsed.symbols, &self.parsed.terms, *tid)
                     {
                         self.convert_rule_head_with_params(lhs);
                     }
+                    let prev_fold = std::mem::replace(&mut self.const_fold, ConstFold::Goal);
                     let head = match self.convert_rule_head_with_params(*tid) {
                         Some(h) => h,
                         None => self.convert_subject_term(*tid),
                     };
+                    self.const_fold = prev_fold;
                     self.in_value_position = false;
                     self.in_rule_head = false;
                     self.clause_head = None;
@@ -34250,7 +34788,11 @@ impl<'a> Loader<'a> {
                 // load (a proof's step rules) cannot leak the state.
                 let prev_goal = self.in_body_goal;
                 self.in_body_goal = true;
+                // WI-20261001-KDMQS — and the const fold's state starts at the same
+                // place: a goal, whose data slots fold.
+                let prev_fold = std::mem::replace(&mut self.const_fold, ConstFold::Goal);
                 let atom = self.build_body_atom_occurrence(tid);
+                self.const_fold = prev_fold;
                 self.in_body_goal = prev_goal;
                 body_nodes.push(atom);
             }
@@ -35513,6 +36055,16 @@ impl<'a> Loader<'a> {
     }
 
     fn load_constraint(&mut self, c: &Constraint, domain: Symbol) {
+        // WI-20261001-KDMQS — a constraint's goals are matched against facts like a rule
+        // body's, so each is a GOAL position whose data slots fold. Set across the whole
+        // item because the FIRST conversion of a goal (`reject_binding_unify_in_contract`)
+        // is the one memoized and stored.
+        let prev_fold = std::mem::replace(&mut self.const_fold, ConstFold::Goal);
+        self.load_constraint_inner(c, domain);
+        self.const_fold = prev_fold;
+    }
+
+    fn load_constraint_inner(&mut self, c: &Constraint, domain: Symbol) {
         // An unlabeled constraint names nothing to key a block by; the converter refuses
         // a block on one (WI-20260914-DV7DP), as it refuses a description block.
         if let Some(label) = c.label.as_ref().map(|n| self.remap_name(n)) {
@@ -37932,6 +38484,9 @@ impl<'a> Loader<'a> {
 
     fn load_meta_block(&mut self, mb: &MetaBlock) -> TermId {
         let meta_sym = self.kb.resolve_symbol("meta");
+        // WI-20261001-KDMQS — metadata is not a clause data slot, even on a constraint,
+        // whose loader sets the fold state for its whole item.
+        let prev_fold = std::mem::replace(&mut self.const_fold, ConstFold::Off);
         let named_args: SmallVec<[(Symbol, TermId); 2]> = mb
             .entries
             .iter()
@@ -37941,6 +38496,7 @@ impl<'a> Loader<'a> {
                 (key_sym, val)
             })
             .collect();
+        self.const_fold = prev_fold;
         self.kb.alloc(Term::Fn {
             functor: meta_sym,
             pos_args: SmallVec::new(),
@@ -37988,14 +38544,18 @@ impl ScopePass for DeclarePass<'_, '_> {
     fn at_item(&mut self, item: &Item, _scope: ScopeId, _prefix: &str) {
         match item {
             Item::Entity(e) => self.0.register_declared_field_types(e),
+            // WI-20261001-KDMQS — a const's load-time value source, from its body or
+            // from a `language rust` block's `const_map`, for the same reason the field
+            // types are declared here: a clause in another file may need it first.
+            Item::Const(c) => self.0.declare_const_source(c),
+            Item::ProvidesBlock(pb) => self.0.declare_const_map_sources(pb),
             // `AbstractSort` is handled by the alias pre-load; the rest declare no
-            // entity fields. Exhaustive on purpose: a future item kind that can
-            // contain an `entity` has to decide here, rather than defaulting into
-            // the silence above.
+            // entity fields and no const value. Exhaustive on purpose: a future item
+            // kind that can contain an `entity` has to decide here, rather than
+            // defaulting into the silence above.
             Item::AbstractSort(_)
             | Item::Rule(_)
             | Item::Operation(_)
-            | Item::Const(_)
             | Item::RequiresDecl(_)
             | Item::Fact(_)
             | Item::Constraint(_)
@@ -38003,8 +38563,7 @@ impl ScopePass for DeclarePass<'_, '_> {
             | Item::RuleBlock(_)
             | Item::Describe(_)
             | Item::Proof(_)
-            | Item::ProvidesClause(_)
-            | Item::ProvidesBlock(_) => {}
+            | Item::ProvidesClause(_) => {}
             // Routed to `enter_scope` by `walk_scopes`, which is the ONE place an
             // `Item` is classified as scope-opening.
             Item::Namespace(_) | Item::SortWithBody(_) => {

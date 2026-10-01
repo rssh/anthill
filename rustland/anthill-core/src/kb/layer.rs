@@ -172,6 +172,10 @@ kb_scoped_fields!(
     domain_value_face_declined,
     const_types,
     const_bodies,
+    // WI-20261001-KDMQS — a layer's const declarations record value sources beside the
+    // bodies above, and the memo can hold a value read through one of them.
+    const_sources,
+    const_slot_values,
     existential_return_ops,
     field_wise_noneq_carriers,
     partial_transparent_carriers,
@@ -398,6 +402,8 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         domain_value_face_declined: _,
         const_types: _,
         const_bodies: _,
+        const_sources: _,
+        const_slot_values: _,
         existential_return_ops: _,
         field_wise_noneq_carriers: _,
         partial_transparent_carriers: _,

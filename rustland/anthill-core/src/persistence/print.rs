@@ -37,10 +37,11 @@ pub fn write_literal(lit: &Literal, buf: &mut String) {
         // spelling was worse: Rust's `inf` reloads SILENTLY as an identifier, and the
         // `.0` fix-up below garbled it into `inf.0`.
         //
-        // NOT YET RELOAD-FAITHFUL: a persisted `f(v: Float.infinity)` loads as
-        // `field_access(Float, infinity)` rather than as the Float, because the loader
-        // does not fold a const in fact data (WI-20261001-KDMQS). That is the loader's
-        // gap, not a reason to print a spelling that names nothing.
+        // RELOAD-FAITHFUL since WI-20261001-KDMQS: the loader folds a const in a clause
+        // data slot to its value, so a persisted `f(v: Float.infinity)` loads as the
+        // Float. The reload scope must import `Float`, as it must import every other name
+        // a store writes. The parse of that text keys as `Float.infinity` too
+        // ([`TermPrinter::dotted_chain_name`]), so the file store can still retract it.
         Literal::Float(f) if f.is_nan() => buf.push_str("Float.nan"),
         Literal::Float(f) if f.is_infinite() => buf.push_str(if f.is_sign_positive() {
             "Float.infinity"
@@ -1069,6 +1070,12 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 pos_args,
                 named_args,
             } => {
+                // WI-20261001-KDMQS — a NAME-ROOTED `field_access` chain prints as the
+                // dotted name it spells. See [`Self::dotted_chain_name`].
+                if let Some(name) = self.dotted_chain_name(id) {
+                    buf.push_str(&name);
+                    return;
+                }
                 // A ground cons/nil spine prints as a list literal (see
                 // `unwrap_list_spine` for why the cons form must not be
                 // written to disk).
@@ -1240,6 +1247,53 @@ impl<'a, V: TermSource + ?Sized> TermPrinter<'a, V> {
                 }
             }
         }
+    }
+
+    /// WI-20261001-KDMQS — the dotted name a NAME-ROOTED `field_access` chain spells
+    /// (`field_access(Float, infinity)` is `Float.infinity`), or `None` for any other term.
+    /// Name-rooted means every receiver down the chain is a name (`Ref`/`Ident`) or
+    /// another such chain, and every selector is a name: the shape §6.7 lowers a written
+    /// `A.B` to. A projection on a value (`?x.f`) or a typer-minted selector (a string)
+    /// is not one and prints as its structure.
+    ///
+    /// THE CONTENT KEY NEEDS IT. The loader folds a const in a data slot to its value, so
+    /// a persisted `+∞` is written `Float.infinity` (the const's name, [`write_literal`]),
+    /// loads as the Float, and keys as `Float.infinity` on the KB side, while the parse of
+    /// the same on-disk text is the minted chain `field_access(Float, infinity)`. The file
+    /// store's retract compares those two prints. Printed structurally they differ and
+    /// the retract is a silent no-op.
+    ///
+    /// ON BOTH VIEWS, and not gated on the parse side's `is_minted` provenance. Gated, a
+    /// HAND-written dotted name that is not a const (`fact h(o: Option.none)`) would key
+    /// `Option.none` from its text and `field_access(Option, none)` from the KB, which is
+    /// the same silent no-op one spelling over. Ungated, both views print one text for
+    /// one chain. The reload-faithful print is better for it too: the dotted text reloads
+    /// as the minted chain it came from, where `field_access(…)` reloaded as a call.
+    fn dotted_chain_name(&self, id: TermId) -> Option<String> {
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = self.view.term(id)
+        else {
+            return None;
+        };
+        if !named_args.is_empty()
+            || pos_args.len() != 2
+            || !dt::is(self.view.sym_name(*functor), dt::FIELD_ACCESS)
+        {
+            return None;
+        }
+        let selector = match self.view.term(pos_args[1]) {
+            Term::Ref(s) | Term::Ident(s) => self.view.sym_name(*s),
+            _ => return None,
+        };
+        let receiver = match self.view.term(pos_args[0]) {
+            Term::Ref(s) | Term::Ident(s) => self.view.sym_name(*s).to_owned(),
+            Term::Fn { .. } => self.dotted_chain_name(pos_args[0])?,
+            _ => return None,
+        };
+        Some(format!("{receiver}.{selector}"))
     }
 
     /// WI-173: is `functor` one of the distinct `TypeExtractor.*` type functors

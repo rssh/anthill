@@ -993,7 +993,7 @@ impl Interpreter {
     /// registered reflect builtin) and caches it; every later demand returns the
     /// cache. The `Forcing` sentinel makes a dependency cycle (`const A = B + 1;
     /// const B = A + 1`) a loud `ConstCycle` error rather than an infinite fold.
-    fn force_const(&mut self, sym: Symbol) -> Result<Value, EvalError> {
+    pub(crate) fn force_const(&mut self, sym: Symbol) -> Result<Value, EvalError> {
         match self.const_cache.get(&sym) {
             Some(super::ConstCacheEntry::Cached(v)) => return Ok(v.clone()),
             Some(super::ConstCacheEntry::Forcing) => {

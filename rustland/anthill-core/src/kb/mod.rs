@@ -1,5 +1,6 @@
 pub(crate) mod body_specialize;
 pub mod call_form;
+pub(crate) mod const_value;
 pub mod defaults;
 pub(crate) mod discrim;
 pub(crate) mod entity_slots;
@@ -1657,6 +1658,18 @@ pub struct KnowledgeBase {
     /// consts have no entry. Folding the body to a value is a later phase.
     pub(crate) const_bodies: HashMap<Symbol, Rc<NodeOccurrence>>,
 
+    /// WI-20261001-KDMQS — each const's LOAD-TIME value source, recorded by the
+    /// declaration pass before any clause converts. Read only through
+    /// [`Self::const_slot_value`]; see `kb::const_value` for what has a value at load.
+    /// Persists across load phases: a later phase's data slot may name an earlier
+    /// phase's const.
+    pub(crate) const_sources: HashMap<Symbol, const_value::ConstSource>,
+
+    /// WI-20261001-KDMQS — [`Self::const_slot_value`]'s memo. Cleared whenever a source
+    /// is recorded (`record_const_source`).
+    pub(crate) const_slot_values:
+        HashMap<Symbol, Result<term::Literal, const_value::ConstUnavailable>>,
+
     /// WI-443 — true once the loader has built any `dot_apply` expression.
     /// The typer's tree-reassembly gate reads it: a DotApply is ALWAYS
     /// rewritten by the typer (to the dispatched call), so its ancestors
@@ -2496,6 +2509,8 @@ impl KnowledgeBase {
             op_info_index: None,
             const_types: HashMap::new(),
             const_bodies: HashMap::new(),
+            const_sources: HashMap::new(),
+            const_slot_values: HashMap::new(),
             has_dot_applies: false,
             simp_gate_cache: None,
             simp_guard_depth: 0,

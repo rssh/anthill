@@ -53,6 +53,8 @@ The value materializes only where demanded:
 
 Neither path requires value-level expansion-during-unification. That mechanism — the value-level generalization of WI-374's type-level "elimination at the unify boundary" — is explicitly **not** a v1 dependency. (A future hybrid could expand eagerly in data / fact-head positions while staying symbolic in guards; the eval-side cache read covers all current drivers without it.)
 
+**Delivered for data slots (WI-20261001-KDMQS).** The hybrid landed, eager and at LOAD rather than at the resolver: a const in a clause's data slot (fact and rule heads, rule and constraint body goals, query patterns) is folded to its value when the clause converts, so the discrimination tree indexes the value and both sides of a match fold alike. A bare const in goal position stays symbolic (WI-20260822-NDG34), and so do operation bodies, which still fold at eval as above. Folding at load bounds the value source to a literal body, an alias of another const, or a `language rust` `const_map` entry; a computed body in a data slot is refused. The spec's statement is `docs/kernel-language.md` §5.9.
+
 ### Typing is fold-free
 
 The load-bearing driver — `set_channel(em, BROADCAST_CHANNEL)` checking against `channel: Int64` — needs only the **declared type** `T`, read directly off the `Const` symbol. No evaluation occurs during type-checking; folding is triggered solely by an actual value demand at eval / codegen. So a const type-checks even when its value source is unavailable (the host-supplied, spec-only case).

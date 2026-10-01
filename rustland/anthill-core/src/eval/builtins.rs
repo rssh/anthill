@@ -595,29 +595,26 @@ fn register_const_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
         ..
     } in mappings
     {
-        let Some(host) = host_fn_by_key(interp.kb(), &host_fn) else {
-            return Err(EvalError::Internal(format!(
-                "broken binding block: const_map names host value {host_fn:?} for \
-                 {const_qn}, which the rust runtime does not provide. No interpreter can \
-                 be built for this program until the binding is fixed."
-            )));
+        let host = match const_value_source(interp.kb(), &host_fn) {
+            Ok(host) => host,
+            Err(ConstValueSourceRefusal::UnknownKey) => {
+                return Err(EvalError::Internal(format!(
+                    "broken binding block: const_map names host value {host_fn:?} for \
+                     {const_qn}, which the rust runtime does not provide. No interpreter can \
+                     be built for this program until the binding is fixed."
+                )))
+            }
+            Err(ConstValueSourceRefusal::NotNullary { arity }) => {
+                return Err(EvalError::Internal(format!(
+                    "const_map maps {const_qn} to {host_fn:?}, but a const's value source \
+                     must be NULLARY and {host_fn:?} takes {arity} argument(s)"
+                )))
+            }
         };
         // `const_sym` is `None` only when the loader already refused this mapping (the
         // const is undeclared, or is not a const at all), so the load errored and
         // nothing should be registered against it.
         let Some(sym) = const_sym else { continue };
-        // A const's value source is NULLARY — `force_const` invokes it with no args. A
-        // host_fn that takes arguments cannot be one; caught here, the earliest point
-        // that knows the host function's arity. (The peer check for operations lives in
-        // `register_operation_mappings`; here the operation-side "declared arity" is
-        // fixed at zero because a const takes none.)
-        if host.arity != 0 {
-            return Err(EvalError::Internal(format!(
-                "const_map maps {const_qn} to {host_fn:?}, but a const's value source \
-                 must be NULLARY and {host_fn:?} takes {} argument(s)",
-                host.arity
-            )));
-        }
         // Under BOTH spellings, for the same reason the operation peer does it: eval's
         // const lookup is a RAW `Symbol` map hit, so whichever spelling `force_const`
         // reaches must find the registration.
@@ -628,6 +625,68 @@ fn register_const_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
         }
     }
     Ok(())
+}
+
+/// Why a `const_map` key names no usable value source. See [`const_value_source`].
+pub(crate) enum ConstValueSourceRefusal {
+    /// No host function is registered under the key, in either registry.
+    UnknownKey,
+    /// The host function takes arguments.
+    NotNullary { arity: usize },
+}
+
+/// The host value source a `const_map` key names: looked up in the one registry
+/// ([`host_fn_by_key`]) and held to the shape a const's value source has. It must be
+/// NULLARY, because `force_const` invokes it with no arguments. (The operation peer's check
+/// lives in `register_operation_mappings`; a const's "declared arity" is fixed at zero.)
+///
+/// ONE OWNER for both readers: [`register_const_mappings`] binds what this returns for
+/// `force_const` at run time, and [`host_const_literal`] runs it at load for a clause data
+/// slot (WI-20261001-KDMQS). Two copies of the checks could accept different keys, and
+/// then a data slot and an operation body would read two values for one const.
+fn const_value_source(
+    kb: &crate::kb::KnowledgeBase,
+    key: &str,
+) -> Result<HostFn, ConstValueSourceRefusal> {
+    let host = host_fn_by_key(kb, key).ok_or(ConstValueSourceRefusal::UnknownKey)?;
+    if host.arity != 0 {
+        return Err(ConstValueSourceRefusal::NotNullary { arity: host.arity });
+    }
+    Ok(host)
+}
+
+/// WI-20261001-KDMQS — run a `const_map` value source at LOAD, for a clause data slot that
+/// names the const (`kb::const_value`). The value [`register_const_mappings`] binds for
+/// `force_const`, through the same [`const_value_source`].
+///
+/// THE INTERPRETER IS A SCRATCH ONE OVER AN EMPTY KB, deliberately not the program's.
+/// A const's value source is nullary and carrier-independent (proposal 039: `fn() ->
+/// Value`), so there is nothing in the KB for it to read, and the KB a clause converts
+/// against is half-loaded. Lending that KB to a full interpreter would make the value
+/// depend on how far the load had got.
+pub(crate) fn host_const_literal(
+    kb: &crate::kb::KnowledgeBase,
+    key: &str,
+) -> Result<crate::kb::term::Literal, crate::kb::const_value::ConstUnavailableWhy> {
+    use crate::kb::const_value::ConstUnavailableWhy as Why;
+    use crate::kb::term_view::TermView;
+    let host = const_value_source(kb, key).map_err(|refusal| match refusal {
+        ConstValueSourceRefusal::UnknownKey => Why::UnknownHostKey(key.to_string()),
+        ConstValueSourceRefusal::NotNullary { arity } => Why::HostNotNullary {
+            key: key.to_string(),
+            arity,
+        },
+    })?;
+    let mut scratch = Interpreter::new(crate::kb::KnowledgeBase::new());
+    let value = host.call(&mut scratch, &[]).map_err(|e| Why::HostFailed {
+        key: key.to_string(),
+        message: e.to_string(),
+    })?;
+    value
+        .as_literal(scratch.kb())
+        .ok_or_else(|| Why::HostNotScalar {
+            key: key.to_string(),
+        })
 }
 
 // WI-20260923-9R5HN — `register_if_present` (register a builtin if its qualified name
