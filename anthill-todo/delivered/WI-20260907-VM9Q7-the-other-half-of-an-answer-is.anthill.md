@@ -3,9 +3,9 @@
 - id: WI-20260907-VM9Q7-the-other-half-of-an-answer-is
 - created: 2026-09-07T00:39:06Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-07T00:39:06Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-01T06:41:28Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -92,4 +92,10 @@ re-spell it rather than deleting it.
 REFERENCE: `KnowledgeBase::fold_const_occurrences` and `answer_binding` (kb/mod.rs),
 `Value::from_literal` (eval/value.rs), `persistence/print.rs`'s `TermPrinter`,
 `wi_emvcb_answer_is_a_value_test.rs`.
+
+## Changes
+
+### 2026-10-01T06:41:10Z — feedback — user
+
+Delivered in 7fbb103b. The float question was answered as a PRINTER defect, fixed first and on its own: render_value now reads a literal through TermView::as_literal + write_literal on every carrier, so Literal::Float is not refused by the fold (?r <=> 3.0 already printed 3 before this change). Census per Literal variant at render_value's site, driven by anthill-cli wi_vm9q7_literal_rendering_test: Float and String differed, Int/BigInt/Bool agreed. The String row led (user decision) to spec §2.4's \u{HEX} escape with unknown escapes refused; the IEEE specials print as Float.infinity/negativeInfinity/nan (user decision), whose reload is WI-20261001-KDMQS. MUST-FLIP row re-spelled as a_fact_matched_literal_answers_the_value; float_division_computes and the pass-either-way rows unmoved; back-outs measured at each site. Workspace 7875 passed / 0 failed; scaland testFull green.
 
