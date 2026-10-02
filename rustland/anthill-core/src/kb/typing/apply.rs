@@ -318,6 +318,16 @@ pub(super) fn check_apply_iter(
         // both dispatch routes, the spec-op one (`dispatch_spec_op_cached`) and the
         // Direct-call dictionary build (`build_concrete_dispatch_dict`).
         let selections = seed_op_type_args(kb, &mut subst, &op, occ, fn_sym, span)?;
+        // WI-20260929-0RP29: the operation's type parameters the bracket wrote — a dispatched
+        // override's own parameter aligned with one takes it ([`override_at_call`]).
+        let bracket_params: SmallVec<[VarId; 2]> = op
+            .type_params
+            .iter()
+            .filter_map(|(_, v)| match v {
+                Var::Global(vid) if subst.resolve_as_value(*vid).is_some() => Some(*vid),
+                _ => None,
+            })
+            .collect();
         // WI-20260911-RS2G4 (058 rule 1, the SORT half of the BINDING) — and the
         // receiver bracket, which writes the SAME channel. See
         // [`seed_receiver_type_args`] for why it is here and not at the W6JH0 result arm
@@ -365,6 +375,16 @@ pub(super) fn check_apply_iter(
         // element, and the outer return-type check rejects the differing
         // declared return. `carrier_bound` is reused below to gate the WI-357
         // effect-close, which the early bind would otherwise steal.
+        // WI-20260827-1F0QP: the parameter each POSITIONAL argument fills, from the one owner
+        // ([`positional_param_indices`]) that `bind_call_arguments` and
+        // `reorder_named_args_in_apply` also read — computed once here and handed to every
+        // reader of an argument by parameter (WI-20260929-0RP29: they each used to rank it
+        // again). The identity for a call with no labels, which is nearly every call; what it
+        // changes is the MIXED one, whose positional arguments rank among the parameters the
+        // labels did not take — reading `params.get(i)` there checked an argument against one
+        // parameter while the runtime bound it to another. `op.params` is the
+        // inference-expanded list and `written_params` its clone, so ONE index serves both.
+        let pos_call_params = positional_param_indices(kb, &op.params, pos_args.len(), named_args);
         let self_recv_spec = self_receiver_spec_sort(kb, &op, fn_sym);
         // WI-383 B: capture the CARRIER-PARAM provision (the `Iterable.find(c: C)` /
         // `ModifyRuntime.get(target: T)` shape — receiver typed by the spec's own carrier
@@ -374,9 +394,25 @@ pub(super) fn check_apply_iter(
         let carrier_param_info = if self_recv_spec.is_some() {
             None
         } else {
-            carrier_param_receiver(kb, &op.params, fn_sym, pos_args, named_args, &|i, pname| {
-                supplied_arg_type(kb, i, pname, pos_results, named_args, named_results)
-            })
+            carrier_param_receiver(
+                kb,
+                &op.params,
+                fn_sym,
+                pos_args,
+                &pos_call_params,
+                named_args,
+                &|i, _| {
+                    supplied_arg_type(
+                        kb,
+                        &op.params,
+                        &pos_call_params,
+                        i,
+                        pos_results,
+                        named_args,
+                        named_results,
+                    )
+                },
+            )
         };
         // WI-590 — the ENCLOSING SORT's `requires` clause licensing this call, when the
         // carrier-param classification declined. ONE lookup: the binder below and both
@@ -393,6 +429,7 @@ pub(super) fn check_apply_iter(
                 env,
                 &op,
                 fn_sym,
+                &pos_call_params,
                 named_args,
                 pos_results,
                 named_results,
@@ -407,13 +444,22 @@ pub(super) fn check_apply_iter(
         let carrier_param_sym: Option<Symbol> = carrier_param_info.as_ref().map(|(_, c, ..)| *c);
         let carrier_bound = match self_recv_spec {
             Some(spec_sort) => {
-                match receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results) {
+                match receiver_carrier(
+                    kb,
+                    &op,
+                    spec_sort,
+                    &pos_call_params,
+                    named_args,
+                    pos_results,
+                    named_results,
+                ) {
                     ReceiverCarrier::Concrete(recv) => bind_spec_params_from_carrier(
                         kb,
                         &mut subst,
                         &op,
                         spec_sort,
                         recv.sort,
+                        &pos_call_params,
                         named_args,
                         pos_results,
                         named_results,
@@ -480,8 +526,16 @@ pub(super) fn check_apply_iter(
                 .params
                 .iter()
                 .enumerate()
-                .map(|(i, (pname, _))| {
-                    supplied_arg_type(kb, i, *pname, pos_results, named_args, named_results)
+                .map(|(i, _)| {
+                    supplied_arg_type(
+                        kb,
+                        &op.params,
+                        &pos_call_params,
+                        i,
+                        pos_results,
+                        named_args,
+                        named_results,
+                    )
                 })
                 .collect();
             bind_op_type_params_from_op_requires(kb, &mut subst, &op, fn_sym, &arg_tys);
@@ -492,37 +546,12 @@ pub(super) fn check_apply_iter(
         // arg loops), so it fills still-free type params without overriding any
         // that an argument pinned.
         let mut arg_effects: Vec<Value> = Vec::new();
-        let mut param_to_arg_sym: HashMap<Symbol, Symbol> = HashMap::new();
-        // WI-506: EFFECTS-ONLY re-key additions for a field-projection argument.
-        // `Cell.set(c.rep, …)` passes `c.rep`, which has no single value-ref sym, so
-        // `param_to_arg_sym` skips it and the callee's `Modify[<param>]` would survive
-        // un-re-keyed (a spurious "undeclared effect"). A `Modify` on a projection
-        // argument coarsens to the projection's HEAD parameter (`Modify[c.rep]` is
-        // covered by `Modify[c]`; proposal 037 §"Effect-row convention"), so record
-        // param → head HERE — kept out of `param_to_arg_sym` because the head loses the
-        // `.rep`, which a re-keyed RETURN type (where the exact projection matters, and a
-        // sym cannot represent it) must not do.
-        let mut param_to_arg_head: HashMap<Symbol, Symbol> = HashMap::new();
-        // WI-20260823-4GBQV: the arguments that name NO PLACE — the population
-        // [`unrekeyed_modify_argument`] judges, and the parameters the EFFECT re-key must
-        // therefore skip. Recorded where the decision is made rather than recomputed
-        // after, so the maps cannot disagree about which shapes count.
-        //
-        // NOT RARE, and saying otherwise misleads the next reader about the cost: every
-        // non-variable argument lands here, a LITERAL included — `Cell.set(k, 1)` records
-        // the `1`. So the check below runs on a large share of all calls, not a corner.
-        // It stays cheap because it walks the callee's INCURRED effects and stops at the
-        // first non-`Modify`; correctness does not depend on the population, only the
-        // budget does. (`/code-review` caught the claim.)
-        //
-        // NOT A NARROWING OF `param_to_arg_sym`, which is read by the RETURN-type and
-        // value-in-type re-keys too and asks a different question of the same argument:
-        // `f(wrap)` genuinely passes `wrap`, and a return type mentioning that parameter
-        // must still say so. Only the EFFECT map skips these — a `Modify` re-keyed onto a
-        // name the declaration cannot spell (`Modify[T = wrap]`, over a field-bearing
-        // constructor) leaves the program unwritable, which is the leak in another
-        // spelling.
-        let mut param_to_placeless_arg: HashMap<Symbol, Rc<NodeOccurrence>> = HashMap::new();
+        // WI-506 / WI-20260823-4GBQV: each argument by the parameter it binds, as [`arg_place`]
+        // classifies it ([`ArgPlaces`]) — a VARIABLE (read by the return-type and value-in-type
+        // re-keys too), a field path's or a nullary constructor's HEAD (the EFFECT re-key only:
+        // `Modify[c.rep]` is covered by `Modify[c]`, proposal 037), or NO PLACE, which the effect
+        // re-key skips and [`unrekeyed_modify_argument`] judges.
+        let mut places = ArgPlaces::default();
         // WI-376/398: only ops whose signature actually carries a projection pay for the
         // per-call elimination — the >99% that don't skip the param_to_arg_type clones
         // and the rewrite walk entirely. WI-398 adds the PARAMETER positions: a param
@@ -581,17 +610,6 @@ pub(super) fn check_apply_iter(
         // arg loops because a row tail's lower bound is the UNION over every parameter
         // naming it. Empty for an op with no type parameters (the gate at each push).
         let mut callback_pairs: Vec<(Value, Value)> = Vec::new();
-        // WI-20260827-1F0QP: the parameter each positional argument fills, from the one
-        // owner ([`positional_param_indices`]) that `bind_call_arguments` and
-        // `reorder_named_args_in_apply` also read. `op.params` is the inference-expanded
-        // list and `written_params` its clone, so ONE index serves both loops below.
-        //
-        // The identity for a call with no labels, which is nearly every call; what it
-        // changes is the MIXED one, whose positional arguments rank among the parameters
-        // the labels did not take. Reading `params.get(i)` there checked an argument
-        // against one parameter while the runtime bound it to another.
-        let pos_call_params = positional_param_indices(kb, &op.params, pos_args.len(), named_args);
-
         // WI-20260926-NEKR0: a type parameter several arguments bind takes their JOIN, bound
         // here BEFORE the loops below unify in parameter order — which is what made the first
         // argument decide it. A projection-bearing parameter is deferred there and here alike.
@@ -615,35 +633,18 @@ pub(super) fn check_apply_iter(
         }
 
         for (i, arg_occ) in pos_args.iter().enumerate() {
-            if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
-                if let Some((param_sym, _)) = pos_call_params[i].and_then(|p| op.params.get(p)) {
-                    param_to_arg_sym.insert(*param_sym, arg_var_sym);
-                    // WI-20260823-4GBQV: the EFFECT re-key must not mint a label the
-                    // DECLARATION cannot spell. See `param_to_placeless_arg`.
-                    if kb.is_unplaceable_constructor(arg_var_sym) {
-                        param_to_placeless_arg.insert(*param_sym, Rc::clone(arg_occ));
-                    }
-                }
-            } else if let Some((param_sym, _)) = op.params.get(i) {
-                // WI-506: a field-projection argument (`s.rep`) — record param → head
-                // for the effects-only re-key (see `param_to_arg_head`). WI-20260823-4GBQV
-                // adds the nullary-constructor argument (`set(counter(), n)`) through the
-                // same map; [`arg_place_head`] is the one reader of both shapes.
-                match arg_place_head(kb, arg_occ) {
-                    Some(head) => {
-                        param_to_arg_head.insert(*param_sym, head);
-                    }
-                    None => {
-                        param_to_placeless_arg.insert(*param_sym, Rc::clone(arg_occ));
-                    }
-                }
+            let call_param = pos_call_params[i].and_then(|p| op.params.get(p));
+            if let Some((param_sym, _)) = call_param {
+                // WI-506 / WI-20260823-4GBQV: a variable re-keys everything; a field path's
+                // head or a nullary-constructor place only the effects; a placeless argument
+                // nothing, and the EFFECT re-key must not mint a label the DECLARATION cannot
+                // spell. [`ArgPlaces`] decides.
+                places.record(kb, *param_sym, arg_occ);
             }
             if let Ok(ref arg_result) = pos_results[i] {
                 // WI-341 Stage A: the param type is `Value` (`Value::TermView`),
                 // unified carrier-agnostically — no `TermIdView` wrap.
-                if let Some((param_sym, param_type)) =
-                    pos_call_params[i].and_then(|p| op.params.get(p))
-                {
+                if let Some((param_sym, param_type)) = call_param {
                     // WI-398: a param whose declared type IS / CONTAINS a projection
                     // (`k: s.cell.T`) cannot be unified against its raw `ExprCarried` —
                     // the receiver param's type-args are not yet projected, and an
@@ -680,29 +681,13 @@ pub(super) fn check_apply_iter(
         for (i, (arg_name, arg_occ)) in named_args.iter().enumerate() {
             // WI-426: match the label to its param by name, then key the per-call
             // maps by the PARAM symbol (not the use-site label symbol) so the
-            // positional loop above, the projection eliminator, and param_to_arg_sym
+            // positional loop above, the projection eliminator, and `places`
             // all agree on one key.
             let matched =
                 match_named_arg_param(kb, &op.params, *arg_name).map(|(s, t)| (*s, t.clone()));
-            if let Some(arg_var_sym) = extract_var_ref_sym_node(arg_occ) {
-                if let Some((param_sym, _)) = &matched {
-                    param_to_arg_sym.insert(*param_sym, arg_var_sym);
-                    // WI-20260823-4GBQV — see the positional loop.
-                    if kb.is_unplaceable_constructor(arg_var_sym) {
-                        param_to_placeless_arg.insert(*param_sym, Rc::clone(arg_occ));
-                    }
-                }
-            } else if let Some((param_sym, _)) = &matched {
-                // WI-506: a field-projection named argument — effects-only head re-key.
-                // WI-20260823-4GBQV: a nullary-constructor named argument rides it too.
-                match arg_place_head(kb, arg_occ) {
-                    Some(head) => {
-                        param_to_arg_head.insert(*param_sym, head);
-                    }
-                    None => {
-                        param_to_placeless_arg.insert(*param_sym, Rc::clone(arg_occ));
-                    }
-                }
+            if let Some((param_sym, _)) = &matched {
+                // See the positional loop.
+                places.record(kb, *param_sym, arg_occ);
             }
             if let Ok(ref arg_result) = named_results[i] {
                 if let Some((param_sym, param_type)) = &matched {
@@ -747,10 +732,25 @@ pub(super) fn check_apply_iter(
         // an expanded partial application's unbound fresh var would make the
         // eliminated type non-ground, and the WI-385 groundness gate below
         // would silently skip a mismatch the written form rejects loudly.
+        // WI-506: the EFFECT re-key — the variables that name a place plus the heads
+        // ([`ArgPlaces::eff_rekey`]). Built here, once the argument loops have filled `places`,
+        // for the parameter types below and the call's own effects further down.
+        let eff_rekey_map = places.eff_rekey();
+        // The receivers a projection reads ([`projection_receivers`]): each parameter's argument
+        // type, or the option the parameter receives for an argument the call wraps in
+        // `some(…)` — computed once both argument loops have solved what they can, and read by
+        // EVERY projection reader below (the dispatch readers key on the argument itself and
+        // cannot differ: a wrapped argument's parameter is an option, which declares no slot
+        // a dictionary is read from).
+        let projection_receivers =
+            projection_receivers(kb, &subst, &written_params, &param_to_arg_type, fn_sym);
         let mut effective_param_types: HashMap<Symbol, Value> = HashMap::new();
         if params_have_projection {
-            // WI-459: re-key a cross-param projection NEUTRAL to the caller's argument too.
-            let arg_syms = (!param_to_arg_sym.is_empty()).then_some(&param_to_arg_sym);
+            // WI-459: re-key a cross-param projection NEUTRAL to the caller's argument too —
+            // by variables; a `denoted` beside it by the EFFECT re-key, in the same pass (see
+            // the callback rows below).
+            let arg_syms = (!places.vars.is_empty()).then_some(&places.vars);
+            let denoted_syms = (!eff_rekey_map.is_empty()).then_some(&*eff_rekey_map);
             // Interned ONCE for the whole loop, not per parameter (review).
             let macro_pass = crate::kb::occurrence::macro_expand_pass(kb);
             for (param_sym, param_type) in &written_params {
@@ -760,11 +760,12 @@ pub(super) fn check_apply_iter(
                 // Computed BEFORE the call: `eliminate_type_projections` takes `kb`
                 // mutably, and only one of the two can hold it.
                 let surface = surface_of_with(kb, macro_pass, occ, fn_sym);
-                let eff = eliminate_type_projections(
+                let eff = eliminate_type_projections_rekeyed(
                     kb,
                     param_type,
-                    &param_to_arg_type,
+                    &projection_receivers,
                     arg_syms,
+                    denoted_syms,
                     &TypeErrorContext::OperationReturn {
                         op_name: fn_sym,
                         surface,
@@ -776,6 +777,31 @@ pub(super) fn check_apply_iter(
                     unify_types(kb, &mut subst, arg_ty, &eff);
                 }
                 effective_param_types.insert(*param_sym, eff);
+            }
+        }
+        // WI-20260929-0RP29: a PARAMETER type naming another parameter by value — a callback
+        // row `f: (u: Int64) -> Unit @ Modify[p]` — is validated in the CALLER's names, as the
+        // elimination above re-keys one beside a projection. Keyed on the projection alone, the
+        // same callback was refused for `Modify[q]` over `apply(h, q, λ)` and admitted once an
+        // unrelated `u: h.T` appeared beside it (MEASURED). The row is an EFFECT position, so it
+        // takes the call's effect re-key — a field path's head, no placeless argument — as the
+        // call's own `Modify[p]` does: variables alone left `apply(h.cell, λ)` refusing the
+        // lambda's `Modify[h]`. ONE substitution per type: a type the elimination rewrote took
+        // this re-key there; re-keying it again renamed a self-recursive call's labels twice,
+        // its caller variables being the callee's own parameters (MEASURED). Any carrier: the
+        // `denoted` gate keeps it off the >99% path, and a type the re-key leaves as it was is
+        // kept.
+        if !eff_rekey_map.is_empty() {
+            for (param_sym, param_type) in &written_params {
+                if effective_param_types.contains_key(param_sym)
+                    || !view_bears_denoted(kb, param_type)
+                {
+                    continue;
+                }
+                let rekeyed = substitute_ref_syms_value(kb, param_type, &eff_rekey_map);
+                if !views_structurally_equal(kb, &rekeyed, param_type) {
+                    effective_param_types.insert(*param_sym, rekeyed);
+                }
             }
         }
 
@@ -800,7 +826,7 @@ pub(super) fn check_apply_iter(
         // eta-scoped per-arg self-contradiction reject (removed) AND catches the two
         // shapes it missed (an op's own row; a lambda callback). No-op unless an
         // instantiation actually bound a row-bearing type param.
-        check_signature_self_contradiction(kb, &subst, &op, fn_sym, span)?;
+        check_signature_self_contradiction(kb, &subst, &op, &effective_param_types, fn_sym, span)?;
         // WI-385: VALIDATE each argument against its declared parameter type.
         // The unify loops above pin type-parameters for INFERENCE and DISCARD
         // their boolean — so before this check a caller could pass an argument
@@ -848,6 +874,7 @@ pub(super) fn check_apply_iter(
                     // prints two identically-displayed arrow types.
                     if let Some(err) = validate_callback_effect_row(
                         kb,
+                        env,
                         &subst,
                         fn_sym,
                         *param_sym,
@@ -890,6 +917,7 @@ pub(super) fn check_apply_iter(
                     // WI-440: callback row check first — see the positional loop.
                     if let Some(err) = validate_callback_effect_row(
                         kb,
+                        env,
                         &subst,
                         fn_sym,
                         *param_sym,
@@ -922,6 +950,20 @@ pub(super) fn check_apply_iter(
                 }
             }
         }
+        // WI-20260929-0RP29: the call as a dispatched override receives it — the arguments
+        // wrapped as `some_wraps` says, the bracket — for both paths that type the override (the
+        // WI-606 fallback below, and the dispatch arms' `dispatched_impl_effects`).
+        let call_view = CallToOverride {
+            env,
+            pos_args,
+            named_args,
+            pos_params: &pos_call_params,
+            pos_results,
+            named_results,
+            some_wraps: &some_wraps,
+            bracket: &bracket_params,
+            expected: expected.as_ref(),
+        };
         // WI-426: named-argument COVERAGE (see `bind_call_arguments`, which
         // WI-783 shares with the function-VALUE call path so the two cannot drift).
         // WI-1100: and the ARITY verdict the same binding decides — every declared slot
@@ -1079,6 +1121,9 @@ pub(super) fn check_apply_iter(
         // existential opening has to ask the §3 self question of that operation's sort, not of
         // the spec op the call named.
         let mut return_owner = fn_sym;
+        // WI-20260929-0RP29: the threaded override's parameters with the spec's at their
+        // positions — the guard σ below is extended through them. Empty unless it threaded.
+        let mut impl_to_spec: HashMap<Symbol, Symbol> = HashMap::new();
         let (proj_return_type, proj_effects): (Value, Vec<Value>) = if op_has_projection {
             let ret_ctx = TypeErrorContext::OperationReturn {
                 op_name: fn_sym,
@@ -1087,7 +1132,7 @@ pub(super) fn check_apply_iter(
             // WI-459: pass the formal→argument value-reference map so a projection NEUTRAL
             // formed off a formal param is RE-KEYED to the caller's actual receiver (see
             // `project_expr_carried`).
-            let arg_syms = (!param_to_arg_sym.is_empty()).then_some(&param_to_arg_sym);
+            let arg_syms = (!places.vars.is_empty()).then_some(&places.vars);
             // WI-606: a body-less self-receiver spec op whose RETURN (and observation
             // effect row) is WRITTEN with path-dependent projections on the receiver
             // (`Stream.splitFirst -> …[B = Stream[T = s.T, E = s.E]]`, `effects {s.E}`)
@@ -1101,48 +1146,88 @@ pub(super) fn check_apply_iter(
             // erased `Stream[…]`) and a downstream dispatch on it (`collect(rest)`) grounds.
             // Return AND effects fall back together (self-contained: the effect row stays
             // sound even on a dispatch arm that does not re-derive `dispatched_impl_-
-            // effects`). A clean elimination (abstract self-receiver, or a provider with a
-            // direct member) is unchanged; a genuine projection failure with no concrete
-            // override stays the loud error.
-            match eliminate_type_projections(
+            // effects`), and EITHER failing arms the fallback — an override threads an
+            // effects-only projection (`touch(s: Sp2) -> Option[T = V] effects {s.E}`) as it
+            // does a return one. A clean elimination (abstract self-receiver, or a provider
+            // with a direct member) is unchanged; a genuine projection failure with no
+            // concrete override stays the loud error.
+            let eliminated = eliminate_type_projections(
                 kb,
                 &op.return_type,
-                &param_to_arg_type,
+                &projection_receivers,
                 arg_syms,
                 &ret_ctx,
                 span,
-            ) {
-                Ok(rt) => {
-                    let mut effs: Vec<Value> = Vec::with_capacity(op.effects.len());
-                    for e in &op.effects {
-                        effs.push(eliminate_type_projections(
+            )
+            .and_then(|rt| {
+                let effs = op
+                    .effects
+                    .iter()
+                    .map(|e| {
+                        eliminate_type_projections(
                             kb,
                             e,
-                            &param_to_arg_type,
+                            &projection_receivers,
                             arg_syms,
                             &ret_ctx,
                             span,
-                        )?);
-                    }
-                    (rt, effs)
-                }
-                Err(e) => {
-                    match concrete_override_threaded(
-                        kb,
-                        &op,
-                        fn_sym,
-                        self_recv_spec,
-                        pos_results,
-                        &param_to_arg_type,
-                        arg_syms,
-                    ) {
-                        Some((rt, effs, impl_op)) => {
-                            return_owner = impl_op;
-                            (rt, effs)
+                        )
+                    })
+                    .collect::<Result<Vec<Value>, TypeError>>()?;
+                Ok((rt, effs))
+            });
+            match eliminated {
+                Ok(eliminated) => eliminated,
+                Err(e) => match concrete_override_threaded(
+                    kb,
+                    &op,
+                    fn_sym,
+                    self_recv_spec,
+                    &call_view,
+                    &subst,
+                    arg_syms,
+                    &eff_rekey_map,
+                    span,
+                )? {
+                    Some(threaded) => {
+                        // The spec's own type parameters as the threaded return pins them: its
+                        // return, projections masked, describes the same result — so a `W` the
+                        // override took from the caller's expected type (C6) is the spec's `W`
+                        // too, as it is the qualified call's. Where the two returns agree whole,
+                        // the whole agreement; where they do not, PER PARAMETER — each one still
+                        // free takes what the threaded return says of it, as the override's own
+                        // are read off a probe ([`override_at_call`], step 4). The two differ
+                        // wherever the override returns its carrier for the spec's `Sp` (the
+                        // WI-606 shape itself) or the spec's return holds a row-slot projection
+                        // the mask keeps (`E = s.E`): committed only whole, a `W` beside either
+                        // was "unconstrained" under an annotation that fixed it (MEASURED).
+                        let masked = mask_projections(kb, &op.return_type);
+                        let mut probe = subst.clone();
+                        if unify_types(kb, &mut probe, &masked, &threaded.ret) {
+                            subst = probe;
+                        } else {
+                            for (_, v) in &op.type_params {
+                                let Var::Global(vid) = v else {
+                                    continue;
+                                };
+                                let var = Value::Var(Var::Global(*vid));
+                                if resolved_var(kb, &walk_view(kb, &subst, &var)).is_none() {
+                                    continue;
+                                }
+                                let pinned = walk_type_deep_value(kb, &probe, &var);
+                                if kb.collect_vars(&pinned).is_empty()
+                                    && first_genuine_conflict_on(kb, &probe, &[*vid], &[]).is_none()
+                                {
+                                    subst.bind_value(kb, *vid, pinned);
+                                }
+                            }
                         }
-                        None => return Err(e),
+                        return_owner = threaded.impl_op;
+                        impl_to_spec = threaded.impl_to_spec;
+                        (threaded.ret, threaded.effects)
                     }
-                }
+                    None => return Err(e),
+                },
             }
         } else {
             (op.return_type.clone(), op.effects.clone())
@@ -1160,15 +1245,22 @@ pub(super) fn check_apply_iter(
         // declared and incurred `Modify[p]` named DIFFERENT `p` symbols (caller's vs
         // callee's).
         //
-        // Gate on `!op_has_projection`: when the op HAS a projection the return type was
-        // already run through `eliminate_type_projections` above, whose `Denoted` arm now
-        // re-keys the value-in-type via this same `param_to_arg_sym` (so a MIXED return
-        // `Strm[T = s.T, E = {Modify[p]}]` re-keys the `Modify[p]` there, alongside the
-        // projection — and a δ-reduced projection NEUTRAL's receiver is left to that arm's
-        // surgical, WI-459-aware handling rather than corrupted by a blanket `Ref`-sub
-        // here). The projection-free case never reaches elimination, so re-key it here.
-        let proj_return_type = if !param_to_arg_sym.is_empty() && !op_has_projection {
-            substitute_ref_syms_value(kb, &proj_return_type, &param_to_arg_sym)
+        // Gate on the RETURN's own projection: a return that holds one was run through
+        // `eliminate_type_projections` above, whose `Denoted` arm re-keys the value-in-type
+        // via this same `places.vars` (so a MIXED return `Strm[T = s.T, E =
+        // {Modify[p]}]` re-keys the `Modify[p]` there, alongside the projection — and a
+        // δ-reduced projection NEUTRAL's receiver is left to that arm's surgical,
+        // WI-459-aware handling rather than corrupted by a blanket `Ref`-sub here). A return
+        // that holds none is passed through by that walk untouched — also when the op
+        // projects elsewhere (`remix2(s: Strm, k: s.T, p: Producer) -> Strm[…, E =
+        // {Modify[p]}]`, a projection in a PARAMETER), which a gate on `op_has_projection`
+        // left bearing the callee's `p` — so re-key it here. A return the WI-606 fallback
+        // threaded was re-keyed there, against the override's own parameters.
+        let proj_return_type = if return_owner == fn_sym
+            && !places.vars.is_empty()
+            && !value_contains_projection(kb, &op.return_type)
+        {
+            substitute_ref_syms_value(kb, &proj_return_type, &places.vars)
         } else {
             proj_return_type
         };
@@ -1367,8 +1459,8 @@ pub(super) fn check_apply_iter(
         // return is the use-site check on `resolved_ret`, not this unify's discarded boolean,
         // and that check still sees the contradicting slot. What changed is that the sibling
         // fills are now the SAME set however the `expected` type's slots were spelled.
-        if let Some(exp) = expected {
-            unify_types(kb, &mut subst, &proj_return_type, &exp);
+        if let Some(exp) = &expected {
+            unify_types(kb, &mut subst, &proj_return_type, exp);
         }
 
         // WI-20260918-R541X (A) — what is STILL free after the arguments and `expected`,
@@ -1517,30 +1609,6 @@ pub(super) fn check_apply_iter(
         // (e.g. `Stream.head`'s `effects E` → `Error` once `vid_E` is
         // bound by `unify_parameterized_with_sort_ref`). Skip the
         // param-name walk when no var_ref args were seen.
-        // WI-506: the effect re-key uses the VarRef map PLUS the projection-head
-        // additions (a `Modify` on a projection arg coarsens to the head param). The
-        // owned merge is built only when a projection arg was actually seen (the rare
-        // case); the common path borrows `param_to_arg_sym` with no clone.
-        let eff_rekey_owned;
-        let eff_rekey_map: &HashMap<Symbol, Symbol> =
-            if param_to_arg_head.is_empty() && param_to_placeless_arg.is_empty() {
-                &param_to_arg_sym
-            } else {
-                // WI-20260823-4GBQV: drop the parameters whose argument names no place —
-                // see `param_to_placeless_arg`. Their labels stay in the callee's own
-                // vocabulary, where `unrekeyed_modify_argument` reports them against the
-                // caller's expression.
-                let mut m: HashMap<Symbol, Symbol> = param_to_arg_sym
-                    .iter()
-                    .filter(|(p, _)| !param_to_placeless_arg.contains_key(*p))
-                    .map(|(k, v)| (*k, *v))
-                    .collect();
-                for (k, v) in &param_to_arg_head {
-                    m.entry(*k).or_insert(*v);
-                }
-                eff_rekey_owned = m;
-                &eff_rekey_owned
-            };
         let pre_substituted: Vec<Value> = if eff_rekey_map.is_empty() {
             proj_effects.clone()
         } else {
@@ -1560,7 +1628,7 @@ pub(super) fn check_apply_iter(
                     if value_contains_projection(kb, e) {
                         e.clone()
                     } else {
-                        substitute_ref_syms_value(kb, e, eff_rekey_map)
+                        substitute_ref_syms_value(kb, e, &eff_rekey_map)
                     }
                 })
                 .collect()
@@ -1631,7 +1699,8 @@ pub(super) fn check_apply_iter(
             .filter(|c| is_value_precondition_clause(kb, c))
             .collect();
         if !value_reqs.is_empty() {
-            let req_sigma = build_call_guard_sigma(kb, &op.params, pos_args, named_args);
+            let req_sigma =
+                build_call_guard_sigma(kb, &op.params, &pos_call_params, pos_args, named_args);
             let in_rule_body = env.in_rule_body();
             for clause in &value_reqs {
                 // WI-9PGCM — σ_TYPE BEFORE Γ. A `requires` clause may name a variable
@@ -1798,7 +1867,19 @@ pub(super) fn check_apply_iter(
         // arguments the rename cannot. An argument with no clean twin is absent —
         // its param stays symbolic and the guard flounders, conservatively kept.)
         let guard_sigma: HashMap<Symbol, TermId> = if op_has_guarded {
-            build_call_guard_sigma(kb, &op.params, pos_args, named_args)
+            let mut sigma =
+                build_call_guard_sigma(kb, &op.params, &pos_call_params, pos_args, named_args);
+            // WI-20260929-0RP29: effects the WI-606 fallback threaded are the OVERRIDE's, and a
+            // guard's operands are binder references (`var_ref(name: d)`) the parameter rename
+            // does not touch — so the override's parameters, aligned with the spec's by
+            // position, take the spec parameters' σ entries. Without them an override's guard
+            // was never refuted and the call was refused an effect it does not incur.
+            for (impl_p, spec_p) in &impl_to_spec {
+                if let Some(&t) = sigma.get(spec_p) {
+                    sigma.insert(*impl_p, t);
+                }
+            }
+            sigma
         } else {
             HashMap::new()
         };
@@ -1863,13 +1944,13 @@ pub(super) fn check_apply_iter(
         // refuse a correct program (measured — `touch(mk(), false)` under a refuted
         // `{Modify[c] :- eq(flag, true)}` loads clean, and did so under the earlier
         // placement only because that one skipped guarded atoms outright).
-        if !param_to_placeless_arg.is_empty() {
+        if !places.placeless.is_empty() {
             if let Some(err) = unrekeyed_modify_argument(
                 kb,
                 &op,
                 fn_sym,
                 &substituted_op_effects,
-                &param_to_placeless_arg,
+                &places.placeless,
                 span,
             ) {
                 return Err(err);
@@ -1999,15 +2080,22 @@ pub(super) fn check_apply_iter(
         // still closes `E` even when the element bound separately.)
         if lookup_spec_op_dispatch(kb, fn_sym).is_none() {
             if let Some(spec_sort) = self_receiver_spec_sort(kb, &op, fn_sym) {
-                if let ReceiverCarrier::Concrete(recv) =
-                    receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results)
-                {
+                if let ReceiverCarrier::Concrete(recv) = receiver_carrier(
+                    kb,
+                    &op,
+                    spec_sort,
+                    &pos_call_params,
+                    named_args,
+                    pos_results,
+                    named_results,
+                ) {
                     if bind_spec_params_from_carrier(
                         kb,
                         &mut subst,
                         &op,
                         spec_sort,
                         recv.sort,
+                        &pos_call_params,
                         named_args,
                         pos_results,
                         named_results,
@@ -2071,8 +2159,15 @@ pub(super) fn check_apply_iter(
             // plus that same param lookup, and `spec_sort` is that parent here — so a
             // `match self_recv_spec` wrapper around it would be a third gate that only
             // LOOKS authoritative.
-            let recv_carrier =
-                receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results);
+            let recv_carrier = receiver_carrier(
+                kb,
+                &op,
+                spec_sort,
+                &pos_call_params,
+                named_args,
+                pos_results,
+                named_results,
+            );
             // WI-20260917-NR6FJ DEFECT B: the declared slot speaks where the arguments are silent.
             // `.or_else`, so an argument-pinned carrier still wins — see the helper's doc
             // for why that order is the point and not an accident.
@@ -2171,17 +2266,8 @@ pub(super) fn check_apply_iter(
                 // fill — fall through and run the spec's default body.
                 if let Some(only) = chosen {
                     let impl_op = only.target;
-                    let derived = dispatched_impl_effects(
-                        kb,
-                        flow,
-                        impl_op,
-                        &op.params,
-                        &subst,
-                        pos_args,
-                        named_args,
-                        pos_results,
-                        named_results,
-                    );
+                    let derived =
+                        dispatched_impl_effects(kb, flow, impl_op, &op, &call_view, &subst, span)?;
                     merge_effects_into(kb, &mut effects, &derived);
                     // WI-1093: RESOLVE THE SPEC AT THE PINNED CARRIER and hand the tree to
                     // the shared tail, which emits it as the callee's `dispatch_dict`
@@ -2295,7 +2381,7 @@ pub(super) fn check_apply_iter(
                             param_rigids: env.param_rigids(),
                             selected: &selections,
                             enclosing_op: env.enclosing_op(),
-                            param_arg_types: &param_to_arg_type,
+                            param_arg_types: &projection_receivers,
                             held: &held_views,
                         }),
                     )?;
@@ -2458,7 +2544,7 @@ pub(super) fn check_apply_iter(
                             param_rigids: env.param_rigids(),
                             selected: &selections,
                             enclosing_op: env.enclosing_op(),
-                            param_arg_types: &param_to_arg_type,
+                            param_arg_types: &projection_receivers,
                             held: &held_views,
                         }),
                     )?;
@@ -2660,16 +2746,8 @@ pub(super) fn check_apply_iter(
                     // op would otherwise mask its effect at the consumption site.
                     if impl_op != fn_sym {
                         let derived = dispatched_impl_effects(
-                            kb,
-                            flow,
-                            impl_op,
-                            &op.params,
-                            &subst,
-                            pos_args,
-                            named_args,
-                            pos_results,
-                            named_results,
-                        );
+                            kb, flow, impl_op, &op, &call_view, &subst, span,
+                        )?;
                         merge_effects_into(kb, &mut effects, &derived);
                     }
                     // PinNow, or ConcreteApplyWithin when the impl's OWN sort declares
@@ -2689,7 +2767,7 @@ pub(super) fn check_apply_iter(
                                 param_rigids: env.param_rigids(),
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
-                                param_arg_types: &param_to_arg_type,
+                                param_arg_types: &projection_receivers,
                                 held: &held_views,
                             }),
                         )?;
@@ -2702,8 +2780,15 @@ pub(super) fn check_apply_iter(
                     node: Rc::clone(occ),
                 });
             }
-            let carrier =
-                receiver_carrier(kb, &op, spec_sort, named_args, pos_results, named_results);
+            let carrier = receiver_carrier(
+                kb,
+                &op,
+                spec_sort,
+                &pos_call_params,
+                named_args,
+                pos_results,
+                named_results,
+            );
 
             // WI-357: a concretely-dispatched self-receiver spec op (e.g.
             // `Stream.splitFirst` on a `List[Int]`) binds none of the spec's
@@ -2731,6 +2816,7 @@ pub(super) fn check_apply_iter(
                     &op,
                     spec_sort,
                     recv.sort,
+                    &pos_call_params,
                     named_args,
                     pos_results,
                     named_results,
@@ -3077,21 +3163,21 @@ pub(super) fn check_apply_iter(
                     // same-named member), so a carrier WITHOUT one resolves `None` and falls
                     // through to the WI-325 pass-through / abstract-coverage demand unchanged;
                     // a carrier whose dispatch resolved `Unique` never reaches here.
-                    if let Some(impl_op) = carrier_sym
+                    if let Some((impl_op, impl_info)) = carrier_sym
                         .filter(|_| self_recv_spec.is_some())
-                        .and_then(|c| concrete_self_receiver_override(kb, c, fn_sym, op_short_sym))
+                        .and_then(|c| {
+                            concrete_self_receiver_override(
+                                kb,
+                                c,
+                                fn_sym,
+                                op_short_sym,
+                                op.params.len(),
+                            )
+                        })
                     {
-                        let derived = dispatched_impl_effects(
-                            kb,
-                            flow,
-                            impl_op,
-                            &op.params,
-                            &subst,
-                            pos_args,
-                            named_args,
-                            pos_results,
-                            named_results,
-                        );
+                        let derived = dispatched_impl_effects_of(
+                            kb, flow, impl_op, &impl_info, &op, &call_view, &subst, span,
+                        )?;
                         merge_effects_into(kb, &mut effects, &derived);
                         classify_pin_or_apply_within(
                             kb,
@@ -3106,7 +3192,7 @@ pub(super) fn check_apply_iter(
                                 param_rigids: env.param_rigids(),
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
-                                param_arg_types: &param_to_arg_type,
+                                param_arg_types: &projection_receivers,
                                 held: &held_views,
                             }),
                         )?;
@@ -3436,13 +3522,11 @@ pub(super) fn check_apply_iter(
                             kb,
                             flow,
                             impl_op_sym,
-                            &op.params,
+                            &op,
+                            &call_view,
                             &subst,
-                            pos_args,
-                            named_args,
-                            pos_results,
-                            named_results,
-                        );
+                            span,
+                        )?;
                         // The spec op's polymorphic effect row is GROUNDED by
                         // this concrete dispatch. Drop the still-unresolved row
                         // var from the SPEC OP's OWN effects only — the
@@ -3506,7 +3590,7 @@ pub(super) fn check_apply_iter(
                                 param_rigids: env.param_rigids(),
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
-                                param_arg_types: &param_to_arg_type,
+                                param_arg_types: &projection_receivers,
                                 held: &held_views,
                             }),
                         )?;
@@ -3715,7 +3799,7 @@ pub(super) fn check_apply_iter(
                     env.param_rigids(),
                     &selections,
                     OpSlotParkSite::for_call(kb, fn_sym, env.enclosing_op(), span, occ.span.source),
-                    &param_to_arg_type,
+                    &projection_receivers,
                     &held_views,
                     span,
                     false,
@@ -3968,7 +4052,7 @@ pub(super) fn check_apply_iter(
                             span,
                             occ.span.source,
                         ),
-                        &param_to_arg_type,
+                        &projection_receivers,
                         &held_views,
                         span,
                         false,

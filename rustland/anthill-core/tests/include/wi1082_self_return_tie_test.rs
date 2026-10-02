@@ -188,7 +188,7 @@ fn the_body_check_was_the_other_producer() {
 /// THE TIE POOLS EVERY PARAMETER — the row that decided the filler.
 ///
 /// `Map.put(m: Map, key: K, value: V) -> Map` is called as `put(empty(), "a", 1)`: the receiver
-/// argument is a CALL, so there is no stable value reference to project off (`param_to_arg_sym`
+/// argument is a CALL, so there is no stable value reference to project off (`ArgPlaces::vars`
 /// records nothing for `m`) and `m.K` could never be eliminated. The sort's own `K`/`V` are
 /// bound by `key` and `value` instead, and the elided return reads the very same vars — so the
 /// annotated `-> Map[String, Int64]` conforms.

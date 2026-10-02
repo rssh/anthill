@@ -652,6 +652,10 @@ pub(super) fn visit_type(
                 // exactly the hint it would otherwise have had: it is never hof-shaped, and
                 // `hof_arg_hint` is the only reader of the projection-eliminated type, so
                 // the incomplete map cannot change its answer (see `apply_arg_hints`).
+                let pos_slots = op_params
+                    .as_ref()
+                    .map(|ps| positional_param_indices(kb, ps, pos_args.len(), named_args))
+                    .unwrap_or_default();
                 let staged_hints: Vec<Option<Value>> = staged
                     .iter()
                     .map(|&unified| {
@@ -659,9 +663,12 @@ pub(super) fn visit_type(
                             return sort_app_hint.clone();
                         }
                         let (arg, pt) = if unified < pos_args.len() {
+                            // The parameter this positional argument FILLS (the ranking,
+                            // WI-20260827-1F0QP), not the one at its slot.
                             let pt = op_params
                                 .as_ref()
-                                .and_then(|ps| ps.get(unified))
+                                .zip(pos_slots.get(unified).copied().flatten())
+                                .and_then(|(ps, p)| ps.get(p))
                                 .map(|(_, t)| t.clone());
                             (&pos_args[unified], pt)
                         } else {

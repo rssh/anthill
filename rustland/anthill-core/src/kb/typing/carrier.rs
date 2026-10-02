@@ -155,6 +155,7 @@ pub(super) fn receiver_carrier(
     kb: &mut KnowledgeBase,
     op: &OperationInfoFull,
     spec_sort: Symbol,
+    pos_params: &[Option<usize>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
@@ -162,22 +163,17 @@ pub(super) fn receiver_carrier(
     let Some(idx) = self_receiver_param_index(kb, &op.params, spec_sort) else {
         return ReceiverCarrier::NotApplicable;
     };
-    let param_name = op.params[idx].0;
-    // The argument may be supplied positionally (matched by declaration
-    // index, as `check_apply_iter`'s unify loop does) or by name.
-    let arg_ty: Option<&Value> = pos_results
-        .get(idx)
-        .and_then(|r| r.as_ref().ok())
-        .map(|r| &r.ty)
-        .or_else(|| {
-            named_args
-                // WI-426: a named label binds to its param by name, not symbol identity.
-                .iter()
-                .position(|(n, _)| same_label(kb, *n, param_name))
-                .and_then(|j| named_results.get(j))
-                .and_then(|r| r.as_ref().ok())
-                .map(|r| &r.ty)
-        });
+    // The argument the call binds to it, positional or named ([`bound_arg`]).
+    let arg_ty: Option<Value> = supplied_arg_type(
+        kb,
+        &op.params,
+        pos_params,
+        idx,
+        pos_results,
+        named_args,
+        named_results,
+    );
+    let arg_ty = arg_ty.as_ref();
     let spec_canon = kb.canonical_sort_sym(spec_sort);
     // WI-20260828-EKWDC: the receiver's TYPE rides beside its base sort through the
     // match, because the `Concrete` arm now needs both. A `.and_then` that kept only the
@@ -420,6 +416,27 @@ fn witness_provider_for(
         .map(|row| row.provider)
 }
 
+/// Does the carrier's OWN `provides` of `spec_sort` bind the parameter `carrier_pvid` to the
+/// carrier — [`provision_binds_param_to_carrier`]'s first arm, which that function prefers
+/// over any witness? Then the view a carrier-param call reads was written INSIDE the carrier,
+/// in the carrier's own parameters; otherwise it is a witness's, written in another binder.
+pub(super) fn carriers_own_provision_qualifies(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carrier_pvid: VarId,
+    carrier_sym: Symbol,
+) -> bool {
+    let carrier_canon = kb.canonical_sort_sym(carrier_sym);
+    provider_spec_view_bindings(kb, carrier_sym, spec_sort).is_some_and(|view| {
+        view.iter().any(|(sp_sym, sp_val)| {
+            type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(carrier_pvid)
+                && crate::kb::load::provides_spec_base_sym(kb, *sp_val)
+                    .map(|b| kb.canonical_sort_sym(b))
+                    == Some(carrier_canon)
+        })
+    })
+}
+
 /// WI-20260828-57MRM — instantiate a WITNESS provision against the receiver: the σ that
 /// takes the witness sort's OWN parameters to the receiver's type-args.
 ///
@@ -474,17 +491,7 @@ pub(super) fn witness_instantiation(
     // building σ from a witness's binder and applying it there would substitute across two
     // different binders — the very defect this function exists to prevent. Mirror that
     // function's arm order: if the carrier's own provides qualifies, the view came from it.
-    let carrier_canon = kb.canonical_sort_sym(carrier_sym);
-    let own_provides_qualifies = provider_spec_view_bindings(kb, carrier_sym, spec_sort)
-        .is_some_and(|view| {
-            view.iter().any(|(sp_sym, sp_val)| {
-                type_param_vid_in_sort(kb, spec_sort, *sp_sym) == Some(carrier_pvid)
-                    && crate::kb::load::provides_spec_base_sym(kb, *sp_val)
-                        .map(|b| kb.canonical_sort_sym(b))
-                        == Some(carrier_canon)
-            })
-        });
-    if own_provides_qualifies {
+    if carriers_own_provision_qualifies(kb, spec_sort, carrier_pvid, carrier_sym) {
         return None;
     }
     let witness = witness_provider_for(kb, spec_sort, carrier_pvid, carrier_sym)?;
@@ -921,11 +928,12 @@ pub(super) fn self_receiver_spec_sort(
 /// `Fn`. Returns true iff at least one spec parameter was bound (the
 /// caller then re-walks the return type through the updated subst).
 pub(super) fn bind_spec_params_from_carrier(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     op: &OperationInfoFull,
     spec_sort: Symbol,
     carrier_sym: Symbol,
+    pos_params: &[Option<usize>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
@@ -934,33 +942,62 @@ pub(super) fn bind_spec_params_from_carrier(
     let Some(idx) = self_receiver_param_index(kb, &op.params, spec_sort) else {
         return false;
     };
-    let param_name = op.params[idx].0;
     // WI-470: read the receiver's inferred type as a carrier-agnostic `Value`, NOT via
     // `.as_term()` — an occurrence-primary `List[T = Int]` is a `Value::Node`, and
     // `.as_term()` would return `None` and drop the carrier (erasing its `T`/`Eff`
     // bindings → a spurious `Eff unconstrained`). The binding is read below through
-    // `parameterized_short_bindings` (carrier-agnostic), so it is preserved.
-    let recv_ty: Option<Value> = pos_results
-        .get(idx)
-        .and_then(|r| r.as_ref().ok())
-        .map(|r| r.ty.clone())
-        .or_else(|| {
-            named_args
-                .iter()
-                .position(|(n, _)| *n == param_name)
-                .and_then(|j| named_results.get(j))
-                .and_then(|r| r.as_ref().ok())
-                .map(|r| r.ty.clone())
-        });
+    // `parameterized_short_bindings` (carrier-agnostic), so it is preserved. The argument
+    // is the one the call binds to the receiver ([`bound_arg`]).
+    let recv_ty: Option<Value> = supplied_arg_type(
+        kb,
+        &op.params,
+        pos_params,
+        idx,
+        pos_results,
+        named_args,
+        named_results,
+    );
     let Some(recv_ty) = recv_ty else {
         return false;
     };
+
+    // WI-20260929-0RP29 — a spec parameter the carrier's OWN provision binds to the carrier
+    // itself, bare or at its own parameters (`Car provides Sp[T = Car]`), is THIS instance: the
+    // receiver's type, as the carrier's own operations read the bare name (§3's tie) and as
+    // the declaration rule reads the binding — so `Sp.both(k1, k2)` holds `k2` to `k1`'s
+    // instance. Skipped below as "ref-shaped, no parameter of the carrier", the call held it to
+    // nothing and a member written tied crashed on a second instance, or on a `5` (MEASURED).
+    // INTERIM (user, 2026-10-01): WI-20261001-80ZV8 makes a bare sort fresh `?` slots in a
+    // provision as in an operation, and the rest of what a call owes its provision's bindings
+    // is WI-20260929-05ZQE's.
+    let mut any = false;
+    if let Some(own_view) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) {
+        for (spec_param_sym, carrier_value) in own_view {
+            let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, spec_param_sym) else {
+                continue;
+            };
+            if subst.resolve_as_value(spec_vid).is_some() {
+                continue;
+            }
+            // At any depth and part-written too ([`this_instance_binding_at`]), as the rule
+            // reads it: `T = List[T = Car]` holds `o` to a list of the RECEIVER's instance.
+            let Some(instance) = this_instance_binding_at(kb, carrier_sym, carrier_value, &recv_ty)
+            else {
+                continue;
+            };
+            if occurs_in_view(kb, spec_vid, &instance) {
+                continue;
+            }
+            subst.bind_value(kb, spec_vid, instance);
+            any = true;
+        }
+    }
 
     // The receiver's own type arguments, keyed by the carrier sort's canonical
     // param VarId (WI-600 — the identity key carrier grounding joins on).
     let recv_bindings = parameterized_vid_bindings(kb, &recv_ty, carrier_sym);
     if recv_bindings.is_empty() {
-        return false;
+        return any;
     }
 
     // The carrier's provider fact maps each spec parameter to a carrier-side value
@@ -973,7 +1010,7 @@ pub(super) fn bind_spec_params_from_carrier(
     let Some(view_bindings) =
         transitive_provider_spec_view_bindings(kb, carrier_sym, spec_sort, &mut visited)
     else {
-        return false;
+        return any;
     };
 
     // WI-393: the CONSUMING op's self-receiver param type maps each spec
@@ -994,7 +1031,6 @@ pub(super) fn bind_spec_params_from_carrier(
         _ => Vec::new(),
     };
 
-    let mut any = false;
     for (spec_param_sym, carrier_value) in view_bindings {
         let spec_vid = type_param_vid_in_sort(kb, spec_sort, spec_param_sym);
         // WI-600: a type-param REF SHAPE (bare `Ref`/`Ident`/nullary `Fn`/`Var`) —
@@ -1123,40 +1159,33 @@ fn spec_param_typed_params(
     Some(out)
 }
 
-/// The INFERRED TYPE of the argument supplied for the parameter at index `i`, named `pname`
-/// — positionally, else by its label.
+/// The INFERRED TYPE of the argument the call binds to the parameter at index `i` — the
+/// argument [`bound_arg`] names, `pos_params` being the call's [`positional_param_indices`].
+/// The one spelling every reader of an argument's type by parameter uses (the receiver's
+/// carrier, the spec parameters it binds, a carrier-param receiver, the enclosing licence).
 ///
 /// WI-477: a carrier-agnostic `Value`, never `.as_term()` — an occurrence-primary
 /// `List[T = …]` is a `Value::Node` whose `T`/`E` bindings live in the node, and dropping the
-/// carrier leaks `Eff unconstrained`. WI-426: a named label binds to its param BY NAME, not
-/// by symbol identity.
-///
-/// ONE OWNER, because two passes in `check_apply_iter` ask it and they must not drift
-/// (`/code-review`): [`carrier_param_receiver`] asks WHICH ARGUMENT IS THE RECEIVER, and
-/// [`bind_op_type_params_from_op_requires`] asks WHOSE PROVISION GROUNDS THE ELEMENT. A
-/// change to how a call's arguments are matched to parameters — a variadic capture, a
-/// default, the label rule — applied to one copy and not the other would answer those two
-/// with different arguments.
+/// carrier leaks `Eff unconstrained`.
 pub(super) fn supplied_arg_type(
     kb: &KnowledgeBase,
+    params: &[(Symbol, Value)],
+    pos_params: &[Option<usize>],
     i: usize,
-    pname: Symbol,
     pos_results: &[Result<TypeResult, TypeError>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     named_results: &[Result<TypeResult, TypeError>],
 ) -> Option<Value> {
-    pos_results
-        .get(i)
-        .and_then(|r| r.as_ref().ok())
-        .map(|r| r.ty.clone())
-        .or_else(|| {
-            named_args
-                .iter()
-                .position(|(n, _)| same_label(kb, *n, pname))
-                .and_then(|j| named_results.get(j))
-                .and_then(|r| r.as_ref().ok())
-                .map(|r| r.ty.clone())
-        })
+    bound_arg_result(
+        kb,
+        params,
+        pos_params,
+        i,
+        pos_results,
+        named_args,
+        named_results,
+    )
+    .map(|r| r.ty.clone())
 }
 
 /// WI-424 — classify a CARRIER-PARAM receiver: a spec op that takes its carrier
@@ -1198,6 +1227,7 @@ pub(super) fn carrier_param_receiver(
     params: &[(Symbol, Value)],
     fn_sym: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
+    pos_params: &[Option<usize>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     recv_ty_of: &dyn Fn(usize, Symbol) -> Option<Value>,
 ) -> Option<(
@@ -1279,15 +1309,14 @@ pub(super) fn carrier_param_receiver(
         // (unwritten) carrier param as the receiver's own projection `s.<member>` instead
         // of leaking `?_`. `None` for a non-var receiver (a compound expression) → that
         // param stays unbound and surfaces the usual loud `undeclared`/`unconstrained`.
-        let recv_arg_sym = pos_args
-            .get(i)
-            .and_then(extract_var_ref_sym_node)
-            .or_else(|| {
-                named_args
-                    .iter()
-                    .find(|(n, _)| same_label(kb, *n, pname))
-                    .and_then(|(_, occ)| extract_var_ref_sym_node(occ))
-            });
+        // WI-20260929-0RP29: the argument BOUND to the receiver's parameter ([`bound_arg`]),
+        // as its type is — in a mixed call not the one at index `i`: read by index, the row
+        // was threaded as another argument's (`Ctr.run(x, c: b)` incurred `x.EC` and loaded).
+        let recv_arg_sym = match bound_arg(kb, params, pos_params, i, named_args) {
+            Some(BoundArg::Pos(j)) => extract_var_ref_sym_node(&pos_args[j]),
+            Some(BoundArg::Named(j)) => extract_var_ref_sym_node(&named_args[j].1),
+            None => None,
+        };
         return Some((
             spec_sort,
             carrier_sym,
@@ -1374,6 +1403,7 @@ pub(super) fn enclosing_requires_licensing_clause(
     env: &TypingEnv,
     op: &OperationInfoFull,
     fn_sym: Symbol,
+    pos_params: &[Option<usize>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
@@ -1421,23 +1451,19 @@ pub(super) fn enclosing_requires_licensing_clause(
         };
 
     // GATE 1 — the receiver is the parameter typed as the spec's CARRIER param.
-    let (i, (pname, _)) = op
+    let i = op
         .params
         .iter()
-        .enumerate()
-        .find(|(_, (_, pty))| declared_type_param_vid(kb, pty) == Some(carrier_pvid))?;
-    let recv_ty = pos_results
-        .get(i)
-        .and_then(|r| r.as_ref().ok())
-        .map(|r| r.ty.clone())
-        .or_else(|| {
-            named_args
-                .iter()
-                .position(|(n, _)| same_label(kb, *n, *pname))
-                .and_then(|j| named_results.get(j))
-                .and_then(|r| r.as_ref().ok())
-                .map(|r| r.ty.clone())
-        })?;
+        .position(|(_, pty)| declared_type_param_vid(kb, pty) == Some(carrier_pvid))?;
+    let recv_ty = supplied_arg_type(
+        kb,
+        &op.params,
+        pos_params,
+        i,
+        pos_results,
+        named_args,
+        named_results,
+    )?;
     // GATE 2 — a bare param (a Skolem, no carrier sort), or a SPEC view over one.
     let recv_carrier: TermId = match extract_type(kb, &recv_ty) {
         TypeExtractor::Parameterized { base, bindings } => {
@@ -1896,6 +1922,9 @@ pub(super) fn bind_spec_params_from_carrier_param(
         &recv_bindings,
     );
     let mut any = false;
+    // Whether the view is the carrier's OWN provision — written inside the carrier — or a
+    // witness's (computed on demand).
+    let mut own_provision: Option<bool> = None;
     for (spec_param_sym, carrier_value) in view_bindings {
         let spec_vid = type_param_vid_in_sort(kb, spec_sort, spec_param_sym);
         // (the carrier-param skip below runs BEFORE any instantiation: for a witness that
@@ -1945,6 +1974,48 @@ pub(super) fn bind_spec_params_from_carrier_param(
         // ref shape naming a concrete leaf (`Int64`) resolves to no VarId, finds no
         // receiver arg, and is skipped — it must NOT fall to the ground-verbatim arm
         // (WI-383 reserves ground value-params to the late pass).
+        // WI-20260929-0RP29 — a binding naming the CARRIER ITSELF for another spec parameter
+        // (`B ↦ Car` beside the receiver's `A ↦ Car`): ref-shaped when bare, yet no parameter
+        // OF the carrier, so the arm below dropped it and the call held `b` to nothing —
+        // `Rel.mix(k1, k2)` over two instances, even `Rel.mix(k1, 5)`, loaded and crashed
+        // (MEASURED). Where the provision is the carrier's OWN — written inside the carrier —
+        // the carrier bare or at its own parameters is THIS instance, as it is in the carrier's
+        // own operations (§3's tie): the receiver's type, whichever parameter it binds
+        // (INTERIM, user 2026-10-01 — WI-20261001-80ZV8 makes a bare sort fresh `?` slots in
+        // both places). A WITNESS's provision is written in another sort, where the carrier's
+        // bare name is a foreign sort: an instance of its own, which the argument fills.
+        // AT ANY DEPTH AND PART-WRITTEN TOO, as the rule reads the binding
+        // ([`this_instance_binding_at`]): `B = List[T = Car]` is a list of THIS instance and `B
+        // = Car[V = V]` this instance whatever the receiver's argument is — gated on a bare
+        // reference, the first was expanded below as an independent instance and the second
+        // bound only where the receiver's arguments were ground (MEASURED: `Rel.mix(k1, k2)`
+        // over `k1: Car[V = W]` passed a second instance to the member the rule admits as tied).
+        if let Some(spec_vid) = spec_vid.filter(|v| subst.resolve_as_value(*v).is_none()) {
+            let carrier_canon = kb.canonical_sort_sym(carrier_sym);
+            let instance = if !holds_carrier(kb, &Value::term(carrier_value), carrier_canon) {
+                None
+            } else if *own_provision.get_or_insert_with(|| {
+                carriers_own_provision_qualifies(kb, spec_sort, carrier_pvid, carrier_sym)
+            }) {
+                this_instance_binding_at(kb, carrier_sym, carrier_value, recv_ty)
+            } else if extract_sort_ref_sym(kb, &TermIdView(carrier_value))
+                .is_some_and(|s| kb.canonical_sort_sym(s) == carrier_canon)
+            {
+                Some(
+                    expand_foreign_sort_application(kb, &Value::term(carrier_value), None)
+                        .unwrap_or_else(|| Value::term(carrier_value)),
+                )
+            } else {
+                None
+            };
+            if let Some(instance) = instance {
+                if !occurs_in_view(kb, spec_vid, &instance) {
+                    subst.bind_value(kb, spec_vid, instance);
+                    any = true;
+                }
+                continue;
+            }
+        }
         let concrete: Option<TermId> = if typaram_occurrence_sym(kb, carrier_value).is_some() {
             // A ref SHAPE (`Element ↦ T`, `E ↦ Stream.E`, or a concrete leaf `Int64`).
             match typaram_ref_vid(kb, carrier_value, carrier_sym) {
@@ -1992,8 +2063,31 @@ pub(super) fn bind_spec_params_from_carrier_param(
                 None => None,
             }
         } else if type_value_is_ground(kb, carrier_value) {
-            // A ground provider value (the written `{}` row): bind verbatim.
-            Some(carrier_value)
+            // A ground provider value, bound ONCE per call with each unwritten slot a fresh
+            // variable — every parameter typed by it reads that one type (`x: T, y: T` at `T =
+            // Pair[A = Box, B = Int64]` take one `Box`, as the self-receiver path and the
+            // declaration rule tie them). Bound as written and expanded per occurrence it
+            // admitted two, and a member tying them crashed (WI-20260929-0RP29, MEASURED). A
+            // written row (`{}`) has no slot and is bound as written.
+            match expand_foreign_sorts_deep(
+                kb,
+                &Value::term(carrier_value),
+                None,
+                SlotVar::Flexible,
+            ) {
+                Value::Term { id, .. } => Some(id),
+                expanded => {
+                    if let Some(spec_vid) = spec_vid {
+                        if subst.resolve_as_value(spec_vid).is_none()
+                            && !occurs_in_view(kb, spec_vid, &expanded)
+                        {
+                            subst.bind_value(kb, spec_vid, expanded);
+                            any = true;
+                        }
+                    }
+                    continue;
+                }
+            }
         } else {
             // WI-593: a COMPOUND provider binding still mentioning the carrier's own
             // params (`Map provides FiniteCollection[Element = Pair[A = K, B = V]]`).
@@ -2647,25 +2741,42 @@ pub(super) fn push_effect_with_guard_discharge(
 /// the impl's own params, which may be renamed vs the spec op's). Parameters
 /// align positionally across a spec op and its override (the override-refinement
 /// check enforces this) and the call was matched against the SPEC op, so the
-/// arg for impl param `i` is the positional arg at `i`, or — for a named call —
-/// the arg named with the SPEC op's param[i] name (`spec_params`).
+/// arg for impl param `i` is the one the call binds to the SPEC op's param[i]: the
+/// positional arg that fills it by the call's ranking (`pos_params`,
+/// [`positional_param_indices`] — in a MIXED call not the arg at index `i`), else the
+/// arg named with its label. The override's OWN type parameters are bound as the call binds
+/// them ([`override_at_call`]).
 pub(super) fn dispatched_impl_effects(
     kb: &mut KnowledgeBase,
     flow: &FlowEnv,
     impl_op_sym: Symbol,
-    spec_params: &[(Symbol, Value)],
+    spec_op: &OperationInfoFull,
+    call: &CallToOverride,
     subst: &Substitution,
-    pos_args: &[Rc<NodeOccurrence>],
-    named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    pos_results: &[Result<TypeResult, TypeError>],
-    named_results: &[Result<TypeResult, TypeError>],
-) -> Vec<Value> {
+    span: Option<Span>,
+) -> Result<Vec<Value>, TypeError> {
     let Some(impl_op) = lookup_operation_info_full(kb, impl_op_sym) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
+    dispatched_impl_effects_of(kb, flow, impl_op_sym, &impl_op, spec_op, call, subst, span)
+}
+
+/// [`dispatched_impl_effects`] for a caller already holding the override's info.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn dispatched_impl_effects_of(
+    kb: &mut KnowledgeBase,
+    flow: &FlowEnv,
+    impl_op_sym: Symbol,
+    impl_op: &OperationInfoFull,
+    spec_op: &OperationInfoFull,
+    call: &CallToOverride,
+    subst: &Substitution,
+    span: Option<Span>,
+) -> Result<Vec<Value>, TypeError> {
     if impl_op.effects.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
+    let spec_params = &spec_op.params;
     // WI-20260824-VT8CF — the impl's own guarded atoms, and the call σ to refute them
     // with. `collect_guarded_atoms` walks each effect, so it is asked once and the σ
     // below is filled only when the answer is yes — the common effect-bearing op that
@@ -2675,47 +2786,35 @@ pub(super) fn dispatched_impl_effects(
         .iter()
         .any(|e| !collect_guarded_atoms(kb, subst, e).is_empty());
     let mut guard_sigma: HashMap<Symbol, TermId> = HashMap::new();
-    let mut param_to_arg: HashMap<Symbol, Symbol> = HashMap::new();
+    let mut places = ArgPlaces::default();
     // WI-604: the IMPL op's parameter TYPES, keyed by impl-param symbol, so a
     // projection-bearing impl effect (`Stream.isEmpty effects s.E`) is δ-reduced
     // against the receiver argument's concrete type in the loop below.
     let mut param_to_arg_type: HashMap<Symbol, Value> = HashMap::new();
     for (i, (impl_param_sym, _)) in impl_op.params.iter().enumerate() {
-        // Positional arg at this index, else the named arg carrying the spec
-        // op's param[i] name (the caller names spec-op params, not impl params).
-        let mut arg_sym = pos_args.get(i).and_then(extract_var_ref_sym_node);
-        let mut arg_ty = pos_results
-            .get(i)
-            .and_then(|r| r.as_ref().ok())
-            .map(|r| r.ty.clone());
-        if arg_sym.is_none() || arg_ty.is_none() {
-            if let Some((spec_name, _)) = spec_params.get(i) {
-                for (j, (n, occ)) in named_args.iter().enumerate() {
-                    // WI-426: a named label binds to its param by name, not symbol identity.
-                    if same_label(kb, *n, *spec_name) {
-                        if arg_sym.is_none() {
-                            arg_sym = extract_var_ref_sym_node(occ);
-                        }
-                        if arg_ty.is_none() {
-                            arg_ty = named_results
-                                .get(j)
-                                .and_then(|r| r.as_ref().ok())
-                                .map(|r| r.ty.clone());
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-        if let Some(s) = arg_sym {
-            param_to_arg.insert(*impl_param_sym, s);
-        }
-        if let Some(t) = arg_ty {
+        // The arg bound to the spec op's param[i] (the caller names and orders spec-op
+        // params, not impl params): the positional one that fills it by the call's
+        // WI-20260827-1F0QP ranking, else the one named with its label.
+        let Some((_, arg_occ)) = call.arg(kb, spec_params, i) else {
+            continue;
+        };
+        let passed = call.passed(kb, spec_params, i);
+        // The call site's classification ([`ArgPlaces`]): a VARIABLE argument re-keys a
+        // projection's receiver and a `denoted` (the elimination's `arg_syms`, and the receiver
+        // of a projection effect below); a LABEL's re-key also takes a field path's HEAD
+        // (WI-506: `Modify[c.rep]` is covered by `Modify[c]`) and skips an argument that names
+        // no place (WI-20260823-4GBQV), which is refused where its `Modify` is incurred, as the
+        // call's own. Keyed on variables alone, an override's `Modify[<its own param>]` leaked
+        // to the caller of `ModifyRuntime.set(h.cell, 1)` (MEASURED).
+        places.record(kb, *impl_param_sym, arg_occ);
+        // The type the override RECEIVES — a `some(…)`-wrapped argument's option — as
+        // [`override_at_call`] and the fallback read it.
+        if let Some(t) = passed {
             param_to_arg_type.insert(*impl_param_sym, t);
         }
         // WI-20260824-VT8CF — σ for the guard, paired THE WAY THIS FUNCTION'S DOC
-        // PRESCRIBES: positionally by index, or — for a named call — by the SPEC op's
-        // `param[i]` label, because that is what a caller writes.
+        // PRESCRIBES: with the arg bound to the SPEC op's `param[i]`, because that is what a
+        // caller writes and orders.
         //
         // NOT `build_call_guard_sigma(kb, &impl_op.params, …)`, which is what this did
         // first and which is wrong in both directions. That helper matches a named arg's
@@ -2728,28 +2827,24 @@ pub(super) fn dispatched_impl_effects(
         // reintroduced for named calls; a PERMUTED one binds the guard to the WRONG
         // OPERAND, which drops an effect that is really incurred. The second direction is
         // unsound, not merely imprecise. Found by `/code-review`, which also found that
-        // the paragraph stating this rule had been displaced off this function.
+        // the paragraph stating this rule had been displaced off this function. Pairing a
+        // MIXED call's positional arg by its index is the same wrong operand again.
         if impl_has_guarded {
-            let guard_arg = pos_args.get(i).cloned().or_else(|| {
-                spec_params.get(i).and_then(|(spec_name, _)| {
-                    named_args
-                        .iter()
-                        .find(|(n, _)| same_label(kb, *n, *spec_name))
-                        .map(|(_, occ)| Rc::clone(occ))
-                })
-            });
-            if let Some(occ) = guard_arg {
-                if let Some(t) = crate::kb::node_occurrence::try_occurrence_to_term(kb, &occ) {
-                    guard_sigma.insert(*impl_param_sym, t);
-                }
+            if let Some(t) = crate::kb::node_occurrence::try_occurrence_to_term(kb, arg_occ) {
+                guard_sigma.insert(*impl_param_sym, t);
             }
         }
     }
-    let arg_syms = (!param_to_arg.is_empty()).then_some(&param_to_arg);
+    let arg_syms = (!places.vars.is_empty()).then_some(&places.vars);
+    let eff_rekey = places.eff_rekey();
     let ctx = TypeErrorContext::OperationReturn {
         op_name: impl_op_sym,
         surface: None,
     };
+    // WI-20260929-0RP29 — THE OVERRIDE'S OWN TYPE PARAMETERS, as this call binds them. The
+    // call's σ binds the SPEC op's; an override's `[W]` is its own, so `effects {EC, Error[W]}`
+    // reached the caller as `Error[?W]` (refused where `Car.op(x, "str")` loads, MEASURED).
+    let own_sigma = override_at_call(kb, impl_op_sym, &impl_op, spec_op, call, subst, span)?;
     let mut out: Vec<Value> = Vec::new();
     for e in &impl_op.effects {
         // WI-604: an override's effect can carry a self-receiver PROJECTION
@@ -2774,23 +2869,33 @@ pub(super) fn dispatched_impl_effects(
             // bare row var the reduction returns that raw var, which a later
             // `walk_type_deep_value` + concrete-filter would SILENTLY DROP — the
             // guard routes it to the fallback re-key instead so the row survives.
+            //
+            // The fallback re-key reads VARIABLES only (`ArgPlaces::vars`), as the call site's own
+            // projection-bearing effects are left to the variable re-key: a field path's HEAD
+            // names the holder, not the field, so `k.E` with `k` bound to `h.s` became `h.E` —
+            // the HOLDER's row — and a caller declaring `h.E` loaded with `h.s`'s row undeclared
+            // (MEASURED).
             match eliminate_type_projections(kb, e, &param_to_arg_type, arg_syms, &ctx, None) {
                 Ok(reduced) if !effect_is_unresolved_var(kb, &reduced) => reduced,
-                _ => substitute_ref_syms_value(kb, e, &param_to_arg),
+                _ => substitute_ref_syms_value(kb, e, &places.vars),
             }
-        } else if param_to_arg.is_empty() {
+        } else if eff_rekey.is_empty() {
             e.clone()
         } else {
-            substitute_ref_syms_value(kb, e, &param_to_arg)
+            substitute_ref_syms_value(kb, e, &eff_rekey)
+        };
+        let sub = match &own_sigma {
+            Some(own) => walk_type_deep_value(kb, own, &sub),
+            None => sub,
         };
         let walked = walk_type_deep_value(kb, subst, &sub);
         if !effect_is_unresolved_var(kb, &walked) {
             // WI-20260824-VT8CF — DISCHARGE HERE TOO, through the same owner the
             // op's-own-effect loop uses. σ is built over the IMPL's parameters, because
             // it is the impl's guard (`Int64.div`'s `eq(b, 0)`) being refuted and its
-            // `b` that the call's argument must be bound to; the caller names the SPEC
-            // op's params, which is exactly what `build_call_guard_sigma` resolves by
-            // position and by label.
+            // `b` that the call's argument must be bound to; the caller names and orders the
+            // SPEC op's params, which the loop above pairs through [`bound_arg`] — the
+            // ranking ([`positional_param_indices`]) `build_call_guard_sigma` reads too.
             push_effect_with_guard_discharge(
                 kb,
                 flow,
@@ -2802,7 +2907,415 @@ pub(super) fn dispatched_impl_effects(
             );
         }
     }
+    // WI-20260929-0RP29: a `Modify` over a parameter whose argument names no place is refused
+    // here as the call's own is (`unrekeyed_modify_argument`), not left naming the override's
+    // parameter in the caller's row (`Modify[T = b]`, which no caller can declare).
+    if !places.placeless.is_empty() {
+        if let Some(err) =
+            unrekeyed_modify_argument(kb, &impl_op, impl_op_sym, &out, &places.placeless, span)
+        {
+            return Err(err);
+        }
+    }
+    Ok(out)
+}
+
+/// WI-20260929-0RP29 — a call as the override it dispatches to receives it, by the SPEC
+/// operation's parameters: each argument and the type the override gets for it (the call's
+/// `some(…)` wrap applied, WI-408 — the call was elaborated against the spec's parameter), and
+/// the spec operation's type parameters the call's BRACKET wrote. One view for both paths that
+/// type an override at a call ([`dispatched_impl_effects`], the WI-606 fallback), so they read
+/// one call alike.
+pub(super) struct CallToOverride<'a> {
+    /// The environment the call is written in — what is in scope at it.
+    pub(super) env: &'a TypingEnv,
+    pub(super) pos_args: &'a [Rc<NodeOccurrence>],
+    pub(super) named_args: &'a [(Symbol, Rc<NodeOccurrence>)],
+    /// The parameter each positional argument fills (WI-20260827-1F0QP's ranking).
+    pub(super) pos_params: &'a [Option<usize>],
+    pub(super) pos_results: &'a [Result<TypeResult, TypeError>],
+    pub(super) named_results: &'a [Result<TypeResult, TypeError>],
+    /// The arguments the call wrapped in `some(…)`, by unified index (`pos_args ++
+    /// named_args`), each with the option type it was validated against.
+    pub(super) some_wraps: &'a [(usize, Value)],
+    /// The spec operation's type parameters the call's bracket bound (`Sp.op[U = String](…)`).
+    pub(super) bracket: &'a [VarId],
+    /// The type the call's context expects of its result (a `let` annotation), when it has one.
+    pub(super) expected: Option<&'a Value>,
+}
+
+impl CallToOverride<'_> {
+    /// The argument bound to spec parameter `i` — the positional one that fills it, else the one
+    /// named with its label ([`bound_arg`]) — with its unified index.
+    pub(super) fn arg(
+        &self,
+        kb: &KnowledgeBase,
+        spec_params: &[(Symbol, Value)],
+        i: usize,
+    ) -> Option<(usize, &Rc<NodeOccurrence>)> {
+        match bound_arg(kb, spec_params, self.pos_params, i, self.named_args)? {
+            BoundArg::Pos(j) => Some((j, &self.pos_args[j])),
+            BoundArg::Named(k) => Some((self.pos_args.len() + k, &self.named_args[k].1)),
+        }
+    }
+
+    /// The synthesized argument at unified index `u`, when it synthesized.
+    pub(super) fn result(&self, u: usize) -> Option<&TypeResult> {
+        let r = match u.checked_sub(self.pos_args.len()) {
+            None => self.pos_results.get(u),
+            Some(k) => self.named_results.get(k),
+        };
+        r.and_then(|r| r.as_ref().ok())
+    }
+
+    /// The type the override receives at spec parameter `i`: the argument's own type, or — for
+    /// one the call wrapped in `some(…)` — the option OF that type. The option the call
+    /// validated against is the spec's DECLARATION, which may write no payload at all: read as
+    /// what the override receives, a bare `Option` passed an override's `Option[T = String]`
+    /// whatever the argument was, and `Sp.put(x, y, 5)` reached it with `some(5)` (MEASURED).
+    pub(super) fn passed(
+        &self,
+        kb: &mut KnowledgeBase,
+        spec_params: &[(Symbol, Value)],
+        i: usize,
+    ) -> Option<Value> {
+        let (u, _) = self.arg(kb, spec_params, i)?;
+        let arg_ty = self.result(u)?.ty.clone();
+        match self.some_wraps.iter().find(|(w, _)| *w == u) {
+            Some((_, declared)) => Some(option_of(kb, declared, arg_ty)),
+            None => Some(arg_ty),
+        }
+    }
+}
+
+/// What an option-typed parameter receives for an argument the call wraps in `some(…)`
+/// (WI-408) — the option of the argument's type — or `None` where the call does not wrap it.
+/// THE WRAP IS THE VALIDATION'S VERDICT ([`validate_arg_against_param`]), and this asks that
+/// verdict itself, on a scratch substitution, for a reader that needs the receiver before the
+/// arguments are validated. Decided by the argument's HEAD instead, an argument typed by an
+/// ALIAS of an option — which conforms as it is, and is not wrapped — was read as wrapped
+/// (MEASURED: `get(m)` over `m: MaybeInt` was typed `MaybeInt`, and the bare `Int64` it returns
+/// failed a `match` at run time), and an `Option[T]` passed for an `Option[Option[T]]` — which
+/// the call does wrap — as not.
+pub(super) fn some_wrapped_arg_type(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    arg_ty: &Value,
+    param_ty: &Value,
+    op: Symbol,
+) -> Option<Value> {
+    if !is_option_type(kb, param_ty) {
+        return None;
+    }
+    // Only a refusal reads the context, and none is kept.
+    let ctx = TypeErrorContext::OperationReturn {
+        op_name: op,
+        surface: None,
+    };
+    let mut scratch = subst.clone();
+    match validate_arg_against_param(kb, &mut scratch, arg_ty, param_ty, None, ctx, None) {
+        ArgValidation::WrapSome { declared } => Some(option_of(kb, &declared, arg_ty.clone())),
+        ArgValidation::Ok | ArgValidation::Fail(_) => None,
+    }
+}
+
+/// THE RECEIVERS A PROJECTION OVER A CALL'S PARAMETERS READS: each parameter's argument type
+/// (`arg_types`), or — for an argument the call wraps in `some(…)` — the option the parameter
+/// receives ([`some_wrapped_arg_type`]): `k.T` over `k: Option[T = Int64]` given a bare `5` is
+/// `Int64`. ONE map for every projection reader of the call — its parameter types, return and
+/// effects, an operation-level `requires`, a lambda's hint. Given to three of them only, the
+/// others read the raw `Int64`, which has no member `T` since a spec's carrier parameter lends
+/// none: `pick(5)` behind `requires Desc[T = k.T]` and `app(5, lambda (x) -> x + 1)` behind `f:
+/// (x: k.T) -> Int64` were refused (MEASURED: programs that ran), and a payload with a `T` of
+/// its own picked another dictionary in silence.
+pub(super) fn projection_receivers<'a>(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    params: &[(Symbol, Value)],
+    arg_types: &'a HashMap<Symbol, Value>,
+    op: Symbol,
+) -> std::borrow::Cow<'a, HashMap<Symbol, Value>> {
+    let mut out = std::borrow::Cow::Borrowed(arg_types);
+    for (param_sym, param_type) in params {
+        if !is_option_type(kb, param_type) {
+            continue;
+        }
+        let Some(arg_ty) = arg_types.get(param_sym) else {
+            continue;
+        };
+        // The parameter's own type as the call reads it, where it projects another parameter
+        // (`k: Option[T = h.P]`): at the receivers so far.
+        let read = if value_contains_projection(kb, param_type) {
+            let ctx = TypeErrorContext::OperationReturn {
+                op_name: op,
+                surface: None,
+            };
+            eliminate_type_projections(kb, param_type, &out, None, &ctx, None)
+                .unwrap_or_else(|_| param_type.clone())
+        } else {
+            param_type.clone()
+        };
+        if let Some(received) = some_wrapped_arg_type(kb, subst, arg_ty, &read, op) {
+            out.to_mut().insert(*param_sym, received);
+        }
+    }
     out
+}
+
+/// `declared`'s option sort at the payload `payload` — the type of `some(v)` for a `v` of that
+/// type, on whichever carrier the payload rides.
+fn option_of(kb: &mut KnowledgeBase, declared: &Value, payload: Value) -> Value {
+    let (base, written) = sort_application_parts(kb, declared)
+        .expect("a `some(…)` wrap is validated against an option sort");
+    let label = match written.first() {
+        Some((k, _)) => *k,
+        None => {
+            let canon = kb.canonical_sort_sym(base);
+            let param = sort_type_params_as_pairs(kb, canon)
+                .first()
+                .map(|(p, _)| *p)
+                .expect("an option sort declares its payload parameter");
+            let short = short_name_of(kb.local_name_of(param)).to_owned();
+            kb.intern(&short)
+        }
+    };
+    let base_ref = kb.make_sort_ref(base);
+    parameterized_value(
+        kb,
+        base_ref,
+        &[(label, payload)],
+        crate::kb::node_occurrence::empty_span(),
+        None,
+    )
+}
+
+/// `ty` with each INERT type variable — the element an empty literal leaves undetermined
+/// (`[]` is `List[T = ??T]`) — a fresh flexible one, so the type the argument was checked
+/// against can decide it.
+fn open_literal_type_vars(kb: &mut KnowledgeBase, ty: &Value) -> Value {
+    map_type_bottom_up(kb, ty, &mut |kb, node| match extract_type(kb, node) {
+        TypeExtractor::TypeVar(name) => {
+            let vid = kb.fresh_var(name);
+            Some(Value::term(kb.alloc(Term::Var(Var::Global(vid)))))
+        }
+        _ => None,
+    })
+    .unwrap_or_else(|| ty.clone())
+}
+
+/// WI-20260929-0RP29 — the override's OWN type parameters as this call binds them, the way the
+/// qualified call `Car.op(…)` binds them — `None` when it declares none. One function for both
+/// paths that type an override at a call ([`dispatched_impl_effects`], the WI-606 fallback,
+/// [`concrete_override_threaded`]), so they read one override at one call alike. In order:
+///
+/// 1. THE BRACKET. The two declarations are related position by position, return included —
+///    never by name, since an override may declare parameters the spec does not — with each
+///    projection masked ([`mask_projections`]: a return holding `s.E` still relates `B = W`);
+///    an override parameter aligned with a spec type parameter the call's bracket wrote takes
+///    it (`Sp.pick2[W = Int64](a, b)`, WI-20260930-JPSDH). A concrete spec type seeds nothing
+///    here: the arguments decide first (`a: Animal` given a `cat` is `W = cat`).
+/// 2. THE ARGUMENTS' JOIN over the parameters still free, as the qualified call's
+///    WI-20260926-NEKR0 step joins them (`a: W, b: W` given a cat and a dog is `W = Animal`).
+/// 3. THE ARGUMENTS, each met with the override's parameter at its position — its receiver
+///    included (`c: Car[V = W]` given a `Car[V = Int64]`) — a foreign sort's unwritten slot
+///    fresh per occurrence on both sides (WI-374: two `nil`s are two lists). What an argument
+///    leaves OPEN (a `none`'s payload, `[]`'s element, an unannotated lambda's parameter) is
+///    the spec's parameter as the call bound it — the type the call checked it against.
+/// 4. THE CALLER'S EXPECTED TYPE, through the return, for a parameter the arguments left free —
+///    the qualified call's WI-270 fill (`let r: Option[T = Pair[A = Int64, B = String]] =
+///    Sp.pick2(a, b)`), so the two calls agree on an annotated result.
+/// 5. WHAT IS STILL FREE takes the spec's side as the call bound it: the override's parameters
+///    and return met with the spec's at this call, each projection reduced against the
+///    arguments where it reduces (`-> Option[T = W]` behind `-> Option[T = s.T]`).
+/// 6. A parameter two of these bind two ways is the call's error, worded as the qualified
+///    call's ([`conflicting_bindings_error`]).
+///
+/// Read off the spec's parameters alone, a parameter only the receiver binds stayed free — an
+/// unbound row dropped, and a pure caller raised the override's error at run time (unsound,
+/// MEASURED) — and `a: Animal` widened `W` past its `cat`; read off the raw arguments alone, the
+/// first argument decided a joined parameter, two `nil`s shared `List`'s one `T`, and a bracket
+/// reached nothing.
+pub(super) fn override_at_call(
+    kb: &mut KnowledgeBase,
+    impl_op_sym: Symbol,
+    impl_op: &OperationInfoFull,
+    spec_op: &OperationInfoFull,
+    call: &CallToOverride,
+    call_subst: &Substitution,
+    span: Option<Span>,
+) -> Result<Option<Substitution>, TypeError> {
+    let own: SmallVec<[VarId; 2]> = impl_op
+        .type_params
+        .iter()
+        .filter_map(|(_, v)| match v {
+            Var::Global(vid) => Some(*vid),
+            _ => None,
+        })
+        .collect();
+    if own.is_empty() {
+        return Ok(None);
+    }
+    let parent = impl_parent_sort_of_op(kb, impl_op_sym).map(|p| kb.canonical_sort_sym(p));
+    let n = spec_op.params.len().min(impl_op.params.len());
+    let var = |vid: VarId| Value::Var(Var::Global(vid));
+    // 1. The declarations related, and the bracket.
+    let mut rel = Substitution::new();
+    let declared = (0..n)
+        .map(|i| (&spec_op.params[i].1, &impl_op.params[i].1))
+        .chain(std::iter::once((
+            &spec_op.return_type,
+            &impl_op.return_type,
+        )));
+    for (spec_ty, impl_ty) in declared {
+        let spec_ty = mask_projections(kb, spec_ty);
+        let spec_ty = expand_foreign_sorts_deep(kb, &spec_ty, None, SlotVar::Flexible);
+        let impl_ty = expand_foreign_sorts_deep(kb, impl_ty, parent, SlotVar::Flexible);
+        unify_types(kb, &mut rel, &spec_ty, &impl_ty);
+    }
+    let rep = |kb: &KnowledgeBase, rel: &Substitution, vid: VarId| {
+        resolved_var(kb, &walk_view(kb, rel, &var(vid)))
+    };
+    let mut sigma = Substitution::new();
+    for &w in &own {
+        let Some(rw) = rep(kb, &rel, w) else {
+            continue;
+        };
+        if let Some(&u) = call.bracket.iter().find(|&&u| rep(kb, &rel, u) == Some(rw)) {
+            let written = walk_type_deep_value(kb, call_subst, &var(u));
+            sigma.bind_value(kb, w, written);
+        }
+    }
+    // The SPEC's parameter and return types as the call bound them: each projection eliminated
+    // against the arguments where it reduces there (masked where it does not), then the call's
+    // σ — the type the call checked each argument against.
+    let ctx = TypeErrorContext::OperationReturn {
+        op_name: impl_op_sym,
+        surface: None,
+    };
+    let mut spec_args: HashMap<Symbol, Value> = HashMap::new();
+    for (i, (spec_p, _)) in spec_op.params.iter().enumerate() {
+        if let Some(t) = call.passed(kb, &spec_op.params, i) {
+            spec_args.insert(*spec_p, t);
+        }
+    }
+    let spec_at_call = |kb: &mut KnowledgeBase, spec_ty: &Value| {
+        let reduced = eliminate_type_projections(kb, spec_ty, &spec_args, None, &ctx, span)
+            .unwrap_or_else(|_| mask_projections(kb, spec_ty));
+        let bound = walk_type_deep_value(kb, call_subst, &reduced);
+        expand_foreign_sorts_deep(kb, &bound, None, SlotVar::Flexible)
+    };
+    // 2. The arguments' join, then 3. the arguments themselves. An argument's own type decides
+    //    where it is determined (`a: Animal` given a `cat` is `W = cat`); what it leaves OPEN —
+    //    a `none`'s payload, an empty literal's element, an unannotated lambda's parameter — is
+    //    what the call checked it against, the spec's parameter as the call bound it. Read
+    //    alone, `Sp.op(c, none)` bound `W` to a bare `Option` and `Sp.op(c, [])` to a list of
+    //    nothing, and the override's `Error[W]` was undeclared in a caller declaring the right
+    //    row (MEASURED).
+    let passed: Vec<(Symbol, Value, Value)> = (0..n)
+        .filter_map(|i| {
+            let p = call.passed(kb, &spec_op.params, i)?;
+            let p = walk_type_deep_value(kb, call_subst, &p);
+            let p = open_literal_type_vars(kb, &p);
+            let p = expand_foreign_sorts_deep(kb, &p, parent, SlotVar::Flexible);
+            let at_call = spec_at_call(kb, &spec_op.params[i].1);
+            let mut probe = Substitution::new();
+            let p = if unify_types(kb, &mut probe, &p, &at_call)
+                && !genuine_contradiction_since(kb, &probe, 0)
+            {
+                walk_type_deep_value(kb, &probe, &p)
+            } else {
+                p
+            };
+            let (impl_p, impl_ty) = &impl_op.params[i];
+            Some((*impl_p, impl_ty.clone(), p))
+        })
+        .collect();
+    let refs: Vec<(Symbol, &Value, &Value)> = passed.iter().map(|(p, d, a)| (*p, d, a)).collect();
+    join_repeated_type_params(
+        kb,
+        &mut sigma,
+        JoinCandidates::TypeParams(&impl_op.type_params),
+        &refs,
+    )
+    .map_err(|no_join| no_join.into_call_error(kb, impl_op_sym, span))?;
+    for (_, impl_ty, passed_ty) in &passed {
+        let impl_ty = expand_foreign_sorts_deep(kb, impl_ty, parent, SlotVar::Flexible);
+        unify_types(kb, &mut sigma, passed_ty, &impl_ty);
+    }
+    // 4. What is still free after the arguments, from the caller's expected type — as the
+    //    qualified call fills it (WI-270: only a parameter the arguments left free, through the
+    //    return; a contradicting claim is the use site's to refuse, so this binds nothing it
+    //    disagrees with).
+    if let Some(exp) = call.expected {
+        let ret = mask_projections(kb, &impl_op.return_type);
+        let ret = expand_foreign_sorts_deep(kb, &ret, parent, SlotVar::Flexible);
+        let mut probe = sigma.clone();
+        unify_types(kb, &mut probe, &ret, exp);
+        for &w in &own {
+            if sigma.resolve_as_value(w).is_some() {
+                continue;
+            }
+            if let Some(v) = probe.resolve_as_value(w).cloned() {
+                let v = walk_type_deep_value(kb, &probe, &v);
+                if kb.collect_vars(&v).is_empty() {
+                    sigma.bind_value(kb, w, v);
+                }
+            }
+        }
+    }
+    // 5. What is still free, from the spec's side as the call bound it: the override's
+    //    parameters and return met with the spec's at this call — a parameter only the return
+    //    names (`-> Option[T = W]` behind `-> Option[T = s.T]`), or one no argument reaches.
+    //    Walked through the relation of step 1 instead, the override's variable led nowhere —
+    //    unification had bound the SPEC's variable to it — and a return projection that
+    //    reduces here was masked away (MEASURED: `Error[?W]` undeclared).
+    if own.iter().any(|&w| sigma.resolve_as_value(w).is_none()) {
+        let mut probe = sigma.clone();
+        let positions = (0..n)
+            .map(|i| (&spec_op.params[i].1, &impl_op.params[i].1))
+            .chain(std::iter::once((
+                &spec_op.return_type,
+                &impl_op.return_type,
+            )));
+        for (spec_ty, impl_ty) in positions {
+            let at_call = spec_at_call(kb, spec_ty);
+            let impl_ty = mask_projections(kb, impl_ty);
+            let impl_ty = expand_foreign_sorts_deep(kb, &impl_ty, parent, SlotVar::Flexible);
+            unify_types(kb, &mut probe, &at_call, &impl_ty);
+        }
+        for &w in &own {
+            if sigma.resolve_as_value(w).is_some() {
+                continue;
+            }
+            if let Some(v) = probe.resolve_as_value(w).cloned() {
+                let v = walk_type_deep_value(kb, &probe, &v);
+                if kb.collect_vars(&v).is_empty() {
+                    sigma.bind_value(kb, w, v);
+                }
+            }
+        }
+    }
+    // 6. A conflict on an own parameter.
+    if let Some((vid, prior, attempted)) = first_genuine_conflict_on(kb, &sigma, &own, &[]) {
+        let what = override_variable_name(kb, impl_op_sym, impl_op, vid);
+        return Err(conflicting_bindings_error(
+            kb,
+            &sigma,
+            &prior,
+            &attempted,
+            &what,
+            impl_op_sym,
+            span,
+        ));
+    }
+    let mut kept = Substitution::new();
+    for vid in own {
+        if let Some(v) = sigma.resolve_as_value(vid).cloned() {
+            let v = walk_type_deep_value(kb, &sigma, &v);
+            kept.bind_value(kb, vid, v);
+        }
+    }
+    Ok(Some(kept))
 }
 
 /// The name symbol carried by a type-parameter reference in any of the shapes a

@@ -51,6 +51,19 @@ pub struct TypingEnv {
     /// Int64].tag()` does. Storing only the head would silently drop the
     /// bindings and type the result at the wrong instantiation.
     type_denotations: HashMap<Symbol, Rc<NodeOccurrence>>,
+    /// WI-20260929-0RP29 — the binders of the CALLABLE a let-bound name holds, by position:
+    /// `let g = lambda (k) -> Cell.set(k, 42)` records `g → [k]`, `let h = g` over a
+    /// callback-typed parameter `g` its registered places. A callback's effect row names its
+    /// own binders (`Modify[k]`), and a slot's row names the slot's (`-Modify[x]`); which
+    /// answers which is positional, and an arrow TYPE does not say its binders — only the
+    /// expression the callback was written as does ([`callback_actual_places`]). So the name a
+    /// `let` gives that expression keeps them. Without the record a let-bound callback was
+    /// aligned with nothing: `app[EffP = {}](c, g)` mutated the cell under `-Modify[x]` where
+    /// the lambda written in place was refused (MEASURED).
+    ///
+    /// A THIRD CHANNEL BESIDE THE TWO ABOVE, for the reason the second gives: this one answers
+    /// neither "which value path" nor "which sort", and a name bound to anything else clears it.
+    callable_places: HashMap<Symbol, Rc<[Option<Symbol>]>>,
     /// WI-424/WI-942 — every type-param canonical var IN SCOPE for this body,
     /// mapped to the per-body `Var::Rigid` term `check_operation_bodies` minted
     /// for it (the WI-392 skolemization, extended to the enclosing SORT's params
@@ -267,6 +280,7 @@ impl TypingEnv {
             var_bindings: HashMap::new(),
             receiver_aliases: HashMap::new(),
             type_denotations: HashMap::new(),
+            callable_places: HashMap::new(),
             param_rigids: Rc::new(Vec::new()),
             sort_rigid_len: 0,
             local_resources: Vec::new(),
@@ -674,6 +688,26 @@ impl TypingEnv {
     /// WI-20260824-PAPX0: the `Expr::TypeValue` occurrence `name` denotes, if any.
     pub(super) fn type_denotation(&self, name: Symbol) -> Option<&Rc<NodeOccurrence>> {
         self.type_denotations.get(&name)
+    }
+
+    /// WI-20260929-0RP29: record the binders of the callable `name` holds
+    /// ([`Self::callable_places`]), or — `None`, a name re-bound to anything else — drop the
+    /// record, for the soundness reason [`Self::clear_receiver_alias`] states.
+    pub(super) fn bind_callable_places(
+        &mut self,
+        name: Symbol,
+        places: Option<Vec<Option<Symbol>>>,
+    ) {
+        match places {
+            Some(places) => self.callable_places.insert(name, Rc::from(places)),
+            None => self.callable_places.remove(&name),
+        };
+    }
+
+    /// WI-20260929-0RP29: the binders of the callable the let-bound `name` holds, if it holds one
+    /// whose expression says them.
+    pub(super) fn callable_places(&self, name: Symbol) -> Option<&[Option<Symbol>]> {
+        self.callable_places.get(&name).map(|p| &**p)
     }
 
     pub fn declare_local_resource(&mut self, name: Symbol) {

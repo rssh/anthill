@@ -454,8 +454,8 @@ fn and_a_requirement_one_hop_away_is_still_refused_at_a_value_that_cannot_meet_i
 /// receiver's `Out` rather than to anything at all.
 ///
 /// BACKED OUT (the fallback threading the override's return as written, WI-20260929-0RP29's
-/// test ledger): the run arm fails to load with the old `got w.Out`; the control passes
-/// either way, refused both times.
+/// test ledger): the run arm fails to load with the old `got w.Out`, which ends the row; its
+/// control would fail as well — refused, but naming `w.Out` where it must name the `Bool`.
 #[test]
 fn a_receiver_projection_across_a_hop_is_eliminated() {
     let src = |ns: &str, value: &str| {

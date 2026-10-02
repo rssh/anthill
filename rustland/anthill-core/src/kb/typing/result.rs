@@ -157,11 +157,21 @@ pub(super) fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChil
         // position, in the prelude, that any diagnostic anchored on it would point at.
         Value::Var(v) => kb.type_var_child(*v, crate::kb::node_occurrence::empty_span(), None),
         other => {
-            // A scalar/`Entity` is a typer bug here (types are `Term`/`Node`/`Var`);
-            // mint a fresh `?ungrounded` type var so we don't panic in release.
+            // WI-20260929-0RP29: an entity-carried type (σ's splice spine) takes the builders'
+            // carrier.
+            let why = match other {
+                Value::Entity { .. } => match entity_type_on_builders(kb, other) {
+                    Ok(t) => return value_to_type_child(kb, &t),
+                    Err(why) => why,
+                },
+                _ => "not a type carrier".to_string(),
+            };
+            // Anything else — a scalar, or an entity spine that is no type — is a typer bug
+            // here (types are `Term`/`Node`/`Var`, an entity converted): loud in a debug build,
+            // and a fresh `?ungrounded` type var in release rather than a panic.
             debug_assert!(
                 false,
-                "WI-342: non-type Value in a TypeChild slot: {other:?}"
+                "WI-342: non-type Value in a TypeChild slot ({why}): {other:?}"
             );
             let sym = kb.intern("?ungrounded");
             TypeChild::Interned(kb.make_type_var(sym))
@@ -235,7 +245,31 @@ fn type_children(
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> TypeChildren {
-    if items.iter().any(|(_, v)| type_value_needs_occurrence(v)) {
+    // An ENTITY-carried child (σ's splice spine) is converted first ([`entity_type_on_builders`]);
+    // one that does not convert is a typer bug, which the occurrence branch's per-child placement
+    // ([`value_to_type_child`]) asserts against, naming why.
+    let converted: Vec<(Symbol, Value)>;
+    let items = if items.iter().any(|(_, v)| matches!(v, Value::Entity { .. })) {
+        converted = items
+            .iter()
+            .map(|(s, v)| {
+                let v = match v {
+                    Value::Entity { .. } => {
+                        entity_type_on_builders(kb, v).unwrap_or_else(|_| v.clone())
+                    }
+                    _ => v.clone(),
+                };
+                (*s, v)
+            })
+            .collect();
+        &converted[..]
+    } else {
+        items
+    };
+    if items
+        .iter()
+        .any(|(_, v)| type_value_needs_occurrence(v) || matches!(v, Value::Entity { .. }))
+    {
         let mut children: Vec<(Symbol, TypeChild)> = Vec::with_capacity(items.len());
         for (s, v) in items {
             children.push((*s, value_to_type_child_at(kb, v, span, owner)));
@@ -270,6 +304,211 @@ pub(super) fn named_tuple_value(
         }
         TypeChildren::Terms(terms) => Value::term(kb.make_named_tuple_type(&terms)),
     }
+}
+
+/// WI-20260929-0RP29 — the `EffectExpression` node forms that hold children (`empty_row`
+/// holds none and reads as a sort reference).
+#[derive(Clone, Copy)]
+pub(super) enum EffectForm {
+    Merge,
+    Present,
+    Absent,
+    Guarded,
+    Open,
+}
+
+/// The `EffectExpression` form headed by `f`, or `None` for any other head. A constructor
+/// this does not list falls to the application arm, which refuses to rebuild under it.
+pub(super) fn effect_expr_form(kb: &KnowledgeBase, f: Symbol) -> Option<EffectForm> {
+    Some(
+        match kb
+            .qualified_name_of(f)
+            .strip_prefix("anthill.prelude.EffectExpression.")?
+        {
+            "merge" => EffectForm::Merge,
+            "present" => EffectForm::Present,
+            "absent" => EffectForm::Absent,
+            "guarded" => EffectForm::Guarded,
+            "open" => EffectForm::Open,
+            _ => return None,
+        },
+    )
+}
+
+/// WI-20260929-0RP29 — a type child on a carrier the type builders take, or why it is not a
+/// type. A term, an occurrence and a variable are children as they are. A raw LEAF a σ walk
+/// left (`Value::SymbolRef`, the `Term::Ref` not yet interned) is held as its term, as
+/// `splice_non_term_bindings` holds one. An ENTITY spine is REBUILT
+/// ([`entity_type_on_builders`]).
+pub(super) fn type_child_value(kb: &mut KnowledgeBase, v: Value) -> Result<Value, String> {
+    match v {
+        Value::Term { .. } | Value::Node(_) | Value::Var(_) => Ok(v),
+        Value::Entity { .. } => entity_type_on_builders(kb, &v),
+        // INFALLIBLE by `lowers_to_leaf_term`'s contract (every arm it admits is an `Ok`).
+        leaf if leaf.lowers_to_leaf_term() => Ok(Value::term(
+            kb.alloc_from_value(&leaf)
+                .expect("lowers_to_leaf_term admits only infallible leaves"),
+        )),
+        other => Err(format!("a {}, which is not a type", other.type_name())),
+    }
+}
+
+/// WI-20260929-0RP29 — an ENTITY-carried type rebuilt on the carriers the type builders
+/// produce, each form through its own builder: the ONE owner of that conversion, which the
+/// builders themselves ask ([`type_children`], [`value_to_type_child`]) and the projection
+/// elimination asks of a child it grounded. σ hands back an entity for a type it spliced an
+/// occurrence into (`splice_non_term_bindings` → `fn_value`, for ANY form: an application, a
+/// named tuple, an arrow, an effect row), and no builder took one — `parameterized_value`
+/// read it as a term and PANICKED the loader, in the branch join (`if` / `match` / a list
+/// literal over a generic call whose answer holds a value, MEASURED) as in the projection
+/// elimination before it. Read through [`extract_type`], its children converted first ([`type_child_value`]:
+/// read, not interned, so a variable inside stays on the occurrence, WI-20260904-02ERR's
+/// rule). A spec view is lowered to the term its readers key on ([`lower_spec_view`], the
+/// `TermId` boundary WI-20260829-2NMXA removes).
+pub(super) fn entity_type_on_builders(kb: &mut KnowledgeBase, v: &Value) -> Result<Value, String> {
+    let sp = crate::kb::node_occurrence::empty_span();
+    let owner = None;
+    let child = |kb: &mut KnowledgeBase, c: Value| -> Result<TypeChild, String> {
+        let c = type_child_value(kb, c)?;
+        Ok(value_to_type_child_at(kb, &c, sp, owner))
+    };
+    let required = |kb: &KnowledgeBase, key: &str| -> Result<Value, String> {
+        view_child_value(kb, v, key).ok_or_else(|| format!("a type with no `{key}` child"))
+    };
+    match extract_type(kb, v) {
+        TypeExtractor::Parameterized { base, bindings } if is_sort_view_functor(kb, base) => {
+            let ViewHead::Functor {
+                functor: Some(functor),
+                pos_arity,
+                ..
+            } = v.head(kb)
+            else {
+                return Err("a spec view with no head".to_string());
+            };
+            let mut children: Vec<Value> = (0..pos_arity)
+                .map(|i| v.pos_arg(kb, i).map(|item| view_item_value(&item)))
+                .collect::<Option<_>>()
+                .ok_or_else(|| "a spec view whose positional slot does not read".to_string())?;
+            let (labels, values): (Vec<Symbol>, Vec<Value>) = bindings.into_iter().unzip();
+            children.extend(values);
+            lower_spec_view(kb, functor, pos_arity, &children, labels)
+        }
+        TypeExtractor::Parameterized { base, bindings } => match effect_expr_form(kb, base) {
+            Some(form) => {
+                let read = |kb: &mut KnowledgeBase, key: &str| -> Result<TypeChild, String> {
+                    let c = required(kb, key)?;
+                    child(kb, c)
+                };
+                let node = match form {
+                    EffectForm::Merge => EffectExprNode::Merge {
+                        left: read(kb, "left")?,
+                        right: read(kb, "right")?,
+                    },
+                    EffectForm::Open => EffectExprNode::Open {
+                        tail: read(kb, "tail")?,
+                    },
+                    EffectForm::Present => EffectExprNode::Present {
+                        label: read(kb, "label")?,
+                    },
+                    EffectForm::Absent => EffectExprNode::Absent {
+                        label: read(kb, "label")?,
+                    },
+                    EffectForm::Guarded => EffectExprNode::Guarded {
+                        label: read(kb, "label")?,
+                        guard: required(kb, "guard")?,
+                    },
+                };
+                Ok(Value::Node(NodeOccurrence::new_effect_expr(
+                    node, sp, owner,
+                )))
+            }
+            None => {
+                let mut rebuilt: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
+                for (k, b) in bindings {
+                    rebuilt.push((k, type_child_value(kb, b)?));
+                }
+                sort_application_value(kb, base, &rebuilt, sp, owner)
+            }
+        },
+        TypeExtractor::NamedTuple(fields) => {
+            let mut rebuilt: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());
+            for (k, f) in fields {
+                rebuilt.push((k, type_child_value(kb, f)?));
+            }
+            Ok(named_tuple_value(kb, &rebuilt, sp, owner))
+        }
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => {
+            let (p, r, e) = (child(kb, param)?, child(kb, result)?, child(kb, effects)?);
+            Ok(Value::Node(kb.make_arrow_occ(p, r, e, arity, sp, owner)))
+        }
+        TypeExtractor::EffectsRows(expr) => {
+            let e = child(kb, expr)?;
+            Ok(Value::Node(kb.make_effects_rows_occ(e, sp, owner)))
+        }
+        TypeExtractor::PolyType { body, .. } => {
+            let b = child(kb, body)?;
+            let binders = required(kb, "binders")?;
+            let context = view_child_value(kb, v, "context")
+                .unwrap_or_else(|| crate::kb::load::build_value_list(kb, Vec::new()));
+            Ok(Value::Node(
+                kb.make_poly_type_occ(binders, context, b, sp, owner),
+            ))
+        }
+        _ => Err("an entity-carried value that is not a type".to_string()),
+    }
+}
+
+/// `base` applied to `bindings` through the carrier-choosing builder — or why not: a head that
+/// is not a sort has no application to rebuild into, and building one would invent a sort.
+pub(super) fn sort_application_value(
+    kb: &mut KnowledgeBase,
+    base: Symbol,
+    bindings: &[(Symbol, Value)],
+    sp: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Result<Value, String> {
+    if !kb.has_kind(base, crate::intern::SymbolKind::Sort) {
+        return Err(format!(
+            "a type under `{}`, which is not a sort, with no form to rebuild it into",
+            kb.qualified_name_of(base),
+        ));
+    }
+    let base_ref = kb.make_sort_ref(base);
+    Ok(parameterized_value(kb, base_ref, bindings, sp, owner))
+}
+
+/// A spec view `functor(children…)` — its first `pos_arity` children positional, the rest
+/// under `labels` — lowered to the term its readers key on (SortGoal bindings are `TermId`s
+/// until WI-20260829-2NMXA). Built BY HAND rather than through `value_to_term`'s entity arm,
+/// which would reorder a binding named `sort` (WI-498); each child is lowered on its own.
+pub(super) fn lower_spec_view(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    pos_arity: usize,
+    children: &[Value],
+    labels: Vec<Symbol>,
+) -> Result<Value, String> {
+    let mut lowered: Vec<TermId> = Vec::with_capacity(children.len());
+    for v in children {
+        lowered.push(
+            value_to_term(kb, v)
+                .map_err(|e| format!("a spec view's child has no term form ({e:?})"))?,
+        );
+    }
+    let named_args: SmallVec<[(Symbol, TermId); 2]> = labels
+        .into_iter()
+        .zip(lowered.split_off(pos_arity))
+        .collect();
+    Ok(Value::term(kb.alloc(Term::Fn {
+        functor,
+        pos_args: lowered.into_iter().collect(),
+        named_args,
+    })))
 }
 
 /// WI-20260824-6RXGD — the GROUND twin of a written value-in-type LITERAL type argument,
@@ -549,7 +788,7 @@ fn substitute_ref_syms_rec(
         // bare param-name occurrence to rename. Leave it intact — recursing would
         // rewrite the binder's `name` child, corrupting `var_ref(name: c)` into
         // `var_ref(name: Green)` when `map` carries `c ↦ Green` (a constructor /
-        // value argument, which `param_to_arg_head` records for a re-keyed
+        // value argument, which `ArgPlaces::heads` records for a re-keyed
         // effect). The call's VALUE substitution (`build_call_guard_sigma` →
         // [`substitute_ref_terms`]) is what replaces a bound binder, and it does
         // so WHOLESALE (WI-552), so a binder→binder rename rides that path; this
@@ -820,17 +1059,17 @@ pub(super) fn rewrite_type_occ_deep(
                 // [`spliced_type_child`].
                 if let Some(spliced) = splice_non_term_bindings(kb, subst, w, ground) {
                     match spliced_type_child(kb, &spliced) {
-                        Some(c) => {
+                        Ok(c) => {
                             *changed = true;
                             return c;
                         }
                         // A spliced type this carrier has no child form for. Loud in a
                         // debug build; a release keeps the term walk's answer, which is no
                         // worse than before the splice existed.
-                        None => debug_assert!(
+                        Err(why) => debug_assert!(
                             false,
                             "rewrite_type_occ_deep: no occurrence child for the spliced \
-                             type {spliced:?}"
+                             type ({why}) {spliced:?}"
                         ),
                     }
                 }
@@ -1014,15 +1253,15 @@ pub(super) fn rewrite_type_occ_deep(
 /// A type [`splice_non_term_bindings`] produced, placed as a child of a type occurrence. A
 /// term and an occurrence are children as they are — an occurrence-carried binding stays
 /// one, UNINTERNED. An application rebuilt around one (a `Value::Entity`: `Option[T = A]`
-/// with `A` bound to `Foo[T = Int64, N = 3]`) has no child form of its own, and is LOWERED
-/// to the type term it is — `value_to_term`, lossless for an occurrence (WI-390) — which is
-/// the answer [`rewrite_type_occ_deep`]'s own `TypeNode::Var` arm already gives a bound
-/// variable: the type it denotes, interned. `None` only when it does not lower.
-fn spliced_type_child(kb: &mut KnowledgeBase, v: &Value) -> Option<TypeChild> {
+/// with `A` bound to `Foo[T = Int64, N = 3]`) takes the builders' carrier through their one
+/// owner ([`type_child_value`] → [`entity_type_on_builders`]) — it was LOWERED to a term here,
+/// a local copy of the conversion the builders now make (WI-20260930-FZA6H). An error, naming
+/// why, only when it is not a type.
+fn spliced_type_child(kb: &mut KnowledgeBase, v: &Value) -> Result<TypeChild, String> {
     match v {
-        Value::Term { id, .. } => Some(TypeChild::Interned(*id)),
-        Value::Node(occ) => Some(TypeChild::Node(Rc::clone(occ))),
-        other => value_to_term(kb, other).ok().map(TypeChild::Interned),
+        Value::Term { id, .. } => Ok(TypeChild::Interned(*id)),
+        Value::Node(occ) => Ok(TypeChild::Node(Rc::clone(occ))),
+        other => type_child_value(kb, other.clone()).map(|t| value_to_type_child(kb, &t)),
     }
 }
 
@@ -1079,9 +1318,20 @@ pub(super) fn walk_type_value(kb: &KnowledgeBase, subst: &Substitution, ty: &Val
 /// type-param value is carried, not re-grounded).
 pub(super) fn walk_pattern_field_type_deep(
     kb: &mut KnowledgeBase,
-    subst: &Substitution,
+    subst: &PatternSubst,
     ty: &Value,
 ) -> Value {
+    match subst.apart(kb) {
+        Some((apart, at)) => {
+            let ty = pattern_field_type_through(kb, &apart, ty);
+            pattern_field_type_through(kb, &at, &ty)
+        }
+        None => pattern_field_type_through(kb, subst.as_built(), ty),
+    }
+}
+
+/// [`walk_pattern_field_type_deep`]'s walk through one substitution.
+fn pattern_field_type_through(kb: &mut KnowledgeBase, subst: &Substitution, ty: &Value) -> Value {
     // Top-level type-param var → resolve through the subst's `Value` binding
     // first, so a `Value::Node` (denoted) binding surfaces rather than being
     // dropped by the term-only deep walk (which keeps a Node-bound var).

@@ -197,10 +197,7 @@ impl CarrierAtOwnParams {
 
 /// [`CarrierAtOwnParams::applied`] for every BARE reference to the carrier in `goal`'s
 /// bindings, at any depth (`List[T = Pair]` is a list of `Pair`s at `Pair`'s own
-/// parameters too).
-///
-/// A `SortView` wrapper is kept WHOLE: its `pos_args[0]` is the view's BASE, not a type
-/// argument, and rewriting it would leave a wrapper `unwrap_spec_view` no longer reads.
+/// parameters too) — [`rewrite_bare_carrier_refs`].
 fn goal_at_own_params(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
@@ -212,17 +209,10 @@ fn goal_at_own_params(
         .bindings
         .iter()
         .map(|(k, v)| {
-            let v = rewrite_term_leaves(kb, *v, &|kb, t| {
-                if let Term::Fn { functor, .. } = kb.get_term(t) {
-                    if is_sort_view_functor(kb, *functor) {
-                        return Some(t);
-                    }
-                }
-                extract_sort_ref_sym(kb, &TermIdView(t))
-                    .is_some_and(|s| kb.canonical_sort_sym(s) == carrier_canon)
-                    .then_some(applied)
-            });
-            (*k, v)
+            (
+                *k,
+                rewrite_bare_carrier_refs(kb, *v, carrier_canon, &|_, _| applied),
+            )
         })
         .collect();
     SortGoal {
@@ -230,6 +220,28 @@ fn goal_at_own_params(
         bindings,
         carrier: goal.carrier.clone(),
     }
+}
+
+/// `t` with every BARE reference to the carrier `carrier_canon`, at any depth, replaced by
+/// `replace(kb, reference)` — [`goal_at_own_params`]'s leaf set. A `SortView` wrapper is kept
+/// WHOLE: its `pos_args[0]` is the view's BASE, not a type argument, and rewriting it would
+/// leave a wrapper `unwrap_spec_view` no longer reads.
+fn rewrite_bare_carrier_refs(
+    kb: &mut KnowledgeBase,
+    t: TermId,
+    carrier_canon: Symbol,
+    replace: &impl Fn(&mut KnowledgeBase, TermId) -> TermId,
+) -> TermId {
+    rewrite_term_leaves(kb, t, &|kb, leaf| {
+        if let Term::Fn { functor, .. } = kb.get_term(leaf) {
+            if is_sort_view_functor(kb, *functor) {
+                return Some(leaf);
+            }
+        }
+        extract_sort_ref_sym(kb, &TermIdView(leaf))
+            .filter(|s| kb.canonical_sort_sym(*s) == carrier_canon)?;
+        Some(replace(kb, leaf))
+    })
 }
 
 /// WI-20260925-P5G39 — one clause of a provision, and what it lets the check assume.

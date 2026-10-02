@@ -294,7 +294,20 @@ fn node_type_is_ground_g(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, rigid_ok:
                     && child_ground(effects)
                     && child_ground(arity)
             }
-            TypeNode::ExprCarried { value, member } => child_ground(value) && child_ground(member),
+            // A projection's RECEIVER is a value path, not a type: `s.T`'s rides the term carrier
+            // as a bare reference, which reads as ground, and a FIELD PATH's (`s.provider.K`)
+            // the occurrence carrier as a `DotApply` chain over one — the same kind of receiver,
+            // and as determined. Read as "not a type occurrence, so unground", a parameter typed
+            // by a field-path projection was checked against NO argument, and a value of that
+            // type passed any parameter (MEASURED: `check(s, "oops")` for `k: s.provider.K`
+            // loaded, where the single-reference twin `k: s.T` refused it).
+            TypeNode::ExprCarried { value, member } => {
+                let receiver_ground = match value {
+                    TypeChild::Node(n) if n.as_expr().is_some() => expr_is_value_path(n),
+                    other => child_ground(other),
+                };
+                receiver_ground && child_ground(member)
+            }
             TypeNode::NamedTuple { fields } => list_records_to_pairs(kb, fields, "name", "type")
                 .iter()
                 .all(|(_, t)| resolved_type_is_ground_g(kb, t, rigid_ok)),
@@ -321,6 +334,21 @@ fn node_type_is_ground_g(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, rigid_ok:
         },
         // Not a type occurrence (an Expr/Pattern/RuleHead node never stands in a
         // type slot here) — conservatively unground (skip), as before.
+        _ => false,
+    }
+}
+
+/// Is `occ` a stable value PATH — a reference, or a chain of bare field accesses over one
+/// (`s.provider`)? The receiver of a field-path type projection.
+fn expr_is_value_path(occ: &Rc<NodeOccurrence>) -> bool {
+    match occ.as_expr() {
+        Some(Expr::Ref(_)) => true,
+        Some(Expr::DotApply {
+            receiver,
+            pos_args,
+            named_args,
+            ..
+        }) => pos_args.is_empty() && named_args.is_empty() && expr_is_value_path(receiver),
         _ => false,
     }
 }

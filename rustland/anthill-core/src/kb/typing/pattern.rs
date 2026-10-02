@@ -5,7 +5,60 @@ use super::*;
 
 // ── Pattern env extension ──────────────────────────────────────
 
-/// Build a `Substitution` from a `parameterized(base, bindings)` type
+/// A sort's parameters, each bound to the argument a receiver's (a scrutinee's) type writes for
+/// it — what [`build_pattern_subst`] reads off that type, and [`walk_pattern_field_type_deep`]
+/// applies to a type declared in those parameters (a field's, a provision's binding).
+///
+/// THE ARGUMENTS ARE THE RECEIVER'S, read where its type was written — and inside the sort
+/// itself they name the sort's parameters too (`x: Car[V = List[T = V]]`), which there are the
+/// ENCLOSING instance's, not the receiver's. So each parameter is replaced ONCE, never to a
+/// fixpoint: `V ↦ List[T = V]` has none (MEASURED: the loader's stack overflowed on a member
+/// reading `x.J` off such a parameter, and on one reading the field path `x.v.T`), and `A ↦
+/// List[T = B], B ↦ Int64` would read the enclosing `B` as the receiver's `Int64`.
+pub(super) struct PatternSubst {
+    at: Substitution,
+    /// An argument holds a parameter this binds, by its variable or by its reference: only
+    /// then are the parameters renamed apart before they are replaced.
+    captures: bool,
+}
+
+impl PatternSubst {
+    pub(super) fn of(kb: &KnowledgeBase, at: Substitution) -> Self {
+        let captures = at.iter().any(|(_, arg)| {
+            let mut held = kb.collect_vars(arg);
+            referenced_param_vars(kb, arg, &mut held);
+            held.iter().any(|v| at.resolve_as_value(*v).is_some())
+        });
+        PatternSubst { at, captures }
+    }
+
+    /// The substitution as built: what to walk a type through where no argument holds a
+    /// parameter.
+    pub(super) fn as_built(&self) -> &Substitution {
+        &self.at
+    }
+
+    /// Where an argument holds a parameter, the two substitutions to walk a type through in
+    /// turn: the parameters renamed to fresh variables, then those bound to the arguments —
+    /// whose own parameters nothing binds any more.
+    pub(super) fn apart(&self, kb: &mut KnowledgeBase) -> Option<(Substitution, Substitution)> {
+        if !self.captures {
+            return None;
+        }
+        let mut apart = Substitution::new();
+        let mut at = Substitution::new();
+        let bound: Vec<(VarId, Value)> = self.at.iter().map(|(v, arg)| (*v, arg.clone())).collect();
+        for (v, arg) in bound {
+            let fresh = kb.fresh_var(v.name());
+            let renamed = kb.alloc(Term::Var(Var::Global(fresh)));
+            apart.bind_term(kb, v, renamed);
+            at.bind_value(kb, fresh, arg);
+        }
+        Some((apart, at))
+    }
+}
+
+/// Build a [`PatternSubst`] from a `parameterized(base, bindings)` type
 /// for a constructor pattern's field types: each scrutinee binding's
 /// param symbol maps to the type-param `Var(Global)` registered for
 /// `parent_sort`, bound to the binding's value type. So
@@ -19,7 +72,7 @@ pub(super) fn build_pattern_subst(
     kb: &KnowledgeBase,
     scrutinee_type: &impl TermView,
     parent_sort: Symbol,
-) -> Option<Substitution> {
+) -> Option<PatternSubst> {
     // WI-361: read the bindings form-agnostically — deep `parameterized(base,
     // bindings)` or term-backed `Fn{S, named}`. A non-parameterized scrutinee
     // (bare sort, arrow, …) yields no pattern subst. WI-342: carrier-agnostic
@@ -42,11 +95,7 @@ pub(super) fn build_pattern_subst(
             any = true;
         }
     }
-    if any {
-        Some(subst)
-    } else {
-        None
-    }
+    any.then(|| PatternSubst::of(kb, subst))
 }
 
 /// WI-424 — a parametric sort's declared type parameters as `(param symbol,

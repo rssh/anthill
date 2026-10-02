@@ -1267,12 +1267,12 @@ pub(super) fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<V
     //     both interned, different   52,596   11.7%   the walk below
     //     either not interned             0    0.0%
     //
-    // So the fast path is the DOMINANT one, and the last row answers a question that was
-    // asked and is worth recording as settled: a computed hash on `Value` would generalize
-    // this arm past the interned carrier, and there is nothing here for it to serve — a
-    // `Value::Node` (an arrow, a denoted type — deliberately not interned) never reaches
-    // `join_types` at all. If a producer ever routes one here, this comment is the place
-    // that says the fast path silently stops covering it.
+    // So the fast path is the DOMINANT one. The last row was measured before
+    // WI-20260929-0RP29: a type projection elimination rebuilt (an arrow, an effect row, an
+    // application around one) is now an OCCURRENCE and does reach `join_types`. Such a pair
+    // takes the walk below — carrier-neutral, so it gives the same answer, only without this
+    // one-integer shortcut; generalizing the shortcut past the interned carrier would want a
+    // structural hash on `Value`, which nothing measured here asks for.
     //
     // IT HAS NO TEST ROW AND SHOULD NOT: backing it out fails NOTHING (lib 600/0, `wi_tests`
     // 4253/0), which is the correct outcome for a performance change and is itself the
@@ -1510,10 +1510,13 @@ pub(super) fn types_equivalent(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> 
 /// [`SameBaseCombine::NoCombination`], which the LUB reads as NO JOIN (WI-20260829-WBXGX
 /// retired the bare-base fallback: `S` is an upper bound that is also a lower bound) and
 /// the GLB as the bottom type.
-/// Construction stays on the hash-consed term path (the
-/// nominal, heavily-shared structure that should remain a `TermId`); a `Value::Node`
-/// combined binding (an arrow / denoted type — exotic for a branch join) falls back
-/// to the conservative bound rather than minting a Node-carried type.
+/// Construction goes through [`parameterized_value`], which chooses the carrier: hash-consed
+/// while every combined binding is a term, an occurrence the moment one is not. A binding
+/// carried by an occurrence — a type holding a value, or an arrow or effect row that
+/// projection elimination rebuilt as one (WI-20260929-0RP29) — is combined like any other,
+/// read through [`extract_type`]; bailing on it refused `if b then mk(cat) else mk(dog)` over
+/// `mk(s: Src) -> Pair[A = s.T, B = (x: s.K) -> Int64]`, whose `B` is the same arrow on both
+/// sides (MEASURED).
 /// WI-20260829-WBXGX — what [`combine_parameterized_same_base`] found, as three answers
 /// rather than two.
 ///
@@ -1586,7 +1589,7 @@ fn combine_parameterized_same_base(
         return SameBaseCombine::NoCombination;
     }
     let mut used = vec![false; b_binds.len()];
-    let mut result: Vec<(Symbol, TermId)> = Vec::with_capacity(a_binds.len());
+    let mut result: Vec<(Symbol, Value)> = Vec::with_capacity(a_binds.len());
     for (param, av) in &a_binds {
         // WI-769: key lookup by the one shared rule ([`binding_for_param`]) —
         // the sides may spell one slot canonically vs bare (the WI-726/764/768
@@ -1648,14 +1651,16 @@ fn combine_parameterized_same_base(
         if result.iter().any(|(k, _)| *k == canon_key) {
             return SameBaseCombine::NoCombination;
         }
-        match combined {
-            Value::Term { id: t, .. } => result.push((canon_key, t)),
-            // A Node-carried combined binding: stay off the Node path; bail.
-            _ => return SameBaseCombine::NoCombination,
-        }
+        result.push((canon_key, combined));
     }
     let base_ref = kb.make_sort_ref(base);
-    SameBaseCombine::Combined(Value::term(kb.make_parameterized_type(base_ref, &result)))
+    SameBaseCombine::Combined(parameterized_value(
+        kb,
+        base_ref,
+        &result,
+        crate::kb::node_occurrence::empty_span(),
+        None,
+    ))
 }
 
 /// WI-464: combine one binding's two values per the lattice `dir`. `Lub` is the

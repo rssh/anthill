@@ -412,6 +412,10 @@ end
 /// on a fixture with no composition in it. The composed branch answers the same, which is
 /// the property this test pins.
 ///
+/// `Box.splitFirst` returns what `Stream.splitFirst` promises: the member rule compares a
+/// return holding a projection (WI-20260929-0RP29), and `-> Int64` behind `-> Option[T = Pair[A
+/// = s.T, …]]` is refused there.
+///
 /// ONLY THE BARE SITE HAS AN ANSWER HERE. `parameterized_compatible_view` has no
 /// entity→parent climb, so a PARAMETERIZED entity actual finds no provider view and every
 /// carrier spelling refuses — measured, and identically with this ticket backed out. That
@@ -424,11 +428,12 @@ fn an_entity_actual_is_admissible_at_its_providing_sort() {
 namespace test.xzmgc_entity
   import anthill.prelude.{{Int64, Iterable, Stream}}
   sort Box
-    import anthill.prelude.{{Int64, Stream}}
+    import anthill.prelude.{{Int64, Stream, Option, Pair}}
+    import anthill.prelude.Option.{{none}}
     sort T = ?
     entity boxed(v: Int64)
     provides Stream[T = T, E = {{}}]
-    operation splitFirst(s: Box) -> Int64 = 1
+    operation splitFirst(s: Box) -> Option[T = Pair[A = T, B = Box[T = T]]] = none
   end
   operation ti(c: {want}) -> Int64 = 1
   operation drive(b: Box.boxed) -> Int64 = ti(b)

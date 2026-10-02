@@ -4379,7 +4379,7 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // would flounder instead of being DECIDED (resolve.rs: a constructor "is
         // a closed datum … must still be able to DECIDE, not flounder"). Telling
         // the two apart at this goal-lowering boundary keeps the carried
-        // OCCURRENCE a `var_ref` (so the typer's `param_to_arg_sym` re-key still
+        // OCCURRENCE a `var_ref` (so the typer's `ArgPlaces::vars` re-key still
         // sees the binder shape, WI-459/WI-481) while the lowered GOAL TERM is the
         // decidable `Ref` the resolver needs. A genuine binder stays `var_ref`
         // (flounder is the sound default for a runtime-unknown). `Const` is
@@ -4917,10 +4917,10 @@ fn effect_node_to_term(kb: &mut KnowledgeBase, en: &EffectExprNode) -> TermId {
 ///
 /// An earlier cut of WI-819 DID pass `Value::Node` through, to keep a compound
 /// type projection (`s.cell.T`) on the carrier `eliminate_type_projections`
-/// routed to `resolve_compound_projection`. That was fixing the wrong end: the
-/// `Value::Term` arm now delegates compound receivers to the same resolver, so
-/// both carriers give the same answer and the annotation no longer has to carry
-/// a shape merely to be understood downstream.
+/// routed to the compound-receiver resolver. That was fixing the wrong end: the
+/// elimination is one carrier-neutral walk (WI-20260929-0RP29) that resolves every
+/// receiver through the same resolver, so both carriers give the same answer and the
+/// annotation no longer has to carry a shape merely to be understood downstream.
 ///
 /// [`value_to_term`] is the total `Value → Term` boundary (WI-390 — a
 /// `denoted`-bearing type lowers losslessly through `occurrence_to_term`), and

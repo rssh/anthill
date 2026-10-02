@@ -62,15 +62,18 @@ use super::*;
 ///     refuse every one of them; dispatch is what makes the narrowing sound, since
 ///     the receiver is the carrier by construction. Recognised structurally — the
 ///     spec side's sort functor IS the spec, the member side's IS the carrier —
-///     never by position: `test.wi596.Bag.holds(x: T, b: Bag)` puts it second.
+///     never by position: `test.wi596.Bag.holds(x: T, b: Bag)` puts it second. This
+///     comparison passes every such parameter; only the RECEIVER is sound by dispatch,
+///     and [`member_narrower_than_spec`] refuses a member narrowing a SECOND one to the
+///     carrier (`combine(a: Widget, b: Widget)`, `b` admitting any provider).
 ///   * A TYPE CARRYING AN EXPRESSION PROJECTION (`s.T`, WI-376). σ binds the
 ///     spec's TYPE PARAMETERS; it cannot ground a projection off the operation's
 ///     own parameter, and the two operations' receivers are different parameters,
 ///     so `Stream.splitFirst`'s `s.T` and `List.splitFirst`'s `xs.T` are two
 ///     distinct neutrals that [`types_compatible`] refuses (`expr_carried_zeta`:
-///     "a neutral projection is equal only to an identical neutral"). Deciding
-///     these needs the receiver-relative alignment WI-461/WI-474 do at a CALL, not
-///     a σ over type parameters.
+///     "a neutral projection is equal only to an identical neutral").
+///     [`member_narrower_than_spec`] relates them — the parameters and the return —
+///     reading each projection as the call reads it, off the argument it projects.
 ///   * A NON-GROUND PAIR — the fail-open [`instance_binding_type_ok`] already
 ///     applies, so a higher-kinded or unbound parameter is not judged. GROUND IS A
 ///     PROPERTY OF THE TYPE, NOT OF ITS CARRIER: a type carrying a literal argument
@@ -112,6 +115,7 @@ pub(super) fn check_member_signature(
     spec_info: &crate::kb::op_info::OpInfoRecord,
     impl_info: &crate::kb::op_info::OpInfoRecord,
     sigma: &[(Symbol, TermId)],
+    provision: &ProvisionMembers,
     errors: &mut Vec<crate::kb::load::LoadError>,
 ) -> MemberSignature {
     use crate::kb::load::LoadError;
@@ -134,7 +138,9 @@ pub(super) fn check_member_signature(
     // The carrier / spec names are read ONLY on a refusal. This function runs for every
     // (spec op, member) pair of every provision on every load — the stdlib alone carries
     // ~146 provisions — and the overwhelmingly common outcome is that the signatures fit,
-    // so nothing above the failure branches allocates.
+    // so nothing above the failure branches allocates — but the member rule below, which
+    // builds the spec's arguments on the success path too: only for a GATED pair, and its
+    // per-provision half once per provision ([`ProvisionMembers`]).
     let refuse = |kb: &KnowledgeBase, errors: &mut Vec<LoadError>, reason: String| {
         errors.push(LoadError::IncompatibleMemberSignature {
             carrier: kb.qualified_name_of(carrier).to_string(),
@@ -163,11 +169,26 @@ pub(super) fn check_member_signature(
 
     // ── parameter types (contravariant: σ(spec) <: member) ──────────────────
     let n = spec_info.params.len();
+    // The member's parameters by the spec's names, positionally: a type naming one by value
+    // (a callback's `Modify[p]`) names the spec's `p` in the spec and the member's in the
+    // member, two symbols, so a verbatim member compared unequal (WI-20260929-0RP29, MEASURED).
+    let impl_to_spec: HashMap<Symbol, Symbol> = impl_info
+        .params
+        .iter()
+        .zip(&spec_info.params)
+        .filter(|((m, _), (s, _))| m != s)
+        .map(|((m, _), (s, _))| (*m, *s))
+        .collect();
     let mut bad: Vec<usize> = Vec::new();
     for i in 0..n {
         let (_, spec_pty) = &spec_info.params[i];
         let (_, impl_pty) = &impl_info.params[i];
-        if instance_binding_type_ok(kb, spec_pty, impl_pty, sigma, false) != Some(false) {
+        let impl_pty = if impl_to_spec.is_empty() {
+            impl_pty.clone()
+        } else {
+            substitute_ref_syms_value(kb, impl_pty, &impl_to_spec)
+        };
+        if instance_binding_type_ok(kb, spec_pty, &impl_pty, sigma, false) != Some(false) {
             continue;
         }
         // THE SELF-RECEIVER, and the projection gate — see the doc above. Both are
@@ -175,10 +196,10 @@ pub(super) fn check_member_signature(
         // is why the canonicalizations sit here rather than above the loop.
         let is_receiver = sort_functor_of_view(kb, spec_pty)
             .is_some_and(|b| kb.canonical_sort_sym(b) == kb.canonical_sort_sym(spec))
-            && sort_functor_of_view(kb, impl_pty)
+            && sort_functor_of_view(kb, &impl_pty)
                 .is_some_and(|b| kb.canonical_sort_sym(b) == kb.canonical_sort_sym(carrier));
         let carries_projection =
-            value_contains_projection(kb, spec_pty) || value_contains_projection(kb, impl_pty);
+            value_contains_projection(kb, spec_pty) || value_contains_projection(kb, &impl_pty);
         if !is_receiver && !carries_projection {
             bad.push(i);
         }
@@ -222,14 +243,193 @@ pub(super) fn check_member_signature(
         return MemberSignature::Alignable;
     }
 
-    // ── return type (covariant: member <: σ(spec)) ──────────────────────────
-    if instance_binding_type_ok(
+    // ── the member takes every argument list the spec takes, and returns what it promises ──
+    let fit = member_narrower_than_spec(
         kb,
-        &spec_info.return_type,
-        &impl_info.return_type,
+        carrier,
+        spec,
+        spec_op,
+        spec_info,
+        impl_info,
         sigma,
-        true,
-    ) == Some(false)
+        provision,
+        &impl_to_spec,
+    );
+    if let MemberFit::Narrower(n) = fit {
+        let spec_sig = render_op_signature(kb, op_short, spec_info, sigma);
+        let impl_sig = render_op_signature(kb, op_short, impl_info, &[]);
+        let sigs = format!(
+            "The spec declares `{spec_sig}` (at this provision's bindings) and the member is \
+             `{impl_sig}`"
+        );
+        // The two types as compared where the rule read them otherwise than the declarations
+        // print (a projection read, a receiver typed by the spec, a return), else as declared.
+        let (decl_spec, decl_member) = match n.at {
+            Some(i) => (&spec_info.params[i].1, &impl_info.params[i].1),
+            None => (&spec_info.return_type, &impl_info.return_type),
+        };
+        let got_decl = member_type_display(kb, decl_member);
+        let (want, got) = match &n.compared {
+            Some((w, g)) => (member_type_display(kb, w), member_type_display(kb, g)),
+            None => {
+                let sub = sigma_subst_type(kb, decl_spec, sigma);
+                (member_type_display(kb, &sub), got_decl.clone())
+            }
+        };
+        // Two sides that PRINT ALIKE differ where this rendering does not look: only a top-level
+        // arrow prints its row ([`member_type_display`]), and a rigid and a flexible variable
+        // share one name. Said, where the refusal would otherwise read as a tautology (`Box[T =
+        // Int64 -> Int64]` "admits arguments" `Box[T = Int64 -> Int64]` "does not").
+        let sigs = if want == got {
+            format!(
+                "{sigs}. The two types compared print alike: they differ in a part this \
+                 rendering leaves out — the effect row of a function type inside them, or two \
+                 variables of one name"
+            )
+        } else {
+            sigs
+        };
+        let carrier_short = kb.local_name_of(carrier).to_string();
+        let spec_short = kb.local_name_of(spec).to_string();
+        let reason = match (n.at, n.why) {
+            (None, Narrower::Return { unwritten }) => format!(
+                "the member returns `{got}`, which is not a subtype of the spec's `{want}`, each \
+                 read as a call reads it at the spec's arguments — {sigs}{}",
+                if unwritten {
+                    ". The member's return leaves a slot unwritten, which is a type the member \
+                     picks and no caller knows: write it, or name it by a type parameter of the \
+                     member's that one of its parameters fixes"
+                } else {
+                    ""
+                }
+            ),
+            (None, Narrower::Unreadable { spec, why }) => format!(
+                "the {} return type does not read at the spec's arguments — {why}. {sigs}",
+                if spec { "spec's" } else { "member's" }
+            ),
+            (Some(i), why) => {
+                let name = kb.local_name_of(impl_info.params[i].0).to_string();
+                let at = format!("parameter {} (`{name}: {got_decl}`)", i + 1);
+                let narrower = |why: String| {
+                    format!(
+                        "{at} takes less than the spec's, so a call written against the spec \
+                         can pass it an argument its own signature refuses — {why}. {sigs}"
+                    )
+                };
+                match why {
+                    Narrower::Receiver { by_spec: true, .. } => narrower(format!(
+                        "`{name}` is the receiver, and the spec receives every provider of \
+                         `{spec_short}` this provision covers, as `{want}`, where the member's \
+                         `{got}` does not take them all; type `{name}` as the spec writes it at \
+                         this provision, or write the restriction into the spec's receiver"
+                    )),
+                    Narrower::Receiver {
+                        written: false,
+                        sort,
+                        ..
+                    } => {
+                        let recv_short = kb.local_name_of(sort).to_string();
+                        narrower(format!(
+                            "`{name}` is the receiver, and the spec receives every \
+                             `{recv_short}` this provision covers, where the member's `{got}` \
+                             fixes what the spec leaves open; type `{name}` as `{recv_short}` at \
+                             its own parameters, or write the restriction into the spec's receiver"
+                        ))
+                    }
+                    Narrower::Receiver { sort, .. } => {
+                        let recv_short = kb.local_name_of(sort).to_string();
+                        narrower(format!(
+                            "`{name}` is the receiver, and the spec receives every \
+                             `{recv_short}` its receiver's type admits at this provision's \
+                             bindings (`{want}`), where the member's `{got}` does not take them \
+                             all; type `{name}` as the spec writes it"
+                        ))
+                    }
+                    Narrower::AnyProvider => narrower(format!(
+                        "the spec's `{want}` admits any provider of `{spec_short}`, and the \
+                         member's `{got}` only a `{carrier_short}`; type `{name}` by the spec, or \
+                         make the spec parameter the receiver's type"
+                    )),
+                    Narrower::Tied { with: None } => narrower(format!(
+                        "inside `{carrier_short}` a bare `{carrier_short}`, or one written with \
+                         `{carrier_short}`'s own parameters, is THIS instance (the parametricity \
+                         tie), so the member's `{got}` ties `{name}` to the receiver, where the \
+                         spec's `{want}` need not be the receiver's instance; give `{name}`'s \
+                         `{carrier_short}` type arguments of its own, or tie the two in the spec"
+                    )),
+                    // No receiver: the instance is whichever the first parameter naming it took.
+                    Narrower::Tied { with: Some(j) } => {
+                        let first = kb.local_name_of(impl_info.params[j].0).to_string();
+                        narrower(format!(
+                            "inside `{carrier_short}` a bare `{carrier_short}`, or one written \
+                             with `{carrier_short}`'s own parameters, is THIS instance (the \
+                             parametricity tie), so the member's `{got}` ties `{name}` to \
+                             `{first}`, where the spec's `{want}` is an instance of its own; give \
+                             `{name}`'s `{carrier_short}` type arguments of its own, or tie the \
+                             two in the spec"
+                        ))
+                    }
+                    Narrower::Other => narrower(format!(
+                        "the spec's `{want}` admits arguments the member's `{got}` does not; \
+                         widen the member's parameter to the spec's type"
+                    )),
+                    Narrower::Circular { binding, sort } => {
+                        let recv_short = kb.local_name_of(sort).to_string();
+                        let b = type_display_name_value(kb, &Value::term(binding));
+                        format!(
+                            "{at} is the receiver, and the provision binds its type to `{b}`, \
+                             which writes one of `{recv_short}`'s own parameters inside its own \
+                             slot — no `{recv_short}` is that type, so no call written against \
+                             the spec reaches this member; write that slot as `?` (any type), \
+                             leave it unwritten, or bind a parameter of the spec's to what it was \
+                             meant to name. {sigs}"
+                        )
+                    }
+                    Narrower::Unreadable { spec: true, why } => format!(
+                        "{at}: the spec's `{want}` does not read at this provision — {why}. {sigs}"
+                    ),
+                    Narrower::Unreadable { spec: false, why } => {
+                        format!("{at} does not read at the spec's arguments — {why}. {sigs}")
+                    }
+                    Narrower::Return { .. } => {
+                        panic!("member_narrower_than_spec: a return refusal names a parameter")
+                    }
+                }
+            }
+            (None, why) => panic!(
+                "member_narrower_than_spec: a parameter's refusal kind without a parameter ({})",
+                match why {
+                    Narrower::Receiver { .. } => "Receiver",
+                    Narrower::AnyProvider => "AnyProvider",
+                    Narrower::Tied { .. } => "Tied",
+                    Narrower::Other => "Other",
+                    Narrower::Circular { .. } => "Circular",
+                    Narrower::Unreadable { .. } | Narrower::Return { .. } => "unreachable",
+                }
+            ),
+        };
+        refuse(kb, errors, reason);
+        return MemberSignature::Alignable;
+    }
+
+    // ── return type (covariant: member <: σ(spec)) ──────────────────────────
+    // Where the rule above compared it, it is judged: as a call reads it, which this raw-σ
+    // comparison is not (a bare carrier binding is any instance here, and a return naming a
+    // type parameter is undecided — MEASURED: `-> Car[V = Int64]` behind `-> T` at `T = Car`
+    // loaded and a spec call read a `String` off it). It stays for the member no call written
+    // against the spec reaches, which the rule compares nothing of — by the spec's names, as the
+    // parameters above are (a verbatim `-> Buf[T = Int64, N = n]` named two `n`s and was
+    // refused printing one type twice, MEASURED).
+    if !matches!(fit, MemberFit::Unreached) {
+        return MemberSignature::Alignable;
+    }
+    let impl_return = if impl_to_spec.is_empty() {
+        impl_info.return_type.clone()
+    } else {
+        substitute_ref_syms_value(kb, &impl_info.return_type, &impl_to_spec)
+    };
+    if instance_binding_type_ok(kb, &spec_info.return_type, &impl_return, sigma, true)
+        == Some(false)
         && !value_contains_projection(kb, &spec_info.return_type)
         && !value_contains_projection(kb, &impl_info.return_type)
     {
@@ -246,6 +446,1862 @@ pub(super) fn check_member_signature(
         refuse(kb, errors, reason);
     }
     MemberSignature::Alignable
+}
+
+/// WI-20260929-0RP29 — what [`member_narrower_than_spec`] reads of a PROVISION, built on the
+/// first gated member that asks and shared by the rest of its operations: a provision whose
+/// spec backs every operation with a body pays nothing.
+pub(super) struct ProvisionMembers<'a> {
+    spec: Symbol,
+    /// The declaring sort, whose members are compared and whose own parameters a member's
+    /// self references denote.
+    carrier: Symbol,
+    /// The provision's bindings AS THE `provides` FACT STORES THEM — spec parameter ↦ the type
+    /// the clause wrote (`provides Sp[T = List[T = V]]` ⟹ `T ↦ List[T = V]`), read off the
+    /// fact's spec-view term ([`spec_param_sigma`]). STORED DATA, not the result of a
+    /// substitution, which is why it is `TermId`s: a fact's arguments are hash-consed. It is
+    /// called σ for its USE — the spec's signature with each parameter reference replaced by
+    /// its binding ([`sigma_subst_type`]). Everything DERIVED from it is a `Value`
+    /// ([`ProvisionShared::template`]).
+    sigma: &'a [(Symbol, TermId)],
+    /// The sort the spec's carrier parameter is bound to where it is not the declaring sort
+    /// (a WITNESS's carrier: `BoxHolder provides Holder[C = Box]` receives a `Box`).
+    witness: Option<Symbol>,
+    shared: std::cell::OnceCell<ProvisionShared>,
+}
+
+/// The per-provision half of [`member_narrower_than_spec`]'s arguments ([`ProvisionMembers`]).
+struct ProvisionShared {
+    /// The witness's carrier, canonical ([`ProvisionMembers::witness`]).
+    witness: Option<Symbol>,
+    /// The declaring sort at its own parameters: a member's bare self reference, and the
+    /// instance a self-receiver receives.
+    own_decl: TermId,
+    /// σ as a call reads it, ONCE per spec parameter. The provision is written inside the
+    /// declaring sort, so a reference to that sort in a binding reads as it does in the sort's
+    /// own operations (§3's tie): bare, or with a slot unwritten, it is THIS instance — at any
+    /// depth, whichever parameter it binds and whether an operation receives on it. A FOREIGN
+    /// sort's unwritten slot (a witness's carrier among them) is a variable every reader of the
+    /// parameter shares (`c: C, d: C` at `C = Box` are one `Box`, as the call ties them).
+    /// INTERIM (user, 2026-10-01): WI-20261001-80ZV8 makes a bare sort fresh `?` slots in both
+    /// places and writes this instance as `Self`.
+    ///
+    /// On whatever carrier each binding's expansion rides — a rebuilt arrow is an occurrence, a
+    /// row around an expanded label a value — and substituted as that
+    /// ([`sigma_subst_type_values`]).
+    template: Vec<(Symbol, Value)>,
+    /// The spec's own parameters: one the provision leaves unbound stays a WILDCARD, as in the
+    /// rest of this check (a provision naming no carrier is refused on its own, WI-KXNEX).
+    spec_own: SmallVec<[VarId; 4]>,
+}
+
+impl<'a> ProvisionMembers<'a> {
+    pub(super) fn new(
+        spec: Symbol,
+        carrier: Symbol,
+        sigma: &'a [(Symbol, TermId)],
+        witness: Option<Symbol>,
+    ) -> Self {
+        ProvisionMembers {
+            spec,
+            carrier,
+            sigma,
+            witness,
+            shared: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn shared(&self, kb: &mut KnowledgeBase) -> &ProvisionShared {
+        self.shared.get_or_init(|| {
+            let decl = kb.canonical_sort_sym(self.carrier);
+            let witness = self.witness.map(|w| kb.canonical_sort_sym(w));
+            let spec_canon = kb.canonical_sort_sym(self.spec);
+            let own_decl = own_application(kb, decl);
+            let spec_own = own_params_of(kb, spec_canon)
+                .iter()
+                .map(|&(_, v)| v)
+                .collect();
+            let template = self
+                .sigma
+                .iter()
+                .map(|&(p, b)| {
+                    let b = self_references_at_own_parameters(kb, b, decl);
+                    let b = row_parameter_binding_as_row(kb, spec_canon, p, b);
+                    let b =
+                        expand_foreign_sorts_and_row_labels(kb, &b, Some(decl), SlotVar::Flexible);
+                    (p, b)
+                })
+                .collect();
+            ProvisionShared {
+                witness,
+                own_decl,
+                template,
+                spec_own,
+            }
+        })
+    }
+}
+
+/// The binding of a spec's EFFECT-ROW parameter as the row it denotes ([`row_holding_label`]):
+/// `E = Error[Foo]` is the row holding that label, as `E = {Error[Foo]}` writes it. A row
+/// parameter's variable stands where a row does — a callback row's tail, `f: … @ {E}` — and
+/// bound to the bare label it made `open(tail: Error[T = Foo])`, which no row reader decomposes:
+/// the spec's callback row read as nothing and every member was refused (MEASURED: the member
+/// restating `@ {Error[Foo]}` behind `provides Sp[E = Error[Foo]]`).
+fn row_parameter_binding_as_row(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    p: Symbol,
+    b: Value,
+) -> Value {
+    let short = short_name_of(kb.local_name_of(p)).to_owned();
+    if !sort_param_is_effect_row(kb, spec, &short) {
+        return b;
+    }
+    row_holding_label(kb, &b).unwrap_or(b)
+}
+
+/// `sort` at its own parameters (bare when it declares none).
+fn own_application(kb: &mut KnowledgeBase, sort: Symbol) -> TermId {
+    let pairs = sort_type_params_as_pairs(kb, sort);
+    let base = kb.make_sort_ref(sort);
+    if pairs.is_empty() {
+        base
+    } else {
+        kb.make_parameterized_type(base, &pairs)
+    }
+}
+
+/// The CARRIER-PARAM RECEIVER of an operation with no self-receiver (WI-424): its first
+/// parameter typed by a spec parameter the provision binds to one of `sorts` — with that spec
+/// parameter, the binding (σ can bind one key twice, `C = Int64, C = Car`), and the sort it
+/// names.
+fn carrier_param_receiver_of(
+    kb: &KnowledgeBase,
+    params: &[(Symbol, Value)],
+    sigma: &[(Symbol, TermId)],
+    sorts: &[Symbol],
+) -> Option<(usize, Symbol, TermId, Symbol)> {
+    params.iter().enumerate().find_map(|(i, (_, pty))| {
+        let v = declared_type_param_vid(kb, pty)?;
+        sigma.iter().find_map(|&(p, b)| {
+            if type_param_global_var(kb, p) != Some(v) {
+                return None;
+            }
+            sorts
+                .iter()
+                .copied()
+                .find(|&s| composed_self_reference(kb, s, b))
+                .map(|s| (i, p, b, s))
+        })
+    })
+}
+
+/// WI-20260929-0RP29 (user decision, 2026-09-30) — WHY a member takes less than its spec,
+/// for the refusal to name the repair that fits.
+#[derive(Clone, PartialEq, Eq)]
+enum Narrower {
+    /// The operation's RECEIVER takes fewer carriers than the spec sends it — `written` when
+    /// the spec's receiver writes the restriction it is held to (a carrier parameter bound to
+    /// `Box[B = Int64]`, a self-receiver `s: Sp[T = Int64]`), so the member's differs from what
+    /// the spec writes rather than fixing what it leaves open; `by_spec` when the member types
+    /// it by the spec itself, compared as the spec's type at this provision.
+    Receiver {
+        written: bool,
+        by_spec: bool,
+        sort: Symbol,
+    },
+    /// A parameter the spec types by the SPEC ITSELF, other than the receiver: it admits any
+    /// provider of the spec, and the member's takes only the carrier.
+    AnyProvider,
+    /// The member's parameter is THIS instance (§3's parametricity tie) where the spec's need
+    /// not be — at any depth. `with` is the parameter that fixed the member's instance first,
+    /// where the operation has no receiver to fix it.
+    Tied { with: Option<usize> },
+    /// Anything else.
+    Other,
+    /// The provision binds the receiver's parameter to a type writing one of the carrier's own
+    /// parameters inside its own slot (`C = Box[B = List[T = B]]`): no instance is that type,
+    /// so no call through the spec reaches the member.
+    Circular { binding: TermId, sort: Symbol },
+    /// A projection does not read here — on the spec's side, the spec's own (`spec: true`).
+    Unreadable { spec: bool, why: String },
+    /// The member's return type is not a subtype of the spec's. `unwritten`: it leaves a slot
+    /// unwritten — a type the member picks, which no caller knows.
+    Return { unwritten: bool },
+}
+
+/// Where [`member_narrower_than_spec`] found the member narrower, and why.
+struct Narrowing {
+    /// The parameter, or `None` for the return type.
+    at: Option<usize>,
+    why: Narrower,
+    /// The two types as compared, where they differ from the declarations at this provision's
+    /// bindings — a projection read, a receiver typed by the spec, a return — for the refusal
+    /// to print what was compared.
+    compared: Option<(Value, Value)>,
+}
+
+impl Narrowing {
+    fn at(i: usize, why: Narrower) -> Self {
+        Narrowing {
+            at: Some(i),
+            why,
+            compared: None,
+        }
+    }
+}
+
+/// What [`member_narrower_than_spec`] found.
+enum MemberFit {
+    /// Every position and the return compared: the member takes what the spec takes and
+    /// returns what it promises.
+    Fits,
+    /// No call written against the spec reaches the member — the spec's receiver, as written,
+    /// admits no provider at this provision's bindings, and the call CHECKS its receiver against
+    /// that type ([`receiver_type_is_closed`]) — so nothing was compared.
+    Unreached,
+    /// The first parameter, or the return, where the member is narrower.
+    Narrower(Narrowing),
+}
+
+impl From<Narrowing> for MemberFit {
+    fn from(n: Narrowing) -> Self {
+        MemberFit::Narrower(n)
+    }
+}
+
+/// WI-20260929-0RP29 (user decisions, 2026-09-30 and 2026-10-01) — DOES THE MEMBER TAKE EVERY
+/// ARGUMENT LIST THE SPEC OPERATION TAKES, AND RETURN WHAT IT PROMISES? [`MemberFit::Narrower`]
+/// names the first parameter (or the return) where it does not.
+///
+/// A call written against the spec reaches the member at run time, so a member that refuses
+/// an argument list the spec admits receives arguments its own signature forbids. The
+/// per-position comparison above cannot see the commonest way to be narrower, because it
+/// is not in any one parameter: `Car.pick(x: Car, s: Car)` beside `Sp.pick(x: T, s: Sp)`
+/// at `Car provides Sp[T = Car]` compares `Car` with `Car` at both positions, yet inside
+/// `sort Car` every bare `Car` is THIS instance (§3's parametricity tie), so the member
+/// demands `x.V = s.V` where the spec lets them differ.
+///
+/// THE SPEC'S ARGUMENTS, as a call writes them against it, in a substitution of their own:
+///   * THE RECEIVER, per operation and as dispatch reads it — the parameter typed by the spec
+///     itself ([`self_receiver_param_index`]), else the first typed by a spec parameter the
+///     provision binds to the carrier (the WI-424 carrier-param receiver; a witness's carrier
+///     for a witness). An operation with NEITHER is compared all the same: a spec call reaches
+///     its member wherever the call fixes the spec's parameters — by its arguments, a call-site
+///     bracket (`Mon2.total[U = Int64](xs)`), or an operation-level `requires` dictionary — so
+///     it has no instance to receive, and the member's own parameters are bound by the first
+///     position that names them.
+///   * THE INSTANCE is the carrier at its own parameters, which the provision's references to
+///     them denote — the receiver's slots, as the call grounds them (WI-593): `C = Car[V =
+///     Int64, W = V]` receives a `Car` whose `W` is its `V`. The carrier-param receiver's binding
+///     is MET with it, a foreign sort's unwritten slot in it any type; one that writes a
+///     parameter inside its own data slot (`B = List[T = B]`, or around another) admits no
+///     instance and is refused, where a row slot's (`EC = {EC, Error[Foo]}`) is a row that
+///     holds the label. A self-receiver written with arguments (`s: Sp[T = U]`) meets each —
+///     its foreign sorts fresh per occurrence — with the provision's binding of that parameter,
+///     the operation's own type parameters bound by it as the call binds them, along the
+///     parameter's declared variance where the two are not equal — EQUAL being each a subtype
+///     of the other, which unification alone does not say. A binding that does not relate to it
+///     so, or only through a type holding itself, is never reached through the spec WHERE THE
+///     CALL CHECKS ITS RECEIVER AGAINST THAT TYPE — where it is closed as written, every spec
+///     parameter bound and none through a variable ([`receiver_type_is_closed`];
+///     [`MemberFit::Unreached`]: nothing of the member is compared). Elsewhere the call admits
+///     the receiver and the member is reached: the argument then holds it to nothing, and the
+///     comparison goes on. Everything left open is ANY type (a rigid of its own).
+///   * THIS INSTANCE — the receiver's — is also every reference to the DECLARING sort a binding
+///     leaves bare or part-written, at any depth and whichever parameter it binds (`T = Car`,
+///     `T = Car[V = V]`, `T = List[T = Car]`): the provision is written inside the sort, where
+///     the name reads as it does in the sort's own operations (§3's tie). One written at other
+///     arguments (`C = Car[V = Int64]`) is that type, and an INDEPENDENT instance is written
+///     (`T = Car[V = ?]`). INTERIM (user, 2026-10-01): WI-20261001-80ZV8 makes a bare sort
+///     fresh `?` slots in a provision as in an operation, and writes this instance `Self`.
+///   * A FOREIGN sort's unwritten slot in a binding — a witness's carrier among them — is one
+///     variable per spec parameter, read alike wherever the parameter is.
+///   * A parameter typed by the spec itself, other than the receiver, is ANY provider of the
+///     spec — so a member taking only the carrier there is narrower.
+///   * A type parameter the spec operation declares (unless the receiver binds it), an
+///     unwritten slot the spec's own text leaves (fresh per occurrence, WI-374), and a written
+///     `?` are each ANY type.
+///   * A PROJECTION reads as the call reads it, off the type of the argument it projects — as
+///     the positions compared so far have bound it ([`resolve_recorded`]): the
+///     receiver's `Sort` is that type, a parameter of the carrier's own its slot, and any other
+///     member the binding of the provision that LENDS it, at that argument's parameters — over
+///     this instance, an independent instance, or any provider (`o: Sp` makes `o.T` any type),
+///     on both sides. WHICH provision lends it is the receiver's DECLARATION's to say, as at the
+///     call: this one for a receiver the spec types (`s: Sp`, a parameter of the spec's — a
+///     witness's binding read through its carrier view at the receiver projected), the sort's
+///     own provisions by agreement for one declared at the carrier (`c: Car`), and the call's
+///     reading for one another spec declares. One the lender leaves unbound is a wildcard, and
+///     one that reduces nowhere (off a field path) the same projection on both sides
+///     ([`ProjectionReader`]).
+///
+/// THE MEMBER'S PARAMETERS keep their own variables, its own parameters among them — bound as a
+/// call binds them, by unifying with the spec's arguments, the receiver first — and an
+/// unwritten slot of a foreign sort is a fresh variable per occurrence at any depth (WI-374,
+/// the call's own expansion); its parameters' names are the spec's (`Modify[p]`).
+///
+/// THE VERDICT is subtyping: each spec argument must be a subtype of the member's parameter
+/// ([`types_compatible`] — a wider member, by width, contravariance or row, fits), and the
+/// member's return type a subtype of the spec's — every return, read as the call reads it (the
+/// per-position comparison is left the member no call through the spec reaches,
+/// [`MemberFit::Unreached`]). One substitution threads the member's variables
+/// across the positions, by unification, and a variable it binds two ways is the tie
+/// ([`genuine_contradiction_since`]); where unification stops short of a wider member, its
+/// variables are bound along the relation's own decomposition ([`bind_member_vars_along`]).
+/// UNIFICATION ONLY BINDS; THE RELATION JUDGES. It runs on a probe, a unifier that binds a
+/// variable inside itself is dropped before anything walks it ([`binds_a_cycle`]), and its
+/// `true` is no verdict — it equates two types across an invariant slot, a reversed arrow or
+/// an alias that the relation does not relate — so the relation is asked of what it bound, at
+/// every position and at the return. The provision's own open variables (a written `?`, a
+/// foreign sort's unwritten slot in a binding) are the same any-type on both sides, since the
+/// relation reads a provider's view off the provision.
+///
+/// AN UNWRITTEN SLOT IN A RETURN belongs to whoever picks it. The member produces the value: its
+/// own unwritten slot is a type it chose and the caller does not know, the spec text's the
+/// member's to pick; under a returned arrow's PARAMETER the two turn over. A
+/// member variable a position compared EARLIER — the receiver, then the positions holding no
+/// projection, then each projection position once what it reads is bound — binds to a subtype
+/// of a later one's argument is read as the conflict, where a call would join them
+/// (WI-20260930-JPSDH records the join the fallback lacks); the other order is admitted, since
+/// the later subtype fits.
+#[allow(clippy::too_many_arguments)]
+fn member_narrower_than_spec(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    spec: Symbol,
+    spec_op: Symbol,
+    spec_info: &crate::kb::op_info::OpInfoRecord,
+    impl_info: &crate::kb::op_info::OpInfoRecord,
+    sigma: &[(Symbol, TermId)],
+    provision: &ProvisionMembers,
+    impl_to_spec: &HashMap<Symbol, Symbol>,
+) -> MemberFit {
+    let decl = kb.canonical_sort_sym(carrier);
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let shared = provision.shared(kb);
+    let (witness, own_decl) = (shared.witness, shared.own_decl);
+    let mut template = shared.template.clone();
+    let spec_own = shared.spec_own.clone();
+    // THE RECEIVER: the self-receiver, receiving the declaring sort, else the carrier-param
+    // receiver, receiving the sort its binding names — the declaring sort, or a witness's
+    // carrier — with that binding, since σ can bind one key twice (`C = Int64, C = Car`).
+    let self_recv = self_receiver_param_index(kb, &spec_info.params, spec);
+    let carrier_recv = match self_recv {
+        Some(_) => None,
+        None => {
+            let sorts: SmallVec<[Symbol; 2]> = std::iter::once(decl).chain(witness).collect();
+            carrier_param_receiver_of(kb, &spec_info.params, sigma, &sorts)
+        }
+    };
+    let recv = self_recv.or(carrier_recv.map(|(i, ..)| i));
+    let recv_sort = carrier_recv.map_or(decl, |(.., s)| s);
+    let own = if recv_sort == decl {
+        own_decl
+    } else {
+        own_application(kb, recv_sort)
+    };
+    // THE INSTANCE, in the spec side's own substitution.
+    let mut prep = Substitution::new();
+    let mut receiver_written = false;
+    if let Some((i, p, b, _)) = carrier_recv {
+        for (q, v) in template.iter_mut() {
+            if *q == p {
+                *v = Value::term(own);
+            }
+        }
+        if !is_this_instance(kb, &Value::term(b), recv_sort) {
+            receiver_written = true;
+            let read = self_references_at_own_parameters(kb, b, decl);
+            if !meet_receiver_binding(kb, &mut prep, own, &read, recv_sort) {
+                let why = Narrower::Circular {
+                    binding: b,
+                    sort: recv_sort,
+                };
+                return Narrowing::at(i, why).into();
+            }
+        }
+    }
+    if let Some(i) = self_recv {
+        let written = sort_application_parts(kb, &spec_info.params[i].1)
+            .map(|(_, w)| w)
+            .unwrap_or_default();
+        receiver_written = !written.is_empty();
+        let spec_params = sort_type_params_as_pairs(kb, spec_canon);
+        // A written argument the provision's binding does not meet excludes the provider ONLY
+        // WHERE THE CALL CHECKS THE RECEIVER AGAINST THE TYPE, which it does where the type is
+        // closed as the spec writes it ([`receiver_type_is_closed`]). Elsewhere the call admits
+        // the receiver and the member is reached: the argument then holds it to nothing, and the
+        // member is compared against the carrier at any parameters.
+        let closed = receiver_type_is_closed(kb, &spec_params, &written);
+        for (k, t) in written {
+            let Some(q) = spec_params
+                .iter()
+                .map(|(q, _)| *q)
+                .find(|q| same_label(kb, *q, k))
+            else {
+                continue;
+            };
+            // A parameter the provision leaves unbound is a wildcard: nothing to meet.
+            let Some((_, b)) = template.iter().find(|(p, _)| *p == q) else {
+                continue;
+            };
+            let b = b.clone();
+            // The spec's own text: a foreign sort's unwritten slot is fresh PER OCCURRENCE
+            // (WI-374), so `s: Sp[K = List, W = List]` writes two lists. Met unexpanded, both
+            // bound `List`'s one canonical `T`; a binding of each at another element type then
+            // read as a contradiction, the provision as unreachable, and the operation went
+            // uncompared (MEASURED: a narrower member loaded and crashed).
+            let t = sigma_subst_type_values(kb, &t, &template);
+            let t =
+                expand_foreign_sorts_and_row_labels(kb, &t, Some(spec_canon), SlotVar::Flexible);
+            let mut probe = prep.clone();
+            let before = probe.contradiction_details.len();
+            // EQUAL, which unification alone does not say: between two types holding no
+            // variable it falls back to the subtype relation, so `T = cat` "unified" with a
+            // written `Sp[T = Animal]` whatever `T`'s variance — and an INVARIANT parameter's
+            // provision was read as reached, its member refused for a receiver no call
+            // admits (`Sp.total(c, 1)` is "expected Sp[T = Animal], got Car" — MEASURED). The
+            // two are equal where each is a subtype of the other.
+            let unified = unify_types(kb, &mut probe, &b, &t)
+                && !genuine_contradiction_since(kb, &probe, before);
+            // A meet that binds a variable to a type holding itself (`s: Sp[T = List[T = U], W =
+            // U]` at `T = V, W = List[T = V]`) admits no receiver — and is not to be resolved
+            // through: a deep resolve of such a substitution does not return.
+            if unified && binds_a_cycle(kb, &probe) {
+                if closed {
+                    return MemberFit::Unreached;
+                }
+                continue;
+            }
+            let mut reached = unified && {
+                let bb = resolve_type_deep_value(kb, &probe, &b);
+                let tb = resolve_type_deep_value(kb, &probe, &t);
+                views_structurally_equal(kb, &bb, &tb)
+                    || types_compatible(kb, &mut probe.clone(), &tb, &bb)
+            };
+            if !reached {
+                // Not equal: reached by the parameter's declared variance, the operation's own
+                // variables bound along that relation first as a call binds them (`s: Sp[T =
+                // (a: U)]` at `T = (a: Int64, b: Int64)` is `U = Int64`) — the relation binds
+                // nothing, and left `U` unbound it read every such provision as unreachable.
+                probe = prep.clone();
+                let variance = declared_variance(kb, spec_canon, q);
+                if matches!(variance, Variance::Covariant | Variance::Contravariant) {
+                    bind_member_vars_along(
+                        kb,
+                        &mut probe,
+                        &b,
+                        &t,
+                        variance == Variance::Contravariant,
+                    );
+                }
+                if binds_a_cycle(kb, &probe) {
+                    if closed {
+                        return MemberFit::Unreached;
+                    }
+                    continue;
+                }
+                let t = resolve_type_deep_value(kb, &probe, &t);
+                reached = match variance {
+                    Variance::Covariant => types_compatible(kb, &mut probe, &b, &t),
+                    Variance::Contravariant => types_compatible(kb, &mut probe, &t, &b),
+                    Variance::Bivariant => true,
+                    Variance::Invariant => false,
+                };
+            }
+            if !reached {
+                if closed {
+                    return MemberFit::Unreached;
+                }
+                continue;
+            }
+            prep = probe;
+        }
+    }
+    // A spec parameter the provision BINDS is that binding wherever its VARIABLE is read, not
+    // only where the spec's text names it: a binding naming another (`T = List[T = Sp.U]` at `U
+    // = Int64`) and a callback row's tail (`f: … @ {E}`) reach the parameter as its canonical
+    // variable, which σ — a substitution of references — never sees. Left unbound it stayed a
+    // WILDCARD, as a parameter the provision leaves unbound does, and a member narrower than
+    // the binding was admitted (MEASURED: `put(c: Car, k: List[T = String])` behind `k: s.T`
+    // loaded and ran `String.length` on an `Int64`). A key σ binds twice, and a binding holding
+    // its own parameter (`T = List[T = Sp.T]`, no finite type), stay as they were.
+    for (ps, v) in own_params_of(kb, spec_canon) {
+        let mut bound = template.iter().filter(|(q, _)| *q == ps);
+        let (Some((_, tb)), None) = (bound.next(), bound.next()) else {
+            continue;
+        };
+        if prep.resolve_as_value(v).is_some() {
+            continue;
+        }
+        let mut probe = prep.clone();
+        probe.bind_value(kb, v, tb.clone());
+        if !binds_a_cycle(kb, &probe) {
+            prep = probe;
+        }
+    }
+    // Every variable left open is ANY type: the instance's slots first, named after its
+    // parameters, then the template's and the operation's own type parameters.
+    for (ps, v) in own_params_of(kb, recv_sort) {
+        if prep.resolve_as_value(v).is_none() {
+            let rho = fresh_rigid_named(kb, ps);
+            prep.bind_term(kb, v, rho);
+        }
+    }
+    // The bindings' own open variables — a written `?`, a foreign sort's unwritten slot — are
+    // read by the MEMBER's side too: the subtype relation reads a provider's view off the
+    // provision, the same bindings and the same variables. Left open there, `Car <: Sp[T = s.T]`
+    // compared the provision's `Car[V = ?]` with the any-type the rule had made of that very
+    // `?`, and a member returning its own carrier behind `-> Sp[T = s.T, E = s.E]` was no
+    // subtype of it. (The carrier's own parameters are not among them: the member binds those.)
+    //
+    // ANY TYPE WHERE A PARAMETER READS IT — the caller passes it, and the call ties every
+    // parameter typed by one spec parameter, and the return, to it. A variable NO parameter
+    // reads stands in the RETURN only, where nothing the caller passes fixes it: it is left
+    // open here, and the return leg below holds the member to leaving it as open
+    // ([`leaves_open`]). Made any type there too, `fresh(n: Int64) -> Buf[T = Int64]` behind
+    // `-> State` at `State = Buf[T = Int64]` — `N` unwritten in both — compared two unknowns
+    // of one name and was refused (MEASURED, once a member's own unwritten return slot stopped
+    // unifying with whatever stood across it).
+    let param_read: Vec<VarId> = {
+        let by_spec_recv = recv.filter(|&i| {
+            sort_functor_of_view(kb, &impl_info.params[i].1)
+                .is_some_and(|b| kb.canonical_sort_sym(b) == spec_canon)
+        });
+        // As `prep` reads each: the receiver's meeting may have bound a parameter's variable
+        // to the binding's own (`C = Car[V = ?]` met with the instance), and the receiver
+        // reads the instance whatever its declared type says.
+        let mut read = Vec::new();
+        for (i, (_, pty)) in spec_info.params.iter().enumerate() {
+            let at = if by_spec_recv == Some(i) {
+                spec_at_provision(kb, pty, &template)
+            } else if recv == Some(i) {
+                Value::term(own)
+            } else {
+                sigma_subst_type_values(kb, pty, &template)
+            };
+            let at = resolve_type_deep_value(kb, &prep, &at);
+            read.extend(kb.collect_vars(&at));
+        }
+        read
+    };
+    // The bindings' OWN open variables only. The declaring sort's parameters are not among
+    // them: a provision that binds them receives them, and a WITNESS's — which no receiver
+    // fixes (`Car provides Sp[T = Int64, J = V]` receives an `Int64`) — are any type whoever
+    // reads them. Left open with the rest, such a `V` was free where the member's own types
+    // name it, and `x: Car[V = List[T = V]]` bound it inside itself (MEASURED: the loader's
+    // stack overflowed on a member that fits).
+    let declaring_own = own_params_of(kb, decl);
+    let mut return_only: SmallVec<[VarId; 4]> = SmallVec::new();
+    for (_, b) in &template {
+        let open = resolve_type_deep_value(kb, &prep, b);
+        for v in kb.collect_vars(&open) {
+            if !param_read.contains(&v)
+                && !spec_own.contains(&v)
+                && !declaring_own.iter().any(|&(_, own)| own == v)
+                && !return_only.contains(&v)
+            {
+                return_only.push(v);
+            }
+        }
+    }
+    let kept: SmallVec<[VarId; 8]> = spec_own.iter().chain(&return_only).copied().collect();
+    let mut provision_any: Vec<(VarId, TermId)> = Vec::new();
+    for (_, b) in &template {
+        provision_any.extend(rigidify_open(kb, &mut prep, b, &kept));
+    }
+    let op_vars: SmallVec<[VarId; 2]> = spec_info
+        .type_params
+        .iter()
+        .filter_map(|(_, v)| match v {
+            Var::Global(v) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    // Whether the receiver bound each, read before the rest are made any type.
+    let op_vars_bound: SmallVec<[VarId; 2]> = op_vars
+        .iter()
+        .copied()
+        .filter(|v| prep.resolve_as_value(*v).is_some())
+        .collect();
+    for (ps, v) in &spec_info.type_params {
+        if let Var::Global(v) = v {
+            if prep.resolve_as_value(*v).is_none() {
+                let rho = fresh_rigid_named(kb, *ps);
+                prep.bind_term(kb, *v, rho);
+            }
+        }
+    }
+    let instance = resolve_type_deep_value(kb, &prep, &Value::term(own));
+    // A spec type as the call reads it: σ once per parameter, the spec text's own unwritten
+    // slots fresh per occurrence (WI-374), whatever stays open any type.
+    let spec_side = |kb: &mut KnowledgeBase,
+                     prep: &mut Substitution,
+                     ty: &Value,
+                     template: &[(Symbol, Value)]| {
+        let s = sigma_subst_type_values(kb, ty, template);
+        let s = expand_foreign_sorts_and_row_labels(kb, &s, None, SlotVar::Rigid);
+        let _ = rigidify_open(kb, prep, &s, &spec_own);
+        resolve_type_deep_value(kb, prep, &s)
+    };
+    let decl_own: SmallVec<[VarId; 4]> = own_params_of(kb, decl).iter().map(|&(_, v)| v).collect();
+    let witness_view = carrier_recv.and_then(|(_, _, b, s)| (s != decl).then_some(b));
+    let reader = ProjectionReader::new(kb, recv_sort, spec_canon, sigma, witness_view);
+    // The receiver first — a call binds the member's own parameters from it — then the other
+    // positions, then a projection position once those it reads are.
+    let n = spec_info.params.len();
+    let projecting: Vec<bool> = (0..n)
+        .map(|i| {
+            value_contains_projection(kb, &spec_info.params[i].1)
+                || value_contains_projection(kb, &impl_info.params[i].1)
+        })
+        .collect();
+    let mut order: Vec<usize> = recv.filter(|&r| !projecting[r]).into_iter().collect();
+    order.extend((0..n).filter(|&i| Some(i) != recv && !projecting[i]));
+    order.extend(projection_order(kb, spec_info, impl_info, &projecting));
+    let mut spec_args: HashMap<Symbol, Value> = HashMap::new();
+    let mut member_args: HashMap<Symbol, Value> = HashMap::new();
+    let mut subst = Substitution::new();
+    for &(v, rho) in &provision_any {
+        subst.bind_term(kb, v, rho);
+    }
+    let ctx = TypeErrorContext::OperationReturn {
+        op_name: spec_op,
+        surface: None,
+    };
+    let any_projection = projecting.iter().any(|&p| p);
+    let return_projecting = value_contains_projection(kb, &spec_info.return_type)
+        || value_contains_projection(kb, &impl_info.return_type);
+    for (k, &i) in order.iter().enumerate() {
+        let (spec_p, spec_pty) = &spec_info.params[i];
+        let (impl_p, impl_pty) = &impl_info.params[i];
+        // One plain type on both sides relates to itself and binds nothing another position
+        // reads; deep-expanding it minted a variable per unwritten slot for nothing (MEASURED:
+        // 4.4x the check on `Pair[A = List, B = Option]` positions).
+        if !any_projection
+            && !return_projecting
+            && Some(i) != recv
+            && views_structurally_equal(kb, spec_pty, impl_pty)
+            && plain_type(kb, spec_pty, &[decl, recv_sort])
+        {
+            continue;
+        }
+        // A member receiver typed by the SPEC ITSELF takes any provider, never fewer than the
+        // spec's receiver — so it is compared as the spec's type at this provision, not as the
+        // carrier (the relation does not see a WITNESS's carrier as the spec's provider).
+        let by_spec = Some(i) == recv
+            && sort_functor_of_view(kb, impl_pty)
+                .is_some_and(|b| kb.canonical_sort_sym(b) == spec_canon);
+        // WHAT A PROJECTION READS IS EACH ARGUMENT AS BOUND SO FAR. An argument is recorded when
+        // its position is compared, and a position compared after it may bind a variable it
+        // holds (`x: Car[V = W]`, then `z: W` behind `z: String`). Read as recorded, `y: x.J`
+        // projected off an open `W` and stayed the neutral projection — and a member fitting
+        // its spec was refused (MEASURED: `op[W](x: Car[V = W], y: x.J, z: W)` behind `y:
+        // String, z: String` at `J = V`).
+        if projecting[i] {
+            resolve_recorded(kb, &subst, &mut spec_args);
+            resolve_recorded(kb, &subst, &mut member_args);
+        }
+        let arg = if projecting[i] {
+            let prep_now = prep.clone();
+            match reader.eliminate(kb, spec_pty, &spec_args, None, &prep_now, &ctx) {
+                Ok(s) => spec_side(kb, &mut prep, &s, &template),
+                Err(why) => {
+                    return Narrowing::at(i, Narrower::Unreadable { spec: true, why }).into()
+                }
+            }
+        } else if Some(i) == recv && !by_spec {
+            instance.clone()
+        } else if by_spec {
+            let at = spec_at_provision(kb, spec_pty, &template);
+            spec_side(kb, &mut prep, &at, &template)
+        } else {
+            spec_side(kb, &mut prep, spec_pty, &template)
+        };
+        let member = {
+            let prep_now = prep.clone();
+            match reader.member_type(
+                kb,
+                impl_pty,
+                &member_args,
+                impl_to_spec,
+                &prep_now,
+                &ctx,
+                decl,
+                false,
+            ) {
+                Ok(m) => m,
+                Err(why) => {
+                    return Narrowing::at(i, Narrower::Unreadable { spec: false, why }).into()
+                }
+            }
+        };
+        // UNIFICATION BINDS — the member's variables, a wildcard, a slot left to the other side —
+        // and the RELATION judges. On a probe: a unifier binding a variable inside itself solves
+        // nothing (its occurs check reads a binding as written: `K ↦ W`, then `W ↦ List[T = K]`),
+        // and is dropped before anything walks it — a deep resolve through it does not return
+        // (MEASURED: the loader's stack overflowed on such a member instead of refusing it).
+        let before = subst.contradiction_details.len();
+        let mut probe = subst.clone();
+        let unified = unify_types(kb, &mut probe, &arg, &member);
+        let mut cyclic = binds_a_cycle(kb, &probe);
+        if !cyclic && !unified && !genuine_contradiction_since(kb, &probe, before) {
+            bind_member_vars_along(kb, &mut probe, &arg, &member, false);
+            cyclic = binds_a_cycle(kb, &probe);
+        }
+        if !cyclic {
+            subst = probe;
+        }
+        let contradiction = first_genuine_contradiction_since(kb, &subst, before);
+        // Resolved first: the relation walks the top of a type, not the variables inside it —
+        // BOTH sides, the spec's a wildcard an earlier position bound (left unresolved it read as
+        // unrelated, and a member wider by width beside it was refused).
+        let member = resolve_type_deep_value(kb, &subst, &member);
+        let arg = resolve_type_deep_value(kb, &subst, &arg);
+        // A unifier's `true` is no verdict: between two types holding no variable it falls back
+        // to the subtype relation in ARGUMENT order at every depth, whatever the position's
+        // variance (`Cell[V = cat]` "unifies" with `Cell[V = Animal]`), and across two sorts it
+        // compares no binding. So where it unified, the two are EQUAL or the relation holds.
+        let fits = !cyclic
+            && contradiction.is_none()
+            && if unified {
+                views_structurally_equal(kb, &arg, &member)
+                    || types_compatible(kb, &mut subst.clone(), &arg, &member)
+            } else {
+                // The relation binds as it decomposes, and what it binds is kept for the
+                // positions after this one — unless it bound a variable inside itself, which is
+                // no verdict and nothing a later resolve may walk.
+                let mut related = subst.clone();
+                let holds = types_compatible(kb, &mut related, &arg, &member)
+                    && !binds_a_cycle(kb, &related);
+                if holds {
+                    subst = related;
+                }
+                holds
+            };
+        if !fits {
+            let why = if Some(i) == recv {
+                Narrower::Receiver {
+                    written: receiver_written,
+                    by_spec,
+                    sort: recv_sort,
+                }
+            } else if sort_functor_of_view(kb, spec_pty)
+                .is_some_and(|b| kb.canonical_sort_sym(b) == spec_canon)
+            {
+                Narrower::AnyProvider
+            } else if contradiction.is_some_and(|(v, _, _)| decl_own.contains(&v))
+                || (holds_this_instance(kb, impl_pty, decl, &decl_own)
+                    && holds_carrier(kb, &arg, decl))
+            {
+                // What it is tied TO: the receiver, which fixes the member's instance first —
+                // or, with no receiver, the first parameter that named it.
+                let first = order[..k]
+                    .iter()
+                    .copied()
+                    .find(|&j| holds_this_instance(kb, &impl_info.params[j].1, decl, &decl_own));
+                match (recv, first) {
+                    (Some(_), _) => Narrower::Tied { with: None },
+                    (None, Some(j)) => Narrower::Tied { with: Some(j) },
+                    (None, None) => Narrower::Other,
+                }
+            } else {
+                Narrower::Other
+            };
+            // The declaration at this provision prints the types where nothing the rule read
+            // changed them; a projection read, a receiver typed by the spec, and an operation
+            // type parameter the receiver bound (`x: U` at `U = String`) print as compared.
+            let op_param_bound = kb
+                .collect_vars(spec_pty)
+                .iter()
+                .any(|v| op_vars_bound.contains(v));
+            return MemberFit::Narrower(Narrowing {
+                at: Some(i),
+                why,
+                compared: (projecting[i] || by_spec || op_param_bound).then(|| (arg, member)),
+            });
+        }
+        // What a projection over this position reads — recorded only where one does: the
+        // member's parameter as THIS instance where its type is (the receiver, a bare
+        // carrier), else as it resolved.
+        if any_projection || return_projecting {
+            let member_arg = if is_this_instance(kb, impl_pty, decl) {
+                resolve_type_deep_value(kb, &subst, &Value::term(own_decl))
+            } else {
+                member
+            };
+            spec_args.insert(*spec_p, arg);
+            member_args.insert(*impl_p, member_arg);
+        }
+    }
+    // THE RETURN: the member's must be a subtype of the spec's, each read as the call reads it at
+    // these arguments — the spec's unwritten slots the caller's to fill. EVERY return, not only
+    // one holding a projection: the per-position comparison reads the provision's bindings as
+    // written, where a bare carrier is any instance and a return naming a type parameter is
+    // undecided, so `-> Pair[A = Car[V = Int64], …]` behind `-> Pair[A = T, …]` at `T = Car`, `->
+    // Option[T = V]` behind `-> Option[T = T]` at `T = List[T = Int64]` and `-> Option[T = Int64]`
+    // behind `get[W](…) -> Option[T = W]` each loaded, and a spec call read the wrong type off
+    // the result (MEASURED) — while the same types spelled with a projection were refused. One
+    // plain type on both sides is itself.
+    let plain_return = !return_projecting
+        && views_structurally_equal(kb, &spec_info.return_type, &impl_info.return_type)
+        && plain_type(kb, &spec_info.return_type, &[decl, recv_sort]);
+    if !plain_return {
+        let unreadable = |spec: bool, why: String| Narrowing {
+            at: None,
+            why: Narrower::Unreadable { spec, why },
+            compared: None,
+        };
+        let prep_now = prep.clone();
+        resolve_recorded(kb, &subst, &mut spec_args);
+        resolve_recorded(kb, &subst, &mut member_args);
+        // WHO PICKS AN UNWRITTEN SLOT. A returned type is produced by the member: its own
+        // unwritten slot is a type the member chose and the caller does not know (a rigid), and
+        // the spec text's is the member's to pick — a fresh variable to unify with (`want`), and
+        // left unwritten for the relation (`want_open`), which binds nothing: a member returning
+        // a PROVIDER of a bare `Base` is a subtype of it, where `Carrier <: Base[B = ?B]` is no
+        // question the relation answers. Under a returned arrow's PARAMETER the two turn over:
+        // the returned function takes every instantiation of what its parameter leaves unwritten,
+        // so there the spec's slot is any type and the member's its to instantiate. Read alike on
+        // both sides, a member's bare `-> List` behind `-> List[T = T]`, and a `-> (xs: List[T =
+        // Int64]) -> Int64` behind `-> (xs: List) -> Int64`, each loaded (MEASURED: a spec call
+        // read the wrong element type off the result, at run time).
+        let (want, want_open) = match reader.eliminate(
+            kb,
+            &spec_info.return_type,
+            &spec_args,
+            None,
+            &prep_now,
+            &ctx,
+        ) {
+            Ok(s) => {
+                let s = sigma_subst_type_values(kb, &s, &template);
+                let open = expand_foreign_sorts_under_params(kb, &s, None, SlotVar::Rigid);
+                let s = expand_foreign_sorts_by_polarity(
+                    kb,
+                    &s,
+                    None,
+                    SlotVar::Flexible,
+                    SlotVar::Rigid,
+                );
+                (
+                    resolve_type_deep_value(kb, &prep, &s),
+                    resolve_type_deep_value(kb, &prep, &open),
+                )
+            }
+            Err(why) => return unreadable(true, why).into(),
+        };
+        // The variables minted between the two marks are the member return's own unwritten
+        // slots: the types the member picked and the caller does not know.
+        let mark = kb.intern("?mark");
+        let slots_from = kb.fresh_var(mark).raw();
+        let got = match reader.member_type(
+            kb,
+            &impl_info.return_type,
+            &member_args,
+            impl_to_spec,
+            &prep_now,
+            &ctx,
+            decl,
+            true,
+        ) {
+            Ok(m) => resolve_type_deep_value(kb, &subst, &m),
+            Err(why) => return unreadable(false, why).into(),
+        };
+        let slots_to = kb.fresh_var(mark).raw();
+        let own_slot = |v: VarId| (slots_from..slots_to).contains(&v.raw());
+        // As a parameter is judged: unification BINDS, on a probe a cyclic unifier never leaves;
+        // where it stops short the member's variables are bound along the relation, the member
+        // the subtype here (`mk[W](…) -> (a: List[T = W], b: Int64)` behind `-> (a: List[T =
+        // Int64])` is `W = Int64`); and the verdict is the relation's whatever unification
+        // answered — its `true` between two types holding no variable is the subtype relation in
+        // argument order at every depth (`-> (x: cat) -> Int64` behind `-> (x: Animal) -> Int64`
+        // and `-> Cell[V = cat]` behind `-> Cell[V = Animal]` "unified", and the caller of the
+        // spec then read a `cat` where a `dog` was — MEASURED). A variable the return binds a
+        // second way is the refusal it is in a parameter.
+        let before = subst.contradiction_details.len();
+        let mut probe = subst.clone();
+        let unified = unify_types(kb, &mut probe, &got, &want);
+        let mut cyclic = binds_a_cycle(kb, &probe);
+        if !cyclic && !unified && !genuine_contradiction_since(kb, &probe, before) {
+            bind_member_vars_along(kb, &mut probe, &want, &got, true);
+            cyclic = binds_a_cycle(kb, &probe);
+        }
+        let fits = !cyclic && !genuine_contradiction_since(kb, &probe, before) && {
+            let got = resolve_type_deep_value(kb, &probe, &got);
+            let want = resolve_type_deep_value(kb, &probe, &want);
+            let want_open = resolve_type_deep_value(kb, &probe, &want_open);
+            // A SPEC PARAMETER THE PROVISION LEAVES UNBOUND, and nothing has bound since, is a
+            // wildcard: in a spec view it stands for whatever the provider leaves there, which
+            // is no binding the relation can compare — a provider that leaves `E` unbound is no
+            // `Stream[E = X]` for any written `X`. Left written, a member returning its own
+            // carrier behind `-> Stream[T = s.T, E = s.E]` at `provides Stream[T]` was no subtype
+            // of it (MEASURED: a fixture that loaded before this ticket; the eighth pass admitted
+            // it on unification's word alone).
+            let unbound: SmallVec<[Symbol; 4]> = own_params_of(kb, spec_canon)
+                .iter()
+                .map(|&(q, _)| q)
+                .filter(|q| !template.iter().any(|(p, _)| p == q))
+                .collect();
+            let want_open = unwrite_wildcards(kb, &want_open, spec_canon, &unbound);
+            // The substitution the verdict holds under: the relation binds on its own copy.
+            let related = |kb: &mut KnowledgeBase, want: &Value| {
+                let mut s = probe.clone();
+                (types_compatible(kb, &mut s, &got, want) && !binds_a_cycle(kb, &s)).then_some(s)
+            };
+            let under = if views_structurally_equal(kb, &got, &want) {
+                Some(probe.clone())
+            } else {
+                related(kb, &want).or_else(|| related(kb, &want_open))
+            };
+            // A SLOT THE PROVISION LEAVES UNWRITTEN AND ONLY THE RETURN READS is no type the
+            // member may FIX: nothing the caller passes says it, so the caller of the spec reads
+            // it as it likes (`let x: Strm[T = String, …] = Sp.get(k)` at `T = Strm[E =
+            // {Error}]`), and a member returning `Strm[T = Int64, …]` there ends that caller in a
+            // run-time type error (MEASURED). It may meet only what the member leaves as open:
+            // an unwritten slot of its own, or a type parameter of its own.
+            under.is_some_and(|s| {
+                return_only
+                    .iter()
+                    .all(|v| leaves_open(kb, &s, *v, &own_slot))
+            })
+        };
+        if !fits {
+            let unwritten = holds_rigid(kb, &got, &own_slot);
+            return MemberFit::Narrower(Narrowing {
+                at: None,
+                why: Narrower::Return { unwritten },
+                compared: Some((want, got)),
+            });
+        }
+    }
+    MemberFit::Fits
+}
+
+/// Each recorded argument as `subst` binds it now.
+fn resolve_recorded(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    args: &mut HashMap<Symbol, Value>,
+) {
+    for ty in args.values_mut() {
+        *ty = resolve_type_deep_value(kb, subst, ty);
+    }
+}
+
+/// Does `subst` leave the variable `v` — a slot a provision's binding leaves unwritten — as OPEN
+/// as the provision did: unbound, bound to another variable still open, or to a rigid that is
+/// the member's own unwritten slot (`own_slot`)?
+fn leaves_open(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    v: VarId,
+    own_slot: &impl Fn(VarId) -> bool,
+) -> bool {
+    let var = Value::term(kb.alloc(Term::Var(Var::Global(v))));
+    let at = resolve_type_deep_value(kb, subst, &var);
+    match at.index_var(kb) {
+        Some(Var::Global(_)) => true,
+        Some(Var::Rigid(r)) => own_slot(r),
+        _ => false,
+    }
+}
+
+/// `ty` with, in each application of `spec`, the binding of a parameter the provision leaves
+/// `unbound` left unwritten where it is still an open variable — the wildcard itself, or a
+/// variable of the member's it met (`f: (q: K) -> W` beside the member's `f: (q: X2) -> W`).
+fn unwrite_wildcards(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    spec: Symbol,
+    unbound: &[Symbol],
+) -> Value {
+    map_type_bottom_up(kb, ty, &mut |kb, node| {
+        let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, node) else {
+            return None;
+        };
+        if kb.canonical_sort_sym(base) != spec {
+            return None;
+        }
+        let kept: Vec<(Symbol, Value)> = bindings
+            .iter()
+            .filter(|(k, v)| {
+                !(matches!(v.index_var(kb), Some(Var::Global(_)))
+                    && unbound.iter().any(|q| same_label(kb, *q, *k)))
+            })
+            .cloned()
+            .collect();
+        if kept.len() == bindings.len() {
+            return None;
+        }
+        let (sp, owner) = site_of(node);
+        let base_ref = kb.make_sort_ref(base);
+        Some(if kept.is_empty() {
+            Value::term(base_ref)
+        } else {
+            parameterized_value(kb, base_ref, &kept, sp, owner)
+        })
+    })
+    .unwrap_or_else(|| ty.clone())
+}
+
+/// Does `v` hold a rigid variable `is` accepts?
+fn holds_rigid(kb: &KnowledgeBase, v: &impl TermView, is: &impl Fn(VarId) -> bool) -> bool {
+    if let Some(var) = v.index_var(kb) {
+        return matches!(var, Var::Rigid(r) if is(r));
+    }
+    kb.structural_child_views(v)
+        .iter()
+        .any(|c| holds_rigid(kb, c, is))
+}
+
+/// Does a spec call CHECK its receiver against the spec's receiver type as written — every spec
+/// parameter written (`written`), and none through a variable: an operation type parameter, a
+/// `?`, another parameter's reference? The call validates an argument only against a type it has
+/// determined, so over `s: Sp[T = Animal]` with a second parameter `K` left unwritten it admits
+/// a provider binding `T = cat` (MEASURED: a member narrowing its receiver, which the rule had
+/// stopped comparing as "reached by no call", loaded and was run on a receiver its own signature
+/// excludes); the call's own gap is WI-20260929-05ZQE's.
+fn receiver_type_is_closed(
+    kb: &mut KnowledgeBase,
+    spec_params: &[(Symbol, TermId)],
+    written: &[(Symbol, Value)],
+) -> bool {
+    spec_params
+        .iter()
+        .all(|(q, _)| written.iter().any(|(k, _)| same_label(kb, *q, *k)))
+        && written.iter().all(|(_, t)| {
+            let mut refs = Vec::new();
+            referenced_param_vars(kb, t, &mut refs);
+            refs.is_empty() && kb.collect_vars(t).is_empty()
+        })
+}
+
+/// Each variable `v` leaves open in `prep` a rigid of its own — ANY type — but the spec's own
+/// parameters, which stay wildcards. Named after the variable without its `?` (a minted slot
+/// is `?T`, and a rigid prints its own). Answers the variables it bound, each with its rigid.
+fn rigidify_open(
+    kb: &mut KnowledgeBase,
+    prep: &mut Substitution,
+    v: &Value,
+    keep: &[VarId],
+) -> Vec<(VarId, TermId)> {
+    let r = resolve_type_deep_value(kb, prep, v);
+    let mut bound = Vec::new();
+    for vid in kb.collect_vars(&r) {
+        if !keep.contains(&vid) && prep.resolve_as_value(vid).is_none() {
+            let name = kb
+                .local_name_of(vid.name())
+                .trim_start_matches('?')
+                .to_owned();
+            let name = kb.intern(if name.is_empty() { "_" } else { &name });
+            let rho = fresh_rigid_named(kb, name);
+            prep.bind_term(kb, vid, rho);
+            bound.push((vid, rho));
+        }
+    }
+    bound
+}
+
+/// Does `ty` name nothing [`member_narrower_than_spec`] reads — no type parameter or variable,
+/// no projection, no value or place, no instance of the `carriers` (nor an alias, which can
+/// name one: `sort MyCar = Car` is THIS instance in a member)? Such a type, the same on both
+/// sides, is compatible with itself whatever the provision binds.
+fn plain_type(kb: &mut KnowledgeBase, ty: &Value, carriers: &[Symbol]) -> bool {
+    let plain_sort = |kb: &KnowledgeBase, s: Symbol| {
+        !carriers.contains(&kb.canonical_sort_sym(s))
+            && resolve_alias_shape(kb, s).is_none()
+            && type_param_global_var(kb, s).is_none()
+    };
+    match extract_type(kb, ty) {
+        TypeExtractor::SortRef(s) => plain_sort(kb, s) && declared_type_param_vid(kb, ty).is_none(),
+        TypeExtractor::Parameterized { base, bindings } => {
+            plain_sort(kb, base) && bindings.iter().all(|(_, v)| plain_type(kb, v, carriers))
+        }
+        TypeExtractor::NamedTuple(fields) => {
+            fields.iter().all(|(_, v)| plain_type(kb, v, carriers))
+        }
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            ..
+        } => {
+            plain_type(kb, &param, carriers)
+                && plain_type(kb, &result, carriers)
+                && plain_type(kb, &effects, carriers)
+        }
+        TypeExtractor::EffectsRows(expr) => {
+            match decompose_effect_row_raw(kb, &Substitution::new(), &expr) {
+                Some((present, tails, absent)) => {
+                    tails.is_empty()
+                        && present
+                            .iter()
+                            .chain(&absent)
+                            .all(|l| plain_type(kb, l, carriers))
+                }
+                None => false,
+            }
+        }
+        TypeExtractor::Nothing => true,
+        _ => false,
+    }
+}
+
+/// `sort`'s own parameters, each with its canonical variable.
+pub(super) fn own_params_of(kb: &KnowledgeBase, sort: Symbol) -> SmallVec<[(Symbol, VarId); 4]> {
+    sort_type_params_as_pairs(kb, sort)
+        .iter()
+        .filter_map(|(q, t)| match kb.get_term(*t) {
+            Term::Var(Var::Global(v)) => Some((*q, *v)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The carrier at its own parameters (`own`) MET with the carrier-param receiver's binding `b`
+/// in `prep` — each of the carrier's parameters `b` names being the receiver's slot, as the
+/// call grounds them (WI-593), and a foreign sort's unwritten slot in it any type (`C = Box[B =
+/// List]` receives a box of any list: met as written, the bare `List` bound its one canonical
+/// `T` to the member's, and a member narrower than the binding was admitted — MEASURED). A row
+/// slot naming its own parameter (`EC = {EC, Error[Foo]}`) is a row that holds the rest, `{ρ,
+/// Error[Foo]}`, and one that IS another parameter's row (`EC = {EF}`) is that row; a data slot
+/// naming its own parameter (`B = List[T = B]`), directly or around another (`V = List[T = W],
+/// W = List[T = V]`), admits no instance — `false`.
+fn meet_receiver_binding(
+    kb: &mut KnowledgeBase,
+    prep: &mut Substitution,
+    own: TermId,
+    b: &Value,
+    carrier_canon: Symbol,
+) -> bool {
+    let b = b.clone();
+    let b = match sort_application_parts(kb, &b) {
+        Some((base, written)) => {
+            let own = own_params_of(kb, carrier_canon);
+            let mut changed = false;
+            let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(written.len());
+            for (k, v) in written {
+                let short = short_name_of(kb.local_name_of(k)).to_owned();
+                let own_var = own
+                    .iter()
+                    .find(|(q, _)| short_name_of(kb.local_name_of(*q)) == short)
+                    .map(|&(_, vid)| vid);
+                let is_row = sort_param_is_effect_row(kb, carrier_canon, &short);
+                match own_var {
+                    Some(vid) if is_row && kb.collect_vars(&v).contains(&vid) => {
+                        let mut rest = Substitution::new();
+                        let tail_sym = kb.intern(&short);
+                        let tail = kb.fresh_var(tail_sym);
+                        let tail_t = kb.alloc(Term::Var(Var::Global(tail)));
+                        rest.bind_term(kb, vid, tail_t);
+                        out.push((k, resolve_type_deep_value(kb, &rest, &v)));
+                        changed = true;
+                    }
+                    // A row that is exactly ANOTHER parameter's row is that row, not a row
+                    // around it: bound as `{EF}`, two such slots (`EC = {EF}, EF = {EC}`) bound
+                    // each row inside the other.
+                    _ if is_row
+                        && braced_row_var(kb, &v)
+                            .is_some_and(|w| own.iter().any(|&(_, o)| o == w)) =>
+                    {
+                        let w = braced_row_var(kb, &v).expect("checked above");
+                        out.push((k, Value::term(kb.alloc(Term::Var(Var::Global(w))))));
+                        changed = true;
+                    }
+                    _ => out.push((k, v)),
+                }
+            }
+            if changed {
+                let base_ref = kb.make_sort_ref(base);
+                parameterized_value(
+                    kb,
+                    base_ref,
+                    &out,
+                    crate::kb::node_occurrence::empty_span(),
+                    None,
+                )
+            } else {
+                b
+            }
+        }
+        None => b,
+    };
+    let b = expand_foreign_sorts_and_row_labels(kb, &b, Some(carrier_canon), SlotVar::Flexible);
+    let mut probe = prep.clone();
+    if unify_types(kb, &mut probe, &Value::term(own), &b) && !binds_a_cycle(kb, &probe) {
+        *prep = probe;
+        true
+    } else {
+        false
+    }
+}
+
+/// Does `subst` bind a variable to a value holding that variable — directly, or through the
+/// variables its bindings hold (`V ↦ List[T = W]`, `W ↦ List[T = V]`)? No finite type solves
+/// such a substitution, and a deep resolve through it does not return: unification's occurs
+/// check reads a binding as written, so the second of two such bindings passes it.
+fn binds_a_cycle(kb: &KnowledgeBase, subst: &Substitution) -> bool {
+    fn visit(
+        kb: &KnowledgeBase,
+        subst: &Substitution,
+        v: VarId,
+        path: &mut Vec<VarId>,
+        done: &mut HashSet<VarId>,
+    ) -> bool {
+        if done.contains(&v) {
+            return false;
+        }
+        if path.contains(&v) {
+            return true;
+        }
+        let Some(bound) = subst.resolve_as_value(v) else {
+            done.insert(v);
+            return false;
+        };
+        path.push(v);
+        let mut held: Vec<VarId> = kb.collect_vars(bound).into_iter().collect();
+        referenced_param_vars(kb, bound, &mut held);
+        let cyclic = held.into_iter().any(|w| visit(kb, subst, w, path, done));
+        path.pop();
+        done.insert(v);
+        cyclic
+    }
+    let mut done = HashSet::new();
+    let roots: Vec<VarId> = subst.iter().map(|(v, _)| *v).collect();
+    roots
+        .into_iter()
+        .any(|v| visit(kb, subst, v, &mut Vec::new(), &mut done))
+}
+
+/// The variables `view` names by a type parameter's REFERENCE (`List[T = Car.V]`), at any
+/// depth: a provision's binding writes the carrier's parameters that way, and a resolve walks
+/// each reference to its parameter's variable.
+pub(super) fn referenced_param_vars<V: TermView>(
+    kb: &KnowledgeBase,
+    view: &V,
+    out: &mut Vec<VarId>,
+) {
+    match view.head(kb) {
+        ViewHead::Ident(s)
+        | ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            named_arity: 0,
+        } => out.extend(type_param_global_var(kb, s)),
+        ViewHead::Functor { pos_arity, .. } => {
+            view_any_child(kb, view, pos_arity, |c| {
+                referenced_param_vars(kb, c, out);
+                false
+            });
+        }
+        _ => {}
+    }
+}
+
+/// `b` with every reference to `sort` — the provision's declaring sort — at that sort's OWN
+/// parameters wherever the binding leaves a slot unwritten: bare `Car` is `Car[V = V]`, and
+/// `Car[W = Int64]` is `Car[V = V, W = Int64]`, at any depth. This is how the sort's own
+/// operations read such a reference (§3's tie, written in by WI-1082), and a `provides` clause
+/// is written in the same place. A written slot is kept; the result rides the carrier its
+/// rebuilt forms take (an arrow holding such a reference is an occurrence).
+pub(super) fn self_references_at_own_parameters(
+    kb: &mut KnowledgeBase,
+    b: TermId,
+    sort: Symbol,
+) -> Value {
+    let own = sort_type_params_as_pairs(kb, sort);
+    if own.is_empty() {
+        return Value::term(b);
+    }
+    map_type_bottom_up(kb, &Value::term(b), &mut |kb, node| {
+        // Through [`sort_application_parts`]: an ALIAS of the sort (`sort MyCar = Car`) is the
+        // sort, as it is in the sort's own operations — read by its own symbol it was an
+        // independent instance here and this instance to the call (MEASURED: the verbatim member
+        // `o: MyCar` behind `T = MyCar` was refused, two identical signatures printed).
+        let (base, written) = sort_application_parts(kb, node)?;
+        if kb.canonical_sort_sym(base) != sort || written.len() >= own.len() {
+            return None;
+        }
+        let (sp, owner) = site_of(node);
+        let pairs: Vec<(Symbol, Value)> = own
+            .iter()
+            .map(
+                |&(p, own_param)| match written.iter().find(|(k, _)| same_label(kb, p, *k)) {
+                    Some((_, v)) => (p, v.clone()),
+                    None => (p, Value::term(own_param)),
+                },
+            )
+            .collect();
+        let base = kb.make_sort_ref(sort);
+        Some(parameterized_value(kb, base, &pairs, sp, owner))
+    })
+    .unwrap_or_else(|| Value::term(b))
+}
+
+/// A binding of `carrier`'s OWN provision, at a receiver of type `recv_ty`, where the binding
+/// refers to the carrier with a slot left to its own parameter — bare, part-written, or written
+/// at them, at any depth (`T = Car`, `T = Car[W = Int64]`, `T = List[T = Car]`): THIS instance
+/// there, as the declaration rule reads it ([`self_references_at_own_parameters`]) — so the
+/// binding with the carrier's parameters replaced by the receiver's arguments, which is what a
+/// call holds the arguments typed by that spec parameter to. `None` for any other binding (what
+/// a call owes those is WI-20260929-05ZQE's), and where the receiver's type leaves a parameter
+/// unwritten. ONE reading for the rule and the two call binders: held to a top-level bare or
+/// own-parameter binding only, the call passed a second instance to the member the rule had
+/// admitted as tied (MEASURED: `T = List[T = Car]`, `T = Car[W = Int64]`, and `B = Car[V = V]`
+/// under a receiver whose argument is a type parameter — each loaded and failed at run time).
+/// INTERIM (user, 2026-10-01): WI-20261001-80ZV8 makes a bare sort fresh `?` slots in a provision
+/// as in an operation, and writes this instance `Self`.
+pub(super) fn this_instance_binding_at(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    binding: TermId,
+    recv_ty: &Value,
+) -> Option<Value> {
+    let carrier = kb.canonical_sort_sym(carrier);
+    if !holds_carrier(kb, &Value::term(binding), carrier) {
+        return None;
+    }
+    let read = self_references_at_own_parameters(kb, binding, carrier);
+    if is_this_instance(kb, &read, carrier) {
+        return Some(recv_ty.clone());
+    }
+    if !holds_own_instance(kb, &read, carrier) {
+        return None;
+    }
+    binding_at_receiver(kb, carrier, recv_ty, &read)
+}
+
+/// Does `ty` hold an application of `carrier` with a slot at the carrier's own parameter, at
+/// any depth?
+fn holds_own_instance(kb: &mut KnowledgeBase, ty: &Value, carrier: Symbol) -> bool {
+    let own = own_params_of(kb, carrier);
+    let mut found = false;
+    map_type_bottom_up(kb, ty, &mut |kb, node| {
+        let Some((base, written)) = sort_application_parts(kb, node) else {
+            return None;
+        };
+        if kb.canonical_sort_sym(base) == carrier {
+            found |= written.is_empty()
+                || written.iter().any(|(k, v)| {
+                    own.iter().any(|&(q, vid)| {
+                        same_label(kb, q, *k)
+                            && (declared_type_param_vid(kb, v) == Some(vid)
+                                || braced_row_var(kb, v) == Some(vid))
+                    })
+                });
+        }
+        None
+    });
+    found
+}
+
+/// `b` — written in `sort`'s own parameters — at a receiver of type `recv_ty`: each parameter
+/// replaced by the receiver's slot, every one of them written, or `None`. The binding's
+/// parameters are renamed apart first: a slot may hold the very parameter it fills (a member's
+/// `x: Car[V = List[T = V]]` where no receiver fixes `V`), and bound directly `V ↦ List[T = V]`
+/// is a substitution no resolve returns from (MEASURED: the loader's stack overflowed on a
+/// member that fits).
+pub(super) fn binding_at_receiver(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+    recv_ty: &Value,
+    b: &Value,
+) -> Option<Value> {
+    let mut apart = Substitution::new();
+    let mut at = Substitution::new();
+    for (q, vid) in own_params_of(kb, sort) {
+        let short = short_name_of(kb.local_name_of(q)).to_owned();
+        let slot = extract_type_param(kb, recv_ty, &short)?;
+        let copy = kb.fresh_var(vid.name());
+        let copy_t = kb.alloc(Term::Var(Var::Global(copy)));
+        apart.bind_term(kb, vid, copy_t);
+        at.bind_value(kb, copy, slot);
+    }
+    let v = resolve_type_deep_value(kb, &apart, b);
+    Some(resolve_type_deep_value(kb, &at, &v))
+}
+
+/// A projection position's order among the others: once the positions its projections read,
+/// on either side, are judged.
+fn projection_order(
+    kb: &KnowledgeBase,
+    spec_info: &crate::kb::op_info::OpInfoRecord,
+    impl_info: &crate::kb::op_info::OpInfoRecord,
+    projecting: &[bool],
+) -> Vec<usize> {
+    let reads: Vec<Vec<usize>> = (0..projecting.len())
+        .map(|i| {
+            let mut receivers = Vec::new();
+            collect_projection_receivers(kb, &spec_info.params[i].1, &mut receivers);
+            let spec_reads = receivers
+                .iter()
+                .filter_map(|r| spec_info.params.iter().position(|(p, _)| p == r));
+            let mut receivers_m = Vec::new();
+            collect_projection_receivers(kb, &impl_info.params[i].1, &mut receivers_m);
+            let member_reads = receivers_m
+                .iter()
+                .filter_map(|r| impl_info.params.iter().position(|(p, _)| p == r));
+            spec_reads
+                .chain(member_reads)
+                .filter(|&j| projecting[j] && j != i)
+                .collect()
+        })
+        .collect();
+    let mut done: Vec<usize> = Vec::new();
+    let mut pending: Vec<usize> = (0..projecting.len()).filter(|&i| projecting[i]).collect();
+    while !pending.is_empty() {
+        let Some(at) = pending
+            .iter()
+            .position(|&i| reads[i].iter().all(|j| done.contains(j)))
+        else {
+            // A cycle the loader refuses on its own: in declaration order.
+            done.extend(pending);
+            break;
+        };
+        done.push(pending.remove(at));
+    }
+    done
+}
+
+/// WI-20260929-0RP29 — the declaration rule's reading of a projection, the call's own
+/// ([`eliminate_type_projections_read`]) at the arguments the rule passes: a carrier instance
+/// whose slots are rigids stands for every argument they admit, where the call's reading takes
+/// a member resting on a rigid for unknown and keeps it neutral. Over a carrier instance:
+/// the carrier's own parameter is its slot, any other member the binding — of the provision
+/// the receiver's DECLARATION names as its lender ([`ProjectionReader::read`]: this one, the
+/// sort's own by agreement, or the call's reading) — AS
+/// WRITTEN at the instance's slots — as [`project_type_member`] reads it, so its unwritten
+/// slots are fresh where it lands, apart from the parameters typed by it; a member the
+/// provision leaves UNBOUND the spec parameter's own variable, the wildcard it is in every other
+/// position; `Sort` the call's (the type itself). Over an abstract receiver (a type parameter's
+/// rigid), the neutral projection itself, by the spec's names on both sides — a single
+/// reference's, or a field path's (`st.provider.K`); one the call's reading leaves neutral off
+/// a CONCRETE field (`h.items.T`, `items` a bare `List`) is re-keyed there, at its head.
+struct ProjectionReader {
+    /// The provision's spec, canonical.
+    spec: Symbol,
+    recv_sort: Symbol,
+    /// The provision's bindings by the spec parameter's short name.
+    bindings: SmallVec<[(String, TermId); 4]>,
+    /// The spec's own parameters: one the provision leaves unbound reads as its variable, the
+    /// wildcard it is in the rest of the check.
+    spec_params: SmallVec<[(String, VarId); 4]>,
+    /// A WITNESS's carrier view — the binding of the spec's carrier parameter (`C = List[T =
+    /// E]`) — through which a receiver's type instantiates the witness's own parameters; `None`
+    /// for a provision the receiving sort writes itself.
+    witness_view: Option<TermId>,
+}
+
+impl ProjectionReader {
+    fn new(
+        kb: &KnowledgeBase,
+        recv_sort: Symbol,
+        spec_canon: Symbol,
+        sigma: &[(Symbol, TermId)],
+        witness_view: Option<TermId>,
+    ) -> Self {
+        let by_short = |kb: &KnowledgeBase, sort: Symbol| {
+            own_params_of(kb, sort)
+                .iter()
+                .map(|&(q, v)| (short_name_of(kb.local_name_of(q)).to_owned(), v))
+                .collect()
+        };
+        let bindings = sigma
+            .iter()
+            .map(|&(q, b)| (short_name_of(kb.local_name_of(q)).to_owned(), b))
+            .collect();
+        ProjectionReader {
+            spec: spec_canon,
+            recv_sort,
+            bindings,
+            spec_params: by_short(kb, spec_canon),
+            witness_view,
+        }
+    }
+
+    /// `r.member` over a receiver of type `recv_ty`, or `None` for the call's own reading.
+    fn read(
+        &self,
+        kb: &mut KnowledgeBase,
+        receiver: &Value,
+        recv_ty: &Value,
+        member: Symbol,
+        rekey: Option<&HashMap<Symbol, Symbol>>,
+        prep: &Substitution,
+    ) -> Option<Value> {
+        let name = kb.local_name_of(member).to_owned();
+        if name == "Sort" {
+            return None;
+        }
+        if matches!(
+            type_head(kb, recv_ty),
+            TypeHead::Skolem(_) | TypeHead::FlexVar(_)
+        ) {
+            // The neutral itself, its receiver's head by the spec's name — a single reference
+            // or a field path's root (`st.provider.K`, whose abstract `provider` is the rigid
+            // the rule made of `State`'s parameter: the call's reading looks for the `requires`
+            // bound of a parameter and finds none for a rigid — MEASURED, a verbatim member
+            // refused as unreadable).
+            let mut segs = receiver_path_segs(kb, receiver)?;
+            if let Some(r) = rekey.and_then(|m| m.get(&segs[0]).copied()) {
+                segs[0] = r;
+            }
+            return Some(build_projection_from_segs(
+                kb,
+                &segs,
+                member,
+                site_of(receiver).0,
+            ));
+        }
+        let base = sort_functor_of_view(kb, recv_ty)?;
+        if kb.canonical_sort_sym(base) != self.recv_sort {
+            return None;
+        }
+        if let Some(slot) = extract_type_param(kb, recv_ty, &name) {
+            return Some(slot);
+        }
+        // WHICH PROVISION LENDS THE MEMBER IS THE RECEIVER'S DECLARATION'S TO SAY, as it is at
+        // the call ([`projection_owner_spec`]). Only a receiver declared by THIS spec — `s: Sp`,
+        // or a parameter of the spec's — reads this provision. One declared at the carrier
+        // (`c: Car`) names no spec: the call, the member's own signature and its body read the
+        // member from the specs the sort itself provides, by agreement. Answered from this
+        // provision whatever the declaration, a member's `k: c.E` behind `Sp[…]` with `E`
+        // unbound was a wildcard while its body took `Other`'s `String`, and a witness's member
+        // `-> c.T` over `c: Box` the witness's `Int64` while its body returned `Box`'s own
+        // (MEASURED: each loaded, and the spec call's caller failed at run time).
+        match projection_owner_spec(kb, receiver, &name).map(|s| kb.canonical_sort_sym(s)) {
+            Some(spec) if spec == self.spec => {}
+            Some(_) => return None,
+            None => return self.read_unowned(kb, recv_ty, &name, prep),
+        }
+        let Some(&(_, b)) = self.bindings.iter().find(|(s, _)| *s == name) else {
+            // A spec parameter the provision leaves UNBOUND is a wildcard here as in every
+            // other position: its own variable. Left to the call's reading, `s.K` at `Car
+            // provides Sp[T = V]` was "type 'Car' has no member 'K'" and a member the spec call
+            // can never reach was refused as unreadable (MEASURED).
+            let &(_, v) = self.spec_params.iter().find(|(s, _)| *s == name)?;
+            return Some(Value::term(kb.alloc(Term::Var(Var::Global(v)))));
+        };
+        match self.witness_view {
+            // A witness's binding is written in the WITNESS's parameters, which the receiver
+            // PROJECTED instantiates through the carrier view, as the call's reading does
+            // ([`witnesses_covering`]) — not the operation's receiver: `get2(c: C, d: D) ->
+            // d.U` at `ListHolder[E] provides Holder[C = List[T = E], D = List[T = Int64], U =
+            // Option[T = E]]` reads `d.U` at `d`'s own element. Read at the receiver's, the
+            // rule admitted a member returning `Option[T = E]` where the call read
+            // `Option[T = Int64]` (MEASURED, run time).
+            Some(view) => {
+                let mut at = Substitution::new();
+                if !unify_types(kb, &mut at, &Value::term(view), recv_ty) || binds_a_cycle(kb, &at)
+                {
+                    return None;
+                }
+                let v = resolve_type_deep_value(kb, &at, &Value::term(b));
+                Some(resolve_type_deep_value(kb, prep, &v))
+            }
+            None => self.at_receiver(kb, recv_ty, b, prep),
+        }
+    }
+
+    /// A binding the receiving sort's own provision writes — in that sort's parameters — at
+    /// THIS receiver's slots ([`binding_at_receiver`]), each of them written, or `None` (the
+    /// call's reading).
+    fn at_receiver(
+        &self,
+        kb: &mut KnowledgeBase,
+        recv_ty: &Value,
+        b: TermId,
+        prep: &Substitution,
+    ) -> Option<Value> {
+        let v = binding_at_receiver(kb, self.recv_sort, recv_ty, &Value::term(b))?;
+        Some(resolve_type_deep_value(kb, prep, &v))
+    }
+
+    /// `r.member` where the receiver's declaration names no spec: what the receiving sort's
+    /// own provisions lend, by AGREEMENT ([`unowned_member_bindings`], the call's selection),
+    /// at this receiver's slots — `None` (the call's reading, which says why) where none lends
+    /// it or two disagree.
+    fn read_unowned(
+        &self,
+        kb: &mut KnowledgeBase,
+        recv_ty: &Value,
+        name: &str,
+        prep: &Substitution,
+    ) -> Option<Value> {
+        let mut read: Option<Value> = None;
+        for (_, written) in unowned_member_bindings(kb, self.recv_sort, name) {
+            let this = self.at_receiver(kb, recv_ty, written, prep)?;
+            match &read {
+                None => read = Some(this),
+                Some(prior) if types_agree(kb, prior, &this) => {}
+                Some(_) => return None,
+            }
+        }
+        read
+    }
+
+    /// `ty` (a spec side) with its projections read at `args`.
+    #[allow(clippy::too_many_arguments)]
+    fn eliminate(
+        &self,
+        kb: &mut KnowledgeBase,
+        ty: &Value,
+        args: &HashMap<Symbol, Value>,
+        rekey: Option<&HashMap<Symbol, Symbol>>,
+        prep: &Substitution,
+        ctx: &TypeErrorContext,
+    ) -> Result<Value, String> {
+        let read = |kb: &mut KnowledgeBase, receiver: &Value, recv_ty: &Value, member: Symbol| {
+            self.read(kb, receiver, recv_ty, member, rekey, prep)
+        };
+        eliminate_type_projections_read(kb, ty, args, rekey, &read, ctx).map_err(|e| match e {
+            TypeError::Other { actual, .. } => actual,
+            other => format!("{other:?}"),
+        })
+    }
+
+    /// A member type as compared: its projections read at `member_args`, by the spec's names,
+    /// and expanded as the call expands it.
+    #[allow(clippy::too_many_arguments)]
+    fn member_type(
+        &self,
+        kb: &mut KnowledgeBase,
+        ty: &Value,
+        member_args: &HashMap<Symbol, Value>,
+        impl_to_spec: &HashMap<Symbol, Symbol>,
+        prep: &Substitution,
+        ctx: &TypeErrorContext,
+        decl: Symbol,
+        returned: bool,
+    ) -> Result<Value, String> {
+        let m = if value_contains_projection(kb, ty) {
+            self.eliminate(kb, ty, member_args, Some(impl_to_spec), prep, ctx)?
+        } else if impl_to_spec.is_empty() {
+            ty.clone()
+        } else {
+            substitute_ref_syms_value(kb, ty, impl_to_spec)
+        };
+        // A parameter's unwritten slot is the member's to instantiate; a RETURN's is a type the
+        // member picked, unknown to the caller — and under a returned arrow's parameter the
+        // member's to instantiate again ([`expand_foreign_sorts_by_polarity`]).
+        let (slot, under_param) = if returned {
+            (SlotVar::Rigid, SlotVar::Flexible)
+        } else {
+            (SlotVar::Flexible, SlotVar::Flexible)
+        };
+        Ok(expand_foreign_sorts_by_polarity(
+            kb,
+            &m,
+            Some(decl),
+            slot,
+            under_param,
+        ))
+    }
+}
+
+/// The spec's receiver type at this provision, as a member typed by the spec receives it:
+/// what it writes, and each slot it leaves unwritten bound as the provision binds it (`T = V`
+/// is the instance's `V`); [`member_narrower_than_spec`]'s spec side makes the rest any type.
+fn spec_at_provision(
+    kb: &mut KnowledgeBase,
+    spec_pty: &Value,
+    template: &[(Symbol, Value)],
+) -> Value {
+    let Some((base, mut bindings)) = sort_application_parts(kb, spec_pty) else {
+        return spec_pty.clone();
+    };
+    for (p, b) in template {
+        if binding_for_param(kb, &bindings, *p, BindingKeyMatch::Label).is_none() {
+            let short = kb.local_name_of(*p).to_string();
+            let short_sym = kb.intern(&short);
+            bindings.push((short_sym, b.clone()));
+        }
+    }
+    let base_ref = kb.make_sort_ref(base);
+    parameterized_value(
+        kb,
+        base_ref,
+        &bindings,
+        crate::kb::node_occurrence::empty_span(),
+        None,
+    )
+}
+
+/// WI-20260929-0RP29 — the MEMBER's variables bound from the spec's argument along the
+/// subtyping relation's own decomposition, where unification stopped short. Unification is an
+/// equality and stops at the first difference, so a member wider by tuple width or order (`t:
+/// (a: X)` behind `(a: Int64, b: Int64)`) or contravariantly (`f: (a: cat) -> R` behind `(a:
+/// Animal) -> Int64`) kept `X` / `R` unbound — and [`types_compatible`] binds nothing, so it
+/// refused them. Each member position meets the spec's: a named tuple's field by its alignment
+/// ([`align_named_tuple_slots`]), an arrow's parameter and result, a same-sort application's
+/// binding by label; an unbound member variable there takes the spec's type. `flipped` is the
+/// relation's direction: an arrow's parameter and a `Contravariant` binding turn it, so there
+/// the MEMBER's tuple is the one aligned as the subtype (a callback's parameter wider by width
+/// is `(t: (a: X, b: Int64, c: Int64))` behind `(t: (a: Int64, b: Int64))`). The verdict stays
+/// the relation's — this only supplies the variables it reads, and a binding the relation then
+/// refuses is refused.
+fn bind_member_vars_along(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    spec: &Value,
+    member: &Value,
+    flipped: bool,
+) {
+    let m = walk_view(kb, subst, member);
+    if matches!(type_head(kb, &m), TypeHead::FlexVar(_)) {
+        unify_types(kb, subst, &m, spec);
+        return;
+    }
+    let s = walk_view(kb, subst, spec);
+    match (extract_type(kb, &s), extract_type(kb, &m)) {
+        (TypeExtractor::NamedTuple(sf), TypeExtractor::NamedTuple(mf)) => {
+            bind_member_fields_along(kb, subst, &sf, &mf, TupleAlign::DATA, flipped);
+        }
+        (
+            TypeExtractor::Arrow {
+                param: sp,
+                result: sr,
+                arity,
+                ..
+            },
+            TypeExtractor::Arrow {
+                param: mp,
+                result: mr,
+                ..
+            },
+        ) => {
+            // A parameter LIST aligns by position (WI-782); a sole parameter is its type.
+            match (extract_type(kb, &sp), extract_type(kb, &mp)) {
+                (TypeExtractor::NamedTuple(sf), TypeExtractor::NamedTuple(mf))
+                    if arity != 1 && both_named_tuples(kb, &sp, &mp) =>
+                {
+                    bind_member_fields_along(kb, subst, &sf, &mf, TupleAlign::PARAM_LIST, !flipped);
+                }
+                _ => bind_member_vars_along(kb, subst, &sp, &mp, !flipped),
+            }
+            bind_member_vars_along(kb, subst, &sr, &mr, flipped);
+        }
+        (
+            TypeExtractor::Parameterized {
+                base: sb,
+                bindings: sbind,
+            },
+            TypeExtractor::Parameterized {
+                base: mb,
+                bindings: mbind,
+            },
+        ) if kb.canonical_sort_sym(sb) == kb.canonical_sort_sym(mb) => {
+            let base = kb.canonical_sort_sym(sb);
+            for (k, mv) in &mbind {
+                let flip = match declared_variance(kb, base, *k) {
+                    Variance::Covariant | Variance::Invariant => flipped,
+                    Variance::Contravariant => !flipped,
+                    Variance::Bivariant => continue,
+                };
+                if let Some(sv) = binding_for_param(kb, &sbind, *k, BindingKeyMatch::Label).cloned()
+                {
+                    bind_member_vars_along(kb, subst, &sv, mv, flip);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// [`bind_member_vars_along`] over two field lists, each member field against the spec's it
+/// aligns with — the spec's list aligned as the subtype, the member's where `flipped`.
+fn bind_member_fields_along(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    spec_fields: &[(Symbol, Value)],
+    member_fields: &[(Symbol, Value)],
+    mode: TupleAlign,
+    flipped: bool,
+) {
+    let pairs: Vec<(Value, Value)> = if flipped {
+        let Some(slots) = align_named_tuple_slots(kb, member_fields, spec_fields, mode) else {
+            return;
+        };
+        aligned_pairs(&slots, member_fields, spec_fields)
+            .map(|(m, s)| (s.clone(), m.clone()))
+            .collect()
+    } else {
+        let Some(slots) = align_named_tuple_slots(kb, spec_fields, member_fields, mode) else {
+            return;
+        };
+        aligned_pairs(&slots, spec_fields, member_fields)
+            .map(|(s, m)| (s.clone(), m.clone()))
+            .collect()
+    };
+    for (s, m) in pairs {
+        bind_member_vars_along(kb, subst, &s, &m, flipped);
+    }
+}
+
+/// Is `ty` the carrier at its OWN parameters — bare, or each written slot its own parameter (a
+/// row slot's own row variable braced, `{EC}`, included) — which inside the carrier is THIS
+/// instance (§3's parametricity tie)? Slot by slot: `P2[A = B, B = A]` and `P2[A = A, B = A]`
+/// are not.
+pub(super) fn is_this_instance(kb: &mut KnowledgeBase, ty: &Value, carrier_canon: Symbol) -> bool {
+    let Some((base, written)) = sort_application_parts(kb, ty) else {
+        return false;
+    };
+    if kb.canonical_sort_sym(base) != carrier_canon {
+        return false;
+    }
+    let own = own_params_of(kb, base);
+    written.iter().all(|(k, v)| {
+        let Some(&(_, vid)) = own.iter().find(|(q, _)| same_label(kb, *q, *k)) else {
+            return false;
+        };
+        declared_type_param_vid(kb, v) == Some(vid) || braced_row_var(kb, v) == Some(vid)
+    })
+}
+
+/// Does `ty` hold THIS instance at any depth — the carrier bare or at its own parameters, or
+/// one of its own parameters (`own`)?
+fn holds_this_instance(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    carrier_canon: Symbol,
+    own: &[VarId],
+) -> bool {
+    if kb.collect_vars(ty).iter().any(|v| own.contains(v)) {
+        return true;
+    }
+    let mut found = false;
+    map_type_bottom_up(kb, ty, &mut |kb, node| {
+        found |= is_this_instance(kb, node, carrier_canon);
+        None
+    });
+    found
+}
+
+/// Does `ty` hold an instance of the carrier at any depth — by its own name, or an alias of it
+/// (`sort MyCar = Car`)?
+pub(super) fn holds_carrier(kb: &mut KnowledgeBase, ty: &Value, carrier_canon: Symbol) -> bool {
+    let mut found = false;
+    map_type_bottom_up(kb, ty, &mut |kb, node| {
+        found |= sort_application_parts(kb, node)
+            .is_some_and(|(s, _)| kb.canonical_sort_sym(s) == carrier_canon);
+        None
+    });
+    found
+}
+
+/// The row variable a row is exactly (`{EC}`), or `None`.
+fn braced_row_var(kb: &mut KnowledgeBase, v: &Value) -> Option<VarId> {
+    effects_rows_inner(kb, v)?;
+    let (present, tails, absent) = decompose_effect_row_raw(kb, &Substitution::new(), v)?;
+    match (&present[..], &tails[..], &absent[..]) {
+        ([], [t], []) => match kb.get_term(*t) {
+            Term::Var(Var::Global(vid)) => Some(*vid),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// WI-20260822-1MAGR — can the legs AFTER [`check_member_signature`] still align the
@@ -318,6 +2374,23 @@ fn permutations_any(idx: &mut Vec<usize>, k: usize, f: &mut dyn FnMut(&[usize]) 
     false
 }
 
+/// A type as the member rule's refusals print it: an arrow with its effect row (`… @ {EP}`),
+/// which the plain rendering leaves out and a callback's difference can lie in.
+fn member_type_display(kb: &KnowledgeBase, v: &Value) -> String {
+    let plain = type_display_name_value(kb, v);
+    match extract_type(kb, v) {
+        TypeExtractor::Arrow { effects, .. } => {
+            let row = type_display_name_value(kb, &effects);
+            if row == "{}" {
+                plain
+            } else {
+                format!("{plain} @ {row}")
+            }
+        }
+        _ => plain,
+    }
+}
+
 /// WI-20260822-1MAGR — render one operation's declared signature for a diagnostic:
 /// `vec_scale(c: Float, v: Vec3) -> Vec3`. `sigma` is the provision's type-parameter
 /// binding, so the SPEC side is printed as the author of the provision would have to
@@ -383,6 +2456,8 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         carrier: Symbol,
         spec: Symbol,
         sigma: Vec<(Symbol, TermId)>,
+        /// A witness's carrier — the sort its operations receive on.
+        witness: Option<Symbol>,
     }
     let provs: Vec<Prov> = provides_rows(kb)
         .map(|row| {
@@ -395,6 +2470,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                 carrier: row.provider,
                 spec: row.spec_base,
                 sigma: spec_param_sigma(kb, row.spec_base, named),
+                witness: witness_dispatch_carrier(kb, row.spec_base, row.provider, row.spec_view),
             }
         })
         .collect();
@@ -404,6 +2480,9 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         let (Some(spec_ops), Some(carrier_ops)) = (own.get(&p.spec), own.get(&p.carrier)) else {
             continue;
         };
+        // WI-20260929-0RP29 — what the member rule reads of this provision, built on the
+        // first member it compares ([`ProvisionMembers`]).
+        let provision = ProvisionMembers::new(p.spec, p.carrier, &p.sigma, p.witness);
         for &spec_op in spec_ops {
             let sn = short(kb, spec_op);
             // The carrier's own op of the same short name is its override/impl.
@@ -441,6 +2520,7 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                 &spec_info,
                 &impl_info,
                 &p.sigma,
+                &provision,
                 &mut errors,
             ) == MemberSignature::ArityDiffers
             {
@@ -1226,6 +3306,7 @@ pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<crate::kb
         // element contributes nothing — it has its own diagnostic path and must neither
         // mask nor fabricate a clash here.
         let mut present: Vec<Value> = Vec::new();
+        let mut tails: Vec<TermId> = Vec::new();
         let mut absent: Vec<Value> = Vec::new();
         for e in &effects {
             // CLASSIFY BY SHAPE, and do not lean on `decompose_effect_row_raw` to tell a
@@ -1254,12 +3335,21 @@ pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<crate::kb
             // being taken for the kernel algebra, and it is the same predicate the
             // op-effects reader uses — the two cannot drift into disagreeing about what
             // a row is.
+            //
+            // WI-20260929-0RP29 — A ROW PARAMETER WRITTEN BARE IS A TAIL, not a label: `effects
+            // {Q, -Q}` over the operation's own `Q` holds the row it lacks whole (user decision,
+            // 2026-10-01). Its reference heads as a sort's, so it was filed among the present
+            // labels, where the denied VARIABLE equals no label — and the declaration loaded
+            // while `{Error[Foo], -Error[Foo]}` was refused (MEASURED).
             let row_shaped = effect_value_is_row_shaped(kb, e);
             if row_shaped {
-                if let Some((p, _tails, a)) = decompose_effect_row_raw(kb, &subst, e) {
+                if let Some((p, t, a)) = decompose_effect_row_raw(kb, &subst, e) {
                     present.extend(p);
+                    tails.extend(t);
                     absent.extend(a);
                 }
+            } else if let Some(vid) = declared_type_param_vid(kb, e) {
+                tails.push(kb.alloc(Term::Var(Var::Global(vid))));
             } else if matches!(
                 type_head(kb, e),
                 TypeHead::SortRef(_) | TypeHead::Parameterized { .. }
@@ -1271,7 +3361,8 @@ pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<crate::kb
         if absent.is_empty() {
             continue;
         }
-        let Some(clash) = uninhabitable_row_clash(kb, &subst, &present, &absent, &effects) else {
+        let Some(clash) = uninhabitable_row_clash(kb, &subst, &present, &tails, &absent, &effects)
+        else {
             continue;
         };
         if !reported.insert(op_sym) {

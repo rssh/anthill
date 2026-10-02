@@ -195,14 +195,24 @@ pub(super) fn decompose_effect_row_raw(
 ///
 /// The per-pair verdict is [`label_violates_absence`], which is DIRECTIONAL and wider
 /// than equality — see there.
+///
+/// The absences are read through [`lacked_parts`] (WI-20260929-0RP29): one over a ROW VARIABLE
+/// bound since denies the labels of the row it was bound to, so `{Error[Foo], -R}` at `R =
+/// {Error[Foo]}` is `{e, -e}` too. Read as written, a `-R` equalled no label, and a row whose
+/// `R` a LATER argument bound to a label it presents passed every check — the verdict turned
+/// on the order of the arguments (MEASURED).
 pub(super) fn row_self_contradiction<'a>(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     present: &'a [Value],
     absent: &[Value],
 ) -> Option<&'a Value> {
+    if absent.is_empty() {
+        return None;
+    }
+    let (lacked, _) = lacked_parts(kb, subst, absent);
     present.iter().find(|p| {
-        absent
+        lacked
             .iter()
             .any(|a| label_violates_absence(kb, subst, p, a))
     })
@@ -375,10 +385,201 @@ pub(super) fn decompose_effect_row(
     effects: &impl TermView,
 ) -> Option<(Vec<Value>, Vec<TermId>, Vec<Value>)> {
     let (present, tails, absent) = decompose_effect_row_raw(kb, subst, effects)?;
-    if row_self_contradiction(kb, subst, &present, &absent).is_some() {
+    if row_self_contradiction(kb, subst, &present, &absent).is_some()
+        || row_holds_a_variable_it_lacks(kb, subst, &tails, &absent).is_some()
+    {
         return None;
     }
     Some((present, tails, absent))
+}
+
+/// WI-20260929-0RP29 (user decision, 2026-10-01) — `{R, -R}`: the row variable a row holds and
+/// also lacks whole, the row-variable twin of [`row_self_contradiction`]'s `{e, -e}`.
+pub(super) fn row_holds_a_variable_it_lacks(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    tails: &[TermId],
+    absent: &[Value],
+) -> Option<TermId> {
+    if absent.is_empty() || tails.is_empty() {
+        return None;
+    }
+    let (_, lacked_vars) = lacked_parts(kb, subst, absent);
+    tails
+        .iter()
+        .map(|t| walk_type(kb, subst, *t))
+        .find(|t| lacked_vars.contains(t))
+}
+
+/// WI-20260929-0RP29 (user decision, 2026-10-01) — absences split into what they deny: LABELS,
+/// and ROW VARIABLES denied whole (`-R`, written, or an absence spliced over a row whose tail is a
+/// variable: `-s.E` over `{Error[Foo], R}` is `-Error[Foo], -R`). A variable bound since denies
+/// the row it was bound to — its labels and its own tails. Read as labels, a denied variable
+/// constrained nothing: against a rigid it unified with no label, so `-R` admitted a callback
+/// raising `R` itself (MEASURED), and against a flexible one it would have unified with every
+/// label.
+pub(super) fn lacked_parts(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    lacked: &[Value],
+) -> (Vec<Value>, Vec<TermId>) {
+    let mut labels: Vec<Value> = Vec::new();
+    let mut vars: Vec<TermId> = Vec::new();
+    for l in lacked {
+        let mut w = walk_value_to_resolved(kb, subst, l.clone());
+        // A WRITTEN `-R` names the parameter (`Ref(R)`), where a row tail carries its variable.
+        if let Some(vid) =
+            declared_type_param_vid(kb, &w).filter(|_| row_tail_termid(kb, &w).is_none())
+        {
+            let var = Value::term(kb.alloc(Term::Var(Var::Global(vid))));
+            w = walk_value_to_resolved(kb, subst, var);
+        }
+        if let Some(t) = row_tail_termid(kb, &w) {
+            let t = walk_type(kb, subst, t);
+            if !vars.contains(&t) {
+                vars.push(t);
+            }
+            continue;
+        }
+        if effects_rows_inner(kb, &w).is_some() || value_is_bare_effect_expr(kb, &w) {
+            if let Some((present, tails, _)) = decompose_effect_row_raw(kb, subst, &w) {
+                labels.extend(present);
+                for t in tails {
+                    let t = walk_type(kb, subst, t);
+                    if !vars.contains(&t) {
+                        vars.push(t);
+                    }
+                }
+                continue;
+            }
+        }
+        labels.push(l.clone());
+    }
+    (labels, vars)
+}
+
+/// WI-20260929-0RP29 — what a row lacks WHOLE, beyond labels: [`lacked_parts`]' row variables,
+/// and the NEUTRAL row projections its absences name — `-s.E` where `s` leaves its row unwritten
+/// (`s: Strm[T = Int64]`), which inside the enclosing operation is the projection `s.E` itself.
+/// That is the enclosing operation's own row, unknown where the check runs, exactly as a rigid
+/// `R` is; the decision's reason for the rigid variable is its reason too. Read as a label it
+/// matched only itself, so `Strm.each(s, g)` passed a callback raising `Error[Foo]` under `-s.E`
+/// and a caller then handed it a stream raising that very label (MEASURED) — where the same
+/// operation with its row NAMED (`E = {R}`) was refused. A neutral stays among
+/// [`lacked_parts`]' labels as well: a row presenting the same projection meets it there by
+/// equality.
+pub(super) struct LackedRows {
+    pub(super) vars: Vec<TermId>,
+    pub(super) neutrals: Vec<Value>,
+}
+
+/// The [`LackedRows`] of the absences `lacked`.
+pub(super) fn lacked_rows(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    lacked: &[Value],
+) -> LackedRows {
+    let (_, vars) = lacked_parts(kb, subst, lacked);
+    let neutrals = lacked
+        .iter()
+        .filter_map(|l| {
+            let w = walk_value_to_resolved(kb, subst, l.clone());
+            matches!(
+                type_head(kb, &w),
+                TypeHead::ExprCarried | TypeHead::RigidProjection
+            )
+            .then_some(w)
+        })
+        .collect();
+    LackedRows { vars, neutrals }
+}
+
+/// WI-20260929-0RP29 (user decision, 2026-10-01) — does a row presenting `labels` and holding
+/// `tails` violate the absences `lacked` ([`lacked_parts`]) where it flows into a tail that lacks
+/// them? When it presents a lacked label (WI-328), or holds a lacked row variable itself (`{R}`
+/// into `-R`). What cannot be SHOWN outside a lacked rigid row is the relation's question, which
+/// sees the flowing row's own absences ([`row_unshown_outside_lacked`]).
+pub(super) fn row_violates_lacks(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    labels: &[Value],
+    tails: &[TermId],
+    lacked: &[Value],
+) -> bool {
+    if lacked.is_empty() {
+        return false;
+    }
+    let (lacked_labels, lacked_vars) = lacked_parts(kb, subst, lacked);
+    labels
+        .iter()
+        .any(|l| label_violates_lacks(kb, subst, l, &lacked_labels))
+        || row_holds_lacked_variable(kb, subst, tails, &lacked_vars)
+}
+
+/// `{R}` against `-R`: one of `tails` IS a lacked row variable.
+fn row_holds_lacked_variable(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    tails: &[TermId],
+    lacked_vars: &[TermId],
+) -> bool {
+    !lacked_vars.is_empty()
+        && tails
+            .iter()
+            .any(|t| lacked_vars.contains(&walk_type(kb, subst, *t)))
+}
+
+/// WI-20260929-0RP29 (user decisions, 2026-10-01) — the lacked row UNKNOWN where the check runs —
+/// a RIGID row variable (the enclosing operation's own row) or a neutral row projection (its
+/// parameter's unwritten row, [`LackedRows`]) — beside which a row (`labels`, `tails`) cannot be
+/// shown to stay outside: a label, or another rigid row variable (`{Q}` against `-R`). `None`
+/// when the row itself lacks it — `own`, its own absences: a callback typed `@ {Q, -R}` states
+/// it, and that type holds its callers to it. A FLEXIBLE row variable is no such question here:
+/// whatever a later argument binds it to, the row is tested against its own absences once the
+/// call is solved ([`row_self_contradiction`], which reads a bound `-R` as the labels it
+/// denies), so the verdict does not turn on which argument came first. A label that IS the
+/// lacked projection is the row holding it, the label check's to refuse.
+pub(super) fn row_unshown_outside_lacked(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    labels: &[Value],
+    tails: &[TermId],
+    lacked: &LackedRows,
+    own: &LackedRows,
+) -> Option<Value> {
+    if lacked.vars.is_empty() && lacked.neutrals.is_empty() {
+        return None;
+    }
+    let rigid = |kb: &KnowledgeBase, t: TermId| matches!(kb.get_term(t), Term::Var(Var::Rigid(_)));
+    let rigid_tails: SmallVec<[TermId; 2]> = tails
+        .iter()
+        .map(|t| walk_type(kb, subst, *t))
+        .filter(|t| rigid(kb, *t))
+        .collect();
+    if let Some(r) = lacked
+        .vars
+        .iter()
+        .copied()
+        .filter(|r| rigid(kb, *r) && !own.vars.contains(r))
+        .find(|r| !labels.is_empty() || rigid_tails.iter().any(|t| t != r))
+    {
+        return Some(Value::term(r));
+    }
+    lacked
+        .neutrals
+        .iter()
+        .filter(|n| {
+            !own.neutrals
+                .iter()
+                .any(|o| views_structurally_equal(kb, o, *n))
+        })
+        .find(|n| {
+            !rigid_tails.is_empty()
+                || labels
+                    .iter()
+                    .any(|l| !resolved_labels_equal(kb, subst, l, n))
+        })
+        .cloned()
 }
 
 // ── WI-067: guarded-effect discharge at a call site ────────────────
@@ -823,12 +1024,16 @@ pub(super) fn eq_neq_functors(kb: &mut KnowledgeBase) -> (Symbol, Option<Symbol>
 pub(super) fn build_call_guard_sigma(
     kb: &mut KnowledgeBase,
     params: &[(Symbol, Value)],
+    pos_params: &[Option<usize>],
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> HashMap<Symbol, TermId> {
     let mut sigma: HashMap<Symbol, TermId> = HashMap::new();
-    for (i, arg_occ) in pos_args.iter().enumerate() {
-        if let Some((param_sym, _)) = params.get(i) {
+    // WI-20260929-0RP29: the parameter each positional argument FILLS (`pos_params`, the call's
+    // [`positional_param_indices`]) — in a mixed call not the one at its index — so a guard
+    // reads the operand the call binds.
+    for (j, arg_occ) in pos_args.iter().enumerate() {
+        if let Some((param_sym, _)) = pos_params[j].and_then(|p| params.get(p)) {
             if let Some(t) = crate::kb::node_occurrence::try_occurrence_to_term(kb, arg_occ) {
                 sigma.insert(*param_sym, t);
             }
@@ -1401,7 +1606,8 @@ pub(super) fn assume_call_ensures(
     }
     // σ: callee params ↦ actual arg terms, plus `result` ↦ var_ref(binder). The
     // reserved `result` resolves under the op scope as `<op>.result` (proposal 041).
-    let mut sigma = build_call_guard_sigma(kb, &rec.params, &pos_args, &named_args);
+    let pos_params = positional_param_indices(kb, &rec.params, pos_args.len(), &named_args);
+    let mut sigma = build_call_guard_sigma(kb, &rec.params, &pos_params, &pos_args, &named_args);
     let op_qn = kb.qualified_name_of(functor).to_string();
     if let Some(result_sym) = kb.try_resolve_symbol(&format!("{}.result", op_qn)) {
         let binder_term = kb.make_var_ref_term(binder);
@@ -1485,10 +1691,8 @@ fn multi_tail_rows_compat(
         };
         let lacks = subst.lacks_of(vid);
         if !lacks.is_empty() {
-            for l in other_present {
-                if label_violates_lacks(kb, subst, l, &lacks) {
-                    return false;
-                }
+            if row_violates_lacks(kb, subst, other_present, other_tails, &lacks) {
+                return false;
             }
             for t in other_tails {
                 if let Term::Var(Var::Global(tvid)) = kb.get_term(*t) {
@@ -1516,7 +1720,7 @@ fn multi_tail_rows_compat(
 /// `absent` / `open` / `empty_row`, matched by QUALIFIED functor)? A row var's
 /// binding (`open(?ρ)` from `bind_row_tail`) and a walked bound row are bare
 /// expressions, not `effects_rows` wrappers.
-fn value_is_bare_effect_expr(kb: &KnowledgeBase, v: &impl TermView) -> bool {
+pub(super) fn value_is_bare_effect_expr(kb: &KnowledgeBase, v: &impl TermView) -> bool {
     // WI-436: `empty_row` is a 0-ary constructor → bare `Ref` head; read the
     // functor symbol off either spelling so a bare empty row is still classified
     // as a bare EffectExpression node.
@@ -1634,6 +1838,90 @@ pub(crate) fn named_child_value(
     key: Symbol,
 ) -> Option<Value> {
     v.named_arg(kb, key).map(|it| view_item_value(&it))
+}
+
+/// WI-20260929-0RP29 — `row` with each PRESENT label `f` rewrites, rebuilt; `None` when none
+/// was. `row` is what a row SLOT is bound to: an `effects_rows(…)` wrapper, a bare effect
+/// expression, or a bare label (`E = Error` is the row holding it). An absence, a guarded atom
+/// and a tail are kept as written. A rebuilt node rides the value carrier
+/// ([`Value::Entity`]), which every row reader takes.
+pub(super) fn map_row_present_labels(
+    kb: &mut KnowledgeBase,
+    row: &Value,
+    f: &mut dyn FnMut(&mut KnowledgeBase, &Value) -> Option<Value>,
+) -> Option<Value> {
+    if let Some(inner) = effects_rows_inner(kb, row) {
+        let mapped = map_row_present_labels(kb, &inner, f)?;
+        let key = kb.intern("effects_expr");
+        return Some(with_named_child(kb, row, key, mapped));
+    }
+    if !value_is_bare_effect_expr(kb, row) {
+        return match type_head(kb, row) {
+            TypeHead::SortRef(_) | TypeHead::Parameterized { .. } => f(kb, row),
+            _ => None,
+        };
+    }
+    match resolved_functor_name(kb, row).map(str::to_owned).as_deref() {
+        Some("present") => {
+            let key = kb.intern("label");
+            let label = named_child_value(kb, row, key)?;
+            let mapped = f(kb, &label)?;
+            Some(with_named_child(kb, row, key, mapped))
+        }
+        Some("merge") => {
+            let (left_key, right_key) = (kb.intern("left"), kb.intern("right"));
+            let left = named_child_value(kb, row, left_key)
+                .and_then(|l| map_row_present_labels(kb, &l, f));
+            let right = named_child_value(kb, row, right_key)
+                .and_then(|r| map_row_present_labels(kb, &r, f));
+            if left.is_none() && right.is_none() {
+                return None;
+            }
+            let mut out = row.clone();
+            if let Some(l) = left {
+                out = with_named_child(kb, &out, left_key, l);
+            }
+            if let Some(r) = right {
+                out = with_named_child(kb, &out, right_key, r);
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// The functor application `v` with its named child `key` replaced by `child`, on the value
+/// carrier.
+fn with_named_child(kb: &mut KnowledgeBase, v: &Value, key: Symbol, child: Value) -> Value {
+    let ViewHead::Functor {
+        functor: Some(f),
+        pos_arity,
+        ..
+    } = v.head(kb)
+    else {
+        unreachable!("an effect-row node is a functor application")
+    };
+    let pos: Vec<Value> = (0..pos_arity)
+        .map(|i| v.pos_arg(kb, i).expect("pos_arg within arity").to_value())
+        .collect();
+    let mut named: Vec<(Symbol, Value)> = v
+        .named_keys(kb)
+        .into_iter()
+        .map(|k| {
+            let c = if k == key {
+                child.clone()
+            } else {
+                v.named_arg(kb, k).expect("named key present").to_value()
+            };
+            (k, c)
+        })
+        .collect();
+    kb.canonicalize_record_named_args(f, &mut named);
+    Value::Entity {
+        functor: f,
+        pos: std::rc::Rc::from(pos),
+        named: std::rc::Rc::from(named),
+    }
 }
 
 /// Resolve two effect-row labels through `subst` and compare structurally via
@@ -1933,13 +2221,13 @@ pub(super) fn bind_row_tail(
     // lack (`ρ lacks e`). If `vid lacks e` and the binding would present
     // `e`, the row would carry a forbidden effect — reject the binding
     // (this is the "{Error | ρ} with ρ-lacks-Error fails" impossibility).
+    // WI-20260929-0RP29: and a lacked row variable the continuation IS (a flexible tail
+    // aliasing the rigid `R` it lacks). What cannot be SHOWN outside a lacked rigid row — a
+    // label beside it — is not decided here: the relation and the callback validator decide
+    // it, which see the flowing row's own absences ([`row_unshown_outside_lacked`]).
     let vid_lacks = subst.lacks_of(vid);
-    if !vid_lacks.is_empty() {
-        for l in extra_labels {
-            if label_violates_lacks(kb, subst, l, &vid_lacks) {
-                return false;
-            }
-        }
+    if row_violates_lacks(kb, subst, extra_labels, final_tail.as_slice(), &vid_lacks) {
+        return false;
     }
 
     // WI-342 P4-B: a denoted-bearing extra label (`Value::Node`) would require
@@ -2201,6 +2489,33 @@ fn relate_effect_rows<EA: TermView, EB: TermView>(
         None => return false,
     };
 
+    // WI-20260929-0RP29 (user decisions, 2026-10-01) — an absence over a ROW VARIABLE in the
+    // expected row (`{EffP, -R}`): the actual holds neither the variable itself nor, beside a
+    // rigid one, a label or another rigid row variable — unless it lacks that variable itself
+    // ([`row_unshown_outside_lacked`]). Unification reads both rows so. The tails' `lacks` below
+    // carry the definite half into a binding; this reads it where no tail is bound — a variable
+    // already bound, a label the expected row presents itself — and the half only the two rows
+    // together decide.
+    if !a_absent.is_empty() || !b_absent.is_empty() {
+        let b_lacked = lacked_rows(kb, subst, &b_absent);
+        let a_lacked = lacked_rows(kb, subst, &a_absent);
+        if row_holds_lacked_variable(kb, subst, &a_tails, &b_lacked.vars)
+            || row_unshown_outside_lacked(kb, subst, &a_present, &a_tails, &b_lacked, &a_lacked)
+                .is_some()
+        {
+            return false;
+        }
+        if !directional
+            && (row_holds_lacked_variable(kb, subst, &b_tails, &a_lacked.vars)
+                || row_unshown_outside_lacked(
+                    kb, subst, &b_present, &b_tails, &a_lacked, &b_lacked,
+                )
+                .is_some())
+        {
+            return false;
+        }
+    }
+
     // WI-328: register each side's `- e` absents as `lacks` constraints on
     // that side's tail(s) BEFORE the tail-binding step, so `bind_row_tail`
     // sees them when it checks the labels flowing into each tail.
@@ -2230,6 +2545,26 @@ fn relate_effect_rows<EA: TermView, EB: TermView>(
     } else {
         pair_present_labels(kb, subst, &a_present, &b_present)
     };
+
+    // DIRECTIONAL — A CLOSED ACTUAL THE EXPECTED LABELS COVER IS A SUBSET OF THE EXPECTED ROW,
+    // whatever its tails stand for (`{} <: {R}`): nothing flows into them, so nothing is bound.
+    // The arms below answer by BINDING an expected tail, which a RIGID one — the enclosing
+    // operation's own row — refuses: a PURE callback into a slot whose row is the caller's own
+    // (`Strm.each(s, pure1)` over `f: … @ {s.E}` inside `use[R](s: Strm[E = {R}])`, a
+    // `Function[A, B, E]` slot at a rigid `E`) was refused, printing two identical arrows
+    // (MEASURED; the first ran before this ticket read `s.E`). Said here wherever a tail is
+    // rigid. FLEXIBLE tails keep their arms: a lone one is closed by its own
+    // (WI-20260820-RDNS4 is that arm's question), and a union of them is the multi-tail arm's
+    // to refuse (`subtype_rejects_malformed_multi_tail_row`).
+    if directional && a_tails.is_empty() && only_a.is_empty() {
+        let rigid_tail = b_tails.iter().any(|&t| {
+            let t = walk_type(kb, subst, t);
+            matches!(kb.get_term(t), Term::Var(Var::Rigid(_)))
+        });
+        if rigid_tail {
+            return true;
+        }
+    }
 
     // WI-441: a row UNION (≥ 2 tails, `{E, EffP}`) takes the dedicated
     // multi-tail arm — equal tail sets or the bare-flexible wholesale absorb.

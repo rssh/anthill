@@ -183,14 +183,35 @@ pub(crate) fn build_sort_alias_index(kb: &mut KnowledgeBase) {
 ///   canonical channel),
 /// - every declared parameter is already written.
 ///
-/// Scope: the TOP-LEVEL form of a param/return position only — a bare ref
-/// NESTED inside a written binding (`Pair[B = List]`) is not yet expanded
-/// (deliberate; deep expansion is follow-on scope). An alias resolves to its
-/// shape first (WI-381), so only genuinely-open positions get fresh vars.
+/// Scope: the TOP-LEVEL form of a param/return position only — the call's own
+/// expansion; a bare ref NESTED inside a written binding (`Pair[B = List]`) is
+/// expanded by [`expand_foreign_sorts_deep`] where a reader needs every depth (the
+/// member rule, the WI-606 fallback). An alias resolves to its shape first
+/// (WI-381), so only genuinely-open positions get fresh vars.
 pub(super) fn expand_foreign_sort_application(
     kb: &mut KnowledgeBase,
     ty: &Value,
     callee_parent_canon: Option<Symbol>,
+) -> Option<Value> {
+    expand_foreign_sort_application_as(kb, ty, callee_parent_canon, SlotVar::Flexible)
+}
+
+/// What an unwritten slot becomes in [`expand_foreign_sort_application_as`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SlotVar {
+    /// A logic variable the call solves — the slot of a parameter an argument will fill.
+    Flexible,
+    /// A rigid — ANY type, fixed but unknown: the slot of a type something else chooses
+    /// (the spec's side of a member comparison, WI-20260929-0RP29).
+    Rigid,
+}
+
+/// [`expand_foreign_sort_application`] with the unwritten slots minted as `slot`.
+pub(super) fn expand_foreign_sort_application_as(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    callee_parent_canon: Option<Symbol>,
+    slot: SlotVar,
 ) -> Option<Value> {
     if !matches!(ty, Value::Term { .. }) {
         return None;
@@ -199,41 +220,405 @@ pub(super) fn expand_foreign_sort_application(
     if callee_parent_canon.is_some_and(|p| p == kb.canonical_sort_sym(base)) {
         return None;
     }
-    // The WI-424 memoized pairs — `(qualified param sym, canonical Var term)`
-    // — double as the declared-param list, so the per-call path never walks
-    // the symbol table or SortAlias facts for an already-seen sort.
-    let declared = sort_type_params_as_pairs(kb, base);
-    if declared.is_empty() {
+    // A Term carrier's children are Term-carried, so the bindings below lower to terms.
+    let bindings = mint_unwritten_slots(kb, base, &written, slot)?;
+    let bindings: Vec<(Symbol, TermId)> = bindings
+        .into_iter()
+        .map(|(k, v)| match v {
+            Value::Term { id, .. } => Some((k, id)),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let base_ref = kb.make_sort_ref(base);
+    Some(Value::term(kb.make_parameterized_type(base_ref, &bindings)))
+}
+
+/// WI-20260929-0RP29 — a type rebuilt from its leaves up, on any carrier: each node's children
+/// first — an application's bindings, a named tuple's fields, an arrow's parameter and result —
+/// then `f` asked of the node so rebuilt, answering its replacement or `None` to keep it. A spec
+/// view, an effect-expression node, an effect row and a ∀ are leaves, and so is a binding in an
+/// EFFECT-ROW slot: `E = Error` is a row whose labels are compared as written, not a type whose
+/// slots a walk may open (the gate [`rigidify_unwritten_sort_params`] keeps for the same reason —
+/// opened, the one label read two ways). Read through [`extract_type`]; a rebuilt form takes the
+/// carrier its builder chooses. `None` when nothing changed, so an unchanged subtree keeps its
+/// carrier.
+pub(super) fn map_type_bottom_up(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    f: &mut dyn FnMut(&mut KnowledgeBase, &Value) -> Option<Value>,
+) -> Option<Value> {
+    let (sp, owner) = site_of(ty);
+    let rebuilt: Option<Value> = match extract_type(kb, ty) {
+        TypeExtractor::Parameterized { base, bindings }
+            if !is_sort_view_functor(kb, base) && effect_expr_form(kb, base).is_none() =>
+        {
+            let mut changed = false;
+            let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
+            for (k, v) in bindings {
+                let short = short_name_of(kb.local_name_of(k)).to_owned();
+                let mapped = if sort_param_is_effect_row(kb, base, &short) {
+                    None
+                } else {
+                    map_type_bottom_up(kb, &v, f)
+                };
+                changed |= mapped.is_some();
+                out.push((k, mapped.unwrap_or(v)));
+            }
+            changed.then(|| {
+                let base_ref = kb.make_sort_ref(base);
+                parameterized_value(kb, base_ref, &out, sp, owner)
+            })
+        }
+        TypeExtractor::NamedTuple(fields) => {
+            let mut changed = false;
+            let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());
+            for (k, v) in fields {
+                let mapped = map_type_bottom_up(kb, &v, f);
+                changed |= mapped.is_some();
+                out.push((k, mapped.unwrap_or(v)));
+            }
+            changed.then(|| named_tuple_value(kb, &out, sp, owner))
+        }
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => {
+            let p = map_type_bottom_up(kb, &param, f);
+            let r = map_type_bottom_up(kb, &result, f);
+            (p.is_some() || r.is_some()).then(|| {
+                let (p, r) = (p.unwrap_or(param), r.unwrap_or(result));
+                arrow_value(kb, &p, &r, &effects, arity, sp, owner)
+            })
+        }
+        _ => None,
+    };
+    let replaced = f(kb, rebuilt.as_ref().unwrap_or(ty));
+    replaced.or(rebuilt)
+}
+
+/// An arrow rebuilt around its children — an occurrence, as every arrow the typer builds is
+/// (WI-470: an arrow is a binder, and is not hash-consed).
+fn arrow_value(
+    kb: &mut KnowledgeBase,
+    param: &Value,
+    result: &Value,
+    effects: &Value,
+    arity: usize,
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Value {
+    let p = value_to_type_child_at(kb, param, span, owner);
+    let r = value_to_type_child_at(kb, result, span, owner);
+    let e = value_to_type_child_at(kb, effects, span, owner);
+    Value::Node(kb.make_arrow_occ(p, r, e, arity, span, owner))
+}
+
+/// WI-20260929-0RP29 — [`expand_foreign_sort_application_as`] at EVERY depth, on any carrier:
+/// each foreign bare or partial sort application in `ty` — the top form, or one nested in a
+/// written binding, a named tuple's field, an arrow's parameter or result — gets its unwritten
+/// slots as `slot`, fresh per occurrence, so `Pair[A = List, B = List]` is two lists of their
+/// own element types and `List[T = Option]` an option of any element; an occurrence-carried
+/// type (`Buf[N = 3]`, a type holding a value) is expanded as its `N = Bool` twin is. The
+/// callee's OWN sort keeps its unwritten slots (§3's tie, the canonical channel) while its
+/// written arguments are walked; an effect row's labels are kept as written. `ty` itself when
+/// nothing changed.
+pub(super) fn expand_foreign_sorts_deep(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    callee_parent_canon: Option<Symbol>,
+    slot: SlotVar,
+) -> Value {
+    let how = SlotExpansion {
+        parent: callee_parent_canon,
+        slot: Some(slot),
+        under_param: Some(slot),
+        rows: false,
+    };
+    expand_slots(kb, ty, how).unwrap_or_else(|| ty.clone())
+}
+
+/// [`expand_foreign_sorts_deep`] reaching the LABELS of the effect rows a type holds — a row
+/// slot's (`x: Strm[E = Error]`, `x: Strm[E = {Error}]`), an arrow's own (`f: (x: Int64) -> Int64
+/// @ {Error}`), a row that IS the type (a row parameter's binding), and those an ALIAS's shape
+/// writes: a label is a sort application, and its unwritten slot reads as every other unwritten
+/// slot does, so `Error` is `Error` at ANY payload and takes `slot` there, fresh per occurrence.
+/// Kept bare, the label met a member's `Error[T = String]` by binding `Error`'s one canonical
+/// `T`, and a member taking a narrower row was admitted (MEASURED: the spec call handed it a
+/// callback raising `Error[Bool]`, which left a pure `main` as "error: true"; behind an alias and
+/// in an arrow's own row it still did after the slot's was closed). For the member rule's two
+/// sides; a call's rows are related as written.
+pub(super) fn expand_foreign_sorts_and_row_labels(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    callee_parent_canon: Option<Symbol>,
+    slot: SlotVar,
+) -> Value {
+    expand_foreign_sorts_by_polarity(kb, ty, callee_parent_canon, slot, slot)
+}
+
+/// [`expand_foreign_sorts_and_row_labels`] with the slots under an ARROW'S PARAMETER minted as
+/// `under_param`: there the quantifier a bare sort stands for turns over. A type that is
+/// PRODUCED leaves its unwritten slot to the producer — `-> List` is a list of SOME element type
+/// — and a function it produces takes every instantiation of the slots its parameters leave
+/// (`-> (xs: List) -> Int64` takes any list). So comparing a member's return against its spec's,
+/// the member's slot is unknown (`Rigid`) and the spec's the member's to pick (`Flexible`), and
+/// under a returned arrow's parameter the other way about.
+pub(super) fn expand_foreign_sorts_by_polarity(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    callee_parent_canon: Option<Symbol>,
+    slot: SlotVar,
+    under_param: SlotVar,
+) -> Value {
+    let how = SlotExpansion {
+        parent: callee_parent_canon,
+        slot: Some(slot),
+        under_param: Some(under_param),
+        rows: true,
+    };
+    expand_slots(kb, ty, how).unwrap_or_else(|| ty.clone())
+}
+
+/// [`expand_foreign_sorts_by_polarity`] with the slots where the type stands LEFT UNWRITTEN and
+/// only those under an arrow's parameter minted, as `under_param`: the form the subtype RELATION
+/// is asked over, which reads an unwritten slot as any instantiation and binds no variable.
+pub(super) fn expand_foreign_sorts_under_params(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    callee_parent_canon: Option<Symbol>,
+    under_param: SlotVar,
+) -> Value {
+    let how = SlotExpansion {
+        parent: callee_parent_canon,
+        slot: None,
+        under_param: Some(under_param),
+        rows: true,
+    };
+    expand_slots(kb, ty, how).unwrap_or_else(|| ty.clone())
+}
+
+/// How [`expand_slots`] reads a type's unwritten slots.
+#[derive(Clone, Copy)]
+struct SlotExpansion {
+    /// The sort whose own references keep their unwritten slots (§3's tie).
+    parent: Option<Symbol>,
+    /// What an unwritten slot becomes where the type stands (`None`: left unwritten) …
+    slot: Option<SlotVar>,
+    /// … and under an arrow's parameter.
+    under_param: Option<SlotVar>,
+    /// Whether the labels of the effect rows the type holds are expanded too.
+    rows: bool,
+}
+
+impl SlotExpansion {
+    /// The reading under an arrow's parameter, where the two turn over.
+    fn under_param(self) -> Self {
+        SlotExpansion {
+            slot: self.under_param,
+            under_param: self.slot,
+            ..self
+        }
+    }
+}
+
+/// `ty` with the unwritten slots of every foreign sort application it holds minted as `how`
+/// says — ONE walk, from the top, since what a slot becomes depends on where it stands: an
+/// application's bindings, a named tuple's fields, an arrow's parameter, result and (where
+/// `how.rows`) row, and the labels of a row slot's row. A spec view, a ∀, a projection and a
+/// value are leaves. A rebuilt form takes the carrier its builder chooses, and an unchanged
+/// subtree keeps its own: `None` when nothing changed.
+fn expand_slots(kb: &mut KnowledgeBase, ty: &Value, how: SlotExpansion) -> Option<Value> {
+    if value_is_bare_effect_expr(kb, ty) {
+        return if how.rows {
+            expand_row_labels(kb, ty, how)
+        } else {
+            None
+        };
+    }
+    let (sp, owner) = site_of(ty);
+    match extract_type(kb, ty) {
+        TypeExtractor::SortRef(_) | TypeExtractor::Parameterized { .. } => {
+            expand_application(kb, ty, how)
+        }
+        TypeExtractor::NamedTuple(fields) => {
+            let mut changed = false;
+            let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());
+            for (k, v) in fields {
+                let mapped = expand_slots(kb, &v, how);
+                changed |= mapped.is_some();
+                out.push((k, mapped.unwrap_or(v)));
+            }
+            changed.then(|| named_tuple_value(kb, &out, sp, owner))
+        }
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => {
+            let p = expand_slots(kb, &param, how.under_param());
+            let r = expand_slots(kb, &result, how);
+            let e = if how.rows {
+                expand_row_labels(kb, &effects, how)
+            } else {
+                None
+            };
+            (p.is_some() || r.is_some() || e.is_some()).then(|| {
+                let (p, r, e) = (
+                    p.unwrap_or(param),
+                    r.unwrap_or(result),
+                    e.unwrap_or(effects),
+                );
+                arrow_value(kb, &p, &r, &e, arity, sp, owner)
+            })
+        }
+        TypeExtractor::EffectsRows(_) if how.rows => expand_row_labels(kb, ty, how),
+        _ => None,
+    }
+}
+
+/// A row's PRESENT labels expanded ([`expand_slots`]): each is a sort application.
+fn expand_row_labels(kb: &mut KnowledgeBase, row: &Value, how: SlotExpansion) -> Option<Value> {
+    map_row_present_labels(kb, row, &mut |kb, label| expand_slots(kb, label, how))
+}
+
+/// The row holding `label` alone, where `label` IS one — a sort application standing where a
+/// row does (`E = Error[Foo]`), which is the row `{Error[Foo]}` writes; `None` for a row, a row
+/// variable and a type parameter's reference, each a row already. On the label's carrier.
+pub(super) fn row_holding_label(kb: &mut KnowledgeBase, label: &Value) -> Option<Value> {
+    let is_label = matches!(
+        type_head(kb, label),
+        TypeHead::SortRef(_) | TypeHead::Parameterized { .. }
+    ) && declared_type_param_vid(kb, label).is_none()
+        && !value_is_bare_effect_expr(kb, label);
+    is_label.then(|| row_holding(kb, label))
+}
+
+/// The row holding `atom` alone (`{atom}`), on `atom`'s carrier.
+pub(super) fn row_holding(kb: &mut KnowledgeBase, atom: &Value) -> Value {
+    match atom {
+        Value::Term { id, .. } => {
+            let present = kb.make_effect_expression_present(*id);
+            Value::term(kb.make_effects_rows_type(present))
+        }
+        _ => {
+            let (sp, owner) = site_of(atom);
+            let child = value_to_type_child_at(kb, atom, sp, owner);
+            let present = kb.make_present_occ(child, sp, owner);
+            Value::Node(kb.make_effects_rows_occ(TypeChild::Node(present), sp, owner))
+        }
+    }
+}
+
+/// `node` — a sort application, bare or partial — with its written arguments expanded and each
+/// unwritten declared slot a fresh `how.slot` variable ([`mint_unwritten_slots`]); `None` when
+/// nothing changes: a sort declaring no parameter, every slot written and none of them changed.
+/// The callee's own sort keeps its unwritten slots. An ALIAS reads as its shape
+/// ([`sort_application_parts`]), whose written arguments — a row slot's labels among them — are
+/// expanded as any other's: left as written, `x: AnyErr` with `sort AnyErr = Strm[T = Int64, E =
+/// {Error}]` kept its bare label where the same type written in place did not (MEASURED: the
+/// narrower member loaded behind the alias and ended a pure `main` in "error: true").
+fn expand_application(kb: &mut KnowledgeBase, node: &Value, how: SlotExpansion) -> Option<Value> {
+    let (sp, owner) = site_of(node);
+    let (base, written) = sort_application_parts(kb, node)?;
+    if is_sort_view_functor(kb, base) || effect_expr_form(kb, base).is_some() {
         return None;
     }
-    let declared_syms: Vec<Symbol> = declared.iter().map(|(q, _)| *q).collect();
-    let mut bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(declared_syms.len());
+    let mut changed = false;
+    let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(written.len());
+    for (k, v) in written {
+        let short = short_name_of(kb.local_name_of(k)).to_owned();
+        let mapped = if !sort_param_is_effect_row(kb, base, &short) {
+            expand_slots(kb, &v, how)
+        } else if how.rows {
+            // One row, one form: `E = Error` is the row `E = {Error}` writes. Left in the two
+            // spellings, a spec's and a member's one row compared as a label against a row.
+            let mapped = expand_row_labels(kb, &v, how);
+            row_holding_label(kb, mapped.as_ref().unwrap_or(&v)).or(mapped)
+        } else {
+            None
+        };
+        changed |= mapped.is_some();
+        out.push((k, mapped.unwrap_or(v)));
+    }
+    let bindings = match how.slot {
+        Some(slot) if how.parent != Some(kb.canonical_sort_sym(base)) => {
+            mint_unwritten_slots(kb, base, &out, slot)
+        }
+        _ => None,
+    };
+    if bindings.is_none() && !changed {
+        return None;
+    }
+    let base_ref = kb.make_sort_ref(base);
+    Some(parameterized_value(
+        kb,
+        base_ref,
+        &bindings.unwrap_or(out),
+        sp,
+        owner,
+    ))
+}
+
+/// `written` with each declared slot of `base` it leaves unwritten a fresh `slot` variable,
+/// keyed by its SHORT name (the named-arg key convention the (parameterized, parameterized)
+/// unify matches on) — `None` when every slot is written or `base` declares none. The mint both
+/// expansions share ([`expand_foreign_sort_application_as`], [`fill_foreign_slots`]).
+fn mint_unwritten_slots(
+    kb: &mut KnowledgeBase,
+    base: Symbol,
+    written: &[(Symbol, Value)],
+    slot: SlotVar,
+) -> Option<Vec<(Symbol, Value)>> {
+    // The WI-424 memoized pairs — `(qualified param sym, canonical Var term)` — double as the
+    // declared-param list, so a per-call path never walks the symbol table or SortAlias facts
+    // for an already-seen sort.
+    let declared: SmallVec<[Symbol; 4]> = sort_type_params_as_pairs(kb, base)
+        .iter()
+        .map(|(q, _)| *q)
+        .collect();
+    let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(declared.len());
     let mut filled = false;
-    for qsym in declared_syms {
+    for qsym in declared {
         let short = kb.local_name_of(qsym).to_string();
         match written.iter().find(|(k, _)| kb.local_name_of(*k) == short) {
-            Some((k, v)) => match v {
-                Value::Term { id: t, .. } => bindings.push((*k, *t)),
-                // A Term carrier's children are Term-carried; guard anyway.
-                _ => return None,
-            },
+            Some((k, v)) => out.push((*k, v.clone())),
             None => {
-                let var_sym = kb.intern(&format!("?{short}"));
+                let var_sym = kb.intern(&short);
                 let vid = kb.fresh_var(var_sym);
-                let var_t = kb.alloc(Term::Var(Var::Global(vid)));
-                // The SHORT symbol — the named-arg key convention the
-                // (parameterized, parameterized) unify matches on.
+                let var_t = kb.alloc(Term::Var(match slot {
+                    SlotVar::Flexible => Var::Global(vid),
+                    SlotVar::Rigid => Var::Rigid(vid),
+                }));
                 let short_sym = kb.intern(&short);
-                bindings.push((short_sym, var_t));
+                out.push((short_sym, Value::term(var_t)));
                 filled = true;
             }
         }
     }
-    if !filled {
-        return None;
-    }
-    let base_ref = kb.make_sort_ref(base);
-    Some(Value::term(kb.make_parameterized_type(base_ref, &bindings)))
+    filled.then_some(out)
+}
+
+/// WI-20260929-0RP29 — `ty` with each TYPE PROJECTION (`s.T`, `P.Key`) a fresh variable: the
+/// rest of a declaration kept to align with another around projections neither reduces here
+/// (the WI-606 fallback's override against its spec: `-> Option[T = Pair[A = W, B = Sp[T = s.T,
+/// E = s.E]]]` still relates `W`). A projection in an effect-row slot is kept, as every walk of
+/// [`map_type_bottom_up`] keeps that slot.
+pub(super) fn mask_projections(kb: &mut KnowledgeBase, ty: &Value) -> Value {
+    map_type_bottom_up(kb, ty, &mut |kb, node| {
+        matches!(
+            type_head(kb, node),
+            TypeHead::ExprCarried | TypeHead::RigidProjection
+        )
+        .then(|| {
+            let sym = kb.intern("?masked");
+            let vid = kb.fresh_var(sym);
+            Value::term(kb.alloc(Term::Var(Var::Global(vid))))
+        })
+    })
+    .unwrap_or_else(|| ty.clone())
 }
 
 /// WI-374 (user-decided 2026-06-12): ENFORCE the §3-bullet-1 parametricity
@@ -270,41 +655,113 @@ pub(super) fn enforce_member_tie(
     if member_vids.is_empty() {
         return Ok(());
     }
-    let details = subst.contradiction_details.clone();
-    for (vid, prior, attempted) in &details {
-        if !member_vids.contains(vid) {
-            continue;
-        }
-        if exempt_rigids
-            .iter()
-            .any(|(v, r)| v == vid && matches!(prior, Value::Term { id: t, .. } if t == r))
-        {
-            continue;
-        }
-        // Walk both sides through the LIVE subst first — a recorded pair may
-        // contain a var the call has since pinned (`Box[T = ?x]` with `?x`
-        // later bound to Int64); re-testing the unwalked pair in an empty
-        // scratch would spuriously re-unify and skip a genuine violation.
-        let prior_w = walk_type_deep_value(kb, subst, prior);
-        let attempted_w = walk_type_deep_value(kb, subst, attempted);
-        let mut scratch = Substitution::new();
-        if unify_types(kb, &mut scratch, &prior_w, &attempted_w) {
-            continue;
-        }
-        return Err(TypeError::Other {
-            site: TypeError::here(),
+    match first_genuine_conflict_on(kb, subst, &member_vids, exempt_rigids) {
+        Some((_, prior, attempted)) => Err(conflicting_bindings_error(
+            kb,
+            subst,
+            &prior,
+            &attempted,
+            "the sort's shared type parameter",
+            error_name,
             span,
-            context: TypeErrorContext::OperationTypeParams {
-                op_name: error_name,
-            },
-            expected: format!(
-                "consistent bindings for the sort's shared type parameter (first bound to {})",
-                type_display_name_value(kb, &prior_w),
-            ),
-            actual: type_display_name_value(kb, &attempted_w),
-        });
+        )),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// The first contradiction `subst` recorded on one of `vids` that does not reconcile
+/// ([`contradiction_reconciles`]) — skipping one whose prior binding is that variable's `exempt`
+/// rigid — as `(variable, prior, attempted)`. [`enforce_member_tie`]'s and the override's
+/// ([`override_at_call`]) one question.
+pub(super) fn first_genuine_conflict_on(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    vids: &[VarId],
+    exempt: &[(VarId, TermId)],
+) -> Option<(VarId, Value, Value)> {
+    subst
+        .contradiction_details
+        .iter()
+        .filter(|(vid, prior, _)| {
+            vids.contains(vid)
+                && !exempt
+                    .iter()
+                    .any(|(v, r)| v == vid && matches!(prior, Value::Term { id: t, .. } if t == r))
+        })
+        .find(|(_, prior, attempted)| !contradiction_reconciles(kb, subst, prior, attempted))
+        .cloned()
+}
+
+/// The refusal of a variable two arguments bind to types that do not reconcile — `what` names
+/// the variable, `prior` the binding that held and `attempted` the one refused. Shared by
+/// [`enforce_member_tie`] and the WI-606 fallback's decline (`concrete_override_threaded`),
+/// so a conflict reads the same whichever spelling of the call met it.
+pub(super) fn conflicting_bindings_error(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    prior: &Value,
+    attempted: &Value,
+    what: &str,
+    error_name: Symbol,
+    span: Option<Span>,
+) -> TypeError {
+    let prior_w = walk_type_deep_value(kb, subst, prior);
+    let attempted_w = walk_type_deep_value(kb, subst, attempted);
+    TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::OperationTypeParams {
+            op_name: error_name,
+        },
+        expected: format!(
+            "consistent bindings for {what} (first bound to {})",
+            type_display_name_value(kb, &prior_w),
+        ),
+        actual: type_display_name_value(kb, &attempted_w),
+    }
+}
+
+/// Does a contradiction `subst` recorded — `prior` held, `attempted` refused — RECONCILE under
+/// the real relation? Bind-level inequality over-reports (bare `List` vs `List[T = Int64]`, a
+/// wildcard, equal rows in different carriers or orders are refinement), so the pair is
+/// re-tested by unification in a scratch σ. Both sides are walked through the LIVE σ first —
+/// a recorded pair may hold a variable the call has since pinned (`Box[T = ?x]`, `?x` later
+/// `Int64`), and re-testing it unwalked would spuriously re-unify and pass a genuine
+/// conflict. Shared by [`enforce_member_tie`] and every reader that must tell a conflict
+/// between two arguments from a partial pin.
+pub(super) fn contradiction_reconciles(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    prior: &Value,
+    attempted: &Value,
+) -> bool {
+    let prior_w = walk_type_deep_value(kb, subst, prior);
+    let attempted_w = walk_type_deep_value(kb, subst, attempted);
+    let mut scratch = Substitution::new();
+    unify_types(kb, &mut scratch, &prior_w, &attempted_w)
+}
+
+/// The first contradiction recorded in `subst` since `from` that does not reconcile
+/// ([`contradiction_reconciles`]) — two bindings of one variable the relation cannot join —
+/// as `(variable, prior, attempted)`.
+pub(super) fn first_genuine_contradiction_since(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    from: usize,
+) -> Option<(VarId, Value, Value)> {
+    subst.contradiction_details[from..]
+        .iter()
+        .find(|(_, prior, attempted)| !contradiction_reconciles(kb, subst, prior, attempted))
+        .cloned()
+}
+
+/// Is there a [`first_genuine_contradiction_since`]?
+pub(super) fn genuine_contradiction_since(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    from: usize,
+) -> bool {
+    first_genuine_contradiction_since(kb, subst, from).is_some()
 }
 
 /// WI-381: resolve a defined-type / alias reference (`SortRef(S)`) to its underlying

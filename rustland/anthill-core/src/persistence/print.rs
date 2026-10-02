@@ -272,20 +272,35 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         write_ann(buf);
     }
 
-    /// Render a `Type`-child — a ground hash-consed type (`write_term`) or a
-    /// nested occurrence (`write_occurrence`), uniformly (WI-348/349).
+    /// Render a `Type`-child — a ground hash-consed type or a nested occurrence —
+    /// uniformly (WI-348/349), and AS A TYPE on either carrier: a hash-consed child goes
+    /// through [`Self::write_type_term`], so `Buf[T = Int64]` does not read as the data
+    /// term `Buf(T: Int64)` because the type around it rides an occurrence
+    /// (WI-20260929-0RP29 — a type rebuilt by projection elimination is one, and read
+    /// differently from its term twin).
     fn write_type_child(&self, child: &TypeChild, buf: &mut String) {
         match child {
-            TypeChild::Interned(t) => self.write_term(*t, buf),
+            TypeChild::Interned(t) => self.write_type_term(*t, buf),
             TypeChild::Node(occ) => self.write_occurrence(occ, buf),
         }
     }
 
-    /// WI-361: render a field type carried as a [`Value`] (a `named_tuple` `fields`
-    /// `List[TypeField]` element) — `Value::Term` is a hash-consed term, `Value::Node`
-    /// a poisoned occurrence; both reuse the existing writers. A type is only ever
-    /// `Term` or `Node`, so the fallback is unreachable.
+    /// WI-361: render a type carried as a [`Value`] (a `named_tuple` `fields`
+    /// `List[TypeField]` element, a ∀'s binder or constraint) — `Value::Term` a
+    /// hash-consed type, `Value::Node` a poisoned occurrence — as a type, as
+    /// [`Self::write_type_child`] does. A type is only ever `Term` or `Node`, so the
+    /// fallback is unreachable.
     fn write_type_value(&self, v: &Value, buf: &mut String) {
+        match v {
+            Value::Term { id: t, .. } => self.write_type_term(*t, buf),
+            Value::Node(occ) => self.write_occurrence(occ, buf),
+            _ => buf.push('?'),
+        }
+    }
+
+    /// A GOAL carried as a [`Value`] (an element of an effect guard's goal list): a
+    /// data term, rendered as one (`eq(b, b)`, not the type spelling `eq[b, b]`).
+    fn write_goal_value(&self, v: &Value, buf: &mut String) {
         match v {
             Value::Term { id: t, .. } => self.write_term(*t, buf),
             Value::Node(occ) => self.write_occurrence(occ, buf),
@@ -293,20 +308,23 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         }
     }
 
-    /// Render a `Type`-sort occurrence (WI-342 IR). Structural and faithful —
-    /// `Parameterized` shows its `[param = value]` bindings (the part a
-    /// `denoted` value-index like `Modify[c]` lives in), `denoted(..)` marks a
-    /// value-in-type so it reads distinctly from a type argument.
+    /// Render a `Type`-sort occurrence (WI-342 IR) in the surface syntax
+    /// [`Self::write_type_term`] gives its term twin — `Parameterized` shows its `[param =
+    /// value]` bindings (the part a `denoted` value-index like `Modify[c]` lives in), a
+    /// value-in-type prints as its value, an arrow as `(P) -> R @ E`, an effect row as `{…}`,
+    /// a positional tuple component bare. WI-20260929-0RP29: a type projection elimination
+    /// rebuilds is an occurrence, so a structural spelling here printed it apart from the
+    /// same type on the term carrier. (A TERM printed OUTSIDE type context still takes
+    /// `write_term`'s data spelling, `Option(T: …)` — WI-361: a bare application of a sort is
+    /// shaped like a data term, and only the caller knows which it is.)
     fn write_type_node(&self, tn: &TypeNode, buf: &mut String) {
         match tn {
             // WI-20260904-02ERR: rendered by the SHARED `write_var`, so a type variable
             // reads identically whether it arrived interned or occurrence-carried.
             TypeNode::Var(v) => self.write_var(*v, buf),
-            TypeNode::Denoted { value } => {
-                buf.push_str("denoted(");
-                self.write_occurrence(value, buf);
-                buf.push(')');
-            }
+            // A value-in-type prints as the value it carries — `Buf[N = 3]`, as
+            // `write_type_term`'s `Denoted` arm prints its term twin.
+            TypeNode::Denoted { value } => self.write_occurrence(value, buf),
             TypeNode::Parameterized { base, bindings } => {
                 self.write_type_child(base, buf);
                 buf.push('[');
@@ -320,50 +338,86 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 }
                 buf.push(']');
             }
+            // A standalone effect-row type renders its braced row, as `write_type_term`'s
+            // `EffectsRows` arm does.
             TypeNode::EffectsRows { effects_expr } => {
-                buf.push_str("effects_rows(");
-                self.write_type_child(effects_expr, buf);
-                buf.push(')');
+                let mut atoms = Vec::new();
+                self.collect_effect_child_atoms(effects_expr, &mut atoms);
+                buf.push('{');
+                buf.push_str(&atoms.join(", "));
+                buf.push('}');
             }
+            // The surface arrow `write_arrow_type` renders for the term, read off the
+            // occurrence's children — `(P) -> R @ E` — so an arrow reads the same on either
+            // carrier (WI-470 makes an inferred one an occurrence; WI-20260929-0RP29 a
+            // rebuilt one).
             TypeNode::Arrow {
                 param,
                 result,
                 effects,
                 arity,
             } => {
-                // WI-791: at arity one the `param` child is the sole parameter's
-                // TYPE, so a tuple there is that parameter's type and needs its own
-                // parens — without them `((a: A, b: B)) -> R` renders as the
-                // two-parameter `(a: A, b: B) -> R`. Mirrors `write_arrow_type`,
-                // which had to guess this from the param's shape (WI-766) and can
-                // now read it. An unreadable arity keeps the pre-WI-791 rendering.
-                // Carrier-agnostic: a tuple param with a denoted-bearing component
-                // rides as `TypeChild::Node`, and a Ground-only test would leave
-                // exactly that arrow printing as an n-parameter list.
-                let param_is_tuple = match param {
-                    TypeChild::Interned(t) => self.is_named_tuple_term(*t),
-                    TypeChild::Node(occ) => {
-                        matches!(&occ.kind, NodeKind::Type(TypeNode::NamedTuple { .. }))
+                // WI-791: whether the `param` slot ALREADY renders as the parameter list —
+                // only a named tuple can, and only when the arrow's arity says it is one;
+                // at arity one it is the sole parameter's TYPE and takes a list around it.
+                // An unreadable arity keeps the shape heuristic, as `write_arrow_type`
+                // does. Carrier-agnostic: a tuple param with a denoted-bearing component
+                // rides as `TypeChild::Node`.
+                let slot_is_the_list = match param {
+                    TypeChild::Interned(t) => {
+                        self.is_named_tuple_term(*t)
+                            && match self.type_child_arity(arity) {
+                                Some(n) => n != 1,
+                                None => self.named_tuple_arity(*t) != 1,
+                            }
                     }
+                    TypeChild::Node(occ) => match &occ.kind {
+                        NodeKind::Type(TypeNode::NamedTuple { fields }) => {
+                            match self.type_child_arity(arity) {
+                                Some(n) => n != 1,
+                                None => {
+                                    crate::kb::typing::value_list_elements(self.view, fields).len()
+                                        != 1
+                                }
+                            }
+                        }
+                        _ => false,
+                    },
                 };
-                let wrap = self.type_child_arity(arity) == Some(1) && param_is_tuple;
-                if wrap {
+                if slot_is_the_list {
+                    self.write_type_child(param, buf);
+                } else {
                     buf.push('(');
-                }
-                self.write_type_child(param, buf);
-                if wrap {
+                    self.write_type_child(param, buf);
                     buf.push(')');
                 }
                 buf.push_str(" -> ");
                 self.write_type_child(result, buf);
-                buf.push_str(" ! ");
-                self.write_type_child(effects, buf);
+                let mut atoms = Vec::new();
+                self.collect_effect_child_atoms(effects, &mut atoms);
+                if !atoms.is_empty() {
+                    buf.push_str(" @ ");
+                    if atoms.len() == 1 {
+                        buf.push_str(&atoms[0]);
+                    } else {
+                        buf.push('{');
+                        buf.push_str(&atoms.join(", "));
+                        buf.push('}');
+                    }
+                }
             }
             // WI-397: a compound-receiver projection `(a.b).M` — receiver then `.member`.
+            // Neither child is a type: the receiver is a value path, the member a name.
             TypeNode::ExprCarried { value, member } => {
-                self.write_type_child(value, buf);
-                buf.push('.');
-                self.write_type_child(member, buf);
+                for (i, child) in [value, member].into_iter().enumerate() {
+                    if i > 0 {
+                        buf.push('.');
+                    }
+                    match child {
+                        TypeChild::Interned(t) => self.write_term(*t, buf),
+                        TypeChild::Node(occ) => self.write_occurrence(occ, buf),
+                    }
+                }
             }
             TypeNode::NamedTuple { fields } => {
                 // WI-361: `fields` is a `Value`-carried `List[TypeField]`; decode it
@@ -376,8 +430,13 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                     if i > 0 {
                         buf.push_str(", ");
                     }
-                    buf.push_str(self.view.sym_name(*name));
-                    buf.push_str(": ");
+                    // A positional component (`_N` at its own position) prints bare, as
+                    // `write_named_tuple_element` prints its term twin (WI-790).
+                    let label = self.view.sym_name(*name);
+                    if !is_positional_label_at(label, i) {
+                        buf.push_str(label);
+                        buf.push_str(": ");
+                    }
                     self.write_type_value(ty, buf);
                 }
                 buf.push(')');
@@ -420,56 +479,122 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         }
     }
 
-    /// Render an `EffectExpression`-sort occurrence (the row algebra, WI-342).
+    /// Render an `EffectExpression`-sort occurrence (the row algebra, WI-342): its atoms,
+    /// as a row's `{…}` holds them (`{}` for the empty row).
     fn write_effect_expr_node(&self, en: &EffectExprNode, buf: &mut String) {
-        match en {
-            EffectExprNode::Merge { left, right } => {
-                self.write_type_child(left, buf);
-                buf.push_str(", ");
-                self.write_type_child(right, buf);
+        if matches!(en, EffectExprNode::EmptyRow) {
+            buf.push_str("{}");
+            return;
+        }
+        let mut atoms = Vec::new();
+        self.collect_effect_node_atoms(en, &mut atoms);
+        buf.push_str(&atoms.join(", "));
+    }
+
+    /// The atoms of an effect-row child on EITHER carrier — `{…}` and an arrow's `@ …`
+    /// read them here, so a row renders the same whichever carrier holds it or any part of
+    /// it: a hash-consed child through [`Self::collect_effect_atoms`] (an `EffectsRows`
+    /// wrapper unwrapped first, as `write_arrow_type` unwraps one), an occurrence through
+    /// its node.
+    fn collect_effect_child_atoms(&self, child: &TypeChild, out: &mut Vec<String>) {
+        match child {
+            TypeChild::Interned(t) => {
+                let expr = match self.view.term(*t) {
+                    Term::Fn {
+                        functor,
+                        named_args,
+                        ..
+                    } if self.view.qualified_name(*functor)
+                        == "anthill.prelude.TypeExtractor.EffectsRows" =>
+                    {
+                        self.named_arg(named_args, "effects_expr")
+                    }
+                    _ => Some(*t),
+                };
+                if let Some(expr) = expr {
+                    self.collect_effect_atoms(expr, out);
+                }
             }
-            EffectExprNode::Present { label } => self.write_type_child(label, buf),
-            EffectExprNode::Guarded { label, guard } => {
-                // WI-478: `E :- g1` (single goal) / `( E :- g1, g2 )` (conjunctive,
-                // parenthesized so it round-trips). Only the NODE form reaches here
-                // (a denoted-bearing label); the common ground guarded atom is a
-                // hash-consed term rendered by `collect_effect_atoms`.
-                let goals = self.guard_goal_value_strings(guard);
-                let multi = goals.len() > 1;
-                if multi {
-                    buf.push_str("( ");
+            TypeChild::Node(occ) => match &occ.kind {
+                NodeKind::EffectExpr(en) => self.collect_effect_node_atoms(en, out),
+                NodeKind::Type(TypeNode::EffectsRows { effects_expr }) => {
+                    self.collect_effect_child_atoms(effects_expr, out)
                 }
-                self.write_type_child(label, buf);
-                buf.push_str(" :- ");
-                buf.push_str(&goals.join(", "));
-                if multi {
-                    buf.push_str(" )");
+                // A label standing where the row is (a bare `effects Modify[c]`).
+                _ => {
+                    let mut s = String::new();
+                    self.write_occurrence(occ, &mut s);
+                    out.push(s);
                 }
+            },
+        }
+    }
+
+    /// [`Self::collect_effect_atoms`] for an `EffectExpression` occurrence — the same
+    /// surface per form: `L`, `-L`, `L :- g` (`( L :- g1, g2 )` when conjunctive, WI-478),
+    /// the tail variable, both halves of a `merge`, nothing for `empty_row`.
+    fn collect_effect_node_atoms(&self, en: &EffectExprNode, out: &mut Vec<String>) {
+        match en {
+            EffectExprNode::EmptyRow => {}
+            EffectExprNode::Merge { left, right } => {
+                self.collect_effect_child_atoms(left, out);
+                self.collect_effect_child_atoms(right, out);
+            }
+            EffectExprNode::Present { label } => {
+                let mut s = String::new();
+                self.write_type_child(label, &mut s);
+                out.push(s);
             }
             EffectExprNode::Absent { label } => {
-                buf.push('-');
-                self.write_type_child(label, buf);
+                let mut s = String::from("-");
+                self.write_type_child(label, &mut s);
+                out.push(s);
             }
-            EffectExprNode::Open { tail } => self.write_type_child(tail, buf),
-            EffectExprNode::EmptyRow => buf.push_str("{}"),
+            EffectExprNode::Guarded { label, guard } => {
+                let mut label_s = String::new();
+                self.write_type_child(label, &mut label_s);
+                let goals = self.guard_goal_value_strings(guard);
+                let body = goals.join(", ");
+                out.push(if goals.len() > 1 {
+                    format!("( {label_s} :- {body} )")
+                } else {
+                    format!("{label_s} :- {body}")
+                });
+            }
+            EffectExprNode::Open { tail } => {
+                let mut s = String::new();
+                self.write_type_child(tail, &mut s);
+                out.push(s);
+            }
         }
     }
 
     /// WI-478: walk a NODE-form guard — a `Value`-carried `List[reflect.Term]`
     /// cons-spine — into its rendered goal strings. A `nil` (no `head`/`tail`) ends
-    /// the walk.
+    /// the walk. A spine that continues as a TERM is walked on the term store: a
+    /// node rebuilt by projection elimination carries its source's guard as it was
+    /// read, a term throughout when the source was one (WI-20260929-0RP29).
     fn guard_goal_value_strings(&self, guard: &Value) -> Vec<String> {
         let mut goals: Vec<String> = Vec::new();
         let mut cur = guard;
-        while let Value::Entity { named, .. } = cur {
-            let head = named.iter().find(|(s, _)| self.view.sym_name(*s) == "head");
-            let tail = named.iter().find(|(s, _)| self.view.sym_name(*s) == "tail");
-            match (head, tail) {
-                (Some((_, h)), Some((_, t))) => {
-                    let mut s = String::new();
-                    self.write_type_value(h, &mut s);
-                    goals.push(s);
-                    cur = t;
+        loop {
+            match cur {
+                Value::Term { id } => {
+                    goals.extend(self.guard_goal_term_strings(Some(*id)));
+                    break;
+                }
+                Value::Entity { named, .. } => {
+                    let head = named.iter().find(|(s, _)| self.view.sym_name(*s) == "head");
+                    let tail = named.iter().find(|(s, _)| self.view.sym_name(*s) == "tail");
+                    match (head, tail) {
+                        (Some((_, h)), Some((_, t))) => {
+                            let mut s = String::new();
+                            self.write_goal_value(h, &mut s);
+                            goals.push(s);
+                            cur = t;
+                        }
+                        _ => break,
+                    }
                 }
                 _ => break,
             }

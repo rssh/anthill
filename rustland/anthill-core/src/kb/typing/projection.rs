@@ -160,7 +160,7 @@ fn receiver_path_head_sym(kb: &KnowledgeBase, receiver: &Value) -> Option<Symbol
 /// `[s, provider]`. The path twin of [`receiver_path_head_sym`] (which returns only the
 /// head). `None` for a non-value-reference receiver. Used by the eager-let-alias
 /// canonicalization to rewrite a receiver whose head is aliased.
-fn receiver_path_segs(kb: &KnowledgeBase, receiver: &Value) -> Option<Vec<Symbol>> {
+pub(super) fn receiver_path_segs(kb: &KnowledgeBase, receiver: &Value) -> Option<Vec<Symbol>> {
     if let Some(head) = extract_sort_ref_sym(kb, receiver) {
         return Some(vec![head]);
     }
@@ -234,6 +234,96 @@ pub(super) fn stable_receiver_path(
             Some(segs)
         }
         _ => None,
+    }
+}
+
+/// WI-20260929-0RP29 — what an ARGUMENT is to the re-keys of the callee parameter it binds,
+/// read only through [`ArgPlaces::record`] — so the call's own maps and a dispatched
+/// override's ([`dispatched_impl_effects`]) cannot disagree about which shapes count.
+enum ArgPlace {
+    /// A variable: it re-keys a projection's receiver, a `denoted` and a return type; and the
+    /// EFFECT re-key too, unless it names a nullary constructor — a label no declaration can
+    /// spell (`placeable: false`, WI-20260823-4GBQV).
+    Var { sym: Symbol, placeable: bool },
+    /// A field path's head (`c.rep` ⟹ `c`, WI-506) or a nullary-constructor place: the EFFECT
+    /// re-key only ([`arg_place_head`]).
+    Head(Symbol),
+    /// Names no place: nothing is re-keyed onto it, and a `Modify` over its parameter is
+    /// refused where it is incurred ([`unrekeyed_modify_argument`]).
+    Placeless,
+}
+
+/// A call's arguments by the callee parameter each binds, as [`arg_place`] classifies them —
+/// the one conversion `check_apply_iter`'s two loops and a dispatched override's copy
+/// ([`dispatched_impl_effects`]) fill, and the one EFFECT re-key ([`ArgPlaces::eff_rekey`])
+/// both read.
+#[derive(Default)]
+pub(super) struct ArgPlaces {
+    /// A variable argument: re-keys a projection's receiver, a `denoted`, a return type.
+    pub(super) vars: HashMap<Symbol, Symbol>,
+    /// A field path's or a nullary constructor's head (WI-506): the effect re-key only. Kept
+    /// out of `vars` because the head loses the path, which a re-keyed RETURN type must not.
+    pub(super) heads: HashMap<Symbol, Symbol>,
+    /// An argument naming no place (WI-20260823-4GBQV) — a literal included, so NOT rare:
+    /// `Cell.set(k, 1)` records the `1`. A `Modify` over its parameter is refused where it is
+    /// incurred ([`unrekeyed_modify_argument`]); the effect re-key skips it.
+    pub(super) placeless: HashMap<Symbol, Rc<NodeOccurrence>>,
+}
+
+impl ArgPlaces {
+    /// Classify `occ`, the argument bound to `param`.
+    pub(super) fn record(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        param: Symbol,
+        occ: &Rc<NodeOccurrence>,
+    ) {
+        match arg_place(kb, occ) {
+            ArgPlace::Var { sym, placeable } => {
+                self.vars.insert(param, sym);
+                if !placeable {
+                    self.placeless.insert(param, Rc::clone(occ));
+                }
+            }
+            ArgPlace::Head(head) => {
+                self.heads.insert(param, head);
+            }
+            ArgPlace::Placeless => {
+                self.placeless.insert(param, Rc::clone(occ));
+            }
+        }
+    }
+
+    /// The EFFECT re-key: each variable that names a place, and each head — borrowed when
+    /// there is no head and nothing placeless, the commonest call.
+    pub(super) fn eff_rekey(&self) -> std::borrow::Cow<'_, HashMap<Symbol, Symbol>> {
+        if self.heads.is_empty() && self.placeless.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.vars);
+        }
+        let mut m: HashMap<Symbol, Symbol> = self
+            .vars
+            .iter()
+            .filter(|(p, _)| !self.placeless.contains_key(*p))
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        for (k, v) in &self.heads {
+            m.entry(*k).or_insert(*v);
+        }
+        std::borrow::Cow::Owned(m)
+    }
+}
+
+/// The [`ArgPlace`] of the argument `occ`.
+fn arg_place(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> ArgPlace {
+    match extract_var_ref_sym_node(occ) {
+        Some(sym) => ArgPlace::Var {
+            sym,
+            placeable: !kb.is_unplaceable_constructor(sym),
+        },
+        None => match arg_place_head(kb, occ) {
+            Some(head) => ArgPlace::Head(head),
+            None => ArgPlace::Placeless,
+        },
     }
 }
 
@@ -596,7 +686,7 @@ pub(super) fn canonicalize_projection_receivers(
 /// `TypeNode::ExprCarried` Node over a `DotApply` chain. `span` is the originating
 /// annotation's span (the canonical receiver has no source span of its own); `owner` is
 /// `None`.
-fn build_projection_from_segs(
+pub(super) fn build_projection_from_segs(
     kb: &mut KnowledgeBase,
     segs: &[Symbol],
     member: Symbol,
@@ -773,14 +863,34 @@ fn dfs_projection_cycle(
 ///
 /// ONE WALK, ON ANY CARRIER (WI-20260929-0RP29) — see [`eliminate_in`]. The gate is
 /// load-bearing, not only the >99% fast path: the walk re-keys a `denoted` BESIDE a
-/// projection (WI-481), and a projection-free type is re-keyed by its callers' own gates
-/// (`check_apply_iter`'s return and effect re-keys), so walking it here too would re-key
-/// it twice.
+/// projection (WI-481), and a type the gate turns away is re-keyed by the caller instead —
+/// `check_apply_iter`'s return re-key and the WI-606 fallback's each ask this same predicate
+/// of the DECLARED type, so one of the two re-keys it. Walking a projection-free type here as
+/// well would re-key it twice, which a permuted self-call turns back into the callee's names.
 pub(super) fn eliminate_type_projections(
     kb: &mut KnowledgeBase,
     ty: &Value,
     arg_types: &HashMap<Symbol, Value>,
     arg_syms: Option<&HashMap<Symbol, Symbol>>,
+    ctx: &TypeErrorContext,
+    span: Option<Span>,
+) -> Result<Value, TypeError> {
+    eliminate_type_projections_rekeyed(kb, ty, arg_types, arg_syms, arg_syms, ctx, span)
+}
+
+/// WI-20260929-0RP29 — [`eliminate_type_projections`] with the `denoted` re-key apart from the
+/// receivers': a single-ref projection's receiver is re-keyed to a caller VARIABLE (WI-459,
+/// `arg_syms`), while a `denoted` beside it takes `denoted_syms` — for a PARAMETER type the
+/// call's EFFECT re-key, a field path's head included (`Modify[p]` over `h.cell` is
+/// `Modify[h]`, WI-506). One simultaneous substitution: re-keying an eliminated type a second
+/// time renamed a self-recursive call's labels twice, its caller variables being the callee's
+/// own parameters (`Modify[q]` → `Modify[p]` → `Modify[h]`, MEASURED).
+pub(super) fn eliminate_type_projections_rekeyed(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    arg_types: &HashMap<Symbol, Value>,
+    arg_syms: Option<&HashMap<Symbol, Symbol>>,
+    denoted_syms: Option<&HashMap<Symbol, Symbol>>,
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
@@ -790,8 +900,44 @@ pub(super) fn eliminate_type_projections(
     let cx = Discharge {
         arg_types,
         arg_syms,
+        denoted_syms,
+        reading: None,
         ctx,
         span,
+    };
+    Ok(eliminate_in(kb, ty, &cx)?.unwrap_or_else(|| ty.clone()))
+}
+
+/// WI-20260929-0RP29 — a caller's own reading of a projection — given its receiver, the
+/// receiver's type and the member — off a receiver whose type it knows to stand for EVERY type
+/// its slots admit, tried before the call's ([`project_type_member`]): `Some` is the member's
+/// type, `None` defers to the call's. The declaration rule reads a carrier instance whose
+/// parameters are rigids — any type — where the call's reading takes a member resting on one
+/// for unknown and keeps it neutral.
+pub(super) type ProjectionReading<'r> =
+    &'r dyn Fn(&mut KnowledgeBase, &Value, &Value, Symbol) -> Option<Value>;
+
+/// WI-20260929-0RP29 — [`eliminate_type_projections`] with a [`ProjectionReading`] tried first,
+/// and `arg_syms` re-keying both a neutral receiver and a `denoted` (the member side of the
+/// declaration rule names the spec's parameters by the spec's names).
+pub(super) fn eliminate_type_projections_read(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    arg_types: &HashMap<Symbol, Value>,
+    arg_syms: Option<&HashMap<Symbol, Symbol>>,
+    reading: ProjectionReading,
+    ctx: &TypeErrorContext,
+) -> Result<Value, TypeError> {
+    if !value_contains_projection(kb, ty) {
+        return Ok(ty.clone());
+    }
+    let cx = Discharge {
+        arg_types,
+        arg_syms,
+        denoted_syms: arg_syms,
+        reading: Some(reading),
+        ctx,
+        span: None,
     };
     Ok(eliminate_in(kb, ty, &cx)?.unwrap_or_else(|| ty.clone()))
 }
@@ -799,7 +945,12 @@ pub(super) fn eliminate_type_projections(
 /// The call a projection is discharged against, and where a refusal is reported.
 struct Discharge<'a> {
     arg_types: &'a HashMap<Symbol, Value>,
+    /// A single-ref projection receiver's re-key (WI-459): caller variables.
     arg_syms: Option<&'a HashMap<Symbol, Symbol>>,
+    /// A `denoted`'s re-key (WI-481) — `arg_syms` unless the caller hands its effect re-key.
+    denoted_syms: Option<&'a HashMap<Symbol, Symbol>>,
+    /// A caller's reading of a projection, tried before the call's ([`ProjectionReading`]).
+    reading: Option<ProjectionReading<'a>>,
     ctx: &'a TypeErrorContext,
     span: Option<Span>,
 }
@@ -815,12 +966,18 @@ impl Discharge<'_> {
 /// eliminated; and it is rebuilt only when one changed — `None` when `ty` comes back as it
 /// was, so an unchanged subtree keeps its term or its occurrence as it is.
 ///
-/// A REBUILT FORM IS THE OCCURRENCE, LOWERED WHEN IT IS CLOSED ([`settle`]): built from its
-/// children (an occurrence child is one it can hold), then lowered through the one
-/// occurrence→term lowering when every child is a term. So a form has one term shape, the
-/// lowering's — `make_poly_type_occ` records why a second builder must not exist — and the
-/// applications keep their own carrier-choosing builders (`parameterized_value`,
-/// `named_tuple_value`), which make the same choice.
+/// A REBUILT FORM TAKES THE CARRIER ITS KIND HAS, and nothing is converted to get there. An
+/// application or a named tuple goes through its carrier-choosing builder
+/// (`parameterized_value`, `named_tuple_value`): hash-consed while closed, since a closed
+/// application is an index key (WI-470's scope), an occurrence the moment a child is one. An
+/// arrow, an effect row, an effect-expression node and a ∀ are rebuilt as OCCURRENCES — the
+/// representation note: hash-consing is for persistent shared structure, not binders; WI-470
+/// already mints every inferred arrow as one. The loader still mints a declared ground arrow
+/// or row as a term, so a rebuilt form and its written twin can sit on different carriers,
+/// and that is the READERS' concern, not this walk's: every consumer reads through `TermView`
+/// (the type join combines an occurrence binding like a term one; the printer renders both
+/// alike in type context), and one that did not was a defect of its own (MEASURED: the join
+/// refused two branches carrying the same rebuilt arrow).
 ///
 /// It replaces a walk per carrier, and the split was the bug. The term half walked
 /// `Term::Fn` and answered a `TermId`, so a projection nested in a term-carried type that
@@ -847,7 +1004,9 @@ fn eliminate_in(
 ) -> Result<Option<Value>, TypeError> {
     let (sp, owner) = site_of(ty);
     match extract_type(kb, ty) {
-        TypeExtractor::ExprCarried { value, member } => project_expr_carried(kb, &value, member, cx),
+        TypeExtractor::ExprCarried { value, member } => {
+            project_expr_carried(kb, &value, member, cx)
+        }
         // WI-428: a rigid type-receiver projection (`P.Key` / `MemStore.Key`) — validated
         // and δ-grounded (or kept as the rigid neutral) against the declaring sort's
         // `requires` chain / the subject's own manifest bindings; no `arg_types` receiver
@@ -868,23 +1027,12 @@ fn eliminate_in(
             eliminate_spec_view(kb, ty, bindings, cx)
         }
         TypeExtractor::Parameterized { base, bindings } => match effect_expr_form(kb, base) {
-            Some(form) => eliminate_effect_expr(kb, form, &bindings, sp, owner, cx),
+            Some(form) => eliminate_effect_expr(kb, ty, form, sp, owner, cx),
             None => {
                 let Some(bindings) = eliminate_named(kb, bindings, cx)? else {
                     return Ok(None);
                 };
-                // A head that is not a sort has no application to rebuild into: building
-                // one would invent a sort. Refused, as a changed child under it cannot be
-                // dropped.
-                if !kb.has_kind(base, crate::intern::SymbolKind::Sort) {
-                    return Err(cx.refuse(&format!(
-                        "a type projection sits under `{}`, which is not a sort, and the \
-                         elimination has no form to rebuild it into",
-                        kb.qualified_name_of(base),
-                    )));
-                }
-                let base_ref = kb.make_sort_ref(base);
-                Ok(Some(parameterized_value(kb, base_ref, &bindings, sp, owner)))
+                sort_application(kb, base, &bindings, sp, owner, cx).map(Some)
             }
         },
         // WI-714: the named tuple's fields — the two-row `join` lambda's `(c: r1.T, q: r2.T)`.
@@ -896,34 +1044,27 @@ fn eliminate_in(
         }
         // WI-460: a callback arrow's parameter — `(x: s.T) -> Bool @ {EffP, -Modify[x]}`.
         // WI-791: elimination rewrites the parameter TYPE and never the parameter COUNT, so
-        // the arrow's own `arity` child crosses unchanged.
+        // the arrow keeps its own arity.
         TypeExtractor::Arrow {
             param,
             result,
             effects,
-            ..
+            arity,
         } => {
-            let Some(children) = eliminate_children(kb, &[param, result, effects], cx)? else {
+            let Some([p, r, e]) =
+                eliminate_to_children(kb, [param, result, effects], sp, owner, cx)?
+            else {
                 return Ok(None);
             };
-            let arity = required_child(kb, ty, "arity", cx)?;
-            let closed = all_terms(&children);
-            let [p, r, e] = <[Value; 3]>::try_from(children).expect("three children in, three out");
-            let p = value_to_type_child_at(kb, &p, sp, owner);
-            let r = value_to_type_child_at(kb, &r, sp, owner);
-            let e = value_to_type_child_at(kb, &e, sp, owner);
-            let arity = value_to_type_child_at(kb, &arity, sp, owner);
-            let occ = kb.make_arrow_occ_child(p, r, e, arity, sp, owner);
-            settle(kb, occ, closed, cx).map(Some)
+            Ok(Some(Value::Node(
+                kb.make_arrow_occ(p, r, e, arity, sp, owner),
+            )))
         }
         TypeExtractor::EffectsRows(expr) => {
-            let Some(e) = eliminate_children(kb, &[expr], cx)? else {
+            let Some([e]) = eliminate_to_children(kb, [expr], sp, owner, cx)? else {
                 return Ok(None);
             };
-            let closed = all_terms(&e);
-            let e = value_to_type_child_at(kb, &e[0], sp, owner);
-            let occ = kb.make_effects_rows_occ(e, sp, owner);
-            settle(kb, occ, closed, cx).map(Some)
+            Ok(Some(Value::Node(kb.make_effects_rows_occ(e, sp, owner))))
         }
         // WI-1083: eliminate inside the quantified body and REBUILD the ∀ — the eta arrow of
         // a member whose signature projects its receiver (`mapElems(xs: List, f: (x: xs.T) ->
@@ -941,7 +1082,7 @@ fn eliminate_in(
                      does not yet rewrite (WI-20260904-50B2K part (c))",
                 ));
             }
-            let Some(b) = eliminate_children(kb, &[body], cx)? else {
+            let Some([b]) = eliminate_to_children(kb, [body], sp, owner, cx)? else {
                 return Ok(None);
             };
             let binders = required_child(kb, ty, "binders", cx)?;
@@ -949,10 +1090,9 @@ fn eliminate_in(
             // with the empty one every producer writes.
             let context = view_child_value(kb, ty, "context")
                 .unwrap_or_else(|| crate::kb::load::build_value_list(kb, Vec::new()));
-            let closed = all_terms(&b) && all_terms(&[binders.clone(), context.clone()]);
-            let body = value_to_type_child_at(kb, &b[0], sp, owner);
-            let occ = kb.make_poly_type_occ(binders, context, body, sp, owner);
-            settle(kb, occ, closed, cx).map(Some)
+            Ok(Some(Value::Node(
+                kb.make_poly_type_occ(binders, context, b, sp, owner),
+            )))
         }
         // A `denoted` value-in-type (`Modify[c]`) carries no type projection, but it DOES
         // carry a callee-parameter reference by VALUE. WI-481: re-key it to the caller's
@@ -962,7 +1102,7 @@ fn eliminate_in(
         // here too, not left bearing the callee's `p`. No projection inside ⇒ no neutral
         // receiver to corrupt. A re-key that renamed nothing is no change.
         TypeExtractor::Denoted(_) => {
-            let Some(map) = cx.arg_syms else {
+            let Some(map) = cx.denoted_syms else {
                 return Ok(None);
             };
             let v = substitute_ref_syms_value(kb, ty, map);
@@ -997,11 +1137,15 @@ fn eliminate_in(
 /// eval died `__req_desc not bound` (the four WI-20260909-S8CBV rows, MEASURED). The slot is
 /// read and kept here.
 ///
-/// AND IT IS REBUILT AS THE TERM every reader of a spec keys on, each child LOWERED: a
-/// binding left on another carrier is dropped by `unwrap_spec_view_value`, and a requirement
-/// that lost its binding demands nothing, so a caller's `requires` at ANY binding covered it
-/// (a wrong dictionary, not a refusal). The rule WI-20260929-WBHTM set for a spec binding
-/// (`dispatch_type_term`); a child with no term form is refused.
+/// AND IT IS REBUILT AS A TERM, each child lowered — the one place this walk lowers, at the
+/// boundary that still needs it: a spec becomes a dispatch goal whose bindings are `TermId`s
+/// (`SortGoal`, WI-20260829-2NMXA), and `unwrap_spec_view_value` drops a binding on another
+/// carrier. A requirement that lost its binding demanded nothing, so a caller's `requires` at
+/// ANY binding covered it — a wrong dictionary (MEASURED). WI-20260929-WBHTM lowers a spec
+/// binding at that boundary the same way; once 2NMXA carries value bindings, this goes. Built
+/// by hand rather than through `value_to_term`'s entity arm, which would move a binding named
+/// `sort` (the view's one declared field) to the front — the canonicalization SortView
+/// bindings deliberately skip (WI-498).
 fn eliminate_spec_view(
     kb: &mut KnowledgeBase,
     ty: &Value,
@@ -1016,164 +1160,176 @@ fn eliminate_spec_view(
     else {
         return Err(cx.refuse("a spec view has no head (malformed carrier)"));
     };
-    let pos: Vec<Value> = (0..pos_arity)
+    let mut children: Vec<Value> = (0..pos_arity)
         .map(|i| ty.pos_arg(kb, i).map(|item| view_item_value(&item)))
         .collect::<Option<_>>()
-        .ok_or_else(|| cx.refuse("a spec view's positional slot does not read (malformed carrier)"))?;
-    let new_pos = eliminate_children(kb, &pos, cx)?;
-    let new_named = eliminate_named(kb, bindings.clone(), cx)?;
-    if new_pos.is_none() && new_named.is_none() {
+        .ok_or_else(|| {
+            cx.refuse("a spec view's positional slot does not read (malformed carrier)")
+        })?;
+    let (labels, values): (Vec<Symbol>, Vec<Value>) = bindings.into_iter().unzip();
+    children.extend(values);
+    let Some(children) = eliminate_children(kb, &children, cx)? else {
         return Ok(None);
-    }
-    let lower = |kb: &mut KnowledgeBase, v: &Value| {
-        value_to_term(kb, v).map_err(|e| {
-            cx.refuse(&format!("a spec view's child has no term form ({e:?})"))
-        })
     };
-    let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
-    for v in new_pos.as_ref().unwrap_or(&pos) {
-        pos_args.push(lower(kb, v)?);
-    }
-    let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    for (k, v) in new_named.as_ref().unwrap_or(&bindings) {
-        named_args.push((*k, lower(kb, v)?));
-    }
-    Ok(Some(Value::term(kb.alloc(Term::Fn {
-        functor,
-        pos_args,
-        named_args,
-    }))))
-}
-
-/// WI-20260929-0RP29 — the `EffectExpression` node forms that hold children (`empty_row`
-/// holds none and reads as a sort reference).
-#[derive(Clone, Copy)]
-enum EffectForm {
-    Merge,
-    Present,
-    Absent,
-    Guarded,
-    Open,
-}
-
-/// The `EffectExpression` form headed by `f`, or `None` for any other head. A constructor
-/// this does not list falls to the application arm, which refuses to rebuild under it.
-fn effect_expr_form(kb: &KnowledgeBase, f: Symbol) -> Option<EffectForm> {
-    Some(
-        match kb
-            .qualified_name_of(f)
-            .strip_prefix("anthill.prelude.EffectExpression.")?
-        {
-            "merge" => EffectForm::Merge,
-            "present" => EffectForm::Present,
-            "absent" => EffectForm::Absent,
-            "guarded" => EffectForm::Guarded,
-            "open" => EffectForm::Open,
-            _ => return None,
-        },
-    )
+    lower_spec_view(kb, functor, pos_arity, &children, labels)
+        .map(Some)
+        .map_err(|why| cx.refuse(&why))
 }
 
 /// WI-20260929-0RP29 — an `EffectExpression` node (`{s.E, Error[EmptyStream]}` nested in a
-/// type, `s.E` grounding to `{Modify[p]}`), its children eliminated and the node rebuilt
-/// ([`settle`]). A `merge`'s halves, a label and a tail all go back through [`eliminate_in`].
-/// A `guarded` node's guard crosses as it is — it holds goals, not types, and a projection in
-/// it is refused rather than passed through — and on the occurrence it is the value-list
-/// spine that carrier holds (`build_value_list`), which the printer reads.
+/// type, `s.E` grounding to `{Modify[p]}`), its children eliminated and the node rebuilt as an
+/// occurrence. A `merge`'s halves, a label and a tail all go back through [`eliminate_in`]. A
+/// `guarded` node's guard holds goals, not types: it crosses as it is, on whichever carrier it
+/// rides — every reader of the node's guard takes it as a `Value` — and a projection in it is
+/// refused whether or not the label changes.
+///
+/// A PRESENT LABEL OR AN OPEN TAIL THAT GROUNDS TO A WHOLE ROW IS SPLICED: the loader folds a
+/// projection written as a row atom (`{s.E, L}`, an arrow's `@ s.E`) as `present(label:
+/// s.E)`, and `s.E` grounds to a row (`{Error[Foo]}`), whose expression then stands where the
+/// atom stood so the enclosing row stays flat. Kept as the label, it nested a row in a row,
+/// which unification does not flatten — passing `relay(foo_stream(p))` to a parameter written
+/// `Strm[E = {Error[Foo], Error[EmptyStream]}]` was refused (MEASURED). A GUARDED or ABSENT
+/// atom that grounds to a row DISTRIBUTES over it ([`distribute_atom_over_row`]): `{s.E :- g}`
+/// is each atom of the row under `g`, `-s.E` the absence of each. Nested, the guarded row was
+/// counted undeclared (`{Error[T = Foo]}` against a caller declaring `Error[Foo]`), and the
+/// absence of a row was no absence at all — a callback typed `@ {EffP, -s.E}` accepted a lambda
+/// raising `s.E`'s error (MEASURED, both).
 fn eliminate_effect_expr(
     kb: &mut KnowledgeBase,
+    ty: &Value,
     form: EffectForm,
-    bindings: &[(Symbol, Value)],
     sp: crate::span::SourceSpan,
     owner: Option<Symbol>,
     cx: &Discharge,
 ) -> Result<Option<Value>, TypeError> {
-    let child = |kb: &KnowledgeBase, key: &str| {
-        bindings
-            .iter()
-            .find(|(k, _)| kb.local_name_of(*k) == key)
-            .map(|(_, v)| v.clone())
-            .ok_or_else(|| {
-                cx.refuse(&format!("an effect-row node has no `{key}` child (malformed carrier)"))
-            })
+    // The one child a label- or tail-holding node has, eliminated — `None` when unchanged.
+    let only = |kb: &mut KnowledgeBase, key: &str| -> Result<Option<Value>, TypeError> {
+        let child = required_child(kb, ty, key, cx)?;
+        Ok(eliminate_children(kb, &[child], cx)?
+            .map(|mut vs| vs.pop().expect("one child in, one out")))
     };
-    let keys: &[&str] = match form {
-        EffectForm::Merge => &["left", "right"],
-        EffectForm::Open => &["tail"],
-        EffectForm::Present | EffectForm::Absent | EffectForm::Guarded => &["label"],
-    };
-    let children = keys
-        .iter()
-        .map(|k| child(kb, k))
-        .collect::<Result<Vec<_>, _>>()?;
-    let Some(children) = eliminate_children(kb, &children, cx)? else {
-        return Ok(None);
-    };
-    let mut closed = all_terms(&children);
-    let mut tc: Vec<TypeChild> = children
-        .iter()
-        .map(|v| value_to_type_child_at(kb, v, sp, owner))
-        .collect();
     let node = match form {
         EffectForm::Merge => {
-            let right = tc.pop().expect("two children");
-            let left = tc.pop().expect("two children");
+            let halves = [
+                required_child(kb, ty, "left", cx)?,
+                required_child(kb, ty, "right", cx)?,
+            ];
+            let Some([left, right]) = eliminate_to_children(kb, halves, sp, owner, cx)? else {
+                return Ok(None);
+            };
             EffectExprNode::Merge { left, right }
         }
-        EffectForm::Open => EffectExprNode::Open {
-            tail: tc.pop().expect("one child"),
-        },
-        EffectForm::Present => EffectExprNode::Present {
-            label: tc.pop().expect("one child"),
-        },
-        EffectForm::Absent => EffectExprNode::Absent {
-            label: tc.pop().expect("one child"),
-        },
+        EffectForm::Open | EffectForm::Present => {
+            let key = if matches!(form, EffectForm::Open) {
+                "tail"
+            } else {
+                "label"
+            };
+            let Some(v) = only(kb, key)? else {
+                return Ok(None);
+            };
+            // A child that grounded to a whole row is that row's expression (see the doc).
+            if let Some(expr) = effects_rows_inner(kb, &v) {
+                return child_type_value(kb, expr, cx).map(Some);
+            }
+            let c = value_to_type_child_at(kb, &v, sp, owner);
+            if matches!(form, EffectForm::Open) {
+                EffectExprNode::Open { tail: c }
+            } else {
+                EffectExprNode::Present { label: c }
+            }
+        }
+        // An absent or guarded atom is placed over its label, or over each atom of the row the
+        // label grounded to ([`distribute_atom_over_row`]).
+        EffectForm::Absent => {
+            let Some(label) = only(kb, "label")? else {
+                return Ok(None);
+            };
+            let row = effects_rows_inner(kb, &label).unwrap_or(label);
+            let absent = |c: TypeChild| EffectExprNode::Absent { label: c };
+            return distribute_atom_over_row(kb, &row, &absent, sp, owner, cx).map(Some);
+        }
         EffectForm::Guarded => {
-            let guard = child(kb, "guard")?;
+            let guard = required_child(kb, ty, "guard", cx)?;
             if value_contains_projection(kb, &guard) {
                 return Err(cx.refuse(
                     "a type projection sits in an effect guard, which holds goals and is not \
                      rewritten",
                 ));
             }
-            closed &= matches!(guard, Value::Term { .. });
-            let guard = if closed {
-                guard
-            } else {
-                let goals = value_list_elements(kb, &guard);
-                crate::kb::load::build_value_list(kb, goals)
+            let Some(label) = only(kb, "label")? else {
+                return Ok(None);
             };
-            EffectExprNode::Guarded {
-                label: tc.pop().expect("one child"),
-                guard,
-            }
+            let row = effects_rows_inner(kb, &label).unwrap_or(label);
+            let guarded = |c: TypeChild| EffectExprNode::Guarded {
+                label: c,
+                guard: guard.clone(),
+            };
+            return distribute_atom_over_row(kb, &row, &guarded, sp, owner, cx).map(Some);
         }
     };
-    let occ = NodeOccurrence::new_effect_expr(node, sp, owner);
-    settle(kb, occ, closed, cx).map(Some)
+    Ok(Some(Value::Node(NodeOccurrence::new_effect_expr(
+        node, sp, owner,
+    ))))
 }
 
-/// A rebuilt form on its carrier: the occurrence as built, or — when every child was a term —
-/// its term twin, through the one occurrence→term lowering.
-fn settle(
+/// WI-20260929-0RP29 — a row expression with each of its atoms placed under `atom` (a guard
+/// over it, or its absence): how a guarded or absent atom distributes over the row its label
+/// grounded to ([`eliminate_effect_expr`]). The row's `merge` spine is kept and the empty row
+/// stays empty. An OPEN tail is followed: one bound to a row is that row (the loader writes a
+/// row parameter inside braces as `open(EC)`, so `E = {EC}` at `EC = {}` grounds `s.E` to `{
+/// {} }`), and a row VARIABLE is placed as an atom (`R :- g`, `-R` — what `E = R` builds). An
+/// atom already guarded or absent has no reading under another guard or absence here, and is
+/// refused rather than left nested, which read as something else.
+fn distribute_atom_over_row(
     kb: &mut KnowledgeBase,
-    occ: Rc<NodeOccurrence>,
-    closed: bool,
+    expr: &Value,
+    atom: &dyn Fn(TypeChild) -> EffectExprNode,
+    sp: crate::span::SourceSpan,
+    owner: Option<Symbol>,
     cx: &Discharge,
 ) -> Result<Value, TypeError> {
-    if !closed {
-        return Ok(Value::Node(occ));
+    let node = |node: EffectExprNode| Value::Node(NodeOccurrence::new_effect_expr(node, sp, owner));
+    if let Some(s) = view_ref_symbol(kb, expr) {
+        if kb.qualified_name_of(s) == "anthill.prelude.EffectExpression.empty_row" {
+            return Ok(expr.clone());
+        }
     }
-    crate::kb::node_occurrence::try_occurrence_to_term(kb, &occ)
-        .map(Value::term)
-        .ok_or_else(|| cx.refuse("a rebuilt type has no term form"))
-}
-
-/// Is every value a term? Asked of the `Value`s, not of the `TypeChild`s they become: a
-/// `DeBruijn` variable rides a child as `Interned`, and is not a term here.
-fn all_terms(vs: &[Value]) -> bool {
-    vs.iter().all(|v| matches!(v, Value::Term { .. }))
+    let form = match extract_type(kb, expr) {
+        TypeExtractor::Parameterized { base, .. } => effect_expr_form(kb, base),
+        _ => None,
+    };
+    match form {
+        Some(EffectForm::Merge) => {
+            let left = required_child(kb, expr, "left", cx)?;
+            let right = required_child(kb, expr, "right", cx)?;
+            let left = distribute_atom_over_row(kb, &left, atom, sp, owner, cx)?;
+            let right = distribute_atom_over_row(kb, &right, atom, sp, owner, cx)?;
+            Ok(node(EffectExprNode::Merge {
+                left: value_to_type_child_at(kb, &left, sp, owner),
+                right: value_to_type_child_at(kb, &right, sp, owner),
+            }))
+        }
+        Some(EffectForm::Present) => {
+            let label = required_child(kb, expr, "label", cx)?;
+            let label = value_to_type_child_at(kb, &label, sp, owner);
+            Ok(node(atom(label)))
+        }
+        Some(EffectForm::Open) => {
+            let tail = required_child(kb, expr, "tail", cx)?;
+            let row = effects_rows_inner(kb, &tail).unwrap_or(tail);
+            distribute_atom_over_row(kb, &row, atom, sp, owner, cx)
+        }
+        Some(EffectForm::Guarded | EffectForm::Absent) => Err(cx.refuse(
+            "a guarded or absent effect grounded to a row holding an atom already guarded or \
+             absent, which does not distribute over it",
+        )),
+        // A bare label — or a row variable — standing as the row (`E = Error[Foo]`, `E = R`).
+        None => {
+            let label = value_to_type_child_at(kb, expr, sp, owner);
+            Ok(node(atom(label)))
+        }
+    }
 }
 
 /// A form's child by key, which the form's builder always writes.
@@ -1187,6 +1343,28 @@ fn required_child(
         .ok_or_else(|| cx.refuse(&format!("a type has no `{key}` child (malformed carrier)")))
 }
 
+/// The children of a form rebuilt as an occurrence ([`eliminate_children`]), each placed as
+/// the occurrence child its carrier makes it — `None` when every one came back as it was.
+fn eliminate_to_children<const N: usize>(
+    kb: &mut KnowledgeBase,
+    children: [Value; N],
+    sp: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+    cx: &Discharge,
+) -> Result<Option<[TypeChild; N]>, TypeError> {
+    let Some(values) = eliminate_children(kb, &children, cx)? else {
+        return Ok(None);
+    };
+    let placed: Vec<TypeChild> = values
+        .iter()
+        .map(|v| value_to_type_child_at(kb, v, sp, owner))
+        .collect();
+    match placed.try_into() {
+        Ok(placed) => Ok(Some(placed)),
+        Err(_) => unreachable!("eliminate_children keeps the child count"),
+    }
+}
+
 /// [`eliminate_children`] over labelled children (bindings, fields), keeping the labels.
 fn eliminate_named(
     kb: &mut KnowledgeBase,
@@ -1197,8 +1375,9 @@ fn eliminate_named(
     Ok(eliminate_children(kb, &values, cx)?.map(|vs| labels.into_iter().zip(vs).collect()))
 }
 
-/// Eliminate each child. `None` when every one came back as it was; otherwise all of them,
-/// each on a carrier a builder takes ([`child_type_value`]).
+/// Eliminate each child. `None` when every one came back as it was — a projection that
+/// grounds or re-keys to the very term it stood for changed nothing either — otherwise all of
+/// them, each on a carrier a builder takes ([`child_type_value`]).
 fn eliminate_children(
     kb: &mut KnowledgeBase,
     children: &[Value],
@@ -1206,7 +1385,13 @@ fn eliminate_children(
 ) -> Result<Option<Vec<Value>>, TypeError> {
     let mut out: Option<Vec<Value>> = None;
     for (i, c) in children.iter().enumerate() {
-        match eliminate_in(kb, c, cx)? {
+        let changed = match eliminate_in(kb, c, cx)? {
+            Some(Value::Term { id, .. }) if matches!(c, Value::Term { id: was, .. } if *was == id) => {
+                None
+            }
+            changed => changed,
+        };
+        match changed {
             Some(v) => out.get_or_insert_with(|| children[..i].to_vec()).push(v),
             None => {
                 if let Some(o) = out.as_mut() {
@@ -1226,46 +1411,35 @@ fn eliminate_children(
 
 /// Where a rebuilt node is stamped: an occurrence keeps the one it was rebuilt from; a node
 /// rebuilt from a term has no recorded location.
-fn site_of(ty: &Value) -> (crate::span::SourceSpan, Option<Symbol>) {
+pub(super) fn site_of(ty: &Value) -> (crate::span::SourceSpan, Option<Symbol>) {
     match ty {
         Value::Node(occ) => (occ.span, occ.owner),
         _ => (crate::kb::node_occurrence::empty_span(), None),
     }
 }
 
-/// WI-20260929-0RP29 — a child on a carrier the type builders take. A term, an occurrence and
-/// a variable are children as they are. Anything else is LOWERED to the term it is (lossless
-/// for a type since WI-390): an entity spine — the application `fn_value` rebuilds around an
-/// occurrence, which σ hands back for one — which no builder takes (`parameterized_value`
-/// would read it as a term and panic), and a leaf a σ walk left raw (`Value::SymbolRef`,
-/// the `Term::Ref` not yet interned). What has no term form is not a type, and is refused.
-fn child_type_value(kb: &mut KnowledgeBase, v: Value, cx: &Discharge) -> Result<Value, TypeError> {
-    match v {
-        Value::Term { .. } | Value::Node(_) | Value::Var(_) => Ok(v),
-        other => value_to_term(kb, &other).map(Value::term).map_err(|e| {
-            cx.refuse(&format!(
-                "a type projection grounded to a {} with no term form ({e:?})",
-                other.type_name()
-            ))
-        }),
-    }
+/// `base` applied to `bindings` through the carrier-choosing builder ([`sort_application_value`]),
+/// a head that is not a sort refused — a changed child under it cannot be dropped.
+fn sort_application(
+    kb: &mut KnowledgeBase,
+    base: Symbol,
+    bindings: &[(Symbol, Value)],
+    sp: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+    cx: &Discharge,
+) -> Result<Value, TypeError> {
+    sort_application_value(kb, base, bindings, sp, owner)
+        .map_err(|why| cx.refuse(&format!("a type projection sits in {why}")))
 }
 
-/// WI-397: resolve a COMPOUND-receiver projection (`a.b.T`) — the receiver `value`
-/// is a field-access occurrence (`Value::Node`), not a single value reference.
-/// Resolve the receiver path's static type, then project the `member` off it. The
-/// compound twin of the single-`Ref` path in [`project_expr_carried`].
-fn resolve_compound_projection(
-    kb: &mut KnowledgeBase,
-    receiver: &Value,
-    member: Symbol,
-    arg_types: &HashMap<Symbol, Value>,
-    ctx: &TypeErrorContext,
-    span: Option<Span>,
-) -> Result<ProjResult, TypeError> {
-    let (recv_ty, recv_decl_sort) = resolve_receiver_path_type(kb, receiver, arg_types, ctx, span)?;
-    let member_str = kb.local_name_of(member).to_owned();
-    project_type_member(kb, &recv_ty, &member_str, recv_decl_sort, ctx, span)
+/// WI-20260929-0RP29 — a child on a carrier the type builders take. A term, an occurrence and
+/// a variable are children as they are. A raw LEAF a σ walk left (`Value::SymbolRef`, the
+/// `Term::Ref` not yet interned) is held as its term, as `splice_non_term_bindings` holds
+/// one. An ENTITY spine is REBUILT ([`entity_type_on_builders`]). Anything else is not a
+/// type, and is refused.
+fn child_type_value(kb: &mut KnowledgeBase, v: Value, cx: &Discharge) -> Result<Value, TypeError> {
+    type_child_value(kb, v)
+        .map_err(|why| cx.refuse(&format!("a type projection grounded to {why}")))
 }
 
 /// Resolve the static TYPE of a field-access receiver path occurrence (WI-397). A
@@ -1471,68 +1645,85 @@ pub(super) fn resolve_field_type(
 /// — an occurrence included (`s.E` projecting to a Modify-bearing effect row `{Modify[p]}`,
 /// or `xs.T` to a type holding a value); the enclosing form rebuilds around it
 /// ([`eliminate_in`]).
+///
+/// The receiver is a single value reference `Ref(s)` — the argument bound to `s` — or a
+/// field-access path (`s.cell.T`, WI-397), and [`resolve_receiver_path_type`] resolves both,
+/// whichever carrier the projection rides. WI-819: the compound path rode the occurrence
+/// alone until a `let`'s annotation came to ride its pattern term, and refusing the term
+/// spelling then made the answer depend on WHICH CARRIER the annotation happened to have (the
+/// carrier-dependent verdict WI-425 exists to prevent).
 fn project_expr_carried(
     kb: &mut KnowledgeBase,
     value: &Value,
     member: Symbol,
     cx: &Discharge,
 ) -> Result<Option<Value>, TypeError> {
-    // A single value reference `Ref(s)` (classified as `SortRef`) is the common
-    // receiver and is resolved below.
-    //
-    // WI-819: a COMPOUND receiver (`s.cell.T`, a field-access path) is delegated to
-    // `resolve_compound_projection`, whichever carrier the projection rides — it rode
-    // the occurrence alone until a `let`'s annotation came to ride its pattern term, and
-    // refusing the term spelling then made the answer depend on WHICH CARRIER the
-    // annotation happened to have (the carrier-dependent verdict WI-425 exists to
-    // prevent). WI-459 NOTE: the compound neutral is NOT re-keyed to the caller's
-    // argument (`arg_syms` is not threaded into `resolve_compound_projection`), so a
-    // forwarded compound projection stays callee-keyed and fails the ζ identity check —
-    // a LOUD over-rejection, never a wrong accept; compound re-keying is a recorded
-    // follow-on.
-    let Some(receiver) = extract_sort_ref_sym(kb, value) else {
-        return Ok(
-            match resolve_compound_projection(kb, value, member, cx.arg_types, cx.ctx, cx.span)? {
-                ProjResult::Grounded(v) => Some(v),
-                // Abstract receiver with the member declared: the projection stays the
-                // rigid neutral it is.
-                ProjResult::Neutral => None,
-            },
-        );
-    };
-    let Some(arg_ty) = cx.arg_types.get(&receiver).cloned() else {
-        return Err(cx.refuse(&format!(
-            "type projection receiver '{}' is not an argument-bound parameter of this call",
-            kb.local_name_of(receiver),
-        )));
-    };
+    let (recv_ty, recv_decl_sort) =
+        resolve_receiver_path_type(kb, value, cx.arg_types, cx.ctx, cx.span)?;
+    if let Some(v) = cx
+        .reading
+        .and_then(|read| read(kb, value, &recv_ty, member))
+    {
+        return Ok(Some(v));
+    }
     let member_str = kb.local_name_of(member).to_owned();
-    // Single-ref receiver: the arg's inferred type (a concrete sort, or a bound
-    // type-param). No abstract-type-param declaring sort is in hand here (that arises
-    // only on the compound field-projection path) — `None`.
+    let owner = projection_owner_spec(kb, value, &member_str)
+        .or_else(|| field_path_owner_spec(kb, value, &member_str, cx.arg_types, cx.ctx, cx.span));
     Ok(
-        match project_type_member(kb, &arg_ty, &member_str, None, cx.ctx, cx.span)? {
+        match project_type_member(
+            kb,
+            &recv_ty,
+            &member_str,
+            recv_decl_sort,
+            owner,
+            cx.ctx,
+            cx.span,
+        )? {
             ProjResult::Grounded(v) => Some(v),
             // WI-400: the receiver is abstract but the member is declared — the rigid
-            // NEUTRAL (path-identity). WI-459: RE-KEY its receiver from the callee's formal
-            // parameter to the CALLER's argument value-reference when this is a call-site
-            // elimination (`arg_syms` present) and the argument is a simple value reference.
-            // The projection stayed abstract precisely because the argument's TYPE did not
-            // bind the member (`sfd(xs)` with the bare `xs : List`), so the receiver VALUE
-            // is exactly that argument — `sfd.xs.T` is definitionally `collectd.xs.T`. The
-            // grounded arm above never reaches here, so a member the argument's type DID
+            // NEUTRAL (path-identity). WI-459: RE-KEY a single-ref receiver from the callee's
+            // formal parameter to the CALLER's argument value-reference when this is a
+            // call-site elimination (`arg_syms` present) and the argument is a simple value
+            // reference. The projection stayed abstract precisely because the argument's TYPE
+            // did not bind the member (`sfd(xs)` with the bare `xs : List`), so the receiver
+            // VALUE is exactly that argument — `sfd.xs.T` is definitionally `collectd.xs.T`.
+            // The grounded arm above never reaches here, so a member the argument's type DID
             // bind (the recursive `collectd(rest)`, where `rest : List[T = xs.T]` δ-reduces
             // `T` to `xs.T`) keeps its δ-reduced value un-re-keyed. A non-value-ref argument
             // has no `arg_syms` entry → left as the callee-keyed neutral (deferred-receiver
             // follow-on). Re-forming `ExprCarried{Ref(arg_sym), member}` here is what makes
             // the SAME definitional projection compare EQUAL under the non-decomposing ζ arm
             // (WI-400) instead of two identically-printed-yet-distinct neutrals.
-            ProjResult::Neutral => cx.arg_syms.and_then(|m| m.get(&receiver)).map(|&arg_sym| {
-                let recv_term = kb.alloc(Term::Ref(arg_sym));
-                Value::term(kb.make_expr_carried(recv_term, member))
-            }),
+            //
+            // A COMPOUND receiver's neutral is re-keyed at its HEAD (WI-20260929-0RP29):
+            // `sfd.h.items.T` is `caller.b.items.T` by the same definition, the path below the
+            // head naming fields of one value. Left callee-keyed it failed the ζ identity
+            // check — and the declaration rule, which re-keys the member's parameters to the
+            // spec's names through this arm, refused a member restating `-> h.items.T`
+            // verbatim, printing one type twice (MEASURED).
+            ProjResult::Neutral => rekeyed_neutral(kb, value, member, cx.arg_syms),
         },
     )
+}
+
+/// The neutral projection `value.member` with its receiver's HEAD re-keyed through `arg_syms`
+/// — a single reference (`s.T`) or the root of a field path (`h.items.T`) — or `None` where
+/// nothing re-keys it: no map, a head the map does not name, a receiver that is no
+/// value-reference path.
+fn rekeyed_neutral(
+    kb: &mut KnowledgeBase,
+    value: &Value,
+    member: Symbol,
+    arg_syms: Option<&HashMap<Symbol, Symbol>>,
+) -> Option<Value> {
+    let mut segs = receiver_path_segs(kb, value)?;
+    segs[0] = *arg_syms?.get(&segs[0])?;
+    Some(build_projection_from_segs(
+        kb,
+        &segs,
+        member,
+        site_of(value).0,
+    ))
 }
 
 /// WI-400: outcome of projecting a member off a receiver's type. A projection either
@@ -1561,11 +1752,16 @@ pub(super) enum ProjResult {
 /// ⟹ `State`, since `State requires DataProvider[P]`). `None` for a concrete receiver or
 /// where no declaring sort is in hand; then an abstract member that is not a declared
 /// type-parameter cannot be confirmed and is a loud error.
+///
+/// `owner` is the spec the projection's receiver is DECLARED by, where its declaration names
+/// one ([`projection_owner_spec`], [`field_path_owner_spec`]): a member the receiver's sort only
+/// PROVIDES is read from that spec's provision.
 pub(super) fn project_type_member(
     kb: &mut KnowledgeBase,
     arg_ty: &Value,
     member: &str,
     recv_decl_sort: Option<Symbol>,
+    owner: Option<Symbol>,
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<ProjResult, TypeError> {
@@ -1623,7 +1819,7 @@ pub(super) fn project_type_member(
         // carrier-side type and ground/neutralize THAT against the receiver — so one
         // signature written in the spec's vocabulary (`c.Element`) grounds on a concrete
         // carrier (`List[T = Int64].Element = Int64`) and stays neutral on a bare one.
-        if let Some(r) = project_via_provided_spec(kb, arg_ty, s, member) {
+        if let Some(r) = project_via_provided_spec(kb, arg_ty, s, member, owner, ctx, span) {
             return r;
         }
         return Err(projection_type_error(
@@ -1750,20 +1946,124 @@ fn requires_entry_lends_member(
 /// substitution field-type resolution uses). A binding that grounds to a concrete type is
 /// `Grounded`; one still resting on an unbound carrier parameter (a BARE receiver) stays
 /// `Neutral` — abstract-stays-poly, exactly as a direct unbound type-param would. Returns
-/// `None` when no provided spec declares `member` (the caller then surfaces the loud
-/// no-member error). First provided spec that declares `member` wins (a member shared
-/// across two provided specs is left to a later disambiguation pass, mirroring
-/// `find_spec_op_for_provided_sort`).
+/// `None` when no provided spec lends `member` (the caller then surfaces the loud no-member
+/// error).
+///
+/// WHICH SPEC (WI-20260929-0RP29). A member name is a spec PARAMETER's, and two specs a sort
+/// provides may each declare one of that name — every entity sort provides the derived `Eq[T =
+/// <itself>]` beside whatever it writes. The first provided spec declaring the name used to
+/// win, so the reading turned on the order of the `provides` clauses, and over a WITNESS's
+/// carrier — whose provision is not among the carrier's own rows — on a derived spec:
+///
+///   * `Car provides Other[E = String]` then `Sp[E = Int64]`: `Sp.put(s: Sp, k: s.E)` took a
+///     `String`, and the member the declaration rule had admitted against this provision's
+///     `Int64` added 1 to it (MEASURED, run time);
+///   * `BoxHolder provides Holder[C = Box, T = Int64]`: `Holder.get(c: C) -> c.T` over a `Box`
+///     was typed `Box` — `Eq`'s `T` — and the `Int64` it returns was read as an entity
+///     (MEASURED, run time).
+///
+/// `owner` is the spec the receiver's declaration names ([`projection_owner_spec`]; for a
+/// field path, the `requires` entry that lends the member, [`field_path_owner_spec`]): the
+/// member is read from the receiver sort's provision of THAT spec — its own, else the witnesses
+/// covering the receiver, which must all agree ([`witnesses_lend_member`]) — and from no other;
+/// a provision that leaves the member unbound lends nothing (`None`: the loud no-member error,
+/// not another spec's binding of the name). Where the declaration names none, or the sort has
+/// no provision of the owner in hand, every provided spec that lends the member must AGREE —
+/// on the type, however each spells it ([`proj_results_agree`]) — and two that bind it
+/// differently are refused; a provision binding the name, as its spec's carrier parameter, to
+/// the provider itself is left out ([`unowned_member_bindings`]): that is the provider, and no
+/// member of it.
 fn project_via_provided_spec(
     kb: &mut KnowledgeBase,
     recv_ty: &Value,
     recv_sort: Symbol,
     member: &str,
+    owner: Option<Symbol>,
+    ctx: &TypeErrorContext,
+    span: Option<Span>,
 ) -> Option<Result<ProjResult, TypeError>> {
-    // `directly_provided_specs` dedups CANONICALLY, where this walk's own copy used to dedup
-    // raw — and drops nothing this loop could reach: every step below reads `spec`
-    // canonically (`type_params_of_sort`, `provider_spec_view_bindings`), so a second,
-    // raw-different copy of a spec already tried answers exactly as the first did.
+    if let Some(spec) = owner {
+        if let Some(bindings) = provider_spec_view_bindings(kb, recv_sort, spec) {
+            let written = member_binding(kb, &bindings, member)?;
+            return provision_lends_binding(kb, recv_ty, recv_sort, written).map(Ok);
+        }
+        match witnesses_lend_member(kb, recv_ty, recv_sort, spec, member, ctx, span) {
+            Ok(Some(lent)) => return lent.map(Ok),
+            Ok(None) => {}
+            Err(e) => return Some(Err(e)),
+        }
+    }
+    let mut lent: Option<(Symbol, ProjResult)> = None;
+    for (spec, written) in unowned_member_bindings(kb, recv_sort, member) {
+        let Some(this) = provision_lends_binding(kb, recv_ty, recv_sort, written) else {
+            continue;
+        };
+        let agree = match &lent {
+            None => {
+                lent = Some((spec, this));
+                continue;
+            }
+            Some((_, prior)) => proj_results_agree(kb, prior, &this),
+        };
+        if !agree {
+            let (first, prior) = lent.expect("a prior lender");
+            let msg = format!(
+                "type '{}' has a member '{member}' by two specs it provides, which bind it \
+                 differently — '{}' to {} and '{}' to {}; project it off a receiver typed \
+                 by the spec whose member is meant",
+                kb.qualified_name_of(recv_sort).to_owned(),
+                kb.qualified_name_of(first).to_owned(),
+                show_lent(kb, &prior),
+                kb.qualified_name_of(spec).to_owned(),
+                show_lent(kb, &this),
+            );
+            return Some(Err(projection_type_error(ctx, span, &msg)));
+        }
+    }
+    lent.map(|(_, r)| Ok(r))
+}
+
+/// A lent member, for a refusal that names two lenders.
+fn show_lent(kb: &KnowledgeBase, r: &ProjResult) -> String {
+    match r {
+        ProjResult::Grounded(v) => format!("`{}`", type_display_name_value(kb, v)),
+        ProjResult::Neutral => "a type its receiver leaves open".to_string(),
+    }
+}
+
+/// A provision's binding of the spec parameter `member`, by its name.
+fn member_binding(
+    kb: &KnowledgeBase,
+    bindings: &[(Symbol, TermId)],
+    member: &str,
+) -> Option<TermId> {
+    bindings
+        .iter()
+        .find(|(p, _)| kb.local_name_of(*p) == member)
+        .map(|(_, b)| *b)
+}
+
+/// WHERE A RECEIVER'S DECLARATION NAMES NO SPEC: the bindings of `member` its sort's own
+/// provisions write, each with its spec — every provided spec that declares the name and binds
+/// it, EXCEPT one that binds it to THE PROVIDER ITSELF as the spec's carrier parameter (the
+/// derived `Eq[T = Car]`: `c.T` is not `Car`, write `c.Sort`). The exception is a fact of the
+/// PROVISION, not of the parameter's name: [`spec_carrier_param_or_sole`] answers "a parameter
+/// some operation takes", which for a spec receiving on itself is its ELEMENT (`push(s: Stack,
+/// x: T)`), and asked of the name alone it dropped `IntStack provides Stack[T = Int64]`'s `T` —
+/// "type 'IntStack' has no member 'T'" for a program that ran, and, beside a second spec
+/// declaring the name, the other spec's binding read in silence (MEASURED). So the binding must
+/// name the provider too — the second gate that predicate's own doc asks of a new consumer.
+/// Shared by the call ([`project_via_provided_spec`]) and the declaration rule's reader, so the
+/// two read one selection.
+pub(super) fn unowned_member_bindings(
+    kb: &KnowledgeBase,
+    recv_sort: Symbol,
+    member: &str,
+) -> Vec<(Symbol, TermId)> {
+    // `directly_provided_specs` dedups CANONICALLY — and drops nothing this loop could reach:
+    // every step below reads `spec` canonically, so a second, raw-different copy of a spec
+    // already tried answers exactly as the first did.
+    let mut out = Vec::new();
     for spec in directly_provided_specs(kb, recv_sort) {
         if !kb
             .type_params_of_sort(spec)
@@ -1775,46 +2075,292 @@ fn project_via_provided_spec(
         let Some(bindings) = provider_spec_view_bindings(kb, recv_sort, spec) else {
             continue;
         };
-        let Some((_, carrier_val)) = bindings
-            .iter()
-            .find(|(p, _)| kb.local_name_of(*p) == member)
-            .copied()
+        let Some(written) = member_binding(kb, &bindings, member) else {
+            continue;
+        };
+        let is_the_provider = spec_carrier_param_or_sole(kb, spec)
+            .is_some_and(|p| kb.local_name_of(p) == member)
+            && composed_self_reference(kb, recv_sort, written);
+        if !is_the_provider {
+            out.push((spec, written));
+        }
+    }
+    out
+}
+
+/// Do two provisions lend one member the same type? The same type however it is SPELLED — each
+/// a subtype of the other ([`types_agree`]): compared by structural identity, a row parameter
+/// in its two spellings (`E = EC` beside `E = {EC}`), a row beside the row it splices to, and an
+/// alias beside what it names were each "bound differently" (MEASURED: programs that ran).
+fn proj_results_agree(kb: &mut KnowledgeBase, a: &ProjResult, b: &ProjResult) -> bool {
+    match (a, b) {
+        (ProjResult::Grounded(x), ProjResult::Grounded(y)) => types_agree(kb, x, y),
+        (ProjResult::Neutral, ProjResult::Neutral) => true,
+        _ => false,
+    }
+}
+
+/// Are `x` and `y` one type — identical, or each a subtype of the other, a label standing where
+/// a row does read as the row holding it?
+pub(super) fn types_agree(kb: &mut KnowledgeBase, x: &Value, y: &Value) -> bool {
+    if views_structurally_equal(kb, x, y) {
+        return true;
+    }
+    // Beside a row, what stands for one — a label, a row projection (`c.EC`) — is the row
+    // holding it: `E = EC` and `E = {EC}` bind one row.
+    let is_row = |kb: &KnowledgeBase, v: &Value| matches!(type_head(kb, v), TypeHead::EffectsRows);
+    let (x, y) = match (is_row(kb, x), is_row(kb, y)) {
+        (true, false) => match sole_row_tail(kb, x) {
+            Some(tail) => return types_agree(kb, &tail, y),
+            None => (x.clone(), row_holding(kb, y)),
+        },
+        (false, true) => match sole_row_tail(kb, y) {
+            Some(tail) => return types_agree(kb, x, &tail),
+            None => (row_holding(kb, x), y.clone()),
+        },
+        _ => (x.clone(), y.clone()),
+    };
+    views_structurally_equal(kb, &x, &y)
+        || (types_compatible(kb, &mut Substitution::new(), &x, &y)
+            && types_compatible(kb, &mut Substitution::new(), &y, &x))
+}
+
+/// The tail of a row that is nothing but a tail (`{X}`): that row IS `X`.
+fn sole_row_tail(kb: &mut KnowledgeBase, row: &Value) -> Option<Value> {
+    let inner = effects_rows_inner(kb, row)?;
+    if resolved_functor_name(kb, &inner) != Some("open") {
+        return None;
+    }
+    let key = kb.intern("tail");
+    named_child_value(kb, &inner, key)
+}
+
+/// What ONE provision of the receiver's own sort lends through its binding `written` of a
+/// member — written in that sort's parameters — at the receiver, or `None` when it lends
+/// nothing there ([`lent_member`]).
+fn provision_lends_binding(
+    kb: &mut KnowledgeBase,
+    recv_ty: &Value,
+    recv_sort: Symbol,
+    written: TermId,
+) -> Option<ProjResult> {
+    // Ground the carrier-side type (`List`'s `T`) against the receiver's type-args, so
+    // a concrete `List[T = Int64]` grounds `Element` to `Int64`; a bare `List` leaves
+    // it an unbound `T` ⟹ neutral.
+    let grounded = match build_pattern_subst(kb, recv_ty, recv_sort) {
+        Some(s) => walk_pattern_field_type_deep(kb, &s, &Value::term(written)),
+        None => Value::term(written),
+    };
+    lent_member(kb, written, grounded)
+}
+
+/// A provision's binding of a member (`written`), as it reads at a receiver (`at_receiver`).
+///
+/// WI-484 (vs WI-396): an EFFECT-row member projects via `provides` ONLY when the provision
+/// WROTE a GROUND row (`List provides Stream[T, {}]` ⟹ `l.E = {}`). Reading back a written,
+/// ground effect is sound — it is NOT the "silent pure default" WI-396 excluded
+/// (reconstructing `{}` for an UNwritten effect). A non-ground / unwritten effect binding
+/// lends nothing → loud missing-member, preserving WI-396 for the case it actually guarded.
+///
+/// Grounded ONLY when the result is FULLY concrete (deep `resolved_type_is_ground`, not a
+/// head-only check): a structured binding still resting on an unbound carrier param (`Element
+/// = Pair[A, B]` on a bare receiver) stays NEUTRAL, never a Grounded type that would absorb
+/// demand downstream.
+fn lent_member(kb: &KnowledgeBase, written: TermId, at_receiver: Value) -> Option<ProjResult> {
+    let is_effect_member = matches!(type_head(kb, &Value::term(written)), TypeHead::EffectsRows);
+    let is_ground = resolved_type_is_ground(kb, &at_receiver);
+    if is_effect_member && !is_ground {
+        return None;
+    }
+    Some(if is_ground {
+        ProjResult::Grounded(at_receiver)
+    } else {
+        ProjResult::Neutral
+    })
+}
+
+/// A WITNESS provision of `spec` whose carrier view covers a receiver: the witness, and the
+/// witness's parameters as the receiver's type instantiates them (`ListOrd provides Ord[T =
+/// List[T = E]]` at a `List[T = Int64]` is `E = Int64`). A witness's provision is filed under
+/// the witness, not under its carrier (`BoxHolder provides Holder[C = Box, T = Int64]` is no
+/// row of `Box`), and its bindings are written in the WITNESS's parameters.
+pub(super) fn witnesses_covering(
+    kb: &mut KnowledgeBase,
+    recv_ty: &Value,
+    recv_sort: Symbol,
+    spec: Symbol,
+) -> Vec<(ProvidesRow, Substitution)> {
+    let recv_canon = kb.canonical_sort_sym(recv_sort);
+    let rows: Vec<ProvidesRow> = provides_rows_of_spec(kb, spec).collect();
+    let mut out = Vec::new();
+    for row in rows {
+        let Some((view, base)) =
+            witness_dispatch_carrier_view(kb, spec, row.provider, row.spec_view)
         else {
             continue;
         };
-        let is_effect_member = matches!(
-            type_head(kb, &Value::term(carrier_val)),
-            TypeHead::EffectsRows
-        );
-        // Ground the carrier-side type (`List`'s `T`) against the receiver's type-args, so
-        // a concrete `List[T = Int64]` grounds `Element` to `Int64`; a bare `List` leaves
-        // it an unbound `T` ⟹ neutral.
-        let grounded = match build_pattern_subst(kb, recv_ty, recv_sort) {
-            Some(s) => walk_pattern_field_type_deep(kb, &s, &Value::term(carrier_val)),
-            None => Value::term(carrier_val),
-        };
-        let is_ground = resolved_type_is_ground(kb, &grounded);
-        // WI-484 (vs WI-396): an EFFECT-row member projects via `provides` ONLY when the
-        // provision WROTE a GROUND row (`List provides Stream[T, {}]` ⟹ `l.E = {}`).
-        // Reading back a written, ground effect is sound — it is NOT the "silent pure
-        // default" WI-396 excluded (reconstructing `{}` for an UNwritten effect). A
-        // non-ground / unwritten effect binding still skips → loud missing-member,
-        // preserving WI-396 for the case it actually guarded.
-        if is_effect_member && !is_ground {
+        if base != recv_canon {
             continue;
         }
-        // Grounded ONLY when the result is FULLY concrete (deep `resolved_type_is_ground`,
-        // not a head-only check): a structured binding still resting on an unbound carrier
-        // param (`Element = Pair[A, B]` on a bare receiver) stays NEUTRAL, never a Grounded
-        // type that would absorb demand downstream. A non-Term carrier is conservatively
-        // neutral too.
-        return Some(if is_ground {
-            Ok(ProjResult::Grounded(grounded))
-        } else {
-            Ok(ProjResult::Neutral)
-        });
+        let mut at = Substitution::new();
+        if unify_types(kb, &mut at, &Value::term(view), recv_ty) {
+            out.push((row, at));
+        }
     }
-    None
+    out
+}
+
+/// What the WITNESSES of `spec` covering the receiver lend a projection of `member`. `Ok(None)`:
+/// no witness of `spec` covers this receiver. `Ok(Some(None))`: those that do lend nothing — the
+/// member is unbound in each. EVERY covering witness is asked, and they must AGREE, one leaving
+/// the member unbound included: a call reaches one of them, and which is the dispatch's to say,
+/// not this reading's. Merged — the witness leaving it unbound passed over, two binding it
+/// differently answered by a neutral — the call read one witness's binding off a value another
+/// witness's member returned (MEASURED: `BoxHolderA provides Holder[C = Box]` returning a
+/// `String` beside `BoxHolderB provides Holder[C = Box, T = Int64]`, at run time), and the
+/// disagreement surfaced as a mismatch naming the callee's own parameter (`c.T`).
+fn witnesses_lend_member(
+    kb: &mut KnowledgeBase,
+    recv_ty: &Value,
+    recv_sort: Symbol,
+    spec: Symbol,
+    member: &str,
+    ctx: &TypeErrorContext,
+    span: Option<Span>,
+) -> Result<Option<Option<ProjResult>>, TypeError> {
+    let covering = witnesses_covering(kb, recv_ty, recv_sort, spec);
+    let mut lent: Option<(Symbol, Option<ProjResult>)> = None;
+    for (row, at) in covering {
+        let this = member_binding(kb, &row.bindings, member).and_then(|written| {
+            let at_receiver = resolve_type_deep_value(kb, &at, &Value::term(written));
+            lent_member(kb, written, at_receiver)
+        });
+        let agree = match &lent {
+            None => {
+                lent = Some((row.provider, this));
+                continue;
+            }
+            Some((_, None)) => this.is_none(),
+            Some((_, Some(prior))) => this
+                .as_ref()
+                .is_some_and(|this| proj_results_agree(kb, prior, this)),
+        };
+        if !agree {
+            let (first, prior) = lent.expect("a prior witness");
+            let show = |kb: &KnowledgeBase, r: &Option<ProjResult>| match r {
+                Some(r) => format!("binds it to {}", show_lent(kb, r)),
+                None => "leaves it unbound".to_string(),
+            };
+            let msg = format!(
+                "type '{}' is covered by two witnesses of '{}' that do not agree on its member \
+                 '{member}' — '{}' {} and '{}' {}; which of them a call reaches is not this \
+                 projection's to say, so write the type meant instead of projecting it",
+                kb.qualified_name_of(recv_sort).to_owned(),
+                kb.qualified_name_of(spec).to_owned(),
+                kb.qualified_name_of(first).to_owned(),
+                show(kb, &prior),
+                kb.qualified_name_of(row.provider).to_owned(),
+                show(kb, &this),
+            );
+            return Err(projection_type_error(ctx, span, &msg));
+        }
+    }
+    Ok(lent.map(|(_, r)| r))
+}
+
+/// The spec whose member a FIELD-PATH projection names (`s.provider.K`): where the path's last
+/// field is declared at a type PARAMETER of the sort holding it (`entity state(provider: P)`),
+/// the spec that sort REQUIRES of the parameter and that declares the member (`State requires
+/// DataProvider[P = P]`) — the bound that makes the projection well-formed at all
+/// ([`requires_entry_lends_member`]). `None` where the field is declared at a concrete sort, or
+/// no single bound lends the member. Without it the instance's provider was asked what it lends
+/// by AGREEMENT, and one that also provides another spec with a member of that name was refused
+/// as ambiguous — advised to project "off a receiver typed by the spec", which a field cannot be
+/// (MEASURED: a program that ran).
+fn field_path_owner_spec(
+    kb: &mut KnowledgeBase,
+    receiver: &Value,
+    member: &str,
+    arg_types: &HashMap<Symbol, Value>,
+    ctx: &TypeErrorContext,
+    span: Option<Span>,
+) -> Option<Symbol> {
+    let segs = receiver_path_segs(kb, receiver)?;
+    let (&field, base) = segs.split_last()?;
+    let (&head, fields) = base.split_first()?;
+    let mut holder_ty = arg_types.get(&head)?.clone();
+    for &f in fields {
+        holder_ty = resolve_field_type(kb, &holder_ty, f, ctx, span).ok()?.0;
+    }
+    let holder = sort_functor_of_view(kb, &holder_ty)?;
+    // The field's DECLARED type, the same on every constructor that declares it.
+    let mut declared: Option<TermId> = None;
+    for ctor in kb.field_constructors_of_sort(holder) {
+        let Some(fields) = kb.entity_field_types(ctor) else {
+            continue;
+        };
+        let Some((_, d)) = fields.iter().find(|(f, _)| *f == field) else {
+            continue;
+        };
+        let Value::Term { id, .. } = d else {
+            return None;
+        };
+        if declared.is_some_and(|prior| prior != *id) {
+            return None;
+        }
+        declared = Some(*id);
+    }
+    let declared = declared.filter(|t| is_type_param_value(kb, *t))?;
+    let key = subject_key_of_term(kb, declared)?;
+    let mut owners: Vec<Symbol> = Vec::new();
+    for entry in requires_chain(kb, holder) {
+        if requires_entry_lends_member(kb, &entry, key, member) {
+            let spec = kb.canonical_sort_sym(entry.required_sort);
+            if !owners.contains(&spec) {
+                owners.push(spec);
+            }
+        }
+    }
+    match owners[..] {
+        [spec] => Some(spec),
+        _ => None,
+    }
+}
+
+/// WI-20260929-0RP29 — the spec whose member a projection `r.member` names, read off the
+/// DECLARATION of its receiver `r`, an operation's parameter:
+///
+///   * typed by a sort that declares `member` — `s: Sp` makes `s.E` `Sp`'s `E`, whatever
+///     provider the argument is;
+///   * typed by a parameter of the sort that declares the operation, which declares `member` —
+///     `Holder.get(c: C) -> c.T` reads `Holder`'s `T` for the carrier that goes in `C`.
+///
+/// `None` for a field path, a receiver that is no operation parameter (a `let`), and a
+/// receiver declared at a concrete sort that only provides the member.
+pub(super) fn projection_owner_spec(
+    kb: &KnowledgeBase,
+    receiver: &Value,
+    member: &str,
+) -> Option<Symbol> {
+    let param = extract_sort_ref_sym(kb, receiver)?;
+    let op = impl_parent_of_op(kb, param)?;
+    let info = crate::kb::op_info::lookup_operation_info(kb, op)?;
+    let (_, declared) = info.params.iter().find(|(p, _)| *p == param)?;
+    let declares = |kb: &KnowledgeBase, sort: Symbol| {
+        kb.type_params_of_sort(sort)
+            .iter()
+            .any(|d| d.as_str() == member)
+    };
+    // A parameter first: its reference reads as a sort's.
+    if let Some(vid) = declared_type_param_vid(kb, declared) {
+        let parent = impl_parent_sort_of_op(kb, op)?;
+        let own = sort_type_params_as_pairs(kb, parent)
+            .iter()
+            .any(|(_, t)| matches!(kb.get_term(*t), Term::Var(Var::Global(v)) if *v == vid));
+        return (own && declares(kb, parent)).then_some(parent);
+    }
+    let sort = sort_functor_of_view(kb, declared)?;
+    declares(kb, sort).then_some(sort)
 }
 
 /// WI-383: the `requires`-clause specs of an OPERATION, decoded to `RequiresEntry`s —
@@ -2126,7 +2672,7 @@ pub(super) fn resolve_rigid_projection(
     if let SubjectKey::Sym(subject_sym) = key {
         if same_sort_canonical(kb, subject_sym, decl_sort) {
             let recv = Value::term(kb.make_sort_ref(subject_sym));
-            return match project_type_member(kb, &recv, &member_str, None, ctx, span)? {
+            return match project_type_member(kb, &recv, &member_str, None, None, ctx, span)? {
                 // WI-391: a ground member projects to the canonical `Ref(s)` shape (the
                 // producer no longer emits a nullary `Fn{s}` binding here).
                 ProjResult::Grounded(v) => Ok(ProjResult::Grounded(v)),

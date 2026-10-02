@@ -652,11 +652,13 @@ mod wi417_cycle_tests {
     //! regression here is a loud failure.
     use super::super::{
         walk_pattern_field_type_deep, walk_type, walk_type_value, walk_value_to_resolved,
+        PatternSubst,
     };
     use crate::eval::value::Value;
     use crate::kb::subst::Substitution;
     use crate::kb::term::{Term, TermId, Var, VarId};
     use crate::kb::KnowledgeBase;
+    use smallvec::SmallVec;
 
     fn fresh(kb: &mut KnowledgeBase, name: &str) -> VarId {
         let sym = kb.intern(name);
@@ -703,7 +705,68 @@ mod wi417_cycle_tests {
         let mut kb = KnowledgeBase::new();
         let (subst, ta, _a, _b) = term_var_cycle(&mut kb);
         // Termination is the property under test (returns instead of crashing).
+        let subst = PatternSubst::of(&kb, subst);
         let _ = walk_pattern_field_type_deep(&mut kb, &subst, &Value::term(ta));
+    }
+
+    /// `functor(t: child)`.
+    fn application(kb: &mut KnowledgeBase, functor: &str, child: TermId) -> TermId {
+        let functor = kb.intern(functor);
+        let t = kb.intern("t");
+        kb.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_elem((t, child), 1),
+        })
+    }
+
+    /// `V ↦ F(t: V)` — a receiver's argument holding the very parameter it is bound to, the
+    /// `x: Car[V = List[T = V]]` of a sort's own operation, where the argument's `V` is the
+    /// ENCLOSING instance's. The parameter is replaced ONCE (WI-20260929-0RP29): walked to a
+    /// fixpoint this recursed for ever (MEASURED: the loader's stack overflowed). With the
+    /// once-only replacement backed out this test aborts the binary, as this module's others do.
+    #[test]
+    fn walk_pattern_field_type_deep_replaces_a_parameter_once() {
+        let mut kb = KnowledgeBase::new();
+        let v = fresh(&mut kb, "V");
+        let tv = kb.alloc(Term::Var(Var::Global(v)));
+        let arg = application(&mut kb, "F", tv);
+        let mut subst = Substitution::new();
+        subst.bind_value(&kb, v, Value::term(arg));
+        let subst = PatternSubst::of(&kb, subst);
+        match walk_pattern_field_type_deep(&mut kb, &subst, &Value::term(tv)) {
+            Value::Term { id, .. } => assert_eq!(id, arg, "the argument, its own `V` untouched"),
+            other => panic!("expected the argument's term, got {other:?}"),
+        }
+    }
+
+    /// … AND WHERE NOTHING CYCLES: `A ↦ F(t: B)`, `B ↦ G` reads `A` as `F(t: B)` — the
+    /// argument's `B` is the enclosing instance's, not the receiver's `G`. A fixpoint walk
+    /// answers `F(t: G)`: with the once-only replacement backed out this test FAILS, and
+    /// aborts nothing.
+    #[test]
+    fn walk_pattern_field_type_deep_keeps_an_arguments_own_parameter() {
+        let mut kb = KnowledgeBase::new();
+        let a = fresh(&mut kb, "A");
+        let b = fresh(&mut kb, "B");
+        let ta = kb.alloc(Term::Var(Var::Global(a)));
+        let tb = kb.alloc(Term::Var(Var::Global(b)));
+        let arg = application(&mut kb, "F", tb);
+        let g = kb.intern("G");
+        let g = kb.alloc(Term::Ref(g));
+        let mut subst = Substitution::new();
+        subst.bind_value(&kb, a, Value::term(arg));
+        subst.bind_value(&kb, b, Value::term(g));
+        let subst = PatternSubst::of(&kb, subst);
+        match walk_pattern_field_type_deep(&mut kb, &subst, &Value::term(ta)) {
+            Value::Term { id, .. } => assert_eq!(id, arg, "`F(t: B)`, its `B` not the receiver's"),
+            other => panic!("expected the argument's term, got {other:?}"),
+        }
+        // The receiver's own `B` is still its argument.
+        match walk_pattern_field_type_deep(&mut kb, &subst, &Value::term(tb)) {
+            Value::Term { id, .. } => assert_eq!(id, g),
+            other => panic!("expected `G`, got {other:?}"),
+        }
     }
 
     #[test]

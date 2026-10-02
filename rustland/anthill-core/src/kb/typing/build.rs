@@ -142,6 +142,7 @@ pub(super) fn build_type(
             let drain_start = results.len() - staged.len();
             let staged_results: Vec<Result<TypeResult, TypeError>> =
                 results.drain(drain_start..).collect();
+            let pos_slots = positional_param_indices(kb, &op_params, pos_args.len(), &named_args);
             for (k, &unified) in staged.iter().enumerate() {
                 // A staged argument that FAILED to type contributes nothing to the map, and
                 // that is not a silent skip: its `Err` rides `staged_results` into the
@@ -152,6 +153,7 @@ pub(super) fn build_type(
                     if let Some(psym) = param_sym_for_arg_index(
                         kb,
                         &op_params,
+                        &pos_slots,
                         unified,
                         pos_args.len(),
                         &named_args,
@@ -1292,6 +1294,13 @@ pub(super) fn build_type(
                     }
                     _ => ext_env.clear_type_denotation(var_name),
                 }
+                // WI-20260929-0RP29: if the value is a CALLABLE whose expression says its
+                // binders — a lambda, an operation, a callback parameter, a name already
+                // holding one — record them, so the callback passed by this name is aligned
+                // as the expression itself would be ([`TypingEnv::callable_places`]).
+                // Cleared otherwise, paired as the two records above are.
+                let places = callback_actual_places(kb, &ext_env, &value_node);
+                ext_env.bind_callable_places(var_name, places);
             }
             // WI-550 / proposal 050: the binding rule `let x = e ⟹ Γ ∪ { x ≡ e }`,
             // re-enabled now that a binder reference reads as its indexable
@@ -2396,20 +2405,27 @@ pub(crate) struct OpSupplyCtx<'a> {
 ///     WI-450's carrier-as-artifact problem). It now answers `None` for a
 ///     self-representing spec and the provision keys at its provider, i.e. at the
 ///     carrier. The two reasons above stand on their own; only the "inert" one is gone.
+///
+/// WI-20260929-0RP29 — AND THE MEMBER TAKES THE SPEC OP'S ARITY. Its parameters align with the
+/// call's by position; a member of another arity (reachable beside a DEFAULTED spec op, which
+/// the member-fit check does not compare, WI-20260930-FB53M) is not this call's override, and
+/// positional pairing would truncate silently. Here rather than in one caller, so the two
+/// sites cannot disagree about it either.
 pub(super) fn concrete_self_receiver_override(
     kb: &mut KnowledgeBase,
     carrier_sym: Symbol,
     fn_sym: Symbol,
     op_short_sym: Symbol,
-) -> Option<Symbol> {
+    spec_arity: usize,
+) -> Option<(Symbol, OperationInfoFull)> {
     let impl_op = carrier_override_op(kb, carrier_sym, fn_sym, op_short_sym)?;
     let info = lookup_operation_info_full(kb, impl_op)?;
     self_receiver_param_index(kb, &info.params, carrier_sym)?;
-    Some(impl_op)
+    (info.params.len() == spec_arity).then_some((impl_op, info))
 }
 
 /// WI-606: the return type a self-receiver spec op's call should thread when the
-/// spec op's OWN (projection-laden) return does not eliminate against the receiver.
+/// spec op's OWN (projection-laden) return or effects do not eliminate against the call.
 ///
 /// A body-less self-receiver spec op types its return at the abstract SPEC carrier
 /// with path-dependent projections — `Stream.splitFirst(s: Stream) -> Option[Pair[A
@@ -2437,11 +2453,10 @@ pub(super) fn concrete_self_receiver_override(
 /// provider (not an abstract spec, whose runtime value is some other provider
 /// resolved dynamically; not the spec sort itself, an abstract self-receiver) that
 /// declares a runnable self-receiver override. The impl's params are bound by
-/// unifying the receiver against the impl's self-receiver param in a THROWAWAY
-/// subst (the tie a Path-1 call to the impl makes): a bare self-param (`m: Mapped`)
-/// binds the carrier's canonical sort params via `unify_parameterized_with_sort_-
-/// ref`; a parameterized one (`f: FilteredStream[T = Elem, …]`) binds the op's own
-/// `[Elem, …]` params.
+/// unifying the call's arguments against the impl's parameters in a THROWAWAY subst: a
+/// bare carrier param (`m: Mapped`) binds the carrier's canonical sort params via
+/// `unify_parameterized_with_sort_ref`; a parameterized one (`f: FilteredStream[T = Elem,
+/// …]`) binds the op's own `[Elem, …]` params.
 ///
 /// WI-20260929-0RP29 — AND THE OVERRIDE'S OWN PROJECTIONS ARE ELIMINATED, against this
 /// call's arguments. An override may write its return with projections on ITS parameters
@@ -2449,107 +2464,208 @@ pub(super) fn concrete_self_receiver_override(
 /// written: a pattern binder then held `c.T` — a projection off a parameter of an operation
 /// the caller is not inside — and the refusal the caller saw named neither the call nor the
 /// cause ("expected Buf[T = Int64, N = Bool], got c.T", MEASURED; a projection across a
-/// provider hop, `w.Out`, likewise). Four rules, each MEASURED against a wrong answer:
+/// provider hop, `w.Out`, likewise). The rules, each MEASURED against a wrong answer:
 ///
-/// * δ BEFORE σ. The DECLARED return and effects are eliminated, then σ ties the
-///   override's own sort parameters to the receiver. σ first put the CALLER's projections
-///   into the type (`T ↦ x.T` for a receiver that leaves `T` to its WI-1059 slot), which are
-///   not this call's to eliminate, and the fallback declined a program it used to thread —
-///   the stdlib's own `Stream.splitFirst(MappedStream.map(s, f))` over `s: Stream[T = Int64]`.
-/// * BY POSITION, and only so. The call's arguments arrive keyed by the SPEC op's parameters
-///   (`param_to_arg_type`, `arg_syms`), and the override's align with those by position — the
-///   run-time binding, and how [`dispatched_impl_effects`] reads the same call. Keying the
-///   receiver's type to the first carrier-typed override parameter as well overwrote the
-///   right entry whenever that parameter was not the receiver (`pick(x: Car, s: Car)` for a
-///   spec `pick(x: T, s: Sp)`): a program adding 1 to a `String` loaded and failed at run time.
-/// * A `denoted` naming an override parameter is re-keyed to the caller's argument wherever it
-///   sits — the elimination re-keys only beside a projection — which is
-///   [`dispatched_impl_effects`]' rule for the same override at the same call.
-/// * A projection that does not eliminate DECLINES the fallback (`None`), so the call keeps
-///   the refusal it had rather than threading a type that names another operation's
+/// * δ ON THE DECLARED TYPES. The return and effects are eliminated as written, and σ is
+///   applied to the result. σ applied first put the CALLER's projections into the type (`T ↦
+///   x.T` for a receiver that leaves `T` to its WI-1059 slot), which are not this call's to
+///   eliminate, and the fallback declined a program it used to thread — the stdlib's own
+///   `Stream.splitFirst(MappedStream.map(s, f))` over `s: Stream[T = Int64]`.
+/// * BY POSITION, EVERY ARGUMENT. The call's arguments arrive keyed by the SPEC op's
+///   parameters (`param_to_arg_type`, `arg_syms`, whether passed by position or by name), and
+///   the override's parameters align with those by position — the run-time binding, and how
+///   [`dispatched_impl_effects`] reads the same call. σ starts from the override's OWN type
+///   parameters as the call binds them ([`override_at_call`]: a
+///   bracket written at the call reaches an override parameter only the return names,
+///   WI-20260930-JPSDH, and a parameter two arguments bind takes the call's join), then unifies
+///   each argument with the override's parameter at its position, a FOREIGN sort's unwritten
+///   slot expanded per occurrence at any depth on BOTH sides first (WI-374, as the qualified
+///   call expands it: two bare `List`s are two lists, so are two `nil`s and the `List`s of `Pair[A
+///   = List, B = List]`, not one list's `T` bound twice). Tying the receiver alone left free an
+///   override parameter only another argument binds (`pick[W](x: Car[V = W, …], s: Car)`
+///   threaded `A = ?W`), and tying it to the first carrier-typed override parameter tied the
+///   wrong one whenever that was not the receiver: either way, a program adding 1 to a `String`
+///   loaded and failed at run time.
+/// * THE OVERRIDE IS WHAT RUNS, SO IT JUDGES THE ARGUMENTS, with the qualified call's three
+///   verdicts: a callback's row ([`validate_callback_effect_row`]), then subtyping
+///   ([`validate_arg_against_param`], not the unifier's equality, whose `false` the loop above
+///   only threads) — and an argument the override takes as an OPTION is refused, since the call
+///   was elaborated against the spec's parameter and nothing wraps it in `some(…)` on this path.
+///   The declaration checks judge a projection over THIS instance (`k: s.T` against `k: c.V`)
+///   and leave one over another argument to the call — this one: `Sp.put(x, ks)` over `Car.put(c:
+///   Car, k: c.V)` with `ks` a list loaded and died adding 1 to it; a pure override's callback
+///   wrote a cell. A variable two arguments bind two ways — §3's tie beside a spec DEFAULT body
+///   (WI-20260930-FB53M), or the override's own type parameter — is refused the same way
+///   ([`conflicting_bindings_error`]). Each is the CALL's error: the spec's own elimination
+///   failure beside them names an unrelated cause.
+/// * WHAT σ CANNOT DECIDE, IT DECLINES (`Ok(None)`): an override type parameter the return
+///   mentions and nothing binds would thread `?W`, and a projection that does not eliminate
+///   leaves the call the refusal it had rather than a type naming another operation's
 ///   parameter.
+/// * A `denoted` naming an override parameter is re-keyed ONCE: by the elimination, which
+///   re-keys the denoteds of a type holding a projection, or directly for a type holding none
+///   — [`dispatched_impl_effects`]' rule for the same override at the same call. The RETURN is
+///   re-keyed to the caller's arguments. The EFFECTS are re-keyed to the SPEC op's parameters,
+///   so the call site's effect re-key (a field-path head, a placeless argument), keyed by the
+///   spec's parameters, applies to them. A GUARD's binders are not renamed by a re-key
+///   (WI-592); the call's guard σ is extended with the override's parameters instead, through
+///   [`ThreadedOverride::impl_to_spec`].
 pub(super) fn concrete_override_threaded(
     kb: &mut KnowledgeBase,
     op: &OperationInfoFull,
     fn_sym: Symbol,
     self_recv_spec: Option<Symbol>,
-    pos_results: &[Result<TypeResult, TypeError>],
-    param_to_arg_type: &HashMap<Symbol, Value>,
+    call: &CallToOverride,
+    call_subst: &Substitution,
     arg_syms: Option<&HashMap<Symbol, Symbol>>,
-) -> Option<(Value, Vec<Value>, Symbol)> {
-    // Self-receiver spec ops only (`splitFirst(s: Stream)`): the carrier-param
-    // shape (`collect(c: C)`) does not write a receiver-projected return.
-    let spec_sort = self_recv_spec?;
-    let idx = self_receiver_param_index(kb, &op.params, spec_sort)?;
-    let recv_ty = pos_results.get(idx)?.as_ref().ok()?.ty.clone();
-    let carrier_sym = sort_functor_of_view(kb, &recv_ty)?;
-    if carrier_is_abstract_spec(kb, carrier_sym)
-        || kb.canonical_sort_sym(carrier_sym) == kb.canonical_sort_sym(spec_sort)
-    {
-        return None;
-    }
-    let op_qn = kb.qualified_name_of(fn_sym).to_string();
-    let op_short_sym = kb.intern(short_name_of(&op_qn));
-    let impl_op = concrete_self_receiver_override(kb, carrier_sym, fn_sym, op_short_sym)?;
-    // Thread the impl's OWN return + effects through the receiver. The receiver is
-    // the ground truth for the impl's element/effect params, and the deep resolve below
-    // reads THIS σ — so what a failed unify leaves in it is this site's business.
-    // WI-20260904-60143: "a failed unify leaves them free" is what this said, and it was
-    // never true. `unify_types` does not roll back; it binds every component that AGREED
-    // and answers `false` for the rest (see its "what survives a `false`" note). So a shape
-    // mismatch leaves the params PARTIALLY pinned and the resolve returns a type built from
-    // the agreeing half — which is the intended reading here, the receiver being ground
-    // truth for exactly as much as it determines, but it is a different statement from
-    // "free". What that ticket changed is that the surviving half no longer depends on the
-    // order the receiver's type-args happened to be written in.
-    let impl_info = lookup_operation_info_full(kb, impl_op)?;
-    let impl_idx = self_receiver_param_index(kb, &impl_info.params, carrier_sym)?;
-    let self_param_ty = impl_info.params[impl_idx].1.clone();
-    // WI-20260929-0RP29 — δ, on the DECLARED types (see the doc): the override's parameters
-    // keyed as the call's arguments are, by position.
+    eff_rekey: &HashMap<Symbol, Symbol>,
+    span: Option<Span>,
+) -> Result<Option<ThreadedOverride>, TypeError> {
+    let Some((impl_op, impl_info)) =
+        self_receiver_override_of_call(kb, op, fn_sym, self_recv_spec, call)
+    else {
+        return Ok(None);
+    };
+    // The override's parameters keyed as the call's arguments are: by position. Its arity is
+    // the spec's ([`concrete_self_receiver_override`]).
     let mut impl_arg_types: HashMap<Symbol, Value> = HashMap::new();
     let mut impl_arg_syms: HashMap<Symbol, Symbol> = HashMap::new();
-    for ((spec_p, _), (impl_p, _)) in op.params.iter().zip(impl_info.params.iter()) {
-        if let Some(t) = param_to_arg_type.get(spec_p) {
+    let mut impl_eff_rekey: HashMap<Symbol, Symbol> = HashMap::new();
+    let mut impl_to_spec: HashMap<Symbol, Symbol> = HashMap::new();
+    let mut passed: Vec<(usize, Value)> = Vec::with_capacity(op.params.len());
+    for (i, ((spec_p, _), (impl_p, _))) in op.params.iter().zip(impl_info.params.iter()).enumerate()
+    {
+        if let Some(t) = call.passed(kb, &op.params, i) {
             impl_arg_types.insert(*impl_p, t.clone());
+            passed.push((i, t));
         }
         if let Some(&a) = arg_syms.and_then(|m| m.get(spec_p)) {
             impl_arg_syms.insert(*impl_p, a);
         }
+        if let Some(&a) = eff_rekey.get(spec_p) {
+            impl_eff_rekey.insert(*impl_p, a);
+        }
+        impl_to_spec.insert(*impl_p, *spec_p);
     }
-    let impl_syms = (!impl_arg_syms.is_empty()).then_some(&impl_arg_syms);
     let ctx = TypeErrorContext::OperationReturn {
         op_name: impl_op,
         surface: None,
     };
-    let discharge = |kb: &mut KnowledgeBase, ty: &Value| -> Option<Value> {
-        let v = eliminate_type_projections(kb, ty, &impl_arg_types, impl_syms, &ctx, None).ok()?;
-        Some(match impl_syms {
-            Some(map) => substitute_ref_syms_value(kb, &v, map),
-            None => v,
-        })
+    // δ on a DECLARED type (see the doc): a projection's receiver re-keyed to caller variables,
+    // a `denoted` through `denoted` in the same pass; `None` when a projection does not
+    // eliminate.
+    let discharge = |kb: &mut KnowledgeBase, ty: &Value, denoted: &HashMap<Symbol, Symbol>| {
+        let denoted = (!denoted.is_empty()).then_some(denoted);
+        if value_contains_projection(kb, ty) {
+            let receivers = (!impl_arg_syms.is_empty()).then_some(&impl_arg_syms);
+            eliminate_type_projections_rekeyed(
+                kb,
+                ty,
+                &impl_arg_types,
+                receivers,
+                denoted,
+                &ctx,
+                span,
+            )
+            .ok()
+        } else {
+            Some(match denoted {
+                Some(map) => substitute_ref_syms_value(kb, ty, map),
+                None => ty.clone(),
+            })
+        }
     };
-    let ret = discharge(kb, &impl_info.return_type)?;
-    let effs = impl_info
+    // σ: the override's own type parameters as the call binds them ([`override_at_call`] — the
+    // bracket, the arguments' join, the arguments), then every argument against the override's
+    // parameter at its position, for the rest (its carrier's parameters through the receiver).
+    // The parameter is the one the call's EFFECT re-key reads (a callback row naming a field
+    // path's head, WI-506), eliminated first if it projects another (WI-398); a foreign sort's
+    // unwritten slot is expanded per occurrence on both sides for σ (WI-374: two `nil`s are two
+    // lists) — never for the validation below, which reads the parameter as WRITTEN, as the
+    // qualified call validates it (an expanded callable's fresh row reads non-ground, and the
+    // check passed a wrong argument, MEASURED). WI-20260904-60143: `unify_types` binds every
+    // component that agreed and answers `false` for the rest — the validation judges that.
+    let impl_parent_canon = impl_parent_sort_of_op(kb, impl_op).map(|p| kb.canonical_sort_sym(p));
+    let mut subst =
+        override_at_call(kb, impl_op, &impl_info, op, call, call_subst, span)?.unwrap_or_default();
+    let mut bound: Vec<(usize, Value, Value)> = Vec::with_capacity(passed.len());
+    for (i, passed_ty) in passed {
+        let Some(written) = discharge(kb, &impl_info.params[i].1, &impl_eff_rekey) else {
+            return Ok(None);
+        };
+        let passed_x =
+            expand_foreign_sorts_deep(kb, &passed_ty, impl_parent_canon, SlotVar::Flexible);
+        let written_x =
+            expand_foreign_sorts_deep(kb, &written, impl_parent_canon, SlotVar::Flexible);
+        unify_types(kb, &mut subst, &passed_x, &written_x);
+        bound.push((i, passed_ty, written));
+    }
+    if let Some((vid, prior, attempted)) = first_genuine_contradiction_since(kb, &subst, 0) {
+        let what = override_variable_name(kb, impl_op, &impl_info, vid);
+        return Err(conflicting_bindings_error(
+            kb, &subst, &prior, &attempted, &what, impl_op, span,
+        ));
+    }
+    for (i, passed_ty, written) in &bound {
+        let impl_p = impl_info.params[*i].0;
+        // The qualified call's three verdicts, in its order: a callback's row first (it names
+        // the offending label), then subtyping.
+        if let Some((_, occ)) = call.arg(kb, &op.params, *i) {
+            if let Some(err) = validate_callback_effect_row(
+                kb, call.env, &subst, impl_op, impl_p, written, occ, passed_ty, span,
+            ) {
+                return Err(err);
+            }
+        }
+        let context = TypeErrorContext::OperationArgument {
+            op_name: impl_op,
+            param: impl_p,
+        };
+        match validate_arg_against_param(kb, &mut subst, passed_ty, written, span, context, None) {
+            ArgValidation::Ok => {}
+            ArgValidation::Fail(err) => return Err(err),
+            // The argument as the override receives it — wrapped where the call wrapped it
+            // against an option the SPEC declares — is a bare value where the override takes an
+            // option: the call was elaborated against the spec's parameter, so nothing wraps it.
+            ArgValidation::WrapSome { declared } => {
+                return Err(TypeError::Other {
+                    site: TypeError::here(),
+                    span,
+                    context: TypeErrorContext::OperationArgument {
+                        op_name: impl_op,
+                        param: impl_p,
+                    },
+                    expected: format!(
+                        "{} — the override this call dispatches to takes an option there, \
+                         where the spec's parameter does not, so nothing wraps the argument in \
+                         `some(…)`",
+                        type_display_name_value(kb, &declared)
+                    ),
+                    actual: type_display_name_value(kb, passed_ty),
+                });
+            }
+        }
+    }
+    let Some(ret) = discharge(kb, &impl_info.return_type, &impl_arg_syms) else {
+        return Ok(None);
+    };
+    let unbound_in_return = impl_info.type_params.iter().any(|(_, var)| {
+        matches!(var, Var::Global(vid)
+            if subst.resolve_as_value(*vid).is_none() && occurs_in_view(kb, *vid, &ret))
+    });
+    if unbound_in_return {
+        return Ok(None);
+    }
+    let Some(effs) = impl_info
         .effects
         .iter()
-        .map(|e| discharge(kb, e))
-        .collect::<Option<Vec<Value>>>()?;
-    // σ: thread the impl's return + effects through the receiver. The receiver is
-    // the ground truth for the impl's element/effect params, and the deep resolve below
-    // reads THIS σ — so what a failed unify leaves in it is this site's business.
-    // WI-20260904-60143: "a failed unify leaves them free" is what this said, and it was
-    // never true. `unify_types` does not roll back; it binds every component that AGREED
-    // and answers `false` for the rest (see its "what survives a `false`" note). So a shape
-    // mismatch leaves the params PARTIALLY pinned and the resolve returns a type built from
-    // the agreeing half — which is the intended reading here, the receiver being ground
-    // truth for exactly as much as it determines, but it is a different statement from
-    // "free". What that ticket changed is that the surviving half no longer depends on the
-    // order the receiver's type-args happened to be written in.
-    let mut subst = Substitution::new();
-    unify_types(kb, &mut subst, &recv_ty, &self_param_ty);
+        .map(|e| discharge(kb, e, &impl_to_spec))
+        .collect::<Option<Vec<Value>>>()
+    else {
+        return Ok(None);
+    };
     let ret = resolve_type_deep_value(kb, &subst, &ret);
-    let effs = effs
+    let effects = effs
         .iter()
         .map(|e| resolve_type_deep_value(kb, &subst, e))
         .collect();
@@ -2559,5 +2675,72 @@ pub(super) fn concrete_override_threaded(
     // that on `fn_sym` would read `MappedStream.splitFirst`'s own `B = MappedStream[…]` as
     // FOREIGN, since `fn_sym` is `Stream.splitFirst`, and skolemize the very carrier tie this
     // function exists to thread.
-    Some((ret, effs, impl_op))
+    Ok(Some(ThreadedOverride {
+        ret,
+        effects,
+        impl_op,
+        impl_to_spec,
+    }))
+}
+
+/// What [`concrete_override_threaded`] threads for a call: the override's return and effects
+/// at the call, the override, and each override parameter with the spec parameter at its
+/// position.
+pub(super) struct ThreadedOverride {
+    pub(super) ret: Value,
+    pub(super) effects: Vec<Value>,
+    pub(super) impl_op: Symbol,
+    /// Each override parameter's spec parameter, by position — the effects' re-key, and the
+    /// call's guard σ (keyed by the spec's parameters) is extended with the override's through
+    /// it, since a re-key does not rename a guard's binders (WI-592).
+    pub(super) impl_to_spec: HashMap<Symbol, Symbol>,
+}
+
+/// How [`conflicting_bindings_error`] names a variable of `impl_op` two arguments bound two
+/// ways: the carrier's shared type parameter (§3's tie), or the operation's own.
+pub(super) fn override_variable_name(
+    kb: &mut KnowledgeBase,
+    impl_op: Symbol,
+    impl_info: &OperationInfoFull,
+    vid: VarId,
+) -> String {
+    if let Some((name, _)) = impl_info
+        .type_params
+        .iter()
+        .find(|(_, v)| matches!(v, Var::Global(g) if *g == vid))
+    {
+        return format!(
+            "the type parameter `{}` of `{}`",
+            short_name_of(kb.local_name_of(*name)),
+            kb.local_name_of(impl_op)
+        );
+    }
+    "the sort's shared type parameter".to_string()
+}
+
+/// WI-606 — the concrete override a self-receiver spec-op call runs, with its signature:
+/// `None` unless the receiver (the argument bound to the spec's self-receiver parameter,
+/// passed by position or by name) is typed by a GENUINE concrete provider — not an abstract
+/// spec, not the spec sort itself — that declares a runnable self-receiver override.
+fn self_receiver_override_of_call(
+    kb: &mut KnowledgeBase,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+    self_recv_spec: Option<Symbol>,
+    call: &CallToOverride,
+) -> Option<(Symbol, OperationInfoFull)> {
+    // Self-receiver spec ops only (`splitFirst(s: Stream)`): the carrier-param
+    // shape (`collect(c: C)`) does not write a receiver-projected return.
+    let spec_sort = self_recv_spec?;
+    let idx = self_receiver_param_index(kb, &op.params, spec_sort)?;
+    let recv_ty = call.passed(kb, &op.params, idx)?;
+    let carrier_sym = sort_functor_of_view(kb, &recv_ty)?;
+    if carrier_is_abstract_spec(kb, carrier_sym)
+        || kb.canonical_sort_sym(carrier_sym) == kb.canonical_sort_sym(spec_sort)
+    {
+        return None;
+    }
+    let op_qn = kb.qualified_name_of(fn_sym).to_string();
+    let op_short_sym = kb.intern(short_name_of(&op_qn));
+    concrete_self_receiver_override(kb, carrier_sym, fn_sym, op_short_sym, op.params.len())
 }

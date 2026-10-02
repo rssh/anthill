@@ -816,14 +816,25 @@ pub(super) fn function_slot_arity_error<D: TermView, A: TermView>(
 /// into a canonical `effects_rows(...)` carrier the row machinery
 /// ([`subtype_effect_rows`] / [`unify_effect_rows`]) consumes. An arrow's
 /// `effects` child and a `Value::Node` row are already canonical and pass
-/// through untouched; only a legacy `List[Type]` `Function.E` binding (a
-/// `TermId` carrier) is flattened and re-canonicalized.
+/// through untouched; a `Function.E` BINDING (a `TermId` carrier) is whatever was written
+/// there, and each spelling is the row it denotes:
+///
+///  * a legacy `List[Type]` — its elements, flattened;
+///  * a bare `EffectExpression` (`merge(…)`, `open(…)`) — itself, wrapped;
+///  * ANYTHING ELSE IS ONE ELEMENT: a bare row variable or row-parameter reference is the OPEN
+///    row `{E}`, a bare label the row holding it — as the braced spelling builds them
+///    ([`KnowledgeBase::build_canonical_effects_rows`], whose `row_tail_var_of` reads a
+///    sort-level `Ref(S.E)` too).
+///
+/// The last case used to be flattened as a list too, and a non-list flattens to NOTHING: the
+/// prelude's own `Function[A, B, E]` slot read as the closed EMPTY row whatever `E` was bound
+/// to, so `Function.apply(inc, 41)` over a raising `inc` was refused "(a closed row)", and
+/// since the validator judges fields and call results (WI-20260929-0RP29) so was every
+/// effectful one of those (MEASURED: programs that ran). On the ACTUAL side the same reading
+/// made a `Function[…, E = Error[Foo]]`-typed callback pure.
 pub(super) fn canonical_effects_row(kb: &mut KnowledgeBase, row: &impl TermView) -> Value {
     let effects_rows_sym = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
     match row.as_bind_value() {
-        // Ground carrier: a canonical `effects_rows(...)` passes through; a
-        // legacy `List[Type]` (Function.E pre-WI-331) is flattened + re-
-        // canonicalized so the row machinery sees one shape.
         BindValue::Term(t) => {
             let is_canonical = matches!(
                 (kb.get_term(t), effects_rows_sym),
@@ -831,9 +842,13 @@ pub(super) fn canonical_effects_row(kb: &mut KnowledgeBase, row: &impl TermView)
             );
             if is_canonical {
                 Value::term(t)
-            } else {
+            } else if value_is_bare_effect_expr(kb, &Value::term(t)) {
+                wrap_bare_effect_expr_as_row(kb, &Value::term(t))
+            } else if term_is_list(kb, t) {
                 let flat = list_to_vec(kb, t);
                 Value::term(kb.build_canonical_effects_rows(&flat))
+            } else {
+                Value::term(kb.build_canonical_effects_rows(&[t]))
             }
         }
         // A `Value::Node` effects row is always the canonical occurrence form.
@@ -841,6 +856,15 @@ pub(super) fn canonical_effects_row(kb: &mut KnowledgeBase, row: &impl TermView)
         // An effects row is never carried as a deferred query path; the empty
         // row is a safe (unreachable) fallback.
         BindValue::Path(_) => Value::term(kb.build_canonical_effects_rows(&[])),
+    }
+}
+
+/// Is `t` a list spine — `nil` or a `cons` cell — as [`list_to_vec`] reads one?
+fn term_is_list(kb: &KnowledgeBase, t: TermId) -> bool {
+    match kb.get_term(t) {
+        Term::Fn { functor, .. } => matches!(kb.local_name_of(*functor), "nil" | "cons"),
+        Term::Ref(sym) | Term::Ident(sym) => kb.local_name_of(*sym) == "nil",
+        _ => false,
     }
 }
 

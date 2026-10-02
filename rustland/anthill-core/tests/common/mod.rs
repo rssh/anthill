@@ -451,6 +451,27 @@ pub fn assert_refused_naming(errs: &[String], tokens: &[&str], why: &str) {
     }
 }
 
+/// The loader's refusals of `source` — empty when it loads clean.
+#[allow(dead_code)]
+pub fn load_errors_of(source: &str) -> Vec<String> {
+    try_load_kb_with(source).err().unwrap_or_default()
+}
+
+/// Load `source` and call `entry`: its `Int64`, or WHY it did not load or run — the harness of
+/// a row that runs a program and must see a refusal as its own `Err` rather than a panic
+/// ([`interp_for`] panics on one). Standard eval builtins only.
+#[allow(dead_code)]
+pub fn run_int64(source: &str, entry: &str) -> Result<i64, String> {
+    let kb = try_load_kb_with(source).map_err(|errs| errs.join("\n"))?;
+    let mut interp = Interpreter::new(kb);
+    eval::builtins::register_standard_builtins(&mut interp)
+        .expect("register standard eval builtins");
+    match interp.call(entry, &[]) {
+        Ok(eval::Value::Int(v)) => Ok(v),
+        other => Err(format!("`{entry}` did not run to an Int64: {other:?}")),
+    }
+}
+
 /// Load stdlib + user source, construct an `Interpreter`, and register the
 /// standard eval builtins. The one-liner every eval_mN_test file needs.
 #[allow(dead_code)]

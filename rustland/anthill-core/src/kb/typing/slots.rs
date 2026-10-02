@@ -605,11 +605,11 @@ pub(super) fn seed_receiver_type_args(
 /// "a Box of Boxes", whose inner parameter is unwritten and must be fresh rather than the
 /// enclosing instance's.
 ///
-/// TOP LEVEL ONLY, the same depth WI-374 expands a signature position to, and stated
+/// TOP LEVEL ONLY, the same depth WI-374 expands a CALL's signature position to, and stated
 /// rather than assumed: a bare sort NESTED inside a written binding (`[T = Pair[A =
-/// List]]`) is not expanded, so the erasure survives one level in. Deep expansion is
-/// [`expand_foreign_sort_application`]'s own follow-on scope and closing it there closes
-/// it here, since this is a call to it.
+/// List]]`) is not expanded, so the erasure survives one level in. The every-depth walk
+/// ([`expand_foreign_sorts_deep`]) serves the readers that compare two declarations; moving
+/// the call to it would move this bracket with it, since this is a call to the top-level one.
 ///
 /// NEVER A PROVIDER SELECTION, which is what `binds_a_provider_slot` gates and the one
 /// place this differs from the parameter channel it copies. A NAMED REQUIREMENT SLOT is

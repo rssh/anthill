@@ -121,24 +121,26 @@ pub(super) fn is_hof_shaped(arg: &Rc<NodeOccurrence>) -> bool {
 }
 
 /// WI-793: the UNIFIED `pos_args ++ named_args` index of the argument bound to parameter
-/// `psym` at declared position `param_pos` — positional by slot, named by LABEL (WI-426,
-/// not symbol identity). One index space so a staged argument can be named once and
-/// located in either channel. [`arg_at`] reads it back; [`param_sym_for_arg_index`] is
-/// the inverse.
+/// `param_pos` — [`bound_arg`]'s answer (the positional argument that FILLS it by the call's
+/// ranking, `pos_slots`, else the one named with its LABEL) in one index space, so a staged
+/// argument can be named once and located in either channel. [`arg_at`] reads it back;
+/// [`param_sym_for_arg_index`] is the inverse.
+///
+/// WI-20260929-0RP29: by the RANKING, not by slot — in a mixed call positional arguments
+/// rank among the parameters the labels left open, so the slot named another argument:
+/// `g(ints, lambda x -> x + 1, a: strs)` typed the lambda against the wrong sibling and was
+/// refused where the positional and all-named spellings ran (MEASURED).
 fn param_arg_index(
     kb: &KnowledgeBase,
-    psym: Symbol,
+    ps: &[(Symbol, Value)],
+    pos_slots: &[Option<usize>],
     param_pos: usize,
-    pos_len: usize,
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Option<usize> {
-    if param_pos < pos_len {
-        return Some(param_pos);
-    }
-    named_args
-        .iter()
-        .position(|(n, _)| same_label(kb, *n, psym))
-        .map(|k| pos_len + k)
+    Some(match bound_arg(kb, ps, pos_slots, param_pos, named_args)? {
+        BoundArg::Pos(j) => j,
+        BoundArg::Named(k) => pos_slots.len() + k,
+    })
 }
 
 /// WI-793: the argument at a unified [`param_arg_index`].
@@ -165,12 +167,18 @@ pub(super) fn arg_at<'a>(
 pub(super) fn param_sym_for_arg_index(
     kb: &KnowledgeBase,
     ps: &[(Symbol, Value)],
+    pos_slots: &[Option<usize>],
     unified: usize,
     pos_len: usize,
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Option<Symbol> {
     if unified < pos_len {
-        return ps.get(unified).map(|(s, _)| *s);
+        return pos_slots
+            .get(unified)
+            .copied()
+            .flatten()
+            .and_then(|p| ps.get(p))
+            .map(|(s, _)| *s);
     }
     let label = named_args.get(unified - pos_len)?.0;
     ps.iter()
@@ -298,6 +306,7 @@ pub(super) fn known_arg_types_and_staged(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> (HashMap<Symbol, Value>, Vec<usize>) {
     let ps = &op.params;
+    let pos_slots = positional_param_indices(kb, ps, pos_args.len(), named_args);
     // The params some param type PROJECTS. ONE walk of the signature; empty ⟹ this call
     // eliminates nothing, so no argument is worth staging.
     let mut projected: Vec<Symbol> = Vec::new();
@@ -308,7 +317,7 @@ pub(super) fn known_arg_types_and_staged(
     // declared type mentions (see the doc above). Disjoint from `projected` in
     // mechanism (type-param identity, not path projection) but identical in
     // treatment: their arguments are typed first so the hint map can be completed.
-    let tp_pinning = op_tp_pinning_params(kb, functor, op, pos_args, named_args);
+    let tp_pinning = op_tp_pinning_params(kb, functor, op, pos_args, &pos_slots, named_args);
     // WI-20260828-N2FHM: the THIRD trigger — the callee's CARRIER-PARAM receiver
     // (`Iterable.find(c: C, …)`). A callback param that names one of the spec's OWN params
     // (`pred: (x: Element) -> Bool`) is grounded from that receiver's PROVISION, not from
@@ -348,8 +357,8 @@ pub(super) fn known_arg_types_and_staged(
                     _ => None,
                 })
                 .collect();
-            ps.iter().enumerate().any(|(j, (psym, pty))| {
-                param_arg_index(kb, *psym, j, pos_args.len(), named_args)
+            ps.iter().enumerate().any(|(j, (_, pty))| {
+                param_arg_index(kb, ps, &pos_slots, j, named_args)
                     .and_then(|u| arg_at(pos_args, named_args, u))
                     .is_some_and(is_hof_shaped)
                     && type_mentions_spec_param(kb, pty, &spec_syms, &spec_vars)
@@ -360,7 +369,7 @@ pub(super) fn known_arg_types_and_staged(
     let mut known: HashMap<Symbol, Value> = HashMap::new();
     let mut staged: Vec<usize> = Vec::new();
     for (j, (psym, _)) in ps.iter().enumerate() {
-        let Some(unified) = param_arg_index(kb, *psym, j, pos_args.len(), named_args) else {
+        let Some(unified) = param_arg_index(kb, ps, &pos_slots, j, named_args) else {
             continue;
         };
         let Some(a) = arg_at(pos_args, named_args, unified) else {
@@ -433,6 +442,7 @@ fn op_tp_pinning_params(
     functor: Symbol,
     op: &OperationInfoFull,
     pos_args: &[Rc<NodeOccurrence>],
+    pos_slots: &[Option<usize>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Vec<Symbol> {
     // WI-849: the op table holds each param's `Var` directly. A non-`Global` entry is
@@ -476,9 +486,9 @@ fn op_tp_pinning_params(
         .iter()
         .map(|(_, t)| type_mentions_op_tp(kb, t, &tp_vars))
         .collect();
-    let some_hof_mentions_tp = ps.iter().enumerate().any(|(j, (psym, _))| {
+    let some_hof_mentions_tp = ps.iter().enumerate().any(|(j, _)| {
         mentions[j]
-            && param_arg_index(kb, *psym, j, pos_args.len(), named_args)
+            && param_arg_index(kb, ps, pos_slots, j, named_args)
                 .and_then(|u| arg_at(pos_args, named_args, u))
                 .is_some_and(is_hof_shaped)
     });
@@ -668,10 +678,17 @@ pub(super) fn bind_spec_params_for_hint(
     if known.is_empty() {
         return false;
     }
+    let pos_params = positional_param_indices(kb, params, pos_args.len(), named_args);
     let Some((spec_sort, carrier_sym, recv_ty, view, carrier_pvid, _transitive, recv_arg_sym)) =
-        carrier_param_receiver(kb, params, functor, pos_args, named_args, &|_i, pname| {
-            known.get(&pname).cloned()
-        })
+        carrier_param_receiver(
+            kb,
+            params,
+            functor,
+            pos_args,
+            &pos_params,
+            named_args,
+            &|_i, pname| known.get(&pname).cloned(),
+        )
     else {
         return false;
     };
@@ -718,6 +735,19 @@ pub(super) fn apply_arg_hints(
         bind_spec_params_for_hint(kb, &mut s, functor, ps, pos_args, named_args, known);
         (!s.is_empty()).then_some(s)
     });
+    // What a callback parameter's PROJECTION reads ([`projection_receivers`]): the sibling
+    // argument's type, or the option its parameter receives for one the call will wrap in
+    // `some(…)` — `app(5, lambda (x) -> x + 1)` behind `f: (x: k.T) -> Int64` hints `x` as the
+    // `Int64` the call's own elimination reads. The two pinning readers above key on the
+    // argument itself.
+    let no_subst = Substitution::new();
+    let receivers = match op_params {
+        Some(ps) => {
+            projection_receivers(kb, inst.as_ref().unwrap_or(&no_subst), ps, known, functor)
+        }
+        None => std::borrow::Cow::Borrowed(known),
+    };
+    let known = &*receivers;
     // WI-20260904-50B2K — WHICH PARAMETER A POSITIONAL ARGUMENT TAKES IS
     // [`positional_param_indices`]' QUESTION, not `ps.get(i)`. A named argument CONSUMES a
     // parameter, so a positional one beside it does not land at its own index — the

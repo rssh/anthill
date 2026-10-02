@@ -103,7 +103,7 @@ end
 /// WI-20260823-4GBQV — THE ARGUMENT SHAPES THAT NAME A PLACE, AND WHAT HAPPENS TO THE
 /// ONE THAT DOES NOT.
 ///
-/// `param_to_arg_sym` / `param_to_arg_head` populate from the shapes that DENOTE a place:
+/// `ArgPlaces::vars` / `ArgPlaces::heads` populate from the shapes that DENOTE a place:
 /// a bare VARIABLE (`Cell.set(k, 1)` ⟹ `Modify[c]` becomes `Modify[k]`), a field
 /// PROJECTION off one (`Cell.set(c.rep, 1)` ⟹ the head `c`, the rest of this file), and —
 /// as of this ticket — a NULLARY CONSTRUCTOR naming an ambient resource

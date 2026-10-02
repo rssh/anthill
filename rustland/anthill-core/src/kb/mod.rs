@@ -10184,7 +10184,9 @@ impl KnowledgeBase {
     ///
     /// WI-791: `arity` is the parameter-list LENGTH as written — `op.params.len()`
     /// at an eta mint, `params.len()` at a declared signature, the lambda's binder
-    /// count at a lambda mint. It is REQUIRED, not derived: deriving it from
+    /// count at a lambda mint, the source arrow's own (decoded) arity at a rebuild
+    /// (projection elimination rewrites the parameter TYPES, never their count).
+    /// It is REQUIRED, not derived: deriving it from
     /// `param`'s shape is exactly the ambiguity this ticket closes (a lone
     /// tuple-typed parameter presents the same `named_tuple` an n-parameter list
     /// does). Pass 1 whenever the arrow has a single parameter, INCLUDING when that
@@ -10199,21 +10201,6 @@ impl KnowledgeBase {
         owner: Option<Symbol>,
     ) -> Rc<NodeOccurrence> {
         let arity = node_occurrence::TypeChild::Interned(self.make_arity_term(arity));
-        self.make_arrow_occ_child(param, result, effects, arity, span, owner)
-    }
-
-    /// [`Self::make_arrow_occ`] with the `arity` child already built — for a
-    /// REBUILD (projection elimination), which must transplant the arrow's own
-    /// arity rather than re-derive a count it no longer has the source for.
-    pub(crate) fn make_arrow_occ_child(
-        &self,
-        param: node_occurrence::TypeChild,
-        result: node_occurrence::TypeChild,
-        effects: node_occurrence::TypeChild,
-        arity: node_occurrence::TypeChild,
-        span: crate::span::SourceSpan,
-        owner: Option<Symbol>,
-    ) -> Rc<NodeOccurrence> {
         NodeOccurrence::new_type(
             node_occurrence::TypeNode::Arrow {
                 param,

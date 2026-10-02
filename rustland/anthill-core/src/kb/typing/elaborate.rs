@@ -385,7 +385,7 @@ pub(super) fn open_existential_return(
 /// `c : List[T = ?T]`, so `c.T` reduces to the sort's rigid — but it reads ONE parameter where
 /// the tie pools ALL of them, and it fails wherever that one cannot answer. Driven, both
 /// halves from the suite: `put(empty(), "a", 1)` has no stable receiver to project off (the
-/// argument is a call, so `param_to_arg_sym` records nothing) and `Map.put`'s result came back
+/// argument is a call, so `ArgPlaces::vars` records nothing) and `Map.put`'s result came back
 /// as the un-eliminated `Map[K = m.K, V = m.V]`, while the canonical form has `key: K` and
 /// `value: V` bind the very same vars; and writing a projection into `put`'s return flips
 /// `op_has_projection` on for the whole call, which then failed its own PARAMETERS at
@@ -1496,21 +1496,24 @@ pub(super) fn rigidify_op_type_params(
     for (param_sym, var) in type_params {
         if let Var::Global(vid) = var {
             let vid = *vid;
-            // Name the rigid after the PARAMETER's short name, not the alias var's name.
-            // `sort A = ?` aliases to an ANONYMOUS `?` var, so inheriting `vid.name()`
-            // renders every skolemized param as `?_` — a clash then reads the unhelpful
-            // `expected F[T = ?_], got F[T = ?_]` (both rigids print identically). The
-            // short name makes it `?A` vs `?B`. Purely cosmetic: a rigid's identity is its
-            // fresh `VarId`, never its name (unification compares VarIds; `SubjectKey` keys
-            // on `v.raw()`), so the rename cannot affect any judgement.
-            let name = short_name_of(kb.local_name_of(*param_sym)).to_owned();
-            let name_sym = kb.intern(&name);
-            let fresh = kb.fresh_var(name_sym);
-            let rigid_term = kb.alloc(Term::Var(Var::Rigid(fresh)));
+            let rigid_term = fresh_rigid_named(kb, *param_sym);
             rigidify.bind_term(kb, vid, rigid_term);
         }
     }
     rigidify
+}
+
+/// A fresh rigid named after `param`'s SHORT name, not the alias var's name. `sort A = ?`
+/// aliases to an ANONYMOUS `?` var, so inheriting `vid.name()` renders every skolemized
+/// param as `?_` — a clash then reads the unhelpful `expected F[T = ?_], got F[T = ?_]`
+/// (both rigids print identically). The short name makes it `?A` vs `?B`. Purely cosmetic:
+/// a rigid's identity is its fresh `VarId`, never its name (unification compares VarIds;
+/// `SubjectKey` keys on `v.raw()`), so the rename cannot affect any judgement.
+pub(super) fn fresh_rigid_named(kb: &mut KnowledgeBase, param: Symbol) -> TermId {
+    let name = short_name_of(kb.local_name_of(param)).to_owned();
+    let name_sym = kb.intern(&name);
+    let fresh = kb.fresh_var(name_sym);
+    kb.alloc(Term::Var(Var::Rigid(fresh)))
 }
 
 /// The `(canonical var, rigid)` bridge ([`SigmaCtx::param_rigids`]) for `params`, read

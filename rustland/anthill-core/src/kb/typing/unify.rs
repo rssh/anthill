@@ -1160,7 +1160,7 @@ pub(super) fn unify_denoted_view<A: TermView, B: TermView>(
 /// identity instead. The parent callable is the place's qualified name minus its
 /// last segment (`<op>.f.a` → `<op>.f`), and its ordered params are on its symbol
 /// (`SymbolTable::arg_places`).
-fn callback_binder_position(kb: &KnowledgeBase, sym: Symbol) -> Option<usize> {
+pub(super) fn callback_binder_position(kb: &KnowledgeBase, sym: Symbol) -> Option<usize> {
     if kb.kind_of(sym) != Some(crate::intern::SymbolKind::CallbackParam) {
         return None;
     }

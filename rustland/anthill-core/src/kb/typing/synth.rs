@@ -1558,25 +1558,59 @@ pub(super) fn sigma_subst_type(
     if sigma.is_empty() {
         return ty.clone();
     }
-    sigma_subst_view(kb, ty, sigma).unwrap_or_else(|| ty.clone())
+    let lookup = |s: Symbol| {
+        sigma
+            .iter()
+            .find(|(k, _)| *k == s)
+            .map(|(_, t)| Value::term(*t))
+    };
+    sigma_subst_view(kb, ty, Some(sigma), &lookup).unwrap_or_else(|| ty.clone())
+}
+
+/// [`sigma_subst_type`] with σ's RANGE on any carrier (WI-20260929-0RP29): a binding the member
+/// rule has expanded is the value its expansion built — an arrow is rebuilt as an occurrence, a
+/// row around a rewritten label on the value carrier — and is substituted as that value. Held to
+/// a `TermId` range, such a binding did not fit and was kept UNEXPANDED, read three ways by its
+/// three readers (MEASURED: `T = Strm[E = {Error}]` and `T = (z: List) -> Int64`). While every
+/// binding is a term this is [`sigma_subst_type`] itself, hash-consed result and all.
+pub(super) fn sigma_subst_type_values(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    sigma: &[(Symbol, Value)],
+) -> Value {
+    if sigma.is_empty() {
+        return ty.clone();
+    }
+    let terms: Option<Vec<(Symbol, TermId)>> = sigma
+        .iter()
+        .map(|(k, v)| match v {
+            Value::Term { id, .. } => Some((*k, *id)),
+            _ => None,
+        })
+        .collect();
+    if let Some(terms) = terms {
+        return sigma_subst_type(kb, ty, &terms);
+    }
+    let lookup = |s: Symbol| sigma.iter().find(|(k, _)| *k == s).map(|(_, v)| v.clone());
+    sigma_subst_view(kb, ty, None, &lookup).unwrap_or_else(|| ty.clone())
 }
 
 /// [`sigma_subst_type`]'s walk. `None` when σ changes nothing at or beneath `v`, which
-/// is what lets an untouched subtree keep its own carrier.
+/// is what lets an untouched subtree keep its own carrier. `terms` is σ where its whole range
+/// is hash-consed — the term world's own substitution for a hash-consed subtree; `lookup` is σ
+/// by name, on whatever carrier each binding rides.
 fn sigma_subst_view(
     kb: &mut KnowledgeBase,
     v: &Value,
-    sigma: &[(Symbol, TermId)],
+    terms: Option<&[(Symbol, TermId)]>,
+    lookup: &dyn Fn(Symbol) -> Option<Value>,
 ) -> Option<Value> {
-    if let Value::Term { id, .. } = v {
+    if let (Value::Term { id, .. }, Some(sigma)) = (v, terms) {
         let t = substitute_impl_params_alloc(kb, *id, sigma);
         return (t != *id).then(|| Value::term(t));
     }
     if let Some(s) = view_ref_symbol(kb, v) {
-        return sigma
-            .iter()
-            .find(|(k, _)| *k == s)
-            .map(|(_, t)| Value::term(*t));
+        return lookup(s);
     }
     // A variable, a literal, `⊥` or an opaque head names nothing σ binds.
     let ViewHead::Functor {
@@ -1591,7 +1625,7 @@ fn sigma_subst_view(
     let mut pos = Vec::with_capacity(pos_arity);
     for i in 0..pos_arity {
         let child = v.pos_arg(kb, i).expect("pos_arg within arity").to_value();
-        let new = sigma_subst_view(kb, &child, sigma);
+        let new = sigma_subst_view(kb, &child, terms, lookup);
         changed |= new.is_some();
         pos.push(new.unwrap_or(child));
     }
@@ -1599,7 +1633,7 @@ fn sigma_subst_view(
     let mut named = Vec::with_capacity(keys.len());
     for k in keys {
         let child = v.named_arg(kb, k).expect("named key present").to_value();
-        let new = sigma_subst_view(kb, &child, sigma);
+        let new = sigma_subst_view(kb, &child, terms, lookup);
         changed |= new.is_some();
         named.push((k, new.unwrap_or(child)));
     }

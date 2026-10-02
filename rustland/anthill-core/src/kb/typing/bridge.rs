@@ -269,7 +269,7 @@ pub(crate) fn resolve_bridge_requirements_supplied(
     // of the discharge would drift from it.
     let entries_have_projection = chain.iter().any(|e| value_contains_projection(kb, &e.spec));
     let (subst, param_arg_types) =
-        pin_params_from_args(kb, &rec.params, args, entries_have_projection);
+        pin_params_from_args(kb, op, &rec.params, args, entries_have_projection);
     // One resolved tree per requires slot, keyed by the frame requirement-param name.
     let names = chain.names(kb);
     // WI-822 LEG 1 — where the OP half starts. A failure in the SORT half aborts the
@@ -759,7 +759,13 @@ pub(crate) fn resolve_bridge_requirements_supplied(
 
 /// The substitution that pins an operation's type parameters from GROUND argument
 /// values — each argument's inferred type unified with its declared parameter type —
-/// and, when `keep_arg_types`, each parameter's argument type keyed by parameter.
+/// and, when `keep_arg_types`, what a projection over each parameter reads, keyed by
+/// parameter: its argument's type, or the option the parameter is declared to receive where
+/// the argument is its bare payload ([`projection_receivers`], the typed call site's own map —
+/// WI-20260929-0RP29). Read raw here, `rule answer(?r) :- pick(5, ?r)` over `pick(k: Option[T =
+/// Int64]) requires Desc[T = k.T]` asked `Int64` for a member `T`, found none, and the goal
+/// answered "no solutions" in silence where the same call in an operation body ran (MEASURED:
+/// it answered 7 before a spec's carrier parameter stopped lending a member).
 ///
 /// A parameter typed with the parent sort (`b: Box`) binds `Box`'s params from the
 /// arg's type-args (`Box[T = Tag]` ⇒ `Box.T := Tag`); a parameter typed with a
@@ -768,6 +774,7 @@ pub(crate) fn resolve_bridge_requirements_supplied(
 /// a witness is resolved at exactly the bindings the rest of the frame was.
 fn pin_params_from_args(
     kb: &mut KnowledgeBase,
+    op: Symbol,
     params: &[(Symbol, Value)],
     args: &[Value],
     keep_arg_types: bool,
@@ -783,6 +790,8 @@ fn pin_params_from_args(
         }
         unify_types(kb, &mut subst, &arg_ty, ptype);
     }
+    let param_arg_types =
+        projection_receivers(kb, &subst, params, &param_arg_types, op).into_owned();
     (subst, param_arg_types)
 }
 
@@ -953,7 +962,7 @@ pub(crate) fn resolve_param_witnesses(
     let keep_arg_types = matched
         .iter()
         .any(|(_, e, ..)| value_contains_projection(kb, &e.spec));
-    let (subst, param_arg_types) = pin_params_from_args(kb, &rec.params, args, keep_arg_types);
+    let (subst, param_arg_types) = pin_params_from_args(kb, op, &rec.params, args, keep_arg_types);
     let mut out = Vec::with_capacity(matched.len());
     for (name, entry, witness, spelled) in matched {
         let concrete = RequiresEntry {

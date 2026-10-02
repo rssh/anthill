@@ -176,7 +176,10 @@ end
 /// (`combine(a: Widget, …)`) and `requires Eq[T]` over its element; `HashWidget
 /// provides Widget` opens the abstract-spec gate. Without the carrier-preservation
 /// guard, `w.eq(x)` would mis-resolve to `Eq.eq(widget, x)` — passing a Widget where
-/// an element is expected. The guard rejects the edge ⟹ a clean dot-dispatch error.
+/// an element is expected. The guard rejects the edge ⟹ a clean dot-dispatch error, and
+/// the ONLY one (pinned): the member takes `b: Widget` — any provider, as the spec's
+/// `combine` does; a `b: HashWidget` would be refused by WI-20260929-0RP29's member rule
+/// beside it, an extra error nothing here would see change.
 #[test]
 fn constraint_style_requires_member_not_borrowable() {
     let src = r#"
@@ -192,20 +195,13 @@ namespace wi614.carrier_guard
   sort HashWidget
     entity hw(x: Int64)
     provides Widget[T = Int64]
-    operation combine(a: HashWidget, b: HashWidget) -> HashWidget = a
+    operation combine(a: HashWidget, b: Widget) -> HashWidget = a
   end
 
   operation try_eq(w: Widget[T = Int64], x: Widget[T = Int64]) -> Bool = w.eq(x)
 end
 "#;
-    let errs = crate::common::try_load_kb_with(src)
-        .err()
-        .unwrap_or_default();
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("eq") && e.contains("dot dispatch")),
-        "a constraint-style `requires Eq[T]` over the element must NOT lend `.eq` to \
-         the collection value (carrier-preservation); expected a dot-dispatch error \
-         on `eq`, got: {errs:?}"
-    );
+    // A constraint-style `requires Eq[T]` over the element must NOT lend `.eq` to the
+    // collection value (carrier-preservation): a dot-dispatch error on `eq`.
+    crate::common::expect_load_errors(crate::common::try_load_kb_with(src), &["dot dispatch"]);
 }
