@@ -10,6 +10,14 @@ type parameters — the *explicit* threading mechanism, already implemented),
 WI-376 (value projection `s.T` / `s.Sort` — the *fluent* threading mechanism),
 WI-374 (bare-reference expansion — a *convenience*, no longer load-bearing).
 
+**Superseded in part by [070](../proposals/070-self-and-fresh-bare-sorts.md)**
+(Draft, 2026-10-03): §1's `s.Sort` (renamed `s.Self`) and its rejection of
+`s.Self`; §3's first bullet (the implicit self tie), its WI-1082 paragraph and
+its "Two exceptions"; §4's member-tie enforcement; §5's "The scope is the
+foreign slots" paragraph. Under 070 a bare or partial sort is fresh everywhere,
+`Self` writes this instance, and inside its own definition a sort is written in
+full. Until 070 is implemented, the text below describes the code.
+
 ## The core principle
 
 > **Type-checking depends on the *type* of a value, never on its provenance —
