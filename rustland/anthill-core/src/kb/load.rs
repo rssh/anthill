@@ -9172,6 +9172,28 @@ impl ScopePass for SecondaryEntryPass<'_> {
         if matches!(site.decl, ScopeDecl::Namespace(_)) {
             let name = self.kb.qualified_name_of(sym).to_string();
             if self.kb.has_kind(sym, SymbolKind::Sort) {
+                // WI-1003 — the entry's OWN `{< … >}` block. Not one of the block's
+                // items, so the classifier below never sees it, and it is not the
+                // "inert, always allowed" block a declaration carries: a `namespace X`
+                // header block emits its `DescriptionInfo` against the namespace's
+                // symbol, which at an entry address IS the type `X` (measured: target
+                // `Rec`). So it describes a declaration the MAIN entry owns — the
+                // foreign-target `describe` R3 already refuses, by another production.
+                if let ScopeDecl::Namespace(ns) = site.decl {
+                    if !ns.descriptions.is_empty() {
+                        self.refuse(
+                            &name,
+                            "description block",
+                            None,
+                            "a `namespace` block's own `{< … >}` describes the symbol the \
+                             block is at, and at a sort's address that symbol is the TYPE, \
+                             which this entry does not declare — the same foreign target a \
+                             standalone `describe` is refused for here. Describe the type in \
+                             its own declaration, or describe a member this entry declares",
+                            ns.name.span,
+                        );
+                    }
+                }
                 self.classify_entry(sym, &name, site.decl.items());
             } else {
                 self.refuse_orphan_provides(&name, site.decl.items());
@@ -9694,10 +9716,26 @@ impl SecondaryEntryPass<'_> {
     /// would be accepted; that direction is the mild one — the check is an ownership
     /// gate, and a false ACCEPT costs a diagnostic while a false REFUSE costs a legal
     /// program.
+    ///
+    /// A CONTRACT-proof target `<op>.requires` / `<op>.ensures` (proposal 025 §"Proof
+    /// for operation contracts", WI-539) is about the OPERATION: the contract clause has
+    /// no declaration of its own, and its verdict is written onto the operation's
+    /// contract. So the clause keyword is peeled first and the operation is what is
+    /// asked — without it, `proof show.ensures` read `show` as a foreign PREFIX and
+    /// refused a proof about the entry's own member (WI-1003, measured).
     fn target_names_this_entry(&self, t: &DeferredTarget) -> bool {
-        let (prefix, last) = match t.target.rsplit_once('.') {
+        let target = match t.target.rsplit_once('.') {
+            Some((op, clause))
+                if t.construct == "proof"
+                    && crate::kb::proof_verify::CONTRACT_CLAUSE_KEYWORDS.contains(&clause) =>
+            {
+                op
+            }
+            _ => t.target.as_str(),
+        };
+        let (prefix, last) = match target.rsplit_once('.') {
             Some((p, l)) => (Some(p), l),
-            None => (None, t.target.as_str()),
+            None => (None, target),
         };
         if let Some(p) = prefix {
             if p != t.sort && !t.sort.ends_with(&format!(".{p}")) {
