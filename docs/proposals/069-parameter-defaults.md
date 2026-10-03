@@ -102,6 +102,32 @@ rule head, match case, or other pattern position, an omitted field retains its e
 meaning—it is unconstrained, not filled by a default. This distinction prevents adding a default
 from silently changing which stored facts a pattern matches.
 
+**In a rule body, the position decides.** A rule body holds both kinds of position, and the same
+text means a pattern in one and a value in the other:
+
+```anthill
+rule r1 :- Endpoint(port: 80)                         -- a goal: matches stored Endpoint facts
+rule r2 :- connects(Endpoint(port: 80))               -- an argument of a rule goal: unified
+rule r3(?d) :- ?d <=> describe(Endpoint(port: 80))    -- an argument of an operation call
+```
+
+- In a **logical** position — a goal, an argument of a rule goal (at any depth), or a side of `<=>`
+  — the entity is matched by unification, so it is a pattern: an omitted field is a fresh variable
+  (kernel-language §8.3, *Partial entity patterns*), never its default. `r1` and `r2` match stored
+  `Endpoint`s whatever their host.
+- As an argument of an **operation call** — which a rule body evaluates (proposal 068: an operation
+  call in a rule body is its value, at any depth) — the entity is the value the operation receives,
+  so it is a construction: omitted fields take their defaults. `r3` hands `describe` the
+  `Endpoint("localhost", 80)` an operation body would, rather than an `Endpoint` with an unbound
+  host on which the call could only wait.
+
+The split keeps one meaning for `describe(Endpoint(port: 80))` in an operation body and in a rule
+body — 068's purpose — and leaves every pattern meaning what it means today. It is the same
+partition kernel-language §6.7 already draws for a dotted name between a logical position and a
+value position. A position nested inside a construction inherits it (`describe(Wrap(Endpoint(port:
+80)))` fills both), and one nested inside a pattern inherits that; an operation call nested inside a
+pattern starts a value position again, because 068 evaluates it.
+
 ### 1.3 Explicit operation type parameters
 
 Proposal 042's parsed-but-refused form becomes meaningful:
@@ -431,7 +457,9 @@ effect upper bound.
 
 Calls in operation bodies, rule-body functional fragments, top-level queries, and constructor
 expressions use the same coverage and insertion rule. A logical variable written as an argument is
-an argument, not an omission. Pattern positions never insert constructor defaults.
+an argument, not an omission. Pattern positions never insert constructor defaults; in a rule body,
+an entity application is a pattern in a logical position and a construction as an argument of an
+operation call (§1.2, *In a rule body, the position decides*).
 
 ### Function values
 
@@ -567,6 +595,9 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
 - A value default referring to an earlier parameter evaluates once and is type/effect checked.
 - `Endpoint(port: 8080)` fills a defaulted `host`, while an omitted `host` in an `Endpoint` pattern
   remains unconstrained and matches stored non-default hosts too.
+- In a rule body, `Endpoint(port: 80)` as a goal or an argument of a rule goal matches stored
+  `Endpoint`s with any host, while the same text as an argument of an operation call constructs
+  `Endpoint("localhost", 80)` — the value the call receives in an operation body too.
 - Missing required parameters remain errors, including a required parameter declared after a
   defaulted one.
 - Calls through function values still require full arity.
