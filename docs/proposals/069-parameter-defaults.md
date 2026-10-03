@@ -329,6 +329,16 @@ This amends §8.1's expansion rule: an omitted parameter is initially fresh, as 
 variable marked with a default must be finalized by steps 4–5 before the completed type escapes its
 elaboration boundary. It does not change the polarity of an explicit hole or a non-defaulted slot.
 
+It also narrows WI-1056's rule that the four ways of leaving a parameter unwritten — a bare
+reference, a partial application, an explicit `?`, and an operation type parameter — "all mean the
+same thing". That rule now holds for a **non-defaulted** slot only. For a defaulted slot the
+spellings split deliberately: a bare reference and a partial application omit the slot and take its
+default, while an explicit `?` writes a hole and suppresses the default. So `Function` ≡
+`Function[A = ?, B = ?, E = {}]` and `Function[A, B]` ≡ `Function[A, B, {}]`, but
+`Function[A, B, ?]` keeps the open row. §8.1's sentence is restated as: *the four spellings agree
+on a slot whose parameter declares no default; on a defaulted slot, omission takes the default and
+`?` is the explicit opt-out.*
+
 Defaults may refer only to earlier parameters from the same declaration and to names in the
 declaration's enclosing scope:
 
@@ -465,6 +475,8 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
    not fill omitted fields in pattern positions.
 5. Thread defaults through reflection, persistence, Rust/Scala code generation, and diagnostics.
 6. Declare `Function.E` as `default {}` and remove every special “unbound means empty” reading.
+   Restate kernel-language §8.1's WI-1056 sentence ("the four ways of leaving a parameter unwritten
+   … all mean the same thing") as holding for non-defaulted slots only (§2).
 6a. Admit `?v = e` in a rule declaration head as a column default (amending 061's list of what a
    declaration may not carry); refuse it in clause and `fact` heads after a census of existing
    `?v = e` head arguments; refuse a clause or `fact` whose arity differs from a defaulted
