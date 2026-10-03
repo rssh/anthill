@@ -2,7 +2,7 @@
 
 ## Status: Draft (2026-10-03). The motivating verdict is that `Function[A, B]` is pure: its omitted `E` is `{}`, while `Function[A, B, ?]` is explicitly open. This proposal reopens proposal 042 OQ3 / WI-850 with that concrete driver and extends the same declaration-time mechanism to operation and entity-constructor value parameters, and to the columns of a declared rule (§1.5), whose undeclared default is `?`. Type inference runs to a fixed point before defaults are chosen, then solving resumes once with the defaults installed.
 
-## Relates to: [002](002-arrow-sorts.md) (sort parameters), [018](018-expressions-and-operation-implementation.md) (operation bodies), [042](042-explicit-type-parameters-on-operations.md) (explicit operation type parameters; OQ3), [045](045-effect-sets-and-expressions.md) (effect-row binders), kernel-language §§4.4 and 8.1 (the contradictory `Function[A, B]` readings), WI-850 (the current refusal), WI-188 (entity record update), WI-191 (typed command arguments), [052](052-rules-as-stream-valued-operations.md) (a rule cited as a `Relation` value; WI-714's column binding), [061](061-rule-declarations.md) (rule declarations — where a rule column's default is written), WI-20260821-6WVJB (one arity per predicate — enforced here only for a declaration with a default), and [070](070-self-and-fresh-bare-sorts.md) (`Self` — §2's "the self tie wins over the default" is `p: Self` in its terms).
+## Relates to: [002](002-arrow-sorts.md) (sort parameters), [018](018-expressions-and-operation-implementation.md) (operation bodies), [042](042-explicit-type-parameters-on-operations.md) (explicit operation type parameters; OQ3), [045](045-effect-sets-and-expressions.md) (effect-row binders), kernel-language §§4.4 and 8.1 (whose 2026-10-03 `Function[A, B]` verdict this proposal supersedes), WI-850 (the current refusal), WI-188 (entity record update), WI-191 (typed command arguments), [052](052-rules-as-stream-valued-operations.md) (a rule cited as a `Relation` value; WI-714's column binding), [061](061-rule-declarations.md) (rule declarations — where a rule column's default is written), WI-20260821-6WVJB (one arity per predicate — enforced here only for a declaration with a default), and [070](070-self-and-fresh-bare-sorts.md) (`Self` — §2's "the self tie wins over the default" is `p: Self` in its terms).
 
 ## Tracked by: WI-20261003-QV5W5 (`proposal-069`). WI-188 depends on it.
 
@@ -11,24 +11,21 @@
 Anthill has no declaration-site parameter default. That absence now has a concrete semantic cost,
 not merely a convenience cost.
 
-Kernel-language §4.4 says both of these things:
+Kernel-language §4.4 currently resolves the old arrow/`Function` ambiguity this way:
 
 ```anthill
-(A) -> B              = Function[A, B]       -- pure
-(A) -> B @ E          = Function[A, B, E]     -- effectful
+(A) -> B              = Function[A, B, E = {}] -- pure; the arrow writes the row
+(A) -> B @ E          = Function[A, B, E]      -- effectful
+Function[A, B]        = Function[A, B, ?E]     -- omitted E is open
 ```
 
-and states that the first form has the empty effect set. But §8.1 gives every unwritten sort slot
-a fresh variable:
-
-```anthill
-Function[A, B] = Function[A, B, ?E]
-```
-
-Those readings contradict one another. The library comment currently tries to bridge the gap by
-saying that an unbound `Function.E` means empty, but an unbound slot is not an empty row: it is a
-variable which inference may bind to a non-empty row, or which polarity may make universal or
-existential. Purity must be written into the declaration rather than inferred from absence.
+That is a coherent current rule, recorded as a user decision on 2026-10-03: the arrow is pure, while
+the named sort with an omitted `E` is effect-polymorphic because Anthill declares no parameter
+defaults. This proposal deliberately **supersedes that decision**. Its motivating verdict is that
+the declaration of `Function` should own the ordinary meaning of an omitted row: `E` defaults to
+`{}`, and the author who wants the open reading writes `Function[A, B, ?]`. Purity is then written in
+the `Function` declaration rather than attached specially to either the arrow spelling or an
+unbound variable.
 
 Two related omissions have the same shape:
 
@@ -254,8 +251,12 @@ rule any(?x)   :- within(x: ?x, limit: ?)     -- explicit `?`: every limit
 Grammar, in a rule **declaration** head only:
 
 ```text
-DeclColumn ::= Variable ['=' Expr]
+DeclColumn ::= Variable [':' Type] ['=' Expr]
 ```
+
+The optional type is proposal 061's declared column type. When present it is the relation-schema
+type for that column and every clause must conform to it; otherwise the schema type is synthesized
+from the clauses as below. A default is not a type declaration and contributes no type information.
 
 **Omission means the declared default, else `?`.** At a call, an omitted column takes its declared
 default; a column with no default is a fresh variable, which is what an omitted column already
@@ -340,9 +341,18 @@ unwritten column means. A caller who wants every value writes `?`.
 A rule-column default follows the ordering and scoping rules of §3: it may refer to earlier columns
 of the same declaration and to visible constants, constructors and operations; a forward reference
 is refused. An operation call in a default is evaluated as an operation call in a rule body is
-(proposal 068). Its type must conform to the column's type, which the predicate's clauses determine
-(kernel-language §8.6, *What types a rule's variables*); a default that conforms to no clause's
-column is a load error at the default.
+(proposal 068). The predicate has one column type: the type written on the declaration, when present,
+or otherwise the relation-schema type synthesized as the join (lub) of that head column's type
+across all clauses (proposal 052, *The schema `T`*; kernel-language §8.6, *What types a rule's
+variables*). Schema determination completes before the declaration default is checked, and the
+default must conform to that one type. Individual clause-local types do not separately admit or
+reject it.
+
+A default contributes no type information. If neither a declared column type nor the clauses
+determine one, the declaration is a load error at the default: write the column type explicitly
+(`rule within(?x: Int64, ?limit: Int64 = 10)`) or add a clause that types it. This includes a
+defaulted declaration with no clauses and no written column type. A default outside a determined
+schema is likewise a load error at the default, naming the column and its schema type.
 
 ## 2. Infer first, default second, solve again
 
@@ -375,11 +385,13 @@ replace a value inferred in step 3, retry with another default after a contradic
 default to an explicit `?`.
 
 The elaboration boundary matters. An operation or constructor call gathers constraints from its
-receiver, written arguments, requirements, and expected result before step 4. A type written as a
-declaration contract is finalized before a later value is checked against that contract. Thus
-`f: Function[A, B]` reaches step 4 with no evidence for `E` and becomes
-`Function[A, B, E = {}]`; checking an effectful callback afterward cannot reopen it. Conversely,
-`box(1)` may infer a defaulted element parameter from `1` before its default is considered.
+receiver, written arguments, requirements, and expected result before step 4. A type application is
+finalized before a later value is checked against it, wherever that type application is written.
+Thus `Function[A, B]` reaches step 4 with no evidence for `E` and becomes
+`Function[A, B, E = {}]`; checking an effectful callback afterward cannot reopen it. The same
+expansion is made in a parameter, return, alias, field, or logical type position, so a transparent
+alias cannot change whether a default applies. Conversely, `box(1)` may infer a defaulted element
+parameter from `1` before its default is considered.
 
 This amends §8.1's expansion rule: an omitted parameter is initially fresh, as today, but a fresh
 variable marked with a default must be finalized by steps 4–5 before the completed type escapes its
@@ -396,25 +408,18 @@ on a slot whose parameter declares no default; on a defaulted slot, omission tak
 `?` is the explicit opt-out.* (A self reference inside the sort's own definition is the exception
 below: it keeps WI-1082's tie.)
 
-**A default speaks only where the type's user supplies the slot.** §8.1 reads an omitted slot by
-its polarity, and that reading decides whether a default applies at all:
+**A type default is context-free.** Once ordinary inference leaves a slot omitted and unbound, its
+declaration default is installed wherever the type application occurs: in a parameter, return,
+alias, field, construction, annotation, or logical position. Polarity continues to decide the
+quantifier of a **non-defaulted** omitted slot and of an explicit `?`; it does not decide whether a
+declared default exists. This preserves transparent aliases: `sort F = Function[A, B]` and a direct
+`Function[A, B]` denote the same pure type in every position.
 
-- In a **negative** position — an operation parameter, a written type annotation or rule-head
-  bound (`?f: Function[A, B]`), a construction's type arguments — the *caller* supplies the value,
-  so an omitted slot is the caller's silence and its default speaks for it. A non-defaulted slot
-  there is universal, as before (WI-1063; WI-1059's projection names it, WI-1061's fresh skolem a
-  nested one); a defaulted slot is instantiated by step 4 under the slots before it, so it inherits
-  whatever they carry, and a default that mentions no parameter is closed.
-- In a **positive** position — an operation's return — the *body* supplies the value: it packs a
-  witness (WI-1063), and an omitted slot is the body's to choose. A default there would be a claim
-  about the witness the author did not write, so it does **not** apply: every omitted slot of a
-  return is existential, each opened as its own fresh `ρ` per use, defaulted or not. A dependent
-  default (`T2 = T1`) therefore ties nothing in a return.
-- In a **logical** position of a rule — a pattern term in a goal, an argument of a rule goal, a
-  side of `<=>` — an omitted type parameter is the rule-scoped variable §8.1 already makes it (a
-  rule UNIFIES its parameters, WI-20260911-5G28A), and the default does not apply: `rule
-  all(?v) :- box(?v)` under `sort Box[T = Int64]` ranges over every `Box`, not over `Box[Int64]`
-  only. This is §1.2's position rule for entity fields, applied to the entity's type parameters.
+An author who wants the position's ordinary open-variable reading writes `?`. Thus a rule under
+`sort Box[T = Int64]` that omits `T` matches `Box[Int64]`; one that must range over every element type
+writes `Box[?]`. This does not change §1.2's rule for **entity fields**: omitting a constructor field
+in a pattern still makes that field unconstrained. A sort type argument and an entity value field
+are distinct slots with distinct declarations.
 
 Under
 
@@ -429,18 +434,18 @@ end
 | `AsymmetricPair[Int64]` | `Int64` | `Int64` |
 | `AsymmetricPair[Int64, String]` | `Int64` | `String` (written) |
 | `p: AsymmetricPair` (parameter) | ∀, the skolem `p.T1` | `p.T1` — `p.T2` reduces to `p.T1` |
-| `-> AsymmetricPair` (return) | ∃, a fresh `ρ₁` per use | ∃, an independent fresh `ρ₂` |
+| `-> AsymmetricPair` (return) | ∃, a fresh `ρ` per use | that same `ρ` |
 | `AsymmetricPair[?]` | an explicit hole | tied to that hole |
 | `AsymmetricPair[?, ?]` | a hole | an independent hole |
 
-So a body declared `-> AsymmetricPair` may return `apair(1, "s")`, and a consumer may rely on
-nothing about either component — not even their agreement. A parameter `p: AsymmetricPair` accepts
-`apair(1, 2)` and refuses `apair(1, "s")`. In a negative position, every chain of defaults ends at a
-root that carries the quantifier, because forward references are refused: a written slot, an
-explicit `?`, a non-defaulted omitted slot, an enclosing parameter, or a closed type. `f:
-Function[A, B]` is therefore pure — not universal in `E` — while `-> Function[A, B]` opens `E` to an
-existential row like any omitted return slot (§4). A pure *returned* function is written as an
-arrow, whose syntax writes the empty row explicitly (§4), or as `Function[A, B, {}]`.
+So a body declared `-> AsymmetricPair` must return a pair whose component types agree; the return's
+non-defaulted `T1` is existential, and the default ties `T2` to it. A body returning
+`apair(1, "s")` is refused. A parameter `p: AsymmetricPair` likewise accepts `apair(1, 2)` and
+refuses `apair(1, "s")`. In every position, a chain of defaults ends at a root that carries the
+position's ordinary quantifier, because forward references are refused: a written slot, an explicit
+`?`, a non-defaulted omitted slot, an enclosing parameter, or a closed type. `Function[A, B]` is
+therefore pure in a parameter and in a return; `Function[A, B, ?]` explicitly restores the
+position's open-row reading.
 
 **Within a sort's own definition, the self tie wins over the default.** A bare or partial reference
 to the sort inside its own body keeps WI-1082's rewrite: an elided slot names *this instance's*
@@ -472,12 +477,11 @@ lands first decides the wording: before 070 the tie wins over the default, as st
 it, the member says `Self`, and this paragraph, the parenthesis closing the four-spellings
 restatement, and the sentence on WI-1082 below are replaced by a pointer to 070 §1.4.
 
-The polarity rules continue to govern explicit `?`, named variables and non-defaulted slots, so in
-a negative position the quantifier on a defaulted slot is spelled with `?`: `f: Function[A, B, ?]`
-is universal in a parameter. In a return the `?` adds nothing — `-> Function[A, B, ?]` and
-`-> Function[A, B]` are the same existential, since a default never applies there. WI-1082's "a member may not pin its own
-sort's parameter to a constant and still elide it in the return" is unchanged, since a self
-reference still takes the tie.
+The polarity rules continue to govern explicit `?`, named variables and non-defaulted slots.
+`f: Function[A, B, ?]` is universal in its open row, while `-> Function[A, B, ?]` is existential in
+it. Both differ from `Function[A, B]`, whose omitted `E` takes `{}` in either position. WI-1082's “a
+member may not pin its own sort's parameter to a constant and still elide it in the return” is
+unchanged, since a self reference still takes the tie.
 
 Defaults may refer only to earlier parameters from the same declaration and to names in the
 declaration's enclosing scope:
@@ -511,9 +515,15 @@ operation range(first: Int64, last: Int64 = first, step: Int64 = 1) -> Range = .
 ```
 
 Each selected default is evaluated exactly once, left to right, in the callee's parameter frame.
-Its effects are effects of the operation and must fit the operation's declared effect row. Supplying
-an explicit argument may avoid executing a default, but does not narrow the operation's declared
-effect upper bound.
+For an operation parameter, its effects are effects of the operation and must fit the operation's
+declared effect row. Supplying an explicit argument may avoid executing a default, but does not
+narrow the operation's declared effect upper bound.
+
+An entity-constructor default must be **pure**. Entity constructors have no effect contract in which
+to declare a default's effects, and construction must not acquire an effect merely because a field
+was omitted. A constructor default whose inferred effect row is non-empty is a load error at that
+default. Introducing effectful constructors and propagating their rows at each construction site
+would be a separate language change.
 
 Calls in operation bodies, rule-body functional fragments, top-level queries, and constructor
 expressions use the same coverage and insertion rule. A logical variable written as an argument is
@@ -540,7 +550,7 @@ on an implementation is refused rather than compared for expression equivalence.
 A non-spec operation owns its defaults directly. Reflection reports defaults from the callable
 declaration, not from a selected implementation.
 
-## 4. `Function[A, B]` resolves the §4.4 / §8.1 contradiction
+## 4. `Function[A, B]` supersedes §4.4's open-row verdict
 
 `Function` declares:
 
@@ -552,11 +562,8 @@ Consequently:
 
 - the arrow syntax `(A) -> B` WRITES the empty row: it is `Function[A, B, {}]`, not an omission,
   so it is pure in every position, a return included;
-- `Function[A, B]` takes the default `{}` in a negative position (a parameter, an annotation, a
-  bound), so `f: Function[A, B]` is pure; in a return the default does not apply (§2), so
-  `-> Function[A, B]` opens `E` as an existential row — sound, since a consumer can assume no
-  purity of it, but not pure. A returned pure function is written `-> (A) -> B` or
-  `-> Function[A, B, {}]`;
+- `Function[A, B]` takes the default `{}` in every position, so parameters, annotations, bounds,
+  returns and transparent aliases agree that it is pure;
 - `(A) -> B @ E` and `Function[A, B, E]` both carry the written row;
 - `Function[A, B, ?]` is the explicit effect-polymorphic spelling;
 - `Function[A, B] <: Function[A, B, E]` remains the ordinary effect-widening relation from the
@@ -598,6 +605,12 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
 ## 6. Diagnostics and reflection
 
 - A declaration reports every default whose expression/type does not conform to its parameter.
+- A rule-column default mismatch names the column's declared or synthesized relation-schema type,
+  not an arbitrary clause that contributed to it.
+- A defaulted rule column with no declared or clause-synthesized type is refused at the default and
+  suggests a typed declaration column; the default itself is not used to invent its schema type.
+- An effectful entity-constructor default is refused at the default and names its inferred effects;
+  constructors have no effect contract to admit them.
 - A default referencing a later parameter names both parameters and says that defaults are ordered.
 - A call missing a required parameter names that parameter; it does not report only an arity count.
 - An explicitly supplied value that conflicts with another inference source is still a type error;
@@ -614,7 +627,8 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
    entity-constructor, and sort defaults. Restore the already parsed explicit-operation-type
    default as semantic IR rather than a refusal.
 2. Resolve and type-check defaults at their declarations. Record type defaults on sort parameter
-   metadata and value defaults on the canonical operation signature.
+   metadata and value defaults on the canonical operation signature. Refuse an entity-constructor
+   default whose inferred effect row is non-empty.
 3. Change type-parameter inference to mark omitted defaulted slots, solve without defaults, install
    defaults in declaration order, then resume solving before final validation. Preserve explicit
    `?` as the opt-out.
@@ -625,15 +639,17 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
 6. Declare `Function.E` as `default {}` and remove every special “unbound means empty” reading.
    Restate kernel-language §8.1's WI-1056 sentence ("the four ways of leaving a parameter unwritten
    … all mean the same thing") as holding for non-defaulted slots only (§2), and add to §8.1's
-   polarity section (WI-1063) that a default applies only in a negative position (where a
-   defaulted slot inherits the quantifier of the slots its default mentions, read after them),
-   never in a return (every omitted return slot is its own existential) or in a rule's logical
-   position, and that a self reference keeps WI-1082's tie over a default. Restate §4.4 so the arrow
-   syntax writes `E = {}` explicitly.
+   polarity section (WI-1063) that a declaration default is installed context-free, while polarity
+   continues to govern explicit holes and non-defaulted slots; state that transparent aliases do
+   not change whether a default applies, and that a self reference keeps WI-1082's tie over a
+   default. Restate §4.4 with the superseded 2026-10-03 verdict and the new explicit opt-out.
 6a. Admit `?v = e` in a rule declaration head as a column default (amending 061's list of what a
    declaration may not carry); refuse it in clause and `fact` heads after a census of existing
    `?v = e` head arguments; refuse a clause or `fact` whose arity differs from a defaulted
-   declaration; insert defaults at goal omissions (positional and named), queries and citations
+   declaration; compose with 061's typed declaration columns, using a written type as authoritative
+   and otherwise synthesizing the relation schema across all clauses before checking each column
+   default against its one schema type; refuse a defaulted column for which neither route determines
+   a type; insert defaults at goal omissions (positional and named), queries and citations
    (`resolve_relation_arg_columns` and the goal path share one owner), never in heads.
 7. Replace WI-850's refusal tests with driven calls, and add controls proving that removing default
    application changes the result or restores the old error.
@@ -643,33 +659,33 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
 - `Function[A, B]` is structurally the same effect instantiation as `Function[A, B, E = {}]`, and
   rejects an effectful callback where a pure one is required.
 - `Function[A, B, ?]` remains open and accepts an effect row inferred by its context.
-- Arrow `(A) -> B` and `Function[A, B]` agree in a negative position in the §4.4 and §8.1 tests
-  without a special-case “missing E means empty” branch; `-> (A) -> B` is pure, and
-  `-> Function[A, B]` is existential in `E`.
+- Arrow `(A) -> B` and `Function[A, B]` agree in parameters, returns, aliases and logical positions
+  without a special-case “missing E means empty” branch; both `-> (A) -> B` and
+  `-> Function[A, B]` are pure.
 - `Box[T = Int64]` defaults an omitted `T`, while `Box[?]` remains open and `Box[String]` overrides
   the default.
 - A dependent sort default (`Values = List[T = K]`) expands after `K`; a forward reference and a
   kind mismatch are loud declaration errors.
 - Under `sort AsymmetricPair[T1, T2 = T1]`: a bare parameter `p: AsymmetricPair` accepts
   `apair(1, 2)` and refuses `apair(1, "s")`, with `p.T2` reducing to `p.T1`; a bare return
-  `-> AsymmetricPair` opens to two independent existentials, so a body returning `apair(1, "s")`
-  loads and a consumer relying on the components' agreement is refused; and a member inside the
+  `-> AsymmetricPair` opens `T1` existentially and defaults `T2` to that same witness, so a body
+  returning `apair(1, "s")` is refused; and a member inside the
   sort taking a bare `p: AsymmetricPair` accepts an asymmetric instance (the WI-1082 tie, not the
   default). Control: with the tie overridden by the default, the in-sort member refuses it. (Once
   proposal 070 has landed this row is written `p: Self`, and the bare spelling is a load error
   inside the sort — §2, "In proposal 070's terms".)
 - `f: Function[A, B]` is not universal in `E` (an effectful argument is refused), and
-  `f: Function[A, B, ?]` restores ∀. `-> Function[A, B]` is existential in `E` (a body returning an
-  effectful function loads; a consumer passing the result to a pure slot is refused), while
-  `-> (A) -> B` and `-> Function[A, B, {}]` are pure (a body returning an effectful function is
-  refused).
-- Under `sort Box[T = Int64]`, `rule all(?v) :- box(?v)` answers every stored `box`, whatever its
-  element type — the default is not installed in a logical position.
+  `f: Function[A, B, ?]` restores ∀. `-> Function[A, B]` is pure (a body returning an effectful
+  function is refused), while `-> Function[A, B, ?]` restores the existential open row.
+- Under `sort Box[T = Int64]`, an omitted `T` in a logical position matches only `Box[Int64]`; an
+  explicit `Box[?]` ranges over every element type.
 - A constraint introduced by a dependent default is propagated by the second solver phase and may
   determine an earlier still-free parameter; defaults are not selected a second time.
 - `operation identity[T = String](x: Option[T] = none()) -> T` uses inference before `T`'s default,
   uses the default when no source binds `T`, and honors an explicit call-site override.
-- A value default referring to an earlier parameter evaluates once and is type/effect checked.
+- A value default referring to an earlier parameter evaluates once and is type/effect checked. An
+  operation default's effects fit its operation's declared row; an entity-constructor default with
+  a non-empty inferred effect row is refused.
 - `Endpoint(port: 8080)` fills a defaulted `host`, while an omitted `host` in an `Endpoint` pattern
   remains unconstrained and matches stored non-default hosts too.
 - In a rule body, `Endpoint(port: 80)` as a goal or an argument of a rule goal matches stored
@@ -686,6 +702,11 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
 - A declared rule column's default fills an omission — positional or named — at a goal, a query and
   a citation, and is checked against the clauses' answers when the column is an output; an explicit
   `?` still ranges over every value; a column with no default stays free.
+- A rule-column default is checked once against its declared schema type, or against the synthesized
+  relation-schema LUB after all clauses have contributed when no type is declared. Clause-local
+  types do not independently accept or reject it, a default outside the schema is a load error
+  naming that type, and a defaulted column for which neither route determines a type is refused
+  rather than inferred from the default.
 - A default written on a clause head or a `fact` head is refused naming the declaration; `?v = e` in
   a clause head is refused rather than read as an equation term.
 - Against a declaration with a default, a clause or `fact` at another arity is a load error naming
