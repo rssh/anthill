@@ -337,7 +337,61 @@ default, while an explicit `?` writes a hole and suppresses the default. So `Fun
 `Function[A = ?, B = ?, E = {}]` and `Function[A, B]` ≡ `Function[A, B, {}]`, but
 `Function[A, B, ?]` keeps the open row. §8.1's sentence is restated as: *the four spellings agree
 on a slot whose parameter declares no default; on a defaulted slot, omission takes the default and
-`?` is the explicit opt-out.*
+`?` is the explicit opt-out.* (A self reference inside the sort's own definition is the exception
+below: it keeps WI-1082's tie.)
+
+**A defaulted slot carries no quantifier of its own.** §8.1 reads an omitted non-defaulted slot by
+its polarity: universal in a parameter (WI-1063; named by WI-1059's projection, nested slots by
+WI-1061's fresh skolem), existential in a return (WI-1063/1078). That reading runs **first**; step 4
+then instantiates each default under the slots before it, so a defaulted slot inherits whatever
+those slots carry. A default is therefore concrete only when it mentions no parameter. Under
+
+```anthill
+sort AsymmetricPair[T1, T2 = T1]
+  entity apair(first: T1, second: T2)
+end
+```
+
+| Written | `T1` | `T2` |
+|---|---|---|
+| `AsymmetricPair[Int64]` | `Int64` | `Int64` |
+| `AsymmetricPair[Int64, String]` | `Int64` | `String` (written) |
+| `p: AsymmetricPair` (parameter) | ∀, the skolem `p.T1` | `p.T1` — `p.T2` reduces to `p.T1` |
+| `-> AsymmetricPair` (return) | ∃, a fresh `ρ` per use | the same `ρ` |
+| `AsymmetricPair[?]` | an explicit hole | tied to that hole |
+| `AsymmetricPair[?, ?]` | a hole | an independent hole |
+
+So `-> AsymmetricPair` opens to **one** existential shared by both components — a consumer may rely
+on their agreement, as §8.1 says of a named `?t` (WI-1078) — not to two. Because forward references
+are refused, every chain of defaults ends at a root that carries the quantifier: a written slot, an
+explicit `?`, a non-defaulted omitted slot, an enclosing parameter, or a closed type. A default that
+mentions no parameter is closed: `f: Function[A, B]` is not universal in `E`, and
+`-> Function[A, B]` does not open it.
+
+**Within a sort's own definition, the self tie wins over the default.** A bare or partial reference
+to the sort inside its own body keeps WI-1082's rewrite: an elided slot names *this instance's*
+parameter, and the default does not apply. A default states what an outside user means by omitting a
+slot; inside the sort, the elided slot already means the instance's own parameter. Taking the
+default there would change what a member is about:
+
+```anthill
+sort AsymmetricPair[T1, T2 = T1]
+  entity apair(first: T1, second: T2)
+  operation second_of(p: AsymmetricPair) -> T2 = …
+  --   tie:     p: AsymmetricPair[T1 = T1, T2 = T2]   (this instance — intended)
+  --   default: p: AsymmetricPair[T1, T1]             (only symmetric pairs; -> T2 no longer matches)
+end
+```
+
+Likewise, inside `sort Function` an elided `E` is this function's row, not `{}`. The tie applies only
+to the self reference; a foreign reference inside the sort body (`Function[A, B]` written inside
+`sort Stream`) takes the default.
+
+The polarity rules continue to govern explicit `?`, named variables and non-defaulted slots, so the
+quantifier on a defaulted slot is spelled with `?`: `f: Function[A, B, ?]` is universal in a
+parameter, `-> Function[A, B, ?]` existential in a return. WI-1082's "a member may not pin its own
+sort's parameter to a constant and still elide it in the return" is unchanged, since a self
+reference still takes the tie.
 
 Defaults may refer only to earlier parameters from the same declaration and to names in the
 declaration's enclosing scope:
@@ -476,7 +530,9 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
 5. Thread defaults through reflection, persistence, Rust/Scala code generation, and diagnostics.
 6. Declare `Function.E` as `default {}` and remove every special “unbound means empty” reading.
    Restate kernel-language §8.1's WI-1056 sentence ("the four ways of leaving a parameter unwritten
-   … all mean the same thing") as holding for non-defaulted slots only (§2).
+   … all mean the same thing") as holding for non-defaulted slots only (§2), and add to §8.1's
+   polarity section (WI-1063) that a defaulted slot inherits the quantifier of the slots its default
+   mentions, read after them, and that a self reference keeps WI-1082's tie over a default.
 6a. Admit `?v = e` in a rule declaration head as a column default (amending 061's list of what a
    declaration may not carry); refuse it in clause and `fact` heads after a census of existing
    `?v = e` head arguments; refuse a clause or `fact` whose arity differs from a defaulted
@@ -496,6 +552,14 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
   the default.
 - A dependent sort default (`Values = List[T = K]`) expands after `K`; a forward reference and a
   kind mismatch are loud declaration errors.
+- Under `sort AsymmetricPair[T1, T2 = T1]`: a bare parameter `p: AsymmetricPair` accepts
+  `apair(1, 2)` and refuses `apair(1, "s")`, with `p.T2` reducing to `p.T1`; a bare return
+  `-> AsymmetricPair` opens to one existential shared by both components; and a member inside the
+  sort taking a bare `p: AsymmetricPair` accepts an asymmetric instance (the WI-1082 tie, not the
+  default). Control: with the tie overridden by the default, the in-sort member refuses it.
+- `f: Function[A, B]` is not universal in `E` (an effectful argument is refused), and
+  `-> Function[A, B]` does not open (a body returning an effectful function is refused); the `?`
+  spellings restore ∀ and ∃ respectively.
 - A constraint introduced by a dependent default is propagated by the second solver phase and may
   determine an earlier still-free parameter; defaults are not selected a second time.
 - `operation identity[T = String](x: Option[T] = none()) -> T` uses inference before `T`'s default,
