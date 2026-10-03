@@ -300,7 +300,7 @@ pub(super) fn map_type_bottom_up(
 
 /// An arrow rebuilt around its children — an occurrence, as every arrow the typer builds is
 /// (WI-470: an arrow is a binder, and is not hash-consed).
-fn arrow_value(
+pub(super) fn arrow_value(
     kb: &mut KnowledgeBase,
     param: &Value,
     result: &Value,
@@ -908,18 +908,35 @@ fn resolve_alias_shape_chain(
 /// applied alias (`Name[…]`) is refused where it is written, so only a bare leaf can be one.
 pub(crate) fn dealias_type(kb: &mut KnowledgeBase, t: TermId) -> TermId {
     rewrite_term_leaves(kb, t, &|kb, leaf| {
-        let s = ref_or_nullary_name(kb.get_term(leaf))?;
-        // O(1) FIRST: `alias_targets` holds every alias, keyed as `resolve_sort_alias` matches
-        // (the exact symbol), and nothing else — a `sort T = ?` parameter is not one — so a
-        // miss is `resolve_alias_shape`'s `None`. Asked before it because the derivation runs
-        // ahead of `sort_alias_index`, where that read is a scan of every `SortAlias` fact per
-        // field leaf, for a pass that rarely meets an alias.
-        if !kb.alias_targets.contains_key(&s) {
-            return None;
-        }
-        let shape = resolve_alias_shape(kb, s)?;
-        Some(dealias_type(kb, shape))
+        alias_leaf(kb, ref_or_nullary_name(kb.get_term(leaf))?)
     })
+}
+
+/// [`dealias_type`] on any carrier.
+pub(super) fn dealiased(kb: &mut KnowledgeBase, ty: &Value) -> Value {
+    if let Value::Term { id, .. } = ty {
+        return Value::term(dealias_type(kb, *id));
+    }
+    map_type_bottom_up(kb, ty, &mut |kb, node| {
+        alias_leaf(kb, extract_sort_ref_sym(kb, node)?).map(Value::term)
+    })
+    .unwrap_or_else(|| ty.clone())
+}
+
+/// The type the alias `s` stands for, its own aliases read through ([`dealias_type`]) — `None`
+/// where `s` is no alias [`resolve_alias_shape`] expands. The one alias-leaf step of every alias
+/// reader: [`dealias_type`], [`dealiased`] and a pattern's scrutinee ([`build_pattern_subst`]).
+pub(crate) fn alias_leaf(kb: &mut KnowledgeBase, s: Symbol) -> Option<TermId> {
+    // O(1) FIRST: `alias_targets` holds every alias, keyed as `resolve_sort_alias` matches
+    // (the exact symbol), and nothing else — a `sort T = ?` parameter is not one — so a
+    // miss is `resolve_alias_shape`'s `None`. Asked before it because the derivation runs
+    // ahead of `sort_alias_index`, where that read is a scan of every `SortAlias` fact per
+    // field leaf, for a pass that rarely meets an alias.
+    if !kb.alias_targets.contains_key(&s) {
+        return None;
+    }
+    let shape = resolve_alias_shape(kb, s)?;
+    Some(dealias_type(kb, shape))
 }
 
 /// WI-20260924-F8PYZ — a type ALIAS read as the SORT APPLICATION it stands for, which is

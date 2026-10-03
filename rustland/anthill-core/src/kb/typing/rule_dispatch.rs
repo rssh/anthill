@@ -629,9 +629,9 @@ pub(super) fn child_body_positions(
 ///
 /// `known` is EMPTY here, and that is not a stub: it is the map of sibling argument types
 /// [`check_apply_iter`] fills from typed results, and this walk has typed no siblings.
-/// Its two readers ([`hint_instantiation_subst`], [`bind_spec_params_for_hint`]) both
-/// return nothing for an empty map, so a hint that would need a sibling's type is simply
-/// not made — the declared type rides through as written.
+/// [`apply_arg_hints`] reads nothing off an empty map — no instantiation, no projection
+/// receivers, no argument paths — so a hint that would need a sibling's type is simply not
+/// made: the declared type rides through as written.
 /// WI-20260904-50B2K — TWO LISTS, ONE SIGNATURE READ, and they answer DIFFERENT
 /// questions about the same slots:
 ///
@@ -728,6 +728,7 @@ fn data_slot_arg_hints(
         &None,
         pos_args,
         named_args,
+        &HashMap::new(),
         &HashMap::new(),
     );
     let out: SmallVec<[Option<Value>; 8]> = pos_hints.into_iter().chain(named_hints).collect();

@@ -176,7 +176,7 @@ pub(super) fn expr_carried_zeta<A: TermView, B: TermView>(
 /// and must not absorb a failed unify's evidence takes the probe-commit instead: `let mut
 /// probe = subst.clone(); if unify_types(kb, &mut probe, ..) { *subst = probe; }`
 /// (`Substitution::clone` is O(1) — `imbl`, WI-569). SIX sites do exactly that today and say
-/// why at each: [`hint_instantiation_subst`], the `lacks`-conflict probe, the
+/// why at each: [`hint_instantiation_into`], the `lacks`-conflict probe, the
 /// contradiction-replay scratch, the operation-return check, and the two row-matching loops
 /// (`pair_present_labels` / `cover_present_labels`), whose restore is a BACKTRACK between
 /// candidate labels rather than a rollback of the verdict.

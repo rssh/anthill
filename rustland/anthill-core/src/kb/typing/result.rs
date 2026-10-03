@@ -450,6 +450,16 @@ pub(super) fn entity_type_on_builders(kb: &mut KnowledgeBase, v: &Value) -> Resu
             let e = child(kb, expr)?;
             Ok(Value::Node(kb.make_effects_rows_occ(e, sp, owner)))
         }
+        // A rigid type-receiver projection (`P.Key`, WI-428): its three slots are ground, and
+        // it is rebuilt as the term it always is.
+        TypeExtractor::RigidTypeProjection {
+            sort,
+            subject,
+            member,
+        } => match type_child_value(kb, subject)? {
+            Value::Term { id, .. } => Ok(Value::term(kb.make_rigid_projection(sort, id, member))),
+            _ => Err("a rigid projection whose subject is no ground term".to_string()),
+        },
         TypeExtractor::PolyType { body, .. } => {
             let b = child(kb, body)?;
             let binders = required(kb, "binders")?;
@@ -464,7 +474,14 @@ pub(super) fn entity_type_on_builders(kb: &mut KnowledgeBase, v: &Value) -> Resu
 }
 
 /// `base` applied to `bindings` through the carrier-choosing builder — or why not: a head that
-/// is not a sort has no application to rebuild into, and building one would invent a sort.
+/// is neither a sort nor one of a sort's constructors has no application to rebuild into, and
+/// building one would invent a sort.
+///
+/// A CONSTRUCTOR head is a VARIANT type (§8.2, `some[T = T]`: the constructor over its sort's
+/// parameters) and is rebuilt as one. Refused, a σ walk that substituted into a variant type —
+/// `put(s: Sp, x: (a: some[T = T], b: List))` behind a provision with one binding that is no
+/// term (`E = {Error}`), the operation need not read it — panicked the loader on a member that
+/// fits (MEASURED: review 9).
 pub(super) fn sort_application_value(
     kb: &mut KnowledgeBase,
     base: Symbol,
@@ -472,7 +489,10 @@ pub(super) fn sort_application_value(
     sp: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Result<Value, String> {
-    if !kb.has_kind(base, crate::intern::SymbolKind::Sort) {
+    let variant = kb
+        .sort_of_constructor(base)
+        .is_some_and(|sort| kb.has_kind(sort, crate::intern::SymbolKind::Sort));
+    if !variant && !kb.has_kind(base, crate::intern::SymbolKind::Sort) {
         return Err(format!(
             "a type under `{}`, which is not a sort, with no form to rebuild it into",
             kb.qualified_name_of(base),
@@ -960,7 +980,8 @@ pub(super) fn walk_type_deep_value_g(
 ///
 /// THE SAME TWO STOPS AS THE TERM WALK, for the same reasons: a NEUTRAL head
 /// (`RigidProjection` / `ExprCarried`) is an identity slot and is not descended, and a
-/// variable whose chain ends UNBOUND stays the variable it was. One more is this walk's
+/// variable whose chain ends UNBOUND is the variable the chain ends at — itself, or the one it
+/// was bound to, held as its term as the term walk holds it. One more is this walk's
 /// own: a binding that is a VALUE-world occurrence (an expression, not a `Type` /
 /// `EffectExpression` one) is not a type, and is left as the variable rather than spliced
 /// into a type position — the answer the term walk always gave it.
@@ -977,12 +998,26 @@ fn splice_non_term_bindings(
                 return None; // `walk_type` already followed it
             }
             let bound = bound.clone();
-            match walk_type_deep_value_g(kb, subst, &bound, ground) {
-                // A chain ending at a VARIABLE, on either spelling — `TypeNode::Var` is a
-                // variable's NESTED spelling and must not escape into value position
-                // (WI-20260904-02ERR) — leaves the term walk's answer: nothing to splice.
-                Value::Var(_) => None,
-                Value::Node(occ) if matches!(occ.as_type(), Some(TypeNode::Var(_))) => None,
+            // A chain ending at a VARIABLE, on either spelling — `TypeNode::Var` is a variable's
+            // NESTED spelling and must not escape into value position (WI-20260904-02ERR) — is that
+            // END variable, held as its term: what the term walk answers for the same chain carried
+            // on terms. Left as the variable it started from, a callee's own parameter `B` bound to
+            // a caller's open variable kept `B` in the call's type — one binding, two answers by
+            // carrier, and `Pair.mk(o)` under an un-annotated `lambda (o)` typed `Pair[A = ?_, …]`
+            // with `A` tied to nothing (MEASURED: review 9).
+            let walked = walk_type_deep_value_g(kb, subst, &bound, ground);
+            let end = match &walked {
+                Value::Var(end) => Some(*end),
+                Value::Node(occ) => match occ.as_type() {
+                    Some(TypeNode::Var(end)) => Some(*end),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(end) = end {
+                return (end != Var::Global(vid)).then(|| Value::term(kb.alloc(Term::Var(end))));
+            }
+            match walked {
                 Value::Node(occ) if occ.as_type().is_none() && occ.as_effect_expr().is_none() => {
                     None
                 }

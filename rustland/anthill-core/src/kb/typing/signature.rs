@@ -280,7 +280,15 @@ pub(super) fn check_member_signature(
         // arrow prints its row ([`member_type_display`]), and a rigid and a flexible variable
         // share one name. Said, where the refusal would otherwise read as a tautology (`Box[T =
         // Int64 -> Int64]` "admits arguments" `Box[T = Int64 -> Int64]` "does not").
-        let sigs = if want == got {
+        // ONLY WHERE TWO TYPES WERE COMPARED: a circular binding or a type that does not read
+        // compares nothing, and its two printed sides are one declaration restated — the
+        // sentence then sent the author after a hidden difference that does not exist (MEASURED:
+        // review 9).
+        let compared_two = !matches!(
+            n.why,
+            Narrower::Circular { .. } | Narrower::Unreadable { .. }
+        );
+        let sigs = if compared_two && want == got {
             format!(
                 "{sigs}. The two types compared print alike: they differ in a part this \
                  rendering leaves out — the effect row of a function type inside them, or two \
@@ -554,8 +562,7 @@ fn row_parameter_binding_as_row(
     p: Symbol,
     b: Value,
 ) -> Value {
-    let short = short_name_of(kb.local_name_of(p)).to_owned();
-    if !sort_param_is_effect_row(kb, spec, &short) {
+    if !sort_param_sym_is_effect_row(kb, spec, p) {
         return b;
     }
     row_holding_label(kb, &b).unwrap_or(b)
@@ -972,11 +979,20 @@ fn member_narrower_than_spec(
         // As `prep` reads each: the receiver's meeting may have bound a parameter's variable
         // to the binding's own (`C = Car[V = ?]` met with the instance), and the receiver
         // reads the instance whatever its declared type says.
+        //
+        // THE RECEIVER READS THE INSTANCE WHATEVER ITS TYPE IS WRITTEN AS: typed by the spec
+        // (`fresh(s: Store, …)`) it is still the provider, and the spec view's OTHER bindings are
+        // no slot it reads — read through it, `State = Box[T = Int64]`'s unwritten `U` counted as
+        // a parameter's, and the member leaving it open, the case the return rule admits, was
+        // refused printing two identical signatures (MEASURED: review 9).
+        //
+        // A PROJECTION off the receiver reads no slot here: it is the binding as written, an
+        // instance of its own (kernel-language.md §8.7), so `x: s.T` at `T = Box` ties nothing to
+        // a `-> T` — counted as reading `Box`'s slot, a member leaving the return's open was
+        // refused, the case the return rule admits (MEASURED: review 9's fix pass).
         let mut read = Vec::new();
         for (i, (_, pty)) in spec_info.params.iter().enumerate() {
-            let at = if by_spec_recv == Some(i) {
-                spec_at_provision(kb, pty, &template)
-            } else if recv == Some(i) {
+            let at = if recv == Some(i) || by_spec_recv == Some(i) {
                 Value::term(own)
             } else {
                 sigma_subst_type_values(kb, pty, &template)
@@ -1035,14 +1051,18 @@ fn member_narrower_than_spec(
     }
     let instance = resolve_type_deep_value(kb, &prep, &Value::term(own));
     // A spec type as the call reads it: σ once per parameter, the spec text's own unwritten
-    // slots fresh per occurrence (WI-374), whatever stays open any type.
+    // slots fresh per occurrence (WI-374), whatever stays open any type — but a slot only the
+    // RETURN reads, which the receiver typed by the spec carries in its view (`s: Store` at
+    // `State = Box[T = Int64]`), stays open there as everywhere ([`leaves_open`]): made any type
+    // at the receiver, it read as FIXED and the member leaving it open was refused (MEASURED:
+    // review 9).
     let spec_side = |kb: &mut KnowledgeBase,
                      prep: &mut Substitution,
                      ty: &Value,
                      template: &[(Symbol, Value)]| {
         let s = sigma_subst_type_values(kb, ty, template);
         let s = expand_foreign_sorts_and_row_labels(kb, &s, None, SlotVar::Rigid);
-        let _ = rigidify_open(kb, prep, &s, &spec_own);
+        let _ = rigidify_open(kb, prep, &s, &kept);
         resolve_type_deep_value(kb, prep, &s)
     };
     let decl_own: SmallVec<[VarId; 4]> = own_params_of(kb, decl).iter().map(|&(_, v)| v).collect();
@@ -1114,7 +1134,7 @@ fn member_narrower_than_spec(
         } else if Some(i) == recv && !by_spec {
             instance.clone()
         } else if by_spec {
-            let at = spec_at_provision(kb, spec_pty, &template);
+            let at = spec_at_provision(kb, spec_pty, &template, spec_canon);
             spec_side(kb, &mut prep, &at, &template)
         } else {
             spec_side(kb, &mut prep, spec_pty, &template)
@@ -1138,18 +1158,9 @@ fn member_narrower_than_spec(
             }
         };
         // UNIFICATION BINDS — the member's variables, a wildcard, a slot left to the other side —
-        // and the RELATION judges. On a probe: a unifier binding a variable inside itself solves
-        // nothing (its occurs check reads a binding as written: `K ↦ W`, then `W ↦ List[T = K]`),
-        // and is dropped before anything walks it — a deep resolve through it does not return
-        // (MEASURED: the loader's stack overflowed on such a member instead of refusing it).
+        // and the RELATION judges ([`bind_on_probe`]).
         let before = subst.contradiction_details.len();
-        let mut probe = subst.clone();
-        let unified = unify_types(kb, &mut probe, &arg, &member);
-        let mut cyclic = binds_a_cycle(kb, &probe);
-        if !cyclic && !unified && !genuine_contradiction_since(kb, &probe, before) {
-            bind_member_vars_along(kb, &mut probe, &arg, &member, false);
-            cyclic = binds_a_cycle(kb, &probe);
-        }
+        let (probe, unified, cyclic) = bind_on_probe(kb, &subst, before, &arg, &member, false);
         if !cyclic {
             subst = probe;
         }
@@ -1277,10 +1288,15 @@ fn member_narrower_than_spec(
         ) {
             Ok(s) => {
                 let s = sigma_subst_type_values(kb, &s, &template);
+                // ONE expansion under a returned arrow's parameters, shared by both forms: each
+                // minting its own rigid there, unification bound the member's variable to
+                // `want`'s and the relation then met `want_open`'s — two unknowns of one name —
+                // and a member returning a provider of the spec's bare result behind a returned
+                // function was refused (MEASURED: review 9).
                 let open = expand_foreign_sorts_under_params(kb, &s, None, SlotVar::Rigid);
                 let s = expand_foreign_sorts_by_polarity(
                     kb,
-                    &s,
+                    &open,
                     None,
                     SlotVar::Flexible,
                     SlotVar::Rigid,
@@ -1321,13 +1337,7 @@ fn member_narrower_than_spec(
         // spec then read a `cat` where a `dog` was — MEASURED). A variable the return binds a
         // second way is the refusal it is in a parameter.
         let before = subst.contradiction_details.len();
-        let mut probe = subst.clone();
-        let unified = unify_types(kb, &mut probe, &got, &want);
-        let mut cyclic = binds_a_cycle(kb, &probe);
-        if !cyclic && !unified && !genuine_contradiction_since(kb, &probe, before) {
-            bind_member_vars_along(kb, &mut probe, &want, &got, true);
-            cyclic = binds_a_cycle(kb, &probe);
-        }
+        let (probe, _, cyclic) = bind_on_probe(kb, &subst, before, &got, &want, true);
         let fits = !cyclic && !genuine_contradiction_since(kb, &probe, before) && {
             let got = resolve_type_deep_value(kb, &probe, &got);
             let want = resolve_type_deep_value(kb, &probe, &want);
@@ -1368,7 +1378,12 @@ fn member_narrower_than_spec(
             })
         };
         if !fits {
-            let unwritten = holds_rigid(kb, &got, &own_slot);
+            // The advice to write the slot is owed where the slot IS the difference — the two
+            // returns agree once the member's own unwritten slots are read as anything — not
+            // wherever the member's return happens to leave one unwritten (`Pair[A = String]`
+            // behind `Pair[A = Int64]` was told to write its `B`, MEASURED: review 9).
+            let unwritten = holds_rigid(kb, &got, &own_slot)
+                && agrees_but_for_own_slots(kb, &got, &want, &own_slot);
             return MemberFit::Narrower(Narrowing {
                 at: None,
                 why: Narrower::Return { unwritten },
@@ -1454,6 +1469,66 @@ fn holds_rigid(kb: &KnowledgeBase, v: &impl TermView, is: &impl Fn(VarId) -> boo
     kb.structural_child_views(v)
         .iter()
         .any(|c| holds_rigid(kb, c, is))
+}
+
+/// Do `got` and `want` agree everywhere but where `got` holds one of the member's OWN unwritten
+/// slots (`own`, rigid) or `want` a variable — the two returns one type once those slots are
+/// written as the spec's?
+fn agrees_but_for_own_slots(
+    kb: &mut KnowledgeBase,
+    got: &Value,
+    want: &Value,
+    own: &impl Fn(VarId) -> bool,
+) -> bool {
+    if matches!(got.index_var(kb), Some(Var::Rigid(r)) if own(r)) || want.index_var(kb).is_some() {
+        return true;
+    }
+    match (extract_type(kb, got), extract_type(kb, want)) {
+        (
+            TypeExtractor::Parameterized {
+                base: gb,
+                bindings: gbind,
+            },
+            TypeExtractor::Parameterized {
+                base: wb,
+                bindings: wbind,
+            },
+        ) if kb.canonical_sort_sym(gb) == kb.canonical_sort_sym(wb) => {
+            wbind.iter().all(|(k, wv)| {
+                match binding_for_param(kb, &gbind, *k, BindingKeyMatch::Label) {
+                    Some(gv) => agrees_but_for_own_slots(kb, gv, wv, own),
+                    None => true,
+                }
+            })
+        }
+        (TypeExtractor::NamedTuple(gf), TypeExtractor::NamedTuple(wf)) if gf.len() == wf.len() => gf
+            .iter()
+            .zip(wf.iter())
+            .all(|((gk, gv), (wk, wv))| gk == wk && agrees_but_for_own_slots(kb, gv, wv, own)),
+        (
+            TypeExtractor::Arrow {
+                param: gp,
+                result: gr,
+                ..
+            },
+            TypeExtractor::Arrow {
+                param: wp,
+                result: wr,
+                ..
+            },
+        ) => {
+            agrees_but_for_own_slots(kb, &gp, &wp, own)
+                && agrees_but_for_own_slots(kb, &gr, &wr, own)
+        }
+        // A ROW, label by label — the member's own slot is as often a label's payload
+        // (`{Error}` written in the member's return) as a sort's.
+        (TypeExtractor::EffectsRows(_), TypeExtractor::EffectsRows(_)) => {
+            rows_correspond(kb, got, want, &mut |kb, g, w| {
+                agrees_but_for_own_slots(kb, g, w, own)
+            })
+        }
+        _ => views_structurally_equal(kb, got, want),
+    }
 }
 
 /// Does a spec call CHECK its receiver against the spec's receiver type as written — every spec
@@ -1642,7 +1717,7 @@ fn meet_receiver_binding(
 /// variables its bindings hold (`V ↦ List[T = W]`, `W ↦ List[T = V]`)? No finite type solves
 /// such a substitution, and a deep resolve through it does not return: unification's occurs
 /// check reads a binding as written, so the second of two such bindings passes it.
-fn binds_a_cycle(kb: &KnowledgeBase, subst: &Substitution) -> bool {
+pub(super) fn binds_a_cycle(kb: &KnowledgeBase, subst: &Substitution) -> bool {
     fn visit(
         kb: &KnowledgeBase,
         subst: &Substitution,
@@ -1866,7 +1941,7 @@ fn projection_order(
 }
 
 /// WI-20260929-0RP29 — the declaration rule's reading of a projection, the call's own
-/// ([`eliminate_type_projections_read`]) at the arguments the rule passes: a carrier instance
+/// ([`Discharge::reading`]) at the arguments the rule passes: a carrier instance
 /// whose slots are rigids stands for every argument they admit, where the call's reading takes
 /// a member resting on a rigid for unknown and keeps it neutral. Over a carrier instance:
 /// the carrier's own parameter is its slot, any other member the binding — of the provision
@@ -2056,7 +2131,14 @@ impl ProjectionReader {
         let read = |kb: &mut KnowledgeBase, receiver: &Value, recv_ty: &Value, member: Symbol| {
             self.read(kb, receiver, recv_ty, member, rekey, prep)
         };
-        eliminate_type_projections_read(kb, ty, args, rekey, &read, ctx).map_err(|e| match e {
+        Discharge {
+            arg_syms: rekey,
+            denoted_syms: rekey,
+            reading: Some(&read),
+            ..Discharge::new(args, ctx, None)
+        }
+        .eliminate(kb, ty)
+        .map_err(|e| match e {
             TypeError::Other { actual, .. } => actual,
             other => format!("{other:?}"),
         })
@@ -2104,14 +2186,23 @@ impl ProjectionReader {
 /// The spec's receiver type at this provision, as a member typed by the spec receives it:
 /// what it writes, and each slot it leaves unwritten bound as the provision binds it (`T = V`
 /// is the instance's `V`); [`member_narrower_than_spec`]'s spec side makes the rest any type.
+///
+/// A receiver typed by the carrier PARAMETER (`peek(c: C)`, `size(y: T)`) is the SPEC at this
+/// provision too, its whole template: that is what the member's parameter typed by the spec
+/// takes. Read as whatever head `T` resolved to, the template was appended to it — `Car[V =
+/// ?V][T = …, E9 = {Error[T = ?T]}]` — and the member was refused once a row binding rode the
+/// template (MEASURED: review 9); read as the carrier the parameter is bound to, a WITNESS's
+/// (`BoxHolder provides Holder[C = Box]`) is no provider of the spec the relation can see, and
+/// `peek(c: Holder)` was refused as taking less (MEASURED: review 9's fix pass).
 fn spec_at_provision(
     kb: &mut KnowledgeBase,
     spec_pty: &Value,
     template: &[(Symbol, Value)],
+    spec_canon: Symbol,
 ) -> Value {
-    let Some((base, mut bindings)) = sort_application_parts(kb, spec_pty) else {
-        return spec_pty.clone();
-    };
+    let (base, mut bindings) = sort_application_parts(kb, spec_pty)
+        .filter(|(base, _)| kb.canonical_sort_sym(*base) == spec_canon)
+        .unwrap_or_else(|| (spec_canon, Vec::new()));
     for (p, b) in template {
         if binding_for_param(kb, &bindings, *p, BindingKeyMatch::Label).is_none() {
             let short = kb.local_name_of(*p).to_string();
@@ -2208,6 +2299,119 @@ fn bind_member_vars_along(
         }
         _ => {}
     }
+}
+
+/// The declaration rule's binding step, a member's position against its spec's: `sub` unified
+/// with `sup` on a probe of `subst`, and where the unifier stops short the member's variables
+/// bound along the relation ([`bind_member_vars_along`], the member the subtype where
+/// `member_is_sub`) — both as the subtype relation reads a carrier through its provision too
+/// ([`bind_along_provider_view`]). The probe, whether the unifier answered `true`, and whether the
+/// probe binds a variable inside itself: such a unifier solves nothing (its occurs check reads a
+/// binding as written: `K ↦ W`, then `W ↦ List[T = K]`), and a deep resolve through it does not
+/// return (MEASURED: the loader's stack overflowed on such a member instead of refusing it), so a
+/// caller keeps nothing of a cyclic probe. Nothing is bound past a contradiction since `before`.
+fn bind_on_probe(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    before: usize,
+    sub: &Value,
+    sup: &Value,
+    member_is_sub: bool,
+) -> (Substitution, bool, bool) {
+    let mut probe = subst.clone();
+    let unified = unify_types(kb, &mut probe, sub, sup);
+    if binds_a_cycle(kb, &probe) {
+        return (probe, unified, true);
+    }
+    if genuine_contradiction_since(kb, &probe, before) {
+        return (probe, unified, false);
+    }
+    if unified {
+        bind_along_provider_view(kb, &mut probe, sub, sup);
+        return (probe, true, false);
+    }
+    let (spec, member) = if member_is_sub { (sup, sub) } else { (sub, sup) };
+    bind_member_vars_along(kb, &mut probe, spec, member, member_is_sub);
+    // A provision binding kept was checked whole, the relation's bindings with it.
+    let checked = bind_along_provider_view(kb, &mut probe, sub, sup);
+    let cyclic = !checked && binds_a_cycle(kb, &probe);
+    (probe, false, cyclic)
+}
+
+/// WHERE THE SUBTYPE IS A CARRIER AND THE SUPERTYPE A SPEC IT PROVIDES — `List[T = Int64]`
+/// against a member's `FiniteCollection[E = {}]`, a member's `Box[T = Int64]` against the spec's
+/// `Describe[K = ?K]` — the variables either side holds bound from the carrier's provision read at
+/// its arguments: the spec the carrier IS, as the subtype relation reads it, unified with `sup`
+/// on a probe kept only when it holds. Unification across two sorts answers `true` and binds
+/// nothing, and the relation binds nothing either, so a member WIDER than its spec through a
+/// spec-typed parameter left its slot open and was refused as taking less (MEASURED: review 9 —
+/// 160 of 1,200 generated widenings), and a return behind a spec slot the provision leaves
+/// unbound likewise.
+///
+/// At ANY DEPTH a same-sort application reaches: each binding of `sup` against `sub`'s at its
+/// label (`Option[T = Box[T = W]]` behind `Option[T = Describe[K = W]]`, `List[T = Describe]`
+/// behind `List[T = Box[T = Int64]]`).
+///
+/// `true` when it kept a binding — the probe it kept was checked cycle-free whole, so `subst`
+/// is then known to bind no variable inside itself.
+fn bind_along_provider_view(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    sub: &Value,
+    sup: &Value,
+) -> bool {
+    let s = walk_view(kb, subst, sub);
+    let p = walk_view(kb, subst, sup);
+    let (Some(carrier), Some((spec, sup_bindings))) = (
+        sort_functor_of_view(kb, &s),
+        sort_application_parts(kb, &p),
+    ) else {
+        return false;
+    };
+    let (carrier, spec) = (kb.canonical_sort_sym(carrier), kb.canonical_sort_sym(spec));
+    if carrier == spec {
+        let Some((_, sub_bindings)) = sort_application_parts(kb, &s) else {
+            return false;
+        };
+        // A later binding that keeps nothing leaves the probe an earlier one checked.
+        let mut kept = false;
+        for (k, pv) in &sup_bindings {
+            if let Some(sv) = binding_for_param(kb, &sub_bindings, *k, BindingKeyMatch::Label).cloned()
+            {
+                kept |= bind_along_provider_view(kb, subst, &sv, pv);
+            }
+        }
+        return kept;
+    }
+    let Some((view, _)) = subtype_provider_view(kb, carrier, spec) else {
+        return false;
+    };
+    let at = build_pattern_subst(kb, &s, carrier);
+    let bindings: Vec<(Symbol, Value)> = view
+        .iter()
+        .map(|(k, t)| {
+            let v = Value::term(*t);
+            let v = match &at {
+                Some(ps) => walk_pattern_field_type_deep(kb, ps, &v),
+                None => v,
+            };
+            (*k, v)
+        })
+        .collect();
+    let base = kb.make_sort_ref(spec);
+    let viewed = parameterized_value(
+        kb,
+        base,
+        &bindings,
+        crate::kb::node_occurrence::empty_span(),
+        None,
+    );
+    let mut probe = subst.clone();
+    if unify_types(kb, &mut probe, &viewed, &p) && !binds_a_cycle(kb, &probe) {
+        *subst = probe;
+        return true;
+    }
+    false
 }
 
 /// [`bind_member_vars_along`] over two field lists, each member field against the spec's it

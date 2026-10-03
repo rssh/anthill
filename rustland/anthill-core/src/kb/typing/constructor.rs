@@ -484,6 +484,28 @@ pub(super) fn check_seq_literal_constructor(
 /// exact here (and more robust than symbol identity, which can differ across the
 /// param's registrations).
 pub(super) fn sort_param_is_effect_row(kb: &mut KnowledgeBase, sort: Symbol, member: &str) -> bool {
+    effects_param_head_is(kb, sort, |kb, head| short_name_of(kb.local_name_of(head)) == member)
+}
+
+/// [`sort_param_is_effect_row`] keyed by the parameter's own symbol, for a caller on a hot path
+/// that holds one: the two short names are compared in the symbol table, none copied out.
+pub(super) fn sort_param_sym_is_effect_row(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+    param: Symbol,
+) -> bool {
+    effects_param_head_is(kb, sort, |kb, head| {
+        short_name_of(kb.local_name_of(head)) == short_name_of(kb.local_name_of(param))
+    })
+}
+
+/// Does `sort`'s own `EffectsRuntime` requirement name, as its `Effects` row, a parameter `is`
+/// accepts? The one walk behind [`sort_param_is_effect_row`]'s two keys.
+fn effects_param_head_is(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+    is: impl Fn(&KnowledgeBase, Symbol) -> bool,
+) -> bool {
     let Some(effects_runtime) = effects_runtime_sym(kb) else {
         return false;
     };
@@ -493,7 +515,7 @@ pub(super) fn sort_param_is_effect_row(kb: &mut KnowledgeBase, sort: Symbol, mem
         }
         if let Some(v) = spec_binding_value(kb, &entry.spec, "Effects") {
             if let Some(head) = spec_binding_head_sym(kb, v) {
-                if short_name_of(kb.local_name_of(head)) == member {
+                if is(kb, head) {
                     return true;
                 }
             }

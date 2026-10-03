@@ -527,25 +527,30 @@ fn type_term_mentions_op_tp(kb: &KnowledgeBase, tid: TermId, tp_vars: &[VarId]) 
 /// params from the KNOWN sibling argument types — unify each known param's
 /// DECLARED type against its argument's type (`a: X` vs `Wrap[A = GT]` pins
 /// `X`), exactly the pinning the call itself performs later at argument
-/// unification, done early so a lambda's hint can carry it. `None` when
-/// nothing is known or nothing BINDS (a monomorphic callee's pairs unify
-/// without binding, and an empty σ would only buy every hint a no-op deep
-/// rebuild) — the hint then stays as declared.
+/// unification, done early so a lambda's hint can carry it. Nothing is added
+/// when nothing is known or nothing BINDS (a monomorphic callee's pairs unify
+/// without binding) — the hint then stays as declared.
 ///
 /// WI-20260926-NEKR0: a type parameter several known arguments bind is their JOIN, bound
 /// first — the instantiation `check_apply_iter` makes — so a hint cannot carry the first
 /// argument's type where the call instantiates a wider one. A call with no join hints as
 /// declared; the call itself refuses it.
-pub(super) fn hint_instantiation_subst(
+///
+/// INTO `s`, after what the receiver binds there ([`bind_self_receiver_params_for_hint`],
+/// [`bind_spec_params_for_hint`]): the call binds a spec parameter from its receiver BEFORE it
+/// unifies any argument, so a sibling argument meets that binding here as there — pinned from
+/// the sibling first, `T` read a wider tuple than the receiver's provision binds and the lambda's
+/// hint disagreed with the slot the call checks it against (MEASURED: review 9).
+pub(super) fn hint_instantiation_into(
     kb: &mut KnowledgeBase,
+    s: &mut Substitution,
     functor: Symbol,
     ps: &[(Symbol, Value)],
     known: &HashMap<Symbol, Value>,
-) -> Option<Substitution> {
+) {
     if known.is_empty() {
-        return None;
+        return;
     }
-    let mut s = Substitution::new();
     if let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) {
         let refs: Vec<(Symbol, &Value, &Value)> = ps
             .iter()
@@ -553,7 +558,7 @@ pub(super) fn hint_instantiation_subst(
             .collect();
         let mut probe = s.clone();
         if join_repeated_type_params(kb, &mut probe, JoinCandidates::TypeParams(&rec.type_params), &refs).is_ok() {
-            s = probe;
+            *s = probe;
         }
     }
     for (psym, declared) in ps {
@@ -568,11 +573,10 @@ pub(super) fn hint_instantiation_subst(
             // this is one unification per pair, not two.
             let mut probe = s.clone();
             if unify_types(kb, &mut probe, declared, arg_ty) {
-                s = probe;
+                *s = probe;
             }
         }
     }
-    (!s.is_empty()).then_some(s)
 }
 
 /// WI-275/427/707: the top-down hint for ONE argument, given its declared parameter type.
@@ -580,16 +584,18 @@ pub(super) fn hint_instantiation_subst(
 /// up) and by both staging phases, so a hint cannot be computed one way before the
 /// receiver is typed and another way after.
 ///
-/// WI-821: `inst` — the [`hint_instantiation_subst`] pinning callee type params from
-/// known sibling argument types — is applied to a HOF hint only, mirroring how the
-/// projection elimination is: the other hint kinds are gated on ground declared types
-/// and never mention a callee type param.
+/// WI-821: `inst` — the [`hint_instantiation_into`] pinning callee type params from
+/// known sibling argument types — is applied to the two hints that read the parameter in
+/// the CALLER's terms, a HOF hint and a sequence literal's, as the projection elimination
+/// is: the other hint kinds are gated on ground declared types and never mention a callee
+/// type param.
 pub(super) fn one_arg_hint(
     kb: &mut KnowledgeBase,
     functor: Symbol,
     arg: &Rc<NodeOccurrence>,
     pt: Option<Value>,
     known: &HashMap<Symbol, Value>,
+    arg_paths: &HashMap<Symbol, Vec<Symbol>>,
     inst: Option<&Substitution>,
 ) -> Option<Value> {
     // WI-485: eliminate a callback param projection for the lambda hint (`s.T ⟹ Int64`);
@@ -597,20 +603,36 @@ pub(super) fn one_arg_hint(
     // type and rides the call-site path).
     let pt_hof = pt
         .as_ref()
-        .and_then(|t| eliminate_callback_hint_projection(kb, t, known, functor))
+        .and_then(|t| eliminate_callback_hint_projection(kb, t, known, arg_paths, functor))
         .or_else(|| pt.clone());
-    // Only a hof-shaped arg consumes `pt_hof` (`hof_arg_hint`'s own gate), so
-    // the deep rebuild is skipped for every other argument.
+    // Only a hof-shaped arg and a sequence literal consume `pt_hof` (their hints' own gates),
+    // so the deep rebuild is skipped for every other argument.
+    //
+    // A SEQUENCE LITERAL reads it too — the parameter type in the CALLER's terms, projections
+    // eliminated and the instantiation applied. It is typed BY its hint (WI-1096), so the raw
+    // `p: List[T = (a: s.J, b: J)]` typed `[(a: [k], b: [k])]` with the callee's `s.J`, which no
+    // caller names, and the argument check refused it against the eliminated slot (MEASURED:
+    // review 9 — reached once the receiver's provision binds `J` at depth).
     let pt_hof = match (inst, pt_hof) {
-        (Some(s), Some(t)) if is_hof_shaped(arg) => Some(resolve_type_deep_value(kb, s, &t)),
+        (Some(s), Some(t)) if is_hof_shaped(arg) || seq_literal_kind(kb, arg).is_some() => {
+            Some(resolve_type_deep_value(kb, s, &t))
+        }
         (_, t) => t,
     };
     let pt_eliminated = pt_hof.clone();
+    // A sequence literal is typed BY its hint, so one still holding a projection the elimination
+    // could not read — a STAGED literal, hinted before the receiver it projects is typed — would
+    // be typed in the callee's names, which no caller value has: `f(mk(), [(a: 2, b: 3)], …)`
+    // over `p: List[T = (a: s.J, b: s.J)]` was refused "expected (a: s.J, b: s.J)" (MEASURED, on
+    // every build). Such a literal types bottom-up, and the call checks it against the slot.
+    let seq_pt = pt_eliminated
+        .as_ref()
+        .filter(|t| !value_contains_projection(kb, t));
     let base = hof_arg_hint(kb, arg, pt_hof)
         .or_else(|| nested_call_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| type_slot_arg_hint(kb, arg, pt.as_ref()))
         .or_else(|| variant_slot_arg_hint(kb, arg, pt.as_ref()))
-        .or_else(|| seq_slot_arg_hint(kb, arg, pt.as_ref()));
+        .or_else(|| seq_slot_arg_hint(kb, arg, seq_pt));
     if base.is_some() {
         return base;
     }
@@ -630,6 +652,33 @@ pub(super) fn one_arg_hint(
     ctor_arg_unlocks_an_arrow_for_a_bare_name(kb, arg, &pt).then_some(pt)
 }
 
+/// The spec parameters a SELF-RECEIVER spec operation's receiver binds through its carrier's own
+/// provision (`Sp.each(k, …)` over `each(s: Sp, f: (q: T) -> Int64, z: T)` at `Car provides Sp[T =
+/// Option[T = Car]]`), read as the call reads them ([`concrete_receiver_carrier`],
+/// [`bind_this_instance_params`]) — into the hint's σ before any sibling argument pins them.
+/// Nothing when the operation has no self-receiver, its receiver's type is not known yet, or the
+/// receiver is no concrete carrier.
+pub(super) fn bind_self_receiver_params_for_hint(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    functor: Symbol,
+    params: &[(Symbol, Value)],
+    known: &HashMap<Symbol, Value>,
+) {
+    let Some(spec_sort) = spec_op_parent_sort(kb, functor) else {
+        return;
+    };
+    let Some(idx) = self_receiver_param_index(kb, params, spec_sort) else {
+        return;
+    };
+    let Some(recv_ty) = known.get(&params[idx].0).cloned() else {
+        return;
+    };
+    if let Some(carrier) = concrete_receiver_carrier(kb, spec_sort, &recv_ty) {
+        bind_this_instance_params(kb, subst, spec_sort, carrier, &recv_ty);
+    }
+}
+
 /// WI-20260828-N2FHM — the substitution that grounds a spec's OWN type params from the
 /// receiver argument's carrier, computed at HINT time so a callback param that names one
 /// can be eliminated before it hints a lambda.
@@ -637,8 +686,8 @@ pub(super) fn one_arg_hint(
 /// THE GAP THIS CLOSES, measured. `Iterable.find(c: C, pred: (x: Element) -> Bool)` types
 /// its callback binder from `Element`, a param of the SPEC — not, as `Stream.find`'s
 /// `pred: (x: s.T)` does, a PROJECTION of a sibling. WI-485's elimination and WI-821's
-/// `hint_instantiation_subst` between them cover the projection and the callee-type-param
-/// spellings; neither covers this one. `hint_instantiation_subst` unifies the declared
+/// `hint_instantiation_into` between them cover the projection and the callee-type-param
+/// spellings; neither covers this one. `hint_instantiation_into` unifies the declared
 /// `c: C` against `List[T = Row]` and so binds `C`, but nothing in the signature relates
 /// `Element` to `C` — that relation lives in the carrier's PROVISION
 /// (`List provides Stream provides Iterable[C = …, Element = T, E = {}]`), which is
@@ -659,13 +708,12 @@ pub(super) fn one_arg_hint(
 /// view, a receiver whose type no no-typing reader knows) or nothing binds; the hint then
 /// stays exactly as declared, which is today's behaviour.
 ///
-/// Binds into the SAME `subst` [`hint_instantiation_subst`] filled, not a second one the
-/// caller would have to merge: the two are disjoint by construction — that one pins the
-/// callee's params from the declared/argument pairs (the carrier param `C` among them),
-/// this one the spec's OTHER params from the provision, and
-/// [`bind_spec_params_from_carrier_param`] skips `C` for exactly that reason. Filling one
-/// σ keeps the hint's single deep resolve, and a contradiction (should the disjointness
-/// ever stop holding) is loud from `bind_term` rather than silently order-dependent.
+/// Binds into the SAME `subst` the sibling pins ([`hint_instantiation_into`]) fill after it,
+/// not a second one the caller would have to merge — and BEFORE them, as the call binds a spec
+/// parameter from its receiver before it unifies any argument: a pin that disagrees with the
+/// provision is then dropped here as the argument's unification fails there, rather than the
+/// hint reading the sibling's type where the call reads the provision's. One σ keeps the hint's
+/// single deep resolve.
 pub(super) fn bind_spec_params_for_hint(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -706,12 +754,17 @@ pub(super) fn bind_spec_params_for_hint(
 
 /// WI-275: the top-down hints for every argument of a call, positional then named.
 ///
-/// WI-793 note on why calling this BEFORE the staged arguments are typed is sound: only
-/// [`hof_arg_hint`] reads the projection-eliminated type, and it answers `None` for
-/// anything not [`is_hof_shaped`]. A staged argument is never hof-shaped, so its hint
-/// does not depend on `known` — computing it with the incomplete map yields exactly the
-/// hint the completed map would. That is what lets a staged argument keep the
-/// `nested_call_arg_hint` / `type_slot_arg_hint` it would otherwise have received.
+/// WI-793 note on why calling this BEFORE the staged arguments are typed is sound: the
+/// projection-eliminated type is read by [`hof_arg_hint`], which answers `None` for anything
+/// not [`is_hof_shaped`], and by a sequence literal's hint, which a projection the incomplete
+/// map leaves unread withholds ([`one_arg_hint`]). A staged argument is never hof-shaped, so an
+/// incomplete map can only make a staged literal type bottom-up — it cannot hint it wrongly.
+/// That is what lets a staged argument keep the `nested_call_arg_hint` / `type_slot_arg_hint`
+/// it would otherwise have received.
+///
+/// `aliases`: the caller's `let` aliases ([`TypingEnv::receiver_aliases`]) — an argument path
+/// is read through them as the call reads it ([`call_arg_paths`]).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn apply_arg_hints(
     kb: &mut KnowledgeBase,
     functor: Symbol,
@@ -720,6 +773,7 @@ pub(super) fn apply_arg_hints(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     known: &HashMap<Symbol, Value>,
+    aliases: &HashMap<Symbol, Vec<Symbol>>,
 ) -> (Vec<Option<Value>>, Vec<Option<Value>>) {
     // WI-821: pin callee type params from the known sibling argument types once,
     // so every HOF hint below carries the instantiation (`Function[A = X]` hints
@@ -730,9 +784,14 @@ pub(super) fn apply_arg_hints(
     // (`Iterable.find`'s `pred: (x: Element) -> Bool`), which neither the WI-485
     // projection elimination nor the pairwise pinning above can reach. See
     // [`bind_spec_params_for_hint`].
-    let inst = op_params.and_then(|ps| {
-        let mut s = hint_instantiation_subst(kb, functor, ps, known).unwrap_or_else(Substitution::new);
+    //
+    // Nothing is known of a call none of whose arguments has been typed yet — every call
+    // without a higher-order argument — and then nothing below reads either map.
+    let inst = op_params.filter(|_| !known.is_empty()).and_then(|ps| {
+        let mut s = Substitution::new();
+        bind_self_receiver_params_for_hint(kb, &mut s, functor, ps, known);
         bind_spec_params_for_hint(kb, &mut s, functor, ps, pos_args, named_args, known);
+        hint_instantiation_into(kb, &mut s, functor, ps, known);
         (!s.is_empty()).then_some(s)
     });
     // What a callback parameter's PROJECTION reads ([`projection_receivers`]): the sibling
@@ -742,10 +801,10 @@ pub(super) fn apply_arg_hints(
     // argument itself.
     let no_subst = Substitution::new();
     let receivers = match op_params {
-        Some(ps) => {
+        Some(ps) if !known.is_empty() => {
             projection_receivers(kb, inst.as_ref().unwrap_or(&no_subst), ps, known, functor)
         }
-        None => std::borrow::Cow::Borrowed(known),
+        _ => std::borrow::Cow::Borrowed(known),
     };
     let known = &*receivers;
     // WI-20260904-50B2K — WHICH PARAMETER A POSITIONAL ARGUMENT TAKES IS
@@ -788,6 +847,14 @@ pub(super) fn apply_arg_hints(
     let pos_slots = op_params
         .map(|ps| positional_param_indices(kb, ps, pos_args.len(), named_args))
         .unwrap_or_default();
+    // Each argument's value path by the parameter it binds — what a callback hint's neutral
+    // projection is re-keyed to, as the call re-keys the slot ([`eliminate_callback_hint_projection`]).
+    let arg_paths = match op_params {
+        Some(ps) if !known.is_empty() => {
+            call_arg_paths(kb, aliases, ps, &pos_slots, pos_args, named_args)
+        }
+        _ => HashMap::new(),
+    };
     let mut pos_hints = Vec::with_capacity(pos_args.len());
     for (i, arg) in pos_args.iter().enumerate() {
         // WI-707: inside a sort application every argument is a type.
@@ -801,7 +868,7 @@ pub(super) fn apply_arg_hints(
             .flatten()
             .and_then(|slot| op_params.and_then(|ps| ps.get(slot)))
             .map(|(_, t)| t.clone());
-        pos_hints.push(one_arg_hint(kb, functor, arg, pt, known, inst.as_ref()));
+        pos_hints.push(one_arg_hint(kb, functor, arg, pt, known, &arg_paths, inst.as_ref()));
     }
     let mut named_hints = Vec::with_capacity(named_args.len());
     for (name, arg) in named_args.iter() {
@@ -813,9 +880,44 @@ pub(super) fn apply_arg_hints(
         let pt = op_params
             .and_then(|ps| ps.iter().find(|(s, _)| same_label(kb, *s, *name)))
             .map(|(_, t)| t.clone());
-        named_hints.push(one_arg_hint(kb, functor, arg, pt, known, inst.as_ref()));
+        named_hints.push(one_arg_hint(kb, functor, arg, pt, known, &arg_paths, inst.as_ref()));
     }
     (pos_hints, named_hints)
+}
+
+/// The VALUE PATH each argument of a call is, by the parameter it binds — a variable, a field
+/// path (`w.st`), or a `let` alias read as the path it names ([`canonical_receiver_path`]) — for
+/// the neutral re-key of a projection over that parameter: in the call's parameters, return and
+/// effects, and in a callback argument's hint, which must name the receiver as they do. An
+/// argument that is no stable path (a call's result, a literal) has none.
+pub(super) fn call_arg_paths(
+    kb: &mut KnowledgeBase,
+    aliases: &HashMap<Symbol, Vec<Symbol>>,
+    params: &[(Symbol, Value)],
+    pos_call_params: &[Option<usize>],
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+) -> HashMap<Symbol, Vec<Symbol>> {
+    let mut paths = HashMap::new();
+    for (i, arg) in pos_args.iter().enumerate() {
+        let Some((param, _)) = pos_call_params.get(i).copied().flatten().and_then(|p| params.get(p))
+        else {
+            continue;
+        };
+        if let Some(path) = stable_receiver_path(kb, arg) {
+            paths.insert(*param, canonical_receiver_path(aliases, path));
+        }
+    }
+    for (label, arg) in named_args {
+        let Some((param, _)) = match_named_arg_param(kb, params, *label) else {
+            continue;
+        };
+        let param = *param;
+        if let Some(path) = stable_receiver_path(kb, arg) {
+            paths.insert(param, canonical_receiver_path(aliases, path));
+        }
+    }
+    paths
 }
 
 /// WI-485: eliminate a cross-param projection in a callback PARAM type (e.g. find's
@@ -829,10 +931,16 @@ pub(super) fn apply_arg_hints(
 /// the projection's receiver arg is not a known `VarRef`; an un-eliminable projection is
 /// swallowed here (the later call-site elimination still reports a genuine bad projection
 /// loudly), never silently grounded.
+///
+/// `arg_paths`: the arguments' value paths by parameter — a NEUTRAL the elimination leaves is
+/// re-keyed to the argument it projects off, as the call re-keys the slot it then checks the
+/// lambda against: hinted with the callee's `s.provider.K`, `lambda (x) -> 42` for `f: (x:
+/// s.provider.K) -> Int64` was refused against the call's `st.provider.K` (MEASURED: review 9).
 fn eliminate_callback_hint_projection(
     kb: &mut KnowledgeBase,
     pt: &Value,
     param_arg_types: &HashMap<Symbol, Value>,
+    arg_paths: &HashMap<Symbol, Vec<Symbol>>,
     fn_sym: Symbol,
 ) -> Option<Value> {
     if param_arg_types.is_empty() || !value_contains_projection(kb, pt) {
@@ -842,7 +950,12 @@ fn eliminate_callback_hint_projection(
         op_name: fn_sym,
         surface: None,
     };
-    eliminate_type_projections(kb, pt, param_arg_types, None, &ctx, None).ok()
+    Discharge {
+        arg_paths: Some(arg_paths),
+        ..Discharge::new(param_arg_types, &ctx, None)
+    }
+    .eliminate(kb, pt)
+    .ok()
 }
 
 /// WI-427: true iff the type term mentions a `TypeExtractor.TypeVar` form

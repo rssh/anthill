@@ -430,10 +430,14 @@ pub(crate) fn is_reflect_term_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> b
 /// (`pub(crate)`: the loader's fact-field wrap tests field types with it).
 pub(crate) fn is_option_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
     match type_head(kb, ty) {
-        TypeHead::Parameterized { base } => kb.qualified_name_of(base) == "anthill.prelude.Option",
-        TypeHead::SortRef(s) => kb.qualified_name_of(s) == "anthill.prelude.Option",
+        TypeHead::Parameterized { base: s } | TypeHead::SortRef(s) => is_option_sort(kb, s),
         _ => false,
     }
+}
+
+/// Is `s` the `anthill.prelude.Option` sort? The one place the typer spells its name.
+pub(crate) fn is_option_sort(kb: &KnowledgeBase, s: Symbol) -> bool {
+    kb.qualified_name_of(s) == "anthill.prelude.Option"
 }
 
 /// WI-1096: is this resolved type a VARIABLE — a declared type parameter (`T`), an

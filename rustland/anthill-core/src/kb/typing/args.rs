@@ -180,6 +180,18 @@ pub(super) fn validate_arg_against_param(
         // ended up. MEASURED before removing it: neutralized, the anthill-core suite is
         // 5605/0, unchanged. The whole-argument pair is covered — by the call inside
         // `nominal_head_mismatch`, which the head test above reaches with it.
+        //
+        // WI-408'S SOME-COERCION WHERE THE OPTION IS NOT DETERMINED YET (`k: Option[T = A]`, `A`
+        // bound by a later argument or never): a value that is decidedly no option conforms to
+        // no `Option[T = …]` as it is, whatever `A` becomes, so the payload is the one reading
+        // left — checked against the element as the ground path does, and wrapped. Returned
+        // `Ok`, the call left the value bare in memory while every projection over the parameter
+        // read it as wrapped, and `match k` failed at run time (`orElse(41, 0)` over `d: k.T`;
+        // `f(3, b)` over a value-in-type payload — MEASURED: review 9); read raw instead, `k.T`
+        // asked the bare value for a member and correct calls were refused.
+        if is_option_type(kb, &declared_g) && decidedly_not_an_option(kb, &actual_g) {
+            return some_coercion(kb, subst, actual_g, declared_g, span, context, actual_node);
+        }
         return ArgValidation::Ok;
     }
     // value→Term reflection: total conversion, accept any actual vs declared Term.
@@ -196,46 +208,7 @@ pub(super) fn validate_arg_against_param(
     // re-wrapped; an `Option[T]` actual against `Option[Option[T]]` declared
     // is a valid PAYLOAD and takes the one outer wrap.
     if is_option_type(kb, &declared_g) {
-        match extract_type_param(kb, &declared_g, "T") {
-            Some(inner) => {
-                return match validate_arg_against_param(
-                    kb,
-                    subst,
-                    &actual_g,
-                    &inner,
-                    span,
-                    context.clone(),
-                    actual_node,
-                ) {
-                    ArgValidation::Ok => ArgValidation::WrapSome {
-                        declared: declared_g,
-                    },
-                    // WrapSome: the value is bare at BOTH depths of a nested
-                    // Option — a single wrap cannot repair it; demand the
-                    // explicit inner `some(...)` rather than silently
-                    // guessing the nesting depth. Fail: report the OUTER
-                    // expected/actual pair (clearer than the peeled element
-                    // mismatch).
-                    ArgValidation::WrapSome { .. } | ArgValidation::Fail(_) => {
-                        ArgValidation::Fail(TypeError::TypeMismatch {
-                            site: TypeError::here(),
-                            span,
-                            context,
-                            expected: declared_g,
-                            denoted: denoted_type_value(kb, actual_node),
-                            actual: actual_g,
-                        })
-                    }
-                };
-            }
-            // A bare `Option` (unconstrained element) has no element to
-            // re-check — any value is its `some` payload.
-            None => {
-                return ArgValidation::WrapSome {
-                    declared: declared_g,
-                }
-            }
-        }
+        return some_coercion(kb, subst, actual_g, declared_g, span, context, actual_node);
     }
     // WI-385: a concrete carrier conforms to a BARE spec it PROVIDES — e.g.
     // `List[Int]` passed where `Stream` is declared (`List provides Stream`).
@@ -261,6 +234,85 @@ pub(super) fn validate_arg_against_param(
         context,
         actual_node,
     ))
+}
+
+/// WI-408: `actual` against the option `declared` as its `some(…)` payload — checked against the
+/// element and wrapped, or refused naming the OUTER pair.
+fn some_coercion(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual_g: Value,
+    declared_g: Value,
+    span: Option<Span>,
+    context: TypeErrorContext,
+    actual_node: Option<&Rc<NodeOccurrence>>,
+) -> ArgValidation {
+    match extract_type_param(kb, &declared_g, "T") {
+        Some(inner) => {
+            match validate_arg_against_param(
+                kb,
+                subst,
+                &actual_g,
+                &inner,
+                span,
+                context.clone(),
+                actual_node,
+            ) {
+                ArgValidation::Ok => ArgValidation::WrapSome {
+                    declared: declared_g,
+                },
+                // WrapSome: the value is bare at BOTH depths of a nested
+                // Option — a single wrap cannot repair it; demand the
+                // explicit inner `some(...)` rather than silently
+                // guessing the nesting depth. Fail: report the OUTER
+                // expected/actual pair (clearer than the peeled element
+                // mismatch).
+                ArgValidation::WrapSome { .. } | ArgValidation::Fail(_) => {
+                    ArgValidation::Fail(TypeError::TypeMismatch {
+                        site: TypeError::here(),
+                        span,
+                        context,
+                        expected: declared_g,
+                        denoted: denoted_type_value(kb, actual_node),
+                        actual: actual_g,
+                    })
+                }
+            }
+        }
+        // A bare `Option` (unconstrained element) has no element to
+        // re-check — any value is its `some` payload.
+        None => ArgValidation::WrapSome {
+            declared: declared_g,
+        },
+    }
+}
+
+/// Is `ty` decidedly NOT an option — neither an option (bare, applied, or one of its
+/// constructors' variant types; an alias of one reads as one through [`walk_view`]) nor a type
+/// still open (a variable, a declared type parameter, an unresolved projection) that an option
+/// may yet turn out to be?
+fn decidedly_not_an_option(kb: &KnowledgeBase, ty: &Value) -> bool {
+    match type_head(kb, ty) {
+        TypeHead::FlexVar(_)
+        | TypeHead::TypeVar(_)
+        | TypeHead::Denoted
+        | TypeHead::ExprCarried
+        | TypeHead::RigidProjection
+        | TypeHead::Nothing
+        | TypeHead::Error => false,
+        // A head that is itself a parameter — a declared type parameter, an opaque `sort T =
+        // ?` — is no nominal head ([`nominal_head_parts`]), and still open.
+        TypeHead::Parameterized { .. } | TypeHead::SortRef(_) => {
+            nominal_head_parts(kb, ty).is_some_and(|(base, _)| {
+                !is_option_sort(kb, kb.sort_of_constructor(base).unwrap_or(base))
+            })
+        }
+        TypeHead::Skolem(_)
+        | TypeHead::Arrow
+        | TypeHead::PolyType
+        | TypeHead::EffectsRows
+        | TypeHead::NamedTuple => true,
+    }
 }
 
 /// WI-RKMD4: does `actual` disagree with `declared` at a NOMINAL HEAD CONSTRUCTOR —
@@ -2619,16 +2671,22 @@ pub(super) fn validate_callback_effect_row(
     // which "disagrees" with every slot declaring one: `let g = mk()` then `two(inc, g)`, and
     // the stdlib's own `List.mapElems[EffP = {}]([1, 2], g)`, passed a raising callback into a
     // closed row and a pure `main` died, where `two(inc, mk())` was refused (MEASURED).
+    //
+    // AND A SLOT THAT NAMES NO BINDERS (a `Function[…]`) DROPS NO LABEL BUT THE ONE IT CANNOT
+    // JUDGE. A label naming one of the callback's own binders has no correspondence here, and
+    // only where the declared row speaks of a place in the same effect (`Modify[c]`, `-Modify[c]`)
+    // does admitting or denying it turn on one — that label alone is passed over below
+    // (`unaligned_own`). Everything else is judged: the bail used to return for the whole row
+    // as soon as the callback named a binder, so `eachF[E = {}](c, g)` passed a `let`-bound
+    // lambda that wrote its binder AND raised `Error[Foo]` beside it, out of a pure `main`
+    // (MEASURED: review 9 — reachable for every lambda once a `let` recorded its places).
+    let mut unaligned_own: SmallVec<[Symbol; 4]> = SmallVec::new();
     if let Some(places) = &actual_places {
         if places.len() != declared_places.len() {
-            let names_own_place = places.iter().flatten().any(|place| {
-                a_present
-                    .iter()
-                    .any(|la| extract_effect_resource_sym(kb, la) == Some(*place))
-            });
-            if !declared_places.is_empty() || names_own_place {
+            if !declared_places.is_empty() {
                 return None;
             }
+            unaligned_own.extend(places.iter().flatten().copied());
         }
     }
     let mut place_map: HashMap<Symbol, Symbol> = actual_places
@@ -2678,18 +2736,27 @@ pub(super) fn validate_callback_effect_row(
         .collect();
     // A label naming a CALLBACK PARAMETER's place (`<op>.g.y`) says its position itself: that
     // kind of place exists in the row of its own arrow only (WI-341,
-    // [`callback_binder_position`]), so whatever expression carries the arrow here — a `let`
-    // over the parameter, an `if` over two — the place is this callback's binder at that
-    // position.
-    for la in &a_present {
-        let Some(place) = extract_effect_resource_sym(kb, la) else {
-            continue;
-        };
-        if place_map.contains_key(&place) {
-            continue;
-        }
-        if let Some(e) = callback_binder_position(kb, place).and_then(|i| declared_places.get(i)) {
-            place_map.insert(place, *e);
+    // [`callback_binder_position`]), so an expression that says no places of its own and carries
+    // the arrow — an `if` over two callback parameters — has this callback's binder at that
+    // position. NOT ONE THAT SAYS ITS OWN (a lambda, an operation, a `let` holding one): an
+    // APPLICATION of `g` inside it charges `g`'s place as written whatever `g` was applied to,
+    // so `lambda (k) -> g(d)` carried `Modify[g.y]` exactly as `lambda (k) -> g(k)` does, and
+    // read as the lambda's binder it admitted the write to `d` past a closed `@ {Modify[x]}`
+    // and defeated a `-Modify[a]` (MEASURED: review 9). There the label is compared as it
+    // stands, as the lambda's own places are aligned above.
+    if actual_places.is_none() {
+        for la in &a_present {
+            let Some(place) = extract_effect_resource_sym(kb, la) else {
+                continue;
+            };
+            if place_map.contains_key(&place) {
+                continue;
+            }
+            if let Some(e) =
+                callback_binder_position(kb, place).and_then(|i| declared_places.get(i))
+            {
+                place_map.insert(place, *e);
+            }
         }
     }
     for la in &a_present {
@@ -2725,6 +2792,42 @@ pub(super) fn validate_callback_effect_row(
                     type_display_name_value(kb, la),
                 ),
             });
+        }
+        // One of the callback's own binders at a slot naming none, where the declared row speaks
+        // of a place in the same effect: which place the binder receives is nobody's to say, so
+        // the row neither admits it nor shows it absent. Refused, naming the spelling that can
+        // say it: `eachF[E = {Modify[c]}](c, g)` over a `g` writing its argument is right only if
+        // `eachF` applies `g` to `c`, and the same slot admitted `onOther`, applying it to `o`
+        // (MEASURED: review 9 — the bail passed both).
+        if let Some(own) =
+            extract_effect_resource_sym(kb, la).filter(|place| unaligned_own.contains(place))
+        {
+            if e_present.iter().chain(e_absent.iter()).any(|le| {
+                extract_effect_resource_sym(kb, le).is_some() && same_effect_sort(kb, la, le)
+            }) {
+                return Some(TypeError::Other {
+                    site: TypeError::here(),
+                    span,
+                    context: TypeErrorContext::OperationArgument {
+                        op_name: fn_sym,
+                        param: param_sym,
+                    },
+                    expected: format!(
+                        "callback effects admitted by parameter `{}` of `{}` — a `Function[…]` \
+                         slot names no parameter, so its row cannot say which value the callback \
+                         is given",
+                        kb.local_name_of(param_sym),
+                        kb.qualified_name_of(fn_sym),
+                    ),
+                    actual: format!(
+                        "{} declares `{}` on its own parameter `{}`; type the slot as an arrow \
+                         that names it (`(x: …) -> … @ {{…[x]}}`)",
+                        subject(kb),
+                        type_display_name_value(kb, la),
+                        kb.local_name_of(own),
+                    ),
+                });
+            }
         }
         // A LABEL THAT NAMES A VALUE, AND NO DECLARED LABEL IS IT. A value in scope at the call
         // — a parameter of the enclosing operation, a local — is that value, compared above as

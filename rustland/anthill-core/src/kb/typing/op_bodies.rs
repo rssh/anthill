@@ -652,7 +652,7 @@ pub(super) fn check_operation_bodies(
                 // unify leaves and not WHETHER this σ should absorb them, and this one is
                 // read two lines down into a user-visible message.
                 // PROBE ON A CLONE, COMMIT ONLY ON SUCCESS — the file's own pattern
-                // (`hint_instantiation_subst`), applied here because this σ is READ two
+                // (`hint_instantiation_into`), applied here because this σ is READ two
                 // lines down and its reading is USER-VISIBLE. `unify_types` binds as it
                 // descends and does not roll back, so a pair that fails partway leaves its
                 // partial bindings behind; `body_ty` is what `conformance_error` renders,
@@ -803,12 +803,17 @@ pub(super) fn check_operation_bodies(
                 // over-declaration it asks for. Absences keep their written `-X` form
                 // via [`effect_atom_display`].
                 let mut declared_display: Vec<String> = Vec::new();
+                // AN ALIAS LABEL IS THE LABEL IT STANDS FOR, on both sides (`sort Fails =
+                // Error[Foo]`): compared as written, a body applying a callback whose row says
+                // `Fails` was refused against a declared `Error[Foo]` on every build ("undeclared
+                // effect: Fails", MEASURED: review 9's fix pass). The display keeps the spelling.
                 for e in &effective_effects {
                     match explode_declared_effect_row(kb, e) {
                         Some((admitting, absent)) => {
                             for a in &admitting {
                                 declared_display.push(effect_atom_display(kb, a, atom_label_key));
-                                declared_canon.push(walk_type_deep_value(kb, &canon_subst, a));
+                                let a = walk_type_deep_value(kb, &canon_subst, a);
+                                declared_canon.push(dealiased(kb, &a));
                             }
                             for l in &absent {
                                 declared_display
@@ -818,7 +823,8 @@ pub(super) fn check_operation_bodies(
                         }
                         None => {
                             declared_display.push(effect_atom_display(kb, e, atom_label_key));
-                            declared_canon.push(walk_type_deep_value(kb, &canon_subst, e));
+                            let e = walk_type_deep_value(kb, &canon_subst, e);
+                            declared_canon.push(dealiased(kb, &e));
                         }
                     }
                 }
@@ -841,6 +847,7 @@ pub(super) fn check_operation_bodies(
                     };
                     for comp in &components {
                         let comp_canon = walk_type_deep_value(kb, &canon_subst, comp);
+                        let comp_key = dealiased(kb, &comp_canon);
                         // WI-818: a declared GUARDED atom `L :- g` conservatively
                         // CONTAINS its label ([`guarded_effect_label`]'s reading),
                         // so a body incurring raw `L` — `head`'s raise under the
@@ -873,9 +880,9 @@ pub(super) fn check_operation_bodies(
                         // refuse `Stream.head` outright if any decline path exists that
                         // this reading missed.
                         let declared = declared_canon.iter().any(|d| {
-                            views_structurally_equal(kb, &comp_canon, d)
+                            views_structurally_equal(kb, &comp_key, d)
                                 || guarded_effect_label(kb, d).is_some_and(|lbl| {
-                                    views_structurally_equal(kb, &comp_canon, &lbl)
+                                    views_structurally_equal(kb, &comp_key, &lbl)
                                 })
                         });
                         if !declared {
@@ -893,9 +900,12 @@ pub(super) fn check_operation_bodies(
                             // became. With an empty subst that pair silently degraded to
                             // the generic "undeclared effect" wording — the failure this
                             // branch exists to avoid. (Found by review.)
-                            let denied = declared_absent
-                                .iter()
-                                .find(|a| label_violates_absence(kb, &canon_subst, &comp_canon, a));
+                            // Each absence read through its aliases as the labels above are; the
+                            // message keeps the spelling.
+                            let denied = declared_absent.iter().find(|a| {
+                                let a = dealiased(kb, a);
+                                label_violates_absence(kb, &canon_subst, &comp_key, &a)
+                            });
                             let actual = match denied {
                                 Some(a) => format!(
                                     "denied effect: {} — the row DECLARES `-{}`, so this \

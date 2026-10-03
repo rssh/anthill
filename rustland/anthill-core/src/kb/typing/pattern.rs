@@ -68,8 +68,14 @@ impl PatternSubst {
 /// Lookup is scoped to `parent_sort` via [`type_param_vid_in_sort`];
 /// short-name resolution is ambiguous when many sorts declare
 /// `sort T = ?`.
+///
+/// A TYPE ALIAS IS THE TYPE IT STANDS FOR (`x: IntS` under `sort IntS = Strm[T = Int64]`): its
+/// application's bindings are the scrutinee's. Read as the bare name, an alias held none, so
+/// `case strm(a)` bound `a` to `Strm`'s own `T`, which no annotation reached — `String.length(a)`
+/// loaded on every build, and `a + b` over two such binders turned on which variable that `T`
+/// happened to be (MEASURED: review 9's fix pass).
 pub(super) fn build_pattern_subst(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     scrutinee_type: &impl TermView,
     parent_sort: Symbol,
 ) -> Option<PatternSubst> {
@@ -77,7 +83,12 @@ pub(super) fn build_pattern_subst(
     // bindings)` or term-backed `Fn{S, named}`. A non-parameterized scrutinee
     // (bare sort, arrow, …) yields no pattern subst. WI-342: carrier-agnostic
     // over [`TermView`] so a `Value::Node` scrutinee builds the subst too.
-    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, scrutinee_type) else {
+    let alias_shape = extract_sort_ref_sym(kb, scrutinee_type).and_then(|s| alias_leaf(kb, s));
+    let extracted = match alias_shape {
+        Some(shape) => extract_type(kb, &TermIdView(shape)),
+        None => extract_type(kb, scrutinee_type),
+    };
+    let TypeExtractor::Parameterized { bindings, .. } = extracted else {
         return None;
     };
 

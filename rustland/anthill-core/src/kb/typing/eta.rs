@@ -333,6 +333,7 @@ pub(super) fn operation_as_function_value(
         impl_parent_sort_of_op(kb, sym),
         sym,
         &op.return_type,
+        &HashSet::new(),
         span,
         owner,
     )

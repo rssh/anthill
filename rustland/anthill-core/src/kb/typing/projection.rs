@@ -164,22 +164,56 @@ pub(super) fn receiver_path_segs(kb: &KnowledgeBase, receiver: &Value) -> Option
     if let Some(head) = extract_sort_ref_sym(kb, receiver) {
         return Some(vec![head]);
     }
-    if let Value::Node(occ) = receiver {
-        if let Some(Expr::DotApply {
-            receiver: base,
-            name,
-            pos_args,
-            named_args,
-        }) = occ.as_expr()
-        {
-            if pos_args.is_empty() && named_args.is_empty() {
-                let mut segs = receiver_path_segs(kb, &Value::Node(std::rc::Rc::clone(base)))?;
-                segs.push(*name);
-                return Some(segs);
-            }
-        }
+    let (base, field) = bare_field_access(kb, receiver)?;
+    let mut segs = receiver_path_segs(kb, &base)?;
+    segs.push(field);
+    Some(segs)
+}
+
+/// A BARE FIELD ACCESS `base.field` — a `dot_apply` with no call arguments — as `(base,
+/// field)`, on EITHER carrier: an `Expr::DotApply` occurrence and its `dot_apply` term twin have
+/// one view head with the same three keys (WI-814), so a receiver reads alike whichever it rides.
+/// Read through the view, not by matching `Expr::DotApply`: a `let` annotation reaches a reader
+/// on the TERM carrier, off its pattern (WI-819), and the occurrence-only match left `let t = s;
+/// let k: t.provider.K = …` keyed to `t` where everything else said `s` (MEASURED: review 9's
+/// /simplify).
+///
+/// A bare access carries an EMPTY `args` list — ABSENT, or the `nil` constructor, which heads as
+/// a bare `Ref` (WI-436 / WI-511: a nullary constructor is stored as `Ref(c)`). Anything else — a
+/// `cons` spine (a method CALL `s.f(x)`, not a path) OR an unresolved reflection `?args` Var — is
+/// NOT a bare access. The Var case is spelled out rather than folded into a "not a Functor"
+/// test: that test admitted it silently, and treating a call with unknown arguments as a field
+/// path is the kind of quiet acceptance CLAUDE.md rules out.
+fn bare_field_access(kb: &KnowledgeBase, receiver: &Value) -> Option<(Value, Symbol)> {
+    let dot_sym = kb.try_resolve_symbol(dt::qualified(dt::DOT_APPLY))?;
+    if !matches!(
+        receiver.head(kb),
+        ViewHead::Functor { functor: Some(f), .. } if f == dot_sym
+    ) {
+        return None;
     }
-    None
+    let key = |name: &str| kb.lookup_symbol(name);
+    let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil");
+    let args_empty = match key("args").and_then(|k| receiver.named_arg(kb, k)) {
+        None => true,
+        Some(a) => matches!(
+            (a.head(kb), nil_sym),
+            (
+                ViewHead::Functor {
+                    functor: Some(r),
+                    pos_arity: 0,
+                    named_arity: 0,
+                },
+                Some(n),
+            ) if r == n
+        ),
+    };
+    if !args_empty {
+        return None;
+    }
+    let base = receiver.named_arg(kb, key("receiver")?)?.to_value();
+    let field = extract_sort_ref_sym(kb, &receiver.named_arg(kb, key("name")?)?)?;
+    Some((base, field))
 }
 
 /// WI-400 increment C: the stable receiver PATH a `let`-bound value occurrence denotes,
@@ -875,37 +909,12 @@ pub(super) fn eliminate_type_projections(
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<Value, TypeError> {
-    eliminate_type_projections_rekeyed(kb, ty, arg_types, arg_syms, arg_syms, ctx, span)
-}
-
-/// WI-20260929-0RP29 — [`eliminate_type_projections`] with the `denoted` re-key apart from the
-/// receivers': a single-ref projection's receiver is re-keyed to a caller VARIABLE (WI-459,
-/// `arg_syms`), while a `denoted` beside it takes `denoted_syms` — for a PARAMETER type the
-/// call's EFFECT re-key, a field path's head included (`Modify[p]` over `h.cell` is
-/// `Modify[h]`, WI-506). One simultaneous substitution: re-keying an eliminated type a second
-/// time renamed a self-recursive call's labels twice, its caller variables being the callee's
-/// own parameters (`Modify[q]` → `Modify[p]` → `Modify[h]`, MEASURED).
-pub(super) fn eliminate_type_projections_rekeyed(
-    kb: &mut KnowledgeBase,
-    ty: &Value,
-    arg_types: &HashMap<Symbol, Value>,
-    arg_syms: Option<&HashMap<Symbol, Symbol>>,
-    denoted_syms: Option<&HashMap<Symbol, Symbol>>,
-    ctx: &TypeErrorContext,
-    span: Option<Span>,
-) -> Result<Value, TypeError> {
-    if !value_contains_projection(kb, ty) {
-        return Ok(ty.clone());
-    }
-    let cx = Discharge {
-        arg_types,
+    Discharge {
         arg_syms,
-        denoted_syms,
-        reading: None,
-        ctx,
-        span,
-    };
-    Ok(eliminate_in(kb, ty, &cx)?.unwrap_or_else(|| ty.clone()))
+        denoted_syms: arg_syms,
+        ..Discharge::new(arg_types, ctx, span)
+    }
+    .eliminate(kb, ty)
 }
 
 /// WI-20260929-0RP29 — a caller's own reading of a projection — given its receiver, the
@@ -917,45 +926,66 @@ pub(super) fn eliminate_type_projections_rekeyed(
 pub(super) type ProjectionReading<'r> =
     &'r dyn Fn(&mut KnowledgeBase, &Value, &Value, Symbol) -> Option<Value>;
 
-/// WI-20260929-0RP29 — [`eliminate_type_projections`] with a [`ProjectionReading`] tried first,
-/// and `arg_syms` re-keying both a neutral receiver and a `denoted` (the member side of the
-/// declaration rule names the spec's parameters by the spec's names).
-pub(super) fn eliminate_type_projections_read(
-    kb: &mut KnowledgeBase,
-    ty: &Value,
-    arg_types: &HashMap<Symbol, Value>,
-    arg_syms: Option<&HashMap<Symbol, Symbol>>,
-    reading: ProjectionReading,
-    ctx: &TypeErrorContext,
-) -> Result<Value, TypeError> {
-    if !value_contains_projection(kb, ty) {
-        return Ok(ty.clone());
-    }
-    let cx = Discharge {
-        arg_types,
-        arg_syms,
-        denoted_syms: arg_syms,
-        reading: Some(reading),
-        ctx,
-        span: None,
-    };
-    Ok(eliminate_in(kb, ty, &cx)?.unwrap_or_else(|| ty.clone()))
-}
-
-/// The call a projection is discharged against, and where a refusal is reported.
-struct Discharge<'a> {
-    arg_types: &'a HashMap<Symbol, Value>,
+/// The call a projection is discharged against, and where a refusal is reported — the options of
+/// [`eliminate_type_projections`]' one walk. [`Discharge::new`] sets the receivers' types and
+/// where to report; a caller sets what else it re-keys or reads by struct update and calls
+/// [`Discharge::eliminate`].
+pub(super) struct Discharge<'a> {
+    pub(super) arg_types: &'a HashMap<Symbol, Value>,
     /// A single-ref projection receiver's re-key (WI-459): caller variables.
-    arg_syms: Option<&'a HashMap<Symbol, Symbol>>,
-    /// A `denoted`'s re-key (WI-481) — `arg_syms` unless the caller hands its effect re-key.
-    denoted_syms: Option<&'a HashMap<Symbol, Symbol>>,
+    pub(super) arg_syms: Option<&'a HashMap<Symbol, Symbol>>,
+    /// A `denoted`'s re-key (WI-481) — for a PARAMETER type the call's EFFECT re-key, a field
+    /// path's head included (`Modify[p]` over `h.cell` is `Modify[h]`, WI-506). One
+    /// simultaneous substitution with the receivers': re-keying an eliminated type a second
+    /// time renamed a self-recursive call's labels twice, its caller variables being the
+    /// callee's own parameters (`Modify[q]` → `Modify[p]` → `Modify[h]`, MEASURED).
+    pub(super) denoted_syms: Option<&'a HashMap<Symbol, Symbol>>,
+    /// A `denoted` in an ARROW'S ROW, where it differs from `denoted_syms`: a returned
+    /// callback's row is an effect position and takes the field paths' heads, where the rest of
+    /// a return keeps its paths ([`ArgPlaces::heads`]). In this same pass, for the same reason.
+    pub(super) row_syms: Option<&'a HashMap<Symbol, Symbol>>,
+    /// A neutral receiver's re-key to a whole VALUE PATH (`w.st`, or a `let` alias read as what
+    /// it names), before `arg_syms`'s single variable ([`rekeyed_neutral`]).
+    pub(super) arg_paths: Option<&'a HashMap<Symbol, Vec<Symbol>>>,
+    /// The witnesses the call NAMES in a bracket (`Holder.get[Holder = BoxHolderA](…)`): a
+    /// projection a witness lends is read from the one the call names, not by the agreement of
+    /// every witness covering the receiver ([`witnesses_lend_member`]).
+    pub(super) selections: &'a [InstanceSelection],
     /// A caller's reading of a projection, tried before the call's ([`ProjectionReading`]).
-    reading: Option<ProjectionReading<'a>>,
-    ctx: &'a TypeErrorContext,
-    span: Option<Span>,
+    pub(super) reading: Option<ProjectionReading<'a>>,
+    pub(super) ctx: &'a TypeErrorContext,
+    pub(super) span: Option<Span>,
 }
 
-impl Discharge<'_> {
+impl<'a> Discharge<'a> {
+    /// Projections read off `arg_types`, nothing re-keyed, refusals reported at `ctx`/`span`.
+    pub(super) fn new(
+        arg_types: &'a HashMap<Symbol, Value>,
+        ctx: &'a TypeErrorContext,
+        span: Option<Span>,
+    ) -> Self {
+        Discharge {
+            arg_types,
+            arg_syms: None,
+            denoted_syms: None,
+            row_syms: None,
+            arg_paths: None,
+            selections: &[],
+            reading: None,
+            ctx,
+            span,
+        }
+    }
+
+    /// `ty` with its projections eliminated — `ty` itself when it holds none (the gate, see
+    /// [`eliminate_type_projections`]).
+    pub(super) fn eliminate(&self, kb: &mut KnowledgeBase, ty: &Value) -> Result<Value, TypeError> {
+        if !value_contains_projection(kb, ty) {
+            return Ok(ty.clone());
+        }
+        Ok(eliminate_in(kb, ty, self)?.unwrap_or_else(|| ty.clone()))
+    }
+
     fn refuse(&self, msg: &str) -> TypeError {
         projection_type_error(self.ctx, self.span, msg)
     }
@@ -1044,21 +1074,36 @@ fn eliminate_in(
         }
         // WI-460: a callback arrow's parameter — `(x: s.T) -> Bool @ {EffP, -Modify[x]}`.
         // WI-791: elimination rewrites the parameter TYPE and never the parameter COUNT, so
-        // the arrow keeps its own arity.
+        // the arrow keeps its own arity. Its ROW takes `row_syms` where the caller hands one.
         TypeExtractor::Arrow {
             param,
             result,
             effects,
             arity,
         } => {
-            let Some([p, r, e]) =
-                eliminate_to_children(kb, [param, result, effects], sp, owner, cx)?
-            else {
-                return Ok(None);
+            let Some(rows) = cx.row_syms else {
+                let Some([p, r, e]) =
+                    eliminate_to_children(kb, [param, result, effects], sp, owner, cx)?
+                else {
+                    return Ok(None);
+                };
+                return Ok(Some(Value::Node(kb.make_arrow_occ(p, r, e, arity, sp, owner))));
             };
-            Ok(Some(Value::Node(
-                kb.make_arrow_occ(p, r, e, arity, sp, owner),
-            )))
+            let row_cx = Discharge {
+                denoted_syms: Some(rows),
+                ..*cx
+            };
+            let pr = eliminate_children(kb, &[param.clone(), result.clone()], cx)?;
+            let e = eliminate_in(kb, &effects, &row_cx)?;
+            if pr.is_none() && e.is_none() {
+                return Ok(None);
+            }
+            let (p, r) = match pr {
+                Some(pr) => (pr[0].clone(), pr[1].clone()),
+                None => (param, result),
+            };
+            let e = e.unwrap_or(effects);
+            Ok(Some(arrow_value(kb, &p, &r, &e, arity, sp, owner)))
         }
         TypeExtractor::EffectsRows(expr) => {
             let Some([e]) = eliminate_to_children(kb, [expr], sp, owner, cx)? else {
@@ -1486,47 +1531,9 @@ fn resolve_receiver_path_type(
     // head with the same three keys, which is exactly what makes the neutral read
     // possible: `head` / `named_arg` see through either carrier, so the verdict no
     // longer depends on which one the type is written on (WI-425).
-    if let Some(dot_sym) = kb.try_resolve_symbol(dt::qualified(dt::DOT_APPLY)) {
-        let is_dot = matches!(
-            receiver.head(kb),
-            ViewHead::Functor { functor: Some(f), .. } if f == dot_sym
-        );
-        if is_dot {
-            let (k_receiver, k_name, k_args) =
-                (kb.intern("receiver"), kb.intern("name"), kb.intern("args"));
-            // A bare field access carries an EMPTY `args` list — ABSENT, or the
-            // `nil` constructor, which heads as a bare `Ref` (WI-436 / WI-511:
-            // a nullary constructor is stored as `Ref(c)`). Anything else — a
-            // `cons` spine (a method CALL `s.f(x)`, not a type path) OR an
-            // unresolved reflection `?args` Var — is NOT a bare access. The Var
-            // case is spelled out rather than folded into a "not a Functor" test:
-            // that test admitted it silently, and treating a call with unknown
-            // arguments as a field path is the kind of quiet acceptance CLAUDE.md
-            // rules out.
-            let nil_sym = kb.try_resolve_symbol("anthill.prelude.List.nil");
-            let args_empty = match receiver.named_arg(kb, k_args) {
-                None => true,
-                Some(a) => matches!(
-                    (a.head(kb), nil_sym),
-                    (
-                        ViewHead::Functor {
-                            functor: Some(r),
-                            pos_arity: 0,
-                            named_arity: 0,
-                        },
-                        Some(n),
-                    ) if r == n
-                ),
-            };
-            let base = receiver.named_arg(kb, k_receiver).map(|b| b.to_value());
-            let field = receiver
-                .named_arg(kb, k_name)
-                .and_then(|n| extract_sort_ref_sym(kb, &n));
-            if let (true, Some(base), Some(field)) = (args_empty, base, field) {
-                let (base_ty, _) = resolve_receiver_path_type(kb, &base, arg_types, ctx, span)?;
-                return resolve_field_type(kb, &base_ty, field, ctx, span);
-            }
-        }
+    if let Some((base, field)) = bare_field_access(kb, receiver) {
+        let (base_ty, _) = resolve_receiver_path_type(kb, &base, arg_types, ctx, span)?;
+        return resolve_field_type(kb, &base_ty, field, ctx, span);
     }
     Err(projection_type_error(
         ctx,
@@ -1676,6 +1683,7 @@ fn project_expr_carried(
             &member_str,
             recv_decl_sort,
             owner,
+            cx.selections,
             cx.ctx,
             cx.span,
         )? {
@@ -1701,23 +1709,32 @@ fn project_expr_carried(
             // check — and the declaration rule, which re-keys the member's parameters to the
             // spec's names through this arm, refused a member restating `-> h.items.T`
             // verbatim, printing one type twice (MEASURED).
-            ProjResult::Neutral => rekeyed_neutral(kb, value, member, cx.arg_syms),
+            ProjResult::Neutral => rekeyed_neutral(kb, value, member, cx.arg_syms, cx.arg_paths),
         },
     )
 }
 
-/// The neutral projection `value.member` with its receiver's HEAD re-keyed through `arg_syms`
-/// — a single reference (`s.T`) or the root of a field path (`h.items.T`) — or `None` where
-/// nothing re-keys it: no map, a head the map does not name, a receiver that is no
-/// value-reference path.
+/// The neutral projection `value.member` with its receiver's HEAD re-keyed — to the argument's
+/// whole VALUE PATH where `arg_paths` has one (`check(s, …)` given `w.st`: `s.provider.K` is
+/// `w.st.provider.K`), else through `arg_syms` — a single reference (`s.T`) or the root of a
+/// field path (`h.items.T`) — or `None` where nothing re-keys it: no map, a head the maps do not
+/// name, a receiver that is no value-reference path. Keyed to a variable only, a parameter typed
+/// `k: s.provider.K` refused the very argument its receiver's path projects (`check(w.st, j)`
+/// over `j: w.st.provider.K`: "expected s.provider.K, got w.st.provider.K", MEASURED: review 9).
 fn rekeyed_neutral(
     kb: &mut KnowledgeBase,
     value: &Value,
     member: Symbol,
     arg_syms: Option<&HashMap<Symbol, Symbol>>,
+    arg_paths: Option<&HashMap<Symbol, Vec<Symbol>>>,
 ) -> Option<Value> {
     let mut segs = receiver_path_segs(kb, value)?;
-    segs[0] = *arg_syms?.get(&segs[0])?;
+    match arg_paths.and_then(|paths| paths.get(&segs[0])) {
+        Some(path) => {
+            segs.splice(0..1, path.iter().copied());
+        }
+        None => segs[0] = *arg_syms?.get(&segs[0])?,
+    }
     Some(build_projection_from_segs(
         kb,
         &segs,
@@ -1756,12 +1773,14 @@ pub(super) enum ProjResult {
 /// `owner` is the spec the projection's receiver is DECLARED by, where its declaration names
 /// one ([`projection_owner_spec`], [`field_path_owner_spec`]): a member the receiver's sort only
 /// PROVIDES is read from that spec's provision.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn project_type_member(
     kb: &mut KnowledgeBase,
     arg_ty: &Value,
     member: &str,
     recv_decl_sort: Option<Symbol>,
     owner: Option<Symbol>,
+    selections: &[InstanceSelection],
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<ProjResult, TypeError> {
@@ -1819,7 +1838,9 @@ pub(super) fn project_type_member(
         // carrier-side type and ground/neutralize THAT against the receiver — so one
         // signature written in the spec's vocabulary (`c.Element`) grounds on a concrete
         // carrier (`List[T = Int64].Element = Int64`) and stays neutral on a bare one.
-        if let Some(r) = project_via_provided_spec(kb, arg_ty, s, member, owner, ctx, span) {
+        if let Some(r) =
+            project_via_provided_spec(kb, arg_ty, s, member, owner, selections, ctx, span)
+        {
             return r;
         }
         return Err(projection_type_error(
@@ -1973,12 +1994,14 @@ fn requires_entry_lends_member(
 /// differently are refused; a provision binding the name, as its spec's carrier parameter, to
 /// the provider itself is left out ([`unowned_member_bindings`]): that is the provider, and no
 /// member of it.
+#[allow(clippy::too_many_arguments)]
 fn project_via_provided_spec(
     kb: &mut KnowledgeBase,
     recv_ty: &Value,
     recv_sort: Symbol,
     member: &str,
     owner: Option<Symbol>,
+    selections: &[InstanceSelection],
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Option<Result<ProjResult, TypeError>> {
@@ -1987,7 +2010,7 @@ fn project_via_provided_spec(
             let written = member_binding(kb, &bindings, member)?;
             return provision_lends_binding(kb, recv_ty, recv_sort, written).map(Ok);
         }
-        match witnesses_lend_member(kb, recv_ty, recv_sort, spec, member, ctx, span) {
+        match witnesses_lend_member(kb, recv_ty, recv_sort, spec, member, selections, ctx, span) {
             Ok(Some(lent)) => return lent.map(Ok),
             Ok(None) => {}
             Err(e) => return Some(Err(e)),
@@ -2088,8 +2111,8 @@ pub(super) fn unowned_member_bindings(
     out
 }
 
-/// Do two provisions lend one member the same type? The same type however it is SPELLED — each
-/// a subtype of the other ([`types_agree`]): compared by structural identity, a row parameter
+/// Do two provisions lend one member the same type? The same type however it is SPELLED
+/// ([`types_agree`]): compared by structural identity, a row parameter
 /// in its two spellings (`E = EC` beside `E = {EC}`), a row beside the row it splices to, and an
 /// alias beside what it names were each "bound differently" (MEASURED: programs that ran).
 fn proj_results_agree(kb: &mut KnowledgeBase, a: &ProjResult, b: &ProjResult) -> bool {
@@ -2100,29 +2123,55 @@ fn proj_results_agree(kb: &mut KnowledgeBase, a: &ProjResult, b: &ProjResult) ->
     }
 }
 
-/// Are `x` and `y` one type — identical, or each a subtype of the other, a label standing where
-/// a row does read as the row holding it?
+/// Are `x` and `y` one type — the same once each alias in them reads as what it names (`MyInt`
+/// as `Int64`), and for a ROW the same labels, tails and absences in whatever order, a label
+/// standing where a row does read as the row holding it?
+///
+/// NOT "EACH A SUBTYPE OF THE OTHER": the relation reads an unwritten slot as any type and a
+/// named tuple by its labels, so `List` agreed with `List[T = Int64]`, `{Error}` with `{Error[T =
+/// String]}` and `(a: Int64, b: Int64)` with `(b: Int64, a: Int64)` — two types, and the
+/// first-written provision then lent the member, so the verdict, and for the tuples the value
+/// computed, turned on the order of the `provides` clauses (MEASURED: review 9).
 pub(super) fn types_agree(kb: &mut KnowledgeBase, x: &Value, y: &Value) -> bool {
     if views_structurally_equal(kb, x, y) {
+        return true;
+    }
+    let (x, y) = (dealiased(kb, x), dealiased(kb, y));
+    if views_structurally_equal(kb, &x, &y) {
         return true;
     }
     // Beside a row, what stands for one — a label, a row projection (`c.EC`) — is the row
     // holding it: `E = EC` and `E = {EC}` bind one row.
     let is_row = |kb: &KnowledgeBase, v: &Value| matches!(type_head(kb, v), TypeHead::EffectsRows);
-    let (x, y) = match (is_row(kb, x), is_row(kb, y)) {
-        (true, false) => match sole_row_tail(kb, x) {
-            Some(tail) => return types_agree(kb, &tail, y),
-            None => (x.clone(), row_holding(kb, y)),
-        },
-        (false, true) => match sole_row_tail(kb, y) {
-            Some(tail) => return types_agree(kb, x, &tail),
-            None => (row_holding(kb, x), y.clone()),
-        },
-        _ => (x.clone(), y.clone()),
+    match (is_row(kb, &x), is_row(kb, &y)) {
+        (true, false) => row_agrees(kb, &x, &y),
+        (false, true) => row_agrees(kb, &y, &x),
+        (true, true) => rows_equal(kb, &x, &y),
+        (false, false) => false,
+    }
+}
+
+/// [`types_agree`] of a row and what stands for one beside it: a row that is nothing but a tail
+/// (`{X}`) is that tail; otherwise `other` is the row holding it. Both readings are symmetric,
+/// so either side may be the row.
+fn row_agrees(kb: &mut KnowledgeBase, row: &Value, other: &Value) -> bool {
+    match sole_row_tail(kb, row) {
+        Some(tail) => types_agree(kb, &tail, other),
+        None => {
+            let other = row_holding(kb, other);
+            rows_equal(kb, row, &other)
+        }
+    }
+}
+
+/// Are `x` and `y` one ROW: the same labels present and absent, each read through its aliases
+/// and compared as written, and the same tails?
+fn rows_equal(kb: &mut KnowledgeBase, x: &Value, y: &Value) -> bool {
+    let mut same = |kb: &mut KnowledgeBase, l: &Value, m: &Value| {
+        let (l, m) = (dealiased(kb, l), dealiased(kb, m));
+        views_structurally_equal(kb, &l, &m)
     };
-    views_structurally_equal(kb, &x, &y)
-        || (types_compatible(kb, &mut Substitution::new(), &x, &y)
-            && types_compatible(kb, &mut Substitution::new(), &y, &x))
+    rows_correspond(kb, x, y, &mut same) && rows_correspond(kb, y, x, &mut same)
 }
 
 /// The tail of a row that is nothing but a tail (`{X}`): that row IS `X`.
@@ -2179,6 +2228,25 @@ fn lent_member(kb: &KnowledgeBase, written: TermId, at_receiver: Value) -> Optio
     })
 }
 
+/// [`witnesses_covering`] narrowed to the witness the call NAMES for `spec` in a bracket, where it
+/// names one ([`pinned_witness_for`]): which of the covering witnesses the call reaches is said
+/// there — by the call's dispatch ([`narrowed_to_named_witness`]) and by the projections its
+/// return reads ([`witnesses_lend_member`]) alike.
+pub(super) fn covering_witnesses_named(
+    kb: &mut KnowledgeBase,
+    recv_ty: &Value,
+    recv_sort: Symbol,
+    spec: Symbol,
+    selections: &[InstanceSelection],
+) -> Vec<(ProvidesRow, Substitution)> {
+    let mut covering = witnesses_covering(kb, recv_ty, recv_sort, spec);
+    if let Some(named) = pinned_witness_for(kb, selections, spec) {
+        let named = kb.canonical_sort_sym(named);
+        covering.retain(|(row, _)| kb.canonical_sort_sym(row.provider) == named);
+    }
+    covering
+}
+
 /// A WITNESS provision of `spec` whose carrier view covers a receiver: the witness, and the
 /// witness's parameters as the receiver's type instantiates them (`ListOrd provides Ord[T =
 /// List[T = E]]` at a `List[T = Int64]` is `E = Int64`). A witness's provision is filed under
@@ -2219,16 +2287,22 @@ pub(super) fn witnesses_covering(
 /// witness's member returned (MEASURED: `BoxHolderA provides Holder[C = Box]` returning a
 /// `String` beside `BoxHolderB provides Holder[C = Box, T = Int64]`, at run time), and the
 /// disagreement surfaced as a mismatch naming the callee's own parameter (`c.T`).
+#[allow(clippy::too_many_arguments)]
 fn witnesses_lend_member(
     kb: &mut KnowledgeBase,
     recv_ty: &Value,
     recv_sort: Symbol,
     spec: Symbol,
     member: &str,
+    selections: &[InstanceSelection],
     ctx: &TypeErrorContext,
     span: Option<Span>,
 ) -> Result<Option<Option<ProjResult>>, TypeError> {
-    let covering = witnesses_covering(kb, recv_ty, recv_sort, spec);
+    // THE WITNESS THE CALL NAMES lends the member alone: which of the covering witnesses the call
+    // reaches IS said there. Asked of every one, `Holder.get[Holder = BoxHolderA](…)` was refused
+    // as "not this projection's to say" when a second witness bound the member otherwise
+    // (MEASURED: review 9).
+    let covering = covering_witnesses_named(kb, recv_ty, recv_sort, spec, selections);
     let mut lent: Option<(Symbol, Option<ProjResult>)> = None;
     for (row, at) in covering {
         let this = member_binding(kb, &row.bindings, member).and_then(|written| {
@@ -2672,7 +2746,7 @@ pub(super) fn resolve_rigid_projection(
     if let SubjectKey::Sym(subject_sym) = key {
         if same_sort_canonical(kb, subject_sym, decl_sort) {
             let recv = Value::term(kb.make_sort_ref(subject_sym));
-            return match project_type_member(kb, &recv, &member_str, None, None, ctx, span)? {
+            return match project_type_member(kb, &recv, &member_str, None, None, &[], ctx, span)? {
                 // WI-391: a ground member projects to the canonical `Ref(s)` shape (the
                 // producer no longer emits a nullary `Fn{s}` binding here).
                 ProjResult::Grounded(v) => Ok(ProjResult::Grounded(v)),

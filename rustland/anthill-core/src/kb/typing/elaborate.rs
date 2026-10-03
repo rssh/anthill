@@ -348,11 +348,16 @@ pub(super) fn rigidify_unwritten_sort_params(
 /// `None` when nothing was opened, which is the overwhelmingly common case: a fully-written
 /// return, a non-parametric one, or a self-sort one. The caller keeps its original value
 /// rather than a re-minted equal-but-distinct carrier.
+///
+/// `held`: when `ret` is what a type constructor in the declared return reduced to, the
+/// variables the arguments put into it, which stay ([`SlotPosition::CallResult`]'s field of
+/// that name); empty otherwise.
 pub(super) fn open_existential_return(
     kb: &mut KnowledgeBase,
     callee_sort: Option<Symbol>,
     callee_op: Symbol,
     ret: &Value,
+    held: &HashSet<u32>,
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Option<Value> {
@@ -364,10 +369,32 @@ pub(super) fn open_existential_return(
         SlotPosition::CallResult {
             callee_sort,
             opened: &opened,
+            held,
         },
         span,
         owner,
     )
+}
+
+/// The variables of a call's argument types as its σ reads them: what the ARGUMENTS can put into
+/// a return a type constructor reduced, which [`SlotPosition::CallResult`] keeps. Read off the
+/// arguments, not as what σ added to the declared return: a projection the elimination discharged
+/// against an argument carries that argument's variables into the declared return itself
+/// (`project(r, …) -> Relation[T = Project[T = r.T, …]]`), and read as the return's own they were
+/// opened — `getl(q)` over `-> FieldOf[T = Pair[A = p.A, B = p.B], Name = "l"]` read a list of a
+/// fresh rigid (MEASURED: review 9's /simplify).
+pub(super) fn vars_the_arguments_put<'v>(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    arg_types: impl Iterator<Item = &'v Value>,
+) -> HashSet<u32> {
+    let mut seen = HashSet::new();
+    let mut vars = Vec::new();
+    for ty in arg_types {
+        let ty = walk_type_deep_value(kb, subst, ty);
+        crate::kb::node_occurrence::collect_value_type(kb, &ty, &mut vars, &mut seen);
+    }
+    vars.iter().map(|v| v.raw()).collect()
 }
 
 /// WI-1082 — WRITE §3's TIE DOWN, once per declaration, before anything reads the signature.
@@ -994,6 +1021,11 @@ pub(super) enum SlotPosition<'a> {
     CallResult {
         callee_sort: Option<Symbol>,
         opened: &'a HashMap<u32, Value>,
+        /// The variables the ARGUMENTS put into a result a type CONSTRUCTOR reduced (`FieldOf`,
+        /// `Concat`, `Without`) — the caller's, never an existential, so a slot holding one
+        /// stays. Empty when nothing was reduced. A slot left out, a `?` the declared return
+        /// wrote and a `?` the reduction itself brought in (a field declared `E = ?`) are opened.
+        held: &'a HashSet<u32>,
     },
 }
 
@@ -1150,9 +1182,16 @@ impl SlotPosition<'_> {
                 // unwritten. Same answer the BODY position gives, for the same reason.
                 None => value_is_flex_var(kb, v),
             },
-            SlotPosition::CallResult { opened, .. } => {
-                value_is_anonymous_wildcard(kb, v)
-                    || value_flex_var_id(kb, v).is_some_and(|vid| opened.contains_key(&vid.raw()))
+            // A variable the ARGUMENTS put into a reduced result is the caller's and stays:
+            // `Pair.mk(1).l` reads the receiver's `List[T = ?_]`, and opened, no annotation
+            // could say what it was. A `?` the reduction brought in is still opened: a field
+            // read `h.s` of `s: Stream[T = Int64, E = ?]` is the holder's existential, and left
+            // flexible it was admitted as a pure stream (MEASURED: review 9's fix pass).
+            SlotPosition::CallResult { opened, held, .. } => {
+                let vid = value_flex_var_id(kb, v).map(|vid| vid.raw());
+                !vid.is_some_and(|raw| held.contains(&raw))
+                    && (value_is_anonymous_wildcard(kb, v)
+                        || vid.is_some_and(|raw| opened.contains_key(&raw)))
             }
         }
     }

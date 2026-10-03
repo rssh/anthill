@@ -653,17 +653,7 @@ impl TypingEnv {
     /// `[y, f]` with `y → [s, provider]` ⟹ `[s, provider, f]`. One hop suffices because
     /// stored aliases are already de-aliased at record time.
     pub(super) fn canonicalize_receiver_path(&self, path: Vec<Symbol>) -> Vec<Symbol> {
-        let Some((head, rest)) = path.split_first() else {
-            return path;
-        };
-        match self.receiver_aliases.get(head) {
-            Some(canon_head) => {
-                let mut out = canon_head.clone();
-                out.extend_from_slice(rest);
-                out
-            }
-            None => path,
-        }
+        canonical_receiver_path(&self.receiver_aliases, path)
     }
 
     pub(super) fn receiver_aliases(&self) -> &HashMap<Symbol, Vec<Symbol>> {
@@ -716,6 +706,25 @@ impl TypingEnv {
 
     pub fn is_local_resource(&self, name: Symbol) -> bool {
         self.local_resources.iter().any(|r| *r == name)
+    }
+}
+
+/// [`TypingEnv::canonicalize_receiver_path`] over a bare alias map, for a reader that holds the
+/// map and no environment (a rule body has no `let` aliases, so it passes an empty one).
+pub(super) fn canonical_receiver_path(
+    aliases: &HashMap<Symbol, Vec<Symbol>>,
+    path: Vec<Symbol>,
+) -> Vec<Symbol> {
+    let Some((head, rest)) = path.split_first() else {
+        return path;
+    };
+    match aliases.get(head) {
+        Some(canon_head) => {
+            let mut out = canon_head.clone();
+            out.extend_from_slice(rest);
+            out
+        }
+        None => path,
     }
 }
 

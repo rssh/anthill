@@ -393,6 +393,31 @@ pub(super) fn decompose_effect_row(
     Some((present, tails, absent))
 }
 
+/// Do the rows `x` and `y` correspond piece by piece — as many present labels, absences and
+/// tails on each side, and each of `x`'s meeting one of `y`'s (`meets`)? Order-insensitive, and
+/// it binds nothing: both rows are read under an empty σ, where [`pair_present_labels`] pairs by
+/// unifying. `false` when either is no row. One direction: a caller wanting `y`'s to meet `x`'s
+/// too asks again with the two swapped.
+pub(super) fn rows_correspond(
+    kb: &mut KnowledgeBase,
+    x: &Value,
+    y: &Value,
+    meets: &mut dyn FnMut(&mut KnowledgeBase, &Value, &Value) -> bool,
+) -> bool {
+    let none = Substitution::new();
+    let (Some((xp, xt, xa)), Some((yp, yt, ya))) = (
+        decompose_effect_row(kb, &none, x),
+        decompose_effect_row(kb, &none, y),
+    ) else {
+        return false;
+    };
+    let mut paired = |kb: &mut KnowledgeBase, xs: &[Value], ys: &[Value]| {
+        xs.len() == ys.len() && xs.iter().all(|l| ys.iter().any(|m| meets(kb, l, m)))
+    };
+    let tails = |ts: Vec<TermId>| -> Vec<Value> { ts.into_iter().map(Value::term).collect() };
+    paired(kb, &xp, &yp) && paired(kb, &xa, &ya) && paired(kb, &tails(xt), &tails(yt))
+}
+
 /// WI-20260929-0RP29 (user decision, 2026-10-01) — `{R, -R}`: the row variable a row holds and
 /// also lacks whole, the row-variable twin of [`row_self_contradiction`]'s `{e, -e}`.
 pub(super) fn row_holds_a_variable_it_lacks(

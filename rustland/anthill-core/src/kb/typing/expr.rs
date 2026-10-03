@@ -1147,6 +1147,7 @@ pub(super) fn check_bare_ref(
             impl_parent_sort_of_op(kb, sym),
             sym,
             &ret,
+            &HashSet::new(),
             occ.span,
             occ.owner,
         )

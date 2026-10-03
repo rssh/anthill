@@ -882,21 +882,64 @@ pub(super) fn effect_row_present_values(kb: &mut KnowledgeBase, row: &impl TermV
             .into_iter()
             .map(Value::term)
             .collect(),
-        // `Value::Node` carrier: decompose the occurrence row into its present
-        // labels (plus an open-row tail), the occurrence never re-grounded
-        // (WI-341) — matching the former `extract_function_type_parts_value`.
-        _ => {
-            let subst = Substitution::new();
-            match decompose_effect_row(kb, &subst, row) {
-                Some((mut present, tails, _absent)) => {
-                    for tail_tid in tails {
-                        present.push(Value::term(tail_tid));
-                    }
-                    present
-                }
-                None => Vec::new(),
-            }
+        _ => occurrence_row_present_values(kb, row),
+    }
+}
+
+/// The effects APPLYING a callable with this effects child incurs: [`effect_row_present_values`]
+/// of the binding read as the row it DENOTES ([`canonical_effects_row`]). A `Function.E` binding
+/// is whatever was written there — a bare row parameter is the open row `{E}`, a bare label the
+/// row holding it — and the argument check admits a callback into the slot by exactly that
+/// reading; flattened as it stands, both read as NO effect (a non-list flattens to nothing), so
+/// applying `f: Function[A, B, E = E]` charged nothing for the `boom` the slot had admitted, and a
+/// raising callback's effect left a pure `main` (MEASURED: review 9).
+///
+/// EXCEPT AN UNWRITTEN `E`, which charges nothing, as on every build: read off a value (`f.E`,
+/// what [`rigidify_unwritten_sort_params`] fills a parameter's own unwritten slot with in the
+/// body; a written `E = s.E` likewise), a flexible variable, or a rigid that is no DECLARED
+/// parameter's (none of the body's `param_rigids` — the slot of a `Function[A, B]` nested in
+/// another type, minted per occurrence: `some(f)` out of an `Option[T = Function[A = Int64, B =
+/// Int64]]`). A row parameter the author wrote is a declaration's, rigid in the body, and is
+/// charged. `Function[A, B]` is polymorphic in its row (kernel-language.md §4.4, as §8.1 reads an
+/// unwritten parameter; user decision 2026-10-03), so applying one should charge it — but that
+/// refuses every operation applying such a value ("undeclared effect: f.E" / "?E", MEASURED: the
+/// suite's own `wi_2tmb5` / `wi_5nszy` programs and 131 rows in all), since no operation can
+/// declare `effects {f.E}` for a callable parameter (MEASURED: every build). That refusal, and
+/// the rewrite of those programs to `Function[…, {}]`, is WI-20261003-H7KFV.
+pub(super) fn callable_effect_present_values(
+    kb: &mut KnowledgeBase,
+    row: &Value,
+    param_rigids: &[(VarId, TermId)],
+) -> Vec<Value> {
+    let BindValue::Term(t) = row.as_bind_value() else {
+        return effect_row_present_values(kb, row);
+    };
+    let unwritten = match kb.get_term(t) {
+        Term::Var(Var::Global(_)) => true,
+        Term::Var(Var::Rigid(_)) => !param_rigids.iter().any(|(_, r)| *r == t),
+        _ => matches!(
+            extract_type(kb, &TermIdView(t)),
+            TypeExtractor::ExprCarried { .. }
+        ),
+    };
+    if unwritten {
+        return Vec::new();
+    }
+    let canonical = canonical_effects_row(kb, &TermIdView(t));
+    effect_row_present_values(kb, &canonical)
+}
+
+/// An occurrence (`Value::Node`) effects row's present labels plus its open-row tails, the
+/// occurrence never re-grounded (WI-341) — matching the former
+/// `extract_function_type_parts_value`.
+fn occurrence_row_present_values(kb: &mut KnowledgeBase, row: &impl TermView) -> Vec<Value> {
+    let subst = Substitution::new();
+    match decompose_effect_row(kb, &subst, row) {
+        Some((mut present, tails, _absent)) => {
+            present.extend(tails.into_iter().map(Value::term));
+            present
         }
+        None => Vec::new(),
     }
 }
 
@@ -1040,13 +1083,17 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
 /// goes on to ask the SAME value for its parameter slots and binder names — pays
 /// for one classification instead of three. The lambda-hint caller has nothing to
 /// share and simply classifies at its own call site, as it did before.
+///
+/// `param_rigids` (the body's, [`TypingEnv::param_rigids`]) says whether a rigid row binding is a
+/// DECLARED parameter's — see [`callable_effect_present_values`].
 pub(super) fn extract_function_type_parts(
     kb: &mut KnowledgeBase,
     fn_type: &TypeExtractor,
+    param_rigids: &[(VarId, TermId)],
 ) -> Option<(Value, Vec<Value>)> {
     let (_, result, eff) = arrow_parts_extracted(kb, fn_type)?;
     let effects = eff
-        .map(|row| effect_row_present_values(kb, &row))
+        .map(|row| callable_effect_present_values(kb, &row, param_rigids))
         .unwrap_or_default();
     Some((result, effects))
 }

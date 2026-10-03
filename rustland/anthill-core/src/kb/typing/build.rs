@@ -170,6 +170,7 @@ pub(super) fn build_type(
                 &pos_args,
                 &named_args,
                 &known,
+                env.receiver_aliases(),
             );
             let staged_pairs: Vec<(usize, Result<TypeResult, TypeError>)> =
                 staged.iter().copied().zip(staged_results).collect();
@@ -2558,15 +2559,12 @@ pub(super) fn concrete_override_threaded(
         let denoted = (!denoted.is_empty()).then_some(denoted);
         if value_contains_projection(kb, ty) {
             let receivers = (!impl_arg_syms.is_empty()).then_some(&impl_arg_syms);
-            eliminate_type_projections_rekeyed(
-                kb,
-                ty,
-                &impl_arg_types,
-                receivers,
-                denoted,
-                &ctx,
-                span,
-            )
+            Discharge {
+                arg_syms: receivers,
+                denoted_syms: denoted,
+                ..Discharge::new(&impl_arg_types, &ctx, span)
+            }
+            .eliminate(kb, ty)
             .ok()
         } else {
             Some(match denoted {

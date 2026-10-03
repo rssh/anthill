@@ -622,6 +622,40 @@ fn check_binding_by_variance<A: TermView, E: TermView>(
     av: &A,
     ev: &E,
 ) -> bool {
+    // AN EFFECT-ROW PARAMETER'S BINDING IS THE ROW IT DENOTES, on both sides: a label standing
+    // where the row does (`provides Sp[E = Error[String]]`) is the row holding it
+    // ([`row_holding_label`]), as the declaration rule reads the same binding. Compared as
+    // written, a provider's bare label met the rule's braced row and `Car` was no subtype of the
+    // `Sp[E = {Error[String]}]` its own provision makes it (MEASURED: review 9 — a member
+    // returning its carrier behind `-> Sp`, the stdlib `Stream.splitFirst` among them).
+    if sort_param_sym_is_effect_row(kb, expected_base, param) {
+        let as_value = |b: BindValue| match b {
+            BindValue::Term(t) => Some(Value::term(t)),
+            BindValue::Value(v) => Some(v),
+            BindValue::Path(_) => None,
+        };
+        if let (Some(a), Some(e)) = (as_value(av.as_bind_value()), as_value(ev.as_bind_value())) {
+            let a_row = row_holding_label(kb, &a);
+            let e_row = row_holding_label(kb, &e);
+            if a_row.is_some() || e_row.is_some() {
+                let a = a_row.unwrap_or(a);
+                let e = e_row.unwrap_or(e);
+                return check_by_declared_variance(kb, subst, expected_base, param, &a, &e);
+            }
+        }
+    }
+    check_by_declared_variance(kb, subst, expected_base, param, av, ev)
+}
+
+/// [`check_binding_by_variance`]'s comparison, once each binding reads as what it denotes.
+fn check_by_declared_variance<A: TermView, E: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    expected_base: Symbol,
+    param: Symbol,
+    av: &A,
+    ev: &E,
+) -> bool {
     match declared_variance(kb, expected_base, param) {
         Variance::Covariant => types_compatible(kb, subst, av, ev),
         Variance::Contravariant => types_compatible(kb, subst, ev, av),

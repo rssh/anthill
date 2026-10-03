@@ -1,7 +1,8 @@
 -- Function: computation with optional effects.
 -- E is the effect row (empty for pure functions).
 -- Replaces separate Function (pure) and Operation (effectful) sorts.
--- PureFunction is Function[A, B] with E unbound (= empty).
+-- PureFunction is Function[A, B, E = {}]. With E unbound, Function[A, B] is
+-- effect-POLYMORPHIC, as every unwritten parameter is (kernel-language.md §4.4, §8.1).
 sort anthill.prelude.Function
   sort A = ?
   sort B = ?

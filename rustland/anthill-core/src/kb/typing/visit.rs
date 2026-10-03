@@ -303,10 +303,9 @@ pub(super) fn visit_type(
             // decompose and pass `result` to the body. Mismatching
             // shapes (or `None`) leave the body without a hint. WI-342 S3a: the
             // body's expected hint is a carrier-agnostic `Value` — no re-ground.
-            let body_expected = expected.as_ref().and_then(|exp| {
-                let exp_ty = extract_callable_type(kb, exp);
-                extract_function_type_parts(kb, &exp_ty).map(|(ret, _)| ret)
-            });
+            let body_expected = expected
+                .as_ref()
+                .and_then(|exp| arrow_parts(kb, exp).map(|(_, ret, _)| ret));
             // The lambda body runs under the SAME Γ as the lambda site (the
             // binder narrows types, not the flow); capture it before `env` moves
             // into the frame.
@@ -585,7 +584,7 @@ pub(super) fn visit_type(
             // the argument shape whose absence defines that case — so on such a call they
             // still answer `None` with a real `pt` in hand. Only `variant_slot_arg_hint`
             // can fire here that could not before. (`inst` likewise: `known` is empty
-            // whenever `has_hof_arg` is false, and it is read only for a hof-shaped arg.)
+            // whenever `has_hof_arg` is false, and nothing is instantiated from an empty map.)
             let has_ctor_arg = pos_args
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
@@ -622,6 +621,7 @@ pub(super) fn visit_type(
                     pos_args,
                     named_args,
                     &known_param_arg_types,
+                    env.receiver_aliases(),
                 );
                 work.push(TypeWorkOp::Build(TypeBuildFrame::Apply {
                     occ: occ_clone,
@@ -649,9 +649,9 @@ pub(super) fn visit_type(
                 // Only the STAGED arguments are hinted here — hinting the rest now would be
                 // discarded work, and the lambda's hint in particular would be computed
                 // against the very map that is still incomplete. A staged argument keeps
-                // exactly the hint it would otherwise have had: it is never hof-shaped, and
-                // `hof_arg_hint` is the only reader of the projection-eliminated type, so
-                // the incomplete map cannot change its answer (see `apply_arg_hints`).
+                // the hint it would otherwise have had: it is never hof-shaped, and a staged
+                // sequence literal whose slot projects what is not typed yet is hinted
+                // nothing rather than in the callee's names (see `apply_arg_hints`).
                 let pos_slots = op_params
                     .as_ref()
                     .map(|ps| positional_param_indices(kb, ps, pos_args.len(), named_args))
@@ -680,10 +680,18 @@ pub(super) fn visit_type(
                                 .map(|(_, t)| t.clone());
                             (arg, pt)
                         };
-                        // A staged argument is never hof-shaped, so the WI-821
-                        // instantiation subst (a HOF-hint-only input) is not
-                        // computed for it.
-                        one_arg_hint(kb, functor, arg, pt, &known_param_arg_types, None)
+                        // Before any sibling is typed nothing is instantiated, and a path
+                        // re-keys only a projection the elimination reads, of which a staged
+                        // argument's slot has none to read yet: neither is computed for it.
+                        one_arg_hint(
+                            kb,
+                            functor,
+                            arg,
+                            pt,
+                            &known_param_arg_types,
+                            &HashMap::new(),
+                            None,
+                        )
                     })
                     .collect();
                 work.push(TypeWorkOp::Build(TypeBuildFrame::ApplyHints {

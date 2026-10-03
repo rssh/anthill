@@ -8,7 +8,7 @@
 //! it with the join (WI-20260829-WBXGX); this is that relation asked of a call.
 //!
 //! ONE OWNER, asked BEFORE each site's own pinning loop: the operation-body call
-//! (`check_apply_iter`), the lambda-binder hint (`hint_instantiation_subst`), a rule
+//! (`check_apply_iter`), the lambda-binder hint (`hint_instantiation_into`), a rule
 //! citation's column typing (`relation_reference_type_applied`) and the rule-body slot route
 //! (`op_slot_route`). Each then pins and checks as before, against a σ that already holds the
 //! join — so the per-argument conformance check (`validate_arg_against_param`) is what judges

@@ -231,7 +231,7 @@ pub(super) fn arg_is_tuple_literal(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>)
 /// ordering; `/code-review` read the chains and found it false. It matters because
 /// reordering `seq_slot_arg_hint` ABOVE `variant_slot_arg_hint` is what a reader would do
 /// on the strength of the old claim — harmless today, and not a thing to rely on.
-fn seq_literal_kind(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<SeqLiteral> {
+pub(super) fn seq_literal_kind(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<SeqLiteral> {
     match &arg.kind {
         NodeKind::Expr {
             expr: Expr::Constructor { name, .. },

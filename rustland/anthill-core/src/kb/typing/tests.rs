@@ -4296,7 +4296,7 @@ mod wi1084_arrow_function_unify_tests {
     ///
     /// WHY IT IS WORTH A ROW: three callers act on the verdict rather than discarding it —
     /// `constrain_vid` (which marks the substitution CONTRADICTORY on a false),
-    /// `hint_instantiation_subst` (which drops the pin) and `unify_parameterized_view`
+    /// `hint_instantiation_into` (which drops the pin) and `unify_parameterized_view`
     /// (which fails a whole binding set). The argument path is not among them; it discards
     /// the boolean by design. Nothing in the suite or the corpus reaches the difference —
     /// which is exactly why it needs asserting here rather than left to be discovered.

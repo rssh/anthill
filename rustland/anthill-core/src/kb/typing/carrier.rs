@@ -173,48 +173,48 @@ pub(super) fn receiver_carrier(
         named_args,
         named_results,
     );
-    let arg_ty = arg_ty.as_ref();
-    let spec_canon = kb.canonical_sort_sym(spec_sort);
-    // WI-20260828-EKWDC: the receiver's TYPE rides beside its base sort through the
-    // match, because the `Concrete` arm now needs both. A `.and_then` that kept only the
-    // sort would leave the arm re-deriving `arg_ty` behind an `unwrap_or_default`, i.e. a
-    // silent empty-argument fallback on a path where the value is present by
-    // construction — `carrier_sort_of_value` read THIS value's head to produce `base`.
-    let carrier_base = arg_ty.and_then(|v| carrier_sort_of_value(kb, v));
-    match (arg_ty, carrier_base) {
-        // A concrete carrier distinct from the spec sort itself, AND not itself
-        // an abstract-interface spec. Store the canonical sort symbol so the
-        // candidate filter (which canonicalizes `impl_sort`) compares
-        // like-for-like.
-        //
-        // WI-601: a receiver whose static carrier is ANOTHER abstract spec — a
-        // `FiniteStream`-typed value against a bare `Stream` op (`FiniteStream`
-        // provides `Stream` yet has no representation of its own) — is NOT a
-        // pinnable concrete impl. Resolving it concretely picks `FiniteStream`'s
-        // `provides Stream → Stream requires EffectsRuntime[E]`, unsatisfiable at
-        // the abstract access row `E` → a spurious `DispatchNoMatch` /
-        // `MissingRequiresForSpecOp`. The runtime value is some concrete provider
-        // (a `List`), so classify it `Abstract` and defer to eval's
-        // value-directed dispatch, exactly the deferral the carrier-param path
-        // already takes via `carrier_is_abstract_spec` (WI-598) — funnelling both
-        // dispatch shapes through the one notion. Concrete carriers (`List`/`Map`
-        // — they HAVE constructors, so `carrier_is_abstract_spec` is false) stay
-        // `Concrete` and dispatch as before.
-        (Some(ty), Some(base))
-            if kb.canonical_sort_sym(base) != spec_canon && !carrier_is_abstract_spec(kb, base) =>
-        {
-            // WI-20260828-EKWDC: the receiver's own type ARGUMENTS ride along, read off
-            // the very value `base` was read from.
-            ReceiverCarrier::Concrete(GoalCarrier {
-                sort: kb.canonical_sort_sym(base),
-                args: receiver_type_args(kb, ty),
-            })
-        }
-        // Base == spec sort (abstract spec value), an abstract-interface carrier
-        // distinct from the op's spec (WI-601), or unresolved type: no concrete
-        // impl is pinnable.
-        _ => ReceiverCarrier::Abstract,
+    // WI-20260828-EKWDC: the receiver's TYPE rides beside its carrier, because the `Concrete`
+    // arm needs both — its own type ARGUMENTS read off the very value the carrier was read from.
+    match arg_ty {
+        Some(ty) => match concrete_receiver_carrier(kb, spec_sort, &ty) {
+            Some(sort) => ReceiverCarrier::Concrete(GoalCarrier {
+                sort,
+                args: receiver_type_args(kb, &ty),
+            }),
+            None => ReceiverCarrier::Abstract,
+        },
+        None => ReceiverCarrier::Abstract,
     }
+}
+
+/// The CONCRETE carrier a self-receiver spec operation's receiver of type `recv_ty` pins — its
+/// canonical base sort — or `None` where no concrete impl is pinnable: the base is the spec sort
+/// itself (an abstract spec value), an abstract-interface spec, or no sort. The one
+/// classification of a receiver, read by the call ([`receiver_carrier`]) and by its callback
+/// hints ([`bind_self_receiver_params_for_hint`]) alike, so the two cannot disagree about
+/// whether a receiver binds the spec's parameters.
+///
+/// Canonical, so the candidate filter (which canonicalizes `impl_sort`) compares like-for-like.
+///
+/// WI-601: a receiver whose static carrier is ANOTHER abstract spec — a `FiniteStream`-typed
+/// value against a bare `Stream` op (`FiniteStream` provides `Stream` yet has no representation
+/// of its own) — is NOT a pinnable concrete impl. Resolving it concretely picks `FiniteStream`'s
+/// `provides Stream → Stream requires EffectsRuntime[E]`, unsatisfiable at the abstract access
+/// row `E` → a spurious `DispatchNoMatch` / `MissingRequiresForSpecOp`. The runtime value is
+/// some concrete provider (a `List`), so it classifies abstract and defers to eval's
+/// value-directed dispatch, exactly the deferral the carrier-param path already takes via
+/// `carrier_is_abstract_spec` (WI-598) — funnelling both dispatch shapes through the one notion.
+/// Concrete carriers (`List`/`Map` — they HAVE constructors, so `carrier_is_abstract_spec` is
+/// false) dispatch as before.
+pub(super) fn concrete_receiver_carrier(
+    kb: &mut KnowledgeBase,
+    spec_sort: Symbol,
+    recv_ty: &Value,
+) -> Option<Symbol> {
+    let base = carrier_sort_of_value(kb, recv_ty)?;
+    (kb.canonical_sort_sym(base) != kb.canonical_sort_sym(spec_sort)
+        && !carrier_is_abstract_spec(kb, base))
+    .then(|| kb.canonical_sort_sym(base))
 }
 
 /// WI-20260828-EKWDC — the type ARGUMENTS a receiver's own type writes at its carrier
@@ -910,6 +910,64 @@ pub(super) fn self_receiver_spec_sort(
     Some(parent_sym)
 }
 
+/// The spec parameters `carrier_sym`'s OWN provision of `spec_sort` binds to THIS instance, read at
+/// a receiver of type `recv_ty` ([`this_instance_binding_at`], [`once_per_call`]): what a call holds
+/// the arguments typed by them to ([`bind_spec_params_from_carrier`]) and what a lambda's hint reads
+/// them as ([`bind_self_receiver_params_for_hint`]), so the two cannot disagree. A parameter σ binds
+/// already is left as it is. `true` when one was bound.
+pub(super) fn bind_this_instance_params(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    spec_sort: Symbol,
+    carrier_sym: Symbol,
+    recv_ty: &Value,
+) -> bool {
+    // WI-20260929-0RP29 — a spec parameter the carrier's OWN provision binds to the carrier
+    // itself, bare or at its own parameters (`Car provides Sp[T = Car]`), is THIS instance: the
+    // receiver's type, as the carrier's own operations read the bare name (§3's tie) and as
+    // the declaration rule reads the binding — so `Sp.both(k1, k2)` holds `k2` to `k1`'s
+    // instance. Skipped below as "ref-shaped, no parameter of the carrier", the call held it to
+    // nothing and a member written tied crashed on a second instance, or on a `5` (MEASURED).
+    // INTERIM (user, 2026-10-01): WI-20261001-80ZV8 makes a bare sort fresh `?` slots in a
+    // provision as in an operation, and the rest of what a call owes its provision's bindings
+    // is WI-20260929-05ZQE's.
+    let mut any = false;
+    if let Some(own_view) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) {
+        for (spec_param_sym, carrier_value) in own_view {
+            let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, spec_param_sym) else {
+                continue;
+            };
+            if subst.resolve_as_value(spec_vid).is_some() {
+                continue;
+            }
+            // At any depth and part-written too ([`this_instance_binding_at`]), as the rule
+            // reads it: `T = List[T = Car]` holds `o` to a list of the RECEIVER's instance.
+            let Some(instance) = this_instance_binding_at(kb, carrier_sym, carrier_value, recv_ty)
+            else {
+                continue;
+            };
+            let instance = once_per_call(kb, carrier_sym, &instance);
+            if occurs_in_view(kb, spec_vid, &instance) {
+                continue;
+            }
+            subst.bind_value(kb, spec_vid, instance);
+            any = true;
+        }
+    }
+    any
+}
+
+/// THIS instance as a call binds it ([`this_instance_binding_at`]), each slot a FOREIGN sort in it
+/// leaves unwritten one fresh variable for the whole call — the reading the ground arm of
+/// [`bind_spec_params_from_carrier_param`] gives a provider value, and the declaration rule
+/// gives the binding: every parameter typed by the spec parameter reads that one type. Bound as
+/// written, `T = Box[C = Car]` was expanded per occurrence, so `x: T, y: T` took two boxes of
+/// different element types and a member tying them failed at run time (MEASURED: review 9).
+fn once_per_call(kb: &mut KnowledgeBase, carrier: Symbol, instance: &Value) -> Value {
+    let carrier = kb.canonical_sort_sym(carrier);
+    expand_foreign_sorts_deep(kb, instance, Some(carrier), SlotVar::Flexible)
+}
+
 /// WI-357 — bind a self-receiver spec op's own type parameters from the
 /// concrete receiver carrier, so a dispatched call threads the element
 /// type. `Stream.splitFirst(s: Stream) -> Option[T = Pair[A = T, …]]`
@@ -961,37 +1019,7 @@ pub(super) fn bind_spec_params_from_carrier(
         return false;
     };
 
-    // WI-20260929-0RP29 — a spec parameter the carrier's OWN provision binds to the carrier
-    // itself, bare or at its own parameters (`Car provides Sp[T = Car]`), is THIS instance: the
-    // receiver's type, as the carrier's own operations read the bare name (§3's tie) and as
-    // the declaration rule reads the binding — so `Sp.both(k1, k2)` holds `k2` to `k1`'s
-    // instance. Skipped below as "ref-shaped, no parameter of the carrier", the call held it to
-    // nothing and a member written tied crashed on a second instance, or on a `5` (MEASURED).
-    // INTERIM (user, 2026-10-01): WI-20261001-80ZV8 makes a bare sort fresh `?` slots in a
-    // provision as in an operation, and the rest of what a call owes its provision's bindings
-    // is WI-20260929-05ZQE's.
-    let mut any = false;
-    if let Some(own_view) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) {
-        for (spec_param_sym, carrier_value) in own_view {
-            let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, spec_param_sym) else {
-                continue;
-            };
-            if subst.resolve_as_value(spec_vid).is_some() {
-                continue;
-            }
-            // At any depth and part-written too ([`this_instance_binding_at`]), as the rule
-            // reads it: `T = List[T = Car]` holds `o` to a list of the RECEIVER's instance.
-            let Some(instance) = this_instance_binding_at(kb, carrier_sym, carrier_value, &recv_ty)
-            else {
-                continue;
-            };
-            if occurs_in_view(kb, spec_vid, &instance) {
-                continue;
-            }
-            subst.bind_value(kb, spec_vid, instance);
-            any = true;
-        }
-    }
+    let mut any = bind_this_instance_params(kb, subst, spec_sort, carrier_sym, &recv_ty);
 
     // The receiver's own type arguments, keyed by the carrier sort's canonical
     // param VarId (WI-600 — the identity key carrier grounding joins on).
@@ -1998,6 +2026,7 @@ pub(super) fn bind_spec_params_from_carrier_param(
                 carriers_own_provision_qualifies(kb, spec_sort, carrier_pvid, carrier_sym)
             }) {
                 this_instance_binding_at(kb, carrier_sym, carrier_value, recv_ty)
+                    .map(|instance| once_per_call(kb, carrier_sym, &instance))
             } else if extract_sort_ref_sym(kb, &TermIdView(carrier_value))
                 .is_some_and(|s| kb.canonical_sort_sym(s) == carrier_canon)
             {
@@ -2988,15 +3017,25 @@ impl CallToOverride<'_> {
     }
 }
 
-/// What an option-typed parameter receives for an argument the call wraps in `some(…)`
-/// (WI-408) — the option of the argument's type — or `None` where the call does not wrap it.
-/// THE WRAP IS THE VALIDATION'S VERDICT ([`validate_arg_against_param`]), and this asks that
-/// verdict itself, on a scratch substitution, for a reader that needs the receiver before the
-/// arguments are validated. Decided by the argument's HEAD instead, an argument typed by an
-/// ALIAS of an option — which conforms as it is, and is not wrapped — was read as wrapped
-/// (MEASURED: `get(m)` over `m: MaybeInt` was typed `MaybeInt`, and the bare `Int64` it returns
-/// failed a `match` at run time), and an `Option[T]` passed for an `Option[Option[T]]` — which
-/// the call does wrap — as not.
+/// What an option-typed parameter receives, as a projection over it reads it, where that is not
+/// the argument's own type — or `None` where it is. THE WRAP IS THE VALIDATION'S VERDICT
+/// ([`validate_arg_against_param`]), asked on a scratch substitution for a reader that needs the
+/// receiver before the arguments are validated:
+///
+///  * WRAPPED: the option of the argument's type. Decided by the argument's HEAD instead, an
+///    argument typed by an ALIAS of an option — which conforms as it is, and is not wrapped —
+///    was read as wrapped (MEASURED: `get(m)` over `m: MaybeInt` was typed `MaybeInt`, and the
+///    bare `Int64` it returns failed a `match` at run time), and an `Option[T]` passed for an
+///    `Option[Option[T]]` — which the call does wrap — as not.
+///    The check wraps a value that is decidedly no option even where the option still holds a
+///    variable a later argument binds (`k: Option[T = A]` beside `w: Pair[L = h.T, R = A]`,
+///    whose unification waits for these receivers), so `pick(box(v: 1), 41, pair(l: 1, r: 0))`
+///    receives `Option[T = Int64]` here and at run time alike.
+///  * CONFORMS AS IT IS, or not decidable yet (an option or an open variable against an option
+///    still holding a variable): `None`, the argument's own type.
+///  * REFUSED: the declared option itself, so every projection over it agrees with the argument
+///    check, which refuses the call in its own words ("put.k: expected Option[T = Int64], got
+///    String") rather than a projection in its ("'String' has no member 'T'", MEASURED: review 9).
 pub(super) fn some_wrapped_arg_type(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -3015,7 +3054,8 @@ pub(super) fn some_wrapped_arg_type(
     let mut scratch = subst.clone();
     match validate_arg_against_param(kb, &mut scratch, arg_ty, param_ty, None, ctx, None) {
         ArgValidation::WrapSome { declared } => Some(option_of(kb, &declared, arg_ty.clone())),
-        ArgValidation::Ok | ArgValidation::Fail(_) => None,
+        ArgValidation::Ok => None,
+        ArgValidation::Fail(_) => Some(walk_type_deep_value(kb, subst, param_ty)),
     }
 }
 
@@ -3028,6 +3068,14 @@ pub(super) fn some_wrapped_arg_type(
 /// none: `pick(5)` behind `requires Desc[T = k.T]` and `app(5, lambda (x) -> x + 1)` behind `f:
 /// (x: k.T) -> Int64` were refused (MEASURED: programs that ran), and a payload with a `T` of
 /// its own picked another dictionary in silence.
+///
+/// TO A FIXPOINT, NOT IN DECLARATION ORDER: an option parameter's own type may project another
+/// parameter (`k: Option[T = h.T]`), read at the receivers as they stand — and the receiver it
+/// projects may be an option declared AFTER it. Read once in order, `pick(k: Option[T = h.T], h:
+/// Option[T = List[T = Int64]])` given two bare lists read `h.T` off the raw list (`Int64`), and
+/// a wrong call loaded and failed at run time, a right one was refused (MEASURED: review 9).
+/// The passes stop where projections between parameters are acyclic; a cycle is refused at load,
+/// and bounded here (see the end).
 pub(super) fn projection_receivers<'a>(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -3035,30 +3083,67 @@ pub(super) fn projection_receivers<'a>(
     arg_types: &'a HashMap<Symbol, Value>,
     op: Symbol,
 ) -> std::borrow::Cow<'a, HashMap<Symbol, Value>> {
+    // Each option parameter given an argument, and whether its own type projects another
+    // parameter — the only kind whose reading a later pass can change.
+    let options: Vec<(Symbol, &Value, &Value, bool)> = params
+        .iter()
+        .filter(|(_, param_type)| is_option_type(kb, param_type))
+        .filter_map(|(param_sym, param_type)| {
+            arg_types.get(param_sym).map(|arg_ty| {
+                let projects = value_contains_projection(kb, param_type);
+                (*param_sym, param_type, arg_ty, projects)
+            })
+        })
+        .collect();
+    // NOT THROUGH A CYCLE: the argument check resolves σ deeply, and a call whose arguments bound
+    // a variable inside itself (`two(none, lambda (x) -> [x], lambda (y) -> [y], …)` over
+    // `f: (x: A) -> B, g: (y: B) -> A` — the call-side occurs check reads a binding as written)
+    // does not return from it: the loader overflowed its stack where the call's own diagnostics
+    // used to be printed (MEASURED: review 9). Such a call has no finite type, and its
+    // receivers are its arguments' as they stand.
     let mut out = std::borrow::Cow::Borrowed(arg_types);
-    for (param_sym, param_type) in params {
-        if !is_option_type(kb, param_type) {
-            continue;
-        }
-        let Some(arg_ty) = arg_types.get(param_sym) else {
-            continue;
-        };
-        // The parameter's own type as the call reads it, where it projects another parameter
-        // (`k: Option[T = h.P]`): at the receivers so far.
-        let read = if value_contains_projection(kb, param_type) {
-            let ctx = TypeErrorContext::OperationReturn {
-                op_name: op,
-                surface: None,
+    if options.is_empty() || binds_a_cycle(kb, subst) {
+        return out;
+    }
+    let ctx = TypeErrorContext::OperationReturn {
+        op_name: op,
+        surface: None,
+    };
+    // The first pass reads every option; a later one only those whose type projects, at the
+    // receivers as the pass before left them.
+    let mut pass: Vec<usize> = (0..options.len()).collect();
+    for _ in 0..=options.len() {
+        let mut changed = false;
+        for &i in &pass {
+            let (param_sym, param_type, arg_ty, projects) = options[i];
+            let read = if projects {
+                eliminate_type_projections(kb, param_type, &out, None, &ctx, None)
+                    .unwrap_or_else(|_| param_type.clone())
+            } else {
+                param_type.clone()
             };
-            eliminate_type_projections(kb, param_type, &out, None, &ctx, None)
-                .unwrap_or_else(|_| param_type.clone())
-        } else {
-            param_type.clone()
-        };
-        if let Some(received) = some_wrapped_arg_type(kb, subst, arg_ty, &read, op) {
-            out.to_mut().insert(*param_sym, received);
+            // `None`: the argument as it stands.
+            let received = some_wrapped_arg_type(kb, subst, arg_ty, &read, op);
+            let now = received.as_ref().unwrap_or(arg_ty);
+            if !out
+                .get(&param_sym)
+                .is_some_and(|was| views_structurally_equal(kb, was, now))
+            {
+                let now = received.unwrap_or_else(|| arg_ty.clone());
+                out.to_mut().insert(param_sym, now);
+                changed = true;
+            }
+        }
+        pass.retain(|&i| options[i].3);
+        if !changed || pass.is_empty() {
+            return out;
         }
     }
+    // REACHED BY A CYCLIC SIGNATURE ONLY (`f(a: Option[T = b.T], b: Option[T = a.T])`), whose
+    // readings need not settle. Such a signature is refused loudly at load ("cyclic
+    // cross-parameter type projection") and its calls still pass through here; the bound stops
+    // them, and the refusal is that check's. MEASURED: an assertion here panicked the loader on
+    // four corpus programs of that shape.
     out
 }
 

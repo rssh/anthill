@@ -414,16 +414,19 @@ pub(super) fn check_apply_iter(
                 },
             )
         };
+        // The typer's spelling of "this call dispatches on nothing": no self-receiver and no
+        // carrier-param receiver. `self_recv_spec.is_some()` FORCES `carrier_param_info` to None
+        // above, so testing that alone would read a carrier-param-typed parameter as the
+        // receiver while dispatch runs on the SELF receiver.
+        let dispatches_on_nothing = self_recv_spec.is_none() && carrier_param_info.is_none();
         // WI-590 — the ENCLOSING SORT's `requires` clause licensing this call, when the
         // carrier-param classification declined. ONE lookup: the binder below and both
         // refusal arms read this, so the licence and the binding cannot disagree, and the
-        // scan runs at most once per call.
-        // `self_recv_spec.is_some()` FORCES `carrier_param_info` to None above, so testing
-        // that alone would derive the licence from a carrier-param-typed parameter while
-        // dispatch runs on the SELF receiver — suppressing the diagnostic for a receiver the
-        // licence never examined (caught by review).
-        let enclosing_requires_clause = if self_recv_spec.is_none() && carrier_param_info.is_none()
-        {
+        // scan runs at most once per call. Over `dispatches_on_nothing`, not the carrier-param
+        // test alone, which would derive the licence while dispatch runs on the SELF receiver —
+        // suppressing the diagnostic for a receiver the licence never examined (caught by
+        // review).
+        let enclosing_requires_clause = if dispatches_on_nothing {
             enclosing_requires_licensing_clause(
                 kb,
                 env,
@@ -632,6 +635,15 @@ pub(super) fn check_apply_iter(
             }
         }
 
+        // The callee's sort when the call has NO receiver binding its parameters — the only call
+        // whose own sort parameters its arguments decide ([`unify_arg_with_param`]). Not a sort
+        // something PROVIDES: a spec's parameters are a provision's, which the dispatch reads
+        // from all the arguments together — bound to each argument's variable apart, the
+        // rule-body call `Conv.conv(?x, ?u, ?r)` judged each parameter alone, and `Same provides
+        // Conv[A = X, B = X]` served `toN(3, "km")` (MEASURED: review 9's fix pass,
+        // `wi_prva2_pre_existing_defects_test`).
+        let receiverless_sort =
+            callee_parent_sort.filter(|s| dispatches_on_nothing && !spec_has_any_providers(kb, *s));
         for (i, arg_occ) in pos_args.iter().enumerate() {
             let call_param = pos_call_params[i].and_then(|p| op.params.get(p));
             if let Some((param_sym, _)) = call_param {
@@ -653,7 +665,13 @@ pub(super) fn check_apply_iter(
                     // recorded so a LATER param projecting THIS one can read it.
                     if !(op_has_projection && value_contains_projection(kb, param_type)) {
                         let before = subst.clone();
-                        let unified = unify_types(kb, &mut subst, &arg_result.ty, param_type);
+                        let unified = unify_arg_with_param(
+                            kb,
+                            &mut subst,
+                            &arg_result.ty,
+                            param_type,
+                            receiverless_sort,
+                        );
                         // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
                         // `check_apply_iter` has 22 exits and an argument's solving is
                         // complete the moment its unification is: reporting at one exit
@@ -694,7 +712,13 @@ pub(super) fn check_apply_iter(
                     // WI-398: defer a projection param's unify (see the positional loop).
                     if !(op_has_projection && value_contains_projection(kb, param_type)) {
                         let before = subst.clone();
-                        let unified = unify_types(kb, &mut subst, &arg_result.ty, param_type);
+                        let unified = unify_arg_with_param(
+                            kb,
+                            &mut subst,
+                            &arg_result.ty,
+                            param_type,
+                            receiverless_sort,
+                        );
                         // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
                         // `check_apply_iter` has 22 exits and an argument's solving is
                         // complete the moment its unification is: reporting at one exit
@@ -745,6 +769,24 @@ pub(super) fn check_apply_iter(
         let projection_receivers =
             projection_receivers(kb, &subst, &written_params, &param_to_arg_type, fn_sym);
         let mut effective_param_types: HashMap<Symbol, Value> = HashMap::new();
+        // Each argument that is a VALUE PATH — a variable, a field path, a `let` alias read as
+        // the path it names — by the parameter it binds: what a neutral projection off that
+        // parameter is re-keyed to ([`rekeyed_neutral`]), so `k: s.provider.K` at `check(w.st,
+        // j)` is `w.st.provider.K` and at `let t = s; check(t, j)` is `s.provider.K`. The
+        // parameters, the return and the effects read the one map, so `check(t, get(t, j))`
+        // passes `get`'s result where `check` names the same receiver.
+        let arg_paths: HashMap<Symbol, Vec<Symbol>> = if op_has_projection {
+            call_arg_paths(
+                kb,
+                env.receiver_aliases(),
+                &op.params,
+                &pos_call_params,
+                pos_args,
+                named_args,
+            )
+        } else {
+            HashMap::new()
+        };
         if params_have_projection {
             // WI-459: re-key a cross-param projection NEUTRAL to the caller's argument too —
             // by variables; a `denoted` beside it by the EFFECT re-key, in the same pass (see
@@ -760,18 +802,18 @@ pub(super) fn check_apply_iter(
                 // Computed BEFORE the call: `eliminate_type_projections` takes `kb`
                 // mutably, and only one of the two can hold it.
                 let surface = surface_of_with(kb, macro_pass, occ, fn_sym);
-                let eff = eliminate_type_projections_rekeyed(
-                    kb,
-                    param_type,
-                    &projection_receivers,
+                let ctx = TypeErrorContext::OperationReturn {
+                    op_name: fn_sym,
+                    surface,
+                };
+                let eff = Discharge {
                     arg_syms,
                     denoted_syms,
-                    &TypeErrorContext::OperationReturn {
-                        op_name: fn_sym,
-                        surface,
-                    },
-                    span,
-                )?;
+                    arg_paths: Some(&arg_paths),
+                    selections: &selections,
+                    ..Discharge::new(&projection_receivers, &ctx, span)
+                }
+                .eliminate(kb, param_type)?;
                 // `unify_types` borrows the arg type (it is `A: TermView`), so no clone.
                 if let Some(arg_ty) = param_to_arg_type.get(param_sym) {
                     unify_types(kb, &mut subst, arg_ty, &eff);
@@ -1124,6 +1166,22 @@ pub(super) fn check_apply_iter(
         // WI-20260929-0RP29: the threaded override's parameters with the spec's at their
         // positions — the guard σ below is extended through them. Empty unless it threaded.
         let mut impl_to_spec: HashMap<Symbol, Symbol> = HashMap::new();
+        // A RETURNED ARROW'S EFFECT ROW TAKES THE CALL'S EFFECT RE-KEY: the variables AND a field
+        // path's head (WI-506), as the call's own `Modify[p]` and a parameter's callback row do —
+        // where the rest of the return keeps its paths ([`ArgPlaces::heads`]). Keyed to variables
+        // only, `mk(h.c)` returned a callback still writing `mk`'s `p`, and `run2(h.c, mk(h.c))`
+        // was refused against `Modify[h]` where `let c = h.c` then `run2(c, mk(c))` ran
+        // (MEASURED: review 9). `None` without a head: the variables alone then. ONE substitution
+        // with the return's own re-key, below and in the elimination: a second pass renamed a
+        // self-recursive call's row twice (see [`rekeyed_return`]).
+        let returned_rows: Option<HashMap<Symbol, Symbol>> = (!places.heads.is_empty()).then(|| {
+            places
+                .vars
+                .iter()
+                .chain(places.heads.iter())
+                .map(|(k, v)| (*k, *v))
+                .collect()
+        });
         let (proj_return_type, proj_effects): (Value, Vec<Value>) = if op_has_projection {
             let ret_ctx = TypeErrorContext::OperationReturn {
                 op_name: fn_sym,
@@ -1151,28 +1209,19 @@ pub(super) fn check_apply_iter(
             // does a return one. A clean elimination (abstract self-receiver, or a provider
             // with a direct member) is unchanged; a genuine projection failure with no
             // concrete override stays the loud error.
-            let eliminated = eliminate_type_projections(
-                kb,
-                &op.return_type,
-                &projection_receivers,
+            let cx = Discharge {
                 arg_syms,
-                &ret_ctx,
-                span,
-            )
-            .and_then(|rt| {
+                denoted_syms: arg_syms,
+                row_syms: returned_rows.as_ref(),
+                arg_paths: Some(&arg_paths),
+                selections: &selections,
+                ..Discharge::new(&projection_receivers, &ret_ctx, span)
+            };
+            let eliminated = cx.eliminate(kb, &op.return_type).and_then(|rt| {
                 let effs = op
                     .effects
                     .iter()
-                    .map(|e| {
-                        eliminate_type_projections(
-                            kb,
-                            e,
-                            &projection_receivers,
-                            arg_syms,
-                            &ret_ctx,
-                            span,
-                        )
-                    })
+                    .map(|e| cx.eliminate(kb, e))
                     .collect::<Result<Vec<Value>, TypeError>>()?;
                 Ok((rt, effs))
             });
@@ -1255,15 +1304,14 @@ pub(super) fn check_apply_iter(
         // projects elsewhere (`remix2(s: Strm, k: s.T, p: Producer) -> Strm[…, E =
         // {Modify[p]}]`, a projection in a PARAMETER), which a gate on `op_has_projection`
         // left bearing the callee's `p` — so re-key it here. A return the WI-606 fallback
-        // threaded was re-keyed there, against the override's own parameters.
-        let proj_return_type = if return_owner == fn_sym
-            && !places.vars.is_empty()
-            && !value_contains_projection(kb, &op.return_type)
-        {
-            substitute_ref_syms_value(kb, &proj_return_type, &places.vars)
-        } else {
-            proj_return_type
-        };
+        // threaded was re-keyed there, against the override's own parameters. A returned
+        // arrow's row takes `returned_rows` in the same substitution, on either path.
+        let proj_return_type =
+            if return_owner == fn_sym && !value_contains_projection(kb, &op.return_type) {
+                rekeyed_return(kb, &proj_return_type, &places.vars, returned_rows.as_ref())
+            } else {
+                proj_return_type
+            };
 
         // WI-714: EVALUATE the `Concat[A, B]` type constructor in the return type. Its
         // operands are the per-call schemas — but they reach here as the op type params
@@ -1279,7 +1327,7 @@ pub(super) fn check_apply_iter(
         // record — into the type before the operands are inspected), then apply whichever
         // reduction the signature actually wrote. Each is universal (keyed on the sort, not
         // the op) and gated per-op on the declared return type.
-        let proj_return_type = if op_return_ctors.iter().any(|f| *f) {
+        let (proj_return_type, held) = if op_return_ctors.iter().any(|f| *f) {
             let ret_ctx = TypeErrorContext::OperationReturn {
                 op_name: fn_sym,
                 surface: surface_of(kb, occ, fn_sym),
@@ -1353,6 +1401,15 @@ pub(super) fn check_apply_iter(
             // producing an unusable type, so it must see every computing member's result.
             const MAX_PASSES: usize = 16;
             let mut reduced = walk_type_deep_value(kb, &subst, &proj_return_type);
+            let held = vars_the_arguments_put(
+                kb,
+                &subst,
+                pos_results
+                    .iter()
+                    .chain(named_results.iter())
+                    .filter_map(|r| r.as_ref().ok())
+                    .map(|r| &r.ty),
+            );
             let mut flags = op_return_ctors;
             let mut passes = 0;
             while flags.iter().any(|f| *f) {
@@ -1386,9 +1443,9 @@ pub(super) fn check_apply_iter(
                 }
                 flags = next;
             }
-            reduced
+            (reduced, held)
         } else {
-            proj_return_type
+            (proj_return_type, HashSet::new())
         };
 
         // WI-1104 — the RESULT COLUMN of a functional-relation goal, compared against the
@@ -1500,6 +1557,15 @@ pub(super) fn check_apply_iter(
         // and a FAILED unify may leave `subst` marked contradictory for every reader below.
         //
         // `return_owner`, not `fn_sym`: see its declaration above.
+        //
+        //
+        // A RETURN A TYPE CONSTRUCTOR REDUCED (`FieldOf`, `Concat`, `Without`) keeps every
+        // variable the ARGUMENTS put into it (`held`): `field_access(q, "l")` reduces to `q`'s
+        // field type, and a variable there is the caller's, not an existential of the callee's.
+        // Opened, `Pair.mk(1).l` read a list of a fresh rigid whatever the receiver's slot held,
+        // so no annotation could say what it was (MEASURED: review 9 — every field read of an
+        // open slot was rigid). A field DECLARED with a slot left out (`s: Stream[T = Int64]`)
+        // or written `?` is still an existential, and is opened.
         let proj_return_type = match open_existential_return(
             kb,
             if return_owner == fn_sym {
@@ -1509,6 +1575,7 @@ pub(super) fn check_apply_iter(
             },
             return_owner,
             &proj_return_type,
+            &held,
             occ.span,
             occ.owner,
         ) {
@@ -3053,21 +3120,52 @@ pub(super) fn check_apply_iter(
             // sole coarse cover whose compound element σ-disagrees (shallow-vs-deep)
             // does NOT re-defer here after `find_requires_location` above already
             // refused it — construction of the deeper dictionary runs instead.
-            let dispatch_sigma = SigmaCtx {
-                subst: &subst,
-                param_rigids: env.param_rigids(),
+            let dispatch = |kb: &mut KnowledgeBase, subst: &Substitution, carrier| {
+                let sigma = SigmaCtx {
+                    subst,
+                    param_rigids: env.param_rigids(),
+                };
+                dispatch_spec_op_cached(
+                    kb,
+                    subst,
+                    spec_sort,
+                    op_short_sym,
+                    enclosing_requires,
+                    carrier,
+                    Some(&sigma),
+                    &selections,
+                    env.sub_goal_requires(),
+                )
             };
-            let (outcome, resolved_tree) = dispatch_spec_op_cached(
-                kb,
-                &subst,
-                spec_sort,
-                op_short_sym,
-                enclosing_requires,
-                dispatch_carrier,
-                Some(&dispatch_sigma),
-                &selections,
-                env.sub_goal_requires(),
-            );
+            let (outcome, resolved_tree) = dispatch(kb, &subst, dispatch_carrier.clone());
+            // A CALL THAT NAMES ITS WITNESS REACHES IT where the receiver matches no provision
+            // as it stands — a slot no type decides (`box(v: none)` behind witnesses at `Box[V =
+            // Option[T = Int64]]` and `[… = String]`): the bracket says which covering witness
+            // the call reaches, the reading its return's projection takes
+            // ([`witnesses_lend_member`]), so the call is dispatched at THAT witness's instance.
+            // Left `NoCandidates`, it went to eval's value-directed dispatch, which reads no
+            // bracket, and died "ambiguous dispatch" at run time where its type had read the
+            // named witness (MEASURED: review 9's fix pass; on the tree before it wherever the
+            // result was generic).
+            let narrowed = match (&outcome, carrier_param_info.as_ref()) {
+                (
+                    DispatchOutcome::NoCandidates,
+                    Some((_, carrier, recv_ty, _, carrier_vid, ..)),
+                ) => narrowed_to_named_witness(
+                    kb,
+                    &subst,
+                    &selections,
+                    spec_sort,
+                    *carrier,
+                    recv_ty,
+                    *carrier_vid,
+                ),
+                _ => None,
+            };
+            let (outcome, resolved_tree) = match narrowed {
+                Some(narrowed) => dispatch(kb, &narrowed, dispatch_carrier),
+                None => (outcome, resolved_tree),
+            };
             // WI-508: a NULLARY spec op (`new() -> C`, carrier only in the
             // RESULT) gets no carrier from value args, so value-directed
             // dispatch finds nothing. Resolve the carrier from the EXPECTED
@@ -3414,13 +3512,9 @@ pub(super) fn check_apply_iter(
                             // goes green-to-red: a wholly-unimplemented self-receiver spec
                             // loaded clean instead of being caught at type-check.
                             //
-                            // The same pair `self_recv_spec.is_none() && carrier_param_
-                            // info.is_none()` is what `enclosing_requires_clause` tests
-                            // above, for the same reason: it is the typer's spelling of
-                            // "this call dispatches on nothing".
-                            let has_receiver =
-                                self_recv_spec.is_some() || carrier_param_info.is_some();
-                            if !signature_mentions && !has_receiver {
+                            // `dispatches_on_nothing` is what `enclosing_requires_clause`
+                            // tests above, for the same reason.
+                            if !signature_mentions && dispatches_on_nothing {
                                 continue;
                             }
                             // Read as the dispatch readers read it — through
@@ -4140,7 +4234,9 @@ pub(super) fn check_apply_iter(
         // performs is what lets a `Value::Node` callee's children be found at all,
         // and it used to happen inside `arrow_parts` on the line below.
         let callee_ty = extract_callable_type(kb, &fn_type);
-        if let Some((ret_ty, call_effects)) = extract_function_type_parts(kb, &callee_ty) {
+        if let Some((ret_ty, call_effects)) =
+            extract_function_type_parts(kb, &callee_ty, env.param_rigids())
+        {
             // WI-798: and the DECLARED PARAMETER LIST likewise once — the
             // positional check reads it as its slot list (for every arity but
             // one), and the WI-783 named-label resolution below reads the SAME
@@ -4614,6 +4710,7 @@ pub(super) fn check_apply_iter(
                 impl_parent_sort_of_op(kb, fn_sym),
                 fn_sym,
                 &ret,
+                &HashSet::new(),
                 occ.span,
                 occ.owner,
             )
@@ -4854,3 +4951,139 @@ fn defaulted_call_at_non_instance(
     }
     unprovided_spec_at_carrier(kb, goal, carrier, fn_sym, span)
 }
+
+/// [`check_apply_iter`]'s argument unification: `arg` against `param`. A parameter typed by the
+/// callee's OWN sort parameter (`mk(x: B)` inside `sort Pair`) of a call with no receiver
+/// (`receiverless_sort`), given an argument whose type is still an open variable (a `lambda (o)
+/// -> Pair.mk(o)` binder), takes that variable as its value rather than the reverse: bound the other way, the caller's variable named the callee's
+/// canonical parameter, nothing named the caller's, and the call's type kept `A = B` unrelated
+/// to `o` — `Pair[A = ?_, B = Int64]` on every build. A field read off it then took the leftover
+/// at any type, and `String.length(g(7))` over `g = lambda (o) -> Pair.mk(o).l` loaded and failed
+/// at run time once the field read stopped reading `B` as the result's own `Int64` (MEASURED:
+/// review 9).
+fn unify_arg_with_param(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    arg: &Value,
+    param: &Value,
+    receiverless_sort: Option<Symbol>,
+) -> bool {
+    let own_param = receiverless_sort.is_some_and(|sort| {
+        let mut named = false;
+        map_type_bottom_up(kb, param, &mut |kb, node| {
+            named = named || {
+                let sym = match node {
+                    Value::Term { id, .. } => typaram_occurrence_sym(kb, *id),
+                    _ => extract_sort_ref_sym(kb, node),
+                };
+                sym.is_some_and(|s| type_param_vid_in_sort(kb, sort, s).is_some())
+            };
+            None
+        });
+        named
+    });
+    let open_arg = own_param && {
+        let arg = resolve_type_deep_value(kb, subst, arg);
+        type_mentions_flex_var(kb, &arg)
+    };
+    if open_arg {
+        unify_types(kb, subst, param, arg)
+    } else {
+        unify_types(kb, subst, arg, param)
+    }
+}
+
+/// The call's σ with the spec's carrier parameter (`carrier_vid`) read as the instance the
+/// witness its bracket names provides the spec at, instantiated at the receiver (`[Holder =
+/// OptIntBoxH]` over `box(v: none)`, a `Box[V = Option]`: `C = Box[V = Option[T = Int64]]`) —
+/// `None` where the call names no witness of `spec` or that witness does not cover the receiver
+/// ([`covering_witnesses_named`]). The receiver's own type cannot be narrowed in place: a slot it
+/// leaves out holds no variable to bind.
+fn narrowed_to_named_witness(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    selections: &[InstanceSelection],
+    spec: Symbol,
+    carrier: Symbol,
+    recv_ty: &Value,
+    carrier_vid: VarId,
+) -> Option<Substitution> {
+    pinned_witness_for(kb, selections, spec)?;
+    let recv = resolve_type_deep_value(kb, subst, recv_ty);
+    let (row, at) = covering_witnesses_named(kb, &recv, carrier, spec, selections)
+        .into_iter()
+        .next()?;
+    let (view, _) = witness_dispatch_carrier_view(kb, spec, row.provider, row.spec_view)?;
+    let instance = resolve_type_deep_value(kb, &at, &Value::term(view));
+    let mut narrowed = subst.clone();
+    narrowed.bindings.remove(&carrier_vid);
+    narrowed.bind_value(kb, carrier_vid, instance);
+    Some(narrowed)
+}
+
+/// A projection-free return re-keyed to the caller in ONE substitution per position: an arrow's
+/// effect row through `rows` where there is one (the variables and the field paths' heads, which
+/// an effect names — `returned_rows` at the call), every other position through `vars` (a head
+/// would lose the path, [`ArgPlaces::heads`]). Each position is substituted once, so the two maps
+/// cannot compose: in two passes a self-recursive call's row was renamed twice, its caller's
+/// variables being the callee's own parameters — `rec(q, h.c, h, n - 1)` inside `rec(p, q, h, n)`
+/// read `Modify[p]` as `Modify[q]` and then that `q` as `h`, admitting a callback that writes `q`
+/// where `{Modify[p], Modify[h]}` was declared (MEASURED: review 9's /simplify).
+fn rekeyed_return(
+    kb: &mut KnowledgeBase,
+    ty: &Value,
+    vars: &HashMap<Symbol, Symbol>,
+    rows: Option<&HashMap<Symbol, Symbol>>,
+) -> Value {
+    let Some(rows) = rows else {
+        return if vars.is_empty() {
+            ty.clone()
+        } else {
+            substitute_ref_syms_value(kb, ty, vars)
+        };
+    };
+    let changed = |kb: &mut KnowledgeBase, v: &Value, map: &HashMap<Symbol, Symbol>| {
+        let r = substitute_ref_syms_value(kb, v, map);
+        (!views_structurally_equal(kb, &r, v)).then_some(r)
+    };
+    // The walk reaches every position but an arrow's row and an effect-row binding, which it
+    // hands over untouched with the form holding them: those two are substituted at that form,
+    // every other position where the walk meets it as a leaf.
+    map_type_bottom_up(kb, ty, &mut |kb, node| {
+        let (sp, owner) = site_of(node);
+        match extract_type(kb, node) {
+            TypeExtractor::Arrow {
+                param,
+                result,
+                effects,
+                arity,
+            } => {
+                let e = changed(kb, &effects, rows)?;
+                Some(arrow_value(kb, &param, &result, &e, arity, sp, owner))
+            }
+            TypeExtractor::Parameterized { base, bindings }
+                if !is_sort_view_functor(kb, base) && effect_expr_form(kb, base).is_none() =>
+            {
+                let mut any = false;
+                let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(bindings.len());
+                for (k, v) in bindings {
+                    let rekeyed = if sort_param_sym_is_effect_row(kb, base, k) {
+                        changed(kb, &v, vars)
+                    } else {
+                        None
+                    };
+                    any |= rekeyed.is_some();
+                    out.push((k, rekeyed.unwrap_or(v)));
+                }
+                any.then(|| {
+                    let base_ref = kb.make_sort_ref(base);
+                    parameterized_value(kb, base_ref, &out, sp, owner)
+                })
+            }
+            TypeExtractor::NamedTuple(_) => None,
+            _ => changed(kb, node, vars),
+        }
+    })
+    .unwrap_or_else(|| ty.clone())
+}
+
