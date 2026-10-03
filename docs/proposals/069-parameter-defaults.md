@@ -1,8 +1,8 @@
-# 069: Declaration-site defaults for operation, entity-constructor, and sort parameters
+# 069: Declaration-site defaults for operation, entity-constructor, and sort parameters, and rule columns
 
-## Status: Draft (2026-10-03). The motivating verdict is that `Function[A, B]` is pure: its omitted `E` is `{}`, while `Function[A, B, ?]` is explicitly open. This proposal reopens proposal 042 OQ3 / WI-850 with that concrete driver and extends the same declaration-time mechanism to operation and entity-constructor value parameters. Type inference runs to a fixed point before defaults are chosen, then solving resumes once with the defaults installed.
+## Status: Draft (2026-10-03). The motivating verdict is that `Function[A, B]` is pure: its omitted `E` is `{}`, while `Function[A, B, ?]` is explicitly open. This proposal reopens proposal 042 OQ3 / WI-850 with that concrete driver and extends the same declaration-time mechanism to operation and entity-constructor value parameters, and to the columns of a declared rule (§1.5), whose undeclared default is `?`. Type inference runs to a fixed point before defaults are chosen, then solving resumes once with the defaults installed.
 
-## Relates to: [002](002-arrow-sorts.md) (sort parameters), [018](018-expressions-and-operation-implementation.md) (operation bodies), [042](042-explicit-type-parameters-on-operations.md) (explicit operation type parameters; OQ3), [045](045-effect-sets-and-expressions.md) (effect-row binders), kernel-language §§4.4 and 8.1 (the contradictory `Function[A, B]` readings), WI-850 (the current refusal), WI-188 (entity record update), and WI-191 (typed command arguments).
+## Relates to: [002](002-arrow-sorts.md) (sort parameters), [018](018-expressions-and-operation-implementation.md) (operation bodies), [042](042-explicit-type-parameters-on-operations.md) (explicit operation type parameters; OQ3), [045](045-effect-sets-and-expressions.md) (effect-row binders), kernel-language §§4.4 and 8.1 (the contradictory `Function[A, B]` readings), WI-850 (the current refusal), WI-188 (entity record update), WI-191 (typed command arguments), [052](052-rules-as-stream-valued-operations.md) (a rule cited as a `Relation` value; WI-714's column binding), [061](061-rule-declarations.md) (rule declarations — where a rule column's default is written), and WI-20260821-6WVJB (one arity per predicate — what positional omission in a goal waits on).
 
 ## Tracked by: WI-20261003-QV5W5 (`proposal-069`). WI-188 depends on it.
 
@@ -41,7 +41,7 @@ Two related omissions have the same shape:
    from the receiver; WI-188 currently proposes a bespoke residual-override lowering instead.
 
 The common rule is: a declaration may provide a value for a slot which its use site leaves
-unwritten. The four surfaces carry two different kinds of thing—terms for value parameters, types
+unwritten. The five surfaces carry two different kinds of thing—terms for value parameters and rule columns, types
 for type parameters—but omission, dependency order, diagnostics, and reflection should agree.
 
 ## 1. Surface
@@ -178,6 +178,88 @@ sort Traverse[F[T] = List, A]
 
 As with every declared type, a default is resolved and kind-checked at its declaration. A wrong-kind
 default is a load error at the default, not a later failure at a use.
+
+### 1.5 Rule columns
+
+A rule is called as well as defined — as a goal in a rule body, in a query, and as a `Relation`
+value cited in an operation body (proposal 052) — so its columns are parameters too. A column may
+carry a default, and **only the predicate's declaration may write it** (proposal 061's body-less
+`rule` head):
+
+```anthill
+rule within(?x, ?limit = 10)                  -- the declaration: `limit` defaults to 10
+rule within(?x, ?limit) :- lt(?x, ?limit)     -- a clause: writes no default
+rule within(?x, ?limit) :- special(?x, ?limit)
+
+rule small(?x) :- within(x: ?x)               -- within(?x, 10)
+rule any(?x)   :- within(x: ?x, limit: ?)     -- explicit `?`: every limit
+```
+
+Grammar, in a rule **declaration** head only:
+
+```text
+DeclColumn ::= Variable ['=' Expr]
+```
+
+**Omission means the declared default, else `?`.** At a call, an omitted column takes its declared
+default; a column with no default is a fresh variable, which is what an omitted column already
+means at a citation today (`pair_eq(5)` is a `Relation` over its remaining column; WI-714). An
+explicit `?` always means "free" and suppresses the default — the same opt-out `Function[A, B, ?]`
+is for a sort parameter (§1.4):
+
+| Call | No default declared | `?limit = 10` declared |
+|---|---|---|
+| `within(x: 5)` | `limit` free | `limit = 10` |
+| `within(x: 5, limit: ?)` | `limit` free | `limit` free |
+| `within(x: 5, limit: 3)` | `limit = 3` | `limit = 3` |
+
+The default is inserted as though the caller had written it. If `limit` is an input of the rule's
+clauses, the 10 is supplied; if it is an output, the 10 is checked — `within(x: 5)` succeeds only
+where the rule answers `limit = 10`. Either reading is the clauses' own; the default adds nothing
+but the argument.
+
+**Only the declaration writes a default.** A predicate may have many clauses, and its default must
+have one home. A default written on a clause head or a `fact` head is a load error naming the
+declaration. If the predicate has no declaration, the clause cannot carry one — declare the
+predicate (061) to give it a default.
+
+The spelling `?v = e` inside a rule-head argument is today an ordinary term argument, the equation
+`eq(?v, e)`. In a declaration that reading has no use — a declaration's columns are variables — so
+the declaration reclaims it. In a **clause** head the same spelling is refused, with the message
+pointing at the declaration, rather than left to mean an equation term: otherwise a default written
+on the wrong head would load silently as something else. An equation term remains writable in a
+clause head as `eq(?v, e)`. (The census of `?v = e` arguments in existing clause heads is part of
+implementing this; each one found is rewritten to `eq(…)` or is a misplaced default.)
+
+**Heads are never filled.** A default fills an omission at a **call** — a body goal, a query, a
+citation — and never in another **head** of the same predicate. A head defines answers rather than
+asking for them: `fact within(3)` is a clause at its own arity (or refused, once WI-20260821-6WVJB
+settles one arity per predicate), never silently `fact within(3, 10)`. This is §1.2's rule for
+entity patterns, read from the other side: an entity's patterns were not written by the author of
+the default, so they are not filled; a rule's heads are its definition, so they are not filled
+either.
+
+**Named omission now; positional omission in a goal waits.** At a citation, columns already bind
+positionally from the left and by name (WI-714), so a positional underrun leaves the trailing
+columns to their defaults. In a **goal**, the count of positional arguments still carries meaning:
+clauses of one predicate may differ in arity (WI-20260821-6WVJB is open), and an operation's
+arity + 1 goal is its functional-relation view (WI-938). So in a goal only a **named** omission
+(`within(x: 5)`) inserts defaults; a short positional goal keeps its present meaning until
+6WVJB decides arity. The rule above does not change when it does — only which goals reach it.
+
+**Adding a default changes existing calls.** For an operation, an omitted argument was an error
+before its parameter had a default, so adding one only makes programs load. For a rule, an omitted
+column already means `?`, so declaring `?limit = 10` on an existing predicate changes every call
+that omits `limit` from "every limit" to "limit 10". That is the trade-off §4 makes for
+`Function.E = {}`, and it is made deliberately: the default is the author's statement of what an
+unwritten column means. A caller who wants every value writes `?`.
+
+A rule-column default follows the ordering and scoping rules of §3: it may refer to earlier columns
+of the same declaration and to visible constants, constructors and operations; a forward reference
+is refused. An operation call in a default is evaluated as an operation call in a rule body is
+(proposal 068). Its type must conform to the column's type, which the predicate's clauses determine
+(kernel-language §8.6, *What types a rule's variables*); a default that conforms to no clause's
+column is a load error at the default.
 
 ## 2. Infer first, default second, solve again
 
@@ -356,6 +438,10 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
    not fill omitted fields in pattern positions.
 5. Thread defaults through reflection, persistence, Rust/Scala code generation, and diagnostics.
 6. Declare `Function.E` as `default {}` and remove every special “unbound means empty” reading.
+6a. Admit `?v = e` in a rule declaration head as a column default (amending 061's list of what a
+   declaration may not carry); refuse it in clause and `fact` heads after a census of existing
+   `?v = e` head arguments; insert defaults at named goal omissions, queries and citations
+   (`resolve_relation_arg_columns` and the goal path share one owner), never in heads.
 7. Replace WI-850's refusal tests with driven calls, and add controls proving that removing default
    application changes the result or restores the old error.
 
@@ -381,6 +467,13 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
   defaulted one.
 - Calls through function values still require full arity.
 - Spec dispatch uses the spec declaration's defaults and refuses implementation-local redeclaration.
+- A declared rule column's default fills a named omission at a goal, a query and a citation, and is
+  checked against the clauses' answers when the column is an output; an explicit `?` still ranges
+  over every value; a column with no default stays free at a citation, as today.
+- A default written on a clause head or a `fact` head is refused naming the declaration; `?v = e` in
+  a clause head is refused rather than read as an equation term.
+- A `fact` or clause head that omits a defaulted column is never filled.
+- A short positional goal keeps its present meaning until WI-20260821-6WVJB.
 - Rust tests run through `rustland/scripts/test.sh`; `sbt testFull` and tree-sitter corpus tests pass.
 
 ## 9. Non-goals
@@ -390,3 +483,6 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
   optional-parameter bit in arrow types.
 - A default is not an error-recovery fallback. It applies only to an omitted slot.
 - Constructor defaults do not change pattern omission, stored entity shape, or field subtyping.
+- A rule column's default is never written per clause, and never fills a clause or `fact` head.
+- This proposal does not decide one arity per predicate (WI-20260821-6WVJB); positional omission in
+  a goal waits on it.
