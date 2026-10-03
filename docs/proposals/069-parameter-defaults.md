@@ -366,11 +366,27 @@ on a slot whose parameter declares no default; on a defaulted slot, omission tak
 `?` is the explicit opt-out.* (A self reference inside the sort's own definition is the exception
 below: it keeps WI-1082's tie.)
 
-**A defaulted slot carries no quantifier of its own.** §8.1 reads an omitted non-defaulted slot by
-its polarity: universal in a parameter (WI-1063; named by WI-1059's projection, nested slots by
-WI-1061's fresh skolem), existential in a return (WI-1063/1078). That reading runs **first**; step 4
-then instantiates each default under the slots before it, so a defaulted slot inherits whatever
-those slots carry. A default is therefore concrete only when it mentions no parameter. Under
+**A default speaks only where the type's user supplies the slot.** §8.1 reads an omitted slot by
+its polarity, and that reading decides whether a default applies at all:
+
+- In a **negative** position — an operation parameter, a written type annotation or rule-head
+  bound (`?f: Function[A, B]`), a construction's type arguments — the *caller* supplies the value,
+  so an omitted slot is the caller's silence and its default speaks for it. A non-defaulted slot
+  there is universal, as before (WI-1063; WI-1059's projection names it, WI-1061's fresh skolem a
+  nested one); a defaulted slot is instantiated by step 4 under the slots before it, so it inherits
+  whatever they carry, and a default that mentions no parameter is closed.
+- In a **positive** position — an operation's return — the *body* supplies the value: it packs a
+  witness (WI-1063), and an omitted slot is the body's to choose. A default there would be a claim
+  about the witness the author did not write, so it does **not** apply: every omitted slot of a
+  return is existential, each opened as its own fresh `ρ` per use, defaulted or not. A dependent
+  default (`T2 = T1`) therefore ties nothing in a return.
+- In a **logical** position of a rule — a pattern term in a goal, an argument of a rule goal, a
+  side of `<=>` — an omitted type parameter is the rule-scoped variable §8.1 already makes it (a
+  rule UNIFIES its parameters, WI-20260911-5G28A), and the default does not apply: `rule
+  all(?v) :- box(?v)` under `sort Box[T = Int64]` ranges over every `Box`, not over `Box[Int64]`
+  only. This is §1.2's position rule for entity fields, applied to the entity's type parameters.
+
+Under
 
 ```anthill
 sort AsymmetricPair[T1, T2 = T1]
@@ -383,16 +399,18 @@ end
 | `AsymmetricPair[Int64]` | `Int64` | `Int64` |
 | `AsymmetricPair[Int64, String]` | `Int64` | `String` (written) |
 | `p: AsymmetricPair` (parameter) | ∀, the skolem `p.T1` | `p.T1` — `p.T2` reduces to `p.T1` |
-| `-> AsymmetricPair` (return) | ∃, a fresh `ρ` per use | the same `ρ` |
+| `-> AsymmetricPair` (return) | ∃, a fresh `ρ₁` per use | ∃, an independent fresh `ρ₂` |
 | `AsymmetricPair[?]` | an explicit hole | tied to that hole |
 | `AsymmetricPair[?, ?]` | a hole | an independent hole |
 
-So `-> AsymmetricPair` opens to **one** existential shared by both components — a consumer may rely
-on their agreement, as §8.1 says of a named `?t` (WI-1078) — not to two. Because forward references
-are refused, every chain of defaults ends at a root that carries the quantifier: a written slot, an
-explicit `?`, a non-defaulted omitted slot, an enclosing parameter, or a closed type. A default that
-mentions no parameter is closed: `f: Function[A, B]` is not universal in `E`, and
-`-> Function[A, B]` does not open it.
+So a body declared `-> AsymmetricPair` may return `apair(1, "s")`, and a consumer may rely on
+nothing about either component — not even their agreement. A parameter `p: AsymmetricPair` accepts
+`apair(1, 2)` and refuses `apair(1, "s")`. In a negative position, every chain of defaults ends at a
+root that carries the quantifier, because forward references are refused: a written slot, an
+explicit `?`, a non-defaulted omitted slot, an enclosing parameter, or a closed type. `f:
+Function[A, B]` is therefore pure — not universal in `E` — while `-> Function[A, B]` opens `E` to an
+existential row like any omitted return slot (§4). A pure *returned* function is written as an
+arrow, whose syntax writes the empty row explicitly (§4), or as `Function[A, B, {}]`.
 
 **Within a sort's own definition, the self tie wins over the default.** A bare or partial reference
 to the sort inside its own body keeps WI-1082's rewrite: an elided slot names *this instance's*
@@ -413,9 +431,10 @@ Likewise, inside `sort Function` an elided `E` is this function's row, not `{}`.
 to the self reference; a foreign reference inside the sort body (`Function[A, B]` written inside
 `sort Stream`) takes the default.
 
-The polarity rules continue to govern explicit `?`, named variables and non-defaulted slots, so the
-quantifier on a defaulted slot is spelled with `?`: `f: Function[A, B, ?]` is universal in a
-parameter, `-> Function[A, B, ?]` existential in a return. WI-1082's "a member may not pin its own
+The polarity rules continue to govern explicit `?`, named variables and non-defaulted slots, so in
+a negative position the quantifier on a defaulted slot is spelled with `?`: `f: Function[A, B, ?]`
+is universal in a parameter. In a return the `?` adds nothing — `-> Function[A, B, ?]` and
+`-> Function[A, B]` are the same existential, since a default never applies there. WI-1082's "a member may not pin its own
 sort's parameter to a constant and still elide it in the return" is unchanged, since a self
 reference still takes the tie.
 
@@ -490,7 +509,13 @@ effects E = ? default {}
 
 Consequently:
 
-- `(A) -> B` and `Function[A, B]` both carry the closed empty row;
+- the arrow syntax `(A) -> B` WRITES the empty row: it is `Function[A, B, {}]`, not an omission,
+  so it is pure in every position, a return included;
+- `Function[A, B]` takes the default `{}` in a negative position (a parameter, an annotation, a
+  bound), so `f: Function[A, B]` is pure; in a return the default does not apply (§2), so
+  `-> Function[A, B]` opens `E` as an existential row — sound, since a consumer can assume no
+  purity of it, but not pure. A returned pure function is written `-> (A) -> B` or
+  `-> Function[A, B, {}]`;
 - `(A) -> B @ E` and `Function[A, B, E]` both carry the written row;
 - `Function[A, B, ?]` is the explicit effect-polymorphic spelling;
 - `Function[A, B] <: Function[A, B, E]` remains the ordinary effect-widening relation from the
@@ -559,8 +584,11 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
 6. Declare `Function.E` as `default {}` and remove every special “unbound means empty” reading.
    Restate kernel-language §8.1's WI-1056 sentence ("the four ways of leaving a parameter unwritten
    … all mean the same thing") as holding for non-defaulted slots only (§2), and add to §8.1's
-   polarity section (WI-1063) that a defaulted slot inherits the quantifier of the slots its default
-   mentions, read after them, and that a self reference keeps WI-1082's tie over a default.
+   polarity section (WI-1063) that a default applies only in a negative position (where a
+   defaulted slot inherits the quantifier of the slots its default mentions, read after them),
+   never in a return (every omitted return slot is its own existential) or in a rule's logical
+   position, and that a self reference keeps WI-1082's tie over a default. Restate §4.4 so the arrow
+   syntax writes `E = {}` explicitly.
 6a. Admit `?v = e` in a rule declaration head as a column default (amending 061's list of what a
    declaration may not carry); refuse it in clause and `fact` heads after a census of existing
    `?v = e` head arguments; refuse a clause or `fact` whose arity differs from a defaulted
@@ -574,20 +602,26 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
 - `Function[A, B]` is structurally the same effect instantiation as `Function[A, B, E = {}]`, and
   rejects an effectful callback where a pure one is required.
 - `Function[A, B, ?]` remains open and accepts an effect row inferred by its context.
-- Arrow `(A) -> B` and `Function[A, B]` agree in the §4.4 and §8.1 tests without a special-case
-  “missing E means empty” branch.
+- Arrow `(A) -> B` and `Function[A, B]` agree in a negative position in the §4.4 and §8.1 tests
+  without a special-case “missing E means empty” branch; `-> (A) -> B` is pure, and
+  `-> Function[A, B]` is existential in `E`.
 - `Box[T = Int64]` defaults an omitted `T`, while `Box[?]` remains open and `Box[String]` overrides
   the default.
 - A dependent sort default (`Values = List[T = K]`) expands after `K`; a forward reference and a
   kind mismatch are loud declaration errors.
 - Under `sort AsymmetricPair[T1, T2 = T1]`: a bare parameter `p: AsymmetricPair` accepts
   `apair(1, 2)` and refuses `apair(1, "s")`, with `p.T2` reducing to `p.T1`; a bare return
-  `-> AsymmetricPair` opens to one existential shared by both components; and a member inside the
+  `-> AsymmetricPair` opens to two independent existentials, so a body returning `apair(1, "s")`
+  loads and a consumer relying on the components' agreement is refused; and a member inside the
   sort taking a bare `p: AsymmetricPair` accepts an asymmetric instance (the WI-1082 tie, not the
   default). Control: with the tie overridden by the default, the in-sort member refuses it.
 - `f: Function[A, B]` is not universal in `E` (an effectful argument is refused), and
-  `-> Function[A, B]` does not open (a body returning an effectful function is refused); the `?`
-  spellings restore ∀ and ∃ respectively.
+  `f: Function[A, B, ?]` restores ∀. `-> Function[A, B]` is existential in `E` (a body returning an
+  effectful function loads; a consumer passing the result to a pure slot is refused), while
+  `-> (A) -> B` and `-> Function[A, B, {}]` are pure (a body returning an effectful function is
+  refused).
+- Under `sort Box[T = Int64]`, `rule all(?v) :- box(?v)` answers every stored `box`, whatever its
+  element type — the default is not installed in a logical position.
 - A constraint introduced by a dependent default is propagated by the second solver phase and may
   determine an earlier still-free parameter; defaults are not selected a second time.
 - `operation identity[T = String](x: Option[T] = none()) -> T` uses inference before `T`'s default,
