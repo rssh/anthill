@@ -10860,7 +10860,7 @@ impl KnowledgeBase {
     }
 
     /// `expr_carried(value: <term>, member: Ref(<sym>))` — the term twin of an
-    /// expression-carried type projection `s.T` / `s.Sort` (WI-376). `value` is the
+    /// expression-carried type projection `s.T` / `s.Self` (WI-376). `value` is the
     /// receiver occurrence's term (a ground `Ref(s)` for a param/local receiver);
     /// `member` is the projected type-member name, carried as `Ref(sym)` exactly as
     /// [`Self::make_type_var`] carries its `name`. The type-member sibling of

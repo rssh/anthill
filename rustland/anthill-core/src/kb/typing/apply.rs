@@ -1145,7 +1145,7 @@ pub(super) fn check_apply_iter(
             &rebuilt_occ
         };
 
-        // WI-376: discharge expression-carried type projections (`s.T` / `s.Sort`) in
+        // WI-376: discharge expression-carried type projections (`s.T` / `s.Self`) in
         // the declared return type — and any effect rows that carry one — by projecting
         // the RECEIVER param's argument type, resolved here where the arguments are
         // synthesized. Concrete member → the projected type (`List[Int].T = Int`); a

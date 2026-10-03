@@ -431,11 +431,11 @@ pub(super) fn check_operation_bodies(
 
         // WI-491: a COVARIANT return rooted at the receiver — an expression-carried
         // projection of one parameter's own type (`operation iterator(m: MappedStream)
-        // -> m.Sort = m`, `m.Sort` = the whole type of `m`; also a member form `m.T`) —
+        // -> m.Self = m`, `m.Self` = the whole type of `m`; also a member form `m.T`) —
         // is eliminated against the op's own parameter types BEFORE the conformance and
         // escape checks. Then the body (`= m`, type `MappedStream`) conforms to the
         // projected type, and the WI-401 avoidance gate sees the input-rooted concrete
-        // type (`m.Sort` ⟹ `MappedStream`, same sort as the body ⟹ admitted) rather
+        // type (`m.Self` ⟹ `MappedStream`, same sort as the body ⟹ admitted) rather
         // than the raw `ExprCarried`, which has no sort functor.
         //
         // WI-1059 widened the gate from the TOP-LEVEL form to a projection ANYWHERE
@@ -465,7 +465,7 @@ pub(super) fn check_operation_bodies(
             ) {
                 Ok(elim) => elim,
                 // The projection is un-dischargeable: the receiver is not a
-                // parameter (`-> result.Sort`) or names a member the receiver's
+                // parameter (`-> result.Self`) or names a member the receiver's
                 // type does not have (`-> m.Nonexistent`). Surface the PRECISE
                 // elimination error and skip this op's body check — never swallow
                 // it behind a vaguer conformance mismatch (project principle:

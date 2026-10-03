@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20261001-80ZV8-a-bare-parametric-sort-means
+
 - tags: proposal-069
 
 ## Description

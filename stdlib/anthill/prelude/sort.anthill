@@ -536,9 +536,9 @@ enum anthill.prelude.TypeExtractor
      constraint becomes answerable; see `check_bare_ref`. >}
   entity PolyType(binders: List[Term], context: List[Term], body: Term)
   entity Denoted(value: NodeOccurrence)
-  {< WI-376: an expression-carried type projection `s.T` / `s.Sort`. `value` is the
+  {< WI-376: an expression-carried type projection `s.T` / `s.Self`. `value` is the
      RECEIVER occurrence (a param/local ref, or any typed expression); `member` is the
-     projected type-member name (`T`, `Sort`, `E`). The type-member sibling of
+     projected type-member name (`T`, `Self`, `E`). The type-member sibling of
      `Denoted` (a value-in-type, which STAYS): this is ELIMINATED at the unify boundary
      by projecting the receiver's synthesized type. A ground (ref) receiver rides as a
      hash-consed term `Fn{ExprCarried, value: Ref(s), member: Ref(M)}`. >}

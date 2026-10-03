@@ -1778,7 +1778,7 @@ fn try_expand_macro(
         // this `Error` is a compile-time DIAGNOSTIC and never a runtime effect —
         // which is why the WI-702 rewrite gate exempts a macro at the `@[simp]` RHS
         // head. `raise` carries a payload and no occurrence, so the span is the
-        // reporter's redex; a narrower one needs a `reject(…, at:)` op (043.1 §7).
+        // reporter's redex; `anthill.reflect.reject` is the separate precise route.
         Err(crate::eval::EvalError::Raised { payload }) => Err(MacroRejection {
             macro_name: functor,
             detail: crate::eval::render_raised_payload(kb, &payload),

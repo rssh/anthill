@@ -273,6 +273,7 @@ const HOST_FNS: &[(
         1,
         reflect_sub_occurrence_labels,
     ),
+    ("reflect_reject", 2, reflect_reject),
     ("reflect_is_modifiable", 1, reflect_is_modifiable),
     // WI-20260914-Z73FX — visibility and a declaration's block, as the kernel reads
     // them: resolution's own `internal` filter, and the readers `@[simp]` goes through.
@@ -2910,8 +2911,8 @@ fn fill_recipe_holes(
 /// ordinary [`type_mismatch`] DECLINE.
 ///
 /// The `expected …, got …` phrasing is built HERE — the channel itself carries one
-/// rendered `detail`, because its other producer is an anthill macro's `raise`,
-/// whose payload has no such structure (proposal 043.1 §3.6).
+/// rendered `detail`, because anthill macros supply their own message through
+/// `reflect.reject` or a raised payload (proposal 043.1 §3.6).
 fn macro_rejects(
     expected: &str,
     got: String,
@@ -5556,6 +5557,29 @@ fn reflect_occurrence_type(interp: &mut Interpreter, args: &[Value]) -> Result<V
             named: Vec::new().into(),
         }),
     }
+}
+
+/// WI-901 (proposal 043.1 §3.6) — `anthill.reflect.reject(message: String,
+/// at: NodeOccurrence) -> Nothing`.
+///
+/// The anthill-written half of the macro rejection channel. `Error.raise` already
+/// supplies a macro's own words, but carries no occurrence and is therefore
+/// reported at the whole redex. This operation carries the occurrence the macro
+/// has identified, so [`crate::kb::simp_rewrite::try_expand_macro`] preserves its
+/// [`SourceSpan`](crate::span::SourceSpan) through `MacroRejection` to the load
+/// error. It never returns a value; the surface return `Nothing` is the bottom
+/// sort that lets an anthill macro use it where `NodeOccurrence` is required.
+fn reflect_reject(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [message_arg, at_arg] = expect_args::<2>("reject", args)?;
+    let detail = str_operand(interp.kb(), &message_arg)?.into_owned();
+    let at = match at_arg {
+        Value::Node(occ) => occ,
+        other => return Err(type_mismatch("NodeOccurrence", &other, None)),
+    };
+    Err(EvalError::MacroRejected {
+        detail,
+        span: Some(at.span),
+    })
 }
 
 /// `anthill.reflect.replace_named_arg(t: Term, name: String, value: Term)

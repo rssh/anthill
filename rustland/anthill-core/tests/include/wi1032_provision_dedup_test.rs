@@ -272,16 +272,16 @@ fn a_specificity_ordered_pair_still_takes_the_more_specific() {
   import anthill.prelude.Int64
 
   sort Iter
-    sort Self = ?
+    sort Carrier = ?
     sort Element = ?
-    operation nxt(i: Self) -> Element
+    operation nxt(i: Carrier) -> Element
   end
 
   sort C
     import anthill.prelude.Int64
     entity c
-    provides Iter[Self = C]
-    provides Iter[Self = C, Element = Int64]
+    provides Iter[Carrier = C]
+    provides Iter[Carrier = C, Element = Int64]
     operation nxt(i: C) -> Int64 = 7
   end
 

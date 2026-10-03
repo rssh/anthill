@@ -104,6 +104,18 @@ impl Default for CodegenConfig {
 }
 
 /// Generate Rust skeleton code from a parsed anthill file.
+/// Does the written type name `written` denote the sort being generated: its own name,
+/// or the reserved `Self` (proposal 070 §1.2 — the enclosing sort at its own parameters)?
+///
+/// This generator reads the PARSE tree, where `Self` is still the word the author wrote
+/// (the loader replaces it only where it lowers a type), so every place that asks "is
+/// this the sort itself" — the `Self` rendering, the boxed recursive field, the receiver
+/// — asks it here. Without the second half `entity cons(head: T, tail: Self)` was not
+/// boxed and `length(l: Self)` was no method.
+fn names_this_sort(written: &str, sort_name: &str) -> bool {
+    written == sort_name || written == crate::intern::SELF_TYPE_NAME
+}
+
 pub fn generate_rust(parsed: &ParsedFile) -> Result<String, Vec<CodegenError>> {
     generate_rust_with_context(parsed, &HashSet::new())
 }
@@ -698,7 +710,7 @@ impl<'a> RustCodegen<'a> {
         match ty {
             TypeExpr::Simple(name) => {
                 let n = self.resolve(name);
-                if n == sort_name {
+                if names_this_sort(&n, sort_name) {
                     return "Self".to_owned();
                 }
                 if collapse_type_params && type_params.iter().any(|p| p == &n) {
@@ -725,7 +737,7 @@ impl<'a> RustCodegen<'a> {
             }
             TypeExpr::Parameterized { name, bindings } => {
                 let n = self.resolve(name);
-                if n == sort_name {
+                if names_this_sort(&n, sort_name) {
                     return "Self".to_owned();
                 }
                 match n.as_str() {
@@ -1542,7 +1554,7 @@ impl<'a> RustCodegen<'a> {
     ) -> String {
         let rust_type = self.type_to_rust(ty);
         let type_name = self.type_expr_short_name(ty);
-        if type_name == sort_name {
+        if names_this_sort(&type_name, sort_name) {
             // Self-referential → Box
             let generics = if type_params.is_empty() {
                 String::new()
@@ -1758,7 +1770,7 @@ impl<'a> RustCodegen<'a> {
         let first_type_name = self.type_expr_short_name(&op.params[0].ty);
 
         // Check if first param type matches the sort name or a type param
-        let is_self = first_type_name == sort_name
+        let is_self = names_this_sort(&first_type_name, sort_name)
             || (collapse_type_params && type_params.iter().any(|p| p == &first_type_name));
 
         if !is_self {

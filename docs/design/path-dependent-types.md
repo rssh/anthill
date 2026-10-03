@@ -161,7 +161,7 @@ under congruence:
   term once the substitution is applied — a non-binding check; `let y = z` ⟹
   `y.M ≡ z.M`);
 - **δ** (manifest) — `p.M ⟶ τ` when `type(p)` makes `M` manifest (grounding, §3);
-- **η** (`.Sort`) — `p.Sort ⟶ type(p)`, reifying the receiver's whole type.
+- **η** (`.Self`) — `p.Self ⟶ type(p)`, reifying the receiver's whole type.
 
 The three are confluent (δ and η act on different members; ζ is orthogonal) and
 terminate on finite type structure (recursive providers need the usual cycle guard).
@@ -751,7 +751,7 @@ uses `project_type_member` directly. The unification is a single resolver
 resolve_member(type(receiver), member) -> Method(op) | Field(τ) | TypeProjection(τ)
 ```
 
-used by **both** the `DotApply` frame and the annotation-side receiver resolver. `.Sort`
+used by **both** the `DotApply` frame and the annotation-side receiver resolver. `.Self`
 (η) is the whole-type case of the `TypeProjection` arm; plain value-position field access
 (the existing **INC-1b** follow-up — see the `DotApply` frame's TODO) is the `Field` arm.
 So the right altitude is not "add a value-position `.T` special case" but "give the dot
@@ -759,7 +759,7 @@ its `TypeProjection` arm, the same one the annotation path already projects with
 
 **Implementation (value-position, concrete — the immediate win).** In the `DotApply`
 build frame, *before* the `DotDispatchNoMatch` error and after method resolution fails:
-if `member` is `Sort` or a type member the receiver's sort declares
+if `member` is `Self` or a type member the receiver's sort declares
 (`kb.type_params_of_sort(recv_sort)` contains it), call
 `project_type_member(kb, &recv.ty, &short, &ctx, dot_span)` — **the receiver's type
 `recv.ty` is already inferred and in hand** at this frame (it is what `recv_sort` is read
