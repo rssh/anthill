@@ -2607,6 +2607,21 @@ pub const ABSOLUTE_PATH_MARKER: &str = "..";
 /// top-level scope* as well, since a grammar change starts there.
 pub const GLOBAL_SCOPE_NAME: &str = "<global>";
 
+/// Proposal 070 — the ONE word for "a sort at its parameters".
+///
+/// As a type name, written inside a sort's definition, it is that sort applied to its
+/// own parameters (§1.2): the loader replaces it with the written form (`Cell[V = V]`)
+/// where the type is lowered, so nothing after name resolution sees it. As the member
+/// of a value projection, `s.Self` is the whole parameterized type of the value `s`
+/// (§1.5; it was `s.Sort`, WI-376).
+///
+/// RESERVED: no sort or enum, type parameter, entity, entity field, operation, const, or
+/// operation type or value parameter may take it (the loader's
+/// `reserved_self_name_errors`, `refuse_reserved_self_params` and the field check in
+/// `register_declared_field_types`), so the name read in a type position can never be a
+/// user's sort or parameter, and `s.Self` can never be a field.
+pub const SELF_TYPE_NAME: &str = "Self";
+
 /// The qualified name `name` demands ABSOLUTELY, or `None` when it is an
 /// ordinary (relative) name. The SOLE reader of [`ABSOLUTE_PATH_MARKER`] —
 /// paired with the sole minter in `convert_name` — so the two spellings of "is

@@ -2131,6 +2131,15 @@ pub enum LoadError {
         position: CallTypeArgsPosition,
         span: Span,
     },
+    /// Proposal 070 §1.2 — `Self` written where it means nothing. `Self` is the sort it
+    /// is written in, applied to that sort's own parameters, and nothing else: outside a
+    /// sort there is no such sort, it takes no bindings, no declaration may take the
+    /// name, and it is no term. One variant, since they are one rule read at different
+    /// sites, and [`SelfTypeProblem`] says which.
+    SelfTypeMisuse {
+        problem: SelfTypeProblem,
+        span: Span,
+    },
     /// WI-20260911-5G28A (L3) — a PAREN-LESS bracketed `Sort[…].m` in an operation or
     /// const body whose `m` resolves, and not to a rule. The paren-less spelling is the
     /// RULE citation (`Wrap[T = Colour].tag`); the bare `Sort.m` cites nothing else
@@ -2329,6 +2338,59 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
              no channel for them, so the binding would be parsed and then silently \
              dropped. The applicative spelling `Sort.{callee}[…](…)` is the form that \
              can carry one"
+        ),
+    }
+}
+
+/// Proposal 070 §1.2 — which way `Self` was misused ([`LoadError::SelfTypeMisuse`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SelfTypeProblem {
+    /// Written where no sort encloses it: a namespace-level declaration, or a plain
+    /// namespace nested in a sort body, whose members are not the sort's.
+    OutsideSort,
+    /// `Self[V = Int64]` — `Self` is one instance, the sort at its OWN parameters.
+    WithBindings {
+        /// The enclosing sort's short name, for the repair; `None` outside a sort.
+        sort: Option<String>,
+    },
+    /// A declaration named `Self`; `what` is its kind as the author wrote it
+    /// (`sort`, `entity`, `operation`, a `type parameter`, …).
+    Declared { what: &'static str },
+    /// `Self` reached NAME RESOLUTION unresolved, which means no position that reads a
+    /// type handled it: it is written as a term (`?x = Self`, a rule parameter outside a
+    /// sort). Refused rather than interned as an unknown name, which is how `rule
+    /// pick(c: Self) :- item(c)` once loaded clean and answered nothing.
+    NotHere,
+}
+
+/// The one wording of [`LoadError::SelfTypeMisuse`], shared by the two renderings so
+/// they cannot drift (WI-852).
+fn self_type_misuse_detail(problem: &SelfTypeProblem) -> String {
+    use crate::intern::SELF_TYPE_NAME as S;
+    match problem {
+        SelfTypeProblem::OutsideSort => format!(
+            "`{S}` names the sort it is written in, at that sort's own parameters, and \
+             this is not written inside a sort — write the sort's name"
+        ),
+        SelfTypeProblem::WithBindings { sort } => {
+            let other = match sort {
+                Some(s) => format!(" (`{s}[…]`)"),
+                None => String::new(),
+            };
+            format!(
+                "`{S}` takes no bindings: it is the enclosing sort at its own parameters — \
+                 write another instance with the sort's name{other}"
+            )
+        }
+        SelfTypeProblem::Declared { what } => format!(
+            "`{S}` is reserved — it names the enclosing sort at its own parameters — so \
+             no {what} may be called `{S}`"
+        ),
+        SelfTypeProblem::NotHere => format!(
+            "`{S}` is a type — the enclosing sort at its own parameters — and is read \
+             where a sort's declarations write a type: a parameter, return, field or \
+             rule-variable type, a `provides` / `requires` binding, an annotation. It \
+             means nothing here; write the sort's name"
         ),
     }
 }
@@ -2581,6 +2643,7 @@ impl LoadError {
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
             | LoadError::ParenLessCitationOfNonRule { span, .. }
+            | LoadError::SelfTypeMisuse { span, .. }
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
             | LoadError::MacroRejected { span, .. }
@@ -3520,6 +3583,13 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     paren_less_citation_detail(sort, member, *is_operation),
+                )
+            }
+            LoadError::SelfTypeMisuse { problem, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    self_type_misuse_detail(problem),
                 )
             }
             LoadError::TypeParamShadowsSlot {
@@ -4871,6 +4941,15 @@ impl std::fmt::Display for LoadError {
                     span.end,
                 )
             }
+            LoadError::SelfTypeMisuse { problem, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    self_type_misuse_detail(problem),
+                    span.start,
+                    span.end,
+                )
+            }
             LoadError::TypeParamShadowsSlot {
                 op,
                 param,
@@ -5280,6 +5359,7 @@ pub fn scan_definitions_with_sources(
     // every other pass here accumulates: one bad declaration must not hide the
     // rest of the file's diagnostics.
     let mut errors = ledger.duplicate_type_errors(kb, files);
+    errors.extend(reserved_self_name_errors(kb, files, source_ids));
 
     // Sub-pass 1b (WI-1000 / 059 R3) — classify the direct content of every
     // SECONDARY ENTRY. Runs here, between passes 1 and 2, for the reason the section
@@ -8487,6 +8567,39 @@ struct DefinePass<'a> {
     /// the slice is still in hand.
     source_id: SourceId,
     ledger: &'a mut DeclLedger,
+}
+
+/// Proposal 070 §1.2 — `Self` is RESERVED: every declaration pass 1 logged under that
+/// name (a sort or enum, a type parameter, an entity, an operation, a const) is refused,
+/// with the keyword the author typed. Read off [`KnowledgeBase::decl_sites`], which holds
+/// every named declaration of this scan with its site, so no declaring arm has to
+/// remember the rule. An operation's own bracket and value parameters are not in that
+/// log; [`Loader::refuse_reserved_self_params`] covers them where the operation loads.
+///
+/// The reservation is what lets the type lowering read `Self` BEFORE resolving the name
+/// ([`Loader::is_self_type_name`]): no declaration can be the thing it would have found.
+fn reserved_self_name_errors(
+    kb: &KnowledgeBase,
+    files: &[&ParsedFile],
+    source_ids: &[SourceId],
+) -> Vec<LoadError> {
+    kb.decl_sites
+        .iter()
+        .filter(|d| d.local == crate::intern::SELF_TYPE_NAME)
+        .map(|d| {
+            let err = LoadError::SelfTypeMisuse {
+                problem: SelfTypeProblem::Declared { what: d.keyword },
+                span: d.site.span,
+            };
+            // `decl_sites` is cleared and refilled by THIS scan, so a site's source is
+            // always one of its files; anything else is a bookkeeping bug to see early.
+            let file = source_ids
+                .iter()
+                .position(|s| *s == d.site.source)
+                .expect("a declaration site of this scan lies in one of its files");
+            err.located_in(files[file])
+        })
+        .collect()
 }
 
 /// WI-999 — note that `source_id`'s text opens `scope`, for
@@ -20883,6 +20996,15 @@ fn typed_head_guards_its_own_carrier(kb: &KnowledgeBase, head: &RuleHeadSite<'_>
         return false;
     }
     head.type_annotations.iter().any(|n| {
+        // Proposal 070 §1.2 — `Self` on this head IS the carrier: the head's scope is
+        // owned by a sort (checked above), and that sort at its own parameters is all
+        // `Self` means there. It is asked by name because nothing resolves to it — the
+        // reserved word has no symbol. MEASURED before this arm: under `sort A { requires
+        // Spec … }`, `rule p(?x: Self)` was refused as an unguarded join where `rule
+        // p(?x: A)` loads.
+        if n == crate::intern::SELF_TYPE_NAME {
+            return true;
+        }
         let answer = if n.contains('.') {
             resolve_dotted_in_kb(kb, n, head.scope, DottedVisibility::VisibleOnly)
         } else {
@@ -23047,6 +23169,9 @@ impl<'a> Loader<'a> {
                 self.push_ambiguous_symbol(name, &candidates, &contested, span)
             }
             ResolveResult::NotFound => {
+                if let Some(sym) = self.refuse_unresolved_self(name, span) {
+                    return sym;
+                }
                 // WI-752: THE dotted ladder — head-qualification, then the absolute
                 // qualified name. Both rungs, their order and the rationale for it live
                 // in `resolve_dotted_in_kb`; this position is the ladder's REFERENCE
@@ -23192,6 +23317,9 @@ impl<'a> Loader<'a> {
                 self.push_ambiguous_symbol(name, &candidates, &contested, span)
             }
             ResolveResult::NotFound => {
+                if let Some(sym) = self.refuse_unresolved_self(name, span) {
+                    return sym;
+                }
                 // WI-752: THE dotted ladder. A `Term::Ref` reaching here can carry a
                 // dotted name (a written `Sort.rule` reference), and this position used
                 // to have NEITHER dotted rung — so a path the term and rule positions
@@ -23237,6 +23365,9 @@ impl<'a> Loader<'a> {
                 self.push_ambiguous_symbol(&lookup_name, &candidates, &contested, name.span)
             }
             ResolveResult::NotFound => {
+                if let Some(sym) = self.refuse_unresolved_self(&lookup_name, name.span) {
+                    return sym;
+                }
                 // WI-752: THE dotted ladder — the SAME one the term positions read.
                 //
                 // This position used to carry the absolute rung ALONE, with no
@@ -23789,6 +23920,10 @@ impl<'a> Loader<'a> {
                 let bound = self.convert_term(value);
                 self.const_fold = data_fold;
                 bound
+            } else if self.parse_arg_is_self_type(value) {
+                // Proposal 070 §1.2: the enclosing sort at its own parameters — the
+                // term the `?x: Self` form's annotation lowers to.
+                self.self_type_term(self.parsed.terms.span(value))
             } else {
                 // Read through the SAME name reader the discriminator used — one
                 // spelling of the question, so a shape it admits cannot be one this
@@ -24521,9 +24656,27 @@ impl<'a> Loader<'a> {
     /// WI-742 §2.1 — does this parse argument spell a name that resolves to a SORT?
     /// The second half of [`Self::convert_rule_head_with_params`]'s discriminator.
     fn parse_arg_names_a_sort(&self, value: TermId) -> bool {
-        self.parse_arg_type_name(value)
-            .and_then(|name| self.parse_arg_sort_symbol(&name))
-            .is_some()
+        self.parse_arg_is_self_type(value)
+            || self
+                .parse_arg_type_name(value)
+                .and_then(|name| self.parse_arg_sort_symbol(&name))
+                .is_some()
+    }
+
+    /// Proposal 070 §1.2 — is this rule-head argument's written type the bare `Self`,
+    /// inside a sort? Then `c: Self` is the PARAMETER form, as `c: Tag` is, and its bound
+    /// is [`Self::self_type_term`].
+    ///
+    /// Asked of the parameter form alone, not folded into
+    /// [`Self::parse_arg_sort_symbol`]: that one answers a SYMBOL, which its other
+    /// readers (a `require[…]` binding) mint a bare sort reference from — and a bare
+    /// reference to the enclosing sort is exactly what `Self` is not. MEASURED before
+    /// this: `rule pick(c: Self) :- item(c)` loaded clean and answered nothing where
+    /// `c: Tag` answered `red` — `c` was a label over an unknown constant.
+    fn parse_arg_is_self_type(&self, value: TermId) -> bool {
+        !self.parse_arg_type_is_applied(value)
+            && self.parse_arg_type_name(value).as_deref() == Some(crate::intern::SELF_TYPE_NAME)
+            && self.enclosing_sort_for_self().is_some()
     }
 
     /// WI-742 §2.1 — the SORT SYMBOL a rule-head parameter's written type name denotes,
@@ -30199,7 +30352,7 @@ impl<'a> Loader<'a> {
     /// (`Simple`-as-value, `Parameterized`); every other shape (arrow, tuple, …)
     /// stays ground (no denoted ⇒ no carrier obligation).
     /// WI-376: classify a multi-segment type name as an expression-carried type
-    /// projection `s.T` / `s.Sort` when its HEAD resolves (in the current scope) to
+    /// projection `s.T` / `s.Self` when its HEAD resolves (in the current scope) to
     /// a VALUE binder — a param / local / field / op-result / callback place. The
     /// receiver is `segments[..n-1]`, the projected member is the last segment.
     ///
@@ -31420,6 +31573,251 @@ impl<'a> Loader<'a> {
         child
     }
 
+    /// What a type NAME lowers to once it has resolved to `sort_sym` — the tail of
+    /// [`Self::type_expr_to_child_inner`]'s `Simple` arm, and what each of `Self`'s own
+    /// parameters goes through ([`Self::self_type_child`]), so a parameter named by
+    /// `Self` is the same child a written `V` is.
+    fn type_name_child(
+        &mut self,
+        sort_sym: Symbol,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> node_occurrence::TypeChild {
+        let short_name = self.kb.local_name_of(sort_sym).to_owned();
+        // A type-param name is a ground logic Var (no denoted) — build it
+        // via the shared `type_param_var` helper (NOT `type_expr_to_value`,
+        // which this fn must not call, see the wrapper note on it).
+        if self
+            .kb
+            .symbols
+            .is_type_param(self.current_scope, &short_name)
+        {
+            return node_occurrence::TypeChild::Interned(
+                self.type_param_var(sort_sym, &short_name),
+            );
+        }
+        // WI-302/WI-313: a name resolving to a VALUE in a type slot is
+        // value-in-type (`Modify[c]`) — the `denoted` source. Mint it as
+        // a `Value::Node` occurrence rather than the ground `make_denoted`.
+        // Shared value-place set + a zero-arg `Operation` (the WI-313
+        // ambient-KB accessor `Modify[op]`, value-producing) — the one kind
+        // the compound-path heads omit (a field off an op name is not a place).
+        // A NULLARY CONSTRUCTOR is deliberately NOT here — an entity name in a
+        // general type slot is a TYPE (WI-313, and `Level.Untrusted` standing in
+        // `Text[L = Untrusted]` is the live idiom that depends on it). The
+        // `Modify` TARGET slot alone reads it as an ambient PLACE; see
+        // [`Self::type_expr_to_child_modify_target`].
+        let is_value = self.symbol_is_value_place(sort_sym)
+            || self
+                .kb
+                .symbols
+                .get(sort_sym)
+                .has_kind(SymbolKind::Operation);
+        // NB the operation arm is arity-BLIND, which kernel-language.md §5.6 and
+        // `check_modify_targets`' own message both contradict ("a value-producing
+        // ZERO-ARG operation"): `Modify[twoArgOp]` lowers as a place today. Left
+        // as it stands — it long predates WI-20260823-4GBQV, an operation's
+        // declared arity is not readable here (signatures load later), and
+        // narrowing it is a separate measurement. Recorded by `/code-review`
+        // rather than silently inherited.
+        if is_value {
+            node_occurrence::TypeChild::Node(self.kb.make_denoted_occ_ref(sort_sym, span, owner))
+        } else {
+            node_occurrence::TypeChild::Interned(self.kb.make_sort_ref(sort_sym))
+        }
+    }
+
+    /// `sort_sym` applied to `child_bindings` — the tail of
+    /// [`Self::type_expr_to_child_inner`]'s `Parameterized` arm, shared with
+    /// [`Self::self_type_child`] so `Self` is assembled exactly as the written
+    /// application is. `site_span` is the base name's own span.
+    fn parameterized_child(
+        &mut self,
+        sort_sym: Symbol,
+        child_bindings: Vec<(Symbol, node_occurrence::TypeChild)>,
+        site_span: SourceSpan,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> node_occurrence::TypeChild {
+        let base_term = self.kb.make_sort_ref(sort_sym);
+        // WI-835: record the written instantiation for the post-load use-site
+        // checks (`check_use_site_requires_eq`) — the semantic sibling of the
+        // WI-709 arg-FIT check, deferred because it needs a `provides`
+        // relation `eq_derive::run` has not built yet.
+        //
+        // BEFORE the `any_node` split, and from `child_bindings` rather than
+        // the assembled term, so a denoted binding stays a binding of ITS OWN.
+        // The ground branch alone left `Map[K = Float, V = Buf[T = Int64, N =
+        // 3]]` unchecked: the literal `3` poisons the whole type to
+        // `Value::Node`, and `K = Float` went with it — an unrelated
+        // value-in-type argument silently disabling the lawful-key check. The
+        // WI-709 check is branch-blind for the same reason; these two must
+        // not disagree about which instantiations they see.
+        self.kb
+            .record_parameterized_type_site(crate::kb::ParameterizedSite {
+                base: sort_sym,
+                bindings: child_bindings
+                    .iter()
+                    .map(|(s, c)| match c {
+                        node_occurrence::TypeChild::Interned(t) => {
+                            (*s, crate::eval::value::Value::term(*t))
+                        }
+                        node_occurrence::TypeChild::Node(n) => {
+                            (*s, crate::eval::value::Value::Node(n.clone()))
+                        }
+                    })
+                    .collect(),
+                span: site_span,
+            });
+        let any_node = child_bindings
+            .iter()
+            .any(|(_, c)| matches!(c, node_occurrence::TypeChild::Node(_)));
+        if any_node {
+            node_occurrence::TypeChild::Node(self.kb.make_parameterized_occ(
+                node_occurrence::TypeChild::Interned(base_term),
+                child_bindings,
+                span,
+                owner,
+            ))
+        } else {
+            // No denoted binding ⇒ assemble the hash-consed parameterized
+            // term from the ground children already built (NOT a second
+            // structural walk; same `base_term` + the same
+            // positional→param-name mapping ⇒ the ground hash-consed form).
+            let ground_bindings: Vec<(Symbol, TermId)> = child_bindings
+                .into_iter()
+                .map(|(s, c)| match c {
+                    node_occurrence::TypeChild::Interned(t) => (s, t),
+                    node_occurrence::TypeChild::Node(_) => {
+                        unreachable!("checked !any_node")
+                    }
+                })
+                .collect();
+            node_occurrence::TypeChild::Interned(
+                self.kb.make_parameterized_type(base_term, &ground_bindings),
+            )
+        }
+    }
+
+    /// Proposal 070 §1.2 — is this written type name the reserved `Self`? One segment:
+    /// a dotted `Self.x` is an ordinary path, and resolves to nothing.
+    fn is_self_type_name(&self, name: &Name) -> bool {
+        name.segments.len() == 1
+            && self.parsed.symbols.local_name(name.segments[0]) == crate::intern::SELF_TYPE_NAME
+    }
+
+    /// Proposal 070 §1.2 — the sort `Self` names where a type is being lowered: the
+    /// nearest scope up the ENCLOSING chain that a sort owns. `None` when a namespace is
+    /// reached first, or nothing is.
+    ///
+    /// LEXICAL, and it stops at a namespace on purpose: a plain namespace written inside
+    /// a sort body is not the sort (its operations are not the sort's — see
+    /// [`CarrierBlock`]), while a `namespace X` at a sort's address is that sort's
+    /// SECONDARY ENTRY (059) and its scope's owner IS the sort. So a sort body, an
+    /// `enum` body, a secondary entry and a provision block all answer the sort, and an
+    /// operation, entity or rule scope inside one walks up to it.
+    ///
+    /// Read off the SCOPE rather than [`Self::carrier_block`], which is installed by the
+    /// load pass alone and after a sort's entity fields have been lowered.
+    fn enclosing_sort_for_self(&self) -> Option<Symbol> {
+        let mut scope = self.current_scope;
+        let mut seen: SmallVec<[ScopeId; 4]> = SmallVec::new();
+        loop {
+            let owner = scope.owner();
+            if self.kb.has_kind(owner, SymbolKind::Sort) {
+                return Some(owner);
+            }
+            if self.kb.has_kind(owner, SymbolKind::Namespace) || seen.contains(&scope) {
+                return None;
+            }
+            seen.push(scope);
+            scope = self
+                .kb
+                .symbols
+                .scope(scope)?
+                .parents
+                .iter()
+                .find(|p| p.is_enclosing)?
+                .parent_scope;
+        }
+    }
+
+    /// Proposal 070 §1.2 — the ONE guard of the three NAME doors ([`Self::remap_name`],
+    /// [`Self::remap_name_str_inner`], [`Self::remap_symbol_strict`]), asked in each
+    /// door's NOT-FOUND arm: `Some` when the unresolved `name` is `Self`.
+    ///
+    /// Every position that reads `Self` as a type asks [`Self::is_self_type_name`] (or
+    /// [`Self::parse_arg_is_self_type`]) BEFORE resolving the name, so an unresolved
+    /// `Self` at a door is written where nothing reads it — not an unknown name.
+    /// Reported, and answered with the unresolved symbol; never interned quietly as a
+    /// constant of that name.
+    ///
+    /// AFTER resolution has missed, not before it: a (refused) declaration named `Self`
+    /// still resolves at its own scope-opening, and is reported once, as a declaration.
+    fn refuse_unresolved_self(&mut self, name: &str, span: Span) -> Option<Symbol> {
+        if name != crate::intern::SELF_TYPE_NAME {
+            return None;
+        }
+        self.errors.push(LoadError::SelfTypeMisuse {
+            problem: SelfTypeProblem::NotHere,
+            span,
+        });
+        Some(self.kb.intern(crate::intern::SELF_TYPE_NAME))
+    }
+
+    /// Proposal 070 §1.2 — `Self` as a hash-consed type TERM, for the rule-head
+    /// parameter form (`rule pick(c: Self)`), whose bound is a term.
+    fn self_type_term(&mut self, name_span: Span) -> TermId {
+        let span = SourceSpan::from_span(self.source_id, name_span);
+        match self.self_type_child(name_span, span, self.current_owner) {
+            node_occurrence::TypeChild::Interned(t) => t,
+            node_occurrence::TypeChild::Node(_) => {
+                unreachable!("`Self` binds each parameter to its own name, never to a value")
+            }
+        }
+    }
+
+    /// Proposal 070 §1.2 — `Self` as a type: the enclosing sort applied to its OWN
+    /// parameters, built as the written form is (`Cell[V = V]`) so that nothing after
+    /// this lowering can tell the two apart. A sort without parameters is its bare name.
+    ///
+    /// Each parameter is named by its SYMBOL, not re-resolved by its short name in the
+    /// current scope: `Self` is the sort's own parameters whatever an inner scope calls
+    /// by the same word.
+    ///
+    /// Outside a sort it is a load error and lowers to a reference to the unresolved
+    /// name, as any other name that resolves to nothing does.
+    fn self_type_child(
+        &mut self,
+        name_span: Span,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) -> node_occurrence::TypeChild {
+        let Some(sort_sym) = self.enclosing_sort_for_self() else {
+            self.errors.push(LoadError::SelfTypeMisuse {
+                problem: SelfTypeProblem::OutsideSort,
+                span: name_span,
+            });
+            let unresolved = self.kb.intern(crate::intern::SELF_TYPE_NAME);
+            return node_occurrence::TypeChild::Interned(self.kb.make_sort_ref(unresolved));
+        };
+        let params: SmallVec<[Symbol; 4]> =
+            SmallVec::from_slice(self.kb.type_param_syms_of(sort_sym));
+        if params.is_empty() {
+            return node_occurrence::TypeChild::Interned(self.kb.make_sort_ref(sort_sym));
+        }
+        let child_bindings: Vec<(Symbol, node_occurrence::TypeChild)> = params
+            .iter()
+            .map(|&param| {
+                let short = self.kb.local_name_of(param).to_owned();
+                let key = self.kb.intern(&short);
+                (key, self.type_name_child(param, span, owner))
+            })
+            .collect();
+        let site_span = SourceSpan::from_span(self.source_id, name_span);
+        self.parameterized_child(sort_sym, child_bindings, site_span, span, owner)
+    }
+
     fn type_expr_to_child_inner(
         &mut self,
         ty: &TypeExpr,
@@ -31427,6 +31825,21 @@ impl<'a> Loader<'a> {
         owner: Option<Symbol>,
     ) -> node_occurrence::TypeChild {
         match ty {
+            // Proposal 070 §1.2 — `Self`, asked before anything resolves the name: it
+            // is reserved, so no scope holds a symbol for it to find.
+            TypeExpr::Simple(name) if self.is_self_type_name(name) => {
+                self.self_type_child(name.span, span, owner)
+            }
+            TypeExpr::Parameterized { name, .. } if self.is_self_type_name(name) => {
+                let sort = self
+                    .enclosing_sort_for_self()
+                    .map(|s| self.kb.local_name_of(s).to_owned());
+                self.errors.push(LoadError::SelfTypeMisuse {
+                    problem: SelfTypeProblem::WithBindings { sort },
+                    span: name.span,
+                });
+                self.self_type_child(name.span, span, owner)
+            }
             TypeExpr::Simple(name) => {
                 // WI-341: a callback arrow's own param (`a` in `Modify[a]`,
                 // in scope only while loading that callback param's arrow type)
@@ -31442,7 +31855,7 @@ impl<'a> Loader<'a> {
                 }
                 // WI-376: a MULTI-segment name whose HEAD resolves to a VALUE
                 // (param / local / field / op-result) is an expression-carried type
-                // projection `s.T` / `s.Sort` — the type-member sibling of the
+                // projection `s.T` / `s.Self` — the type-member sibling of the
                 // single-segment `denoted` value-in-type below. Classify it HERE,
                 // before `remap_name`, which would otherwise join the segments
                 // (`"s.T"`) and raise the load-blocking `UnresolvedTypeName`
@@ -31464,50 +31877,7 @@ impl<'a> Loader<'a> {
                     }
                 }
                 let sort_sym = self.remap_name(name);
-                let short_name = self.kb.local_name_of(sort_sym).to_owned();
-                // A type-param name is a ground logic Var (no denoted) — build it
-                // via the shared `type_param_var` helper (NOT `type_expr_to_value`,
-                // which this fn must not call, see the wrapper note on it).
-                if self
-                    .kb
-                    .symbols
-                    .is_type_param(self.current_scope, &short_name)
-                {
-                    return node_occurrence::TypeChild::Interned(
-                        self.type_param_var(sort_sym, &short_name),
-                    );
-                }
-                // WI-302/WI-313: a name resolving to a VALUE in a type slot is
-                // value-in-type (`Modify[c]`) — the `denoted` source. Mint it as
-                // a `Value::Node` occurrence rather than the ground `make_denoted`.
-                // Shared value-place set + a zero-arg `Operation` (the WI-313
-                // ambient-KB accessor `Modify[op]`, value-producing) — the one kind
-                // the compound-path heads omit (a field off an op name is not a place).
-                // A NULLARY CONSTRUCTOR is deliberately NOT here — an entity name in a
-                // general type slot is a TYPE (WI-313, and `Level.Untrusted` standing in
-                // `Text[L = Untrusted]` is the live idiom that depends on it). The
-                // `Modify` TARGET slot alone reads it as an ambient PLACE; see
-                // [`Self::type_expr_to_child_modify_target`].
-                let is_value = self.symbol_is_value_place(sort_sym)
-                    || self
-                        .kb
-                        .symbols
-                        .get(sort_sym)
-                        .has_kind(SymbolKind::Operation);
-                // NB the operation arm is arity-BLIND, which kernel-language.md §5.6 and
-                // `check_modify_targets`' own message both contradict ("a value-producing
-                // ZERO-ARG operation"): `Modify[twoArgOp]` lowers as a place today. Left
-                // as it stands — it long predates WI-20260823-4GBQV, an operation's
-                // declared arity is not readable here (signatures load later), and
-                // narrowing it is a separate measurement. Recorded by `/code-review`
-                // rather than silently inherited.
-                if is_value {
-                    node_occurrence::TypeChild::Node(
-                        self.kb.make_denoted_occ_ref(sort_sym, span, owner),
-                    )
-                } else {
-                    node_occurrence::TypeChild::Interned(self.kb.make_sort_ref(sort_sym))
-                }
+                self.type_name_child(sort_sym, span, owner)
             }
             TypeExpr::Parameterized { name, bindings } => {
                 let written_sym = self.remap_name(name);
@@ -31520,7 +31890,6 @@ impl<'a> Loader<'a> {
                 // read as written, and so refused as an application of a name that
                 // declares no parameters.
                 let (sort_sym, fixed) = self.type_alias_application(written_sym);
-                let base_term = self.kb.make_sort_ref(sort_sym);
                 // Same positional→declared-param-name mapping for both the node
                 // and the ground hash-consed form, so a label's binding
                 // symbols match across the two carriers (the display-name
@@ -31573,7 +31942,6 @@ impl<'a> Loader<'a> {
                     positional_count,
                 )
                 .into_iter();
-                let mut any_node = false;
                 // WI-20260823-4GBQV: is this `Modify`'s own target slot? Read ONCE, above
                 // the loop, since it is a property of the head, not of a binding.
                 let modify_target =
@@ -31584,9 +31952,6 @@ impl<'a> Loader<'a> {
                     } else {
                         self.type_expr_to_child(&b.bound, span, owner)
                     };
-                    if matches!(bound_child, node_occurrence::TypeChild::Node(_)) {
-                        any_node = true;
-                    }
                     let param_sym = match &b.param {
                         Some(p) => Some(self.reintern(p.last())),
                         None => slots
@@ -31598,65 +31963,12 @@ impl<'a> Loader<'a> {
                         child_bindings.push((sym, bound_child));
                     }
                 }
-                // WI-835: record the written instantiation for the post-load use-site
-                // checks (`check_use_site_requires_eq`) — the semantic sibling of the
-                // WI-709 arg-FIT check above, deferred because it needs a `provides`
-                // relation `eq_derive::run` has not built yet.
-                //
-                // BEFORE the `any_node` split, and from `child_bindings` rather than
-                // the assembled term, so a denoted binding stays a binding of ITS OWN.
-                // The ground branch alone left `Map[K = Float, V = Buf[T = Int64, N =
-                // 3]]` unchecked: the literal `3` poisons the whole type to
-                // `Value::Node`, and `K = Float` went with it — an unrelated
-                // value-in-type argument silently disabling the lawful-key check. The
-                // WI-709 check above is branch-blind for the same reason; these two must
-                // not disagree about which instantiations they see.
-                //
                 // The base name's OWN span (`type_expr_span`, that rule's owner), not
                 // the threaded `span` — that one is the whole annotation's, so a NESTED
                 // instantiation (`Map[K = Int64, V = Set[T = Float]]`) would report the
                 // outer `Map`'s position for a refusal about the inner `Set`.
-                self.kb
-                    .record_parameterized_type_site(crate::kb::ParameterizedSite {
-                        base: sort_sym,
-                        bindings: child_bindings
-                            .iter()
-                            .map(|(s, c)| match c {
-                                node_occurrence::TypeChild::Interned(t) => {
-                                    (*s, crate::eval::value::Value::term(*t))
-                                }
-                                node_occurrence::TypeChild::Node(n) => {
-                                    (*s, crate::eval::value::Value::Node(n.clone()))
-                                }
-                            })
-                            .collect(),
-                        span: self.type_expr_span(ty),
-                    });
-                if any_node {
-                    node_occurrence::TypeChild::Node(self.kb.make_parameterized_occ(
-                        node_occurrence::TypeChild::Interned(base_term),
-                        child_bindings,
-                        span,
-                        owner,
-                    ))
-                } else {
-                    // No denoted binding ⇒ assemble the hash-consed parameterized
-                    // term from the ground children already built (NOT a second
-                    // structural walk; same `base_term` + the same
-                    // positional→param-name mapping ⇒ the ground hash-consed form).
-                    let ground_bindings: Vec<(Symbol, TermId)> = child_bindings
-                        .into_iter()
-                        .map(|(s, c)| match c {
-                            node_occurrence::TypeChild::Interned(t) => (s, t),
-                            node_occurrence::TypeChild::Node(_) => {
-                                unreachable!("checked !any_node")
-                            }
-                        })
-                        .collect();
-                    node_occurrence::TypeChild::Interned(
-                        self.kb.make_parameterized_type(base_term, &ground_bindings),
-                    )
-                }
+                let site_span = self.type_expr_span(ty);
+                self.parameterized_child(sort_sym, child_bindings, site_span, span, owner)
             }
             TypeExpr::Arrow {
                 params,
@@ -31997,6 +32309,42 @@ impl<'a> Loader<'a> {
     fn sort_binding_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         match ty {
+            // Proposal 070 §1.2 — `Self` as a binding value (`provides Rel[A = Self]`) is
+            // the enclosing sort at its own parameters, in THIS lowering's canon: what
+            // the `Parameterized` arm below builds for the written `Car[V = V]`, whose
+            // leaves are `Ref`s of the parameters. A sort without parameters is its
+            // `Ref`, as the written name is. Anything else `Self` could be here — the
+            // spec's own head, `Self` with bindings, `Self` outside a sort — is reported
+            // by the type lowering it falls through to.
+            TypeExpr::Simple(name) if self.is_self_type_name(name) => {
+                let Some(sort_sym) = self.enclosing_sort_for_self() else {
+                    return self.type_expr_to_value(ty);
+                };
+                let named: Vec<(Symbol, Value)> = self
+                    .kb
+                    .type_param_syms_of(sort_sym)
+                    .to_vec()
+                    .into_iter()
+                    .map(|param| {
+                        let short = self.kb.local_name_of(param).to_owned();
+                        (self.kb.intern(&short), Value::term(self.kb.make_sort_ref(param)))
+                    })
+                    .collect();
+                if named.is_empty() {
+                    return Value::term(self.kb.make_sort_ref(sort_sym));
+                }
+                let span = self.type_expr_span(ty);
+                self.kb
+                    .record_parameterized_type_site(crate::kb::ParameterizedSite {
+                        base: sort_sym,
+                        bindings: named.iter().cloned().collect(),
+                        span,
+                    });
+                self.assemble_binding_value(sort_sym, named, Vec::new(), span)
+            }
+            TypeExpr::Parameterized { name, .. } if self.is_self_type_name(name) => {
+                self.type_expr_to_value(ty)
+            }
             TypeExpr::Simple(name) => {
                 let sort_sym = self.remap_name(name);
                 Value::term(self.kb.make_sort_ref(sort_sym))
@@ -32398,6 +32746,17 @@ impl<'a> Loader<'a> {
     /// under (`load_entity`, and the convert path's `remap_symbol` of a written
     /// constructor).
     fn register_declared_field_types(&mut self, e: &Entity) {
+        // Proposal 070 §1.5 — a FIELD named `Self` would give `x.Self` two readings: the
+        // field in a value position, the whole-type projection in a type position.
+        // Refused with the other declarations of that name ([`reserved_self_name_errors`]).
+        for f in &e.fields {
+            if self.parsed.symbols.local_name(f.name) == crate::intern::SELF_TYPE_NAME {
+                self.errors.push(LoadError::SelfTypeMisuse {
+                    problem: SelfTypeProblem::Declared { what: "field" },
+                    span: e.span,
+                });
+            }
+        }
         let functor = self.remap_name(&e.name);
         // WI-342: lower each field type ONCE, carrier-agnostically — a value-in-type
         // field (`Vector[Int64, 3]` / `Modify[c]`-shaped / dependent) is carried as
@@ -35635,6 +35994,7 @@ impl<'a> Loader<'a> {
         // what lets the guard ask `is_type_param` directly instead of re-finding the
         // sort's body scope by name.
         self.check_op_type_param_shadowing(o, prev_scope, &op_qualified);
+        self.refuse_reserved_self_params(o);
         self.record_op_named_slots(o, functor);
 
         // WI-525 (proposal 049, Part B): a contract TESTS, it never binds — so a
@@ -36416,6 +36776,32 @@ impl<'a> Loader<'a> {
     /// compares exactly the two things a call would compare, in the same alphabet.
     /// What WI-672 deleted was matching two RESOLVED identities on their last
     /// segment; nothing here is a resolved identity.
+    /// Proposal 070 §1.2 — an operation's own type parameter or value parameter named
+    /// `Self`. The declarations [`reserved_self_name_errors`] reads do not include an
+    /// operation's frame, and a parameter of this name would be silently unreachable:
+    /// the type lowering reads `Self` before it resolves any name.
+    fn refuse_reserved_self_params(&mut self, o: &Operation) {
+        let is_self = |loader: &Self, sym: Symbol| {
+            loader.parsed.symbols.local_name(sym) == crate::intern::SELF_TYPE_NAME
+        };
+        for tp in &o.type_params {
+            if is_self(self, tp.name) {
+                self.errors.push(LoadError::SelfTypeMisuse {
+                    problem: SelfTypeProblem::Declared { what: "type parameter" },
+                    span: tp.span,
+                });
+            }
+        }
+        for p in &o.params {
+            if is_self(self, p.name) {
+                self.errors.push(LoadError::SelfTypeMisuse {
+                    problem: SelfTypeProblem::Declared { what: "parameter" },
+                    span: o.span,
+                });
+            }
+        }
+    }
+
     fn check_op_type_param_shadowing(
         &mut self,
         o: &Operation,

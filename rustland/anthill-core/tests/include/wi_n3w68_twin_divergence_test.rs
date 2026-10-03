@@ -32,16 +32,16 @@ fn one_carrier_two_provisions(ns: &str, first: &str, second: &str) -> String {
 namespace {ns}
   import anthill.prelude.{{Int64, String, List}}
   sort Iter
-    sort Self = ?
+    sort Carrier = ?
     sort Element = ?
   end
   sort C
     entity c
-    provides Iter[Self = C, Element = {first}]
-    provides Iter[Self = C, Element = {second}]
+    provides Iter[Carrier = C, Element = {first}]
+    provides Iter[Carrier = C, Element = {second}]
   end
   sort Use
-    operation takes(i: Iter[Self = C, Element = List[T = String]]) -> Int64 = 1
+    operation takes(i: Iter[Carrier = C, Element = List[T = String]]) -> Int64 = 1
     operation go(n: Int64) -> Int64 = Use.takes(c())
   end
 end

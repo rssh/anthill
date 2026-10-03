@@ -75,7 +75,7 @@ pub enum TypeExtractor {
     /// A value standing in a type-argument position (`Modify[c]`) —
     /// `denoted(value)`; carries the value occurrence.
     Denoted(Value),
-    /// WI-376: an expression-carried projection `s.T` / `s.Sort` — `value` is the
+    /// WI-376: an expression-carried projection `s.T` / `s.Self` — `value` is the
     /// receiver type occurrence (a param/local ref, or any typed expression),
     /// `member` the projected type-member name (`T`, `Sort`, `E`). The type-member
     /// sibling of [`TypeExtractor::Denoted`]; eliminated at the unify boundary by

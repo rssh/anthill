@@ -884,7 +884,7 @@ fn dfs_projection_cycle(
     None
 }
 
-/// WI-376: replace every expression-carried projection (`s.T` / `s.Sort`) in a type
+/// WI-376: replace every expression-carried projection (`s.T` / `s.Self`) in a type
 /// [`Value`] by projecting the RECEIVER param's argument type. `arg_types` maps each
 /// operation parameter symbol to the inferred type of the argument bound to it (built
 /// in [`check_apply_iter`]'s argument loops). This is the synthesis-time discharge of
@@ -1797,9 +1797,10 @@ pub(super) fn project_type_member(
         _ => arg_ty.clone(),
     };
     let arg_ty = &resolved_recv;
-    // `s.Sort` — the whole parameterized sort of the receiver (captures every
-    // parameter, wide-sort safe).
-    if member == "Sort" {
+    // `s.Self` — the whole parameterized sort of the receiver (captures every
+    // parameter, wide-sort safe). Proposal 070 §1.5: it was `s.Sort` (WI-376), and
+    // there is no second spelling — `Sort` is now an ordinary member name.
+    if member == crate::intern::SELF_TYPE_NAME {
         return Ok(ProjResult::Grounded(arg_ty.clone()));
     }
     // Concrete: the receiver's type binds the member directly (`List[Int].T = Int`).
@@ -2069,7 +2070,7 @@ fn member_binding(
 /// WHERE A RECEIVER'S DECLARATION NAMES NO SPEC: the bindings of `member` its sort's own
 /// provisions write, each with its spec — every provided spec that declares the name and binds
 /// it, EXCEPT one that binds it to THE PROVIDER ITSELF as the spec's carrier parameter (the
-/// derived `Eq[T = Car]`: `c.T` is not `Car`, write `c.Sort`). The exception is a fact of the
+/// derived `Eq[T = Car]`: `c.T` is not `Car`, write `c.Self`). The exception is a fact of the
 /// PROVISION, not of the parameter's name: [`spec_carrier_param_or_sole`] answers "a parameter
 /// some operation takes", which for a spec receiving on itself is its ELEMENT (`push(s: Stack,
 /// x: T)`), and asked of the name alone it dropped `IntStack provides Stack[T = Int64]`'s `T` —

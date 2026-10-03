@@ -356,7 +356,7 @@ fn rule_answers(
 
 // ── `provider_spec_view_bindings`: the carrier-keyed provider view ──────────────
 
-/// Two provisions of one spec for one carrier AT THE SAME APPLICATION (`Self = C`)
+/// Two provisions of one spec for one carrier AT THE SAME APPLICATION (`Carrier = C`)
 /// that disagree about another param. `first`/`second` decide the SOURCE ORDER.
 fn two_provision_program(ns: &str, first: &str, second: &str) -> String {
     format!(
@@ -365,16 +365,16 @@ namespace {ns}
   import anthill.prelude.{{Int64, String}}
   import anthill.prelude.PartialEq.{{eq}}
   sort Iter
-    sort Self = ?
+    sort Carrier = ?
     sort Element = ?
   end
   sort C
     entity c
-    provides Iter[Self = C, Element = {first}]
-    provides Iter[Self = C, Element = {second}]
+    provides Iter[Carrier = C, Element = {first}]
+    provides Iter[Carrier = C, Element = {second}]
   end
   sort Use
-    operation takes(i: Iter[Self = C, Element = String]) -> Int64 = 1
+    operation takes(i: Iter[Carrier = C, Element = String]) -> Int64 = 1
     operation go(n: Int64) -> Int64 = Use.takes(c())
   end
 end
@@ -388,7 +388,7 @@ end
 /// MEASURED before the fix, and the measurement is the whole point: with
 /// `Element = String` written first the program LOADED CLEAN; with `Element = Int64`
 /// first the identical program was refused with `expected Iter[Element = String,
-/// Self = C], got C`. The reader took the first matching provision, so the program's
+/// Carrier = C], got C`. The reader took the first matching provision, so the program's
 /// MEANING was decided by provision order and the losing binding was invisible.
 #[test]
 fn conflicting_provisions_are_refused_in_either_order() {
@@ -432,7 +432,7 @@ fn several_applications_of_one_spec_on_one_carrier_still_load() {
 namespace wi842.view.apps
   import anthill.prelude.{Int64, String}
   sort Iter
-    sort Self = ?
+    sort Carrier = ?
     sort Element = ?
   end
   sort A
@@ -443,8 +443,8 @@ namespace wi842.view.apps
   end
   sort C
     entity c
-    provides Iter[Self = A, Element = Int64]
-    provides Iter[Self = B, Element = String]
+    provides Iter[Carrier = A, Element = Int64]
+    provides Iter[Carrier = B, Element = String]
   end
 end
 "#;
@@ -470,16 +470,16 @@ fn a_provision_binding_a_param_the_first_omits_is_no_longer_hidden() {
 namespace wi842.view.merge
   import anthill.prelude.{Int64}
   sort Iter
-    sort Self = ?
+    sort Carrier = ?
     sort Element = ?
   end
   sort C
     entity c
-    provides Iter[Self = C]
-    provides Iter[Self = C, Element = Int64]
+    provides Iter[Carrier = C]
+    provides Iter[Carrier = C, Element = Int64]
   end
   sort Use
-    operation takes(i: Iter[Self = C, Element = Int64]) -> Int64 = 1
+    operation takes(i: Iter[Carrier = C, Element = Int64]) -> Int64 = 1
     operation go(n: Int64) -> Int64 = Use.takes(c())
   end
 end

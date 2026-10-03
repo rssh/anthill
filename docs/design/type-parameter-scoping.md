@@ -7,16 +7,17 @@ sort-parameter-*sharing* framing of
 **Realizes:** [`kernel-language.md`](../kernel-language.md) §8.1. **Drives:**
 [042](../proposals/042-explicit-type-parameters-on-operations.md) (operation
 type parameters — the *explicit* threading mechanism, already implemented),
-WI-376 (value projection `s.T` / `s.Sort` — the *fluent* threading mechanism),
+WI-376 (value projection `s.T` / `s.Self` — the *fluent* threading mechanism),
 WI-374 (bare-reference expansion — a *convenience*, no longer load-bearing).
 
 **Superseded in part by [070](../proposals/070-self-and-fresh-bare-sorts.md)**
-(Draft, 2026-10-03): §1's `s.Sort` (renamed `s.Self`) and its rejection of
-`s.Self`; §3's first bullet (the implicit self tie), its WI-1082 paragraph and
-its "Two exceptions"; §4's member-tie enforcement; §5's "The scope is the
-foreign slots" paragraph. Under 070 a bare or partial sort is fresh everywhere,
-`Self` writes this instance, and inside its own definition a sort is written in
-full. Until 070 is implemented, the text below describes the code.
+(Draft, 2026-10-03): §3's first bullet (the implicit self tie), its WI-1082
+paragraph and its "Two exceptions"; §4's member-tie enforcement; §5's "The
+scope is the foreign slots" paragraph. Under 070 a bare or partial sort is
+fresh everywhere, `Self` writes this instance, and inside its own definition a
+sort is written in full. Until those stages of 070 are implemented, §3–§5 below
+describe the code. **Delivered** (070 stage b): §1's projection is `s.Self` —
+it was `s.Sort` — and `Self` is a type name inside a sort's definition.
 
 ## The core principle
 
@@ -29,34 +30,35 @@ needs about a value must be readable *from the value's type*, stated explicitly
 by the producer — not recovered from where the value came from, and not smuggled
 in through a sort parameter that two unrelated references happen to share.
 
-## 1. A value carries its type; project it (`s.Sort`, `s.T`)
+## 1. A value carries its type; project it (`s.Self`, `s.T`)
 
 A value `s` has a static type, and its type members are projected **off the
 value**:
 
 | form | meaning |
 |---|---|
-| `s.Sort` | the whole **parameterized** sort of `s` — e.g. `Stream[T = Int64, E = {}]` |
-| `s.T`, `s.E` | a **named** member of that sort — `s.T = s.Sort.T` |
+| `s.Self` | the whole **parameterized** sort of `s` — e.g. `Stream[T = Int64, E = {}]` |
+| `s.T`, `s.E` | a **named** member of that sort — `s.T = s.Self.T` |
 
-- **Capitalized** (`Sort`, `T`, `E`), matching anthill's type-vs-value case
+- **Capitalized** (`Self`, `T`, `E`), matching anthill's type-vs-value case
   split: types and sort parameters are Capitalized (`List`, `Stream`, `T`, `E`),
   value fields are lowercase (`head`, `tail`). So the case at the dot says which
-  world you are in: `s.head` is a value field; `s.T` / `s.Sort` are type members.
-- `Sort` (not the lowercase keyword `sort`) is a free identifier, so `.Sort`
-  needs no keyword gymnastics.
+  world you are in: `s.head` is a value field; `s.T` / `s.Self` are type members.
+- `Self` is the one word for "a sort at its parameters" (proposal 070): of the
+  enclosing definition when written as a type, of a value when projected.
 - A projection reads the **value's** static type — locally, concretely, per
-  reference. No global variable, no provenance. (Rejected alternatives: `s.type`
-  drags in Scala's *singleton* `s.type`; `s.Self` carries
-  receiver/enclosing-type baggage and its member `Self.T` is `Stream.T` — the
-  sort-parameter framing this document removes.)
+  reference. No global variable, no provenance. (Rejected alternative: `s.type`
+  drags in Scala's *singleton* `s.type`. The projection was `s.Sort` until
+  proposal 070: this document first rejected `s.Self` for its
+  "receiver/enclosing-type baggage", when there was no `Self` for it to agree
+  with.)
 
-`s.Sort` is the robust "same type as `s`" — it captures **every** parameter
+`s.Self` is the robust "same type as `s`" — it captures **every** parameter
 whatever their number, so a sort growing a third parameter does not silently
-drop from a `s.Sort`-typed return (where a spelled-out `Stream[T = s.T, E = s.E]`
+drop from a `s.Self`-typed return (where a spelled-out `Stream[T = s.T, E = s.E]`
 would).
 
-**Two projection forms — only one lives here.** `s.T` / `s.Sort` above are
+**Two projection forms — only one lives here.** `s.T` / `s.Self` above are
 **expression-carried** projections — `s` is a *value*, and the projection
 elaborates to a fresh `Ti` plus the synthesis-time constraint `Ti =
 typeof(s).T`, discharged when `s` is synthesized (no requirement; `Ti` is
@@ -80,7 +82,7 @@ either:
 ```
 iterator(l: List)  -> Stream[T = l.T, E = {}]
 collect(s: Stream) -> List[T = s.T] effects s.E
-splitFirst(s: Stream) -> Option[Pair[A = s.T, B = s.Sort]] effects s.E
+splitFirst(s: Stream) -> Option[Pair[A = s.T, B = s.Self]] effects s.E
 ```
 
 **(b) Operation type parameters (042) — explicit, already implemented.** Declare
@@ -113,7 +115,7 @@ form a *library* is written in is (c) delegating to (c).
 All three are explicit and **per-call**. Operation type parameters are *already*
 per-call (042: "each invocation binds them afresh"), so **no separate
 "per-call scheme substrate" is needed** — 042 is the substrate. Prefer (a) for
-brevity and for wide sorts (`s.Sort` is one token for all parameters; `s.P7`
+brevity and for wide sorts (`s.Self` is one token for all parameters; `s.P7`
 picks one); (b) when you want to name the parameter at the call site; (c) when the
 relationship is between two positions and nothing needs to name it from outside.
 
@@ -378,7 +380,7 @@ it must exist.
   unconstrained-param inference). The per-call substrate. *Verify*: inference
   pins `[Elem, Eff]` from a **cross-sort** argument (a `List[Int64]` used as a
   `Stream`) via provider admissibility — the one piece to confirm.
-- **WI-376 (value projection)** — grows the family `s.T` / `s.E` / **`s.Sort`**
+- **WI-376 (value projection)** — grows the family `s.T` / `s.E` / **`s.Self`**
   (the whole parameterized sort). The fluent threading mechanism; scales to wide
   sorts. Reads the value; no provenance.
 - **WI-374 (bare-reference expansion)** — a convenience layer for unannotated

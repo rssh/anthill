@@ -2007,7 +2007,7 @@ impl ProjectionReader {
         prep: &Substitution,
     ) -> Option<Value> {
         let name = kb.local_name_of(member).to_owned();
-        if name == "Sort" {
+        if name == crate::intern::SELF_TYPE_NAME {
             return None;
         }
         if matches!(

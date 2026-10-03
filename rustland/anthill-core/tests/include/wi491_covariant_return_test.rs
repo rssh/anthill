@@ -1,16 +1,16 @@
 //! WI-491 — covariant / projection return types rooted at the receiver.
 //!
 //! An operation may declare its return as the WHOLE type of one of its own
-//! parameters — `operation iterator(m: MappedStream) -> m.Sort = m` — meaning
+//! parameters — `operation iterator(m: MappedStream) -> m.Self = m` — meaning
 //! "returns a value of the receiver's type". This is the wide-type sibling of
 //! the receiver-type-member projections (WI-376 `x.A` / `X.L`; WI-430
-//! carrier-precise): `m.Sort` projects the whole sort of `m`, not one member.
+//! carrier-precise): `m.Self` projects the whole sort of `m`, not one member.
 //!
 //! The typer eliminates a TOP-LEVEL expression-carried projection RETURN type
 //! against the op's own parameter types before the conformance + WI-401 escape
 //! checks, so:
-//!   * the identity body `= m` (type `Box`) conforms to `b.Sort` (= `Box`);
-//!   * the avoidance gate sees the input-rooted concrete type (`b.Sort` ⟹ `Box`,
+//!   * the identity body `= m` (type `Box`) conforms to `b.Self` (= `Box`);
+//!   * the avoidance gate sees the input-rooted concrete type (`b.Self` ⟹ `Box`,
 //!     same sort as the body ⟹ admitted), unlike a bare `-> Spec` whose abstract
 //!     members would escape;
 //!   * the returned value is admissible wherever the receiver's type — and the
@@ -48,9 +48,9 @@ namespace wi491.covariant
     operation get(b: Box) -> Int64 = match b case box(n) -> n
   end
 
-  -- WI-491 headline: a covariant return rooted at the receiver. `b.Sort` is the
+  -- WI-491 headline: a covariant return rooted at the receiver. `b.Self` is the
   -- whole type of `b` (= Box), input-rooted, so the avoidance gate admits `= b`.
-  operation identity(b: Box) -> b.Sort = b
+  operation identity(b: Box) -> b.Self = b
 
   operation mk() -> Box = box(7)
 
@@ -93,8 +93,8 @@ fn covariant_return_admissible_where_provided_spec_expected() {
 }
 
 /// THE ticket's headline form against the real lazy carrier: `operation
-/// iterator(m: MappedStream) -> m.Sort = m` TYPE-CHECKS at load (the def-site
-/// elimination of `m.Sort` ⟹ MappedStream, so the identity body conforms and the
+/// iterator(m: MappedStream) -> m.Self = m` TYPE-CHECKS at load (the def-site
+/// elimination of `m.Self` ⟹ MappedStream, so the identity body conforms and the
 /// avoidance gate admits the input-rooted return). Pure load-clean assertion —
 /// consuming a constructed lazy stream is the effect-row grounding of WI-495.
 #[test]
@@ -102,7 +102,7 @@ fn mappedstream_covariant_iterator_typechecks() {
     let src = r#"
 namespace wi491.headline
   import anthill.prelude.{MappedStream, Stream}
-  operation iterator(m: MappedStream) -> m.Sort = m
+  operation iterator(m: MappedStream) -> m.Self = m
 end
 "#;
     let errs = crate::common::try_load_kb_with(src)
@@ -110,7 +110,7 @@ end
         .unwrap_or_default();
     assert!(
         errs.is_empty(),
-        "`iterator(m: MappedStream) -> m.Sort = m` must type-check (covariant \
+        "`iterator(m: MappedStream) -> m.Self = m` must type-check (covariant \
          receiver-rooted return); got: {errs:?}",
     );
 }
@@ -140,7 +140,7 @@ end
 
 /// WI-491 must NOT open an escape hole: a BARE abstract-spec return (`-> Stream`,
 /// whose members T,E are left unbound) is still REJECTED by the WI-401 avoidance
-/// gate — only the input-rooted `m.Sort` projection is admitted.
+/// gate — only the input-rooted `m.Self` projection is admitted.
 #[test]
 fn bare_abstract_spec_return_still_rejected() {
     let src = r#"

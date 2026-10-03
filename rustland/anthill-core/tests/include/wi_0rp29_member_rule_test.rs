@@ -1999,8 +1999,8 @@ end
     );
 }
 
-/// `s.Sort` IS THE RECEIVER'S TYPE, on both sides: `combine(c: Car, o: c.Sort)` behind
-/// `combine(s: Sp, o: s.Sort)`. Read off the spec, it was refused (MEASURED). Runs to 3.
+/// `s.Self` IS THE RECEIVER'S TYPE, on both sides: `combine(c: Car, o: c.Self)` behind
+/// `combine(s: Sp, o: s.Self)`. Read off the spec, it was refused (MEASURED). Runs to 3.
 #[test]
 fn a_sort_projection_reads_the_receivers_type() {
     let src = with_app(
@@ -2009,13 +2009,13 @@ namespace wi0rp29mr6.sortproj
   import anthill.prelude.{Int64, Bool, Option, String, List}
   sort Sp
     sort T = ?
-    operation combine(s: Sp, o: s.Sort) -> Int64
+    operation combine(s: Sp, o: s.Self) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation combine(c: Car, o: c.Sort) -> Int64 = 3
+    operation combine(c: Car, o: c.Self) -> Int64 = 3
   end
   operation use(x: Car[V = Int64], y: Car[V = Int64]) -> Int64 = Sp.combine(x, y)
   operation go() -> Int64 =

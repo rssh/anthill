@@ -1,10 +1,10 @@
-//! WI-376: expression-carried type projections `s.T` / `s.Sort`.
+//! WI-376: expression-carried type projections `s.T` / `s.Self`.
 //!
 //! A producer's projection signature `peek(l: List) -> l.T` threads the receiver's
 //! element through call sites: the projection is ELIMINATED by projecting the
 //! ARGUMENT's inferred type (`List[Int64].T = Int64`) — the synthesis-time discharge of
 //! WI-379 bidirectional inference, resolved in `check_apply_iter` where the arguments
-//! are already synthesized. `s.Sort` projects the whole parameterized sort of the
+//! are already synthesized. `s.Self` projects the whole parameterized sort of the
 //! receiver. A member the receiver's concrete sort does NOT declare is a loud error
 //! (never a silent fresh var); a bare / abstract receiver stays polymorphic, so one
 //! signature serves both the concrete and the abstract receiver.
@@ -73,26 +73,26 @@ end
     );
 }
 
-/// `echo(l: List) -> l.Sort` projects the WHOLE parameterized sort of the receiver,
+/// `echo(l: List) -> l.Self` projects the WHOLE parameterized sort of the receiver,
 /// so `echo(xs)` on a `List[Int64]` is `List[Int64]` (every parameter captured).
 #[test]
 fn projection_sort_captures_whole_type() {
     let ok = r#"
 namespace test.wi376.sort_ok
   import anthill.prelude.{List, Int64}
-  operation echo(l: List) -> l.Sort
+  operation echo(l: List) -> l.Self
   operation caller(xs: List[T = Int64]) -> List[T = Int64] = echo(xs)
 end
 "#;
     assert!(
         load_errors(&[ok]).is_empty(),
-        "echo(xs) is l.Sort = List[Int64]; returning it as List[Int64] must conform",
+        "echo(xs) is l.Self = List[Int64]; returning it as List[Int64] must conform",
     );
 
     let wrong = r#"
 namespace test.wi376.sort_wrong
   import anthill.prelude.{List, Int64, String}
-  operation echo(l: List) -> l.Sort
+  operation echo(l: List) -> l.Self
   operation caller(xs: List[T = Int64]) -> List[T = String] = echo(xs)
 end
 "#;

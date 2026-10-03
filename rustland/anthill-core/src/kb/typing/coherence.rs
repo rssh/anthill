@@ -1891,7 +1891,7 @@ pub(super) fn check_provision_binding_agreement(
 /// here, `load::sort_ref_functor` in the route merge — which also answers the functor of
 /// ANY `Term::Fn`), so `List[T = Int64]` agreed with `List[T = String]`, and in the
 /// route merge any two arrows agreed. MEASURED before the fix, both copies: one carrier
-/// providing `Iter[Self = C, Element = List[T = Int64]]` and `[…, Element = List[T =
+/// providing `Iter[Carrier = C, Element = List[T = Int64]]` and `[…, Element = List[T =
 /// String]]` loaded clean or was refused depending only on which line came first, and so
 /// did a carrier reaching one spec through two intermediates binding `P` to those two
 /// types, or to `(Int64) -> Int64` and `(String) -> String`.

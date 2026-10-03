@@ -264,23 +264,25 @@ Exceptions are not used for `Error` effect — the spec is explicit that errors 
 ```anthill
 sort Container
   sort T
-  sort Self
-  operation insert(s: Self, x: T) -> Self
-  operation contains(s: Self, x: T) -> Bool
+  sort C
+  operation insert(s: C, x: T) -> C
+  operation contains(s: C, x: T) -> Bool
 end
 ```
 
 becomes
 
 ```cpp
-// Sort: Container[Self, T]
-template <typename Self, typename T>
+// Sort: Container[C, T]
+template <typename C, typename T>
 struct Container {
-    static Self insert(Self s, const T& x);          // TODO
-    static bool contains(const Self& s, const T& x); // TODO
+    static C insert(C s, const T& x);             // TODO
+    static bool contains(const C& s, const T& x); // TODO
 };
 // call:  Container<MyVec, int64_t>::insert(v, 42)
 ```
+
+(The carrier parameter is an ordinary name. It is not called `Self`: that name is reserved for the enclosing sort at its own parameters — kernel-language.md §5.2.)
 
 Named arguments in anthill (sorted by field name canonically) carry through to C++ parameter names directly.
 

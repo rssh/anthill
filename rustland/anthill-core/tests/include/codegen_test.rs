@@ -1034,3 +1034,43 @@ end
         "no `Error<…>` may survive in a type-argument slot:\n{out}"
     );
 }
+
+// ── Proposal 070 §1.2: `Self` is the sort being generated ────────
+
+/// One sort, naming its own instance as `self_ty` in a recursive field, a receiver, a
+/// second parameter and a return.
+fn self_spelling(self_ty: &str) -> String {
+    format!(
+        r#"sort List {{
+  sort T = ?
+  entity Nil
+  entity Cons(head: T, tail: {self_ty})
+  operation length(l: {self_ty}) -> Int64
+  operation append(xs: {self_ty}, ys: {self_ty}) -> {self_ty}
+}}
+"#
+    )
+}
+
+/// A TYPE WRITTEN `Self` IS THE SORT BEING GENERATED (WI-20261001-80ZV8). This generator
+/// reads the parse tree, where `Self` is still the author's word, and three decisions
+/// compare a type's NAME with the sort's: the `Self` rendering, the boxed recursive field
+/// and the receiver. So the two spellings must generate the same text — and that text must
+/// hold the two things the comparison decides.
+///
+/// BACKED OUT (`names_this_sort` answering for the sort's own name alone), this fails: the
+/// field is emitted unboxed and `length` / `append` as associated functions.
+#[test]
+fn self_generates_what_the_sorts_own_name_generates() {
+    let named = gen(&self_spelling("List"));
+    let selfed = gen(&self_spelling("Self"));
+    assert_eq!(selfed, named, "`Self` and the sort's own name must generate one text");
+    assert!(
+        selfed.contains("Box<List<T>>"),
+        "the recursive field is boxed:\n{selfed}"
+    );
+    assert!(
+        selfed.contains("fn length(&self"),
+        "a `Self`-typed first parameter is the receiver:\n{selfed}"
+    );
+}
