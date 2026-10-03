@@ -79,6 +79,9 @@ mod wi730_boolean_condition_test;
 #[path = "include/wi757_macro_diagnostic_test.rs"]
 mod wi757_macro_diagnostic_test;
 
+#[path = "include/wi901_macro_reject_span_test.rs"]
+mod wi901_macro_reject_span_test;
+
 #[path = "include/wi714_project_test.rs"]
 mod wi714_project_test;
 

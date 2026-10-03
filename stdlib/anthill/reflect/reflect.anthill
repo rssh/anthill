@@ -232,6 +232,13 @@ namespace anthill.reflect
   -- where/join read a relation argument's schema, which lives in its type.
   operation occurrence_type(occ: NodeOccurrence) -> Option[T = Type] @[host_implemented]
 
+  -- WI-901 (proposal 043.1 §3.6): reject an anthill-written compile-time macro
+  -- with its own words at the precise input occurrence it found invalid. Unlike
+  -- `Error.raise`, this is effect-free: the macro expander consumes the host
+  -- error at compile time, and `Nothing` lets the call inhabit the macro's
+  -- declared `NodeOccurrence` result without manufacturing a value.
+  operation reject(message: String, at: NodeOccurrence) -> anthill.prelude.Nothing @[host_implemented]
+
   -- Find occurrences owned by a symbol (operation body, fact head, rule head/body).
   -- Returns all NodeOccurrences registered under this owner during loading.
   operation occurrences_of(owner: Symbol) -> List[NodeOccurrence]
