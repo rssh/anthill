@@ -3,9 +3,9 @@
 - id: WI-20261003-H7KFV-a-callback-in-a-function-a-b
 - created: 2026-10-03T09:18:51Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-03T09:18:51Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-03T12:58:01Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -24,4 +24,8 @@ USER DECISION (2026-10-03): `via` must not compile — an operation that applies
 ### 2026-10-03T09:38:57Z — feedback — user
 
 MEASURED (tenth pass, 2026-10-03): the prototype refusal at the application — an `E` binding left out, a parameter's own unwritten slot as the body reads it (`g.E`), or a rigid no declared parameter owns; NOT a flexible variable still being inferred — fails 131 existing rows: 117 in wi_tests across 25 files (wi_qqpq2_tuple_carrier 11, wi_50b2k_binder_inference 9, wi_fc2x4_lambda_in_a_rule 8, wi_emvcb 8, wi817_polyrec 8, wi786 8, wi_5nszy 7, wi803 6, wi788 6, wi_02err 5, wi801 5, wi787 4, wi785 4, wi784 3, wi1095 3, wi1093 3, wi1087 3, wi275 2, wi1088 2, wi_9r5hn 1, wi_2tmb5 1, wi792 1, wi_0rp29_review9's an_unwritten_function_slot_charges_nothing_control 1), 10 in eval_tests (e.g. `spin(f: Function[Int64, Int64], x)`, `cyc.a`, `reduce_set3.f`), 4 in parse_tests (typing_test). Sampled failures are the intended case (an operation declaring nothing applies an unwritten-row parameter); the stdlib loads clean. So the work is the refusal (small) plus rewriting those programs to a written row — `Function[…, {}]` where pure, `[E] … E = E … effects {E}` where a row is meant — and the scaland port.
+
+### 2026-10-03T12:57:55Z — feedback — user
+
+SUPERSEDED BY WI-20261003-QV5W5 (implement proposal 069), user decision 2026-10-03. Proposal 069 makes `Function[A, B]` pure: `Function` declares its `E` with `default {}`, so an omitted `E` is the closed empty row, and `Function[A, B, ?]` is the explicit effect-polymorphic spelling. Under it this ticket's program changes verdict at the CALL, not at the application: `via(boom)` is refused because `boom`'s `{Error[String]}` does not fit the slot's `{}` — as the arrow and `Function[Int64, Int64, {}]` spellings already are — and applying `g` inside `via` charges the empty row, which is right. So no operation applying a `Function[A, B]` must declare anything, and the refusal asked for here (and the 131 rows a prototype of it broke) is moot. WHAT CARRIES OVER to QV5W5's acceptance: this ticket's program (`boom` through `via` escaping a `main` that declares no effect) refused once 069 lands; the exception `callable_effect_present_values` (typing/callable.rs) keeps — an unwritten `E` charges nothing where it is applied, whose doc names this ticket — removed with the `default {}`, since nothing is unwritten after defaulting; and applying a `Function[A, B, ?]` (the explicitly open spelling) still charges its row at the application. Until then the interim stands: an unwritten `E` is any row (WI-332, kernel-language.md §4.4 as corrected 2026-10-03), uncharged where applied.
 

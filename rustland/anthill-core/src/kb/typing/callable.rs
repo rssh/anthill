@@ -904,8 +904,10 @@ pub(super) fn effect_row_present_values(kb: &mut KnowledgeBase, row: &impl TermV
 /// unwritten parameter; user decision 2026-10-03), so applying one should charge it — but that
 /// refuses every operation applying such a value ("undeclared effect: f.E" / "?E", MEASURED: the
 /// suite's own `wi_2tmb5` / `wi_5nszy` programs and 131 rows in all), since no operation can
-/// declare `effects {f.E}` for a callable parameter (MEASURED: every build). That refusal, and
-/// the rewrite of those programs to `Function[…, {}]`, is WI-20261003-H7KFV.
+/// declare `effects {f.E}` for a callable parameter (MEASURED: every build). Proposal 069
+/// settles it the other way (WI-20261003-QV5W5, superseding WI-20261003-H7KFV): `Function`
+/// declares `E` with `default {}`, so an omitted `E` is the empty row and this exception goes —
+/// an effectful callback is refused at the CALL, and `Function[A, B, ?]` is the open spelling.
 pub(super) fn callable_effect_present_values(
     kb: &mut KnowledgeBase,
     row: &Value,

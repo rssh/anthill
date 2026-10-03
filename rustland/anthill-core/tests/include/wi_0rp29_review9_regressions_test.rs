@@ -211,10 +211,9 @@ end
 }
 
 /// CONTROL: an UNWRITTEN slot charges nothing where it is applied, as on every build. Runs to 42
-/// either way by design. `Function[A, B]` is effect-polymorphic (kernel-language.md §4.4, as
-/// corrected 2026-10-03), and an operation applying such a value is to be refused at the
-/// application (WI-20261003-H7KFV) — which turns this row into a refusal, its `f` into
-/// `Function[A = Int64, B = Int64, E = {}]`.
+/// either way by design. `Function[A, B]` is effect-polymorphic for now (kernel-language.md §4.4,
+/// as corrected 2026-10-03); proposal 069 (WI-20261003-QV5W5) makes its omitted `E` the empty row
+/// by `default {}`, and this row then runs for that reason — `inc` is pure.
 #[test]
 fn an_unwritten_function_slot_charges_nothing_control() {
     let src = r#"
