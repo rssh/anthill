@@ -68,6 +68,7 @@ anthill-todo -d "$PWD" add-dependency WI-A WI-B          # Make WI-A depend on W
 anthill-todo -d "$PWD" remove-dependency WI-A WI-B       # Drop WI-A's dependency on WI-B
 anthill-todo -d "$PWD" status                            # Show status counts
 anthill-todo -d "$PWD" graph                             # Show dependency graph
+anthill-todo -d "$PWD" dependents WI-NNN                 # Items that depend on WI-NNN, directly or transitively, as a tree
 anthill-todo -d "$PWD" init [--language L --build B --tool T]  # Initialize anthill-todo/ in project
 ```
 

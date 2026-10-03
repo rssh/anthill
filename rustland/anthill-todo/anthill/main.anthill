@@ -120,6 +120,7 @@ namespace anthill.todo
     , spec_tag_change("tag",          "Add a work item to a named list")
     , spec_tag_change("untag",        "Remove a work item from a named list")
     , spec_named("graph",             "Show dependency graph")
+    , spec_with_id("dependents",      "Show the work items that depend on a work item, transitively")
     , spec_mirror("export", "Publish every work item to the project's mirror target")
     , spec_mirror("import", "Ingest the mirror target's comments as feedback")
     , spec_named("migrate",           "Stamp a pre-versioning project with the current data format")
@@ -633,6 +634,7 @@ namespace anthill.todo
       else if eq(name, "show") then cmd_show(args, s)
       else if eq(name, "list") then cmd_list(args, s)
       else if eq(name, "graph") then cmd_graph(s)
+      else if eq(name, "dependents") then cmd_dependents(args, s)
       else if eq(name, "next") then cmd_next(args, s)
       else if eq(name, "feedback") then cmd_feedback(args, agent, s)
       else if eq(name, "add") then cmd_add(args, agent, s)
@@ -2626,6 +2628,41 @@ namespace anthill.todo
         let roots = find_roots(raw_rows)
         let _ = print_roots(roots, row_map, dep_map)
         0
+
+    -- ── cmd_dependents ────────────────────────────────────────────
+    --
+    -- `dependents <id>`: every item that depends on a work item, directly or
+    -- through another, as `graph`'s tree rooted at that item (WI-20260904-WX613).
+    -- Each line carries its status, so a reader asking what an item BLOCKS reads
+    -- it there: once the item is Delivered or Verified, nothing beneath it is
+    -- blocked by it any more, and the tree still shows who depended on it. The same walk as `graph`, so a diamond renders
+    -- under each parent and a cycle in a corrupt store is marked, not looped.
+    -- An item nothing depends on prints its own line and says so, rather
+    -- than printing nothing a reader could mistake for a failed lookup.
+    operation cmd_dependents(args: List[Binding], s: Cell[State]) -> Int64
+      effects {ConsoleOutput, ConsoleError, Error}
+    =
+      match resolve_id_arg(args, "id", "error: missing work item id")
+        case ref_missing() -> 2
+        case ref_unresolved() -> 1
+        case ref_ok(id) ->
+          match WorkItemStore.lookup(s, id)
+            case none() ->
+              let _ = eprintln(console(),
+                               concat("error: work item '",
+                                      concat(id, "' not found")))
+              1
+            case some(_) ->
+              let raw_rows = rows_of_w(WorkItemStore.all(s))
+              let dep_map = build_dep_map(raw_rows)
+              let row_map = build_row_map(raw_rows)
+              let _ = print_tree(id, true, true, "", nil(), row_map, dep_map)
+              match direct_dependents_m(dep_map, id)
+                case nil() ->
+                  let _ = println(console(),
+                                  concat("No work items depend on ", id))
+                  0
+                case cons(_, _) -> 0
 
     -- ── cmd_add ──────────────────────────────────────────────────
     --
