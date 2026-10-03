@@ -2,7 +2,7 @@
 
 ## Status: Draft (2026-10-03). The motivating verdict is that `Function[A, B]` is pure: its omitted `E` is `{}`, while `Function[A, B, ?]` is explicitly open. This proposal reopens proposal 042 OQ3 / WI-850 with that concrete driver and extends the same declaration-time mechanism to operation and entity-constructor value parameters, and to the columns of a declared rule (§1.5), whose undeclared default is `?`. Type inference runs to a fixed point before defaults are chosen, then solving resumes once with the defaults installed.
 
-## Relates to: [002](002-arrow-sorts.md) (sort parameters), [018](018-expressions-and-operation-implementation.md) (operation bodies), [042](042-explicit-type-parameters-on-operations.md) (explicit operation type parameters; OQ3), [045](045-effect-sets-and-expressions.md) (effect-row binders), kernel-language §§4.4 and 8.1 (the contradictory `Function[A, B]` readings), WI-850 (the current refusal), WI-188 (entity record update), WI-191 (typed command arguments), [052](052-rules-as-stream-valued-operations.md) (a rule cited as a `Relation` value; WI-714's column binding), [061](061-rule-declarations.md) (rule declarations — where a rule column's default is written), and WI-20260821-6WVJB (one arity per predicate — enforced here only for a declaration with a default).
+## Relates to: [002](002-arrow-sorts.md) (sort parameters), [018](018-expressions-and-operation-implementation.md) (operation bodies), [042](042-explicit-type-parameters-on-operations.md) (explicit operation type parameters; OQ3), [045](045-effect-sets-and-expressions.md) (effect-row binders), kernel-language §§4.4 and 8.1 (the contradictory `Function[A, B]` readings), WI-850 (the current refusal), WI-188 (entity record update), WI-191 (typed command arguments), [052](052-rules-as-stream-valued-operations.md) (a rule cited as a `Relation` value; WI-714's column binding), [061](061-rule-declarations.md) (rule declarations — where a rule column's default is written), WI-20260821-6WVJB (one arity per predicate — enforced here only for a declaration with a default), and [070](070-self-and-fresh-bare-sorts.md) (`Self` — §2's "the self tie wins over the default" is `p: Self` in its terms).
 
 ## Tracked by: WI-20261003-QV5W5 (`proposal-069`). WI-188 depends on it.
 
@@ -461,6 +461,17 @@ Likewise, inside `sort Function` an elided `E` is this function's row, not `{}`.
 to the self reference; a foreign reference inside the sort body (`Function[A, B]` written inside
 `sort Stream`) takes the default.
 
+**In proposal 070's terms, `p` is `Self`.** The paragraph above is written in pre-`Self` terms: it
+describes today's code, where WI-1082's tie is what reads a bare self reference as this instance.
+[070](070-self-and-fresh-bare-sorts.md) removes that tie and writes this instance `Self` —
+`operation second_of(p: Self) -> T2` — and inside a sort's own definition it refuses a reference to
+the sort that leaves a slot out (070 §1.4), whether or not the slot has a default. What `second_of`
+means is the same under both. What changes is that the bare spelling is no longer accepted there, so
+no slot is left out for a default to fill and there is nothing for the tie to win over. Whichever
+lands first decides the wording: before 070 the tie wins over the default, as stated above; after
+it, the member says `Self`, and this paragraph, the parenthesis closing the four-spellings
+restatement, and the sentence on WI-1082 below are replaced by a pointer to 070 §1.4.
+
 The polarity rules continue to govern explicit `?`, named variables and non-defaulted slots, so in
 a negative position the quantifier on a defaulted slot is spelled with `?`: `f: Function[A, B, ?]`
 is universal in a parameter. In a return the `?` adds nothing — `-> Function[A, B, ?]` and
@@ -644,7 +655,9 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
   `-> AsymmetricPair` opens to two independent existentials, so a body returning `apair(1, "s")`
   loads and a consumer relying on the components' agreement is refused; and a member inside the
   sort taking a bare `p: AsymmetricPair` accepts an asymmetric instance (the WI-1082 tie, not the
-  default). Control: with the tie overridden by the default, the in-sort member refuses it.
+  default). Control: with the tie overridden by the default, the in-sort member refuses it. (Once
+  proposal 070 has landed this row is written `p: Self`, and the bare spelling is a load error
+  inside the sort — §2, "In proposal 070's terms".)
 - `f: Function[A, B]` is not universal in `E` (an effectful argument is refused), and
   `f: Function[A, B, ?]` restores ∀. `-> Function[A, B]` is existential in `E` (a body returning an
   effectful function loads; a consumer passing the result to a pure slot is refused), while

@@ -4,7 +4,7 @@
 
 ## Supersedes: `docs/design/type-parameter-scoping.md` §1's `s.Sort` and its rejection of `s.Self`; §3's first bullet (the implicit self tie), its WI-1082 paragraph and its "Two exceptions"; §4's member-tie enforcement; §5's "The scope is the foreign slots" paragraph. In `docs/kernel-language.md` §8.1, every sentence that makes a reference to the callee's own sort an exception — WI-1059's and WI-1061's self skolem, the "callee's own sort is not existential" paragraph, WI-1082's "The tie is WRITTEN" and the three paragraphs after it (the parameter position, its two consequences, an operation with no parameter naming its own sort), and the self reading and the "enclosing frame for a bare sibling call" of "One principle, two engines" — while WI-1078's sentence on the enclosing sort's parameters keeps its reason and loses its bare `toPair(h: Holder)`, those parameters being the operation's own type parameters (§1.1); in §8.7 the *Interim* sentences of the member rule. WI-20260929-05ZQE's DECIDED (2), "a received bare carrier binding is the receiver's instance".
 
-## Relates to: [042](042-explicit-type-parameters-on-operations.md) (operation type parameters; `s.Sort` in "Type projections"), [058](058-modular-instances.md) (§4.2, what a call's bracket may bind), [059](059-secondary-entries.md) (secondary entries), [066](066-provision-member-blocks.md) (provision blocks), [069](069-parameter-defaults.md) (declared defaults; its "the self tie wins over the default" is §7's open question), WI-374, WI-376, WI-424, WI-1059, WI-1061, WI-1063, WI-1078, WI-1082, WI-20260929-0RP29 (the interim reading of `provides`), WI-20260930-GJW9Z (a same-sort sibling call through the spec).
+## Relates to: [042](042-explicit-type-parameters-on-operations.md) (operation type parameters; `s.Sort` in "Type projections"), [058](058-modular-instances.md) (§4.2, what a call's bracket may bind), [059](059-secondary-entries.md) (secondary entries), [066](066-provision-member-blocks.md) (provision blocks), [069](069-parameter-defaults.md) (declared defaults; its "the self tie wins over the default" is `p: Self` in this proposal's terms — §7), WI-374, WI-376, WI-424, WI-1059, WI-1061, WI-1063, WI-1078, WI-1082, WI-20260929-0RP29 (the interim reading of `provides`), WI-20260930-GJW9Z (a same-sort sibling call through the spec).
 
 ## Tracked by: WI-20261001-80ZV8.
 
@@ -100,7 +100,7 @@ Three things are not affected:
 - a reference to another sort;
 - a qualified call such as `List.reverse(xs)`, which names an operation, not a type.
 
-Whether a slot with a declared default (069) may be left out here is §7's question.
+A declared default (069) does not excuse the reference: inside its own definition a left-out slot is refused whether or not it has a default (§7).
 
 ### 1.5 `s.Self`
 
@@ -168,9 +168,9 @@ Each row asserts its control and says which build fails it.
 - **`Self` as the carrier in a spec** (Rust's trait `Self`). It needs a declared carrier, which the language does not have, and it reverses §1.2's single lexical meaning.
 - **`Self` with bindings** (`Self[T = Int64]`). Another instance is written with the sort's name; `Self` stays one word for one instance.
 
-## 7. Open questions
+## 7. Open questions — answered
 
-- **A defaulted slot inside the sort's own definition (069).** 069 (Draft, as of 2026-10-03) fills a left-out slot with its declared default in a negative position only, and makes one exception: *within a sort's own definition, the self tie wins over the default*, because taking the default would change what a member is about —
+- **A defaulted slot inside the sort's own definition (069).** ANSWERED (user, 2026-10-03): 069 and this proposal say the same thing in different terms. 069 (Draft) is written in pre-`Self` terms. It fills a left-out slot with its declared default in a negative position only, and makes one exception: *within a sort's own definition, the self tie wins over the default*, because taking the default would change what a member is about —
 
   ```anthill
   sort AsymmetricPair[T1, T2 = T1]
@@ -181,4 +181,4 @@ Each row asserts its control and says which build fails it.
   end
   ```
 
-  This proposal removes the tie that exception keeps, so the two cannot both stand. **Proposed:** §1.4 refuses a left-out slot of the enclosing sort whether or not it has a default, so the member is written `second_of(p: Self) -> T2` and no default gets to change what a member is about; a reference to another sort keeps 069's rule unchanged. 069 would then replace its paragraph "Within a sort's own definition, the self tie wins over the default" by a pointer to §1.4, and drop the other places that rely on the tie: the parenthesis closing its restatement of WI-1056's four spellings, "WI-1082's … is unchanged, since a self reference still takes the tie", and the matching clause of its implementation outline. To be confirmed together with 069.
+  What 069 writes there means that `p` is `Self`. This proposal removes the tie and writes it: `second_of(p: Self) -> T2`. So §1.4 refuses a left-out slot of the enclosing sort whether or not it has a default — no default gets to change what a member is about, which is 069's own reason — and a reference to another sort keeps 069's rule unchanged. 069 carries the bridge (its §2, "In proposal 070's terms, `p` is `Self`"): before this proposal lands, the tie wins over the default as 069 states; after it, 069's tie paragraph, the parenthesis closing its restatement of WI-1056's four spellings and its sentence "WI-1082's … is unchanged, since a self reference still takes the tie" become a pointer to §1.4, and its acceptance row is written `p: Self`.
