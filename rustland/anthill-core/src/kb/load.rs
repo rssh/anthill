@@ -7519,24 +7519,19 @@ fn rule_introduced_functor_name<'a>(
 /// P85Z7's diff. The two walks are now one: the reason IS the refusal, carried by the
 /// `Err`, and `detail` is a `match` on it with no shape questions of its own.
 ///
-/// **WHAT IS NOT HERE, and is somebody else's** — the ticket's enumeration is wider than
-/// the rule-head walk, and the three shapes below never reach this type because they
-/// never ask it. Each is DELIBERATE and each is measured in
-/// `wi_rdgqc_head_introduction_census_test`, which is where the enumeration is complete:
+/// **WHAT IS NOT A SEPARATE VARIANT.** A **FACT head** is the one-head predicate-rule
+/// spelling (§6.1), so [`RuleHeadCollectPass::collect_fact`] sends it through
+/// [`subject_introduces`] and it gets the same answers as a rule. A head inside a host
+/// **`provides … language … end`** block does too, in the target sort's semantic scope
+/// ([`RuleHeadCollectPass::collect_provides_block`], WI-20260821-TTHRK). Neither needs a
+/// reason of its own; `wi_rdgqc_head_introduction_census_test` drives the surface forms
+/// so the shared answer cannot drift.
 ///
-///  * a **FACT head** is unscoped at every arity (§6.1 / §5.3) — collected as a CLAUSE
-///    by [`RuleHeadCollectPass::at_item`] and never minted. Two namespaces writing one
-///    fact name share one predicate, and each reads the other's fact.
-///  * each functor of a **MULTI-HEAD** rule lands its own clause while the rule
-///    introduces nothing — the [`Self::SeveralHeads`] arm is that refusal, and
-///    WI-20260908-NE0E4 owns the cross-sort leak it leaves.
-///  * a head inside a host **`provides … language … end`** block takes the SPEC's scope
-///    for its clause and no scope at all for its name — no scan pass descends into the
-///    block ([`RuleHeadCollectPass::collect_provides_block`], WI-20260821-TTHRK).
-///
-/// They are named here rather than given unproduced variants: a variant no producer
-/// builds is its own defect class (WI-816), and the census test is the reader that keeps
-/// the list honest.
+/// One deliberate leak remains outside a single introduced name: each functor of a
+/// **MULTI-HEAD** rule lands its own clause while the rule introduces nothing — the
+/// [`Self::SeveralHeads`] arm is that refusal, and WI-20260908-NE0E4 owns the cross-sort
+/// leak it leaves. A variant no producer builds is its own defect class (WI-816), so that
+/// fact is stated here rather than represented by another `NoIntroduction` arm.
 // `Debug` alone, and it is LOAD-BEARING: `scan_rule_goal`'s `expect` renders it, so a
 // verdict/reading disagreement panics with the REASON. No other derive has a reader.
 #[derive(Debug)]
@@ -10140,12 +10135,11 @@ struct EntryTextRange {
 /// WI-20260827-APXSS.
 ///
 /// A FACT IS A CLAUSE, and condition (2) is about clauses. Since 061 `fact H` IS
-/// `rule H :- true`, so a fact in the main entry and a rule in a secondary entry compose
-/// ONE predicate — but a fact is not a [`RuleHeadSite`]: [`RuleHeadCollectPass`] reads
-/// `Item::Rule` and `Item::RuleBlock` for its `sites`, deliberately, because a fact must
-/// not MINT (§5.3 "a fact head … is unscoped") and must not enter 061's multi-file
-/// report. So the site set is TWO censuses, not one, and they are kept apart rather than
-/// fused: only condition (2) reads this one.
+/// `rule H :- true`, a fact in the main entry and a rule in a secondary entry compose
+/// ONE predicate. RDGQC also makes an introducing fact a [`RuleHeadSite`], but the two
+/// censuses still cannot fuse: this one includes every clause that LANDS on a predicate
+/// — qualified heads and each head of a multi-head rule included — while `RuleHeadSite`
+/// contains only a head that can introduce one name. Only condition (2) reads this one.
 ///
 /// MEASURED BEFORE IT EXISTED, and found by `/code-review` rather than by a failing row:
 /// `sort Rec { fact freshp(2); rule q(0) :- not freshp(1) }` beside `namespace Rec {
@@ -10157,7 +10151,7 @@ struct EntryTextRange {
 /// ── WHY IT IS NOT THE "INTRODUCES" SITE SET (WI-20260827-APXSS) ──────────────
 ///
 /// WI-1001 keyed condition (2) on `(scope, name)` drawn from the sites that INTRODUCE a
-/// name. Introducing and landing are TWO QUESTIONS, and three spellings answer them
+/// name. Introducing and landing are TWO QUESTIONS, and two spellings answer them
 /// differently — each measured loading clean with `Rec.freshp` holding two clauses from
 /// two entries, which is the exact harm R3 exists to refuse:
 ///
@@ -10167,13 +10161,13 @@ struct EntryTextRange {
 ///     same spelling inside the SECONDARY entry was already refused, so only the main
 ///     entry's side leaked: an ASYMMETRY, which is what says the two questions had been
 ///     collapsed.)
-///   * `fact freshp(2)` in a sort nested INSIDE the main entry — a fact head is unscoped,
-///     so it resolves UP the chain to the entry's predicate. WI-1001's scope filter read
-///     `f.scope == scope` and argued only ENCLOSING scopes fall away; a DESCENDANT one
-///     does not.
 ///
-/// AND A FOURTH THIS TICKET FOUND ON THE WAY, which no scope-keyed census can reach at
-/// all: a host `provides Rec language rust … rule freshp(2) :- true … end` block written
+/// RDGQC closed the former third case: an unqualified fact in a nested sort now
+/// introduces a predicate in that nested scope exactly as its rule spelling does.
+///
+/// A THIRD SHAPE this ticket found on the way cannot be represented by any scope-keyed
+/// introduction census at all: a host `provides Rec language rust … rule freshp(2) :-
+/// true … end` block written
 /// in an ORDINARY NAMESPACE beside `Rec`. `load_provides_block` switches `current_scope`
 /// to the spec's base sort before loading the block's clauses, so the clause lands on
 /// `Rec.freshp` from text that is nowhere near it. MEASURED: it loaded CLEAN beside
@@ -11170,16 +11164,17 @@ struct RuleHeadCollectPass<'a, 'f> {
     /// See [`ClauseSite`] for why a fact cannot join `sites`, and for why this one keeps
     /// the spellings `sites` drops.
     clauses: &'a mut Vec<ClauseSite<'f>>,
-    /// COLLECT IT AT ALL? Its ONE reader ([`judge_secondary_entry_rules`]) returns
-    /// immediately when no rule was deferred from a secondary entry, and that is settled
-    /// by sub-pass 1b — which runs BEFORE this pass — so the whole census can be skipped
-    /// on the same condition. It is one entry per rule head, per fact and per host
-    /// `provides` clause in every file of the scan, plus a resolve per `provides` block,
-    /// and the shipped corpus contains no secondary entry at all.
+    /// COLLECT THE CLAUSE CENSUS AT ALL? Its ONE reader
+    /// ([`judge_secondary_entry_rules`]) returns immediately when no rule was deferred
+    /// from a secondary entry, and that is settled by sub-pass 1b — which runs BEFORE
+    /// this pass — so the clause rows can be skipped on the same condition. Rule-head
+    /// sites are independent: WI-20260821-TTHRK requires every host `provides` block to
+    /// resolve its target even when this flag is false, because its heads mint in that
+    /// target's scope.
     ///
-    /// THE COUPLING IS THE COST. A SECOND reader with a different precondition would be
-    /// silently starved here, so the caller names this condition at the flag and the
-    /// judge names it at its early return; the two must stay one condition.
+    /// THE FLAG GATES ONLY THE CLAUSE ROWS. TTHRK added an unconditional reader of host
+    /// blocks for rule-head sites; tying that reader to this flag would recreate the
+    /// original leak whenever the program has no secondary entry.
     census_clauses: bool,
     /// WI-20260821-RDGQC — see [`SourceRole`]. A `Query` source's fact head files its
     /// CLAUSE census entry as before and declares nothing.
@@ -11188,7 +11183,13 @@ struct RuleHeadCollectPass<'a, 'f> {
 }
 
 impl<'f> RuleHeadCollectPass<'_, 'f> {
-    fn collect(&mut self, r: &Rule, scope: ScopeId, prefix: &str) {
+    fn collect(
+        &mut self,
+        r: &Rule,
+        resolves_in: ScopeId,
+        written_in: ScopeId,
+        prefix: &str,
+    ) {
         let (parse_sym, parse_terms) = (self.parse_sym, self.parse_terms);
         // ONE SHAPE WALK, TWO CENSUSES — and the clause census is the wider on BOTH
         // axes (WI-20260827-APXSS):
@@ -11231,7 +11232,7 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
             // separately (WI-20260821-D0EXD); one in its own scope is one author writing
             // both roles.
             if introduced_by == RuleIntroduction::Predicate {
-                self.clause(subject.clone(), r.span, scope, scope);
+                self.clause(subject.clone(), r.span, resolves_in, written_in);
             }
             let Ok(name) = subject_introduces(subject, head_count) else {
                 continue;
@@ -11244,7 +11245,7 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
             }
             self.sites.push(RuleHeadSite {
                 file_idx: self.file_idx,
-                scope,
+                scope: resolves_in,
                 prefix: prefix.to_owned(),
                 name,
                 introduced_by,
@@ -11256,21 +11257,6 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
                     _ => Vec::new(),
                 },
             });
-        }
-    }
-
-    /// Every head of one rule inside a host `provides` block, as clause sites resolving
-    /// in the SPEC's scope. PER HEAD for the same reason [`Self::collect`] is.
-    fn provides_clause(&mut self, r: &Rule, resolves_in: ScopeId, written_in: ScopeId) {
-        let (parse_sym, parse_terms) = (self.parse_sym, self.parse_terms);
-        let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
-        for head in &r.heads {
-            // An EQUATION indexes under the connective here too — see [`Self::collect`].
-            if let Ok((subject, RuleIntroduction::Predicate)) =
-                head_subject_name(head, bodyless, parse_sym, parse_terms)
-            {
-                self.clause(subject, r.span, resolves_in, written_in);
-            }
         }
     }
 
@@ -11295,7 +11281,8 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
         });
     }
 
-    /// WI-20260827-APXSS — A HOST BLOCK'S CLAUSES LAND IN THE **SPEC'S** SCOPE.
+    /// WI-20260827-APXSS / WI-20260821-TTHRK — A HOST BLOCK'S CLAUSES AND INTRODUCED
+    /// NAMES LAND IN THE **TARGET SORT'S** SCOPE.
     /// `load_provides_block` sets `current_scope` to the spec's BASE SORT before taking
     /// its rules and facts through the ordinary `load_rule` / `load_fact` path, so a
     /// clause written here files itself on that sort's predicate however far from it the
@@ -11303,20 +11290,17 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
     /// freshp(2) :- true … end }` beside `namespace Rec { rule freshp(1) :- true }`
     /// loaded CLEAN with `Rec.freshp` holding two clauses from two parties.
     ///
-    /// CLAUSES ONLY, never a [`RuleHeadSite`]: no pass descends into a `provides` block,
-    /// and a head here must not mint (the name is the spec's) nor enter 061's multi-file
-    /// report. R3 already refuses a rule in a block written INSIDE a secondary entry,
-    /// for the mirror-image reason; this census is what lets condition (2) see one
-    /// written outside.
+    /// APXSS originally added only the clause census. TTHRK closes the other half: a
+    /// head that introduces a name is a [`RuleHeadSite`] at the target sort, exactly as
+    /// if the same rule were written in that sort's body. Otherwise the clause falls to
+    /// WI-476's bare intern and two target sorts silently share one uncitable predicate.
+    /// The TEXTUAL `written_in` stays the enclosing scope for 059 R3's entry-ownership
+    /// question; name ownership and clause resolution use `spec_scope`.
     ///
     /// THE SPEC'S SCOPE IS ASKED AS `load_provides_block` ASKS IT: the written name's
     /// BASE (a parameterized spec lowers to an application, whose clauses still belong
     /// to the base sort), resolved where the block is WRITTEN.
     fn collect_provides_block(&mut self, pb: &ProvidesBlock, scope: ScopeId) {
-        // Ahead of the resolve, which is this pass's only per-block cost.
-        if !self.census_clauses {
-            return;
-        }
         let base = type_expr_base_name(self.parse_sym, &pb.spec);
         let ResolveResult::Found(written) = resolve_name_in_kb(self.kb, &base, scope) else {
             // The spec names nothing here, so `load_provides_block`'s own remap of the
@@ -11334,20 +11318,16 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
             false => self.kb.alias_head(written).unwrap_or(written),
         };
         let spec_scope = self.kb.symbols.scope_id(spec);
-        let (parse_sym, parse_terms) = (self.parse_sym, self.parse_terms);
+        let spec_prefix = self.kb.qualified_name_of(spec).to_owned();
         for item in &pb.items {
             match item {
-                ProvidesItem::Rule(r) => self.provides_clause(r, spec_scope, scope),
+                ProvidesItem::Rule(r) => self.collect(r, spec_scope, scope, &spec_prefix),
                 ProvidesItem::RuleBlock(rb) => {
                     for r in &rb.entries {
-                        self.provides_clause(r, spec_scope, scope);
+                        self.collect(r, spec_scope, scope, &spec_prefix);
                     }
                 }
-                ProvidesItem::Fact(f) => {
-                    if let Some(subject) = fact_head_subject_name(f, parse_sym, parse_terms) {
-                        self.clause(subject, f.span, spec_scope, scope);
-                    }
-                }
+                ProvidesItem::Fact(f) => self.collect_fact(f, spec_scope, scope, &spec_prefix),
                 // NOT CLAUSES, and each named rather than swept up: a nested
                 // `provides Spec[…]` and a `proof` record a provision and a verdict on a
                 // DECLARATION, and `artifact` / `carrier` / `namespace_map` /
@@ -11363,6 +11343,36 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
             }
         }
     }
+
+    /// A fact is a one-head predicate rule (§6.1), including inside a host block.
+    /// `resolves_in` is where its clause and introduced name belong; `written_in` is
+    /// retained separately for 059 R3's entry census.
+    fn collect_fact(
+        &mut self,
+        f: &Fact,
+        resolves_in: ScopeId,
+        written_in: ScopeId,
+        prefix: &str,
+    ) {
+        let Some(subject) = fact_head_subject_name(f, self.parse_sym, self.parse_terms) else {
+            return;
+        };
+        self.clause(subject.clone(), f.span, resolves_in, written_in);
+        if self.role == SourceRole::Query {
+            return;
+        }
+        if let Ok(name) = subject_introduces(subject, 1) {
+            self.sites.push(RuleHeadSite {
+                file_idx: self.file_idx,
+                scope: resolves_in,
+                prefix: prefix.to_owned(),
+                name,
+                introduced_by: RuleIntroduction::Predicate,
+                span: f.span,
+                type_annotations: Vec::new(),
+            });
+        }
+    }
 }
 
 impl<'f> ScopePass for RuleHeadCollectPass<'_, 'f> {
@@ -11376,10 +11386,10 @@ impl<'f> ScopePass for RuleHeadCollectPass<'_, 'f> {
 
     fn at_item(&mut self, item: &Item, scope: ScopeId, prefix: &str) {
         match item {
-            Item::Rule(r) => self.collect(r, scope, prefix),
+            Item::Rule(r) => self.collect(r, scope, scope, prefix),
             Item::RuleBlock(rb) => {
                 for rule in &rb.entries {
-                    self.collect(rule, scope, prefix);
+                    self.collect(rule, scope, scope, prefix);
                 }
             }
             // WI-20260821-RDGQC — RECORDED **AND** MINTED, and the second half is new.
@@ -11407,41 +11417,14 @@ impl<'f> ScopePass for RuleHeadCollectPass<'_, 'f> {
             // `Rec.p` and introduces nothing, §1234), and the one enumeration decides for
             // both keywords. `head_count` is 1: a fact has exactly one head.
             //
-            // STILL NOT MINTED, and each is somebody else's: a fact inside a host
-            // `provides … language … end` block (TTHRK — see
-            // [`Self::collect_provides_block`], which files its clause and no site), and
-            // a BRACKETED provision claim (`fact Spec[T = K]`), whose functor must
-            // REFERENCE a declared sort rather than introduce one.
-            Item::Fact(f) => {
-                let Some(subject) = fact_head_subject_name(f, self.parse_sym, self.parse_terms)
-                else {
-                    return;
-                };
-                self.clause(subject.clone(), f.span, scope, scope);
-                // A QUERY's `fact` is the CLI's carrier for a GOAL, not a clause — see
-                // [`SourceRole`], where the measurement is.
-                if self.role == SourceRole::Query {
-                    return;
-                }
-                if let Ok(name) = subject_introduces(subject, 1) {
-                    self.sites.push(RuleHeadSite {
-                        file_idx: self.file_idx,
-                        scope,
-                        prefix: prefix.to_owned(),
-                        name,
-                        // A fact head is a PREDICATE head: its clause indexes under its
-                        // own functor. There is no equation reading to make — `fact lhs
-                        // === rhs` is refused at load (WI-1090).
-                        introduced_by: RuleIntroduction::Predicate,
-                        span: f.span,
-                        // A fact head carries no `?x: T` annotation — it is a ground
-                        // value position (WI-716).
-                        type_annotations: Vec::new(),
-                    });
-                }
-            }
-            // WI-20260827-APXSS — the one form whose clauses land somewhere its text is
-            // not. See [`Self::collect_provides_block`].
+            // A fact inside a host `provides … language … end` block takes this same
+            // path with the target sort's scope (TTHRK). A BRACKETED provision claim
+            // (`fact Spec[T = K]`) still introduces nothing: its functor REFERENCES the
+            // declared spec rather than minting a predicate.
+            Item::Fact(f) => self.collect_fact(f, scope, scope, prefix),
+            // WI-20260827-APXSS / WI-20260821-TTHRK — the one form whose clauses and
+            // introduced names land somewhere its text is not. See
+            // [`Self::collect_provides_block`].
             Item::ProvidesBlock(pb) => self.collect_provides_block(pb, scope),
 
             // ── EVERY OTHER ITEM FILES NO CLAUSE UNDER A PREDICATE'S FUNCTOR ──
@@ -34723,18 +34706,12 @@ impl<'a> Loader<'a> {
                 // finds nothing under, and both carriers were silently lost the moment
                 // this arm stopped asserting.
                 //
-                // IT OUTRANKS THE "NOTHING WAS MINTED HERE" REFUSAL BELOW, which is a
-                // KNOWN COST rather than a choice (WI-20260910-7NBZX, raised by
-                // /code-review). Since that ticket the carrier test also answers for a
-                // §2.1 PARAMETER, so inside a `provides … language … end` block —
-                // the one position pass 1 does not descend into — `rule d(x: Red)` now
-                // reports the annotation rather than the located
-                // WI-20260821-TTHRK message its untyped twin still gets. BOTH ARE LOUD
-                // and neither is silent, which is why it was left: putting the more
-                // fundamental refusal first means restructuring an arm whose final
-                // branch is where a VALID declaration lands (`emit_own_descriptions`),
-                // and the whole gain is a better sentence on a rule that is refused
-                // either way.
+                // IT OUTRANKS the declaration checks below (WI-20260910-7NBZX, raised
+                // by /code-review). Since that ticket the carrier test also answers for
+                // a §2.1 PARAMETER, so `rule d(x: Red)` reports the annotation wherever
+                // it is written, including inside a host block. TTHRK now mints an
+                // otherwise-valid declaration there in the target sort's scope; a
+                // declaration carrying clause text remains invalid for its own reason.
                 if let Some(carrier) = self.declaration_clause_carrier(r) {
                     self.errors.push(LoadError::DeclarationCarriesClauseText {
                         name: rule_introduced_functor_name(
@@ -34768,20 +34745,18 @@ impl<'a> Loader<'a> {
                         .scope(self.current_scope)
                         .and_then(|s| s.locals.get(name).copied());
                     match local {
-                        // NOTHING WAS MINTED HERE. One shape reaches this: the interior
-                        // of a `provides … language … end` block, which no scan pass
-                        // descends into (WI-20260821-TTHRK, and WI-20260821-RDGQC's
-                        // enumeration of which head shapes introduce a name). Before 061
-                        // such a head asserted its clause on the WI-476 bare intern —
-                        // uncitable, but present; under the declaration reading it would
-                        // assert nothing AND declare nothing.
+                        // THE NAME DENOTES, BUT NOT AS A LOCAL DECLARATION. Sub-pass 3
+                        // mints every introducing head position, including a host block
+                        // since TTHRK. Reaching `None` therefore means the frozen ladder
+                        // answer found an inherited/imported declaration and correctly
+                        // did not shadow it. A body-less rule stores no clause, so this
+                        // line would add nothing.
                         None => self.errors.push(LoadError::BodylessRuleDeclaresNothing {
                             detail: format!(
-                                "`{name}` was never brought into existence: the defining \
-                                 pass does not descend into this position (a `provides … \
-                                 language … end` block's interior is the one such place \
-                                 — WI-20260821-TTHRK), so the declaration would introduce \
-                                 nothing and assert nothing"
+                                "`{name}` denotes a declaration outside this scope, so a \
+                                 body-less rule neither declares a local predicate nor \
+                                 asserts a clause — write `:- true` to add a CLAUSE to \
+                                 the denoted predicate, or choose a new local name"
                             ),
                             span: r.span,
                         }),

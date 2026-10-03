@@ -3,9 +3,9 @@
 - id: WI-20260821-TTHRK-a-rule-head-inside-a-provides
 - created: 2026-08-21T07:53:20Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-21T07:53:20Z
+- status: Delivered
+- status_agent: codex
+- status_at: 2026-10-03T22:12:51Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
