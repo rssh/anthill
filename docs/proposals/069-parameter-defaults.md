@@ -231,13 +231,22 @@ on the wrong head would load silently as something else. An equation term remain
 clause head as `eq(?v, e)`. (The census of `?v = e` arguments in existing clause heads is part of
 implementing this; each one found is rewritten to `eq(…)` or is a misplaced default.)
 
-**Heads are never filled.** A default fills an omission at a **call** — a body goal, a query, a
-citation — and never in another **head** of the same predicate. A head defines answers rather than
-asking for them: `fact within(3)` is a clause at its own arity (or refused, once WI-20260821-6WVJB
-settles one arity per predicate), never silently `fact within(3, 10)`. This is §1.2's rule for
-entity patterns, read from the other side: an entity's patterns were not written by the author of
-the default, so they are not filled; a rule's heads are its definition, so they are not filled
-either.
+**Clause heads are never filled — a rule clause's head and a `fact` alike.** A default fills an
+omission at a **call** — a body goal, a query, a citation — and never in a **clause head** of the
+same predicate, whether the clause is a `rule … :- …` or a `fact`. (The declaration's head is where
+the default is written, so it is not filled either.) With `rule within(?x, ?limit = 10)` declared:
+
+```anthill
+fact within(3)                       -- a one-column clause, never fact within(3, 10)
+rule within(?x) :- small(?x)         -- a one-column clause, never within(?x, 10) :- small(?x)
+```
+
+Each stays a clause at its own arity (or is refused, once WI-20260821-6WVJB settles one arity per
+predicate). A clause head defines answers rather than asking for them, so filling it would turn the
+author's clause into a narrower one — "`within(x, 10)` for every small `x`" — that nobody wrote. This
+is §1.2's rule for entity patterns read from the other side: an entity's patterns were not written
+by the author of the default, so they are not filled; a rule's clause heads are its definition, so
+they are not filled either.
 
 **Named omission now; positional omission in a goal waits.** At a citation, columns already bind
 positionally from the left and by name (WI-714), so a positional underrun leaves the trailing
@@ -472,7 +481,7 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
   over every value; a column with no default stays free at a citation, as today.
 - A default written on a clause head or a `fact` head is refused naming the declaration; `?v = e` in
   a clause head is refused rather than read as an equation term.
-- A `fact` or clause head that omits a defaulted column is never filled.
+- A clause head that omits a defaulted column — a `rule … :- …` clause or a `fact` — is never filled.
 - A short positional goal keeps its present meaning until WI-20260821-6WVJB.
 - Rust tests run through `rustland/scripts/test.sh`; `sbt testFull` and tree-sitter corpus tests pass.
 
@@ -483,6 +492,6 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
   optional-parameter bit in arrow types.
 - A default is not an error-recovery fallback. It applies only to an omitted slot.
 - Constructor defaults do not change pattern omission, stored entity shape, or field subtyping.
-- A rule column's default is never written per clause, and never fills a clause or `fact` head.
+- A rule column's default is never written per clause, and never fills a clause head (rule clause or `fact`).
 - This proposal does not decide one arity per predicate (WI-20260821-6WVJB); positional omission in
   a goal waits on it.
