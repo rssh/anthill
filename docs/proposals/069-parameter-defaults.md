@@ -77,6 +77,36 @@ A positional argument still fills the next unfilled declaration slot. Once the w
 arguments end, every unfilled slot must either have a default or have been filled by name. Otherwise
 the existing exact-coverage error applies and names the required slot.
 
+**In a rule-body goal, the result is named `result:`.** A goal at an operation's arity + 1 is its
+functional-relation view, the last positional argument being the result (WI-938); a `Bool`
+operation's goal at its declared arity succeeds when the call returns `true` (WI-583). Both read the
+COUNT of positional arguments, and a default makes the parameter count a range, so the count alone
+no longer says which argument is the result:
+
+```anthill
+operation clamp(x: Int64, low: Int64 = 0, high: Int64 = 100) -> Int64
+
+:- clamp(12, ?r)       -- the result with low and high defaulted?  or  x = 12, low = ?r?
+:- clamp(12, 5, ?r)    -- the result with high defaulted?          or  low = 5, high = ?r?
+```
+
+So the result column takes a NAME, the reserved `result` (kernel-language §5.4 already refuses a
+parameter named `result`, so the label can never mean a parameter):
+
+- **Positional arity + 1 keeps its meaning — with every parameter written.** `clamp(12, 0, 100, ?r)`
+  is the functional view exactly as today; no existing goal changes.
+- **With fewer positional arguments, the goal is a call** and the omitted parameters take their
+  defaults. For a `Bool` operation that is the "succeeds when `true`" reading (`contains(?xs, 3)`);
+  any other operation needs its result column, written `result: ?r` — `clamp(12, result: ?r)`.
+- **`result:` works at any arity**, with or without defaults: `clamp(12, 5, result: ?r)` and
+  `clamp(12, 0, 100, result: ?r)` alike. It is the one spelling that combines with omission.
+- **A short goal on a non-`Bool` operation without `result:` is a load error**, never a silent pick
+  between the two readings: `clamp(12, ?r)` is refused with "`?r` fills `low`; write
+  `result: ?r` for the call's result". (Read as a call, its value is an `Int64` in goal position,
+  which is no goal.)
+
+The same holds wherever the functional view is read — a rule body, a query, a constraint body.
+
 ### 1.2 Entity-constructor parameters
 
 An entity field may carry a constructor default:
@@ -634,6 +664,10 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
   `Endpoint("localhost", 80)` — the value the call receives in an operation body too.
 - Missing required parameters remain errors, including a required parameter declared after a
   defaulted one.
+- In a rule-body goal on `clamp(x, low = 0, high = 100) -> Int64`: `clamp(12, result: ?r)` binds
+  `?r = 12` with both defaults; `clamp(12, 0, 100, ?r)` is the functional view as today; and
+  `clamp(12, ?r)` is a load error naming `result:`. A `Bool` operation's short goal succeeds when
+  the call with defaults returns `true`.
 - Calls through function values still require full arity.
 - Spec dispatch uses the spec declaration's defaults and refuses implementation-local redeclaration.
 - A declared rule column's default fills an omission — positional or named — at a goal, a query and
