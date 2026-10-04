@@ -27670,7 +27670,7 @@ impl<'a> Loader<'a> {
                         self.parsed.terms.span(outer_parse_id),
                     );
                     self.expr_match_metas.push(node_occurrence::BranchMeta {
-                        pattern,
+                        pattern: node_occurrence::Src::Term(pattern),
                         has_guard,
                         span,
                     });
@@ -27743,7 +27743,10 @@ impl<'a> Loader<'a> {
                     );
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Let { span, pattern },
+                        node_occurrence::BuildFrame::Let {
+                            span,
+                            pattern: node_occurrence::Src::Term(pattern),
+                        },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -27768,7 +27771,10 @@ impl<'a> Loader<'a> {
                     );
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Lambda { span, param },
+                        node_occurrence::BuildFrame::Lambda {
+                            span,
+                            param: node_occurrence::Src::Term(param),
+                        },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -29832,6 +29838,9 @@ impl<'a> Loader<'a> {
     }
 
     fn build_body_atom_occurrence_inner(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
+        // WI-753 — set by the `Term::Fn` arm when the node it builds is a reflect form
+        // written as data, which the tail re-reads into its keyed occurrence.
+        let mut reread_reflect_form = false;
         let parse_term = self.parsed.terms.get(parse_id).clone();
         let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
         let expr = match parse_term {
@@ -30084,18 +30093,29 @@ impl<'a> Loader<'a> {
                 // RE-DERIVED FROM ITS TERM. See [`Self::entity_ctor_expr`]. `None` means
                 // the lowering produced a shape that arm does not recognise, and the
                 // round-trip below still serves it.
-                let entity_native = if self.kb.written_entity_field_names(new_functor).is_some()
-                    && !node_occurrence::is_reflect_form_functor(self.kb, new_functor)
-                {
+                let written_entity = self.kb.written_entity_field_names(new_functor).is_some();
+                let reflect_form = node_occurrence::is_reflect_form_functor(self.kb, new_functor);
+                let entity_native = if written_entity && !reflect_form {
                     self.entity_ctor_expr(parse_id, new_functor)
                 } else {
                     // WI-20260902-2NXAC — the three COLLECTION LITERALS, the largest
                     // reflect-keyed group still on the round-trip (192 of 284 censused
                     // nodes). WI-753 — and the converter's METHOD CALL, the next largest
-                    // (`dot_apply`, 49). Everything else there keeps it.
+                    // (`dot_apply`, 49).
                     match self.collection_literal_expr(parse_id, new_functor) {
                         Some(expr) => Some(expr),
-                        None => self.dot_apply_expr(parse_id),
+                        None => match self.dot_apply_expr(parse_id) {
+                            Some(expr) => Some(expr),
+                            // WI-753 — and every other reflect form: built here as the
+                            // structural application it is written as, then RE-READ at
+                            // this function's tail (see `reread_reflect_form`).
+                            None if written_entity => {
+                                let expr = self.entity_ctor_expr(parse_id, new_functor);
+                                reread_reflect_form = expr.is_some();
+                                expr
+                            }
+                            None => None,
+                        },
                     }
                 };
                 if let Some(expr) = entity_native {
@@ -30104,9 +30124,7 @@ impl<'a> Loader<'a> {
                     // `dotted_citation_name` — EXACTLY, of the parse node, with no table
                     // and no set difference. That is the ticket.
                     expr
-                } else if self.kb.written_entity_field_names(new_functor).is_some()
-                    || node_occurrence::is_reflect_form_functor(self.kb, new_functor)
-                {
+                } else if written_entity {
                     let kb_term = self.convert_term(parse_id); // memoized hit
                                                                // WI-1035/WI-1039: locate the materialized subtree from the PARSE
                                                                // tree. The term-derived path has no spans of its own (see this
@@ -30127,6 +30145,12 @@ impl<'a> Loader<'a> {
                         Some(&dot_chains),
                     );
                 } else {
+                    // WI-753 — an UNRESOLVED reflect form (`if_expr(…)` written as a
+                    // pattern under `import anthill.reflect.Expr` alone — the corpus
+                    // spelling) has no schema to build against; it is built as the generic
+                    // application it is written as, and re-read at the tail like the
+                    // resolved one.
+                    reread_reflect_form = reflect_form;
                     // Native generic application. Positional in source order; named
                     // ParseAux-filtered (type_args / type_name are read elsewhere)
                     // with `reintern`ed keys in source order — matching `convert_term`
@@ -30246,7 +30270,17 @@ impl<'a> Loader<'a> {
                         // stop. (`type_args` beside it stays `Vec::new()`: that channel is
                         // REFUSED in a rule head by `call_type_args_unsupported_detail`, a
                         // decision this ticket does not reopen.)
-                        recv_type: self.build_recv_type(parse_id),
+                        //
+                        // WI-753: NOT for a reflect form. Its node is re-read at the tail
+                        // into the keyed occurrence, which has no receiver-type slot, so
+                        // consuming the bracket here would drop it in silence — and
+                        // `check_unconsumed_recv_types` refuses it, as it did when this
+                        // node took the round trip. Found by `/code-review`.
+                        recv_type: if reread_reflect_form {
+                            None
+                        } else {
+                            self.build_recv_type(parse_id)
+                        },
                         functor: new_functor,
                         pos_args: pos,
                         named_args: named,
@@ -30276,7 +30310,22 @@ impl<'a> Loader<'a> {
         // chain a citation are `dotted_citation_name`'s, and it re-asks them per level.
         let dot_chain =
             dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id).is_some();
-        NodeOccurrence::new_expr_dot_chain(expr, span, None, dot_chain)
+        let node = NodeOccurrence::new_expr_dot_chain(expr, span, None, dot_chain);
+        // WI-753 — A REFLECT FORM WRITTEN AS DATA IS READ BY THE ARMS THAT READ IT AS A TERM.
+        //
+        // `occurrence_term(?e, if_expr(cond: ?c, …))` writes a reflect form as a pattern; its
+        // occurrence is not the application but what `visit_fn` reads it as — `if_expr`
+        // an `Expr::If`, a concrete `int_lit(value: 3)` a literal, `int_lit(value: ?)` kept
+        // structural. Until this the node went to the early return and was rebuilt from
+        // its lowered TERM, each child located through a table keyed on a hash-consed
+        // `TermId` — so two identical children shared ONE span. Now the node is built
+        // above from the parse tree, every child with its own span, and
+        // [`node_occurrence::rebuild_reflect_node`] reads it through the SAME arms over
+        // `TermView`, reusing the children it built. One reading, two carriers.
+        if reread_reflect_form {
+            return node_occurrence::rebuild_reflect_node(self.kb, node);
+        }
+        node
     }
 
     fn load_var_ref(&mut self, parse_id: TermId) -> TermId {

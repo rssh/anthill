@@ -17,8 +17,9 @@ use crate::span::SourceSpan;
 pub use super::occurrence::PassId;
 use super::subst::Substitution;
 use super::term::{Literal, Term, TermId, Var, VarId};
-use super::typing::{get_named_arg, list_to_vec, unwrap_option};
+use super::typing::get_named_arg;
 use super::KnowledgeBase;
+use super::term_view::{TermView, ViewHead, ViewItem};
 use crate::eval::value::Value;
 
 // ── Origin ──────────────────────────────────────────────────────
@@ -1302,7 +1303,7 @@ pub enum NodeKind {
     /// which asserts on a `Type`-kind node (the type-field→occurrence-child
     /// migration is still deferred — see `occurrence_has_unbound_var`). A
     /// `denoted`-bearing annotation therefore lowers through
-    /// `value_to_term` + `term_to_expr_leaf_occ` on the way in, which is
+    /// `value_to_term` + `expr_leaf_occ` on the way in, which is
     /// LOSSLESS since WI-390 and is exactly what the WI-517 binder channel has
     /// always done. The "a denoted type cannot be hash-consed" reasoning that
     /// once justified a second `Value`-only channel is false; do not revive it.
@@ -4924,7 +4925,7 @@ fn effect_node_to_term(kb: &mut KnowledgeBase, en: &EffectExprNode) -> TermId {
 ///
 /// [`value_to_term`] is the total `Value → Term` boundary (WI-390 — a
 /// `denoted`-bearing type lowers losslessly through `occurrence_to_term`), and
-/// `term_to_expr_leaf_occ` is the inverse `term_to_param_occurrence` has always
+/// `expr_leaf_occ` is the inverse `term_to_param_occurrence` has always
 /// used to read a binder's annotation back. The `Err` arm cannot fire for a
 /// loader-built annotation (`type_expr_to_value` yields only `Term`/`Node`, both
 /// total here); it is a debug-assert + `Bottom` rather than a silent drop,
@@ -4941,7 +4942,7 @@ pub fn value_to_pattern_annotation(
         );
         kb.alloc(Term::Bottom)
     });
-    term_to_expr_leaf_occ(kb, tid, span)
+    expr_leaf_occ(kb, &Src::Term(tid), span)
 }
 
 /// WI-819 — rebuild a pattern occurrence from its SUB-PATTERNS plus an explicit
@@ -5375,27 +5376,30 @@ pub fn term_to_param_occurrence(
     tid: TermId,
     span: SourceSpan,
 ) -> Rc<NodeOccurrence> {
-    use smallvec::SmallVec;
-    let term = kb.get_term(tid).clone();
+    param_occurrence(kb, &Src::Term(tid), span)
+}
+
+/// [`term_to_param_occurrence`] on either carrier (WI-753). A node the loader built is read in
+/// place and every pattern built from it takes the node's OWN span; a stored term has none, so
+/// it takes the caller's (the coarse fallback this has always used).
+fn param_occurrence(kb: &KnowledgeBase, src: &Src, span: SourceSpan) -> Rc<NodeOccurrence> {
+    let span = src.span_or(span);
     // WI-511: a 0-ary pattern reflect constructor (only `wildcard`) is stored
-    // in the canonical `Ref(c)` form after the alloc flip, so treat `Ref(c)` as
-    // the nullary application `Fn{c,[],[]}` and dispatch on the functor exactly
-    // like the `Fn` form. A `Ref` that is NOT a reflect pattern constructor
-    // falls to the `_ =>` arm below (`term_pattern_as_expr_occ` → `Expr::Ref`),
-    // identical to the old Expr-leaf behaviour.
-    let (functor, named_args): (Symbol, SmallVec<[(Symbol, TermId); 2]>) = match &term {
-        Term::Fn {
-            functor,
-            named_args,
-            ..
-        } => (*functor, named_args.clone()),
-        Term::Ref(s) => (*s, SmallVec::new()),
+    // in the canonical `Ref(c)` form after the alloc flip, and a `Ref` heads as the
+    // nullary application `Fn{c,[],[]}` — so both dispatch on the functor alike.
+    // A `Ref` that is NOT a reflect pattern constructor falls to the `_ =>` arm
+    // below (`pattern_as_expr_occ` → `Expr::Ref`), identical to the old Expr-leaf
+    // behaviour.
+    let functor = match src.head(kb) {
+        ViewHead::Functor {
+            functor: Some(f), ..
+        } => f,
         // Logical Var in pattern position → reflection meta-var.
-        Term::Var(v) => return NodeOccurrence::new_expr(Expr::Var(*v), span, None),
-        // Other non-Fn/Ref terms (Const / Ident / Bottom) — surface
+        ViewHead::Var(v) => return NodeOccurrence::new_expr(Expr::Var(v), span, None),
+        // Other non-application shapes (Const / Ident / Bottom) — surface
         // as an Expr leaf so the walkers stay uniform.
-        Term::Const(lit) => return NodeOccurrence::new_expr(Expr::Const(lit.clone()), span, None),
-        Term::Ident(s) => return NodeOccurrence::new_expr(Expr::Ident(*s), span, None),
+        ViewHead::Const(lit) => return NodeOccurrence::new_expr(Expr::Const(lit), span, None),
+        ViewHead::Ident(s) => return NodeOccurrence::new_expr(Expr::Ident(s), span, None),
         _ => return NodeOccurrence::new_expr(Expr::Bottom, span, None),
     };
     // WI-318: dispatch on QUALIFIED name (not short name) to avoid
@@ -5409,82 +5413,66 @@ pub fn term_to_param_occurrence(
             // Reflection rules can carry `var_pattern(name: ?x, …)` as
             // DATA — `?x` becomes a logical Var after rule encoding,
             // which doesn't fit the `name: Symbol` field. In that case
-            // fall through to the Expr-kind term representation so
+            // fall through to the Expr-kind representation so
             // structural matchers see it as data.
-            match extract_term_ref_sym(kb, &named_args, "name") {
+            match src.field(kb, "name").and_then(|v| v.symbol(kb)) {
                 // WI-819: `type_ann` is no longer read here — it is read once,
                 // below, for EVERY variant, and hung on the occurrence.
                 Some(name) => Pattern::Var { name },
-                None => return term_pattern_as_expr_occ(kb, tid, span),
+                None => return pattern_as_expr_occ(kb, src, span),
             }
         }
         "anthill.reflect.Pattern.wildcard" => Pattern::Wildcard,
         "anthill.reflect.Pattern.literal_pattern" => {
             // CLAUDE.md: avoid silent fallbacks. If `value` isn't a
-            // Term::Const (e.g. a logical Var via a reflection-data
+            // literal (e.g. a logical Var via a reflection-data
             // synthesizer), surface the pattern as Expr instead of
             // silently coercing to `Literal::Int(0)`.
-            match extract_literal_arg(kb, &named_args, "value") {
+            match src.field(kb, "value").and_then(|v| v.literal(kb)) {
                 Some(lit) => Pattern::Literal { value: lit },
-                None => return term_pattern_as_expr_occ(kb, tid, span),
+                None => return pattern_as_expr_occ(kb, src, span),
             }
         }
         "anthill.reflect.Pattern.constructor_pattern" => {
-            match extract_term_ref_sym(kb, &named_args, "name") {
+            match src.field(kb, "name").and_then(|v| v.symbol(kb)) {
                 Some(name) => {
-                    let pos_args: Vec<Rc<NodeOccurrence>> =
-                        extract_named_list(kb, &named_args, "args")
-                            .iter()
-                            .map(|&t| term_to_param_occurrence(kb, t, span))
-                            .collect();
+                    let pos_args: Vec<Rc<NodeOccurrence>> = named_list(kb, src, "args")
+                        .iter()
+                        .map(|t| param_occurrence(kb, t, span))
+                        .collect();
                     // WI-445: named sub-patterns (`Box(v: some(x))`) ride a
                     // `named: List[NamedPattern]` field; surface each
                     // `(field, sub-pattern occurrence)` so the typer / eval
                     // bind them by field name.
-                    let named_subs: Vec<(Symbol, Rc<NodeOccurrence>)> =
-                        extract_named_list(kb, &named_args, "named")
-                            .iter()
-                            .filter_map(|&np| read_named_pattern_term(kb, np))
-                            .map(|(field, sub)| (field, term_to_param_occurrence(kb, sub, span)))
-                            .collect();
+                    let named_subs: Vec<(Symbol, Rc<NodeOccurrence>)> = named_list(kb, src, "named")
+                        .iter()
+                        .filter_map(|np| read_named_pattern_src(kb, np))
+                        .map(|(field, sub)| (field, param_occurrence(kb, &sub, span)))
+                        .collect();
                     Pattern::Constructor {
                         name,
                         pos_args,
                         named_args: named_subs,
                     }
                 }
-                None => return term_pattern_as_expr_occ(kb, tid, span),
+                None => return pattern_as_expr_occ(kb, src, span),
             }
         }
         "anthill.reflect.Pattern.tuple_pattern" => {
-            let positional: Vec<Rc<NodeOccurrence>> =
-                extract_named_list(kb, &named_args, "elements")
-                    .iter()
-                    .map(|&t| term_to_param_occurrence(kb, t, span))
-                    .collect();
-            // WI-803: `labels` is empty here and can only be empty here — this
-            // rebuilds a pattern from its REFLECTED TERM, and the term surface
-            // (`tuple_pattern(elements: …)`) carries no labels because the surface
-            // grammar has no way to write one. They are the typer's, resolved from
-            // the expected type; a pattern that arrives this way has not been
-            // typed, so the matcher's positional fallback is the correct reading.
-            // WI-819 / WI-803: `labels` now HAS a term surface
-            // (`tuple_pattern(elements, labels)`, emitted only when non-empty),
-            // so this reads them back instead of always returning `Vec::new()`.
-            // What used to be true — "empty here and can only be empty here" —
-            // was a consequence of the reflect surface having nowhere to put
-            // them, and it meant a pattern lowered after typing and rebuilt here
-            // silently reverted to reading its components BY SLOT: the WI-788
-            // wrong answer on a permuted value. A term carrying no `labels` key
-            // still yields an empty list, which remains the correct reading for
-            // a pattern that was never typed (the matcher's positional
-            // fallback).
-            let labels: Vec<Symbol> = extract_named_list(kb, &named_args, "labels")
+            let positional: Vec<Rc<NodeOccurrence>> = named_list(kb, src, "elements")
                 .iter()
-                .filter_map(|&t| match kb.get_term(t) {
-                    Term::Ref(s) => Some(*s),
-                    _ => None,
-                })
+                .map(|t| param_occurrence(kb, t, span))
+                .collect();
+            // WI-819 / WI-803: `labels` HAS a term surface (`tuple_pattern(elements,
+            // labels)`, emitted only when non-empty), so this reads them back instead of
+            // always returning `Vec::new()` — a pattern lowered after typing and rebuilt
+            // here would otherwise silently revert to reading its components BY SLOT,
+            // the WI-788 wrong answer on a permuted value. A pattern with no `labels`
+            // key yields an empty list, which remains the correct reading for a
+            // pattern that was never typed (the matcher's positional fallback).
+            let labels: Vec<Symbol> = named_list(kb, src, "labels")
+                .iter()
+                .filter_map(|t| t.ref_symbol(kb))
                 .collect();
             // The matcher's invariant: empty, or exactly one label per binder.
             // A partially-filled list can only come from a hand-built /
@@ -5499,26 +5487,24 @@ pub fn term_to_param_occurrence(
         }
         _ => {
             // Unknown functor in a pattern slot: surface as Expr-kind so
-            // downstream walkers see the term shape as data, rather
-            // than silently coercing to Pattern::Wildcard (which would
+            // downstream walkers see the shape as data, rather than
+            // silently coercing to Pattern::Wildcard (which would
             // make any match unconditionally succeed). The reflection-
             // meta-var path also takes this fall-through.
-            return term_pattern_as_expr_occ(kb, tid, span);
+            return pattern_as_expr_occ(kb, src, span);
         }
     };
-    // WI-819: ONE annotation read, for every variant — the term surface carries
+    // WI-819: ONE annotation read, for every variant — the surface carries
     // `type_ann` only when the pattern is annotated (the `constructor_pattern.
     // named` / `proof_stmt.strategy` precedent: an absent key and a `none()`
     // payload carry the same information, and omitting it keeps `wildcard`
     // NULLARY, which `functor_view_head` relies on to head as `Ref` on both
-    // carriers — WI-436 / WI-511).
-    // WI-819: ONE annotation read, for every variant, off the TERM — the single
-    // source. The loader attaches it to the pattern term before this runs, so
-    // there is no second, occurrence-side channel to reconcile with.
-    let type_ann = get_named_arg(kb, &named_args, "type_ann").and_then(|t| {
+    // carriers — WI-436 / WI-511). The loader attaches it to the pattern before
+    // this runs, so there is no second, occurrence-side channel to reconcile with.
+    let type_ann = src.field(kb, "type_ann").and_then(|t| {
         // WI-819 changed this key's ENCODING: it used to be present-always and
         // `Option`-WRAPPED (`type_ann: none()` / `some(value: T)`), it is now
-        // present-only-when-annotated and UNWRAPPED. A term still carrying the
+        // present-only-when-annotated and UNWRAPPED. A pattern still carrying the
         // old shape would otherwise read as annotated with the TYPE `none` —
         // an `Expr::Ref(Option.none)` annotation flowing on into the binder's
         // type and the let's expected type. Both in-tree producers were
@@ -5526,13 +5512,12 @@ pub fn term_to_param_occurrence(
         // externally-synthesized term; refuse it loudly rather than silently
         // mistyping the binder (CLAUDE.md: prefer a loud error over a silent
         // skip).
-        let is_option_wrapper = match kb.get_term(t) {
-            Term::Fn { functor, .. } | Term::Ref(functor) => matches!(
-                kb.qualified_name_of(*functor),
+        let is_option_wrapper = t.functor(kb).is_some_and(|f| {
+            matches!(
+                kb.qualified_name_of(f),
                 "anthill.prelude.Option.none" | "anthill.prelude.Option.some"
-            ),
-            _ => false,
-        };
+            )
+        });
         if is_option_wrapper {
             debug_assert!(
                 false,
@@ -5541,9 +5526,24 @@ pub fn term_to_param_occurrence(
             );
             return None;
         }
-        Some(term_to_expr_leaf_occ(kb, t, span))
+        Some(expr_leaf_occ(kb, &t, span))
     });
     NodeOccurrence::new_pattern_annotated(pat, type_ann, span, None)
+}
+
+/// The elements of the list-valued field `field` of `src` — none when it is absent.
+fn named_list(kb: &KnowledgeBase, src: &Src, field: &str) -> Vec<Src> {
+    src.field(kb, field).map(|l| l.list(kb)).unwrap_or_default()
+}
+
+/// The reader of [`build_named_pattern_term`]'s shape, on either carrier: `NamedPattern(name: Ref(field), pattern: sub)`.
+fn read_named_pattern_src(kb: &KnowledgeBase, src: &Src) -> Option<(Symbol, Src)> {
+    if !src.is_application(kb) {
+        return None;
+    }
+    let field = src.field(kb, "name").and_then(|v| v.symbol(kb))?;
+    let pat = src.field(kb, "pattern")?;
+    Some((field, pat))
 }
 
 /// WI-318: build an Expr-kind leaf occurrence for a `TermId` that names
@@ -5552,29 +5552,38 @@ pub fn term_to_param_occurrence(
 /// same surface as the rest of the rule body. Compound types (Fn)
 /// surface as `Expr::Apply` (the parameterised/named/sort-ref shapes
 /// the typer reads as terms-as-types).
-fn term_to_expr_leaf_occ(kb: &KnowledgeBase, tid: TermId, span: SourceSpan) -> Rc<NodeOccurrence> {
-    match kb.get_term(tid).clone() {
-        Term::Var(v) => NodeOccurrence::new_expr(Expr::Var(v), span, None),
-        Term::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit), span, None),
-        Term::Ref(s) => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
-        Term::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(s), span, None),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
+fn expr_leaf_occ(kb: &KnowledgeBase, src: &Src, span: SourceSpan) -> Rc<NodeOccurrence> {
+    // A node the loader built IS the expression already (WI-753).
+    if let Src::Node(n) = src {
+        return Rc::clone(n);
+    }
+    match src.head(kb) {
+        ViewHead::Var(v) => NodeOccurrence::new_expr(Expr::Var(v), span, None),
+        ViewHead::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit), span, None),
+        ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            named_arity: 0,
+        } if src.is_ref(kb) => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
+        ViewHead::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(s), span, None),
+        ViewHead::Functor {
+            functor: Some(functor),
+            ..
         } => {
-            // Surface a type-position Fn as an Expr::Apply with NO
+            // Surface a type-position application as an Expr::Apply with NO
             // type_args (these are types-as-terms; the args are the
             // type's structural components). Children pass through
-            // `term_to_expr_leaf_occ` so a nested Var is preserved as
+            // `expr_leaf_occ` so a nested Var is preserved as
             // an Expr::Var occurrence.
-            let pos: Vec<Rc<NodeOccurrence>> = pos_args
+            let pos: Vec<Rc<NodeOccurrence>> = src
+                .pos_args(kb)
                 .iter()
-                .map(|&t| term_to_expr_leaf_occ(kb, t, span))
+                .map(|t| expr_leaf_occ(kb, t, span))
                 .collect();
-            let named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+            let named: Vec<(Symbol, Rc<NodeOccurrence>)> = src
+                .named_args(kb)
                 .iter()
-                .map(|&(s, t)| (s, term_to_expr_leaf_occ(kb, t, span)))
+                .map(|(s, t)| (*s, expr_leaf_occ(kb, t, span)))
                 .collect();
             NodeOccurrence::new_expr(
                 Expr::Apply {
@@ -5600,24 +5609,26 @@ fn term_to_expr_leaf_occ(kb: &KnowledgeBase, tid: TermId, span: SourceSpan) -> R
 /// var_pattern / constructor_pattern / tuple_pattern keep the
 /// Pattern-or-Expr decision per-node, so a ground sub-pattern still
 /// becomes Pattern-kind and only the non-ground spine stays Expr.
-fn term_pattern_as_expr_occ(
-    kb: &KnowledgeBase,
-    tid: TermId,
-    span: SourceSpan,
-) -> Rc<NodeOccurrence> {
-    match kb.get_term(tid).clone() {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
+fn pattern_as_expr_occ(kb: &KnowledgeBase, src: &Src, span: SourceSpan) -> Rc<NodeOccurrence> {
+    match src.head(kb) {
+        ViewHead::Functor {
+            functor: Some(s),
+            pos_arity: 0,
+            named_arity: 0,
+        } if src.is_ref(kb) => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
+        ViewHead::Functor {
+            functor: Some(functor),
+            ..
         } => {
-            let pos: Vec<Rc<NodeOccurrence>> = pos_args
+            let pos: Vec<Rc<NodeOccurrence>> = src
+                .pos_args(kb)
                 .iter()
-                .map(|&t| term_pattern_child_as_occ(kb, t, span))
+                .map(|t| pattern_child_as_occ(kb, t, span))
                 .collect();
-            let named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+            let named: Vec<(Symbol, Rc<NodeOccurrence>)> = src
+                .named_args(kb)
                 .iter()
-                .map(|&(s, t)| (s, term_pattern_child_as_occ(kb, t, span)))
+                .map(|(s, t)| (*s, pattern_child_as_occ(kb, t, span)))
                 .collect();
             NodeOccurrence::new_expr(
                 Expr::Apply {
@@ -5631,49 +5642,60 @@ fn term_pattern_as_expr_occ(
                 None,
             )
         }
-        Term::Var(v) => NodeOccurrence::new_expr(Expr::Var(v), span, None),
-        Term::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit), span, None),
-        Term::Ref(s) => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
-        Term::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(s), span, None),
+        ViewHead::Var(v) => NodeOccurrence::new_expr(Expr::Var(v), span, None),
+        ViewHead::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit), span, None),
+        ViewHead::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(s), span, None),
         _ => NodeOccurrence::new_expr(Expr::Bottom, span, None),
     }
 }
 
 /// Per-child projection inside a non-ground pattern term (see
-/// `term_pattern_as_expr_occ`): a child that's itself a recognised
+/// `pattern_as_expr_occ`): a child that's itself a recognised
 /// pattern term goes back through `term_to_param_occurrence` (so a
 /// ground sub-pattern surfaces as Pattern-kind); otherwise it's lifted
 /// to an Expr leaf so structural matchers see the right shape.
-fn term_pattern_child_as_occ(
-    kb: &KnowledgeBase,
-    tid: TermId,
-    span: SourceSpan,
-) -> Rc<NodeOccurrence> {
-    match kb.get_term(tid) {
-        Term::Fn { functor, .. } => {
-            let name = kb.local_name_of(*functor);
-            if matches!(
-                name,
-                "var_pattern"
-                    | "wildcard"
-                    | "literal_pattern"
-                    | "constructor_pattern"
-                    | "tuple_pattern"
-            ) {
-                return term_to_param_occurrence(kb, tid, span);
+fn pattern_child_as_occ(kb: &KnowledgeBase, src: &Src, span: SourceSpan) -> Rc<NodeOccurrence> {
+    let span = src.span_or(span);
+    match src.head(kb) {
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity,
+            named_arity,
+        } => {
+            let name = kb.local_name_of(f);
+            let nullary = pos_arity == 0 && named_arity == 0;
+            // WI-511: the nullary `wildcard` pattern is the canonical `Ref(wildcard)`;
+            // route it through `param_occurrence` so it surfaces as
+            // Pattern::Wildcard, not an `Expr::Ref` data leaf.
+            if (!nullary
+                && matches!(
+                    name,
+                    "var_pattern"
+                        | "wildcard"
+                        | "literal_pattern"
+                        | "constructor_pattern"
+                        | "tuple_pattern"
+                ))
+                || (nullary && name == "wildcard")
+            {
+                return param_occurrence(kb, src, span);
             }
-            term_pattern_as_expr_occ(kb, tid, span)
+            match src {
+                // A node the loader built is the data already (WI-753).
+                Src::Node(n) => Rc::clone(n),
+                Src::Term(_) if nullary && src.is_ref(kb) => {
+                    NodeOccurrence::new_expr(Expr::Ref(f), span, None)
+                }
+                Src::Term(_) => pattern_as_expr_occ(kb, src, span),
+            }
         }
-        Term::Var(v) => NodeOccurrence::new_expr(Expr::Var(*v), span, None),
-        Term::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit.clone()), span, None),
-        // WI-511: the nullary `wildcard` pattern is the canonical `Ref(wildcard)`;
-        // route it through `term_to_param_occurrence` so it surfaces as
-        // Pattern::Wildcard, not an `Expr::Ref` data leaf.
-        Term::Ref(s) if kb.local_name_of(*s) == "wildcard" => {
-            term_to_param_occurrence(kb, tid, span)
-        }
-        Term::Ref(s) => NodeOccurrence::new_expr(Expr::Ref(*s), span, None),
-        Term::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(*s), span, None),
+        _ if matches!(src, Src::Node(_)) => match src {
+            Src::Node(n) => Rc::clone(n),
+            Src::Term(_) => unreachable!(),
+        },
+        ViewHead::Var(v) => NodeOccurrence::new_expr(Expr::Var(v), span, None),
+        ViewHead::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit), span, None),
+        ViewHead::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(s), span, None),
         _ => NodeOccurrence::new_expr(Expr::Bottom, span, None),
     }
 }
@@ -5683,7 +5705,7 @@ fn term_pattern_child_as_occ(
 /// source of truth for that shape, shared by the loader
 /// (`LoadBuildFrame::PatternConstructor`) and [`pattern_to_term`] so the
 /// occurrence↔term round-trip cannot drift. Read back with
-/// [`read_named_pattern_term`].
+/// [`read_named_pattern_src`].
 pub(crate) fn build_named_pattern_term(
     kb: &mut KnowledgeBase,
     field: Symbol,
@@ -5701,62 +5723,7 @@ pub(crate) fn build_named_pattern_term(
     })
 }
 
-/// WI-445: read a reflect `NamedPattern(name: Ref(field), pattern: sub)` term
-/// into `(field_symbol, sub_pattern_term)`. The element shape of a constructor
-/// pattern's `named` list. Returns `None` for a malformed element. Shared by
-/// the typer (`bind_and_label_pattern`) and eval (`match_constructor_pattern`).
-pub(crate) fn read_named_pattern_term(kb: &KnowledgeBase, tid: TermId) -> Option<(Symbol, TermId)> {
-    let Term::Fn { named_args, .. } = kb.get_term(tid) else {
-        return None;
-    };
-    let field = extract_term_ref_sym(kb, named_args, "name")?;
-    let pat = named_args
-        .iter()
-        .find(|(s, _)| kb.local_name_of(*s) == "pattern")
-        .map(|(_, t)| *t)?;
-    Some((field, pat))
-}
 
-fn extract_term_ref_sym(
-    kb: &KnowledgeBase,
-    named_args: &[(Symbol, TermId)],
-    field: &str,
-) -> Option<Symbol> {
-    let (_, tid) = named_args
-        .iter()
-        .find(|(s, _)| kb.local_name_of(*s) == field)?;
-    match kb.get_term(*tid) {
-        Term::Ref(s) => Some(*s),
-        Term::Ident(s) => Some(*s),
-        _ => None,
-    }
-}
-fn extract_literal_arg(
-    kb: &KnowledgeBase,
-    named_args: &[(Symbol, TermId)],
-    field: &str,
-) -> Option<Literal> {
-    let (_, tid) = named_args
-        .iter()
-        .find(|(s, _)| kb.local_name_of(*s) == field)?;
-    match kb.get_term(*tid) {
-        Term::Const(lit) => Some(lit.clone()),
-        _ => None,
-    }
-}
-fn extract_named_list(
-    kb: &KnowledgeBase,
-    named_args: &[(Symbol, TermId)],
-    field: &str,
-) -> Vec<TermId> {
-    let Some((_, tid)) = named_args
-        .iter()
-        .find(|(s, _)| kb.local_name_of(*s) == field)
-    else {
-        return Vec::new();
-    };
-    list_to_vec(kb, *tid)
-}
 
 /// WI-318: convert a Pattern-kind occurrence back to the reflect-Term
 /// shape (`var_pattern` / `wildcard` / `literal_pattern` /
@@ -6646,12 +6613,36 @@ pub(crate) fn materialize_from_handle_spanned(
     spans: Option<&std::collections::HashMap<TermId, SourceSpan>>,
     dot_chains: Option<&std::collections::HashSet<TermId>>,
 ) -> Rc<NodeOccurrence> {
+    run_rebuild(kb, Src::Term(root), spans, dot_chains)
+}
+
+/// WI-753 — REBUILD AN OCCURRENCE THE LOADER BUILT FROM ITS PARSE NODE into the form it
+/// denotes. A reflect form written as DATA in a rule body (`if_expr(cond: ?c, …)`,
+/// `var_ref(name: ?n)`) is built by the loader as a structural application over children it
+/// built natively; this reads that application through the same arms a stored term takes
+/// ([`visit_fn`]) and REUSES its children — their spans included. A node that is not such an
+/// application comes back unchanged.
+pub(crate) fn rebuild_reflect_node(kb: &KnowledgeBase, node: Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
+    run_rebuild(kb, Src::Node(node), None, None)
+}
+
+/// The work-stack walk both entry points run. Iterative (WI-253): constant host stack
+/// whatever the nesting.
+fn run_rebuild(
+    kb: &KnowledgeBase,
+    root: Src,
+    spans: Option<&std::collections::HashMap<TermId, SourceSpan>>,
+    dot_chains: Option<&std::collections::HashSet<TermId>>,
+) -> Rc<NodeOccurrence> {
     let mut work: Vec<WorkOp> = vec![WorkOp::Visit(root)];
     let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
 
     while let Some(op) = work.pop() {
         match op {
-            WorkOp::Visit(t) => visit_term(kb, t, spans, dot_chains, &mut work, &mut results),
+            WorkOp::Visit(Src::Term(t)) => {
+                visit_term(kb, t, spans, dot_chains, &mut work, &mut results)
+            }
+            WorkOp::Visit(Src::Node(n)) => visit_node(kb, n, &mut work, &mut results),
             WorkOp::Build(frame) => build_frame(kb, frame, &mut results),
         }
     }
@@ -6741,8 +6732,201 @@ pub(crate) fn build_expr_leaf(
 /// they pop in source order). `Build` pops the completed children
 /// from `results` and assembles the parent NodeOccurrence.
 enum WorkOp {
-    Visit(TermId),
+    Visit(Src),
     Build(BuildFrame),
+}
+
+/// WI-753 — ONE CHILD OF A FORM BEING REBUILT INTO AN OCCURRENCE, on whichever carrier it
+/// rides: a stored hash-consed term, or an occurrence the loader already built from its own
+/// parse node. Every read of a form's slots — a field by name, a symbol, a literal, a list,
+/// an `Option` payload — goes through [`TermView`], which both carriers implement, so ONE
+/// rebuild ([`visit_fn`], [`param_occurrence`]) serves both, and a node the loader built is
+/// read in place: never lowered to a term only to be rebuilt from it.
+///
+/// That round trip is what WI-753 removes. A hash-consed `TermId` is shared by every
+/// structurally identical subterm, so a node rebuilt from one had to look its location up by
+/// a key many sites share: two identical siblings got one span, and a miss fell back to the
+/// cross-file, first-write-wins `kb.term_spans`. A `Node` child keeps the span it was built
+/// with.
+#[derive(Clone, Debug)]
+pub(crate) enum Src {
+    Term(TermId),
+    Node(Rc<NodeOccurrence>),
+}
+
+impl Src {
+    fn from_item(item: ViewItem<'_>) -> Src {
+        match item {
+            ViewItem::Term(t) => Src::Term(t),
+            ViewItem::Node(n) => Src::Node(n),
+            ViewItem::Value(v) => Src::from_value(v.clone()),
+            ViewItem::Owned(v) => Src::from_value(v),
+        }
+    }
+
+    fn from_value(v: Value) -> Src {
+        match v {
+            Value::Term { id, .. } => Src::Term(id),
+            Value::Node(n) => Src::Node(n),
+            // Any other value carrier rides an occurrence as itself (`Expr::Spliced`
+            // views through to the value, so its shape is still readable).
+            other => Src::Node(NodeOccurrence::new_expr(Expr::Spliced(other), empty_span(), None)),
+        }
+    }
+
+    fn head(&self, kb: &KnowledgeBase) -> ViewHead {
+        match self {
+            Src::Term(t) => t.head(kb),
+            Src::Node(n) => n.head(kb),
+        }
+    }
+
+    /// The named argument whose LOCAL name is `name` (the matching rule `get_named_arg`
+    /// applies to a term).
+    fn field(&self, kb: &KnowledgeBase, name: &str) -> Option<Src> {
+        match self {
+            Src::Term(t) => t.named_field(kb, name).map(Src::from_item),
+            Src::Node(n) => n.named_field(kb, name).map(Src::from_item),
+        }
+    }
+
+    fn pos_arg(&self, kb: &KnowledgeBase, i: usize) -> Option<Src> {
+        match self {
+            Src::Term(t) => t.pos_arg(kb, i).map(Src::from_item),
+            Src::Node(n) => n.pos_arg(kb, i).map(Src::from_item),
+        }
+    }
+
+    fn named_arg(&self, kb: &KnowledgeBase, sym: Symbol) -> Option<Src> {
+        match self {
+            Src::Term(t) => t.named_arg(kb, sym).map(Src::from_item),
+            Src::Node(n) => n.named_arg(kb, sym).map(Src::from_item),
+        }
+    }
+
+    fn named_keys(&self, kb: &KnowledgeBase) -> Vec<Symbol> {
+        match self {
+            Src::Term(t) => t.named_keys(kb),
+            Src::Node(n) => n.named_keys(kb),
+        }
+    }
+
+    /// The positional arguments, in order.
+    fn pos_args(&self, kb: &KnowledgeBase) -> Vec<Src> {
+        let n = match self.head(kb) {
+            ViewHead::Functor { pos_arity, .. } => pos_arity,
+            _ => 0,
+        };
+        (0..n).filter_map(|i| self.pos_arg(kb, i)).collect()
+    }
+
+    /// The named arguments, in the carrier's canonical order.
+    fn named_args(&self, kb: &KnowledgeBase) -> Vec<(Symbol, Src)> {
+        self.named_keys(kb)
+            .into_iter()
+            .filter_map(|k| self.named_arg(kb, k).map(|v| (k, v)))
+            .collect()
+    }
+
+    /// A NAME: a bare reference (`Ref(s)`, which heads as a nullary functor) or an
+    /// identifier. What `named_ref` read off a `Term::Ref` / `Term::Ident`.
+    /// Is this a REFERENCE — a stored `Term::Ref`, or an `Expr::Ref` node?
+    ///
+    /// `TermView` heads `Ref(S)` and a stored nullary `Fn{S,[],[]}` alike (both are
+    /// `Functor{S, 0, 0}`), but they are two terms: for a sort, `Fn{S}` is the concrete
+    /// spec identity and `Ref(S)` the dispatch wildcard (WI-511's canon). Every reader
+    /// that turned a `Term::Ref` into `Expr::Ref` — or a name out of one — asks this, so
+    /// a nullary `Fn` keeps reading as the application it is.
+    fn is_ref(&self, kb: &KnowledgeBase) -> bool {
+        match self {
+            Src::Term(t) => matches!(kb.get_term(*t), Term::Ref(_)),
+            Src::Node(n) => matches!(n.as_expr(), Some(Expr::Ref(_))),
+        }
+    }
+
+    fn symbol(&self, kb: &KnowledgeBase) -> Option<Symbol> {
+        match self.head(kb) {
+            ViewHead::Ident(s) => Some(s),
+            _ => self.ref_symbol(kb),
+        }
+    }
+
+    /// A REFERENCE only — not an identifier: the payload an argument LABEL carries
+    /// (`ApplyArg(name: some(Ref(k)), …)`), which is never written as a bare identifier.
+    fn ref_symbol(&self, kb: &KnowledgeBase) -> Option<Symbol> {
+        match self.head(kb) {
+            ViewHead::Functor {
+                functor: Some(s),
+                pos_arity: 0,
+                named_arity: 0,
+            } if self.is_ref(kb) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn literal(&self, kb: &KnowledgeBase) -> Option<Literal> {
+        match self.head(kb) {
+            ViewHead::Const(lit) => Some(lit),
+            _ => None,
+        }
+    }
+
+    fn functor(&self, kb: &KnowledgeBase) -> Option<Symbol> {
+        self.head(kb).functor_sym()
+    }
+
+    /// Is this an application (with or without arguments) — the shape a `Term::Fn` has?
+    fn is_application(&self, kb: &KnowledgeBase) -> bool {
+        self.functor(kb).is_some()
+    }
+
+    /// The payload of a `some(…)`, `None` for anything else — `unwrap_option`'s reading.
+    fn unwrap_some(&self, kb: &KnowledgeBase) -> Option<Src> {
+        let f = self.functor(kb)?;
+        if kb.local_name_of(f) != "some" {
+            return None;
+        }
+        self.pos_arg(kb, 0)
+            .or_else(|| self.named_keys(kb).first().and_then(|k| self.named_arg(kb, *k)))
+    }
+
+    /// The elements of a `cons(head, tail) | nil` spine — `list_to_vec`'s reading — or of a
+    /// list literal an occurrence carries. Anything else is no list and yields nothing, as
+    /// `list_to_vec` does for a variable.
+    fn list(&self, kb: &KnowledgeBase) -> Vec<Src> {
+        if let Src::Node(n) = self {
+            if let Some(Expr::ListLit(items)) = n.as_expr() {
+                return items.iter().cloned().map(Src::Node).collect();
+            }
+        }
+        let mut items = Vec::new();
+        let mut cur = self.clone();
+        loop {
+            let Some(f) = cur.functor(kb) else { break };
+            match kb.local_name_of(f) {
+                "cons" => {
+                    if let Some(h) = cur.field(kb, "head").or_else(|| cur.pos_arg(kb, 0)) {
+                        items.push(h);
+                    }
+                    match cur.field(kb, "tail").or_else(|| cur.pos_arg(kb, 1)) {
+                        Some(t) => cur = t,
+                        None => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+        items
+    }
+
+    /// The span a node built from this source carries: an occurrence's own, or — for a term,
+    /// which has none of its own here — the caller's.
+    fn span_or(&self, fallback: SourceSpan) -> SourceSpan {
+        match self {
+            Src::Node(n) => n.span,
+            Src::Term(_) => fallback,
+        }
+    }
 }
 
 /// Parent-assembly metadata captured at Visit time so the matching
@@ -6761,11 +6945,11 @@ pub(crate) enum BuildFrame {
     /// the two carriers cannot disagree by construction.
     Let {
         span: SourceSpan,
-        pattern: TermId,
+        pattern: Src,
     },
     Lambda {
         span: SourceSpan,
-        param: TermId,
+        param: Src,
     },
     /// In-body / control-flow proof (WI-538). Children on the result
     /// stack are `[body, conclude?]`; the resolved target / strategy /
@@ -6867,7 +7051,7 @@ pub(crate) enum BuildFrame {
 }
 
 pub(crate) struct BranchMeta {
-    pub(crate) pattern: TermId,
+    pub(crate) pattern: Src,
     pub(crate) has_guard: bool,
     pub(crate) span: SourceSpan,
 }
@@ -6894,11 +7078,7 @@ fn visit_term(
         Term::Ref(s) => results.push(NodeOccurrence::new_expr(Expr::Ref(s), span, None)),
         Term::Ident(s) => results.push(NodeOccurrence::new_expr(Expr::Ident(s), span, None)),
         Term::Bottom => results.push(NodeOccurrence::new_expr(Expr::Bottom, span, None)),
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => {
+        Term::Fn { functor, .. } => {
             let qn = kb.qualified_name_of(functor);
             let short = kb.local_name_of(functor);
             let key = expr_form_key(qn, short);
@@ -6906,18 +7086,7 @@ fn visit_term(
             // is. Asked of THIS node only — the walk re-asks it of every child, which is
             // what `parse_dot_chain_table` fills per level.
             let dot_chain = dot_chains.is_some_and(|m| m.contains(&t));
-            visit_fn(
-                kb,
-                t,
-                span,
-                functor,
-                &pos_args,
-                &named_args,
-                key,
-                dot_chain,
-                work,
-                results,
-            );
+            visit_fn(kb, &Src::Term(t), span, functor, key, dot_chain, work, results);
         }
         Term::ParseAux(_) => unreachable!(
             "parse-only Term::ParseAux variant reached node_occurrence materialization",
@@ -6929,13 +7098,12 @@ fn visit_term(
 /// last-segment functor key. Children to materialize get pushed as
 /// `Visit` ops in REVERSE order (so the first child pops first), with
 /// the matching `Build` frame pushed first (so it pops last).
+#[allow(clippy::too_many_arguments)]
 fn visit_fn(
     kb: &KnowledgeBase,
-    t: TermId,
+    src: &Src,
     span: SourceSpan,
     functor: Symbol,
-    pos_args: &smallvec::SmallVec<[TermId; 4]>,
-    named_args: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
     key: &str,
     dot_chain: bool,
     work: &mut Vec<WorkOp>,
@@ -6957,23 +7125,19 @@ fn visit_fn(
     );
     match key {
         "int_lit" | "float_lit" | "bigint_lit" | "string_lit" | "bool_lit" => {
-            match get_named_arg(kb, named_args, "value").map(|v| kb.get_term(v)) {
+            match src.field(kb, "value").and_then(|v| v.literal(kb)) {
                 // Concrete op-body literal → the internal literal leaf.
-                Some(Term::Const(lit)) => {
-                    results.push(NodeOccurrence::new_expr(
-                        Expr::Const(lit.clone()),
-                        span,
-                        None,
-                    ));
+                Some(lit) => {
+                    results.push(NodeOccurrence::new_expr(Expr::Const(lit), span, None));
                 }
                 // Non-literal `value` ⇒ reflection data (a pattern such as
                 // `int_lit(value: ?)`); keep it structural (WI-297) so
                 // `occurrence_term` can match it.
-                _ => push_unknown_fn(span, functor, pos_args, named_args, dot_chain, work),
+                None => push_unknown_fn(kb, span, functor, src, dot_chain, work, results),
             }
         }
         "var_ref" => {
-            match named_ref(kb, named_args, "name") {
+            match src.field(kb, "name").and_then(|v| v.symbol(kb)) {
                 Some(sym) => {
                     results.push(NodeOccurrence::new_expr(
                         Expr::VarRef { name: sym },
@@ -6983,20 +7147,20 @@ fn visit_fn(
                 }
                 // Non-name `name` (e.g. `var_ref(name: ?n)`) ⇒ reflection data;
                 // keep structural (WI-297).
-                None => push_unknown_fn(span, functor, pos_args, named_args, dot_chain, work),
+                None => push_unknown_fn(kb, span, functor, src, dot_chain, work, results),
             }
         }
         "if_expr" => {
-            let cond = get_named_arg(kb, named_args, "cond");
-            let then_b = get_named_arg(kb, named_args, "then_branch");
-            let else_b = get_named_arg(kb, named_args, "else_branch");
+            let cond = src.field(kb, "cond");
+            let then_b = src.field(kb, "then_branch");
+            let else_b = src.field(kb, "else_branch");
             work.push(WorkOp::Build(BuildFrame::If { span }));
             push_visit_or_bottom(work, else_b);
             push_visit_or_bottom(work, then_b);
             push_visit_or_bottom(work, cond);
         }
         "let_expr" => {
-            let pattern = get_named_arg(kb, named_args, "pattern").unwrap_or(t);
+            let pattern = src.field(kb, "pattern").unwrap_or_else(|| src.clone());
             // WI-814: NO `type_name` read. WI-342 T8 deleted the WRITE side (the
             // `k_type_name` slot on the reflect `let_expr` term) because it was
             // write-only — the typer types a `let` from the occurrence, never
@@ -7013,15 +7177,15 @@ fn visit_fn(
             // and the loader lowers it onto the occurrence via
             // `type_expr_to_value`. Different namespace, different direction.
             // Deleting THAT would drop every let annotation.
-            let value = get_named_arg(kb, named_args, "value");
-            let body = get_named_arg(kb, named_args, "body");
+            let value = src.field(kb, "value");
+            let body = src.field(kb, "body");
             work.push(WorkOp::Build(BuildFrame::Let { span, pattern }));
             push_visit_or_bottom(work, body);
             push_visit_or_bottom(work, value);
         }
         "lambda_expr" => {
-            let param = get_named_arg(kb, named_args, "param").unwrap_or(t);
-            let body = get_named_arg(kb, named_args, "body");
+            let param = src.field(kb, "param").unwrap_or_else(|| src.clone());
+            let body = src.field(kb, "body");
             work.push(WorkOp::Build(BuildFrame::Lambda { span, param }));
             push_visit_or_bottom(work, body);
         }
@@ -7030,9 +7194,9 @@ fn visit_fn(
             // term (the inverse of the loader's BuildFrame::Proof). The
             // target/strategy/using clauses are leaf metadata; body and
             // optional conclude are the child occurrences.
-            match named_ref(kb, named_args, "target") {
+            match src.field(kb, "target").and_then(|v| v.symbol(kb)) {
                 Some(target) => {
-                    let strategy = named_ref(kb, named_args, "strategy");
+                    let strategy = src.field(kb, "strategy").and_then(|v| v.symbol(kb));
                     // WI-814: the `proof_stmt` term DOES carry its `using`
                     // cites now, as a possibly-`nil` `List[Ident]`, so the
                     // rebuild recovers them instead of yielding an empty list.
@@ -7041,15 +7205,18 @@ fn visit_fn(
                     // different proofs, so dropping the premise set made the
                     // term an INCOMPLETE representation, and a rebuild silently
                     // returned a proof that was not the one stored.
-                    let using: Vec<Symbol> = extract_named_list(kb, named_args, "using")
+                    let using: Vec<Symbol> = src
+                        .field(kb, "using")
+                        .map(|l| l.list(kb))
+                        .unwrap_or_default()
                         .iter()
-                        .filter_map(|t| match kb.get_term(*t) {
-                            Term::Ref(s) | Term::Ident(s) => Some(*s),
+                        .filter_map(|t| match t.symbol(kb) {
+                            Some(s) => Some(s),
                             // A non-symbol in the cite list is a malformed term,
                             // not a shape this rebuild understands: loud in debug,
                             // dropped in release (the arm's own `None` fallback
                             // for a malformed `proof_stmt` is the same shape).
-                            _ => {
+                            None => {
                                 debug_assert!(
                                     false,
                                     "proof_stmt rebuild: `using` element is not a \
@@ -7059,8 +7226,8 @@ fn visit_fn(
                             }
                         })
                         .collect();
-                    let conclude = get_named_arg(kb, named_args, "conclude");
-                    let body = get_named_arg(kb, named_args, "body");
+                    let conclude = src.field(kb, "conclude");
+                    let body = src.field(kb, "body");
                     work.push(WorkOp::Build(BuildFrame::Proof {
                         span,
                         target,
@@ -7075,25 +7242,24 @@ fn visit_fn(
                 }
                 // Malformed `proof_stmt(name: ?n)` ⇒ reflection data; keep
                 // structural (mirrors the `var_ref` None arm).
-                None => push_unknown_fn(span, functor, pos_args, named_args, dot_chain, work),
+                None => push_unknown_fn(kb, span, functor, src, dot_chain, work, results),
             }
         }
         "match_expr" => {
-            let scrutinee = get_named_arg(kb, named_args, "scrutinee");
-            let branches_tid = get_named_arg(kb, named_args, "branches");
+            let scrutinee = src.field(kb, "scrutinee");
+            let branches_src = src.field(kb, "branches");
             // Collect branch metadata + Visits in source order, then
             // push in reverse so the work stack pops them in order.
             let mut branches: Vec<BranchMeta> = Vec::new();
             let mut child_visits: Vec<WorkOp> = Vec::new();
-            if let Some(list_tid) = branches_tid {
-                for br_tid in list_to_vec(kb, list_tid) {
-                    let Term::Fn { named_args: ba, .. } = kb.get_term(br_tid) else {
+            if let Some(list) = branches_src {
+                for br in list.list(kb) {
+                    if !br.is_application(kb) {
                         continue;
-                    };
-                    let pattern = get_named_arg(kb, ba, "pattern").unwrap_or(br_tid);
-                    let body = get_named_arg(kb, ba, "body");
-                    let guard_slot =
-                        get_named_arg(kb, ba, "guard").and_then(|opt| unwrap_option(kb, opt));
+                    }
+                    let pattern = br.field(kb, "pattern").unwrap_or_else(|| br.clone());
+                    let body = br.field(kb, "body");
+                    let guard_slot = br.field(kb, "guard").and_then(|opt| opt.unwrap_some(kb));
                     let has_guard = guard_slot.is_some();
                     let branch_span = empty_span();
                     branches.push(BranchMeta {
@@ -7119,9 +7285,9 @@ fn visit_fn(
             push_visit_or_bottom(work, scrutinee);
         }
         "apply" => {
-            let fn_sym = named_ref(kb, named_args, "fn").unwrap_or(functor);
-            let args_tid = get_named_arg(kb, named_args, "args");
-            let type_args = collect_type_args(kb, get_named_arg(kb, named_args, "type_args"));
+            let fn_sym = src.field(kb, "fn").and_then(|v| v.symbol(kb)).unwrap_or(functor);
+            let args_tid = src.field(kb, "args");
+            let type_args = collect_type_args_src(kb, src.field(kb, "type_args"));
             push_apply_like_args(
                 kb,
                 args_tid,
@@ -7143,8 +7309,8 @@ fn visit_fn(
             );
         }
         "constructor" => {
-            let name = named_ref(kb, named_args, "name").unwrap_or(functor);
-            let args_tid = get_named_arg(kb, named_args, "args");
+            let name = src.field(kb, "name").and_then(|v| v.symbol(kb)).unwrap_or(functor);
+            let args_tid = src.field(kb, "args");
             push_apply_like_args(
                 kb,
                 args_tid,
@@ -7166,9 +7332,9 @@ fn visit_fn(
             );
         }
         "dot_apply" => {
-            let name = named_ref(kb, named_args, "name").unwrap_or(functor);
-            let receiver = get_named_arg(kb, named_args, "receiver");
-            let args_tid = get_named_arg(kb, named_args, "args");
+            let name = src.field(kb, "name").and_then(|v| v.symbol(kb)).unwrap_or(functor);
+            let receiver = src.field(kb, "receiver");
+            let args_tid = src.field(kb, "args");
             let (pos_count, named_keys, arg_visits) = collect_apply_arg_visits(kb, args_tid);
             work.push(WorkOp::Build(BuildFrame::DotApply {
                 span,
@@ -7184,10 +7350,10 @@ fn visit_fn(
             push_visit_or_bottom(work, receiver);
         }
         "apply_within" => {
-            let fn_sym = named_ref(kb, named_args, "fn").unwrap_or(functor);
-            let args_tid = get_named_arg(kb, named_args, "args");
-            let reqs_tid = get_named_arg(kb, named_args, "requirements");
-            let type_args = collect_type_args(kb, get_named_arg(kb, named_args, "type_args"));
+            let fn_sym = src.field(kb, "fn").and_then(|v| v.symbol(kb)).unwrap_or(functor);
+            let args_tid = src.field(kb, "args");
+            let reqs_tid = src.field(kb, "requirements");
+            let type_args = collect_type_args_src(kb, src.field(kb, "type_args"));
             // First collect args + requirements into reversed visit
             // slots, then push Build with the right counts.
             let (pos_count, named_keys, arg_visits) = collect_apply_arg_visits(kb, args_tid);
@@ -7209,10 +7375,11 @@ fn visit_fn(
             }
         }
         "requirement_at_sort" => {
-            let chain = get_named_arg(kb, named_args, "chain");
-            let slot = get_named_arg(kb, named_args, "slot")
-                .and_then(|t| match kb.get_term(t) {
-                    Term::Const(Literal::Int(n)) => Some(*n),
+            let chain = src.field(kb, "chain");
+            let slot = src
+                .field(kb, "slot")
+                .and_then(|t| match t.literal(kb) {
+                    Some(Literal::Int(n)) => Some(n),
                     _ => None,
                 })
                 .unwrap_or(0);
@@ -7237,10 +7404,12 @@ fn visit_fn(
         // dropped — a dictionary over a non-provider where a type was written. The
         // shape test refuses it, and it falls through to the generic application
         // below, which is the right answer for a type application.
-        "Dictionary" if is_dictionary_node(kb, functor, named_args) => {
-            let impl_sort = named_ref(kb, named_args, "impl")
-                .expect("is_dictionary_node just read `impl` off this term");
-            let visits: Vec<WorkOp> = pos_args.iter().map(|&e| WorkOp::Visit(e)).collect();
+        "Dictionary" if is_dictionary_src(kb, functor, src) => {
+            let impl_sort = src
+                .field(kb, "impl")
+                .and_then(|v| v.symbol(kb))
+                .expect("is_dictionary_src just read `impl` off this node");
+            let visits: Vec<WorkOp> = src.pos_args(kb).into_iter().map(WorkOp::Visit).collect();
             work.push(WorkOp::Build(BuildFrame::Dictionary {
                 span,
                 impl_sort,
@@ -7258,7 +7427,7 @@ fn visit_fn(
             // un-desugared `forall ?x in [a, b]` collection first exposed). A
             // `ListLiteral` never carries a tail (the `[h | t]` head-tail surface
             // was removed, WI-560), so `pos_args` is the complete element list.
-            let visits: Vec<WorkOp> = pos_args.iter().map(|&e| WorkOp::Visit(e)).collect();
+            let visits: Vec<WorkOp> = src.pos_args(kb).into_iter().map(WorkOp::Visit).collect();
             let count = visits.len();
             work.push(WorkOp::Build(BuildFrame::ListLit { span, count }));
             for v in visits.into_iter().rev() {
@@ -7272,7 +7441,7 @@ fn visit_fn(
             // `collect_list_visits` (a cons/nil walker) would silently yield
             // zero, dropping every element (the same pre-existing data-loss bug
             // WI-027 fixed for `ListLiteral`).
-            let visits: Vec<WorkOp> = pos_args.iter().map(|&e| WorkOp::Visit(e)).collect();
+            let visits: Vec<WorkOp> = src.pos_args(kb).into_iter().map(WorkOp::Visit).collect();
             let count = visits.len();
             work.push(WorkOp::Build(BuildFrame::SetLit { span, count }));
             for v in visits.into_iter().rev() {
@@ -7286,6 +7455,8 @@ fn visit_fn(
             // spine, so `collect_list_visits` would silently drop every element.
             // Push pos then named exactly as `push_unknown_fn`/`pop_apply_like`
             // expect (named reversed, then pos reversed).
+            let pos_args = src.pos_args(kb);
+            let named_args = src.named_args(kb);
             let pos_count = pos_args.len();
             let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
             work.push(WorkOp::Build(BuildFrame::TupleLit {
@@ -7293,16 +7464,41 @@ fn visit_fn(
                 pos_count,
                 named_keys,
             }));
-            for &(_, v) in named_args.iter().rev() {
+            for (_, v) in named_args.into_iter().rev() {
                 work.push(WorkOp::Visit(v));
             }
-            for &v in pos_args.iter().rev() {
+            for v in pos_args.into_iter().rev() {
                 work.push(WorkOp::Visit(v));
             }
         }
-        _ => push_unknown_fn(span, functor, pos_args, named_args, dot_chain, work),
+        _ => push_unknown_fn(kb, span, functor, src, dot_chain, work, results),
     }
-    let _ = results; // kept in case future variants want direct push
+}
+
+/// WI-753 — a child the loader already built from its parse node. A STRUCTURAL application
+/// whose functor [`visit_fn`] keys — a reflect form written as data, `if_expr(cond: ?c, …)` —
+/// is read through the same arms a stored term takes, its children reused; anything else is
+/// final and is kept exactly as built, with its own span.
+fn visit_node(
+    kb: &KnowledgeBase,
+    n: Rc<NodeOccurrence>,
+    work: &mut Vec<WorkOp>,
+    results: &mut Vec<Rc<NodeOccurrence>>,
+) {
+    if let Some(Expr::Apply {
+        functor, type_args, ..
+    }) = n.as_expr()
+    {
+        if type_args.is_empty() && is_reflect_form_functor(kb, *functor) {
+            let functor = *functor;
+            let key = expr_form_key(kb.qualified_name_of(functor), kb.local_name_of(functor));
+            let span = n.span;
+            let dot_chain = n.is_dot_chain();
+            visit_fn(kb, &Src::Node(n), span, functor, key, dot_chain, work, results);
+            return;
+        }
+    }
+    results.push(n);
 }
 
 /// Materialize an unrecognized `Term::Fn` as a generic *structural* occurrence
@@ -7314,13 +7510,21 @@ fn visit_fn(
 /// survives loading. Collapsing those to `Const`/`VarRef`/`⊥` is only correct
 /// for concrete op-body expressions, where the field is a literal/known name.
 fn push_unknown_fn(
+    kb: &KnowledgeBase,
     span: SourceSpan,
     functor: Symbol,
-    pos_args: &smallvec::SmallVec<[TermId; 4]>,
-    named_args: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
+    src: &Src,
     dot_chain: bool,
     work: &mut Vec<WorkOp>,
+    results: &mut Vec<Rc<NodeOccurrence>>,
 ) {
+    // A node the loader built IS the structural application already (WI-753): keep it.
+    if let Src::Node(n) = src {
+        results.push(Rc::clone(n));
+        return;
+    }
+    let pos_args = src.pos_args(kb);
+    let named_args = src.named_args(kb);
     let pos_count = pos_args.len();
     let named_keys: Vec<Symbol> = named_args.iter().map(|(s, _)| *s).collect();
     work.push(WorkOp::Build(BuildFrame::UnknownFn {
@@ -7330,10 +7534,10 @@ fn push_unknown_fn(
         named_keys,
         dot_chain,
     }));
-    for &(_, v) in named_args.iter().rev() {
+    for (_, v) in named_args.into_iter().rev() {
         work.push(WorkOp::Visit(v));
     }
-    for &v in pos_args.iter().rev() {
+    for v in pos_args.into_iter().rev() {
         work.push(WorkOp::Visit(v));
     }
 }
@@ -7344,15 +7548,15 @@ fn push_unknown_fn(
 /// caller must push to feed the matching Build frame.
 fn collect_apply_arg_visits(
     kb: &KnowledgeBase,
-    list_tid: Option<TermId>,
+    list: Option<Src>,
 ) -> (usize, Vec<Symbol>, Vec<WorkOp>) {
     let mut pos_count = 0usize;
     let mut named_keys: Vec<Symbol> = Vec::new();
     let mut visits: Vec<WorkOp> = Vec::new();
-    let Some(tid) = list_tid else {
+    let Some(list) = list else {
         return (0, named_keys, visits);
     };
-    for (arg_name, value) in apply_arg_entries(kb, tid) {
+    for (arg_name, value) in apply_arg_entries_src(kb, &list) {
         match arg_name {
             None => {
                 pos_count += 1;
@@ -7375,56 +7579,69 @@ pub(crate) fn apply_arg_entries(
     kb: &KnowledgeBase,
     list_tid: TermId,
 ) -> Vec<(Option<Symbol>, Option<TermId>)> {
-    list_to_vec(kb, list_tid)
+    apply_arg_entries_src(kb, &Src::Term(list_tid))
         .into_iter()
-        .filter_map(|arg_tid| {
-            let Term::Fn { named_args: aa, .. } = kb.get_term(arg_tid) else {
+        .map(|(name, value)| {
+            let value = value.and_then(|v| match v {
+                Src::Term(t) => Some(t),
+                // A stored list's elements are stored terms.
+                Src::Node(_) => None,
+            });
+            (name, value)
+        })
+        .collect()
+}
+
+/// [`apply_arg_entries`] on either carrier.
+fn apply_arg_entries_src(kb: &KnowledgeBase, list: &Src) -> Vec<(Option<Symbol>, Option<Src>)> {
+    list.list(kb)
+        .into_iter()
+        .filter_map(|arg| {
+            if !arg.is_application(kb) {
                 return None;
-            };
-            let value = get_named_arg(kb, aa, "value");
-            let arg_name = get_named_arg(kb, aa, "name").and_then(|t| some_name(kb, t));
+            }
+            let value = arg.field(kb, "value");
+            let arg_name = arg
+                .field(kb, "name")
+                .and_then(|t| t.unwrap_some(kb))
+                .and_then(|t| t.ref_symbol(kb));
             Some((arg_name, value))
         })
         .collect()
 }
 
-/// Walk a plain `cons(head, tail) | nil` element list and produce
-/// `(count, visits)`. Each entry becomes one Visit op.
-/// Walk a cons-list of `type_arg(name: Option[Ref], value: Type)`
-/// entries and return `(name, value)` pairs in declaration order;
-/// `None` for the name means positional.
-pub(crate) fn collect_type_args(
-    kb: &KnowledgeBase,
-    list_tid: Option<TermId>,
-) -> Vec<(Option<Symbol>, Value)> {
-    let Some(tid) = list_tid else {
+
+/// The `type_args` list of an `apply` / `apply_within`, on either carrier. A value read off a stored term is that ground
+/// `TermId` (WI-342 S4b — the term handle cannot carry a denoted occurrence); one read off an
+/// occurrence the loader built is that occurrence.
+fn collect_type_args_src(kb: &KnowledgeBase, list: Option<Src>) -> Vec<(Option<Symbol>, Value)> {
+    let Some(list) = list else {
         return Vec::new();
     };
-    list_to_vec(kb, tid)
+    list.list(kb)
         .into_iter()
         .filter_map(|entry| {
-            let entry_args = match kb.get_term(entry) {
-                Term::Fn { named_args, .. } => named_args.clone(),
-                _ => return None,
+            if !entry.is_application(kb) {
+                return None;
+            }
+            let name_opt = entry
+                .field(kb, "name")
+                .and_then(|t| t.unwrap_some(kb))
+                .and_then(|t| t.ref_symbol(kb));
+            let value = match entry.field(kb, "value")? {
+                Src::Term(t) => Value::term(t),
+                Src::Node(n) => Value::Node(n),
             };
-            let name_opt = get_named_arg(kb, &entry_args, "name").and_then(|t| some_name(kb, t));
-            let value = get_named_arg(kb, &entry_args, "value")?;
-            // WI-342 S4b: the term-side handle holds a ground `TermId`, so the
-            // materialized occurrence type-arg is `Value::Term`. The loader's
-            // direct occurrence build mints a `Value::Node` for a value-in-type
-            // arg once `make_denoted` is retired; this term-round-trip path
-            // stays ground (the term handle cannot carry a denoted occurrence).
-            Some((name_opt, Value::term(value)))
+            Some((name_opt, value))
         })
         .collect()
 }
 
-fn collect_list_visits(kb: &KnowledgeBase, list_tid: Option<TermId>) -> (usize, Vec<WorkOp>) {
-    let Some(tid) = list_tid else {
+fn collect_list_visits(kb: &KnowledgeBase, list: Option<Src>) -> (usize, Vec<WorkOp>) {
+    let Some(list) = list else {
         return (0, Vec::new());
     };
-    let elems = list_to_vec(kb, tid);
-    let visits: Vec<WorkOp> = elems.into_iter().map(WorkOp::Visit).collect();
+    let visits: Vec<WorkOp> = list.list(kb).into_iter().map(WorkOp::Visit).collect();
     (visits.len(), visits)
 }
 
@@ -7432,7 +7649,7 @@ fn collect_list_visits(kb: &KnowledgeBase, list_tid: Option<TermId>) -> (usize, 
 /// pushes Visits for each arg in reverse.
 fn push_apply_like_args(
     kb: &KnowledgeBase,
-    args_tid: Option<TermId>,
+    args_tid: Option<Src>,
     mk: impl FnOnce(SourceSpan, usize, Vec<Symbol>) -> BuildFrame,
     span: SourceSpan,
     work: &mut Vec<WorkOp>,
@@ -7445,12 +7662,12 @@ fn push_apply_like_args(
 }
 
 #[inline]
-fn push_visit_or_bottom(work: &mut Vec<WorkOp>, slot: Option<TermId>) {
+fn push_visit_or_bottom(work: &mut Vec<WorkOp>, slot: Option<Src>) {
     work.push(visit_or_bottom_op(slot));
 }
 
 #[inline]
-fn visit_or_bottom_op(slot: Option<TermId>) -> WorkOp {
+fn visit_or_bottom_op(slot: Option<Src>) -> WorkOp {
     match slot {
         Some(t) => WorkOp::Visit(t),
         None => WorkOp::Build(BuildFrame::Bottom),
@@ -7484,7 +7701,7 @@ pub(crate) fn build_frame(
             // pattern occurrence — `Expr::Let` has no annotation slot.
             let body = results.pop().expect("let: missing body");
             let value = results.pop().expect("let: missing value");
-            let pattern_occ = term_to_param_occurrence(kb, pattern, span);
+            let pattern_occ = param_occurrence(kb, &pattern, span);
             let expr = Expr::Let {
                 pattern: pattern_occ,
                 value,
@@ -7498,7 +7715,7 @@ pub(crate) fn build_frame(
             // the loader-emitted var_pattern / constructor_pattern /
             // ... shape and produces the structural Pattern equivalent.
             let body = results.pop().expect("lambda: missing body");
-            let param_occ = term_to_param_occurrence(kb, param, span);
+            let param_occ = param_occurrence(kb, &param, span);
             let expr = Expr::Lambda {
                 param: param_occ,
                 body,
@@ -7543,7 +7760,7 @@ pub(crate) fn build_frame(
                 // WI-318: convert the BranchMeta's pattern TermId to a
                 // Pattern-kind (or Expr-kind for reflection meta-vars)
                 // occurrence, mirroring BuildFrame::Lambda / Let.
-                let pattern = term_to_param_occurrence(kb, meta.pattern, meta.span);
+                let pattern = param_occurrence(kb, &meta.pattern, meta.span);
                 built_branches.push(MatchBranch {
                     pattern,
                     guard,
@@ -7819,7 +8036,7 @@ pub fn is_reflect_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
 ///
 /// [`is_reflect_form_functor`] answers it for every arm BUT `Dictionary`, which it
 /// omits deliberately: that arm's own test reads the NAMED ARGS
-/// ([`is_dictionary_node`]) and a functor-only predicate could mirror the symbol half
+/// ([`is_dictionary_src`]) and a functor-only predicate could mirror the symbol half
 /// only — an OVER-admission, and the wrong trade for that function's caller, the
 /// loader's rule-body-atom builder, which would then take the materialize fallback for
 /// a plain `Dictionary[S = …]` TYPE application.
@@ -7827,7 +8044,7 @@ pub fn is_reflect_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
 /// IT IS THE RIGHT TRADE HERE, which is why this is a separate predicate rather than a
 /// widening of that one. Over-admitting sends a value through `value_to_term` +
 /// [`materialize_from_handle`] — the ONE materializer, which then applies
-/// `is_dictionary_node` EXACTLY and falls to the generic application if the shape does
+/// `is_dictionary_src` EXACTLY and falls to the generic application if the shape does
 /// not hold — so the cost is a store write on a rare ground shape and never a divergent
 /// reading. UNDER-admitting is what would diverge. Raised by `/code-review`.
 ///
@@ -7865,14 +8082,10 @@ fn visit_fn_keys_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
 /// ordering. It therefore asks [`visit_fn_keys_functor`], which adds the symbol half
 /// back on top. A recorded reason not to widen is scoped to the caller it was
 /// recorded for.
-fn is_dictionary_node(
-    kb: &KnowledgeBase,
-    functor: Symbol,
-    named_args: &smallvec::SmallVec<[(Symbol, TermId); 2]>,
-) -> bool {
+fn is_dictionary_src(kb: &KnowledgeBase, functor: Symbol, src: &Src) -> bool {
     super::term_view::dictionary_view_syms(kb).is_some_and(|(ctor, _)| ctor == functor)
-        && named_args.len() == 1
-        && named_ref(kb, named_args, "impl").is_some()
+        && src.named_keys(kb).len() == 1
+        && src.field(kb, "impl").and_then(|v| v.symbol(kb)).is_some()
 }
 
 /// Extract the `Symbol` of a `Ref(sym)` or `Ident(sym)` from a named-arg slot.
@@ -7888,15 +8101,6 @@ fn named_ref(
     }
 }
 
-/// Unwrap an `Option`-shaped term and extract its inner symbol via `Ref`.
-/// Returns `None` for `none` or any non-Ref payload.
-fn some_name(kb: &KnowledgeBase, tid: TermId) -> Option<Symbol> {
-    let inner = unwrap_option(kb, tid)?;
-    match kb.get_term(inner) {
-        Term::Ref(s) => Some(*s),
-        _ => None,
-    }
-}
 
 #[cfg(test)]
 mod tests {
