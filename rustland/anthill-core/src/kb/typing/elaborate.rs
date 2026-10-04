@@ -606,6 +606,43 @@ pub(super) fn elaborate_self_ties(kb: &mut KnowledgeBase, sort_names: &[Symbol])
     elaborate_self_field_ties(kb, sort_names);
 }
 
+/// WI-20261001-80ZV8 — does `ty`, a type DECLARED in `sort`'s own definition, leave a slot of
+/// that sort unwritten: a bare reference to `sort`, or one that omits a parameter, at any
+/// depth? A signature that answers `false` throughout WRITES every reference to its own sort
+/// (`Self`, or the slots spelled out), and a call of it has no declared position left that
+/// rides the unifier's canonical channel (`unify_parameterized_with_sort_ref`).
+///
+/// THE SAME WALK [`elaborate_self_ties`] RUNS — it is asked whether that pass would have
+/// anything to write — so "unwritten" means here what it means there, and the two positions
+/// that pass leaves as the author wrote them (a BARE self parameter, and the return of an
+/// operation with no self parameter) are exactly the ones this still finds. The walk builds
+/// what it would write in order to answer; that is paid only by a signature that does leave
+/// a slot out, a spelling proposal 070's stage (d) refuses. `fallback` is the declaring
+/// symbol, for the span a rebuilt occurrence would take.
+pub(super) fn leaves_own_slot_unwritten(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+    ty: &Value,
+    fallback: Symbol,
+) -> bool {
+    if sort_type_params_as_pairs(kb, sort).is_empty() {
+        return false;
+    }
+    let (span, owner) = declared_span_owner(kb, ty, fallback);
+    rigidify_unwritten_sort_params(
+        kb,
+        UnwrittenFill::Anonymous,
+        ty,
+        SlotPosition::Declared {
+            sort,
+            unbound: Some(&[]),
+        },
+        span,
+        owner,
+    )
+    .is_some()
+}
+
 /// WI-1082 — the SAME tie at the other declaration position: an ENTITY FIELD whose type names
 /// its own sort. `docs/design/type-parameter-scoping.md` §3 states this one literally —
 /// "`cons(head: T, tail: List)` ⇒ `tail` is a `List` of *this* sort's `T`" — so this writes

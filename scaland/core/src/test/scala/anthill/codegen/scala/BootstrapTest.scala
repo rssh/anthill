@@ -3028,6 +3028,11 @@ class BootstrapTest extends munit.FunSuite:
     //     the application's shape is judged before its parts. Both diagnoses are
     //     true of the same line; the `?A` arm is driven by a fixture instead
     //     (WI-1055 B2 above), for exactly the reason the other B2 arms are.
+    //     AND BACK AGAIN (WI-20261001-80ZV8): inside its own sort the stdlib now
+    //     writes the occurrence in full, `LogicalStream[T = ?A, E = E]` (proposal 070
+    //     §1.4 — no slot of a self reference is left out), so the arity is right and
+    //     what is left to refuse is the variable. The ARITY arm is driven by
+    //     fixtures of its own (`declares 2 type parameter(s), but 0 were written`).
     //
     // ONE FILE LEFT (WI-1022): sortedset.anthill's `requires O: Ord[T]` is a NAMED
     // requirement slot, and a named slot is a type PARAMETER whose value is a chosen
@@ -3052,7 +3057,7 @@ class BootstrapTest extends munit.FunSuite:
         ("sort `MatchFailed`", "imported from `anthill.reflect`"),
         ("sort `RelationFloundered`", "imported from `anthill.reflect`")),
       "logical_stream.anthill" -> Seq(
-        ("operation `empty`", "declares 2 type parameter(s)")),
+        ("operation `empty`", "a type VARIABLE in a type position has no Scala form")),
       "meta.anthill" -> Seq(
         ("entity `Meta`", "imported from `anthill.reflect`"),
         ("sort `ProofResult`", "imported from `anthill.reflect`")),

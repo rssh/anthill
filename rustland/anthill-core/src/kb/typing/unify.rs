@@ -1421,6 +1421,30 @@ pub(super) fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
     if pbase_sym != sref_sym {
         return types_compatible(kb, subst, parameterized, sort_ref);
     }
+    // WI-20261001-80ZV8 — NOT FOR THE SORT THIS CALL READS AS WRITTEN. The loop below writes
+    // the parameterized side's bindings into the sort's CANONICAL variables, which serves a
+    // DECLARED bare reference: `reverse(xs: List)` reaches its argument's element because the
+    // signature and the call's substitution ride the same variable. A callee whose signature
+    // WRITES every reference to its own sort has no such position ([`leaves_own_slot_unwritten`]), so
+    // in that call's substitution a bare reference to the callee's sort is the type of a VALUE
+    // — `nil`, a constructor over one, a call that fixed nothing — and the variables are the
+    // call's own parameters. Written from a value, the callee's `T` took the element of its
+    // own element: `append(xs: Self, ys: Self)` on `append([nil], [[1]])` binds `T` to the
+    // bare `List` of the first argument's elements, meets `List[T = Int64]` in the second,
+    // and wrote `Int64` into `T` — `expected consistent bindings … (first bound to List), got
+    // Int64` (MEASURED: `wi374 member_tie_refinement_accepted` on the stdlib's `append`
+    // written with `Self`). There the two are compatible by width and nothing is bound.
+    //
+    // ONLY THAT SORT, ONLY THAT CALL, ONLY A WRITTEN SIGNATURE. Every other reader of the
+    // channel — a member still declared with a bare receiver, a constructor's bare parent
+    // type against its expected type, an override's signature threaded through a dispatch,
+    // the member rule — unifies in a substitution that names no such sort and is served as
+    // before. Removing the channel outright moves 36 rows of those suites, and reading every
+    // bare receiver as written at the call moves the member rule's wildcard-provision rows
+    // (both MEASURED); the channel goes with them at proposal 070's stage (e).
+    if subst.written_sort == Some(kb.canonical_sort_sym(pbase_sym)) {
+        return true;
+    }
 
     for (psym, value) in &bindings {
         // Classify the binding value up front so the `format!` + symbol-resolve

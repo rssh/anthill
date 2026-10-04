@@ -54,11 +54,7 @@ enum anthill.prelude.List
       case cons(head, tail) -> if eq(head, x) then true else contains(tail, x)
 
   {< Concatenation: the elements of `xs` followed by those of `ys`. >}
-  -- Still bare, on purpose (WI-20261001-80ZV8): written `Self`, two receivers meet the
-  -- unifier's canonical channel on a list of lists whose element is itself bare —
-  -- `append([nil], [[1]])` — and are refused. It is written with the rest once that
-  -- channel goes (proposal 070, stage e).
-  operation append(xs: List, ys: List) -> List =
+  operation append(xs: Self, ys: Self) -> Self =
     match xs
       case nil() -> ys
       case cons(x, rest) -> cons(head: x, tail: append(rest, ys))
@@ -228,11 +224,7 @@ enum anthill.prelude.List
   operation insert(c: Self, elem: T) -> Self = cons(head: elem, tail: c)
 
   {< PersistentCollection.empty for List: the empty list. >}
-  -- Still bare, on purpose (WI-20261001-80ZV8): nothing at a call fixes `T`, and what
-  -- a call means that leaves a sort's parameter unfixed is open in proposal 070. Bare,
-  -- the result joins with any instance; written `Self`, it joins with none. The same
-  -- holds for `Map.empty`, `Set.empty`, `MutableStack.new` and `LogicalStream`'s three.
-  operation empty() -> List = nil
+  operation empty() -> Self = nil
 
   -- List satisfies Iteration (pure). Effect left unbound by design —
   -- grounded to {} at consumption (045 row model; WI-357 / WI-365).

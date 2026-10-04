@@ -20,9 +20,11 @@
 //! the parent sort's params, so `Map.empty[K = Bool, V = Bool]()` reaches
 //! `seed_op_type_args` and binds them — and it changes nothing, because `empty() -> Map`
 //! returns the sort BARE and WI-1082 deliberately leaves a constructor's self-sort return
-//! untied ("NO SELF PARAMETER, NO TIE"). MEASURED: that spelling still accepts a `String`
-//! key, before this change and after it — [`the_callee_bracket_still_does_not_reach_the_result`]
-//! pins it. The binding has nowhere to land, so the receiver has to name the RESULT.
+//! untied ("NO SELF PARAMETER, NO TIE"). MEASURED: that spelling still accepted a `String`
+//! key, before this change and after it — pinned by a control row until WI-20261001-80ZV8
+//! wrote `empty() -> Self`, when the binding got somewhere to land and the row became
+//! [`the_callee_bracket_reaches_the_result`]. Then, the binding had nowhere to land, so
+//! the receiver had to name the RESULT.
 //!
 //! **WI-20260911-RS2G4 CHANGED FOUR OF THESE ROWS, AND WIDENED THE FEATURE.** 058 rule
 //! 1's SORT half now BINDS: a companion receiver's bracket seeds the enclosing sort's
@@ -72,10 +74,10 @@
 //! spellings genuinely disagree, and both facts are why it asserts the two lists are equal
 //! AND pins the length.
 //!
-//! THE CONTROLS, green under all three: [`a_correct_receiver_bracket_still_loads`],
-//! [`the_bare_companion_call_is_unchanged`] (form (2)), and
-//! [`the_callee_bracket_still_does_not_reach_the_result`] (the stated boundary — a BARE
-//! self-sort return is still untied, which RS2G4 did not reopen).
+//! THE CONTROLS, green under all three: [`a_correct_receiver_bracket_still_loads`] and
+//! [`the_bare_companion_call_is_unchanged`] (form (2)). A third stood beside them, the
+//! stated boundary that a BARE self-sort return is untied; it is closed and the row is
+//! [`the_callee_bracket_reaches_the_result`].
 //!
 //! `map_builtins_test::form_3_instantiation_receiver_parses_and_runs` is the other control
 //! and passes either way: it EVALUATES a form-(3) call, so it holds the change to the
@@ -309,21 +311,40 @@ fn an_undeclared_parameter_is_refused_on_a_non_constructor_callee_too() {
     assert!(errs[0].contains("has no type parameter named 'Bogus'"));
 }
 
-/// CONTROL, AND THE STATED BOUNDARY. The CALLEE bracket binds the sort's params in the
-/// call's substitution and still does not reach the result, so this contradiction loads
-/// clean — before this change and after it. It is the same missing tie as the ticket's
-/// row, reached from the other spelling; closing it means reopening WI-1082's "NO SELF
-/// PARAMETER, NO TIE" for every companion call that returns its own sort, which is a
-/// separate decision. Pinned here so the next reader finds the boundary measured rather
-/// than assumed.
+/// THE BOUNDARY THIS ROW PINNED IS CLOSED (WI-20261001-80ZV8). It stood as a control: the
+/// CALLEE bracket bound the sort's params in the call's substitution and still did not
+/// reach the result, so this contradiction loaded clean — the same missing tie as the
+/// ticket's row, reached from the other spelling, and closing it meant reopening WI-1082's
+/// "NO SELF PARAMETER, NO TIE" for every companion call that returns its own sort. That
+/// decision is taken: `Map.empty` is written `-> Self`, so the instance the bracket names
+/// IS the result's, and a `String` key put into a `Map[K = Bool, V = Bool]` is refused at
+/// the argument — the two spellings of the bracket now agree on a callee that returns its
+/// own sort as they already did on one that does not.
 #[test]
-fn the_callee_bracket_still_does_not_reach_the_result() {
-    assert_eq!(
-        load_errors(&prog(
-            r#"size(put(Map.empty[K = Bool, V = Bool](), "a", 1))"#
-        )),
-        Vec::<String>::new()
+fn the_callee_bracket_reaches_the_result() {
+    let errs = load_errors(&prog(
+        r#"size(put(Map.empty[K = Bool, V = Bool](), "a", 1))"#,
+    ));
+    assert_eq!(errs.len(), 2, "{errs:#?}");
+    assert!(
+        errs[0].contains("put.key (op-arg): expected Bool, got String"),
+        "{errs:#?}"
     );
+    assert!(
+        errs[1].contains("put.value (op-arg): expected Bool, got Int64"),
+        "{errs:#?}"
+    );
+
+    // The receiver spelling says the same thing, and must read the same.
+    let receiver = load_errors(&prog(
+        r#"size(put(Map[K = Bool, V = Bool].empty(), "a", 1))"#,
+    ));
+    let msg = |v: Vec<String>| -> Vec<String> {
+        v.into_iter()
+            .map(|e| e.split_once(": ").map(|(_, m)| m.to_string()).unwrap_or(e))
+            .collect()
+    };
+    assert_eq!(msg(errs), msg(receiver));
 }
 
 // ── /code-review (high), four findings, all measured and all fixed ───────────────

@@ -243,7 +243,6 @@ pub(super) fn check_apply_iter(
         // validation's groundness gate would silently skip the rejection
         // (`Function[Int64, Int64]` with open `E` vs a `String -> Bool`
         // argument must still be a loud mismatch).
-        let written_params = op.params.clone();
         // WI-1063: computed ONCE, and via [`impl_parent_sort_of_op`]. Both polarities of the
         // §3 tie ask this one question — "is a reference to this sort the callee's OWN?" —
         // and until this hoist they asked it in two spellings: the parameter expansion here
@@ -252,6 +251,20 @@ pub(super) fn check_apply_iter(
         // `has_kind`. On a §6.3 re-declared sort the two answered differently, and one gate
         // being wrong is a silent expansion of the callee's own parameters.
         let callee_parent_sort = impl_parent_sort_of_op(kb, fn_sym);
+        // WI-20261001-80ZV8: DOES THE SIGNATURE WRITE EVERY REFERENCE TO ITS OWN SORT? `xs:
+        // Self` and `-> List[T = T]` do; a bare `xs: List`, or one that leaves a slot out,
+        // does not, and is still read as this call's instance through the unifier's
+        // canonical channel (the interim tie, until proposal 070's stage (d) refuses the
+        // spelling). Where everything is written the call has no use for that channel, and
+        // turns it off for the callee's sort — see `Substitution::written_sort`, set below.
+        let own_sort_is_written = callee_parent_sort.is_some_and(|sort| {
+            !leaves_own_slot_unwritten(kb, sort, &op.return_type, fn_sym)
+                && !op
+                    .params
+                    .iter()
+                    .any(|(_, ty)| leaves_own_slot_unwritten(kb, sort, ty, fn_sym))
+        });
+        let written_params = op.params.clone();
         {
             let callee_parent_canon = callee_parent_sort.map(|p| kb.canonical_sort_sym(p));
             for i in 0..op.params.len() {
@@ -311,6 +324,12 @@ pub(super) fn check_apply_iter(
             None => (occ, named_args, named_results),
         };
         let mut subst = Substitution::new();
+        // WI-20261001-80ZV8: the callee's signature writes its own sort in full, so a bare
+        // reference to that sort met below is a value's type and binds none of this call's
+        // parameters — see `Substitution::written_sort`.
+        if own_sort_is_written {
+            subst.written_sort = callee_parent_sort.map(|sort| kb.canonical_sort_sym(sort));
+        }
         // WI-269 Phase D: explicit call-site `op[bindings]` bindings
         // seed the substitution first. Returns `NoSuchTypeParam` on
         // an unknown binding name.
@@ -2080,7 +2099,14 @@ pub(super) fn check_apply_iter(
         // carrier-agnostic walk (the return type is a `Value`). `mut`: a
         // concretely-dispatched self-receiver spec op re-walks it below once
         // the carrier pins the spec's element params (WI-357).
-        let mut resolved_ret = resolve_type_deep_value(kb, &subst, &proj_return_type);
+        // WI-20261001-80ZV8: …and a parameter of the callee's sort the call left unfixed
+        // fills no slot of that sort ([`leave_unfixed_slots_open`]); the two re-walks
+        // below read the result the same way.
+        let result_type = |kb: &mut KnowledgeBase, subst: &Substitution, declared: &Value| {
+            let resolved = resolve_type_deep_value(kb, subst, declared);
+            leave_unfixed_slots_open(kb, subst, callee_parent_sort, resolved)
+        };
+        let mut resolved_ret = result_type(kb, &subst, &proj_return_type);
 
         // WI-270: every declared op type-parameter must be pinned by
         // some combination of: explicit `[bindings]`, caller-side
@@ -2194,7 +2220,7 @@ pub(super) fn check_apply_iter(
                         pos_results,
                         named_results,
                     ) {
-                        resolved_ret = resolve_type_deep_value(kb, &subst, &proj_return_type);
+                        resolved_ret = result_type(kb, &subst, &proj_return_type);
                     }
                     let closed_op_effects: Vec<Value> = substituted_op_effects
                         .iter()
@@ -2916,7 +2942,7 @@ pub(super) fn check_apply_iter(
                     named_results,
                 );
                 if late_bound {
-                    resolved_ret = resolve_type_deep_value(kb, &subst, &proj_return_type);
+                    resolved_ret = result_type(kb, &subst, &proj_return_type);
                 }
                 // Close the spec op's OWN polymorphic effect row at this
                 // concrete carrier. The provider fact cannot yet bind the

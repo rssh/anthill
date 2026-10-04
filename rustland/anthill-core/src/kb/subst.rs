@@ -95,6 +95,18 @@ pub struct Substitution {
     /// checked against (and propagated through) the binding by
     /// [`crate::kb::typing`]'s `bind_row_tail`.
     pub constraints: ImHashMap<VarId, Vec<Constraint>>,
+    /// WI-20261001-80ZV8 — the sort this substitution reads AS WRITTEN: the callee's own sort,
+    /// while this is the working state of ONE call (the typer's `check_apply_iter`), by its
+    /// canonical symbol. `None` everywhere else.
+    ///
+    /// A bare reference to a parametric sort met during unification writes the instance it
+    /// meets into the sort's CANONICAL parameter variables (the typer's
+    /// `unify_parameterized_with_sort_ref`) — how a member declared with a bare receiver
+    /// reaches its argument's element. Where the callee's signature writes every reference
+    /// to its own sort (`Self`), a bare reference to that sort that still turns up in the
+    /// call is the type of a VALUE, and the canonical variables it would write are this
+    /// call's own parameters. For that sort the write is off; see the reader there.
+    pub written_sort: Option<crate::intern::Symbol>,
 }
 
 /// Push `c` onto a per-var constraint list, deduping a `Lacks` against an
@@ -123,16 +135,19 @@ impl Substitution {
             contradiction: false,
             contradiction_details: Vec::new(),
             constraints: ImHashMap::new(),
+            written_sort: None,
         }
     }
 
     pub fn with_parent(parent: Substitution) -> Self {
+        let written_sort = parent.written_sort;
         Self {
             bindings: ImHashMap::new(),
             parent: Some(Box::new(parent)),
             contradiction: false,
             contradiction_details: Vec::new(),
             constraints: ImHashMap::new(),
+            written_sort,
         }
     }
 

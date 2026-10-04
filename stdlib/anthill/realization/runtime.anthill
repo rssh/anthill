@@ -48,8 +48,10 @@ namespace anthill.realization.runtime
 
     -- Project the i-th sub-requirement — positional child i, no copy (the
     -- child rides an Rc). Its denoted type is the i-th `requires` of S's impl; that
-    -- value-dependent refinement is deferred, so the view returns bare
-    -- `Dictionary` (existential) for now.
+    -- value-dependent refinement is deferred, so the view returns a `Dictionary`
+    -- of an `S` it does not name — `Dictionary[S = ?]`, the existential. (Until
+    -- proposal 070's stage (e) the typer still reads a `?` in a member's return as
+    -- this instance, WI-1082; the declaration says what is meant.)
     operation sub(d: Self, i: Int64) -> Dictionary[S = ?] @[host_implemented]
 
     -- RESOLVE a spec operation against this dict's impl sort, as a callable

@@ -60,14 +60,14 @@ sort anthill.prelude.LogicalStream
   -- Logic-specific construction
   -- ================================================================
 
-  operation empty() -> LogicalStream[?A]                 -- zero results (failure)
+  operation empty() -> LogicalStream[T = ?A, E = E]      -- zero results (failure)
 
   operation pure[A](x: A) -> LogicalStream[A, {}]          -- single result
 
-  operation mplus(a: LogicalStream[?A], b: LogicalStream[?A])
-    -> LogicalStream[?A]                               -- disjunction
+  operation mplus(a: LogicalStream[T = ?A, E = E], b: LogicalStream[T = ?A, E = E])
+    -> LogicalStream[T = ?A, E = E]                      -- disjunction
 
-  operation guard(cond: Bool) -> LogicalStream[Unit]   -- filter
+  operation guard(cond: Bool) -> LogicalStream[T = Unit, E = E]   -- filter
 
   -- WI-1056: writes the effect row EXPLICITLY, and shares one row variable across both
   -- inputs and the result — which is what fair disjunction actually does. Written

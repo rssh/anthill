@@ -83,7 +83,7 @@ sort anthill.prelude.Map
   -- combinator's finiteness witness requires of the source (WI-590).
 
   -- Construction
-  operation empty() -> Map @[host_implemented]
+  operation empty() -> Self @[host_implemented]
   operation put(m: Self, key: K, value: V) -> Self @[host_implemented]
 
   -- Lookup

@@ -619,6 +619,17 @@ fn bare_spec_arg_self_projection(
     // Recover the receiver head from a simple value reference; a compound or
     // non-reference argument has no single projectable receiver.
     let recv = leaf_var_ref(&arg.node)?;
+    // WI-20261001-80ZV8: A CONSTRUCTOR IS NOT A RECEIVER. `nil` and `none` are leaf
+    // references too, but each is a CONSTANT whose bare type is all there is to know: no
+    // caller will ever say what `nil.T` is, so the projection is a name for nothing and
+    // stays stuck for good. Formed anyway, it made `bag(items: nil)` a `Bag[T = nil.T]`,
+    // which no declared `Bag[T = T]` admits — `operation empty() -> Self = bag(items:
+    // nil)` was refused `expected Bag[T = ?T], got Bag[T = nil.T]` (MEASURED, and the
+    // hand-written `-> Bag[T = T]` the same; only the bare `-> Bag`, which claims nothing,
+    // loaded). Left out, the slot is open, as it is for `bag(items: List.empty())` or `[]`.
+    if kb.is_constructor_symbol(recv) {
+        return None;
+    }
     // The argument must be a BARE receiver at that same base — either spelling
     // ([`bare_receiver_sort`], which owns that shape test and its WI-1059 half). An
     // already-applied argument (`s: Stream[S, EffS]`) threads through the ordinary arm

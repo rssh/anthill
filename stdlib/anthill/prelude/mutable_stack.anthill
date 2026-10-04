@@ -33,7 +33,7 @@ sort anthill.prelude.MutableStack
 
   -- Allocate a fresh, empty stack. The fresh cell escapes via the returned
   -- wrapper, so `Modify[result]` is declared (proposal 027.1).
-  operation new() -> MutableStack
+  operation new() -> Self
     effects Modify[result]
   =
     mutableStack(rep: Cell.new(nil()))

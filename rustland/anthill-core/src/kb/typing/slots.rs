@@ -1307,6 +1307,84 @@ pub(super) fn place_sibling_call_at_callers_instance(
     }
 }
 
+/// WI-20261001-80ZV8 (user, 2026-10-03) — A PARAMETER THE CALL LEFT UNFIXED FILLS NO SLOT:
+/// in the call's result, a slot of the callee's own sort that would hold such a parameter is
+/// left unwritten.
+///
+/// `operation empty() -> Self` in `sort List` is `-> List[T = T]`, and a call fixes `T` by
+/// its bracket, its arguments or the expected type (proposal 070 §1.1). Where none of them
+/// does — `match xs  case nil() -> List.empty()  case cons(_, _) -> ys`, whose first arm has
+/// no expected type — the resolved return still names the callee's parameter: its canonical
+/// variable, unbound. A branch join has no variable arm, so that result met `List[T =
+/// Int64]` as a mismatch, `expected List[T = ?_], got List[T = Int64]` (MEASURED: the
+/// stdlib written with `Self` refused the anthill-todo program on that shape, 264 tests).
+///
+/// The same call types as it did while the declaration read `-> List`: the element is not
+/// said, and whatever the value meets says it — the other arm of the join, an annotation,
+/// the parameter it is passed to. THE SLOT STAYS OPEN, and that is all this decides. It is
+/// not an inference variable: one value read at two instances loads, as it did (the row
+/// `an_open_slot_is_not_an_inference_variable` pins it). Making the join bind is the
+/// stricter rule, and a separate change.
+///
+/// ONLY A SLOT OF THE CALLEE'S OWN SORT, which is the position a bare or part-written
+/// reference to it left unwritten and `Self` now writes; a parameter standing anywhere else
+/// in the result — `-> T`, `-> Option[T = T]` — is kept as the variable it was, unchanged.
+/// And only a parameter NOTHING fixed: a slot the call bound is the call's, so `Map.empty[K
+/// = String]()` is a `Map[K = String]`.
+pub(super) fn leave_unfixed_slots_open(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    callee_parent_sort: Option<Symbol>,
+    ty: Value,
+) -> Value {
+    let Some(sort) = callee_parent_sort else {
+        return ty;
+    };
+    // UNFIXED IS "NOTHING BOUND IT", read off the parameter's own variable — not "what it
+    // was bound to is still a variable". A receiver-less call given an argument whose type
+    // is not known yet (`lambda (o) -> Pair.mk(o).l`) binds the callee's parameter TO the
+    // caller's variable ([`unify_arg_with_param`]), and the result must go on naming that
+    // variable: read by where the chain ends, the slot was dropped with it and `g(7)`
+    // passed for a `String` (MEASURED: `wi_0rp29_review9_regressions_test`'s two
+    // receiver-less rows loaded clean).
+    let params = sort_type_params_as_pairs(kb, sort);
+    let open: SmallVec<[VarId; 4]> = params
+        .iter()
+        .filter_map(|(_, var)| match kb.get_term(*var) {
+            Term::Var(Var::Global(vid)) if subst.resolve_as_value(*vid).is_none() => Some(*vid),
+            _ => None,
+        })
+        .collect();
+    if open.is_empty() {
+        return ty;
+    }
+    let canon = kb.canonical_sort_sym(sort);
+    map_type_bottom_up(kb, &ty, &mut |kb, node| {
+        let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, node) else {
+            return None;
+        };
+        if kb.canonical_sort_sym(base) != canon {
+            return None;
+        }
+        let written = bindings.len();
+        let kept: Vec<(Symbol, Value)> = bindings
+            .into_iter()
+            .filter(|(_, v)| !resolved_var(kb, v).is_some_and(|vid| open.contains(&vid)))
+            .collect();
+        if kept.len() == written {
+            return None;
+        }
+        let base_ref = kb.make_sort_ref(base);
+        Some(if kept.is_empty() {
+            Value::term(base_ref)
+        } else {
+            let (span, owner) = site_of(node);
+            parameterized_value(kb, base_ref, &kept, span, owner)
+        })
+    })
+    .unwrap_or(ty)
+}
+
 /// WI-20260923-WN9P8 — the path into `slot` whose dictionary answers a demand of spec
 /// `demand_spec` that `covers` accepts. The slot itself, or, for a parameter's OWN slot,
 /// one level into it: `requires X: Ord[E]` answers `WeakOrd[T = E]` out of `X`'s own

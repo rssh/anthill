@@ -24,7 +24,7 @@ sort anthill.prelude.Set
   provides PartialEq[T = Self]
   provides Eq[T = Self]
 
-  operation empty() -> Set
+  operation empty() -> Self
   operation insert(s: Self, x: T) -> Self
   operation eq(a: Self, b: Self) -> Bool
   operation contains(s: Self, x: T) -> Bool
