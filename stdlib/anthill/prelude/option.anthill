@@ -8,12 +8,12 @@ enum anthill.prelude.Option
 
   -- Emptiness, as a test rather than a match. `nonEmpty` is not decoration: it
   -- is what makes `exists` a one-liner over `find` (Stream / Iterable).
-  operation isEmpty(o: Option) -> Bool =
+  operation isEmpty(o: Self) -> Bool =
     match o
       case none() -> true
       case some(_) -> false
 
-  operation nonEmpty(o: Option) -> Bool = not(isEmpty(o))
+  operation nonEmpty(o: Self) -> Bool = not(isEmpty(o))
 
   -- Option is a Monad. Op-value bindings (not a bare `fact Monad[Option]`)
   -- because Monad.pure is result-determined — it has no Option argument to
@@ -30,5 +30,5 @@ enum anthill.prelude.Option
       case none() -> none
       case some(x) -> some(f(x))
 
-  provides Monad[M = Option, pure = optionPure, flatMap = optionFlatMap, map = optionMap]
+  provides Monad[M = Self, pure = optionPure, flatMap = optionFlatMap, map = optionMap]
 end

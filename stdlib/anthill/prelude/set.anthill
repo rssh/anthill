@@ -21,17 +21,17 @@ sort anthill.prelude.Set
   -- WI-644 / proposal 004: Set's extensional equality is lawful (reflexive), so
   -- Set provides the total marker Eq AND its PartialEq base (Eq requires it). The
   -- own `eq` below is the single impl both resolve to.
-  provides PartialEq[T = Set]
-  provides Eq[T = Set]
+  provides PartialEq[T = Self]
+  provides Eq[T = Self]
 
   operation empty() -> Set
-  operation insert(s: Set, x: T) -> Set
-  operation eq(a: Set, b: Set) -> Bool
-  operation contains(s: Set, x: T) -> Bool
-  operation subset(s1: Set, s2: Set) -> Bool
-  operation union(s1: Set, s2: Set) -> Set
-  operation intersection(s1: Set, s2: Set) -> Set
-  operation difference(s1: Set, s2: Set) -> Set
+  operation insert(s: Self, x: T) -> Self
+  operation eq(a: Self, b: Self) -> Bool
+  operation contains(s: Self, x: T) -> Bool
+  operation subset(s1: Self, s2: Self) -> Bool
+  operation union(s1: Self, s2: Self) -> Self
+  operation intersection(s1: Self, s2: Self) -> Self
+  operation difference(s1: Self, s2: Self) -> Self
 
   -- WI-616: relational (`:-`) rules make `eq`/`subset`/`contains` COMPUTABLE by
   -- ordinary SLD over the symbolic `insert`/`empty` algebra (the List.contains

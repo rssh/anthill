@@ -20,14 +20,14 @@ sort anthill.prelude.Stream
   -- `sort E = ? requires EffectsRuntime[Effects = E]`).
   effects E = ?           -- effect row required to observe
 
-  operation splitFirst(s: Stream) -> Option[Pair[A = s.T, B = Stream[T = s.T, E = s.E]]]
+  operation splitFirst(s: Self) -> Option[Pair[A = s.T, B = Stream[T = s.T, E = s.E]]]
     effects s.E
   -- WI-567: the TOTAL form — absence is the value `none`. The only sound shape
   -- for a lazy/abstract stream (emptiness is an effectful observation, not a
   -- statically-refutable guard). The bare-`T` `head` (guarded `Error[EmptyStream]`)
   -- is added separately and discharges only where a concrete carrier makes
   -- `isEmpty` foldable.
-  operation headOption(s: Stream) -> Option[s.T]
+  operation headOption(s: Self) -> Option[s.T]
     effects s.E =
     match splitFirst(s)
       case none() -> none
@@ -43,7 +43,7 @@ sort anthill.prelude.Stream
   -- row conservatively CONTAINING its label. The law below stays the
   -- SPECIFICATION the body is read against; a law alone is not backing
   -- (only a body or a builtin is — WI-818's rule).
-  operation head(s: Stream) -> s.T effects { s.E, Error[EmptyStream] :- isEmpty(s) } =
+  operation head(s: Self) -> s.T effects { s.E, Error[EmptyStream] :- isEmpty(s) } =
     match splitFirst(s)
       case none() -> Error.raise(empty_stream)
       case some(pair(h, _)) -> h
@@ -51,7 +51,7 @@ sort anthill.prelude.Stream
   -- now says so (guarded, so it discharges wherever `isEmpty` statically
   -- refutes), where it used to promise a totality the some-case-only law never
   -- delivered.
-  operation tail(s: Stream) -> Stream[T = s.T, E = s.E]
+  operation tail(s: Self) -> Stream[T = s.T, E = s.E]
     effects { s.E, Error[EmptyStream] :- isEmpty(s) } =
     match splitFirst(s)
       case none() -> Error.raise(empty_stream)
@@ -69,7 +69,7 @@ sort anthill.prelude.Stream
   -- the cross-sort element projection (WI-461/WI-474), the cross-sort WRITTEN
   -- effect-row projection (WI-484), and — for `find`'s lambda predicate — the
   -- callback-param projection hint (WI-485).
-  operation takeN(s: Stream, n: Int64) -> List[T = s.T] effects s.E =
+  operation takeN(s: Self, n: Int64) -> List[T = s.T] effects s.E =
     if gt(n, 0) then
       match splitFirst(s)
         case none() -> nil
@@ -85,7 +85,7 @@ sort anthill.prelude.Stream
   -- open, minus Modify on the element under test — instead of being tied to
   -- the stream's observation row `Eff`; find's effect is the MERGE of both
   -- (`effects {Eff, EffP}`: splitFirst pays Eff, applying pred pays EffP).
-  operation find[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}) -> Option[s.T] effects {s.E, EffP} =
+  operation find[EffP](s: Self, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}) -> Option[s.T] effects {s.E, EffP} =
     match splitFirst(s)
       case none() -> none
       case some(pair(h, rest)) ->
@@ -93,17 +93,17 @@ sort anthill.prelude.Stream
   -- Default body (WI-362 pattern, like takeN/collect): the interpreter has no
   -- equational-rewrite fallback, so the law rules below alone make isEmpty
   -- resolvable but not evaluable; the body is the same one splitFirst step.
-  operation isEmpty(s: Stream) -> Bool effects s.E =
+  operation isEmpty(s: Self) -> Bool effects s.E =
     match splitFirst(s)
       case none() -> true
       case some(_) -> false
 
-  operation nonEmpty(s: Stream) -> Bool effects s.E = not(isEmpty(s))
+  operation nonEmpty(s: Self) -> Bool effects s.E = not(isEmpty(s))
 
   -- `exists` is `find` asked as a question, and it is written that way rather
   -- than re-walked: same short-circuit, same effect row, one definition to be
   -- wrong in.
-  operation exists[EffP](s: Stream, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]})
+  operation exists[EffP](s: Self, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]})
       -> Bool effects {s.E, EffP} =
     Option.nonEmpty(find(s, pred))
 
@@ -126,7 +126,7 @@ sort anthill.prelude.Stream
   -- wrote them, so this was the one signature on the sort that dropped them. Nothing caught
   -- it because the OTHER route to an iterator, `Iterable.iterator`, names the SPEC's params
   -- and grounds by carrier-param binding, and because an ascribing call site pins the row.
-  operation iterator(s: Stream) -> Stream[T = s.T, E = s.E] = s
+  operation iterator(s: Self) -> Stream[T = s.T, E = s.E] = s
 
   -- Laws (derived from splitFirst). WI-818: laws are SPECIFICATION, not
   -- backing — the eval-side semantics (including the empty-case raises) live

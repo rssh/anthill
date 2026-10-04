@@ -99,7 +99,7 @@ sort anthill.prelude.Relation
   -- supplies it by running the query (026.1 `execute`) and materializing each
   -- answer's substitution onto the free variables as the named-tuple row `T`. The
   -- continuation is an ordinary LogicalStream over the resolver's remaining answers.
-  operation splitFirst(r: Relation)
+  operation splitFirst(r: Self)
     -> Option[Pair[A = r.T, B = LogicalStream[T = r.T, E = r.E]]]
     effects r.E @[host_implemented]
 
@@ -152,7 +152,7 @@ sort anthill.prelude.Relation
   -- relation presents, so `Membership` accepted it at load and only the drain refused
   -- it. Its schema is now `(t: Unit)` — a named tuple with one free column — so this
   -- assertion refuses it at LOAD, where it belongs.
-  operation negate(r: Relation) -> Relation[T = Membership[T = r.T], E = r.E] @[host_implemented]
+  operation negate(r: Self) -> Relation[T = Membership[T = r.T], E = r.E] @[host_implemented]
 
   -- union — the BAG union of two relations (052 §algebra; multiplicity kept, OQ6):
   -- the solutions of EITHER operand. Combines QUERIES: builds
@@ -167,7 +167,7 @@ sort anthill.prelude.Relation
   -- keeps a's schema (a.T). Its effect row is the UNION {a.E, b.E}: consuming the
   -- union runs BOTH operands' search (`or` explores both branches), so both rows are
   -- incurred (both are {Error} today, but this stays sound if either ever carries more).
-  operation union(a: Relation, b: Relation) -> Relation[T = a.T, E = {a.E, b.E}] @[host_implemented]
+  operation union(a: Self, b: Self) -> Relation[T = a.T, E = {a.E, b.E}] @[host_implemented]
 
   -- where — FILTER a relation by a row condition (WI-714 / proposal 052 §"Compiling
   -- a row lambda into a query"). `where(r, c -> eq(c.x, 1))` keeps the solutions of
@@ -210,7 +210,7 @@ sort anthill.prelude.Relation
   --   * `where_run` is the RUNTIME back-end: it fills the recipe's column HOLES with
   --     `r`'s real column variables and conjoins it onto `r.query` — the same
   --     query-combining step `negate`/`union` perform.
-  operation where(r: Relation, cond: (c: r.T) -> Bool) -> Relation[T = r.T, E = r.E]
+  operation where(r: Self, cond: (c: r.T) -> Bool) -> Relation[T = r.T, E = r.E]
 
   rule where(?r, ?cond) <=> guarded_of(?r, ?cond) @[simp]
 
@@ -234,7 +234,7 @@ sort anthill.prelude.Relation
   -- expression over here, where the fill is the same symbol-keyed step a column hole
   -- takes. A variadic capture (proposal 056) rather than a fixed slot: the arity is the
   -- condition's, and the overwhelmingly common count is zero.
-  operation where_run[P](r: Relation, cond: LogicalQuery, ...params: P)
+  operation where_run[P](r: Self, cond: LogicalQuery, ...params: P)
     -> Relation[T = r.T, E = r.E] @[host_implemented]
 
   -- join — combine two relations by a condition over BOTH rows (WI-714 / proposal
@@ -289,7 +289,7 @@ sort anthill.prelude.Relation
   -- its own `L`/`R` breaks that tie. The row types are still read as `r1.T`/`r2.T`
   -- projections (eliminated per call against the actual receivers), so the binders type
   -- at the concrete schemas.
-  operation join[L, R](r1: Relation[T = L], r2: Relation[T = R], cond: (c: r1.T, q: r2.T) -> Bool)
+  operation join[L, R](r1: Relation[T = L, E = E], r2: Relation[T = R, E = E], cond: (c: r1.T, q: r2.T) -> Bool)
     -> Relation[T = Concat[A = L, B = R], E = {r1.E, r2.E}]
 
   rule join(?r1, ?r2, ?cond) <=> conjoin_of(?r1, ?r2, ?cond) @[simp]
@@ -311,7 +311,7 @@ sort anthill.prelude.Relation
   -- tuple concatenation, not expressible as a projection).
   -- `...params` is the same PARAMETER channel `where_run` carries (WI-1127) — one
   -- compiler, so a join condition's row-independent operands are captured identically.
-  operation join_run[L, R, P](r1: Relation[T = L], r2: Relation[T = R], cond: LogicalQuery,
+  operation join_run[L, R, P](r1: Relation[T = L, E = E], r2: Relation[T = R, E = E], cond: LogicalQuery,
                               ...params: P)
     -> Relation[T = Concat[A = L, B = R], E = {r1.E, r2.E}] @[host_implemented]
 
@@ -346,7 +346,7 @@ sort anthill.prelude.Relation
   -- typer builds both from one list, so they cannot disagree. Body-less; the host builtin
   -- rebuilds `columns` as `[(result-key, r's column var of source-name)]`, keeping `r.query`.
   -- A source name naming no column is a loud error, never a drop.
-  operation project_run[Keep](r: Relation, spec: Term)
+  operation project_run[Keep](r: Self, spec: Term)
     -> Relation[T = Project[T = r.T, Keep = Keep], E = r.E] @[host_implemented]
 
   -- fix — RESTRICT relation columns to given VALUES and DROP them (WI-714 / proposal 052
@@ -390,7 +390,7 @@ sort anthill.prelude.Relation
   -- `guarded(query, eq(col, val))` + drops the columns (the column stays SOLVED in the
   -- query, so a dropped column keeps the source multiplicity — bag semantics, OQ6, as
   -- `project`).
-  operation fix[R](p: Relation, ...args: R)
+  operation fix[R](p: Self, ...args: R)
     -> Relation[T = Without[T = p.T, Drop = R], E = p.E] @[host_implemented]
 
   -- rename — RE-KEY columns IN PLACE (WI-731). `r.rename(who: r.name)` gives back `r` with
@@ -426,6 +426,6 @@ sort anthill.prelude.Relation
   --
   -- Body-less; the host builtin re-keys `columns` and leaves `query` untouched, so `rename`
   -- changes no row and no multiplicity — it is a schema operation alone.
-  operation rename[R](r: Relation, ...args: R)
+  operation rename[R](r: Self, ...args: R)
     -> Relation[T = Rename[T = r.T, Map = R], E = r.E] @[host_implemented]
 end

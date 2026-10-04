@@ -157,10 +157,29 @@ fn collect_sort_refs(kb: &KnowledgeBase, term: TermId, skip: Symbol, out: &mut H
     // bare `Ref(Cell)` a `Modifiable[T = Cell]` type-arg takes (WI-361), so one
     // check covers both fact-head shapes.
     if let Some(s) = extract_sort_ref_sym(kb, &super::term_view::TermIdView(term)) {
-        if s != skip {
+        // WI-20261001-80ZV8: …BUT NOT A TYPE PARAMETER, which names no sort. `Cell[V =
+        // V]` binds the slot to the sort's own parameter, and the set stays what the
+        // claim gave it while it was written `Modifiable[T = Cell]`. NOT DRIVEN by a row
+        // of its own: a result typed by a bare parameter is already kept conservatively
+        // ([`result_type_admits_region`]), so nothing observable tells `{Cell}` from
+        // `{Cell, V}` today.
+        if s != skip && !super::typing::is_sort_param_symbol(kb, s) {
             out.insert(s);
         }
         return;
+    }
+    // WI-20261001-80ZV8: AN APPLICATION NAMES ITS HEAD TOO. `provides Modifiable[T =
+    // Self]` inside `sort Cell` is `Modifiable[T = Cell[V = V]]`, and the sort that claim
+    // is about is the application's base — which is not one of its subterms. Walking the
+    // arguments alone collected `V` and missed `Cell`: MEASURED on the stdlib written
+    // with `Self`, no operation returning a fresh cell owed a `Modify[result]` any more
+    // (`wi314 escaping_let_bound_cell_requires_declaration` and `wi353
+    // fold_accumulator_mixed_provenance_keeps_seed_and_result` fail without this arm).
+    // The module's own doc gives `Modifiable[T = Cell[V = Int64]]` as a shape it reads.
+    if let Some(base) = type_head_sort(kb, &Value::term(term)) {
+        if base != skip {
+            out.insert(base);
+        }
     }
     for child in kb.get_term(term).subterms() {
         collect_sort_refs(kb, child, skip, out);

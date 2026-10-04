@@ -57,5 +57,5 @@ enum anthill.prelude.Result
       case ok(v)  -> v
       case err(e) -> Error.raise(e)
 
-  provides Monad[M = Result[E = E], pure = resultPure, flatMap = resultFlatMap, map = resultMap]
+  provides Monad[M = Result[E = E, T = T], pure = resultPure, flatMap = resultFlatMap, map = resultMap]
 end

@@ -256,10 +256,10 @@ fn the_bare_companion_call_is_unchanged() {
 /// ARM, which still fires only when the callee's declared return is the receiver's own
 /// sort. What was wrong was the conclusion drawn from it: that the bracket therefore
 /// means nothing on such a callee. It means what it says — the receiver is a `Map[K =
-/// Bool, V = Bool]` — and `size(m: Map)` is tied to that instance (WI-1082), so a
-/// `String` key put into it contradicts the receiver. 058 rule 1's SORT half binds it,
-/// and the refusal is the one the CALLEE spelling `Map.size[K = Bool, V = Bool](…)` has
-/// given since WI-841, byte for byte.
+/// Bool, V = Bool]` — and `size(m: Self)` is a member of that instance (written since
+/// WI-20261001-80ZV8; it was the bare `m: Map`, tied by WI-1082), so a `String` key put
+/// into it contradicts the receiver. 058 rule 1's SORT half binds it, and the refusal is
+/// the one the CALLEE spelling `Map.size[K = Bool, V = Bool](…)` gives, byte for byte.
 ///
 /// So the bracket is READ on every member now, not only on one whose return is the
 /// receiver's sort. Its sibling
@@ -272,9 +272,13 @@ fn a_receiver_bracket_on_a_non_constructor_callee_is_read() {
         r#"Map[K = Bool, V = Bool].size(put(Map.empty(), "a", 1))"#,
     ));
     assert_eq!(errs.len(), 1, "{errs:#?}");
-    assert!(errs[0].contains("size.type_args (op-type-params)"), "{errs:#?}");
+    // WI-20261001-80ZV8: `size(m: Self)` WRITES what the tie only implied, so the refusal
+    // is the argument's — the receiver's instance against the value handed to it — and
+    // no longer the member-tie check's `size.type_args … first bound to Bool, got
+    // String` (proposal 070 §5: "stays refused, now by the written `Self`").
+    assert!(errs[0].contains("size.m (op-arg)"), "{errs:#?}");
     assert!(
-        errs[0].contains("first bound to Bool") && errs[0].contains("got String"),
+        errs[0].contains("expected Map[V = Bool, K = Bool], got Map[V = Int64, K = String]"),
         "{errs:#?}"
     );
 

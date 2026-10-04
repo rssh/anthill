@@ -20,9 +20,9 @@ enum anthill.prelude.List
   {< The empty list. >}
   entity nil
   {< A cons cell: `head` prepended to `tail`. >}
-  entity cons(head: T, tail: List)
+  entity cons(head: T, tail: Self)
 
-  operation length(l: List) -> Int64 =
+  operation length(l: Self) -> Int64 =
     match l
       case nil() -> 0
       case cons(_, xs) -> add(1, length(xs))
@@ -48,12 +48,16 @@ enum anthill.prelude.List
   -- only List op that compares elements, and a sort-level `requires Eq[T]` makes
   -- `List[NonEq]` ill-formed for every element-agnostic op (it wrongly blocked
   -- `IndexedSeq.nth` on a `List[Waypoint]`).
-  operation contains(l: List, x: T) -> Bool requires Eq[T] =
+  operation contains(l: Self, x: T) -> Bool requires Eq[T] =
     match l
       case nil() -> false
       case cons(head, tail) -> if eq(head, x) then true else contains(tail, x)
 
   {< Concatenation: the elements of `xs` followed by those of `ys`. >}
+  -- Still bare, on purpose (WI-20261001-80ZV8): written `Self`, two receivers meet the
+  -- unifier's canonical channel on a list of lists whose element is itself bare —
+  -- `append([nil], [[1]])` — and are refused. It is written with the rest once that
+  -- channel goes (proposal 070, stage e).
   operation append(xs: List, ys: List) -> List =
     match xs
       case nil() -> ys
@@ -67,12 +71,12 @@ enum anthill.prelude.List
   -- destructure) so the tail threads its element type — a bare `cons` tail is
   -- untyped `List` and would lose `xs.T` on the recursive call, leaving the
   -- callback row `EffP` unconstrained (the same reason `nth` uses `splitFirst`).
-  operation foldLeft[Acc, EffP](xs: List, init: Acc, f: (acc: Acc, x: xs.T) -> Acc @ {EffP}) -> Acc effects EffP =
+  operation foldLeft[Acc, EffP](xs: Self, init: Acc, f: (acc: Acc, x: xs.T) -> Acc @ {EffP}) -> Acc effects EffP =
     match splitFirst(xs)
       case none() -> init
       case some(pair(h, t)) -> foldLeft(t, f(init, h), f)
 
-  operation foldRight[Acc, EffP](xs: List, init: Acc, f: (x: xs.T, acc: Acc) -> Acc @ {EffP}) -> Acc effects EffP =
+  operation foldRight[Acc, EffP](xs: Self, init: Acc, f: (x: xs.T, acc: Acc) -> Acc @ {EffP}) -> Acc effects EffP =
     match splitFirst(xs)
       case none() -> init
       case some(pair(h, t)) -> f(h, foldRight(t, init, f))
@@ -80,12 +84,12 @@ enum anthill.prelude.List
   {< The elements of `xs` in reverse order. >}
   -- Via a tail accumulator (`reverseOnto`). Element-agnostic (no `Eq`), pure.
   -- Needed to give the eager `mapElems` forward (source) order.
-  operation reverse(xs: List) -> List[xs.T] =
+  operation reverse(xs: Self) -> List[xs.T] =
     let seed: List[xs.T] = nil
     reverseOnto(xs, seed)
 
   -- `internal` (WI-369): a tail-accumulator worker for `reverse` — not public API.
-  internal operation reverseOnto(xs: List, acc: List[xs.T]) -> List[xs.T] =
+  internal operation reverseOnto(xs: Self, acc: List[xs.T]) -> List[xs.T] =
     match splitFirst(xs)
       case none() -> acc
       case some(pair(h, t)) -> reverseOnto(t, cons(head: h, tail: acc))
@@ -110,17 +114,17 @@ enum anthill.prelude.List
   -- shape proven by `foldLeft`/`foldRight` (typed accumulator + named callback).
   -- `filterElems` keeps its element type (`Bool` callback), so it is `find`-shaped
   -- and needs no accumulator.
-  operation mapElems[Dst, EffP](xs: List, f: (x: xs.T) -> Dst @ {EffP}) -> List[Dst] effects EffP =
+  operation mapElems[Dst, EffP](xs: Self, f: (x: xs.T) -> Dst @ {EffP}) -> List[Dst] effects EffP =
     let seed: List[Dst] = nil
     reverse(mapElemsOnto(xs, f, seed))
 
   -- `internal` (WI-369): the tail-accumulator worker for `mapElems`. It builds the
   -- mapped list REVERSED (prepends onto `acc`); `mapElems` re-reverses. Not public.
-  internal operation mapElemsOnto[Dst, EffP](xs: List, f: (x: xs.T) -> Dst @ {EffP}, acc: List[Dst]) -> List[Dst] effects EffP =
+  internal operation mapElemsOnto[Dst, EffP](xs: Self, f: (x: xs.T) -> Dst @ {EffP}, acc: List[Dst]) -> List[Dst] effects EffP =
     match splitFirst(xs)
       case none() -> acc
       case some(pair(h, t)) -> mapElemsOnto(t, f, cons(head: f(h), tail: acc))
-  operation filterElems[EffP](xs: List, p: (x: xs.T) -> Bool @ {EffP}) -> List[xs.T] effects EffP =
+  operation filterElems[EffP](xs: Self, p: (x: xs.T) -> Bool @ {EffP}) -> List[xs.T] effects EffP =
     match splitFirst(xs)
       case none() -> nil
       case some(pair(h, t)) ->
@@ -160,7 +164,7 @@ enum anthill.prelude.List
   -- `foldLeft` / `foldRight`). `provides` (not `fact`) so the pure row `E = {}`
   -- lowers through the type-aware path, like the Stream provision above.
   provides FiniteCollection[C = List[T], Element = T, E = {}]
-  operation collect(l: List) -> List[l.T] = l
+  operation collect(l: Self) -> List[l.T] = l
 
   -- List provides FiniteStream (WI-588): a list's tail is a list, so a List IS a
   -- finite lazy sequence; its `splitFirst` (below) returns a List tail, which
@@ -177,7 +181,7 @@ enum anthill.prelude.List
   -- delivered by WI-357. The effect dual — threading `E` through the nested
   -- `Stream` in a destructured Pair across a carrier-impl self-recursion (the
   -- lazy `filter` carrier) — is still open; see WI-413.
-  operation splitFirst(xs: List) -> Option[Pair[A = xs.T, B = List[xs.T]]] =
+  operation splitFirst(xs: Self) -> Option[Pair[A = xs.T, B = List[xs.T]]] =
     match xs
       case nil() -> none
       case cons(h, t) -> some(pair(h, t))
@@ -192,12 +196,12 @@ enum anthill.prelude.List
   -- (`some(h)`) does thread, which is what `headOption` relies on. `tail` is
   -- deliberately NOT overridden — the via-`splitFirst` spelling would be the
   -- inherited default verbatim.
-  operation head(xs: List) -> xs.T effects { Error[EmptyStream] :- isEmpty(xs) } =
+  operation head(xs: Self) -> xs.T effects { Error[EmptyStream] :- isEmpty(xs) } =
     match headOption(xs)
       case none() -> Error.raise(empty_stream)
       case some(h) -> h
 
-  operation headOption(xs: List) -> Option[xs.T] =
+  operation headOption(xs: Self) -> Option[xs.T] =
     match xs
       case nil() -> none
       case cons(h, _) -> some(h)
@@ -212,7 +216,7 @@ enum anthill.prelude.List
   -- than destructuring `cons` directly — the cons tail is bare `List` (cons
   -- cannot carry `List[T]`: a self-referential field type overflows the type
   -- walk), so a direct `nth(t, …)` could not infer the recursive `Elem`.
-  operation nth(xs: List, i: Int64) -> Option[xs.T] =
+  operation nth(xs: Self, i: Int64) -> Option[xs.T] =
     match splitFirst(xs)
       case none() -> none
       case some(pair(h, rest)) ->
@@ -221,9 +225,13 @@ enum anthill.prelude.List
         else none
 
   {< PersistentCollection.insert for List: prepend `elem` onto `c`. >}
-  operation insert(c: List, elem: T) -> List = cons(head: elem, tail: c)
+  operation insert(c: Self, elem: T) -> Self = cons(head: elem, tail: c)
 
   {< PersistentCollection.empty for List: the empty list. >}
+  -- Still bare, on purpose (WI-20261001-80ZV8): nothing at a call fixes `T`, and what
+  -- a call means that leaves a sort's parameter unfixed is open in proposal 070. Bare,
+  -- the result joins with any instance; written `Self`, it joins with none. The same
+  -- holds for `Map.empty`, `Set.empty`, `MutableStack.new` and `LogicalStream`'s three.
   operation empty() -> List = nil
 
   -- List satisfies Iteration (pure). Effect left unbound by design —
@@ -237,7 +245,7 @@ enum anthill.prelude.List
   -- destructured head `h` threads into the tuple literal `(h, t)` via the
   -- tuple-literal element threading (WI-462), so `split` on a `List[Int64]` types
   -- the head as `Int64` with no explicit `[Elem]` param.
-  operation split(xs: List) -> Option[(xs.T, List[xs.T])] =
+  operation split(xs: Self) -> Option[(xs.T, List[xs.T])] =
     match xs
       case nil() -> none
       case cons(h, t) -> some((h, t))

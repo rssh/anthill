@@ -77,7 +77,7 @@ sort anthill.prelude.MappedStream
   -- the truth: the tail wraps the SOURCE's tail, so its `Source` is that tail's sort, NOT
   -- this carrier's — a `MappedStream[Source = Source]` tail would make the witness read
   -- finiteness off the wrong sort.
-  operation splitFirst(m: MappedStream) -> Option[Pair[A = T, B = Stream[T = T, E = {ES, EF}]]] effects {ES, EF} =
+  operation splitFirst(m: Self) -> Option[Pair[A = T, B = Stream[T = T, E = {ES, EF}]]] effects {ES, EF} =
     match m
       case mapped(src, fn) ->
         match Stream.splitFirst(Iterable.iterator(src))
@@ -181,7 +181,7 @@ sort anthill.prelude.FilteredStream
   -- and the value no longer has the receiver's own type. Dispatching through `Stream` lands
   -- back here on that value's own instance, which drops the next element and threads the
   -- carrier effect (WI-413).
-  operation splitFirst(f: FilteredStream) -> Option[Pair[A = T, B = Stream[T = T, E = {ES, EF}]]] effects {ES, EF} =
+  operation splitFirst(f: Self) -> Option[Pair[A = T, B = Stream[T = T, E = {ES, EF}]]] effects {ES, EF} =
     match f
       case filtered(src, pred) ->
         match Stream.splitFirst(Iterable.iterator(src))

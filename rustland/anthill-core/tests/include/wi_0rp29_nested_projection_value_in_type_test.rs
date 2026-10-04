@@ -547,7 +547,7 @@ end
         assert_refused_naming(
             &load_errors(&program(&ns, n, &tail)),
             &[&format!(
-                "expected List, got Stream[T = Buf[T = Int64, N = {n}]"
+                "expected List[T = ?_], got Stream[T = Buf[T = Int64, N = {n}]"
             )],
             &format!("the Stream tail handed to List.length, at N = {n}"),
         );

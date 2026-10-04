@@ -52,7 +52,7 @@ sort anthill.prelude.LogicalStream
   -- that provides LogicalStream at a concrete row (Relation at {Error}) REFINES this
   -- instead of widening it (override-refinement, WI-347). A value typed as a bare
   -- `Stream` (e.g. `execute`'s `Stream[Solution]`) splits via `Stream.splitFirst`.
-  operation splitFirst(s: LogicalStream)
+  operation splitFirst(s: Self)
     -> Option[Pair[A = s.T, B = LogicalStream[T = s.T, E = s.E]]]
     effects s.E @[host_implemented]
 

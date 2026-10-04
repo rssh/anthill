@@ -39,13 +39,13 @@ sort anthill.prelude.MutableStack
     mutableStack(rep: Cell.new(nil()))
 
   -- Push `elem` onto the top, in place.
-  operation push(s: MutableStack, elem: T) -> Unit
+  operation push(s: Self, elem: T) -> Unit
     effects Modify[s]
   =
     Cell.set(s.rep, cons(head: elem, tail: Cell.get(s.rep)))
 
   -- Pop the top: remove it and return it, or `none` if the stack is empty.
-  operation pop(s: MutableStack) -> Option[T]
+  operation pop(s: Self) -> Option[T]
     effects Modify[s]
   =
     match Cell.get(s.rep)
@@ -55,7 +55,7 @@ sort anthill.prelude.MutableStack
         some(h)
 
   -- Peek at the top WITHOUT removing it — a read observation, no effect.
-  operation top(s: MutableStack) -> Option[T]
+  operation top(s: Self) -> Option[T]
   =
     match Cell.get(s.rep)
       case nil() -> none()
@@ -67,7 +67,7 @@ sort anthill.prelude.MutableStack
   -- a snapshot mutates nothing, and a later `push`/`pop` does not perturb an
   -- already-produced snapshot (it is the List value captured at `iterator`
   -- time) — the "snapshot, not live cursor" reading in the proposal.
-  operation iterator(s: MutableStack) -> Stream[T, {}]
+  operation iterator(s: Self) -> Stream[T, {}]
   =
     Cell.get(s.rep)
 
@@ -79,19 +79,19 @@ sort anthill.prelude.MutableStack
   -- (WI-599: the `finiteIterator` finite cursor is GONE — the thin finite
   -- combinators wrap the bare carrier directly, so no cursor indirection is needed.)
   provides FiniteCollection[C = MutableStack[T], Element = T, E = {}]
-  operation collect(s: MutableStack) -> List[T = s.T] = Cell.get(s.rep)
+  operation collect(s: Self) -> List[T = s.T] = Cell.get(s.rep)
 
   -- MutableCollection.insert: the collection view of `push`. Returns the
   -- membership witness ("was new") — vacuously `true` for a stack/bag
   -- (proposal library/002 Open Q 4).
-  operation insert(s: MutableStack, elem: T) -> Bool
+  operation insert(s: Self, elem: T) -> Bool
     effects Modify[s]
   =
     let _ = push(s, elem)
     true
 
   -- MutableCollection.clear: reset to empty, in place.
-  operation clear(s: MutableStack) -> Unit
+  operation clear(s: Self) -> Unit
     effects Modify[s]
   =
     Cell.set(s.rep, nil())
@@ -101,7 +101,7 @@ sort anthill.prelude.MutableStack
   -- builder and the shared read layer. `E = {}` is written so the pure access
   -- row lowers into the type (the iterator-consumption row does not float —
   -- cf. List's `provides Stream[T, {}]`).
-  provides Modifiable[T = MutableStack]
+  provides Modifiable[T = Self]
   provides MutableCollection[C = MutableStack[T], Element = T, E = {}]
   provides Iterable[C = MutableStack[T], Element = T, E = {}]
 end

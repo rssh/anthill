@@ -51,9 +51,9 @@ sort anthill.prelude.Map
   -- over two Maps are stamped `Map` by the same WI-603 inference `eq` uses (WI-651
   -- confirmed neq does NOT escape; its own key comparison `neq(?k, ?k2)` below is
   -- correctly typed `K`, not `Map`, and not flagged). Structural comparison is `===`.
-  provides PartialEq[T = Map]
-  provides Eq[T = Map]
-  operation eq(a: Map, b: Map) -> Bool
+  provides PartialEq[T = Self]
+  provides Eq[T = Self]
+  operation eq(a: Self, b: Self) -> Bool
 
   -- WI-495: a Map is a GENUINE non-Stream Iterable — it can be walked (produces
   -- a Stream of its entries) but is NOT itself a Stream (it has no `splitFirst`
@@ -64,16 +64,16 @@ sort anthill.prelude.Map
   -- a List (which provides Stream, so it is admissible as the produced Stream).
   -- This is exactly the carrier the Iterable≠Stream split exists for (proposal
   -- library/002: "Iterable PRODUCES an iterator, Iteration/Stream IS one").
-  provides Iterable[C = Map, Element = Pair[A = K, B = V], E = {}]
-  operation iterator(m: Map) -> Stream[T = Pair[A = K, B = V], E = {}] = entries(m)
+  provides Iterable[C = Self, Element = Pair[A = K, B = V], E = {}]
+  operation iterator(m: Self) -> Stream[T = Pair[A = K, B = V], E = {}] = entries(m)
 
   -- Map provides FiniteCollection (WI-585): a Map is finite, so it can be fully
   -- consumed. `collect` materializes the entries as a List (which is the
   -- finiteness primitive's List form); `size`/`foldLeft`/`foldRight` come from
   -- the FiniteCollection defaults — except `size`, which Map supplies itself: see the
   -- `size` note below.
-  provides FiniteCollection[C = Map, Element = Pair[A = K, B = V], E = {}]
-  operation collect(m: Map) -> List[T = Pair[A = K, B = V]] = entries(m)
+  provides FiniteCollection[C = Self, Element = Pair[A = K, B = V], E = {}]
+  operation collect(m: Self) -> List[T = Pair[A = K, B = V]] = entries(m)
 
   -- WI-599: the `finiteIterator` finite cursor is GONE. The thin finite
   -- combinators wrap the bare carrier directly (Map.map / Map.filter, inherited
@@ -84,19 +84,19 @@ sort anthill.prelude.Map
 
   -- Construction
   operation empty() -> Map @[host_implemented]
-  operation put(m: Map, key: K, value: V) -> Map @[host_implemented]
+  operation put(m: Self, key: K, value: V) -> Self @[host_implemented]
 
   -- Lookup
-  operation get(m: Map, key: K) -> Option[V] @[host_implemented]
-  operation contains(m: Map, key: K) -> Bool @[host_implemented]
+  operation get(m: Self, key: K) -> Option[V] @[host_implemented]
+  operation contains(m: Self, key: K) -> Bool @[host_implemented]
 
   -- Removal
-  operation remove(m: Map, key: K) -> Map @[host_implemented]
+  operation remove(m: Self, key: K) -> Self @[host_implemented]
 
   -- Projections
-  operation keys(m: Map) -> List[T = K] @[host_implemented]
-  operation values(m: Map) -> List[T = V] @[host_implemented]
-  operation entries(m: Map) -> List[T = Pair[A = K, B = V]] @[host_implemented]
+  operation keys(m: Self) -> List[T = K] @[host_implemented]
+  operation values(m: Self) -> List[T = V] @[host_implemented]
+  operation entries(m: Self) -> List[T = Pair[A = K, B = V]] @[host_implemented]
   -- Map's OWN O(1) size. Note (WI-444): now that Map provides FiniteCollection,
   -- the inherited `FiniteCollection.size` default (an O(N) `List.length(collect(m))`
   -- walk) shares this short name. The carrier override (WI-444) takes an own op the
@@ -105,7 +105,7 @@ sort anthill.prelude.Map
   -- hardcoded name before, invisible to that gate, so the spec-op call ran the default
   -- walk. MEASURED after the move: `FiniteCollection.size(m)` and `Map.size(m)` both run
   -- this host `size`. Same answer either way; the difference is O(1) against O(N).
-  operation size(m: Map) -> Int64 @[host_implemented]
+  operation size(m: Self) -> Int64 @[host_implemented]
 
   -- Laws (algebraic specification). The genuinely-reducing laws are tagged @[simp] so
   -- the type-directed rewriter fires them once the redex's carrier is known to provide
