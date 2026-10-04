@@ -547,26 +547,20 @@ fn the_fact_census_is_scoped_and_attributed() {
     );
 }
 
-/// CONDITION (2) IS ABOUT WHERE THE CLAUSE IS **PLACED**, NOT ABOUT WHAT THE LADDER
-/// SAID — and this row is the measurement that settled it, because the other reading is
-/// the one that looks right.
-///
-/// A `!denotes` filter on the site set would say: a head that resolved ELSEWHERE is a
-/// clause of what it resolved to, so it is not a clause of the predicate this entry is
-/// minting. Driven on the three files below, that is FALSE. `main.anthill`'s head
-/// resolves to `lib.p` at scan time (its own file imports it), and its clause is
-/// nevertheless stored under `Rec.p` beside the entry's — `load_rule` remaps the head in
-/// its SCOPE at load time, by which point the entry's head has minted `Rec.p` there and
-/// a local symbol beats an import. That divergence is WI-20260820-JR7BB, filed by
-/// WI-980 and not this rule's to fix; what it settles is that condition (2) must count
-/// the head.
+/// JR7BB CLOSES THE OLD GAP BEFORE CONDITION (2) CAN COUNT IT. `main.anthill`'s head
+/// resolves to `lib.p` at scan time (its own file imports it), while the secondary
+/// entry's head would mint `Rec.p`. Minting that local used to make `load_rule` remap the
+/// unchanged main-entry head to `Rec.p`, where condition (2) then refused both clauses
+/// as one predicate assembled from two entries. The placement census was accurate, but
+/// it observed a clause that had already moved silently. JR7BB now refuses the mixed
+/// frozen answers as an import capture before the mint, naming both files.
 ///
 /// THE THIRD FILE IS LOAD-BEARING. Written in ONE file the entry sees the main entry's
 /// import too (they share one scope), both heads denote, and condition (1) refuses
 /// instead — measured. Imports are file-local (WI-995), so only a separate file gives
 /// the two heads different ladder answers.
 #[test]
-fn condition_2_counts_a_head_by_where_its_clause_lands() {
+fn jr7bb_refuses_the_capture_before_condition_2_counts_clause_placement() {
     const LIB: (&str, &str) = (
         "lib.anthill",
         "namespace wi1001.c2imp.lib\n  rule p(?x)\n  rule p(1) :- true\nend\n",
@@ -592,9 +586,8 @@ fn condition_2_counts_a_head_by_where_its_clause_lands() {
         None,
         "CONTROL: and mints nothing at the sort"
     );
-    // Now a secondary entry in a THIRD file writes a `p` of its own. Refused: whatever
-    // the ladder answered, both clauses land in one predicate at one address, written by
-    // two entries.
+    // Now a secondary entry in a THIRD file writes a `p` of its own. Refused before its
+    // local can move the unchanged main-entry clause away from the imported predicate.
     let errs = crate::common::try_load_kb_with_named_files(&[
         LIB,
         MAIN,
@@ -607,14 +600,16 @@ fn condition_2_counts_a_head_by_where_its_clause_lands() {
     .unwrap_or_default();
     assert_eq!(errs.len(), 1, "one predicate, one message; got {errs:#?}");
     assert!(
-        errs[0].contains("assembled from more than one entry")
-            && errs[0].contains("a clause is written in the main entry"),
-        "condition (2) must count the main entry's head; got {:?}",
+        errs[0].contains("would capture")
+            && errs[0].contains("main.anthill")
+            && errs[0].contains("entry.anthill")
+            && errs[0].contains("wi1001.c2imp.Rec"),
+        "JR7BB must name the imported head and the local mint; got {:?}",
         errs[0]
     );
 }
 
-/// THE CONTROL FOR THE ROW ABOVE, one token apart: the SAME two files, the same two
+/// THE CONTROL FOR THE ROW ABOVE, one token apart: the same two files, the same two
 /// entries, DIFFERENT predicate names. Nothing is assembled from two parties, so both
 /// load and both answer. Without it the refusal above would be equally true of an
 /// implementation that refused every cross-file secondary entry.

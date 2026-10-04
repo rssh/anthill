@@ -708,6 +708,9 @@ mod wi321_cross_file_mutual_recursion_test;
 #[path = "include/wi369_internal_visibility_test.rs"]
 mod wi369_internal_visibility_test;
 
+#[path = "include/wi_jr7bb_rule_head_import_capture_test.rs"]
+mod wi_jr7bb_rule_head_import_capture_test;
+
 #[path = "include/wi516_graded_effect_row_test.rs"]
 mod wi516_graded_effect_row_test;
 

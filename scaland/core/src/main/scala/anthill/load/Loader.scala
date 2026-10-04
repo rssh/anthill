@@ -161,13 +161,15 @@ object Loader:
     val headSites = heads.toIndexedSeq
     val denotes: IndexedSeq[Boolean] = headSites.map { h =>
       kb.symbols.setAskingFile(Some(fileIds(h.fileIdx)))
-      ruleHeadLadderAnswer(kb, h.name, h.scope).denotes
+      ruleHeadLadderAnswer(kb, h.name, h.scope).denotes || pending.exists(p =>
+        p.scope == h.scope && p.short == h.name && p.origin.id == fileIds(h.fileIdx))
     }
 
     // PHASE 3 — DECIDE, then mint. Deciding reads the table and minting writes it, so
     // they cannot interleave: [[headNameCollisions]] sees a scope through a per-scope
     // SENTINEL symbol, and no mint has happened when any of its answers is taken.
-    val collided = reportHeadNameCollisions(kb, headSites, denotes, fileIds, errors)
+    val captured = reportRuleHeadImportCaptures(kb, headSites, denotes, errors)
+    val collided = captured ++ reportHeadNameCollisions(kb, headSites, denotes, fileIds, errors)
     reportPredicateHeadsSpanningFiles(kb, headSites, denotes, collided, errors)
     for (head, denoted) <- headSites.zip(denotes) if !denoted do
       kb.symbols.setAskingFile(Some(fileIds(head.fileIdx)))
@@ -1004,6 +1006,47 @@ object Loader:
     * for them. */
   private def scanRuleGoal(kb: KnowledgeBase, site: RuleHeadSite[kb.ScopeId]): Unit =
     defineSymbolOnce(kb, site.name, makeQualified(site.prefix, site.name), site.kind, site.scope)
+
+  /** WI-20260821-JR7BB — refuse a scope-local rule-head declaration that would capture
+    * a sibling file's imported head.
+    *
+    * Imports are FILE-local (WI-1074/WI-995); declarations are SCOPE-wide. Therefore a
+    * mixed frozen answer for one `(scope, name)` — one head DENOTES while another would
+    * INTRODUCE — means the latter's local would precede the former's import and silently
+    * retarget an unchanged clause. Ask before the mint, while the distinction still
+    * exists. Carrying the imported answer only into head placement was rejected: then a
+    * bare name in one rule's head and body would resolve two ways. */
+  private def reportRuleHeadImportCaptures(
+    kb: KnowledgeBase,
+    heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
+    denotes: IndexedSeq[Boolean],
+    errors: ArrayBuffer[LoadError]
+  ): Set[(kb.ScopeId, String)] =
+    val groups = LinkedHashMap.empty[(kb.ScopeId, String), (ArrayBuffer[Int], ArrayBuffer[Int])]
+    for (head, idx) <- heads.zipWithIndex do
+      val (imported, introducing) = groups.getOrElseUpdate(
+        (head.scope, head.name), (ArrayBuffer.empty, ArrayBuffer.empty))
+      if denotes(idx) then imported += idx else introducing += idx
+
+    var refused = Set.empty[(kb.ScopeId, String)]
+    for ((scope, name), (imported, introducing)) <- groups.toIndexedSeq
+        .sortBy((key, _) => (kb.scopeDisplayName(key._1), key._2))
+        if imported.nonEmpty && introducing.nonEmpty do
+      val importingFiles = imported.map(i => heads(i).span.file).distinct.sorted
+      val introducingFiles = introducing.map(i => heads(i).span.file).distinct.sorted
+      val first = introducing.minBy(i => (heads(i).fileIdx, heads(i).span.start))
+      errors += LoadError.Other(
+        s"the local rule-head name `$name` in '${kb.scopeDisplayName(scope)}' would " +
+        s"capture the same head as resolved through an import in " +
+        s"${importingFiles.mkString(", ")}. Imports belong only to the files that write " +
+        s"them, but the local declaration requested by ${introducingFiles.mkString(", ")} " +
+        s"would belong to every file at this scope and outrank those imports, silently " +
+        s"retargeting an unchanged clause. Qualify the imported head, import it by name " +
+        s"in every contributing file, or declare the local predicate explicitly and " +
+        s"qualify the foreign contribution.",
+        heads(first).span)
+      refused += ((scope, name))
+    refused
 
   /** How many scope names a collision message prints before it says "… and N more".
     * Mirrors rustland's `COLLISION_SCOPES_SHOWN`. */

@@ -1670,6 +1670,31 @@ pub enum LoadError {
         owner: Option<String>,
         span: Span,
     },
+    /// WI-20260821-JR7BB — a local rule-head declaration in one file would capture a
+    /// sibling file's head that resolves through an import.
+    ///
+    /// Imports are FILE-local (WI-995), while a declaration is SCOPE-wide. If file A
+    /// imports `lib.p` and writes `rule p`, while file B reopens the same scope and
+    /// writes another undeclared `rule p`, minting `<scope>.p` for B makes that local
+    /// precede A's import. A's unchanged clause is then silently retargeted to the new
+    /// local predicate. The two frozen phase-2 answers already expose the contradiction:
+    /// one head DENOTES and one INTRODUCES at the same `(scope, name)`.
+    ///
+    /// Refused rather than carrying A's answer into placement: otherwise a bare `p` in
+    /// A's head and body would resolve two ways. The author must make one ownership
+    /// choice explicit instead.
+    RuleHeadImportCapturedByLocal {
+        /// The short head name shared by both files.
+        name: String,
+        /// The scope both files reopen and in which the local would be minted.
+        scope: String,
+        /// Files whose head already denotes through their file-local visibility.
+        importing_files: Vec<String>,
+        /// Files whose head would introduce the capturing local.
+        introducing_files: Vec<String>,
+        /// The first introducing head, so the refusal points at the capture.
+        span: Span,
+    },
     /// PROPOSAL 061 — A PREDICATE WHOSE HEADS ARE IN MORE THAN ONE FILE MUST BE
     /// DECLARED.
     ///
@@ -2664,6 +2689,7 @@ impl LoadError {
             | LoadError::PublicAliasOfInternal { span, .. }
             | LoadError::ProvidesClauseNeedsSort { span, .. }
             | LoadError::RuleHeadOwnedByNoScope { span, .. }
+            | LoadError::RuleHeadImportCapturedByLocal { span, .. }
             | LoadError::PredicateHeadsSpanFiles { span, .. }
             | LoadError::NameIntroducedAtTwoVisibleScopes { span, .. }
             | LoadError::EquationSubjectNamesAPredicate { span, .. }
@@ -3241,6 +3267,26 @@ impl LoadError {
                     scope
                 )
             }
+            LoadError::RuleHeadImportCapturedByLocal {
+                name,
+                scope,
+                importing_files,
+                introducing_files,
+                span,
+            } => format!(
+                "{}: the local rule-head name `{}` in '{}' would capture the same head \
+                 as resolved through an import in {}. Imports belong only to the files \
+                 that write them, but the local declaration requested by {} would \
+                 belong to every file at this scope and outrank those imports, silently \
+                 retargeting an unchanged clause. Qualify the imported head, import it \
+                 by name in every contributing file, or declare the local predicate \
+                 explicitly and qualify the foreign contribution.",
+                loc.format_start(*span),
+                name,
+                scope,
+                importing_files.join(", "),
+                introducing_files.join(", "),
+            ),
             LoadError::PredicateHeadsSpanFiles {
                 name,
                 scope,
@@ -4660,6 +4706,23 @@ impl std::fmt::Display for LoadError {
                     name, scope, span.start, span.end
                 )
             }
+            LoadError::RuleHeadImportCapturedByLocal {
+                name,
+                scope,
+                importing_files,
+                introducing_files,
+                span,
+            } => write!(
+                f,
+                "the local rule-head name '{}' in '{}' would capture an imported head \
+                 from {} when introduced by {} (at {}..{})",
+                name,
+                scope,
+                importing_files.join(", "),
+                introducing_files.join(", "),
+                span.start,
+                span.end
+            ),
             LoadError::PredicateHeadsSpanFiles {
                 name,
                 scope,
@@ -5534,8 +5597,18 @@ pub fn scan_definitions_with_sources(
     let denotes: Vec<bool> = resolved
         .iter()
         .zip(heads.iter())
-        .map(|(r, h)| r.denotes() || pending_import_brings_in(&pending, h.scope, h.name))
+        .map(|(r, h)| {
+            r.denotes()
+                || pending_import_brings_in(&pending, h.scope, h.name, h.file_idx)
+        })
         .collect();
+    // WI-20260821-JR7BB — FILE-LOCAL visibility and SCOPE-WIDE declaration must not
+    // silently disagree. One file's head may denote through its import while a sibling
+    // file at the same address sees nothing and would therefore mint a local. That local
+    // wins the ladder for BOTH files, retargeting the first file's unchanged head.
+    // Refuse the mixed frozen answers before the mint; keep the key so proposal 061's
+    // multi-file report does not print a second prescription for the same fault.
+    let captured = report_rule_head_import_captures(kb, &heads, &denotes, files, &mut errors);
     // AND AN EQUATION'S SUBJECT MAY NOT LAND ON ANOTHER SCOPE'S PREDICATE (D0EXD).
     //
     // The ladder above answers one question — does the name resolve — for every head
@@ -5650,7 +5723,7 @@ pub fn scan_definitions_with_sources(
     // the question is per file, and every candidate is overlaid at once because the
     // question is "does another scope introduce this name", not "did it win".
     let collisions = head_name_collisions(kb, &heads, &denotes, source_ids, global, &sentinels);
-    let mut collided: HashSet<(ScopeId, &str)> = HashSet::new();
+    let mut collided: HashSet<(ScopeId, &str)> = captured.clone();
     for c in &collisions {
         for s in &c.scopes {
             collided.insert((*s, c.name));
@@ -5761,6 +5834,7 @@ pub fn scan_definitions_with_sources(
         &resolved,
         &entry_rules,
         &entry_ranges,
+        &captured,
         files,
         source_ids,
         &mut errors,
@@ -10288,6 +10362,7 @@ fn judge_secondary_entry_rules<'f>(
     resolved: &[ResolveResult],
     entry_rules: &[SecondaryEntryRule],
     entry_ranges: &[EntryTextRange],
+    preempted: &HashSet<(ScopeId, &'f str)>,
     files: &[&ParsedFile],
     source_ids: &[SourceId],
     errors: &mut Vec<LoadError>,
@@ -10375,6 +10450,14 @@ fn judge_secondary_entry_rules<'f>(
     }
 
     for ((scope, name), members) in ordered {
+        // JR7BB already refused this predicate before minting because one file's
+        // imported head and a sibling file's introducing head had different frozen
+        // answers. The post-mint landing census necessarily sees the local symbol win
+        // and would restate the same fault as condition (2). Keep the earlier refusal:
+        // it names the actual import/local capture and its applicable repairs.
+        if preempted.contains(&(scope, name)) {
+            continue;
+        }
         let (first_k, _) = *members
             .iter()
             .min_by_key(|&&(k, _)| (entry_rules[k].file_idx, entry_rules[k].span.start))
@@ -11625,10 +11708,99 @@ struct PendingImport {
 /// still suppresses the mint, which is the right way round: the program is refused
 /// either way, and refusing it for the import the author wrote beats refusing it for a
 /// predicate they did not.
-fn pending_import_brings_in(pending: &[PendingImport], scope: ScopeId, name: &str) -> bool {
+fn pending_import_brings_in(
+    pending: &[PendingImport],
+    scope: ScopeId,
+    name: &str,
+    file_idx: usize,
+) -> bool {
     pending
         .iter()
-        .any(|p| p.scope == scope && p.short == name)
+        .any(|p| p.scope == scope && p.short == name && p.file_idx == file_idx)
+}
+
+/// WI-20260821-JR7BB — refuse one scope's MIXED frozen answers for one rule-head name.
+///
+/// A mixed answer is possible only through FILE-local visibility: declarations and
+/// enclosing parents are shared by every file at an address, while imports are not
+/// (WI-995). Therefore, if one head DENOTES and another INTRODUCES at the same
+/// `(scope, name)`, minting the latter's local would put it ahead of the former's import
+/// and silently move that clause. This is 059 R4 clause 3's capture rule at the rule-head
+/// boundary.
+///
+/// The check consumes the already-frozen [`denotes`] vector. Re-resolving after the mint
+/// is exactly the bug: the new local has already erased the evidence by then. A deferred
+/// selective import participates only for ITS file — [`pending_import_brings_in`] is
+/// file-keyed for the same reason.
+fn report_rule_head_import_captures<'f>(
+    kb: &KnowledgeBase,
+    heads: &[RuleHeadSite<'f>],
+    denotes: &[bool],
+    files: &[&ParsedFile],
+    errors: &mut Vec<LoadError>,
+) -> HashSet<(ScopeId, &'f str)> {
+    let mut groups: HashMap<(ScopeId, &'f str), (Vec<usize>, Vec<usize>)> = HashMap::new();
+    for (idx, (head, &denotes_already)) in heads.iter().zip(denotes).enumerate() {
+        let (imported, introducing) = groups
+            .entry((head.scope, head.name))
+            .or_insert_with(|| (Vec::new(), Vec::new()));
+        if denotes_already {
+            imported.push(idx);
+        } else {
+            introducing.push(idx);
+        }
+    }
+
+    let file_name = |idx: usize| {
+        files[idx]
+            .path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| format!("<file {idx}>"))
+    };
+    let mut mixed: Vec<((ScopeId, &'f str), Vec<usize>, Vec<usize>)> = groups
+        .into_iter()
+        .filter_map(|(key, (imported, introducing))| {
+            (!imported.is_empty() && !introducing.is_empty())
+                .then_some((key, imported, introducing))
+        })
+        .collect();
+    mixed.sort_by_key(|((scope, name), _, _)| {
+        (kb.scope_display_name(*scope).to_owned(), (*name).to_owned())
+    });
+
+    let mut refused = HashSet::new();
+    for ((scope, name), imported, introducing) in mixed {
+        let mut importing_files: Vec<String> = imported
+            .iter()
+            .map(|&i| file_name(heads[i].file_idx))
+            .collect();
+        importing_files.sort();
+        importing_files.dedup();
+        let mut introducing_files: Vec<String> = introducing
+            .iter()
+            .map(|&i| file_name(heads[i].file_idx))
+            .collect();
+        introducing_files.sort();
+        introducing_files.dedup();
+        let first = introducing
+            .iter()
+            .copied()
+            .min_by_key(|&i| (heads[i].file_idx, heads[i].span.start))
+            .expect("a mixed group has an introducing head");
+        errors.push(
+            LoadError::RuleHeadImportCapturedByLocal {
+                name: name.to_owned(),
+                scope: kb.scope_display_name(scope).to_owned(),
+                importing_files,
+                introducing_files,
+                span: heads[first].span,
+            }
+            .located_in(files[heads[first].file_idx]),
+        );
+        refused.insert((scope, name));
+    }
+    refused
 }
 
 /// WI-369: reject importing an `internal` name into a scope that cannot see it.
