@@ -579,6 +579,36 @@ pub(super) fn hint_instantiation_into(
     }
 }
 
+/// WI-20261001-80ZV8 — a DATA sort's parameter that several KNOWN arguments bind, instantiated
+/// as the call will instantiate it ([`join_repeated_sort_params`], [`sort_params_join`]) and
+/// FIRST, before the receiver and the siblings pin it — the order `check_apply_iter` asks in.
+///
+/// The call checks a lambda argument against its parameter at the call's instantiation, so the
+/// hint the lambda is typed from has to carry that one. Pinned from the first sibling instead,
+/// `Stack.each(c, shapes, lambda (v) -> area(v))` over `each(x: T, s: Self, f: (v: T) ->
+/// Int64)`, a `Circle` and a `Stack[T = Shape]` hinted `v: Circle` and was then refused at
+/// `f`, `expected Shape -> Int64, got Circle -> Int64`, where `each2(s, x, f)` loaded
+/// (MEASURED). A projection-bearing parameter is left out here as it is there.
+fn join_sort_params_for_hint(
+    kb: &mut KnowledgeBase,
+    s: &mut Substitution,
+    functor: Symbol,
+    ps: &[(Symbol, Value)],
+    known: &HashMap<Symbol, Value>,
+) {
+    let Some(sort) = impl_parent_sort_of_op(kb, functor)
+        .filter(|sort| known.len() > 1 && sort_params_join(kb, *sort))
+    else {
+        return;
+    };
+    let refs: Vec<(Symbol, &Value, &Value)> = ps
+        .iter()
+        .filter(|(_, declared)| !value_contains_projection(kb, declared))
+        .filter_map(|(p, declared)| known.get(p).map(|arg| (*p, declared, arg)))
+        .collect();
+    join_repeated_sort_params(kb, s, sort, &refs);
+}
+
 /// WI-275/427/707: the top-down hint for ONE argument, given its declared parameter type.
 /// Shared by the positional and named channels (they differ only in how `pt` is looked
 /// up) and by both staging phases, so a hint cannot be computed one way before the
@@ -789,6 +819,7 @@ pub(super) fn apply_arg_hints(
     // without a higher-order argument — and then nothing below reads either map.
     let inst = op_params.filter(|_| !known.is_empty()).and_then(|ps| {
         let mut s = Substitution::new();
+        join_sort_params_for_hint(kb, &mut s, functor, ps, known);
         bind_self_receiver_params_for_hint(kb, &mut s, functor, ps, known);
         bind_spec_params_for_hint(kb, &mut s, functor, ps, pos_args, named_args, known);
         hint_instantiation_into(kb, &mut s, functor, ps, known);

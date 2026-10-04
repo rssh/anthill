@@ -828,6 +828,26 @@ pub(super) fn check_bare_ref(
     // local (handled above) still shadows it; §8.6 resolution already arbitrates
     // the candidate set, so an ambiguous same-name tie errored before we got here.
     if let Some(ty) = kb.const_type(sym).cloned() {
+        // WI-20261001-80ZV8 — A CONSTANT'S DECLARED TYPE IS A DECLARATION, and a slot it
+        // leaves out is the declaration's to pick: an existential, opened at each reference
+        // as a nullary operation's return is ([`open_existential_return`], WI-1063). Read as
+        // declared, `const things: List = cons(head: 1, tail: nil)` was a list every instance
+        // admits — and once a name closed an open slot to the bottom type, `let ys = things`
+        // was a list of nothing, `String.length` of whose head loaded (MEASURED). A value
+        // stands in that slot; the reference does not know its type.
+        let ty = rigidify_unwritten_sort_params(
+            kb,
+            UnwrittenFill::Anonymous,
+            &ty,
+            SlotPosition::CallResult {
+                callee_sort: None,
+                opened: &HashMap::new(),
+                held: &HashSet::new(),
+            },
+            occ.span,
+            occ.owner,
+        )
+        .unwrap_or(ty);
         return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
     }
     if kb.is_constructor_symbol(sym) {

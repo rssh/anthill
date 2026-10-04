@@ -1739,6 +1739,33 @@ pub(super) fn check_constructor_iter(
     // fresh `?_` rather than DROPPING it (which had made `pair(h, t)` build
     // `Pair[B=List]`, losing `A`).
 
+    // WI-20261001-80ZV8 — A CONSTRUCTOR IS A CALL: a parameter of its sort that several
+    // fields bind takes their join ([`join_repeated_sort_params`]) before the loops below
+    // unify in field order, which let the first field decide. `cons(head: c, tail: ss)` over
+    // a `Circle` and a `List[T = Shape]` was refused, `cons.tail: expected List[T = Circle],
+    // got List[T = Shape]`, where `cons(head: s, tail: cs)` loaded and the literal `[c, s]`
+    // joined (MEASURED). The same types the loops unify are the ones joined
+    // ([`field_arg_type`]). Asked only where more than one field is supplied, of a sort that
+    // has a parameter ([`sort_params_join`]).
+    if let Some(sort) = parent_sort
+        .filter(|s| pos_results.len() + named_results.len() > 1 && sort_params_join(kb, *s))
+    {
+        let mut supplied: Vec<(Symbol, Value, Value)> = Vec::new();
+        for (i, (field_sym, declared_type)) in field_types.iter().enumerate() {
+            let named = named_args
+                .iter()
+                .position(|(s, _)| s == field_sym)
+                .map(|idx| &named_results[idx]);
+            for r in named.into_iter().chain(pos_results.get(i)).flatten() {
+                let arg_ty = field_arg_type(kb, env, declared_type, r);
+                supplied.push((*field_sym, declared_type.clone(), arg_ty));
+            }
+        }
+        let refs: Vec<(Symbol, &Value, &Value)> =
+            supplied.iter().map(|(f, d, a)| (*f, d, a)).collect();
+        join_repeated_sort_params(kb, &mut subst, sort, &refs);
+    }
+
     // WI-342: `declared_type` is a carrier-agnostic `Value` (a value-in-type
     // field rides as `Value::Node`); pass it directly to `unify_types`.
     for (field_sym, declared_type) in &field_types {

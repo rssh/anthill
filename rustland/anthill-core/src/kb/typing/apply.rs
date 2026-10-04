@@ -451,6 +451,23 @@ pub(super) fn check_apply_iter(
         // calls). The tuple is positional and seven wide, so a `|(_, c, ..)|` pattern keeps
         // compiling with the WRONG element if a field is ever inserted before the carrier.
         let carrier_param_sym: Option<Symbol> = carrier_param_info.as_ref().map(|(_, c, ..)| *c);
+        // WI-20261001-80ZV8 — a parameter of the callee's SORT that several arguments bind
+        // takes their join ([`join_repeated_sort_params`]), BEFORE the receiver's carrier binds
+        // it below: that binding fills only what is still free. Of a DATA sort only
+        // ([`sort_params_join`]): a SPEC's parameters are a provision's, which the arms below
+        // read off the receiver's carrier or off the enclosing `requires` clause. Asked only
+        // of a call with more than one argument, since one argument has nothing to join with.
+        if let Some(sort) = callee_parent_sort
+            .filter(|s| pos_results.len() + named_results.len() > 1 && sort_params_join(kb, *s))
+        {
+            let arg_pairs = supplied_arg_pairs(kb, &op.params, &pos_call_params, pos_results, named_args, named_results);
+            let refs: Vec<(Symbol, &Value, &Value)> = arg_pairs
+                .iter()
+                .filter(|(_, pty, _)| !value_contains_projection(kb, pty))
+                .map(|(p, d, a)| (*p, d, a))
+                .collect();
+            join_repeated_sort_params(kb, &mut subst, sort, &refs);
+        }
         let carrier_bound = match self_recv_spec {
             Some(spec_sort) => {
                 match receiver_carrier(
@@ -625,17 +642,7 @@ pub(super) fn check_apply_iter(
         // here BEFORE the loops below unify in parameter order — which is what made the first
         // argument decide it. A projection-bearing parameter is deferred there and here alike.
         if !op.type_params.is_empty() {
-            let mut arg_pairs: Vec<(Symbol, Value, Value)> = Vec::new();
-            for (i, res) in pos_results.iter().enumerate() {
-                if let (Ok(r), Some((p, pty))) = (res, pos_call_params[i].and_then(|p| op.params.get(p))) {
-                    arg_pairs.push((*p, pty.clone(), r.ty.clone()));
-                }
-            }
-            for (i, (arg_name, _)) in named_args.iter().enumerate() {
-                if let (Ok(r), Some((p, pty))) = (&named_results[i], match_named_arg_param(kb, &op.params, *arg_name)) {
-                    arg_pairs.push((*p, pty.clone(), r.ty.clone()));
-                }
-            }
+            let mut arg_pairs = supplied_arg_pairs(kb, &op.params, &pos_call_params, pos_results, named_args, named_results);
             arg_pairs.retain(|(_, pty, _)| !(op_has_projection && value_contains_projection(kb, pty)));
             let refs: Vec<(Symbol, &Value, &Value)> = arg_pairs.iter().map(|(p, d, a)| (*p, d, a)).collect();
             if let Err(no_join) = join_repeated_type_params(kb, &mut subst, JoinCandidates::TypeParams(&op.type_params), &refs) {
@@ -5041,6 +5048,31 @@ fn defaulted_call_at_non_instance(
         return None;
     }
     unprovided_spec_at_carrier(kb, goal, carrier, fn_sym, span)
+}
+
+/// Each argument a call supplies that was typed, with the parameter it fills: `(parameter,
+/// declared type, argument type)` — what the two joins of [`check_apply_iter`] read
+/// ([`join_repeated_sort_params`], [`join_repeated_type_params`]).
+fn supplied_arg_pairs(
+    kb: &KnowledgeBase,
+    params: &[(Symbol, Value)],
+    pos_call_params: &[Option<usize>],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    named_results: &[Result<TypeResult, TypeError>],
+) -> Vec<(Symbol, Value, Value)> {
+    let mut pairs: Vec<(Symbol, Value, Value)> = Vec::new();
+    for (i, res) in pos_results.iter().enumerate() {
+        if let (Ok(r), Some((p, pty))) = (res, pos_call_params[i].and_then(|p| params.get(p))) {
+            pairs.push((*p, pty.clone(), r.ty.clone()));
+        }
+    }
+    for (i, (arg_name, _)) in named_args.iter().enumerate() {
+        if let (Ok(r), Some((p, pty))) = (&named_results[i], match_named_arg_param(kb, params, *arg_name)) {
+            pairs.push((*p, pty.clone(), r.ty.clone()));
+        }
+    }
+    pairs
 }
 
 /// [`check_apply_iter`]'s argument unification: `arg` against `param`. A parameter typed by the

@@ -34,10 +34,11 @@
 //! bottom type's rows were added, on a binary of the six suites that first measurement found
 //! any of them to reach — this file, `wi_80zv8_unfixed_parameter`, `if_branch_join`,
 //! `wi508`, `wi_0rp29_review9` and `wi858`; 142 rows. The numbers are the second
-//! measurement's.
+//! measurement's, corrected for the one row the sort-parameter join then turned round
+//! ([`a_named_nil_stands_first_or_second`], measured again with that file's own binary).
 //!
 //! 1. A NAME CLOSES THE SLOT (typing/pattern.rs, the `Pattern::Var` arm's
-//!    `closed_where_named`). 18 FAIL: sixteen here — [`a_named_value_is_one_instance`],
+//!    `closed_where_named`). 17 FAIL: fifteen here — [`a_named_value_is_one_instance`],
 //!    [`a_named_value_does_not_meet_a_declared_instance`], [`a_pattern_variable_is_a_name`],
 //!    [`two_names_are_two_unknowns_and_one_name_is_one`],
 //!    [`a_slot_nested_in_a_named_value_is_closed_too`],
@@ -50,14 +51,13 @@
 //!    [`the_bottom_fill_reads_the_declared_variance_and_leaves_a_row_alone`],
 //!    [`a_phantom_parameter_is_at_the_bottom_type_too`],
 //!    [`an_undetermined_type_in_a_named_value_is_not_the_bottom_type`],
-//!    [`a_declared_binder_is_any_instance_not_the_bottom_type`],
-//!    [`a_sort_parameter_is_still_bound_by_the_first_argument`] — and `wi508
+//!    [`a_declared_binder_is_any_instance_not_the_bottom_type`] — and `wi508
 //!    wi508_concrete_new_element_is_not_inferred_from_use`, `wi_0rp29_review9
 //!    a_named_reduced_return_is_closed_at_the_name`. Each loads: the value is read as the
 //!    use likes.
 //! 2. A DESTRUCTURED SCRUTINEE IS ONE INSTANCE (the `Pattern::Constructor` arm's). 1 FAILS:
 //!    [`a_destructured_value_is_one_instance`].
-//!    WITH 1 AND 2 BOTH OUT, 20 FAIL: those nineteen and
+//!    WITH 1 AND 2 BOTH OUT, 19 FAIL: those eighteen and
 //!    [`a_name_nothing_reads_at_an_instance_runs`], which passes under either alone — see
 //!    its site.
 //! 3. A NAME DOES NOT CLOSE A FUNCTION'S RESULT (typing/elaborate.rs, the
@@ -85,7 +85,7 @@
 //! 6. TWO UNKNOWNS OF ONE NAME ARE NAMED AS THE CAUSE (typing/display.rs
 //!    `like_named_unknowns`). 1 FAILS: [`two_unknowns_of_one_name_are_said_to_be_two`].
 //! 7. AN OPEN SLOT IN A COVARIANT POSITION IS `Nothing` (typing/elaborate.rs
-//!    `SlotPosition::is_said_to_be_nothing` answering no). 8 FAIL:
+//!    `SlotPosition::is_said_to_be_nothing` answering no). 9 FAIL:
 //!    [`a_named_nil_an_empty_literal_and_none_are_at_the_bottom_type`],
 //!    [`a_bare_annotation_over_an_empty_value_is_still_the_bottom_type`],
 //!    [`the_bottom_type_is_what_a_named_empty_value_prints`],
@@ -93,7 +93,8 @@
 //!    [`a_covariant_position_is_covariant_all_the_way_down`],
 //!    [`the_bottom_fill_reads_the_declared_variance_and_leaves_a_row_alone`],
 //!    [`a_phantom_parameter_is_at_the_bottom_type_too`],
-//!    [`a_sort_parameter_is_still_bound_by_the_first_argument`]. Its six conditions, each
+//!    [`a_named_nil_stands_first_or_second`], and `wi_80zv8_sort_param_join_test
+//!    both_orders_answer_for_a_sorts_parameter`. Its six conditions, each
 //!    off alone, 1 FAILS under each: covariance not asked of the slots above
 //!    (`SlotPosition::under` keeping the flag) — [`a_covariant_position_is_covariant_all_the_
 //!    way_down`]; an effect row given it too —
@@ -108,6 +109,10 @@
 //!    [`a_constructor_over_an_empty_literal_named_is_one_instance`] and
 //!    [`the_bottom_type_is_what_a_named_empty_value_prints`]. Not in a join: 1 FAILS —
 //!    [`an_empty_literal_joins_as_an_open_slot`].
+//! 9. A CONSTANT'S DECLARED OPEN SLOT IS OPENED AT THE REFERENCE (typing/expr.rs, the
+//!    constant read as declared). 1 FAILS:
+//!    [`a_constant_declared_bare_is_opened_at_each_reference`] — measured on a binary of this
+//!    file and `wi_80zv8_sort_param_join_test`.
 //!
 //! Pass under every part, by design, and say so at their sites:
 //! [`an_annotation_or_a_bracket_says_the_slot`],
@@ -818,6 +823,62 @@ end
     }
 }
 
+/// A CONSTANT DECLARED AT A BARE TYPE IS OPENED AT EACH REFERENCE. `const things: List =
+/// cons(head: 1, tail: nil)` declares "some list": the slot is the declaration's to pick, a
+/// value stands in it, and a reference does not know its type — the existential a nullary
+/// operation's `-> List` is. Named, destructured or passed on, its element is an unknown:
+/// `String.length` of it is refused, and so is the list where a `List[T = String]` is wanted.
+/// Read as declared, the constant was a list every instance admits (the third case loaded
+/// before any of this), and with a name closing an open slot to the bottom type the first two
+/// loaded as well — an `Int64` read as a `String` (MEASURED, found probing the bottom fill).
+/// A constant whose type says its element runs: 1 + 41.
+#[test]
+fn a_constant_declared_bare_is_opened_at_each_reference() {
+    let program = |ns: &str, go: &str| {
+        format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64, String, List, Option}}
+  import anthill.prelude.List.{{nil, cons}}
+  import anthill.prelude.Option.{{none, some}}
+  const things: List = cons(head: 1, tail: nil)
+  const maybe: Option = some(1)
+  const ints: List[T = Int64] = cons(head: 1, tail: nil)
+  operation takes_strings(xs: List[T = String]) -> Int64 = 0
+  operation go() -> Int64 =
+    {go}
+end
+"#
+        )
+    };
+    for (ns, go, naming) in [
+        (
+            "wi80zv8n.o1",
+            "let ys = things\n    match ys\n      case cons(h, _) -> String.length(h)\n      \
+             case nil() -> 0",
+            "length.s (op-arg): expected String, got ?T",
+        ),
+        (
+            "wi80zv8n.o2",
+            "match maybe\n      case some(v) -> String.length(v)\n      case none() -> 0",
+            "length.s (op-arg): expected String, got ?T",
+        ),
+        (
+            "wi80zv8n.o3",
+            "takes_strings(things)",
+            "takes_strings.xs (op-arg): expected List[T = String], got List[T = ?T]",
+        ),
+    ] {
+        let errs = load_errors(&program(ns, go));
+        assert_refused_naming(&errs, &[naming], go);
+    }
+    let said = program(
+        "wi80zv8n.o4",
+        "match ints\n      case cons(h, _) -> h + 41\n      case nil() -> 0",
+    );
+    assert_eq!(run_src(&said, "wi80zv8n.o4.go"), Ok(42));
+}
+
 /// … WHILE AN ANNOTATION OVER A VALUE THAT LEAVES THE SLOT OPEN ITSELF is still the value's
 /// open slot: `let xs: List = nil` is a list of nothing, as `let xs = nil` is. Runs to 1.
 #[test]
@@ -902,31 +963,18 @@ fn a_constructor_over_an_empty_literal_named_is_one_instance() {
     );
 }
 
-/// WHAT THE BOTTOM TYPE DOES NOT DO, pinned so that it is a recorded limit and not an
-/// accident: a SORT's parameter is still bound by the first argument that names it, so a
-/// list of nothing standing FIRST fixes `T = nothing` and the list of `Int64` after it is
-/// refused, while the other order runs. An operation's own `[A]` takes the join of its
-/// arguments (WI-20260926-NEKR0) and has no such order. Reported to the user 2026-10-04; not
-/// decided.
+/// A LIST OF NOTHING STANDS FIRST AS WELL AS SECOND: `List.append(acc, [1])` over `let acc =
+/// nil` joins the two arguments at `Int64`. With the bottom type alone the first argument fixed
+/// `T = nothing` and the list of `Int64` after it was refused, while the other order ran —
+/// pinned here as a limit until the user settled it (2026-10-04); the rule and its rows are
+/// `wi_80zv8_sort_param_join_test`. Runs to 1 + 1.
 #[test]
-fn a_sort_parameter_is_still_bound_by_the_first_argument() {
-    let second = bag_program(
+fn a_named_nil_stands_first_or_second() {
+    let src = bag_program(
         "wi80zv8n.x1",
         r#"  operation go() -> Int64 =
     let acc = nil
-    List.length(List.append([1], acc))"#,
+    List.length(List.append([1], acc)) + List.length(List.append(acc, [1]))"#,
     );
-    assert_eq!(run_src(&second, "wi80zv8n.x1.go"), Ok(1));
-
-    let errs = load_errors(&bag_program(
-        "wi80zv8n.x2",
-        r#"  operation go() -> Int64 =
-    let acc = nil
-    List.length(List.append(acc, [1]))"#,
-    ));
-    assert_refused_naming(
-        &errs,
-        &["append.ys (op-arg): expected List[T = nothing], got List[T = Int64]"],
-        "a list of nothing standing first",
-    );
+    assert_eq!(run_src(&src, "wi80zv8n.x1.go"), Ok(2));
 }

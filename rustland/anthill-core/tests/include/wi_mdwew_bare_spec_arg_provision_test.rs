@@ -192,10 +192,14 @@ fn foreign_provision_binding_is_refused_like_its_concrete_twin() {
     let concrete = foreign_provision_binding("Int64");
     let foreign = foreign_provision_binding("Foreign.X");
     // The CONCRETE twin fixes the intended verdict: a provision binding the receiver really
-    // does determine contradicts the callback, and is refused AT THE FIELD.
+    // does determine contradicts the callback, and is refused AT THE FIELD. The field's
+    // RESULT prints as the callback's own (`?Dst`) since WI-20261001-80ZV8: `Mapped`'s `T` is
+    // instantiated from the arguments before the field is judged
+    // (`join_repeated_sort_params`), where it used to be still unbound there and printed
+    // `?_`. The PARAMETER is what is refused, as it was.
     assert_refused_naming(
         &concrete,
-        &["expected Int64 -> ?_"],
+        &["mk.fn (entity-field): expected Int64 -> ?Dst, got s.Elem -> ?Dst"],
         "the concrete control must refuse, or the foreign row proves nothing",
     );
     // The FOREIGN one is refused a step later and for a different reason — the projection

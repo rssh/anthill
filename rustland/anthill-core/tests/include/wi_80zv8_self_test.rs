@@ -193,7 +193,12 @@ fn self_in_an_entity_field_is_the_declaring_sort() {
     assert_eq!(run_src(&src, "wi80zv8.fld1.go"), Ok(2));
 }
 
-/// …AND AT THIS INSTANCE: a tail of another element type is refused at the field.
+/// …AND AT THIS INSTANCE: a head that is not the tail's element is refused at the field.
+/// `MyList` declares no variance, so the tail — a `MyList[T = String]`, an invariant
+/// occurrence of `T` — says what `T` is, and the `Int64` head is what does not fit
+/// (`wi_80zv8_sort_param_join_test`). Until that rule the first field decided, and the same
+/// program was refused at the other one: `mcons.tail (entity-field): expected MyList[T =
+/// Int64], got MyList[T = String]`.
 #[test]
 fn self_in_an_entity_field_refuses_another_instance() {
     let src = field_program(
@@ -203,7 +208,7 @@ fn self_in_an_entity_field_refuses_another_instance() {
     );
     assert_refused_naming(
         &load_errors(&src),
-        &["mcons.tail (entity-field): expected MyList[T = Int64], got MyList[T = String]"],
+        &["mcons.head (entity-field): expected String, got Int64"],
         "`tail: Self` at the head's element",
     );
 }

@@ -112,6 +112,97 @@ fn mark_opaque(kb: &mut KnowledgeBase, subst: &Substitution, declared: &Value, o
     crate::kb::node_occurrence::collect_value_type(kb, &deep, opaque, &mut seen);
 }
 
+/// WI-20261001-80ZV8 (user, 2026-10-04: "we have this decision for list constants, so yes") —
+/// A SORT'S PARAMETER SEVERAL ARGUMENTS BIND IS INSTANTIATED AS AN OPERATION'S OWN `[A]` IS
+/// ([`join_repeated_type_params`]): at an invariant occurrence where there is one, else at the
+/// join of the covariant ones. A sort's parameters are type parameters of its operations and
+/// of its constructors (proposal 070 §1.1).
+///
+/// A call used to let the FIRST argument naming the sort's parameter decide it — the receiver,
+/// through its carrier (`bind_spec_params_from_carrier`), or a constructor's first field — and
+/// held every later one to that (each MEASURED):
+///
+/// * `List.append([1], acc)` loaded over a list of nothing `acc`, and `List.append(acc, [1])`
+///   was refused, `expected List[T = nothing], got List[T = Int64]`;
+/// * over an INVARIANT `Stack`, `push(top: c, rest: shapes)` — a `Circle` on a `Stack[T =
+///   Shape]` — was refused, `push.rest: expected Stack[T = Circle], got Stack[T = Shape]`,
+///   and `Stack.put(c, shapes)` with it, where `put2(shapes, c)` loaded.
+///
+/// Asked BEFORE the receiver binds, which fills only what is still free.
+///
+/// WHERE THERE IS NO JOIN, NOTHING IS BOUND — and that is not a silent skip. The call's own
+/// loop then lets the first argument decide, exactly as before, and refuses the argument that
+/// disagrees with the message it always had (`cons.tail (entity-field): expected List[T =
+/// String], got List[T = Int64]`), which names the argument; a "no common type" refusal here
+/// would say less and reword every such row. So this only ever ADMITS: a program that loaded
+/// before has every later argument a subtype of the first, whose type is then the join, or
+/// equal to it where the occurrence is invariant.
+///
+/// WHAT A REFUSAL NAMES DOES MOVE, where an invariant occurrence comes after a covariant one:
+/// the invariant one says the parameter, so the covariant argument is the one that does not
+/// fit. `mcons(head: 1, tail: strings)` over an invariant `MyList` is refused `mcons.head:
+/// expected String, got Int64`, where the head used to decide and the tail was refused.
+///
+/// EACH PARAMETER BY ITSELF, so that one with no join does not keep another from its own. A
+/// single candidate is bound only when its instantiation succeeds, which is what makes
+/// dropping the refusal safe: nothing was written into σ on the way to it.
+///
+/// OF A DATA SORT ONLY — every site asks [`sort_params_join`] first.
+///
+/// AT THE OPERATION-BODY CALL, AT A CONSTRUCTOR, AND IN THE HINT A LAMBDA ARGUMENT IS TYPED
+/// FROM (`check_apply_iter`, `check_constructor_iter`, `join_sort_params_for_hint`) — the
+/// hint has to carry the instantiation the call will check the lambda against. A rule
+/// citation's columns join every variable they share already ([`JoinCandidates::AnyFree`];
+/// MEASURED: `via(c, s)` and `via(s, c)` both load over `rule via(?a, ?b, ?c) :-
+/// Stack.pick2(?a, ?b, ?c)`). The rule-body slot route (`op_slot_route`) still pins a SORT
+/// parameter in argument order; no program reaching it with two arguments that differ was
+/// found — a goal over a sort that `requires` something of its parameter is refused before
+/// it, where the clause declares no `require[…]`.
+pub(super) fn join_repeated_sort_params(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    sort: Symbol,
+    pairs: &[(Symbol, &Value, &Value)],
+) {
+    if pairs.len() < 2 {
+        return;
+    }
+    let params: SmallVec<[(Symbol, Var); 2]> = sort_type_params_as_pairs(kb, sort)
+        .iter()
+        .filter_map(|(name, canonical)| match kb.get_term(*canonical) {
+            Term::Var(var @ Var::Global(_)) => Some((*name, *var)),
+            _ => None,
+        })
+        .collect();
+    for param in &params {
+        let _no_join_is_the_call_sites_to_report = join_repeated_type_params(
+            kb,
+            subst,
+            JoinCandidates::TypeParams(std::slice::from_ref(param)),
+            pairs,
+        );
+    }
+}
+
+/// DOES A CALL INTO `sort` INSTANTIATE ITS PARAMETERS BY [`join_repeated_sort_params`] — is
+/// it a DATA sort, and has it a parameter? The one gate of the three sites that ask.
+///
+/// A data sort declares a constructor, and nothing can provide one (`ProvidesNamesDataSort`),
+/// so its parameters are type parameters of its operations and nothing else. A SPEC's are a
+/// provision's: a call reads them off the receiver's carrier or off the enclosing `requires`
+/// clause, and the provider that then runs is the receiver's — `Cmp.cmp(c, s)` joined at `T =
+/// Shape` would hand a `Shape` to the `cmp` that `Circle` provides at `T = Circle`. Whether
+/// anything provides the spec YET is not the question: asked that way, a call licensed by
+/// `requires Cmp[T = Circle]` loaded with a `Shape` at `T` while no provider of `Cmp` existed,
+/// and a provision declared elsewhere then refused it (MEASURED).
+///
+/// Read off the sort → constructors index, complete once every sort body has loaded, which
+/// the typer runs after; `KnowledgeBase::sort_has_constructors` answers the same question
+/// DURING the load, by a scan of the symbol table no call site could afford.
+pub(super) fn sort_params_join(kb: &KnowledgeBase, sort: Symbol) -> bool {
+    !kb.sort_children(sort).is_empty() && !sort_type_params_as_pairs(kb, sort).is_empty()
+}
+
 /// Which variables the join instantiates.
 pub(super) enum JoinCandidates<'a> {
     /// An operation's own `[A]`s — a call site.
