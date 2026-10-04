@@ -6225,6 +6225,15 @@ fn eponymous_sort_symbol(
     (kb.local_name_of(owner) == short).then_some(owner)
 }
 
+/// Whether an entity item is declared directly at the address of the block whose
+/// item list contains it. A dotted entity is filed at its prefix's address instead;
+/// every sort-body aggregate must exclude it or the dotted spelling acquires a
+/// constructor parent that the equivalent explicit namespace spelling does not
+/// (WI-929 item 8).
+fn entity_is_direct_child(entity: &Entity) -> bool {
+    entity.name.segments.len() == 1
+}
+
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
 /// Heuristic: if the scope has a symbol defined as Sort kind, it's a sort scope.
 /// The two spellings a `sort` / `enum` declaration needs: the [`SortKind`] it
@@ -8748,7 +8757,12 @@ impl ScopePass for DefinePass<'_> {
         // WI-20260925-SHED7 — a PRIMITIVE has a domain too (every type has a
         // `SortDomain`), whose `fill` is the waiting type check (`kb::fill_derive`).
         let primitive = is_prelude_sort_qn(self.kb.qualified_name_of(scope.owner()));
-        if !primitive && !s.items.iter().any(|i| matches!(i, Item::Entity(_))) {
+        if !primitive
+            && !s
+                .items
+                .iter()
+                .any(|i| matches!(i, Item::Entity(e) if entity_is_direct_child(e)))
+        {
             return;
         }
         mint_domain_value_face_name(self.kb, scope.owner());
@@ -8854,9 +8868,11 @@ impl ScopePass for DefinePass<'_> {
                 let mut has_variant = false;
                 for item in &s.items {
                     if let Item::Entity(e) = item {
-                        let vshort = parse_sym.local_name(*e.name.segments.last().unwrap());
-                        kb.symbols.add_exposed(sort_scope, vshort);
-                        has_variant = true;
+                        if entity_is_direct_child(e) {
+                            let vshort = parse_sym.local_name(*e.name.segments.last().unwrap());
+                            kb.symbols.add_exposed(sort_scope, vshort);
+                            has_variant = true;
+                        }
                     }
                 }
                 // WI-994 — the same reading as the `add_kind` above, one gate over.
@@ -9034,8 +9050,14 @@ impl ScopePass for DefinePass<'_> {
                 // coincide, is gated on `eponymous.is_none()` — so no scope owner is
                 // ever marked while the walk is inside it. Marking one would stop this
                 // sort body from reading as one (§6.3 / WI-926).
-                let in_sort_body = is_sort_scope(kb, scope);
-                let eponymous = eponymous_sort_symbol(kb, scope, &name, &short);
+                // WI-929 item 8 — ownership follows the declaration ADDRESS, not the
+                // syntactic block containing the dotted spelling. In
+                // `sort S { entity a.B }`, `actual_scope` is namespace `S.a`, so B is
+                // a free-standing entity there; treating `scope` (`S`) as its owner
+                // made B a constructor of S while the equivalent explicit namespace
+                // spelling made B its own sort.
+                let in_sort_body = is_sort_scope(kb, actual_scope);
+                let eponymous = eponymous_sort_symbol(kb, actual_scope, &name, &short);
                 let entity_sym = if let Some(sym) = eponymous {
                     sym
                 } else if let Some(&existing) = kb.symbols.by_qualified_name.get(&qualified) {
@@ -9376,7 +9398,7 @@ impl ScopePass for SecondaryEntryPass<'_> {
                         );
                     }
                 }
-                self.classify_entry(sym, &name, site.decl.items());
+                self.classify_entry(sym, &name, site.decl.items(), DottedDeclarations::Skip);
             } else {
                 self.refuse_orphan_provides(&name, site.decl.items());
             }
@@ -9384,11 +9406,58 @@ impl ScopePass for SecondaryEntryPass<'_> {
         Some(self.kb.symbols.scope_id(sym))
     }
 
-    /// Nothing: R3 governs a `namespace` block's CONTENT, which
-    /// [`Self::enter_scope`] reads whole. An item reaching here is either at an
-    /// address with no main entry (an ordinary namespace — 059: "nothing in R3 or R4
-    /// reaches it") or inside a sort body (the main entry).
-    fn at_item(&mut self, _item: &Item, _scope: ScopeId, _prefix: &str) {}
+    /// A non-scope item normally belongs to the block that contains it, which
+    /// [`Self::enter_scope`] classifies when that block is a secondary entry. A
+    /// DOTTED declaration is the exception: proposal 059 assigns it to the address
+    /// its name's prefix denotes. `entity E.Child` written one level outside `E`
+    /// is therefore entry content at `E`, exactly like `namespace E { entity
+    /// Child }`, even though no explicit `namespace E` node exists for
+    /// [`Self::enter_scope`] to see.
+    ///
+    /// Classify only when that immediate prefix is itself a sort. If it is an
+    /// ordinary namespace, 059's "nothing in R3 or R4 reaches it" rule still
+    /// applies. This also preserves the established `E.Inner.helper` result:
+    /// `helper` belongs to `E.Inner`, not recursively to the sort `E`.
+    fn at_item(&mut self, item: &Item, _scope: ScopeId, prefix: &str) {
+        let Some(name) = declaration_at_dotted_address(item) else {
+            return;
+        };
+        let written = join_segments(self.parse_sym, &name.segments);
+        let Some((parent, _short)) = written.rsplit_once('.') else {
+            return;
+        };
+        let address_name = make_qualified(prefix, parent);
+        // Pass 1 has already run `ensure_intermediate_namespaces` for every
+        // declaration admitted by this helper. Use the shared loud invariant check:
+        // silently omitting a missing prefix would admit identity.
+        let Some(address) = lookup_defined(
+            self.kb,
+            &address_name,
+            name.span,
+            "its dotted declaration cannot be checked against proposal 059 R3",
+            self.errors,
+        ) else {
+            return;
+        };
+        if self.kb.has_kind(address, SymbolKind::Sort) {
+            let sort = self.kb.qualified_name_of(address).to_string();
+            self.classify_entry(
+                address,
+                &sort,
+                std::slice::from_ref(item),
+                DottedDeclarations::Include,
+            );
+        }
+    }
+}
+
+/// Whether dotted declarations in a batch land at the address being classified.
+/// Explicit `namespace E { … }` content skips `Inner.member`; the one-item batch
+/// synthesized for `E.member` includes it because `E` is precisely its target.
+#[derive(Clone, Copy)]
+enum DottedDeclarations {
+    Skip,
+    Include,
 }
 
 impl SecondaryEntryPass<'_> {
@@ -9430,7 +9499,13 @@ impl SecondaryEntryPass<'_> {
 
     /// THE TWO LISTS. `address` is the entry's grouping key, `sort` its qualified
     /// name for the diagnostics, `items` the block's DIRECT content.
-    fn classify_entry(&mut self, address: Symbol, sort: &str, items: &[Item]) {
+    fn classify_entry(
+        &mut self,
+        address: Symbol,
+        sort: &str,
+        items: &[Item],
+        dotted: DottedDeclarations,
+    ) {
         // The entry's declared names FIRST, and for every named declaration whatever
         // its verdict below. The target check this feeds asks "is this declaration
         // WRITTEN in this entry" — 059's condition — not "is it legal": a refusal does
@@ -9439,9 +9514,9 @@ impl SecondaryEntryPass<'_> {
         // as foreign would raise a second error for one root cause and name the wrong
         // reason. Separate from the classification loop because an entry's blocks are
         // not ordered relative to one another either.
-        self.record_declared_names(address, items);
+        self.record_declared_names(address, items, dotted);
         for item in items {
-            if declares_at_another_address(self.parse_sym, item) {
+            if matches!(dotted, DottedDeclarations::Skip) && declares_at_another_address(item) {
                 continue;
             }
             match item {
@@ -9757,7 +9832,12 @@ impl SecondaryEntryPass<'_> {
     /// for the same reason [`Self::classify_entry`]'s match is: a new `Item` variant
     /// that binds a name must be considered here too, and a `_ =>` would quietly
     /// answer "declares nothing".
-    fn record_declared_names(&mut self, address: Symbol, items: &[Item]) {
+    fn record_declared_names(
+        &mut self,
+        address: Symbol,
+        items: &[Item],
+        dotted: DottedDeclarations,
+    ) {
         let mut names: Vec<String> = Vec::new();
         for item in items {
             // A DOTTED name declares at another address, so the entry does not declare
@@ -9767,7 +9847,7 @@ impl SecondaryEntryPass<'_> {
             // though the entry declares `Rec.Inner.helper` — the exact hole this check
             // exists to close, with the eventual `unresolved name` naming the wrong
             // problem. See [`declares_at_another_address`].
-            if declares_at_another_address(self.parse_sym, item) {
+            if matches!(dotted, DottedDeclarations::Skip) && declares_at_another_address(item) {
                 continue;
             }
             match item {
@@ -10094,7 +10174,19 @@ const CONSTRAINT_REASON: &str = "a constraint is a rule with NO HEAD: it introdu
 /// skipped here: none of them declares a name at an address. A rule's label is a
 /// citation handle and its head is resolved where the rule is WRITTEN; a `proof` /
 /// `describe` name is a TARGET, which is the deferred check's business.
-fn declares_at_another_address(parse_sym: &crate::intern::SymbolTable, item: &Item) -> bool {
+fn declares_at_another_address(item: &Item) -> bool {
+    declaration_at_dotted_address(item).is_some()
+}
+
+/// The declaration name when `item` is one of the non-scope productions whose dotted
+/// spelling pass 1 places at its prefix's address. Shared by the two sides of 059's
+/// address rule: an explicit entry must SKIP such an item, while [`SecondaryEntryPass::at_item`]
+/// must classify it at the address it actually lands at.
+///
+/// The type-parameter exception and `operation { … }` caveat are detailed at
+/// [`declares_at_another_address`]; both return `None` because the loader assigns them
+/// to their enclosing scope despite any dots in their surface spelling.
+fn declaration_at_dotted_address(item: &Item) -> Option<&Name> {
     let name = match item {
         Item::Operation(o) => &o.name,
         Item::Const(c) => &c.name,
@@ -10102,7 +10194,7 @@ fn declares_at_another_address(parse_sym: &crate::intern::SymbolTable, item: &It
         Item::SortWithBody(s) => &s.name,
         Item::Entity(e) => &e.name,
         // The exception above: a dotted type-parameter binder still binds THIS sort.
-        Item::AbstractSort(s) if matches!(s.definition, TypeExpr::Variable { .. }) => return false,
+        Item::AbstractSort(s) if matches!(s.definition, TypeExpr::Variable { .. }) => return None,
         Item::AbstractSort(s) => &s.name,
         // An `operation { … }` block's entries carry names too, but the loader's own
         // arm for them does NOT call `ensure_intermediate_namespaces` — it defines the
@@ -10118,10 +10210,9 @@ fn declares_at_another_address(parse_sym: &crate::intern::SymbolTable, item: &It
         | Item::ProvidesClause(_)
         | Item::ProvidesBlock(_)
         | Item::Describe(_)
-        | Item::Proof(_) => return false,
+        | Item::Proof(_) => return None,
     };
-    let _ = parse_sym;
-    name.segments.len() > 1
+    (name.segments.len() > 1).then_some(name)
 }
 
 /// A rule's citation LABEL, for the diagnostics above. `None` for an unlabeled rule,
@@ -31284,19 +31375,16 @@ impl<'a> Loader<'a> {
     /// WI-428: the LOGICAL sort qualified name behind a resolved symbol that may be
     /// the INNER self-named registration of a sort (`ns.W.P.P`, like
     /// `anthill.prelude.List.List`): strip the duplicated level iff the outer name
-    /// also ends in `short` AND maps to a Sort-kind symbol (so a sort merely sharing
-    /// its namespace's last segment — `namespace app.Config` containing `sort Config`,
-    /// qn `app.Config.Config` — is NOT stripped: `app.Config` is a Namespace).
+    /// also ends in `short` AND maps to a Sort-kind symbol.
     ///
-    /// WI-979 WEAKENED THAT SECOND CLAUSE, and the doc above is kept as written
-    /// because it still describes the INTENT. "`app.Config` is a Namespace" is no
-    /// longer exclusive: a category is a SET, and since WI-979 a `sort X` reusing an
-    /// existing symbol records `Sort` on it — so one symbol beside a namespace of the
-    /// same name now carries BOTH, and this guard passes where it used to fail. It
-    /// takes three same-named declarations to reach (`namespace app.Config` holding
-    /// `sort Config`, plus a `sort Config` beside it), and no such shape exists in the
-    /// corpus, so this is a NOTED premise rather than a measured wrong answer — but if
-    /// a `Config.K` projection ever stops forming, this strip is where to look.
+    /// WI-929 — this deliberately asks the inclusive category question. A symbol that
+    /// is both Namespace and Sort also passes, but the only ambiguous shape needs three
+    /// same-named declarations (`namespace app.Config` holding `sort Config`, plus a
+    /// sibling `sort Config`). Proposal 059 R4 rejects the inner declaration for
+    /// capturing the outer sort's `Config`, independently of declaration order. Thus a
+    /// successful full load reaches this normalization only for a genuine self-named
+    /// sort registration; the R4 check is the enforcement boundary, not an exclusive
+    /// category assumption here.
     fn logical_sort_qn<'q>(&self, qn: &'q str, short: &str) -> &'q str {
         if let Some((outer, last)) = qn.rsplit_once('.') {
             if last == short && outer.rsplit('.').next() == Some(short) {
@@ -33337,10 +33425,12 @@ impl<'a> Loader<'a> {
     }
 
     /// WI-936 — lower `e`'s field types and register them, the one place that happens.
-    /// Keyed by `remap_name(&e.name)`, the same symbol every reader looks the schema up
-    /// under (`load_entity`, and the convert path's `remap_symbol` of a written
-    /// constructor).
-    fn register_declared_field_types(&mut self, e: &Entity) {
+    /// Keyed by the pass-1-resolved `functor`, the same symbol every reader looks the
+    /// schema up under (`load_entity`, and the convert path's `remap_symbol` of a
+    /// written constructor). Passing it in is load-bearing for a dotted declaration:
+    /// after entering its actual scope, re-resolving the original dotted spelling
+    /// could be captured by a same-named nested prefix (WI-929 item 8).
+    fn register_declared_field_types(&mut self, e: &Entity, functor: Symbol) {
         // Proposal 070 §1.5 — a FIELD named `Self` would give `x.Self` two readings: the
         // field in a value position, the whole-type projection in a type position.
         // Refused with the other declarations of that name ([`reserved_self_name_errors`]).
@@ -33352,7 +33442,6 @@ impl<'a> Loader<'a> {
                 });
             }
         }
-        let functor = self.remap_name(&e.name);
         // WI-342: lower each field type ONCE, carrier-agnostically — a value-in-type
         // field (`Vector[Int64, 3]` / `Modify[c]`-shaped / dependent) is carried as
         // `Value::Node`, a ground field type as `Value::Term`. Lowering once is also
@@ -33583,6 +33672,33 @@ impl<'a> Loader<'a> {
             self.kb.qualified_name_of(sym),
         );
         Some(self.kb.symbols.scope_id(sym))
+    }
+
+    /// WI-929 item 8 — the symbol and scope a non-scope declaration is filed under.
+    /// For an undotted name the scope is the syntactic enclosing scope. A dotted name
+    /// was placed by pass 1 in the scope denoted by its prefix; return both answers
+    /// before the caller enters that scope, so it never re-resolves the original
+    /// relative spelling from a different lookup position.
+    ///
+    /// Pass 1 has already defined every declaration before either caller runs, so a
+    /// resolved name without a declaring scope is an internal phase-order violation,
+    /// not a source case to recover from by silently using `enclosing`.
+    fn declaration_symbol_scope(
+        &mut self,
+        name: &Name,
+        enclosing: ScopeId,
+    ) -> (Symbol, ScopeId) {
+        let sym = self.remap_name(name);
+        if name.segments.len() == 1 {
+            return (sym, enclosing);
+        }
+        let scope = self.kb.symbols.declaring_scope(sym).unwrap_or_else(|| {
+            unreachable!(
+                "dotted declaration `{}` reached load without the declaring scope pass 1 recorded",
+                join_segments(&self.parsed.symbols, &name.segments),
+            )
+        });
+        (sym, scope)
     }
 
     /// A namespace's own facts, and the scope its body loads in. The descent
@@ -33915,6 +34031,9 @@ impl<'a> Loader<'a> {
         let ei_syms = self.entity_info_syms();
         for item in &s.items {
             if let Item::Entity(e) = item {
+                if !entity_is_direct_child(e) {
+                    continue;
+                }
                 let ctor_term = self.name_to_sort_term(&e.name);
                 // WI-926 (§6.3): an eponymous constructor resolves to the sort's
                 // OWN symbol, so there is no entity→parent edge to record — the
@@ -33964,7 +34083,10 @@ impl<'a> Loader<'a> {
         self.carrier_block = enclosing_carrier_block;
 
         let sort_sort = ClauseKind::Sort;
-        let has_entities = s.items.iter().any(|item| matches!(item, Item::Entity(_)));
+        let has_entities = s
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Entity(e) if entity_is_direct_child(e)));
         let (_, kind_str) = sort_decl_kinds(s.kind);
 
         // Now collect constructors, operations, parameters, requires from child items
@@ -33993,7 +34115,7 @@ impl<'a> Loader<'a> {
 
         for item in &s.items {
             match item {
-                Item::Entity(e) => {
+                Item::Entity(e) if entity_is_direct_child(e) => {
                     let sym = self.remap_name(&e.name);
                     ctor_refs.push(self.kb.alloc(Term::Ref(sym)));
                 }
@@ -34071,12 +34193,12 @@ impl<'a> Loader<'a> {
         // Implementation, SortInfo, OperationInfo, etc. — and never
         // enumerates `<Sort>.induction` rules.)
         if has_entities {
-            let entities: Vec<&Entity> = s
+            let entities: Vec<(&Entity, Symbol)> = s
                 .items
                 .iter()
                 .filter_map(|i| {
                     if let Item::Entity(e) = i {
-                        Some(e)
+                        entity_is_direct_child(e).then(|| (e, self.remap_name(&e.name)))
                     } else {
                         None
                     }
@@ -34112,7 +34234,7 @@ impl<'a> Loader<'a> {
     /// route is readable rather than inferred from an absence.
     fn collect_domain_job(
         &mut self,
-        entities: &[&Entity],
+        entities: &[(&Entity, Symbol)],
         sort_functor: Symbol,
         params: Vec<crate::kb::fill_derive::DomainParam>,
         decl_span: Span,
@@ -34120,8 +34242,7 @@ impl<'a> Loader<'a> {
         let domain = self.current_domain();
         let span = SourceSpan::from_span(self.source_id, decl_span);
         let mut ctors: Vec<DomainCtor> = Vec::with_capacity(entities.len());
-        for &e in entities {
-            let ctor = self.remap_name(&e.name);
+        for &(_entity, ctor) in entities {
             let Some(declared) = self.kb.entity_field_types(ctor).map(|fs| fs.to_vec()) else {
                 // The declaration pass visits every `Item::Entity` the load pass does
                 // (`declared_field_values`' invariant), so this is unreachable through
@@ -34196,7 +34317,7 @@ impl<'a> Loader<'a> {
     /// `SortWithBody` to pass.
     fn emit_induction_rule(
         &mut self,
-        entities: &[&Entity],
+        entities: &[(&Entity, Symbol)],
         sort_functor: Symbol,
         parent_domain: Symbol,
     ) {
@@ -34253,8 +34374,7 @@ impl<'a> Loader<'a> {
         let forall_impl_sym = self.kb.intern("forall_impl");
 
         let mut body: Vec<TermId> = Vec::new();
-        for &e in entities {
-            let ctor_sym = self.remap_name(&e.name);
+        for &(e, ctor_sym) in entities {
             if e.fields.is_empty() {
                 let ctor_term = self.kb.alloc(Term::Ref(ctor_sym));
                 body.push(self.alloc_pos_fn(ho_apply_sym, &[p_term, ctor_term]));
@@ -34602,8 +34722,7 @@ impl<'a> Loader<'a> {
         }
     }
 
-    fn load_entity(&mut self, e: &Entity, domain: Symbol) {
-        let functor = self.remap_name(&e.name);
+    fn load_entity(&mut self, e: &Entity, functor: Symbol, domain: Symbol) {
         self.emit_own_descriptions(functor, &e.descriptions, domain);
 
         // WI-20260914-DV7DP — the constructor's block, recorded HERE because every entity
@@ -34644,7 +34763,7 @@ impl<'a> Loader<'a> {
         // can disagree, and `sort_of_head` needs none.
         if !is_sort_scope(self.kb, self.current_scope) {
             let ei_syms = self.entity_info_syms();
-            let ctor_term = self.name_to_sort_term(&e.name);
+            let ctor_term = self.kb.make_name_term_from_sym(functor);
             self.emit_entity_info(e, ctor_term, &lowered, &ei_syms, domain);
             // WI-925 / §6.3: `entity E` IS `sort E { entity E }`, and the whole
             // point of that wrapping is that an entity HAS a sort — so record it.
@@ -34694,11 +34813,11 @@ impl<'a> Loader<'a> {
             // the enclosing NAMESPACE scope, which is where a free-standing entity's
             // own name resolves). The long form has emitted it since proposal 030;
             // its omission here was a straight one.
-            self.emit_induction_rule(&[e], functor, domain);
+            self.emit_induction_rule(&[(e, functor)], functor, domain);
             // WI-743 — and its existential twin. A free-standing `entity E` is
             // `sort E { entity E }` (§6.3), so its domain is the one-branch
             // disjunction; it has no type parameters to bind.
-            self.collect_domain_job(&[e], functor, Vec::new(), e.span);
+            self.collect_domain_job(&[(e, functor)], functor, Vec::new(), e.span);
         }
     }
 
@@ -39316,6 +39435,13 @@ impl<'a> Loader<'a> {
         for item in items {
             match item {
                 Item::Entity(e) => {
+                    // A dotted declaration belongs to its prefix's address, not to
+                    // the block whose item list happens to contain the spelling. Its
+                    // MemberInfo row is emitted when the load walk reaches the item at
+                    // that actual address (WI-929 item 8).
+                    if !entity_is_direct_child(e) {
+                        continue;
+                    }
                     let sym = self.remap_name(&e.name);
                     // WI-928 / §6.3 — an eponymous constructor IS its sort, so it is
                     // not a MEMBER of itself. `sort Project { entity Project(…) }`
@@ -39521,9 +39647,19 @@ impl ScopePass for DeclarePass<'_, '_> {
         self.0.current_scope = site.enclosing;
     }
 
-    fn at_item(&mut self, item: &Item, _scope: ScopeId, _prefix: &str) {
+    fn at_item(&mut self, item: &Item, scope: ScopeId, _prefix: &str) {
         match item {
-            Item::Entity(e) => self.0.register_declared_field_types(e),
+            Item::Entity(e) => {
+                // WI-929 item 8 — lower fields where the declaration actually lives.
+                // For `sort S { entity a.B(x: Local) }`, the implicit namespace
+                // `S.a` may itself declare/import `Local`; using syntactic `S` here
+                // gives the dotted and explicit namespace spellings different types.
+                let saved = self.0.current_scope;
+                let (entity, entity_scope) = self.0.declaration_symbol_scope(&e.name, scope);
+                self.0.current_scope = entity_scope;
+                self.0.register_declared_field_types(e, entity);
+                self.0.current_scope = saved;
+            }
             // WI-20261001-KDMQS — a const's load-time value source, from its body or
             // from a `language rust` block's `const_map`, for the same reason the field
             // types are declared here: a clause in another file may need it first.
@@ -39659,7 +39795,22 @@ impl ScopePass for LoadPass<'_, '_> {
                 "RequiresDecl"
             }
             Item::Entity(e) => {
-                self.loader.load_entity(e, domain);
+                // WI-929 item 8 — a dotted entity is loaded in the scope its prefix
+                // denotes, not the syntactic sort/namespace containing the spelling.
+                // The enclosing aggregate skipped its MemberInfo row for the same
+                // reason, so emit that row once under the actual address here.
+                let (entity, entity_scope) =
+                    self.loader.declaration_symbol_scope(&e.name, scope);
+                let saved = self.loader.current_scope;
+                self.loader.current_scope = entity_scope;
+                let entity_domain = entity_scope.owner();
+                if !entity_is_direct_child(e) {
+                    let parent = self.loader.kb.make_name_term_from_sym(entity_domain);
+                    self.loader
+                        .emit_member_fact(entity, MemberKind::Constructor, parent);
+                }
+                self.loader.load_entity(e, entity, entity_domain);
+                self.loader.current_scope = saved;
                 "Entity"
             }
             Item::Fact(f) => {
