@@ -20690,9 +20690,11 @@ fn equation_subject_lands_on_predicate(
     // `Int(7)` out of it. A `<global>` head reaches a namespace's name only through an
     // import it wrote, so it opted in exactly as any namespace does.
     //
-    // WHAT THE TARGET-SIDE EXCLUSION COSTS is the silence that scope has always taken
-    // (§8.6): a `<global>` predicate does absorb a namespace's equation subject, and
-    // nothing says so. Measured, and recorded in the spec rather than discovered.
+    // THE TARGET-SIDE EXCLUSION NO LONGER COSTS A SILENCE (WI-20260821-HSG31). It used
+    // to: a `<global>` predicate absorbed a namespace's equation subject and nothing said
+    // so. A subject written inside a namespace now never resolves to a `<global>`
+    // declaration ([`rule_head_ladder_answer`]), so such a target only reaches this
+    // function when the head is itself at `<global>` — the exclusion's own case.
     // INLINE FOR THE SINGLE-SYMBOL CASE, which is all but a handful of the 516,224
     // equation subjects a full load resolves: a `Vec` here allocated once per subject on
     // the very path phase 2 keeps its answer to protect (found by `/code-review`).
@@ -20821,10 +20823,33 @@ fn quoted_scope_list(scopes: &[String]) -> String {
 /// it landed. `.denotes()` is what phase 2 reads for the mint and the collision check, so
 /// nothing else gained a question; keeping the answer is what stops the ladder being
 /// walked twice for every equation subject on every load.
+///
+/// WI-20260821-HSG31 — ONE RUNG IS REMOVED for a head written inside a namespace:
+/// `<global>`'s own declarations ([`SymbolTable::resolve_rule_head_inside_namespace`]
+/// carries why). Such a head that would have landed there declares at its own scope
+/// instead, and once minted that local is what every reference in the namespace reads,
+/// so the two positions agree again.
+///
+/// RE-ASKED ONLY WHEN THE ORDINARY ANSWER IS A `<global>` DECLARATION. Removing that rung
+/// cannot change any other answer: `NotFound` means `<global>` declares nothing by this
+/// name, and a `Found` elsewhere never reached it. An `Ambiguous` answer is kept even when
+/// a `<global>` name is among its candidates — the namespace's own REFERENCES to the name
+/// are ambiguous too, and WI-900 reports that at the reference rather than letting the
+/// head pick a side (`wi_hsg31_global_declaration_test` drives it).
 fn rule_head_ladder_answer(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> ResolveResult {
+    let global = kb.global_scope();
+    let simple = match kb.symbols.resolve_in_scope(name, scope) {
+        ResolveResult::Found(sym)
+            if kb.symbols.declaring_scope(sym) == Some(global)
+                && kb.symbols.is_inside_namespace(scope) =>
+        {
+            kb.symbols.resolve_rule_head_inside_namespace(name, scope)
+        }
+        other => other,
+    };
     // WI-20260924-SNJPR — the ladder, save that a head is a DECLARATION: it does not read
     // a type alias through ([`AliasReading::AsDeclared`]).
-    kb.symbols.resolve_in_scope(name, scope).or_else(|| {
+    simple.or_else(|| {
         resolve_dotted_in_kb_with(
             kb,
             name,

@@ -752,6 +752,17 @@ enum ParentLinks {
     EnclosingOnly,
 }
 
+/// WI-20260821-HSG31 — may `<global>`'s OWN declarations answer? `Visible` everywhere
+/// except [`SymbolTable::resolve_rule_head_inside_namespace`], whose doc carries the
+/// reason. Applies at `<global>` alone and at whatever hop the walk reaches it, so its
+/// imports and parents stay reachable: a name merely REACHED through `<global>` has its
+/// home somewhere else.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GlobalLocals {
+    Visible,
+    Skipped,
+}
+
 /// WI-995 — one name whose resolution DEPENDS on an import written in another file:
 /// the two readings disagree about it.
 #[derive(Clone, Debug)]
@@ -1928,6 +1939,61 @@ impl SymbolTable {
         self.resolve_in_scope_recursive(name, scope, &mut visited, ImportVisibility::OwnFileOnly)
     }
 
+    /// WI-20260821-HSG31 — [`Self::resolve_in_scope`] for a RULE HEAD written inside a
+    /// namespace: the ordinary ladder with `<global>`'s own declarations removed from it.
+    ///
+    /// `<global>` IS THE ONE SCOPE NOBODY OPTS INTO — every namespace-less file declares
+    /// there without naming it — so a head written in a namespace must not become a
+    /// clause of a name whose only home is that scope (kernel-language.md §5.3,
+    /// "`<global>` is not a party to any of it"). WI-980 stated that for a `<global>`
+    /// rule HEAD and enforced it in the candidate set; a `<global>` `sort`, `operation`
+    /// or 061 declaration is on this ladder from pass 1, so the head resolved to it and
+    /// the namespace's predicate ceased to exist. Measured: a one-line namespace-less
+    /// `operation type_compatible(…)` left `anthill.reflect.typing.type_compatible`
+    /// absent, its five clauses on the user's operation, loading clean.
+    ///
+    /// ONLY THE LOCALS. `<global>`'s imports and parents are still walked — what they
+    /// reach lives elsewhere. A REFERENCE is not affected: body goals, types and calls
+    /// read the full ladder, so a top-level declaration stays usable from a namespace.
+    pub fn resolve_rule_head_inside_namespace(&self, name: &str, scope: ScopeId) -> ResolveResult {
+        let mut visited = std::collections::HashSet::new();
+        let raw = self.resolve_in_scope_recursive_with_mode(
+            name,
+            scope,
+            &mut visited,
+            ImportVisibility::OwnFileOnly,
+            OwnLocals::Visible,
+            ExposureLinks::Followed,
+            EnclosingLinks::Followed,
+            ParentLinks::All,
+            GlobalLocals::Skipped,
+            None,
+        );
+        self.filter_internal_visibility(raw, scope)
+    }
+
+    /// WI-20260821-HSG31 — is `scope` a namespace, or lexically inside one? Walks the
+    /// ENCLOSING edges only, for [`Self::encloses`]' reason: "inside" is a statement
+    /// about nesting, and an import edge is not one. `false` for `<global>` and for a
+    /// namespace-less file's own sorts and operations, which is what keeps the
+    /// documented top-level form (§"Forms") joining at `<global>`.
+    pub fn is_inside_namespace(&self, scope: ScopeId) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        let mut frontier = vec![scope];
+        while let Some(s) = frontier.pop() {
+            if s == self.global || !seen.insert(s) {
+                continue;
+            }
+            if self.get(s.owner()).has_kind(SymbolKind::Namespace) {
+                return true;
+            }
+            if let Some(data) = self.scopes.get(&s) {
+                frontier.extend(data.parents.iter().filter(|p| p.is_enclosing).map(|p| p.parent_scope));
+            }
+        }
+        false
+    }
+
     /// WI-20260826-NB88H — [`Self::resolve_in_scope`] asked FROM BELOW AN IMPORT EDGE:
     /// the entry scope's own contents and everything its declared clauses reach, but
     /// never the lexical container around it.
@@ -1973,6 +2039,7 @@ impl SymbolTable {
             ExposureLinks::Followed,
             EnclosingLinks::Stopped,
             ParentLinks::All,
+            GlobalLocals::Visible,
             None,
         );
         self.filter_internal_visibility(raw, scope)
@@ -2004,6 +2071,7 @@ impl SymbolTable {
             ExposureLinks::Followed,
             EnclosingLinks::Followed,
             ParentLinks::EnclosingOnly,
+            GlobalLocals::Visible,
             None,
         );
         self.filter_internal_visibility(raw, scope)
@@ -2087,6 +2155,7 @@ impl SymbolTable {
             ExposureLinks::Skipped,
             EnclosingLinks::Followed,
             ParentLinks::All,
+            GlobalLocals::Visible,
             None,
         );
         self.filter_internal_visibility(raw, scope)
@@ -2132,6 +2201,7 @@ impl SymbolTable {
             // written here really does cross those edges, so borrowing that switch would
             // make this answer a question no program asks.
             ParentLinks::All,
+            GlobalLocals::Visible,
             None,
         );
         self.filter_internal_visibility(raw, scope)
@@ -2174,6 +2244,7 @@ impl SymbolTable {
             ExposureLinks::Skipped,
             EnclosingLinks::Followed,
             ParentLinks::All,
+            GlobalLocals::Visible,
             Some(overlay),
         );
         self.filter_internal_visibility(raw, scope)
@@ -2195,6 +2266,7 @@ impl SymbolTable {
             ExposureLinks::Followed,
             EnclosingLinks::Followed,
             ParentLinks::All,
+            GlobalLocals::Visible,
             None,
         )
     }
@@ -2215,6 +2287,7 @@ impl SymbolTable {
         exposure: ExposureLinks,
         enclosing: EnclosingLinks,
         parent_links: ParentLinks,
+        global_locals: GlobalLocals,
         overlay: Option<&ScopeNameOverlay<'_>>,
     ) -> ResolveResult {
         if !visited.insert(scope) {
@@ -2225,7 +2298,10 @@ impl SymbolTable {
         // the borrow on self.scopes, then drop it before recursing.
         let eligible_parents: SmallVec<[ScopeId; 4]> = if let Some(data) = self.scopes.get(&scope) {
             // 1. Local: check locals defined in this scope — O(1) lookup
-            if own_locals == OwnLocals::Visible {
+            // WI-20260821-HSG31 — `<global>`'s own declarations are skipped as a
+            // unit with the overlay below: the overlay names heads that will BE locals.
+            let global_skipped = global_locals == GlobalLocals::Skipped && scope == self.global;
+            if own_locals == OwnLocals::Visible && !global_skipped {
                 if let Some(&sym) = data.locals.get(name) {
                     return ResolveResult::Found(sym);
                 }
@@ -2403,6 +2479,7 @@ impl SymbolTable {
                 below,
                 enclosing_below,
                 parent_links,
+                global_locals,
                 overlay,
             ) {
                 ResolveResult::Found(sym) => matches.push(sym),

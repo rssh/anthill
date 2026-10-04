@@ -1915,3 +1915,5 @@ mod wi_k4jgc_evaluation_strategy_test;
 mod wi_cynpe_waiting_goals_test;
 #[path = "include/wi_vm9q7_string_escape_test.rs"]
 mod wi_vm9q7_string_escape_test;
+#[path = "include/wi_hsg31_global_declaration_test.rs"]
+mod wi_hsg31_global_declaration_test;

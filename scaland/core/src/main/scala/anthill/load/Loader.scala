@@ -161,7 +161,7 @@ object Loader:
     val headSites = heads.toIndexedSeq
     val denotes: IndexedSeq[Boolean] = headSites.map { h =>
       kb.symbols.setAskingFile(Some(fileIds(h.fileIdx)))
-      kb.symbols.resolveInScope(h.name, h.scope).denotes
+      ruleHeadLadderAnswer(kb, h.name, h.scope).denotes
     }
 
     // PHASE 3 — DECIDE, then mint. Deciding reads the table and minting writes it, so
@@ -695,7 +695,11 @@ object Loader:
             // AN AMBIGUOUS ANSWER IS LEFT TO ITS OWN DIAGNOSTIC. This refusal is about
             // one name a rule may not take over; a contested set is a different defect
             // and reporting it here would name only whichever candidate came first.
-            val shadowed = kb.symbols.resolveInScope(name, scope) match
+            // THE HEAD'S OWN LADDER (WI-20260821-HSG31): a `<global>` name is not what a
+            // declaration inside a namespace shadows, any more than it is what a bodied
+            // head there joins — refusing it here and minting it there made the two
+            // spellings of one predicate disagree.
+            val shadowed = ruleHeadLadderAnswer(kb, name, scope) match
               case ResolveResult.Found(sym) => kb.symbols.get(sym) match
                 case SymbolDef.Resolved(_, _, k, _) if !DeclarableByARule.contains(k) => Some(k)
                 case _ => None
@@ -1016,6 +1020,27 @@ object Loader:
   private case class HeadNameCollision[S](
     name: String, scopes: IndexedSeq[S], owner: Option[S], sites: IndexedSeq[Int]
   )
+
+  /** The ladder a rule head reads — the ordinary one, save that a head written inside a
+    * namespace never resolves to a name whose only home is `<global>` (WI-20260821-HSG31,
+    * kernel-language.md §5.3 "`<global>` is not a party to any of it"). Such a head
+    * declares at its own scope instead, and once minted that local is what every reference
+    * in the namespace reads.
+    *
+    * RE-ASKED ONLY WHEN THE ORDINARY ANSWER IS A `<global>` DECLARATION: `NotFound` means
+    * `<global>` declares nothing by this name, and a `Found` elsewhere never reached it.
+    * An `Ambiguous` answer is kept even with a `<global>` candidate among it — the
+    * namespace's own references are ambiguous too, and WI-900 reports that at the
+    * reference. Rustland's twin is `load::rule_head_ladder_answer`. */
+  private def ruleHeadLadderAnswer(kb: KnowledgeBase, name: String, scope: kb.ScopeId): ResolveResult =
+    kb.symbols.resolveInScope(name, scope) match
+      case ResolveResult.Found(sym)
+          if (kb.symbols.get(sym) match
+                case SymbolDef.Resolved(_, _, _, home) => home == kb.globalScope
+                case _                                 => false)
+            && kb.symbols.isInsideNamespace(scope) =>
+        kb.symbols.resolveRuleHeadInsideNamespace(name, scope)
+      case other => other
 
   /** Mint one sentinel per scope that writes a rule head — a symbol standing for "a head
     * is written here", so the resolver can be told about names that are not symbols yet.
