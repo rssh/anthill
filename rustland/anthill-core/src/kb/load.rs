@@ -29068,6 +29068,112 @@ impl<'a> Loader<'a> {
         Some(occ)
     }
 
+    /// WI-753 — A METHOD CALL IN A RULE BODY, BUILT FROM ITS PARSE NODE.
+    ///
+    /// The converter writes `?x.m(a, k: b)` as the positional `dot_apply(receiver,
+    /// Ident(m), a, k: b)`, and `convert_term_inner` re-encodes that (WI-278) into the
+    /// reflect form `dot_apply(receiver: …, name: Ref(m), args: [ApplyArg(…), …])`. Until
+    /// this, the rule-body walk handed the node to the early return, which MATERIALIZED
+    /// that term: every child was rebuilt from a hash-consed `TermId` and located by a
+    /// table keyed on it, so two identical siblings (`?x.m(?y.n(), ?y.n())`) shared one
+    /// location and a node the table missed fell back to the cross-file, first-write-wins
+    /// `kb.term_spans`.
+    ///
+    /// Here the occurrence is assembled from the parse node, as [`Self::entity_ctor_expr`]
+    /// does for a constructor: the method NAME and each argument's LABEL are read off the
+    /// lowered term (so they are exactly what the term side resolved — the name is
+    /// metadata, `remap_symbol`ed there, not a child), and every CHILD goes through
+    /// [`Self::lowered_child_occurrence`], which builds it from its own parse node.
+    ///
+    /// THE SAME SHAPE GUARD AS THE RE-ENCODE — `dot_apply` by name, at least two
+    /// positional arguments, an `Ident` at the second — and for the same reason: a
+    /// `dot_apply` written in a term position is a spelled kernel form, so provenance is
+    /// deliberately not asked (WI-20260822-AKKWF). Anything the re-encode did not take is
+    /// left to the caller, which is what it did before.
+    ///
+    /// `None` also when the lowered term does not line up with the parse node — a loud
+    /// `debug_assert`, since the re-encode builds it one-for-one from that node.
+    fn dot_apply_expr(&mut self, parse_id: TermId) -> Option<Expr> {
+        // Tested BEFORE anything is cloned: this runs for every rule-body node that is
+        // neither an entity constructor nor a collection literal, nearly all of which are
+        // not a method call (the discipline `collection_literal_expr` keeps too).
+        let (parse_pos, parse_named) = match self.parsed.terms.get(parse_id) {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } if dt::is(self.parsed.symbols.local_name(*functor), dt::DOT_APPLY)
+                && pos_args.len() >= 2
+                && matches!(self.parsed.terms.get(pos_args[1]), Term::Ident(_)) =>
+            {
+                (pos_args.clone(), named_args.clone())
+            }
+            _ => return None,
+        };
+        let kb_term = self.convert_term(parse_id); // memoized hit
+        let (k_receiver, k_name, k_args) = {
+            let s = &self.expr_syms;
+            (s.k_receiver, s.k_name, s.k_args)
+        };
+        let Term::Fn {
+            named_args: kb_named,
+            ..
+        } = self.kb.get_term(kb_term).clone()
+        else {
+            return None;
+        };
+        let slot = |k: Symbol| kb_named.iter().find(|(s, _)| *s == k).map(|(_, t)| *t);
+        let (Some(kb_receiver), Some(kb_name), Some(kb_args)) =
+            (slot(k_receiver), slot(k_name), slot(k_args))
+        else {
+            return None;
+        };
+        let Term::Ref(name) = *self.kb.get_term(kb_name) else {
+            return None;
+        };
+        let entries = node_occurrence::apply_arg_entries(self.kb, kb_args);
+        // The re-encode emits the positional arguments first, then the named ones, each in
+        // written order — so the lowered list pairs with the parse children by index.
+        let written = (parse_pos.len() - 2) + parse_named.len();
+        let lined_up = entries.len() == written
+            && entries.iter().all(|(_, v)| v.is_some())
+            && entries[..parse_pos.len() - 2].iter().all(|(n, _)| n.is_none())
+            && entries[parse_pos.len() - 2..].iter().all(|(n, _)| n.is_some());
+        debug_assert!(
+            lined_up,
+            "dot_apply_expr: the lowered `args` list does not pair with the parse node's \
+             {written} written argument(s)"
+        );
+        if !lined_up {
+            return None;
+        }
+        // The `convert_term` above walked this subtree and emitted its inline
+        // descriptions; the child walk must not emit them again
+        // ([`Self::descs_emitted_by_convert`]).
+        let saved_descs = self.descs_emitted_by_convert;
+        self.descs_emitted_by_convert = true;
+        let receiver = self.lowered_child_occurrence(parse_pos[0], kb_receiver);
+        let mut pos_args = Vec::with_capacity(parse_pos.len() - 2);
+        let mut named_args = Vec::with_capacity(parse_named.len());
+        for (i, (label, value)) in entries.into_iter().enumerate() {
+            let value = value.expect("checked by `lined_up`");
+            match label {
+                None => pos_args.push(self.lowered_child_occurrence(parse_pos[2 + i], value)),
+                Some(key) => {
+                    let pid = parse_named[i - (parse_pos.len() - 2)].1;
+                    named_args.push((key, self.lowered_child_occurrence(pid, value)));
+                }
+            }
+        }
+        self.descs_emitted_by_convert = saved_descs;
+        Some(Expr::DotApply {
+            receiver,
+            name,
+            pos_args,
+            named_args,
+        })
+    }
+
     /// WI-20260902-2NXAC — A COLLECTION LITERAL'S OCCURRENCE, BUILT FROM ITS PARSE NODE.
     ///
     /// The sibling of [`Self::entity_ctor_expr`] for the three surfaces WI-20260902-2SZ88
@@ -29923,8 +30029,12 @@ impl<'a> Loader<'a> {
                 } else {
                     // WI-20260902-2NXAC — the three COLLECTION LITERALS, the largest
                     // reflect-keyed group still on the round-trip (192 of 284 censused
-                    // nodes). Everything else there keeps it.
-                    self.collection_literal_expr(parse_id, new_functor)
+                    // nodes). WI-753 — and the converter's METHOD CALL, the next largest
+                    // (`dot_apply`, 49). Everything else there keeps it.
+                    match self.collection_literal_expr(parse_id, new_functor) {
+                        Some(expr) => Some(expr),
+                        None => self.dot_apply_expr(parse_id),
+                    }
                 };
                 if let Some(expr) = entity_native {
                     // NOT a `return`: falling through to this function's tail is what

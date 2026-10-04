@@ -7352,12 +7352,7 @@ fn collect_apply_arg_visits(
     let Some(tid) = list_tid else {
         return (0, named_keys, visits);
     };
-    for arg_tid in list_to_vec(kb, tid) {
-        let Term::Fn { named_args: aa, .. } = kb.get_term(arg_tid) else {
-            continue;
-        };
-        let value = get_named_arg(kb, aa, "value");
-        let arg_name = get_named_arg(kb, aa, "name").and_then(|t| some_name(kb, t));
+    for (arg_name, value) in apply_arg_entries(kb, tid) {
         match arg_name {
             None => {
                 pos_count += 1;
@@ -7370,6 +7365,27 @@ fn collect_apply_arg_visits(
         }
     }
     (pos_count, named_keys, visits)
+}
+
+/// The entries of a reflect `args: List[ApplyArg]` slot, in list order: each argument's
+/// label (`None` for a positional one) and its `value` term. The ONE reader of that layout,
+/// shared by [`collect_apply_arg_visits`] and the loader's native `dot_apply` builder
+/// (WI-753), so the two cannot disagree about which argument is named.
+pub(crate) fn apply_arg_entries(
+    kb: &KnowledgeBase,
+    list_tid: TermId,
+) -> Vec<(Option<Symbol>, Option<TermId>)> {
+    list_to_vec(kb, list_tid)
+        .into_iter()
+        .filter_map(|arg_tid| {
+            let Term::Fn { named_args: aa, .. } = kb.get_term(arg_tid) else {
+                return None;
+            };
+            let value = get_named_arg(kb, aa, "value");
+            let arg_name = get_named_arg(kb, aa, "name").and_then(|t| some_name(kb, t));
+            Some((arg_name, value))
+        })
+        .collect()
 }
 
 /// Walk a plain `cons(head, tail) | nil` element list and produce
