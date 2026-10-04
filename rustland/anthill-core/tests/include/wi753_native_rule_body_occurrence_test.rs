@@ -32,6 +32,16 @@
 //! DESIGN — both carriers take `visit_fn`'s arms — and pins that the native build keeps the
 //! reading.
 //!
+//! Stage 3 — the sites that still re-derived a node from a lowered term.
+//! * A TRANSFORMED child (`wrap_bare_option_value`'s `some(…)`). With
+//!   `lowered_child_occurrence`'s case 2 restored to the per-subtree table materialization,
+//!   `identical_children_inside_a_wrapped_value_are_each_located_at_their_own_site` FAILS
+//!   (`[240, 240]` for `[240, 247]`) and `the_lowered_option_wrapper_is_located_at_the_written_value`
+//!   FAILS (the wrapper at `0`, located nowhere).
+//! * A written EFFECT ROW. With `lower_effect_row_aux_occ` back on the unspanned
+//!   `materialize_from_handle`, `a_written_effect_row_is_located_at_its_own_site` FAILS (the
+//!   first row at `0`).
+
 use crate::wi1012_static_supplier_tie_test::{located, refusal};
 use crate::wi1026_rule_body_spec_op_dispatch_test::{
     program, TWO_LEAF as OWN, TWO_SUPPLY as RIVAL_FACT,
@@ -256,4 +266,111 @@ end
         errs.iter().any(|e| e.contains("not read here")),
         "the bracket must be refused, not dropped: {errs:#?}"
     );
+}
+
+/// Every node under rule `rule_qn`'s body whose `Expr::Apply` functor is locally `name`, as
+/// `start..end` spans in source order.
+fn apply_spans(src: &str, rule_qn: &str, name: &str) -> Vec<(u32, u32)> {
+    use anthill_core::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence};
+    use std::rc::Rc;
+    let kb = crate::common::load_kb_with(src);
+    let sym = kb
+        .try_resolve_symbol(rule_qn)
+        .unwrap_or_else(|| panic!("symbol {rule_qn} not found"));
+    let rid = *kb
+        .rules_by_functor(sym)
+        .first()
+        .unwrap_or_else(|| panic!("no rule for {rule_qn}"));
+    let mut out = Vec::new();
+    let mut stack: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+    while let Some(n) = stack.pop() {
+        if let Some(e) = n.as_expr() {
+            let f = match e {
+                Expr::Apply { functor, .. } | Expr::Constructor { name: functor, .. } => Some(*functor),
+                _ => None,
+            };
+            if f.is_some_and(|f| kb.local_name_of(f) == name) {
+                out.push((n.span.span.start, n.span.span.end));
+            }
+            for_each_child(e, |c| stack.push(Rc::clone(c)));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A bare value written at an `Option[..]` field is LOWERED to `some(value)` — a wrapper the
+/// author never wrote — and the value inside it is a child of its own.
+const WRAPPED: &str = r#"namespace test.wi753.wrapped
+  import anthill.prelude.{Int64, Option}
+
+  operation sq(n: Int64) -> Int64 = n * n
+  operation pair2(a: Int64, b: Int64) -> Int64 = a + b
+  entity bo(v: Option[T = Int64])
+
+  rule probe(?x) :- ?x = bo(v: pair2(sq(1), sq(1)))
+end
+"#;
+
+/// STAGE 3 — THE CASE. Two identical calls inside a WRAPPED child are one hash-consed term;
+/// built from the parse node and spliced under the wrapper, each is at its own site.
+#[test]
+fn identical_children_inside_a_wrapped_value_are_each_located_at_their_own_site() {
+    let spans = apply_spans(WRAPPED, "test.wi753.wrapped.probe", "sq");
+    assert_eq!(
+        spans.iter().map(|s| s.0).collect::<Vec<_>>(),
+        vec![offset(WRAPPED, "sq(1)", 0), offset(WRAPPED, "sq(1)", 1)],
+        "each identical call starts at its OWN offset: {spans:?}"
+    );
+}
+
+/// STAGE 3 — THE WRAPPER IS LOCATED AT THE VALUE IT WRAPS. It has no parse node, so the only
+/// honest site is the written value's; before, it fell to the cross-file `term_spans`.
+#[test]
+fn the_lowered_option_wrapper_is_located_at_the_written_value() {
+    let wraps = apply_spans(WRAPPED, "test.wi753.wrapped.probe", "some");
+    let value = offset(WRAPPED, "pair2(sq(1), sq(1))", 0);
+    assert_eq!(
+        wraps.iter().map(|s| s.0).collect::<Vec<_>>(),
+        vec![value],
+        "one `some` wrapper, at the written value: {wraps:?}"
+    );
+}
+
+/// STAGE 3 — A WRITTEN EFFECT ROW IS LOCATED WHERE IT IS WRITTEN. The row `{}` is lowered to
+/// the canonical interned `effects_rows(…)` term, which is its identity by design; what it
+/// must not take is that term's location — `term_spans` is first-write-wins over one id
+/// shared by every `{}` in the KB, so a second written row reported the first one's site.
+#[test]
+fn a_written_effect_row_is_located_at_its_own_site() {
+    use anthill_core::kb::node_occurrence::Expr;
+    let src = r#"namespace test.wi753.row
+  import anthill.prelude.{Int64, Stream}
+
+  rule first(?c) :- Stream[T = Int64, E = {}]
+  rule second(?c) :- Stream[T = Int64, E = {}]
+end
+"#;
+    let kb = crate::common::load_kb_with(src);
+    for (nth, rule) in ["first", "second"].into_iter().enumerate() {
+        let sym = kb
+            .try_resolve_symbol(&format!("test.wi753.row.{rule}"))
+            .unwrap_or_else(|| panic!("rule {rule} not found"));
+        let rid = kb.rules_by_functor(sym)[0];
+        let atom = &kb.rule_body_nodes(rid)[0];
+        let Some(Expr::Apply { named_args, .. }) = atom.as_expr() else {
+            panic!("{rule}: the body atom is an application: {atom:?}")
+        };
+        let row = named_args
+            .iter()
+            .find(|(k, _)| kb.local_name_of(*k) == "E")
+            .unwrap_or_else(|| panic!("{rule}: the `E` binding is carried"))
+            .1
+            .clone();
+        assert_eq!(
+            row.span.span.start,
+            offset(src, "{}", nth),
+            "{rule}: the row is located at its own `{{}}`"
+        );
+    }
 }
