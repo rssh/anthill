@@ -477,6 +477,43 @@ fn union_within_one_ordering_merges() {
     );
 }
 
+/// … AND THROUGH TWO PARAMETERS (WI-20261001-80ZV8): a provider named in a requirement slot
+/// is one ordering wherever it is written. `both(a: SortedSet[T = Pair[Int64, Int64], O =
+/// ByFst], b: …)` types two parameters at the very type the two `let`s above have, and
+/// `union(a, b)` merges them.
+///
+/// It did not load before: the walk that closes a parameter's unwritten slots descended
+/// into `O`'s binding and minted `ByFst`'s own `A`, `B`, `OA`, `OB` once per parameter — the
+/// requirement `O: Ord[T]` fixes those, nothing leaves them open — so the two parameters were
+/// two types, `expected SortedSet[…, O = ByFst[A = ?A, …]], got SortedSet[…, O = ByFst[A =
+/// ?A, …]] (these render alike …)` (MEASURED on the tree before the gate). The two-`let` row
+/// above failed the same way, and its refusal twin lost the message it pins, once a name
+/// closed the slots of the value it binds.
+/// FAILS when the `named_requirement_slots` gate in `rigidify_unwritten_sort_params` is
+/// removed, with the two-`let` row above and its refusal twin (MEASURED:
+/// `wi_80zv8_named_open_slot_test`'s ledger, part 5).
+#[test]
+fn union_of_two_parameters_at_one_ordering_merges() {
+    let src = program(
+        "wi858.params",
+        &format!(
+            "{BY_FST}  end\n  sort Driver\n{RENDER}    \
+             operation both(a: SortedSet[T = Pair[Int64, Int64], O = ByFst], \
+             b: SortedSet[T = Pair[Int64, Int64], O = ByFst]) -> String =\n      \
+             render(SortedSet.toList(SortedSet.union(a, b)))\n    \
+             operation same(n: Int64) -> String =\n      \
+             both(SortedSet.insert(\n        \
+             SortedSet.empty[T = Pair[Int64, Int64], O = ByFst](), pair(fst: 1, snd: 9)),\n        \
+             SortedSet.insert(\n        \
+             SortedSet.empty[T = Pair[Int64, Int64], O = ByFst](), pair(fst: 2, snd: 1)))\n  end"
+        ),
+    );
+    assert_eq!(
+        eval_str(&src, "wi858.params.Driver.same", "two parameters at one ordering merge"),
+        "(1,9)(2,1)"
+    );
+}
+
 /// The ELEMENT orderings are independent of the pair ordering: a HETEROGENEOUS
 /// `Pair[Int64, String]` threads `Ord[Int64]` for `fst` and `Ord[String]` for
 /// `snd` — two DIFFERENT providers of one spec, live in one dictionary at once. Worth

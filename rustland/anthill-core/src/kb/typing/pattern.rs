@@ -676,6 +676,9 @@ pub(super) fn bind_and_label_pattern(
                         UnpinnedBinder::Unnameable => Value::term(kb.make_type_var(fresh)),
                     }
                 });
+            // WI-20261001-80ZV8: what the value leaves open is closed where it gets a name
+            // ([`closed_where_named`]).
+            let ty = closed_where_named(kb, ty, Some(*name), pattern.span, pattern.owner);
             env.bind_var(*name, ty);
             // Pattern-bound names are local — effects on them shouldn't escape
             // the surrounding match/case scope (matches `check_let_expr`'s
@@ -694,6 +697,11 @@ pub(super) fn bind_and_label_pattern(
             named_args,
         } => {
             let ctor_sym = *name;
+            // WI-20261001-80ZV8: a scrutinee taken apart is a value read, and what its type
+            // leaves open is one unknown for every binder below ([`closed_where_named`]) —
+            // left open, a binder over `v: T` took the sort's own declaration variable.
+            let scrutinee_type = scrutinee_type
+                .map(|ty| closed_where_named(kb, ty, None, pattern.span, pattern.owner));
             let field_types = kb.entity_field_types(ctor_sym).map(|f| f.to_vec());
             // Substitute the scrutinee's type args into the constructor's
             // declared field types. For `case some(name)` over

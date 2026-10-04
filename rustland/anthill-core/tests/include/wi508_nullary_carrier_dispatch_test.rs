@@ -137,42 +137,82 @@ fn wi508_two_providers_unannotated_is_loud() {
     let _ = interp_for(TWO_PROVIDERS_AMBIG);
 }
 
-// ── Guards: the CONCRETE carrier constructor `MutableStack.new()` is unchanged.
-//    Its element `T` is ordinary inference, not part of WI-508 (the carrier is
-//    fixed). Documents that `let x = MutableStack.new()` is valid and `T` is a
-//    monomorphic unification var: pinned by a later use, harmless if never used.
+// ── Guards: the CONCRETE carrier constructor `MutableStack.new()`. Its element `T` is
+//    not part of WI-508 (the carrier is fixed). `new()` fixes no `T`, so the slot is open
+//    in its result — and CLOSED where the stack gets a name (WI-20261001-80ZV8, the user's
+//    decision of 2026-10-04): `let x = MutableStack.new()` is a stack of `x.T`. These rows
+//    used to document the opposite — "`T` is a monomorphic unification var: pinned by a
+//    later use" — which was never what happened: the slot was open at every use, so one
+//    stack took an `Int64` and then a `String`
+//    (`wi_80zv8_named_open_slot_test::a_writable_value_is_not_read_at_two_types`). A later
+//    use really pinning it is WI-20261004-KEGNC.
 
-const SRC_CONCRETE: &str = r#"
-namespace test.wi508g
-  import anthill.prelude.{Int64, Bool, MutableStack}
-  import anthill.prelude.FiniteCollection.{size}
+/// `useNew` over a stack made by `bound`, the `let` that names it.
+fn concrete_program(ns: &str, bound: &str) -> String {
+    format!(
+        r#"
+namespace {ns}
+  import anthill.prelude.{{Int64, Bool, MutableStack}}
+  import anthill.prelude.FiniteCollection.{{size}}
 
-  -- element T inferred Int64 from the push
   operation useNew() -> Int64 effects Modify[result] =
-    let x = MutableStack.new()
+    {bound}
     let _ = MutableStack.push(x, 10)
     size(x)
+end
+"#
+    )
+}
 
-  -- element T never determined; still valid (empty stack of an unknown element)
+/// THE ELEMENT IS SAID WHERE THE STACK IS NAMED — an annotation, or a bracket in either
+/// spelling. Each runs: one push, size 1.
+#[test]
+fn wi508_concrete_new_element_said_at_the_name() {
+    for (ns, bound) in [
+        ("test.wi508g.ann", "let x: MutableStack[T = Int64] = MutableStack.new()"),
+        ("test.wi508g.callee", "let x = MutableStack.new[T = Int64]()"),
+        ("test.wi508g.recv", "let x = MutableStack[T = Int64].new()"),
+    ] {
+        let mut interp = interp_for(&concrete_program(ns, bound));
+        register_modify_handler(&mut interp);
+        let r = interp
+            .call(&format!("{ns}.useNew"), &[])
+            .unwrap_or_else(|e| panic!("{bound}: {e:?}"));
+        assert_eq!(r.literal_int64(interp.kb()), Some(1), "{bound}");
+    }
+}
+
+/// … AND NOT BY A LATER USE: with nothing said at the name the push is refused, the stack's
+/// own unknown named. Loaded before WI-20261001-80ZV8's naming rule (this file's
+/// `wi508_concrete_new_element_inferred_from_use`, which ran to 1).
+/// FAILS with the naming rule backed out (`wi_80zv8_named_open_slot_test`'s ledger, part 1);
+/// the three spellings above and the unpinned row below pass either way, by design.
+#[test]
+fn wi508_concrete_new_element_is_not_inferred_from_use() {
+    let errs = crate::common::load_errors_of(&concrete_program(
+        "test.wi508g.unsaid",
+        "let x = MutableStack.new()",
+    ));
+    crate::common::assert_refused_naming(
+        &errs,
+        &["push.elem (op-arg): expected x.T, got Int64"],
+        "a stack named with no element said, then pushed an Int64",
+    );
+}
+
+/// A stack nothing reads at an element loads with `T` never said — an empty stack of its own
+/// unknown. Passes with or without the naming rule, by design.
+#[test]
+fn wi508_concrete_new_unpinned_element_loads() {
+    let _ = interp_for(
+        r#"
+namespace test.wi508g.amb
+  import anthill.prelude.{Int64, Bool, MutableStack}
+
   operation ambNew() -> Bool effects Modify[result] =
     let x = MutableStack.new()
     true
 end
-"#;
-
-#[test]
-fn wi508_concrete_new_element_inferred_from_use() {
-    let mut interp = interp_for(SRC_CONCRETE);
-    register_modify_handler(&mut interp);
-    let r = interp.call("test.wi508g.useNew", &[]).expect("useNew");
-    assert_eq!(
-        r.literal_int64(interp.kb()),
-        Some(1),
-        "push(x, 10) pins T = Int64; size is 1"
+"#,
     );
-}
-
-#[test]
-fn wi508_concrete_new_unpinned_element_loads() {
-    let _ = interp_for(SRC_CONCRETE); // ambNew loads with T left free
 }

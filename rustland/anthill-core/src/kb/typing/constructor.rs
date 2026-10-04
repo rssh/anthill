@@ -253,13 +253,13 @@ pub(super) fn declared_element_type(
 /// wanted.
 ///
 /// A SOUND UPPER BOUND IS NOT A SOUND ELEMENT TYPE, and the difference is what each is for.
-/// A branch join answers "what can this expression be", where the bare `Option` is honest
-/// and nothing further is claimed. A literal's element type is then compared against a
-/// DECLARATION, and there the erasure passes a `String` into an `Int64` slot. So the
-/// erasure is refused HERE and left alone in [`compute_branch_join_type`], where the same
-/// fallback is reachable through `if` — MEASURED, not assumed
-/// (`an_if_join_still_erases_and_that_is_not_this_tickets_hole` pins it) — because that is
-/// the branch join's own question and its own item.
+/// A literal's element type is compared against a DECLARATION, and there the erasure passes
+/// a `String` into an `Int64` slot. It was first refused HERE and left alone in
+/// [`compute_branch_join_type`], on the reading that a branch join's bare `Option` "is
+/// honest and nothing further is claimed". It was not: an open slot is admitted at every
+/// instance, so the erased join laundered through `if` as well, and the lattice itself was
+/// repaired — the paragraph below, and [`open_slots_said_by`] for the open-beside-said
+/// pair (WI-20261001-80ZV8).
 /// WI-20260829-WBXGX — the element type of a literal so far, extended by one more element:
 /// their JOIN, or `None` where they have none THAT IS USABLE AS AN ELEMENT TYPE.
 ///

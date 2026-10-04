@@ -893,14 +893,18 @@ fn sort_param_without_carrier_detail(
     let (is, repair) = if nested {
         (
             format!("`{c}` holds any `{s}`"),
-            format!("Write that `{s}` as `{me}` to make it the carrier"),
+            format!(
+                "Write that `{s}` as `{me}` to make it the carrier; or, where it is another \
+                 `{s}` on purpose, give its `{v}` a name of its own (`[X]`, `{s}[{v} = X]`)"
+            ),
         )
     } else {
         (
             format!("`{c}` is any `{s}`"),
             format!(
                 "Type `{c}` as `{me}` to make it the carrier, or write `{c}.{v}` where that \
-                 `{s}`'s `{v}` is meant"
+                 `{s}`'s `{v}` is meant; or, where `{c}` is another `{s}` on purpose, give its \
+                 `{v}` a name of its own (`[X]`, `{c}: {s}[{v} = X]`)"
             ),
         )
     };

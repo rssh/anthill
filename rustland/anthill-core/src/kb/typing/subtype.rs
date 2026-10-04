@@ -1302,19 +1302,16 @@ fn widen_value(kb: &mut KnowledgeBase, v: &Value) -> Option<Value> {
 }
 
 /// WI-287: a common supertype (an upper bound) of two branch types in the
-/// (top-less) Type lattice, or `None` when they have none. NOT necessarily
-/// the strict least upper bound: a polymorphic `none()`/`nil()` typed bare
-/// `Option`/`List` could in principle specialize to the sibling branch's
-/// `Option[T=Int]` (making the strict lub `Option[T=Int]`), but the typer
-/// neither tracks that a bare type is the polymorphic kind nor unifies it
-/// here, so for the bare-vs-parameterized case this returns the more-
-/// general type instead (see [`more_general_type`]) — a sound upper bound,
-/// not the lub. Commutative: `join_types(a, b) == join_types(b, a)`, so
+/// (top-less) Type lattice, or `None` when they have none. A slot one side
+/// leaves OPEN — `none()`/`nil()`, a call that fixed no parameter — takes
+/// what the other side says before the two are compared
+/// ([`open_slots_said_by`], WI-20261001-80ZV8): `none()` beside `some(1)` is
+/// an `Option[T = Int64]`. Commutative: `join_types(a, b) == join_types(b, a)`, so
 /// folding branches is order-independent. A wildcard (`type_var`) branch
 /// imposes no constraint, so the other branch's type is the result. When
 /// exactly one type conforms to the other (`types_compatible`, covering
 /// entity→sort and `requires`-refine) the supertype wins; when both
-/// directions hold (identical, or bare-vs-parameterized) [`more_general_type`]
+/// directions hold (identical, or a slot neither side says) [`more_general_type`]
 /// decides; failing both, two SAME-BASE parameterized types get a real
 /// parameterized LUB built per-binding by declared variance (WI-464,
 /// [`join_parameterized_same_base`]), and otherwise the nominal sides are widened
@@ -1369,7 +1366,11 @@ pub(super) fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<V
     if type_dispatch_name_view(kb, &b) == Some("type_var") {
         return Some(a);
     }
-    let (mut a, mut b) = (a, b);
+    // WI-20261001-80ZV8 — WHAT ONE BRANCH LEAVES OPEN, THE OTHER SAYS, and it is said before
+    // the two are compared. See [`open_slots_said_by`].
+    let a_said = open_slots_said_by(kb, &a, &b);
+    let b_said = open_slots_said_by(kb, &b, &a);
+    let (mut a, mut b) = (a_said.unwrap_or(a), b_said.unwrap_or(b));
     // Bound defensively against any pathological parent cycle; real
     // entity→sort chains are a single level.
     for _ in 0..64 {
@@ -1386,13 +1387,11 @@ pub(super) fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<V
             (true, false) => return Some(b),
             // `b <: a` only: `a` is the supertype.
             (false, true) => return Some(a),
-            // Mutually compatible: identical types, or the bare-vs-
-            // parameterized normalization where both directions hold
-            // (`Option` vs `Option[T=Int]`). We return the less-
-            // constrained side — a sound upper bound, deliberately more
-            // general than the strict lub (which would keep the bindings)
-            // — picked deterministically so the result is order-
-            // independent. (Different parameterizations like
+            // Mutually compatible: identical types, or two spellings of
+            // one (a slot neither side says, left out by one and written
+            // `?` by the other) — an open slot the OTHER side says was
+            // filled above. Picked deterministically so the result is
+            // order-independent. (Different parameterizations like
             // `List[Int]`/`List[String]` are NOT mutually compatible — the
             // parameterized arm checks bindings — so they fall through to
             // the widen step.)
@@ -1439,21 +1438,164 @@ pub(super) fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<V
     None
 }
 
+/// WI-20261001-80ZV8 — what `ty` leaves OPEN and `other` says, written into `ty`; `None`
+/// when there is nothing to take. A slot is open where it is left out or holds an anonymous
+/// `?` — the two spellings [`closed_where_named`] closes — and `other` says it where it
+/// holds anything else.
+///
+/// AN OPEN SLOT IS A TYPE NOT SAID YET, NOT "ANY". `none()` and `Bag.empty()` fix no
+/// parameter, and the user's rule (2026-10-03) is that the slot stays open and whatever the
+/// value meets says it. A branch join is one of the things it meets: `if c then none() else
+/// some(1)` is an `Option[T = Int64]`.
+///
+/// The join used to keep the OPEN side there, as "the more general type" (WI-287), on the
+/// reasoning that a bare `Option` might be a declared `-> Option` of some other `T`. A
+/// declared return's left-out slot is opened to a rigid at the call since WI-1063, a
+/// parameter's since WI-1059, a binder's since this ticket, so what still reaches a join
+/// open is only what nothing fixed. And the open result was no upper bound either: an open
+/// slot is admitted wherever any instance is wanted, so `takes_strings(if c then nil else
+/// cons(head: 1, tail: nil))` loaded and read an `Int64` as a `String` (MEASURED:
+/// `wi_80zv8_named_open_slot_test`).
+///
+/// Slots BOTH sides say are left for the join proper, with one recursion: a slot one side
+/// says at a type with open slots of its own (`Pair[A = List, B = Int64]` beside `Pair[A =
+/// List[T = String], B = Int64]`).
+///
+/// A NAMED flexible variable is not open here, as it is not for [`closed_where_named`]: it
+/// can be an un-annotated lambda binder's, which the body shares, and taking the other
+/// side's type for it would claim what nothing bound.
+fn open_slots_said_by(kb: &mut KnowledgeBase, ty: &Value, other: &Value) -> Option<Value> {
+    let (base, written) = match extract_type(kb, ty) {
+        TypeExtractor::SortRef(s) => (s, Vec::new()),
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        // A SORT APPLICATION IS NOT THE ONLY THING THAT HOLDS ONE — the lesson
+        // [`rigidify_unwritten_sort_params`] records for the same two carriers, learned again
+        // here. With these two left to the arm below, the open side still won whenever it
+        // came first: `takes_tuple(if c then (a: nil, b: 1) else (a: cons(head: 1, tail:
+        // nil), b: 2))` loaded against `(a: List[T = String], b: Int64)` and was refused the
+        // other way round, and a lambda returning `nil` beside one returning a list of
+        // `Int64` did the same (MEASURED, found by /code-review).
+        //
+        // A named tuple is an ordered product (WI-788): the two are compared field by field
+        // only where their labels agree in order, and anything else is the join's to refuse.
+        TypeExtractor::NamedTuple(mine) => {
+            let TypeExtractor::NamedTuple(theirs) = extract_type(kb, other) else {
+                return None;
+            };
+            if mine.len() != theirs.len()
+                || mine.iter().zip(&theirs).any(|((a, _), (b, _))| a != b)
+            {
+                return None;
+            }
+            let mut changed = false;
+            let mut fields: Vec<(Symbol, Value)> = Vec::with_capacity(mine.len());
+            for ((label, m), (_, t)) in mine.iter().zip(&theirs) {
+                let said = open_slots_said_by(kb, m, t);
+                changed |= said.is_some();
+                fields.push((*label, said.unwrap_or_else(|| m.clone())));
+            }
+            return changed.then(|| {
+                named_tuple_value(kb, &fields, crate::kb::node_occurrence::empty_span(), None)
+            });
+        }
+        // THE RESULT ONLY. A parameter left open is the function's to accept at every
+        // instance — the opposite fact — and a row is compared by its labels' identity.
+        TypeExtractor::Arrow {
+            param,
+            result,
+            effects,
+            arity,
+        } => {
+            let TypeExtractor::Arrow {
+                result: their_result,
+                arity: their_arity,
+                ..
+            } = extract_type(kb, other)
+            else {
+                return None;
+            };
+            if arity != their_arity {
+                return None;
+            }
+            let said = open_slots_said_by(kb, &result, &their_result)?;
+            let p = value_to_type_child(kb, &param);
+            let r = value_to_type_child(kb, &said);
+            let e = value_to_type_child(kb, &effects);
+            let span = crate::kb::node_occurrence::empty_span();
+            return Some(Value::Node(kb.make_arrow_occ(p, r, e, arity, span, None)));
+        }
+        _ => return None,
+    };
+    let (other_base, said) = match extract_type(kb, other) {
+        TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+        _ => return None,
+    };
+    let key_match = BindingKeyMatch::for_bases(kb, base, other_base);
+    if key_match != BindingKeyMatch::Label {
+        return None;
+    }
+    let mut taken = vec![false; said.len()];
+    let mut changed = false;
+    let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(written.len().max(said.len()));
+    for (key, mine) in &written {
+        let Some(i) = binding_index_for_param(kb, &said, *key, key_match) else {
+            bindings.push((*key, mine.clone()));
+            continue;
+        };
+        // Two of `ty`'s keys on one slot of `other` is a duplicate-keyed side (WI-769): no
+        // fill is built from it, and the combine below bows out of the pair as it always did.
+        if std::mem::replace(&mut taken[i], true) {
+            return None;
+        }
+        let theirs = &said[i].1;
+        let filled = if value_is_anonymous_wildcard(kb, mine) {
+            (!value_is_anonymous_wildcard(kb, theirs)).then(|| theirs.clone())
+        } else {
+            open_slots_said_by(kb, mine, theirs)
+        };
+        changed |= filled.is_some();
+        bindings.push((*key, filled.unwrap_or_else(|| mine.clone())));
+    }
+    for (i, (key, theirs)) in said.iter().enumerate() {
+        if taken[i] {
+            continue;
+        }
+        // … and a slot of `other` left untaken beside one `ty` writes is the duplicate on
+        // the other side.
+        if binding_index_for_param(kb, &written, *key, key_match).is_some() {
+            return None;
+        }
+        if !value_is_anonymous_wildcard(kb, theirs) {
+            bindings.push((*key, theirs.clone()));
+            changed = true;
+        }
+    }
+    if !changed {
+        return None;
+    }
+    let base_ref = kb.make_sort_ref(base);
+    Some(parameterized_value(
+        kb,
+        base_ref,
+        &bindings,
+        crate::kb::node_occurrence::empty_span(),
+        None,
+    ))
+}
+
 /// WI-287: between two *mutually*-`types_compatible` types, the upper
 /// bound to keep. This arm is reached only when `types_compatible` holds
 /// in BOTH directions, which (apart from identical types) means the
 /// bare-vs-parameterized normalization: `Option` and `Option[T=Int]` each
 /// conform to the other (a bare sort is "compatible with any instantiation
-/// and vice versa"). The *strict* lub here is the parameterized side
-/// (`Option[T=Int]`): a polymorphic `none()` specializes to it. But the
-/// typer can't tell a polymorphic bare (`none()`/`nil()`, safe to
-/// specialize) from a declared `-> Option` carrying some other unknown `T`
-/// (where claiming `Int` would be wrong), so we deliberately return the
-/// bare (more-general) side — a sound upper bound that never over-claims a
-/// binding, at the cost of dropping the strict lub's precision. A
-/// return/annotation pins the bindings via checked mode regardless; this
-/// only affects annotation-free synthesis. Returns `a` when neither side
-/// is parameterized (identical types). Keeps [`join_types`] commutative.
+/// and vice versa").
+///
+/// WI-20261001-80ZV8: [`join_types`] no longer brings that pair here — the open side
+/// takes what the other says first ([`open_slots_said_by`]), so the two arrive equal. What
+/// still arrives bare beside a parameterization is a pair whose written slots are all
+/// anonymous `?` (`Option` beside `Option[T = ?]`, one type twice), and the bare side is
+/// kept for it. Returns `a` when neither side is parameterized (identical types). Keeps
+/// [`join_types`] commutative.
 pub(super) fn more_general_type(kb: &KnowledgeBase, a: &Value, b: &Value) -> Value {
     match (more_general_form(kb, a), more_general_form(kb, b)) {
         (Some("sort_ref"), Some("parameterized")) => a.clone(),

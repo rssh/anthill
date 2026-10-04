@@ -1320,11 +1320,12 @@ pub(super) fn place_sibling_call_at_callers_instance(
 /// stdlib written with `Self` refused the anthill-todo program on that shape, 264 tests).
 ///
 /// The same call types as it did while the declaration read `-> List`: the element is not
-/// said, and whatever the value meets says it — the other arm of the join, an annotation,
-/// the parameter it is passed to. THE SLOT STAYS OPEN, and that is all this decides. It is
-/// not an inference variable: one value read at two instances loads, as it did (the row
-/// `an_open_slot_is_not_an_inference_variable` pins it). Making the join bind is the
-/// stricter rule, and a separate change.
+/// said, and whatever the value meets says it — the other arm of the join
+/// ([`open_slots_said_by`]), an annotation, the parameter it is passed to. THE SLOT STAYS
+/// OPEN, and that is all this decides. It is not an inference variable — nothing a later
+/// use says reaches an earlier one — so a value bound to a NAME, which every use would
+/// read as it liked, has the slot closed there ([`closed_where_named`], the user's
+/// decision of 2026-10-04). Inferring it over the body is WI-20261004-KEGNC.
 ///
 /// ONLY A SLOT OF THE CALLEE'S OWN SORT, which is the position a bare or part-written
 /// reference to it left unwritten and `Self` now writes; a parameter standing anywhere else

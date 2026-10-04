@@ -112,12 +112,18 @@ end
 }
 
 /// Bare-vs-parameterized branches (`none()` : `Option` vs `some(1)` :
-/// `Option[T=Int64]`) must join cleanly in BOTH orders. These are mutually
-/// `types_compatible`, so `join_types` resolves them via
-/// `more_general_type` (the bare `Option` wins) rather than treating them
-/// as a clash — and the result is the same regardless of branch order
-/// (`join_types` is commutative). Guards the WI-287 code-review fix for
-/// the bare/parameterized join path against a spurious-clash regression.
+/// `Option[T=Int64]`) must join cleanly in BOTH orders, and the result is
+/// the same regardless of branch order (`join_types` is commutative).
+/// Guards the WI-287 code-review fix for the bare/parameterized join path
+/// against a spurious-clash regression.
+///
+/// WI-20261001-80ZV8: the join is the `Option[T = Int64]` — the open slot of
+/// `none()` takes what the other branch says (`open_slots_said_by`). It was
+/// the bare `Option` ("the more general type"), which met the declared
+/// return only because an open slot is admitted at every instance; with a
+/// name closing an open slot, `x` would be an `Option[T = x.T]` and the
+/// return below refused. `wi_80zv8_named_open_slot_test` reads the join's
+/// type out of a refusal, and pins the element it used to launder.
 #[test]
 fn if_bare_vs_parameterized_branches_join_in_both_orders() {
     let none_then = r#"

@@ -150,6 +150,13 @@ pub(super) fn rigidify_unwritten_sort_params(
             // declared it takes any. A RESULT is the position that faces the body the same
             // way a parameter of the operation does — the body CONSUMES what `f` returns —
             // which is why it belongs here and the parameter does not.
+            //
+            // A NAME IS NOT THAT POSITION ([`SlotPosition::Named`]): what `let mk = lambda (n)
+            // -> Bag.empty()` names is the function, and each call of it makes a value of its
+            // own.
+            if matches!(position, SlotPosition::Named) {
+                return None;
+            }
             let nr = rigidify_unwritten_sort_params(
                 kb,
                 UnwrittenFill::Anonymous,
@@ -243,8 +250,24 @@ pub(super) fn rigidify_unwritten_sort_params(
                 // taking 193 tests with them. `sort_param_is_effect_row` keys on the
                 // DECLARING sort's kind-anchor (WI-594/WI-320), which is the only thing
                 // that separates the two — the values are the same shape.
+                //
+                // NOR INTO A NAMED REQUIREMENT SLOT (WI-20261001-80ZV8). `O = ByFst` in
+                // `SortedSet[T = Pair[Int64, Int64], O = ByFst]` names a PROVIDER, and the
+                // provider's own parameters are not left to anything: the requirement the
+                // slot answers (`O: Ord[T]`) fixes them, through `ByFst provides Ord[Pair[A,
+                // B]]`. Minting them made two mentions of one ordering two types — `union(a,
+                // b)` over two parameters so typed was refused at `expected SortedSet[…, O =
+                // ByFst[A = ?A, …]], got SortedSet[…, O = ByFst[A = ?A, …]] (these render
+                // alike …)` (MEASURED: `wi858_pair_orderings_test`'s
+                // `union_of_two_parameters_at_one_ordering_merges`; through two `let`s, its
+                // `union_within_one_ordering_merges`).
                 let short = short_name_of(kb.local_name_of(*param)).to_owned();
-                if sort_param_is_effect_row(kb, base, &short) {
+                if sort_param_is_effect_row(kb, base, &short)
+                    || kb
+                        .named_requirement_slots(kb.canonical_sort_sym(base))
+                        .iter()
+                        .any(|s| kb.local_name_of(s.binder) == short)
+                {
                     bindings.push((*k, v.clone()));
                     continue;
                 }
@@ -272,7 +295,7 @@ pub(super) fn rigidify_unwritten_sort_params(
         // rules already have: a self slot is not existential at all (WI-1063), so it never
         // gets here whatever it was spelled.
         let opened_named = slot.and_then(|i| position.opened_named_var(kb, &written[i].1));
-        // WI-1082 — the two halves of [`SlotPosition`]'s 3×2 table, read in the order the
+        // WI-1082 — the two halves of [`SlotPosition`]'s table, read in the order the
         // rules already have. `None` from either half means THIS POSITION LEAVES THE SLOT, and
         // both reach the same restore below: put back exactly what was there, because the slot
         // is already marked `consumed` and the carry-the-unmatched loop will NOT restore it —
@@ -523,6 +546,56 @@ impl FieldOpening {
 /// (`project(r, …) -> Relation[T = Project[T = r.T, …]]`), and read as the return's own they were
 /// opened — `getl(q)` over `-> FieldOf[T = Pair[A = p.A, B = p.B], Name = "l"]` read a list of a
 /// fresh rigid (MEASURED: review 9's /simplify).
+/// WI-20261001-80ZV8 (user, 2026-10-04: "and now do 4") — A NAME NEVER HAS AN OPEN SLOT IN
+/// ITS TYPE. `ty`, the type of a value about to be bound to `binder` (a `let`, a pattern
+/// variable) or destructured (`binder` `None`: a scrutinee), with every slot it leaves OPEN
+/// closed to an unknown of its own — the binder's projection (`x.T`), as a declared
+/// parameter's unwritten slot is and a pattern binder's field is ([`FieldOpening`]); an
+/// anonymous rigid where there is no name.
+///
+/// WHERE AN OPEN SLOT COMES FROM: a call that fixes a parameter of its callee's sort by
+/// none of bracket, arguments and expected type leaves that slot open in its result
+/// (`leave_unfixed_slots_open`), and a nullary constructor's type is its sort with nothing
+/// written. INSIDE ONE EXPRESSION that is what lets the enclosing call say the rest — `put(
+/// empty(), "a", 1)`, `mplus(empty(), pure(1))` — or the other arm of a branch join
+/// ([`open_slots_said_by`]), and it stays so. BOUND TO A NAME it was read by each use as
+/// that use liked: `let x = MutableStack.new()` took an `Int64` and then a `String`, one
+/// value at two instances (MEASURED: `wi_80zv8_named_open_slot_test`), which is wrong for
+/// anything that can be written through (a stack, a cell, a logic variable) and was right
+/// only by luck for an empty list. Closed, the name is ONE instance, unknown: a use that
+/// needs a particular one is refused naming `x.T`, and the author says which at the binding
+/// (`let x: Box[T = Int64] = …`) or at the call.
+///
+/// THE INTERIM FOR INFERENCE, not instead of it: the precise reading makes the slot a
+/// variable of the body that later uses solve, Hindley–Milner style, and closes only what
+/// nothing solved (WI-20261004-KEGNC, which says where that needs a substitution to
+/// outlive a call). Every program this admits, that one admits.
+///
+/// A flexible variable with a NAME is not an open slot here — an empty literal's element,
+/// an un-annotated binder's own type — and is left as it was. Both are still read at two
+/// instances (`let xs = []`; `lambda (b) -> add(b, 1) + add(b, "s")`), which is the same
+/// ticket's.
+pub(super) fn closed_where_named(
+    kb: &mut KnowledgeBase,
+    ty: Value,
+    binder: Option<Symbol>,
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Value {
+    rigidify_unwritten_sort_params(
+        kb,
+        match binder {
+            Some(name) => UnwrittenFill::Projection(name),
+            None => UnwrittenFill::Anonymous,
+        },
+        &ty,
+        SlotPosition::Named,
+        span,
+        owner,
+    )
+    .unwrap_or(ty)
+}
+
 /// The NAMED variables a type-constructor reduction brought into a call's result
 /// ([`open_existential_return`]'s `brought`): those `after` holds that `before` — the declared
 /// return as the call's σ read it — did not, the arguments' own (`held`) set aside. An
@@ -1181,7 +1254,7 @@ pub(super) fn signature_bound_vars(
 /// BODY; a return's is existential and rigid at the CALL), and everything the two positions
 /// disagree about is here.
 ///
-/// THE WHOLE POLICY IS ONE 3×2 TABLE — [`Self::fill_self`] × [`Self::fill_foreign`] — and each
+/// THE WHOLE POLICY IS ONE 4×2 TABLE — [`Self::fill_self`] × [`Self::fill_foreign`] — and each
 /// cell has a corpus measurement behind it rather than a symmetry argument. The cells are
 /// documented at their own arms; the table is here so that "which position leaves what" can be
 /// read in one place:
@@ -1191,6 +1264,7 @@ pub(super) fn signature_bound_vars(
 /// | [`Body`](Self::Body) | the enclosing sort's rigid (WI-424) | [`UnwrittenFill`]'s mint |
 /// | [`Declared`](Self::Declared) | the sort's own parameter var — §3's tie, written down (WI-1082) | LEFT — opening once per DECLARATION would share one ρ across every call |
 /// | [`CallResult`](Self::CallResult) | LEFT — `Declared` already wrote it, or the callee has no self parameter to bind it | a fresh ρ, the existential opening (WI-1063) |
+/// | [`Named`](Self::Named) | — no sort is self to a value in a body | [`UnwrittenFill`]'s mint: the name's projection, a fresh ρ where there is no name (WI-20261001-80ZV8) |
 ///
 /// WHICH SLOTS EACH CONSIDERS IS *NOT* A DISAGREEMENT, and keeping that so is load-bearing:
 /// `Declared` and `CallResult` ask the identical two-part question
@@ -1233,6 +1307,18 @@ pub(super) enum SlotPosition<'a> {
         /// wrote and a `?` the reduction itself brought in (a field declared `E = ?`) are opened.
         held: &'a HashSet<u32>,
     },
+    /// WI-20261001-80ZV8 — a VALUE BOUND TO A NAME in a body: a `let`, a pattern variable, a
+    /// destructured scrutinee ([`closed_where_named`]). Every sort is foreign to it — a body
+    /// reads its own sort as any other — and what counts as unwritten is what a call's
+    /// result leaves OPEN: a slot left out, an anonymous `?`.
+    ///
+    /// IT DOES NOT CLOSE A FUNCTION'S RESULT, which is where it parts from a call's result:
+    /// a named function is not the values its calls make, so `let mk = lambda (n: Int64) ->
+    /// Bag.empty()` stays a function to an open bag and each `mk(i)` is said by what it
+    /// meets. Closed, every call returned ONE unknown and `Bag.add(mk(1), 5)` was refused
+    /// (MEASURED: `wi_80zv8_named_open_slot_test`, the first cut of the naming rule, which
+    /// borrowed [`Self::CallResult`]).
+    Named,
 }
 
 impl SlotPosition<'_> {
@@ -1242,6 +1328,7 @@ impl SlotPosition<'_> {
             SlotPosition::Body { sort, .. } => sort,
             SlotPosition::Declared { sort, .. } => Some(sort),
             SlotPosition::CallResult { callee_sort, .. } => callee_sort,
+            SlotPosition::Named => None,
         }
     }
 
@@ -1312,7 +1399,8 @@ impl SlotPosition<'_> {
             // via `splitFirst` and each saying why); those keep working unchanged, and `append`
             // keeps its natural `match xs` / `cons` destructure.
             SlotPosition::Declared { .. } => Some(Value::term(canonical)),
-            SlotPosition::CallResult { .. } => None,
+            // `Named` has no self sort ([`Self::self_sort`]), so it is never asked.
+            SlotPosition::CallResult { .. } | SlotPosition::Named => None,
         }
     }
 
@@ -1336,7 +1424,7 @@ impl SlotPosition<'_> {
         param: Symbol,
     ) -> Option<Value> {
         match self {
-            SlotPosition::Body { .. } | SlotPosition::CallResult { .. } => {
+            SlotPosition::Body { .. } | SlotPosition::CallResult { .. } | SlotPosition::Named => {
                 Some(fill.mint(kb, param))
             }
             SlotPosition::Declared { .. } => None,
@@ -1399,6 +1487,9 @@ impl SlotPosition<'_> {
                     && (value_is_anonymous_wildcard(kb, v)
                         || vid.is_some_and(|raw| opened.contains_key(&raw)))
             }
+            // What a call's result leaves open, and nothing else: a variable with a name is
+            // an empty literal's element or an un-annotated binder's own type.
+            SlotPosition::Named => value_is_anonymous_wildcard(kb, v),
         }
     }
 

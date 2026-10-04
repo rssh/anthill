@@ -22,21 +22,59 @@
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
-//! TO BE MEASURED BEFORE THIS IS COMMITTED, and not yet: the rule changed four times on
-//! 2026-10-04 and the measurement taken that morning was of the load error this file no
-//! longer tests. The parts, each to be disabled in turn on a temporary binary:
+//! MEASURED (2026-10-04, on the tree this file is committed with), each part present but
+//! disabled, on a temporary binary of 28 suites and 707 rows: the eight `wi_80zv8_*`
+//! suites, the four `wi_0rp29_*`, `wi1078`, `wi1076`, `wi1012`, `wi1010`, the three
+//! `wi456_*`, `wi_wn9p8`, `wi_4zzkz`, `wi860`, `wi836`, `wi1000`, `wi508`, `wi858` and
+//! `if_branch_join`. Parts 2 and 3 were measured on this file alone, after their rows were
+//! made to drive them (below).
 //!
-//! 1. the loader's `?` in a slot the enclosing sort's reference leaves out
-//!    (`Loader::own_sort_slots_left_out` answering none);
-//! 2. an effect label's own name left alone (`effect_label_head` never set);
-//! 3. a companion receiver's own bracket left alone (`call_receiver_head` never set);
-//! 4. an alias followed (`alias_expansion` not asked);
-//! 5. `Self` read in an applied rule-head bound, and 6. a parameter of the sort named
-//!    there read as its variable (`Loader::convert_term_inner`, each arm off);
-//! 7. a parameter with no variable not filled;
-//! 8. the carrier check (`check_sort_parameter_carriers` not run; run but honouring no
-//!    carrier; run but reading a use off variables only);
-//! 9. a `let` annotation's `?` taking its value's type (typing/build.rs).
+//! 1. THE LOADER'S `?` in a slot the enclosing sort's reference leaves out
+//!    (`Loader::own_sort_slots_left_out` answering none). 6 FAIL:
+//!    [`a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard`],
+//!    [`a_partial_reference_and_an_alias_leave_the_rest_to_a_wildcard`],
+//!    [`what_the_carrier_rule_leaves_alone_loads_and_runs`], and `wi1078
+//!    a_self_sort_return_that_leaves_a_slot_open_is_opened_at_the_consumer`, `wi836
+//!    the_bare_sort_ref_spelling_is_any_instance_and_its_result_is_opened`,
+//!    `wi_0rp29_call_binding an_alias_of_the_carrier_in_a_binding_is_the_carrier`.
+//! 2. AN EFFECT LABEL'S OWN NAME LEFT ALONE (`effect_label_head` never set). 1 FAILS:
+//!    [`an_effect_label_naming_the_enclosing_sort_is_not_a_reference_to_it`]. The first
+//!    measurement failed NO row: the row declared its rows and incurred neither. It has
+//!    bodies now.
+//! 3. A COMPANION RECEIVER'S OWN BRACKET LEFT ALONE (`call_receiver_head` never set). 1
+//!    FAILS: [`a_companion_receivers_own_bracket_is_a_calls_bracket`], on what its refusal
+//!    prints — the one difference five programs found; the first measurement failed no row.
+//! 4. AN ALIAS FOLLOWED (`alias_expansion` not asked). 2 FAIL:
+//!    [`a_partial_reference_and_an_alias_leave_the_rest_to_a_wildcard`] and
+//!    `wi_0rp29_call_binding an_alias_of_the_carrier_in_a_binding_is_the_carrier`.
+//! 5. `Self` READ IN AN APPLIED RULE-HEAD BOUND, and 6. A PARAMETER OF THE SORT NAMED THERE
+//!    READ AS ITS VARIABLE (`Loader::convert_term_inner`, each arm off). 1 FAILS under each:
+//!    [`a_bound_that_is_a_term_reads_self_and_the_sorts_parameters`].
+//! 7. A PARAMETER WITH NO VARIABLE NOT FILLED. 1 FAILS: `wi1000
+//!    a_dotted_declaration_name_is_not_the_entrys_content`, by a panic where it pins a
+//!    refusal.
+//! 8. THE CARRIER CHECK (`check_sort_parameter_carriers`). Not run: 2 FAIL,
+//!    [`a_sort_parameter_used_beside_the_sort_needs_a_carrier`] and
+//!    [`another_instance_on_purpose_names_its_own_parameter`]. Run but honouring no carrier:
+//!    8 FAIL, every signature that has its carrier beside another instance —
+//!    [`a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard`],
+//!    [`a_partial_reference_and_an_alias_leave_the_rest_to_a_wildcard`],
+//!    [`what_the_carrier_rule_leaves_alone_loads_and_runs`], `wi_80zv8_written_wildcard`'s
+//!    `a_parameter_at_a_wildcard_takes_any_instance` and
+//!    `a_provision_at_a_wildcard_is_provided_at_every_instance`, `wi_0rp29_call_binding
+//!    a_projection_of_the_bound_parameter_is_an_instance_of_its_own`, `wi_0rp29_member_rule
+//!    a_witness_member_receiver_typed_by_the_spec_reads_the_provisions_bindings`,
+//!    `wi_0rp29_nested_projection_value_in_type
+//!    the_fallbacks_callback_row_takes_a_field_paths_head`. Run but reading a use off
+//!    variables only, not a stored reference to the parameter: 2 FAIL, the two of "not run".
+//! 9. A `let` ANNOTATION'S `?` TAKES ITS VALUE'S TYPE (typing/build.rs). 1 FAILS:
+//!    [`a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard`] (its `keep`).
+//!
+//! A bare name being a written `?` now, rows of this file also fail under
+//! `wi_80zv8_written_wildcard_test`'s parts 1, 2 and 8 — its ledger lists them, and it is
+//! where [`a_bare_reference_to_the_enclosing_sort_is_not_this_instance`] and
+//! [`self_makes_the_carrier_and_a_projection_names_the_parameters_own`] fail. No row of
+//! this file passes under every part.
 
 use crate::common::{
     assert_refused_naming, load_errors_of as load_errors, load_kb_with, run_int64 as run_src,
@@ -162,8 +200,14 @@ end
 
 /// AN EFFECT LABEL is compared by identity, not expanded (kernel-language.md §8.1), so a
 /// label naming the enclosing sort is not a reference to it and takes no `?` — in an
-/// `effects` clause and in an arrow's row alike. With the `?` written into it the label is
-/// another label, and the declared row no longer names the registered effect.
+/// `effects` clause and in an arrow's row alike. With the `?` written into it each mention
+/// is a label of its own: `twice` incurs `run`'s `Fx[T = ?]` under a declared `Fx[T = ?]`
+/// that is another variable, and is refused its own declared row — `expected declared:
+/// [Fx[T = ?_]], got undeclared effect: Fx[T = ?_]`, and `each` the same through the
+/// callback's row (MEASURED, the label flag never set).
+///
+/// The bodies are what drive it: as first written this row declared the two rows and
+/// incurred neither, and passed with the flag off.
 #[test]
 fn an_effect_label_naming_the_enclosing_sort_is_not_a_reference_to_it() {
     let src = r#"
@@ -173,7 +217,8 @@ namespace wi80zv8b.label
     sort T = ?
     provides Effect[T = Fx[?]]
     operation run(x: T) -> T effects Fx
-    operation each(f: (x: T) -> T @ {Fx}) -> Int64 = 1
+    operation twice(x: T) -> T effects Fx = Fx.run(Fx.run(x))
+    operation each(f: (x: T) -> T @ {Fx}, x: T) -> T effects Fx = f(x)
   end
 end
 "#;
@@ -183,18 +228,26 @@ end
 /// A COMPANION RECEIVER'S BRACKET IS A CALL'S BRACKET — `Box[T = T].keep(b)` is `Box.keep[T
 /// = T](b)` in its other spelling — and what it leaves out the call's arguments fix (§1.1).
 /// Both spellings run.
+///
+/// WHAT THE CALL DOES NOT FIX EITHER IS LEFT OUT OF ITS RESULT, in both spellings alike:
+/// `Box[T = String].fresh()` where an `Int64` is wanted is `got Box[T = String]`. With the
+/// loader's `?` written into the receiver's bracket it was `got Box[T = String, U = ?_]`
+/// there and `got Box[T = String]` for the callee's bracket (MEASURED, the receiver flag
+/// never set) — the one difference found: a bracket's own `?` reads as unfixed everywhere
+/// else, so the two running calls above pass either way, by design.
 #[test]
 fn a_companion_receivers_own_bracket_is_a_calls_bracket() {
     let program = |call: &str| {
         format!(
             r#"
 namespace wi80zv8b.recv
-  import anthill.prelude.{{Int64, Option}}
+  import anthill.prelude.{{Int64, String, Option}}
   sort Box
     sort T = ?
     sort U = ?
     entity box(v: T)
     operation keep(b: Self) -> Self = b
+    operation fresh() -> Self
     operation via(b: Self) -> Int64 =
       {call}
   end
@@ -208,6 +261,14 @@ end
         "match Box.keep[T = T](b) case box(_) -> 1",
     ] {
         assert_eq!(run_src(&program(call), "wi80zv8b.recv.go"), Ok(1), "{call}");
+    }
+    for call in ["Box[T = String].fresh()", "Box.fresh[T = String]()"] {
+        let errors = load_errors(&program(call));
+        assert_refused_naming(&errors, &["expected Int64, got Box[T = String]"], call);
+        assert!(
+            !errors.join(" | ").contains("U ="),
+            "{call}: a slot the bracket leaves out is not in the result, got: {errors:?}"
+        );
     }
 }
 
@@ -290,6 +351,7 @@ fn a_sort_parameter_used_beside_the_sort_needs_a_carrier() {
         "expected a carrier for `V` — a parameter typed `Self`",
         "`V` used with no carrier: `c` is any `Cell`",
         "Type `c` as `Self` to make it the carrier, or write `c.V`",
+        "give its `V` a name of its own (`[X]`, `c: Cell[V = X]`)",
     ];
     for (ns, op) in [
         ("wi80zv8b.c1", "operation get(c: Cell) -> V"),
@@ -309,8 +371,44 @@ fn a_sort_parameter_used_beside_the_sort_needs_a_carrier() {
         &[
             "`V` used with no carrier: `xs` holds any `Cell`",
             "Write that `Cell` as `Self` to make it the carrier",
+            "give its `V` a name of its own (`[X]`, `Cell[V = X]`)",
         ],
         "a `Cell` nested in a parameter's type",
+    );
+}
+
+/// … AND THE THIRD THING THE REFUSAL OFFERS, for the signature the first two would change
+/// the meaning of: `withValue(c: Cell, v: V) -> Self` takes ANOTHER cell on purpose and
+/// returns one of this instance. It is refused as the rest are — `V` is used and `c` is no
+/// carrier — and neither `c: Self` nor `c.V` is what its author meant; naming the other
+/// cell's parameter is, and that spelling loads and runs: a cell of `String` handed in, a
+/// cell of `Int64` out, 5 + 37. The advice was not offered before /code-review asked what
+/// the refusal says to this author.
+#[test]
+fn another_instance_on_purpose_names_its_own_parameter() {
+    assert_refused_naming(
+        &load_errors(&cell_program(
+            "wi80zv8b.w1",
+            "operation withValue(c: Cell, v: V) -> Self = cell(v: v)",
+            "0",
+        )),
+        &[
+            "type mismatch in wi80zv8b.w1.Cell.withValue.c",
+            "where `c` is another `Cell` on purpose, give its `V` a name of its own (`[X]`, `c: \
+             Cell[V = X]`)",
+        ],
+        "another cell taken on purpose, its `V` left open",
+    );
+    assert_eq!(
+        run_src(
+            &cell_program(
+                "wi80zv8b.w2",
+                "operation withValue[X](c: Cell[V = X], v: V) -> Self = cell(v: v)",
+                "match Cell.withValue(cell(v: \"s\"), 5)\n      case cell(n) -> n + 37",
+            ),
+            "wi80zv8b.w2.go"
+        ),
+        Ok(42)
     );
 }
 

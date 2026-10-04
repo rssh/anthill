@@ -12,20 +12,28 @@
 //! which has that shape, did not load (264 tests) — so the stdlib's seven receiver-less
 //! operations could not be written with `Self` at all. They are now.
 //!
+//! WHERE THE VALUE GETS A NAME the open slot is closed (the user's decision of 2026-10-04,
+//! `wi_80zv8_named_open_slot_test`). The rows here that bind a join's result bind a value
+//! the join has already said: the open arm takes the instance the other arm says.
+//!
 //! Every row that can RUNS and names its value; a row about the result's TYPE reads it out
 //! of a refusal that prints it.
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
-//! MEASURED (2026-10-03), each part present but disabled, over this file's 9 rows:
+//! Parts 1 and 3 MEASURED AGAIN on 2026-10-04, on the tree this file is committed with
+//! (the temporary binary `wi_80zv8_bare_own_sort_test` describes); part 2 as measured on
+//! 2026-10-03 and not re-run — its code is unchanged since.
 //!
 //! 1. THE SLOT LEFT OPEN (typing/slots.rs `leave_unfixed_slots_open`, returning the type it
-//!    was given). 5 FAIL:
-//!    [`a_call_that_fixes_nothing_joins_with_the_instance_it_meets`] (`match.rule (rule):
-//!    expected Bag[T = ?_], got Bag[T = Int64]`), [`the_result_names_no_element`] (`got
-//!    Bag[T = ?_]`), [`an_unfixed_effect_row_slot_is_left_open_too`],
-//!    [`a_fixed_parameter_keeps_its_slot`] (`got Duo[A = Int64, B = ?_]`) and
-//!    [`the_stdlibs_receiverless_constructors_join`] (both of its `match`es refused).
+//!    was given). 3 FAIL, each on what a refusal PRINTS: [`the_result_names_no_element`]
+//!    (`got Bag[T = ?_]`), [`an_unfixed_effect_row_slot_is_left_open_too`] (`got Flow[T =
+//!    ?_, E = ?_]`) and [`a_fixed_parameter_keeps_its_slot`] (`got Duo[A = Int64, B = ?_]`).
+//!    It was 5 on 2026-10-03: [`a_call_that_fixes_nothing_joins_with_the_instance_it_meets`]
+//!    and [`the_stdlibs_receiverless_constructors_join`] were refused at the join, `match.rule:
+//!    expected Bag[T = ?_], got Bag[T = Int64]`. The join now takes what the other arm says
+//!    for a slot left out and for an anonymous `?` alike, so those two fail under THAT part
+//!    (`wi_80zv8_named_open_slot_test`'s ledger, part 4) and no longer under this one.
 //! 2. UNFIXED IS "NOTHING BOUND IT" (the same function, reading a parameter as unfixed
 //!    wherever the chain it is bound into ENDS at a variable). No row of this file fails; the
 //!    rows that do are `wi_0rp29_review9_regressions_test`'s
@@ -37,10 +45,12 @@
 //!    [`a_receiverless_constructor_over_nil_is_written_with_self`] — `expected Bag[T = ?T],
 //!    got Bag[T = nil.T]`.
 //!
-//! Three pass under every part by design and say so at their sites:
-//! [`a_call_that_fixes_the_parameter_names_it`],
-//! [`a_parameter_in_another_sorts_slot_is_left_as_it_was`] and
-//! [`an_open_slot_is_not_an_inference_variable`].
+//! Two pass under every part by design and say so at their sites:
+//! [`a_call_that_fixes_the_parameter_names_it`] and
+//! [`a_parameter_in_another_sorts_slot_is_left_as_it_was`]. A third did —
+//! `an_open_slot_is_not_an_inference_variable`, which pinned a value read at two instances —
+//! and is `wi_80zv8_named_open_slot_test`'s `a_named_value_is_one_instance` now, at the
+//! opposite verdict.
 
 use crate::common::{assert_refused_naming, load_errors_of as load_errors, run_int64 as run_src};
 
@@ -70,7 +80,8 @@ end
 
 /// THE CALL JOINS WITH THE INSTANCE IT MEETS. The first arm of the `match` has no expected
 /// type, so nothing fixes `Bag.empty()`'s `T`; the second arm is a `Bag[T = Int64]`. The
-/// two join, and the program runs both ways round: 1 element after adding to the empty
+/// two join — the open slot takes what the other arm says, so `known` is a `Bag[T =
+/// Int64]` — and the program runs both ways round: 1 element after adding to the empty
 /// bag, 2 after adding to the one handed in.
 #[test]
 fn a_call_that_fixes_nothing_joins_with_the_instance_it_meets() {
@@ -290,24 +301,6 @@ end
         &["expected Int64, got Option[T = ?_]"],
         "`Src.noneOf()` as an Int64",
     );
-}
-
-/// WHAT (a) DOES NOT DO, pinned so that it is a decision and not an accident: an open slot
-/// is not an inference variable. `let e = Bag.empty()` is a bag of nothing said, and it is
-/// read as a bag of `Int64` on one line and of `String` on the next — as it was while
-/// `empty` returned the bare `Bag`. Passes with or without the change by design. A join
-/// that BINDS is the stricter rule (option (c)), and would turn this row into a refusal.
-#[test]
-fn an_open_slot_is_not_an_inference_variable() {
-    let src = bag_program(
-        "wi80zv8u.e1",
-        r#"  operation go() -> Int64 =
-    let e = Bag.empty()
-    let ints = Bag.add(e, 1)
-    let strs = Bag.add(e, "s")
-    Bag.size(ints) + Bag.size(strs)"#,
-    );
-    assert_eq!(run_src(&src, "wi80zv8u.e1.go"), Ok(2));
 }
 
 /// THE STDLIB'S OWN, which is what the rule was decided on: `List.empty()` and

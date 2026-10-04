@@ -205,6 +205,16 @@ pub(super) fn render_mismatch_pair(
                 ),
             );
         }
+        // WI-20261001-80ZV8: A THIRD CAUSE NAMED OUT OF THE RESIDUE — two different UNKNOWNS
+        // under one printed name. A value's open slot is closed where the value gets a name
+        // ([`closed_where_named`]), to the binder's own projection or to a rigid named after
+        // the parameter, and neither prints which binding it belongs to: `let e = Bag.empty()`
+        // shadowed by a second `let e = Bag.empty()` gives `expected Bag[T = e.T], got Bag[T =
+        // e.T]`, and two bags nested in two named pairs `Bag[T = ?T]` twice. Both are ordinary
+        // author errors now, and "please report it" was the wrong thing to say of them.
+        if let Some(name) = like_named_unknowns(kb, expected, actual) {
+            return (e, format!("{a} {}", like_named_unknowns_note(&name)));
+        }
         return (e, format!("{a} {IDENTICAL_RENDERING_NOTE}"));
     }
     (e, a)
@@ -330,6 +340,93 @@ fn short_name_sort_collision(
         }
     }
     None
+}
+
+/// WI-20261001-80ZV8 — the UNKNOWNS a type mentions, at any depth: its rigid variables, and
+/// the names it mentions that are no sort's — a binder's, as the receiver of a projection
+/// (`e` in `e.T`). Shape-agnostic, as [`mentioned_sort_syms`] is and for its reason.
+fn mentioned_unknowns<V: TermView>(
+    kb: &KnowledgeBase,
+    ty: &V,
+    rigids: &mut Vec<VarId>,
+    names: &mut Vec<Symbol>,
+) {
+    let head = ty.head(kb);
+    match head {
+        ViewHead::Var(Var::Rigid(vid)) => rigids.push(vid),
+        ViewHead::Functor {
+            functor: Some(f),
+            pos_arity: 0,
+            named_arity: 0,
+        }
+        | ViewHead::Ident(f)
+            if kb.sort_kind(f).is_none() && kb.sort_kind(kb.canonical_sort_sym(f)).is_none() =>
+        {
+            names.push(f)
+        }
+        _ => {}
+    }
+    if let ViewHead::Functor {
+        pos_arity,
+        named_arity,
+        ..
+    } = head
+    {
+        for i in 0..pos_arity {
+            if let Some(child) = ty.pos_arg(kb, i) {
+                mentioned_unknowns(kb, &child, rigids, names);
+            }
+        }
+        if named_arity > 0 {
+            for k in ty.named_keys(kb) {
+                if let Some(child) = ty.named_arg(kb, k) {
+                    mentioned_unknowns(kb, &child, rigids, names);
+                }
+            }
+        }
+    }
+}
+
+/// WI-20261001-80ZV8 — do the two sides of an identically-rendering mismatch mention two
+/// DIFFERENT unknowns that print alike? Answers the name as printed (`?T`, or the binder
+/// `e`).
+///
+/// UNIQUE TO ITS SIDE, as [`short_name_sort_collision`] requires and for its reason: one
+/// type may lawfully mention two like-named unknowns on BOTH sides, and blaming them would
+/// hide the renderer gap the backstop exists to surface.
+fn like_named_unknowns(kb: &KnowledgeBase, expected: &Value, actual: &Value) -> Option<String> {
+    let (mut e_rigids, mut e_names, mut a_rigids, mut a_names) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    mentioned_unknowns(kb, expected, &mut e_rigids, &mut e_names);
+    mentioned_unknowns(kb, actual, &mut a_rigids, &mut a_names);
+    for e in e_rigids.iter().filter(|e| !a_rigids.contains(e)) {
+        let like = a_rigids.iter().any(|a| {
+            !e_rigids.contains(a) && kb.local_name_of(a.name()) == kb.local_name_of(e.name())
+        });
+        if like {
+            return Some(format!("?{}", kb.local_name_of(e.name())));
+        }
+    }
+    for e in e_names.iter().filter(|e| !a_names.contains(e)) {
+        let like = a_names
+            .iter()
+            .any(|a| !e_names.contains(a) && kb.local_name_of(*a) == kb.local_name_of(*e));
+        if like {
+            return Some(kb.local_name_of(*e).to_string());
+        }
+    }
+    None
+}
+
+/// WI-20261001-80ZV8: appended in place of [`IDENTICAL_RENDERING_NOTE`] when the identical
+/// rendering is two different unknowns under one name. Says what an unknown is and where it
+/// is said, which is the repair.
+fn like_named_unknowns_note(name: &str) -> String {
+    format!(
+        "(these render alike because `{name}` is two different unknowns here, one on each \
+         side — each stands for a type nothing said, and nothing says they are the same; \
+         say the type where each value is bound)"
+    )
 }
 
 /// WI-872: appended in place of [`IDENTICAL_RENDERING_NOTE`] when the identical rendering

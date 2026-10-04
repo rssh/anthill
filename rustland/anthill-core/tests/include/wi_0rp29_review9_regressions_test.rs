@@ -1362,6 +1362,13 @@ end
 /// `List[T = B]` with `B` the call's own, open; the existential opening read that WRITTEN slot as
 /// rigid, so `let xs: List[T = Int64] = q.l` was refused (MEASURED on the tree the ninth review
 /// saw). Only a slot the reduced return leaves out is opened. Runs to 42.
+///
+/// READ OFF THE CALL IN ONE EXPRESSION since WI-20261001-80ZV8's naming rule (the user's
+/// decision of 2026-10-04): this row, its sibling below and the projection row were written `let
+/// q = Pair.mk(1)` then `q.l`, and a name closes the slot the call left open — `q.l` is then a
+/// list of that unknown, [`a_named_reduced_return_is_closed_at_the_name`]. What the three
+/// measure is the field read's own verdict, which the unnamed form still reaches: all three
+/// FAIL with part 107 backed out, measured again on the rewritten rows (2026-10-04).
 /// FAILS under ledger part 107.
 #[test]
 fn a_field_of_a_reduced_return_takes_the_callers_annotation() {
@@ -1375,12 +1382,54 @@ namespace wi0rp29r9.reduced_field
     operation mk(x: Int64) -> Pair[A = List[T = B], B = Int64] = pair(l: [], r: x)
   end
   operation go() -> Int64 =
-    let q = Pair.mk(1)
-    let xs: List[T = Int64] = q.l
+    let xs: List[T = Int64] = Pair.mk(1).l
     42
 end
 "#;
     assert_eq!(run_src(src, "wi0rp29r9.reduced_field.go"), Ok(42));
+}
+
+/// … AND NAMED FIRST, THE CALL'S OPEN SLOT IS CLOSED AT THE NAME (WI-20261001-80ZV8): `let q =
+/// Pair.mk(1)` is a pair whose list is of one unknown element, and `q.l` does not meet `List[T =
+/// Int64]`. Annotating `q` says the element, and the program runs to 42.
+/// FAILS with the naming rule backed out (`wi_80zv8_named_open_slot_test`'s ledger, part 1):
+/// the unannotated form loads, as it did when this file's rows were written that way.
+#[test]
+fn a_named_reduced_return_is_closed_at_the_name() {
+    let program = |ns: &str, bound: &str| {
+        format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64, String, List, Option, Bool}}
+  sort Pair
+    sort A = ?
+    sort B = ?
+    entity pair(l: A, r: B)
+    operation mk(x: Int64) -> Pair[A = List[T = B], B = Int64] = pair(l: [], r: x)
+  end
+  operation go() -> Int64 =
+    {bound}
+    let xs: List[T = Int64] = q.l
+    42
+end
+"#
+        )
+    };
+    assert_refused_naming(
+        &load_errors(&program("wi0rp29r9.reduced_named", "let q = Pair.mk(1)")),
+        &["xs.annotation (let-binding): expected List[T = Int64], got List[T = ?T]"],
+        "a field of a named reduced return read at an element nothing said",
+    );
+    assert_eq!(
+        run_src(
+            &program(
+                "wi0rp29r9.reduced_named_said",
+                "let q: Pair[A = List[T = Int64], B = Int64] = Pair.mk(1)"
+            ),
+            "wi0rp29r9.reduced_named_said.go"
+        ),
+        Ok(42)
+    );
 }
 
 /// … AND OFF ANOTHER SORT'S OPERATION, `Maker.mk` (MEASURED: refused "xs.annotation" on the tree
@@ -1401,8 +1450,7 @@ namespace wi0rp29r9.reduced_maker
     operation mk(x: Int64) -> Pair[A = List[T = B], B = Int64] = pair(l: [], r: x)
   end
   operation go() -> Int64 =
-    let q = Maker.mk(1)
-    let xs: List[T = Int64] = q.l
+    let xs: List[T = Int64] = Maker.mk(1).l
     42
 end
 "#;
@@ -1484,13 +1532,17 @@ end
 }
 
 /// … AND WHAT AN ARGUMENT BRINGS IN THROUGH A PROJECTION IS THE ARGUMENT'S: `Getter.getl(q)` over
-/// `-> FieldOf[T = Pair[A = p.A, B = p.B], Name = "l"]` with `q` of `Pair.mk(1)`'s type. The
+/// `-> FieldOf[T = Pair[A = p.A, B = p.B], Name = "l"]` with `q` of `Pair.mk(1)`'s type — the
+/// call itself, in the argument position, since WI-20261001-80ZV8 (see
+/// [`a_field_of_a_reduced_return_takes_the_callers_annotation`]). The
 /// elimination writes `q`'s own `List[T = B]` into the declared return before σ walks it, and
 /// read as the return's own that variable was opened: "xs.annotation: expected List[T = Int64],
 /// got List[T = ?T]" (MEASURED: this pass's /simplify, its first reading of what the arguments
 /// put there; the tree before it loaded this). The callee is a bodyless spec operation, so
 /// nothing runs: the verdict measured is the call's result type meeting the annotation.
-/// FAILS under ledger part 128.
+/// FAILS under ledger part 128 — as measured on the named form; on the one-expression form it
+/// has now it was re-measured under part 107's back-out, where it fails too, and part 128's
+/// own back-out (122's first cut) was not rebuilt.
 #[test]
 fn a_projection_into_a_reduced_return_keeps_the_arguments_variable() {
     let src = r#"
@@ -1506,8 +1558,7 @@ namespace wi0rp29r9.reduced_projection
     operation getl(p: Pair) -> FieldOf[T = Pair[A = p.A, B = p.B], Name = "l"]
   end
   operation go() -> Int64 =
-    let q = Pair.mk(1)
-    let xs: List[T = Int64] = Getter.getl(q)
+    let xs: List[T = Int64] = Getter.getl(Pair.mk(1))
     42
 end
 "#;

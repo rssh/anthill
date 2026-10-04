@@ -3,40 +3,48 @@
 //!
 //! Inside `sort Car`, `Car[V = ?]` used to be a second spelling of `Self`: the `?` took the
 //! sort's own parameter, "`?` and an omitted slot are one type", and the omitted slot was the
-//! tie. Stage (d) made the omitted slot a load error and tells the author to write `Self` or
-//! `Car[V = ?]` — so the second of those has to mean what it says: ANY `Car`. In a parameter
-//! the caller picks it; in a return the operation does, and each call opens it; in a
-//! provision the carrier provides the spec at every one.
+//! tie. It means what it says now — ANY `Car` — and so does the bare `Car` there, whose `?`
+//! the loader writes (`wi_80zv8_bare_own_sort_test`). In a parameter the caller picks it; in
+//! a return the operation does, and each call opens it; in a provision the carrier provides
+//! the spec at every one.
 //!
 //! Each row RUNS or names its refusal.
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
-//! MEASURED (2026-10-04, again after the review of this stage) on a temporary binary — this
-//! file, `wi_80zv8_written_in_full_test`, `wi_80zv8_written_carrier_test`,
-//! `wi_80zv8_written_receivers_test`, `wi_80zv8_self_test`, the four `wi_0rp29_*` suites,
-//! `wi1076`, `wi1078`, the three `wi456_*`, `wi_wn9p8`, `wi_4zzkz`; 598 rows — each part
-//! present but disabled:
+//! MEASURED (2026-10-04, on the tree this file is committed with), each part present but
+//! disabled, on the temporary binary `wi_80zv8_bare_own_sort_test` describes (28 suites, 707
+//! rows). Rows of that file are named `bare_own_sort …` below: a bare name is this file's
+//! `?` now, so they ride the same parts.
 //!
 //! 1. THE TIE IS FOR A SLOT NOT WRITTEN (typing/elaborate.rs
 //!    `rigidify_unwritten_sort_params`: the self half taken for a written `?` again).
-//!    9 FAIL: five here — [`a_parameter_at_a_wildcard_takes_any_instance`],
+//!    16 FAIL: six here — [`a_parameter_at_a_wildcard_takes_any_instance`],
 //!    [`a_body_may_not_read_a_wildcard_parameter_as_this_instance`],
 //!    [`a_return_at_a_wildcard_is_opened_at_the_call`],
 //!    [`a_field_at_a_wildcard_holds_any_instance`],
 //!    [`a_provision_at_a_wildcard_is_provided_at_every_instance`] (its member takes `o` at
-//!    `?`) — and `wi1078 a_self_sort_return_at_a_variable_is_opened_…`, `wi_0rp29_call_binding
-//!    a_projection_of_the_bound_parameter_is_an_instance_of_its_own`, `wi_0rp29_member_rule
-//!    a_projection_over_any_provider_is_any_type`, `wi_80zv8_written_in_full
-//!    an_alias_of_the_enclosing_sort_is_the_sort_it_stands_for` (its control at `R = ?`).
+//!    `?`), [`a_binder_over_a_field_left_open_is_an_instance_of_its_own`]; five of
+//!    `bare_own_sort` — `a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard`,
+//!    `a_bare_reference_to_the_enclosing_sort_is_not_this_instance`,
+//!    `a_partial_reference_and_an_alias_leave_the_rest_to_a_wildcard`,
+//!    `self_makes_the_carrier_and_a_projection_names_the_parameters_own`,
+//!    `what_the_carrier_rule_leaves_alone_loads_and_runs`; and `wi1078
+//!    a_self_sort_return_that_leaves_a_slot_open_is_opened_at_the_consumer`, `wi836
+//!    the_bare_sort_ref_spelling_is_any_instance_and_its_result_is_opened`,
+//!    `wi_0rp29_call_binding a_projection_of_the_bound_parameter_is_an_instance_of_its_own`,
+//!    `wi_0rp29_member_rule a_projection_over_any_provider_is_any_type`,
+//!    `wi_80zv8_written_receivers
+//!    a_receiver_declared_bare_is_any_instance_and_written_self_is_this_one`.
 //! 2. A PROVISION'S OWN VARIABLES ARE OPENED IN THE CARRIER'S VIEW (typing/subtype.rs
-//!    `ProvisionOpening::open_view` opening nothing). 5 FAIL:
+//!    `ProvisionOpening::open_view` opening nothing). 6 FAIL:
 //!    [`a_provision_at_a_wildcard_is_provided_at_every_instance`],
 //!    [`a_variable_a_provision_writes_twice_is_one_variable`], the controls of
 //!    [`a_body_may_not_pin_a_parameter_typed_by_a_projection`] and
-//!    [`a_member_may_not_tie_a_projection_to_the_parameter_beside_it`], and
+//!    [`a_member_may_not_tie_a_projection_to_the_parameter_beside_it`],
 //!    `wi_0rp29_member_rule
-//!    a_binding_naming_the_carrier_at_a_wildcard_is_an_independent_instance_control`.
+//!    a_binding_naming_the_carrier_at_a_wildcard_is_an_independent_instance_control`, and
+//!    `bare_own_sort a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard`.
 //! 3. A SPEC PARAMETER A PROVISION LEAVES OUT IS OPEN (`provision_leaves_param_open`
 //!    answering no). 2 FAIL: [`a_spec_parameter_a_provision_leaves_out_is_any_type`] and
 //!    `wi_0rp29_member_rule a_wildcard_bound_to_a_member_variable_is_not_frozen`.
@@ -62,29 +70,53 @@
 //!    fill after the parameter-projection fixpoint). 1 FAILS:
 //!    [`a_body_may_not_pin_a_parameter_typed_by_a_projection`].
 //! 8. THE BODY PACKS A RETURN WRITTEN AT `?` (typing/op_bodies.rs, the declared return read
-//!    through what the body bound). 5 FAIL:
+//!    through what the body bound). 6 FAIL:
 //!    [`a_body_packs_a_witness_into_a_return_at_a_wildcard`],
 //!    [`a_return_at_a_wildcard_is_opened_at_the_call`], `wi1078
-//!    the_four_return_spellings_agree`, and — through the `get` member their fixture shares
-//!    — [`a_body_may_not_pin_a_parameter_typed_by_a_projection`] and
+//!    the_four_return_spellings_agree`, `bare_own_sort
+//!    a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard` (its `some`), and —
+//!    through the `get` member their fixture shares —
+//!    [`a_body_may_not_pin_a_parameter_typed_by_a_projection`] and
 //!    [`a_member_may_not_tie_a_projection_to_the_parameter_beside_it`].
-//!
 //! 9. A CONSTRUCTOR PATTERN OPENS WHAT ITS FIELDS LEAVE OPEN (typing/elaborate.rs
-//!    `FieldOpening::open` returning the field as declared). 2 FAIL:
-//!    [`a_binder_over_a_field_left_open_is_an_instance_of_its_own`] and
-//!    [`a_variable_two_fields_share_is_one_for_both_binders`]. With the opening on but no
-//!    rigid of the pattern's for a NAMED variable (`FieldOpening::of`), 1 FAILS: the second.
+//!    `FieldOpening::open` returning the field as declared). 1 FAILS:
+//!    [`a_variable_two_fields_share_is_one_for_both_binders`], which also fails with the
+//!    opening on but no rigid of the pattern's for a NAMED variable (`FieldOpening::of`).
+//!    [`a_binder_over_a_field_left_open_is_an_instance_of_its_own`] failed here until the
+//!    naming rule (`wi_80zv8_named_open_slot_test`): a binder is a name, and closes what its
+//!    value leaves open whether or not the pattern opened it. It fails with BOTH out (2
+//!    FAIL, measured on this file), and with the pattern's fill an anonymous rigid in place
+//!    of the binder's projection — 2 FAIL, it and `wi_0rp29_call_binding
+//!    a_mixed_calls_receiver_row_is_the_bound_arguments` (an unnamed row is not reported by
+//!    the effects check).
 //! 10. A FIELD READ OPENS A NAMED VARIABLE (`open_existential_return` ignoring what the
 //!    reduction brought in). 1 FAILS: [`a_field_read_opens_a_named_variable_too`].
-//!    (Parts 9 and 10 measured on a binary of this file and `wi_80zv8_written_in_full_test`.)
+//! 11. A BINDING THAT IS NOT DETERMINED IS BOUND ALL THE SAME (typing/carrier.rs
+//!    `bind_spec_params_from_carrier_param`). Skipped, as it used to be: 3 FAIL —
+//!    [`a_wildcard_binding_holds_its_argument_to_the_sort_it_names`],
+//!    [`a_binding_the_receiver_leaves_open_is_bound_at_the_calls_own_variables`] and
+//!    `wi_0rp29_call_binding an_alias_of_the_carrier_in_a_binding_is_the_carrier`. Skipped,
+//!    and a rigid read as not determined (the code as it stood): 4 FAIL, those and
+//!    [`a_binding_resting_on_the_callers_own_parameter_is_bound`].
 //!
-//! NOT MEASURED BY ANY ROW, and said so: that the provision's own variables are read off
-//! its STORED bindings (`ProvisionOpening::of`) rather than taken to be every variable that
-//! is no parameter of the carrier. No program was found that tells the two apart; that
-//! function says why the first is the definition.
+//! NOT MEASURED BY ANY ROW, and said so:
+//!
+//! * that what such a binding still holds of its declaration is a FRESH variable of the
+//!   call — a parameter of the carrier the receiver leaves out, a variable the provision
+//!   wrote — rather than the declaration's own, bound raw. No row fails with either left
+//!   raw, and two programs written to tell them apart load both ways: two calls in one
+//!   expression whose results would share the declaration's variable, read at two instances
+//!   (`takes2(Coll.first(MapLike.blank()), Coll.first(MapLike.blank()))`, and its twin over
+//!   `B = Car[V = ?]`). It is the user's rule (2026-10-04: "now we open variables, so it
+//!   should be fresh variables") and is kept as that, unwitnessed.
+//! * that the provision's own variables are read off its STORED bindings
+//!   (`ProvisionOpening::of`) rather than taken to be every variable that is no parameter of
+//!   the carrier. No program was found that tells the two apart; that function says why the
+//!   first is the definition.
 //!
 //! [`a_provision_at_self_is_the_receivers_instance`] passes under every part, by design: it
-//! is the other spelling the refusal offers, and what a wildcard must stay different from.
+//! is the other spelling of a provision's binding, and what a wildcard must stay different
+//! from.
 
 use crate::common::{assert_refused_naming, load_errors_of as load_errors, run_int64 as run_src};
 
