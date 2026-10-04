@@ -26958,7 +26958,9 @@ impl<'a> Loader<'a> {
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
                 if self.occ_suppress == 0 {
-                    let occ = node_occurrence::materialize_from_handle(self.kb, kb_id);
+                    // WI-753: located at the written row, as `lower_effect_row_aux_occ` is.
+                    let site = self.source_span_of(parse_id);
+                    let occ = node_occurrence::materialize_at(self.kb, kb_id, site);
                     self.expr_occ_results.push(occ);
                 }
             }
@@ -28529,7 +28531,10 @@ impl<'a> Loader<'a> {
     /// `TermId`. `None` when `pid` is not an effect-row aux.
     fn lower_effect_row_aux_occ(&mut self, pid: TermId) -> Option<Rc<NodeOccurrence>> {
         let rows_tid = self.lower_effect_row_aux(pid)?;
-        Some(node_occurrence::materialize_from_handle(self.kb, rows_tid))
+        // WI-753: the row is the canonical interned value, so its occurrence is that
+        // term's — but located at the row the author WROTE, not through `term_spans`.
+        let site = self.source_span_of(pid);
+        Some(node_occurrence::materialize_at(self.kb, rows_tid, site))
     }
 
     /// WI-271: extract a parse-only `ParseAux` payload from a parent
@@ -29053,8 +29058,11 @@ impl<'a> Loader<'a> {
     ///    `wi717_omitted_optionals_stay_claimable` among them, when a first cut recursed
     ///    on the parse child and produced the bare payload against a `some(payload)` term.
     ///
-    ///    So such a child is MATERIALIZED — but from its own subtree's tables, not
-    ///    bare. Materializing it bare is the second thing that first cut got wrong: it
+    ///    WI-753: the WRAPPER is materialized from the term
+    ///    ([`node_occurrence::materialize_around`]), located at the written child, and
+    ///    the child it wraps is the node built from its parse node, spliced in — no
+    ///    table. Until then such a child was materialized from its own subtree's
+    ///    tables, not bare. Materializing it bare is the second thing that first cut got wrong: it
     ///    reintroduced WI-1035/1039's wrong location for everything under the wrap.
     ///    MEASURED, `rule r(1) :- bo(v: fx("a"))` with `entity bo(v: Option[T = Int64])` —
     ///    `11:22` on the baseline, **`1:1`** materialized bare, `11:22` again with the
@@ -29078,14 +29086,26 @@ impl<'a> Loader<'a> {
         if self.term_map.get(&pid.raw()).copied() == Some(kb_child) {
             return self.build_body_atom_occurrence(pid);
         }
-        let spans = self.parse_span_table(pid);
-        let dot_chains = self.parse_dot_chain_table(pid);
-        node_occurrence::materialize_from_handle_spanned(
-            self.kb,
-            kb_child,
-            Some(&spans),
-            Some(&dot_chains),
-        )
+        // Case 2: a TRANSFORMED child. The wrapper is the lowering's own and is read from
+        // the term; the child it wraps is built from its parse node and spliced in, so it
+        // keeps its own span and `dot_chain` (WI-753 — before, the whole subtree was
+        // re-derived from the term and located through per-atom tables keyed on
+        // hash-consed ids).
+        let converted = self.term_map.get(&pid.raw()).copied().unwrap_or_else(|| {
+            unreachable!("lowered_child_occurrence: a written child the lowering kept has no conversion")
+        });
+        let site = self.source_span_of(pid);
+        let child = self.build_body_atom_occurrence(pid);
+        node_occurrence::materialize_around(self.kb, kb_child, converted, child, site)
+            .unwrap_or_else(|| {
+                // Every transform measured WRAPS the converted child (`wrap_bare_option_value`
+                // → `some(child)`). One that REPLACES it has no written node to keep, and
+                // must be given its own reading here rather than a silent re-derivation.
+                unreachable!(
+                    "lowered_child_occurrence: the lowering replaced a written child instead \
+                     of wrapping it — no native reading for that transform"
+                )
+            })
     }
 
     /// WI-20260903-FCZ3N — AN EQUATION'S RHS OCCURRENCE, BUILT FROM ITS PARSE NODE.
@@ -29097,9 +29117,8 @@ impl<'a> Loader<'a> {
     ///
     /// THE CHILD RULE IS [`Self::lowered_child_occurrence`]'s, unchanged and for its
     /// reasons: the RHS is built from its own parse node when the conversion passed it
-    /// through 1:1, and materialized from its own subtree's span/`dot_chain` tables when
-    /// a lowering transformed it (`wrap_bare_option_value` and the list spine are the
-    /// live cases). Sharing that function is what keeps the three occurrence-building
+    /// through 1:1, and — when a lowering WRAPPED it (`wrap_bare_option_value`) — built
+    /// the same way and spliced under the wrapper the term carries (WI-753). Sharing that function is what keeps the three occurrence-building
     /// sites — entity constructor, collection literal, and now equation RHS — from
     /// disagreeing about the middle case.
     ///
@@ -29117,10 +29136,11 @@ impl<'a> Loader<'a> {
         // The kb side must be the SAME two-operand connective the parse side just was.
         // THE FUNCTOR IS CHECKED, not just the arity: `pos_args.len() == 2` alone would
         // pair the parse RHS with `pos_args[1]` of whatever ELSE a head conversion can
-        // produce, and `lowered_child_occurrence` would then materialize that from the
-        // wrong subtree's span / `dot_chain` tables — silently, because the `term_map`
-        // identity check would simply fail over to the table path. Found by
-        // `/code-review`: the comment claimed the shape and the code checked the arity.
+        // produce, and `lowered_child_occurrence` would then take that as a transform
+        // of the parse RHS — which, since WI-753, is an `unreachable!` when it does not
+        // CONTAIN the RHS's conversion, and a wrong-but-containing subtree read as a
+        // wrapper otherwise. Found by `/code-review`: the comment claimed the shape and
+        // the code checked the arity.
         let kb_rhs = match self.kb.get_term(kb_head) {
             Term::Fn {
                 functor, pos_args, ..
@@ -29465,7 +29485,13 @@ impl<'a> Loader<'a> {
         // become occurrences here; the first cell's `Expr` is what the caller returns, so
         // the node itself is built by `build_body_atom_occurrence`'s shared tail and gets
         // that tail's `dot_chain` stamp like every other node it builds.
-        let mut acc = node_occurrence::materialize_from_handle(self.kb, cur);
+        // The terminating `nil` is the lowering's own node, with no parse node to build
+        // from. It is located at the LAST written element — the cell it closes — rather
+        // than through `term_spans`, which is keyed on the one hash-consed `nil` every list
+        // in the KB shares (WI-753). `parse_pos` is non-empty: the spine had a cell per
+        // element and the lengths matched above.
+        let last = *parse_pos.last().expect("a non-empty spine has a last element");
+        let mut acc = node_occurrence::materialize_at(self.kb, cur, self.source_span_of(last));
         for (i, &head_child) in cells.iter().enumerate().skip(1).rev() {
             let span = self.source_span_of(parse_pos[i]);
             let head_occ = self.lowered_child_occurrence(parse_pos[i], head_child);

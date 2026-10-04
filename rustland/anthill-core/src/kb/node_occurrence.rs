@@ -6603,17 +6603,105 @@ pub fn materialize_from_handle(kb: &KnowledgeBase, root: TermId) -> Rc<NodeOccur
 /// NOT AN ENUMERATION OF CALLERS, deliberately: `load.rs` has four `materialize_from_handle*`
 /// sites, not two, and only ONE of them passes a table — `bare_entity_goal_occurrence`
 /// walks a synthesized term no `term_map` key can reach (measured, and recorded at that
-/// site), and `lower_effect_row_aux_occ` reaches the unspanned `materialize_from_handle`
-/// from inside the rule-body child loops, so it loses SPANS as well. Neither is this
-/// ticket's, but a doc that counts callers goes stale the day one is added, and this one
-/// already had.
+/// site). (A written effect row, which this paragraph once listed as losing spans, is
+/// located at its site through [`materialize_at`] since WI-753.) A doc that counts callers
+/// goes stale the day one is added, and this one already had.
 pub(crate) fn materialize_from_handle_spanned(
     kb: &KnowledgeBase,
     root: TermId,
     spans: Option<&std::collections::HashMap<TermId, SourceSpan>>,
     dot_chains: Option<&std::collections::HashSet<TermId>>,
 ) -> Rc<NodeOccurrence> {
-    run_rebuild(kb, Src::Term(root), spans, dot_chains)
+    run_rebuild(
+        kb,
+        Src::Term(root),
+        &Rebuild {
+            spans,
+            dot_chains,
+            ..Rebuild::default()
+        },
+    )
+}
+
+/// WI-753 — MATERIALIZE A TERM THAT HAS NO PARSE NODE OF ITS OWN, AT THE SITE THAT WROTE IT.
+///
+/// A canonical type value the loader LOWERED rather than converted — a written effect row
+/// `{}` becomes the interned `effects_rows(…)` — is a hash-consed term by design, and its
+/// occurrence is that term's. What it must not take is the term's LOCATION: `term_spans`
+/// is keyed on the hash-consed id and first-write-wins across files, so every `{}` in the
+/// KB answered with the first one's offset (or none). Every node built here is located at
+/// `site`, the written value's own span.
+pub(crate) fn materialize_at(kb: &KnowledgeBase, root: TermId, site: SourceSpan) -> Rc<NodeOccurrence> {
+    run_rebuild(
+        kb,
+        Src::Term(root),
+        &Rebuild {
+            site: Some(site),
+            ..Rebuild::default()
+        },
+    )
+}
+
+/// WI-753 — MATERIALIZE A LOWERING'S WRAPPER AROUND A CHILD THE LOADER BUILT.
+///
+/// A lowering may TRANSFORM a written child rather than merely convert it —
+/// `wrap_bare_option_value` turns a bare value at an `Option[..]` field into `some(value)`
+/// — so the lowered term is a wrapper the author never wrote around the term the child
+/// converted to. The wrapper is read from `root` and located at `site` (the written
+/// child's span: it has no node of its own); wherever the walk meets `inner`, the
+/// converted child, it places `node` — built from the parse tree, spans and `dot_chain`
+/// its own — instead of re-deriving it from the term.
+///
+/// `None` when `root` does not contain `inner`: a transform that REPLACED the child
+/// rather than wrapping it has no node to keep, and the caller must say so rather than
+/// guess.
+pub(crate) fn materialize_around(
+    kb: &KnowledgeBase,
+    root: TermId,
+    inner: TermId,
+    node: Rc<NodeOccurrence>,
+    site: SourceSpan,
+) -> Option<Rc<NodeOccurrence>> {
+    if !term_contains(kb, root, inner) {
+        return None;
+    }
+    Some(run_rebuild(
+        kb,
+        Src::Term(root),
+        &Rebuild {
+            site: Some(site),
+            splice: Some((inner, node)),
+            ..Rebuild::default()
+        },
+    ))
+}
+
+/// Does `root` contain `inner` (itself included)? Iterative, like the walk it guards.
+fn term_contains(kb: &KnowledgeBase, root: TermId, inner: TermId) -> bool {
+    let mut stack = vec![root];
+    while let Some(t) = stack.pop() {
+        if t == inner {
+            return true;
+        }
+        stack.extend(kb.get_term(t).subterms());
+    }
+    false
+}
+
+/// What one materializing walk is told beyond the root. Every field defaults to "nothing",
+/// which is the bare [`materialize_from_handle`].
+#[derive(Default)]
+struct Rebuild<'a> {
+    /// Per-atom spans keyed on the KB `TermId` (WI-1039). See
+    /// [`materialize_from_handle_spanned`].
+    spans: Option<&'a std::collections::HashMap<TermId, SourceSpan>>,
+    /// Per-atom citation bits keyed on the KB `TermId` (WI-20260902-4NEKZ).
+    dot_chains: Option<&'a std::collections::HashSet<TermId>>,
+    /// The site every node is located at when `spans` has no entry — asked BEFORE the
+    /// cross-file `term_spans` (WI-753).
+    site: Option<SourceSpan>,
+    /// A term the walk does not descend into: it places the node instead (WI-753).
+    splice: Option<(TermId, Rc<NodeOccurrence>)>,
 }
 
 /// WI-753 — REBUILD AN OCCURRENCE THE LOADER BUILT FROM ITS PARSE NODE into the form it
@@ -6623,24 +6711,19 @@ pub(crate) fn materialize_from_handle_spanned(
 /// ([`visit_fn`]) and REUSES its children — their spans included. A node that is not such an
 /// application comes back unchanged.
 pub(crate) fn rebuild_reflect_node(kb: &KnowledgeBase, node: Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
-    run_rebuild(kb, Src::Node(node), None, None)
+    run_rebuild(kb, Src::Node(node), &Rebuild::default())
 }
 
 /// The work-stack walk both entry points run. Iterative (WI-253): constant host stack
 /// whatever the nesting.
-fn run_rebuild(
-    kb: &KnowledgeBase,
-    root: Src,
-    spans: Option<&std::collections::HashMap<TermId, SourceSpan>>,
-    dot_chains: Option<&std::collections::HashSet<TermId>>,
-) -> Rc<NodeOccurrence> {
+fn run_rebuild(kb: &KnowledgeBase, root: Src, ctx: &Rebuild<'_>) -> Rc<NodeOccurrence> {
     let mut work: Vec<WorkOp> = vec![WorkOp::Visit(root)];
     let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
 
     while let Some(op) = work.pop() {
         match op {
             WorkOp::Visit(Src::Term(t)) => {
-                visit_term(kb, t, spans, dot_chains, &mut work, &mut results)
+                visit_term(kb, t, ctx, &mut work, &mut results)
             }
             WorkOp::Visit(Src::Node(n)) => visit_node(kb, n, &mut work, &mut results),
             WorkOp::Build(frame) => build_frame(kb, frame, &mut results),
@@ -7059,16 +7142,24 @@ pub(crate) struct BranchMeta {
 fn visit_term(
     kb: &KnowledgeBase,
     t: TermId,
-    spans: Option<&std::collections::HashMap<TermId, SourceSpan>>,
-    dot_chains: Option<&std::collections::HashSet<TermId>>,
+    ctx: &Rebuild<'_>,
     work: &mut Vec<WorkOp>,
     results: &mut Vec<Rc<NodeOccurrence>>,
 ) {
+    if let Some((inner, node)) = &ctx.splice {
+        if *inner == t {
+            results.push(Rc::clone(node));
+            return;
+        }
+    }
     // The caller's table first (WI-1039): it is the only source that can locate a
     // rule-body node at all, and where BOTH have an entry the caller's is per-atom while
     // `term_spans` is first-write-wins over a hash-consed key shared with every other file.
-    let span = spans
+    // Then the caller's SITE, for the same reason (WI-753).
+    let span = ctx
+        .spans
         .and_then(|m| m.get(&t).copied())
+        .or(ctx.site)
         .or_else(|| kb.term_span(t))
         .unwrap_or_else(empty_span);
     let term = kb.get_term(t).clone();
@@ -7085,7 +7176,7 @@ fn visit_term(
             // WI-20260902-4NEKZ follow-up: the caller's table, keyed exactly as `spans`
             // is. Asked of THIS node only — the walk re-asks it of every child, which is
             // what `parse_dot_chain_table` fills per level.
-            let dot_chain = dot_chains.is_some_and(|m| m.contains(&t));
+            let dot_chain = ctx.dot_chains.is_some_and(|m| m.contains(&t));
             visit_fn(kb, &Src::Term(t), span, functor, key, dot_chain, work, results);
         }
         Term::ParseAux(_) => unreachable!(
