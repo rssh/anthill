@@ -738,7 +738,7 @@ namespace wi1102.selfrep
   sort Container
     sort T = ?
     -- RECEIVES ON THE SORT: self-representing. `T` is the element type.
-    operation head(c: Container) -> T
+    operation head(c: Self) -> T
     -- ... and a non-receiving member, so a requirement holder's body can READ the slot.
     operation tag() -> Int64
   end

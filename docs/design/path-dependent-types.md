@@ -626,8 +626,8 @@ an_existential_results_members_are_abstract_to_the_caller` drives both halves to
 sort KVStore
   sort K = ?
   sort V = ?
-  operation get(s: KVStore, k: K) -> Option[V]
-  operation put(s: KVStore, k: K, v: V) -> KVStore
+  operation get(s: Self, k: K) -> Option[V]
+  operation put(s: Self, k: K, v: V) -> Self
 end
 
 sort MemStore                                    -- in-memory backend

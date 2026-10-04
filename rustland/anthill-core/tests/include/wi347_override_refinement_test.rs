@@ -995,7 +995,7 @@ fn denoted_sigma_effect_src(ns: &str, impl_t: &str) -> String {
             sort N = ?
           end
           namespace Tagged
-            provides Effect[T = Tagged[?]]
+            provides Effect[T = Tagged[?, N = N]]
           end
           sort Sp
             sort T = ?
@@ -1392,8 +1392,8 @@ fn a_parametric_modify_is_refused_at_its_declaration_not_as_a_widening() {
           sort Carrier
             sort R = ?
             entity c(id: Int64)
-            provides Sp[T = Carrier]
-            operation op(x: Carrier) -> Carrier effects {Eff1, Modify[R]} = x
+            provides Sp[T = Self]
+            operation op(x: Self) -> Self effects {Eff1, Modify[R]} = x
           end
         end
     "#;
@@ -1442,8 +1442,8 @@ fn a_parametric_non_modify_atom_still_fails_open_beside_a_judged_neighbour() {
           sort Carrier
             sort R = ?
             entity c(id: Int64)
-            provides Sp[T = Carrier]
-            operation op(x: Carrier) -> Carrier effects {Eff1[T = R], Eff2} = x
+            provides Sp[T = Self]
+            operation op(x: Self) -> Self effects {Eff1[T = R], Eff2} = x
           end
         end
     "#;

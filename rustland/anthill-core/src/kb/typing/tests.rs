@@ -3438,8 +3438,8 @@ mod wi958_one_op_parent_tests {
 namespace test.wi958
   sort Spec
     sort T = ?
-    operation take(s: Spec) -> T
-    operation make(x: T) -> Spec
+    operation take(s: Self) -> T
+    operation make(x: T) -> Self
   end
 
   sort Plain
@@ -6497,12 +6497,12 @@ namespace test.e3dc5
   sort CPlain
     sort T = ?
     entity cplain(x: T)
-    provides CFwd[T = CPlain]
+    provides CFwd[T = Self]
   end
   sort CCond
     sort T = ?
     entity ccond(x: T)
-    provides CFwd[T = CCond] :- CBnd[T = T]
+    provides CFwd[T = Self] :- CBnd[T = T]
     -- WRITTEN BY HAND, as `pair.anthill` writes both of its floors: a carrier whose
     -- provision of a forwarder is conditional gets NO derived lower floor (the deriver
     -- under-derives rather than drop the `:- goals` tail), so without this clause the
@@ -6511,7 +6511,7 @@ namespace test.e3dc5
     -- the end-to-end evidence that the condition is seen; it cannot be asserted here
     -- because `load_stdlib` raises on any load error by design, so the guard is driven
     -- directly below instead.
-    provides CLow[T = CCond] :- CBnd[T = T]
+    provides CLow[T = Self] :- CBnd[T = T]
   end
 end
 "#;

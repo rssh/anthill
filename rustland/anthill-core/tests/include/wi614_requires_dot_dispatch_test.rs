@@ -189,7 +189,7 @@ namespace wi614.carrier_guard
   sort Widget
     sort T = ?
     requires Eq[T]
-    operation combine(a: Widget, b: Widget) -> Widget
+    operation combine(a: Self, b: Self) -> Self
   end
 
   sort HashWidget

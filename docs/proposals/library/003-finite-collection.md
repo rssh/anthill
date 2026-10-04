@@ -91,13 +91,13 @@ sort anthill.prelude.FiniteStream
   effects E = ?
 
   provides Stream[T, E]                                       -- IS a Stream (lazy core)
-  provides FiniteCollection[C = FiniteStream, Element = T, E = E]   -- CAN be consumed
+  provides FiniteCollection[C = Self, Element = T, E = E]     -- CAN be consumed
 
   -- The finiteness primitive: like Stream.splitFirst, but the tail is FINITE.
-  operation splitFirst(s: FiniteStream) -> Option[Pair[A = s.T, B = FiniteStream[T = s.T, E = s.E]]] effects s.E
+  operation splitFirst(s: Self) -> Option[Pair[A = s.T, B = FiniteStream[T = s.T, E = s.E]]] effects s.E
 
   -- collect is now a WELL-FOUNDED recursion — `rest` is itself a FiniteStream.
-  operation collect(s: FiniteStream) -> List[T = s.T] effects s.E =
+  operation collect(s: Self) -> List[T = s.T] effects s.E =
     match splitFirst(s)
       case none() -> nil
       case some(pair(h, rest)) -> cons(head: h, tail: collect(rest))   -- rest : FiniteStream ✓

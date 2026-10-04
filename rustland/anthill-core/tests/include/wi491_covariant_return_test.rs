@@ -38,7 +38,7 @@ namespace wi491.covariant
 
   sort Holder
     sort T = ?
-    operation get(h: Holder) -> Int64
+    operation get(h: Self) -> Int64
   end
 
   sort Box

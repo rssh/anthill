@@ -405,7 +405,7 @@ namespace test.wi444.evalhalf
 
   sort Describable
     sort T = ?
-    operation describe(x: Describable) -> Int64 = 0
+    operation describe(x: Self) -> Int64 = 0
   end
 
   sort Widget

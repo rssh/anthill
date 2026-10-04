@@ -39,10 +39,10 @@ namespace test.wi596
     sort T = ?
     requires Eq[T]
     operation {
-      peek(s: Bag) -> Bool
-      holds(x: T, s: Bag) -> Bool
-      insert(s: Bag, x: T) -> Bag
-      member(x: T, s: Bag) -> Bool
+      peek(s: Self) -> Bool
+      holds(x: T, s: Self) -> Bool
+      insert(s: Self, x: T) -> Self
+      member(x: T, s: Self) -> Bool
     }
     rule {
       peek_id:  peek(?s) <=> true @[simp]

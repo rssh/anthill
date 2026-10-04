@@ -220,7 +220,7 @@ namespace test.wi728genok
   sort Slot
     sort T = ?
     entity slot(value: T)
-    operation close(s: Slot) -> Slot[T = Membership[T = s.T]]
+    operation close(s: Self) -> Slot[T = Membership[T = s.T]]
   end
 
   -- The declared return is the REDUCED `Unit`, so this conforms only if the reduction ran.
@@ -238,7 +238,7 @@ namespace test.wi728genbad
   sort Slot
     sort T = ?
     entity slot(value: T)
-    operation close(s: Slot) -> Slot[T = Membership[T = s.T]]
+    operation close(s: Self) -> Slot[T = Membership[T = s.T]]
   end
 
   operation useOpen(s: Slot[T = Int64]) -> Slot[T = Unit] = Slot.close(s)
@@ -502,7 +502,7 @@ namespace test.wi728orderok
   sort Slot
     sort T = ?
     entity slot(value: T)
-    operation closeAll[D](s: Slot, ...d: D)
+    operation closeAll[D](s: Self, ...d: D)
       -> Slot[T = Membership[T = Without[T = s.T, Drop = D]]]
   end
 

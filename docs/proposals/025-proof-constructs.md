@@ -669,10 +669,10 @@ The `language` field determines the content:
 -- stack/spec.anthill
 sort Stack
   sort T = ?
-  operation push(s: Stack, x: T) -> Stack
+  operation push(s: Self, x: T) -> Self
     ensures eq(top(result), x)
-  operation pop(s: Stack) -> Stack
-  operation top(s: Stack) -> T
+  operation pop(s: Self) -> Self
+  operation top(s: Self) -> T
 
   rule push_pop(?s, ?x) :- eq(pop(push(?s, ?x)), ?s)
 end

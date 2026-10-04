@@ -186,7 +186,7 @@ fn recursive_field_to_box() {
     let out = gen(r#"sort List {
   sort T = ?
   entity Nil
-  entity Cons(head: T, tail: List)
+  entity Cons(head: T, tail: Self)
 }
 "#);
     assert!(out.contains("enum List<T>"), "output:\n{out}");
@@ -595,7 +595,7 @@ fn enum_type_param_not_self() {
     let out = gen(r#"sort LogicalStream {
   sort T = ?
   entity Empty
-  operation pure(x: T) -> LogicalStream
+  operation pure(x: T) -> Self
 }
 "#);
     // pure should NOT get &self — T is a type param, not the sort itself
@@ -616,7 +616,7 @@ fn trait_self_in_return_multi_param() {
     let out = gen(r#"sort Stream {
   sort S = ?
   sort E = ?
-  operation tail(s: Stream) -> Stream
+  operation tail(s: Self) -> Self
 }
 "#);
     // With 2 type params, collapse_self is false, but sort-name → Self still works
@@ -633,7 +633,7 @@ fn enum_self_in_return() {
     let out = gen(r#"sort LogicalStream {
   sort T = ?
   entity Empty
-  operation mplus(a: LogicalStream, b: LogicalStream) -> LogicalStream
+  operation mplus(a: Self, b: Self) -> Self
 }
 "#);
     assert!(out.contains("-> Self"), "return type should be Self: {out}");
@@ -647,9 +647,9 @@ fn abstract_effect_parameter_to_result() {
     let out = gen(r#"sort Stream {
   sort T = ?
   sort E = ?
-  operation head(s: Stream) -> Option[T = T]
+  operation head(s: Self) -> Option[T = T]
     effects E
-  operation isEmpty(s: Stream) -> Bool
+  operation isEmpty(s: Self) -> Bool
 }
 "#);
     // head has effects E → Result wrapping with abstract E

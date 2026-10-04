@@ -541,7 +541,7 @@ fn a_sorts_own_effect_row_parameter_is_not_a_label() {
           sort W
             effects E = ?
             entity w
-            operation ping(x: W) -> Unit effects E
+            operation ping(x: Self) -> Unit effects E
           end
         end
     "#,

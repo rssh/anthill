@@ -38,8 +38,8 @@ namespace test.wi485.strm
   import anthill.prelude.Pair.{pair}
   sort Strm
     sort T = ?
-    operation splitFirstX(s: Strm) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
-    operation findX[EffP](s: Strm, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}) -> Option[T = s.T]
+    operation splitFirstX(s: Self) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
+    operation findX[EffP](s: Self, pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}) -> Option[T = s.T]
       effects EffP =
       match splitFirstX(s)
         case none() -> none
@@ -55,8 +55,8 @@ namespace test.wi485.lst
     sort T = ?
     provides Strm[T = T]
     entity lnil
-    entity lcons(hd: T, tl: Lst)
-    operation splitFirstX(xs: Lst) -> Option[T = Pair[A = xs.T, B = Lst[T = xs.T]]] =
+    entity lcons(hd: T, tl: Self)
+    operation splitFirstX(xs: Self) -> Option[T = Pair[A = xs.T, B = Lst[T = xs.T]]] =
       match xs
         case lnil() -> none
         case lcons(h, t) -> some(pair(h, t))

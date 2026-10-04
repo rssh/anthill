@@ -124,8 +124,8 @@ const DECLS: &str = r#"
     import anthill.prelude.Option.{none}
     entity box(v: T)
     operation empty() -> Option[T = T] = none()
-    operation mine(b: Box) -> Box[T = T] = b
-    operation mine2(b: Box) -> Option[T = T] = none()
+    operation mine(b: Self) -> Box[T = T] = b
+    operation mine2(b: Self) -> Option[T = T] = none()
   end
 
   sort Duo[A, B]

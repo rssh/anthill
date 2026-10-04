@@ -31,13 +31,13 @@ enum anthill.prelude.Pair
   sort B = ?
   entity pair(fst: A, snd: B)
 
-  provides PartialEq[Pair] :- PartialEq[A], PartialEq[B] where
-    operation eq(a: Pair, b: Pair) -> Bool =
+  provides PartialEq[Self] :- PartialEq[A], PartialEq[B] where
+    operation eq(a: Self, b: Self) -> Bool =
       match a case pair(al, ar) -> match b case pair(bl, br) ->
         if PartialEq.eq(al, bl) then PartialEq.eq(ar, br) else false
   end
 
-  provides Eq[Pair] :- Eq[A], Eq[B]          -- no members: the one-line clause stays
+  provides Eq[Self] :- Eq[A], Eq[B]          -- no members: the one-line clause stays
   …
 end
 ```

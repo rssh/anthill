@@ -74,7 +74,7 @@ namespace test.wi954
   sort KVStore
     sort K = ?
     sort V = ?
-    operation describe(s: KVStore) -> String
+    operation describe(s: Self) -> String
   end
 
   sort MemStore

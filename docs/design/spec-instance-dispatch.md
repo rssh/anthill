@@ -344,7 +344,7 @@ sort anthill.prelude.Stream
   sort T = ?              -- element type
   sort E = ?              -- effect required to observe
 
-  operation head(s: Stream) -> Option[T = T]
+  operation head(s: Self) -> Option[T = T]
     effects E             -- E used directly in effects position
   ...
 end

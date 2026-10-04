@@ -686,8 +686,8 @@ namespace wi858.localnest
     requires PartialEq[A]
     requires PartialEq[B]
     entity duo(l: A, r: B)
-    provides PartialEq[Duo]
-    operation eq(x: Duo, y: Duo) -> Bool =
+    provides PartialEq[Self]
+    operation eq(x: Self, y: Self) -> Bool =
       match x
         case duo(xl, xr) ->
           match y

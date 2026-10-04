@@ -1045,6 +1045,36 @@ pub(super) fn match_candidate_against_goal(
         for (k, c_val) in &c_bindings {
             let p_val = match binding_for_param(kb, &p_bindings, *k, key_match) {
                 Some(v) => *v,
+                // WI-20261001-80ZV8 — THE GOAL'S CARRIER LEAVES ONE OF ITS NAMED SLOTS
+                // UNWRITTEN, and the candidate is that sort's own provision forwarding the
+                // slot (`O = O`, which is what `Self` lowers to). The type parameters have
+                // fixed WHICH carrier this is; a named slot says which DICTIONARY fills it,
+                // and that is [`carried_slot`]'s question, asked once the provider is
+                // chosen. So nothing is recorded for it here and the match goes on.
+                //
+                // Refusing made the two spellings of one provision disagree. `provides
+                // Rel[T = Keyed]` reaches arm (2.5), which aligns what the goal writes and
+                // leaves the slot to that classifier — "its provider `Keyed` cannot answer
+                // it here", with the slot named. `provides Rel[T = Self]` came here and
+                // lost the provider at the head, so the refusal read "nothing provides
+                // `Rel[T = Keyed[…]]`" about a sort that does (MEASURED:
+                // `wi_4zzkz_spec_half_refusal_test`, the one row the fixture migration
+                // changed the verdict text of).
+                //
+                // ONLY THAT SHAPE. A head that writes a WITNESS at the slot (`O =
+                // ByLength`) is more specific than a goal that leaves it out and stays
+                // unmatched, as does a provider for some OTHER sort's carrier forwarding
+                // the slot to a parameter of its own: left unbound there, that parameter
+                // would be searched, and the instance found is one `O`'s, not every `O`'s.
+                //
+                // ARM (2a) KEEPS ITS REFUSAL for the same missing slot, and no loading
+                // program tells the two spellings apart there: a carrier OF this sort
+                // whose own provision leaves the slot out is refused under the bare
+                // spelling as well, at the abstract parameter arm (3) leaves it with
+                // (MEASURED — "`WeakOrd[T = Keyed.T]` beneath it does not hold").
+                None if forwards_own_named_slot(kb, impl_sort, c_base, *k, *c_val, impl_params) => {
+                    continue
+                }
                 None => return false,
             };
             if !match_candidate_against_goal(
@@ -1140,6 +1170,31 @@ pub(super) fn match_candidate_against_goal(
     false
 }
 
+/// WI-20261001-80ZV8 — the binding `key = value` of a provision head's `base[…]` is the
+/// provider's own named slot forwarded under its own name: `O = O` in `sort Keyed {
+/// requires O: WeakOrd[T]; provides Rel[T = Keyed[T = T, O = O]] }`. See arm (2) of
+/// [`match_candidate_against_goal`], its one caller.
+fn forwards_own_named_slot(
+    kb: &KnowledgeBase,
+    impl_sort: Symbol,
+    base: Symbol,
+    key: Symbol,
+    value: TermId,
+    impl_params: &[Symbol],
+) -> bool {
+    if !same_sort_canonical(kb, base, impl_sort) {
+        return false;
+    }
+    let Some(param) = impl_param_ref(kb, &TermIdView(value), impl_params) else {
+        return false;
+    };
+    let forwarded = short_name_of(kb.local_name_of(param));
+    kb.named_requirement_slots(impl_sort).iter().any(|slot| {
+        let binder = kb.local_name_of(slot.binder);
+        binder == forwarded && binder == short_name_of(kb.local_name_of(key))
+    })
+}
+
 /// WI-20261001-80ZV8 — `value` READ AT `base`, a sort its own sort provides: the
 /// parameters of `base`, in the value's own terms ([`sort_args_viewed_at`]). `One[T =
 /// Int64]` at `Strm` is `[T ↦ Int64, E ↦ {}]` through `One provides Strm[T, {}]`; through
@@ -1157,18 +1212,29 @@ fn carrier_viewed_at(
     value: TermId,
     base: Symbol,
 ) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
-    let (sort, args) = match parametric_value_parts(kb, value) {
-        Some(parts) => parts,
-        None if is_type_param_value(kb, value) => return None,
-        None => (
-            extract_sort_ref_sym(kb, &TermIdView(value))?,
-            SmallVec::new(),
-        ),
-    };
+    let (sort, args) = sort_instance_parts(kb, value)?;
     if same_sort_canonical(kb, sort, base) {
         return None;
     }
     sort_args_viewed_at(kb, sort, &args, base)
+}
+
+/// The sort a type value is an instance of and the bindings it writes: an application's
+/// own, and none for a sort applied to nothing ([`parametric_value_parts`] answers only
+/// for an application). `None` for a type parameter, and for a value that heads no sort
+/// (a variable, a structural type).
+pub(super) fn sort_instance_parts(
+    kb: &KnowledgeBase,
+    value: TermId,
+) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
+    match parametric_value_parts(kb, value) {
+        Some(parts) => Some(parts),
+        None if is_type_param_value(kb, value) => None,
+        None => Some((
+            extract_sort_ref_sym(kb, &TermIdView(value))?,
+            SmallVec::new(),
+        )),
+    }
 }
 
 /// WI-827 — reconcile an impl param `p` against a per-call element, recording

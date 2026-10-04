@@ -201,7 +201,7 @@ The same clause with the type carried as EVIDENCE instead:
 sort List
   sort T = ?
   entity nil
-  entity cons(head: T, tail: List)
+  entity cons(head: T, tail: Self)
 
   provides SortDomain[T = List[T = T]]
     requires SortDomain[T]                      -- the ELEMENT's domain: one sub-dictionary

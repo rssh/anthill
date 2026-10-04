@@ -366,7 +366,7 @@ namespace t
   import anthill.prelude.{{Int64}}
   sort Stack
     sort T = ?
-    operation size(s: Stack) -> Int64 @[host_implemented]
+    operation size(s: Self) -> Int64 @[host_implemented]
   end
   sort StackAlias = Stack
   provides {spec} language rust

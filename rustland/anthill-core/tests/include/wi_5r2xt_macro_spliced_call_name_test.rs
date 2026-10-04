@@ -293,7 +293,7 @@ namespace test.wi5r2xt.dot
   import anthill.prelude.{Int64, Bool}
   sort Box[T]
     entity box(v: T)
-    operation getIt(b: Box, k: b.Missing) -> Int64
+    operation getIt(b: Self, k: b.Missing) -> Int64
   end
   operation drive() -> Int64 effects Error =
     let bx = box(v: 1)

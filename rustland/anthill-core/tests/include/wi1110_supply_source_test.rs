@@ -443,8 +443,8 @@ namespace wi1110.paramowes
   enum Box
     sort T = ?
     entity box(v: T)
-    provides Ord[T = Box]
-    operation compare(a: Box, b: Box) -> Int64 = 0
+    provides Ord[T = Self]
+    operation compare(a: Self, b: Self) -> Int64 = 0
   end
 end
 "#;

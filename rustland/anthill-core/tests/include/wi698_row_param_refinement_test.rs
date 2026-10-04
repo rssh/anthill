@@ -123,7 +123,7 @@ namespace smoke.c_wrap
     effects EW = ?
     entity mkWrap2
     provides Mir[C = Wrap2[EW], EM = EW]
-    operation ping(m: Wrap2) -> Int64 effects EW = 7
+    operation ping(m: Self) -> Int64 effects EW = 7
   end
 
   operation t_wrap_pure(w: Wrap2[EW = {}]) -> Int64
@@ -226,8 +226,8 @@ namespace smoke.f_rw
     effects WW = ?
     entity mkWrap2RW
     provides Mir2[C = Wrap2RW[WR, WW], ER = WR, EW = WW]
-    operation peek(m: Wrap2RW) -> Int64 effects WR = 0
-    operation stir(m: Wrap2RW, x: Int64) -> Unit effects WW = ()
+    operation peek(m: Self) -> Int64 effects WR = 0
+    operation stir(m: Self, x: Int64) -> Unit effects WW = ()
   end
 
   sort GhRW
@@ -249,7 +249,7 @@ namespace smoke.f_rw
     effects EW = ?
     entity mkStoreRW
     provides Mir[C = StoreRW[ER, EW], EM = {ER, EW}]
-    operation ping(m: StoreRW) -> Int64 effects {ER, EW} = 0
+    operation ping(m: Self) -> Int64 effects {ER, EW} = 0
   end
 
   -- GENUINE two-param substitution: ER and EW refined to DIFFERENT non-empty
@@ -475,7 +475,7 @@ namespace smoke.wi703_no_parent
 
   sort Cache
     effects E = ?
-    operation lookup(c: Cache) -> Option effects E
+    operation lookup(c: Self) -> Option effects E
   end
 end
 "#;

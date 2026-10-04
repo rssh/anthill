@@ -685,17 +685,17 @@ fn cell_tower(eq_cond: &str) -> String {
          import anthill.prelude.{{Bool, Int64, PartialEq, Eq, PartialOrd, Ord, WeakOrd}}\n\
   sort Lawful\n    sort T = ?\n    operation witness(x: T) -> Int64\n  end\n\
   enum Cell\n    sort E = ?\n    entity cell(v: E)\n    \
-    provides PartialEq[Cell] :- PartialEq[E] where\n      \
-      operation eq(a: Cell, b: Cell) -> Bool =\n        \
+    provides PartialEq[Self] :- PartialEq[E] where\n      \
+      operation eq(a: Self, b: Self) -> Bool =\n        \
         match a\n          case cell(x) ->\n            match b\n              case cell(y) -> PartialEq.eq(x, y)\n    \
     end\n    \
-    provides Eq[Cell] :- {eq_cond}\n    \
-    provides PartialOrd[Cell] :- PartialOrd[E]\n    \
-    provides WeakOrd[Cell] :- WeakOrd[E] where\n      \
-      operation compare(a: Cell, b: Cell) -> Int64 =\n        \
+    provides Eq[Self] :- {eq_cond}\n    \
+    provides PartialOrd[Self] :- PartialOrd[E]\n    \
+    provides WeakOrd[Self] :- WeakOrd[E] where\n      \
+      operation compare(a: Self, b: Self) -> Int64 =\n        \
         match a\n          case cell(x) ->\n            match b\n              case cell(y) -> WeakOrd.compare(x, y)\n    \
     end\n    \
-    provides Ord[Cell] :- Ord[E]\n  end\nend\n"
+    provides Ord[Self] :- Ord[E]\n  end\nend\n"
     )
 }
 
@@ -890,9 +890,9 @@ fn permuted(inner_cond: &str) -> String {
   sort Lo\n    sort T = ?\n    operation lo(x: T) -> Int64\n  end\n\
   sort Hi\n    sort T = ?\n    requires Lo[T = T]\n    operation hi(x: T) -> Int64\n  end\n\
   enum C\n    sort P = ?\n    sort Q = ?\n    entity c(p: P, q: Q)\n    \
-    provides Hi[T = C] :- Big[X = P, Y = Q]\n    \
-    provides Lo[T = C] :- {inner_cond}\n    \
-    operation hi(x: C) -> Int64 = 1\n    operation lo(x: C) -> Int64 = 1\n  end\nend\n"
+    provides Hi[T = Self] :- Big[X = P, Y = Q]\n    \
+    provides Lo[T = Self] :- {inner_cond}\n    \
+    operation hi(x: Self) -> Int64 = 1\n    operation lo(x: Self) -> Int64 = 1\n  end\nend\n"
     )
 }
 
@@ -928,9 +928,9 @@ fn an_outer_condition_richer_than_the_inner_still_entails_it() {
   sort Lo\n    sort T = ?\n    operation lo(x: T) -> Int64\n  end\n\
   sort Hi\n    sort T = ?\n    requires Lo[T = T]\n    operation hi(x: T) -> Int64\n  end\n\
   enum D\n    sort P = ?\n    sort Q = ?\n    entity d(p: P, q: Q)\n    \
-    provides Hi[T = D] :- M2[K = P, V = Q]\n    \
-    provides Lo[T = D] :- E1[K = P]\n    \
-    operation hi(x: D) -> Int64 = 1\n    operation lo(x: D) -> Int64 = 1\n  end\nend\n";
+    provides Hi[T = Self] :- M2[K = P, V = Q]\n    \
+    provides Lo[T = Self] :- E1[K = P]\n    \
+    operation hi(x: Self) -> Int64 = 1\n    operation lo(x: Self) -> Int64 = 1\n  end\nend\n";
     if let Err(errs) = crate::common::try_load_kb_with(src) {
         panic!("`M2[K=P, V=Q]` requires `E1[K=P]`, so it entails it; got {errs:?}");
     }
@@ -949,9 +949,9 @@ fn a_second_clause_for_one_spec_only_widens() {
   sort Lo\n    sort T = ?\n    operation lo(x: T) -> Int64\n  end\n\
   sort Hi\n    sort T = ?\n    requires Lo[T = T]\n    operation hi(x: T) -> Int64\n  end\n\
   enum D\n    sort P = ?\n    sort Q = ?\n    entity d(p: P, q: Q)\n    \
-    provides Hi[T = D] :- SA[T = P]\n    \
-    provides Lo[T = D] :- SA[T = P]\n{extra}    \
-    operation hi(x: D) -> Int64 = 1\n    operation lo(x: D) -> Int64 = 1\n  end\nend\n"
+    provides Hi[T = Self] :- SA[T = P]\n    \
+    provides Lo[T = Self] :- SA[T = P]\n{extra}    \
+    operation hi(x: Self) -> Int64 = 1\n    operation lo(x: Self) -> Int64 = 1\n  end\nend\n"
         )
     };
     // The control: one adequate clause loads.

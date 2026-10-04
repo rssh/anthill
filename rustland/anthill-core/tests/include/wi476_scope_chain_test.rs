@@ -60,7 +60,7 @@ namespace test.wi476.req
     sort T = ?
     requires HasZero[T]
     entity box(content: T)
-    operation zeroLike(b: Box) -> T =
+    operation zeroLike(b: Self) -> T =
       match b
         case box(_) -> zero()
   end

@@ -118,9 +118,29 @@ fn a_spec_half_failure_under_the_carriers_own_provision_is_not_too_weak() {
 ///
 /// CONTROL (MEASURED): map every unforwarded `NoMatch` to `RequirementFailure::NoProvider`
 /// and this row fails on the missing reason.
-const REFUSED: &str = r#"
+///
+/// WI-20261001-80ZV8 — AND THE REASON IS ABOUT THE GOAL, whichever way `Keyed` writes its
+/// own provision. The fixture said `provides Rel[T = Keyed]` and the reason then read "the
+/// provision of `Keyed` … does not bind its named slot `O` in its head — write `O = O`":
+/// a repair in the wrong declaration, and one that made things worse, because with the
+/// slot written — which is what `Self` lowers to — the candidate was dropped at the head
+/// and the refusal became "nothing provides `Rel[T = Keyed[…]]`". `head` is `Keyed`'s own
+/// carrier as its provision writes it; `user` is `User`'s body.
+///
+/// CONTROLS (MEASURED on a temporary binary over this file's six rows):
+///  - drop arm (2)'s `forwards_own_named_slot` case in `match_candidate_against_goal`:
+///    THREE fail — the refusal row on the provider not being named ("but nothing provides
+///    …"), [`the_repairs_the_refusal_names_load`] on its closing check for the same reason,
+///    and the constructor-less row below;
+///  - classify the miss as `NotInHead` whatever the goal says (`carried_slot`): TWO fail —
+///    the refusal row on the head being blamed, and the repairs row's closing check.
+/// The repairs themselves load either way, by design: they are the control that the reason
+/// names real repairs, and what a back-out breaks is the reason.
+fn refused(head: &str, user: &str) -> String {
+    format!(
+        r#"
 namespace wi4zzkz.refused
-  import anthill.prelude.{WeakOrd, Int64}
+  import anthill.prelude.{{WeakOrd, Int64}}
   sort Rel
     sort T = ?
   end
@@ -128,35 +148,124 @@ namespace wi4zzkz.refused
     sort T = ?
     requires O: WeakOrd[T]
     entity k(v: T)
-    provides Rel[T = Keyed]
+    provides Rel[T = {head}]
   end
   sort Top
     sort T = ?
     requires Rel[T = T]
   end
   sort User
-    sort E = ?
-    provides Top[T = Keyed[T = E]]
+{user}
   end
 end
-"#;
+"#
+    )
+}
+
+/// `Self`, and what it lowers to written out: one provision, so one refusal.
+const WRITTEN_HEADS: [&str; 2] = ["Self", "Keyed[T = T, O = O]"];
 
 #[test]
 fn a_provider_that_refuses_the_goal_is_named_with_its_reason() {
-    let errs = load_errs(REFUSED);
-    let refusal = errs
-        .iter()
-        .find(|e| e.contains("'wi4zzkz.refused.User' provides 'wi4zzkz.refused.Top'"))
-        .unwrap_or_else(|| panic!("`User`'s provision is refused: {errs:?}"));
-    assert!(
-        refusal.contains("its provider `wi4zzkz.refused.Keyed` cannot answer it here")
-            && refusal.contains("named slot `O`"),
-        "…naming the provider and the slot it cannot answer: {refusal}",
-    );
-    assert!(
-        !refusal.contains("does not provide 'wi4zzkz.refused.Rel'"),
-        "`Keyed` provides `Rel`: {refusal}",
-    );
+    for head in WRITTEN_HEADS {
+        let errs = load_errs(&refused(
+            head,
+            "    sort E = ?\n    provides Top[T = Keyed[T = E]]",
+        ));
+        let refusal = errs
+            .iter()
+            .find(|e| e.contains("'wi4zzkz.refused.User' provides 'wi4zzkz.refused.Top'"))
+            .unwrap_or_else(|| panic!("`{head}`: `User`'s provision is refused: {errs:?}"));
+        assert!(
+            refusal.contains("its provider `wi4zzkz.refused.Keyed` cannot answer it here")
+                && refusal
+                    .contains("does not write named slot `O` of `wi4zzkz.refused.Keyed`"),
+            "`{head}`: …naming the provider and the slot the goal's `Keyed[…]` leaves out: \
+             {refusal}",
+        );
+        assert!(
+            !refusal.contains("in its head"),
+            "`{head}`: `Keyed`'s head binds `O` — it is `User`'s `Keyed[T = E]` that does \
+             not: {refusal}",
+        );
+        assert!(
+            !refusal.contains("does not provide 'wi4zzkz.refused.Rel'")
+                && !refusal.contains("nothing provides"),
+            "`{head}`: `Keyed` provides `Rel`: {refusal}",
+        );
+    }
+}
+
+/// What the refusal above tells the author to do — write `O` in `User`'s `Keyed[…]`: a
+/// named slot `User` declares, or, where the element is concrete, a witness — loads.
+#[test]
+fn the_repairs_the_refusal_names_load() {
+    for head in WRITTEN_HEADS {
+        for user in [
+            "    sort E = ?\n    requires OE: WeakOrd[E]\n    \
+             provides Top[T = Keyed[T = E, O = OE]]",
+            "    provides Top[T = Keyed[T = Int64, O = Int64]]",
+        ] {
+            crate::common::expect_loaded(crate::common::try_load_kb_with(&refused(head, user)));
+        }
+        // …and the witness is what that second program needed: without it, the same
+        // refusal.
+        let errs = load_errs(&refused(head, "    provides Top[T = Keyed[T = Int64]]"));
+        assert!(
+            errs.iter().any(|e| e.contains("does not write named slot `O`")),
+            "`{head}`: a concrete element changes nothing about the slot: {errs:?}",
+        );
+    }
+}
+
+/// A CARRIER WITH NO CONSTRUCTOR has no value that chose the slot, so its unwritten slot is
+/// SEARCHED — and that too is one answer for both spellings of the carrier's provision.
+/// `Keyed[T = Int64]` loads (`WeakOrd[Int64]` holds); `Keyed[T = Float]` is refused naming
+/// the goal beneath the chosen provider, not the provider's absence.
+///
+/// CONTROL (MEASURED): drop arm (2)'s `forwards_own_named_slot` case and the `Self` rows
+/// fail — `Int64` is refused "nothing provides `Rel[T = Keyed[T = Int64]]`", and `Float`
+/// with it. The bare-spelling rows pass either way by design: they are what `Self` must
+/// agree with, and they go away with the spelling (proposal 070 (d)).
+fn constructorless(head: &str, element: &str) -> String {
+    format!(
+        r#"
+namespace wi4zzkz.searched
+  import anthill.prelude.{{WeakOrd, Int64, Float}}
+  sort Rel
+    sort T = ?
+  end
+  sort Keyed
+    sort T = ?
+    requires O: WeakOrd[T]
+    provides Rel[T = {head}]
+  end
+  sort Top
+    sort T = ?
+    requires Rel[T = T]
+  end
+  sort User
+    provides Top[T = Keyed[T = {element}]]
+  end
+end
+"#
+    )
+}
+
+#[test]
+fn a_constructorless_carriers_unwritten_slot_is_searched_under_either_spelling() {
+    for head in ["Self", "Keyed"] {
+        crate::common::expect_loaded(crate::common::try_load_kb_with(&constructorless(
+            head, "Int64",
+        )));
+        let errs = load_errs(&constructorless(head, "Float"));
+        assert!(
+            errs.iter().any(|e| e.contains("its provider `wi4zzkz.searched.Keyed` was chosen")
+                && e.contains("`anthill.prelude.WeakOrd[T = anthill.prelude.Float]` beneath it")),
+            "`provides Rel[T = {head}]`: `Float` has no ordering, and the refusal names the \
+             goal beneath `Keyed`: {errs:?}",
+        );
+    }
 }
 
 // ── 4. a requirement left open by the provision itself ──────────────────────

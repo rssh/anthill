@@ -207,7 +207,7 @@ fn instance_fact_op_dispatches_via_threaded_dict() {
     sort T = ?
     requires HasZero[T]
     entity box(content: T)
-    operation zeroLike(b: Box) -> T =
+    operation zeroLike(b: Self) -> T =
       match b
         case box(_) -> zero()
   end
@@ -278,7 +278,7 @@ fn instance_fact_op_dispatches_when_spec_has_requires() {
     sort T = ?
     requires HasZ[T]
     entity box(content: T)
-    operation zeroLike(b: Box) -> T =
+    operation zeroLike(b: Self) -> T =
       match b
         case box(_) -> hzero()
   end

@@ -101,17 +101,17 @@ namespace {ns}
   import anthill.prelude.{{Int64, String, List}}
   sort Spec
     sort P = ?
-    operation touch(c: Spec) -> Int64
+    operation touch(c: Self) -> Int64
   end
   sort MidA
     sort A = ?
     provides Spec[P = {via_a}]
-    operation touch(c: MidA) -> Int64 = 1
+    operation touch(c: Self) -> Int64 = 1
   end
   sort MidB
     sort B = ?
     provides Spec[P = {via_b}]
-    operation touch(c: MidB) -> Int64 = 2
+    operation touch(c: Self) -> Int64 = 2
   end
   sort Carrier
     sort T = ?

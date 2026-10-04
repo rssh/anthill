@@ -394,7 +394,7 @@ namespace test.wi945.bridged
     sort T = ?
     requires Combiner[T]
     entity box(content: T)
-    operation combineBox(b: Box) -> T =
+    operation combineBox(b: Self) -> T =
       match b
         case box(c) -> combine(c, c)
   end

@@ -375,7 +375,7 @@ sort Map
   sort V = ?
   requires Eq[T = K]                  -- K-quantified (from sort's declared K)
 
-  operation merge_with[F](m1: Map, m2: Map, combine: (V, V) -> V) -> Map
+  operation merge_with[F](m1: Self, m2: Self, combine: (V, V) -> V) -> Self
     -- F is an operation-level parameter (not used here, illustrative).
     -- K, V come from the enclosing sort's declared parameters.
 end

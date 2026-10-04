@@ -129,7 +129,7 @@ namespace test.pyns2.selfrecv
   import test.pyns2.out.Out.{out}
   sort Spec2
     effects E = ?
-    operation go(self: Spec2, p: String) -> Out
+    operation go(self: Self, p: String) -> Out
       effects {E, Error} = out(v: p)
   end
 end
@@ -369,7 +369,7 @@ namespace test.pyns2.selfbodyless
   import test.pyns2.out.{Out}
   sort Spec6
     effects E = ?
-    operation go(self: Spec6, p: String) -> Out
+    operation go(self: Self, p: String) -> Out
       effects {E, Error}
   end
 end

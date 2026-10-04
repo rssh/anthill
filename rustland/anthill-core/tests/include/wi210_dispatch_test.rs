@@ -495,19 +495,19 @@ fn load_box_two_carriers() -> KnowledgeBase {
         namespace wi350.box
           sort Box
             sort T = ?
-            operation peek(b: Box) -> T
+            operation peek(b: Self) -> T
           end
           sort ListBox
             sort T = ?
             entity lbox(item: T)
             provides Box[T]
-            operation peek(b: ListBox) -> T = match b case lbox(x) -> x
+            operation peek(b: Self) -> T = match b case lbox(x) -> x
           end
           sort StreamBox
             sort T = ?
             entity sbox(item: T)
             provides Box[T]
-            operation peek(b: StreamBox) -> T = match b case sbox(x) -> x
+            operation peek(b: Self) -> T = match b case sbox(x) -> x
           end
         end
     "#,

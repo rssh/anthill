@@ -37,8 +37,8 @@ namespace {ns}
   sort Box
     sort T = ?
     entity box(v: T)
-    provides PartialEq[Box] :- PartialEq[T] {open}
-      operation eq(a: Box, b: Box) -> Bool =
+    provides PartialEq[Self] :- PartialEq[T] {open}
+      operation eq(a: Self, b: Self) -> Bool =
         match a
           case box(x) -> match b case box(y) -> PartialEq.eq(x, y)
     {close}
@@ -85,8 +85,8 @@ namespace wi1z3e7.outside
   sort Box
     sort T = ?
     entity box(v: T)
-    provides PartialEq[Box] :- PartialEq[T]
-    operation eq(a: Box, b: Box) -> Bool =
+    provides PartialEq[Self] :- PartialEq[T]
+    operation eq(a: Self, b: Self) -> Bool =
       match a
         case box(x) -> match b case box(y) -> PartialEq.eq(x, y)
   end
@@ -114,13 +114,13 @@ namespace wi1z3e7.sibling
   sort Box
     sort T = ?
     entity box(v: T)
-    provides PartialEq[Box] :- PartialEq[T] where
-      operation eq(a: Box, b: Box) -> Bool =
+    provides PartialEq[Self] :- PartialEq[T] where
+      operation eq(a: Self, b: Self) -> Bool =
         match a
           case box(x) -> match b case box(y) -> PartialEq.eq(x, y)
     end
-    provides Size[Box] :- Size[T] where
-      operation size(b: Box) -> Int64 =
+    provides Size[Self] :- Size[T] where
+      operation size(b: Self) -> Int64 =
         match b
           case box(x) -> if PartialEq.eq(x, x) then Size.size(x) else 0
     end
@@ -151,15 +151,15 @@ namespace wi1z3e7.helper
   sort Box
     sort T = ?
     entity box(v: T)
-    provides PartialEq[Box] :- PartialEq[T] where
-      operation eq(a: Box, b: Box) -> Bool =
+    provides PartialEq[Self] :- PartialEq[T] where
+      operation eq(a: Self, b: Self) -> Bool =
         match a
           case box(x) -> match b case box(y) -> PartialEq.eq(x, y)
     end
-    operation inner(a: Box, b: Box) -> Bool requires PartialEq[T] =
+    operation inner(a: Self, b: Self) -> Bool requires PartialEq[T] =
       match a
         case box(x) -> match b case box(y) -> PartialEq.eq(x, y)
-    operation same(a: Box, b: Box) -> Bool requires PartialEq[T] = PartialEq.eq(a, b)
+    operation same(a: Self, b: Self) -> Bool requires PartialEq[T] = PartialEq.eq(a, b)
   end
   sort D
     operation innerYes(n: Int64) -> Int64 = if Box.inner(box(v: 1), box(v: 1)) then 1 else 0
@@ -206,11 +206,11 @@ namespace wi1z3e7.notmember
   sort Box
     sort T = ?
     entity box(v: T)
-    provides PartialEq[Box] :- PartialEq[T] where
-      operation eq(a: Box, b: Box) -> Bool =
+    provides PartialEq[Self] :- PartialEq[T] where
+      operation eq(a: Self, b: Self) -> Bool =
         match a
           case box(x) -> match b case box(y) -> PartialEq.eq(x, y)
-      operation helper(a: Box) -> Int64 = 1
+      operation helper(a: Self) -> Int64 = 1
     end
   end
 end
@@ -234,12 +234,12 @@ namespace wi1z3e7.twoclauses
   sort Box
     sort T = ?
     entity box(v: T)
-    provides PartialEq[Box] :- PartialEq[T] where
-      operation eq(a: Box, b: Box) -> Bool =
+    provides PartialEq[Self] :- PartialEq[T] where
+      operation eq(a: Self, b: Self) -> Bool =
         match a
           case box(x) -> match b case box(y) -> PartialEq.eq(x, y)
     end
-    provides PartialEq[Box] :- Eq[T]
+    provides PartialEq[Self] :- Eq[T]
   end
 end
 "#;
@@ -306,9 +306,9 @@ namespace wi1z3e7.alt
   enum Box
     sort A = ?
     entity box(v: A)
-    provides Show[T = Box] :- SA[A]
-    provides Show[T = Box] :- SB[A]
-    operation show(x: Box) -> Int64 = 5
+    provides Show[T = Self] :- SA[A]
+    provides Show[T = Self] :- SB[A]
+    operation show(x: Self) -> Int64 = 5
   end
   sort D
     operation viaA(n: Int64) -> Int64 = Show.show(box(v: oa))
@@ -343,13 +343,13 @@ namespace wi1z3e7.direct
   sort Box
     sort T = ?
     entity box(v: T)
-    provides PartialEq[Box] :- PartialEq[T] where
-      operation eq(a: Box, b: Box) -> Bool =
+    provides PartialEq[Self] :- PartialEq[T] where
+      operation eq(a: Self, b: Self) -> Bool =
         match a
           case box(x) -> match b case box(y) -> PartialEq.eq(x, y)
     end
-    operation same(a: Box, b: Box) -> Bool requires PartialEq[T] = Box.eq(a, b)
-    operation dot(a: Box, b: Box) -> Bool requires PartialEq[T] = a.eq(b)
+    operation same(a: Self, b: Self) -> Bool requires PartialEq[T] = Box.eq(a, b)
+    operation dot(a: Self, b: Self) -> Bool requires PartialEq[T] = a.eq(b)
   end
   sort D
     operation sameYes(n: Int64) -> Int64 = if Box.same(box(v: 1), box(v: 1)) then 1 else 0
@@ -364,17 +364,18 @@ end
     assert_eq!(eval_int(src, "wi1z3e7.direct.D.sameNo"), 0);
     assert_eq!(eval_int(src, "wi1z3e7.direct.D.dotYes"), 1);
     assert_eq!(eval_int(src, "wi1z3e7.direct.D.dotNo"), 0);
-    let bare = src
-        .replace(
-            "operation same(a: Box, b: Box) -> Bool requires PartialEq[T] =",
-            "operation same(a: Box, b: Box) -> Bool =",
-        )
-        .replace(
-            "    operation dot(a: Box, b: Box) -> Bool requires PartialEq[T] = a.eq(b)\n",
-            "",
-        )
-        .replace("    operation dotYes(n: Int64) -> Int64 = if Box.dot(box(v: 1), box(v: 1)) then 1 else 0\n", "")
-        .replace("    operation dotNo(n: Int64) -> Int64 = if Box.dot(box(v: 1), box(v: 2)) then 1 else 0\n", "");
+    let mut bare = src.to_owned();
+    for (from, to) in [
+        (
+            "operation same(a: Self, b: Self) -> Bool requires PartialEq[T] =",
+            "operation same(a: Self, b: Self) -> Bool =",
+        ),
+        ("    operation dot(a: Self, b: Self) -> Bool requires PartialEq[T] = a.eq(b)\n", ""),
+        ("    operation dotYes(n: Int64) -> Int64 = if Box.dot(box(v: 1), box(v: 1)) then 1 else 0\n", ""),
+        ("    operation dotNo(n: Int64) -> Int64 = if Box.dot(box(v: 1), box(v: 2)) then 1 else 0\n", ""),
+    ] {
+        bare = crate::common::replace_in_fixture(&bare, from, to);
+    }
     let errs = refusals(&bare);
     assert!(
         errs.iter().any(|e| e.contains("`wi1z3e7.direct.Box.same` calls `wi1z3e7.direct.Box.eq`")

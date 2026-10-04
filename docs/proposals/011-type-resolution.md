@@ -1016,16 +1016,16 @@ sort anthill.prelude.Map
   requires Eq[T = K]
 
   entity empty_map
-  entity entry(key: K, value: V, rest: Map)
+  entity entry(key: K, value: V, rest: Self)
 
-  operation get(m: Map, key: K) -> Option[T = V]
-  operation put(m: Map, key: K, value: V) -> Map
-  operation contains(m: Map, key: K) -> Bool
-  operation remove(m: Map, key: K) -> Map
-  operation keys(m: Map) -> List[T = K]
-  operation values(m: Map) -> List[T = V]
-  operation entries(m: Map) -> List[T = Pair[A = K, B = V]]
-  operation size(m: Map) -> Int64
+  operation get(m: Self, key: K) -> Option[T = V]
+  operation put(m: Self, key: K, value: V) -> Self
+  operation contains(m: Self, key: K) -> Bool
+  operation remove(m: Self, key: K) -> Self
+  operation keys(m: Self) -> List[T = K]
+  operation values(m: Self) -> List[T = V]
+  operation entries(m: Self) -> List[T = Pair[A = K, B = V]]
+  operation size(m: Self) -> Int64
 end
 ```
 

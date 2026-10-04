@@ -303,7 +303,7 @@ namespace wi1magr.receiver
 
   sort Boxy
     sort T = ?
-    operation peek(b: Boxy) -> Int64
+    operation peek(b: Self) -> Int64
   end
 
   sort IntBox

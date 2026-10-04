@@ -235,9 +235,9 @@ sort anthill.prelude.Timestamp {
 sort anthill.prelude.List
   sort T = ?                                         -- type parameter (unspecified)
   entity nil                                         -- empty list
-  entity cons(head: T, tail: List)                   -- cons cell
+  entity cons(head: T, tail: Self)                   -- cons cell
 
-  operation length(l: List) -> Int64 =
+  operation length(l: Self) -> Int64 =
     match l
       case nil() -> 0
       case cons(_, xs) -> add(1, length(xs))

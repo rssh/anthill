@@ -1410,6 +1410,21 @@ pub const DESC_INSTANCES: &str = r#"
 #[allow(dead_code)]
 pub const MISSING_DESC_REQUIRES: &str = "missing `requires Desc[T = …]`";
 
+/// `src` with every `from` replaced by `to` — and a panic when nothing matched.
+///
+/// A fixture edited by string surgery whose needle no longer matches is the UNEDITED
+/// program, and the row then asserts about it as though it had been changed. Two rows did
+/// exactly that when their fixtures' receivers were rewritten (WI-20261001-80ZV8); both
+/// happened to fail on a later assertion, which is luck and not a guard.
+#[allow(dead_code)]
+pub fn replace_in_fixture(src: &str, from: &str, to: &str) -> String {
+    assert!(
+        src.contains(from),
+        "fixture drift: nothing in the fixture matches `{from}`"
+    );
+    src.replace(from, to)
+}
+
 /// The rewritten term for the call to `spec_op_qn` inside operation `op_qn` — the
 /// site-scoped read that replaced `assert_req_param_spec` (WI-873).
 ///

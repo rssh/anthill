@@ -9,9 +9,9 @@ This is an **implementation design** doc, not a proposal. The user-facing interf
 ```anthill
 sort anthill.prelude.Cell
   sort V = ?
-  operation new(initial: V) -> Cell
-  operation get(c: Cell) -> V
-  operation set(c: Cell, value: V) -> Unit
+  operation new(initial: V) -> Self
+  operation get(c: Self) -> V
+  operation set(c: Self, value: V) -> Unit
     effects Modify[c]
 end
 

@@ -78,7 +78,7 @@ fn rigid_param_within_op_identity() {
     sort P = ?
     requires Storage[C = P]
     entity wrapper(provider: P)
-    operation getKey(w: Wrapper, k: P.Key) -> P.Key = k
+    operation getKey(w: Self, k: P.Key) -> P.Key = k
   end
 "#,
     );
@@ -99,7 +99,7 @@ fn rigid_param_distinct_members_rejected() {
     sort P = ?
     requires Storage[C = P]
     entity wrapper(provider: P)
-    operation bad(w: Wrapper, k: P.Key) -> P.Val = k
+    operation bad(w: Self, k: P.Key) -> P.Val = k
   end
 "#,
     );
@@ -125,7 +125,7 @@ fn rigid_param_distinct_subjects_rejected() {
     requires Storage[C = P]
     requires Storage[C = Q]
     entity wrapper(a: P, b: Q)
-    operation bad(w: Wrapper, k: P.Key) -> Q.Key = k
+    operation bad(w: Self, k: P.Key) -> Q.Key = k
   end
 "#,
     );
@@ -148,7 +148,7 @@ fn delta_through_the_bound_grounds() {
     sort P = ?
     requires Storage[C = P, Key = String]
     entity wrapper(provider: P)
-    operation idK(w: Wrapper, k: P.Key) -> String = k
+    operation idK(w: Self, k: P.Key) -> String = k
   end
 "#,
     );
@@ -169,7 +169,7 @@ fn delta_through_the_bound_wrong_return_rejected() {
     sort P = ?
     requires Storage[C = P, Key = String]
     entity wrapper(provider: P)
-    operation idK(w: Wrapper, k: P.Key) -> Int64 = k
+    operation idK(w: Self, k: P.Key) -> Int64 = k
   end
 "#,
     );
@@ -192,7 +192,7 @@ fn undeclared_member_is_loud() {
     sort P = ?
     requires Storage[C = P]
     entity wrapper(provider: P)
-    operation bad(w: Wrapper, k: P.Nope) -> P.Nope = k
+    operation bad(w: Self, k: P.Nope) -> P.Nope = k
   end
 "#,
     );
@@ -212,7 +212,7 @@ fn no_bound_mentioning_subject_is_loud() {
   sort Plain
     sort Q = ?
     entity plain(x: Q)
-    operation bad(p: Plain, k: Q.Key) -> Q.Key = k
+    operation bad(p: Self, k: Q.Key) -> Q.Key = k
   end
 "#,
     );
@@ -294,7 +294,7 @@ namespace test.wi428.token
     sort P = ?
     requires Storage[C = P, Key = Token]
     entity wrapper(provider: P)
-    operation idK(w: Wrapper, k: P.Key) -> Token = k
+    operation idK(w: Self, k: P.Key) -> Token = k
   end
 end
 "#;
@@ -321,7 +321,7 @@ namespace test.wi428.sibling
     sort K = ?
     requires Storage[C = P, Key = K]
     entity wrapper(provider: P, seed: K)
-    operation idK(w: Wrapper, k: P.Key) -> K = k
+    operation idK(w: Self, k: P.Key) -> K = k
   end
 end
 "#;

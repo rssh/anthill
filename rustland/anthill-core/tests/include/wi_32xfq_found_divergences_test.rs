@@ -125,7 +125,7 @@ namespace wi32xfq.wrap
   import anthill.prelude.{Int64, String}
   sort Sp
     sort T = ?
-    operation get(x: Sp) -> T
+    operation get(x: Self) -> T
   end
   sort Carrier provides Sp[T = Int64]
     entity carrier(n: Int64)
@@ -229,7 +229,7 @@ namespace {ns}
   import anthill.prelude.{{Int64, String}}
   sort Sp
     sort T = ?
-    operation get(x: Sp) -> T
+    operation get(x: Self) -> T
   end
   sort Carrier provides {clause}
     entity carrier(n: Int64)

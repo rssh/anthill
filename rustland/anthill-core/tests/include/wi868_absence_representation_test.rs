@@ -98,8 +98,8 @@ namespace wi868.sound
     import anthill.prelude.{Int64, Bool, PartialEq}
     sort E = ?
     entity wrap(v: E)
-    provides PartialEq[T = Wrap] :- PartialEq[E]
-    operation eq(a: Wrap, b: Wrap) -> Bool = true
+    provides PartialEq[T = Self] :- PartialEq[E]
+    operation eq(a: Self, b: Self) -> Bool = true
   end
 
   sort Top

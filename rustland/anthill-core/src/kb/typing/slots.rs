@@ -1624,6 +1624,13 @@ pub(super) enum CarriedSlot {
     /// Ord[T = Pair[…]]`) and whose slots a bracket value or an enclosing selection
     /// writes; for a CONCRETE provider it is a head that forgot `O = O`.
     NotInHead,
+    /// WI-20261001-80ZV8 — the GOAL's carrier is this provider's own sort and its type
+    /// does not write the slot: `Keyed[T = E]` in `provides Top[T = Keyed[T = E]]`, where
+    /// `Keyed requires O: WeakOrd[T]`. [`Self::Erased`] one position over — a declaration
+    /// head has no σ to quantify the slot in, so it is simply absent there — and whatever
+    /// the provision's own head says about the slot is beside the point: no head can
+    /// forward what the goal never wrote.
+    Unwritten,
 }
 
 /// Classify `slot` of `owner` from the provision match `impl_subst`. See [`CarriedSlot`].
@@ -1637,6 +1644,10 @@ pub(super) fn carried_slot(
     owner: Symbol,
     slot: crate::kb::NamedRequirementSlot,
     impl_subst: &[(Symbol, TermId)],
+    // WI-20261001-80ZV8 — the goal's value at each spec parameter the provision's head
+    // binds (`Candidate::resolved_head_bindings`): where the carrier's type is read when
+    // the match recorded nothing for the slot.
+    goal_values: &[(Symbol, TermId)],
     sigma: Option<&SigmaCtx>,
     // WI-20260923-WN9P8 — the frame the resolution's `FromScope` indices count in, where a
     // forwarded binder's own dictionary is looked for.
@@ -1651,7 +1662,11 @@ pub(super) fn carried_slot(
         .find(|(k, _)| kb.local_name_of(*k) == binder)
         .map(|(_, v)| *v)
     else {
-        return CarriedSlot::NotInHead;
+        return if goal_carrier_leaves_slot_unwritten(kb, owner, slot, goal_values) {
+            CarriedSlot::Unwritten
+        } else {
+            CarriedSlot::NotInHead
+        };
     };
     let bound = match sigma {
         Some(s) => {
@@ -1705,6 +1720,25 @@ pub(super) fn carried_slot(
         SlotBinderState::Unspoken(_) => CarriedSlot::Unspoken,
         SlotBinderState::NoWitnessReading => CarriedSlot::NoWitness,
     }
+}
+
+/// WI-20261001-80ZV8 — one of the goal's values is an instance of `owner` itself and
+/// writes no binding for `slot`: [`CarriedSlot::Unwritten`]'s test. A value of any other
+/// sort says nothing about `owner`'s slots (a witness's head is about some other carrier),
+/// and neither does one that writes the slot — the match would then have recorded it,
+/// unless the head left it out.
+fn goal_carrier_leaves_slot_unwritten(
+    kb: &KnowledgeBase,
+    owner: Symbol,
+    slot: crate::kb::NamedRequirementSlot,
+    goal_values: &[(Symbol, TermId)],
+) -> bool {
+    goal_values.iter().any(|(_, value)| {
+        sort_instance_parts(kb, *value).is_some_and(|(sort, bindings)| {
+            same_sort_canonical(kb, sort, owner)
+                && binding_for_param(kb, &bindings, slot.binder, BindingKeyMatch::Label).is_none()
+        })
+    })
 }
 
 /// The named slot of `owner` sitting at position `j` of its dictionary chain, if any —

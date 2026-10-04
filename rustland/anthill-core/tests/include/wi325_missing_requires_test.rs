@@ -189,7 +189,7 @@ namespace test.wi325.user_self_receiver_no_provider
 
   sort Widget
     sort T = ?
-    operation render(w: Widget) -> Bool
+    operation render(w: Self) -> Bool
   end
 
   sort Driver

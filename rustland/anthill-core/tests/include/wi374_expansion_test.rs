@@ -208,8 +208,8 @@ namespace test.wi374.sibling
   sort Box
     sort T = ?
     entity mk(v: T)
-    operation helper(b2: Box) -> Int64 = 42
-    operation use(b: Box) -> Int64 = helper(mk(v: 1))
+    operation helper(b2: Self) -> Int64 = 42
+    operation use(b: Self) -> Int64 = helper(mk(v: 1))
   end
 end
 "#;
@@ -259,7 +259,7 @@ namespace test.wi374.masking
   sort Box
     sort T = ?
     entity mk(v: T)
-    operation combine(x: List, y: List, a: Box, b: Box) -> Int64 = 42
+    operation combine(x: List, y: List, a: Self, b: Self) -> Int64 = 42
   end
 
   operation driver() -> Int64 =
@@ -417,7 +417,7 @@ namespace test.wi374.order1
     sort B = ?
     entity mkA(a: A)
     entity mkB(b: B)
-    operation comb(x: Pair2, y: Pair2, z: Pair2) -> Int64 = 42
+    operation comb(x: Self, y: Self, z: Self) -> Int64 = 42
   end
 
   operation driver() -> Int64 = comb(mkB(b: 1), mkA(a: 2), mkB(b: "x"))
@@ -432,7 +432,7 @@ namespace test.wi374.order2
     sort B = ?
     entity mkA(a: A)
     entity mkB(b: B)
-    operation comb(x: Pair2, y: Pair2, z: Pair2) -> Int64 = 42
+    operation comb(x: Self, y: Self, z: Self) -> Int64 = 42
   end
 
   operation driver() -> Int64 = comb(mkB(b: 1), mkB(b: "x"), mkA(a: 2))

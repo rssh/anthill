@@ -146,10 +146,10 @@ fn nested(big_cond: &str) -> String {
   sort Small\n    sort T = ?\n  end\n\
   sort Cond\n    sort T = ?\n  end\n\
   sort Big\n    sort T = ?\n    requires Small[T = Seq[E = T]]\n  end\n\
-  enum Seq\n    sort E = ?\n    entity seq(e: E)\n    provides Small[T = Seq] :- Small[E]\n  end\n\
+  enum Seq\n    sort E = ?\n    entity seq(e: E)\n    provides Small[T = Self] :- Small[E]\n  end\n\
   enum Box\n    sort B = ?\n    entity bx(b: B)\n    \
-    provides Small[T = Box] :- Cond[B]\n    \
-    provides Big[T = Box]{big_cond}\n  end\nend\n"
+    provides Small[T = Self] :- Cond[B]\n    \
+    provides Big[T = Self]{big_cond}\n  end\nend\n"
     )
 }
 
@@ -263,7 +263,7 @@ const SPECS: &str = "  sort Lawful\n    sort T = ?\n  end\n  \
 fn a_ground_requirement_is_assumed_and_its_use_is_refused() {
     let conditioned = format!(
         "\nnamespace p5g39.cond\n{SPECS}  enum Cell\n    sort A = ?\n    \
-         entity cell(a: A)\n    provides Hi[T = Cell] :- Lo[T = Cell]\n  end\nend\n"
+         entity cell(a: A)\n    provides Hi[T = Self] :- Lo[T = Self]\n  end\nend\n"
     );
     if let Err(errs) = crate::common::try_load_kb_with(&conditioned) {
         panic!("`Hi[Cell]` holds where its condition `Lo[Cell]` does; got {errs:?}");
@@ -274,8 +274,8 @@ fn a_ground_requirement_is_assumed_and_its_use_is_refused() {
              sort Show\n    sort T = ?\n    requires Hi[T = T]\n    \
              operation show(x: T) -> Int64\n  end\n  \
              enum Cell\n    sort A = ?\n    entity cell(a: A)\n    \
-             requires Lo[T = Cell]\n    provides Hi[T = Cell]\n    provides Show[T = Cell]\n    \
-             operation show(x: Cell) -> Int64 = 1\n  end\n  \
+             requires Lo[T = Self]\n    provides Hi[T = Self]\n    provides Show[T = Self]\n    \
+             operation show(x: Self) -> Int64 = 1\n  end\n  \
              sort Caller\n    sort T = ?\n    requires Show[T = T]\n    \
              operation useIt(x: T) -> Int64 = Show.show(x)\n  end\n{use_it}end\n"
         )
@@ -308,7 +308,7 @@ fn a_provision_certified_by_a_generic_witness_elsewhere_is_refused() {
         "\nnamespace p5g39.gen\n  import anthill.prelude.{{Int64}}\n{SPECS}  \
          sort Gen\n    sort X = ?\n    provides Lo[T = X] :- Lawful[X]\n  end\n  \
          enum Cell\n    sort A = ?\n    entity cell(a: A)\n    \
-         provides Lo[T = Cell[A = Int64]]\n    provides Hi[T = Cell]\n  end\nend\n"
+         provides Lo[T = Cell[A = Int64]]\n    provides Hi[T = Self]\n  end\nend\n"
     );
     let errs = load_errs(&src);
     assert!(
@@ -332,9 +332,9 @@ fn the_refusal_names_the_written_condition_not_the_innermost_goal() {
     let src = format!(
         "\nnamespace p5g39.deep\n{SPECS}  \
          enum Seq\n    sort E = ?\n    entity seq(e: E)\n    \
-         provides Lawful[T = Seq] :- Lawful[E]\n  end\n  \
+         provides Lawful[T = Self] :- Lawful[E]\n  end\n  \
          enum Cell\n    sort A = ?\n    entity cell(a: A)\n    \
-         provides Lo[T = Cell] :- Lawful[T = Seq[E = A]]\n    provides Hi[T = Cell]\n  end\nend\n"
+         provides Lo[T = Self] :- Lawful[T = Seq[E = A]]\n    provides Hi[T = Self]\n  end\nend\n"
     );
     let errs = load_errs(&src);
     assert!(
@@ -353,7 +353,7 @@ fn a_written_condition_fact_with_no_spec_head_is_reported() {
     let src = format!(
         "\nnamespace p5g39.fact\n  import anthill.reflect.{{ProvidesConditionInfo}}\n{SPECS}  \
          enum Box\n    sort B = ?\n    entity bx(b: B)\n    \
-         provides Lo[T = Box]\n    provides Hi[T = Box]\n  end\n  \
+         provides Lo[T = Self]\n    provides Hi[T = Self]\n  end\n  \
          fact ProvidesConditionInfo(sort_ref: Box, provided: Hi, condition: 42, clause: 7)\nend\n"
     );
     let errs = load_errs(&src);
@@ -372,8 +372,8 @@ fn a_derived_floor_is_told_to_write_its_own_clause() {
     let src = "\nnamespace p5g39.derived\n  \
          import anthill.prelude.{Int64, Bool, PartialEq, Eq, PartialOrd, Ord, WeakOrd}\n  \
          enum Foo\n    sort A = ?\n    entity foo(a: A)\n    \
-         provides Eq[Foo] :- Eq[A]\n    provides Ord[Foo] where\n      \
-         operation compare(x: Foo, y: Foo) -> Int64 = 0\n    end\n  end\nend\n";
+         provides Eq[Self] :- Eq[A]\n    provides Ord[Self] where\n      \
+         operation compare(x: Self, y: Self) -> Int64 = 0\n    end\n  end\nend\n";
     let errs = load_errs(src);
     assert!(
         errs.iter().any(|e| e.contains(
@@ -398,9 +398,9 @@ fn a_dispatch_holds_through_an_unconditioned_clause_beside_duplicate_conditioned
          sort Cond\n    sort T = ?\n  end\n  \
          sort Big\n    sort T = ?\n    operation big(x: T) -> Int64\n  end\n  \
          enum Box\n    sort B = ?\n    entity bx(b: B)\n    \
-         provides Big[T = Box]\n    provides Big[T = Box] :- Cond[B]\n    \
-         provides Big[T = Box] :- Cond[B]\n    \
-         operation big(x: Box) -> Int64 = 7\n  end\n  \
+         provides Big[T = Self]\n    provides Big[T = Self] :- Cond[B]\n    \
+         provides Big[T = Self] :- Cond[B]\n    \
+         operation big(x: Self) -> Int64 = 7\n  end\n  \
          sort Caller\n    sort T = ?\n    requires Big[T = T]\n    \
          operation useIt(x: T) -> Int64 = Big.big(x)\n  end\n  \
          operation go() -> Int64 = Caller.useIt(bx(b: 1))\nend\n";

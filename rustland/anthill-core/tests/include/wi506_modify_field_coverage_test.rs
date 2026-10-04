@@ -40,7 +40,7 @@ namespace test.wi506.field
     sort T = ?
     entity wrap(rep: Cell[V = List[T]])
 
-    operation push(c: Wrap, elem: T) -> Unit
+    operation push(c: Self, elem: T) -> Unit
       effects Modify[c]
     =
       Cell.set(c.rep, cons(head: elem, tail: Cell.get(c.rep)))
@@ -62,7 +62,7 @@ namespace test.wi506.pat
     sort T = ?
     entity wrap(rep: Cell[V = List[T]])
 
-    operation push(c: Wrap, elem: T) -> Unit
+    operation push(c: Self, elem: T) -> Unit
       effects Modify[c]
     =
       match c
@@ -85,7 +85,7 @@ namespace test.wi506.wrong
     sort T = ?
     entity wrap(rep: Cell[V = List[T]])
 
-    operation move_into(a: Wrap, b: Wrap) -> Unit
+    operation move_into(a: Self, b: Self) -> Unit
       effects Modify[a]
     =
       Cell.set(b.rep, Cell.get(a.rep))

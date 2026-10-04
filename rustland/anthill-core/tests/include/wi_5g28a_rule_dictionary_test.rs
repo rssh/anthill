@@ -329,9 +329,9 @@ namespace wi5g28a.gate
     import anthill.prelude.Int64
     sort E = ?
     entity wrap(inner: E)
-    provides Zeroable[T = Wrap] :- Zeroable[E] where
+    provides Zeroable[T = Self] :- Zeroable[E] where
       operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
-      operation tag(x: Wrap) -> Int64 = 9
+      operation tag(x: Self) -> Int64 = 9
     end
   end
 

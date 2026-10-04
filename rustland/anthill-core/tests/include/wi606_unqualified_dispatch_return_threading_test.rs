@@ -67,7 +67,7 @@ namespace wi606.witness
     -- names — "type mismatch in splitFirst.return (op-return): expected a well-formed
     -- type projection, got type 'wi606.witness.Mapped' has no member 'E'". A body change
     -- that had quietly moved the fixture off WI-606's subject would have left it green.
-    operation splitFirst(m: Mapped)
+    operation splitFirst(m: Self)
       -> Option[Pair[A = T, B = Mapped[Source = Source, Src = Src, T = T, ES = ES, EF = EF]]] effects {ES, EF} =
       match m
         case mk(_, _) -> none

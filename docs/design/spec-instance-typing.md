@@ -14,7 +14,7 @@ Make polymorphic operations defined inside a sort (`Stream.head`, `Option.map`, 
 sort anthill.prelude.Stream
   sort T = ?
   sort E = ?
-  operation head(s: Stream) -> Option[T = T] effects E
+  operation head(s: Self) -> Option[T = T] effects E
 end
 ```
 

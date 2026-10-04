@@ -219,8 +219,8 @@ namespace test.wi404.mvec
   sort Vec
     sort T = ?
     sort N = ?
-    operation mk(c: Vec) -> Vec[T = Int64, N = 3]
-    operation usevec(c: Vec) -> Vec[T = Int64, N = 3] = mk(c)
+    operation mk(c: Self) -> Vec[T = Int64, N = 3]
+    operation usevec(c: Self) -> Vec[T = Int64, N = 3] = mk(c)
   end
 end
 "#;

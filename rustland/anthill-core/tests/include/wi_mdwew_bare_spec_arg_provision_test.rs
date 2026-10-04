@@ -76,9 +76,9 @@ namespace test.mdwew
     import anthill.prelude.Option
     sort Elem = ?
     effects Row = ?
-    operation firstOf(s: Seq) -> Option[T = s.Elem] effects s.Row
-    provides Walk[C = Seq, Element = Elem, E = Row]
-    operation walk(s: Seq) -> Seq[Elem = s.Elem, Row = s.Row] = s
+    operation firstOf(s: Self) -> Option[T = s.Elem] effects s.Row
+    provides Walk[C = Self, Element = Elem, E = Row]
+    operation walk(s: Self) -> Seq[Elem = s.Elem, Row = s.Row] = s
   end
 
   sort Walk
@@ -99,7 +99,7 @@ namespace test.mdwew
     requires Walk[C = Source, Element = Src, E = ES]
     entity mk(source: Walk[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {EF})
     provides Seq[Elem = T, Row = {ES, EF}]
-    operation firstOf(m: Mapped) -> Option[T = T] effects {ES, EF} = none
+    operation firstOf(m: Self) -> Option[T = T] effects {ES, EF} = none
   end
 
   -- the free op: a BARE `Seq` receiver into a `Walk`-typed field.
@@ -150,9 +150,9 @@ namespace test.mdwew.foreign
     import test.mdwew.foreign.Foreign
     sort Elem = ?
     effects Row = ?
-    operation firstOf(s: Seq) -> Option[T = s.Elem] effects s.Row
-    provides Walk[C = Seq, Element = {element}, E = Row]
-    operation walk(s: Seq) -> Seq[Elem = s.Elem, Row = s.Row] = s
+    operation firstOf(s: Self) -> Option[T = s.Elem] effects s.Row
+    provides Walk[C = Self, Element = {element}, E = Row]
+    operation walk(s: Self) -> Seq[Elem = s.Elem, Row = s.Row] = s
   end
 
   sort Walk
@@ -173,7 +173,7 @@ namespace test.mdwew.foreign
     requires Walk[C = Source, Element = Src, E = ES]
     entity mk(source: Walk[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {{EF}})
     provides Seq[Elem = T, Row = {{ES, EF}}]
-    operation firstOf(m: Mapped) -> Option[T = T] effects {{ES, EF}} = none
+    operation firstOf(m: Self) -> Option[T = T] effects {{ES, EF}} = none
   end
 
   operation bare_map[Dst, EffP](s: Seq, f: (x: s.Elem) -> Dst @ {{EffP, -Modify[x]}})
@@ -229,7 +229,7 @@ namespace test.mdwew.transposed
     import anthill.prelude.Bool
     sort Left = ?
     sort Right = ?
-    operation flipped(s: Slot) -> Bool
+    operation flipped(s: Self) -> Bool
   end
 
   sort Xchg
@@ -239,7 +239,7 @@ namespace test.mdwew.transposed
     -- the SWAP: Slot's Left is Xchg's Right, and Xchg names its own params the same
     -- way Slot does, so only reading THIS clause gets the direction right.
     provides Slot[Left = Right, Right = Left]
-    operation flipped(s: Xchg) -> Bool = true
+    operation flipped(s: Self) -> Bool = true
   end
 
   sort Hold
@@ -248,7 +248,7 @@ namespace test.mdwew.transposed
     sort HR = ?
     entity hold(inner: Slot[Left = HL, Right = HR])
     provides Slot[Left = HR, Right = HL]
-    operation flipped(h: Hold) -> Bool = false
+    operation flipped(h: Self) -> Bool = false
   end
 
   operation grab(x: Xchg) -> {ret} = hold(x)
@@ -343,9 +343,9 @@ namespace test.mdwew.ambient
     import anthill.prelude.Option
     sort Elem = ?
     effects Row = ?
-    operation firstOf(s: Seq) -> Option[T = s.Elem] effects s.Row
-    provides Walk[C = Seq, Element = Elem, E = Row]
-    operation walk(s: Seq) -> Seq[Elem = s.Elem, Row = s.Row] = s
+    operation firstOf(s: Self) -> Option[T = s.Elem] effects s.Row
+    provides Walk[C = Self, Element = Elem, E = Row]
+    operation walk(s: Self) -> Seq[Elem = s.Elem, Row = s.Row] = s
   end
 
   sort Walk
@@ -366,7 +366,7 @@ namespace test.mdwew.ambient
     requires Walk[C = Source, Element = Src, E = ES]
     entity mk(source: Walk[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {{EF}})
     provides Seq[Elem = T, Row = {{ES, EF}}]
-    operation firstOf(m: Mapped) -> Option[T = T] effects {{ES, EF}} = none
+    operation firstOf(m: Self) -> Option[T = T] effects {{ES, EF}} = none
   end
 
   sort Coll

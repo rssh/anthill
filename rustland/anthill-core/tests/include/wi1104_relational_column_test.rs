@@ -289,7 +289,7 @@ namespace test.wi1104.proj
   sort Box
     sort T = ?
     entity box(v: T)
-    operation get(b: Box) -> b.T = b.v
+    operation get(b: Self) -> b.T = b.v
   end
 
   rule r() :- box(v: 3).get({col})

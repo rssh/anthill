@@ -489,7 +489,7 @@ fn a_bare_sort_parameter_binds_the_value_in_type() {
 fn holder_body(ann: &str) -> String {
     format!(
         "\n  sort Holder\n    sort S = ?\n    entity holder(s: S)\n    \
-         operation first(h: Holder) -> S =\n      match h\n        case holder(s) -> s\n  \
+         operation first(h: Self) -> S =\n      match h\n        case holder(s) -> s\n  \
          end\n  \
          operation read(h: Holder[S = {N3}]) -> Int64 =\n    \
          let b: Buf[T = Int64, N = {ann}] = Holder.first(h)\n    b.v"
@@ -571,7 +571,7 @@ namespace {ns}
     requires Tagger[T = Src]
     entity pairer(item: Src, out: Out)
     provides Stream[T = Out, E = {{}}]
-    operation splitFirst(p: Pairer) -> Option[Pair[A = Out, B = Stream[T = Out, E = {{}}]]] =
+    operation splitFirst(p: Self) -> Option[Pair[A = Out, B = Stream[T = Out, E = {{}}]]] =
       match p
         case pairer(_, o) -> some(pair(o, rest()))
     operation rest() -> List[T = Out] = []

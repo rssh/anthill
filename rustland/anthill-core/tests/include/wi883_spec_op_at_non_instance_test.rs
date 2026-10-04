@@ -237,8 +237,8 @@ namespace test.wi883.bag
   sort Bag
     sort T = ?
     entity bag(x: T)
-    operation first(b: Bag) -> T = match b case bag(x) -> x
-    operation make(x: T) -> Bag = bag(x: x)
+    operation first(b: Self) -> T = match b case bag(x) -> x
+    operation make(x: T) -> Self = bag(x: x)
   end
   operation g(u: Int64) -> Int64 = Bag.first(Bag.make(6))
 end
@@ -307,8 +307,8 @@ namespace test.wi883.refl
   sort Box
     sort T = ?
     entity box(v: T)
-    operation get(b: Box) -> Int64
-    operation twice(b: Box) -> Int64 = get(b) + get(b)
+    operation get(b: Self) -> Int64
+    operation twice(b: Self) -> Int64 = get(b) + get(b)
   end
   rule twiced(?x) :- ?x = Box.twice(Box.box(1))
 end
@@ -349,14 +349,14 @@ namespace test.wi883.cond
   end
   sort Shape
     sort T = ?
-    operation area(s: Shape) -> Int64
-    operation twice(s: Shape) -> Int64 = area(s) + area(s)
+    operation area(s: Self) -> Int64
+    operation twice(s: Self) -> Int64 = area(s) + area(s)
   end
   sort Sq
     sort E = ?
     entity sq(v: E)
     provides Shape[T = E] :- Tag[T = E]
-    operation area(s: Sq) -> Int64 = 4
+    operation area(s: Self) -> Int64 = 4
   end
   sort Pebble
     entity pebble(n: Int64)

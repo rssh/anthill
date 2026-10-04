@@ -84,9 +84,9 @@ const PRELUDE: &str = r#"
     requires Eq[T = A]
     requires Eq[T = B]
     entity duo(l: A, r: B)
-    provides PartialEq[T = Duo]
-    provides Eq[T = Duo]
-    operation eq(a: Duo, b: Duo) -> Bool =
+    provides PartialEq[T = Self]
+    provides Eq[T = Self]
+    operation eq(a: Self, b: Self) -> Bool =
       match a
         case duo(al, ar) ->
           match b

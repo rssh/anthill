@@ -467,8 +467,8 @@ namespace test.wi8rjk8req
     sort K = ?
     requires Eq[T = K]
     operation {
-      put(b: Bag, key: K) -> Bag
-      get(b: Bag, key: K) -> Option[K]
+      put(b: Self, key: K) -> Self
+      get(b: Self, key: K) -> Option[K]
     }
     -- ONE law, and guarded: `Map`'s unguarded `hit` sibling is deliberately absent, so
     -- that the guard-FALSE row below has nothing else to fire and measures THIS rule.

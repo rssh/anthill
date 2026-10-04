@@ -220,9 +220,9 @@ namespace wi857.parametric
     requires Eq[T = A]
     requires Eq[T = B]
     entity duo(l: A, r: B)
-    provides PartialEq[T = Duo]
-    provides Eq[T = Duo]
-    operation eq(a: Duo, b: Duo) -> Bool =
+    provides PartialEq[T = Self]
+    provides Eq[T = Self]
+    operation eq(a: Self, b: Self) -> Bool =
       match a
         case duo(al, ar) ->
           match b
@@ -317,9 +317,9 @@ namespace wi857.locality
     requires Eq[T = A]
     requires Eq[T = B]
     entity pr(l: A, r: B)
-    provides PartialEq[T = Duet]
-    provides Eq[T = Duet]
-    operation eq(a: Duet, b: Duet) -> Bool =
+    provides PartialEq[T = Self]
+    provides Eq[T = Self]
+    operation eq(a: Self, b: Self) -> Bool =
       match a
         case pr(al, ar) ->
           match b

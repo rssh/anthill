@@ -74,13 +74,13 @@ fn a_spec_that_accepts_its_own_element_files_the_provision_at_the_element() {
 
   sort Bag
     sort T = ?
-    operation insert(s: Bag, x: T) -> Bag
-    operation size(s: Bag) -> Int64
+    operation insert(s: Self, x: T) -> Self
+    operation size(s: Self) -> Int64
   end
 
   sort Feeder
     sort T = ?
-    operation next(f: Feeder) -> T
+    operation next(f: Self) -> T
   end
 
   sort IntBag

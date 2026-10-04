@@ -293,18 +293,18 @@ namespace test.xzmgc_elem
   sort Spec
     sort P = ?
     sort Q = ?
-    operation touch(c: Spec, x: P) -> Q
+    operation touch(c: Self, x: P) -> Q
   end
   sort Mid
     sort A = ?
     provides Spec[P = A, Q = Int64]
-    operation touch(c: Mid, x: A) -> Int64 = 1
+    operation touch(c: Self, x: A) -> Int64 = 1
   end
   sort Carrier
     sort T = ?
     entity carrier(v: T)
     provides Mid[A = T]
-    operation touch(c: Carrier, x: T) -> Int64 = 2
+    operation touch(c: Self, x: T) -> Int64 = 2
   end
   operation ti(c: Spec[{want}]) -> Int64 = 1
   operation drive(x: Carrier[T = Int64]) -> Int64 = ti(x)
@@ -351,7 +351,7 @@ namespace test.xzmgc_selfelem
   import anthill.prelude.{{Int64}}
   sort Spec
     sort P = ?
-    operation touch(c: Spec, x: P) -> Int64
+    operation touch(c: Self, x: P) -> Int64
   end
   sort Elem
     import anthill.prelude.{{Int64}}
@@ -363,7 +363,7 @@ namespace test.xzmgc_selfelem
     import anthill.prelude.{{Int64}}
     sort Z = ?
     provides Spec[P = Elem]
-    operation touch(c: Mid, x: Elem) -> Int64 = 1
+    operation touch(c: Self, x: Elem) -> Int64 = 1
   end
   sort Carrier
     import anthill.prelude.{{Int64}}
@@ -433,7 +433,7 @@ namespace test.xzmgc_entity
     sort T = ?
     entity boxed(v: Int64)
     provides Stream[T = T, E = {{}}]
-    operation splitFirst(s: Box) -> Option[T = Pair[A = T, B = Box[T = T]]] = none
+    operation splitFirst(s: Self) -> Option[T = Pair[A = T, B = Box[T = T]]] = none
   end
   operation ti(c: {want}) -> Int64 = 1
   operation drive(b: Box.boxed) -> Int64 = ti(b)

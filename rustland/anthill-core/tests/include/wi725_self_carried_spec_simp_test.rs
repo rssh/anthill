@@ -35,7 +35,7 @@ namespace test.wi725
   -- sort. The @[simp] firing guard would demand sort_provides(Widget, Widget) (false).
   sort Widget
     sort T = ?
-    operation flip(w: Widget) -> Int64
+    operation flip(w: Self) -> Int64
     -- MACRO-RHS lowering: bypasses the carrier guard (WI-725).
     rule flip(?w) <=> flip_macro(?w) @[simp]
   end

@@ -53,7 +53,7 @@ namespace test.wi475.strm
   sort Strm
     sort T = ?
     effects E = ?
-    operation obsEmpty(s: Strm) -> Bool effects s.E = true
+    operation obsEmpty(s: Self) -> Bool effects s.E = true
   end
 end
 namespace test.wi475.carrier

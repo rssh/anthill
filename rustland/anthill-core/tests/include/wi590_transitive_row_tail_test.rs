@@ -40,9 +40,9 @@ namespace wi590row
     import wi590row.Iter
     sort T = ?
     effects E = ?
-    operation split(s: Str) -> T effects E
-    provides Iter[C = Str, Element = T, E = E]
-    operation iter(s: Str) -> T effects E = split(s)
+    operation split(s: Self) -> T effects E
+    provides Iter[C = Self, Element = T, E = E]
+    operation iter(s: Self) -> T effects E = split(s)
   end
 
   -- The CARRIER. Its provided row is a UNION of its own two row params, so the composed
@@ -54,7 +54,7 @@ namespace wi590row
     effects EF = ?
     entity wrap(v: T)
     provides Str[T = T, E = {{ES, EF}}]
-    operation split(w: Wrap) -> T effects {{ES, EF}} =
+    operation split(w: Self) -> T effects {{ES, EF}} =
       match w
         case wrap(v) -> v
   end

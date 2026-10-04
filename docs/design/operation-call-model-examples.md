@@ -501,7 +501,7 @@ sort Tagged
   sort Tag = ?       -- never used in op bodies
   sort T = ?
   entity tagged(v: T)
-  operation unwrap(x: Tagged) -> T = match x case tagged(v) -> v
+  operation unwrap(x: Self) -> T = match x case tagged(v) -> v
 end
 
 sort UserId

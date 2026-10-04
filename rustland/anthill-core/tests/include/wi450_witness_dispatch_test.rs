@@ -71,7 +71,7 @@ const WITNESS_SRC: &str = r#"namespace test.wi450.eval
     sort T = ?
     requires Combiner[T]
     entity box(content: T)
-    operation combineBox(b: Box) -> T =
+    operation combineBox(b: Self) -> T =
       match b
         case box(c) -> combine(c, c)
   end

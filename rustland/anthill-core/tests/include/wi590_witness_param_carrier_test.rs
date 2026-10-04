@@ -65,7 +65,7 @@ namespace wi590.witness
     -- both read this signature. It stays body-HAVING (rather than becoming a body-less
     -- primitive like `LogicalStream.splitFirst`) so the fixture keeps exercising the
     -- same dispatch route it did before.
-    operation splitFirst(m: Mapped)
+    operation splitFirst(m: Self)
       -> Option[Pair[A = T, B = Mapped[Source = Source, Src = Src, T = T, ES = ES, EF = EF]]] effects {ES, EF} =
       match m
         case mk(_, _) -> none

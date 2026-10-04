@@ -1082,6 +1082,7 @@ pub(super) fn resolve_inner<'a>(
                 chosen_impl_sort,
                 slot,
                 &chosen_impl_subst,
+                &chosen_bindings,
                 scope.sigma,
                 frame,
             )
@@ -1187,27 +1188,48 @@ pub(super) fn resolve_inner<'a>(
                 );
                 return refuse(kb, stack, report, hint);
             }
-            (Some(CarriedSlot::NotInHead), None)
+            // Both of the next two are a VALUE-DIRECTED provider's: its values chose the
+            // slot at their construction, so a search here would answer for some other
+            // dictionary. A constructor-less carrier has no such value and keeps its
+            // search (the last arm).
+            (Some(missing @ (CarriedSlot::NotInHead | CarriedSlot::Unwritten)), None)
                 if is_value_directed_provider(
                     kb,
                     &crate::kb::load::sorts_with_constructors(kb),
                     chosen_impl_sort,
                 ) =>
             {
-                let hint = format!(
-                    "the provision of `{0}` this dispatch took does not bind its named slot \
-                     `{b}` in its head, so the carrier's `{b}` cannot reach the slot — write \
-                     `{b} = {b}` in the provision's `{0}[…]`",
-                    kb.qualified_name_of(chosen_impl_sort),
-                    b = binder_name(kb),
-                );
+                let hint = match missing {
+                    // WI-20261001-80ZV8 — said about the GOAL, which is where the slot is
+                    // missing. Before the classifier told the two apart this was reported
+                    // as the head's omission, and the repair it named — `O = O` in the
+                    // head — is the spelling that then lost the provider altogether.
+                    CarriedSlot::Unwritten => format!(
+                        "the carrier's type does not write named slot `{b}` of `{0}`: the \
+                         value's `{b}` was chosen at its construction and no dictionary \
+                         travels with a value, so a provider supplied here would not be \
+                         the value's own. Write `{b}` in that `{0}[…]`: a witness, or a \
+                         named slot the enclosing declaration declares",
+                        kb.qualified_name_of(chosen_impl_sort),
+                        b = binder_name(kb),
+                    ),
+                    _ => format!(
+                        "the provision of `{0}` this dispatch took does not bind its named \
+                         slot `{b}` in its head, so the carrier's `{b}` cannot reach the \
+                         slot — write `{b} = {b}` in the provision's `{0}[…]`",
+                        kb.qualified_name_of(chosen_impl_sort),
+                        b = binder_name(kb),
+                    ),
+                };
                 return refuse(kb, stack, report, hint);
             }
             // `Forwarded(None)`: no σ, so the scope and the search answer, as they always
             // did there. `Unspoken`: the search is the ladder, as at a construction site.
             // `NoWitness`: the requirement's own route reports it. A witness sort's
             // `NotInHead`: a bracket value or an enclosing selection writes it, and nothing
-            // did. (`Forwarded(Some)` and `Untied` were answered above.)
+            // did. `Unwritten` at a constructor-less carrier: likewise searched, as the
+            // bare spelling of its provision always was. (`Forwarded(Some)` and `Untied`
+            // were answered above.)
             _ => None,
         };
         // WI-861 — a sub-goal filling one of the CHOSEN PROVIDER's own NAMED slots is the

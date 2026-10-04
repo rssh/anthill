@@ -55,8 +55,8 @@ namespace test.wi599
     effects ES = ?
     effects EF = ?
     entity mk(source: Coll[C = SrcC, Element = Src, E = ES], fn: (Src) -> T @ {EF})
-    provides Coll[C = Mapped, Element = T, E = {ES, EF}]
-    operation collect(m: Mapped) -> List[T = T] effects {ES, EF} = nil
+    provides Coll[C = Self, Element = T, E = {ES, EF}]
+    operation collect(m: Self) -> List[T = T] effects {ES, EF} = nil
   end
 end
 "#;
@@ -127,9 +127,9 @@ namespace test.wi70xvh.body
     import anthill.prelude.Option
     sort Elem = ?
     effects Row = ?
-    operation firstOf(s: Seq) -> Option[T = s.Elem] effects s.Row
-    provides Walk[C = Seq, Element = Elem, E = Row]
-    operation walk(s: Seq) -> Seq[Elem = s.Elem, Row = s.Row] = s
+    operation firstOf(s: Self) -> Option[T = s.Elem] effects s.Row
+    provides Walk[C = Self, Element = Elem, E = Row]
+    operation walk(s: Self) -> Seq[Elem = s.Elem, Row = s.Row] = s
   end
 
   sort Walk
@@ -150,7 +150,7 @@ namespace test.wi70xvh.body
     requires Walk[C = Source, Element = Src, E = ES]
     entity mk(source: Walk[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {{EF}})
     provides Seq[Elem = T, Row = {{ES, EF}}]
-    operation firstOf(m: Mapped) -> Option[T = T] effects {{ES, EF}} = none
+    operation firstOf(m: Self) -> Option[T = T] effects {{ES, EF}} = none
   end
 
   -- THE FREE OPERATION: no enclosing sort, and the source is its OWN type parameter.

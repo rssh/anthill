@@ -317,7 +317,7 @@ namespace x9pb4_n
     sort N = ?
     entity leaf(n: N)
     provides Desc[T = Leaf[N], Note = {note}]
-    operation describe(x: Leaf) -> Int64 = 7
+    operation describe(x: Self) -> Int64 = 7
   end
 
   rule dict(?x, ?d) :- ?d = require[Desc[T]], Desc.describe(?x, ?ignored)
@@ -539,14 +539,14 @@ namespace x9pb4_tie
 
   sort MidA
     sort N = ?
-    provides Spec[C = MidA, Note = N]
-    operation probe(c: MidA) -> Int64 = 7
+    provides Spec[C = Self, Note = N]
+    operation probe(c: Self) -> Int64 = 7
   end
 
   sort MidB
     sort N = ?
-    provides Spec[C = MidB, Note = N]
-    operation probe(c: MidB) -> Int64 = 9
+    provides Spec[C = Self, Note = N]
+    operation probe(c: Self) -> Int64 = 9
   end
 
   sort Carrier
@@ -597,14 +597,14 @@ namespace x9pb4_sr
 
   sort Bag
     sort E = ?
-    operation first(b: Bag) -> Int64 = 0
+    operation first(b: Self) -> Int64 = 0
   end
 
   sort IntBag
     sort N = ?
     entity intBag(n: N)
     provides Bag[E = N]
-    operation first(b: IntBag) -> Int64 = 7
+    operation first(b: Self) -> Int64 = 7
   end
 
   rule dict(?x, ?d) :- ?d = require[Bag[E]], Bag.first(?x, ?ignored)

@@ -69,7 +69,7 @@ namespace test.wi608
     effects ES = ?
     effects EF = ?
     entity fcm(source: FiniteCollection[C = SrcC, Element = Src, E = ES], fn: (Src) -> T @ {EF})
-    provides Iterable[C = FCMapped, Element = T, E = {ES, EF}]
+    provides Iterable[C = Self, Element = T, E = {ES, EF}]
 
     operation iterator[SrcCc, Srcc, Tt, ESs, EFf](
         m: FCMapped[SrcC = SrcCc, Src = Srcc, T = Tt, ES = ESs, EF = EFf])

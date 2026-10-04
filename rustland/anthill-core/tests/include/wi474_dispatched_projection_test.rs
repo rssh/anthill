@@ -68,7 +68,7 @@ namespace test.wi474.strm
   import anthill.prelude.{Option, Pair}
   sort Strm
     sort T = ?
-    operation splitFirstX(s: Strm) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
+    operation splitFirstX(s: Self) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
   end
 end
 namespace test.wi474.lst
@@ -80,8 +80,8 @@ namespace test.wi474.lst
     sort T = ?
     provides Strm[T = T]
     entity lnil
-    entity lcons(hd: T, tl: Lst)
-    operation splitFirstX(xs: Lst) -> Option[T = Pair[A = xs.T, B = Lst[T = xs.T]]] =
+    entity lcons(hd: T, tl: Self)
+    operation splitFirstX(xs: Self) -> Option[T = Pair[A = xs.T, B = Lst[T = xs.T]]] =
       match xs
         case lnil() -> none
         case lcons(h, t) -> some(pair(h, t))
@@ -117,7 +117,7 @@ namespace test.wi474w.strm
   import anthill.prelude.{Option, Pair}
   sort Strm
     sort T = ?
-    operation splitFirstX(s: Strm) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
+    operation splitFirstX(s: Self) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
   end
 end
 namespace test.wi474w.lst
@@ -129,8 +129,8 @@ namespace test.wi474w.lst
     sort T = ?
     provides Strm[T = T]
     entity lnil
-    entity lcons(hd: T, tl: Lst)
-    operation splitFirstX(xs: Lst) -> Option[T = Pair[A = xs.T, B = Lst[T = xs.T]]] =
+    entity lcons(hd: T, tl: Self)
+    operation splitFirstX(xs: Self) -> Option[T = Pair[A = xs.T, B = Lst[T = xs.T]]] =
       match xs
         case lnil() -> none
         case lcons(h, t) -> some(pair(h, t))
@@ -172,8 +172,8 @@ namespace test.wi474h.strm
   import anthill.prelude.Pair.{pair}
   sort Strm
     sort T = ?
-    operation splitFirstX(s: Strm) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
-    operation firstE(s: Strm) -> Option[T = s.T] =
+    operation splitFirstX(s: Self) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
+    operation firstE(s: Self) -> Option[T = s.T] =
       match splitFirstX(s)
         case some(pair(h, _)) -> some(h)
         case none() -> none
@@ -188,8 +188,8 @@ namespace test.wi474h.lst
     sort T = ?
     provides Strm[T = T]
     entity lnil
-    entity lcons(hd: T, tl: Lst)
-    operation splitFirstX(xs: Lst) -> Option[T = Pair[A = xs.T, B = Lst[T = xs.T]]] =
+    entity lcons(hd: T, tl: Self)
+    operation splitFirstX(xs: Self) -> Option[T = Pair[A = xs.T, B = Lst[T = xs.T]]] =
       match xs
         case lnil() -> none
         case lcons(h, t) -> some(pair(h, t))
@@ -225,8 +225,8 @@ namespace test.wi474hw.strm
   import anthill.prelude.Pair.{pair}
   sort Strm
     sort T = ?
-    operation splitFirstX(s: Strm) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
-    operation firstE(s: Strm) -> Option[T = s.T] =
+    operation splitFirstX(s: Self) -> Option[T = Pair[A = s.T, B = Strm[T = s.T]]]
+    operation firstE(s: Self) -> Option[T = s.T] =
       match splitFirstX(s)
         case some(pair(h, _)) -> some(h)
         case none() -> none
@@ -241,8 +241,8 @@ namespace test.wi474hw.lst
     sort T = ?
     provides Strm[T = T]
     entity lnil
-    entity lcons(hd: T, tl: Lst)
-    operation splitFirstX(xs: Lst) -> Option[T = Pair[A = xs.T, B = Lst[T = xs.T]]] =
+    entity lcons(hd: T, tl: Self)
+    operation splitFirstX(xs: Self) -> Option[T = Pair[A = xs.T, B = Lst[T = xs.T]]] =
       match xs
         case lnil() -> none
         case lcons(h, t) -> some(pair(h, t))

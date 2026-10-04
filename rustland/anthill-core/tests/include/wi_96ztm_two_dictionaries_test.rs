@@ -292,7 +292,7 @@ fn two_requires_differing_only_inside_a_type_ARGUMENT_are_not_equal() {
   sort Box
     sort E = ?
     entity box(v: E)
-    provides Desc[T = Box] :- Desc[E]
+    provides Desc[T = Self] :- Desc[E]
   end
   fact seedbl(box(v: leaf()))
   fact seedbo(box(v: other()))

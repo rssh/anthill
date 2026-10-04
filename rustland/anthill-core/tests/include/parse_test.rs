@@ -1028,11 +1028,11 @@ fn load_sort_with_operation() {
   entity checking(id: AccountId, balance: Money)
   entity savings(id: AccountId, balance: Money, rate: Money)
 
-  operation deposit(a: Account, m: Money) -> Account
+  operation deposit(a: Self, m: Money) -> Self
     requires gt(m, zero-val)
     ensures eq(balance(result), add(balance(a), m))
 
-  operation withdraw(a: Account, m: Money) -> Account
+  operation withdraw(a: Self, m: Money) -> Self
     requires gt(m, zero-val), gte(balance(a), m)
 end
 "#;
@@ -1321,7 +1321,7 @@ fn member_facts_for_sort_with_params_and_ops() {
   sort AccountId = ?
   entity checking(id: AccountId, balance: Int64)
   entity savings(id: AccountId, balance: Int64)
-  operation deposit(a: Account, m: Int64) -> Account
+  operation deposit(a: Self, m: Int64) -> Self
 end
 "#;
     let parsed = parse::parse(source).expect("parse failed");

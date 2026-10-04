@@ -106,7 +106,7 @@ fn path_dependent_row_projection_is_polymorphic_too() {
           sort Feed
             sort T = ?
             effects E = ?
-            operation peek(f: Feed) -> Bool effects f.E
+            operation peek(f: Self) -> Bool effects f.E
           end
         end
     "#;

@@ -184,7 +184,7 @@ fn conditional(tail: &str) -> String {
     import anthill.prelude.Int64
     sort A = ?
     entity wrap(v: A)
-    provides Sh[T = Wrap] :- Sh[A]
+    provides Sh[T = Self] :- Sh[A]
     operation tag() -> Int64 = 7
   end
 
@@ -264,7 +264,7 @@ fn boxed(tail: &str) -> String {
     import anthill.prelude.Int64
     sort E = ?
     entity box(v: E)
-    provides Desc[T = Box] :- Desc[E]
+    provides Desc[T = Self] :- Desc[E]
     operation tag() -> Int64 = 5
   end
 
@@ -655,7 +655,7 @@ fn a_self_representing_spec_whose_provider_pins_a_sibling_concretely_answers() {
   import anthill.prelude.Int64
   sort Cap
     sort P = ?
-    operation touch(c: Cap, x: P) -> Int64 = 1
+    operation touch(c: Self, x: P) -> Int64 = 1
     operation tag() -> Int64 = 1
   end
   sort Box

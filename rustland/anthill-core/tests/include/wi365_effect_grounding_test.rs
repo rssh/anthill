@@ -68,7 +68,7 @@ namespace test.wi365.carrier
 
   sort Box
     effects Effect = ?
-    operation peek(b: Box) -> Int64 effects Effect
+    operation peek(b: Self) -> Int64 effects Effect
   end
 
   sort MutBox

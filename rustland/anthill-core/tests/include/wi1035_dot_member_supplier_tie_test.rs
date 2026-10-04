@@ -529,8 +529,8 @@ fn abstract_receiver(ns: &str, call: &str, rival: &str) -> String {
   sort Coll
     import anthill.prelude.Int64
     sort E = ?
-    provides Desc[T = Coll]
-    operation describe(x: Coll) -> Int64 = 7
+    provides Desc[T = Self]
+    operation describe(x: Self) -> Int64 = 7
   end
 
   sort Leaf
@@ -618,9 +618,10 @@ fn an_abstract_spec_receiver_with_one_supplier_still_reaches_it() {
         );
         // The bound above, driven: strip the member's body and the program stops loading,
         // identically for both spellings. Without this the narrowing is a claim, not a fact.
-        let unrunnable = abstract_receiver(ns, call, "").replace(
-            "operation describe(x: Coll) -> Int64 = 7",
-            "operation describe(x: Coll) -> Int64",
+        let unrunnable = crate::common::replace_in_fixture(
+            &abstract_receiver(ns, call, ""),
+            "operation describe(x: Self) -> Int64 = 7",
+            "operation describe(x: Self) -> Int64",
         );
         let msg = refusal(&unrunnable);
         assert!(

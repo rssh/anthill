@@ -285,7 +285,7 @@ fn a_parameterized_carrier_in_the_slot_dispatches_to_its_own_member() {
     import anthill.prelude.Int64
     sort E = ?
     entity boxed(v: E)
-    provides Desc[T = Box]
+    provides Desc[T = Self]
     operation tag() -> Int64 = 5
   end
 

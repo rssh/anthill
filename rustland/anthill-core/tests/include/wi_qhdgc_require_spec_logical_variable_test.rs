@@ -461,14 +461,14 @@ fn a_variable_at_a_provider_tie_delays_rather_than_aborting() {
 
   sort MidA
     sort N = ?
-    provides Spec[C = MidA, Note = N]
-    operation probe(c: MidA) -> Int64 = 7
+    provides Spec[C = Self, Note = N]
+    operation probe(c: Self) -> Int64 = 7
   end
 
   sort MidB
     sort N = ?
-    provides Spec[C = MidB, Note = N]
-    operation probe(c: MidB) -> Int64 = 9
+    provides Spec[C = Self, Note = N]
+    operation probe(c: Self) -> Int64 = 9
   end
 
   sort Carrier

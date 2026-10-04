@@ -506,9 +506,9 @@ const BY_INNER: &str = r#"
     sort E = ?
     requires Eq[T = E]
     entity boxed(v: E)
-    provides PartialEq[T = Boxed]
-    provides Eq[T = Boxed]
-    operation eq(a: Boxed, b: Boxed) -> Bool =
+    provides PartialEq[T = Self]
+    provides Eq[T = Self]
+    operation eq(a: Self, b: Self) -> Bool =
       match a
         case boxed(av) ->
           match b
@@ -861,9 +861,9 @@ namespace wi456.misattr
     sort E = ?
     requires Eq[T = E]
     entity boxed(v: E)
-    provides PartialEq[T = Boxed]
-    provides Eq[T = Boxed]
-    operation eq(a: Boxed, b: Boxed) -> Bool =
+    provides PartialEq[T = Self]
+    provides Eq[T = Self]
+    operation eq(a: Self, b: Self) -> Bool =
       match a
         case boxed(av) -> match b
           case boxed(bv) -> PartialEq.eq(av, bv)

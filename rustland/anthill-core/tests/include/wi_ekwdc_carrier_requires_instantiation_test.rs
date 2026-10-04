@@ -100,7 +100,7 @@ namespace wiekwdc.fix
     requires Tagger[T = Src]
     entity pairer(item: Src, out: Out)
     provides Stream[T = Out, E = {}]
-    operation splitFirst(p: Pairer) -> Option[Pair[A = Out, B = Stream[T = Out, E = {}]]] =
+    operation splitFirst(p: Self) -> Option[Pair[A = Out, B = Stream[T = Out, E = {}]]] =
       match p
         case pairer(_, o) -> some(pair(o, rest()))
     operation rest() -> List[T = Out] = []
@@ -114,7 +114,7 @@ namespace wiekwdc.fix
     requires Tagger[T = Src]
     entity elemental(item: Src)
     provides Stream[T = Src, E = {}]
-    operation splitFirst(e: Elemental) -> Option[Pair[A = Src, B = Stream[T = Src, E = {}]]] =
+    operation splitFirst(e: Self) -> Option[Pair[A = Src, B = Stream[T = Src, E = {}]]] =
       match e
         case elemental(i) -> some(pair(i, rest()))
     operation rest() -> List[T = Src] = []
@@ -313,7 +313,7 @@ const CHAIN: &str = r#"
     sort Out = ?
     requires Tagger[T = Src]
     provides Stream[T = Out, E = {}]
-    operation splitFirst(m: Mid) -> Option[Pair[A = m.Out, B = Stream[T = m.Out, E = {}]]]
+    operation splitFirst(m: Self) -> Option[Pair[A = m.Out, B = Stream[T = m.Out, E = {}]]]
   end
 "#;
 
@@ -360,7 +360,7 @@ fn a_requirement_one_provider_hop_away_is_discharged_through_the_provision() {
     sort Out = ?
     entity chained(item: Heavy, out: Out)
     provides Mid[Src = Heavy, Out = Out]
-    operation splitFirst(c: Chained) -> Option[Pair[A = Out, B = Stream[T = Out, E = {}]]] =
+    operation splitFirst(c: Self) -> Option[Pair[A = Out, B = Stream[T = Out, E = {}]]] =
       match c
         case chained(_, v) -> some(pair(v, tail()))
     operation tail() -> List[T = Out] = []
@@ -414,7 +414,7 @@ fn and_a_requirement_one_hop_away_is_still_refused_at_a_value_that_cannot_meet_i
     sort Out = ?
     entity bareL(item: Light, out: Out)
     provides Mid[Src = Light, Out = Out]
-    operation splitFirst(b: BareL) -> Option[Pair[A = Out, B = Stream[T = Out, E = {}]]] =
+    operation splitFirst(b: Self) -> Option[Pair[A = Out, B = Stream[T = Out, E = {}]]] =
       match b
         case bareL(_, v) -> some(pair(v, tail()))
     operation tail() -> List[T = Out] = []
@@ -472,7 +472,7 @@ fn a_receiver_projection_across_a_hop_is_eliminated() {
     import anthill.prelude.{Int64, Stream, Option, Pair}
     sort Out = ?
     provides Stream[T = Out, E = {}]
-    operation splitFirst(m: Plain) -> Option[Pair[A = m.Out, B = Stream[T = m.Out, E = {}]]]
+    operation splitFirst(m: Self) -> Option[Pair[A = m.Out, B = Stream[T = m.Out, E = {}]]]
   end
 
   sort Wrapper
@@ -482,7 +482,7 @@ fn a_receiver_projection_across_a_hop_is_eliminated() {
     sort Out = ?
     entity wrapper(out: Out)
     provides Plain[Out = Out]
-    operation splitFirst(w: Wrapper) -> Option[Pair[A = w.Out, B = Stream[T = w.Out, E = {}]]] =
+    operation splitFirst(w: Self) -> Option[Pair[A = w.Out, B = Stream[T = w.Out, E = {}]]] =
       match w
         case wrapper(v) -> some(pair(v, tail()))
     operation tail() -> List[T = Out] = []
@@ -552,7 +552,7 @@ namespace wiekwdc5
     sort Out = ?
     requires Tagger[T = Src]
     provides Stream[T = Out, E = {}]
-    operation splitFirst(m: Mid) -> Option[Pair[A = m.Out, B = Stream[T = m.Out, E = {}]]]
+    operation splitFirst(m: Self) -> Option[Pair[A = m.Out, B = Stream[T = m.Out, E = {}]]]
   end
 
   sort J
@@ -569,7 +569,7 @@ namespace wiekwdc5
     entity two(out: Out)
     provides J[Out = Out]
     provides Mid[Src = Heavy, Out = Out]
-    operation splitFirst(t: Two) -> Option[Pair[A = Out, B = Stream[T = Out, E = {}]]] =
+    operation splitFirst(t: Self) -> Option[Pair[A = Out, B = Stream[T = Out, E = {}]]] =
       match t
         case two(v) -> some(pair(v, tail()))
     operation tail() -> List[T = Out] = []

@@ -120,7 +120,7 @@ namespace test.wi9wvt7
     operation raise(error: T) -> Nothing effects Err2[T]
     operation reify[Rho, X, T1](body: () -> X @ {{Err2[T1], Rho}}) -> Result[E = T1, T = X]
       effects {{Rho}}
-    provides Effect[T = Err2]
+    provides Effect[T = Self]
   end
 
   operation may_fail(n: Int64) -> Int64 effects {{Err2[Boom]}} = 41
@@ -231,7 +231,7 @@ namespace test.wi9wvt7.unused
     operation raise(error: T) -> Nothing effects Err2[T]
     operation reifyConcrete[Rho, X](body: () -> X @ {Err2[Boom], Rho}) -> Result[E = Boom, T = X]
       effects {Rho}
-    provides Effect[T = Err2]
+    provides Effect[T = Self]
   end
 
   operation may_fail(n: Int64) -> Int64 effects {Err2[Boom]} = 41
@@ -301,7 +301,7 @@ namespace test.wi9wvt7.lacks_{denied}
   sort Err2
     import anthill.prelude.{{Effect}}
     sort T = ?
-    provides Effect[T = Err2]
+    provides Effect[T = Self]
   end
 
   operation acquires() -> Int64 effects {{Err2[Boom]}} = 1

@@ -48,7 +48,7 @@ namespace test.bqhgd
     entity box(v: V)
     BOX_REQ
     provides Desc[T = Box[V = V]]
-    operation f[B](self: Box, x: B) -> Int64 = 2
+    operation f[B](self: Self, x: B) -> Int64 = 2
   end
 
   operation viaLeaf() -> Int64 = Desc.f(leaf(), 5)

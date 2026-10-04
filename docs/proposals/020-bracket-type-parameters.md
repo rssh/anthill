@@ -36,7 +36,7 @@ Switching to square brackets for type parameters:
 sort Container {
   sort T = ?
   entity Node(value: T, children: List[T = Node])
-  operation lookup(c: Container, key: String) -> Option[T = T]
+  operation lookup(c: Self, key: String) -> Option[T = T]
 }
 ```
 

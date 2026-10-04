@@ -101,7 +101,7 @@ const BOTH_SHAPES: &str = r#"namespace test.wi1076.both
 
   sort Feed
     sort T = ?
-    operation next(f: Feed) -> Int64
+    operation next(f: Self) -> Int64
   end
 
   sort Holder
@@ -493,8 +493,8 @@ fn a_supplier_tie_on_a_self_representing_spec_is_now_refused() {
 
   sort Feed
     sort T = ?
-    operation peek(f: Feed) -> Int64
-    operation next(f: Feed) -> Int64 = 1
+    operation peek(f: Self) -> Int64
+    operation next(f: Self) -> Int64 = 1
   end
 
   operation boxNext(f: Box) -> Int64 = 3
@@ -544,7 +544,7 @@ fn a_spec_with_both_a_carrier_param_and_a_self_receiver_keeps_its_binding() {
     sort C = ?
     sort Element = ?
     operation peek(c: C) -> Int64
-    operation joinTwo(a: Holder, b: Holder) -> Int64
+    operation joinTwo(a: Self, b: Self) -> Int64
   end
 
   sort Box

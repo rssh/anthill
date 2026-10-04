@@ -341,7 +341,7 @@ namespace test.wi455.override
 
   sort Describable
     sort T = ?
-    operation describe(x: Describable) -> Int64 = 0
+    operation describe(x: Self) -> Int64 = 0
   end
 
   sort Widget
@@ -3246,7 +3246,7 @@ fn wi350_eval_resolves_abstract_spec_op_from_value_runtime_sort() {
 namespace test.wi350_box
   sort Box
     sort T = ?
-    operation peek(b: Box) -> Int64
+    operation peek(b: Self) -> Int64
   end
   sort ListBox
     entity lbox(item: Int64)

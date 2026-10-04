@@ -209,7 +209,7 @@ fn a_provision_of_a_carrier_parameter_less_spec_loads() {
 
   sort SelfRep
     sort T = ?
-    operation size(s: SelfRep) -> Int64
+    operation size(s: Self) -> Int64
   end
 
   sort Holder

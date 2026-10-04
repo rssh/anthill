@@ -38,7 +38,7 @@ namespace wickd4j.cover.sortlevel
     sort T = ?
     requires PartialEq[T]
     entity bag(v: T)
-    operation pos(b: Bag, i: Opaque) -> Bool = gt(i, i)
+    operation pos(b: Self, i: Opaque) -> Bool = gt(i, i)
   end
 end
 "#;
@@ -52,8 +52,8 @@ namespace wickd4j.cover.conditional
   sort Bag
     sort T = ?
     entity bag(v: T)
-    provides PartialEq[Bag] :- PartialEq[T]
-    operation pos(b: Bag, i: Opaque) -> Bool = gt(i, i)
+    provides PartialEq[Self] :- PartialEq[T]
+    operation pos(b: Self, i: Opaque) -> Bool = gt(i, i)
   end
 end
 "#;
@@ -67,7 +67,7 @@ namespace wickd4j.cover.none
   sort Bag
     sort T = ?
     entity bag(v: T)
-    operation pos(b: Bag, i: Opaque) -> Bool = gt(i, i)
+    operation pos(b: Self, i: Opaque) -> Bool = gt(i, i)
   end
 end
 "#;

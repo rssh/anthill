@@ -963,10 +963,10 @@ namespace wip7vp4.waitsdispatch
     import anthill.prelude.Int64
     sort E = ?
     entity wrap(inner: E)
-    provides Zeroable[T = Wrap] :- Zeroable[E] where
+    provides Zeroable[T = Self] :- Zeroable[E] where
       operation zero() -> Int64 = Int64.add(Zeroable.zero(), 100)
       operation zeroPlus(n: Int64) -> Int64 = Int64.add(Int64.add(Zeroable.zero(), 100), n)
-      operation tag(x: Wrap) -> Int64 = 9
+      operation tag(x: Self) -> Int64 = 9
     end
   end
 

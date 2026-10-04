@@ -88,7 +88,7 @@ const CARRIERS: &str = r#"
     sort T = ?
     entity paramDirect(xs: List[T = T])
     provides Iterable[C = ParamDirect[T = T], Element = T, E = {}]
-    operation iterator(b: ParamDirect) -> Stream[T = b.T, E = {}] =
+    operation iterator(b: Self) -> Stream[T = b.T, E = {}] =
       match b
         case paramDirect(l) -> l
   end
