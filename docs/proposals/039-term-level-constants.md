@@ -138,11 +138,16 @@ const BROADCAST_CHANNEL: Int64 = -1        -- concrete, anthill-bodied
 const CHANNEL_BROADCAST: Int64             -- host-supplied (value from a provided reflect fn)
 ```
 
-**Visibility.** Constants accept the inline `Visibility` prefix (`internal`/`export`/`public`), matching operations and the standing convention for sorts/entities. Per-declaration form is encouraged — the reader sees `export const D_MIN: Float = 1.0` at the declaration site. The namespace-level `export` clause also lists const names.
+**Visibility.** Constants accept the inline `Visibility` prefix
+(`internal`/`public`), matching operations, sorts, and entities. Names are visible by
+default; `public` states that default explicitly, while `internal` hides the constant
+from outside its declaring scope. The former `export` prefix and namespace-level
+`export` statement were removed in WI-291.
 
 ```anthill
 namespace anthill.examples.lf1.webots.Emitter
-  export const BROADCAST_CHANNEL: Int64 = -1
+  const BROADCAST_CHANNEL: Int64 = -1
+  internal const DRIVER_CHANNEL: Int64 = 0
   ...
 end
 ```
