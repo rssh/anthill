@@ -283,6 +283,12 @@ pub(super) fn combine_element_types(
     join_types(kb, acc.clone(), next.clone())
 }
 
+/// The name of the wildcard an EMPTY literal carries for its element — `[]` is a `List[T =
+/// ??T]`. One constant for the mint below and for the reader that tells this wildcard from
+/// every other ([`is_empty_literal_element`]): it is the only wildcard that stands for a
+/// type NO VALUE has, which is what lets a name close it to the bottom type.
+pub(super) const EMPTY_LITERAL_ELEMENT: &str = "?T";
+
 pub(super) fn seq_literal_element_type(
     kb: &mut KnowledgeBase,
     kind: SeqLiteral,
@@ -404,7 +410,7 @@ pub(super) fn seq_literal_element_type(
         // MEASURED REACHABILITY, as WI-20260904-50B2K measured it PER CARRIER before the
         // three were merged here: EIGHT reaches across the whole `wi_tests` binary, every
         // one of them through the constructor carrier and none through either build frame.
-        let fresh = kb.intern("?T");
+        let fresh = kb.intern(EMPTY_LITERAL_ELEMENT);
         Value::term(kb.make_type_var(fresh))
     });
     Ok((element, effects))

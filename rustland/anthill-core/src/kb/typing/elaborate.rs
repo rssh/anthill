@@ -154,7 +154,7 @@ pub(super) fn rigidify_unwritten_sort_params(
             // A NAME IS NOT THAT POSITION ([`SlotPosition::Named`]): what `let mk = lambda (n)
             // -> Bag.empty()` names is the function, and each call of it makes a value of its
             // own.
-            if matches!(position, SlotPosition::Named) {
+            if matches!(position, SlotPosition::Named { .. }) {
                 return None;
             }
             let nr = rigidify_unwritten_sort_params(
@@ -275,7 +275,7 @@ pub(super) fn rigidify_unwritten_sort_params(
                     kb,
                     UnwrittenFill::Anonymous,
                     v,
-                    position,
+                    position.under(kb, base, *param),
                     span,
                     owner,
                 );
@@ -318,6 +318,10 @@ pub(super) fn rigidify_unwritten_sort_params(
             position.fill_self(kb, *canonical)
         } else if let Some(rho) = opened_named {
             Some(rho)
+        } else if slot.is_none_or(|i| is_empty_literal_element(kb, &written[i].1))
+            && position.is_said_to_be_nothing(kb, base, *param)
+        {
+            Some(Value::term(kb.make_nothing_type()))
         } else {
             position.fill_foreign(kb, fill, *param)
         };
@@ -549,7 +553,8 @@ impl FieldOpening {
 /// WI-20261001-80ZV8 (user, 2026-10-04: "and now do 4") — A NAME NEVER HAS AN OPEN SLOT IN
 /// ITS TYPE. `ty`, the type of a value about to be bound to `binder` (a `let`, a pattern
 /// variable) or destructured (`binder` `None`: a scrutinee), with every slot it leaves OPEN
-/// closed to an unknown of its own — the binder's projection (`x.T`), as a declared
+/// closed: in a COVARIANT position to the bottom type, `Nothing` ([`SlotPosition::Named`]);
+/// anywhere else to an unknown of its own — the binder's projection (`x.T`), as a declared
 /// parameter's unwritten slot is and a pattern binder's field is ([`FieldOpening`]); an
 /// anonymous rigid where there is no name.
 ///
@@ -571,14 +576,14 @@ impl FieldOpening {
 /// nothing solved (WI-20261004-KEGNC, which says where that needs a substitution to
 /// outlive a call). Every program this admits, that one admits.
 ///
-/// A flexible variable with a NAME is not an open slot here — an empty literal's element,
-/// an un-annotated binder's own type — and is left as it was. Both are still read at two
-/// instances (`let xs = []`; `lambda (b) -> add(b, 1) + add(b, "s")`), which is the same
-/// ticket's.
+/// A flexible variable with a NAME is not an open slot here ([`slot_is_open`]) — an
+/// un-annotated binder's own type — and is left as it was. It is still read at two
+/// instances (`lambda (b) -> add(b, 1) + add(b, "s")`), which is the same ticket's.
 pub(super) fn closed_where_named(
     kb: &mut KnowledgeBase,
     ty: Value,
     binder: Option<Symbol>,
+    bound: BinderOf,
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Value {
@@ -589,7 +594,11 @@ pub(super) fn closed_where_named(
             None => UnwrittenFill::Anonymous,
         },
         &ty,
-        SlotPosition::Named,
+        // A DECLARED type's open slot is never the bottom type ([`BinderOf`]): the walk
+        // starts as it goes on under an invariant slot.
+        SlotPosition::Named {
+            covariant: bound == BinderOf::Value,
+        },
         span,
         owner,
     )
@@ -1264,7 +1273,7 @@ pub(super) fn signature_bound_vars(
 /// | [`Body`](Self::Body) | the enclosing sort's rigid (WI-424) | [`UnwrittenFill`]'s mint |
 /// | [`Declared`](Self::Declared) | the sort's own parameter var — §3's tie, written down (WI-1082) | LEFT — opening once per DECLARATION would share one ρ across every call |
 /// | [`CallResult`](Self::CallResult) | LEFT — `Declared` already wrote it, or the callee has no self parameter to bind it | a fresh ρ, the existential opening (WI-1063) |
-/// | [`Named`](Self::Named) | — no sort is self to a value in a body | [`UnwrittenFill`]'s mint: the name's projection, a fresh ρ where there is no name (WI-20261001-80ZV8) |
+/// | [`Named`](Self::Named) | — no sort is self to a value in a body | `Nothing` in a covariant position; else [`UnwrittenFill`]'s mint: the name's projection, a fresh ρ where there is no name (WI-20261001-80ZV8) |
 ///
 /// WHICH SLOTS EACH CONSIDERS IS *NOT* A DISAGREEMENT, and keeping that so is load-bearing:
 /// `Declared` and `CallResult` ask the identical two-part question
@@ -1310,7 +1319,31 @@ pub(super) enum SlotPosition<'a> {
     /// WI-20261001-80ZV8 — a VALUE BOUND TO A NAME in a body: a `let`, a pattern variable, a
     /// destructured scrutinee ([`closed_where_named`]). Every sort is foreign to it — a body
     /// reads its own sort as any other — and what counts as unwritten is what a call's
-    /// result leaves OPEN: a slot left out, an anonymous `?`.
+    /// result leaves OPEN: a slot left out, an anonymous `?`, the wildcard an empty literal
+    /// carries ([`slot_is_open`]).
+    ///
+    /// `covariant`: the bound type is a VALUE's ([`BinderOf`]) and every slot from its top
+    /// down to the one being walked is declared `Covariant` ([`Self::under`]). AN OPEN SLOT
+    /// IN SUCH A POSITION IS
+    /// `Nothing` (the user's decision of 2026-10-04, the fifth variant): `let xs = nil` is a
+    /// `List[T = Nothing]`, which covariance makes a list of every element type —
+    /// `cons(head: 1, tail: xs)` and `takes_strings(xs)` both load. It is the type the
+    /// author can already write by hand, and it says what is true: a call that fixed no
+    /// parameter had no value of that parameter to put in its result. Anywhere else — a
+    /// parameter with no `Covariant` fact (`Bag`, `MutableStack`), a slot under one — the
+    /// bottom type would be admitted nowhere a value is wanted, and the slot is the name's
+    /// own unknown instead, whose refusal names the binding to annotate.
+    ///
+    /// ONLY A SLOT NO VALUE STANDS IN: one left out, or an empty literal's wildcard. An
+    /// anonymous wildcard WRITTEN in the slot is not that — it is how a type not determined
+    /// yet is carried (`pair(fst: x, snd: 1)` over an un-annotated lambda binder `x` is a
+    /// `Pair[A = ?_, B = Int64]`), and a value does stand there. Given the bottom type,
+    /// `let g = lambda (x) -> let p = pair(fst: x, snd: 1)  p` made `g(5)` a `Pair[A =
+    /// nothing, B = Int64]`, and `String.length` of its first component loaded (MEASURED,
+    /// found reviewing the first cut). Such a slot keeps the name's unknown.
+    ///
+    /// AN EFFECT ROW IS NOT GIVEN IT, whatever its variance: the bottom of rows is the empty
+    /// row, not a type, and such a slot keeps the fill it had.
     ///
     /// IT DOES NOT CLOSE A FUNCTION'S RESULT, which is where it parts from a call's result:
     /// a named function is not the values its calls make, so `let mk = lambda (n: Int64) ->
@@ -1318,7 +1351,7 @@ pub(super) enum SlotPosition<'a> {
     /// meets. Closed, every call returned ONE unknown and `Bag.add(mk(1), 5)` was refused
     /// (MEASURED: `wi_80zv8_named_open_slot_test`, the first cut of the naming rule, which
     /// borrowed [`Self::CallResult`]).
-    Named,
+    Named { covariant: bool },
 }
 
 impl SlotPosition<'_> {
@@ -1328,8 +1361,32 @@ impl SlotPosition<'_> {
             SlotPosition::Body { sort, .. } => sort,
             SlotPosition::Declared { sort, .. } => Some(sort),
             SlotPosition::CallResult { callee_sort, .. } => callee_sort,
-            SlotPosition::Named => None,
+            SlotPosition::Named { .. } => None,
         }
+    }
+
+    /// This position, one level down: inside the binding of `sort`'s parameter `param`.
+    /// Only [`Self::Named`] changes — it stays covariant only under a `Covariant`
+    /// parameter.
+    fn under(self, kb: &KnowledgeBase, sort: Symbol, param: Symbol) -> Self {
+        match self {
+            SlotPosition::Named { covariant } => SlotPosition::Named {
+                covariant: covariant && param_is_covariant(kb, sort, param),
+            },
+            other => other,
+        }
+    }
+
+    /// Is an open slot of `sort`'s parameter `param` here the bottom type? See
+    /// [`Self::Named`].
+    fn is_said_to_be_nothing(self, kb: &mut KnowledgeBase, sort: Symbol, param: Symbol) -> bool {
+        if !matches!(self, SlotPosition::Named { covariant: true })
+            || !param_is_covariant(kb, sort, param)
+        {
+            return false;
+        }
+        let short = short_name_of(kb.local_name_of(param)).to_owned();
+        !sort_param_is_effect_row(kb, sort, &short)
     }
 
     /// What an unwritten slot on a SELF reference takes, or `None` to leave it unwritten.
@@ -1400,7 +1457,7 @@ impl SlotPosition<'_> {
             // keeps its natural `match xs` / `cons` destructure.
             SlotPosition::Declared { .. } => Some(Value::term(canonical)),
             // `Named` has no self sort ([`Self::self_sort`]), so it is never asked.
-            SlotPosition::CallResult { .. } | SlotPosition::Named => None,
+            SlotPosition::CallResult { .. } | SlotPosition::Named { .. } => None,
         }
     }
 
@@ -1424,9 +1481,9 @@ impl SlotPosition<'_> {
         param: Symbol,
     ) -> Option<Value> {
         match self {
-            SlotPosition::Body { .. } | SlotPosition::CallResult { .. } | SlotPosition::Named => {
-                Some(fill.mint(kb, param))
-            }
+            SlotPosition::Body { .. }
+            | SlotPosition::CallResult { .. }
+            | SlotPosition::Named { .. } => Some(fill.mint(kb, param)),
             SlotPosition::Declared { .. } => None,
         }
     }
@@ -1487,9 +1544,9 @@ impl SlotPosition<'_> {
                     && (value_is_anonymous_wildcard(kb, v)
                         || vid.is_some_and(|raw| opened.contains_key(&raw)))
             }
-            // What a call's result leaves open, and nothing else: a variable with a name is
-            // an empty literal's element or an un-annotated binder's own type.
-            SlotPosition::Named => value_is_anonymous_wildcard(kb, v),
+            // What a value leaves open, and nothing else: a flexible variable with a name
+            // is an un-annotated binder's own type, which the body shares.
+            SlotPosition::Named { .. } => slot_is_open(kb, v),
         }
     }
 
@@ -1674,6 +1731,42 @@ pub(super) fn value_is_anonymous_wildcard(kb: &KnowledgeBase, v: &Value) -> bool
         _ => return false,
     };
     anonymous_var_name(kb, name)
+}
+
+/// WI-20261001-80ZV8 — does this slot's value leave the slot OPEN: said by nothing, so that
+/// what the value meets says it — a branch join's other arm ([`open_slots_said_by`]), the
+/// name it is bound to ([`closed_where_named`])?
+///
+/// An anonymous `?` ([`value_is_anonymous_wildcard`]), and the inert WILDCARD an empty
+/// literal carries for its element ([`is_empty_literal_element`] — WI-20260904-50B2K left
+/// it a reflect `type_var` on purpose, as the closest thing to a ∀ the typer has). That
+/// wildcard is admitted at every instance, and read as a said slot it laundered exactly as
+/// an open one did: `takes_strings(if c then [] else [1])` loaded where the other order was
+/// refused, and `let xs = []` stayed a list of anything while `let xs = nil` was closed
+/// (MEASURED).
+///
+/// NOT a flexible variable with a name: that can be an un-annotated lambda binder's, which
+/// the whole body shares, and saying it here would claim what nothing bound. NOR any other
+/// named wildcard (`?pat`, `?result`, `?logical_var`): each is left as it was.
+pub(super) fn slot_is_open(kb: &KnowledgeBase, v: &Value) -> bool {
+    value_is_anonymous_wildcard(kb, v) || is_empty_literal_element(kb, v)
+}
+
+/// Is this the wildcard an empty literal carries for its element
+/// ([`EMPTY_LITERAL_ELEMENT`])?
+fn is_empty_literal_element(kb: &KnowledgeBase, v: &Value) -> bool {
+    matches!(
+        extract_type(kb, v),
+        TypeExtractor::TypeVar(name) if kb.local_name_of(name) == EMPTY_LITERAL_ELEMENT
+    )
+}
+
+/// Is `sort`'s parameter `param` declared `Covariant` (a bivariant one conforms either way)?
+fn param_is_covariant(kb: &KnowledgeBase, sort: Symbol, param: Symbol) -> bool {
+    matches!(
+        declared_variance(kb, sort, param),
+        Variance::Covariant | Variance::Bivariant
+    )
 }
 
 /// The NAME half of [`value_is_anonymous_wildcard`], for the one reader that already holds a

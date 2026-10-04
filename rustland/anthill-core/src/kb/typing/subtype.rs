@@ -1439,9 +1439,9 @@ pub(super) fn join_types(kb: &mut KnowledgeBase, a: Value, b: Value) -> Option<V
 }
 
 /// WI-20261001-80ZV8 — what `ty` leaves OPEN and `other` says, written into `ty`; `None`
-/// when there is nothing to take. A slot is open where it is left out or holds an anonymous
-/// `?` — the two spellings [`closed_where_named`] closes — and `other` says it where it
-/// holds anything else.
+/// when there is nothing to take. A slot is open where it is left out or holds what
+/// [`slot_is_open`] names — an anonymous `?`, an empty literal's wildcard: what
+/// [`closed_where_named`] closes — and `other` says it where it holds anything else.
 ///
 /// AN OPEN SLOT IS A TYPE NOT SAID YET, NOT "ANY". `none()` and `Bag.empty()` fix no
 /// parameter, and the user's rule (2026-10-03) is that the slot stays open and whatever the
@@ -1548,8 +1548,8 @@ fn open_slots_said_by(kb: &mut KnowledgeBase, ty: &Value, other: &Value) -> Opti
             return None;
         }
         let theirs = &said[i].1;
-        let filled = if value_is_anonymous_wildcard(kb, mine) {
-            (!value_is_anonymous_wildcard(kb, theirs)).then(|| theirs.clone())
+        let filled = if slot_is_open(kb, mine) {
+            (!slot_is_open(kb, theirs)).then(|| theirs.clone())
         } else {
             open_slots_said_by(kb, mine, theirs)
         };
@@ -1565,7 +1565,7 @@ fn open_slots_said_by(kb: &mut KnowledgeBase, ty: &Value, other: &Value) -> Opti
         if binding_index_for_param(kb, &written, *key, key_match).is_some() {
             return None;
         }
-        if !value_is_anonymous_wildcard(kb, theirs) {
+        if !slot_is_open(kb, theirs) {
             bindings.push((*key, theirs.clone()));
             changed = true;
         }

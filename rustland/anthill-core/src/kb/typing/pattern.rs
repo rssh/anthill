@@ -245,6 +245,28 @@ pub(super) enum PatternRole {
     Binder,
 }
 
+/// WI-20261001-80ZV8 — WHOSE TYPE IS THREADED INTO A BINDER'S SLOT, which decides what a slot
+/// that type leaves open may be closed to ([`closed_where_named`]).
+///
+/// A slot left open means two opposite things. In a VALUE's type it is a slot nothing fixed:
+/// `nil` has no element, `Bag.empty()` no member, and the bottom type says exactly that. In
+/// a DECLARED type it is a slot the declaration leaves to whoever supplies the value —
+/// `lambda (xs: List) -> …` takes ANY list, and a callback checked against `f: (o: Option) ->
+/// Int64` any option — so a value does stand there, of a type the body does not know. Given
+/// the bottom type, `lambda (xs: List) -> match xs  case cons(h, _) -> String.length(h)`
+/// loaded and was then called with `[1]` (MEASURED, found reviewing the first cut of the
+/// bottom fill). It is the unknown it always was.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum BinderOf {
+    /// The type of the VALUE being bound: a `let`'s expression, a `match` scrutinee, and
+    /// what a pattern takes out of either.
+    Value,
+    /// A DECLARED type: a lambda parameter's annotation, the parameter slot of the arrow a
+    /// lambda is checked against, a `let` annotation over a value whose own type is not
+    /// known.
+    Declaration,
+}
+
 /// WI-20260904-50B2K — WHAT AN ABSENT TYPE AT A SUB-PATTERN POSITION MEANS, which is the
 /// one thing that decides what a binder with no type mints.
 ///
@@ -468,6 +490,9 @@ pub(super) fn bind_and_label_pattern(
     // unchanged into every sub-pattern — a `match` arm's whole pattern is refutable,
     // so each position inside it is too.
     role: PatternRole,
+    // WI-20261001-80ZV8: whose type `scrutinee_type` is — see [`BinderOf`]. Threaded
+    // unchanged into every sub-pattern: what is taken out of a declared type is declared.
+    bound: BinderOf,
     // WI-20260827-EJ5F5: every `(dead binder, constructor)` pair this call rewrote, at
     // any depth. The caller MUST apply them to the arm's body and guard
     // ([`repoint_arm_binders`]) — the loader captured the written name into the arm's
@@ -678,7 +703,7 @@ pub(super) fn bind_and_label_pattern(
                 });
             // WI-20261001-80ZV8: what the value leaves open is closed where it gets a name
             // ([`closed_where_named`]).
-            let ty = closed_where_named(kb, ty, Some(*name), pattern.span, pattern.owner);
+            let ty = closed_where_named(kb, ty, Some(*name), bound, pattern.span, pattern.owner);
             env.bind_var(*name, ty);
             // Pattern-bound names are local — effects on them shouldn't escape
             // the surrounding match/case scope (matches `check_let_expr`'s
@@ -701,7 +726,7 @@ pub(super) fn bind_and_label_pattern(
             // leaves open is one unknown for every binder below ([`closed_where_named`]) —
             // left open, a binder over `v: T` took the sort's own declaration variable.
             let scrutinee_type = scrutinee_type
-                .map(|ty| closed_where_named(kb, ty, None, pattern.span, pattern.owner));
+                .map(|ty| closed_where_named(kb, ty, None, bound, pattern.span, pattern.owner));
             let field_types = kb.entity_field_types(ctor_sym).map(|f| f.to_vec());
             // Substitute the scrutinee's type args into the constructor's
             // declared field types. For `case some(name)` over
@@ -797,6 +822,7 @@ pub(super) fn bind_and_label_pattern(
                     sub_pat,
                     field_type,
                     role,
+                    bound,
                     repointed,
                     // WI-20260904-50B2K: a constructor field with no declared type is
                     // UNNAMEABLE whatever the scrutinee is — the missing thing is the
@@ -828,6 +854,7 @@ pub(super) fn bind_and_label_pattern(
                     sub_pat,
                     field_type,
                     role,
+                    bound,
                     repointed,
                     // The positional loop's reason, unchanged by binding position.
                     UnpinnedBinder::Unnameable,
@@ -910,6 +937,7 @@ pub(super) fn bind_and_label_pattern(
                         sub_pat,
                         comp,
                         role,
+                        bound,
                         repointed,
                         child_unpinned,
                         errors,
@@ -922,6 +950,7 @@ pub(super) fn bind_and_label_pattern(
                         sub_pat,
                         comp,
                         role,
+                        bound,
                         repointed,
                         child_unpinned,
                         &mut misaligned,

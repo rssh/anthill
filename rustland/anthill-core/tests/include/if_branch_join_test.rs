@@ -120,10 +120,11 @@ end
 /// WI-20261001-80ZV8: the join is the `Option[T = Int64]` — the open slot of
 /// `none()` takes what the other branch says (`open_slots_said_by`). It was
 /// the bare `Option` ("the more general type"), which met the declared
-/// return only because an open slot is admitted at every instance; with a
-/// name closing an open slot, `x` would be an `Option[T = x.T]` and the
-/// return below refused. `wi_80zv8_named_open_slot_test` reads the join's
-/// type out of a refusal, and pins the element it used to launder.
+/// return only because an open slot is admitted at every instance. THIS ROW
+/// DOES NOT TELL THE TWO APART: with the join's fill off, the open `Option`
+/// is closed at the name `x` to the bottom type, which the declared return
+/// admits as well (measured). `wi_80zv8_named_open_slot_test` reads the
+/// join's type out of a refusal, and pins the element it used to launder.
 #[test]
 fn if_bare_vs_parameterized_branches_join_in_both_orders() {
     let none_then = r#"

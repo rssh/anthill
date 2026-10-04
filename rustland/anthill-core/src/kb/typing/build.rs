@@ -1171,6 +1171,16 @@ pub(super) fn build_type(
             // Prefer an explicit annotation (already `Value`, S4a) over the value type —
             // but a bare/partial parametric annotation is first REWRITTEN to keep the
             // value's inferred params (WI-374; conformance already checked above).
+            // WI-20261001-80ZV8: WHOSE TYPE THE NAME IS BOUND AT ([`BinderOf`]). The value's,
+            // unless an annotation stands over a value whose own type is not known — a
+            // variable, as an un-annotated lambda binder's is. A slot that annotation leaves
+            // out is then not one the VALUE left open, and `lambda (x) -> let xs: List = x`
+            // must not read `xs` as a list of nothing.
+            let bound = match (annotation.as_ref(), value_ty.as_ref()) {
+                (Some(_), None) => BinderOf::Declaration,
+                (Some(_), Some(vty)) if is_type_variable(kb, vty) => BinderOf::Declaration,
+                _ => BinderOf::Value,
+            };
             let bound_ty = match (annotation, value_ty) {
                 (Some(ann), Some(vty)) => Some(
                     unroll_annotation_with_inferred(kb, &ann, &vty, occ.span, occ.owner)
@@ -1240,6 +1250,7 @@ pub(super) fn build_type(
                 &pattern,
                 bound_ty,
                 PatternRole::Binder,
+                bound,
                 &mut let_repoints,
                 // WI-20260904-50B2K: the seed, as at the lambda site. A `let` whose bound
                 // value has NO type (`bound_ty` is `None`) keeps the inert form
@@ -1528,6 +1539,8 @@ pub(super) fn build_type(
                     &branch.pattern,
                     Some(scr_ty.clone()),
                     PatternRole::MatchArm,
+                    // WI-20261001-80ZV8: a scrutinee is a value.
+                    BinderOf::Value,
                     &mut repointed,
                     // WI-20260904-50B2K: the seed. The scrutinee type is always present
                     // here, so the tuple arm answers from it and this is never read.

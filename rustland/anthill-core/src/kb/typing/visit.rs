@@ -294,6 +294,10 @@ pub(super) fn visit_type(
                 // is rewritten, so nothing has to be re-pointed. Asserted rather than
                 // asserted-in-a-comment: an empty sink is what makes discarding it safe.
                 PatternRole::Binder,
+                // WI-20261001-80ZV8: a parameter's type is DECLARED — its annotation, or
+                // the parameter slot of the arrow the lambda is checked against — so a
+                // slot it leaves open is any instance, never the bottom type.
+                BinderOf::Declaration,
                 &mut param_repoints,
                 // WI-20260904-50B2K: the SEED, and it is only ever read when
                 // `param_type` gives a sub-pattern nothing. Nothing encloses a lambda's
