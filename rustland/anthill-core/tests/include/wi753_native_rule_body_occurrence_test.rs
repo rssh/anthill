@@ -19,6 +19,28 @@
 //! `a_single_nested_call_is_located_at_the_call` passes either way BY DESIGN — the per-atom
 //! table already located a node with no identical twin (WI-1039); it pins that the native
 //! build keeps that.
+//!
+//! Stage 2 — a REFLECT FORM written as data (`occurrence_term(?e, if_expr(…))`), in both
+//! spellings: UNRESOLVED (`import anthill.reflect.Expr` alone — the corpus spelling, built as
+//! the generic application) and RESOLVED (`import anthill.reflect.Expr.{if_expr, var_ref}`,
+//! built by `entity_ctor_expr`). Backed out by restoring the early return for reflect forms
+//! (`} else if written_entity || reflect_form {`, and the `None if written_entity` arm
+//! disabled): `identical_reflect_pattern_children_are_each_located_at_their_own_site` FAILS —
+//! the two `var_ref(name: a)` branches carry ONE span, the first's (`(166, 166)` for
+//! `(166, 197)`); with ONLY the `None if written_entity` arm disabled, it fails on the
+//! RESOLVED row alone (`(209, 209)` for `(209, 240)`). `a_reflect_pattern_still_reads_as_its_keyed_form` passes either way BY
+//! DESIGN — both carriers take `visit_fn`'s arms — and pins that the native build keeps the
+//! reading.
+//!
+//! Stage 3 — the sites that still re-derived a node from a lowered term.
+//! * A TRANSFORMED child (`wrap_bare_option_value`'s `some(…)`). With
+//!   `lowered_child_occurrence`'s case 2 restored to the per-subtree table materialization,
+//!   `identical_children_inside_a_wrapped_value_are_each_located_at_their_own_site` FAILS
+//!   (`[240, 240]` for `[240, 247]`) and `the_lowered_option_wrapper_is_located_at_the_written_value`
+//!   FAILS (the wrapper at `0`, located nowhere).
+//! * A written EFFECT ROW. With `lower_effect_row_aux_occ` back on the unspanned
+//!   `materialize_from_handle`, `a_written_effect_row_is_located_at_its_own_site` FAILS (the
+//!   first row at `0`).
 
 use crate::wi1012_static_supplier_tie_test::{located, refusal};
 use crate::wi1026_rule_body_spec_op_dispatch_test::{
@@ -138,3 +160,217 @@ fn a_single_nested_call_is_located_at_the_call() {
     );
 }
 
+
+/// Every `Expr::If` in rule `rule_qn`'s body, as `(cond, then, else)` spans.
+fn if_spans(src: &str, rule_qn: &str) -> Vec<[(u32, u32); 3]> {
+    use anthill_core::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence};
+    use std::rc::Rc;
+    let kb = crate::common::load_kb_with(src);
+    let sym = kb
+        .try_resolve_symbol(rule_qn)
+        .unwrap_or_else(|| panic!("symbol {rule_qn} not found"));
+    let rid = *kb
+        .rules_by_functor(sym)
+        .first()
+        .unwrap_or_else(|| panic!("no rule for {rule_qn}"));
+    let sp = |n: &Rc<NodeOccurrence>| (n.span.span.start, n.span.span.end);
+    let mut out = Vec::new();
+    let mut stack: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+    while let Some(n) = stack.pop() {
+        if let Some(e) = n.as_expr() {
+            if let Expr::If { condition, then_branch, else_branch } = e {
+                out.push([sp(condition), sp(then_branch), sp(else_branch)]);
+            }
+            for_each_child(e, |c| stack.push(Rc::clone(c)));
+        }
+    }
+    out
+}
+
+/// The pattern under each import spelling: the reflect form's functor UNRESOLVED (only the
+/// enum imported — how `typing_pass_spec.anthill` writes it) and RESOLVED (the members
+/// imported). The two take different builders; both must locate each child at its own site.
+const REFLECT_PATTERNS: [&str; 2] = [
+    r#"namespace test.wi753.reflect
+  import anthill.reflect.{NodeOccurrence, Expr, occurrence_term}
+
+  rule probe(?e) :- occurrence_term(?e, if_expr(cond: ?c, then_branch: var_ref(name: a), else_branch: var_ref(name: a)))
+end
+"#,
+    r#"namespace test.wi753.reflect
+  import anthill.reflect.{NodeOccurrence, occurrence_term}
+  import anthill.reflect.Expr.{if_expr, var_ref}
+
+  rule probe(?e) :- occurrence_term(?e, if_expr(cond: ?c, then_branch: var_ref(name: a), else_branch: var_ref(name: a)))
+end
+"#,
+];
+
+fn offset(src: &str, needle: &str, nth: usize) -> u32 {
+    src.match_indices(needle)
+        .nth(nth)
+        .unwrap_or_else(|| panic!("fixture guard: occurrence {nth} of {needle:?}"))
+        .0 as u32
+}
+
+/// THE CASE. The two `var_ref(name: a)` branches are one hash-consed term; built from the
+/// parse node, each branch is located at its own site.
+#[test]
+fn identical_reflect_pattern_children_are_each_located_at_their_own_site() {
+    for src in REFLECT_PATTERNS {
+        let ifs = if_spans(src, "test.wi753.reflect.probe");
+        assert_eq!(ifs.len(), 1, "the pattern reads as one `if`: {ifs:?}\n{src}");
+        let [_, then_b, else_b] = ifs[0];
+        let needle = "var_ref(name: a)";
+        assert_eq!(
+            (then_b.0, else_b.0),
+            (offset(src, needle, 0), offset(src, needle, 1)),
+            "each identical branch starts at its OWN offset: {ifs:?}\n{src}"
+        );
+    }
+}
+
+/// CONTROL, passes either way: the written `if_expr(…)` still reads as the keyed `if`
+/// occurrence — the native build keeps `visit_fn`'s reading.
+#[test]
+fn a_reflect_pattern_still_reads_as_its_keyed_form() {
+    for src in REFLECT_PATTERNS {
+        let ifs = if_spans(src, "test.wi753.reflect.probe");
+        assert_eq!(ifs.len(), 1, "the pattern reads as one `if`: {ifs:?}\n{src}");
+        assert_eq!(ifs[0][0].0, offset(src, "?c", 0), "cond at its site: {ifs:?}\n{src}");
+    }
+}
+
+/// A RECEIVER BRACKET ON A REFLECT-NAMED CALL IS STILL REFUSED, NOT DROPPED. A user operation
+/// whose name is a reflect form's (`apply`) takes the generic native build and is re-read at
+/// the tail into the keyed occurrence, which has no receiver-type slot — so that build must
+/// leave the bracket UNCONSUMED for `check_unconsumed_recv_types` to report, as it did when
+/// the node took the round trip. MEASURED: with the generic build's `recv_type` gate removed
+/// (always `build_recv_type`), this program loads CLEAN. Found by `/code-review`.
+#[test]
+fn a_receiver_bracket_on_a_reflect_named_call_is_refused() {
+    let src = r#"namespace test.wi753.bracket
+  import anthill.prelude.Int64
+
+  sort Bx
+    import anthill.prelude.Int64
+    entity bx
+    operation apply(x: Bx) -> Int64 = 1
+  end
+
+  rule probe(?v) :- eq(?v, Bx[T = Int64].apply(bx()))
+end
+"#;
+    let errs = crate::common::load_errors_of(src);
+    assert!(
+        errs.iter().any(|e| e.contains("not read here")),
+        "the bracket must be refused, not dropped: {errs:#?}"
+    );
+}
+
+/// Every node under rule `rule_qn`'s body whose `Expr::Apply` functor is locally `name`, as
+/// `start..end` spans in source order.
+fn apply_spans(src: &str, rule_qn: &str, name: &str) -> Vec<(u32, u32)> {
+    use anthill_core::kb::node_occurrence::{for_each_child, Expr, NodeOccurrence};
+    use std::rc::Rc;
+    let kb = crate::common::load_kb_with(src);
+    let sym = kb
+        .try_resolve_symbol(rule_qn)
+        .unwrap_or_else(|| panic!("symbol {rule_qn} not found"));
+    let rid = *kb
+        .rules_by_functor(sym)
+        .first()
+        .unwrap_or_else(|| panic!("no rule for {rule_qn}"));
+    let mut out = Vec::new();
+    let mut stack: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+    while let Some(n) = stack.pop() {
+        if let Some(e) = n.as_expr() {
+            let f = match e {
+                Expr::Apply { functor, .. } | Expr::Constructor { name: functor, .. } => Some(*functor),
+                _ => None,
+            };
+            if f.is_some_and(|f| kb.local_name_of(f) == name) {
+                out.push((n.span.span.start, n.span.span.end));
+            }
+            for_each_child(e, |c| stack.push(Rc::clone(c)));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A bare value written at an `Option[..]` field is LOWERED to `some(value)` — a wrapper the
+/// author never wrote — and the value inside it is a child of its own.
+const WRAPPED: &str = r#"namespace test.wi753.wrapped
+  import anthill.prelude.{Int64, Option}
+
+  operation sq(n: Int64) -> Int64 = n * n
+  operation pair2(a: Int64, b: Int64) -> Int64 = a + b
+  entity bo(v: Option[T = Int64])
+
+  rule probe(?x) :- ?x = bo(v: pair2(sq(1), sq(1)))
+end
+"#;
+
+/// STAGE 3 — THE CASE. Two identical calls inside a WRAPPED child are one hash-consed term;
+/// built from the parse node and spliced under the wrapper, each is at its own site.
+#[test]
+fn identical_children_inside_a_wrapped_value_are_each_located_at_their_own_site() {
+    let spans = apply_spans(WRAPPED, "test.wi753.wrapped.probe", "sq");
+    assert_eq!(
+        spans.iter().map(|s| s.0).collect::<Vec<_>>(),
+        vec![offset(WRAPPED, "sq(1)", 0), offset(WRAPPED, "sq(1)", 1)],
+        "each identical call starts at its OWN offset: {spans:?}"
+    );
+}
+
+/// STAGE 3 — THE WRAPPER IS LOCATED AT THE VALUE IT WRAPS. It has no parse node, so the only
+/// honest site is the written value's; before, it fell to the cross-file `term_spans`.
+#[test]
+fn the_lowered_option_wrapper_is_located_at_the_written_value() {
+    let wraps = apply_spans(WRAPPED, "test.wi753.wrapped.probe", "some");
+    let value = offset(WRAPPED, "pair2(sq(1), sq(1))", 0);
+    assert_eq!(
+        wraps.iter().map(|s| s.0).collect::<Vec<_>>(),
+        vec![value],
+        "one `some` wrapper, at the written value: {wraps:?}"
+    );
+}
+
+/// STAGE 3 — A WRITTEN EFFECT ROW IS LOCATED WHERE IT IS WRITTEN. The row `{}` is lowered to
+/// the canonical interned `effects_rows(…)` term, which is its identity by design; what it
+/// must not take is that term's location — `term_spans` is first-write-wins over one id
+/// shared by every `{}` in the KB, so a second written row reported the first one's site.
+#[test]
+fn a_written_effect_row_is_located_at_its_own_site() {
+    use anthill_core::kb::node_occurrence::Expr;
+    let src = r#"namespace test.wi753.row
+  import anthill.prelude.{Int64, Stream}
+
+  rule first(?c) :- Stream[T = Int64, E = {}]
+  rule second(?c) :- Stream[T = Int64, E = {}]
+end
+"#;
+    let kb = crate::common::load_kb_with(src);
+    for (nth, rule) in ["first", "second"].into_iter().enumerate() {
+        let sym = kb
+            .try_resolve_symbol(&format!("test.wi753.row.{rule}"))
+            .unwrap_or_else(|| panic!("rule {rule} not found"));
+        let rid = kb.rules_by_functor(sym)[0];
+        let atom = &kb.rule_body_nodes(rid)[0];
+        let Some(Expr::Apply { named_args, .. }) = atom.as_expr() else {
+            panic!("{rule}: the body atom is an application: {atom:?}")
+        };
+        let row = named_args
+            .iter()
+            .find(|(k, _)| kb.local_name_of(*k) == "E")
+            .unwrap_or_else(|| panic!("{rule}: the `E` binding is carried"))
+            .1
+            .clone();
+        assert_eq!(
+            row.span.span.start,
+            offset(src, "{}", nth),
+            "{rule}: the row is located at its own `{{}}`"
+        );
+    }
+}

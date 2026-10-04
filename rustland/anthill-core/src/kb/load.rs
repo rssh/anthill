@@ -6225,6 +6225,15 @@ fn eponymous_sort_symbol(
     (kb.local_name_of(owner) == short).then_some(owner)
 }
 
+/// Whether an entity item is declared directly at the address of the block whose
+/// item list contains it. A dotted entity is filed at its prefix's address instead;
+/// every sort-body aggregate must exclude it or the dotted spelling acquires a
+/// constructor parent that the equivalent explicit namespace spelling does not
+/// (WI-929 item 8).
+fn entity_is_direct_child(entity: &Entity) -> bool {
+    entity.name.segments.len() == 1
+}
+
 /// Check if a scope term represents a sort (vs. the global scope or a namespace).
 /// Heuristic: if the scope has a symbol defined as Sort kind, it's a sort scope.
 /// The two spellings a `sort` / `enum` declaration needs: the [`SortKind`] it
@@ -8748,7 +8757,12 @@ impl ScopePass for DefinePass<'_> {
         // WI-20260925-SHED7 — a PRIMITIVE has a domain too (every type has a
         // `SortDomain`), whose `fill` is the waiting type check (`kb::fill_derive`).
         let primitive = is_prelude_sort_qn(self.kb.qualified_name_of(scope.owner()));
-        if !primitive && !s.items.iter().any(|i| matches!(i, Item::Entity(_))) {
+        if !primitive
+            && !s
+                .items
+                .iter()
+                .any(|i| matches!(i, Item::Entity(e) if entity_is_direct_child(e)))
+        {
             return;
         }
         mint_domain_value_face_name(self.kb, scope.owner());
@@ -8854,9 +8868,11 @@ impl ScopePass for DefinePass<'_> {
                 let mut has_variant = false;
                 for item in &s.items {
                     if let Item::Entity(e) = item {
-                        let vshort = parse_sym.local_name(*e.name.segments.last().unwrap());
-                        kb.symbols.add_exposed(sort_scope, vshort);
-                        has_variant = true;
+                        if entity_is_direct_child(e) {
+                            let vshort = parse_sym.local_name(*e.name.segments.last().unwrap());
+                            kb.symbols.add_exposed(sort_scope, vshort);
+                            has_variant = true;
+                        }
                     }
                 }
                 // WI-994 — the same reading as the `add_kind` above, one gate over.
@@ -9034,8 +9050,14 @@ impl ScopePass for DefinePass<'_> {
                 // coincide, is gated on `eponymous.is_none()` — so no scope owner is
                 // ever marked while the walk is inside it. Marking one would stop this
                 // sort body from reading as one (§6.3 / WI-926).
-                let in_sort_body = is_sort_scope(kb, scope);
-                let eponymous = eponymous_sort_symbol(kb, scope, &name, &short);
+                // WI-929 item 8 — ownership follows the declaration ADDRESS, not the
+                // syntactic block containing the dotted spelling. In
+                // `sort S { entity a.B }`, `actual_scope` is namespace `S.a`, so B is
+                // a free-standing entity there; treating `scope` (`S`) as its owner
+                // made B a constructor of S while the equivalent explicit namespace
+                // spelling made B its own sort.
+                let in_sort_body = is_sort_scope(kb, actual_scope);
+                let eponymous = eponymous_sort_symbol(kb, actual_scope, &name, &short);
                 let entity_sym = if let Some(sym) = eponymous {
                     sym
                 } else if let Some(&existing) = kb.symbols.by_qualified_name.get(&qualified) {
@@ -9376,7 +9398,7 @@ impl ScopePass for SecondaryEntryPass<'_> {
                         );
                     }
                 }
-                self.classify_entry(sym, &name, site.decl.items());
+                self.classify_entry(sym, &name, site.decl.items(), DottedDeclarations::Skip);
             } else {
                 self.refuse_orphan_provides(&name, site.decl.items());
             }
@@ -9384,11 +9406,58 @@ impl ScopePass for SecondaryEntryPass<'_> {
         Some(self.kb.symbols.scope_id(sym))
     }
 
-    /// Nothing: R3 governs a `namespace` block's CONTENT, which
-    /// [`Self::enter_scope`] reads whole. An item reaching here is either at an
-    /// address with no main entry (an ordinary namespace — 059: "nothing in R3 or R4
-    /// reaches it") or inside a sort body (the main entry).
-    fn at_item(&mut self, _item: &Item, _scope: ScopeId, _prefix: &str) {}
+    /// A non-scope item normally belongs to the block that contains it, which
+    /// [`Self::enter_scope`] classifies when that block is a secondary entry. A
+    /// DOTTED declaration is the exception: proposal 059 assigns it to the address
+    /// its name's prefix denotes. `entity E.Child` written one level outside `E`
+    /// is therefore entry content at `E`, exactly like `namespace E { entity
+    /// Child }`, even though no explicit `namespace E` node exists for
+    /// [`Self::enter_scope`] to see.
+    ///
+    /// Classify only when that immediate prefix is itself a sort. If it is an
+    /// ordinary namespace, 059's "nothing in R3 or R4 reaches it" rule still
+    /// applies. This also preserves the established `E.Inner.helper` result:
+    /// `helper` belongs to `E.Inner`, not recursively to the sort `E`.
+    fn at_item(&mut self, item: &Item, _scope: ScopeId, prefix: &str) {
+        let Some(name) = declaration_at_dotted_address(item) else {
+            return;
+        };
+        let written = join_segments(self.parse_sym, &name.segments);
+        let Some((parent, _short)) = written.rsplit_once('.') else {
+            return;
+        };
+        let address_name = make_qualified(prefix, parent);
+        // Pass 1 has already run `ensure_intermediate_namespaces` for every
+        // declaration admitted by this helper. Use the shared loud invariant check:
+        // silently omitting a missing prefix would admit identity.
+        let Some(address) = lookup_defined(
+            self.kb,
+            &address_name,
+            name.span,
+            "its dotted declaration cannot be checked against proposal 059 R3",
+            self.errors,
+        ) else {
+            return;
+        };
+        if self.kb.has_kind(address, SymbolKind::Sort) {
+            let sort = self.kb.qualified_name_of(address).to_string();
+            self.classify_entry(
+                address,
+                &sort,
+                std::slice::from_ref(item),
+                DottedDeclarations::Include,
+            );
+        }
+    }
+}
+
+/// Whether dotted declarations in a batch land at the address being classified.
+/// Explicit `namespace E { … }` content skips `Inner.member`; the one-item batch
+/// synthesized for `E.member` includes it because `E` is precisely its target.
+#[derive(Clone, Copy)]
+enum DottedDeclarations {
+    Skip,
+    Include,
 }
 
 impl SecondaryEntryPass<'_> {
@@ -9430,7 +9499,13 @@ impl SecondaryEntryPass<'_> {
 
     /// THE TWO LISTS. `address` is the entry's grouping key, `sort` its qualified
     /// name for the diagnostics, `items` the block's DIRECT content.
-    fn classify_entry(&mut self, address: Symbol, sort: &str, items: &[Item]) {
+    fn classify_entry(
+        &mut self,
+        address: Symbol,
+        sort: &str,
+        items: &[Item],
+        dotted: DottedDeclarations,
+    ) {
         // The entry's declared names FIRST, and for every named declaration whatever
         // its verdict below. The target check this feeds asks "is this declaration
         // WRITTEN in this entry" — 059's condition — not "is it legal": a refusal does
@@ -9439,9 +9514,9 @@ impl SecondaryEntryPass<'_> {
         // as foreign would raise a second error for one root cause and name the wrong
         // reason. Separate from the classification loop because an entry's blocks are
         // not ordered relative to one another either.
-        self.record_declared_names(address, items);
+        self.record_declared_names(address, items, dotted);
         for item in items {
-            if declares_at_another_address(self.parse_sym, item) {
+            if matches!(dotted, DottedDeclarations::Skip) && declares_at_another_address(item) {
                 continue;
             }
             match item {
@@ -9757,7 +9832,12 @@ impl SecondaryEntryPass<'_> {
     /// for the same reason [`Self::classify_entry`]'s match is: a new `Item` variant
     /// that binds a name must be considered here too, and a `_ =>` would quietly
     /// answer "declares nothing".
-    fn record_declared_names(&mut self, address: Symbol, items: &[Item]) {
+    fn record_declared_names(
+        &mut self,
+        address: Symbol,
+        items: &[Item],
+        dotted: DottedDeclarations,
+    ) {
         let mut names: Vec<String> = Vec::new();
         for item in items {
             // A DOTTED name declares at another address, so the entry does not declare
@@ -9767,7 +9847,7 @@ impl SecondaryEntryPass<'_> {
             // though the entry declares `Rec.Inner.helper` — the exact hole this check
             // exists to close, with the eventual `unresolved name` naming the wrong
             // problem. See [`declares_at_another_address`].
-            if declares_at_another_address(self.parse_sym, item) {
+            if matches!(dotted, DottedDeclarations::Skip) && declares_at_another_address(item) {
                 continue;
             }
             match item {
@@ -10094,7 +10174,19 @@ const CONSTRAINT_REASON: &str = "a constraint is a rule with NO HEAD: it introdu
 /// skipped here: none of them declares a name at an address. A rule's label is a
 /// citation handle and its head is resolved where the rule is WRITTEN; a `proof` /
 /// `describe` name is a TARGET, which is the deferred check's business.
-fn declares_at_another_address(parse_sym: &crate::intern::SymbolTable, item: &Item) -> bool {
+fn declares_at_another_address(item: &Item) -> bool {
+    declaration_at_dotted_address(item).is_some()
+}
+
+/// The declaration name when `item` is one of the non-scope productions whose dotted
+/// spelling pass 1 places at its prefix's address. Shared by the two sides of 059's
+/// address rule: an explicit entry must SKIP such an item, while [`SecondaryEntryPass::at_item`]
+/// must classify it at the address it actually lands at.
+///
+/// The type-parameter exception and `operation { … }` caveat are detailed at
+/// [`declares_at_another_address`]; both return `None` because the loader assigns them
+/// to their enclosing scope despite any dots in their surface spelling.
+fn declaration_at_dotted_address(item: &Item) -> Option<&Name> {
     let name = match item {
         Item::Operation(o) => &o.name,
         Item::Const(c) => &c.name,
@@ -10102,7 +10194,7 @@ fn declares_at_another_address(parse_sym: &crate::intern::SymbolTable, item: &It
         Item::SortWithBody(s) => &s.name,
         Item::Entity(e) => &e.name,
         // The exception above: a dotted type-parameter binder still binds THIS sort.
-        Item::AbstractSort(s) if matches!(s.definition, TypeExpr::Variable { .. }) => return false,
+        Item::AbstractSort(s) if matches!(s.definition, TypeExpr::Variable { .. }) => return None,
         Item::AbstractSort(s) => &s.name,
         // An `operation { … }` block's entries carry names too, but the loader's own
         // arm for them does NOT call `ensure_intermediate_namespaces` — it defines the
@@ -10118,10 +10210,9 @@ fn declares_at_another_address(parse_sym: &crate::intern::SymbolTable, item: &It
         | Item::ProvidesClause(_)
         | Item::ProvidesBlock(_)
         | Item::Describe(_)
-        | Item::Proof(_) => return false,
+        | Item::Proof(_) => return None,
     };
-    let _ = parse_sym;
-    name.segments.len() > 1
+    (name.segments.len() > 1).then_some(name)
 }
 
 /// A rule's citation LABEL, for the diagnostics above. `None` for an unlabeled rule,
@@ -26909,7 +27000,9 @@ impl<'a> Loader<'a> {
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
                 if self.occ_suppress == 0 {
-                    let occ = node_occurrence::materialize_from_handle(self.kb, kb_id);
+                    // WI-753: located at the written row, as `lower_effect_row_aux_occ` is.
+                    let site = self.source_span_of(parse_id);
+                    let occ = node_occurrence::materialize_at(self.kb, kb_id, site);
                     self.expr_occ_results.push(occ);
                 }
             }
@@ -27621,7 +27714,7 @@ impl<'a> Loader<'a> {
                         self.parsed.terms.span(outer_parse_id),
                     );
                     self.expr_match_metas.push(node_occurrence::BranchMeta {
-                        pattern,
+                        pattern: node_occurrence::Src::Term(pattern),
                         has_guard,
                         span,
                     });
@@ -27694,7 +27787,10 @@ impl<'a> Loader<'a> {
                     );
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Let { span, pattern },
+                        node_occurrence::BuildFrame::Let {
+                            span,
+                            pattern: node_occurrence::Src::Term(pattern),
+                        },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -27719,7 +27815,10 @@ impl<'a> Loader<'a> {
                     );
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Lambda { span, param },
+                        node_occurrence::BuildFrame::Lambda {
+                            span,
+                            param: node_occurrence::Src::Term(param),
+                        },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -28474,7 +28573,10 @@ impl<'a> Loader<'a> {
     /// `TermId`. `None` when `pid` is not an effect-row aux.
     fn lower_effect_row_aux_occ(&mut self, pid: TermId) -> Option<Rc<NodeOccurrence>> {
         let rows_tid = self.lower_effect_row_aux(pid)?;
-        Some(node_occurrence::materialize_from_handle(self.kb, rows_tid))
+        // WI-753: the row is the canonical interned value, so its occurrence is that
+        // term's — but located at the row the author WROTE, not through `term_spans`.
+        let site = self.source_span_of(pid);
+        Some(node_occurrence::materialize_at(self.kb, rows_tid, site))
     }
 
     /// WI-271: extract a parse-only `ParseAux` payload from a parent
@@ -28992,8 +29094,11 @@ impl<'a> Loader<'a> {
     ///    `wi717_omitted_optionals_stay_claimable` among them, when a first cut recursed
     ///    on the parse child and produced the bare payload against a `some(payload)` term.
     ///
-    ///    So such a child is MATERIALIZED — but from its own subtree's tables, not
-    ///    bare. Materializing it bare is the second thing that first cut got wrong: it
+    ///    WI-753: the WRAPPER is materialized from the term
+    ///    ([`node_occurrence::materialize_around`]), located at the written child, and
+    ///    the child it wraps is the node built from its parse node, spliced in — no
+    ///    table. Until then such a child was materialized from its own subtree's
+    ///    tables, not bare. Materializing it bare is the second thing that first cut got wrong: it
     ///    reintroduced WI-1035/1039's wrong location for everything under the wrap.
     ///    MEASURED, `rule r(1) :- bo(v: fx("a"))` with `entity bo(v: Option[T = Int64])` —
     ///    `11:22` on the baseline, **`1:1`** materialized bare, `11:22` again with the
@@ -29017,14 +29122,26 @@ impl<'a> Loader<'a> {
         if self.term_map.get(&pid.raw()).copied() == Some(kb_child) {
             return self.build_body_atom_occurrence(pid);
         }
-        let spans = self.parse_span_table(pid);
-        let dot_chains = self.parse_dot_chain_table(pid);
-        node_occurrence::materialize_from_handle_spanned(
-            self.kb,
-            kb_child,
-            Some(&spans),
-            Some(&dot_chains),
-        )
+        // Case 2: a TRANSFORMED child. The wrapper is the lowering's own and is read from
+        // the term; the child it wraps is built from its parse node and spliced in, so it
+        // keeps its own span and `dot_chain` (WI-753 — before, the whole subtree was
+        // re-derived from the term and located through per-atom tables keyed on
+        // hash-consed ids).
+        let converted = self.term_map.get(&pid.raw()).copied().unwrap_or_else(|| {
+            unreachable!("lowered_child_occurrence: a written child the lowering kept has no conversion")
+        });
+        let site = self.source_span_of(pid);
+        let child = self.build_body_atom_occurrence(pid);
+        node_occurrence::materialize_around(self.kb, kb_child, converted, child, site)
+            .unwrap_or_else(|| {
+                // Every transform measured WRAPS the converted child (`wrap_bare_option_value`
+                // → `some(child)`). One that REPLACES it has no written node to keep, and
+                // must be given its own reading here rather than a silent re-derivation.
+                unreachable!(
+                    "lowered_child_occurrence: the lowering replaced a written child instead \
+                     of wrapping it — no native reading for that transform"
+                )
+            })
     }
 
     /// WI-20260903-FCZ3N — AN EQUATION'S RHS OCCURRENCE, BUILT FROM ITS PARSE NODE.
@@ -29036,9 +29153,8 @@ impl<'a> Loader<'a> {
     ///
     /// THE CHILD RULE IS [`Self::lowered_child_occurrence`]'s, unchanged and for its
     /// reasons: the RHS is built from its own parse node when the conversion passed it
-    /// through 1:1, and materialized from its own subtree's span/`dot_chain` tables when
-    /// a lowering transformed it (`wrap_bare_option_value` and the list spine are the
-    /// live cases). Sharing that function is what keeps the three occurrence-building
+    /// through 1:1, and — when a lowering WRAPPED it (`wrap_bare_option_value`) — built
+    /// the same way and spliced under the wrapper the term carries (WI-753). Sharing that function is what keeps the three occurrence-building
     /// sites — entity constructor, collection literal, and now equation RHS — from
     /// disagreeing about the middle case.
     ///
@@ -29056,10 +29172,11 @@ impl<'a> Loader<'a> {
         // The kb side must be the SAME two-operand connective the parse side just was.
         // THE FUNCTOR IS CHECKED, not just the arity: `pos_args.len() == 2` alone would
         // pair the parse RHS with `pos_args[1]` of whatever ELSE a head conversion can
-        // produce, and `lowered_child_occurrence` would then materialize that from the
-        // wrong subtree's span / `dot_chain` tables — silently, because the `term_map`
-        // identity check would simply fail over to the table path. Found by
-        // `/code-review`: the comment claimed the shape and the code checked the arity.
+        // produce, and `lowered_child_occurrence` would then take that as a transform
+        // of the parse RHS — which, since WI-753, is an `unreachable!` when it does not
+        // CONTAIN the RHS's conversion, and a wrong-but-containing subtree read as a
+        // wrapper otherwise. Found by `/code-review`: the comment claimed the shape and
+        // the code checked the arity.
         let kb_rhs = match self.kb.get_term(kb_head) {
             Term::Fn {
                 functor, pos_args, ..
@@ -29404,7 +29521,13 @@ impl<'a> Loader<'a> {
         // become occurrences here; the first cell's `Expr` is what the caller returns, so
         // the node itself is built by `build_body_atom_occurrence`'s shared tail and gets
         // that tail's `dot_chain` stamp like every other node it builds.
-        let mut acc = node_occurrence::materialize_from_handle(self.kb, cur);
+        // The terminating `nil` is the lowering's own node, with no parse node to build
+        // from. It is located at the LAST written element — the cell it closes — rather
+        // than through `term_spans`, which is keyed on the one hash-consed `nil` every list
+        // in the KB shares (WI-753). `parse_pos` is non-empty: the spine had a cell per
+        // element and the lengths matched above.
+        let last = *parse_pos.last().expect("a non-empty spine has a last element");
+        let mut acc = node_occurrence::materialize_at(self.kb, cur, self.source_span_of(last));
         for (i, &head_child) in cells.iter().enumerate().skip(1).rev() {
             let span = self.source_span_of(parse_pos[i]);
             let head_occ = self.lowered_child_occurrence(parse_pos[i], head_child);
@@ -29777,6 +29900,9 @@ impl<'a> Loader<'a> {
     }
 
     fn build_body_atom_occurrence_inner(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
+        // WI-753 — set by the `Term::Fn` arm when the node it builds is a reflect form
+        // written as data, which the tail re-reads into its keyed occurrence.
+        let mut reread_reflect_form = false;
         let parse_term = self.parsed.terms.get(parse_id).clone();
         let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
         let expr = match parse_term {
@@ -30029,18 +30155,29 @@ impl<'a> Loader<'a> {
                 // RE-DERIVED FROM ITS TERM. See [`Self::entity_ctor_expr`]. `None` means
                 // the lowering produced a shape that arm does not recognise, and the
                 // round-trip below still serves it.
-                let entity_native = if self.kb.written_entity_field_names(new_functor).is_some()
-                    && !node_occurrence::is_reflect_form_functor(self.kb, new_functor)
-                {
+                let written_entity = self.kb.written_entity_field_names(new_functor).is_some();
+                let reflect_form = node_occurrence::is_reflect_form_functor(self.kb, new_functor);
+                let entity_native = if written_entity && !reflect_form {
                     self.entity_ctor_expr(parse_id, new_functor)
                 } else {
                     // WI-20260902-2NXAC — the three COLLECTION LITERALS, the largest
                     // reflect-keyed group still on the round-trip (192 of 284 censused
                     // nodes). WI-753 — and the converter's METHOD CALL, the next largest
-                    // (`dot_apply`, 49). Everything else there keeps it.
+                    // (`dot_apply`, 49).
                     match self.collection_literal_expr(parse_id, new_functor) {
                         Some(expr) => Some(expr),
-                        None => self.dot_apply_expr(parse_id),
+                        None => match self.dot_apply_expr(parse_id) {
+                            Some(expr) => Some(expr),
+                            // WI-753 — and every other reflect form: built here as the
+                            // structural application it is written as, then RE-READ at
+                            // this function's tail (see `reread_reflect_form`).
+                            None if written_entity => {
+                                let expr = self.entity_ctor_expr(parse_id, new_functor);
+                                reread_reflect_form = expr.is_some();
+                                expr
+                            }
+                            None => None,
+                        },
                     }
                 };
                 if let Some(expr) = entity_native {
@@ -30049,9 +30186,7 @@ impl<'a> Loader<'a> {
                     // `dotted_citation_name` — EXACTLY, of the parse node, with no table
                     // and no set difference. That is the ticket.
                     expr
-                } else if self.kb.written_entity_field_names(new_functor).is_some()
-                    || node_occurrence::is_reflect_form_functor(self.kb, new_functor)
-                {
+                } else if written_entity {
                     let kb_term = self.convert_term(parse_id); // memoized hit
                                                                // WI-1035/WI-1039: locate the materialized subtree from the PARSE
                                                                // tree. The term-derived path has no spans of its own (see this
@@ -30072,6 +30207,12 @@ impl<'a> Loader<'a> {
                         Some(&dot_chains),
                     );
                 } else {
+                    // WI-753 — an UNRESOLVED reflect form (`if_expr(…)` written as a
+                    // pattern under `import anthill.reflect.Expr` alone — the corpus
+                    // spelling) has no schema to build against; it is built as the generic
+                    // application it is written as, and re-read at the tail like the
+                    // resolved one.
+                    reread_reflect_form = reflect_form;
                     // Native generic application. Positional in source order; named
                     // ParseAux-filtered (type_args / type_name are read elsewhere)
                     // with `reintern`ed keys in source order — matching `convert_term`
@@ -30191,7 +30332,17 @@ impl<'a> Loader<'a> {
                         // stop. (`type_args` beside it stays `Vec::new()`: that channel is
                         // REFUSED in a rule head by `call_type_args_unsupported_detail`, a
                         // decision this ticket does not reopen.)
-                        recv_type: self.build_recv_type(parse_id),
+                        //
+                        // WI-753: NOT for a reflect form. Its node is re-read at the tail
+                        // into the keyed occurrence, which has no receiver-type slot, so
+                        // consuming the bracket here would drop it in silence — and
+                        // `check_unconsumed_recv_types` refuses it, as it did when this
+                        // node took the round trip. Found by `/code-review`.
+                        recv_type: if reread_reflect_form {
+                            None
+                        } else {
+                            self.build_recv_type(parse_id)
+                        },
                         functor: new_functor,
                         pos_args: pos,
                         named_args: named,
@@ -30221,7 +30372,22 @@ impl<'a> Loader<'a> {
         // chain a citation are `dotted_citation_name`'s, and it re-asks them per level.
         let dot_chain =
             dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id).is_some();
-        NodeOccurrence::new_expr_dot_chain(expr, span, None, dot_chain)
+        let node = NodeOccurrence::new_expr_dot_chain(expr, span, None, dot_chain);
+        // WI-753 — A REFLECT FORM WRITTEN AS DATA IS READ BY THE ARMS THAT READ IT AS A TERM.
+        //
+        // `occurrence_term(?e, if_expr(cond: ?c, …))` writes a reflect form as a pattern; its
+        // occurrence is not the application but what `visit_fn` reads it as — `if_expr`
+        // an `Expr::If`, a concrete `int_lit(value: 3)` a literal, `int_lit(value: ?)` kept
+        // structural. Until this the node went to the early return and was rebuilt from
+        // its lowered TERM, each child located through a table keyed on a hash-consed
+        // `TermId` — so two identical children shared ONE span. Now the node is built
+        // above from the parse tree, every child with its own span, and
+        // [`node_occurrence::rebuild_reflect_node`] reads it through the SAME arms over
+        // `TermView`, reusing the children it built. One reading, two carriers.
+        if reread_reflect_form {
+            return node_occurrence::rebuild_reflect_node(self.kb, node);
+        }
+        node
     }
 
     fn load_var_ref(&mut self, parse_id: TermId) -> TermId {
@@ -31180,19 +31346,16 @@ impl<'a> Loader<'a> {
     /// WI-428: the LOGICAL sort qualified name behind a resolved symbol that may be
     /// the INNER self-named registration of a sort (`ns.W.P.P`, like
     /// `anthill.prelude.List.List`): strip the duplicated level iff the outer name
-    /// also ends in `short` AND maps to a Sort-kind symbol (so a sort merely sharing
-    /// its namespace's last segment — `namespace app.Config` containing `sort Config`,
-    /// qn `app.Config.Config` — is NOT stripped: `app.Config` is a Namespace).
+    /// also ends in `short` AND maps to a Sort-kind symbol.
     ///
-    /// WI-979 WEAKENED THAT SECOND CLAUSE, and the doc above is kept as written
-    /// because it still describes the INTENT. "`app.Config` is a Namespace" is no
-    /// longer exclusive: a category is a SET, and since WI-979 a `sort X` reusing an
-    /// existing symbol records `Sort` on it — so one symbol beside a namespace of the
-    /// same name now carries BOTH, and this guard passes where it used to fail. It
-    /// takes three same-named declarations to reach (`namespace app.Config` holding
-    /// `sort Config`, plus a `sort Config` beside it), and no such shape exists in the
-    /// corpus, so this is a NOTED premise rather than a measured wrong answer — but if
-    /// a `Config.K` projection ever stops forming, this strip is where to look.
+    /// WI-929 — this deliberately asks the inclusive category question. A symbol that
+    /// is both Namespace and Sort also passes, but the only ambiguous shape needs three
+    /// same-named declarations (`namespace app.Config` holding `sort Config`, plus a
+    /// sibling `sort Config`). Proposal 059 R4 rejects the inner declaration for
+    /// capturing the outer sort's `Config`, independently of declaration order. Thus a
+    /// successful full load reaches this normalization only for a genuine self-named
+    /// sort registration; the R4 check is the enforcement boundary, not an exclusive
+    /// category assumption here.
     fn logical_sort_qn<'q>(&self, qn: &'q str, short: &str) -> &'q str {
         if let Some((outer, last)) = qn.rsplit_once('.') {
             if last == short && outer.rsplit('.').next() == Some(short) {
@@ -33077,10 +33240,12 @@ impl<'a> Loader<'a> {
     }
 
     /// WI-936 — lower `e`'s field types and register them, the one place that happens.
-    /// Keyed by `remap_name(&e.name)`, the same symbol every reader looks the schema up
-    /// under (`load_entity`, and the convert path's `remap_symbol` of a written
-    /// constructor).
-    fn register_declared_field_types(&mut self, e: &Entity) {
+    /// Keyed by the pass-1-resolved `functor`, the same symbol every reader looks the
+    /// schema up under (`load_entity`, and the convert path's `remap_symbol` of a
+    /// written constructor). Passing it in is load-bearing for a dotted declaration:
+    /// after entering its actual scope, re-resolving the original dotted spelling
+    /// could be captured by a same-named nested prefix (WI-929 item 8).
+    fn register_declared_field_types(&mut self, e: &Entity, functor: Symbol) {
         // Proposal 070 §1.5 — a FIELD named `Self` would give `x.Self` two readings: the
         // field in a value position, the whole-type projection in a type position.
         // Refused with the other declarations of that name ([`reserved_self_name_errors`]).
@@ -33092,7 +33257,6 @@ impl<'a> Loader<'a> {
                 });
             }
         }
-        let functor = self.remap_name(&e.name);
         // WI-342: lower each field type ONCE, carrier-agnostically — a value-in-type
         // field (`Vector[Int64, 3]` / `Modify[c]`-shaped / dependent) is carried as
         // `Value::Node`, a ground field type as `Value::Term`. Lowering once is also
@@ -33323,6 +33487,33 @@ impl<'a> Loader<'a> {
             self.kb.qualified_name_of(sym),
         );
         Some(self.kb.symbols.scope_id(sym))
+    }
+
+    /// WI-929 item 8 — the symbol and scope a non-scope declaration is filed under.
+    /// For an undotted name the scope is the syntactic enclosing scope. A dotted name
+    /// was placed by pass 1 in the scope denoted by its prefix; return both answers
+    /// before the caller enters that scope, so it never re-resolves the original
+    /// relative spelling from a different lookup position.
+    ///
+    /// Pass 1 has already defined every declaration before either caller runs, so a
+    /// resolved name without a declaring scope is an internal phase-order violation,
+    /// not a source case to recover from by silently using `enclosing`.
+    fn declaration_symbol_scope(
+        &mut self,
+        name: &Name,
+        enclosing: ScopeId,
+    ) -> (Symbol, ScopeId) {
+        let sym = self.remap_name(name);
+        if name.segments.len() == 1 {
+            return (sym, enclosing);
+        }
+        let scope = self.kb.symbols.declaring_scope(sym).unwrap_or_else(|| {
+            unreachable!(
+                "dotted declaration `{}` reached load without the declaring scope pass 1 recorded",
+                join_segments(&self.parsed.symbols, &name.segments),
+            )
+        });
+        (sym, scope)
     }
 
     /// A namespace's own facts, and the scope its body loads in. The descent
@@ -33655,6 +33846,9 @@ impl<'a> Loader<'a> {
         let ei_syms = self.entity_info_syms();
         for item in &s.items {
             if let Item::Entity(e) = item {
+                if !entity_is_direct_child(e) {
+                    continue;
+                }
                 let ctor_term = self.name_to_sort_term(&e.name);
                 // WI-926 (§6.3): an eponymous constructor resolves to the sort's
                 // OWN symbol, so there is no entity→parent edge to record — the
@@ -33704,7 +33898,10 @@ impl<'a> Loader<'a> {
         self.carrier_block = enclosing_carrier_block;
 
         let sort_sort = ClauseKind::Sort;
-        let has_entities = s.items.iter().any(|item| matches!(item, Item::Entity(_)));
+        let has_entities = s
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Entity(e) if entity_is_direct_child(e)));
         let (_, kind_str) = sort_decl_kinds(s.kind);
 
         // Now collect constructors, operations, parameters, requires from child items
@@ -33733,7 +33930,7 @@ impl<'a> Loader<'a> {
 
         for item in &s.items {
             match item {
-                Item::Entity(e) => {
+                Item::Entity(e) if entity_is_direct_child(e) => {
                     let sym = self.remap_name(&e.name);
                     ctor_refs.push(self.kb.alloc(Term::Ref(sym)));
                 }
@@ -33811,12 +34008,12 @@ impl<'a> Loader<'a> {
         // Implementation, SortInfo, OperationInfo, etc. — and never
         // enumerates `<Sort>.induction` rules.)
         if has_entities {
-            let entities: Vec<&Entity> = s
+            let entities: Vec<(&Entity, Symbol)> = s
                 .items
                 .iter()
                 .filter_map(|i| {
                     if let Item::Entity(e) = i {
-                        Some(e)
+                        entity_is_direct_child(e).then(|| (e, self.remap_name(&e.name)))
                     } else {
                         None
                     }
@@ -33852,7 +34049,7 @@ impl<'a> Loader<'a> {
     /// route is readable rather than inferred from an absence.
     fn collect_domain_job(
         &mut self,
-        entities: &[&Entity],
+        entities: &[(&Entity, Symbol)],
         sort_functor: Symbol,
         params: Vec<crate::kb::fill_derive::DomainParam>,
         decl_span: Span,
@@ -33860,8 +34057,7 @@ impl<'a> Loader<'a> {
         let domain = self.current_domain();
         let span = SourceSpan::from_span(self.source_id, decl_span);
         let mut ctors: Vec<DomainCtor> = Vec::with_capacity(entities.len());
-        for &e in entities {
-            let ctor = self.remap_name(&e.name);
+        for &(_entity, ctor) in entities {
             let Some(declared) = self.kb.entity_field_types(ctor).map(|fs| fs.to_vec()) else {
                 // The declaration pass visits every `Item::Entity` the load pass does
                 // (`declared_field_values`' invariant), so this is unreachable through
@@ -33936,7 +34132,7 @@ impl<'a> Loader<'a> {
     /// `SortWithBody` to pass.
     fn emit_induction_rule(
         &mut self,
-        entities: &[&Entity],
+        entities: &[(&Entity, Symbol)],
         sort_functor: Symbol,
         parent_domain: Symbol,
     ) {
@@ -33993,8 +34189,7 @@ impl<'a> Loader<'a> {
         let forall_impl_sym = self.kb.intern("forall_impl");
 
         let mut body: Vec<TermId> = Vec::new();
-        for &e in entities {
-            let ctor_sym = self.remap_name(&e.name);
+        for &(e, ctor_sym) in entities {
             if e.fields.is_empty() {
                 let ctor_term = self.kb.alloc(Term::Ref(ctor_sym));
                 body.push(self.alloc_pos_fn(ho_apply_sym, &[p_term, ctor_term]));
@@ -34342,8 +34537,7 @@ impl<'a> Loader<'a> {
         }
     }
 
-    fn load_entity(&mut self, e: &Entity, domain: Symbol) {
-        let functor = self.remap_name(&e.name);
+    fn load_entity(&mut self, e: &Entity, functor: Symbol, domain: Symbol) {
         self.emit_own_descriptions(functor, &e.descriptions, domain);
 
         // WI-20260914-DV7DP — the constructor's block, recorded HERE because every entity
@@ -34384,7 +34578,7 @@ impl<'a> Loader<'a> {
         // can disagree, and `sort_of_head` needs none.
         if !is_sort_scope(self.kb, self.current_scope) {
             let ei_syms = self.entity_info_syms();
-            let ctor_term = self.name_to_sort_term(&e.name);
+            let ctor_term = self.kb.make_name_term_from_sym(functor);
             self.emit_entity_info(e, ctor_term, &lowered, &ei_syms, domain);
             // WI-925 / §6.3: `entity E` IS `sort E { entity E }`, and the whole
             // point of that wrapping is that an entity HAS a sort — so record it.
@@ -34434,11 +34628,11 @@ impl<'a> Loader<'a> {
             // the enclosing NAMESPACE scope, which is where a free-standing entity's
             // own name resolves). The long form has emitted it since proposal 030;
             // its omission here was a straight one.
-            self.emit_induction_rule(&[e], functor, domain);
+            self.emit_induction_rule(&[(e, functor)], functor, domain);
             // WI-743 — and its existential twin. A free-standing `entity E` is
             // `sort E { entity E }` (§6.3), so its domain is the one-branch
             // disjunction; it has no type parameters to bind.
-            self.collect_domain_job(&[e], functor, Vec::new(), e.span);
+            self.collect_domain_job(&[(e, functor)], functor, Vec::new(), e.span);
         }
     }
 
@@ -39049,6 +39243,13 @@ impl<'a> Loader<'a> {
         for item in items {
             match item {
                 Item::Entity(e) => {
+                    // A dotted declaration belongs to its prefix's address, not to
+                    // the block whose item list happens to contain the spelling. Its
+                    // MemberInfo row is emitted when the load walk reaches the item at
+                    // that actual address (WI-929 item 8).
+                    if !entity_is_direct_child(e) {
+                        continue;
+                    }
                     let sym = self.remap_name(&e.name);
                     // WI-928 / §6.3 — an eponymous constructor IS its sort, so it is
                     // not a MEMBER of itself. `sort Project { entity Project(…) }`
@@ -39254,9 +39455,19 @@ impl ScopePass for DeclarePass<'_, '_> {
         self.0.current_scope = site.enclosing;
     }
 
-    fn at_item(&mut self, item: &Item, _scope: ScopeId, _prefix: &str) {
+    fn at_item(&mut self, item: &Item, scope: ScopeId, _prefix: &str) {
         match item {
-            Item::Entity(e) => self.0.register_declared_field_types(e),
+            Item::Entity(e) => {
+                // WI-929 item 8 — lower fields where the declaration actually lives.
+                // For `sort S { entity a.B(x: Local) }`, the implicit namespace
+                // `S.a` may itself declare/import `Local`; using syntactic `S` here
+                // gives the dotted and explicit namespace spellings different types.
+                let saved = self.0.current_scope;
+                let (entity, entity_scope) = self.0.declaration_symbol_scope(&e.name, scope);
+                self.0.current_scope = entity_scope;
+                self.0.register_declared_field_types(e, entity);
+                self.0.current_scope = saved;
+            }
             // WI-20261001-KDMQS — a const's load-time value source, from its body or
             // from a `language rust` block's `const_map`, for the same reason the field
             // types are declared here: a clause in another file may need it first.
@@ -39392,7 +39603,22 @@ impl ScopePass for LoadPass<'_, '_> {
                 "RequiresDecl"
             }
             Item::Entity(e) => {
-                self.loader.load_entity(e, domain);
+                // WI-929 item 8 — a dotted entity is loaded in the scope its prefix
+                // denotes, not the syntactic sort/namespace containing the spelling.
+                // The enclosing aggregate skipped its MemberInfo row for the same
+                // reason, so emit that row once under the actual address here.
+                let (entity, entity_scope) =
+                    self.loader.declaration_symbol_scope(&e.name, scope);
+                let saved = self.loader.current_scope;
+                self.loader.current_scope = entity_scope;
+                let entity_domain = entity_scope.owner();
+                if !entity_is_direct_child(e) {
+                    let parent = self.loader.kb.make_name_term_from_sym(entity_domain);
+                    self.loader
+                        .emit_member_fact(entity, MemberKind::Constructor, parent);
+                }
+                self.loader.load_entity(e, entity, entity_domain);
+                self.loader.current_scope = saved;
                 "Entity"
             }
             Item::Fact(f) => {
