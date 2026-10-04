@@ -2,7 +2,7 @@
 
 ## Status: Draft (2026-10-03). The motivating verdict is that `Function[A, B]` is pure: its omitted `E` is `{}`, while `Function[A, B, ?]` is explicitly open. This proposal reopens proposal 042 OQ3 / WI-850 with that concrete driver and extends the same declaration-time mechanism to operation and entity-constructor value parameters, and to the columns of a declared rule (§1.5), whose undeclared default is `?`. Type inference runs to a fixed point before defaults are chosen, then solving resumes once with the defaults installed.
 
-## Relates to: [002](002-arrow-sorts.md) (sort parameters), [018](018-expressions-and-operation-implementation.md) (operation bodies), [042](042-explicit-type-parameters-on-operations.md) (explicit operation type parameters; OQ3), [045](045-effect-sets-and-expressions.md) (effect-row binders), kernel-language §§4.4 and 8.1 (whose 2026-10-03 `Function[A, B]` verdict this proposal supersedes), WI-850 (the current refusal), WI-188 (entity record update), WI-191 (typed command arguments), [052](052-rules-as-stream-valued-operations.md) (a rule cited as a `Relation` value; WI-714's column binding), [061](061-rule-declarations.md) (rule declarations — where a rule column's default is written), WI-20260821-6WVJB (one arity per predicate — enforced here only for a declaration with a default), and [070](070-self-and-fresh-bare-sorts.md) (`Self` — §2's "the self tie wins over the default" is `p: Self` in its terms).
+## Relates to: [002](002-arrow-sorts.md) (sort parameters), [018](018-expressions-and-operation-implementation.md) (operation bodies), [042](042-explicit-type-parameters-on-operations.md) (explicit operation type parameters; OQ3), [045](045-effect-sets-and-expressions.md) (effect-row binders), kernel-language §§4.4 and 8.1 (whose 2026-10-03 `Function[A, B]` verdict this proposal supersedes), WI-850 (the current refusal), WI-188 (entity record update), WI-191 (typed command arguments), [052](052-rules-as-stream-valued-operations.md) (a rule cited as a `Relation` value; WI-714's column binding), [061](061-rule-declarations.md) (rule declarations — where a rule column's default is written), [070](070-self-and-fresh-bare-sorts.md) (`Self`; a reference to the enclosing sort is read as any other, so a default applies inside a sort's own definition as outside it — §2), WI-20260821-6WVJB (one arity per predicate — enforced here only for a declaration with a default), and [070](070-self-and-fresh-bare-sorts.md) (`Self` — §2's "the self tie wins over the default" is `p: Self` in its terms).
 
 ## Tracked by: WI-20261003-QV5W5 (`proposal-069`). WI-188 depends on it.
 
@@ -405,8 +405,8 @@ default, while an explicit `?` writes a hole and suppresses the default. So `Fun
 `Function[A = ?, B = ?, E = {}]` and `Function[A, B]` ≡ `Function[A, B, {}]`, but
 `Function[A, B, ?]` keeps the open row. §8.1's sentence is restated as: *the four spellings agree
 on a slot whose parameter declares no default; on a defaulted slot, omission takes the default and
-`?` is the explicit opt-out.* (A self reference inside the sort's own definition is the exception
-below: it keeps WI-1082's tie.)
+`?` is the explicit opt-out.* (Inside the sort's own definition the restatement holds unchanged —
+below.)
 
 **A type default is context-free.** Once ordinary inference leaves a slot omitted and unbound, its
 declaration default is installed wherever the type application occurs: in a parameter, return,
@@ -447,41 +447,55 @@ position's ordinary quantifier, because forward references are refused: a writte
 therefore pure in a parameter and in a return; `Function[A, B, ?]` explicitly restores the
 position's open-row reading.
 
-**Within a sort's own definition, the self tie wins over the default.** A bare or partial reference
-to the sort inside its own body keeps WI-1082's rewrite: an elided slot names *this instance's*
-parameter, and the default does not apply. A default states what an outside user means by omitting a
-slot; inside the sort, the elided slot already means the instance's own parameter. Taking the
-default there would change what a member is about:
+**Within a sort's own definition a reference to the sort is read as everywhere.** There is no self
+tie for a default to yield to: proposal [070](070-self-and-fresh-bare-sorts.md) removes it. A bare
+or partial reference to the sort inside its own body is the sort with each left-out slot read by the
+rules above — its declared default where the parameter declares one, a fresh `?` where it does not
+(070 §1.3) — and THIS instance is written `Self` (070 §1.2). A type default is context-free, and the
+inside of the declaring sort is not a context of its own.
 
 ```anthill
 sort AsymmetricPair[T1, T2 = T1]
   entity apair(first: T1, second: T2)
-  operation second_of(p: AsymmetricPair) -> T2 = …
-  --   tie:     p: AsymmetricPair[T1 = T1, T2 = T2]   (this instance — intended)
-  --   default: p: AsymmetricPair[T1, T1]             (only symmetric pairs; -> T2 no longer matches)
+  operation second_of(p: Self) -> T2 = …               -- this instance: p: AsymmetricPair[T1 = T1, T2 = T2]
+  operation is_symmetric(p: AsymmetricPair) -> Bool = … -- any SYMMETRIC pair, as outside: T2 defaults to p's T1
+  operation second_of2(p: AsymmetricPair) -> T2 = …     -- refused at the definition (070 §1.4)
 end
 ```
 
-Likewise, inside `sort Function` an elided `E` is this function's row, not `{}`. The tie applies only
-to the self reference; a foreign reference inside the sort body (`Function[A, B]` written inside
-`sort Stream`) takes the default.
+A default therefore cannot change what a member is about, because a member about this instance says
+so. And a forgotten `Self` does not quietly load as the defaulted type: `second_of2` uses the sort's
+parameter `T2` beside a `p` that is not its carrier — `p` is some symmetric pair, and no parameter is
+`Self` — which 070 §1.4 refuses, naming `Self` as the repair. That rule asks what the author WROTE:
+`p`'s `T2` is left out, whether or not a default then fills it. Likewise inside `sort Function`,
+`Function[A, B]` is a pure function, its omitted `E` being `{}` as anywhere, and this function's own
+row is `Self`, or `E = E` written out.
 
-**In proposal 070's terms, `p` is `Self`.** The paragraph above is written in pre-`Self` terms: it
-describes today's code, where WI-1082's tie is what reads a bare self reference as this instance.
-[070](070-self-and-fresh-bare-sorts.md) removes that tie and writes this instance `Self` —
-`operation second_of(p: Self) -> T2` — and inside a sort's own definition it refuses a reference to
-the sort that leaves a slot out (070 §1.4), whether or not the slot has a default. What `second_of`
-means is the same under both. What changes is that the bare spelling is no longer accepted there, so
-no slot is left out for a default to fill and there is nothing for the tie to win over. Whichever
-lands first decides the wording: before 070 the tie wins over the default, as stated above; after
-it, the member says `Self`, and this paragraph, the parenthesis closing the four-spellings
-restatement, and the sentence on WI-1082 below are replaced by a pointer to 070 §1.4.
+*History.* This paragraph first said the opposite — "the self tie wins over the default": a bare self
+reference kept WI-1082's rewrite to this instance's parameters and took no default, since taking it
+"would change what a member is about". That was written in pre-`Self` terms and described the code
+before 070; the user's reading of it (2026-10-03) was that `p` there IS `Self`, and 070 now writes
+it. For one day (2026-10-04) 070 refused the bare spelling inside the sort outright, and this section
+said so; the refusal was withdrawn the same day ("it should be the same as `Cell[V = ?]`") in favour
+of the carrier rule, which is what guards `second_of2` above.
+
+*For the implementation (WI-20261003-QV5W5).* Until 070's stage (e) the loader writes an anonymous
+`?` into each slot a reference to the ENCLOSING sort leaves out (`Loader::own_sort_slots_left_out`),
+because the typer's remaining tie code would otherwise read such a slot as this instance's. An
+explicit `?` is this proposal's opt-out, so that fill must leave a DEFAULTED slot out once defaults
+land — or the declaring sort would be the one place its own default never applies. And 070 §1.4's
+carrier check (`check_sort_parameter_carriers`) must go on reading such a slot as LEFT OUT: it reads
+the stored signature today, where a left-out slot of the enclosing sort is that `?`, and a slot
+holding an installed default is neither the carrier nor open — `second_of2` would load.
 
 The polarity rules continue to govern explicit `?`, named variables and non-defaulted slots.
 `f: Function[A, B, ?]` is universal in its open row, while `-> Function[A, B, ?]` is existential in
 it. Both differ from `Function[A, B]`, whose omitted `E` takes `{}` in either position. WI-1082's “a
-member may not pin its own sort's parameter to a constant and still elide it in the return” is
-unchanged, since a self reference still takes the tie.
+member may not pin its own sort's parameter to a constant and still elide it in the return” needs no
+rule of its own after 070: a return that writes this instance (`Self`, or `E = E`) is refused at a
+body that pins the parameter; one that leaves a non-defaulted slot out is an existential, opened at
+each call, and proves nothing to a consumer; and a defaulted slot left out is its default, in the
+declaring sort as anywhere.
 
 Defaults may refer only to earlier parameters from the same declaration and to names in the
 declaration's enclosing scope:
@@ -641,8 +655,9 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
    … all mean the same thing") as holding for non-defaulted slots only (§2), and add to §8.1's
    polarity section (WI-1063) that a declaration default is installed context-free, while polarity
    continues to govern explicit holes and non-defaulted slots; state that transparent aliases do
-   not change whether a default applies, and that a self reference keeps WI-1082's tie over a
-   default. Restate §4.4 with the superseded 2026-10-03 verdict and the new explicit opt-out.
+   not change whether a default applies, and that inside the declaring sort a reference to it is
+   read as anywhere (proposal 070 §1.3) — the default applies there too, and this instance is
+   `Self`. Restate §4.4 with the superseded 2026-10-03 verdict and the new explicit opt-out.
 6a. Admit `?v = e` in a rule declaration head as a column default (amending 061's list of what a
    declaration may not carry); refuse it in clause and `fact` heads after a census of existing
    `?v = e` head arguments; refuse a clause or `fact` whose arity differs from a defaulted
@@ -669,11 +684,12 @@ This is why WI-188 depends on this proposal's implementation rather than merely 
 - Under `sort AsymmetricPair[T1, T2 = T1]`: a bare parameter `p: AsymmetricPair` accepts
   `apair(1, 2)` and refuses `apair(1, "s")`, with `p.T2` reducing to `p.T1`; a bare return
   `-> AsymmetricPair` opens `T1` existentially and defaults `T2` to that same witness, so a body
-  returning `apair(1, "s")` is refused; and a member inside the
-  sort taking a bare `p: AsymmetricPair` accepts an asymmetric instance (the WI-1082 tie, not the
-  default). Control: with the tie overridden by the default, the in-sort member refuses it. (Once
-  proposal 070 has landed this row is written `p: Self`, and the bare spelling is a load error
-  inside the sort — §2, "In proposal 070's terms".)
+  returning `apair(1, "s")` is refused. INSIDE THE SORT the same holds (§2, "read as everywhere"): a
+  member taking `p: Self` accepts an asymmetric instance and returns its `T2`; a member taking a bare
+  `p: AsymmetricPair` is the symmetric pair it is outside, and refuses `apair(1, "s")`; and
+  `second_of2(p: AsymmetricPair) -> T2` is refused at its definition for want of a carrier (proposal
+  070 §1.4). Control: with the loader's `?` still written into a defaulted slot of the enclosing
+  sort's own reference, the bare in-sort member accepts the asymmetric instance.
 - `f: Function[A, B]` is not universal in `E` (an effectful argument is refused), and
   `f: Function[A, B, ?]` restores ∀. `-> Function[A, B]` is pure (a body returning an effectful
   function is refused), while `-> Function[A, B, ?]` restores the existential open row.
