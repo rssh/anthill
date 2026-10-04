@@ -1897,6 +1897,8 @@ mod wi_0rp29_call_binding_test;
 mod wi_0rp29_member_rule_test;
 #[path = "include/wi_80zv8_self_test.rs"]
 mod wi_80zv8_self_test;
+#[path = "include/wi_89wzr_written_type_in_body_test.rs"]
+mod wi_89wzr_written_type_in_body_test;
 #[path = "include/wi_0rp29_review9_regressions_test.rs"]
 mod wi_0rp29_review9_regressions_test;
 #[path = "include/wi_7fp1m_query_type_names_test.rs"]

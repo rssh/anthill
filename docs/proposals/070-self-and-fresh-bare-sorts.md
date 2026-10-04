@@ -65,7 +65,7 @@ end
 - in a witness it is the witness, not the sort the witness provides for;
 - in an entity's fields it is the sort that declares the entity (`cons`'s `tail: Self` is a `List`). A top-level `entity Account(…)` is its own sort (§6.3), so there `Self` is `Account`.
 
-`Self` may be written in operation parameters, returns and bodies, entity fields, `provides` and `requires` bindings, and rule-variable bounds. (A body annotation waits on WI-20261001-89WZR: a `let` annotation naming a type parameter in scope is refused today in the written form too, and `Self` is that form.) It takes no bindings — `Self[V = Int64]` is a load error; another instance is written with the sort's name (`Cell[V = Int64]`, or `Cell[V = ?]` for any cell). Outside a sort `Self` is a load error. The name is reserved: no sort, type parameter or member may be called `Self`.
+`Self` may be written in operation parameters, returns and bodies, entity fields, `provides` and `requires` bindings, and rule-variable bounds. (A body annotation needed WI-20261001-89WZR, delivered after stage (b): a `let` annotation naming a type parameter in scope was refused in the written form too, and `Self` is that form.) It takes no bindings — `Self[V = Int64]` is a load error; another instance is written with the sort's name (`Cell[V = Int64]`, or `Cell[V = ?]` for any cell). Outside a sort `Self` is a load error. The name is reserved: no sort, type parameter or member may be called `Self`.
 
 Nothing downstream of name resolution sees `Self`: it is replaced at load by the written form (`Cell[V = V]`), which already loads and runs today (measured 2026-10-01: `provides Rel[A = Car[V], B = Car[V]]` with `mix(a: Car[V], b: Car[V])` runs at one `V` and refuses two).
 

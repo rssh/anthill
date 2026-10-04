@@ -805,6 +805,38 @@ pub(super) fn elem_var_step(kb: &KnowledgeBase, tid: TermId) -> Option<(VarId, b
     }
 }
 
+/// WI-20261001-89WZR — a type the author WROTE inside a body, read at the body's level:
+/// each reference to a type parameter in scope is the body's RIGID for it.
+///
+/// A signature's types reach the body already rigidified (`check_operation_bodies` walks
+/// them through `rigidify_op_type_params`), so a value typed by the signature carries the
+/// rigid. A type written INSIDE the body — a `let` annotation, a lambda parameter's — is
+/// lowered by the loader and still names the parameter itself: its canonical variable, or,
+/// for the enclosing sort's, its bare name. Compared as written, `let x: T = y` then
+/// relates a rigid to the variable it stands for and refuses — `expected ?T, got ?T` — and
+/// so did `let xs: List[T = T]`, an operation's own parameter inside a sort, and a sort's
+/// own parameter inside one of its operations (`expected T, got ?T`).
+///
+/// THE WALK THE SIGNATURE TOOK, with the same substitution ([`TypingEnv::body_rigidify`]).
+/// MEASURED to reach every spelling — the canonical variable, the sort parameter's bare
+/// name, and a variable inside an EFFECT ROW, so a `-R` written in an annotation is the
+/// operation's `R` and not a row variable of its own.
+///
+/// THE RESULT IS PASS-LOCAL: a rigid is minted per body check, so this is what the pass
+/// CHECKS against and BINDS, never what is written back into the stored pattern
+/// (WI-1059). Outside an operation body there is no parameter in scope and the type is
+/// returned as it is.
+pub(super) fn written_type_at_body_rigids(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    ty: &Value,
+) -> Value {
+    if env.param_rigids().is_empty() {
+        return ty.clone();
+    }
+    walk_type_deep_value(kb, env.body_rigidify(), ty)
+}
+
 /// WI-419: canonicalize a `Global` param var to the per-body `Var::Rigid` id the
 /// rigidification minted for it, or return it unchanged when it is not a param in
 /// scope (no rigid mapping). WI-942: "in scope" is the enclosing sort's params AND

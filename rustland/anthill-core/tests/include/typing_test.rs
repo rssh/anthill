@@ -7525,11 +7525,11 @@ end
 /// offending label). The guard exists precisely because "I could not construct
 /// one" is not "none exists".
 ///
-/// The pair here is a REAL renderer gap even though the checker does not currently
-/// route to it: `type_display_name`'s Arrow arm renders `param -> result` and never
-/// walks `effects`, so two arrows differing only in their effect row are
-/// indistinguishable to it — the exact shape of the WI-795 defect, in a different
-/// child.
+/// The pair here is a REAL renderer gap: `type_display_name`'s Arrow arm renders `param ->
+/// result` and never walks `effects`, so two arrows differing only in their effect row are
+/// indistinguishable to it — the exact shape of the WI-795 defect, in a different child.
+/// WI-20261001-89WZR found the checker route to it and named the cause for a TOP-LEVEL
+/// pair; the same pair one level down is what keeps this guard driven.
 ///
 /// Doubles as the only coverage of `TypeError::format`, which WI-795 routed through
 /// the shared pair renderer so the two rendering paths cannot drift.
@@ -7578,6 +7578,36 @@ fn wi795_identical_rendering_is_reported_rather_than_printed_as_a_tautology() {
     };
     let msg = err.format(&kb);
 
+    // WI-20261001-89WZR NAMED THIS CAUSE, at the top level: the checker does route to it
+    // now (a `let` annotation whose row lacks the operation's own row variable), so two
+    // arrows differing only in their row are printed WITH their rows instead of under the
+    // cause-agnostic note.
+    assert!(
+        msg.contains("Int64 @ {},") && msg.contains("Int64 @ {anthill.prelude.Console}"),
+        "two arrows differing only in their effect row are shown with their rows; got: {msg}"
+    );
+    assert!(
+        !msg.contains("render alike but are not the same type"),
+        "a named cause is not also reported as an unnamed one; got: {msg}"
+    );
+
+    // THE BACKSTOP IS STILL LIVE, one level down: the same two arrows as a `List`'s
+    // element render alike — the named cause reads the pair it is handed, not an arrow
+    // nested in one — and that is still said rather than printed as a tautology.
+    let list_ref = kb.make_sort_ref_by_name("anthill.prelude.List");
+    let t = kb.intern("T");
+    let nested = TypeError::TypeMismatch {
+        span: None,
+        context: TypeErrorContext::OperationArgument {
+            op_name: kb.intern("apply"),
+            param: kb.intern("fs"),
+        },
+        expected: Value::term(kb.make_parameterized_type(list_ref, &[(t, pure_arrow)])),
+        actual: Value::term(kb.make_parameterized_type(list_ref, &[(t, noisy_arrow)])),
+        denoted: None,
+        site: TypeError::here(),
+    };
+    let msg = nested.format(&kb);
     assert!(
         msg.contains("render alike but are not the same type"),
         "a pair that renders identically must say so rather than print `expected X, got X`; \

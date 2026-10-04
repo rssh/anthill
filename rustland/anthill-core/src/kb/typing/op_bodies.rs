@@ -324,7 +324,11 @@ pub(super) fn check_operation_bodies(
         env.set_enclosing_op(kb, op.op_sym);
         // WI-424/WI-942: the body's param → rigid bridge, both scopes in one list
         // (see the `TypingEnv::param_rigids` field doc; Rc clone).
-        env.set_param_rigids(Rc::clone(&op.param_rigids), op.sort_rigid_len);
+        env.set_param_rigids(
+            Rc::clone(&op.param_rigids),
+            op.sort_rigid_len,
+            Rc::clone(&op.rigidify),
+        );
         // WI-400 (body-site): a projection param type (`k: s.cell.T`) must be discharged
         // against the OTHER params' DECLARED types before it is bound into the body env —
         // the body-check peer of the call-site elimination (`check_apply_iter` / WI-398,

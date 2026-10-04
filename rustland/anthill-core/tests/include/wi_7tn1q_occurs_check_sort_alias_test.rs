@@ -1,6 +1,17 @@
 //! WI-20260911-7TN1Q — THE OCCURS CHECK IS ALIAS-AWARE: a bracket binding whose VALUE
 //! MENTIONS the parameter it binds is a LOAD ERROR, not a stack overflow.
 //!
+//! WHERE THIS STILL HAPPENS (WI-20261001-89WZR, 2026-10-03). In one of the sort's OWN
+//! operations the bracket's `T` is now read as the body's rigid for this instance's
+//! parameter, so `Box.empty[T = Option[T = T]]()` there is `empty` at ANOTHER instance and
+//! loads — `wi_89wzr_written_type_in_body_test` drives it. What is left is a bracket
+//! written where the sort's `T` is in scope BY NAME and is not a parameter of the body: an
+//! operation of a namespace (or a sort) nested in `sort Box[T]`. There the written `T` is
+//! still the parameter itself, the binding is still cyclic, and every row below is still
+//! what guards it — so the fixture now writes each member in `namespace beside`, inside the
+//! sort. The measurements that follow were taken with the members written directly in the
+//! sort, where they met the same refusal; the mechanism they measure is unchanged.
+//!
 //! THE DEFECT. A call-site bracket written inside the sort whose parameter it names, with
 //! a value mentioning that parameter — `Box.empty[T = Option[T = T]]()` inside
 //! `sort Box[T]` — did not terminate. `anthill load` aborted:
@@ -69,7 +80,7 @@
 //! row, both channels ([`the_callee_bracket_mentioning_its_own_parameter_is_refused`],
 //! [`the_receiver_bracket_mentioning_its_own_parameter_is_refused`],
 //! [`the_mention_is_found_at_depth`], [`the_two_spellings_refuse_alike`],
-//! [`the_refusal_says_why_it_is_a_representation_limit`]). No abort, because (B) still
+//! [`the_refusal_says_why_and_where_the_call_is_legal`]). No abort, because (B) still
 //! refuses the binding; they are red because this is the reader BOTH seeding legs'
 //! `mentions` question goes through, so without it the refusal is SILENT again — the
 //! defect part 2 exists for, arriving from the other side.
@@ -164,7 +175,9 @@ namespace test.tn1q
   sort Box[T]
     entity box(v: T)
     operation empty() -> Option[T = T] = none()
+    namespace beside
 {member}
+    end
   end
 end
 "#
@@ -277,22 +290,26 @@ fn the_two_spellings_refuse_alike() {
     );
 }
 
-/// THE MESSAGE SAYS WHY, and the clause is pinned because it is the whole difference
-/// between "you wrote something illegal" and "the kernel cannot represent this".
-/// `Box.empty[T = List[T = T]]()` — the same operation at the instance whose element is a
-/// `List` of my own `T` — is a well-formed INTENT; it is unexpressible only because a
-/// bracket binds the ENCLOSING sort's canonical parameter variable, so the callee's `T`
-/// and this instance's `T` are one variable. Found by `/code-review`, which read the bare
-/// refusal as blaming the author. Giving the callee's parameters fresh variables is what
-/// would make the family expressible; that is a design change and is NOT in this ticket.
+/// THE MESSAGE SAYS WHY, AND WHERE THE SAME TEXT IS A CALL — pinned because it is the whole
+/// difference between "the value is wrong" and "the place is". `Box.empty[T = List[T =
+/// T]]()` — the same operation at the instance whose element is a `List` of my own `T` — is
+/// a well-formed intent, and in one of the sort's own operations it now LOADS
+/// (WI-20261001-89WZR: there `T` is this instance's). Here the body is not the sort's, the
+/// written `T` is the parameter the bracket binds, and the refusal says both. The first
+/// clause was found by `/code-review`, which read the bare refusal as blaming the author;
+/// it then described a representation limit ("a call at another instance cannot be
+/// written in terms of this one"), which 89WZR removed.
 #[test]
-fn the_refusal_says_why_it_is_a_representation_limit() {
+fn the_refusal_says_why_and_where_the_call_is_legal() {
     let errs = load_errors("    operation probe() -> Option[T = T] = Box.empty[T = List[T = T]]()");
     assert_eq!(errs.len(), 1, "{errs:#?}");
     assert!(
         errs[0].contains(
-            "the bracket binds the ENCLOSING sort's own 'T', so a value mentioning it \
-             would be cyclic"
+            "'T' is the ENCLOSING sort's own parameter and this body is not one of that \
+             sort's operations"
+        ) && errs[0].contains(
+            "in one of the sort's own operations 'T' is that instance's, and the same call \
+             is at another instance"
         ),
         "{errs:#?}"
     );
@@ -305,17 +322,20 @@ fn the_refusal_says_why_it_is_a_representation_limit() {
 /// identity fast-path before `bind_resolved` is reached — which is why the seeding legs
 /// gate on the VERDICT and not on the occurs question alone (they would refuse this row).
 /// GREEN UNDER ALL FIVE BACK-OUTS: the row a seeding leg that asked `mentions` WITHOUT
-/// the verdict gate would fail.
+/// the verdict gate would fail. (The call is bound by a `let` and its type left unstated:
+/// in `namespace beside` a declared `Option[T = T]` names a parameter the body does not
+/// have, which is refused for a reason this row is not about.)
 #[test]
 fn the_parameter_bound_to_itself_still_loads() {
-    assert_eq!(
-        load_errors("    operation probe() -> Option[T = T] = Box.empty[T = T]()"),
-        Vec::<String>::new(),
-    );
-    assert_eq!(
-        load_errors("    operation probe() -> Option[T = T] = Box[T = T].empty()"),
-        Vec::<String>::new(),
-    );
+    for call in ["Box.empty[T = T]()", "Box[T = T].empty()"] {
+        assert_eq!(
+            load_errors(&format!(
+                "    operation probe() -> Int64 =\n      let o = {call}\n      0"
+            )),
+            Vec::<String>::new(),
+            "{call}"
+        );
+    }
 }
 
 /// THE CONTROL THAT SEPARATES "THIS PARAMETER" FROM "A PARAMETER". The value mentions

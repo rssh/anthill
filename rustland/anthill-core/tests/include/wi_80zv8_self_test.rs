@@ -14,16 +14,17 @@
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
-//! MEASURED (2026-10-03), each part present but disabled, over this file's 34 rows:
+//! MEASURED (2026-10-03), each part present but disabled, over this file's 36 rows:
 //!
-//! 1. THE TYPE LOWERING READS `Self` (`type_expr_to_child_inner`'s `Simple` arm). 21 FAIL:
+//! 1. THE TYPE LOWERING READS `Self` (`type_expr_to_child_inner`'s `Simple` arm). 22 FAIL:
 //!    the signature (the no-parameter return among them), entity-field, spec, witness, enum,
 //!    secondary-entry and parameterless-sort rows, [`self_in_a_provides_binding_runs_at_one_instance`],
 //!    [`self_in_a_provision_block_is_the_providing_sort`], the `requires` row and the
 //!    mixed-spelling row (their members are typed `Self`), both `Self` rule-bound rows and
 //!    [`a_head_typed_self_guards_its_own_carrier`] (the head's bound is then unresolved),
-//!    [`self_outside_a_sort_is_refused`] (it is refused, but as an unknown name), and the
-//!    `let` annotation's pin (refused for that reason rather than WI-20261001-89WZR's).
+//!    [`self_outside_a_sort_is_refused`] (it is refused, but as an unknown name),
+//!    [`self_in_a_let_annotation_is_this_instance`] and
+//!    [`self_in_a_call_bracket_is_this_instance`].
 //! 2. `Self[…]` IS REFUSED (that function's `Parameterized` arm). 1 FAILS:
 //!    [`self_with_bindings_is_refused`].
 //! 3. THE BINDING-VALUE LOWERING READS `Self` (`sort_binding_to_value`). 6 FAIL: the two
@@ -45,8 +46,8 @@
 //! 9. A HEAD TYPED `Self` GUARDS ITS CARRIER (`typed_head_guards_its_own_carrier`'s arm). 1
 //!    FAILS: [`a_head_typed_self_guards_its_own_carrier`] (refused as an unguarded join).
 //!
-//! Every row fails under at least one part but six, which pass with or without this ticket
-//! BY DESIGN. The four named `…_written_form` are the same programs spelled `Car[V = V]` (or
+//! Every row fails under at least one part but seven, which pass with or without this ticket
+//! BY DESIGN. The five named `…_written_form` are the same programs spelled `Car[V = V]` (or
 //! the sort's own name), and say that `Self` is that type and no other.
 //! [`a_head_typed_self_guards_its_own_carrier_controls`] says the guard was not loosened.
 //! [`self_as_a_call_head_or_a_require_binding_is_refused`] pins two refusals this ticket did
@@ -608,30 +609,67 @@ namespace {ns}
       let same: {self_ty} = a
       same.v
   end
+  operation go() -> Int64 = Car.keep(car(v: 5))
 end
 "#
     )
 }
 
-/// PINNED, NOT WANTED — WI-20261001-89WZR. A `let` annotation naming a type parameter in
-/// scope is a different type from the parameter, so `let same: Self = a` is refused today,
-/// and so is the same line written `Car[V = V]`, with the same message. `Self` adds nothing
-/// to that defect and removes nothing from it: this row says the two spellings are still one
-/// type here, and it FLIPS to a running program when 89WZR lands (the annotation read
-/// through the body's rigids). It passes with or without this ticket's parts 2–8 and fails
-/// under part 1, where `Self` is refused as an unknown name instead.
+/// `Self` IN A `let` ANNOTATION IS THIS INSTANCE: `let same: Self = a` binds `same` at the
+/// operation's own instance, so `same.v` is a `V`. It waited on WI-20261001-89WZR — a `let`
+/// annotation naming a type parameter in scope was a different type from the parameter, so
+/// this line was refused, and so was the same line written `Car[V = V]`.
 #[test]
-fn self_in_a_let_annotation_is_refused_as_the_written_form_is_today() {
-    let refusal = "same.annotation (let-binding): expected Car[V = V], got Car[V = ?V]";
-    assert_refused_naming(
-        &load_errors(&let_annotation_program("wi80zv8.let1", "Self")),
-        &[refusal],
-        "`let same: Self` — WI-20261001-89WZR",
+fn self_in_a_let_annotation_is_this_instance() {
+    assert_eq!(
+        run_src(&let_annotation_program("wi80zv8.let1", "Self"), "wi80zv8.let1.go"),
+        Ok(5)
+    );
+}
+
+/// CONTROL — the written form of the same line. It passes with or without THIS ticket by
+/// design (it is WI-20261001-89WZR's row, driven there as well).
+#[test]
+fn self_in_a_let_annotation_is_the_written_form() {
+    assert_eq!(
+        run_src(
+            &let_annotation_program("wi80zv8.let2", "Car[V = V]"),
+            "wi80zv8.let2.go"
+        ),
+        Ok(5)
+    );
+}
+
+/// `Self` IN A CALL'S BRACKET IS THIS INSTANCE: `id[A = Self](a)` runs, and the same bracket
+/// over a `Car[V = Int64]` argument is refused naming this instance — the bracket holds the
+/// argument to it. That second half is WI-20261001-89WZR's (a bracket's value is read at the
+/// body's own parameters): read as written it LOADED, the argument pinning `V`.
+#[test]
+fn self_in_a_call_bracket_is_this_instance() {
+    let src = |ns: &str, arg: &str, ret: &str| {
+        format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64}}
+  operation id[A](x: A) -> A = x
+  sort Car
+    sort V = ?
+    entity car(v: V)
+    operation keep(a: Self, o: Car[V = Int64]) -> {ret} = id[A = Self]({arg})
+  end
+  operation go() -> Int64 = Car.keep(car(v: 5), car(v: 6)).v
+end
+"#
+        )
+    };
+    assert_eq!(
+        run_src(&src("wi80zv8.br1", "a", "Self"), "wi80zv8.br1.go"),
+        Ok(5)
     );
     assert_refused_naming(
-        &load_errors(&let_annotation_program("wi80zv8.let2", "Car[V = V]")),
-        &[refusal],
-        "`let same: Car[V = V]` — WI-20261001-89WZR",
+        &load_errors(&src("wi80zv8.br2", "o", "Car[V = Int64]")),
+        &["id.x (op-arg): expected Car[V = ?V], got Car[V = Int64]"],
+        "`id[A = Self](o)` with `o: Car[V = Int64]`",
     );
 }
 

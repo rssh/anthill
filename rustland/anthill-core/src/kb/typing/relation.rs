@@ -26,14 +26,13 @@ pub(super) fn relation_reference_type(
     };
     let opened = open_citation_params(kb, sym, &mut columns);
     let mut subst = Substitution::new();
-    let rigid = body_rigids(kb, site.env);
     if let Some((owner, params)) = &opened {
-        seed_citation_params(kb, &mut subst, occ, sym, span, *owner, params, site.env, &rigid)?;
+        seed_citation_params(kb, &mut subst, occ, sym, span, *owner, params, site.env)?;
     }
     let column_types: Vec<(Symbol, Value)> =
         columns.iter().map(|c| (c.name, c.ty.clone())).collect();
     let ty = relation_type_from_columns(kb, sym, columns, occ.span, span)?;
-    let ty = settle_citation_type(kb, &rigid, &mut subst, sym, span, opened, site.expected, ty)?;
+    let ty = settle_citation_type(kb, site.env, &mut subst, sym, span, opened, site.expected, ty)?;
     // S2 — the bare citation's implicit arguments: no column is bound, so each read is
     // routed over the columns' own types at this citation. QUEUED, not computed — see
     // [`PendingCitationRoutes`].
@@ -129,11 +128,12 @@ fn open_citation_params(
 /// bracket two ways. It binds only a parameter the columns mention: a bracket that fills
 /// nothing is not refused here (060-implementation §7.3, D4).
 ///
-/// A BRACKET VALUE IS READ IN THE BODY'S OWN TERMS ([`body_rigids`]): `Wrap[T = X].dom`
-/// written in `operation g[X]` means THIS body's `X`, a rigid that unifies with itself
-/// alone. MEASURED: bound to `X`'s variable instead, the citation loaded both as the
-/// declared `Wrap[T = X]` and as `Wrap[T = Colour]` or `Wrap[T = Y]` — the variable
-/// unified with whatever the return check offered it.
+/// A BRACKET VALUE IS READ IN THE BODY'S OWN TERMS, by that shared reader
+/// ([`written_type_at_body_rigids`]): `Wrap[T = X].dom` written in `operation g[X]` means
+/// THIS body's `X`, a rigid that unifies with itself alone. MEASURED: bound to `X`'s
+/// variable instead, the citation loaded both as the declared `Wrap[T = X]` and as
+/// `Wrap[T = Colour]` or `Wrap[T = Y]` — the variable unified with whatever the return
+/// check offered it.
 #[allow(clippy::too_many_arguments)]
 fn seed_citation_params(
     kb: &mut KnowledgeBase,
@@ -144,7 +144,6 @@ fn seed_citation_params(
     owner: Symbol,
     params: &[CitationParam],
     env: &TypingEnv,
-    rigid: &Substitution,
 ) -> Result<(), TypeError> {
     if let Some(rt) = call_recv_type_of(occ).cloned() {
         // A BRACKET ON ANOTHER SORT BINDS NOTHING HERE, and saying nothing about it would
@@ -171,13 +170,12 @@ fn seed_citation_params(
                 actual: format!("`{}`, which binds none of its parameters", type_display_name_value(kb, &rt)),
             });
         };
-        for entry in receiver_bracket_entries(kb, owner, &written) {
+        for entry in receiver_bracket_entries(kb, env, owner, &written) {
             if let Some(p) = params.iter().find(|p| p.param == entry.param) {
-                let value = walk_type_deep_value(kb, rigid, &entry.value);
                 // A FRESH variable, minted for this citation alone: nothing has bound it and
                 // the value cannot mention it, so the bind cannot fail — and if it ever did,
                 // the author would be told a parameter they WROTE is undetermined.
-                let bound = bind_resolved(kb, subst, p.var, value);
+                let bound = bind_resolved(kb, subst, p.var, entry.value);
                 assert!(bound, "binding a citation's fresh parameter variable");
             }
         }
@@ -219,7 +217,7 @@ fn seed_citation_params(
 #[allow(clippy::too_many_arguments)]
 fn settle_citation_type(
     kb: &mut KnowledgeBase,
-    rigid: &Substitution,
+    env: &TypingEnv,
     subst: &mut Substitution,
     sym: Symbol,
     span: Option<Span>,
@@ -231,7 +229,7 @@ fn settle_citation_type(
         return Ok(ty);
     };
     if let Some(expected) = expected {
-        let expected = walk_type_deep_value(kb, rigid, expected);
+        let expected = written_type_at_body_rigids(kb, env, expected);
         let mut trial = subst.clone();
         if unify_types(kb, &mut trial, &ty, &expected) {
             *subst = trial;
@@ -249,18 +247,6 @@ fn settle_citation_type(
         }
     }
     Ok(walk_type_deep_value(kb, subst, &ty))
-}
-
-/// The body's type-parameter variables mapped to their RIGIDS (`env.param_rigids()`, the
-/// map `rigidify_op_type_params` built when the body's check began), as a substitution: how
-/// a type WRITTEN in this body — a bracket value, the declared return passed down as the
-/// expected type — is read in the body's own terms.
-fn body_rigids(kb: &mut KnowledgeBase, env: &TypingEnv) -> Substitution {
-    let mut rigid = Substitution::new();
-    for (param_var, rigid_term) in env.param_rigids() {
-        rigid.bind_term(kb, *param_var, *rigid_term);
-    }
-    rigid
 }
 
 /// WI-20260911-WT8WG — the citation-site diagnostic for a `<Sort>.domain` that was
@@ -492,9 +478,8 @@ pub(super) fn relation_reference_type_applied(
     // "s")` binds `T := Int64` from arg 0, then rejects `"s"` against it. `bound[i]`
     // aligns with the i-th argument, matching how `pos_results` ++ `named_results` index.
     let mut subst = Substitution::new();
-    let rigid = body_rigids(kb, site.env);
     if let Some((owner, params)) = &opened {
-        seed_citation_params(kb, &mut subst, occ, sym, span, *owner, params, site.env, &rigid)?;
+        seed_citation_params(kb, &mut subst, occ, sym, span, *owner, params, site.env)?;
     }
     // S2: the type each bound column takes AT THIS CITATION — its argument's — read by the
     // edge check below, which routes the relation's requirement reads over them.
@@ -623,7 +608,7 @@ pub(super) fn relation_reference_type_applied(
         })
         .collect();
     let ty = relation_type_from_columns(kb, sym, free, occ.span, span)?;
-    let ty = settle_citation_type(kb, &rigid, &mut subst, sym, span, opened, site.expected, ty)?;
+    let ty = settle_citation_type(kb, site.env, &mut subst, sym, span, opened, site.expected, ty)?;
     queue_citation_routes(kb, site.env, occ, sym, column_types, bound_types, subst);
     Ok(ty)
 }

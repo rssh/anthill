@@ -120,6 +120,7 @@ pub(super) fn lookup_operation_info_full(
 pub(super) fn seed_op_type_args(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
+    env: &TypingEnv,
     op: &OperationInfoFull,
     occ: &Rc<NodeOccurrence>,
     fn_sym: Symbol,
@@ -182,17 +183,17 @@ pub(super) fn seed_op_type_args(
             let written = grounded.as_ref().unwrap_or(value);
             // WI-20260911-RS2G4: a BARE parametric sort written as a bracket value
             // (`[T = List]`) erased whatever an argument said about its element. See
-            // [`expand_written_bracket_value`]; the receiver spelling runs the same
-            // expansion at [`seed_receiver_type_args`], one rule at both writers.
-            let expanded = expand_written_bracket_value(kb, written, target.slot_spec().is_some());
-            let bound = expanded.as_ref().unwrap_or(written);
+            // [`bracket_value_to_bind`]; the receiver spelling reads its value through the
+            // same function at [`receiver_bracket_entries`], one rule at both writers.
+            let bound = &bracket_value_to_bind(kb, env, written, target.slot_spec().is_some());
             // WI-20260911-7TN1Q — THE ONE FAULT THE DISCARD BELOW MUST NOT SWALLOW. A
             // value that MENTIONS the parameter it binds (`Box.empty[T = Option[T = T]]()`
-            // inside `sort Box[T]`) is refused by [`occurs_in`]'s `Term::Ref` arm, and a
-            // discarded `false` would make that refusal SILENT: the call would type at
-            // whatever the context wanted, which is the WI-20260911-RS2G4 defect one
-            // channel over. It aborted before the arm existed, so "loads clean" is not the
-            // behaviour being preserved here.
+            // where `Box`'s `T` is named but is not the body's own parameter — see
+            // [`bracket_binding_mentions_its_parameter`]) is refused by [`occurs_in`]'s
+            // `Term::Ref` arm, and a discarded `false` would make that refusal SILENT: the
+            // call would type at whatever the context wanted, which is the
+            // WI-20260911-RS2G4 defect one channel over. It aborted before the arm existed,
+            // so "loads clean" is not the behaviour being preserved here.
             //
             // THREE READS, and the order is the whole content. `prior` and `mentions` are
             // taken BEFORE the unify because the unify is what consumes them; the verdict
@@ -282,25 +283,26 @@ pub(super) fn seed_op_type_args(
 
 /// WI-20260911-7TN1Q — the refusal BOTH bracket channels render when a written binding
 /// for a type parameter MENTIONS that parameter: `Box.empty[T = Option[T = T]]()` and
-/// `Box[T = Option[T = T]].empty()`, each written inside `sort Box[T]`. σ would get
-/// `?T := Option[T = Ref(Box.T)]`, whose `Ref` the SortAlias chain resolves back to `?T`
-/// itself — a cycle [`walk_type_deep`] chases until the stack ends, which is what both
-/// spellings did before [`occurs_in`] gained its `Term::Ref` arm.
+/// `Box[T = Option[T = T]].empty()`, each written where `Box`'s `T` is in scope by name
+/// and is NOT a parameter of the body — an operation of a namespace or a sort nested in
+/// `sort Box[T]`. σ would get `?T := Option[T = Ref(Box.T)]`, whose `Ref` the SortAlias
+/// chain resolves back to `?T` itself — a cycle [`walk_type_deep`] chases until the stack
+/// ends, which is what both spellings did before [`occurs_in`] gained its `Term::Ref` arm.
+///
+/// NOT IN ONE OF THE SORT'S OWN OPERATIONS (WI-20261001-89WZR). There the written `T` is
+/// the body's RIGID for this instance's parameter ([`bracket_value_to_bind`]), not the
+/// variable the bracket binds, so the same text is a call at ANOTHER instance and loads.
+/// This refusal used to cover that case too, as a representation limit: the callee's `T`
+/// and the enclosing instance's were one variable.
 ///
 /// ONE MESSAGE, because it is one fault. `channel` is the only thing the two spellings do
 /// not share — which bracket the author wrote — so the remaining bytes are identical, as
 /// 035's interchangeable forms require. It names the PARAMETER and the VALUE because
 /// "cannot unify" would name neither.
 ///
-/// AND IT SAYS WHY, because the refusal is a REPRESENTATION limit and not a malformed
-/// program (found by `/code-review`). `Box.empty[T = List[T = T]]()` — "the same operation
-/// at the instance whose element is a `List` of my own `T`" — is a well-formed intent; it
-/// is unexpressible only because a bracket binds the ENCLOSING sort's canonical parameter
-/// variable (`call_bracket_scopes` spans that scope, and `sort_type_params_as_pairs`
-/// publishes one var per parameter), so the callee's `T` and the enclosing instance's `T`
-/// ARE one variable. A message asserting only "does not mention itself" sends the author
-/// looking for their own mistake. Giving the callee's parameters fresh variables is what
-/// would make the family expressible, and that is a design change, not a diagnostic.
+/// AND IT SAYS WHY AND WHERE THE SAME TEXT IS A CALL (the first found by `/code-review`):
+/// a message asserting only "does not mention itself" sends the author looking for a
+/// mistake in the value, when what is wrong is the place it is written.
 ///
 /// `#[track_caller]` so WI-510's `site` keeps reporting the CALLING seeding site rather
 /// than this builder; `here()` chains through.
@@ -318,9 +320,11 @@ fn bracket_binding_mentions_its_parameter(
         span,
         context: TypeErrorContext::OperationTypeParams { op_name: fn_sym },
         expected: format!(
-            "{channel} for '{param}' that does not mention '{param}' itself (the bracket \
-             binds the ENCLOSING sort's own '{param}', so a value mentioning it would be \
-             cyclic — a call at another instance cannot be written in terms of this one)"
+            "{channel} for '{param}' that does not mention '{param}' itself ('{param}' is \
+             the ENCLOSING sort's own parameter and this body is not one of that sort's \
+             operations, so the value names the very parameter the bracket binds, which \
+             would be cyclic — in one of the sort's own operations '{param}' is that \
+             instance's, and the same call is at another instance)"
         ),
         actual: type_display_name_value(kb, written),
     }
@@ -335,8 +339,7 @@ pub(super) struct ReceiverBracketEntry {
     pub(super) var_term: TermId,
     /// The value AS WRITTEN — what a diagnostic quotes.
     pub(super) written: Value,
-    /// The value to BIND: `written`, expanded by [`expand_written_bracket_value`] unless
-    /// the key names a requirement slot.
+    /// The value to BIND: `written` as [`bracket_value_to_bind`] reads it.
     pub(super) value: Value,
     /// The named requirement slot the key names, if it names one — read by NAME, because
     /// the declared list is qualified and a slot's binder is a bare intern. Its SPEC is the
@@ -358,6 +361,7 @@ pub(super) struct ReceiverBracketEntry {
 /// asks it.
 pub(super) fn receiver_bracket_entries(
     kb: &mut KnowledgeBase,
+    env: &TypingEnv,
     parent: Symbol,
     written: &[(Symbol, Value)],
 ) -> Vec<ReceiverBracketEntry> {
@@ -370,14 +374,13 @@ pub(super) fn receiver_bracket_entries(
         };
         let written_value = written_value.clone();
         // The receiver channel's own spelling of "does this key name a PROVIDER SLOT" —
-        // see [`expand_written_bracket_value`] for the rule both channels obey.
+        // see [`bracket_value_to_bind`] for the rule both channels obey.
         let slot = kb
             .named_requirement_slots(parent)
             .iter()
             .find(|slot| kb.local_name_of(slot.binder) == short)
             .copied();
-        let value = expand_written_bracket_value(kb, &written_value, slot.is_some())
-            .unwrap_or_else(|| written_value.clone());
+        let value = bracket_value_to_bind(kb, env, &written_value, slot.is_some());
         entries.push(ReceiverBracketEntry {
             param: *param,
             var_term: *var_term,
@@ -431,6 +434,7 @@ pub(super) fn receiver_bracket_entries(
 pub(super) fn seed_receiver_type_args(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
+    env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
     parent: Option<Symbol>,
     fn_sym: Symbol,
@@ -473,7 +477,7 @@ pub(super) fn seed_receiver_type_args(
     // `concrete`: the §1.1 set, built lazily, so a receiver bracket that binds no slot
     // never pays for the scan. (The three corpora write no form-(3) call at all.)
     let mut concrete: Option<std::collections::HashSet<Symbol>> = None;
-    for entry in receiver_bracket_entries(kb, parent, &written) {
+    for entry in receiver_bracket_entries(kb, env, parent, &written) {
         let ReceiverBracketEntry {
             param,
             var_term,
@@ -486,8 +490,9 @@ pub(super) fn seed_receiver_type_args(
         // already BOUND can only have been bound by the callee's bracket — that is the
         // two-bracket contradiction. A parameter that is still FREE is the OCCURS check —
         // the receiver's own value mentions the parameter it is binding (`Box[T = Box[T =
-        // T]]` written inside `sort Box[T]`). Reporting that as "the callee bracket says
-        // …" would name a bracket the author never wrote.
+        // T]]` written where `Box`'s `T` is named but is not the body's own parameter).
+        // Reporting that as "the callee bracket says …" would name a bracket the author
+        // never wrote.
         // `sort_type_params_as_pairs` publishes a `Var::Global` term per parameter
         // (`published_param_var`), so the match is total in practice; a non-var term
         // would answer `None` and take the occurs arm, which is the honest reading of
@@ -629,15 +634,30 @@ pub(super) fn seed_receiver_type_args(
 /// [`CallTypeArgTarget`], the receiver has its sort's own [`KnowledgeBase::
 /// named_requirement_slots`] list — and the RULE lives here, once, so a third writer
 /// cannot forget it.
-fn expand_written_bracket_value(
+///
+/// AND IT IS READ IN THE BODY'S OWN TERMS (WI-20261001-89WZR): a type parameter in scope
+/// that the value names is the body's RIGID for it ([`written_type_at_body_rigids`]), as
+/// a `let` annotation's is and as the argument types beside the bracket already are.
+/// Bound as written it was the parameter's FLEXIBLE variable, so the bracket said nothing:
+/// `id[A = U](y)` with `y: T` loaded, the argument pinning the `U` the author wrote; and
+/// `each[EffP = {R}](s, pure1)` charged nothing where it was told to charge `R`. It is
+/// also what lets a call be written at ANOTHER instance in terms of this one —
+/// `Box.empty[T = Option[T = T]]()` inside `sort Box[T]` binds the callee's `T` to an
+/// `Option` of this body's, where the two were one variable and the binding cyclic
+/// (WI-20260911-7TN1Q's refusal, which a bracket still gets where the parameter it names
+/// is not the body's own: [`bracket_binding_mentions_its_parameter`]).
+fn bracket_value_to_bind(
     kb: &mut KnowledgeBase,
+    env: &TypingEnv,
     value: &Value,
     binds_a_provider_slot: bool,
-) -> Option<Value> {
-    if binds_a_provider_slot {
-        return None;
-    }
-    expand_foreign_sort_application(kb, value, None)
+) -> Value {
+    let expanded = if binds_a_provider_slot {
+        None
+    } else {
+        expand_foreign_sort_application(kb, value, None)
+    };
+    written_type_at_body_rigids(kb, env, expanded.as_ref().unwrap_or(value))
 }
 
 /// WI-870 (058 §3.3) — the SELECTIONS a bracket VALUE makes on the witness it names:

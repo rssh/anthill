@@ -317,7 +317,7 @@ pub(super) fn check_apply_iter(
         // WI-841: and returns what the bracket SELECTED (058 §4.2) — read below by
         // both dispatch routes, the spec-op one (`dispatch_spec_op_cached`) and the
         // Direct-call dictionary build (`build_concrete_dispatch_dict`).
-        let selections = seed_op_type_args(kb, &mut subst, &op, occ, fn_sym, span)?;
+        let selections = seed_op_type_args(kb, &mut subst, env, &op, occ, fn_sym, span)?;
         // WI-20260929-0RP29: the operation's type parameters the bracket wrote — a dispatched
         // override's own parameter aligned with one takes it ([`override_at_call`]).
         let bracket_params: SmallVec<[VarId; 2]> = op
@@ -333,7 +333,7 @@ pub(super) fn check_apply_iter(
         // [`seed_receiver_type_args`] for why it is here and not at the W6JH0 result arm
         // below: form (3) has to read as the callee bracket, including its diagnostics,
         // and a WRITTEN receiver must beat the WI-424 rigid fill immediately following.
-        seed_receiver_type_args(kb, &mut subst, occ, callee_parent_sort, fn_sym, span)?;
+        seed_receiver_type_args(kb, &mut subst, env, occ, callee_parent_sort, fn_sym, span)?;
         // WI-424: a SAME-SORT sibling call inside a member body shares the
         // enclosing instance's sort params — seed the callee's canonical param
         // vars with the body's rigids (the WI-392 skolems, extended to sort
@@ -1638,7 +1638,11 @@ pub(super) fn check_apply_iter(
                         if same_sort_canonical(kb, a, b)
                 ) =>
             {
-                let rt = rt.clone();
+                // WI-20261001-89WZR: in the body's own terms, as the bracket's entries were
+                // when they were bound ([`bracket_value_to_bind`]) — walked through this
+                // call's σ as written, a parameter the receiver names would be read as the
+                // CALLEE's, which the entries just bound.
+                let rt = written_type_at_body_rigids(kb, env, rt);
                 let declared_carries_slots = matches!(
                     type_head(kb, &proj_return_type),
                     TypeHead::Parameterized { .. }

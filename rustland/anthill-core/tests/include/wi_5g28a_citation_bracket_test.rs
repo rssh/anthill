@@ -35,9 +35,12 @@
 //!    (a member's own bare `dom` refused as undetermined).
 //!  * [X] the expected-type arm of `settle_citation_type`. 1 red:
 //!    `the_expected_type_pins_the_parameter`, refused as undetermined.
-//!  * [R] `body_rigids` (the bracket value and the expected type read raw). 1 red:
+//!  * [R] the bracket value and the expected type read raw. 1 red:
 //!    `a_rigid_in_the_bracket_is_that_rigid` — its two WRONG programs load, `X`'s variable
-//!    unifying with whatever the return check offers it.
+//!    unifying with whatever the return check offers it. (Measured on the citation's own
+//!    `body_rigids`; since WI-20261001-89WZR the bracket's half is `bracket_value_to_bind`,
+//!    the reader an operation call's brackets share, and RE-MEASURED there: the same row,
+//!    red.)
 //!  * [V] the refusal in `settle_citation_type`. 1 red:
 //!    `nothing_at_the_citation_names_the_parameter` (loads clean).
 //!

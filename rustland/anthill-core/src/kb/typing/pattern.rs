@@ -611,6 +611,10 @@ pub(super) fn bind_and_label_pattern(
             // raise it where the projection is FORMED, not here.
             let ann_ty: Option<(&Rc<NodeOccurrence>, Value)> = type_ann.map(|ann| {
                 let v = pattern_annotation_value(kb, ann);
+                // WI-20261001-89WZR: and to the body's PARAMETERS, as the `let` site reads
+                // its whole-pattern annotation — so one binder's annotation naming a type
+                // parameter in scope can be compared with the context at all (below).
+                let v = written_type_at_body_rigids(kb, env, &v);
                 let v = if value_contains_projection(kb, &v) {
                     let ctx = TypeErrorContext::LetBinding { var: *name };
                     eliminate_type_projections(
@@ -957,23 +961,30 @@ pub(super) fn bind_and_label_pattern(
 /// NARROWER or disjoint one is false and is reported. The diagnostic then reads in the
 /// user's direction — `expected` is what the slot really is, `actual` what they wrote.
 ///
-/// GROUNDNESS GATE, the WI-385/WI-469 discipline: judge only when BOTH sides are ground.
+/// GROUNDNESS GATE, the WI-385/WI-469 discipline: judge only when BOTH sides are DECIDED.
 /// A generic callback slot (`(acc: Acc, x: xs.T) -> Acc`) threads a type var or an
 /// unresolved projection into the binder, and an annotation is a legitimate way to PIN
 /// it — rejecting there would refuse correct programs. Deliberately conservative: this
-/// closes the ground case WI-794 measured and leaves the polymorphic slot to unification,
-/// alongside the same-family gap WI-791 pins as
+/// closes the decided case and leaves the polymorphic slot to unification, alongside the
+/// same-family gap WI-791 pins as
 /// `known_gap_generic_callback_arrow_is_not_conformance_checked`.
 ///
+/// DECIDED IS THE DETERMINED READING (WI-20261001-89WZR): a body's RIGID counts, a
+/// flexible variable does not. WI-794 gated on the CONCRETE reading, which skipped
+/// `let (a: U, b) = (y, 1)` with `y: T` — two of the body's own parameters, as decided as
+/// two concrete types are — and the false annotation loaded. The annotation reaches here
+/// read at the body's rigids ([`written_type_at_body_rigids`], at the caller), which is
+/// what makes the two sides comparable at all.
+///
 /// THE GATE IS WIDER THAN THAT RATIONALE, and the difference is worth knowing before
-/// relying on this check. `resolved_type_is_ground` takes an immutable `&KnowledgeBase`
-/// and answers STRUCTURALLY — it consults no `Substitution`, because this runs in the
-/// visit phase, which has none (the same reason the comparison below needs a scratch
-/// one). So a type var that the surrounding inference HAS already bound to a concrete
-/// type still reads as non-ground here, and its contradiction is passed over exactly as
-/// the original defect did. Not just the honestly-polymorphic slot: any slot whose
-/// concreteness is known only through a substitution. Closing that needs the check to run
-/// where `subst` is in hand, which is the argument-position alternative this ticket
+/// relying on this check. `resolved_type_is_determined` takes an immutable
+/// `&KnowledgeBase` and answers STRUCTURALLY — it consults no `Substitution`, because this
+/// runs in the visit phase, which has none (the same reason the comparison below needs a
+/// scratch one). So a type var that the surrounding inference HAS already bound to a
+/// concrete type still reads as undecided here, and its contradiction is passed over
+/// exactly as the original defect did. Not just the honestly-polymorphic slot: any slot
+/// whose concreteness is known only through a substitution. Closing that needs the check
+/// to run where `subst` is in hand, which is the argument-position alternative this ticket
 /// rejected for a different reason (it would re-derive the binder↔slot alignment).
 fn binder_annotation_conflict(
     kb: &mut KnowledgeBase,
@@ -982,10 +993,11 @@ fn binder_annotation_conflict(
     annotation: &Value,
     span: Option<Span>,
 ) -> Option<TypeError> {
-    if !resolved_type_is_ground(kb, context_ty) || !resolved_type_is_ground(kb, annotation) {
+    if !resolved_type_is_determined(kb, context_ty) || !resolved_type_is_determined(kb, annotation)
+    {
         return None;
     }
-    // A scratch substitution: with both sides ground there is nothing to look up and
+    // A scratch substitution: with both sides decided there is nothing to look up and
     // nothing to bind, so no inference is lost by discarding it. This check is a
     // VALIDATION — the binder's type is already decided above it.
     if types_compatible(kb, &mut Substitution::new(), context_ty, annotation) {

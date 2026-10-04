@@ -3333,6 +3333,13 @@ end
 /// rigid `Q` was refused only as "`EffP` unconstrained — use `each[EffP = …]`", and LOADED once
 /// that bracket was written; `[EffP = {R}]` admitted one raising `R` itself; and a call's result
 /// was never looked at (each MEASURED). FAILS under ledger part 56.
+///
+/// THE `[EffP = {R}]` CASE NO LONGER MEASURES PART 56 (WI-20261001-89WZR): a bracket's `R` is
+/// now the operation's own row, so that bracket itself writes the callback's row as `{R, -R}`
+/// and is refused as the uninhabitable row it is, before any argument is read — the refusal
+/// [`a_row_holding_a_variable_it_lacks_is_uninhabitable`] gives its written twin. While the
+/// bracket's `R` was a row variable of its own, the argument was what refused it ("raises the
+/// row `?R` itself"); the bracket-less `itself` case still is.
 #[test]
 fn a_field_callback_is_held_to_a_lacked_row_however_it_is_passed() {
     let lack = "to lack the row `?R`";
@@ -3359,13 +3366,6 @@ fn a_field_callback_is_held_to_a_lacked_row_however_it_is_passed() {
             "the argument raises the row `?R` itself",
         ),
         (
-            "itself_bracket",
-            "R",
-            "Strm.each[EffP = {R}](s, h.f)",
-            " effects {R}",
-            "the argument raises the row `?R` itself",
-        ),
-        (
             "call_result",
             "{}",
             "Strm.each(s, mk())",
@@ -3377,6 +3377,17 @@ fn a_field_callback_is_held_to_a_lacked_row_however_it_is_passed() {
             callback_source_program(&format!("wi0rp29.cbsrc_{tag}"), holder_row, call, declared);
         assert_refused_naming(&load_errors(&src), &[lack, what], tag);
     }
+    let src = callback_source_program(
+        "wi0rp29.cbsrc_itself_bracket",
+        "R",
+        "Strm.each[EffP = {R}](s, h.f)",
+        " effects {R}",
+    );
+    assert_refused_naming(
+        &load_errors(&src),
+        &["each.f (op-arg)", "both admit and lack `?R`"],
+        "itself_bracket",
+    );
 }
 
 /// `use(h: Holder[Q2 = {raises}])` passing `h.f` to `call` — `each2`, whose callback row is

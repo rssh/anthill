@@ -187,6 +187,15 @@ pub(super) fn render_mismatch_pair(
     // would duplicate the renderer), it is a NOTE, so it belongs exactly where the
     // untargeted note would otherwise go.
     if e == a {
+        // WI-20261001-89WZR: A SECOND CAUSE NAMED OUT OF THE RESIDUE — two ARROWS that
+        // differ only in their effect ROW. The arrow arm renders `param -> result` and
+        // never the row, so `let h: (x: Int64) -> Bool @ {Error[Foo], -R} = g` refused
+        // `expected Int64 -> Bool, got Int64 -> Bool`. Each side is shown with its row,
+        // here and nowhere else: an arrow pair that already differs in what is printed
+        // keeps its rendering, so no other diagnostic moves.
+        if let Some((expected_row, actual_row)) = arrow_rows_that_differ(kb, expected, actual) {
+            return (format!("{e} @ {expected_row}"), format!("{a} @ {actual_row}"));
+        }
         if let Some((expected_qn, actual_qn)) = short_name_sort_collision(kb, expected, actual) {
             return (
                 e,
@@ -199,6 +208,23 @@ pub(super) fn render_mismatch_pair(
         return (e, format!("{a} {IDENTICAL_RENDERING_NOTE}"));
     }
     (e, a)
+}
+
+/// WI-20261001-89WZR — the rendered effect rows of two ARROWS whose rows render
+/// differently, else `None`. Top level only: it names the cause of an identical
+/// rendering for the pair [`render_mismatch_pair`] was handed, not for an arrow nested in
+/// one.
+fn arrow_rows_that_differ(
+    kb: &KnowledgeBase,
+    expected: &Value,
+    actual: &Value,
+) -> Option<(String, String)> {
+    let row = |ty: &Value| {
+        matches!(type_head(kb, ty), TypeHead::Arrow)
+            .then(|| named_child_display(kb, ty, "effects"))
+    };
+    let (e, a) = (row(expected)?, row(actual)?);
+    (e != a).then_some((e, a))
 }
 
 /// WI-872 — the sort symbols a type MENTIONS, at any depth.

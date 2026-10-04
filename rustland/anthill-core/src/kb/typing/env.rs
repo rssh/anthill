@@ -107,6 +107,13 @@ pub struct TypingEnv {
     /// (see that field). The producer appends the op's own after them, so the
     /// prefix relation is structural rather than a convention two lists must keep.
     pub(super) sort_rigid_len: usize,
+    /// WI-20261001-89WZR — the substitution that RIGIDIFIED this body's signature
+    /// (`check_operation_bodies`' `rigidify`: each type parameter in scope bound to its
+    /// rigid). [`Self::param_rigids`] is this map's bridge, read back out of it; the
+    /// substitution itself is kept so a type WRITTEN inside the body takes the very walk
+    /// the signature took ([`written_type_at_body_rigids`]). Empty outside an operation
+    /// body.
+    body_rigidify: Rc<Substitution>,
     local_resources: Vec<Symbol>,
     /// Enclosing sort for defer-to-requirement detection.
     pub(super) enclosing_sort: Option<Symbol>,
@@ -283,6 +290,7 @@ impl TypingEnv {
             callable_places: HashMap::new(),
             param_rigids: Rc::new(Vec::new()),
             sort_rigid_len: 0,
+            body_rigidify: Rc::new(Substitution::new()),
             local_resources: Vec::new(),
             enclosing_sort: None,
             rule_scope: None,
@@ -409,13 +417,34 @@ impl TypingEnv {
     /// WI-424/WI-942 — install the body's param-var → rigid map (see the
     /// [`Self::param_rigids`] field doc). `sort_rigid_len` is how many leading
     /// entries belong to the enclosing SORT; the rest are the operation's own.
-    pub fn set_param_rigids(&mut self, rigids: Rc<Vec<(VarId, TermId)>>, sort_rigid_len: usize) {
+    ///
+    /// WI-20261001-89WZR — and `rigidify`, the substitution the bridge was read out of
+    /// (see [`Self::body_rigidify`]).
+    pub fn set_param_rigids(
+        &mut self,
+        rigids: Rc<Vec<(VarId, TermId)>>,
+        sort_rigid_len: usize,
+        rigidify: Rc<Substitution>,
+    ) {
         debug_assert!(
             sort_rigid_len <= rigids.len(),
             "sort prefix longer than the list"
         );
+        debug_assert!(
+            rigids.iter().all(|(vid, rigid)| matches!(
+                rigidify.resolve_as_value(*vid),
+                Some(Value::Term { id, .. }) if id == rigid
+            )),
+            "the rigid bridge is not read out of the substitution it is installed with"
+        );
         self.param_rigids = rigids;
         self.sort_rigid_len = sort_rigid_len;
+        self.body_rigidify = rigidify;
+    }
+
+    /// The substitution that rigidified this body's signature — see the field.
+    pub(super) fn body_rigidify(&self) -> &Substitution {
+        &self.body_rigidify
     }
 
     /// EVERY type param in scope for this body — the bridge every σ-class

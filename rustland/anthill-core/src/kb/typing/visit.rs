@@ -141,6 +141,11 @@ pub(super) fn visit_type(
                 }
                 other => other,
             };
+            // WI-20261001-89WZR: the annotation names the type parameters in scope as
+            // the author wrote them; the value it is checked against, and expected of,
+            // carries the body's rigids. Read at that level for this pass only — the
+            // stored pattern keeps what was written.
+            let annotation = annotation.map(|ann| written_type_at_body_rigids(kb, &env, &ann));
             let value_occ = Rc::clone(value);
             let body_occ = Rc::clone(body);
             // WI-270: value's expected is the let's annotation only —
@@ -225,8 +230,11 @@ pub(super) fn visit_type(
             // `occurrence_to_term`, so a `denoted`-bearing annotation keeps its
             // `Value::Node` carrier instead of being flattened to `Value::Term`
             // (the carrier is information — see that function).
-            let ann_type: Option<Value> = extract_pattern_type_ann(&param)
-                .map(|ann_occ| pattern_annotation_value(kb, ann_occ));
+            // WI-20261001-89WZR: at the body's parameters, as the `let` arm reads its own.
+            let ann_type: Option<Value> = extract_pattern_type_ann(&param).map(|ann_occ| {
+                let written = pattern_annotation_value(kb, ann_occ);
+                written_type_at_body_rigids(kb, &env, &written)
+            });
             let param_type: Value = ann_type
                 .or_else(|| {
                     // Checking direction: the expected arrow's param slot, as-is.
