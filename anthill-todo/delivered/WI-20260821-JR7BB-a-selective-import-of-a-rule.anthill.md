@@ -3,9 +3,9 @@
 - id: WI-20260821-JR7BB-a-selective-import-of-a-rule
 - created: 2026-08-21T11:36:58Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-21T11:36:58Z
+- status: Delivered
+- status_agent: codex
+- status_at: 2026-10-04T09:58:28Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -125,4 +125,8 @@ ACCEPTANCE, whichever is chosen: the three-file program's answer must not depend
 whether file B exists -- either A's clause stays in `zlib.q`, or the program is refused
 naming both sites. Drive the goals; assert clause counts on both predicates with and
 without B.
+
+### 2026-10-04T09:58:20Z — feedback — codex
+
+Implemented loud refusal for mixed frozen rule-head answers across sibling files: a file-local imported head can no longer be silently retargeted by a scope-wide local predicate minted from another file. Rust and Scala now diagnose the capture before minting; Rust suppresses the later WI-1001 duplicate diagnostic. Added driven capture tests plus same-file selective-contribution and Bool.{ite} controls, and documented the rule in kernel-language.md. Verification: rustland/scripts/test.sh passed all targets (main integration: 5885 passed, 4 ignored; anthill-todo: 295 passed); scaland sbt testFull: 585 passed; git diff --check clean. The configured /code-review skill was unavailable, so I performed a manual final diff review.
 

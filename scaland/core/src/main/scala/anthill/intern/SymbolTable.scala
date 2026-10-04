@@ -435,6 +435,43 @@ class SymbolTable:
     val visited = HashSet.empty[ScopeId]
     resolveRecursive(name, scopeId, visited, ownLocalsVisible = false, overlay = overlay)
 
+  /** The top-level scope, by the same mint [[anthill.kb.KnowledgeBase.globalScope]] uses. */
+  private lazy val globalScopeId: ScopeId = scopeOf(intern(GLOBAL_SCOPE_NAME))
+
+  /** WI-20260821-HSG31 — [[resolveInScope]] for a RULE HEAD written inside a namespace:
+    * the ordinary ladder with `<global>`'s own declarations removed from it.
+    *
+    * `<global>` IS THE ONE SCOPE NOBODY OPTS INTO — every namespace-less file declares
+    * there without naming it — so a head written in a namespace must not become a clause
+    * of a name whose only home is that scope (kernel-language.md §5.3, "`<global>` is not
+    * a party to any of it"). WI-980 enforced that for a `<global>` rule HEAD only; a
+    * `<global>` `sort`, `operation` or 061 declaration is on this ladder from pass 1, so
+    * the head resolved to it and the namespace's predicate ceased to exist.
+    *
+    * ONLY THE LOCALS. `<global>`'s imports and parents — here including the prelude
+    * auto-import's exposure links — are still walked: what they reach lives elsewhere.
+    * Rustland's twin is `SymbolTable::resolve_rule_head_inside_namespace`. */
+  def resolveRuleHeadInsideNamespace(name: String, scopeId: ScopeId): ResolveResult =
+    val visited = HashSet.empty[ScopeId]
+    resolveRecursive(name, scopeId, visited, globalLocalsVisible = false)
+
+  /** WI-20260821-HSG31 — is `scopeId` a namespace, or lexically inside one? ENCLOSING
+    * links only: "inside" is a statement about nesting, and an import edge is not one.
+    * `false` for `<global>` and for a namespace-less file's own sorts and operations,
+    * which keeps the documented top-level form joining at `<global>`. Rustland's twin is
+    * `SymbolTable::is_inside_namespace`. */
+  def isInsideNamespace(scopeId: ScopeId): Boolean =
+    val seen = HashSet.empty[ScopeId]
+    val frontier = ArrayBuffer(scopeId)
+    while frontier.nonEmpty do
+      val s = frontier.remove(frontier.length - 1)
+      if s != globalScopeId && seen.add(s) then
+        get(symbolOf(s)) match
+          case SymbolDef.Resolved(_, _, SymbolKind.Namespace, _) => return true
+          case _ =>
+        scopes.get(s).foreach(sc => frontier ++= sc.parents.filter(_.isEnclosing).map(_.parent))
+    false
+
   /** A caller-supplied answer for "does this scope hold that name", for scopes whose
     * names are not symbols yet. `ScopeId` is this table's member type, so an overlay
     * cannot be written against another table's scopes. */
@@ -485,15 +522,18 @@ class SymbolTable:
     * Rustland's twin is `EnclosingLinks` in `intern.rs`. */
   private def resolveRecursive(
     name: String, scopeId: ScopeId, visited: HashSet[ScopeId], enclosingStopped: Boolean = false,
-    ownLocalsVisible: Boolean = true, overlay: ScopeNameOverlay = NoOverlay
+    ownLocalsVisible: Boolean = true, overlay: ScopeNameOverlay = NoOverlay,
+    globalLocalsVisible: Boolean = true
   ): ResolveResult =
     if !visited.add(scopeId) then return ResolveResult.NotFound // cycle
 
     scopes.get(scopeId) match
       case None => ResolveResult.NotFound
       case Some(scope) =>
-        // 1. Local
-        if ownLocalsVisible then
+        // 1. Local. WI-20260821-HSG31 — `<global>`'s own declarations are skipped as a
+        // unit with the overlay, which names heads that will BE locals; its imports and
+        // parents are still walked (see [[resolveRuleHeadInsideNamespace]]).
+        if ownLocalsVisible && (globalLocalsVisible || scopeId != globalScopeId) then
           scope.locals.get(name).foreach(sym => return ResolveResult.Found(sym))
           // WI-20260821-SBZ2A / WI-980 — a name the CALLER says this scope holds, though
           // no symbol carries it yet. Read exactly where a local is read, so an overlaid
@@ -572,7 +612,8 @@ class SymbolTable:
           val stoppedBelow = enclosingStopped || namesItsTarget
           // `ownLocalsVisible = true`, always: that switch is the ENTRY scope's alone —
           // a parent's declarations are not what a declaration here shadows.
-          resolveRecursive(name, parent, visited, stoppedBelow, ownLocalsVisible = true, overlay) match
+          resolveRecursive(name, parent, visited, stoppedBelow, ownLocalsVisible = true, overlay,
+              globalLocalsVisible) match
             case ResolveResult.Found(sym) => matches += sym
             case ResolveResult.Ambiguous(candidates) => matches ++= candidates
             case ResolveResult.NotFound =>

@@ -708,6 +708,9 @@ mod wi321_cross_file_mutual_recursion_test;
 #[path = "include/wi369_internal_visibility_test.rs"]
 mod wi369_internal_visibility_test;
 
+#[path = "include/wi_jr7bb_rule_head_import_capture_test.rs"]
+mod wi_jr7bb_rule_head_import_capture_test;
+
 #[path = "include/wi516_graded_effect_row_test.rs"]
 mod wi516_graded_effect_row_test;
 
@@ -1935,3 +1938,7 @@ mod wi_k4jgc_evaluation_strategy_test;
 mod wi_cynpe_waiting_goals_test;
 #[path = "include/wi_vm9q7_string_escape_test.rs"]
 mod wi_vm9q7_string_escape_test;
+#[path = "include/wi_hsg31_global_declaration_test.rs"]
+mod wi_hsg31_global_declaration_test;
+#[path = "include/wi753_native_rule_body_occurrence_test.rs"]
+mod wi753_native_rule_body_occurrence_test;

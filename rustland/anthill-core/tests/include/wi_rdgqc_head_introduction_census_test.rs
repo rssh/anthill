@@ -5,8 +5,8 @@
 //! `intern(name)` — ONE GLOBAL NAME two scopes then share, with the loser's clause
 //! answering inside the winner's scope, on a program that loads clean. That is WI-894's
 //! defect class, and four shapes were in it. This file is the census: every head-bearing
-//! shape, its answer today, and — for the shapes still LEFT OUT — the leak itself,
-//! pinned so that whoever closes one has to come here and say so.
+//! shape and its answer today, including the one remaining leak, pinned so that whoever
+//! closes it has to come here and say so.
 //!
 //! ── THE TWO HALVES OF THE ENUMERATION ───────────────────────────────────────
 //!
@@ -15,9 +15,10 @@
 //! (`bodyless_declares_nothing_detail`) that re-derived the same questions to choose a
 //! sentence. Part C below drives every variant.
 //!
-//! A FACT head and a host `provides … language … end` head never ask that type, because
-//! they never ask: neither reaches [`RuleHeadSite`] at all. They are enumerated HERE,
-//! driven, rather than given variants no producer builds (WI-816's class).
+//! A FACT head and a host `provides … language … end` head reach the same collection
+//! path as ordinary rules. They are enumerated HERE because the surface shape still
+//! matters: a host block changes the semantic scope from the surrounding text to its
+//! target sort.
 //!
 //! ── THE LEDGER, MEASURED ON THIS TREE ───────────────────────────────────────
 //!
@@ -34,7 +35,7 @@
 //! | `rule f(?x) <=> …` equation    | YES     | A, two distinct symbols      |
 //! | `fact p(1)` fact head          | YES     | A, 0 and 1  (see below)      |
 //! | `rule l: p(1), q(9) :- …`      | **no**  | B, 2 and 2  (NE0E4)          |
-//! | head in `provides … language`  | **no**  | B, 2 and 2  (TTHRK)          |
+//! | head in `provides … language`  | YES     | A, 1 and 1  (TTHRK)          |
 //! | `rule ns.p :- …` qualified     | n/a     | C — REFERENCES, by design    |
 //! | `rule ?x.m(?y) :- …` desugared | n/a     | C — the desugar's functor    |
 //!
@@ -59,12 +60,10 @@
 //! That is the drift-catcher the merge buys: before it, the same swap had two homes
 //! (the verdict's and the second walk's) and only one of them was under test.
 //!
-//! **PART B PINS DEFECTS, SO IT HAS NO BACK-OUT — IT FAILS WHEN THEY ARE FIXED**, which
-//! is the point. Each row asserts the leak (2 answers where 1 is right) BESIDE a control
-//! in a shape that scopes (1 answer, its own). The control is what makes the 2 a
-//! measurement of the shape rather than of the fixture: back the control out and you
-//! learn nothing from the 2. Whoever closes NE0E4 or TTHRK edits the row and the table
-//! above together.
+//! **PART B PINS NE0E4'S DEFECT, SO IT HAS NO BACK-OUT — IT FAILS WHEN THAT DEFECT IS
+//! FIXED**, which is the point. The row asserts the leak (2 answers where 1 is right)
+//! beside a control in a shape that scopes (1 answer, its own). The control is what
+//! makes the 2 a measurement of the shape rather than of the fixture.
 //!
 //! **AND PART C PASSES AGAINST THE PRE-MERGE CODE, BY DESIGN.** RDGQC's change is
 //! behaviour-preserving — one walk where there were two — so no diagnostic moved:
@@ -241,15 +240,18 @@ fn a_multi_head_rules_functors_are_unscoped_and_two_scopes_share_one_predicate()
 }
 
 #[test]
-fn a_host_provides_block_head_is_unscoped_and_two_specs_share_one_predicate() {
-    // No scan pass DESCENDS into a `provides … language … end` block, so a rule head
-    // written there reaches no `RuleHeadSite`. Its CLAUSE still lands, in the SPEC's
-    // scope (WI-20260827-APXSS); its NAME lands nowhere. WI-20260821-TTHRK owns it.
+fn a_host_provides_block_head_is_scoped_to_its_target_sort() {
+    // APXSS put the CLAUSE in the target sort's scope; TTHRK puts its introduced NAME
+    // there too. The surrounding namespace is only the textual location.
     let src = "namespace zzRDGQC.pv\n\
-               \x20 sort RecP\n    entity P(v: Int64)\n    rule see(?x) :- pick(?x)\n  end\n\
-               \x20 sort RecQ\n    entity Q(v: Int64)\n    rule see(?x) :- pick(?x)\n  end\n\
-               \x20 provides RecP language rust\n    artifact \"x.rs\"\n    rule pick(1) :- true\n  end\n\
-               \x20 provides RecQ language rust\n    artifact \"y.rs\"\n    rule pick(2) :- true\n  end\n\
+               \x20 sort RecP\n    entity P(v: Int64)\n    rule see(?x) :- pick(?x)\n    \
+               rule fsee(?x) :- fpick(?x)\n  end\n\
+               \x20 sort RecQ\n    entity Q(v: Int64)\n    rule see(?x) :- pick(?x)\n    \
+               rule fsee(?x) :- fpick(?x)\n  end\n\
+               \x20 provides RecP language rust\n    artifact \"x.rs\"\n    rule pick(1) :- true\n    \
+               fact fpick(1)\n  end\n\
+               \x20 provides RecQ language rust\n    artifact \"y.rs\"\n    rule pick(2) :- true\n    \
+               fact fpick(2)\n  end\n\
                end\n";
     let mut kb = crate::common::load_kb_with(src);
     assert_eq!(
@@ -257,14 +259,26 @@ fn a_host_provides_block_head_is_unscoped_and_two_specs_share_one_predicate() {
             answers(&mut kb, "zzRDGQC.pv.RecP.see"),
             answers(&mut kb, "zzRDGQC.pv.RecQ.see")
         ),
-        (2, 2),
-        "LIVE (TTHRK): each spec reads the other's block head. Closing it makes this (1, 1)"
+        (1, 1),
+        "each target sort must read only its own host block's predicate"
     );
     assert!(
-        kb.try_resolve_symbol("zzRDGQC.pv.RecP.pick").is_none()
-            && kb.try_resolve_symbol("zzRDGQC.pv.RecQ.pick").is_none(),
-        "and neither name is citable in its spec's scope — the NAME lands nowhere even \
-         though APXSS already lands the CLAUSE. Closing TTHRK makes both `is_some()`"
+        kb.try_resolve_symbol("zzRDGQC.pv.RecP.pick").is_some()
+            && kb.try_resolve_symbol("zzRDGQC.pv.RecQ.pick").is_some(),
+        "both introduced names must be citable in their target sort's scope"
+    );
+    assert_eq!(
+        (
+            answers(&mut kb, "zzRDGQC.pv.RecP.fsee"),
+            answers(&mut kb, "zzRDGQC.pv.RecQ.fsee")
+        ),
+        (1, 1),
+        "a fact is the one-head rule spelling and must take the same target scope"
+    );
+    assert!(
+        kb.try_resolve_symbol("zzRDGQC.pv.RecP.fpick").is_some()
+            && kb.try_resolve_symbol("zzRDGQC.pv.RecQ.fpick").is_some(),
+        "both fact-introduced names must be citable in their target sort's scope"
     );
     // THE CONTROL: the SAME two rules written IN the sorts rather than in a block.
     let ctl = "namespace zzRDGQC.pc\n\

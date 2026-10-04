@@ -378,42 +378,28 @@ fn a_body_less_bare_nullary_head_declares_its_predicate() {
 }
 
 #[test]
-fn a_declaration_the_defining_pass_never_reached_is_refused() {
-    // THE ONE POSITION PASS 1 DOES NOT DESCEND INTO: the interior of a `provides …
-    // language … end` block, which no scan pass walks (WI-20260821-TTHRK, and
-    // WI-20260821-RDGQC's enumeration of which head shapes introduce a name). Before 061
-    // a body-less head there asserted its clause on the WI-476 bare intern — uncitable,
-    // but present. Under the declaration reading it would introduce nothing AND assert
-    // nothing, so the load says so.
-    //
-    // BACKED OUT (delete the `rule_head_ladder_answer` guard in the Declaration arm):
-    // this row FAILS — the fixture loads clean and `pvb.Widget.pvbdecl` resolves to
-    // nothing, which is the silent drop the guard exists for.
+fn a_declaration_in_a_host_block_is_minted_in_the_target_scope() {
+    // TTHRK makes the block's target sort its semantic scope for introduced names, as
+    // APXSS already did for clauses. A body-less head therefore declares an ordinary
+    // predicate there rather than becoming a silent no-op.
     const SRC: &str = "namespace fqc85pvb\n  sort Widget\n                           import anthill.prelude.{Int64}\n                           operation w(x: Int64) -> Int64\n  end\n                         provides Widget language anthill\n    rule pvbdecl(?x)\n  end\nend\n";
-    for (label, name) in [
-        ("a name nothing else declares", "pvbdecl"),
-        // THE ARM THE FIRST GUARD MISSED. It asked the LADDER, and `eq` denotes through
-        // the prelude from anywhere — so this program loaded clean and its declaration
-        // introduced nothing, one name away from the fixture above (found by
-        // /code-review). The guard now asks the SCOPE'S OWN LOCALS: did pass 1 put
-        // anything here.
-        ("a name the prelude also declares", "eq"),
-    ] {
-        let errs = crate::common::try_load_kb_with(&SRC.replace("pvbdecl", name))
-            .err()
-            .unwrap_or_else(|| panic!("{label}: a declaration nothing minted must be refused"));
-        assert!(
-            errs.iter()
-                .any(|e| e.contains("was never brought into existence")),
-            "{label}: got {errs:#?}"
-        );
-    }
+    let kb = crate::common::load_kb_with(SRC);
+    assert!(
+        kb.try_resolve_symbol("fqc85pvb.Widget.pvbdecl").is_some(),
+        "the body-less head must declare a predicate in Widget"
+    );
 
-    // THE CONTROL — the same block with a BODY. It still loads (its clause lands on the
-    // bare intern, which is TTHRK's gap and not this ticket's), so the row above
-    // measures the declaration reading and not "a rule in a provides block is refused".
-    let ctrl = crate::common::load_kb_with(&SRC.replace("rule pvbdecl(?x)", "rule pvbdecl(1) :- true"));
-    let _ = ctrl;
+    // CONTROL: the target sort's own operation already denotes locally, so the block
+    // must not mint a second declaration over it. With no body the rule adds no clause
+    // either, and the general no-op declaration rule stays loud.
+    let errs = crate::common::try_load_kb_with(&SRC.replace("pvbdecl", "w"))
+        .err()
+        .expect("a body-less declaration of the target's operation must be refused");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("already declared in this scope")),
+        "got {errs:#?}"
+    );
 }
 
 #[test]

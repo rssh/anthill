@@ -207,13 +207,12 @@ class ImportFileLocalityTest extends munit.FunSuite:
     * fixtures in both load orders — verified against the delivered WI-995,
     * `anthill query`.
     *
-    * PASSES WITH THE FIX AND WITHOUT IT — verified, and for a reason worth keeping:
-    * A's `import lib.{f}` names a rule-introduced predicate, so its alias is DEFERRED
-    * to pass 4 (WI-295) and does not exist yet when pass 3's mint guard asks whether
-    * `f` denotes — the mint happens on pass ordering, before origin visibility gets a
-    * say. What this test pins is the SEMANTICS (and its rust parity), against a future
-    * where the guard runs late or the deferral disappears and B's head would capture
-    * A's import, polluting `lib.f` with B's clause (drive would answer {1, 3}). */
+    * JR7BB CONTROL — PASSES WITH ITS REFUSAL AND WITHOUT IT. Only B writes a head named
+    * `f`; A uses `f` solely in a BODY. JR7BB compares the frozen answers of competing
+    * heads, so there is no imported head to capture here: B mints the scope-wide local,
+    * and A's body deliberately sees that declaration ahead of its import. What this test
+    * pins is that the refusal does not turn an import into a file-local declaration or
+    * preserve a body's pre-mint answer. */
   test("WI-1074 mint parity: a foreign file's rule head does not capture this file's import") {
     val declarer = """namespace demo
                      |  fact base_f(3)

@@ -162,11 +162,11 @@ end
 /// `stack_provided(7)` — one solution iff the body resolved `is_full` to the
 /// clause `Stack` declares.
 fn solutions_for_stack_provided(kb: &mut KnowledgeBase) -> usize {
-    // A standalone `provides` block's head functor is bare-interned rather than
-    // given a qualified definition (pre-existing, and the same for both
-    // spellings), so it is reached by the name the loader actually minted.
+    // TTHRK: a standalone `provides` block opens its target sort's scope for the
+    // head as well as the body, so the predicate is citable at `Stack`'s address
+    // for both spec spellings.
     let goal_sym: Symbol = kb
-        .lookup_symbol("stack_provided")
+        .try_resolve_symbol("test.pbody.Stack.stack_provided")
         .expect("the provides block's rule head must exist");
     let seven = kb.alloc(Term::Const(Literal::Int(7)));
     let goal = kb.alloc(Term::Fn {

@@ -486,14 +486,16 @@ fn a_global_predicate_is_not_a_party_to_this_refusal() {
         "rule f(?x)\n",
         "namespace pg\n  rule f(true) <=> 7 @[simp]\nend\n",
     ]));
-    // AND THE ROW ASSERTS WHAT IT COSTS, not that it loaded — "it loads" is what this
-    // file's header rules out, and `/code-review` caught this arm doing exactly that.
-    // `pg.f` is ABSENT: the `<global>` predicate DID absorb the namespace's subject, and
-    // nothing said so. That is the silence this scope has always taken, recorded here and
-    // in the spec rather than discovered.
+    // AND THE ROW ASSERTS WHAT THE PAIR MEANS, not that it loaded — "it loads" is what
+    // this file's header rules out, and `/code-review` caught this arm doing exactly that.
+    // `pg.f` is PRESENT. Until WI-20260821-HSG31 it was absent — the `<global>` predicate
+    // absorbed the namespace's subject and nothing said so, a cost this row used to pin.
+    // A head written inside a namespace no longer resolves to a `<global>` declaration
+    // at all (kernel-language.md §5.3), so the exclusion costs nothing; that ticket's
+    // `wi_hsg31_global_declaration_test` drives `pg.f(true)` = 7 from a third scope.
     assert!(
-        !present(&kb, "pg.f"),
-        "the cost of the exclusion: `<global>` absorbs the subject silently"
+        present(&kb, "pg.f"),
+        "a namespace's equation subject defines its own operation beside a `<global>` predicate"
     );
     // THE CONTROL that makes the row mean something: the PREDICATE spelling of the same
     // pair does the same thing. Both spellings agree, which is the point — this refusal
@@ -502,7 +504,7 @@ fn a_global_predicate_is_not_a_party_to_this_refusal() {
         "rule f(?x)\n",
         "namespace pg\n  rule f(1) :- true\nend\n",
     ]));
-    assert!(!present(&ctl, "pg.f"), "CONTROL: `<global>` absorbs the predicate head too");
+    assert!(present(&ctl, "pg.f"), "CONTROL: the predicate head keeps its own too");
 }
 
 #[test]

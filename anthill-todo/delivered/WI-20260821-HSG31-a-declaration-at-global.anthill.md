@@ -3,9 +3,9 @@
 - id: WI-20260821-HSG31-a-declaration-at-global
 - created: 2026-08-21T11:25:02Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-21T11:25:02Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-04T08:42:36Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
