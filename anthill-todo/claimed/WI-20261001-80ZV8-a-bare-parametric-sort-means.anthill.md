@@ -211,3 +211,7 @@ FOUND BY PROBE AND NOT CHANGED (older than this ticket, told to the user): over 
 
 GATE on this tree: rustland 8469 passed / 0 failed / 14 ignored (scripts/test.sh, whole workspace; 8454 before the join and the constant). scaland not re-run: nothing under `stdlib/` or `scaland/` changed since its 588.
 
+### 2026-10-04T16:47:26Z — feedback — claude
+
+COMMITTED AND PUSHED 2026-10-04 (user: "commit and push"). One commit per stage, each the tree that was gated when the stage was made: 7142de51 — stage (c) parts 1–3 (one commit: no saved state separated them); 47fdace8 — part 4, the stdlib; 117d7155 — part 5, the open slot and the written receivers; f8b69009 — part 6, docs and fixtures; c657ef4d — stage (d) as redefined; 22ef92d8 — an open slot is closed at a name (variant 4); 581cd052 — the bottom type in a covariant position (variant 5); 91b3f08b — a data sort's parameter takes the join of its arguments, the constant, decision 3. Beside them: 98348072 — WI-20261001-89WZR (delivered); 4c793fdb — WI-20261004-KEGNC filed; 359fe372 — proposal 069 §2. Merged with origin/main as 0183556a (thirteen upstream commits, no textual conflict). GATE ON THE MERGE: rustland 8491 passed / 0 failed / 14 ignored (`rustland/scripts/test.sh`); scaland 598 passed (`sbt testFull`, cold). STILL OPEN: stage (e) — delete `elaborate_self_ties`, `enforce_member_tie`, the unifier's canonical channel, the member rule's bare-carrier arms, then the loader's `?` fill; `place_sibling_call_at_callers_instance` stays (decision 3).
+

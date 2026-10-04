@@ -3,9 +3,9 @@
 - id: WI-20261001-89WZR-a-let-annotation-naming-a-type
 - created: 2026-10-01T11:23:15Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-03T15:26:35Z
+- status_at: 2026-10-04T16:47:10Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
