@@ -26,9 +26,12 @@
 //! WAS MEASURED ON THE BARE SPELLING and has not been taken again part by part: the rows the
 //! change of spelling moved, and what each of them fails under now, are in the ledgers of
 //! `wi_80zv8_bare_own_sort_test` and `wi_80zv8_written_wildcard_test`. Where a comment
-//! credits "§3's tie" for a verdict, the tie is now the written `Self`; the arms that read a
-//! reference to the declaring sort with a slot LEFT OUT are reached by no loaded program —
-//! the loader writes the `?` — and go at stage (e).
+//! credits "§3's tie" for a verdict, the tie is now the written `Self`. The arms that read a
+//! reference to the declaring sort with a slot LEFT OUT as this instance WENT AT STAGE (e) of
+//! proposal 070: such a reference is any instance, read as a slot left out is on every other
+//! sort, and the loader no longer writes a `?` into it. A ledger part below that names one of
+//! them (`self_references_at_own_parameters`, the bare arms of `is_this_instance`, the
+//! unifier's canonical channel, `enforce_member_tie`) can no longer be backed out.
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!

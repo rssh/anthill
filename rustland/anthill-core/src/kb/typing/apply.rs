@@ -228,13 +228,12 @@ pub(super) fn check_apply_iter(
 
     // Path 1: known operation — unify args with params to instantiate type params
     if let Some(mut op) = lookup_operation_info_full(kb, fn_sym) {
-        // WI-374 (§8.1, site-scoped): expand FOREIGN bare/partial parametric
-        // sort applications in the callee's signature to per-call fresh-var
-        // applications, so two foreign occurrences never alias and the
-        // foreign sort's canonical vars are no longer touched by this call's
-        // argument unification. Member self-sort refs are left bare — the §3
-        // bullet-1 parametricity tie keeps riding the canonical channel
-        // (`unify_parameterized_with_sort_ref` + the per-call subst).
+        // WI-374 (§8.1, site-scoped): expand bare/partial parametric sort
+        // applications in the callee's signature to per-call fresh-var
+        // applications, so two occurrences never alias and the sort's
+        // canonical vars are not touched by this call's argument unification.
+        // The callee's OWN sort is expanded as any other (WI-20261001-80ZV8,
+        // stage (e)): the instance this call fixes is written `Self`.
         //
         // The expansion serves INFERENCE only: the WI-385 validation below
         // keeps checking each argument against the param type AS WRITTEN
@@ -243,34 +242,15 @@ pub(super) fn check_apply_iter(
         // validation's groundness gate would silently skip the rejection
         // (`Function[Int64, Int64]` with open `E` vs a `String -> Bool`
         // argument must still be a loud mismatch).
-        // WI-1063: computed ONCE, and via [`impl_parent_sort_of_op`]. Both polarities of the
-        // §3 tie ask this one question — "is a reference to this sort the callee's OWN?" —
-        // and until this hoist they asked it in two spellings: the parameter expansion here
-        // read `kind_of`, which WI-956 exists to replace (a symbol's categories are a SET and
-        // `kind_of` reports only the first-declared one), while the return opening below read
-        // `has_kind`. On a §6.3 re-declared sort the two answered differently, and one gate
-        // being wrong is a silent expansion of the callee's own parameters.
+        // The callee's SORT, computed ONCE and via [`impl_parent_sort_of_op`] (`has_kind`, not
+        // `kind_of`, which reports only a symbol's first-declared category — WI-956): read
+        // below by the receiver bracket's seeding, the sort-parameter join and the placement
+        // of a sibling call.
         let callee_parent_sort = impl_parent_sort_of_op(kb, fn_sym);
-        // WI-20261001-80ZV8: DOES THE SIGNATURE WRITE EVERY REFERENCE TO ITS OWN SORT? `xs:
-        // Self` and `-> List[T = T]` do; a bare `xs: List`, or one that leaves a slot out,
-        // does not, and is still read as this call's instance through the unifier's
-        // canonical channel (the interim tie, until proposal 070's stage (d) refuses the
-        // spelling). Where everything is written the call has no use for that channel, and
-        // turns it off for the callee's sort — see `Substitution::written_sort`, set below.
-        let own_sort_is_written = callee_parent_sort.is_some_and(|sort| {
-            !leaves_own_slot_unwritten(kb, sort, &op.return_type, fn_sym)
-                && !op
-                    .params
-                    .iter()
-                    .any(|(_, ty)| leaves_own_slot_unwritten(kb, sort, ty, fn_sym))
-        });
         let written_params = op.params.clone();
         {
-            let callee_parent_canon = callee_parent_sort.map(|p| kb.canonical_sort_sym(p));
             for i in 0..op.params.len() {
-                if let Some(exp) =
-                    expand_foreign_sort_application(kb, &op.params[i].1, callee_parent_canon)
-                {
+                if let Some(exp) = expand_sort_application(kb, &op.params[i].1) {
                     op.params[i].1 = exp;
                 }
             }
@@ -324,12 +304,6 @@ pub(super) fn check_apply_iter(
             None => (occ, named_args, named_results),
         };
         let mut subst = Substitution::new();
-        // WI-20261001-80ZV8: the callee's signature writes its own sort in full, so a bare
-        // reference to that sort met below is a value's type and binds none of this call's
-        // parameters — see `Substitution::written_sort`.
-        if own_sort_is_written {
-            subst.written_sort = callee_parent_sort.map(|sort| kb.canonical_sort_sym(sort));
-        }
         // WI-269 Phase D: explicit call-site `op[bindings]` bindings
         // seed the substitution first. Returns `NoSuchTypeParam` on
         // an unknown binding name.
@@ -1106,46 +1080,6 @@ pub(super) fn check_apply_iter(
         if !arg_type_errors.is_empty() {
             return Err(aggregate_errors(arg_type_errors));
         }
-        // WI-374 (user-decided 2026-06-12): ENFORCE the §3 parametricity tie.
-        // The argument loops bind a sort's canonical param vars through bare
-        // member params (`append(xs: List, ys: List)` both bind `List.T`); a
-        // conflicting rebind records a contradiction that was never consulted,
-        // so `append(intList, strList)` was silently accepted with
-        // first-binding-wins threading. Checked HERE — after the WI-385
-        // per-argument validation (whose precise diagnostics take precedence)
-        // and BEFORE the expected-seeding below, whose failed unify against a
-        // pinned slot is a DELIBERATE silent no-op (WI-367/WI-379) that must
-        // not trip this. Scoping (review round, same day):
-        //  - the callee's parent must be a SORT — `impl_parent_of_op` yields
-        //    the NAMESPACE symbol for a top-level op, and a namespace prefix
-        //    would sweep in every sort it contains, enforcing a "member tie"
-        //    on §3-bullet-2 foreign refs;
-        //  - EVERY per-var detail is scanned (a single first-detail would let
-        //    an earlier benign foreign conflict mask a member violation);
-        //  - a conflict whose prior binding is the body's own rigid is exempt —
-        //    a same-sort sibling call at a different instance keeps its
-        //    pre-WI-374 acceptance. That prior was WI-424's seeded value until
-        //    WI-20261001-80ZV8 deleted the seeding; it is now what an argument
-        //    typed at this instance binds, and the argument conformance check
-        //    is what reports a second argument at another instance;
-        //  - a UNIFIABLE pair (bare `List` vs `List[T = Int64]`, a `?_`
-        //    wildcard vs a concrete, equal rows in different carriers/orders)
-        //    is refinement, not violation — bind-level TermId/structural
-        //    inequality over-reports, so re-test through the real relation.
-        // A FOREIGN sort's var contradicted through two independent bare refs
-        // (§3 bullet 2: independent) is not scanned — and with the signature
-        // expansion above, foreign refs no longer touch canonical vars at all.
-        let op_parent_sort = impl_parent_sort_of_op(kb, fn_sym);
-        if let Some(parent) = op_parent_sort {
-            enforce_member_tie(
-                kb,
-                &subst,
-                parent,
-                fn_sym,
-                span,
-                env.enclosing_instance_param_rigids(),
-            )?;
-        }
         // WI-408: materialize the recorded some-coercions — wrap each flagged
         // argument's typed node in a synthesized `some(...)` and reassemble
         // this apply from the new children. MUST run before any annotation
@@ -1308,7 +1242,7 @@ pub(super) fn check_apply_iter(
                                 }
                                 let pinned = walk_type_deep_value(kb, &probe, &var);
                                 if kb.collect_vars(&pinned).is_empty()
-                                    && first_genuine_conflict_on(kb, &probe, &[*vid], &[]).is_none()
+                                    && first_genuine_conflict_on(kb, &probe, &[*vid]).is_none()
                                 {
                                     subst.bind_value(kb, *vid, pinned);
                                 }
@@ -1619,11 +1553,6 @@ pub(super) fn check_apply_iter(
         // or written `?` is still an existential, and is opened.
         let proj_return_type = match open_existential_return(
             kb,
-            if return_owner == fn_sym {
-                callee_parent_sort
-            } else {
-                impl_parent_sort_of_op(kb, return_owner)
-            },
             return_owner,
             &proj_return_type,
             &held,
@@ -1730,7 +1659,7 @@ pub(super) fn check_apply_iter(
         // walk each through `walk_type_deep` so type-var bindings from
         // arg-unification propagate into nested positions in the effect
         // (e.g. `Stream.head`'s `effects E` → `Error` once `vid_E` is
-        // bound by `unify_parameterized_with_sort_ref`). Skip the
+        // bound by the receiver's argument). Skip the
         // param-name walk when no var_ref args were seen.
         let pre_substituted: Vec<Value> = if eff_rekey_map.is_empty() {
             proj_effects.clone()
@@ -1760,7 +1689,7 @@ pub(super) fn check_apply_iter(
         // propagate, then FLATTEN any element that resolved to a concrete effect-
         // ROW wrapper. WI-375: `effects E` with E bound to a WRITTEN
         // `effects_rows(…)` — from a producer's `Stream[E = {…}]` return threaded
-        // into a bare-`Stream` param by `unify_parameterized_with_sort_ref` —
+        // into a `Stream` parameter's row slot by argument unification —
         // resolves to the row WRAPPER as a single effect element. Decompose it to
         // its present labels (+ open tail) so the effect machinery (propagation,
         // the pure-context check in `check_operation_bodies`, the WI-365 close
@@ -4804,7 +4733,6 @@ pub(super) fn check_apply_iter(
             let ret = Value::term(ty);
             let ret = open_existential_return(
                 kb,
-                impl_parent_sort_of_op(kb, fn_sym),
                 fn_sym,
                 &ret,
                 &HashSet::new(),

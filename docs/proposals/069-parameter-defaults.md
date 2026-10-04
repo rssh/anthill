@@ -479,14 +479,14 @@ it. For one day (2026-10-04) 070 refused the bare spelling inside the sort outri
 said so; the refusal was withdrawn the same day ("it should be the same as `Cell[V = ?]`") in favour
 of the carrier rule, which is what guards `second_of2` above.
 
-*For the implementation (WI-20261003-QV5W5).* Until 070's stage (e) the loader writes an anonymous
-`?` into each slot a reference to the ENCLOSING sort leaves out (`Loader::own_sort_slots_left_out`),
-because the typer's remaining tie code would otherwise read such a slot as this instance's. An
-explicit `?` is this proposal's opt-out, so that fill must leave a DEFAULTED slot out once defaults
-land — or the declaring sort would be the one place its own default never applies. And 070 §1.4's
-carrier check (`check_sort_parameter_carriers`) must go on reading such a slot as LEFT OUT: it reads
-the stored signature today, where a left-out slot of the enclosing sort is that `?`, and a slot
-holding an installed default is neither the carrier nor open — `second_of2` would load.
+*For the implementation (WI-20261003-QV5W5).* 070 §1.4's carrier check
+(`check_sort_parameter_carriers`) must go on reading a slot the author left out as LEFT OUT. It reads
+the stored signature, where such a slot is simply absent today; once a default is installed into it,
+a slot holding the default is neither the carrier nor open — `second_of2` would load — so the check
+has to be given what the author wrote. (Until 070's stage (e), 2026-10-04, the loader wrote an
+anonymous `?` into each slot a reference to the ENCLOSING sort left out, and this note carried a
+second obligation: that fill had to leave a DEFAULTED slot out, an explicit `?` being this proposal's
+opt-out. Stage (e) deleted the fill, and with it the obligation.)
 
 The polarity rules continue to govern explicit `?`, named variables and non-defaulted slots.
 `f: Function[A, B, ?]` is universal in its open row, while `-> Function[A, B, ?]` is existential in

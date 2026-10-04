@@ -923,14 +923,12 @@ pub(super) fn bind_this_instance_params(
     recv_ty: &Value,
 ) -> bool {
     // WI-20260929-0RP29 — a spec parameter the carrier's OWN provision binds to the carrier
-    // itself, bare or at its own parameters (`Car provides Sp[T = Car]`), is THIS instance: the
-    // receiver's type, as the carrier's own operations read the bare name (§3's tie) and as
-    // the declaration rule reads the binding — so `Sp.both(k1, k2)` holds `k2` to `k1`'s
-    // instance. Skipped below as "ref-shaped, no parameter of the carrier", the call held it to
+    // at its own parameters (`Car provides Sp[T = Self]`) is THIS instance: the receiver's
+    // type, as the declaration rule reads the binding — so `Sp.both(k1, k2)` holds `k2` to
+    // `k1`'s instance. Skipped below as "no parameter of the carrier", the call held it to
     // nothing and a member written tied crashed on a second instance, or on a `5` (MEASURED).
-    // INTERIM (user, 2026-10-01): WI-20261001-80ZV8 makes a bare sort fresh `?` slots in a
-    // provision as in an operation, and the rest of what a call owes its provision's bindings
-    // is WI-20260929-05ZQE's.
+    // The carrier's BARE name is not such a binding: it is any instance (proposal 070 §1.3).
+    // The rest of what a call owes its provision's bindings is WI-20260929-05ZQE's.
     let mut any = false;
     if let Some(own_view) = provider_spec_view_bindings(kb, carrier_sym, spec_sort) {
         for (spec_param_sym, carrier_value) in own_view {
@@ -946,7 +944,7 @@ pub(super) fn bind_this_instance_params(
             else {
                 continue;
             };
-            let instance = once_per_call(kb, carrier_sym, &instance);
+            let instance = once_per_call(kb, &instance);
             if occurs_in_view(kb, spec_vid, &instance) {
                 continue;
             }
@@ -963,9 +961,8 @@ pub(super) fn bind_this_instance_params(
 /// gives the binding: every parameter typed by the spec parameter reads that one type. Bound as
 /// written, `T = Box[C = Car]` was expanded per occurrence, so `x: T, y: T` took two boxes of
 /// different element types and a member tying them failed at run time (MEASURED: review 9).
-fn once_per_call(kb: &mut KnowledgeBase, carrier: Symbol, instance: &Value) -> Value {
-    let carrier = kb.canonical_sort_sym(carrier);
-    expand_foreign_sorts_deep(kb, instance, Some(carrier), SlotVar::Flexible)
+fn once_per_call(kb: &mut KnowledgeBase, instance: &Value) -> Value {
+    expand_sorts_deep(kb, instance, SlotVar::Flexible)
 }
 
 /// WI-357 — bind a self-receiver spec op's own type parameters from the
@@ -2032,33 +2029,40 @@ pub(super) fn bind_spec_params_from_carrier_param(
         // OF the carrier, so the arm below dropped it and the call held `b` to nothing —
         // `Rel.mix(k1, k2)` over two instances, even `Rel.mix(k1, 5)`, loaded and crashed
         // (MEASURED). Where the provision is the carrier's OWN — written inside the carrier —
-        // the carrier bare or at its own parameters is THIS instance, as it is in the carrier's
-        // own operations (§3's tie): the receiver's type, whichever parameter it binds
-        // (INTERIM, user 2026-10-01 — WI-20261001-80ZV8 makes a bare sort fresh `?` slots in
-        // both places). A WITNESS's provision is written in another sort, where the carrier's
-        // bare name is a foreign sort: an instance of its own, which the argument fills.
-        // AT ANY DEPTH AND PART-WRITTEN TOO, as the rule reads the binding
-        // ([`this_instance_binding_at`]): `B = List[T = Car]` is a list of THIS instance and `B
-        // = Car[V = V]` this instance whatever the receiver's argument is — gated on a bare
-        // reference, the first was expanded below as an independent instance and the second
-        // bound only where the receiver's arguments were ground (MEASURED: `Rel.mix(k1, k2)`
-        // over `k1: Car[V = W]` passed a second instance to the member the rule admits as tied).
+        // the carrier at its own parameters (`B = Self`) is THIS instance: the receiver's type,
+        // whichever parameter it binds. The carrier's BARE name is an instance of its own,
+        // which the argument fills — in a WITNESS's provision, written in another sort, and
+        // since proposal 070's stage (e) in the carrier's own (until then the bare name there
+        // was this instance too: §3's tie, on the `provides` side).
+        // AT ANY DEPTH, as the rule reads the binding ([`this_instance_binding_at`]): `B =
+        // List[T = Self]` is a list of THIS instance and `B = Car[V = V]` this instance
+        // whatever the receiver's argument is — held to a top-level binding, the first was
+        // expanded below as an independent instance and the second bound only where the
+        // receiver's arguments were ground (MEASURED: `Rel.mix(k1, k2)` over `k1: Car[V = W]`
+        // passed a second instance to the member the rule admits as tied).
         if let Some(spec_vid) = spec_vid.filter(|v| subst.resolve_as_value(*v).is_none()) {
             let carrier_canon = kb.canonical_sort_sym(carrier_sym);
-            let instance = if !holds_carrier(kb, &Value::term(carrier_value), carrier_canon) {
+            let binding = Value::term(carrier_value);
+            let instance = if !holds_carrier(kb, &binding, carrier_canon) {
                 None
-            } else if *own_provision.get_or_insert_with(|| {
+            } else if let Some(this) = (*own_provision.get_or_insert_with(|| {
                 carriers_own_provision_qualifies(kb, spec_sort, carrier_pvid, carrier_sym)
-            }) {
-                this_instance_binding_at(kb, carrier_sym, carrier_value, recv_ty)
-                    .map(|instance| once_per_call(kb, carrier_sym, &instance))
-            } else if extract_sort_ref_sym(kb, &TermIdView(carrier_value))
-                .is_some_and(|s| kb.canonical_sort_sym(s) == carrier_canon)
+            }))
+            .then(|| this_instance_binding_at(kb, carrier_sym, carrier_value, recv_ty))
+            .flatten()
             {
-                Some(
-                    expand_foreign_sort_application(kb, &Value::term(carrier_value), None)
-                        .unwrap_or_else(|| Value::term(carrier_value)),
-                )
+                Some(once_per_call(kb, &this))
+            } else if extract_sort_ref_sym(kb, &TermIdView(carrier_value)).is_some()
+                && sort_application_parts(kb, &binding)
+                    .is_some_and(|(s, _)| kb.canonical_sort_sym(s) == carrier_canon)
+            {
+                // THE CARRIER'S NAME ALONE — or an alias of it — is the carrier at slots of its
+                // own (proposal 070 §1.3), in its own provision as in a witness's: an instance
+                // the argument fills. Bound here, expanded, because the arm below reads a bare
+                // name as a ref-shaped leaf and leaves it for the late pass — by which time the
+                // argument has bound the parameter, and `Rel.mix(x, 5)` loaded behind `B = Car`
+                // (MEASURED, with the loader no longer writing the `?` into such a reference).
+                Some(expand_sort_application(kb, &binding).unwrap_or(binding))
             } else {
                 None
             };
@@ -2123,12 +2127,7 @@ pub(super) fn bind_spec_params_from_carrier_param(
             // declaration rule tie them). Bound as written and expanded per occurrence it
             // admitted two, and a member tying them crashed (WI-20260929-0RP29, MEASURED). A
             // written row (`{}`) has no slot and is bound as written.
-            match expand_foreign_sorts_deep(
-                kb,
-                &Value::term(carrier_value),
-                None,
-                SlotVar::Flexible,
-            ) {
+            match expand_sorts_deep(kb, &Value::term(carrier_value), SlotVar::Flexible) {
                 Value::Term { id, .. } => Some(id),
                 expanded => {
                     if let Some(spec_vid) = spec_vid {
@@ -3306,7 +3305,6 @@ pub(super) fn override_at_call(
     if own.is_empty() {
         return Ok(None);
     }
-    let parent = impl_parent_sort_of_op(kb, impl_op_sym).map(|p| kb.canonical_sort_sym(p));
     let n = spec_op.params.len().min(impl_op.params.len());
     let var = |vid: VarId| Value::Var(Var::Global(vid));
     // 1. The declarations related, and the bracket.
@@ -3319,8 +3317,8 @@ pub(super) fn override_at_call(
         )));
     for (spec_ty, impl_ty) in declared {
         let spec_ty = mask_projections(kb, spec_ty);
-        let spec_ty = expand_foreign_sorts_deep(kb, &spec_ty, None, SlotVar::Flexible);
-        let impl_ty = expand_foreign_sorts_deep(kb, impl_ty, parent, SlotVar::Flexible);
+        let spec_ty = expand_sorts_deep(kb, &spec_ty, SlotVar::Flexible);
+        let impl_ty = expand_sorts_deep(kb, impl_ty, SlotVar::Flexible);
         unify_types(kb, &mut rel, &spec_ty, &impl_ty);
     }
     let rep = |kb: &KnowledgeBase, rel: &Substitution, vid: VarId| {
@@ -3353,7 +3351,7 @@ pub(super) fn override_at_call(
         let reduced = eliminate_type_projections(kb, spec_ty, &spec_args, None, &ctx, span)
             .unwrap_or_else(|_| mask_projections(kb, spec_ty));
         let bound = walk_type_deep_value(kb, call_subst, &reduced);
-        expand_foreign_sorts_deep(kb, &bound, None, SlotVar::Flexible)
+        expand_sorts_deep(kb, &bound, SlotVar::Flexible)
     };
     // 2. The arguments' join, then 3. the arguments themselves. An argument's own type decides
     //    where it is determined (`a: Animal` given a `cat` is `W = cat`); what it leaves OPEN —
@@ -3367,7 +3365,7 @@ pub(super) fn override_at_call(
             let p = call.passed(kb, &spec_op.params, i)?;
             let p = walk_type_deep_value(kb, call_subst, &p);
             let p = open_literal_type_vars(kb, &p);
-            let p = expand_foreign_sorts_deep(kb, &p, parent, SlotVar::Flexible);
+            let p = expand_sorts_deep(kb, &p, SlotVar::Flexible);
             let at_call = spec_at_call(kb, &spec_op.params[i].1);
             let mut probe = Substitution::new();
             let p = if unify_types(kb, &mut probe, &p, &at_call)
@@ -3390,7 +3388,7 @@ pub(super) fn override_at_call(
     )
     .map_err(|no_join| no_join.into_call_error(kb, impl_op_sym, span))?;
     for (_, impl_ty, passed_ty) in &passed {
-        let impl_ty = expand_foreign_sorts_deep(kb, impl_ty, parent, SlotVar::Flexible);
+        let impl_ty = expand_sorts_deep(kb, impl_ty, SlotVar::Flexible);
         unify_types(kb, &mut sigma, passed_ty, &impl_ty);
     }
     // 4. What is still free after the arguments, from the caller's expected type — as the
@@ -3399,7 +3397,7 @@ pub(super) fn override_at_call(
     //    disagrees with).
     if let Some(exp) = call.expected {
         let ret = mask_projections(kb, &impl_op.return_type);
-        let ret = expand_foreign_sorts_deep(kb, &ret, parent, SlotVar::Flexible);
+        let ret = expand_sorts_deep(kb, &ret, SlotVar::Flexible);
         let mut probe = sigma.clone();
         unify_types(kb, &mut probe, &ret, exp);
         for &w in &own {
@@ -3431,7 +3429,7 @@ pub(super) fn override_at_call(
         for (spec_ty, impl_ty) in positions {
             let at_call = spec_at_call(kb, spec_ty);
             let impl_ty = mask_projections(kb, impl_ty);
-            let impl_ty = expand_foreign_sorts_deep(kb, &impl_ty, parent, SlotVar::Flexible);
+            let impl_ty = expand_sorts_deep(kb, &impl_ty, SlotVar::Flexible);
             unify_types(kb, &mut probe, &at_call, &impl_ty);
         }
         for &w in &own {
@@ -3447,7 +3445,7 @@ pub(super) fn override_at_call(
         }
     }
     // 6. A conflict on an own parameter.
-    if let Some((vid, prior, attempted)) = first_genuine_conflict_on(kb, &sigma, &own, &[]) {
+    if let Some((vid, prior, attempted)) = first_genuine_conflict_on(kb, &sigma, &own) {
         let what = override_variable_name(kb, impl_op_sym, impl_op, vid);
         return Err(conflicting_bindings_error(
             kb,

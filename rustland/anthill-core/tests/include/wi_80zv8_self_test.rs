@@ -6,8 +6,9 @@
 //! lowered, so nothing after name resolution sees it. `s.Self` is the whole parameterized
 //! type of the value `s` (§1.5); it was `s.Sort`, which is now an ordinary missing member.
 //!
-//! This stage ADDS the spelling and changes no reading: a bare self reference still means
-//! what it meant (the tie is removed at stage (e)).
+//! This stage ADDED the spelling and changed no reading: a bare self reference still meant
+//! what it had meant. The tie was removed at stage (e), and a bare self reference is any
+//! instance (`wi_80zv8_bare_own_sort_test`, `wi_80zv8_tie_removed_test`).
 //!
 //! Every row that can RUNS — an operation to its value, a relation to its answers — and the
 //! rows asserting a LOAD verdict name the refusal a back-out makes disappear.

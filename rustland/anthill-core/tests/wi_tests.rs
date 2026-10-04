@@ -1918,6 +1918,8 @@ mod wi_80zv8_written_wildcard_test;
 mod wi_80zv8_named_open_slot_test;
 #[path = "include/wi_80zv8_sort_param_join_test.rs"]
 mod wi_80zv8_sort_param_join_test;
+#[path = "include/wi_80zv8_tie_removed_test.rs"]
+mod wi_80zv8_tie_removed_test;
 #[path = "include/wi_89wzr_written_type_in_body_test.rs"]
 mod wi_89wzr_written_type_in_body_test;
 #[path = "include/wi_0rp29_review9_regressions_test.rs"]

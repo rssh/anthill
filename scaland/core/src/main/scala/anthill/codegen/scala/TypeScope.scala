@@ -86,10 +86,10 @@ enum ParamBinding:
   * `binders` is every parameter the sort DECLARES, in order, under the ANTHILL name
   * it declares it by — and [[kinds]] and [[params]] are DERIVED from it rather than
   * carried beside it (WI-1081). Three readers need three different views of one list:
-  * a bare mention re-attaches the EMITTED Scala names ([[params]]), an explicit
-  * application is checked and erased against what the declaration WRITES ([[kinds]]),
-  * and a path-dependent projection off a bare self receiver asks for ONE parameter BY
-  * ITS ANTHILL NAME ([[binding]]). Held as one list, they cannot disagree; the scala
+  * `Self` attaches the EMITTED Scala names ([[params]]), an explicit application is
+  * checked and erased against what the declaration WRITES ([[kinds]]), and a
+  * path-dependent projection off a `Self` receiver asks for ONE parameter BY ITS
+  * ANTHILL NAME ([[binding]]). Held as one list, they cannot disagree; the scala
   * names alone could not answer the third, since `Names.scalaTypeName` is many-to-one.
   */
 case class EnclosingSort(
@@ -102,8 +102,8 @@ case class EnclosingSort(
     * (WI-20261001-80ZV8; see `TypeScope.projection`). */
   carrier: Option[String] = None
 ):
-  /** What a bare mention re-attaches: the parameters that survive erasure — which are
-    * exactly the ones with a Scala name to re-attach. */
+  /** What `Self` attaches: the parameters that survive erasure — which are exactly the
+    * ones with a Scala name to attach. */
   def params: IndexedSeq[String] = binders.collect { case (_, ParamBinding.Scala(n, _)) => n }
 
   /** What an explicit application is checked and erased against. */
@@ -113,7 +113,7 @@ case class EnclosingSort(
   })
 
   /** How the SORT binds one of its own parameter names — the question a projection off
-    * a bare self receiver asks, and the reason this is not `TypeScope.params`: that map
+    * a `Self` receiver asks, and the reason this is not `TypeScope.params`: that map
     * has the OPERATION's type parameters merged in ([[TypeScope.withParams]]), and
     * `b.U` for an operation's own `U` is not a member of the sort at all (WI-1081). */
   def binding(anthillLeaf: String): Option[ParamBinding] =
@@ -132,19 +132,21 @@ case class EnclosingSort(
   *    them: its two operands carry INDEPENDENT schemas, and `r1.T` / `r2.T` are `L`
   *    and `R`, not one shared `T`.
   *  - [[Bare]] — the receiver's occurrence writes nothing. Then the projection is the
-  *    ENCLOSING sort's parameter of that name, and only then: within a sort's own
-  *    definition a bare self reference participates in the parametricity tie
-  *    (`docs/design/type-parameter-scoping.md` §3), so `xs: List` inside `sort List[T]`
-  *    makes `xs.T` this sort's `T`. A bare occurrence of any OTHER sort takes a fresh
-  *    skolem (kernel §"How the slot is named", WI-1059), which has no Scala spelling.
+  *    ENCLOSING sort's parameter of that name where the receiver is THIS instance of
+  *    it, and only then: `xs: Self` inside `sort List[T]` makes `xs.T` this sort's `T`
+  *    (proposal 070 §1.2), and so does a receiver typed by the sort's carrier
+  *    parameter. A bare occurrence of a SORT — the enclosing one included, since
+  *    stage (e) of that proposal removed the implicit tie — is any instance of it, and
+  *    takes a fresh skolem (kernel §"How the slot is named", WI-1059), which has no
+  *    Scala spelling.
   */
 enum ReceiverType:
-  /** Declared as an occurrence of the sort `head` NAMES, with NO written arguments.
+  /** Declared as a name `head` with NO written arguments — `Self`, a parameter, or a
+    * sort written bare.
     *
-    * The whole written head and not its leaf: the tie is decided by asking whether the
-    * head names the ENCLOSING sort, and that is the same question a type occurrence
-    * asks — `app.model.Payload` and a sibling `app.Payload` are two sorts, and reading
-    * the leaf alone is the defect this ticket exists to remove. */
+    * The whole written head and not its leaf, because that is what a type occurrence
+    * is read by: `app.model.Payload` and a sibling `app.Payload` are two sorts, and
+    * reading the leaf alone is the defect this ticket exists to remove. */
   case Bare(head: IndexedSeq[String])
   /** Declared as an occurrence with arguments, indexed by the anthill parameter each
     * NAMES. Every reading of it is off the BINDING and never off the target's
@@ -222,11 +224,17 @@ enum Placement:
     * parameter carries 0. The arity itself stays unchecked — see the note at
     * [[TypeGen]]'s `named`. */
   case TypeParam(scalaName: String, memberArity: Int)
-  /** The enclosing sort's own name. A BARE occurrence gets the sort's parameters
-    * re-attached (WI-1055 A3): in anthill they are already in scope, so
-    * `operation get(c: Cell) -> V` inside `sort Cell[V]` means `Cell[V]`, and
-    * Scala has no bare spelling for that. */
-  case Enclosing(sort: EnclosingSort)
+  /** The enclosing sort, named by `Self` (`thisInstance`) or by its own name.
+    *
+    * THE TWO ARE NOT ONE TYPE (proposal 070). `Self` is THIS instance: it gets the
+    * sort's parameters attached — `operation get(c: Self) -> V` inside `sort Cell[V]`
+    * means `Cell[V]`, and Scala has no bare spelling for that — and a projection off a
+    * receiver typed by it is the sort's own parameter. The NAME written bare is ANY
+    * instance of the sort (§1.3), which [[TypeGen]] refuses where the sort emits a
+    * parameter, as it refuses a bare occurrence of any other sort. Carried here, by the
+    * one reader that knows which was written ([[TypeScope.place]]), so the two that
+    * need it cannot answer differently. */
+  case Enclosing(sort: EnclosingSort, thisInstance: Boolean)
   /** A type whose PARAMETERS are known — one this file emits, one in the supplied
     * project/prelude closure, or a `scala_std` type-map entry. Knowing them is what
     * makes an arity MISMATCH detectable (Group B3) and, since WI-1062, what says which
@@ -433,7 +441,7 @@ case class TypeScope(
   /** The one lookup, as a precedence chain. Mostly most-local-first, which is also
     * anthill's own order: a type parameter shadows a sort of the same name, and the
     * enclosing sort answers before the file-wide table — where it also appears, with
-    * the same arity but without the parameters to re-attach.
+    * the same arity but without the parameters `Self` attaches.
     *
     * THE ONE INVERSION IS THE SCALARS (WI-1021), and it is the rule rather than an
     * exception to it: a scalar has no anthill values, so its name denotes the host
@@ -477,13 +485,17 @@ case class TypeScope(
     // WI-20261001-80ZV8 (proposal 070 §1.2): `Self` is the sort the declaration is
     // written in, at its own parameters — and the name is RESERVED, so nothing below
     // could answer for it. Read THROUGH the sort's own name rather than straight to
-    // [[Placement.Enclosing]], so `Self` cannot place differently from the name it
-    // stands for: inside a scalar's own file that name is the HOST carrier (the one
-    // inversion documented above), and `Self` there is `Long`, not the empty trait.
-    // Outside a sort it is refused, as the loader refuses it.
+    // [[Placement.Enclosing]], so `Self` cannot place at another DECLARATION than the
+    // name it stands for: inside a scalar's own file that name is the HOST carrier (the
+    // one inversion documented above), and `Self` there is `Long`, not the empty trait.
+    // Where it does place at the enclosing sort it is marked THIS instance — the one
+    // thing the two spellings differ in (stage (e) of the proposal). Outside a sort it
+    // is refused, as the loader refuses it.
     if anthillLeaf == Names.SelfTypeName then
       enclosing match
-        case Some(sort) => placeNamed(sort.anthillName)
+        case Some(sort) => placeNamed(sort.anthillName) match
+          case Placement.Enclosing(s, _) => Placement.Enclosing(s, thisInstance = true)
+          case other => other
         case None => Placement.Unplaceable(
           s"`${Names.SelfTypeName}` is the sort a declaration is written in, and this " +
           "one is written in none (proposal 070 §1.2: outside a sort it is a load error)")
@@ -498,7 +510,8 @@ case class TypeScope(
     // one `Map[String, ParamBinding]` buys over a map plus a disjoint set.
     paramPlacement(anthillLeaf)
       .orElse(types.hostScalar(anthillLeaf))
-      .orElse(enclosing.filter(_.anthillName == anthillLeaf).map(Placement.Enclosing(_)))
+      .orElse(enclosing.filter(_.anthillName == anthillLeaf)
+        .map(Placement.Enclosing(_, thisInstance = false)))
       .orElse(filePlacement(anthillLeaf))
       .orElse(types.packagePlacement(writtenIn, anthillLeaf))
       .orElse(importPlacement(anthillLeaf))
@@ -511,8 +524,9 @@ case class TypeScope(
     params.get(anthillLeaf).map(placementOf(anthillLeaf, _))
 
   /** What a parameter BINDING is, as a [[Placement]]. ONE reader, because the bare
-    * chain and the parametricity tie ask exactly this of two different binder maps, and
-    * a second copy of the two-case mapping is a way for them to answer it differently. */
+    * chain and a projection off this instance ask exactly this of two different binder
+    * maps, and a second copy of the two-case mapping is a way for them to answer it
+    * differently. */
   private def placementOf(anthillLeaf: String, binding: ParamBinding): Placement =
     binding match
       case ParamBinding.Scala(name, memberArity) => Placement.TypeParam(name, memberArity)
@@ -543,8 +557,8 @@ case class TypeScope(
         case ReceiverType.Applied(byName) => byName.get(member) match
           case Some(bound) => NamePlacement.Substituted(bound, receiver)
           // AN UNWRITTEN SLOT IS THE RECEIVER'S OWN SKOLEM and not the enclosing sort's
-          // parameter, which is why this does not fall back to the tie: kernel §"How the
-          // slot is named" (WI-1059) says `r1: Relation[T = L]` is checked as
+          // parameter, which is why this does not fall back to the sort's own: kernel
+          // §"How the slot is named" (WI-1059) says `r1: Relation[T = L]` is checked as
           // `Relation[T = L, E = r1.E]`, so `join`'s `{r1.E, r2.E}` are two DIFFERENT
           // rows. Tying them to one `E` is exactly the collapse the grading forbids, and
           // Scala has no term for the skolem itself.
@@ -556,7 +570,11 @@ case class TypeScope(
             "a POSITIONAL argument names no slot at all")
         case ReceiverType.Bare(head) =>
           val self = headPlacement(head) match
-            case Placement.Enclosing(sort) => Some(sort)
+            // `Self` IS THIS INSTANCE (proposal 070 §1.2), and only `Self`: the sort's
+            // own NAME was read alike until stage (e) — `b: Box` inside `sort Box` made
+            // `b.T` the sort's `T`, the implicit tie. It is any `Box` now (§1.3), whose
+            // `T` is the receiver's own.
+            case Placement.Enclosing(sort, true) => Some(sort)
             // WI-20261001-80ZV8: A RECEIVER TYPED BY THE SORT'S CARRIER PARAMETER IS THE
             // CARRIER OF THIS INSTANCE. `sort Iterable { sort C = ?  sort Element = ? …
             // operation iterator(c: C) -> Stream[c.Element, c.E] }` writes its result in
@@ -572,16 +590,17 @@ case class TypeScope(
           self match
             case None => refuse(
               s"`$written` projects `$member` off `$receiver`, whose declared type " +
-              s"`${head.mkString(".")}` is not a bare occurrence of the enclosing sort, " +
-              "nor that sort's carrier parameter. Only those tie to the sort's own " +
-              "parameters (`docs/design/type-parameter-scoping.md` §3); any other bare " +
-              "occurrence takes a fresh skolem, which Scala has no term for")
+              s"`${head.mkString(".")}` is neither `${Names.SelfTypeName}` nor the " +
+              "enclosing sort's carrier parameter. Only those are this instance, whose " +
+              "parameters are the sort's own (proposal 070 §1.2); a sort written bare " +
+              "— the enclosing one included — is any instance of it, and takes a fresh " +
+              "skolem, which Scala has no term for")
             // THE SORT'S OWN BINDERS and not this declaration's `params`, which has the
             // OPERATION's type parameters merged in: `operation f[U](b: Box) -> b.U`
             // answered `U` off a name the sort never declared (WI-1081 review).
             case Some(sort) => sort.binding(member).map[NamePlacement](b =>
               NamePlacement.Direct(placementOf(member, b))).getOrElse(refuse(
-                s"`$written` projects `$member` off a bare occurrence of the enclosing " +
+                s"`$written` projects `$member` off this instance of the enclosing " +
                 s"sort `${sort.anthillName}`, which declares no parameter `$member`"))
         case ReceiverType.Other(what) => refuse(
           s"`$written` projects `$member` off `$receiver`, which is declared as $what — " +
@@ -677,7 +696,8 @@ case class TypeScope(
   private def inPackage(owner: String, anthillLeaf: String): Option[Placement] =
     Option.when(owner == types.autoImportPackage)(types.hostScalar(anthillLeaf)).flatten
       .orElse(Option.when(owner == writtenIn)(
-        enclosing.filter(_.anthillName == anthillLeaf).map(Placement.Enclosing(_))).flatten)
+        enclosing.filter(_.anthillName == anthillLeaf)
+          .map(Placement.Enclosing(_, thisInstance = false))).flatten)
       .orElse(fileTypes.get(owner -> anthillLeaf))
       .orElse(Option.when(declaredNotEmitted.contains(owner -> anthillLeaf))(
         Placement.Unplaceable(

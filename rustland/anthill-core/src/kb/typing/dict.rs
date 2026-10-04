@@ -2537,13 +2537,13 @@ pub(super) fn scope_contract_covers_dep(
             }
         }
         // A BARE PARAMETRIC CARRIER IS EXPANDED FIRST, through the one owner of that
-        // rule ([`expand_foreign_sort_application`], WI-20260911-RS2G4). The stdlib writes
-        // `operation new() -> MutableStack` bare, meaning the sort at its own parameters,
-        // while its provision binds `Iterable[C = MutableStack[T], …]` APPLIED — so a goal
-        // carrying the bare spelling matches nothing. MEASURED: without this, `size(x)`
-        // after `let x = MutableStack.new()` is refused although the program answers 1,
-        // and it is the two `wi508` rows that say so.
-        let holder_ty = expand_foreign_sort_application(kb, &holder.entry.spec, None)
+        // rule ([`expand_sort_application`], WI-20260911-RS2G4). The stdlib wrote
+        // `operation new() -> MutableStack` bare (`-> Self` since proposal 070), while its
+        // provision binds `Iterable[C = MutableStack[T], …]` APPLIED — so a goal carrying
+        // the bare spelling matches nothing. MEASURED then: without this, `size(x)` after
+        // `let x = MutableStack.new()` is refused although the program answers 1, and it
+        // is the two `wi508` rows that say so.
+        let holder_ty = expand_sort_application(kb, &holder.entry.spec)
             .unwrap_or_else(|| holder.entry.spec.clone());
         let Value::Term { id: carrier, .. } = holder_ty else {
             continue;

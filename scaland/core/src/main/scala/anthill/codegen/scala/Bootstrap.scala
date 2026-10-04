@@ -1376,11 +1376,13 @@ object Bootstrap:
         .contains(carrier.mentionName)
 
   /** What `Self` is to [[namesIn]] in `scope` (WI-20261001-80ZV8): the enclosing sort's
-    * own LEAF, and nothing else — exactly what a bare mention of that name contributes,
-    * so a sort written with `Self` and one written with its own name are read alike and
-    * emit alike. (The written form `Cell[V = V]` would also mention `V`; a bare mention
-    * never has, and `Self` replaces the bare mention.) Empty outside a sort, where `Self`
-    * is refused by [[TypeScope]] before any reader of this could be asked about it. */
+    * own LEAF, and nothing else — exactly what a mention of that name contributes, so
+    * the readers that ask which NAMES a type writes answer alike for the two. (The
+    * written form `Cell[V = V]` would also mention `V`; `Self` took the place of the
+    * bare mention, which never has.) Only those readers: since stage (e) of proposal
+    * 070 the two are not one TYPE — `Self` is this instance and the name any instance
+    * ([[TypeGen]]). Empty outside a sort, where `Self` is refused by [[TypeScope]]
+    * before any reader of this could be asked about it. */
   private def selfNames(scope: TypeScope): Set[String] =
     scope.enclosing.map(_.anthillName).toSet
 

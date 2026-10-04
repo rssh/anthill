@@ -357,7 +357,7 @@ pub(super) struct ReceiverBracketEntry {
 ///
 /// BY SHORT NAME. The bracket's keys are bare interns of the written spelling and the
 /// declared list is qualified — the same split [`BindingKeyMatch`] closes for two WHOLE
-/// types, asked here one key at a time exactly as [`expand_foreign_sort_application`]
+/// types, asked here one key at a time exactly as [`expand_sort_application`]
 /// asks it.
 pub(super) fn receiver_bracket_entries(
     kb: &mut KnowledgeBase,
@@ -521,11 +521,9 @@ pub(super) fn seed_receiver_type_args(
             // this pass minted.
             match prior {
                 // FREE, refused, and the value does NOT mention the parameter: the sticky
-                // flag above. NOT a silent skip — the conflicting re-bind that set it also
-                // recorded a `contradiction_details` entry, and [`enforce_member_tie`]
-                // renders that as its own `OperationTypeParams` refusal naming the REAL
-                // disagreeing pair. This leg adds no cycle message, which is what lets that
-                // one be the one the author sees, instead of a second, wrong one.
+                // flag above. This leg adds no cycle message — a second, wrong one — and
+                // leaves the disagreement to the written binding's validation below and to
+                // the argument checks, which name the real pair.
                 //
                 // It FALLS THROUGH to the written binding's validation below rather than
                 // `continue`ing past it (WI-20260911-TX0G6, found by `/code-review`): that
@@ -595,23 +593,13 @@ pub(super) fn seed_receiver_type_args(
 /// `Box.empty[T = List]()` — keeps loading, because `?f` is then filled by the context;
 /// that is the partial-annotation reading, and it is a control.
 ///
-/// THE EXPANSION ALONE IS NOT ENOUGH, which the ticket's own predicted mechanism assumed
-/// it would be ("the argument binds `?f := Int64`"). Measured, it does not:
-/// [`unify_parameterized_with_sort_ref`] RAW-BINDS the canonical parameter, so the
-/// already-present bracket claim wins and the refinement is thrown away. That second site
-/// is [`bind_or_refine_member_param`].
-///
-/// NO SELF-SORT EXEMPTION, deliberately, which is the one place this differs from
-/// [`expand_foreign_sort_application`]'s signature use. That exemption keeps a member's
-/// own sort riding the canonical channel for the §3 parametricity tie — a rule about a
-/// SIGNATURE. A bracket value is not a signature: `Box[T = Box]` inside `sort Box` says
-/// "a Box of Boxes", whose inner parameter is unwritten and must be fresh rather than the
-/// enclosing instance's.
+/// THE ENCLOSING SORT INCLUDED: `Box[T = Box]` inside `sort Box` says "a Box of Boxes",
+/// whose inner parameter is unwritten and is fresh, not the enclosing instance's.
 ///
 /// TOP LEVEL ONLY, the same depth WI-374 expands a CALL's signature position to, and stated
 /// rather than assumed: a bare sort NESTED inside a written binding (`[T = Pair[A =
 /// List]]`) is not expanded, so the erasure survives one level in. The every-depth walk
-/// ([`expand_foreign_sorts_deep`]) serves the readers that compare two declarations; moving
+/// ([`expand_sorts_deep`]) serves the readers that compare two declarations; moving
 /// the call to it would move this bracket with it, since this is a call to the top-level one.
 ///
 /// NEVER A PROVIDER SELECTION, which is what `binds_a_provider_slot` gates and the one
@@ -653,7 +641,7 @@ fn bracket_value_to_bind(
     let expanded = if binds_a_provider_slot {
         None
     } else {
-        expand_foreign_sort_application(kb, value, None)
+        expand_sort_application(kb, value)
     };
     written_type_at_body_rigids(kb, env, expanded.as_ref().unwrap_or(value))
 }

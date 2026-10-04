@@ -20,8 +20,8 @@ The mapping is deterministic: given the same anthill source, the same Rust code 
 | Sort with operations (no constructors) `sort S { operation ... }` | `trait S` |
 | Sort with constructors `sort S { entity C₁(...), entity C₂(...) }` | `enum S { C1 { fields }, C2 { fields } }` |
 | Standalone `entity E(fields)` | `struct E { fields }` |
-| `operation op(a: S, ...) -> R` (first arg is enclosing sort) | `fn op(&self, ...) -> R` on the trait or impl |
-| `operation op(a: S, ...) -> ...S...` (return contains S) | `fn op(self, ...) -> ...Self...` by-value (§9) |
+| `operation op(a: Self, ...) -> R` (first arg is the enclosing sort) | `fn op(&self, ...) -> R` on the trait or impl |
+| `operation op(a: Self, ...) -> ...Self...` (return contains the sort) | `fn op(self, ...) -> ...Self...` by-value (§9) |
 | `operation op(x: A, y: B) -> R` (no self-arg) | method on `{Namespace}Ops` module trait |
 | `effects (Modify X)` | `&mut self` |
 | No effects | `&self` (if method), no `Result` wrapping |
@@ -72,17 +72,17 @@ sort Eq {                                  pub trait Eq {
 
 When the sort has a type parameter (`sort T` inside the body), the parameter becomes a Rust generic or `Self` depending on usage (see §2.6).
 
-**Self substitution.** Inside trait method signatures, the enclosing sort name is always replaced with `Self` — both in parameter types and return types. For single-type-parameter traits, the type parameter is also collapsed to `Self` and removed from the trait's generic list (see §4). For multi-parameter traits, only the sort name itself becomes `Self`:
+**Self substitution.** Inside a sort's signatures, anthill's `Self` — the sort at its own parameters (`kernel-language.md` §5.2) — is Rust's `Self`, in parameter types and return types alike; so is the name of a sort that declares NO type parameter, which has one instance. The BARE name of a parameterised sort is not: inside its own definition it is ANY instance of the sort (proposal 070 §1.3), Rust has no type for that in a field or a return, and the generator REFUSES a parameter, return or field written with it — or with a parameter left out, or written `?` — naming the declaration. (Until that proposal's stage (e) the bare name was replaced with `Self` too: the implicit tie, on the emission side.) An APPLICATION of the sort is still rendered `Self` whatever its arguments — right where they are the sort's own parameters or projections of the receiver (`Stream[T = s.T, E = s.E]`), and a known inaccuracy where they name another instance (WI-20261004-JQ1Y2). For single-type-parameter traits, the type parameter is also collapsed to `Self` and removed from the trait's generic list (see §4). For multi-parameter traits, only the sort itself becomes `Self`:
 
 ```
 sort Stream {                              trait Stream<T, E> {
   sort T                        →              fn split_first(self) -> Option<Pair<T, Self>>;
   sort E                                       fn tail(self) -> Self;
   operation split_first(                       fn is_empty(&self) -> bool;
-    s: Stream) -> Option{...}              }
-  operation tail(s: Stream)
-    -> Stream
-  operation isEmpty(s: Stream)
+    s: Self) -> Option{...}                }
+  operation tail(s: Self)
+    -> Self
+  operation isEmpty(s: Self)
     -> Bool
 }
 ```
@@ -162,7 +162,7 @@ sort List {                                pub enum List<T> {
   sort T                        →              Nil,
   entity nil                                   Cons { head: T, tail: Box<List<T>> },
   entity cons(head: T,                     }
-    tail: List)
+    tail: Self)
 }
 ```
 
@@ -500,7 +500,7 @@ $ anthill codegen rust --dry-run
 
 When mapping operations to Rust methods vs. free functions, the codegen must decide which (if any) argument becomes `self`. The heuristic:
 
-1. **Enclosing sort rule.** If the operation is declared inside a sort body `sort S { operation op(x: S, ...) -> R }`, and the first argument's type matches `S` (the enclosing sort name), then `x` becomes `self`. For **single-type-parameter trait sorts** (where "self-collapse" is active), the type parameter also matches — `op(x: T, ...) → fn op(&self, ...)`. For **enum sorts** and **multi-parameter trait sorts**, only the sort name itself matches.
+1. **Enclosing sort rule.** If the operation is declared inside a sort body `sort S { operation op(x: Self, ...) -> R }`, and the first argument's type is the enclosing sort — `Self`, or the name of a sort that declares no type parameter (see "Self substitution", §2.2) — then `x` becomes `self`. For **single-type-parameter trait sorts** (where "self-collapse" is active), the type parameter also matches — `op(x: T, ...) → fn op(&self, ...)`. For **enum sorts** and **multi-parameter trait sorts**, only the sort name itself matches.
 
 2. **Namespace entity rule.** If the operation is declared at namespace level, and its first argument type matches an entity or defined sort declared in the same namespace, it becomes a method in an `impl` block for that type.
 
@@ -519,8 +519,8 @@ sort Eq {
 sort Stream {
   sort T
   sort E
-  operation tail(s: Stream) -> Stream      →  fn tail(self) -> Self;
-  operation isEmpty(s: Stream) -> Bool     →  fn is_empty(&self) -> bool;
+  operation tail(s: Self) -> Self          →  fn tail(self) -> Self;
+  operation isEmpty(s: Self) -> Bool       →  fn is_empty(&self) -> bool;
 }
 -- Note: tail gets `self` (by-value) because the receiver_map
 -- "returns_same_type" rule matches (return is Self). isEmpty
@@ -539,7 +539,7 @@ sort LogicalStream {
 
 -- Rule 1d: Sort name match in enum
 sort List {
-  operation length(l: List) -> Int64         →  fn length(&self) -> i64;
+  operation length(l: Self) -> Int64         →  fn length(&self) -> i64;
 }
 
 -- Rule 2: In namespace config, first arg is Settings (an entity in config)
@@ -734,8 +734,8 @@ This rule applies to operations like `splitFirst`, `tail`, `collect` on `Stream`
 
 ```
 -- Stream operations are pure (no effects):
-operation splitFirst(s: Stream) -> Option[T = Pair[A = T, B = Stream]]
-operation isEmpty(s: Stream) -> Bool
+operation splitFirst(s: Self) -> Option[T = Pair[A = T, B = Self]]
+operation isEmpty(s: Self) -> Bool
 
 -- Rust/std profile produces:
 fn split_first(self) -> Option<(T, Self)>;   -- returns_same_type → by value
@@ -850,8 +850,8 @@ The `sql` half of this example is a SKETCH (§2.13) and is NOT run through the b
 sort anthill.prelude.List
   sort T
   entity nil
-  entity cons(head: T, tail: List)
-  operation length(l: List) -> Int64
+  entity cons(head: T, tail: Self)
+  operation length(l: Self) -> Int64
   rule length(nil) <=> 0
   rule length(cons(?x, ?xs)) <=> add(1, length(?xs))
 end
@@ -1294,12 +1294,12 @@ Effect rules take priority because they are semantic — `Modify` genuinely mean
 **Example: Stream operations**
 
 ```
-splitFirst(s: Stream) -> Option[Pair[T, Stream]]
+splitFirst(s: Self) -> Option[Pair[T, Self]]
   1. No Modify → default receiver
-  2. receiver_map: Stream appears in return → ByValue
+  2. receiver_map: the sort appears in return → ByValue
   Result: fn split_first(self) -> Option<(T, Self)>
 
-isEmpty(s: Stream) -> Bool
+isEmpty(s: Self) -> Bool
   1. No Modify
   2. receiver_map: Stream does NOT appear in return (Bool)
   3. Default: SharedRef
@@ -1355,4 +1355,4 @@ fact LanguageMapping(
 )
 ```
 
-Here `splitFirst(s: Stream) -> ...Stream...` stays as a regular method call — no by-value, no consumption. The JVM GC handles the old reference.
+Here `splitFirst(s: Self) -> ...Self...` stays as a regular method call — no by-value, no consumption. The JVM GC handles the old reference.

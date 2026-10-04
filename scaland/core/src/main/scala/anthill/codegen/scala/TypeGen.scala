@@ -139,7 +139,7 @@ object TypeGen:
           s"${args.length} type argument(s) were applied to it. Bootstrap has no arity " +
           "for that argument — it is an expression the receiver's occurrence wrote, not " +
           "a declaration it can count parameters on — so the application cannot be " +
-          "checked. (A projection off a BARE self receiver names a declared parameter " +
+          "checked. (A projection off a `Self` receiver names a declared parameter " +
           "and does carry one, which is why `b.M[A = X]` against a higher-kinded `M` is " +
           "emitted rather than refused.)",
           n.span)
@@ -180,18 +180,36 @@ object TypeGen:
         val keep = if memberArity == args.length then args else erasedByArgument
         name + brackets(rendered(keep))
       case Placement.Ambient(name) => name + brackets(rendered(erasedByArgument))
-      case Placement.Enclosing(self) =>
-        // WI-1055 A3: a BARE mention of the enclosing sort means "with my own
-        // parameters" in anthill, and Scala has no bare spelling for that. This is
-        // also what stops the sort's own name being rewritten through the prelude
-        // map — pair.anthill's `operation fst(p: Pair) -> A` emitted `Tuple2`, a
+      case Placement.Enclosing(self, thisInstance) =>
+        // The enclosing sort's own name. Answering here is also what stops it being
+        // rewritten through the prelude map — pair.anthill's `fst` emitted `Tuple2`, a
         // DIFFERENT type from the `enum Pair[A, B]` three lines up (WI-1021).
         //
-        // The bare form re-attaches what the sort EMITS (`self.params`, already
-        // effect-free); an explicit application is checked against what it WRITES
+        // WITH NO ARGUMENTS IT IS ONE OF TWO THINGS (proposal 070). `Self` is THIS
+        // instance, the sort at its own parameters, and Scala has no bare spelling for
+        // that: what the sort EMITS (`self.params`, already effect-free) is attached.
+        // The sort's NAME is the sort at a slot of its own in each parameter — ANY
+        // instance, inside its own definition as outside it (§1.3). Where the sort
+        // emits a parameter that is the partial occurrence the arm below refuses
+        // (WI-1055 B3), and it is refused here on the same ground. Until stage (e) of
+        // the proposal the bare name was read as `Self` is (WI-1055 A3: "in anthill the
+        // parameters are in scope") — the implicit tie, which emitted `Cell[V]` for a
+        // parameter that takes any `Cell`.
+        //
+        // An explicit application is checked against what the declaration WRITES
         // (`self.kinds.written`), because that is what the anthill declaration says
         // and what a sibling occurrence spells.
-        if args.isEmpty then self.scalaName + brackets(self.params)
+        if args.isEmpty then
+          if !thisInstance && self.params.nonEmpty then throw BootstrapError(
+            s"${scope.decl}: `$written` is the enclosing sort, which declares " +
+            s"${self.kinds.written} type parameter(s)${erasureNote(self.kinds)}, and none " +
+            "were written. A sort's bare name is the sort at a slot of its own in each " +
+            "parameter — any instance of it, inside its own definition as outside it " +
+            "(proposal 070 §1.3) — and Scala has no bare type constructor in this " +
+            s"position, so there is no spelling to emit. `${Names.SelfTypeName}` is " +
+            "this instance",
+            n.span)
+          else self.scalaName + brackets(self.params)
         else if args.length != self.kinds.written then
           throw BootstrapError(
             s"${scope.decl}: `$written` is the enclosing sort, which declares " +
@@ -203,11 +221,10 @@ object TypeGen:
       case Placement.Known(scalaName, kinds) =>
         if args.length != kinds.written then
           // WI-1055 B3. The written occurrence is PARTIAL — `Pair` where
-          // `Pair[A, B]` is needed, which is what an operation's `p: Pair` is once
-          // it is read from OUTSIDE the sort that declares it. In anthill the
-          // parameters are in scope and need no writing; Scala has no bare type
-          // constructor in this position, and the arguments to re-attach exist only
-          // for the ENCLOSING sort (the arm above).
+          // `Pair[A, B]` is needed. In anthill a slot left out is OPEN, the sort at
+          // any type there (proposal 070 §1.3); Scala has no bare type constructor
+          // in this position, and nothing here emits an open slot. The enclosing
+          // sort's own name is no exception (the arm above).
           //
           // IT ALSO CAUGHT AN ARITY-INCOMPATIBLE MAP ENTRY, and that is now a shape
           // the table cannot express: `Stream[Element, E]` was checked against
@@ -219,9 +236,9 @@ object TypeGen:
           throw BootstrapError(
             s"${scope.decl}: `$written` maps to Scala `$scalaName` and declares " +
             s"${kinds.written} type parameter(s)${erasureNote(kinds)}, but " +
-            s"${args.length} were written. anthill leaves a " +
-            "sort's parameters implicit where they are in scope and allows a PARTIAL " +
-            "named binding; Scala has no bare type constructor in this position, so " +
+            s"${args.length} were written. In anthill a slot left out is open — the " +
+            "sort at any type there, which is also what a PARTIAL named binding leaves " +
+            "of the rest; Scala has no bare type constructor in this position, so " +
             "there is no spelling to emit",
             n.span)
         else scalaName + brackets(rendered(kinds.keepTypeArgs(args)))

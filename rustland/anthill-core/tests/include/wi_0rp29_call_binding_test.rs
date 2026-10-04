@@ -34,9 +34,12 @@
 //! WAS MEASURED ON THE BARE SPELLING and has not been taken again part by part: the rows the
 //! change of spelling moved, and what each of them fails under now, are in the ledgers of
 //! `wi_80zv8_bare_own_sort_test` and `wi_80zv8_written_wildcard_test`. Where a comment
-//! credits "§3's tie" for a verdict, the tie is now the written `Self`; the arms that read a
-//! reference to the declaring sort with a slot LEFT OUT are reached by no loaded program —
-//! the loader writes the `?` — and go at stage (e).
+//! credits "§3's tie" for a verdict, the tie is now the written `Self`. The arms that read a
+//! reference to the declaring sort with a slot LEFT OUT as this instance WENT AT STAGE (e) of
+//! proposal 070: such a reference is any instance, read as a slot left out is on every other
+//! sort, and the loader no longer writes a `?` into it. A ledger part below that names one of
+//! them (`self_references_at_own_parameters`, the bare arms of `is_this_instance`, the
+//! unifier's canonical channel, `enforce_member_tie`) can no longer be backed out.
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
@@ -1985,13 +1988,16 @@ end
 /// "receiver is not an entity" (MEASURED). FAILS under ledger part 30, and under part 29 (a
 /// bare reference to the alias is no bare reference to the carrier).
 ///
-/// SINCE WI-20261001-80ZV8 the sort's bare name — and so its alias — is the sort at `?`
-/// inside its own definition as everywhere: `B` is ANY `Car`, not this instance's. What the
-/// row guards is unchanged — an `Int64` is no `Car` — and its message now says so (`Car[V =
-/// ?_]`, where the tie read `Car[V = Int64]`); a second instance, which the tie refused, runs.
-/// The first cut of that reading left `B` unbound for the argument to bind, and the `5`
-/// loaded again (MEASURED: a binding not ground only by the provision's own `?` was skipped
-/// with the ones the receiver leaves open; `bind_spec_params_from_carrier_param`).
+/// SINCE WI-20261001-80ZV8 the sort's bare name — and so its alias — is the sort at slots of
+/// its own inside its own definition as everywhere: `B` is ANY `Car`, not this instance's.
+/// What the row guards is unchanged — an `Int64` is no `Car` — and its message now says so
+/// (`Car[V = ?V]`, where the tie read `Car[V = Int64]`); a second instance, which the tie
+/// refused, runs. TWICE that reading left `B` unbound for the argument to bind, and the `5`
+/// loaded again (MEASURED): first with the loader writing a `?` into the slot (a binding not
+/// ground only by the provision's own `?` was skipped with the ones the receiver leaves
+/// open), then at stage (e) with nothing written at all — the bare name is a ref-shaped leaf
+/// the binder left for its late pass. `bind_spec_params_from_carrier_param` binds the
+/// carrier's name, expanded, in its own provision as it did in a witness's.
 #[test]
 fn an_alias_of_the_carrier_in_a_binding_is_the_carrier() {
     let program = |ns: &str, second: &str| {
@@ -2021,7 +2027,7 @@ end
     };
     assert_refused_naming(
         &load_errors(&program("wi0rp29cb9.alias", "5")),
-        &["type mismatch in mix.b (op-arg): expected Car[V = ?_], got Int64"],
+        &["type mismatch in mix.b (op-arg): expected Car[V = ?V], got Int64"],
         "an argument held to nothing behind an alias of the carrier",
     );
     assert_eq!(run_src(&program("wi0rp29cb9.alias2", "y"), "wi0rp29cb9.alias2.go"), Ok(7));

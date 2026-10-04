@@ -22,41 +22,51 @@
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
-//! MEASURED (2026-10-04, on the tree this file is committed with), each part present but
-//! disabled, on a temporary binary of 28 suites and 707 rows: the eight `wi_80zv8_*`
-//! suites, the four `wi_0rp29_*`, `wi1078`, `wi1076`, `wi1012`, `wi1010`, the three
-//! `wi456_*`, `wi_wn9p8`, `wi_4zzkz`, `wi860`, `wi836`, `wi1000`, `wi508`, `wi858` and
-//! `if_branch_join`. Parts 2 and 3 were measured on this file alone, after their rows were
-//! made to drive them (below).
+//! MEASURED (2026-10-04), each part present but disabled. Parts 5, 6, 8 and 9 were measured
+//! again on the tree stage (e) of the proposal is committed with — a temporary binary of 52
+//! suites and 1037 rows, `wi_80zv8_tie_removed_test`'s — and their lists are that
+//! measurement's. Parts 1–4 and 7 are the LOADER's `?`, which stage (e) DELETED with the
+//! readers it was written to keep a slot left out away from; they are kept as the record of
+//! what it held (on a binary of 28 suites and 707 rows, the tree this file was first
+//! committed with), and cannot be backed out any more.
+//!
+//! DELETED AT STAGE (e) — what the loader's `?` held while it stood:
 //!
 //! 1. THE LOADER'S `?` in a slot the enclosing sort's reference leaves out
-//!    (`Loader::own_sort_slots_left_out` answering none). 6 FAIL:
+//!    (`Loader::own_sort_slots_left_out` answering none). 6 FAILED:
 //!    [`a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard`],
 //!    [`a_partial_reference_and_an_alias_leave_the_rest_to_a_wildcard`],
 //!    [`what_the_carrier_rule_leaves_alone_loads_and_runs`], and `wi1078
 //!    a_self_sort_return_that_leaves_a_slot_open_is_opened_at_the_consumer`, `wi836
 //!    the_bare_sort_ref_spelling_is_any_instance_and_its_result_is_opened`,
-//!    `wi_0rp29_call_binding an_alias_of_the_carrier_in_a_binding_is_the_carrier`.
-//! 2. AN EFFECT LABEL'S OWN NAME LEFT ALONE (`effect_label_head` never set). 1 FAILS:
+//!    `wi_0rp29_call_binding an_alias_of_the_carrier_in_a_binding_is_the_carrier`. The same
+//!    six failed again at stage (e), on the committed tree with the fill switched off and
+//!    the tie's readers still there — which is the measurement the deletion rests on
+//!    (`wi_80zv8_tie_removed_test`, measurement 3).
+//! 2. AN EFFECT LABEL'S OWN NAME LEFT ALONE (`effect_label_head` never set). 1 FAILED:
 //!    [`an_effect_label_naming_the_enclosing_sort_is_not_a_reference_to_it`]. The first
 //!    measurement failed NO row: the row declared its rows and incurred neither. It has
 //!    bodies now.
 //! 3. A COMPANION RECEIVER'S OWN BRACKET LEFT ALONE (`call_receiver_head` never set). 1
-//!    FAILS: [`a_companion_receivers_own_bracket_is_a_calls_bracket`], on what its refusal
+//!    FAILED: [`a_companion_receivers_own_bracket_is_a_calls_bracket`], on what its refusal
 //!    prints — the one difference five programs found; the first measurement failed no row.
-//! 4. AN ALIAS FOLLOWED (`alias_expansion` not asked). 2 FAIL:
+//! 4. AN ALIAS FOLLOWED (`alias_expansion` not asked). 2 FAILED:
 //!    [`a_partial_reference_and_an_alias_leave_the_rest_to_a_wildcard`] and
 //!    `wi_0rp29_call_binding an_alias_of_the_carrier_in_a_binding_is_the_carrier`.
+//! 7. A PARAMETER WITH NO VARIABLE NOT FILLED. 1 FAILED: `wi1000
+//!    a_dotted_declaration_name_is_not_the_entrys_content`, by a panic where it pins a
+//!    refusal.
+//!
+//! STANDING:
+//!
 //! 5. `Self` READ IN AN APPLIED RULE-HEAD BOUND, and 6. A PARAMETER OF THE SORT NAMED THERE
 //!    READ AS ITS VARIABLE (`Loader::convert_term_inner`, each arm off). 1 FAILS under each:
 //!    [`a_bound_that_is_a_term_reads_self_and_the_sorts_parameters`].
-//! 7. A PARAMETER WITH NO VARIABLE NOT FILLED. 1 FAILS: `wi1000
-//!    a_dotted_declaration_name_is_not_the_entrys_content`, by a panic where it pins a
-//!    refusal.
-//! 8. THE CARRIER CHECK (`check_sort_parameter_carriers`). Not run: 2 FAIL,
-//!    [`a_sort_parameter_used_beside_the_sort_needs_a_carrier`] and
-//!    [`another_instance_on_purpose_names_its_own_parameter`]. Run but honouring no carrier:
-//!    8 FAIL, every signature that has its carrier beside another instance —
+//! 8. THE CARRIER CHECK (`check_sort_parameter_carriers`). Not run: 3 FAIL,
+//!    [`a_sort_parameter_used_beside_the_sort_needs_a_carrier`],
+//!    [`another_instance_on_purpose_names_its_own_parameter`] and `wi_80zv8_tie_removed
+//!    a_sort_parameter_beside_an_alias_of_the_sort_needs_a_carrier`. Run but honouring no
+//!    carrier: 9 FAIL, every signature that has its carrier beside another instance —
 //!    [`a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard`],
 //!    [`a_partial_reference_and_an_alias_leave_the_rest_to_a_wildcard`],
 //!    [`what_the_carrier_rule_leaves_alone_loads_and_runs`], `wi_80zv8_written_wildcard`'s
@@ -65,16 +75,28 @@
 //!    a_projection_of_the_bound_parameter_is_an_instance_of_its_own`, `wi_0rp29_member_rule
 //!    a_witness_member_receiver_typed_by_the_spec_reads_the_provisions_bindings`,
 //!    `wi_0rp29_nested_projection_value_in_type
-//!    the_fallbacks_callback_row_takes_a_field_paths_head`. Run but reading a use off
-//!    variables only, not a stored reference to the parameter: 2 FAIL, the two of "not run".
+//!    the_fallbacks_callback_row_takes_a_field_paths_head`, and the `wi_80zv8_tie_removed`
+//!    row. Run but reading a use off variables only, not a stored reference to the
+//!    parameter: 3 FAIL, the three of "not run". Run but reading a parameter's type as
+//!    written, an alias unread: 1 FAILS, the `wi_80zv8_tie_removed` row — and with it
+//!    [`a_partial_reference_and_an_alias_leave_the_rest_to_a_wildcard`] drops out of the
+//!    "no carrier" nine, which is how the alias reading was found missing once the loader
+//!    no longer followed the alias for it.
 //! 9. A `let` ANNOTATION'S `?` TAKES ITS VALUE'S TYPE (typing/build.rs). 1 FAILS:
-//!    [`a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard`] (its `keep`).
+//!    [`a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard`], by its spelling
+//!    that WRITES the `?` (`let t: Box[T = ?] = s` in `keep`). The bare spelling beside it
+//!    is a slot left out, which the annotation rewrite of WI-374 gives the value's type —
+//!    since stage (e) the two are one type by two routes, and the row runs both.
 //!
-//! A bare name being a written `?` now, rows of this file also fail under
-//! `wi_80zv8_written_wildcard_test`'s parts 1, 2 and 8 — its ledger lists them, and it is
-//! where [`a_bare_reference_to_the_enclosing_sort_is_not_this_instance`] and
-//! [`self_makes_the_carrier_and_a_projection_names_the_parameters_own`] fail. No row of
-//! this file passes under every part.
+//! While the loader wrote the `?`, a bare name WAS a written `?`, and rows of this file
+//! failed under `wi_80zv8_written_wildcard_test`'s parts 1, 2 and 8 with that file's own.
+//! They no longer do: its part 1 was the tie and is deleted, and re-measured at stage (e)
+//! its parts 2 and 8 fail no row of this file — a bare name's slot is left out, not written.
+//! [`a_bare_reference_to_the_enclosing_sort_is_not_this_instance`] and
+//! [`self_makes_the_carrier_and_a_projection_names_the_parameters_own`], which failed under
+//! that part 1 alone — the tie taken for a written `?` — fail under no part re-measured, and
+//! passed in `wi_80zv8_tie_removed_test`'s measurement 3 too: nothing left on this tree
+//! turns them round. They stay for the verdicts they name.
 
 use crate::common::{
     assert_refused_naming, load_errors_of as load_errors, load_kb_with, run_int64 as run_src,
@@ -84,6 +106,7 @@ use crate::common::{
 // ── The bare name is the sort at `?` ────────────────────────────────────────
 
 /// `Box`, its own name written bare in every position a type is written in, and `go`.
+/// `second` is how the second parameter of `both` and the annotation in `keep` are spelt.
 fn bare_program(ns: &str, second: &str, go: &str) -> String {
     format!(
         r#"
@@ -102,7 +125,7 @@ namespace {ns}
     operation both(a: Self, b: {second}) -> Int64 = 5
     operation some(s: Self) -> Box = box(v: "s")
     operation keep(s: Self) -> Self =
-      let t: Box = s
+      let t: {second} = s
       t
   end
   namespace Box
@@ -123,7 +146,9 @@ end
 /// type; a field holds one; a `provides` binding provides at every `Box`; a return is a
 /// `Box` the operation picks; an annotation takes its value's type; a secondary entry's
 /// parameter is any `Box`. Under the tie each of these was this instance's; while the load
-/// error stood none of them loaded.
+/// error stood none of them loaded. Run twice — the parameter and the annotation left bare,
+/// and written `Box[T = ?]`: one type, by two routes since stage (e) (a slot left out and a
+/// written variable), which is why the second spelling is here.
 #[test]
 fn a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard() {
     let go = "Box.both(x, box(v: \"s\")) + takes_any(Box.some(x)) \
@@ -156,10 +181,12 @@ fn a_bare_reference_to_the_enclosing_sort_is_not_this_instance() {
     );
 }
 
-/// A PARTIAL reference leaves the rest to `?`, and an ALIAS of the sort is the sort it stands
+/// A PARTIAL reference leaves the rest open, and an ALIAS of the sort is the sort it stands
 /// for: `Pair[L = Int64]` takes any `R`; `sort MyPair = Pair` is any `Pair`; `sort IntPair =
 /// Pair[L = Int64]` is a `Pair` of `Int64` and any `R` — and holds its argument to the `L` it
-/// fixes.
+/// fixes. The refusal prints the alias by its name, as it does outside the sort (while the
+/// loader wrote the `?` into such a reference it printed the expansion, `Pair[L = Int64, R =
+/// ?_]`).
 #[test]
 fn a_partial_reference_and_an_alias_leave_the_rest_to_a_wildcard() {
     let program = |ns: &str, go: &str| {
@@ -191,7 +218,7 @@ end
             "wi80zv8b.fixed",
             "Pair.il(pair(l: 1, r: 2), pair(l: \"x\", r: 1))",
         )),
-        &["il.o (op-arg): expected Pair[L = Int64", "got Pair[L = String"],
+        &["il.o (op-arg): expected IntPair, got Pair[L = String"],
         "an argument against the slot the alias fixes",
     );
 }
@@ -199,15 +226,19 @@ end
 // ── What is not a reference to the sort ─────────────────────────────────────
 
 /// AN EFFECT LABEL is compared by identity, not expanded (kernel-language.md §8.1), so a
-/// label naming the enclosing sort is not a reference to it and takes no `?` — in an
-/// `effects` clause and in an arrow's row alike. With the `?` written into it each mention
-/// is a label of its own: `twice` incurs `run`'s `Fx[T = ?]` under a declared `Fx[T = ?]`
-/// that is another variable, and is refused its own declared row — `expected declared:
-/// [Fx[T = ?_]], got undeclared effect: Fx[T = ?_]`, and `each` the same through the
-/// callback's row (MEASURED, the label flag never set).
+/// label naming the enclosing sort is a label like any other — in an `effects` clause and
+/// in an arrow's row alike: `twice` incurs `run`'s `Fx` under a declared `Fx`, and `each`
+/// the same through the callback's row.
+///
+/// WHAT IT GUARDED, while the loader wrote a `?` into every slot the enclosing sort's name
+/// left out (stage (d)): with the `?` written into a label each mention was a label of its
+/// own — `twice` incurred `run`'s `Fx[T = ?]` under a declared `Fx[T = ?]` that is another
+/// variable, and was refused its own declared row, `expected declared: [Fx[T = ?_]], got
+/// undeclared effect: Fx[T = ?_]` (MEASURED then; a flag kept the label out of the fill).
+/// The fill is deleted (stage (e)) and the flag with it; the row stays for the verdict.
 ///
 /// The bodies are what drive it: as first written this row declared the two rows and
-/// incurred neither, and passed with the flag off.
+/// incurred neither.
 #[test]
 fn an_effect_label_naming_the_enclosing_sort_is_not_a_reference_to_it() {
     let src = r#"
@@ -230,11 +261,13 @@ end
 /// Both spellings run.
 ///
 /// WHAT THE CALL DOES NOT FIX EITHER IS LEFT OUT OF ITS RESULT, in both spellings alike:
-/// `Box[T = String].fresh()` where an `Int64` is wanted is `got Box[T = String]`. With the
-/// loader's `?` written into the receiver's bracket it was `got Box[T = String, U = ?_]`
-/// there and `got Box[T = String]` for the callee's bracket (MEASURED, the receiver flag
-/// never set) — the one difference found: a bracket's own `?` reads as unfixed everywhere
-/// else, so the two running calls above pass either way, by design.
+/// `Box[T = String].fresh()` where an `Int64` is wanted is `got Box[T = String]`. While the
+/// loader wrote a `?` into every slot the enclosing sort's name left out (stage (d)) a
+/// flag kept the receiver's bracket out of that fill: with the `?` written into it the
+/// refusal was `got Box[T = String, U = ?_]` there and `got Box[T = String]` for the
+/// callee's bracket (MEASURED then) — the one difference found, a bracket's own `?`
+/// reading as unfixed everywhere else. The fill is deleted (stage (e)) and the flag with
+/// it; the row stays for the verdict.
 #[test]
 fn a_companion_receivers_own_bracket_is_a_calls_bracket() {
     let program = |call: &str| {

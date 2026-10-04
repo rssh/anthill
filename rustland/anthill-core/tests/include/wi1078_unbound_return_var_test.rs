@@ -56,6 +56,10 @@
 //!
 //! ## `empty` DID NOT HAVE TO MOVE, which the ticket predicted it would
 //!
+//! (HISTORY. The "self gate" this section credits went at proposal 070's stage (e): a return
+//! naming the callee's own sort is opened like any other, and `empty` is `-> Self` — written
+//! at the sort's parameters, so there is nothing in it to open.)
+//!
 //! `LogicalStream.empty() -> LogicalStream[?A]` was WI-1063's stated justification for the
 //! exemption, and the ticket expected this rule to bite it. It does not, and the reason
 //! retires that justification: `empty` is a member of the sort its return names, so the return

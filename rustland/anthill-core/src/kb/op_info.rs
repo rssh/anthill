@@ -339,16 +339,9 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
     // the operation table first and `kb.entity_field_types` second.
     //
     // Ground truth — behaviour-identical to the pre-WI-656 code, only slower — so the
-    // index is a pure accelerator, never a correctness change.
-    //
-    // WI-1082 IS THE ONE EXCEPTION to that last sentence, and it is deliberate.
-    // `typing::elaborate_self_ties` rewrites the CACHED signature — an elided slot
-    // on a reference to the operation's own sort becomes that sort's parameter,
-    // which is what §3's tie says it already meant — so after a type-check the two
-    // tiers answer differently: the cache carries the elaborated signature, the
-    // fact scan the declaration as written. Every reader that matters takes the
-    // cache; the scan is reached only during load and on a KB that never
-    // type-checks, neither of which asks about a return type's slots.
+    // index is a pure accelerator, never a correctness change. (WI-1082's elaboration of
+    // an elided self slot was the one exception, a rewrite of the CACHED signature; it
+    // went with the tie at proposal 070's stage (e), and the two tiers answer alike again.)
     //
     // WI-20260912-1QVWA — the "scan" is [`op_info_fact_rids`], which is this symbol's
     // INDEX BUCKET once `build_op_signatures` has run and the full walk before that. The

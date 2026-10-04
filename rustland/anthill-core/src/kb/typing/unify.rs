@@ -154,23 +154,15 @@ pub(super) fn expr_carried_zeta<A: TermView, B: TermView>(
 ///
 /// **WHAT A CALLER MAY THEREFORE ASSUME — AND THE BINDINGS ARE NOT ALL OF IT.** On `false`,
 /// σ holds what agreed: evidence about the argument, not an instantiation of the call, and now
-/// the same evidence however the disagreeing type was spelled. On `true`, σ is a unifier
-/// EXCEPT through [`unify_parameterized_with_sort_ref`], which binds the sort's canonical
-/// param vars with an UNWALKED `Substitution::bind` and then answers `true` unconditionally —
-/// so a conflicting re-bind there leaves `true` beside a recorded conflict.
+/// the same evidence however the disagreeing type was spelled. On `true`, σ is a unifier.
 ///
-/// That is the second channel this relation writes and neither verdict resets: the sticky
-/// `contradiction` flag and `contradiction_details`, set by `Substitution::bind` /
-/// `bind_value` on a conflicting re-bind. It is NOT inert — [`enforce_member_tie`] reads
-/// `contradiction_details` and renders an `OperationTypeParams` refusal from it. Unifying
-/// every slot of an author-ordered list (above) strictly widens the set of slots that can
-/// reach that arm, since slots after the first disagreeing one now descend. NOT DRIVEN:
-/// /code-review built two programs for it (a `Box[T]` member given a `Pair[A, B]`, with a
-/// plain disagreement and with a `provides`-based subtype in slot A) and the per-argument
-/// conformance check refused first in both, so [`enforce_member_tie`] was never reached and
-/// no row of `wi_60143_total_unify_descent_test` covers this channel. Recorded as an
-/// unmeasured widening rather than a proven one — but a caller reasoning from the paragraph
-/// above must know σ carries more than bindings.
+/// σ carries a second channel that neither verdict resets: the sticky `contradiction` flag
+/// and `contradiction_details`, set by `Substitution::bind` / `bind_value` on a conflicting
+/// re-bind. It is NOT inert — the member rule and the override's instantiation read what a
+/// unify recorded there ([`first_genuine_contradiction_since`], [`first_genuine_conflict_on`])
+/// — so a caller reasoning from the paragraph above must know σ carries more than bindings.
+/// (Until proposal 070's stage (e) a bare sort reference also WROTE through it: the canonical
+/// channel of [`unify_parameterized_with_sort_ref`], and the member tie that read it.)
 ///
 /// A caller that reads σ as an ANSWER
 /// and must not absorb a failed unify's evidence takes the probe-commit instead: `let mut
@@ -1381,29 +1373,34 @@ fn unify_term_dispatch(
     }
 }
 
-/// Unify `parameterized(B, [P = V, …])` with `sort_ref(B)`.
+/// `parameterized(B, [P = V, …])` against the bare `sort_ref(B)`: COMPATIBLE BY WIDTH, and
+/// nothing is bound. A bare reference writes no slot — each is open (kernel-language §8.1) —
+/// so there is nothing on its side for the written bindings to disagree with, and nothing
+/// of theirs for it to take.
 ///
-/// `sort_ref(B)` doesn't pin B's sort-level type parameters — they're
-/// the loader-cached unification Vars shared across B's signature
-/// (per `sort T = ?` registration in `load.rs`). Binding each P's
-/// canonical Var to V in the substitution propagates the parameterized
-/// side's bindings into B's return-type and effect positions.
+/// WI-20261001-80ZV8, stage (e) of proposal 070 — IT USED TO BIND: each written binding went
+/// into the sort's CANONICAL parameter variable, the "canonical channel" by which a member
+/// declared with a bare receiver (`reverse(xs: List)` inside `sort List`) reached its
+/// argument's element — the implicit self tie, on the unifier's side. No declaration reaches
+/// the typer with its own sort bare any more (`Self` writes this instance; a reference that
+/// leaves a slot out is the sort at `?`), and the one reader that had been left to it reads
+/// the sort at its own parameters instead (a constructor meeting its expected type:
+/// `check_constructor_iter`, `ctor_field_expected`). MEASURED with the binding off and those
+/// two not yet changed: 10 rows of the whole workspace failed, every one through them.
 ///
-/// Bases must match. Type params not bound on the parameterized side
-/// stay unbound (caller didn't constrain them — width subtyping).
+/// A sort_ref to an alias resolves to its shape first (WI-381), so the alias's fixed
+/// bindings are enforced against the parameterized side; a base mismatch, or a side that is
+/// not what its name says, falls back to the plain compatibility relation.
 pub(super) fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     parameterized: &P,
     sort_ref: &S,
 ) -> bool {
-    // WI-361: read base + bindings form-agnostically — deep `parameterized(base,
-    // bindings)` OR term-backed `Fn{S, named}`. A non-parameterized side, a base
-    // mismatch, or a non-`sort_ref` falls back to the plain compat relation.
-    // WI-342: carrier-agnostic over [`TermView`] (both sides may be a `Value::Node`).
+    // WI-361: read base form-agnostically — deep `parameterized(base, bindings)` OR
+    // term-backed `Fn{S, named}`. WI-342: carrier-agnostic over [`TermView`].
     let TypeExtractor::Parameterized {
-        base: pbase_sym,
-        bindings,
+        base: pbase_sym, ..
     } = extract_type(kb, parameterized)
     else {
         return types_compatible(kb, subst, parameterized, sort_ref);
@@ -1413,207 +1410,14 @@ pub(super) fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
     };
     // WI-381: a sort_ref to a structured (ground) defined-type / alias resolves to its
     // underlying shape first — `IntStream` ⟹ `Stream[T = Int]` — so the alias's fixed
-    // bindings are ENFORCED against the parameterized side instead of the bare ref
-    // going all-fresh and silently dropping them. Re-dispatch through `unify_types`.
+    // bindings are ENFORCED against the parameterized side. Re-dispatch through `unify_types`.
     if let Some(shape) = resolve_alias_shape(kb, sref_sym) {
         return unify_types(kb, subst, parameterized, &TermIdView(shape));
     }
     if pbase_sym != sref_sym {
         return types_compatible(kb, subst, parameterized, sort_ref);
     }
-    // WI-20261001-80ZV8 — NOT FOR THE SORT THIS CALL READS AS WRITTEN. The loop below writes
-    // the parameterized side's bindings into the sort's CANONICAL variables, which serves a
-    // DECLARED bare reference: `reverse(xs: List)` reaches its argument's element because the
-    // signature and the call's substitution ride the same variable. A callee whose signature
-    // WRITES every reference to its own sort has no such position ([`leaves_own_slot_unwritten`]), so
-    // in that call's substitution a bare reference to the callee's sort is the type of a VALUE
-    // — `nil`, a constructor over one, a call that fixed nothing — and the variables are the
-    // call's own parameters. Written from a value, the callee's `T` took the element of its
-    // own element: `append(xs: Self, ys: Self)` on `append([nil], [[1]])` binds `T` to the
-    // bare `List` of the first argument's elements, meets `List[T = Int64]` in the second,
-    // and wrote `Int64` into `T` — `expected consistent bindings … (first bound to List), got
-    // Int64` (MEASURED: `wi374 member_tie_refinement_accepted` on the stdlib's `append`
-    // written with `Self`). There the two are compatible by width and nothing is bound.
-    //
-    // ONLY THAT SORT, ONLY THAT CALL, ONLY A WRITTEN SIGNATURE. Every other reader of the
-    // channel — a member still declared with a bare receiver, a constructor's bare parent
-    // type against its expected type, an override's signature threaded through a dispatch,
-    // the member rule — unifies in a substitution that names no such sort and is served as
-    // before. Removing the channel outright moves 36 rows of those suites, and reading every
-    // bare receiver as written at the call moves the member rule's wildcard-provision rows
-    // (both MEASURED); the channel goes with them at proposal 070's stage (e).
-    if subst.written_sort == Some(kb.canonical_sort_sym(pbase_sym)) {
-        return true;
-    }
-
-    for (psym, value) in &bindings {
-        // Classify the binding value up front so the `format!` + symbol-resolve
-        // below runs ONLY for a value that actually binds the alias Var. Three bind:
-        //  - a ground (`Value::Term`) value;
-        //  - WI-375: a Node-carried EFFECT-ROW — a WRITTEN row `E = {Modify[c]}`
-        //    whose `effects_rows(…)` carries the `c` occurrence (the whole binding
-        //    is a `Value::Node`). Bound via `bind_value` so the row threads into a
-        //    bare-`Stream` consumer param instead of being dropped, which left `E`
-        //    an unresolved `?_` that leaked as a spurious `undeclared effect`.
-        //  - WI-20260929-WBHTM: any other TYPE on the occurrence or entity carrier — one
-        //    holding a value (`User[S = Buf[T = Int64, N = 3]]` against a parameter
-        //    declared as the bare `User`), or the spine `fn_value` rebuilds around one. It
-        //    was skipped, on the grounds that it rode "on its own SortRequiresInfo /
-        //    SortAlias value fact (WI-366)" which binding would perturb — written before
-        //    WI-390 filed those specs as term facts, and σ is per call. MEASURED: `S`
-        //    stayed unbound, so `User.via(u)` was refused "element `State = User.S` is
-        //    unconstrained" where `via(u: User[S = S])` — which binds this very σ through
-        //    `unify_types` — ran, and `first(u: User) -> S` let a wrong annotation through.
-        // A `Var` or a scalar binds nothing here: skip it without the symbol work (the
-        // pre-WI-375 leading-`continue` early-out).
-        let is_effect_row_node = matches!(value, Value::Node(_))
-            && matches!(type_head(kb, value), TypeHead::EffectsRows);
-        if !matches!(
-            value,
-            Value::Term { .. } | Value::Node(_) | Value::Entity { .. }
-        ) {
-            continue;
-        }
-        let qualified = format!(
-            "{}.{}",
-            kb.qualified_name_of(pbase_sym),
-            kb.local_name_of(*psym),
-        );
-        let Some(qualified_sym) = kb.try_resolve_symbol(&qualified) else {
-            continue;
-        };
-        let Some(alias_target) = resolve_sort_alias(kb, qualified_sym) else {
-            continue;
-        };
-        let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) else {
-            continue;
-        };
-        let vid = *vid;
-        match value {
-            // Ground (term-carried): bind after the occurs-check guards a cycle.
-            // WI-20260911-RS2G4: through [`bind_or_refine_member_param`], because this
-            // var may already carry a WRITTEN bracket's claim about the same parameter.
-            Value::Term { id: t, .. } => {
-                if !occurs_in(kb, vid, *t) {
-                    bind_or_refine_member_param(kb, subst, vid, *t);
-                }
-            }
-            // An effect-row Node (WI-375). (A freshly-opened alias Var never occurs
-            // inside a user-written row, so no cycle arises here.)
-            _ if is_effect_row_node => {
-                subst.bind_value(kb, vid, value.clone());
-            }
-            // A type on another carrier (WBHTM), occurs-checked as a term is: an argument
-            // type written inside the sort's own scope can mention the member's own var.
-            _ => {
-                if !occurs_in_view(kb, vid, value) {
-                    subst.bind_value(kb, vid, value.clone());
-                }
-            }
-        }
-    }
     true
-}
-
-/// WI-20260911-RS2G4 — TWO CLAIMS ABOUT ONE CANONICAL SORT PARAMETER MUST BE UNIFIED,
-/// not first-wins.
-///
-/// [`Substitution::bind_term`] keeps the FIRST binding and records anything else as a
-/// conflict; [`enforce_member_tie`] then EXEMPTS a pair that re-unifies — in a `scratch`
-/// substitution, so the refinement it just proved is thrown away. That was invisible
-/// while argument unification was the only writer of these vars per call. It is not any
-/// more: a form-(3) receiver bracket ([`seed_receiver_type_args`]) and a callee bracket
-/// both bind this var BEFORE any argument reaches it, and a bracket value with an
-/// unwritten slot (`[T = List]`, expanded to `List[T = ?f]`) is strictly MORE GENERAL
-/// than what the argument carries. First-wins therefore let a TRUE partial claim delete
-/// what the argument determined — WI-20260829-W6JH0's finding 2 one level in.
-///
-/// MEASURED, on `mine(b: Box) -> Option[T = T]` inside `sort Box[T]` with the declared
-/// return `Option[T = List[T = String]]` and the argument `box(v: [1])`:
-///
-/// | call | before | after |
-/// |---|---|---|
-/// | `Box.mine(box(v: [1]))` | refused, `got Option[T = List[T = Int64]]` | unchanged — the control |
-/// | `Box.mine[T = List](box(v: [1]))` | **loads clean** | refused, same message |
-/// | `Box[T = List].mine(box(v: [1]))` | **loads clean** | refused, same message |
-///
-/// UNIFY, THEN FALL BACK TO THE RAW BIND, and the fallback is not defensive. It is what
-/// keeps every existing conflict diagnostic byte-identical: an irreconcilable pair
-/// (`Int64` vs `Letter`) must still land in `contradiction_details`, which is the only
-/// channel [`enforce_member_tie`] reads and the only thing that makes the §3 tie loud. So
-/// a refinable pair absorbs its refinement here, and an irreconcilable one is recorded
-/// exactly as before.
-pub(super) fn bind_or_refine_member_param(
-    kb: &mut KnowledgeBase,
-    subst: &mut Substitution,
-    vid: VarId,
-    t: TermId,
-) {
-    // The two fast paths are today's [`Substitution::bind_term`] verbatim, and they are
-    // what keeps the trial below off the hot path: an UNBOUND var (the overwhelmingly
-    // common case) and a re-bind to the identical hash-consed term never clone anything.
-    match subst.resolve_as_value(vid) {
-        None => {
-            subst.bind(kb, vid, t);
-            return;
-        }
-        Some(Value::Term { id, .. }) if *id == t => return,
-        _ => {}
-    }
-    // ON A TRIAL COPY, because a failed `unify_types` leaves bindings behind and — the
-    // shape that forced this — a BARE reference to a parametric sort rides that sort's
-    // CANONICAL variables, so refining through one can re-enter this very var.
-    // MEASURED, `wi374_expansion_test::member_tie_refinement_accepted`:
-    // `append(cons(head: nil, …), cons(head: cons(head: 1, …), …))` binds `List.T` to a
-    // bare `List` and then to `List[T = Int64]`; unifying those re-dispatches through
-    // [`unify_parameterized_with_sort_ref`], which resolves `List.T` to the SAME var and
-    // tries to bind it to `Int64`. The refinement is not a refinement at all, and
-    // committing the partial σ turned an accepted program into
-    // `first bound to List, got Int64`.
-    //
-    // A contradiction the trial RECORDED counts as failure even though the unify
-    // answered `true`: [`unify_parameterized_with_sort_ref`] returns `true`
-    // unconditionally, so its boolean does not see a nested bind conflict.
-    //
-    // A **NEW** DETAIL, not the absolute `is_contradiction()` flag, because the flag is not
-    // a statement about THIS bind. `enforce_member_tie` ACCEPTS a contradictory σ whenever
-    // every recorded detail is exempt — a WI-424 body rigid as the prior, or a pair that
-    // re-unifies — and those calls load. Reading the flag would therefore make every LATER
-    // refinement in such a call fall back to the raw bind, i.e. make one program's verdict
-    // depend on argument ORDER. The census says the shape is live: a green `wi_tests` run
-    // records 12 505 conflicts against 93 429 refinements, so σ carries the flag on calls
-    // that pass.
-    //
-    // The detail COUNT is the whole discriminator because a conflict `subst` already
-    // records pushes no second copy (`bind_term` dedups per `(var, attempted)`), so an
-    // exact repeat inside the trial is not news — σ already carries it and
-    // `enforce_member_tie` already judges it.
-    //
-    // WI-20260911-7TN1Q — AND A THIRD CONJUNCT `(prior_flag || !trial.is_contradiction())`
-    // USED TO STAND HERE, claiming to catch "a trial that turned the flag on where `subst`
-    // had it off". It could not: every writer reachable inside the trial is a
-    // `Substitution::bind*`, and each PUSHES a detail before setting the flag. So a trial
-    // that raises the flag anew has grown the count and the conjunct above rejects it
-    // first; a dedup hit instead means the entry — and therefore the flag — was ALREADY in
-    // σ, so `trial.is_contradiction() == prior_flag` and the disjunction is a tautology.
-    // The `contradiction_details` field doc does warn that DIRECT `contradiction = true`
-    // writers record nothing, which is the state the conjunct was written for; the two in
-    // the typer are `FIRST_CUT_9C2PZ`-gated and neither is on `unify_types`' callee side,
-    // and MEASURED with a temporary probe at this site the state never arises at all —
-    // `flag set, no detail` fired 0 times across `anthill-core`'s 6046 tests. Removed
-    // rather than re-documented, because a guard that cannot fire reads as protection.
-    // `/code-review` raised the conjunct as a LOST-DETAIL defect; the count conjunct is
-    // why it never was one.
-    let prior_details = subst.contradiction_details.len();
-    let mut trial = subst.clone();
-    let var_t = kb.alloc_or_find_var_term(Var::Global(vid));
-    if unify_types(kb, &mut trial, &TermIdView(var_t), &TermIdView(t))
-        && trial.contradiction_details.len() == prior_details
-    {
-        *subst = trial;
-        return;
-    }
-    subst.bind(kb, vid, t);
 }
 
 /// Occurs check: does `vid` appear anywhere inside `term`?

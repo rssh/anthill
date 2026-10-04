@@ -69,22 +69,12 @@ use super::*;
 /// the projection; `Stream[T = Int64]` and the bare `Stream` arrive missing the slot, and it
 /// is minted. A slot written CONCRETE, or written as the op's own rigid, is left alone.
 ///
-/// SELF AND FOREIGN REFERENCES FILL THE SLOT DIFFERENTLY, and `docs/design/type-parameter-
-/// scoping.md` §3 is what decides which: "Within the sort's own definition, a bare self-sort
-/// reference participates in that tie — `append(xs: List, ys: List)` declared *inside*
-/// `sort List` ties both parameters (and the return) to *this* sort's `T`", whereas two
-/// FOREIGN references "do not silently share a variable across a signature". So a self
-/// reference's unwritten slot is THIS instance's parameter — the enclosing sort's rigid,
-/// which WI-424 already minted — and only a foreign one is fresh-per-occurrence and takes
-/// [`UnwrittenFill`]'s answer. MEASURED, and this split is why it is here: filling a self
-/// reference with a projection refused `Pair.compare(a: Pair, b: Pair)` at `expected a.A,
-/// got b.A`, which is the member tie read as its own negation. The self arm is DEPTH-BLIND on
-/// purpose: the tie is the SORT's, so a self reference nested in a binding takes the same
-/// rigid a top-level parameter does. DRIVEN, by backing exactly that out (`is_self &&
-/// !matches!(fill, Anonymous)`): the stdlib then reports 4 errors, all `expected List[T = ?T],
-/// got List[T = ?T] (these render alike but are not the same type)` — `List.insert`,
-/// `Stream.iterator` and two `match` rules, each holding one skolem for the enclosing sort's
-/// `T` and a second, unrelated one for the same sort named again.
+/// A REFERENCE TO THE ENCLOSING SORT IS FILLED AS ANY OTHER (WI-20261001-80ZV8, proposal 070
+/// stage (e)). It used to take THIS instance's parameter — the enclosing sort's rigid — for a
+/// slot it left out: `docs/design/type-parameter-scoping.md` §3's implicit tie, under which
+/// `append(xs: List, ys: List)` declared inside `sort List` took one list three times. The
+/// author writes that instance now (`Self`), and `o: Box` inside `sort Box` is any box: its
+/// slot is the parameter's own unknown (`o.T`), as `s: Stream`'s is anywhere.
 ///
 /// `None` when nothing was filled — the type is returned unrebuilt, which is what lets the
 /// recursion stay exact about whether a nested binding changed rather than re-minting an
@@ -210,14 +200,11 @@ pub(super) fn rigidify_unwritten_sort_params(
     if declared.is_empty() {
         return None;
     }
-    let is_self = position
-        .self_sort()
-        .is_some_and(|p| kb.canonical_sort_sym(p) == kb.canonical_sort_sym(base));
     let key_match = BindingKeyMatch::for_bases(kb, base, base);
     let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(declared.len().max(written.len()));
     let mut consumed = vec![false; written.len()];
     let mut changed = false;
-    for (param, canonical) in declared.iter() {
+    for (param, _) in declared.iter() {
         let slot = binding_index_for_param(kb, &written, *param, key_match);
         if let Some(i) = slot {
             consumed[i] = true;
@@ -291,45 +278,22 @@ pub(super) fn rigidify_unwritten_sort_params(
         }
         // WI-1078 — a slot the author wrote as an UNBOUND NAMED variable takes the one rigid
         // this call opened that VARIABLE to, so every slot the author tied together stays
-        // tied. Read before the mint and after the self question, which is the order the two
-        // rules already have: a self slot is not existential at all (WI-1063), so it never
-        // gets here whatever it was spelled.
-        let opened_named = slot.and_then(|i| position.opened_named_var(kb, &written[i].1));
-        // WI-1082 — the two halves of [`SlotPosition`]'s table, read in the order the
-        // rules already have. `None` from either half means THIS POSITION LEAVES THE SLOT, and
-        // both reach the same restore below: put back exactly what was there, because the slot
-        // is already marked `consumed` and the carry-the-unmatched loop will NOT restore it —
-        // skipping outright would DROP an author's `P[A = ?]` on the floor whenever a sibling
-        // binding caused a rebuild. That drop is invisible (`A = ?` and an absent `A` mean the
-        // same type), which is precisely why it must not be left to be re-derived.
+        // tied. Read before the mint.
         //
-        // WI-20261001-80ZV8 (proposal 070 §1.3) — THE SELF HALF IS FOR A SLOT THE REFERENCE
-        // DOES NOT WRITE AT ALL. A `?` the author WROTE at the sort's own slot (`o: Car[V =
-        // ?]`, `-> Stream[T = Int64, E = ?E]`) is a fresh variable, as it is on any other
-        // sort: any `Car` in a parameter, an existential in a return. It used to take the
-        // tie too — "`?` and an omitted slot are one type" — which left a sort's own
-        // operations with no way to write an independent instance but a type parameter of
-        // their own, and made `Car[V = ?]` — "any `Car`" — a second spelling of `Self`.
-        // The loader now writes that `?` into every slot a reference to the enclosing sort
-        // leaves out (`Loader::own_sort_slots_left_out`, proposal 070 §1.3), so no
-        // declaration a program loads reaches here with a slot of its own sort omitted:
-        // what still reaches the self half is a reference the typer itself built bare.
-        let filled = if is_self && slot.is_none() {
-            position.fill_self(kb, *canonical)
-        } else if let Some(rho) = opened_named {
-            Some(rho)
+        // ONE FILL FOR EVERY SORT (WI-20261001-80ZV8, proposal 070 stage (e)). A reference to
+        // the enclosing sort — or to the callee's own — used to take another answer here: its
+        // slot left out was THIS instance's parameter (§3's parametricity tie; WI-424 in a
+        // body, WI-1082 in a declaration, left for the canonical channel at a call). `Self`
+        // writes that instance now, and a slot left out is open on that sort as on any other.
+        let opened_named = slot.and_then(|i| position.opened_named_var(kb, &written[i].1));
+        let filled = if let Some(rho) = opened_named {
+            rho
         } else if slot.is_none_or(|i| is_empty_literal_element(kb, &written[i].1))
             && position.is_said_to_be_nothing(kb, base, *param)
         {
-            Some(Value::term(kb.make_nothing_type()))
+            Value::term(kb.make_nothing_type())
         } else {
-            position.fill_foreign(kb, fill, *param)
-        };
-        let Some(filled) = filled else {
-            if let Some(i) = slot {
-                bindings.push(written[i].clone());
-            }
-            continue;
+            fill.mint(kb, *param)
         };
         bindings.push((*param, filled));
         changed = true;
@@ -353,11 +317,10 @@ pub(super) fn rigidify_unwritten_sort_params(
 /// unwritten sort parameter in the callee's declared return type. The caller's rationale is
 /// at the call site in [`check_apply_iter`]; what belongs here is the SCOPE.
 ///
-/// FOREIGN SLOTS ONLY, via [`SlotPosition::CallResult`] — the callee's OWN sort is not
-/// existential in its return, it is the §3 parametricity tie, and this call's argument
-/// unification is what pins it through the canonical channel. Skipping it is the same
-/// decision [`expand_foreign_sort_application`] takes on the parameter side, keyed the same
-/// way, and for one reading of one rule.
+/// EVERY SORT'S SLOTS, the callee's own included: `-> Box` declared inside `sort Box` is a
+/// box the operation picks, as `-> List` is a list it picks (proposal 070 §1.3). The instance
+/// the call fixes is written `Self`, whose slots are the sort's parameters and so are bound
+/// by this call's arguments like any other type parameter.
 ///
 /// FOUR SITES TURN A DECLARED RETURN INTO A RESULT TYPE, and all four must call this. The
 /// first cut wired only the first, and each omission was a live hole rather than a tidiness
@@ -377,16 +340,13 @@ pub(super) fn rigidify_unwritten_sort_params(
 ///   That site opens ONCE PER LIFT rather than per application, which is a real limit stated
 ///   there — an arrow type has nowhere to write `∃`.
 ///
-/// `callee_sort` is the sort that declares the operation whose return this IS, which is not
-/// always the one the CALL named: the WI-606 fallback threads a concrete override's
-/// declaration, and asking the §3 self question of the spec op would read the override's own
-/// carrier as foreign. Its callers pass `impl_parent_sort_of_op` of the right symbol.
-/// `callee_op` is that same operation's SYMBOL, and it is what WI-1078 reads the rest of the
-/// signature through — see [`unbound_return_var_openings`].
+/// `callee_op` is the operation whose return this IS — not always the one the CALL named: the
+/// WI-606 fallback threads a concrete override's declaration — and it is what WI-1078 reads
+/// the rest of the signature through; see [`unbound_return_var_openings`].
 ///
 /// `None` when nothing was opened, which is the overwhelmingly common case: a fully-written
-/// return, a non-parametric one, or a self-sort one. The caller keeps its original value
-/// rather than a re-minted equal-but-distinct carrier.
+/// return or a non-parametric one. The caller keeps its original value rather than a
+/// re-minted equal-but-distinct carrier.
 ///
 /// `held`: when `ret` is what a type constructor in the declared return reduced to, the
 /// variables the arguments put into it, which stay ([`SlotPosition::CallResult`]'s field of
@@ -398,10 +358,8 @@ pub(super) fn rigidify_unwritten_sort_params(
 /// `?` there is, and each is opened to one rigid for this use; left flexible, `takes_int(t.a)`
 /// loaded over a `two` holding boxes of `String` (MEASURED, beside the pattern binder that
 /// [`FieldOpening`] opens). Empty where nothing was reduced.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn open_existential_return(
     kb: &mut KnowledgeBase,
-    callee_sort: Option<Symbol>,
     callee_op: Symbol,
     ret: &Value,
     held: &HashSet<u32>,
@@ -422,7 +380,6 @@ pub(super) fn open_existential_return(
         UnwrittenFill::Anonymous,
         ret,
         SlotPosition::CallResult {
-            callee_sort,
             opened: &opened,
             held,
         },
@@ -449,8 +406,6 @@ pub(super) fn open_existential_return(
 /// after, a scrutinee whose element nothing has fixed yet would have that variable opened out
 /// from under its own inference.
 pub(super) struct FieldOpening {
-    /// The sort that declares the constructor.
-    sort: Option<Symbol>,
     /// This pattern's rigid for each NAMED variable the fields declare.
     opened: HashMap<u32, Value>,
     /// The scrutinee's own variables, which stay.
@@ -500,7 +455,7 @@ impl FieldOpening {
             crate::kb::node_occurrence::collect_value_type(kb, scrutinee, &mut vars, &mut seen);
             held.extend(vars.iter().map(|v| v.raw()));
         }
-        FieldOpening { sort, opened, held }
+        FieldOpening { opened, held }
     }
 
     /// `field_type` — a field's declared type at the scrutinee — with what it leaves open
@@ -532,7 +487,6 @@ impl FieldOpening {
             },
             &field_type,
             SlotPosition::CallResult {
-                callee_sort: self.sort,
                 opened: &self.opened,
                 held: &self.held,
             },
@@ -646,398 +600,6 @@ pub(super) fn vars_the_arguments_put<'v>(
     vars.iter().map(|v| v.raw()).collect()
 }
 
-/// WI-1082 — WRITE §3's TIE DOWN, once per declaration, before anything reads the signature.
-///
-/// A member whose declared RETURN names its OWN sort and leaves a parameter slot unwritten is
-/// not making an existential claim — `docs/design/type-parameter-scoping.md` §3 bullet 1 says
-/// a bare self-sort reference inside the sort's own definition ties the parameters AND THE
-/// RETURN to *this* sort's parameter. So `insert(c: List, elem: T) -> List` means `-> List[T =
-/// T]`, and this pass writes exactly that: the sort's OWN parameter var, the spelling the
-/// sibling parameter `elem: T` already uses and the one `SortedSet.insert(s: SortedSet[T = T,
-/// O = O], x: T) -> SortedSet[T = T, O = O]` writes out by hand.
-///
-/// THE SORT'S PARAMETER, NOT THE RECEIVER'S PROJECTION, and this was measured rather than
-/// chosen. `-> List[T = c.T]` is the same type wherever both spellings can answer — in a body
-/// `c : List[T = ?T]`, so `c.T` reduces to the sort's rigid — but it reads ONE parameter where
-/// the tie pools ALL of them, and it fails wherever that one cannot answer. Driven, both
-/// halves from the suite: `put(empty(), "a", 1)` has no stable receiver to project off (the
-/// argument is a call, so `ArgPlaces::vars` records nothing) and `Map.put`'s result came back
-/// as the un-eliminated `Map[K = m.K, V = m.V]`, while the canonical form has `key: K` and
-/// `value: V` bind the very same vars; and writing a projection into `put`'s return flips
-/// `op_has_projection` on for the whole call, which then failed its own PARAMETERS at
-/// `expected m.K, got Int64`. The canonical var perturbs no call path — it is what the
-/// signature already rides (`unify_parameterized_with_sort_ref` + the per-call `subst`).
-///
-/// WHY THE ABSENCE WAS UNSOUND, and why the fix cannot live at the call. An unwritten slot is
-/// width-IGNORED by `unify_parameterized_view`: nothing is claimed about it, so nothing refutes
-/// a consumer's demand. WI-1063 closed that for FOREIGN sorts by opening the slot to a fresh
-/// rigid at each call and left the self case alone, which is WI-1082's five-line exploit:
-/// `widen(s: MyStream[T = Int64, E = {Error}]) -> MyStream[T = Int64] = s` loaded, and
-/// `takes_pure` (declaring `E = {}`) accepted its result. The laundering has TWO producers —
-/// the BODY check width-ignores the same slot, so `widen`'s declaration was never checked
-/// against its body either — and a call-side-only filler would make the caller trust a claim
-/// nothing had verified. One rewrite of the SIGNATURE closes both, because both read it.
-///
-/// WHERE THE EXPLOIT NOW FAILS IS THE DECLARATION, NOT THE CONSUMER, and the ticket's
-/// acceptance names that as the other admissible verdict. `widen`'s return says "a `MyStream`
-/// at THIS instance's `E`"; within a member body the sort's parameters are rigid (WI-424, the
-/// §3 tie read as parametricity), so the body must hold for EVERY `E` and `= s` — pinned to
-/// `{Error}` by its own parameter — does not. The message points at `widen.return`, which is
-/// where the defect was written, instead of at an innocent `takes_pure`. The general rule it
-/// states: a member may not pin its own sort's parameter to a constant and still elide it in
-/// the return. Writing the return out (`-> MyStream[T = Int64, E = {}]`) is unaffected — a
-/// WRITTEN slot is never touched here — so the shape stays expressible, it just has to be said.
-/// The corpus contains no such declaration: all four tiers load with zero errors.
-///
-/// NO SELF PARAMETER, NO TIE. `List.empty() -> List` has no parameter denoting an instance, so
-/// [`declares_self_param`] answers `false` and the slot stays unwritten rather than taking a
-/// canonical var this call can never bind — a raw canonical var in `resolved_ret` is the
-/// dangling-flex hazard the WI-374 note names. Leaving it is also the right answer for
-/// `empty`, whose body holds for every `T` and whose caller determines it through WI-270's
-/// `expected` seeding. See [`SlotPosition::fill_self`] for what that leaves open (**WI-1083**).
-///
-/// RUN ONCE, from [`type_check_sorts_collect`], immediately after `build_op_signatures` and the
-/// alias/provides indexes it reads.
-///
-/// WHAT IT REWRITES, AND WHO THEREFORE SEES IT. The target is the CACHED
-/// [`crate::kb::op_info::OpSignature`]; the `OperationInfo` FACT is left as the author wrote it, so
-/// anything reading the fact directly (persistence's printer, a reflect query over the fact)
-/// still sees the declaration. But [`crate::kb::op_info::lookup_operation_info`] answers from the
-/// CACHE FIRST, and its own doc names the typer, eval, reflect and codegen as that fast path's
-/// callers — so all of them see the elaborated signature. That is intended: the elaboration is
-/// what the declaration MEANS, and a backend lowering `-> List` without its element is lowering
-/// less than the author said. It is stated here because that cache documents itself as "a pure
-/// accelerator, never a correctness change", and this is the exception; the same note is at
-/// that function.
-///
-/// THE TWO TIERS CAN THEREFORE DISAGREE, and the disagreement is bounded to KBs that never
-/// type-check. `lookup_operation_info` falls back to scanning the facts when nothing is cached
-/// — during load (the const-purity gate, the eq-dispatch-table build) and on a KB built without
-/// reflect, where `build_op_signatures` caches nothing at all. Those readers get the
-/// un-elaborated declaration. Neither load-time caller asks about a return type's slots, and no
-/// typing-time caller can precede this pass; a KB that is loaded and lowered WITHOUT ever
-/// type-checking is outside every entry point the CLI and the test harness use.
-///
-/// RE-RUNNABLE, which `load_all` into a live KB needs: `build_op_signatures` rewrites each cached
-/// signature from its `OperationInfo` fact unconditionally, so a second type-check starts from
-/// the author's declaration again rather than from this pass's output. Nothing here has to be
-/// idempotent against its own result.
-pub(super) fn elaborate_self_ties(kb: &mut KnowledgeBase, sort_names: &[Symbol]) {
-    // GATED, THEN SORTED, THEN CLONED — in that order, and each step earns its place. Only a
-    // member of a PARAMETRIC sort can be rewritten, and `sort_type_params_as_pairs` is memoized,
-    // so that test rejects the overwhelming majority under one immutable borrow before any
-    // signature is cloned. The survivors are sorted by symbol because `op_records` is a
-    // `HashMap` with `RandomState`: nothing here depends on order, but each rewrite interns new
-    // `TermId`s, and leaving the numbering to hash order makes two loads of the same sources
-    // differ in anything that prints one.
-    let mut candidates: Vec<(Symbol, Symbol)> = kb
-        .op_records
-        .iter()
-        .filter(|(_, rec)| rec.signature.is_some())
-        .filter_map(|(op_sym, _)| Some((*op_sym, impl_parent_sort_of_op(kb, *op_sym)?)))
-        .filter(|(_, sort)| !sort_type_params_as_pairs(kb, *sort).is_empty())
-        .collect();
-    candidates.sort_by_key(|(op_sym, _)| op_sym.index());
-    for (op_sym, sort) in candidates {
-        let Some((ret, params)) = kb
-            .op_record(op_sym)
-            .and_then(|r| r.signature.as_ref())
-            .map(|s| (s.return_type.clone(), s.params.clone()))
-        else {
-            continue;
-        };
-        if !declares_self_param(kb, &params, sort) {
-            continue;
-        }
-        // The span/owner a rebuild stamps on a `Value::Node` carrier — read ONLY on that
-        // branch of [`parameterized_value`], which a Term-carried return never reaches: every
-        // value this fill mints is a hash-consed canonical var, so a Term-carried input
-        // rebuilds Term-carried. An occurrence-carried return (a `denoted` value-in-type
-        // binding) must keep its own node's pair, and the other arm supplies what a diagnostic
-        // would want if
-        // a future fill ever did carry a node. `functor_span` is EMPTY for almost every
-        // operation — it is written by `create_occurrence`, i.e. only for a symbol that heads
-        // a stored term — which is why this cannot be a `let … else continue`: demanding a
-        // span here skipped all 216 elaborations in the corpus and the pass measured as inert.
-        let (span, owner) = declared_span_owner(kb, &ret, op_sym);
-        // WI-1078's classification, read here for the SELF answer rather than the foreign one.
-        let unbound: Vec<u32> = unbound_return_vars(kb, op_sym, &ret)
-            .into_iter()
-            .map(|v| v.raw())
-            .collect();
-        let elaborated_ret = rigidify_unwritten_sort_params(
-            kb,
-            UnwrittenFill::Anonymous,
-            &ret,
-            SlotPosition::Declared {
-                sort,
-                unbound: Some(&unbound),
-            },
-            span,
-            owner,
-        );
-        // THE PARAMETERS TAKE THE SAME REWRITE, and leaving them out was a hole rather than a
-        // smaller scope. §3 bullet 1 ties "both parameters (AND the return)" to this sort's
-        // parameter, and only the pair states the tie: with the return alone, a self parameter
-        // that elides a slot still writes no binding, so the call's argument never reaches the
-        // sort's parameter and the return's copy of it stays a raw flexible var that unifies
-        // with anything. DRIVEN — `operation widen(s: MyStream[T = Int64]) -> MyStream`
-        // declared inside `sort MyStream`, with NO body, loaded clean and its result satisfied
-        // a parameter declaring `E = {}`: §8.1's headline exploit, surviving for exactly the
-        // population that has no body check to catch it (spec ops, host-mapped members,
-        // declaration-only members). `wi1082_…::a_bodyless_member_cannot_launder_either` holds
-        // it, and `the_headline_…`'s first half is the bodied twin the body check catches.
-        //
-        // NO `unbound` SET HERE, and that is the polarity difference rather than an omission: a
-        // named variable in a PARAMETER is bound BY being in a parameter — the caller supplies
-        // it — which is the first of WI-1078's three binders. Only the anonymous spelling can
-        // be unwritten in this position.
-        let mut elaborated_params: Vec<(Symbol, Value)> = Vec::with_capacity(params.len());
-        let mut params_changed = false;
-        for (pname, pty) in &params {
-            // A BARE self parameter is ALREADY tied, by a different mechanism, and writing the
-            // tie into it breaks a pattern the stdlib depends on. `unify_parameterized_with_
-            // sort_ref` binds the sort's canonical vars whenever ONE SIDE is a bare sort
-            // reference, so `reverse(xs: List)` reaches the argument's element without help.
-            // Writing `List[T = T]` there instead makes the binding a strict one, and the
-            // WI-424 seeding — which pins a SAME-SORT sibling call's canonical params to the
-            // enclosing instance's rigids before argument unification — then refuses a sibling
-            // called at a DIFFERENT element. DRIVEN: `List.mapElems[Dst]`'s
-            // `reverse(mapElemsOnto(xs, f, seed))` fails at `expected List[T = ?T], got List[T
-            // = ?Dst]`, and with it every corpus tier. (WI-20261001-80ZV8 took that seeding
-            // out from in front of the arguments, so the refusal no longer follows; this skip
-            // goes with the tie itself at proposal 070's stage (e).)
-            //
-            // What is left is exactly the gap: a PARTIALLY written self reference, where
-            // `unify_parameterized_view` width-ignores the slot the author elided and no
-            // canonical binding happens at all.
-            if matches!(extract_type(kb, pty), TypeExtractor::SortRef(b)
-                if kb.canonical_sort_sym(b) == kb.canonical_sort_sym(sort))
-            {
-                elaborated_params.push((*pname, pty.clone()));
-                continue;
-            }
-            let (pspan, powner) = declared_span_owner(kb, pty, op_sym);
-            match rigidify_unwritten_sort_params(
-                kb,
-                UnwrittenFill::Anonymous,
-                pty,
-                SlotPosition::Declared {
-                    sort,
-                    unbound: Some(&[]),
-                },
-                pspan,
-                powner,
-            ) {
-                Some(rewritten) => {
-                    elaborated_params.push((*pname, rewritten));
-                    params_changed = true;
-                }
-                None => elaborated_params.push((*pname, pty.clone())),
-            }
-        }
-        if elaborated_ret.is_none() && !params_changed {
-            continue;
-        }
-        if let Some(sig) = kb
-            .op_records
-            .get_mut(&op_sym)
-            .and_then(|r| r.signature.as_mut())
-        {
-            if let Some(r) = elaborated_ret {
-                sig.return_type = r;
-            }
-            if params_changed {
-                sig.params = elaborated_params;
-            }
-        }
-    }
-    elaborate_self_field_ties(kb, sort_names);
-}
-
-/// WI-20261001-80ZV8 — does `ty`, a type DECLARED in `sort`'s own definition, leave a slot of
-/// that sort unwritten: a bare reference to `sort`, or one that omits a parameter, at any
-/// depth? A signature that answers `false` throughout WRITES every reference to its own sort
-/// (`Self`, or the slots spelled out), and a call of it has no declared position left that
-/// rides the unifier's canonical channel (`unify_parameterized_with_sort_ref`).
-///
-/// THE SAME WALK [`elaborate_self_ties`] RUNS — it is asked whether that pass would have
-/// anything to write — so "unwritten" means here what it means there, and the two positions
-/// that pass leaves as the author wrote them (a BARE self parameter, and the return of an
-/// operation with no self parameter) are exactly the ones this still finds. The walk builds
-/// what it would write in order to answer; that is paid only by a signature that does leave
-/// a slot out, a spelling proposal 070's stage (d) refuses. `fallback` is the declaring
-/// symbol, for the span a rebuilt occurrence would take.
-pub(super) fn leaves_own_slot_unwritten(
-    kb: &mut KnowledgeBase,
-    sort: Symbol,
-    ty: &Value,
-    fallback: Symbol,
-) -> bool {
-    if sort_type_params_as_pairs(kb, sort).is_empty() {
-        return false;
-    }
-    let (span, owner) = declared_span_owner(kb, ty, fallback);
-    rigidify_unwritten_sort_params(
-        kb,
-        UnwrittenFill::Anonymous,
-        ty,
-        SlotPosition::Declared {
-            sort,
-            unbound: Some(&[]),
-        },
-        span,
-        owner,
-    )
-    .is_some()
-}
-
-/// WI-1082 — the SAME tie at the other declaration position: an ENTITY FIELD whose type names
-/// its own sort. `docs/design/type-parameter-scoping.md` §3 states this one literally —
-/// "`cons(head: T, tail: List)` ⇒ `tail` is a `List` of *this* sort's `T`" — so this writes
-/// `List[T = T]`, the spelling its own sibling field already uses.
-///
-/// THE RETURN HALF DOES NOT STAND WITHOUT IT. `case cons(x, rest)` binds `rest` at the DECLARED
-/// field type, so an untied `tail: List` handed the body a tail with no element; that was
-/// invisible only because `append`'s return was erased too. Measured: with the return half
-/// alone, the whole corpus raised exactly one error, `cons.type_args` in `List.append`. See
-/// [`SlotPosition::fill_self`] for the mechanism and the four stdlib workarounds it retires the
-/// reason for.
-///
-/// THE TWO HALVES HAVE DIFFERENT SCOPES ON PURPOSE, and the reason is which store each writes.
-/// The signature half must revisit EVERY operation in the KB, because `build_op_signatures`
-/// resets every cached signature from its fact on each type-check, so an op elaborated by a
-/// previous `load_all` arrives un-elaborated again. This half writes a registry that is NOT
-/// reset, so it only has to reach the sorts THIS call defines (`sort_names` is the caller's
-/// `defined_sorts`) — an entity from an earlier load still carries the tie it was given then,
-/// which [`the_field_tie_is_a_fixpoint`](wi1082_self_return_tie_test) pins from the other side.
-///
-/// [`KnowledgeBase::field_constructors_of_sort`] IS THE OWNER of "whose fields are these", and
-/// the reason it beats the `SortInfo` constructor list is the case it adds: a free-standing
-/// `entity X(next: X)` (§6.3's sugar) emits no `SortInfo` but does carry
-/// `entity_field_types(X)`, and reading the index would silently give it no tie — the WI-490
-/// hole that helper exists to close. `sort_names` is the set the caller is type-checking.
-///
-/// NO `unbound` SET, unlike the return half: a field type has no signature whose parameters,
-/// `[A]` binders or `requires` chain could bind a variable, so the only spelling that can be
-/// "unwritten" here is the anonymous one.
-///
-/// IN PLACE, AND THEREFORE VISIBLE TO EVERY READER OF THAT REGISTRY — which is more than the
-/// typer. `persistence::term_ser`'s `entity_field_type_map` reads `entity_field_types` to pick
-/// the ground `TermId` it hands `value_to_term_typed` when reconstructing a persisted fact, and
-/// the C++ backend reads it to lower entity fields. After a type-check `cons`'s `tail` is
-/// `List[T = <the sort's parameter>]` rather than a bare `Ref(List)`, so those readers see the
-/// tie too. Intended, for the reason the return half states: the tie is what the declaration
-/// MEANS, and a lowering that drops it lowers less than the author wrote. A KB that never
-/// type-checks keeps the raw field types, the same two-tier bound the signature cache has.
-///
-/// IDEMPOTENT, WHICH THE SIGNATURE HALF DOES NOT HAVE TO BE. Nothing reconstructs this registry
-/// from facts the way `build_op_signatures` reconstructs each cached signature, so a second
-/// type-check (`load_all` into a live KB) sees this pass's own output. It is a fixpoint: an
-/// already-elaborated slot holds the sort's parameter var, which is a `Ref`-carried type
-/// reference rather than a flexible variable, so [`SlotPosition::written_slot_is_unwritten`]
-/// leaves it. DRIVEN by `wi1082_…::the_field_tie_is_a_fixpoint`, which type-checks one KB twice
-/// and compares the field types.
-fn elaborate_self_field_ties(kb: &mut KnowledgeBase, sort_names: &[Symbol]) {
-    for &sort in sort_names {
-        for ctor in kb.field_constructors_of_sort(sort) {
-            let Some(fields) = kb.entity_field_types(ctor) else {
-                continue;
-            };
-            let fields: Vec<(Symbol, Value)> = fields.to_vec();
-            let mut changed = false;
-            let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());
-            for (fsym, fty) in fields {
-                // Same span/owner reasoning as the return half: read only on
-                // `parameterized_value`'s Node branch, which a Term-carried field type cannot
-                // reach because the fill is a hash-consed canonical var.
-                let (span, owner) = declared_span_owner(kb, &fty, ctor);
-                match rigidify_unwritten_sort_params(
-                    kb,
-                    UnwrittenFill::Anonymous,
-                    &fty,
-                    SlotPosition::Declared {
-                        sort,
-                        unbound: None,
-                    },
-                    span,
-                    owner,
-                ) {
-                    Some(elaborated) => {
-                        out.push((fsym, elaborated));
-                        changed = true;
-                    }
-                    None => out.push((fsym, fty)),
-                }
-            }
-            if changed {
-                kb.register_entity_field_types(ctor, out);
-            }
-        }
-    }
-}
-
-/// WI-1082 — the span/owner a rebuild of a DECLARED type stamps on a `Value::Node` carrier,
-/// with `fallback` the declaring symbol (the operation, or the entity constructor).
-///
-/// An occurrence-carried declaration keeps its OWN node's pair, which is the only case where
-/// the answer matters to a reader: `parameterized_value` takes its Node branch whenever any
-/// binding is Node-carried, and the `Arrow` / `NamedTuple` arms of the walk build occurrences
-/// unconditionally. The fallback is the declaration's own span when the loader recorded one —
-/// `functor_span` is written by `create_occurrence`, so only a symbol that heads a stored term
-/// has one, which is why this cannot refuse to answer — and [`empty_span`] otherwise. A span
-/// off `empty_span` renders as the first loaded file's start, so a diagnostic built on one is
-/// the WI-745 misattribution class; it is reachable only for a declaration the loader gave no
-/// span AND whose rebuild produced an occurrence, and it is preferred here to silently skipping
-/// the tie, which would be a soundness gap rather than a bad location.
-fn declared_span_owner(
-    kb: &KnowledgeBase,
-    declared: &Value,
-    fallback: Symbol,
-) -> (crate::span::SourceSpan, Option<Symbol>) {
-    match declared {
-        Value::Node(n) => (n.span, n.owner),
-        _ => (
-            kb.functor_span(fallback)
-                .unwrap_or_else(crate::kb::node_occurrence::empty_span),
-            Some(fallback),
-        ),
-    }
-}
-
-/// WI-1082 — DOES this operation have a parameter denoting THIS instance of `sort`?
-///
-/// A GATE, NOT A SOURCE. The fill is the sort's own parameter var and needs no receiver — what
-/// this decides is whether the call can ever BIND that var. `List.insert(c: List, elem: T)`
-/// can, through `c` (and through `elem` too, which is the pooling a projection off one chosen
-/// receiver would have thrown away). `List.empty()` cannot: with no parameter mentioning the
-/// sort, writing the canonical var into its return would stamp a raw, unbindable global into
-/// `resolved_ret` — the dangling-flex hazard the WI-374 note names, and the reason WI-1063
-/// rejected the canonical var as a general filler. So `empty` keeps its unwritten slot and the
-/// caller's `expected` seeding determines it (WI-270).
-///
-/// THE HEAD, not a nested mention. A parameter that merely CONTAINS the sort (`f: (l: List) ->
-/// Bool`) denotes no instance of it; the callback's own `List` is a separate value, and nothing
-/// at the call binds this sort's parameter through it.
-///
-/// THE FIRST is enough, and it is not a choice between rivals: §3 bullet 1 declares every
-/// self-sort parameter to be at the SAME instance and WI-374 enforces it, so `append(xs: List,
-/// ys: List)`'s two parameters cannot disagree at a call that type-checks. This only ever asks
-/// whether at least one exists.
-///
-/// A GUARD THAT COULD NOT BE DRIVEN, said plainly rather than left to look load-bearing.
-/// Removing this gate costs ZERO — the whole `anthill-core` suite stays green and all four
-/// corpus tiers load clean — and two purpose-built fixtures failed to reach the hazard it
-/// names. It is kept on the WI-1063 / WI-374 argument alone: a result type must not carry a
-/// global canonical var. `wi1082_self_return_tie_test::no_self_parameter_leaves_the_slot_open`
-/// carries the same statement from the test side, including what would retire it.
-fn declares_self_param(kb: &KnowledgeBase, params: &[(Symbol, Value)], sort: Symbol) -> bool {
-    let want = kb.canonical_sort_sym(sort);
-    params.iter().any(|(_, ty)| {
-        sort_functor_of_view(kb, ty).is_some_and(|b| kb.canonical_sort_sym(b) == want)
-    })
-}
-
 /// WI-1078 — THIS CALL'S OPENING OF THE CALLEE'S UNBOUND RETURN VARIABLES: one fresh
 /// `Var::Rigid` per unbound variable, keyed by the variable it stands for. Empty (the
 /// overwhelmingly common case) when the declared return has no variable the signature leaves
@@ -1109,16 +671,11 @@ fn unbound_return_var_openings(
 }
 
 /// WI-1078's classification WITHOUT the mint — the variables of `callee_op`'s declared return
-/// that its signature leaves UNBOUND. [`unbound_return_var_openings`] opens each to a fresh ρ
-/// because a FOREIGN slot's unbound variable is existential; WI-1082 reads the same list at the
-/// DECLARATION, where a SELF slot's unbound variable is §3's tie instead. One classification,
-/// two answers keyed on self/foreign — which is the split [`SlotPosition`] already is.
-///
-/// SPLITTING IT IS WHAT KEEPS THE SPELLINGS TOGETHER. `-> MyStream[T = Int64]` and `->
-/// MyStream[T = Int64, E = ?E]` are one type (`docs/kernel-language.md` §"Sort composition"),
-/// and WI-1078 exists because they had drifted apart at the call. Elaborating only the omitted
-/// spelling would re-open that gap from the other end: the omitted one would carry the sort's
-/// parameter and the named one a flexible var that unifies with anything.
+/// that its signature leaves UNBOUND, each of which [`unbound_return_var_openings`] opens to a
+/// fresh ρ: an unbound variable in a return is existential, on the callee's own sort as on
+/// any other. `-> MyStream[T = Int64]` and `-> MyStream[T = Int64, E = ?E]` are one type
+/// (`docs/kernel-language.md` §"Sort composition"), and WI-1078 exists because they had
+/// drifted apart at the call.
 fn unbound_return_vars(kb: &KnowledgeBase, callee_op: Symbol, ret: &Value) -> Vec<VarId> {
     // No variable survives into this call's result, so no slot below can match one. Nearly
     // every call in the corpus stops here, which is what keeps the signature read off the hot
@@ -1193,10 +750,9 @@ fn unbound_return_vars(kb: &KnowledgeBase, callee_op: Symbol, ret: &Value) -> Ve
 /// that loads today. It does not, because the ∀'s binders ARE this set: generalization
 /// happens HERE, at the eta lift that consumes it, and nowhere else.
 ///
-/// FOUR SOURCES, each measured on WI-1078 / WI-1082 and documented in
-/// [`unbound_return_vars`]'s own header: a PARAMETER type, a `requires` clause, the
-/// operation's own `[A]` binders, and — since WI-1082 elaborates an elided self slot to
-/// it — the DECLARING SORT's canonical parameter. The declared EFFECTS are deliberately
+/// FOUR SOURCES: a PARAMETER type, a `requires` clause, the operation's own `[A]` binders
+/// (each measured on WI-1078, [`unbound_return_var_openings`]'s header), and the DECLARING
+/// SORT's parameters, which are the operation's too. The declared EFFECTS are deliberately
 /// not a fifth: a row the operation incurs sits on the same side of the arrow as the
 /// return and binds nothing.
 ///
@@ -1235,17 +791,13 @@ pub(super) fn signature_bound_vars(
             }
         }
     }
-    // THE DECLARING SORT'S OWN PARAMETERS ARE A FOURTH ENTRY, and WI-1082 is what put them
-    // there. WI-1078 measured this list as unreachable and dropped it, correctly at the time: a
-    // sort parameter a HUMAN writes in a type is a `Ref` to its own symbol, never a
-    // `Var::Global`, so `to_pair(h: Holder) -> Pair[A = T, B = T]` arrived variable-free. But
-    // WI-1082 rewrites an elided self slot to that sort's canonical VAR, so every elaborated
-    // member now reaches here with one — and it is bound by construction: it is the §3 tie, the
-    // thing this call's arguments pin through the canonical channel, not an existential. Left
-    // out, every call to `List.insert` / `Map.put` / a `cons` would mint a `Var::Rigid` — which
-    // is interned for the KB's LIFETIME — that `SlotPosition::fill_self` then discards unused,
-    // and the cheap `in_result.is_empty()` gate that keeps this whole signature read off the hot
-    // path would stop firing for them.
+    // THE DECLARING SORT'S OWN PARAMETERS ARE A FOURTH ENTRY: a sort's parameters are type
+    // parameters of each of its operations (proposal 070 §1.1), fixed by the call as its own
+    // `[A]` are — so the ∀ an eta lift mints quantifies them ([`TypeExtractor::PolyType`]),
+    // and a return naming one is no existential. They are named in a signature by a `Ref` to
+    // the parameter's symbol, which resolves to this variable. (WI-1082 added the entry for
+    // another reason, gone with it at proposal 070's stage (e): its elaboration wrote an
+    // elided self slot as this very variable.)
     if let Some(parent) = impl_parent_sort_of_op(kb, callee_op) {
         for (_, canonical) in sort_type_params_as_pairs(kb, parent).iter() {
             if let Term::Var(Var::Global(vid)) = kb.get_term(*canonical) {
@@ -1260,55 +812,32 @@ pub(super) fn signature_bound_vars(
 
 /// WI-1063 — WHICH POSITION [`rigidify_unwritten_sort_params`] is walking. The walk itself is
 /// one rule read at two polarities (a parameter's unwritten slot is universal and rigid in the
-/// BODY; a return's is existential and rigid at the CALL), and everything the two positions
+/// BODY; a return's is existential and rigid at the CALL), and everything the positions
 /// disagree about is here.
 ///
-/// THE WHOLE POLICY IS ONE 4×2 TABLE — [`Self::fill_self`] × [`Self::fill_foreign`] — and each
-/// cell has a corpus measurement behind it rather than a symmetry argument. The cells are
-/// documented at their own arms; the table is here so that "which position leaves what" can be
-/// read in one place:
+/// | position | an open slot becomes |
+/// |---|---|
+/// | [`Body`](Self::Body) | [`UnwrittenFill`]'s mint: the parameter's projection at the top, a fresh ρ below |
+/// | [`CallResult`](Self::CallResult) | a fresh ρ, the existential opening (WI-1063); one ρ per NAMED unbound variable (WI-1078) |
+/// | [`Named`](Self::Named) | `Nothing` in a covariant position; else the name's projection, a fresh ρ where there is no name (WI-20261001-80ZV8) |
 ///
-/// | position | a SELF-sort slot | a FOREIGN-sort slot |
-/// |---|---|---|
-/// | [`Body`](Self::Body) | the enclosing sort's rigid (WI-424) | [`UnwrittenFill`]'s mint |
-/// | [`Declared`](Self::Declared) | the sort's own parameter var — §3's tie, written down (WI-1082) | LEFT — opening once per DECLARATION would share one ρ across every call |
-/// | [`CallResult`](Self::CallResult) | LEFT — `Declared` already wrote it, or the callee has no self parameter to bind it | a fresh ρ, the existential opening (WI-1063) |
-/// | [`Named`](Self::Named) | — no sort is self to a value in a body | `Nothing` in a covariant position; else [`UnwrittenFill`]'s mint: the name's projection, a fresh ρ where there is no name (WI-20261001-80ZV8) |
+/// EVERY SORT IS READ ALIKE. Until proposal 070's stage (e) the table had a second column — a
+/// reference to the ENCLOSING sort (the callee's own, at a call) took its slot left out as
+/// THIS instance's parameter, §3's parametricity tie — and a fourth row, the declaration that
+/// tie was written into at load (WI-1082). `Self` writes this instance now, so a slot left
+/// out is open whichever sort leaves it.
 ///
-/// WHICH SLOTS EACH CONSIDERS IS *NOT* A DISAGREEMENT, and keeping that so is load-bearing:
-/// `Declared` and `CallResult` ask the identical two-part question
-/// ([`Self::written_slot_is_unwritten`]) so that `-> S[E = ?E]` and `-> S` stay ONE type. They
-/// differ only in the answer.
+/// WHICH SLOTS COUNT AS OPEN is [`Self::written_slot_is_unwritten`], and it does differ: by
+/// the time each position's walk runs, different carriers can still be an author's `?`.
 #[derive(Clone, Copy)]
 pub(super) enum SlotPosition<'a> {
-    /// The operation's own BODY (WI-1059/WI-1061). `sort` is the enclosing sort and
-    /// `rigidify` the WI-424 substitution that skolemized its parameters.
-    Body {
-        sort: Option<Symbol>,
-        rigidify: &'a Substitution,
-    },
-    /// WI-1082 — a DECLARATION as written by the author: an operation's return type or an
-    /// entity's field type, rewritten ONCE by [`elaborate_self_ties`] before any body check or
-    /// call site reads it. `sort` is the sort the declaration belongs to.
-    ///
-    /// `unbound` says which NAMED variables count as unwritten, and its two states are the two
-    /// kinds of declaration. `Some(set)` is a SIGNATURE position (a return, a parameter):
-    /// [`unbound_return_vars`]' classification, so `-> S[E = ?E]` is the same slot as an
-    /// omitted `E` while a variable the signature binds elsewhere is left alone. `None` is an
-    /// ENTITY FIELD, which has no signature at all — no parameter list, no `[A]` binders, no
-    /// `requires` chain — so nothing can bind a variable written there and EVERY flexible one
-    /// is unwritten. Reading a field's `Box[T = ?X]` as bound would split it from `Box` and
-    /// `Box[T = ?]`, which are the same type.
-    Declared {
-        sort: Symbol,
-        unbound: Option<&'a [u32]>,
-    },
-    /// One CALL's result (WI-1063). `callee_sort` is the CALLEE's own sort; `opened` is
-    /// WI-1078's per-call opening of the declared return's UNBOUND named variables, built
-    /// once by [`unbound_return_var_openings`] and empty whenever the signature binds them
-    /// all.
+    /// The operation's own BODY (WI-1059/WI-1061): a declared parameter's type, as the body
+    /// reads it.
+    Body,
+    /// One CALL's result (WI-1063). `opened` is WI-1078's per-call opening of the declared
+    /// return's UNBOUND named variables, built once by [`unbound_return_var_openings`] and
+    /// empty whenever the signature binds them all.
     CallResult {
-        callee_sort: Option<Symbol>,
         opened: &'a HashMap<u32, Value>,
         /// The variables the ARGUMENTS put into a result a type CONSTRUCTOR reduced (`FieldOf`,
         /// `Concat`, `Without`) — the caller's, never an existential, so a slot holding one
@@ -1317,10 +846,9 @@ pub(super) enum SlotPosition<'a> {
         held: &'a HashSet<u32>,
     },
     /// WI-20261001-80ZV8 — a VALUE BOUND TO A NAME in a body: a `let`, a pattern variable, a
-    /// destructured scrutinee ([`closed_where_named`]). Every sort is foreign to it — a body
-    /// reads its own sort as any other — and what counts as unwritten is what a call's
-    /// result leaves OPEN: a slot left out, an anonymous `?`, the wildcard an empty literal
-    /// carries ([`slot_is_open`]).
+    /// destructured scrutinee ([`closed_where_named`]). What counts as unwritten is what a
+    /// call's result leaves OPEN: a slot left out, an anonymous `?`, the wildcard an empty
+    /// literal carries ([`slot_is_open`]).
     ///
     /// `covariant`: the bound type is a VALUE's ([`BinderOf`]) and every slot from its top
     /// down to the one being walked is declared `Covariant` ([`Self::under`]). AN OPEN SLOT
@@ -1355,16 +883,6 @@ pub(super) enum SlotPosition<'a> {
 }
 
 impl SlotPosition<'_> {
-    /// The sort a reference must name to count as SELF here.
-    fn self_sort(self) -> Option<Symbol> {
-        match self {
-            SlotPosition::Body { sort, .. } => sort,
-            SlotPosition::Declared { sort, .. } => Some(sort),
-            SlotPosition::CallResult { callee_sort, .. } => callee_sort,
-            SlotPosition::Named { .. } => None,
-        }
-    }
-
     /// This position, one level down: inside the binding of `sort`'s parameter `param`.
     /// Only [`Self::Named`] changes — it stays covariant only under a `Covariant`
     /// parameter.
@@ -1389,107 +907,8 @@ impl SlotPosition<'_> {
         !sort_param_is_effect_row(kb, sort, &short)
     }
 
-    /// What an unwritten slot on a SELF reference takes, or `None` to leave it unwritten.
-    /// `canonical` is that sort's own canonical parameter var (the `SortAlias` target) — which
-    /// two of the three positions answer with directly, one rigidified and one raw.
-    ///
-    /// THE BODY knows the instance: the canonical var run through the rigidify substitution,
-    /// so the slot holds the same skolem every other mention of that parameter in this body
-    /// already resolves to.
-    ///
-    /// A DECLARATION knows it too, and says so with the sort's OWN parameter (WI-1082).
-    /// `docs/design/type-parameter-scoping.md` §3 bullet 1 gives both halves verbatim: a bare
-    /// self-sort reference inside the sort's own definition ties the parameters AND THE RETURN
-    /// to *this* sort's parameter, and `cons(head: T, tail: List)` ⇒ `tail` is a `List` of
-    /// *this* sort's `T`. So `insert(c: List, elem: T) -> List` means `-> List[T = T]` and the
-    /// cons cell's tail means `List[T = T]` — the spelling the sibling `head: T` already uses,
-    /// and the one `SortedSet.insert(s: SortedSet[T = T, O = O], x: T) -> SortedSet[T = T, O =
-    /// O]` writes out by hand. Writing it makes the tie a BINDING instead of an absence, and an
-    /// absence is what laundered: a missing binding is width-ignored by
-    /// `unify_parameterized_view`, so nothing was ever claimed about the slot and nothing could
-    /// refute a consumer's demand.
-    ///
-    /// NOT THE RECEIVER'S PROJECTION, which was tried first and measured wrong. `-> List[T =
-    /// c.T]` is the same type wherever both can answer (in a body `c : List[T = ?T]`, so `c.T`
-    /// reduces to the sort's rigid), but it reads ONE parameter where the tie pools ALL of
-    /// them: `put(empty(), "a", 1)` has no stable receiver to project off, so `Map.put` came
-    /// back as an un-eliminated `Map[K = m.K, V = m.V]` while `key: K` and `value: V` bind the
-    /// very same canonical vars the tie wants. Writing a projection there also flipped
-    /// `op_has_projection` on for the whole call, which then failed `put`'s own PARAMETERS at
-    /// `expected m.K, got Int64`. The canonical var perturbs no call path — it is what the
-    /// signature already rides.
-    ///
-    /// A CALL MUST NOT INVENT ONE, and leaves it — the same decision
-    /// [`expand_foreign_sort_application`] takes on the parameter side and for the same
-    /// reason: the callee's own sort rides the canonical channel, where THIS call's argument
-    /// unification binds it (`type-parameter-scoping.md` §3 bullet 1). Both other answers are
-    /// wrong and both are reachable from this arm if it ever grows one — a fresh skolem would
-    /// refuse `takes_int(reverse(xs))` for every self-returning member in the stdlib, and the
-    /// canonical var itself would stamp a dangling FLEX var into `resolved_ret` for an
-    /// argument-less `List.empty()`, the hazard the WI-374 note at the parameter expansion
-    /// names.
-    ///
-    /// WHAT STILL REACHES THAT ARM after WI-1082, and it is the residue that ticket left
-    /// open rather than an unmeasured gap: an operation with NO parameter denoting its own
-    /// instance — `List.empty() -> List`, `Map.empty() -> Map` — has nothing at the call to
-    /// bind the sort's parameter, so its return keeps the unwritten slot and the caller's
-    /// `expected` seeding determines it (WI-270's legitimate case). That is the right answer
-    /// for `empty`, whose body holds for every `T`, and the WRONG one for a hypothetical
-    /// `mk() -> MyStream[T = Int64]` whose body pins a row; the two are indistinguishable
-    /// without the universal spelling (`empty[T]() -> List[T = T]`), which is **WI-1083**'s
-    /// `PolyType`. See [`declares_self_param`] for why writing the canonical var there anyway
-    /// is worse than leaving the slot.
-    fn fill_self(self, kb: &mut KnowledgeBase, canonical: TermId) -> Option<Value> {
-        match self {
-            SlotPosition::Body { rigidify, .. } => {
-                Some(Value::term(walk_type_deep(kb, rigidify, canonical)))
-            }
-            // THE ENTITY-FIELD HALF IS NOT A SECOND RULE, and it is not optional either.
-            // `case cons(x, rest)` binds `rest` at the DECLARED field type, so an untied
-            // `tail: List` handed the body a tail with NO element. That was invisible while
-            // `append`'s return was the erased `-> List` (claiming nothing); the moment the
-            // return states the tie, the recursive `append(rest, ys)` comes back at `rest`'s
-            // element and the `cons` rebuilding the spine reports the tie as inconsistent —
-            // measured, the single error the whole corpus raised. The stdlib had been working
-            // around the same loss in four places ("a bare `cons` tail is untyped `List` and
-            // would lose `xs.T`" — `foldLeft`, `foldRight`, `nth`, `mapElems`, each recursing
-            // via `splitFirst` and each saying why); those keep working unchanged, and `append`
-            // keeps its natural `match xs` / `cons` destructure.
-            SlotPosition::Declared { .. } => Some(Value::term(canonical)),
-            // `Named` has no self sort ([`Self::self_sort`]), so it is never asked.
-            SlotPosition::CallResult { .. } | SlotPosition::Named { .. } => None,
-        }
-    }
-
-    /// WI-1082 — [`Self::fill_self`]'s other half: what an unwritten slot on a FOREIGN sort
-    /// reference takes, or `None` to leave it unwritten. Two of the three positions answer
-    /// with [`UnwrittenFill`]'s mint, which is why this was a bare `fill.mint` call until the
-    /// third arrived.
-    ///
-    /// THE DECLARED RETURN LEAVES IT, and that is a soundness constraint rather than a
-    /// deferral. A foreign unwritten slot in a return IS the existential WI-1063 opens, and
-    /// its own doc states that "freshness per opening is the soundness, not an implementation
-    /// detail — two calls may genuinely return different rows". This position runs ONCE PER
-    /// DECLARATION; opening here would mint one ρ and share it across every call of the
-    /// operation, relating results that have nothing to do with each other. So the slot stays
-    /// as the author left it and [`SlotPosition::CallResult`] opens it per call, exactly as
-    /// before this ticket.
-    fn fill_foreign(
-        self,
-        kb: &mut KnowledgeBase,
-        fill: UnwrittenFill,
-        param: Symbol,
-    ) -> Option<Value> {
-        match self {
-            SlotPosition::Body { .. }
-            | SlotPosition::CallResult { .. }
-            | SlotPosition::Named { .. } => Some(fill.mint(kb, param)),
-            SlotPosition::Declared { .. } => None,
-        }
-    }
-
-    /// Does a slot the author DID write nevertheless count as unwritten here? Both positions
-    /// answer yes for the same reason — kernel-language §"Expansion during unification" says
+    /// Does a slot the author DID write nevertheless count as unwritten here? Every position
+    /// answers yes for the same reason — kernel-language §"Expansion during unification" says
     /// spelling a slot `?` means exactly what omitting it means — and they disagree only about
     /// which carriers can still be an author's `?` by the time the walk sees them.
     ///
@@ -1518,27 +937,13 @@ impl SlotPosition<'_> {
     /// [`merge_annotation_bindings`] replaces only the anonymous spelling for the same reason.
     fn written_slot_is_unwritten(self, kb: &KnowledgeBase, v: &Value) -> bool {
         match self {
-            SlotPosition::Body { .. } => value_is_flex_var(kb, v),
-            // WI-1082 — the same two-part question [`SlotPosition::CallResult`] asks, and
-            // deliberately the same shape: an ANONYMOUS carrier, or a NAMED variable this
-            // signature leaves unbound. The two positions differ in the ANSWER (a self slot is
-            // the tie here, an existential there), never in which slots they consider — see
-            // [`unbound_return_vars`].
-            SlotPosition::Declared { unbound, .. } => match unbound {
-                Some(set) => {
-                    value_is_anonymous_wildcard(kb, v)
-                        || value_flex_var_id(kb, v).is_some_and(|vid| set.contains(&vid.raw()))
-                }
-                // An entity field: nothing here can bind a variable, so every flexible one is
-                // unwritten. Same answer the BODY position gives, for the same reason.
-                None => value_is_flex_var(kb, v),
-            },
+            SlotPosition::Body => value_is_flex_var(kb, v),
             // A variable the ARGUMENTS put into a reduced result is the caller's and stays:
             // `Pair.mk(1).l` reads the receiver's `List[T = ?_]`, and opened, no annotation
             // could say what it was. A `?` the reduction brought in is still opened: a field
             // read `h.s` of `s: Stream[T = Int64, E = ?]` is the holder's existential, and left
             // flexible it was admitted as a pure stream (MEASURED: review 9's fix pass).
-            SlotPosition::CallResult { opened, held, .. } => {
+            SlotPosition::CallResult { opened, held } => {
                 let vid = value_flex_var_id(kb, v).map(|vid| vid.raw());
                 !vid.is_some_and(|raw| held.contains(&raw))
                     && (value_is_anonymous_wildcard(kb, v)
@@ -1791,9 +1196,10 @@ fn anonymous_var_name(kb: &KnowledgeBase, name: Symbol) -> bool {
 /// NOT DRIVEN, and the honest reason: the shape needs an outer sort's canonical var to reach
 /// a nested member's signature as a `Var::Global`, and nothing produces one. A human writes
 /// such a parameter as a `Ref` to its symbol ([`signature_bound_vars`]' own header states
-/// this), and WI-1082's elaboration fills only a SELF slot — `SlotPosition::fill_foreign`
-/// returns `None` at a declaration, so `grab(o: Outer)` inside `sort Outer.Inner` arrives
-/// variable-free. MEASURED by instrumenting the caller: over that fixture the only variable
+/// this), and nothing fills a slot a declaration leaves out — `grab(o: Outer)` inside `sort
+/// Outer.Inner` arrives variable-free (as it did when this was measured: WI-1082's
+/// elaboration, deleted at proposal 070's stage (e), filled only a SELF slot).
+/// MEASURED by instrumenting the caller: over that fixture the only variable
 /// reaching it is the author's own `?` in `grab2(o: Outer[A = ?])`, which the anonymous filter
 /// removes for its own reason.
 ///

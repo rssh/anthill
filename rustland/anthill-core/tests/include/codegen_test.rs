@@ -1035,42 +1035,141 @@ end
     );
 }
 
-// ── Proposal 070 §1.2: `Self` is the sort being generated ────────
+// ── Proposal 070 §1.2–§1.3: `Self` is the sort being generated; its bare name is not ──
 
-/// One sort, naming its own instance as `self_ty` in a recursive field, a receiver, a
-/// second parameter and a return.
-fn self_spelling(self_ty: &str) -> String {
+/// One sort, naming a list as `list_ty` in a recursive field, a receiver, a second
+/// parameter and a return.
+fn self_spelling(list_ty: &str) -> String {
     format!(
         r#"sort List {{
   sort T = ?
   entity Nil
-  entity Cons(head: T, tail: {self_ty})
-  operation length(l: {self_ty}) -> Int64
-  operation append(xs: {self_ty}, ys: {self_ty}) -> {self_ty}
+  entity Cons(head: T, tail: {list_ty})
+  operation length(l: {list_ty}) -> Int64
+  operation append(xs: {list_ty}, ys: {list_ty}) -> {list_ty}
 }}
 "#
     )
 }
 
 /// A TYPE WRITTEN `Self` IS THE SORT BEING GENERATED (WI-20261001-80ZV8). This generator
-/// reads the parse tree, where `Self` is still the author's word, and three decisions
-/// compare a type's NAME with the sort's: the `Self` rendering, the boxed recursive field
-/// and the receiver. So the two spellings must generate the same text — and that text must
-/// hold the two things the comparison decides.
+/// reads the parse tree, where `Self` is still the author's word, and three decisions ask
+/// whether a type names the sort: the `Self` rendering, the boxed recursive field and the
+/// receiver. The text holds each of them.
 ///
 /// BACKED OUT (`names_this_sort` answering for the sort's own name alone), this fails: the
 /// field is emitted unboxed and `length` / `append` as associated functions.
 #[test]
-fn self_generates_what_the_sorts_own_name_generates() {
-    let named = gen(&self_spelling("List"));
+fn self_is_the_sort_being_generated() {
     let selfed = gen(&self_spelling("Self"));
-    assert_eq!(selfed, named, "`Self` and the sort's own name must generate one text");
     assert!(
-        selfed.contains("Box<List<T>>"),
-        "the recursive field is boxed:\n{selfed}"
+        selfed.contains("tail: Box<List<T>>"),
+        "the recursive field is boxed, at the sort's own parameter:\n{selfed}"
     );
     assert!(
-        selfed.contains("fn length(&self"),
+        selfed.contains("fn length(&self) -> i64;"),
         "a `Self`-typed first parameter is the receiver:\n{selfed}"
+    );
+    assert!(
+        selfed.contains("fn append(&self, ys: Self) -> Self;"),
+        "`Self` beside the receiver, and returned, is Rust's `Self`:\n{selfed}"
+    );
+}
+
+/// THE BARE NAME OF A PARAMETERISED SORT IS NOT `Self` (proposal 070 §1.3, stage (e)).
+/// `tail: List` inside `sort List` is a list of ANY element type, and `append(xs: List, ys:
+/// List) -> List` takes two lists of unrelated element types and returns a third. Until
+/// stage (e) this generator rendered the bare name as it renders `Self` — the implicit tie,
+/// on the emission side, and the row here asserted the two texts EQUAL: `tail: Box<List<T>>`
+/// and `fn append(&self, ys: Self) -> Self`, each claiming the receiver's instance. Rust has
+/// no type for "any `List`" there, so each such declaration is refused, by name.
+///
+/// So is a slot written `?` (`List[T = ?]`), and the bare name nested in another type. A
+/// NAMED variable in the slot is one unknown the signature shares, and generates as it did.
+///
+/// BACKED OUT, MEASURED (2026-10-04), each alone, over the suite's 41 rows. The refusal
+/// recording nothing (`refuse_open_own_reference`): this row fails, alone — the bare
+/// spellings generate, with the text `Self` generates. A positional binding filling no slot,
+/// and a named variable read as open like the anonymous one: this row fails under each, on
+/// its `Pair[L = Int64, String]` and its `List[T = ?A]`. (With `names_this_sort` answering
+/// for the sort's own name alone, 5 fail: this row and the one above, and
+/// `recursive_field_to_box`, `trait_self_in_return_multi_param`,
+/// `abstract_effect_parameter_to_result`.)
+///
+/// CONTROL, which passes either way by design: a sort with NO parameter has one instance,
+/// its name is that instance, and it generates what `Self` generates.
+#[test]
+fn the_bare_name_of_a_parameterised_sort_is_refused() {
+    let refusal = |source: &str| -> String {
+        let parsed = parse::parse(source).unwrap_or_else(|e| panic!("parse failed: {e:?}"));
+        generate_rust(&parsed)
+            .expect_err("a reference that leaves the sort's own parameter open must be refused")
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    let bare = refusal(&self_spelling("List"));
+    for what in [
+        "entity `Cons`, field `tail`: `List` is the enclosing sort `List`",
+        "operation `length`, parameter `l`",
+        "operation `append`, parameter `xs`",
+        "operation `append`, parameter `ys`",
+        "operation `append`, return type",
+        "`Self` is this instance",
+    ] {
+        assert!(bare.contains(what), "expected `{what}` in: {bare}");
+    }
+    let wildcard = refusal(&self_spelling("List[T = ?]"));
+    assert!(
+        wildcard.contains("operation `append`, return type: `List[…]` is the enclosing sort"),
+        "a slot written `?` is as open as one left out: {wildcard}"
+    );
+    let nested = refusal(
+        "sort List {\n  sort T = ?\n  entity Nil\n  operation flat(xs: Option[T = List]) -> Int64\n}\n",
+    );
+    assert!(
+        nested.contains("operation `flat`, parameter `xs`"),
+        "the bare name inside another type is refused too: {nested}"
+    );
+
+    // A SPEC'S OWN NAME, the other emitter (`emit_trait_method`): any provider at any `T`.
+    let spec = refusal(
+        "sort Container {\n  sort T = ?\n  operation merge(a: Self, b: Container) -> Self\n}\n",
+    );
+    assert!(
+        spec.contains("operation `merge`, parameter `b`: `Container` is the enclosing sort"),
+        "a spec's bare name is refused as a data sort's is: {spec}"
+    );
+    // A slot is read as the loader places it: named, else the next positional binding.
+    let pair = |second: &str| {
+        format!(
+            "sort Pair {{\n  sort L = ?\n  sort R = ?\n  entity pair(l: L, r: R)\n  operation swap(p: Self, q: {second}) -> Int64\n}}\n"
+        )
+    };
+    assert!(
+        refusal(&pair("Pair[L = Int64]")).contains("operation `swap`, parameter `q`: `Pair[…]`"),
+        "a PARTIAL application leaves the other slot open"
+    );
+    assert!(
+        gen(&pair("Pair[L = Int64, String]")).contains("fn swap(&self, q: Self) -> i64;"),
+        "a positional binding beside a named one fills the slot the name leaves"
+    );
+
+    let named = gen(&self_spelling("List[T = ?A]"));
+    assert!(
+        named.contains("fn append(&self, ys: Self) -> Self;"),
+        "a NAMED variable in the slot is not an open slot:\n{named}"
+    );
+
+    let plain = |ty: &str| {
+        format!(
+            "sort Plain {{\n  entity Leaf\n  entity Node(next: {ty})\n  operation same(a: {ty}, b: {ty}) -> Bool\n}}\n"
+        )
+    };
+    assert_eq!(
+        gen(&plain("Plain")),
+        gen(&plain("Self")),
+        "a sort with no parameter has one instance, and its name is that"
     );
 }

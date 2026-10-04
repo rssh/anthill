@@ -1305,9 +1305,12 @@ fn ctor_field_expected(
     // returned 42, and a lambda in the same slot returned 41. Same author-written arrow,
     // three verdicts by spelling.
     let parent_sym = kb.sort_of_constructor(ctor_sym)?;
-    let parent_type = kb.make_sort_ref(parent_sym);
+    // The sort AT ITS OWN PARAMETERS, whose variables the field's declared type names: the
+    // bare name binds nothing (WI-20261001-80ZV8, stage (e) — it used to, through the
+    // unifier's canonical channel).
+    let own = own_application(kb, parent_sym);
     let mut subst = Substitution::new();
-    if !unify_types(kb, &mut subst, &TermIdView(parent_type), exp) {
+    if !unify_types(kb, &mut subst, &TermIdView(own), exp) {
         return None;
     }
     Some(walk_type_deep_value(kb, &subst, &field_decl))

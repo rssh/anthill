@@ -966,9 +966,10 @@ pub enum TypeErrorContext {
     OperationAsFunctionValue {
         op_name: Symbol,
     },
-    /// WI-374: a call whose arguments bind a SHARED type parameter
-    /// inconsistently — the §3 parametricity tie, enforced:
-    /// `append(intList, strList)` binds `List.T` to both elements.
+    /// WI-374: a call that binds ONE type parameter inconsistently — two arguments, a
+    /// bracket and an argument, a join that does not exist. (First the §3 parametricity
+    /// tie's own refusal, `append(intList, strList)` binding `List.T` twice; that check went
+    /// with the implicit tie, proposal 070 stage (e), and the context serves the others.)
     OperationTypeParams {
         op_name: Symbol,
     },

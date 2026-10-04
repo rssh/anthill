@@ -94,7 +94,7 @@ hyphens in identifiers become underscores (§5).
 | Sort with constructors `sort S { entity C₁(...), entity C₂(...) }` | `enum S { case C1(...); case C2(...) }` |
 | Sort with an **eponymous** constructor `sort S { entity S(fields) }` | `case class S(...)` — see §2.4 |
 | Standalone `entity E(fields)` | `case class E(...)` |
-| `operation op(a: S, ...) -> R` (first arg is enclosing sort) | `def op(...): R` on the trait |
+| `operation op(a: Self, ...) -> R` (first arg is the enclosing sort) | `def op(...): R` on the trait |
 | `operation op(a: S, ...) -> ...S...` (return contains S) | `def op(...): Self`-typed (when `Self` makes sense) |
 | `operation op(x: A, y: B) -> R` (no self-arg) | top-level `def` in a `{Namespace}Ops` object |
 | `effects (Modify X)` | `def op(...): X` returning the updated state (immutable) — see §3 for alternatives |
@@ -310,7 +310,7 @@ segment"). A **value** binding wins there, so it is asked first:
 
 | the head names | the occurrence is | example |
 |---|---|---|
-| a value in scope (an operation's own parameter) | a **path-dependent projection** | `xs.T` in `operation head(xs: List) -> xs.T` |
+| a value in scope (an operation's own parameter) | a **path-dependent projection** | `xs.T` in `operation head(xs: Self) -> xs.T` |
 | anything else | a **package-qualified type** | `anthill.reflect.Symbol` |
 
 Reading only the last segment — which is what codegen did — collapses the two into
@@ -343,9 +343,9 @@ What the qualified reading consults, in order, within the package it settled on:
   names prelude sorts, so `anthill.prelude.Int64` is `_root_.scala.Long` for the same
   reason the bare `Int64` is (§2.1a). A project's own `my.app.Int64` is its own type,
   which is one thing a written prefix can say and a bare name cannot;
-* the **enclosing sort**, which re-attaches its parameters exactly as a bare
-  self-mention does (§2.6) — in anthill they are in scope whichever way the sort is
-  spelled;
+* the **enclosing sort**, read exactly as its unqualified mention is (§2.6): written at
+  arguments it is rendered by the sort's own emitted name, and written bare it is
+  refused — any instance of the sort, whichever way the sort is spelled;
 * the declarations **this file** emits into that package, then those the supplied
   project/prelude closure promises there, including its negative entries.
 
@@ -368,12 +368,12 @@ ways that type can answer:
   independent schemas, so `r1.T` and `r2.T` are `L` and `R`, not one shared `T`. The
   binding is self-contained, so a **qualified** receiver type reads the same way as a
   bare one;
-* the receiver's occurrence is **bare** *and names the enclosing sort*, and then the
-  projection is that sort's parameter of that name — within a sort's own definition a
-  bare self reference participates in the parametricity tie
-  (`docs/design/type-parameter-scoping.md` §3), so `xs: List` inside `sort List[T]`
-  makes `xs.T` this sort's `T`. The **sort's** parameters, not the operation's: `b.U`
-  for an operation's own `[U]` is not a member of the sort at all;
+* the receiver is typed **`Self`** — the enclosing sort at its own parameters (proposal
+  070 §1.2) — and then the projection is that sort's parameter of that name: `xs: Self`
+  inside `sort List[T]` makes `xs.T` this sort's `T`. The **sort's** parameters, not the
+  operation's: `b.U` for an operation's own `[U]` is not a member of the sort at all.
+  (Until that proposal's stage (e) a receiver typed by the sort's BARE name was read so
+  too — the implicit tie. It is any instance now, and is the first refusal below;)
 * the receiver is typed by the enclosing sort's **carrier parameter** — the parameter
   its operations receive on, where they do not receive on the sort itself — and then
   the projection is again that sort's parameter of that name (WI-20261001-80ZV8). A
@@ -387,7 +387,7 @@ Everything else is refused, and the list is closed:
 
 | shape | why |
 |---|---|
-| a bare occurrence of some **other** sort | it takes a fresh skolem (kernel §"How the slot is named"); Scala has no term for it |
+| a bare occurrence of a sort — the **enclosing one included** | it is any instance of the sort, whose member is the receiver's own skolem (kernel §"How the slot is named"); Scala has no term for it |
 | an **unwritten** slot of an applied receiver (`r1.E` against `r1: Relation[T = L]`) | that slot is the receiver's *own* skolem, not the enclosing sort's parameter — tying them would collapse `join`'s `{r1.E, r2.E}` into one row |
 | a **positional** argument | it names no slot, and no table here carries a per-slot parameter name |
 | a **repeated** binding (`Box[T = L, T = R]`) | no one binding answers; last-wins would pick silently |
@@ -442,10 +442,10 @@ sort Stream {                               trait Stream[T, E] {
   sort T                         →            def splitFirst(s: Stream[T, E]): Option[(T, Stream[T, E])]
   sort E                                      def tail(s: Stream[T, E]): Stream[T, E]
   operation split_first(                      def isEmpty(s: Stream[T, E]): Boolean
-    s: Stream) -> Option{...}               }
-  operation tail(s: Stream)
-    -> Stream
-  operation isEmpty(s: Stream)
+    s: Self) -> Option{...}                 }
+  operation tail(s: Self)
+    -> Self
+  operation isEmpty(s: Self)
     -> Bool
 }
 ```
@@ -478,7 +478,7 @@ sort List {                                 enum List[T] {
   sort T                         →            case Nil[T]() extends List[T]
   entity nil                                  case Cons(head: T, tail: List[T])
   entity cons(head: T,                      }
-    tail: List)
+    tail: Self)
 }
 ```
 
@@ -591,18 +591,23 @@ sort List {                                 enum List[T] {
   sort T                         →            case Nil
   entity nil                                  case Cons(head: T, tail: List[T])
   entity cons(head: T,                      }
-    tail: List)
+    tail: Self)
 }
 ```
 
-**`Self` is the sort's own name here** (proposal 070 §1.2, WI-20261001-80ZV8). `Self` —
-the sort a declaration is written in, at its own parameters — maps exactly as a bare
-mention of that sort's name does, and a sort written with one emits byte for byte what it
-emits written with the other: `tail: Self` is `tail: List[T]`, `operation get(c: Self) ->
-V` inside `sort Cell[V]` is `def get(c: Cell[V]): V`, and `xs.T` off a receiver `xs: Self`
-is the sort's own `T` (§2.1b). The readers that recognise the declaring sort by NAME read
-it too: a sort whose operations receive on `Self` is self-representing, and a requirement
-written over `Self` is over the sort (§2.7). Inside a scalar's own sort it is the host
+**`Self` is THIS instance of the sort; its bare name is not** (proposal 070 §1.2–§1.3,
+WI-20261001-80ZV8). `Self` — the sort a declaration is written in, at its own parameters —
+gets the sort's emitted parameters attached: `tail: Self` is `tail: List[T]`, `operation
+get(c: Self) -> V` inside `sort Cell[V]` is `def get(c: Cell[V]): V`, and `xs.T` off a
+receiver `xs: Self` is the sort's own `T` (§2.1b). The sort's BARE name inside its own
+definition is ANY instance of it, as it is outside: where the sort emits a parameter there
+is no spelling this mapper emits for that, and the declaration is REFUSED — exactly as a
+bare occurrence of any other parameterised sort is (a partial application, below). A sort
+that emits no parameter has one instance, and its name is that. (Until the proposal's
+stage (e) the two spellings emitted byte for byte the same: the bare name was read as this
+instance — the implicit tie, on the emission side.) The readers that recognise the
+declaring sort by NAME read both: a sort whose operations receive on `Self` is
+self-representing, and a requirement written over `Self` is over the sort (§2.7). Inside a scalar's own sort it is the host
 carrier, as that sort's name is (§2.1a). Outside a sort, and with bindings (`Self[V =
 Int64]`), it is refused — as the loader refuses both.
 

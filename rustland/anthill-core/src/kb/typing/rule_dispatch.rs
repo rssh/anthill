@@ -682,9 +682,7 @@ fn data_slot_arg_hints(
     // LINEAR SCAN of every `OperationInfo` fact — and "no record" is every data term
     // headed by an entity or a plain predicate, which is most of what a rule body is made
     // of. The map read is the gate `type_rule_bodies`' goal walk already calls "cheap map
-    // lookup" at its own version of this question. Post-WI-1082 the cache is also the
-    // AUTHORITY, not just the accelerator (`elaborate_self_ties` rewrites it), so reading
-    // it is what keeps this hint agreeing with the call check.
+    // lookup" at its own version of this question.
     let op_params: Option<Vec<(Symbol, Value)>> = kb
         .op_record(*functor)
         .and_then(|r| r.signature.as_ref())

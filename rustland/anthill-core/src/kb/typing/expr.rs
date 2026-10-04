@@ -840,7 +840,6 @@ pub(super) fn check_bare_ref(
             UnwrittenFill::Anonymous,
             &ty,
             SlotPosition::CallResult {
-                callee_sort: None,
                 opened: &HashMap::new(),
                 held: &HashSet::new(),
             },
@@ -1164,7 +1163,6 @@ pub(super) fn check_bare_ref(
         let ret = Value::term(ret_ty);
         let ret = open_existential_return(
             kb,
-            impl_parent_sort_of_op(kb, sym),
             sym,
             &ret,
             &HashSet::new(),

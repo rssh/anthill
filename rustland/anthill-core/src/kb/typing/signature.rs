@@ -403,21 +403,12 @@ pub(super) fn check_member_signature(
                     Narrower::Circular { binding, sort } => {
                         let recv_short = kb.local_name_of(sort).to_string();
                         let b = type_display_name_value(kb, &Value::term(binding));
-                        // Inside its own sort a slot left out is a `?` the loader writes
-                        // (proposal 070 §1.3), so "unwritten" is no state a binding there
-                        // can be in; a witness's binding names another sort, where it is.
-                        let leave = if kb.canonical_sort_sym(sort) == kb.canonical_sort_sym(carrier)
-                        {
-                            ""
-                        } else {
-                            " leave it unwritten,"
-                        };
                         format!(
                             "{at} is the receiver, and the provision binds its type to `{b}`, \
                              which writes one of `{recv_short}`'s own parameters inside its own \
                              slot — no `{recv_short}` is that type, so no call written against \
-                             the spec reaches this member; write that slot as `?` (any type),\
-                             {leave} or bind a parameter of the spec's to what it was \
+                             the spec reaches this member; write that slot as `?` (any type), \
+                             leave it unwritten, or bind a parameter of the spec's to what it was \
                              meant to name. {sigs}"
                         )
                     }
@@ -510,17 +501,14 @@ pub(super) struct ProvisionMembers<'a> {
 struct ProvisionShared {
     /// The witness's carrier, canonical ([`ProvisionMembers::witness`]).
     witness: Option<Symbol>,
-    /// The declaring sort at its own parameters: a member's bare self reference, and the
+    /// The declaring sort at its own parameters: what `Self` is in a member, and the
     /// instance a self-receiver receives.
     own_decl: TermId,
-    /// σ as a call reads it, ONCE per spec parameter. The provision is written inside the
-    /// declaring sort, so a reference to that sort in a binding reads as it does in the sort's
-    /// own operations (§3's tie): bare, or with a slot unwritten, it is THIS instance — at any
-    /// depth, whichever parameter it binds and whether an operation receives on it. A FOREIGN
-    /// sort's unwritten slot (a witness's carrier among them) is a variable every reader of the
-    /// parameter shares (`c: C, d: C` at `C = Box` are one `Box`, as the call ties them).
-    /// INTERIM (user, 2026-10-01): WI-20261001-80ZV8 makes a bare sort fresh `?` slots in both
-    /// places and writes this instance as `Self`.
+    /// σ as a call reads it, ONCE per spec parameter. A reference to the declaring sort at
+    /// its own parameters (`Self`) is THIS instance — at any depth, whichever parameter it
+    /// binds and whether an operation receives on it. A slot a binding leaves UNWRITTEN — on
+    /// the declaring sort as on any other (proposal 070 §1.3) — is a variable every reader of
+    /// the parameter shares (`c: C, d: C` at `C = Box` are one `Box`, as the call ties them).
     ///
     /// On whatever carrier each binding's expansion rides — a rebuilt arrow is an occurrence, a
     /// row around an expanded label a value — and substituted as that
@@ -561,10 +549,9 @@ impl<'a> ProvisionMembers<'a> {
                 .sigma
                 .iter()
                 .map(|&(p, b)| {
-                    let b = self_references_at_own_parameters(kb, b, decl);
-                    let b = row_parameter_binding_as_row(kb, spec_canon, p, b);
+                    let b = row_parameter_binding_as_row(kb, spec_canon, p, Value::term(b));
                     let b =
-                        expand_foreign_sorts_and_row_labels(kb, &b, Some(decl), SlotVar::Flexible);
+                        expand_sorts_and_row_labels(kb, &b, SlotVar::Flexible);
                     (p, b)
                 })
                 .collect();
@@ -597,7 +584,7 @@ fn row_parameter_binding_as_row(
 }
 
 /// `sort` at its own parameters (bare when it declares none).
-fn own_application(kb: &mut KnowledgeBase, sort: Symbol) -> TermId {
+pub(super) fn own_application(kb: &mut KnowledgeBase, sort: Symbol) -> TermId {
     let pairs = sort_type_params_as_pairs(kb, sort);
     let base = kb.make_sort_ref(sort);
     if pairs.is_empty() {
@@ -649,7 +636,7 @@ enum Narrower {
     /// A parameter the spec types by the SPEC ITSELF, other than the receiver: it admits any
     /// provider of the spec, and the member's takes only the carrier.
     AnyProvider,
-    /// The member's parameter is THIS instance (§3's parametricity tie) where the spec's need
+    /// The member's parameter is THIS instance (`Self`) where the spec's need
     /// not be — at any depth. `with` is the parameter that fixed the member's instance first,
     /// where the operation has no receiver to fix it.
     Tied { with: Option<usize> },
@@ -713,10 +700,10 @@ impl From<Narrowing> for MemberFit {
 /// A call written against the spec reaches the member at run time, so a member that refuses
 /// an argument list the spec admits receives arguments its own signature forbids. The
 /// per-position comparison above cannot see the commonest way to be narrower, because it
-/// is not in any one parameter: `Car.pick(x: Car, s: Car)` beside `Sp.pick(x: T, s: Sp)`
-/// at `Car provides Sp[T = Car]` compares `Car` with `Car` at both positions, yet inside
-/// `sort Car` every bare `Car` is THIS instance (§3's parametricity tie), so the member
-/// demands `x.V = s.V` where the spec lets them differ.
+/// is not in any one parameter: `Car.pick(x: Self, s: Self)` beside `Sp.pick(x: T, s: Self)`
+/// at `Car provides Sp[T = Car[V = ?]]` compares a `Car` with a `Car` at both positions,
+/// yet every `Self` in one signature is ONE instance, so the member demands `x.V = s.V`
+/// where the spec lets them differ.
 ///
 /// THE SPEC'S ARGUMENTS, as a call writes them against it, in a substitution of their own:
 ///   * THE RECEIVER, per operation and as dispatch reads it — the parameter typed by the spec
@@ -745,14 +732,13 @@ impl From<Narrowing> for MemberFit {
 ///     the receiver and the member is reached: the argument then holds it to nothing, and the
 ///     comparison goes on. Everything left open is ANY type (a rigid of its own).
 ///   * THIS INSTANCE — the receiver's — is also every reference to the DECLARING sort a binding
-///     leaves bare or part-written, at any depth and whichever parameter it binds (`T = Car`,
-///     `T = Car[V = V]`, `T = List[T = Car]`): the provision is written inside the sort, where
-///     the name reads as it does in the sort's own operations (§3's tie). One written at other
-///     arguments (`C = Car[V = Int64]`) is that type, and an INDEPENDENT instance is written
-///     (`T = Car[V = ?]`). INTERIM (user, 2026-10-01): WI-20261001-80ZV8 makes a bare sort
-///     fresh `?` slots in a provision as in an operation, and writes this instance `Self`.
-///   * A FOREIGN sort's unwritten slot in a binding — a witness's carrier among them — is one
-///     variable per spec parameter, read alike wherever the parameter is.
+///     writes at its own parameters, at any depth and whichever parameter it binds (`T =
+///     Self`, `T = Car[V = V]`, `T = List[T = Self]`). One written at other arguments (`C =
+///     Car[V = Int64]`) is that type, and an INDEPENDENT instance is the sort with a slot at
+///     `?` or left out (`T = Car[V = ?]`, `T = Car`): proposal 070 §1.3, in a provision as in
+///     an operation. (Until its stage (e) the bare name was this instance here.)
+///   * An unwritten slot in a binding — of any sort — is one variable per spec parameter,
+///     read alike wherever the parameter is.
 ///   * A parameter typed by the spec itself, other than the receiver, is ANY provider of the
 ///     spec — so a member taking only the carrier there is narrower.
 ///   * A type parameter the spec operation declares (unless the receiver binds it), an
@@ -847,8 +833,7 @@ fn member_narrower_than_spec(
         }
         if !is_this_instance(kb, &Value::term(b), recv_sort) {
             receiver_written = true;
-            let read = self_references_at_own_parameters(kb, b, decl);
-            if !meet_receiver_binding(kb, &mut prep, own, &read, recv_sort) {
+            if !meet_receiver_binding(kb, &mut prep, own, &Value::term(b), recv_sort) {
                 let why = Narrower::Circular {
                     binding: b,
                     sort: recv_sort,
@@ -906,7 +891,7 @@ fn member_narrower_than_spec(
             // uncompared (MEASURED: a narrower member loaded and crashed).
             let t = sigma_subst_type_values(kb, &t, &template);
             let t =
-                expand_foreign_sorts_and_row_labels(kb, &t, Some(spec_canon), SlotVar::Flexible);
+                expand_sorts_and_row_labels(kb, &t, SlotVar::Flexible);
             let mut probe = prep.clone();
             let before = probe.contradiction_details.len();
             // EQUAL, which unification alone does not say: between two types holding no
@@ -1106,7 +1091,7 @@ fn member_narrower_than_spec(
                      ty: &Value,
                      template: &[(Symbol, Value)]| {
         let s = sigma_subst_type_values(kb, ty, template);
-        let s = expand_foreign_sorts_and_row_labels(kb, &s, None, SlotVar::Rigid);
+        let s = expand_sorts_and_row_labels(kb, &s, SlotVar::Rigid);
         let _ = rigidify_open(kb, prep, &s, &kept);
         resolve_type_deep_value(kb, prep, &s)
     };
@@ -1203,7 +1188,6 @@ fn member_narrower_than_spec(
                 impl_to_spec,
                 &prep_now,
                 &ctx,
-                decl,
                 false,
             ) {
                 Ok(m) => m,
@@ -1289,8 +1273,8 @@ fn member_narrower_than_spec(
             });
         }
         // What a projection over this position reads — recorded only where one does: the
-        // member's parameter as THIS instance where its type is (the receiver, a bare
-        // carrier), else as it resolved.
+        // member's parameter as THIS instance where its type is (`Self`: the receiver, or
+        // a parameter beside it), else as it resolved.
         if any_projection || return_projecting {
             let member_arg = if is_this_instance(kb, impl_pty, decl) {
                 resolve_type_deep_value(kb, &subst, &Value::term(own_decl))
@@ -1349,14 +1333,9 @@ fn member_narrower_than_spec(
                 // `want`'s and the relation then met `want_open`'s — two unknowns of one name —
                 // and a member returning a provider of the spec's bare result behind a returned
                 // function was refused (MEASURED: review 9).
-                let open = expand_foreign_sorts_under_params(kb, &s, None, SlotVar::Rigid);
-                let s = expand_foreign_sorts_by_polarity(
-                    kb,
-                    &open,
-                    None,
-                    SlotVar::Flexible,
-                    SlotVar::Rigid,
-                );
+                let open = expand_sorts_under_params(kb, &s, SlotVar::Rigid);
+                let s =
+                    expand_sorts_by_polarity(kb, &open, SlotVar::Flexible, SlotVar::Rigid);
                 (
                     resolve_type_deep_value(kb, &prep, &s),
                     resolve_type_deep_value(kb, &prep, &open),
@@ -1375,7 +1354,6 @@ fn member_narrower_than_spec(
             impl_to_spec,
             &prep_now,
             &ctx,
-            decl,
             true,
         ) {
             Ok(m) => resolve_type_deep_value(kb, &subst, &m),
@@ -1759,7 +1737,7 @@ fn meet_receiver_binding(
         }
         None => b,
     };
-    let b = expand_foreign_sorts_and_row_labels(kb, &b, Some(carrier_canon), SlotVar::Flexible);
+    let b = expand_sorts_and_row_labels(kb, &b, SlotVar::Flexible);
     let mut probe = prep.clone();
     if unify_types(kb, &mut probe, &Value::term(own), &b) && !binds_a_cycle(kb, &probe) {
         *prep = probe;
@@ -1831,59 +1809,20 @@ pub(super) fn referenced_param_vars<V: TermView>(
     }
 }
 
-/// `b` with every reference to `sort` — the provision's declaring sort — at that sort's OWN
-/// parameters wherever the binding leaves a slot unwritten: bare `Car` is `Car[V = V]`, and
-/// `Car[W = Int64]` is `Car[V = V, W = Int64]`, at any depth. This is how the sort's own
-/// operations read such a reference (§3's tie, written in by WI-1082), and a `provides` clause
-/// is written in the same place. A written slot is kept; the result rides the carrier its
-/// rebuilt forms take (an arrow holding such a reference is an occurrence).
-pub(super) fn self_references_at_own_parameters(
-    kb: &mut KnowledgeBase,
-    b: TermId,
-    sort: Symbol,
-) -> Value {
-    let own = sort_type_params_as_pairs(kb, sort);
-    if own.is_empty() {
-        return Value::term(b);
-    }
-    map_type_bottom_up(kb, &Value::term(b), &mut |kb, node| {
-        // Through [`sort_application_parts`]: an ALIAS of the sort (`sort MyCar = Car`) is the
-        // sort, as it is in the sort's own operations — read by its own symbol it was an
-        // independent instance here and this instance to the call (MEASURED: the verbatim member
-        // `o: MyCar` behind `T = MyCar` was refused, two identical signatures printed).
-        let (base, written) = sort_application_parts(kb, node)?;
-        if kb.canonical_sort_sym(base) != sort || written.len() >= own.len() {
-            return None;
-        }
-        let (sp, owner) = site_of(node);
-        let pairs: Vec<(Symbol, Value)> = own
-            .iter()
-            .map(
-                |&(p, own_param)| match written.iter().find(|(k, _)| same_label(kb, p, *k)) {
-                    Some((_, v)) => (p, v.clone()),
-                    None => (p, Value::term(own_param)),
-                },
-            )
-            .collect();
-        let base = kb.make_sort_ref(sort);
-        Some(parameterized_value(kb, base, &pairs, sp, owner))
-    })
-    .unwrap_or_else(|| Value::term(b))
-}
-
 /// A binding of `carrier`'s OWN provision, at a receiver of type `recv_ty`, where the binding
-/// refers to the carrier with a slot left to its own parameter — bare, part-written, or written
-/// at them, at any depth (`T = Car`, `T = Car[W = Int64]`, `T = List[T = Car]`): THIS instance
-/// there, as the declaration rule reads it ([`self_references_at_own_parameters`]) — so the
-/// binding with the carrier's parameters replaced by the receiver's arguments, which is what a
-/// call holds the arguments typed by that spec parameter to. `None` for any other binding (what
-/// a call owes those is WI-20260929-05ZQE's), and where the receiver's type leaves a parameter
-/// unwritten. ONE reading for the rule and the two call binders: held to a top-level bare or
-/// own-parameter binding only, the call passed a second instance to the member the rule had
-/// admitted as tied (MEASURED: `T = List[T = Car]`, `T = Car[W = Int64]`, and `B = Car[V = V]`
-/// under a receiver whose argument is a type parameter — each loaded and failed at run time).
-/// INTERIM (user, 2026-10-01): WI-20261001-80ZV8 makes a bare sort fresh `?` slots in a provision
-/// as in an operation, and writes this instance `Self`.
+/// holds the carrier WRITTEN AT ITS OWN PARAMETERS, at any depth — `T = Self` (which is `Car[V
+/// = V]`), `T = List[T = Self]`, `T = Car[V = V, W = Int64]`: the binding with the carrier's
+/// parameters replaced by the receiver's arguments, which is what a call holds the arguments
+/// typed by that spec parameter to. `None` for any other binding (what a call owes those is
+/// WI-20260929-05ZQE's), and where the receiver's type leaves a parameter unwritten. ONE reading
+/// for the rule and the two call binders: held to a top-level own-parameter binding only, the
+/// call passed a second instance to the member the rule had admitted as tied (MEASURED: `T =
+/// List[T = Car[V = V]]`, and `B = Car[V = V]` under a receiver whose argument is a type
+/// parameter — each loaded and failed at run time).
+///
+/// A reference that LEAVES A SLOT OUT is not such a binding (proposal 070 §1.3): `T = Car` is
+/// any `Car`, in a provision as in the carrier's operations. Until stage (e) it was read here
+/// as the carrier at its own parameters — the implicit tie, on the `provides` side.
 pub(super) fn this_instance_binding_at(
     kb: &mut KnowledgeBase,
     carrier: Symbol,
@@ -1891,10 +1830,10 @@ pub(super) fn this_instance_binding_at(
     recv_ty: &Value,
 ) -> Option<Value> {
     let carrier = kb.canonical_sort_sym(carrier);
-    if !holds_carrier(kb, &Value::term(binding), carrier) {
+    let read = Value::term(binding);
+    if !holds_carrier(kb, &read, carrier) {
         return None;
     }
-    let read = self_references_at_own_parameters(kb, binding, carrier);
     if is_this_instance(kb, &read, carrier) {
         return Some(recv_ty.clone());
     }
@@ -1904,8 +1843,9 @@ pub(super) fn this_instance_binding_at(
     binding_at_receiver(kb, carrier, recv_ty, &read)
 }
 
-/// Does `ty` hold an application of `carrier` with a slot at the carrier's own parameter, at
-/// any depth?
+/// Does `ty` hold an application of `carrier` with a slot WRITTEN at the carrier's own
+/// parameter, at any depth? (A carrier with no parameter has none to write, and any
+/// application of it counts.)
 fn holds_own_instance(kb: &mut KnowledgeBase, ty: &Value, carrier: Symbol) -> bool {
     let own = own_params_of(kb, carrier);
     let mut found = false;
@@ -1914,7 +1854,7 @@ fn holds_own_instance(kb: &mut KnowledgeBase, ty: &Value, carrier: Symbol) -> bo
             return None;
         };
         if kb.canonical_sort_sym(base) == carrier {
-            found |= written.is_empty()
+            found |= own.is_empty()
                 || written.iter().any(|(k, v)| {
                     own.iter().any(|&(q, vid)| {
                         same_label(kb, q, *k)
@@ -2276,7 +2216,6 @@ impl ProjectionReader {
         impl_to_spec: &HashMap<Symbol, Symbol>,
         prep: &Substitution,
         ctx: &TypeErrorContext,
-        decl: Symbol,
         returned: bool,
     ) -> Result<Value, String> {
         let m = if value_contains_projection(kb, ty) {
@@ -2295,19 +2234,13 @@ impl ProjectionReader {
         };
         // A parameter's unwritten slot is the member's to instantiate; a RETURN's is a type the
         // member picked, unknown to the caller — and under a returned arrow's parameter the
-        // member's to instantiate again ([`expand_foreign_sorts_by_polarity`]).
+        // member's to instantiate again ([`expand_sorts_by_polarity`]).
         let (slot, under_param) = if returned {
             (SlotVar::Rigid, SlotVar::Flexible)
         } else {
             (SlotVar::Flexible, SlotVar::Flexible)
         };
-        Ok(expand_foreign_sorts_by_polarity(
-            kb,
-            &m,
-            Some(decl),
-            slot,
-            under_param,
-        ))
+        Ok(expand_sorts_by_polarity(kb, &m, slot, under_param))
     }
 }
 
@@ -2572,10 +2505,12 @@ fn bind_member_fields_along(
     }
 }
 
-/// Is `ty` the carrier at its OWN parameters — bare, or each written slot its own parameter (a
-/// row slot's own row variable braced, `{EC}`, included) — which inside the carrier is THIS
-/// instance (§3's parametricity tie)? Slot by slot: `P2[A = B, B = A]` and `P2[A = A, B = A]`
-/// are not.
+/// Is `ty` the carrier at its OWN parameters — every one of them written, each slot its own
+/// parameter (a row slot's own row variable braced, `{EC}`, included) — which is what `Self`
+/// lowers to: THIS instance? Slot by slot: `P2[A = B, B = A]` and `P2[A = A, B = A]` are not,
+/// and neither is a reference that leaves a slot out — bare `Car`, or `Car[W = W]` over two
+/// parameters — whose open slot is any instance's (proposal 070 §1.3; until stage (e) such a
+/// reference was this instance, §3's parametricity tie).
 pub(super) fn is_this_instance(kb: &mut KnowledgeBase, ty: &Value, carrier_canon: Symbol) -> bool {
     let Some((base, written)) = sort_application_parts(kb, ty) else {
         return false;
@@ -2584,16 +2519,18 @@ pub(super) fn is_this_instance(kb: &mut KnowledgeBase, ty: &Value, carrier_canon
         return false;
     }
     let own = own_params_of(kb, base);
-    written.iter().all(|(k, v)| {
-        let Some(&(_, vid)) = own.iter().find(|(q, _)| same_label(kb, *q, *k)) else {
-            return false;
-        };
-        declared_type_param_vid(kb, v) == Some(vid) || braced_row_var(kb, v) == Some(vid)
-    })
+    own.iter()
+        .all(|(q, _)| written.iter().any(|(k, _)| same_label(kb, *q, *k)))
+        && written.iter().all(|(k, v)| {
+            let Some(&(_, vid)) = own.iter().find(|(q, _)| same_label(kb, *q, *k)) else {
+                return false;
+            };
+            declared_type_param_vid(kb, v) == Some(vid) || braced_row_var(kb, v) == Some(vid)
+        })
 }
 
-/// Does `ty` hold THIS instance at any depth — the carrier bare or at its own parameters, or
-/// one of its own parameters (`own`)?
+/// Does `ty` hold THIS instance at any depth — the carrier at its own parameters
+/// ([`is_this_instance`]), or one of its own parameters (`own`)?
 fn holds_this_instance(
     kb: &mut KnowledgeBase,
     ty: &Value,

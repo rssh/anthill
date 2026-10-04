@@ -17708,11 +17708,9 @@ fn head_is_equational(kb: &KnowledgeBase, head: TermId) -> bool {
 /// (`KnowledgeBase::assert_rule_debruijn_with_bound_vars`), so they open per firing like
 /// every other clause variable.
 ///
-/// THE SELF-REFERENCE IS NOT THIS, and stays with its own owner. A bare `List` inside
-/// `List`'s OWN definition means "the same element type", and the recursion closes on the
-/// enclosing head's variables — [`repair_self_reference`]'s rule, and for the derived
-/// clause it is the only right one. That case never reaches here: this runs on a bound
-/// written in a rule head, where there is no enclosing derived head to borrow from.
+/// THE DERIVED `fill` IS NOT THIS, and stays with its own owner: a constructor FIELD that
+/// names a parameterised sort bare gets no variable — the sort declines
+/// ([`bare_parameterised_sort_in`]). This runs on a bound written in a rule head.
 fn expand_unwritten_type_params(kb: &mut KnowledgeBase, t: TermId) -> TermId {
     match kb.get_term(t).clone() {
         // A BARE reference to a parameterised sort: every parameter is unwritten.
@@ -17804,71 +17802,41 @@ fn expand_unwritten_type_params(kb: &mut KnowledgeBase, t: TermId) -> TermId {
     }
 }
 
-/// WI-743 — re-apply a BARE reference to a parameterised sort as that sort's own self
-/// type, so the derived `fill` reads it as the recursion.
+/// WI-743 — the parameterised sort `t` names BARE, at any depth: a field type the derived
+/// `fill` has no element domain for. `None` where every reference writes its arguments.
 ///
-/// `entity cons(head: T, tail: List)` lowers `tail` to `Ref(List)`, while `List`'s own
-/// values have the type `List[T = ?T]` — without this the `tail` field would name a list
-/// of NO element type, and the constructor would drop out of its own domain.
+/// A bare reference to a parameterised sort names no element type, and the obvious repair —
+/// fresh variables, "a list of something" — was WRONG in a way that is easy to miss under
+/// WI-743's type-keyed relation: `domain_member(?x, ?T)` with an unbound `?T` unified with
+/// the head of EVERY derived clause, so the goal stopped asking "is `?x` in this type" and
+/// started enumerating TYPES. MEASURED at 20 rows (the solution cap) for `rule nest(?w:
+/// List[T = List]) :- ?w <=> [[a()]]`, whose body binds `?w` outright and can have at most
+/// one. So: no fresh variables anywhere, and a sort whose constructor field reaches one
+/// DECLINES — keeping WI-742's ladder, which is loud at the drain. Found by `/code-review`.
 ///
-/// THE SELF REFERENCE ONLY, and `None` for every other bare one. A bare `List` inside
-/// `List` means "a list of the SAME elements", so it takes the enclosing head's own
-/// variables and the recursion closes. A bare reference to some OTHER parameterised sort
-/// names no element type at all, and the obvious repair — fresh variables, "a list of
-/// something" — was WRONG in a way that is easy to miss under WI-743's type-keyed relation:
-/// `domain_member(?x, ?T)` with an unbound `?T` unified with the head of EVERY derived
-/// clause, so the goal stopped asking
-/// "is `?x` in this type" and started enumerating TYPES. MEASURED at 20 rows (the
-/// solution cap) for `rule nest(?w: List[T = List]) :- ?w <=> [[a()]]`, whose body binds
-/// `?w` outright and can have at most one. So: no fresh variables anywhere, and a sort
-/// whose constructor field reaches one DECLINES — keeping WI-742's ladder, which is
-/// loud at the drain. Found by `/code-review`.
-pub(crate) fn repair_self_reference(
-    kb: &mut KnowledgeBase,
-    t: TermId,
-    self_sort: Symbol,
-    self_type: TermId,
-) -> Option<TermId> {
-    match kb.get_term(t).clone() {
+/// THE SORT'S OWN NAME INCLUDED (WI-20261001-80ZV8, proposal 070 stage (e)). `entity
+/// cons(head: T, tail: List)` inside `sort List` used to be repaired here to the sort's own
+/// self type — "a list of the SAME elements", §3's tie on the rule side — so that the
+/// recursion closed. It is a list of ANY elements now, in the typer and here alike; the
+/// recursion that closes is the one the author writes, `tail: Self`.
+pub(crate) fn bare_parameterised_sort_in(kb: &KnowledgeBase, t: TermId) -> Option<Symbol> {
+    match kb.get_term(t) {
         Term::Ref(s) => {
-            let canon = kb.canonical_sort_sym(s);
-            match kb.domain_params_of(canon) {
-                Some(ps) if !ps.is_empty() => {
-                    if canon == kb.canonical_sort_sym(self_sort) {
-                        Some(self_type)
-                    } else {
-                        None
-                    }
-                }
-                _ => Some(t),
-            }
+            let canon = kb.canonical_sort_sym(*s);
+            kb.domain_params_of(canon)
+                .is_some_and(|ps| !ps.is_empty())
+                .then_some(canon)
         }
         Term::Fn {
-            functor,
             pos_args,
             named_args,
-        } => {
-            let mut pos: SmallVec<[TermId; 4]> = SmallVec::new();
-            for &c in &pos_args {
-                pos.push(repair_self_reference(kb, c, self_sort, self_type)?);
-            }
-            let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-            for &(k, c) in &named_args {
-                named.push((k, repair_self_reference(kb, c, self_sort, self_type)?));
-            }
-            if pos == pos_args && named == named_args {
-                Some(t)
-            } else {
-                // Plain `alloc`: the key set and its order are untouched, so the
-                // canonicalization the original term already went through still holds.
-                Some(kb.alloc(Term::Fn {
-                    functor,
-                    pos_args: pos,
-                    named_args: named,
-                }))
-            }
-        }
-        _ => Some(t),
+            ..
+        } => pos_args
+            .iter()
+            .copied()
+            .chain(named_args.iter().map(|&(_, c)| c))
+            .find_map(|c| bare_parameterised_sort_in(kb, c)),
+        _ => None,
     }
 }
 
@@ -22152,21 +22120,6 @@ struct Loader<'a> {
     // `s.Member` spelling must never load as an opaque nominal sort literally
     // named "Sort.Member".
     in_type_position: bool,
-    // Proposal 070 §1.3: set for the HEAD of an EFFECT LABEL (an operation's `effects`
-    // clause, an arrow's `@ {…}`, an effect row) and taken by the lowering of that one
-    // name. A sort written as a label is compared by identity, not expanded
-    // (kernel-language.md §8.1), so a label naming the enclosing sort leaves no slot to a
-    // `?` and [`Self::own_sort_slots_left_out`] is not asked of it. The types written
-    // INSIDE the label's bracket are ordinary references and are asked: the flag is the
-    // name's alone, not the whole label's.
-    effect_label_head: bool,
-    // Proposal 070 §1.3: set by [`Self::build_recv_type`] for the HEAD of a companion
-    // receiver (`R[OE = P]` in `R[OE = P].ins(s, x)`) and taken by the lowering of that
-    // one application. A receiver's bracket is a CALL's bracket — `R.ins[OE = P](s, x)`
-    // in its other spelling — and the parameters it leaves out are fixed by the call's
-    // arguments and expected type (§1.1), not left to a `?`. The types written INSIDE
-    // the bracket are ordinary references, and take the `?`.
-    call_receiver_head: bool,
     // WI-529: true while building an OPERATION BODY (`convert_expr_term`), which is
     // EVALUATED, not resolved. The boolean operators `not`/`or` are position-directed:
     // a value expression in an op body means the dispatched Bool VALUE op
@@ -22681,8 +22634,6 @@ impl<'a> Loader<'a> {
             clause_head: None,
             in_quoted_term: false,
             const_fold: ConstFold::Off,
-            effect_label_head: false,
-            call_receiver_head: false,
             term_depth: 0,
             in_value_position: false,
             rule_head_type_bounds: Vec::new(),
@@ -28709,13 +28660,7 @@ impl<'a> Loader<'a> {
     fn build_recv_type(&mut self, parse_id: TermId) -> Option<crate::eval::value::Value> {
         let te = self.read_parse_recv_type(parse_id)?;
         self.consumed_recv_types.insert(parse_id);
-        // Proposal 070 §1.3's `?` is not written into the receiver's own application
-        // ([`Self::call_receiver_head`]); the lowering takes the flag, so it cannot
-        // outlive this call.
-        self.call_receiver_head = true;
-        let value = self.type_expr_to_value(&te);
-        self.call_receiver_head = false;
-        Some(value)
+        Some(self.type_expr_to_value(&te))
     }
 
     /// Build an `ApplyArg(name: …, value: …)` term using cached syms.
@@ -32132,113 +32077,6 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// Proposal 070 §1.3 — the slots of the ENCLOSING sort that a reference to it leaves
-    /// out, in declaration order; empty for a reference to any other sort, and for one
-    /// that writes every slot. `written` is what the written name resolved to, `named` the
-    /// parameters it binds by name and `positional` how many it binds by position.
-    ///
-    /// WHAT IT IS ASKED FOR: a slot a reference leaves out is a fresh `?`, here as
-    /// everywhere (user, 2026-10-04: a bare `Cell` inside `Cell` "should be the same as
-    /// `Cell[V = ?]`"), and the doors that lower a written type WRITE that `?` into each
-    /// slot this names ([`Self::anonymous_type_var`]). They write it rather than leave the
-    /// slot out because the typer still reads a slot the enclosing sort's own reference
-    /// leaves out as THIS instance's — the parametricity tie stage (e) of the proposal
-    /// deletes — while a written `?` there is already a variable like any other. For one
-    /// day this was a load error instead (§1.4 as first written: "inside its own
-    /// definition a sort is written in full"), which is how the stdlib's and the fixtures'
-    /// forgotten `Self`s were found; what guards the spelling now is the typer's refusal
-    /// of a sort parameter used with no carrier (`check_sort_parameter_carriers`).
-    ///
-    /// AN ALIAS IS FOLLOWED: `sort MyCar = Car` written bare inside `sort Car` is `Car`
-    /// with its slot left out, and `sort IntPair = Pair[L = Int64]` there is `Pair` with
-    /// `L` bound and `R` left out.
-    ///
-    /// THE ENCLOSING SORT IS `Self`'s ([`Self::enclosing_sort_for_self`]): the sort whose
-    /// operations these are, so the one whose bare name the tie read as "this instance".
-    /// A sort nested in another refers to the outer one as any foreign sort does.
-    ///
-    /// ASKED AT THE DOORS THAT LOWER A WRITTEN TYPE — [`Self::type_expr_to_child_inner`]
-    /// (a parameter, return or field type, an annotation in a body, a rule variable's `?x:
-    /// T`) and [`Self::sort_binding_to_value`] (a `provides` / `requires` binding). A rule
-    /// head's parameter bound is a term and never met the tie: a bare sort there is any
-    /// instance already. NOT ASKED of an effect label's own name
-    /// ([`Self::effect_label_head`] — compared by identity, so it has no slot) nor of a
-    /// companion receiver's own bracket ([`Self::call_receiver_head`] — a call's bracket,
-    /// which the call fills).
-    fn own_sort_slots_left_out(
-        &self,
-        written: Symbol,
-        named: &[Symbol],
-        positional: usize,
-    ) -> Vec<String> {
-        let Some(own) = self.enclosing_sort_for_self() else {
-            return Vec::new();
-        };
-        let (sort_sym, fixed): (Symbol, SmallVec<[Symbol; 2]>) =
-            match super::typing::alias_expansion(self.kb, written) {
-                Some(super::typing::AliasExpansion::Sort { base, bindings }) => {
-                    (base, bindings.iter().map(|(p, _)| *p).collect())
-                }
-                _ => (written, SmallVec::new()),
-            };
-        if self.kb.canonical_sort_sym(sort_sym) != self.kb.canonical_sort_sym(own) {
-            return Vec::new();
-        }
-        let declared = self.kb.type_params_of_sort(own);
-        let by_name = |d: &str| {
-            named
-                .iter()
-                .chain(&fixed)
-                .any(|n| self.kb.local_name_of(*n) == d)
-        };
-        let by_position: SmallVec<[usize; 4]> =
-            KnowledgeBase::positional_param_slots(&declared, by_name, positional)
-                .into_iter()
-                .flatten()
-                .collect();
-        // A PARAMETER WITH NO VARIABLE IS NOT A SLOT TO FILL. A dotted `sort Inner.T = ?`
-        // binder registers `T` as a parameter of the sort it is written in while its symbol
-        // — and so its variable — sits at `Inner.T`; the declaration is refused on its own
-        // account, and writing a `?` into that slot made the reference an application the
-        // typer then asked the sort to expand, which asserts every parameter has a variable
-        // (MEASURED: `wi1000 a_dotted_declaration_name_is_not_the_entrys_content` went from
-        // its refusal to a panic).
-        declared
-            .iter()
-            .enumerate()
-            .filter(|(i, d)| !by_name(d) && !by_position.contains(i))
-            .filter(|(_, d)| {
-                self.kb
-                    .type_param_sym_of(own, d)
-                    .is_some_and(|p| self.kb.canonical_type_param_var(p).is_some())
-            })
-            .map(|(_, d)| d.clone())
-            .collect()
-    }
-
-    /// A fresh anonymous type variable — what a written `?` lowers to, for a slot
-    /// [`Self::own_sort_slots_left_out`] names.
-    fn anonymous_type_var(&mut self) -> TermId {
-        let name = self.kb.intern("_");
-        let vid = self.kb.fresh_var(name);
-        self.kb.alloc(Term::Var(Var::Global(vid)))
-    }
-
-    /// Proposal 070 §1.3 — an EFFECT LABEL, lowered as the type expression it is written
-    /// as, under the flag that keeps the enclosing sort's `?` fill off its name
-    /// ([`Self::effect_label_head`]).
-    fn effect_label_to_child(
-        &mut self,
-        label: &TypeExpr,
-        span: SourceSpan,
-        owner: Option<Symbol>,
-    ) -> node_occurrence::TypeChild {
-        let saved = std::mem::replace(&mut self.effect_label_head, true);
-        let child = self.type_expr_to_child(label, span, owner);
-        self.effect_label_head = saved;
-        child
-    }
-
     /// Proposal 070 §1.2 — the ONE guard of the three NAME doors ([`Self::remap_name`],
     /// [`Self::remap_name_str_inner`], [`Self::remap_symbol_strict`]), asked in each
     /// door's NOT-FOUND arm: `Some` when the unresolved `name` is `Self`.
@@ -32321,9 +32159,6 @@ impl<'a> Loader<'a> {
         span: SourceSpan,
         owner: Option<Symbol>,
     ) -> node_occurrence::TypeChild {
-        // Taken HERE, whatever shape the type has, so that it names this application and
-        // nothing lowered beneath it.
-        let receiver_head = std::mem::take(&mut self.call_receiver_head);
         match ty {
             // Proposal 070 §1.2 — `Self`, asked before anything resolves the name: it
             // is reserved, so no scope holds a symbol for it to find.
@@ -32341,9 +32176,6 @@ impl<'a> Loader<'a> {
                 self.self_type_child(name.span, span, owner)
             }
             TypeExpr::Simple(name) => {
-                // Taken at the NAME, so that it is this label's and nothing written inside
-                // its bracket; a row or an absence around the label leaves it set.
-                let label_head = std::mem::take(&mut self.effect_label_head);
                 // WI-341: a callback arrow's own param (`a` in `Modify[a]`,
                 // in scope only while loading that callback param's arrow type)
                 // resolves to its `CallbackParam` place — minted as a
@@ -32380,22 +32212,9 @@ impl<'a> Loader<'a> {
                     }
                 }
                 let sort_sym = self.remap_name(name);
-                // Proposal 070 §1.3: the enclosing sort's bare name is the sort at `?` —
-                // lowered as the application that writes them, below.
-                if !receiver_head
-                    && !label_head
-                    && !self.own_sort_slots_left_out(sort_sym, &[], 0).is_empty()
-                {
-                    let applied = TypeExpr::Parameterized {
-                        name: name.clone(),
-                        bindings: Vec::new(),
-                    };
-                    return self.type_expr_to_child_inner(&applied, span, owner);
-                }
                 self.type_name_child(sort_sym, span, owner)
             }
             TypeExpr::Parameterized { name, bindings } => {
-                let label_head = std::mem::take(&mut self.effect_label_head);
                 let written_sym = self.remap_name(name);
                 // WI-20260924-SNJPR — an ALIAS applied to further arguments is the sort
                 // it stands for, applied to the bindings the alias fixes and then the
@@ -32442,13 +32261,6 @@ impl<'a> Loader<'a> {
                         span: Some(span.span),
                     });
                 }
-                // Proposal 070 §1.3: what a reference to the ENCLOSING sort leaves out is
-                // written `?` after the bindings it does write.
-                let left_out = if !receiver_head && !label_head {
-                    self.own_sort_slots_left_out(written_sym, &written_named, positional_count)
-                } else {
-                    Vec::new()
-                };
                 let mut child_bindings: Vec<(Symbol, node_occurrence::TypeChild)> = fixed
                     .iter()
                     .map(|(p, v)| (*p, node_occurrence::TypeChild::Interned(*v)))
@@ -32485,11 +32297,6 @@ impl<'a> Loader<'a> {
                     if let Some(sym) = param_sym {
                         child_bindings.push((sym, bound_child));
                     }
-                }
-                for slot in left_out {
-                    let sym = self.kb.intern(&slot);
-                    let any = self.anonymous_type_var();
-                    child_bindings.push((sym, node_occurrence::TypeChild::Interned(any)));
                 }
                 // The base name's OWN span (`type_expr_span`, that rule's owner), not
                 // the threaded `span` — that one is the whole annotation's, so a NESTED
@@ -32552,7 +32359,7 @@ impl<'a> Loader<'a> {
                 self.arrow_binder_scope = saved;
                 let effect_children: Vec<TypeChild> = effects
                     .iter()
-                    .map(|e| self.effect_label_to_child(e, span, owner))
+                    .map(|e| self.type_expr_to_child(e, span, owner))
                     .collect();
                 // WI-440 (row-openness decision): an absence-only annotation
                 // (`@ -Modify[x]`) stays a CLOSED row carrying the lacks atom —
@@ -32742,7 +32549,7 @@ impl<'a> Loader<'a> {
         use node_occurrence::TypeChild;
         let effect_children: Vec<TypeChild> = effects
             .iter()
-            .map(|e| self.effect_label_to_child(e, span, owner))
+            .map(|e| self.type_expr_to_child(e, span, owner))
             .collect();
         let any_node = effect_children
             .iter()
@@ -32875,15 +32682,6 @@ impl<'a> Loader<'a> {
             }
             TypeExpr::Simple(name) => {
                 let sort_sym = self.remap_name(name);
-                // Proposal 070 §1.3: the enclosing sort's bare name is the sort at `?` —
-                // lowered as the application that writes them, below.
-                if !self.own_sort_slots_left_out(sort_sym, &[], 0).is_empty() {
-                    let applied = TypeExpr::Parameterized {
-                        name: name.clone(),
-                        bindings: Vec::new(),
-                    };
-                    return self.sort_binding_to_value(&applied);
-                }
                 Value::term(self.kb.make_sort_ref(sort_sym))
             }
             // WI-600: a NESTED parameterized binding VALUE (`Element = Pair[A = K, B
@@ -32965,10 +32763,6 @@ impl<'a> Loader<'a> {
                         span: Some(span.span),
                     });
                 }
-                // Proposal 070 §1.3: what a reference to the ENCLOSING sort leaves out is
-                // written `?` after the bindings it does write.
-                let left_out =
-                    self.own_sort_slots_left_out(written, &written_named, positionals.len());
                 let slots = KnowledgeBase::positional_param_slots(
                     &declared_params,
                     |d| named_syms.iter().any(|n| self.kb.local_name_of(*n) == d),
@@ -32983,11 +32777,6 @@ impl<'a> Loader<'a> {
                         }
                         None => pos.push(bound),
                     }
-                }
-                for slot in left_out {
-                    let sym = self.kb.intern(&slot);
-                    let any = self.anonymous_type_var();
-                    named.push((sym, Value::term(any)));
                 }
                 // WI-835: a container written as a binding VALUE inside a `requires` /
                 // `provides` clause (`requires Iterable[C = Map[K = Float]]`) is a use
@@ -36470,17 +36259,10 @@ impl<'a> Loader<'a> {
         // *value fact* (Node-carrying head, `assert_fact_value`); when all are
         // `Term` it stays a hash-consed fact. Either way `lookup_operation_info`
         // reads these same labels back from the fact.
-        // Proposal 070 §1.3's `?` is not written into an effect label's own name
-        // ([`Self::effect_label_head`]) — set per label, since the lowering takes it.
         let effect_values: Vec<crate::eval::value::Value> = o
             .effects
             .iter()
-            .map(|e| {
-                let saved = std::mem::replace(&mut self.effect_label_head, true);
-                let value = self.type_expr_to_value(&e.type_expr);
-                self.effect_label_head = saved;
-                value
-            })
+            .map(|e| self.type_expr_to_value(&e.type_expr))
             .collect();
 
         // Build requires and ensures lists. Auto-requires inference

@@ -388,6 +388,149 @@ impl<'a> RustCodegen<'a> {
         self.symbols.local_name(name.last()).to_owned()
     }
 
+    /// Proposal 070 §1.3 — the first reference in `ty`, at any depth, to the sort being
+    /// generated that leaves one of its type parameters OPEN, as it is written: the sort's
+    /// bare name (`o: Cell` inside `sort Cell`, which declares `V`), an application that
+    /// leaves a parameter out, or one that writes the anonymous `?` into it (`Cell[V = ?]`).
+    /// `None` for a sort that declares no parameter — it has one instance, and its name is
+    /// that. A NAMED variable in the slot (`LogicalStream[T = ?A]`) is not this: it is one
+    /// unknown the signature can share, and is rendered as it was.
+    ///
+    /// Such a reference is ANY instance of the sort, inside its own definition as outside
+    /// it; THIS instance is written `Self`. This generator used to render both as Rust's
+    /// `Self` — the implicit tie, on the emission side: `both(a: Self, b: Chain) -> Int64`
+    /// came out `fn both(&self, b: Self)`, and a field `next: Chain` as `Box<Chain<T>>`,
+    /// each claiming the receiver's instance for a value that may be any. Rust has no type
+    /// for "any `Chain`" in a field or a return, and in a parameter only through a generic
+    /// this generator does not mint, so the declaration is REFUSED
+    /// ([`Self::refuse_open_own_reference`]) rather than emitted with the old meaning.
+    ///
+    /// An effect row is not walked: a label's own name is compared by identity, not
+    /// expanded (kernel-language.md §8.1), so it is no reference to the sort.
+    fn open_own_reference(
+        &self,
+        ty: &TypeExpr,
+        sort_name: &str,
+        type_params: &[String],
+    ) -> Option<String> {
+        if type_params.is_empty() {
+            return None;
+        }
+        match ty {
+            TypeExpr::Simple(name) => {
+                (self.resolve(name) == sort_name).then(|| sort_name.to_owned())
+            }
+            TypeExpr::Parameterized { name, bindings } => {
+                if self.resolve(name) == sort_name {
+                    // Slot by slot, as the loader places them: a parameter takes the binding
+                    // that NAMES it, else the next positional one — so `Pair[L = Int64,
+                    // String]` writes both slots. ([`Self::find_binding`] indexes the
+                    // positional ones by the parameter's own position, which reads that
+                    // `String` as no binding of `R`.)
+                    let named = |p: &str| {
+                        bindings.iter().find(|b| {
+                            b.param
+                                .as_ref()
+                                .is_some_and(|n| self.symbols.local_name(n.last()) == p)
+                        })
+                    };
+                    let mut positional = bindings.iter().filter(|b| b.param.is_none());
+                    let leaves_open = type_params.iter().any(|p| {
+                        named(p)
+                            .or_else(|| positional.next())
+                            .is_none_or(|b| self.is_anonymous_variable(&b.bound))
+                    });
+                    if leaves_open {
+                        return Some(format!("{sort_name}[…]"));
+                    }
+                }
+                bindings
+                    .iter()
+                    .find_map(|b| self.open_own_reference(&b.bound, sort_name, type_params))
+            }
+            TypeExpr::Tuple(fields) => fields
+                .iter()
+                .find_map(|(_, t)| self.open_own_reference(t, sort_name, type_params)),
+            TypeExpr::Arrow {
+                params,
+                return_type,
+                ..
+            } => params
+                .iter()
+                .map(|(_, t)| t)
+                .chain(std::iter::once(&**return_type))
+                .find_map(|t| self.open_own_reference(t, sort_name, type_params)),
+            _ => None,
+        }
+    }
+
+    /// Is `ty` the anonymous `?` — the variable the converter mints under the name `_`
+    /// (`convert_variable_node`), fresh at each occurrence?
+    fn is_anonymous_variable(&self, ty: &TypeExpr) -> bool {
+        let TypeExpr::Variable { term_id, .. } = ty else {
+            return false;
+        };
+        matches!(
+            self.terms.get(*term_id),
+            Term::Var(crate::kb::term::Var::Global(vid)) if self.symbols.local_name(vid.name()) == "_"
+        )
+    }
+
+    /// Record the refusal of `what` — a parameter, a return or a field of the sort being
+    /// generated — where its type leaves the sort's own parameter open
+    /// ([`Self::open_own_reference`]). The error makes `generate_rust` answer `Err`, so
+    /// what is rendered for the declaration afterwards is never returned.
+    fn refuse_open_own_reference(
+        &mut self,
+        what: &str,
+        ty: &TypeExpr,
+        sort_name: &str,
+        type_params: &[String],
+    ) {
+        if let Some(written) = self.open_own_reference(ty, sort_name, type_params) {
+            // ONLY `Self` IS OFFERED. The typer's refusal of the same spelling also offers a
+            // name for the other instance's parameter (`[X]`, `Cell[V = X]`), and this
+            // generator must not: it renders an application of the enclosing sort as `Self`
+            // whatever its arguments (older than proposal 070, and recorded there), so that
+            // advice would lead straight to the emission this refusal exists to prevent.
+            self.errors.push(CodegenError {
+                message: format!(
+                    "{what}: `{written}` is the enclosing sort `{sort_name}` with a type \
+                     parameter left open — inside its own definition a sort's bare name is \
+                     ANY instance of it (proposal 070 §1.3), and this generator has no Rust \
+                     spelling for that. `{self_word}` is this instance",
+                    self_word = crate::intern::SELF_TYPE_NAME,
+                ),
+            });
+        }
+    }
+
+    /// [`Self::refuse_open_own_reference`] over an operation's signature: every parameter —
+    /// the one that becomes the receiver included — and the return.
+    fn refuse_open_own_references_in(
+        &mut self,
+        op: &Operation,
+        sort_name: &str,
+        type_params: &[String],
+    ) {
+        let op_name = self.resolve(&op.name);
+        for param in &op.params {
+            let pname = self.local_name_of(param.name);
+            self.refuse_open_own_reference(
+                &format!("operation `{op_name}`, parameter `{pname}`"),
+                &param.ty,
+                sort_name,
+                type_params,
+            );
+        }
+        self.refuse_open_own_reference(
+            &format!("operation `{op_name}`, return type"),
+            &op.return_type,
+            sort_name,
+            type_params,
+        );
+    }
+
     /// Find a binding by named param, falling back to positional index.
     fn find_binding<'b>(
         &self,
@@ -1425,6 +1568,12 @@ impl<'a> RustCodegen<'a> {
                 self.indent();
                 for field in &entity.fields {
                     let fname = to_snake_case(&self.local_name_of(field.name));
+                    self.refuse_open_own_reference(
+                        &format!("entity `{ename}`, field `{fname}`"),
+                        &field.ty,
+                        sort_name,
+                        &info.type_params,
+                    );
                     let ftype =
                         self.type_to_rust_for_enum_field(&field.ty, sort_name, &info.type_params);
                     self.line(&format!("{fname}: {ftype},"));
@@ -1582,6 +1731,7 @@ impl<'a> RustCodegen<'a> {
         type_params: &[String],
         collapse_self: bool,
     ) {
+        self.refuse_open_own_references_in(op, sort_name, type_params);
         let op_name = to_snake_case(&self.resolve(&op.name));
         let effects = analyze_effects(&op.effects, self.symbols, type_params);
 
@@ -1661,6 +1811,7 @@ impl<'a> RustCodegen<'a> {
         type_params: &[String],
         in_impl: bool,
     ) {
+        self.refuse_open_own_references_in(op, sort_name, type_params);
         let vis = if in_impl {
             self.visibility_prefix(op.visibility)
         } else {

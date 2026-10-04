@@ -133,12 +133,6 @@ pub(super) fn type_check_sorts_collect(
     // `resolve_requires_bindings`) are done by this line, and any later one drops the
     // index via `invalidate_requires_chain_cache` — see `KnowledgeBase::requires_index`.
     build_requires_index(kb);
-    // WI-1082 — elaborate every member's declared RETURN so §3's tie is WRITTEN rather than
-    // left as an absence a width-ignoring comparison cannot refute. AFTER the three index
-    // builds above: it reads `canonical_sort_sym` (the SortAlias index) per parameter and the
-    // signatures `build_op_signatures` just cached, and it must land BEFORE the per-sort loop
-    // below, where `check_operation_bodies` and every `check_apply_iter` read those signatures.
-    elaborate_self_ties(kb, sort_names);
     // WI-657(6) — resolve the `anthill.reflect.TupleLiteral` symbol once, so the
     // per-constructor-arg `is_tuple_lit` compares a `Symbol` rather than the long
     // qualified-name string. Reflect is fully loaded by now; `None` (reflect-less
@@ -428,26 +422,59 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
 /// that has its carrier (`both(s: Self, o: Cell) -> V`); and one that does not use `V`
 /// (`same(a: Cell, b: Cell) -> Bool` — any two cells, which is what it says).
 ///
+/// AN ALIAS IS READ AS THE TYPE IT STANDS FOR ([`alias_expansion`]): `p: MyCell` under `sort
+/// MyCell = Cell` is any cell, `p: IntPair` under `sort IntPair = Pair[L = Int64]` a pair that
+/// leaves `R` open, `p: AnyPair` under `sort AnyPair = Pair[L = ?, R = ?]` a pair at two
+/// written `?`, and `p: Pairs` under `sort Pairs = List[T = Pair]` a list that HOLDS any
+/// pair. Until proposal 070's stage (e) the loader wrote a `?` into every slot a reference
+/// to the enclosing sort left out, following an alias OF the sort to do it, so the sort's own
+/// name is what stood here for the first two; with that fill deleted `get(p: MyPair) -> L`
+/// LOADED (MEASURED), the alias being a sort of another name. The last two loaded before it
+/// and after, and are refused with the rest now.
+///
 /// ONE REFUSAL PER OPERATION, at the first parameter of the sort that leaves the slot open.
 fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
     /// Every application of `sort` in `ty`, as the bindings it writes (none for the bare
-    /// name) and whether it is NESTED in the type rather than the whole of it.
+    /// name) and whether it is NESTED in the type rather than the whole of it. `expanding`
+    /// is the aliases being read through, so one that names itself in its own definition —
+    /// which has no finite expansion — is read once.
     fn applications_of(
         kb: &KnowledgeBase,
         ty: &Value,
         sort: Symbol,
         nested: bool,
+        expanding: &mut Vec<Symbol>,
         out: &mut Vec<(bool, Vec<(Symbol, Value)>)>,
     ) {
         match extract_type(kb, ty) {
-            TypeExtractor::SortRef(s) => {
-                if kb.canonical_sort_sym(s) == sort {
-                    out.push((nested, Vec::new()));
+            TypeExtractor::SortRef(s) if kb.canonical_sort_sym(s) == sort => {
+                out.push((nested, Vec::new()));
+            }
+            TypeExtractor::SortRef(s) if !expanding.contains(&s) => {
+                expanding.push(s);
+                match alias_expansion(kb, s) {
+                    Some(AliasExpansion::Sort { base, bindings }) => {
+                        let bindings: Vec<(Symbol, Value)> =
+                            bindings.iter().map(|&(p, v)| (p, Value::term(v))).collect();
+                        for (_, v) in &bindings {
+                            applications_of(kb, v, sort, true, expanding, out);
+                        }
+                        if kb.canonical_sort_sym(base) == sort {
+                            out.push((nested, bindings));
+                        }
+                    }
+                    Some(AliasExpansion::NotASort(shape)) => {
+                        applications_of(kb, &Value::term(shape), sort, nested, expanding, out);
+                    }
+                    // No alias; or one with no reading to follow (a cycle, a name that is
+                    // also declared), which its own declaration is refused for.
+                    _ => {}
                 }
+                expanding.pop();
             }
             TypeExtractor::Parameterized { base, bindings } => {
                 for (_, v) in &bindings {
-                    applications_of(kb, v, sort, true, out);
+                    applications_of(kb, v, sort, true, expanding, out);
                 }
                 if kb.canonical_sort_sym(base) == sort {
                     out.push((nested, bindings));
@@ -455,12 +482,12 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
             }
             TypeExtractor::NamedTuple(fields) => {
                 for (_, v) in &fields {
-                    applications_of(kb, v, sort, true, out);
+                    applications_of(kb, v, sort, true, expanding, out);
                 }
             }
             TypeExtractor::Arrow { param, result, .. } => {
-                applications_of(kb, &param, sort, true, out);
-                applications_of(kb, &result, sort, true, out);
+                applications_of(kb, &param, sort, true, expanding, out);
+                applications_of(kb, &result, sort, true, expanding, out);
             }
             _ => {}
         }
@@ -496,7 +523,7 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
         let mut refs: Vec<(Symbol, bool, Vec<(Symbol, Value)>)> = Vec::new();
         for (name, ty) in &params {
             let mut found = Vec::new();
-            applications_of(kb, ty, sort, false, &mut found);
+            applications_of(kb, ty, sort, false, &mut Vec::new(), &mut found);
             refs.extend(
                 found
                     .into_iter()

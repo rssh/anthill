@@ -1132,10 +1132,9 @@ pub(super) fn build_type(
             // slot it leaves out is ([`unroll_annotation_with_inferred`], just below): the
             // two are one type. The relation is structural about a variable, so `let t:
             // Other[W = ?] = o` was refused, `expected Other[W = ?_], got Other[W = Int64]`
-            // (MEASURED), where `let t: Other = o` loaded — and a bare `Box` inside `sort
-            // Box`, which is `Box[T = ?]` (proposal 070 §1.3), would have been refused with
-            // it. Unified first, on a probe, and read back: the annotation the check and
-            // the binder see is the one with its holes filled.
+            // (MEASURED), where `let t: Other = o` loaded. Unified first, on a probe, and
+            // read back: the annotation the check and the binder see is the one with its
+            // holes filled.
             let annotation = match (annotation, value_ty.as_ref()) {
                 (Some(ann), Some(vty)) if !kb.collect_vars(&ann).is_empty() => {
                     let mut probe = Substitution::new();
@@ -2537,7 +2536,7 @@ pub(super) fn concrete_self_receiver_override(
 ///   The declaration checks judge a projection over THIS instance (`k: s.T` against `k: c.V`)
 ///   and leave one over another argument to the call — this one: `Sp.put(x, ks)` over `Car.put(c:
 ///   Car, k: c.V)` with `ks` a list loaded and died adding 1 to it; a pure override's callback
-///   wrote a cell. A variable two arguments bind two ways — §3's tie beside a spec DEFAULT body
+///   wrote a cell. A variable two arguments bind two ways — the carrier's own parameter beside a spec DEFAULT body
 ///   (WI-20260930-FB53M), or the override's own type parameter — is refused the same way
 ///   ([`conflicting_bindings_error`]). Each is the CALL's error: the spec's own elimination
 ///   failure beside them names an unrelated cause.
@@ -2625,7 +2624,6 @@ pub(super) fn concrete_override_threaded(
     // qualified call validates it (an expanded callable's fresh row reads non-ground, and the
     // check passed a wrong argument, MEASURED). WI-20260904-60143: `unify_types` binds every
     // component that agreed and answers `false` for the rest — the validation judges that.
-    let impl_parent_canon = impl_parent_sort_of_op(kb, impl_op).map(|p| kb.canonical_sort_sym(p));
     let mut subst =
         override_at_call(kb, impl_op, &impl_info, op, call, call_subst, span)?.unwrap_or_default();
     let mut bound: Vec<(usize, Value, Value)> = Vec::with_capacity(passed.len());
@@ -2634,9 +2632,9 @@ pub(super) fn concrete_override_threaded(
             return Ok(None);
         };
         let passed_x =
-            expand_foreign_sorts_deep(kb, &passed_ty, impl_parent_canon, SlotVar::Flexible);
+            expand_sorts_deep(kb, &passed_ty, SlotVar::Flexible);
         let written_x =
-            expand_foreign_sorts_deep(kb, &written, impl_parent_canon, SlotVar::Flexible);
+            expand_sorts_deep(kb, &written, SlotVar::Flexible);
         unify_types(kb, &mut subst, &passed_x, &written_x);
         bound.push((i, passed_ty, written));
     }
@@ -2711,10 +2709,7 @@ pub(super) fn concrete_override_threaded(
         .collect();
     // WI-1063: `impl_op`, not the spec op the CALL named. The returned type is the
     // OVERRIDE's declaration, so every question asked about it downstream must be asked of
-    // its owner — in particular whether a sort reference in it is SELF (the §3 tie). Keying
-    // that on `fn_sym` would read `MappedStream.splitFirst`'s own `B = MappedStream[…]` as
-    // FOREIGN, since `fn_sym` is `Stream.splitFirst`, and skolemize the very carrier tie this
-    // function exists to thread.
+    // its owner — which variables its signature binds, for one ([`open_existential_return`]).
     Ok(Some(ThreadedOverride {
         ret,
         effects,
@@ -2737,7 +2732,7 @@ pub(super) struct ThreadedOverride {
 }
 
 /// How [`conflicting_bindings_error`] names a variable of `impl_op` two arguments bound two
-/// ways: the carrier's shared type parameter (§3's tie), or the operation's own.
+/// ways: the carrier's own type parameter, or the operation's own.
 pub(super) fn override_variable_name(
     kb: &mut KnowledgeBase,
     impl_op: Symbol,

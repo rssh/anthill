@@ -2299,8 +2299,8 @@ fn provision_lends_binding(
 
 /// WI-20261001-80ZV8 — `at_receiver`, the provision's binding `written` read at a receiver,
 /// with the variables the PROVISION wrote opened ([`ProvisionOpening`]): `Car provides Sp[T =
-/// Car[V = ?]]` lends `s.T` as a `Car` at a fresh variable, any `Car` — and so does the
-/// bare `T = Car`, whose `?` the loader writes (proposal 070 §1.3). Left as written, the `?` made
+/// Car[V = ?]]` lends `s.T` as a `Car` at a fresh variable, any `Car` — as the bare `T =
+/// Car` does, its slot left out (proposal 070 §1.3). Left as written, the `?` made
 /// the binding not ground and the projection stayed a neutral `s.T`, which no argument is
 /// (MEASURED: `pick.o (op-arg): expected s.T, got Car[V = String]`).
 ///

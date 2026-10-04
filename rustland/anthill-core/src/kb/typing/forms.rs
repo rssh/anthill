@@ -1134,9 +1134,10 @@ pub(super) fn report_walk_solutions(
 ///   1. A DECLARED TYPE PARAMETER'S VARIABLE IS SHARED.
 ///      [`KnowledgeBase::record_type_param_var`] publishes exactly ONE `Var::Global` per
 ///      type-parameter SYMBOL, so a callee's `T` is the SAME variable at every call site.
-///      `check_apply_iter`'s WI-374 note says what kept that sound — the parametricity tie
-///      rides "the canonical channel AND THE PER-CALL SUBST" — and this copies out of that
-///      σ. Measured in one walk: `var 1372 kept=String dropped=Int64`.
+///      `check_apply_iter`'s WI-374 note said what kept that sound — the parametricity tie
+///      rode "the canonical channel AND THE PER-CALL SUBST" (the tie is gone since proposal
+///      070's stage (e); the per-call σ still holds that variable) — and this copies out of
+///      that σ. Measured in one walk: `var 1372 kept=String dropped=Int64`.
 ///   2. THE RANGE LEAKS WHERE THE DOMAIN DOES NOT. `?param := ?T_callee` puts a
 ///      callee-owned variable INTO the arrow, and filtering the VARIABLE says nothing
 ///      about the VALUE. Measured as an arrow leaving the walk reading `?_`.

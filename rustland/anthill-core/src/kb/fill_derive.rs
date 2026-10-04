@@ -141,31 +141,39 @@ pub(crate) fn run(
         }
         let self_type = domain_self_type(kb, job.sort, &job.params);
         let mut fields: Vec<Vec<(Symbol, TermId)>> = Vec::with_capacity(job.ctors.len());
-        let mut unrepairable: Option<(Symbol, Symbol)> = None;
+        let mut unfillable: Option<(Symbol, Symbol, Symbol)> = None;
         'ctors: for c in &job.ctors {
             let mut fs = Vec::with_capacity(c.fields.len());
             for &(f, t) in &c.fields {
                 // A field typed by an ALIAS is filled as its target is (`dealias_type`).
                 let t = crate::kb::typing::dealias_type(kb, t);
-                match super::load::repair_self_reference(kb, t, job.sort, self_type) {
-                    Some(t) => fs.push((f, t)),
-                    None => {
-                        unrepairable = Some((c.ctor, f));
-                        break 'ctors;
-                    }
+                if let Some(bare) = super::load::bare_parameterised_sort_in(kb, t) {
+                    unfillable = Some((c.ctor, f, bare));
+                    break 'ctors;
                 }
+                fs.push((f, t));
             }
             fields.push(fs);
         }
-        if let Some((ctor, field)) = unrepairable {
-            // A BARE reference to some OTHER parameterised sort names no element type
-            // (`repair_self_reference`'s rule, WI-743).
+        if let Some((ctor, field, bare)) = unfillable {
+            // A BARE reference to a parameterised sort names no element type
+            // (`bare_parameterised_sort_in`, WI-743) — the sort's own name included, which
+            // is any instance of it; the author who meant this one writes `Self`.
+            let own = if bare == kb.canonical_sort_sym(job.sort) {
+                format!(
+                    " (inside its own definition the sort's bare name is any instance of it; \
+                     `{}` is this one)",
+                    crate::intern::SELF_TYPE_NAME
+                )
+            } else {
+                String::new()
+            };
             decline(
                 kb,
                 job.sort,
                 format!(
                     "field `{}` of constructor `{}` names a parameterised sort with no type \
-                     arguments, which has no element domain to fill",
+                     arguments, which has no element domain to fill{own}",
                     kb.qualified_name_of(field),
                     kb.qualified_name_of(ctor),
                 ),

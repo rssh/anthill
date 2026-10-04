@@ -10,16 +10,14 @@ type parameters — the *explicit* threading mechanism, already implemented),
 WI-376 (value projection `s.T` / `s.Self` — the *fluent* threading mechanism),
 WI-374 (bare-reference expansion — a *convenience*, no longer load-bearing).
 
-**Superseded in part by [070](../proposals/070-self-and-fresh-bare-sorts.md)**
-(Draft, 2026-10-03): §3's first bullet (the implicit self tie), its WI-1082
-paragraph and its "Two exceptions"; §4's member-tie enforcement; §5's "The
-scope is the foreign slots" paragraph. Under 070 a bare or partial sort is
-fresh everywhere — inside its own definition too — `Self` writes this instance,
-and an operation that uses its sort's parameter beside the sort at an open slot
-must have a carrier (070 §1.4). Until stage (e) of 070 is implemented, §3–§5
-below describe code the loader no longer feeds: it writes the `?` into a slot
-the enclosing sort's own reference leaves out. **Delivered** (070 stage b): §1's projection is `s.Self` —
-it was `s.Sort` — and `Self` is a type name inside a sort's definition.
+**Revised by [070](../proposals/070-self-and-fresh-bare-sorts.md)** (2026-10-03/04,
+implemented through its stage (e)): the implicit self tie this document described in §3
+— its first bullet, the WI-1082 paragraph and the "Two exceptions" — is gone, with §4's
+member-tie enforcement and §5's "The scope is the foreign slots". A bare or partial sort
+is fresh everywhere, inside its own definition too; `Self` writes this instance; and an
+operation that uses its sort's parameter beside the sort at an open slot must have a
+carrier (070 §1.4). §3–§5 below are rewritten to that. §1's projection is `s.Self` (it
+was `s.Sort`), and `Self` is a type name inside a sort's definition.
 
 ## The core principle
 
@@ -123,61 +121,48 @@ relationship is between two positions and nothing needs to name it from outside.
 
 ## 3. No implicit sort-parameter sharing
 
-- A sort's `sort T = ?` declares its **genericity**, used **within the sort's
-  own definition** — its constructors and own operations (`cons(head: T, tail:
-  List)` ⇒ `tail` is a `List` of *this* sort's `T`). That is parametricity, and
-  it is the *only* implicit tie, because the `sort T = ?` line *is* the
-  declaration of it. **Within the sort's own definition, a bare self-sort
-  reference participates in that tie**: `append(xs: List, ys: List)` declared
-  *inside* `sort List` ties both parameters (and the return) to *this* sort's
-  `T`. The tie is **enforced** (decided 2026-06-12, WI-374):
-  `append(intList, strList)` is rejected — the conflicting binding of the
-  shared `T` is a type error, not a silent first-binding-wins.
-- It is **not** a cross-signature threading mechanism for **foreign**
-  references — a sort referenced *outside its own definition*. Two foreign
-  references to a sort do **not** silently share a variable across a
-  signature: a top-level `f(a: List, b: List)` leaves `a` and `b`'s elements
-  **independent**; to relate them you write a name — `f(a: List[T = ?t], b:
-  List[T = ?t])` ties, `List[T = ?x]` / `List[T = ?y]` splits, `List[Int64]` /
-  `List[String]` fixes.
+- A sort's `sort T = ?` declares its **genericity**. Its parameters are type
+  parameters of each of its constructors and operations (070 §1.1), named there by
+  name: `cons(head: T, tail: Self)` holds a `T` and a list of *this* sort's `T`.
+  **`Self` is the sort applied to its own parameters** — in `sort List` it is
+  `List[T = T]` — so every `Self` in one signature is the same instance, the one
+  the call fixes: `append(xs: Self, ys: Self) -> Self` takes one list type three
+  times, and `append(intList, strList)` is rejected at the argument that does not
+  fit. That is the whole of the tie, and it is **written**.
+- A sort's **bare or partial name is not that tie** — anywhere. `append(xs: List,
+  ys: List) -> List` declared *inside* `sort List` takes two lists of unrelated
+  element types and returns a third the operation picks, exactly as a top-level
+  `f(a: List, b: List)` leaves `a` and `b`'s elements **independent**. To relate
+  them you write a name — `Self`, a parameter (`List[T = T]`), a variable
+  (`f(a: List[T = ?t], b: List[T = ?t])` ties, `List[T = ?x]` / `List[T = ?y]`
+  splits), or a concrete type (`List[Int64]` / `List[String]` fixes).
 
-**The tie is written down, not left implicit (WI-1082).** Every position named
-above is a *rewrite*, applied once per declaration before any body check or call
-site reads the signature: a self-sort reference that elides a slot is rewritten to
-name this sort's own parameter. `cons(head: T, tail: List)` becomes `tail: List[T =
-T]`; `append(xs: List, ys: List) -> List` gets `-> List[T = T]`; and a parameter
-that *partially* writes the sort — `widen(s: MyStream[T = Int64])` — becomes `s:
-MyStream[T = Int64, E = E]`. Leaving the slot *absent* was not equivalent to naming
-it: an absent binding is width-**ignored** by unification, so nothing was claimed
-about it and no consumer demand could be refuted — `docs/kernel-language.md` §8.1
-carries the exploit that closed, and the parameter position is what closes it for a
-member with no body to check.
+**It used to be implicit, inside the sort's own definition** (WI-374, WI-424,
+WI-1082; removed by proposal 070). A bare self-sort reference there took *this*
+instance — `append(xs: List, ys: List)` tied both parameters and the return to the
+sort's `T` — first as an absence the unifier's canonical channel bound, then as a
+rewrite of the declaration at load, enforced at each call. Nothing in such a
+signature said that its three lists agreed, so the tie could not be checked by
+reading, and it did not extend to `provides`. One text had two meanings, depending
+on where it was written; it has one now.
 
-Two exceptions, both measured. A **written** slot is never rewritten. A **bare**
-self parameter is not either: `unify_parameterized_with_sort_ref` already binds the
-sort's parameters when one side is a bare reference, and writing the tie in makes
-that binding strict enough that the WI-424 sibling-call seeding refuses a member
-called at a different instance (`List.mapElems` calls `reverse` at `Dst`). And an
-operation with no parameter naming its own sort (`List.empty() -> List`) is left
-alone, since nothing at a call could bind the parameter this would write.
+**What the bare reading would let through is refused where it is wrong**: an
+operation that *uses* its sort's parameter `V` beside the sort at an open `V` —
+`get(c: Cell) -> V` — has no carrier for that `V`, and is refused at its
+definition (070 §1.4; `kernel-language.md` §5.2). The author says which was meant:
+`get(c: Self) -> V`, or `get(c: Cell) -> c.V`.
 
-The member/foreign split is decided by the **declaration context** of the type
-expression — where it was *written*, not where a unification later runs. That
-context is exported into the term *before* the unify boundary (the loader
-knows a signature's enclosing sort; a typing site knows an annotation's
-scope), so `unify_types` itself stays a pure, context-free term relation: by
-the time two types meet, each bare reference already carries the right
-variable identities. This is what removes the "accidental substitution"
-fragility: nothing is the same variable unless the declaration context says
-so.
+There is no member/foreign split left to decide. A type expression means what it
+says wherever it is written, and `unify_types` is a pure, context-free term
+relation: nothing is the same variable unless the declaration says so.
 
 ## 4. Bare references still expand (WI-374) — but as a convenience
 
 A bare or partial parametric sort still expands — `Stream` ≡ `Stream[T = ?, E
 = ?]`, `Stream[T = Int64]` ≡ `Stream[T = Int64, E = ?]` — a **fresh variable
 per ungrounded position**, **per occurrence**, so two independent bare uses
-never alias. The expansion is **site-scoped** (it runs where the declaration
-context is known, *before* the unify boundary — see §3's closing paragraph),
+never alias. The expansion is **site-scoped** (it runs at each use, *before*
+the unify boundary, so `unify_types` stays a context-free relation),
 it keeps an *unannotated* reference usable, it is **not** how relationships
 are threaded (that is §2), and it never *reconstructs* an erased relationship
 (§5).
@@ -191,12 +176,13 @@ Delivered increments (2026-06-12):
   written `T` and takes `E` from the value. Written bindings stay
   authoritative (a contradicting one is still a mismatch); an alias annotation
   resolves to its shape first (WI-381).
-- **Member-tie enforcement** (§3 bullet 1) — see above.
-- **Remaining:** foreign bare refs in operation signatures still share the
-  foreign sort's canonical vars internally (benign today — gated out of the
-  enforcement, and nothing outside the sort can name `Sort.T`); normalizing
-  them to per-occurrence variables at signature processing is the open
-  WI-374 scope.
+- **Per-occurrence slots at a call.** A callee's parameter that leaves a slot
+  out is expanded to a fresh variable per slot, per call — every sort alike,
+  the callee's own included. (As first delivered the callee's own sort was
+  skipped — its bare name rode the canonical channel as the member tie — and a
+  call-time check enforced that tie; both went with it, 070 stage (e). A bare
+  sort reference met in unification now binds nothing: it is compatible, by
+  width, with every instance.)
 
 ## 5. The boundary — type, not provenance
 
@@ -241,10 +227,12 @@ the body hold for every instantiation, which is a universal in a positive
 position; that was built and measured and costs 40 tests across thirteen
 delivered tickets, including the WI-401/402/457/480/488/491 escape gate.
 
-The scope is the **foreign** slots. A reference to the callee's own sort in its
-own return is §3's parametricity tie, not an existential — it names this
-instance's parameter and the call's arguments pin it — so it is left to the
-canonical channel, exactly as §4's parameter-side expansion leaves it.
+The scope is **every** sort's slots, the callee's own included: `-> Box` declared
+inside `sort Box` is a box the operation picks, as `-> List` is a list it picks.
+A return that is this instance says so — `-> Self` — and its slots, being the
+sort's parameters, are bound by the call's arguments like any other type
+parameter. (Until 070 the callee's own sort was exempt: its bare name in a return
+was §3's implicit tie.)
 
 The mechanism already existed for the *carrier* of an explicit existential
 (`ensures Spec[C]`, WI-402 — §5 of `path-dependent-types.md`); the **members**

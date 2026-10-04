@@ -17,15 +17,21 @@
 //! read by `unify_parameterized_with_sort_ref`). The stdlib's `List.append` is written with
 //! `Self` since this change — the last of its 135 references.
 //!
-//! The arm itself stays for everything else that rides it; it goes at proposal 070's stage
-//! (e). The user agreed to move this much forward (2026-10-03).
+//! The arm itself stayed for everything else that rode it, until proposal 070's stage (e).
+//! The user agreed to move this much forward (2026-10-03).
+//!
+//! STAGE (e), 2026-10-04: the arm binds nothing for ANY call now
+//! (`unify_parameterized_with_sort_ref`), so the gate this file was written for
+//! (`Substitution::written_sort`) is deleted with what it gated, and the measurement below
+//! cannot be repeated — there is no binding left to let through. Its three rows are held by
+//! the deletion itself (`wi_80zv8_tie_removed_test`).
 //!
 //! Every row RUNS and names its value.
 //!
-//! ── WHICH ROWS FAIL WHEN IT IS BACKED OUT ────────────────────────────────────
+//! ── WHICH ROWS FAILED WHEN IT WAS BACKED OUT ─────────────────────────────────
 //!
 //! MEASURED (2026-10-03), the call no longer marking its substitution (`check_apply_iter`
-//! leaving `Substitution::written_sort` unset), over this file's 5 rows: 3 FAIL —
+//! leaving `Substitution::written_sort` unset), over this file's 5 rows: 3 FAILED —
 //! [`two_written_receivers_take_a_list_whose_element_type_is_bare`],
 //! [`a_bare_typed_element_is_taken_beside_a_written_receiver`] and
 //! [`the_stdlibs_append_takes_them`], each `expected consistent bindings for the sort's
@@ -133,8 +139,9 @@ fn two_written_receivers_are_still_one_instance() {
 /// the user's 2026-10-04 decision the bare name is the sort at `?` inside its own definition
 /// (proposal 070 §1.3): `keep` takes ANY `Old` and returns one the operation picks, so its
 /// result is no `Old[T = Int64]` to the annotation that asks for one — where `Self` is this
-/// instance, and reads as the control did. (The loader writes the `?`, so no loaded member
-/// reaches the channel with its own sort left out; it is deleted at stage (e).)
+/// instance, and reads as the control did. (The channel was deleted at stage (e), and with
+/// it the gate this file was written for, `Substitution::written_sort`: a bare reference
+/// binds nothing in any call.)
 #[test]
 fn a_receiver_declared_bare_is_any_instance_and_written_self_is_this_one() {
     let program = |ns: &str, own: &str, annotated: &str| {

@@ -43,9 +43,12 @@
 //! WAS MEASURED ON THE BARE SPELLING and has not been taken again part by part: the rows the
 //! change of spelling moved, and what each of them fails under now, are in the ledgers of
 //! `wi_80zv8_bare_own_sort_test` and `wi_80zv8_written_wildcard_test`. Where a comment
-//! credits "§3's tie" for a verdict, the tie is now the written `Self`; the arms that read a
-//! reference to the declaring sort with a slot LEFT OUT are reached by no loaded program —
-//! the loader writes the `?` — and go at stage (e).
+//! credits "§3's tie" for a verdict, the tie is now the written `Self`. The arms that read a
+//! reference to the declaring sort with a slot LEFT OUT as this instance WENT AT STAGE (e) of
+//! proposal 070: such a reference is any instance, read as a slot left out is on every other
+//! sort, and the loader no longer writes a `?` into it. A ledger part below that names one of
+//! them (`self_references_at_own_parameters`, the bare arms of `is_this_instance`, the
+//! unifier's canonical channel, `enforce_member_tie`) can no longer be backed out.
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
@@ -246,7 +249,7 @@
 //! 57. A BOUND SPEC PARAMETER'S VARIABLE READS ITS BINDING — left a wildcard. 2 FAIL:
 //!     [`a_binding_naming_another_spec_parameter_reads_its_binding`] and
 //!     [`a_callback_rows_tail_reads_the_provisions_row`].
-//! 58. A ROW SLOT'S LABELS READ AS SORT APPLICATIONS (`expand_foreign_sorts_and_row_labels`) —
+//! 58. A ROW SLOT'S LABELS READ AS SORT APPLICATIONS (`expand_sorts_and_row_labels`) —
 //!     kept as written. 1 FAILS: [`a_label_in_a_row_slot_is_any_payload`] (both spellings load).
 //!
 //! MEASURED for the seventh /code-review's findings 10, 12 and 15 (the eighth pass), each part
@@ -347,7 +350,7 @@
 //!     [`a_returned_function_narrower_in_its_parameter_is_refused`].
 //! 70. THE MEMBER'S VARIABLES BOUND ALONG THE RELATION AT THE RETURN (`bind_member_vars_along`) —
 //!     not bound. 1 FAILS: [`a_generic_members_wider_return_is_bound_along_the_relation`].
-//! 71. AN UNWRITTEN RETURN SLOT WHOEVER PICKS IT'S (`expand_foreign_sorts_by_polarity`) — the
+//! 71. AN UNWRITTEN RETURN SLOT WHOEVER PICKS IT'S (`expand_sorts_by_polarity`) — the
 //!     member's to instantiate on both sides, as a parameter's. 4 FAIL:
 //!     [`a_members_bare_return_is_a_type_the_caller_does_not_know`],
 //!     [`a_provision_slot_a_parameter_reads_ties_the_return`],

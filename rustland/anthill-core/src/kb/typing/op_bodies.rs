@@ -179,10 +179,7 @@ pub(super) fn check_operation_bodies(
                     kb,
                     UnwrittenFill::Projection(*n),
                     t,
-                    SlotPosition::Body {
-                        sort: parent_of_op,
-                        rigidify: &rigidify_subst,
-                    },
+                    SlotPosition::Body,
                     body_node.span,
                     body_node.owner,
                 );
@@ -383,19 +380,11 @@ pub(super) fn check_operation_bodies(
                             // other(w: "s"))` then ran `takes_int` on a `String` one
                             // (MEASURED, found by /code-review; the bare binding's half
                             // predates this ticket).
-                            //
-                            // NO ENCLOSING SORT (`sort: None`): what a provision's binding
-                            // names is not written in this sort's definition, so a bare
-                            // `Car` there is any `Car` (proposal 070 §1.3) even when this
-                            // body is `Car`'s own — never this instance's.
                             let elim = rigidify_unwritten_sort_params(
                                 kb,
                                 UnwrittenFill::Projection(*name),
                                 &elim,
-                                SlotPosition::Body {
-                                    sort: None,
-                                    rigidify: &op.rigidify,
-                                },
+                                SlotPosition::Body,
                                 op.body_node.span,
                                 op.body_node.owner,
                             )

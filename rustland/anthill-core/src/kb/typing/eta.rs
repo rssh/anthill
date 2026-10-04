@@ -22,7 +22,7 @@ use super::*;
 /// DECLARING SORT's canonical parameter. So a member of a parameterized sort — `SortedSet.
 /// insert(s: SortedSet[T = T, O = O], x: T)`, which declares no brackets at all — now lifts to
 /// a ∀ where it used to lift to a bare arrow, and each reference gets its own `T`/`O` instead
-/// of writing into the sort's canonical channel. That is the intended reading (§5.6: the
+/// of writing into the sort's one variable for each. That is the intended reading (§5.6: the
 /// caller instantiates), and the one place it must NOT be applied is the dictionary pin — see
 /// [`poly_type_body`], with the test that measures it.
 ///
@@ -330,7 +330,6 @@ pub(super) fn operation_as_function_value(
     // evaluator's" invariant this function opens by stating.
     let return_type = open_existential_return(
         kb,
-        impl_parent_sort_of_op(kb, sym),
         sym,
         &op.return_type,
         &HashSet::new(),

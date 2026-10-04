@@ -1708,7 +1708,6 @@ pub(super) fn check_constructor_iter(
     // String] = Box(x)` loaded CLEAN, while the sort-nested spelling of the same
     // declaration was refused `expected Crate[T = String], got Crate[T = Int64]`.
     let parent_sort = kb.sort_of_constructor(ctor_sym);
-    let parent_type = kb.make_sort_ref(parent_sort.unwrap_or(ctor_sym));
     // WI-20260826-JSFHG — read BEFORE `expected` is moved into the seed below.
     let expected_names_an_entity = expected
         .as_ref()
@@ -1865,20 +1864,6 @@ pub(super) fn check_constructor_iter(
     if !field_type_errors.is_empty() {
         return Err(aggregate_errors(field_type_errors));
     }
-    // WI-374 (user-decided 2026-06-12): ENFORCE the §3 parametricity tie for
-    // CONSTRUCTOR fields — the field loops bind the parent sort's canonical
-    // param vars through `T`-typed and bare-self-sort fields, and a
-    // conflicting rebind was recorded but never consulted: `cons(head: 1,
-    // tail: strList)` built `List[T = Int64]` with a String inside. Same
-    // shared gate as the op-call check (per-var details, refinement
-    // re-unified, parent's own params only); no rigid exemption — a rigid
-    // reaches this subst only through a real field argument, where the
-    // conflict is a genuine parametricity violation. Runs BEFORE the
-    // expected-seed below, whose contradicting-hint unify is a deliberate
-    // ignored no-op.
-    if let Some(parent_sym) = parent_sort {
-        enforce_member_tie(kb, &subst, parent_sym, ctor_sym, span, &[])?;
-    }
     // WI-408: materialize the recorded some-coercions (see check_apply_iter) —
     // every return below reads the (possibly rebuilt) `occ`.
     let rebuilt_occ;
@@ -1910,8 +1895,13 @@ pub(super) fn check_constructor_iter(
     } else {
         parent_sort.unwrap_or(ctor_sym)
     };
+    // THE SORT AT ITS OWN PARAMETERS is what meets the expectation (WI-20261001-80ZV8, stage
+    // (e)): those parameters' variables are the ones the fields bound above, so unifying the
+    // two slot by slot fills exactly the ones still free. It used to be the sort's BARE name,
+    // read through the unifier's canonical channel — the one reader that channel had left.
     if let Some(exp) = expected {
-        unify_types(kb, &mut subst, &TermIdView(parent_type), &exp);
+        let own = own_application(kb, parent_sort.unwrap_or(ctor_sym));
+        unify_types(kb, &mut subst, &TermIdView(own), &exp);
     }
 
     // WI-578 — build the parameterized result type via the shared finish tail, so this

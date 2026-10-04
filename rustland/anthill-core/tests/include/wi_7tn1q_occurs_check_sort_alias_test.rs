@@ -117,7 +117,9 @@
 //! shared canonical parameter var), so the change is reasoned, not measured; what the
 //! rows above do show is that reading the fact costs the honest rows nothing. The
 //! `continue` it enables is not a silent skip: the re-bind that set the flag also recorded
-//! a `contradiction_details` entry, and `enforce_member_tie` renders THAT as the refusal.
+//! a `contradiction_details` entry, and `enforce_member_tie` rendered THAT as the refusal.
+//! (That check was deleted at proposal 070's stage (e). What refuses in that state now is
+//! not established: as above, no program here reaches it.)
 //!
 //! WHAT NO ROW MEASURES, said rather than implied: `occurs_in_view`'s bare-head arm in
 //! its OTHER role, inside `bind_resolved`'s non-`Term` carrier path. Nothing in `stdlib/`,

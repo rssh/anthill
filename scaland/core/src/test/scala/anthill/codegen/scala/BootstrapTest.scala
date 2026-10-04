@@ -381,7 +381,7 @@ class BootstrapTest extends munit.FunSuite:
         |  sort Box
         |    sort T = ?
         |    entity Box(value: T)
-        |    operation unbox(b: Box) -> T
+        |    operation unbox(b: Self) -> T
         |  end
         |end
         |""".stripMargin, "box.anthill"))
@@ -471,23 +471,23 @@ class BootstrapTest extends munit.FunSuite:
     ScalaCompile.assertCompiles("monad.anthill's emission", files)
   }
 
-  test("WI-1055 A3: cell.anthill COMPILES — the enclosing sort's own name keeps its parameters") {
-    // `sort Cell[V]` writes `operation get(c: Cell) -> V`: in anthill the sort's
-    // parameters are already in scope at a bare mention of its own name, and Scala
-    // has no bare spelling for that. `def get(c: Cell): V` is `Missing type
-    // parameter for anthill.prelude.Cell`, six times over this one file.
+  test("WI-1055 A3: cell.anthill COMPILES — the enclosing sort keeps its parameters") {
+    // `sort Cell[V]` writes `operation get(c: Self) -> V` — `c: Cell` until proposal
+    // 070, when the bare name was read as this instance: the sort at its own
+    // parameters, which Scala has no bare spelling for. `def get(c: Cell): V` is
+    // `Missing type parameter for anthill.prelude.Cell`, six times over this one file.
     //
-    // FAILS WHEN BACKED OUT, MEASURED: make `Placement.Enclosing` render
-    // `self.scalaName` without re-attaching `self.params` and three tests fail —
-    // this one, the `Pair` one below, and the enum-case coverage CONTROL, whose
-    // `case Cons(head: T, tail: List[T])` names its own sort too. The string
-    // assertion pins WHICH parameters are re-attached, which the compile cannot:
-    // `Cell[Any]` would also compile.
+    // FAILS WHEN BACKED OUT, MEASURED (on the bare name, before the stdlib wrote
+    // `Self`): make `Placement.Enclosing` render `self.scalaName` without attaching
+    // `self.params` and three tests fail — this one, the `Pair` one below, and the
+    // enum-case coverage CONTROL, whose `case Cons(head: T, tail: List[T])` names its
+    // own sort too. The string assertion pins WHICH parameters are attached, which the
+    // compile cannot: `Cell[Any]` would also compile.
     val files = gen(parseStdlib("anthill/prelude/cell.anthill"))
     val src = files.find(_.relPath.endsWith("/Cell.scala"))
       .getOrElse(fail(s"expected Cell.scala in: ${files.map(_.relPath)}")).contents
     assert(src.contains("def get(c: Cell[V]): V"),
-      s"the sort's own parameters must be re-attached at a bare mention:\n$src")
+      s"the sort's own parameters must be attached to `Self`:\n$src")
     ScalaCompile.assertCompiles("cell.anthill's emission", files)
   }
 
@@ -505,8 +505,9 @@ class BootstrapTest extends munit.FunSuite:
     // consumer half has its own test below.
     //
     // FAILS WHEN BACKED OUT: reorder `place` to consult `types.preludeSort` before
-    // `enclosing`, and a bare `Pair` no longer has parameters to re-attach — it is
-    // a 0-argument write against a 2-parameter entry, so `generate` throws.
+    // `enclosing`, and pair.anthill's `p: Self` — read through the sort's own name —
+    // no longer has parameters to attach: it is a 0-argument write against a
+    // 2-parameter entry, so `generate` throws.
     val files = gen(parseStdlib("anthill/prelude/pair.anthill"))
     val src = files.find(_.relPath.endsWith("/Pair.scala"))
       .getOrElse(fail(s"expected Pair.scala in: ${files.map(_.relPath)}")).contents
@@ -519,11 +520,15 @@ class BootstrapTest extends munit.FunSuite:
 
   // ── WI-20261001-80ZV8 (proposal 070): `Self` ───────────────────────────────
 
-  /** One sort, each mention of it inside its own body written `self` — `Self` or the
-    * sort's own name. The two spellings are one type, so the emission is asserted as
-    * BYTE EQUALITY with the named twin rather than as an expectation of its own: a
-    * reading of `Self` that drifted from the name's would show as a diff, whatever
-    * either emits. */
+  /** One sort, each mention of it inside its own body written `self` — `Self`, or the
+    * sort's own name.
+    *
+    * THE TWO ARE NOT ONE TYPE (proposal 070, stage (e)). `Self` is this instance, the
+    * sort at its own parameters. The name is any instance of the sort, inside it as
+    * outside it — and where the sort emits a parameter Bootstrap has no spelling for
+    * that, so the named twin is REFUSED ([[assertBareEnclosingRefused]]). Until stage (e)
+    * the two emitted byte for byte the same — WI-1055 A3 read the bare name as this
+    * instance, the implicit tie — and these rows asserted that equality. */
   private def selfSort(self: String, requires: String = "") =
     s"""namespace anthill.wi80zv8
        |  sort Cell
@@ -536,25 +541,39 @@ class BootstrapTest extends munit.FunSuite:
        |end
        |""".stripMargin
 
-  test("WI-20261001-80ZV8: `Self` emits what the sort's own name emits, and compiles") {
-    // FAILS WHEN BACKED OUT, MEASURED: without `TypeScope.place`'s `Self` arm all three
-    // rows of this group fail. Here the name falls to the last link, an ambient type
-    // called `Self`, and `peek` is refused — `xs.V` projects off a receiver "whose
-    // declared type `Self` is not a bare occurrence of the enclosing sort". The scalar
-    // row loses its equality and the row after it loses its outside-a-sort refusal.
+  /** `source` is refused for writing the enclosing sort `name` BARE, at `at` (a
+    * `file:line:` prefix of the mention), and the refusal offers `Self`.
+    *
+    * FAILS WHEN BACKED OUT, MEASURED (2026-10-04): with `TypeGen`'s `Placement.Enclosing`
+    * arm attaching the sort's parameters to the bare name again — the reading stage (e)
+    * removed — nothing is refused, and every row that calls this fails at its
+    * `intercept`: the three of this group and the qualified one (`WI-1081: what a
+    * qualified reading consults`). */
+  private def assertBareEnclosingRefused(source: String, name: String, at: String): Unit =
+    val err = intercept[BootstrapError](gen(parseSource(source, "name.anthill")))
+    assert(err.getMessage.contains(s"`$name` is the enclosing sort"),
+      s"expected the refusal of the enclosing sort written bare, got: ${err.getMessage}")
+    assert(err.getMessage.contains("`Self` is this instance"),
+      s"the refusal must offer `Self`: ${err.getMessage}")
+    assert(err.getMessage.contains(at), s"expected the refusal at $at: ${err.getMessage}")
+
+  test("WI-20261001-80ZV8: `Self` is the sort at its own parameters, and compiles; the bare name is refused") {
+    // FAILS WHEN BACKED OUT, MEASURED (stage (b)): without `TypeScope.place`'s `Self` arm
+    // all three rows of this group fail. Here the name falls to the last link, an
+    // ambient type called `Self`, and `peek` is refused — `xs.V` projects off a receiver
+    // whose declared type is no instance of the enclosing sort. The scalar row loses its
+    // equality and the row after it loses its outside-a-sort refusal.
     val withSelf = gen(parseSource(selfSort("Self"), "self.anthill"))
-    val withName = gen(parseSource(selfSort("Cell"), "name.anthill"))
-    assert(withSelf.nonEmpty, "expected an emission to compare")
-    assertEquals(withSelf.map(f => (f.relPath, f.contents)),
-      withName.map(f => (f.relPath, f.contents)))
     val src = withSelf.map(_.contents).mkString("\n")
-    // What the equality is OF — pinned so that two equally wrong emissions cannot pass:
-    // the sort's own parameters re-attached, and a projection off a `Self`-typed
-    // receiver read as the sort's own parameter.
+    // The sort's own parameters attached, and a projection off a `Self`-typed receiver
+    // read as the sort's own parameter.
     assert(src.contains("def get(c: Cell[V]): V"), s"expected `def get(c: Cell[V]): V` in:\n$src")
     assert(src.contains("def put(c: Cell[V], v: V): Cell[V]"), s"expected `put` at the sort's own parameters in:\n$src")
     assert(src.contains("def peek(xs: Cell[V]): V"), s"expected `xs.V` off a `Self` receiver to be `V` in:\n$src")
     ScalaCompile.assertCompiles("a sort written with `Self`", withSelf)
+    // THE NAMED TWIN: `c: Cell` is any cell, and the `V` beside it is not that cell's.
+    // Rustland refuses the same line by its carrier rule (`V` has no carrier).
+    assertBareEnclosingRefused(selfSort("Cell"), "Cell", "name.anthill:5:")
   }
 
   test("WI-20261001-80ZV8: a sort receiving on `Self` is self-representing, and `requires` reads `Self` as the sort") {
@@ -568,25 +587,24 @@ class BootstrapTest extends munit.FunSuite:
     //    migrated to `Self` did to `Set`, `Map` and `VectorSpace`.
     //  * `namesIn` decides whether a requirement mentions the carrier. FAILS WHEN BACKED
     //    OUT, MEASURED: read as the word, `requires Eq[T = Self]` does not mention the
-    //    sort and loses the supertrait its named twin keeps. That is the second pair.
+    //    sort and loses the supertrait. That is the second pair.
     for (requires, expected) <- List(
       ("    requires Eq[V]", "trait Cell[V]:"),
       ("    requires Eq[T = Self]", "trait Cell[V] extends _root_.anthill.prelude.Eq[Cell[V]]")
     ) do
       val withSelf = gen(parseSource(selfSort("Self", requires), "self.anthill"))
-      val named = requires.replace("Self", "Cell")
-      val withName = gen(parseSource(selfSort("Cell", named), "name.anthill"))
-      assertEquals(withSelf.map(f => (f.relPath, f.contents)),
-        withName.map(f => (f.relPath, f.contents)), s"under `$requires`")
       val src = withSelf.map(_.contents).mkString("\n")
       assert(src.contains(expected), s"under `$requires`, expected `$expected` in:\n$src")
+    // A REQUIREMENT OVER THE BARE NAME is one over any `Cell`, with the same refusal: the
+    // supertrait would be `Eq[Cell[V]]`, this instance's, which is not what it says.
+    assertBareEnclosingRefused(
+      selfSort("Self", "    requires Eq[T = Cell]"), "Cell", "name.anthill:4:")
   }
 
-  test("WI-20261001-80ZV8: `Self` in an entity field emits what the sort's own name emits") {
+  test("WI-20261001-80ZV8: `Self` in an entity field is the sort at its own parameters; the bare name is refused") {
     // The DATA shape: `link`'s only mention of its sort's parameter is through the sort
-    // itself. Both spellings are read alike by the enum-case coverage rule (WI-1055) —
-    // `Self` contributes the sort's own name to it and nothing more, as a bare mention
-    // does — so both emit the same case, whichever that is.
+    // itself. `Self` contributes the sort's own name to the enum-case coverage rule
+    // (WI-1055) and nothing more, so `link` is a case that mentions no parameter.
     def chain(self: String) =
       s"""namespace anthill.wi80zv8
          |  sort Chain
@@ -597,13 +615,41 @@ class BootstrapTest extends munit.FunSuite:
          |end
          |""".stripMargin
     val withSelf = gen(parseSource(chain("Self"), "self.anthill"))
-    val withName = gen(parseSource(chain("Chain"), "name.anthill"))
-    assert(withSelf.nonEmpty, "expected an emission to compare")
-    assertEquals(withSelf.map(f => (f.relPath, f.contents)),
-      withName.map(f => (f.relPath, f.contents)))
     val src = withSelf.map(_.contents).mkString("\n")
     assert(src.contains("next: Chain[V]"), s"expected the field at the sort's own parameters in:\n$src")
     ScalaCompile.assertCompiles("a data sort written with `Self`", withSelf)
+    // `next: Chain` holds ANY chain — rustland loads it and derives no domain for the
+    // sort (`wi_80zv8_tie_removed_test`) — and has no Scala spelling here.
+    assertBareEnclosingRefused(chain("Chain"), "Chain", "name.anthill:5:")
+  }
+
+  test("WI-20261001-80ZV8: a projection off a receiver typed by the sort's bare NAME is that receiver's own") {
+    // ONLY `Self` IS THIS INSTANCE. `b: Box` inside `sort Box` is any box (proposal 070
+    // §1.3), so `b.E` is `b`'s own `E` — a skolem Scala has no term for — and not the
+    // sort's. Driven on a sort whose one parameter is ERASED: there the receiver's own
+    // type still emits (`Box`, the one Scala type every instance has), so the projection
+    // is what is left to refuse. Where the sort emits a parameter the receiver's type is
+    // refused first, which is the rows above.
+    //
+    // FAILS WHEN BACKED OUT, MEASURED (2026-10-04): let `TypeScope.projection` read the
+    // sort's own name as it reads `Self` and the first refusal below is the CONTROL's —
+    // "`E` is an effect row, not a type", the sort's own parameter answering.
+    def box(self: String) =
+      s"""namespace anthill.wi80zv8
+         |  sort Box
+         |    effects E = ?
+         |    operation leak(b: $self) -> b.E
+         |  end
+         |end
+         |""".stripMargin
+    val named = intercept[BootstrapError](gen(parseSource(box("Box"), "name.anthill")))
+    assert(named.getMessage.contains("is neither `Self` nor the enclosing sort's carrier parameter"),
+      s"a receiver typed by the sort's bare name is any instance: ${named.getMessage}")
+    // CONTROL — `b: Self` is this instance, so `b.E` IS the sort's `E`: placed, and
+    // refused for what it is. Passes either way, by design.
+    val self = intercept[BootstrapError](gen(parseSource(box("Self"), "self.anthill")))
+    assert(self.getMessage.contains("`E` is an effect row, not a type"),
+      s"a projection off `Self` is the sort's own parameter: ${self.getMessage}")
   }
 
   test("WI-20261001-80ZV8: a projection off a receiver typed by the sort's CARRIER parameter is the sort's own parameter") {
@@ -614,8 +660,9 @@ class BootstrapTest extends munit.FunSuite:
     // the parameter directly.
     //
     // FAILS WHEN BACKED OUT, MEASURED: without `TypeScope.projection`'s carrier arm the
-    // projection is refused — "whose declared type `C` is not a bare occurrence of the
-    // enclosing sort" — here, and for `iterable.anthill` in seven corpus rows.
+    // projection is refused — "whose declared type `C` is neither `Self` nor the
+    // enclosing sort's carrier parameter" (then: "is not a bare occurrence of the
+    // enclosing sort") — here, and for `iterable.anthill` in seven corpus rows.
     def spec(ret: String) =
       s"""namespace anthill.wi80zv8
          |  sort Walk
@@ -644,7 +691,7 @@ class BootstrapTest extends munit.FunSuite:
         |  end
         |end
         |""".stripMargin, "element.anthill")))
-    assert(element.getMessage.contains("nor that sort's carrier parameter"),
+    assert(element.getMessage.contains("nor the enclosing sort's carrier parameter"),
       s"a receiver typed by a non-carrier parameter has no tie: ${element.getMessage}")
     // CONTROL — and a sort that receives on ITSELF has no carrier parameter at all: its
     // `T` is an element, whatever position it is declared in (rustland's
@@ -659,7 +706,7 @@ class BootstrapTest extends munit.FunSuite:
         |  end
         |end
         |""".stripMargin, "stack.anthill")))
-    assert(selfReceiving.getMessage.contains("nor that sort's carrier parameter"),
+    assert(selfReceiving.getMessage.contains("nor the enclosing sort's carrier parameter"),
       s"a self-receiving sort's element has no tie: ${selfReceiving.getMessage}")
   }
 
@@ -818,7 +865,7 @@ class BootstrapTest extends munit.FunSuite:
         |  sort Reader
         |    sort T = ?
         |    sort E = ?
-        |    operation source(r: Reader) -> Stream[T = T, E = E]
+        |    operation source(r: Self) -> Stream[T = T, E = E]
         |  end
         |end
         |""".stripMargin, "reader.anthill"))
@@ -1038,7 +1085,7 @@ class BootstrapTest extends munit.FunSuite:
         |  sort Graded
         |    sort T = ?
         |    sort E = ?
-        |    operation of(g: Graded) -> Graded[T = T, E = E]
+        |    operation of(g: Self) -> Graded[T = T, E = E]
         |  end
         |end
         |""".stripMargin, "graded.anthill"))
@@ -2152,8 +2199,8 @@ class BootstrapTest extends munit.FunSuite:
       |  sort Bag
       |    sort T = ?
       |    requires Cmp[T]
-      |    operation empty() -> Bag
-      |    operation insert(s: Bag, x: T) -> Bag
+      |    operation empty() -> Self
+      |    operation insert(s: Self, x: T) -> Self
       |  end
       |
       |  sort Space
@@ -2183,11 +2230,11 @@ class BootstrapTest extends munit.FunSuite:
       .getOrElse(fail(s"expected $sort.scala in: ${files.map(_.relPath)}")).contents
 
   test("WI-1066: a SELF-REPRESENTING algebra's `requires` is over its ELEMENT") {
-    // `Bag`'s operations take `s: Bag`, so the carrier is `Bag` and `T` is content —
+    // `Bag`'s operations take `s: Self`, so the carrier is `Bag` and `T` is content —
     // `requires Cmp[T]` constrains the element and claims nothing about `Bag`. This is
     // set.anthill's shape (WI-596 made `Set` self-representing) and map.anthill's.
     //
-    // ANY operation and not the first: `empty() -> Bag` is declared ahead of `insert`
+    // ANY operation and not the first: `empty() -> Self` is declared ahead of `insert`
     // and RETURNS the sort rather than receiving it. Reading only the first operation
     // classifies `Bag` as carried by `T` and this test goes green for the wrong reason
     // — which is why the fixture declares them in that order.
@@ -4603,7 +4650,7 @@ class BootstrapTest extends munit.FunSuite:
         |  sort Pair
         |    sort A = ?
         |    sort B = ?
-        |    operation fst(p: Pair) -> A
+        |    operation fst(p: Self) -> A
         |  end
         |end
         |""".stripMargin, "project_pair.anthill")
@@ -4767,7 +4814,7 @@ class BootstrapTest extends munit.FunSuite:
         |    sort Payload = ?
         |    operation scalar(x: anthill.prelude.Int64) -> anthill.prelude.Int64
         |    operation shadowed(p: app.model.Payload) -> Payload
-        |    operation self(h: app.Holder) -> Int64
+        |    operation self(h: app.Holder[Payload = Payload]) -> Int64
         |  end
         |end
         |""".stripMargin, "qualified_precedence.anthill")
@@ -4778,12 +4825,23 @@ class BootstrapTest extends munit.FunSuite:
       s"a qualified scalar is still the host carrier:\n$src")
     assert(src.contains("def shadowed(p: _root_.app.model.Payload): Payload"),
       s"a qualified name must not be answered by a same-named type PARAMETER:\n$src")
-    // THE ENCLOSING SORT DOES answer a qualified self-mention, and re-attaches its own
-    // parameters exactly as the bare one does (WI-1055 A3) — in anthill they are in
-    // scope whichever way the sort is spelled.
+    // THE ENCLOSING SORT DOES answer a qualified self-mention, and renders it exactly
+    // as the unqualified one — by the sort's own emitted name, where the file-wide
+    // table would write `_root_.app.Holder`.
     assert(src.contains("def self(h: Holder[Payload]): _root_.scala.Long"),
-      s"a qualified mention of the enclosing sort must re-attach its parameters:\n$src")
+      s"a qualified mention of the enclosing sort must be read as the enclosing sort:\n$src")
     ScalaCompile.assertCompiles("qualified precedence", files)
+    // …AND WRITTEN BARE it is refused exactly as the unqualified one is (proposal 070
+    // stage (e)): any `Holder`, whichever way the sort is spelled. Until then it had
+    // the sort's own parameters attached (WI-1055 A3).
+    assertBareEnclosingRefused(
+      """namespace app
+        |  sort Holder
+        |    sort Payload = ?
+        |    operation self(h: app.Holder) -> Int64
+        |  end
+        |end
+        |""".stripMargin, "app.Holder", "name.anthill:4:")
   }
 
   test("WI-1081: a qualified name outside the emitted closure is REFUSED, not re-anchored") {
@@ -4861,8 +4919,8 @@ class BootstrapTest extends munit.FunSuite:
         |  sort Box
         |    sort T = ?
         |    operation pinned[L, R](r1: Box[T = L], r2: Box[T = R], c: (x: r1.T, y: r2.T) -> Bool) -> Bool
-        |    operation tied(b: Box) -> b.T
-        |    operation shadow(app: Box) -> app.T
+        |    operation tied(b: Self) -> b.T
+        |    operation shadow(app: Self) -> app.T
         |  end
         |end
         |""".stripMargin, "projection.anthill")
@@ -4871,19 +4929,20 @@ class BootstrapTest extends munit.FunSuite:
       .getOrElse(fail("expected Box.scala")).contents
     assert(src.contains("c: (L, R) => _root_.scala.Boolean"),
       s"a projection off an APPLIED receiver is the argument that receiver wrote:\n$src")
-    // THE TIE, which passes either way BY DESIGN and is here as the control for the arm
-    // above: a bare occurrence of the ENCLOSING sort ties to that sort's own parameters
-    // (`docs/design/type-parameter-scoping.md` §3), so `b.T` is `T` — the same answer
-    // dropping the prefix gave, and the reason the corpus compiled at all.
+    // THIS INSTANCE, which passes either way BY DESIGN and is here as the control for
+    // the arm above: a receiver typed `Self` is the enclosing sort at its own parameters
+    // (proposal 070 §1.2), so `b.T` is `T` — the same answer dropping the prefix gave,
+    // and the reason the corpus compiled at all. (Written `b: Box` until stage (e) of
+    // that proposal, when the bare name was read as this instance.)
     assert(src.contains("def tied(b: Box[T]): T"),
-      s"a projection off a bare enclosing receiver is the sort's own parameter:\n$src")
+      s"a projection off a `Self` receiver is the sort's own parameter:\n$src")
     // A VALUE BINDING SHADOWS A PACKAGE, which is anthill's own head-segment rule: this
     // parameter is NAMED `app`, and `app` is also the package this file emits into. Read
     // as a package, `app.T` names nothing in `app` and would be a refusal — so emitting
     // `T` is the value binding winning, not a coincidence.
     assert(src.contains("def shadow(app: Box[T]): T"),
       s"a value binding must be consulted before the packages:\n$src")
-    ScalaCompile.assertCompiles("projections off pinned and bare receivers", files)
+    ScalaCompile.assertCompiles("projections off pinned and `Self` receivers", files)
   }
 
   test("WI-1081: a projection Bootstrap cannot read off the receiver is REFUSED") {
@@ -4911,8 +4970,8 @@ class BootstrapTest extends munit.FunSuite:
     def box(op: String) = boxWith("    sort T = ?", op)
 
     val foreign = intercept[BootstrapError](gen(box("operation f(m: Marker) -> m.T")))
-    assert(foreign.getMessage.contains("not a bare occurrence of the enclosing sort"),
-      s"a bare NON-enclosing receiver has no tie: ${foreign.getMessage}")
+    assert(foreign.getMessage.contains("is neither `Self` nor the enclosing sort's carrier parameter"),
+      s"a receiver typed by another sort is no instance of this one: ${foreign.getMessage}")
     val arrow = intercept[BootstrapError](gen(box("operation f(g: (x: Int64) -> Int64) -> g.T")))
     assert(arrow.getMessage.contains("an arrow type"),
       s"the refusal must say what the receiver was declared as: ${arrow.getMessage}")
@@ -4937,12 +4996,12 @@ class BootstrapTest extends munit.FunSuite:
     // THE MEMBER MUST BE THE SORT'S, not the OPERATION's: `params` merges the two, and
     // reading it answered `b.U` with the operation's own binder — a name `Box` never
     // declared. CONTROL: `b.T` in the same shape emits (the test above).
-    val opParam = intercept[BootstrapError](gen(box("operation f[U](b: Box) -> b.U")))
+    val opParam = intercept[BootstrapError](gen(box("operation f[U](b: Self) -> b.U")))
     assert(opParam.getMessage.contains("declares no parameter `U`"),
       s"an operation's own type parameter is not a member of the sort: ${opParam.getMessage}")
     // A PROJECTION OFF A PROJECTION: the tail is appended to what the head denotes and
     // never looked up on its own, and what `b.T` denotes is a type with no members here.
-    val chained = intercept[BootstrapError](gen(box("operation f(b: Box) -> b.T.U")))
+    val chained = intercept[BootstrapError](gen(box("operation f(b: Self) -> b.T.U")))
     assert(chained.getMessage.contains("projects off the projection `b.T`"),
       s"a two-member path must be refused at the chain: ${chained.getMessage}")
     // A RECEIVER THAT IS ITSELF A ROW / TUPLE / VARIABLE — the remaining `Other` arms,
@@ -5044,7 +5103,7 @@ class BootstrapTest extends munit.FunSuite:
         |  sort Payload
         |    sort T = ?
         |    requires Eq[T]
-        |    operation use(p: app.Payload) -> Int64
+        |    operation use(p: app.Payload[T = T]) -> Int64
         |  end
         |end
         |""".stripMargin, "carrier_self.anthill")).head.contents
@@ -5099,7 +5158,7 @@ class BootstrapTest extends munit.FunSuite:
         |  sort Box
         |    sort T = ?
         |    effects E = ?
-        |    operation weird[E](s: Box, x: E) -> Int64 effects s.E
+        |    operation weird[E](s: Self, x: E) -> Int64 effects s.E
         |  end
         |end
         |""".stripMargin, "row_projection.anthill")).head.contents

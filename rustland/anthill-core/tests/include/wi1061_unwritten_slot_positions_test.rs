@@ -253,6 +253,11 @@ fn a_body_that_holds_for_every_instantiation_still_loads() {
 /// made the anonymous filler wrong at top level in WI-1059, and it is still wrong here; the
 /// difference is that a foreign nested slot has no other name to desynchronize from.
 ///
+/// SINCE PROPOSAL 070's STAGE (e) THE TIE IS WRITTEN OR IT IS NOT THERE: the fixture says
+/// `Self`, whose slot is the sort's parameter at every depth, and a `Wrap` written bare in
+/// the same place would be any wrap. What follows is the measurement from when a bare self
+/// reference took the tie.
+///
 /// CONTROL: narrow the self tie to the top-level position and this FAILS at
 /// `expected Wrap[T = ?T], got Wrap[T = ?T] (these render alike but are not the same type)`.
 /// It is the ONLY row that fails, and the stdlib loads clean under that revert — measured, so

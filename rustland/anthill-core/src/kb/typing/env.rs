@@ -101,9 +101,9 @@ pub struct TypingEnv {
     ///    `Iterable` member body returns a stream at the enclosing rigids instead of
     ///    dangling fresh `?_`), and what a projection off the spec's own carrier
     ///    reads (`this_instance_member`). A per-call op param is not one of them.
-    ///    `enforce_member_tie` and `carrier_provision_short_bindings` also take
-    ///    this view, but are indifferent to the choice: both look up only vids they
-    ///    got from `sort_type_params_as_pairs`, which an op param's vid never is.
+    ///    `carrier_provision_short_bindings` also takes this view, but is indifferent
+    ///    to the choice: it looks up only vids it got from
+    ///    `sort_type_params_as_pairs`, which an op param's vid never is.
     pub(super) param_rigids: Rc<Vec<(VarId, TermId)>>,
     /// How many leading entries of [`Self::param_rigids`] are the enclosing SORT's
     /// (see that field). The producer appends the op's own after them, so the

@@ -27,10 +27,10 @@
 //! only the signature leaves a destructured field with no element at all
 //! ([`a_destructured_field_carries_the_instances_element`]).
 //!
-//! A BARE self parameter is the one thing deliberately left alone: it is already tied, by
-//! `unify_parameterized_with_sort_ref`, and writing the tie in makes it strict enough that
-//! WI-424's sibling-call seeding refuses `List.mapElems`' `reverse` at `Dst`
-//! ([`a_bare_self_parameter_is_left_to_the_canonical_channel`]).
+//! A BARE self parameter was the one thing deliberately left alone: it was already tied, by
+//! `unify_parameterized_with_sort_ref`, and writing the tie in made it strict enough that
+//! WI-424's sibling-call seeding refused `List.mapElems`' `reverse` at `Dst`
+//! ([`a_sibling_called_at_another_element_runs`]).
 //!
 //! ## Two producers, so the fix is at the DECLARATION
 //!
@@ -67,14 +67,15 @@
 //! a `?` written there is the same variable. So the fixtures write the tie — `E = E`, `Self`
 //! — and each row keeps its verdict through ordinary typing of a written slot: the
 //! laundering declaration is still refused at `widen.return`, the destructured field still
-//! carries the instance's element. The loader writes the `?` into the elided slot, so
-//! `elaborate_self_ties` has nothing left to rewrite in a declaration a program loads, and
-//! goes at stage (e); THE TABLE BELOW IS ITS HISTORY, measured on the elided spelling. What
+//! carries the instance's element. `elaborate_self_ties` had nothing left to rewrite in a
+//! declaration a program loads, and was DELETED at stage (e) with the rest of the tie
+//! (`wi_80zv8_tie_removed_test`); THE TABLE BELOW IS ITS HISTORY, measured on the elided
+//! spelling while the pass stood, and none of it can be taken again. What
 //! the elided spelling means now is pinned in `wi_80zv8_bare_own_sort_test`, and
 //! `wi1078_…::a_self_sort_return_that_leaves_a_slot_open_is_opened_at_the_consumer` holds
 //! the three readings side by side.
 //!
-//! ## What fails when this is backed out — one revert each, whole `anthill-core` suite
+//! ## What failed when the pass was backed out — HISTORY: one revert each, whole `anthill-core` suite
 //!
 //! | revert | cost |
 //! |---|---|
@@ -86,13 +87,16 @@
 //! | BARE self parameters rewritten as well | the stdlib stops loading (`expected List[T = ?T], got List[T = ?Dst]` in `List.mapElems`) — **40** `--lib` tests and all four corpus tiers |
 //! | the `declares_self_param` gate dropped | **0**, and NOT for want of trying — see [`no_self_parameter_leaves_the_slot_open`] |
 //!
-//! Each was run alone against the whole `anthill-core` suite. Rows that pass either way, by
+//! Each was run alone against the whole `anthill-core` suite. Rows that passed either way, by
 //! design, say so at their own site: [`a_written_slot_is_never_touched`],
-//! [`a_foreign_return_still_opens_per_call`], [`an_elided_self_return_still_threads_the_element`],
-//! [`the_field_tie_is_a_fixpoint`].
+//! [`a_foreign_return_still_opens_per_call`], [`an_elided_self_return_still_threads_the_element`].
+//! (`the_field_tie_is_a_fixpoint` pinned an invariant of the pass itself and went with it;
+//! the row the table calls `a_bare_self_parameter_is_left_to_the_canonical_channel` is
+//! [`a_sibling_called_at_another_element_runs`] now — neither the bare parameter nor the
+//! channel is left.)
 //!
-//! REFERENCE: WI-1063 (the polarity rule, the four opening sites, the FOREIGN-only scope and
-//! the two fillers it rejected at `SlotPosition::fill_self`), WI-1078 (the unbound-variable
+//! REFERENCE: WI-1063 (the polarity rule, the four opening sites, and — until proposal 070's
+//! stage (e) — the FOREIGN-only scope with the two fillers it rejected), WI-1078 (the unbound-variable
 //! classification this reuses), WI-1059/WI-1061 (the parameter side of the same walk), WI-374
 //! + `docs/design/type-parameter-scoping.md` §3 (the tie, and the `cons(head: T, tail: List)`
 //! example this implements literally), `docs/kernel-language.md` §8.1,
@@ -293,15 +297,11 @@ fn a_destructured_field_carries_the_instances_element() {
 /// a hypothetical `mk() -> S[…]` whose body pins a row. Telling those apart needs the universal
 /// spelling (`empty[T]() -> List[T = T]`), which is **WI-1083**'s `PolyType`.
 ///
-/// BACK-OUT: **0**, and not for want of trying — this row records a guard I could not drive.
-/// With the gate removed, the whole `anthill-core` suite stays green (this row included), all
-/// four corpus tiers load with zero errors, and two purpose-built fixtures failed to reach the
-/// hazard: `Box.mk() -> Box` bound twice in one body and consumed at `Int64` and `String`
-/// loads either way, because each call gets a fresh `Substitution` and the raw var does not
-/// alias across the two lets. So the gate is kept on the WI-1063/WI-374 argument alone — a
-/// result type must not carry a global canonical var — and that argument is stated here rather
-/// than dressed up as a measurement. If a later ticket reaches the hazard, this is the row to
-/// rewrite; if one proves it unreachable by construction, the gate should go.
+/// HISTORY: while the elaboration stood this row recorded a guard that could not be driven
+/// (`declares_self_param`: an operation with no parameter naming its sort was not rewritten;
+/// removing the guard failed nothing). Guard and pass are gone; what the row holds is the
+/// behaviour — a producer with nothing to fix its `T` takes it from each caller's expected
+/// type.
 #[test]
 fn no_self_parameter_leaves_the_slot_open() {
     assert!(
@@ -445,21 +445,19 @@ fn a_bodyless_member_cannot_launder_either() {
     );
 }
 
-/// A BARE self parameter is deliberately NOT rewritten, and this row is why that is a rule
-/// rather than an oversight. `unify_parameterized_with_sort_ref` already binds the sort's
-/// canonical vars whenever one side is a bare sort reference, so the tie is reached without
-/// help — and writing it in makes the binding strict, at which point WI-424's seeding (which
-/// pins a same-sort sibling call's canonical params to the ENCLOSING instance's rigids before
-/// argument unification) refuses a sibling called at a different element.
+/// A SIBLING CALLED AT ANOTHER ELEMENT RUNS. `List.mapElems[Dst]` does
+/// `reverse(mapElemsOnto(xs, f, seed))`, where `reverse(xs: Self)` is reached at `Dst`, not at
+/// the enclosing `T`. This row runs it.
 ///
-/// `List.mapElems[Dst]` is exactly that call: it does `reverse(mapElemsOnto(xs, f, seed))`,
-/// where `reverse(xs: List)` is a bare self parameter reached at `Dst`, not at the enclosing
-/// `T`. This row runs it.
-///
-/// BACK-OUT (rewriting bare self parameters too): the stdlib stops loading at `expected List[T
-/// = ?T], got List[T = ?Dst]`, and with it all four corpus tiers.
+/// HISTORY: the row was `a_bare_self_parameter_is_left_to_the_canonical_channel`. While the
+/// tie was implicit, `reverse(xs: List)` was a BARE self parameter, which the elaboration
+/// left alone because the unifier's canonical channel already tied it — and writing the tie
+/// in made WI-424's seeding refuse this very call (`expected List[T = ?T], got List[T =
+/// ?Dst]`, the stdlib and all four corpus tiers with it). Seeding, channel and elaboration
+/// are all gone (proposal 070, stages (c) and (e)); `wi_80zv8_sibling_call_test` holds the
+/// rule this row exercises.
 #[test]
-fn a_bare_self_parameter_is_left_to_the_canonical_channel() {
+fn a_sibling_called_at_another_element_runs() {
     let mut interp = crate::common::interp_for(
         "namespace test.wi1082.mapped\n\
          \x20 import anthill.prelude.{List, Int64, String}\n\
@@ -475,49 +473,6 @@ fn a_bare_self_parameter_is_left_to_the_canonical_channel() {
     assert!(
         matches!(n, Value::Int(1)),
         "`mapElems` reverses at `Dst`, a DIFFERENT element from its enclosing `T`; got {n:?}",
-    );
-}
-
-/// THE FIELD REWRITE IS A FIXPOINT, which it has to be: unlike the signature cache — rebuilt
-/// from the `OperationInfo` facts on every type-check — `entity_field_types` is mutated in
-/// place, so a second type-check (what `load_all` into a live KB performs) reads this pass's own
-/// output. An already-elaborated slot holds the sort's parameter, which is not a flexible
-/// variable, so it is left alone.
-///
-/// BACK-OUT: passes either way — it pins an invariant of the implementation rather than the
-/// rule. It fails if the field position's "unwritten" test ever widens to something that
-/// matches its own fill.
-#[test]
-fn the_field_tie_is_a_fixpoint() {
-    let mut kb = crate::common::load_kb_with(
-        "namespace test.wi1082.fix\n\
-         \x20 sort Box\n\
-         \x20   sort T = ?\n\
-         \x20   entity leaf(v: T)\n\
-         \x20   entity node(next: Self)\n\
-         \x20 end\n\
-         end\n",
-    );
-    let ctor = kb
-        .try_resolve_symbol("test.wi1082.fix.Box.node")
-        .expect("the constructor is defined");
-    let before = format!(
-        "{:?}",
-        kb.entity_field_types(ctor).expect("fields").to_vec()
-    );
-    let sorts: Vec<_> = kb
-        .try_resolve_symbol("test.wi1082.fix.Box")
-        .into_iter()
-        .collect();
-    let errs = anthill_core::kb::typing::type_check_sorts(&mut kb, &sorts);
-    assert!(errs.is_empty(), "the re-check must stay clean: {errs:?}");
-    let after = format!(
-        "{:?}",
-        kb.entity_field_types(ctor).expect("fields").to_vec()
-    );
-    assert_eq!(
-        before, after,
-        "a second type-check must leave an already-elaborated field type alone",
     );
 }
 

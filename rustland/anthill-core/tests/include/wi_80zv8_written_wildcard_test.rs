@@ -3,10 +3,10 @@
 //!
 //! Inside `sort Car`, `Car[V = ?]` used to be a second spelling of `Self`: the `?` took the
 //! sort's own parameter, "`?` and an omitted slot are one type", and the omitted slot was the
-//! tie. It means what it says now — ANY `Car` — and so does the bare `Car` there, whose `?`
-//! the loader writes (`wi_80zv8_bare_own_sort_test`). In a parameter the caller picks it; in
-//! a return the operation does, and each call opens it; in a provision the carrier provides
-//! the spec at every one.
+//! tie. It means what it says now — ANY `Car` — and so does the bare `Car` there
+//! (`wi_80zv8_bare_own_sort_test`; the loader wrote its `?` until stage (e), and the slot is
+//! simply left out since). In a parameter the caller picks it; in a return the operation
+//! does, and each call opens it; in a provision the carrier provides the spec at every one.
 //!
 //! Each row RUNS or names its refusal.
 //!
@@ -14,12 +14,20 @@
 //!
 //! MEASURED (2026-10-04, on the tree this file is committed with), each part present but
 //! disabled, on the temporary binary `wi_80zv8_bare_own_sort_test` describes (28 suites, 707
-//! rows). Rows of that file are named `bare_own_sort …` below: a bare name is this file's
-//! `?` now, so they ride the same parts.
+//! rows). Rows of that file are named `bare_own_sort …` below: while the loader wrote a `?`
+//! into the enclosing sort's bare name, that name was this file's `?` and rode the same
+//! parts.
 //!
-//! 1. THE TIE IS FOR A SLOT NOT WRITTEN (typing/elaborate.rs
+//! STAGE (e) OF THE PROPOSAL, the same day: part 1 is DELETED — there is no tie left for a
+//! written `?` to be taken into — and is kept as the record of what it held. Parts 2, 8 and
+//! 11 were measured again on that tree (52 suites, 1037 rows; `wi_80zv8_tie_removed_test`)
+//! and their lists are that measurement's: the bare name is a slot left out now, so no
+//! `bare_own_sort` row rides parts 2 and 8 any more, and the bare carrier binding has a row
+//! of its own under part 11.
+//!
+//! 1. (DELETED AT STAGE (e).) THE TIE IS FOR A SLOT NOT WRITTEN (typing/elaborate.rs
 //!    `rigidify_unwritten_sort_params`: the self half taken for a written `?` again).
-//!    16 FAIL: six here — [`a_parameter_at_a_wildcard_takes_any_instance`],
+//!    16 FAILED: six here — [`a_parameter_at_a_wildcard_takes_any_instance`],
 //!    [`a_body_may_not_read_a_wildcard_parameter_as_this_instance`],
 //!    [`a_return_at_a_wildcard_is_opened_at_the_call`],
 //!    [`a_field_at_a_wildcard_holds_any_instance`],
@@ -37,14 +45,13 @@
 //!    `wi_80zv8_written_receivers
 //!    a_receiver_declared_bare_is_any_instance_and_written_self_is_this_one`.
 //! 2. A PROVISION'S OWN VARIABLES ARE OPENED IN THE CARRIER'S VIEW (typing/subtype.rs
-//!    `ProvisionOpening::open_view` opening nothing). 6 FAIL:
+//!    `ProvisionOpening::open_view` opening nothing). 5 FAIL:
 //!    [`a_provision_at_a_wildcard_is_provided_at_every_instance`],
 //!    [`a_variable_a_provision_writes_twice_is_one_variable`], the controls of
 //!    [`a_body_may_not_pin_a_parameter_typed_by_a_projection`] and
-//!    [`a_member_may_not_tie_a_projection_to_the_parameter_beside_it`],
+//!    [`a_member_may_not_tie_a_projection_to_the_parameter_beside_it`], and
 //!    `wi_0rp29_member_rule
-//!    a_binding_naming_the_carrier_at_a_wildcard_is_an_independent_instance_control`, and
-//!    `bare_own_sort a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard`.
+//!    a_binding_naming_the_carrier_at_a_wildcard_is_an_independent_instance_control`.
 //! 3. A SPEC PARAMETER A PROVISION LEAVES OUT IS OPEN (`provision_leaves_param_open`
 //!    answering no). 2 FAIL: [`a_spec_parameter_a_provision_leaves_out_is_any_type`] and
 //!    `wi_0rp29_member_rule a_wildcard_bound_to_a_member_variable_is_not_frozen`.
@@ -70,11 +77,10 @@
 //!    fill after the parameter-projection fixpoint). 1 FAILS:
 //!    [`a_body_may_not_pin_a_parameter_typed_by_a_projection`].
 //! 8. THE BODY PACKS A RETURN WRITTEN AT `?` (typing/op_bodies.rs, the declared return read
-//!    through what the body bound). 6 FAIL:
+//!    through what the body bound). 5 FAIL:
 //!    [`a_body_packs_a_witness_into_a_return_at_a_wildcard`],
 //!    [`a_return_at_a_wildcard_is_opened_at_the_call`], `wi1078
-//!    the_four_return_spellings_agree`, `bare_own_sort
-//!    a_bare_reference_to_the_enclosing_sort_is_the_sort_at_a_wildcard` (its `some`), and —
+//!    the_four_return_spellings_agree`, and —
 //!    through the `get` member their fixture shares —
 //!    [`a_body_may_not_pin_a_parameter_typed_by_a_projection`] and
 //!    [`a_member_may_not_tie_a_projection_to_the_parameter_beside_it`].
@@ -95,9 +101,13 @@
 //!    `bind_spec_params_from_carrier_param`). Skipped, as it used to be: 3 FAIL —
 //!    [`a_wildcard_binding_holds_its_argument_to_the_sort_it_names`],
 //!    [`a_binding_the_receiver_leaves_open_is_bound_at_the_calls_own_variables`] and
-//!    `wi_0rp29_call_binding an_alias_of_the_carrier_in_a_binding_is_the_carrier`. Skipped,
-//!    and a rigid read as not determined (the code as it stood): 4 FAIL, those and
-//!    [`a_binding_resting_on_the_callers_own_parameter_is_bound`].
+//!    `wi_80zv8_tie_removed a_bare_carrier_binding_is_any_instance_and_still_the_carrier`,
+//!    one of whose spellings writes `Car[V = ?]`. Skipped, and a rigid read as not
+//!    determined (the code as it stood): 4 FAIL, those and
+//!    [`a_binding_resting_on_the_callers_own_parameter_is_bound`]. The alias row that failed
+//!    here while the loader wrote the alias's `?` (`wi_0rp29_call_binding
+//!    an_alias_of_the_carrier_in_a_binding_is_the_carrier`) is held by the binder's arm for
+//!    the carrier's bare name now (`wi_80zv8_tie_removed_test`, part 1).
 //!
 //! NOT MEASURED BY ANY ROW, and said so:
 //!

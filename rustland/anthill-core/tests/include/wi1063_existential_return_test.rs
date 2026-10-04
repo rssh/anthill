@@ -230,7 +230,7 @@ fn a_row_polymorphic_consumer_accepts_a_skolem() {
 }
 
 /// THE CALLEE'S OWN SORT IS NOT EXISTENTIAL IN ITS RETURN, and this row is the reason the
-/// opening is keyed the way [`expand_foreign_sort_application`] keys the parameter side. A
+/// opening is keyed the way [`expand_sort_application`] keys the parameter side. A
 /// self-sort return (`-> List` declared inside `sort List`) is the §3 parametricity tie: it
 /// names THIS instance's parameter, which the call's own argument unification pins. Minting a
 /// skolem there would refuse every self-returning member in the stdlib.
@@ -238,6 +238,11 @@ fn a_row_polymorphic_consumer_accepts_a_skolem() {
 /// Both halves are driven together because the gate has two ways to be wrong: skip too much
 /// (a FOREIGN partial return on a MEMBER operation left unopened — `Box.open_stream` here) or
 /// skip too little (the self-sort return above).
+///
+/// SINCE PROPOSAL 070's STAGE (e) THERE IS NO SELF GATE: a return that leaves a slot of the
+/// callee's own sort out is opened like any other. The first half holds because its fixture
+/// WRITES the instance — `-> List[T = Self]` — whose slots are the sort's parameters, bound by
+/// the argument; what follows is the gate's history.
 ///
 /// CONTROL, driven per half. `Box.open_stream`'s chain LOADS on main. The `Wrap` half loads on
 /// main and after (2597 facts, identical), and with the self gate dropped
