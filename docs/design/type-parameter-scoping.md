@@ -14,9 +14,11 @@ WI-374 (bare-reference expansion — a *convenience*, no longer load-bearing).
 (Draft, 2026-10-03): §3's first bullet (the implicit self tie), its WI-1082
 paragraph and its "Two exceptions"; §4's member-tie enforcement; §5's "The
 scope is the foreign slots" paragraph. Under 070 a bare or partial sort is
-fresh everywhere, `Self` writes this instance, and inside its own definition a
-sort is written in full. Until those stages of 070 are implemented, §3–§5 below
-describe the code. **Delivered** (070 stage b): §1's projection is `s.Self` —
+fresh everywhere — inside its own definition too — `Self` writes this instance,
+and an operation that uses its sort's parameter beside the sort at an open slot
+must have a carrier (070 §1.4). Until stage (e) of 070 is implemented, §3–§5
+below describe code the loader no longer feeds: it writes the `?` into a slot
+the enclosing sort's own reference leaves out. **Delivered** (070 stage b): §1's projection is `s.Self` —
 it was `s.Sort` — and `Self` is a type name inside a sort's definition.
 
 ## The core principle

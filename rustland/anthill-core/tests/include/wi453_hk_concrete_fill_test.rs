@@ -40,7 +40,7 @@ end
 
 namespace anthill.prelude.Option
   import test.wi453.CpsMonad
-  provides CpsMonad[F = Option, unit = test.wi453.optionUnit, flatMap = test.wi453.optionFlatMap]
+  provides CpsMonad[F = Self, unit = test.wi453.optionUnit, flatMap = test.wi453.optionFlatMap]
 end
 "#
     )
@@ -144,7 +144,7 @@ end
 
 namespace anthill.prelude.Option
   import test.wi453.eff.CpsMonad
-  provides CpsMonad[F = Option, unit = test.wi453.eff.optionUnit]
+  provides CpsMonad[F = Self, unit = test.wi453.eff.optionUnit]
 end
 "#;
     let errs = load_errors(src);

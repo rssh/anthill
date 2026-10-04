@@ -76,7 +76,7 @@ end
 
 namespace anthill.prelude.Option
   import test.wi431.cps_accept.CpsMonad
-  provides CpsMonad[F = Option, pure = test.wi431.cps_accept.optionPure, flatMap = test.wi431.cps_accept.optionFlatMap]
+  provides CpsMonad[F = Self, pure = test.wi431.cps_accept.optionPure, flatMap = test.wi431.cps_accept.optionFlatMap]
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -108,7 +108,7 @@ end
 
 namespace anthill.prelude.Option
   import test.wi431.cps_missing.CpsMonad
-  provides CpsMonad[F = Option, pure = test.wi431.cps_missing.optionPure]
+  provides CpsMonad[F = Self, pure = test.wi431.cps_missing.optionPure]
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -381,7 +381,7 @@ end
 
 namespace anthill.prelude.Option
   import test.wi431.cps_default.CpsMonad
-  provides CpsMonad[F = Option, pure = test.wi431.cps_default.optionPure, flatMap = test.wi431.cps_default.optionFlatMap]
+  provides CpsMonad[F = Self, pure = test.wi431.cps_default.optionPure, flatMap = test.wi431.cps_default.optionFlatMap]
 end
 "#;
     let errs = load_errors(&[snippet]);
@@ -643,7 +643,7 @@ end
 
 namespace anthill.prelude.Option
   import test.wi431.sig_hk.CpsMonad
-  provides CpsMonad[F = Option, pure = test.wi431.sig_hk.optionPure, flatMap = test.wi431.sig_hk.optionFlatMap]
+  provides CpsMonad[F = Self, pure = test.wi431.sig_hk.optionPure, flatMap = test.wi431.sig_hk.optionFlatMap]
 end
 "#;
     let errs = load_errors(&[snippet]);

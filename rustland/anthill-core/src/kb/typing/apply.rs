@@ -1363,7 +1363,7 @@ pub(super) fn check_apply_iter(
         // record — into the type before the operands are inspected), then apply whichever
         // reduction the signature actually wrote. Each is universal (keyed on the sort, not
         // the op) and gated per-op on the declared return type.
-        let (proj_return_type, held) = if op_return_ctors.iter().any(|f| *f) {
+        let (proj_return_type, held, brought) = if op_return_ctors.iter().any(|f| *f) {
             let ret_ctx = TypeErrorContext::OperationReturn {
                 op_name: fn_sym,
                 surface: surface_of(kb, occ, fn_sym),
@@ -1437,6 +1437,7 @@ pub(super) fn check_apply_iter(
             // producing an unusable type, so it must see every computing member's result.
             const MAX_PASSES: usize = 16;
             let mut reduced = walk_type_deep_value(kb, &subst, &proj_return_type);
+            let unreduced = reduced.clone();
             let held = vars_the_arguments_put(
                 kb,
                 &subst,
@@ -1479,9 +1480,10 @@ pub(super) fn check_apply_iter(
                 }
                 flags = next;
             }
-            (reduced, held)
+            let brought = vars_a_reduction_brought(kb, &unreduced, &reduced, &held);
+            (reduced, held, brought)
         } else {
-            (proj_return_type, HashSet::new())
+            (proj_return_type, HashSet::new(), Vec::new())
         };
 
         // WI-1104 — the RESULT COLUMN of a functional-relation goal, compared against the
@@ -1618,6 +1620,7 @@ pub(super) fn check_apply_iter(
             return_owner,
             &proj_return_type,
             &held,
+            &brought,
             occ.span,
             occ.owner,
         ) {
@@ -4798,6 +4801,7 @@ pub(super) fn check_apply_iter(
                 fn_sym,
                 &ret,
                 &HashSet::new(),
+                &[],
                 occ.span,
                 occ.owner,
             )

@@ -83,7 +83,7 @@ namespace wi8q0q5.{NS}
     import anthill.prelude.{Int64, Function, EffectsRuntime}
     effects R = ?
     entity held(fn: (Int64) -> Int64 @ {R})
-    operation run(h: Holder) -> Int64 effects R =
+    operation run(h: Self) -> Int64 effects R =
       match h
         case held(f) -> f(1)
   end

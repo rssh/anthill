@@ -860,6 +860,9 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
     // firings, so nothing the corpus reaches falls through them — which is also why there
     // is no `debug_assert` here. An assertion nothing can drive is not a guard, and the
     // honest form of "unmeasured" is this sentence. Found by /code-review.
+    // WI-20261001-80ZV8 — the view's bindings that hold a variable the PROVISION wrote
+    // ([`ProvisionOpening`]); empty for every provision that writes none.
+    let mut opened_view: SmallVec<[TermId; 2]> = SmallVec::new();
     let cross_sort_provider = match cross_sort_provider {
         None => None,
         Some(view) => {
@@ -882,6 +885,10 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
                 let vid = *vid;
                 instance.bind_value(kb, vid, av.clone());
             }
+            // Read off the view AS THE PROVISION STORED IT, before it is read at this
+            // instance: what the instance's own type arguments bring in is not the
+            // provision's ([`ProvisionOpening::of`]).
+            let opening = ProvisionOpening::of(kb, view.iter().map(|(_, v)| *v));
             let mut instantiated: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
             for (p, v) in view {
                 // Deep, and then surfaced, for the reason WI-394 records at the arm that
@@ -889,6 +896,9 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
                 // var under `walk_type_deep` alone.
                 let walked = walk_type_deep(kb, &instance, v);
                 instantiated.push((p, surface_node_binding_to_term(kb, &instance, walked)));
+            }
+            if let Some(opening) = opening {
+                opened_view = opening.open_view(kb, subst, &mut instantiated);
             }
             Some(instantiated)
         }
@@ -1011,7 +1021,17 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
                         // Gated on `pvr != pv`, so it can only ever ACCEPT what the first
                         // leg did not — never reject.
                         let mut probe = subst.clone();
-                        if check_binding_by_variance(
+                        if opened_view.contains(&pv) {
+                            // The provision holds at EVERY type its own variable stands
+                            // for, so the question is whether one of them is the expected
+                            // binding — an instantiation, which is unification's to find.
+                            if unify_types(kb, &mut probe, &TermIdView(pv), ev) {
+                                *subst = probe;
+                                true
+                            } else {
+                                false
+                            }
+                        } else if check_binding_by_variance(
                             kb,
                             &mut probe,
                             expected_base,
@@ -1061,7 +1081,13 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
                             }
                         }
                     }
-                    None => false,
+                    // The provider's view has nothing for this parameter. Refused when
+                    // there is no provider at all; where there is one, see
+                    // [`provision_leaves_param_open`].
+                    None => {
+                        cross_sort_provider.is_some()
+                            && provision_leaves_param_open(kb, expected_base, *param)
+                    }
                 }
             }
         };
@@ -1070,6 +1096,26 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
         }
     }
     true
+}
+
+/// WI-20261001-80ZV8 (proposal 070 §1.3) — A PARAMETER OF `spec` THAT A PROVISION DOES NOT
+/// BIND IS LEFT TO A `?`: `Car provides Sp`, with `Sp[T]`, provides `Sp` at every `T`, so a
+/// carrier of it is an `Sp[T = X]` whatever `X` is. The declaration rule already reads the
+/// provision so — its members are held to every argument list the spec takes at an unbound
+/// `T` — and the call binder read it so for a bare self-receiver. A receiver written `Self`
+/// asks the subtype relation instead, which answered no: `Sp.op(c, some(5), [1, 2, 3])`
+/// behind `op(s: Self, a: Option[T = T], b: List[T = T])` was refused, `op.s (op-arg):
+/// expected Sp[T = Int64], got Car[V = Int64]` (MEASURED, the row that ran with `s: Sp`).
+///
+/// THE SPEC'S CARRIER PARAMETER IS NOT ONE. It names the value an operation receives, so a
+/// provision that leaves it out has not said "any carrier" — it has not said which sort
+/// provides — and the expected binding is refused as before (the load check refuses such a
+/// provision by name, WI-20260828-KXNEX).
+fn provision_leaves_param_open(kb: &KnowledgeBase, spec: Symbol, param: Symbol) -> bool {
+    let Some(vid) = type_param_vid_in_sort(kb, spec, param) else {
+        return false;
+    };
+    spec_carrier_param(kb, spec).and_then(|c| type_param_vid_in_sort(kb, spec, c)) != Some(vid)
 }
 
 /// Compatibility between the typer's `arrow(param, result, effects)` and the
@@ -2561,6 +2607,14 @@ pub(super) fn bare_provider_binding_precise<E: TermView>(
     } else {
         None
     };
+    // WI-20261001-80ZV8 — a provision's own variables, opened as at the parameterized
+    // site ([`ProvisionOpening`]). A view that stores none — every one in the stdlib — is
+    // left as it was read, and this stays the walk over it that finds that out.
+    let mut provider_view = provider_view;
+    let opened_view = match ProvisionOpening::of(kb, provider_view.iter().map(|(_, v)| *v)) {
+        Some(opening) => opening.open_view(kb, subst, &mut provider_view),
+        None => SmallVec::new(),
+    };
     let mut probe = subst.clone();
     for (param, ev) in &expected_bindings {
         if let Some((cvid, self_ty)) = composed_carrier {
@@ -2584,6 +2638,9 @@ pub(super) fn bare_provider_binding_precise<E: TermView>(
             .find(|(p, _)| short_name_of(kb.local_name_of(*p)) == short)
             .map(|(_, v)| *v)
         else {
+            if provision_leaves_param_open(kb, expected_base, *param) {
+                continue;
+            }
             return false;
         };
         // WI-391: a plain-sort-name leaf binding is now the canonical `Ref(S)` (normalized
@@ -2594,6 +2651,12 @@ pub(super) fn bare_provider_binding_precise<E: TermView>(
         // shapes) is the deferred fact-path / structured-binding work. Conservative: a false
         // REJECT only, never a false accept — anchored by the `#[ignore]`d wi402
         // structured-accept test.
+        if opened_view.contains(&pv) {
+            if !unify_types(kb, &mut probe, &TermIdView(pv), ev) {
+                return false;
+            }
+            continue;
+        }
         let pv = normalize_spec_binding_type(kb, pv).unwrap_or(pv);
         if !check_binding_by_variance(kb, &mut probe, expected_base, *param, &TermIdView(pv), ev) {
             return false;
@@ -2601,6 +2664,176 @@ pub(super) fn bare_provider_binding_precise<E: TermView>(
     }
     *subst = probe;
     true
+}
+
+/// WI-20261001-80ZV8 — ONE OPENING OF THE VARIABLES A PROVISION WROTE. `Car provides Sp[T =
+/// Car[V = ?]]` says `Car` provides `Sp` at EVERY `Car`: the `?` (or a named `?x`, which ties
+/// two places of one provision together) is the provision's own variable, not a parameter of
+/// the carrier. So wherever the provision's bindings are read each one is renamed to a fresh
+/// variable — one per variable per opening, as a clause's variables are opened per use — and
+/// the reader meets the renamed binding by unification rather than by the structural
+/// relation, which reads any variable as a mismatch.
+///
+/// WHICH VARIABLES THEY ARE IS READ OFF THE STORED BINDINGS, and that is the whole
+/// definition ([`Self::of`]): a provision stores a parameter of its carrier as a `Ref` of
+/// that parameter (`Loader::sort_binding_to_value`), so a flexible variable in a stored
+/// binding is one the provision wrote. It is NOT "whatever variable the binding holds once
+/// read at an instance": the instance's own type arguments arrive there, and a variable
+/// among them is the instance's — renaming it would cut it from the receiver it belongs to
+/// and give each read of one projection a type of its own. The first cut of this said
+/// exactly that ("every variable that is no parameter of the carrier"), in each reader
+/// separately. NOT DRIVEN BY A ROW, and said so rather than implied: no program was found
+/// that reaches a reader with such a receiver — a call that leaves a type parameter open is
+/// refused before its result is one — so this is the definition being the right one, not a
+/// measured failure. Found by /code-review.
+///
+/// WHY IT IS NEEDED AT ALL: a spec that types its receiver `Self` (`both(s: Self, o: T)`)
+/// asks whether a carrier is an `Sp[T = …]` at the bindings the call has so far, where the
+/// bare receiver the tie read as this instance asked only whether it provides `Sp` at all and
+/// left the bindings to the call binder, which read the `?` as any type. MEASURED before
+/// this: `Sp.both(x, x)` over one `Car[V = Int64]` was refused, `expected Sp[T = Car[V =
+/// Int64]], got Car[V = Int64]`.
+pub(super) struct ProvisionOpening {
+    /// The variables the provision wrote, in the order its bindings hold them.
+    written: SmallVec<[VarId; 2]>,
+    /// The fresh variable each one met so far was renamed to — so a named `?x` written
+    /// twice in one provision stays one variable across the bindings one opening rewrites.
+    fresh: std::cell::RefCell<SmallVec<[(VarId, TermId); 2]>>,
+}
+
+impl ProvisionOpening {
+    /// The opening of the provision whose bindings are `stored` — AS STORED, before they are
+    /// read at any instance — or `None` when it wrote no variable, which is every provision
+    /// in the stdlib: the walk that finds that out reads the terms in place and allocates
+    /// nothing, so a caller on the subtype path pays one pass over a binding or two.
+    pub(super) fn of(kb: &KnowledgeBase, stored: impl IntoIterator<Item = TermId>) -> Option<Self> {
+        fn collect(kb: &KnowledgeBase, t: TermId, written: &mut SmallVec<[VarId; 2]>) {
+            match kb.get_term(t) {
+                Term::Var(Var::Global(vid)) => {
+                    if !written.contains(vid) {
+                        written.push(*vid);
+                    }
+                }
+                Term::Fn {
+                    pos_args,
+                    named_args,
+                    ..
+                } => {
+                    for &a in pos_args.iter() {
+                        collect(kb, a, written);
+                    }
+                    for &(_, a) in named_args.iter() {
+                        collect(kb, a, written);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut written = SmallVec::new();
+        for t in stored {
+            collect(kb, t, &mut written);
+        }
+        (!written.is_empty()).then(|| ProvisionOpening {
+            written,
+            fresh: std::cell::RefCell::new(SmallVec::new()),
+        })
+    }
+
+    /// The variables the provision wrote.
+    pub(super) fn written(&self) -> &[VarId] {
+        &self.written
+    }
+
+    /// `value` with each of the provision's variables given by `to`, asked once per variable
+    /// per opening; `value` itself when it holds none. A variable `bound` already gives a
+    /// value to is the caller's — this call chose the provision's instance there — and is
+    /// kept.
+    pub(super) fn open_with(
+        &self,
+        kb: &mut KnowledgeBase,
+        value: TermId,
+        bound: Option<&Substitution>,
+        to: &impl Fn(&mut KnowledgeBase, VarId) -> TermId,
+    ) -> TermId {
+        rewrite_term_leaves(kb, value, &|kb, leaf| {
+            let Term::Var(Var::Global(vid)) = kb.get_term(leaf) else {
+                return None;
+            };
+            let vid = *vid;
+            if !self.written.contains(&vid)
+                || bound.is_some_and(|s| s.resolve_as_value(vid).is_some())
+            {
+                return None;
+            }
+            if let Some((_, renamed)) = self.fresh.borrow().iter().find(|(v, _)| *v == vid) {
+                return Some(*renamed);
+            }
+            let renamed = to(kb, vid);
+            self.fresh.borrow_mut().push((vid, renamed));
+            Some(renamed)
+        })
+    }
+
+    /// [`Self::open_with`] at a fresh FLEXIBLE variable each: the reader's to instantiate.
+    pub(super) fn open(
+        &self,
+        kb: &mut KnowledgeBase,
+        value: TermId,
+        bound: Option<&Substitution>,
+    ) -> TermId {
+        self.open_with(kb, value, bound, &|kb, vid| {
+            let renamed = kb.fresh_var(vid.name());
+            kb.alloc(Term::Var(Var::Global(renamed)))
+        })
+    }
+
+    /// `at_instance` — the provision's binding `stored`, read at an instance — as ONE
+    /// instance of it: the provision's own variables each a fresh flexible one. `None` where
+    /// the provision wrote no variable, and where something ELSE in the binding is still
+    /// open (a parameter of the carrier the instance does not write, a variable of the
+    /// instance's own type): that binding is not manifest, and what it means there is its
+    /// reader's to say, as it was. (The PROJECTION reader's question — a projection that is
+    /// not manifest stays neutral. A call binding the spec's parameters opens whatever is
+    /// left and binds regardless: `bind_spec_params_from_carrier_param`.)
+    ///
+    /// "Nothing else is open" is asked of the binding with a concrete type standing where
+    /// each of the provision's variables does — the carrier's own reference, a type that
+    /// mentions no parameter and no variable whatever the carrier is.
+    pub(super) fn instance_where_nothing_else_is_open(
+        kb: &mut KnowledgeBase,
+        carrier: Symbol,
+        stored: TermId,
+        at_instance: TermId,
+    ) -> Option<TermId> {
+        let filling = ProvisionOpening::of(kb, [stored])?;
+        let stand_in = kb.make_sort_ref(carrier);
+        let filled = filling.open_with(kb, at_instance, None, &|_, _| stand_in);
+        if !type_value_is_ground(kb, filled) {
+            return None;
+        }
+        // A second opening: the first one's variables are the stand-in now.
+        let opening = ProvisionOpening::of(kb, [stored])?;
+        Some(opening.open(kb, at_instance, None))
+    }
+
+    /// `view` — the provision's bindings as read at an instance — opened in place; answers
+    /// the bindings that hold a renamed variable, for the caller to meet by unification.
+    fn open_view(
+        &self,
+        kb: &mut KnowledgeBase,
+        subst: &Substitution,
+        view: &mut SmallVec<[(Symbol, TermId); 2]>,
+    ) -> SmallVec<[TermId; 2]> {
+        let mut opened: SmallVec<[TermId; 2]> = SmallVec::new();
+        for (_, value) in view.iter_mut() {
+            let rewritten = self.open(kb, *value, Some(subst));
+            if rewritten != *value {
+                *value = rewritten;
+                opened.push(rewritten);
+            }
+        }
+        opened
+    }
 }
 
 /// WI-401 — detect an ABSTRACTING (sealing) return so the base model stays escape-free

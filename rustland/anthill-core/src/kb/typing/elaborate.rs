@@ -279,7 +279,19 @@ pub(super) fn rigidify_unwritten_sort_params(
         // skipping outright would DROP an author's `P[A = ?]` on the floor whenever a sibling
         // binding caused a rebuild. That drop is invisible (`A = ?` and an absent `A` mean the
         // same type), which is precisely why it must not be left to be re-derived.
-        let filled = if is_self {
+        //
+        // WI-20261001-80ZV8 (proposal 070 §1.3) — THE SELF HALF IS FOR A SLOT THE REFERENCE
+        // DOES NOT WRITE AT ALL. A `?` the author WROTE at the sort's own slot (`o: Car[V =
+        // ?]`, `-> Stream[T = Int64, E = ?E]`) is a fresh variable, as it is on any other
+        // sort: any `Car` in a parameter, an existential in a return. It used to take the
+        // tie too — "`?` and an omitted slot are one type" — which left a sort's own
+        // operations with no way to write an independent instance but a type parameter of
+        // their own, and made `Car[V = ?]` — "any `Car`" — a second spelling of `Self`.
+        // The loader now writes that `?` into every slot a reference to the enclosing sort
+        // leaves out (`Loader::own_sort_slots_left_out`, proposal 070 §1.3), so no
+        // declaration a program loads reaches here with a slot of its own sort omitted:
+        // what still reaches the self half is a reference the typer itself built bare.
+        let filled = if is_self && slot.is_none() {
             position.fill_self(kb, *canonical)
         } else if let Some(rho) = opened_named {
             Some(rho)
@@ -352,16 +364,32 @@ pub(super) fn rigidify_unwritten_sort_params(
 /// `held`: when `ret` is what a type constructor in the declared return reduced to, the
 /// variables the arguments put into it, which stay ([`SlotPosition::CallResult`]'s field of
 /// that name); empty otherwise.
+///
+/// `brought` (WI-20261001-80ZV8): the NAMED variables such a reduction brought in from a
+/// declaration it read — a field declared `a: Box[T = ?x]`, read as `t.a` — neither the
+/// arguments' nor the callee's. They are the holder's existentials exactly as an anonymous
+/// `?` there is, and each is opened to one rigid for this use; left flexible, `takes_int(t.a)`
+/// loaded over a `two` holding boxes of `String` (MEASURED, beside the pattern binder that
+/// [`FieldOpening`] opens). Empty where nothing was reduced.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn open_existential_return(
     kb: &mut KnowledgeBase,
     callee_sort: Option<Symbol>,
     callee_op: Symbol,
     ret: &Value,
     held: &HashSet<u32>,
+    brought: &[VarId],
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Option<Value> {
-    let opened = unbound_return_var_openings(kb, callee_op, ret);
+    let mut opened = unbound_return_var_openings(kb, callee_op, ret);
+    for vid in brought {
+        if !opened.contains_key(&vid.raw()) {
+            let fresh = kb.fresh_var(vid.name());
+            let rigid = kb.alloc(Term::Var(Var::Rigid(fresh)));
+            opened.insert(vid.raw(), Value::term(rigid));
+        }
+    }
     rigidify_unwritten_sort_params(
         kb,
         UnwrittenFill::Anonymous,
@@ -376,6 +404,118 @@ pub(super) fn open_existential_return(
     )
 }
 
+/// WI-20261001-80ZV8 — ONE CONSTRUCTOR PATTERN'S OPENING OF THE FIELDS IT DESTRUCTURES.
+///
+/// A field declared with a slot left open — `next: Box[T = ?]`, a bare `item: Box` of
+/// another sort, a named `a: Box[T = ?x]` — holds ANY instance: the value was built with
+/// whatever its author passed, and nothing in the holder's type says which. So taking it out
+/// is a USE of an existential, exactly as a call's result is ([`open_existential_return`]),
+/// and it opens the same way: a fresh rigid per slot, and ONE per named variable for the whole
+/// pattern — `two(a: Box[T = ?x], b: Box[T = ?x])` says the two agree, and `case two(p, q)`
+/// keeps that. A field READ (`h.item`) already opened, through the call it is; a pattern
+/// binder did not, and `case node(n) -> takes_int(n)` loaded over a `node` holding a `Box` of
+/// `String` (MEASURED: the binder kept the declaration's own variable, which any use binds).
+///
+/// WHICH VARIABLES ARE THE DECLARATION'S is read off the fields AS DECLARED, before the
+/// scrutinee's type arguments are substituted into them: what arrives with the scrutinee is
+/// the scrutinee's (`held`), and the sort's own parameters are what it instantiates. Read
+/// after, a scrutinee whose element nothing has fixed yet would have that variable opened out
+/// from under its own inference.
+pub(super) struct FieldOpening {
+    /// The sort that declares the constructor.
+    sort: Option<Symbol>,
+    /// This pattern's rigid for each NAMED variable the fields declare.
+    opened: HashMap<u32, Value>,
+    /// The scrutinee's own variables, which stay.
+    held: HashSet<u32>,
+}
+
+impl FieldOpening {
+    /// The opening for one pattern of a constructor of `sort` whose fields are `declared`,
+    /// over a scrutinee of type `scrutinee`.
+    pub(super) fn of(
+        kb: &mut KnowledgeBase,
+        sort: Option<Symbol>,
+        declared: &[(Symbol, Value)],
+        scrutinee: Option<&Value>,
+    ) -> Self {
+        let own: SmallVec<[u32; 4]> = sort
+            .map(|s| {
+                sort_type_params_as_pairs(kb, s)
+                    .iter()
+                    .filter_map(|(_, canonical)| match kb.get_term(*canonical) {
+                        Term::Var(Var::Global(vid)) => Some(vid.raw()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut written: Vec<VarId> = Vec::new();
+        let mut seen = HashSet::new();
+        for (_, ty) in declared {
+            crate::kb::node_occurrence::collect_value_type(kb, ty, &mut written, &mut seen);
+        }
+        let mut opened = HashMap::new();
+        for vid in written {
+            // An anonymous `?` keeps its per-slot mint, as at a call
+            // ([`unbound_return_vars`]).
+            if own.contains(&vid.raw()) || anonymous_var_name(kb, vid.name()) {
+                continue;
+            }
+            let fresh = kb.fresh_var(vid.name());
+            let rigid = kb.alloc(Term::Var(Var::Rigid(fresh)));
+            opened.insert(vid.raw(), Value::term(rigid));
+        }
+        let mut held = HashSet::new();
+        if let Some(scrutinee) = scrutinee {
+            let mut vars: Vec<VarId> = Vec::new();
+            let mut seen = HashSet::new();
+            crate::kb::node_occurrence::collect_value_type(kb, scrutinee, &mut vars, &mut seen);
+            held.extend(vars.iter().map(|v| v.raw()));
+        }
+        FieldOpening { sort, opened, held }
+    }
+
+    /// `field_type` — a field's declared type at the scrutinee — with what it leaves open
+    /// opened; itself where it leaves nothing. `binder` is the sub-pattern's variable, where
+    /// it is one.
+    ///
+    /// A BINDER'S OPEN SLOT IS NAMED BY THE BINDER (`n.T`), as a parameter's is by the
+    /// parameter ([`UnwrittenFill::Projection`]), and for the same reason: the unknown has a
+    /// name the rest of the body can state. An anonymous rigid in an EFFECT-ROW slot did not:
+    /// `case holder(b) -> Ctr.pick(o, c: b)` over a bare `b: Bag` incurs `b.EB`, which the
+    /// operation's declared `o.EB` does not cover — and with the row a nameless rigid the
+    /// effect was not reported at all (MEASURED: `wi_0rp29_call_binding
+    /// a_mixed_calls_receiver_row_is_the_bound_arguments` loaded clean under the first cut of
+    /// this opening). A sub-pattern that is not a variable has no name to give, and takes
+    /// the anonymous rigid a call's result takes.
+    pub(super) fn open(
+        &self,
+        kb: &mut KnowledgeBase,
+        field_type: Value,
+        binder: Option<Symbol>,
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> Value {
+        rigidify_unwritten_sort_params(
+            kb,
+            match binder {
+                Some(name) => UnwrittenFill::Projection(name),
+                None => UnwrittenFill::Anonymous,
+            },
+            &field_type,
+            SlotPosition::CallResult {
+                callee_sort: self.sort,
+                opened: &self.opened,
+                held: &self.held,
+            },
+            span,
+            owner,
+        )
+        .unwrap_or(field_type)
+    }
+}
+
 /// The variables of a call's argument types as its σ reads them: what the ARGUMENTS can put into
 /// a return a type constructor reduced, which [`SlotPosition::CallResult`] keeps. Read off the
 /// arguments, not as what σ added to the declared return: a projection the elimination discharged
@@ -383,6 +523,33 @@ pub(super) fn open_existential_return(
 /// (`project(r, …) -> Relation[T = Project[T = r.T, …]]`), and read as the return's own they were
 /// opened — `getl(q)` over `-> FieldOf[T = Pair[A = p.A, B = p.B], Name = "l"]` read a list of a
 /// fresh rigid (MEASURED: review 9's /simplify).
+/// The NAMED variables a type-constructor reduction brought into a call's result
+/// ([`open_existential_return`]'s `brought`): those `after` holds that `before` — the declared
+/// return as the call's σ read it — did not, the arguments' own (`held`) set aside. An
+/// anonymous one is opened per slot already and is not listed.
+pub(super) fn vars_a_reduction_brought(
+    kb: &KnowledgeBase,
+    before: &Value,
+    after: &Value,
+    held: &HashSet<u32>,
+) -> Vec<VarId> {
+    let vars_of = |v: &Value| {
+        let mut vars: Vec<VarId> = Vec::new();
+        let mut seen = HashSet::new();
+        crate::kb::node_occurrence::collect_value_type(kb, v, &mut vars, &mut seen);
+        vars
+    };
+    let before = vars_of(before);
+    vars_of(after)
+        .into_iter()
+        .filter(|v| {
+            !held.contains(&v.raw())
+                && !before.iter().any(|b| b.raw() == v.raw())
+                && !anonymous_var_name(kb, v.name())
+        })
+        .collect()
+}
+
 pub(super) fn vars_the_arguments_put<'v>(
     kb: &mut KnowledgeBase,
     subst: &Substitution,

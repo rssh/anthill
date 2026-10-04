@@ -7,6 +7,29 @@
 //! Every row that can RUNS and names what was reached; a row asserting a LOAD verdict says at its
 //! site why nothing runs.
 //!
+//! ── SINCE WI-20261001-80ZV8 (proposal 070 §1.3) ──────────────────────────────
+//!
+//! A SORT'S BARE NAME INSIDE ITS OWN DEFINITION NO LONGER MEANS THIS INSTANCE — it is the
+//! sort at `?`, any instance, as everywhere (and was, for one day, a load error) — so the
+//! fixtures here write what each bare name MEANT, and the row comments, which quote the
+//! declarations as they first stood (`both(s: Car, o: Car)`, `put(s: Sp, …)`, `T = Car`),
+//! describe a spelling the fixture no longer has:
+//!
+//!  * the carrier inside the carrier, and a spec's own RECEIVER, are `Self` — this instance;
+//!  * another parameter a spec types by itself, which the bare name read as any provider,
+//!    is the spec at `?` (`o: Sp[T = ?]`);
+//!  * a binding the rows call "bare" is `T = Self`, and an independent one is still
+//!    `T = Car[V = ?]`.
+//!
+//! The verdicts are the ones the rows pinned, with the refusal texts printing the member's
+//! `Self` as the carrier at its own parameters (`o: Car[V = V]`). THE BACK-OUT LEDGER BELOW
+//! WAS MEASURED ON THE BARE SPELLING and has not been taken again part by part: the rows the
+//! change of spelling moved, and what each of them fails under now, are in the ledgers of
+//! `wi_80zv8_bare_own_sort_test` and `wi_80zv8_written_wildcard_test`. Where a comment
+//! credits "§3's tie" for a verdict, the tie is now the written `Self`; the arms that read a
+//! reference to the declaring sort with a slot LEFT OUT are reached by no loaded program —
+//! the loader writes the `?` — and go at stage (e).
+//!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
 //! MEASURED with each part backed out present but wrong, over this file, the three other
@@ -576,7 +599,7 @@ namespace wi0rp29r9.once_self
   end
   sort Sp
     sort T = ?
-    operation both(s: Sp, x: T, y: T) -> Int64
+    operation both(s: Self, x: T, y: T) -> Int64
   end
   sort Car
     entity car(n: Int64)
@@ -651,7 +674,7 @@ namespace wi0rp29r9.once_self_same
   end
   sort Sp
     sort T = ?
-    operation both(s: Sp, x: T, y: T) -> Int64
+    operation both(s: Self, x: T, y: T) -> Int64
   end
   sort Car
     entity car(n: Int64)
@@ -685,13 +708,13 @@ namespace wi0rp29r9.hint_receiver
   import anthill.prelude.{Int64, String, List, Option}
   sort Sp
     sort T = ?
-    operation each(s: Sp, f: (q: T) -> Int64, z: T) -> Int64
+    operation each(s: Self, f: (q: T) -> Int64, z: T) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V)
-    provides Sp[T = Option[T = Car]]
-    operation each(c: Car, f: (q: Option[T = Car]) -> Int64, z: Option[T = Car]) -> Int64 = f(z)
+    provides Sp[T = Option[T = Self]]
+    operation each(c: Self, f: (q: Option[T = Self]) -> Int64, z: Option[T = Self]) -> Int64 = f(z)
   end
   operation go() -> Int64 =
     let k: Car[V = Int64] = car(v: 1)
@@ -711,12 +734,12 @@ namespace wi0rp29r9.hint_ground
   import anthill.prelude.{Int64, String, List, Option}
   sort Sp
     sort T = ?
-    operation each(s: Sp, f: (q: T) -> Int64, z: T) -> Int64
+    operation each(s: Self, f: (q: T) -> Int64, z: T) -> Int64
   end
   sort Car
     entity car(n: Int64)
-    provides Sp[T = Option[T = Car]]
-    operation each(c: Car, f: (q: Option[T = Car]) -> Int64, z: Option[T = Car]) -> Int64 = f(z)
+    provides Sp[T = Option[T = Self]]
+    operation each(c: Self, f: (q: Option[T = Self]) -> Int64, z: Option[T = Self]) -> Int64 = f(z)
   end
   operation go() -> Int64 =
     let k: Car = car(n: 1)
@@ -738,7 +761,7 @@ namespace wi0rp29r9.hint_wide
   import anthill.prelude.{Int64, String, List}
   sort Sp
     sort T = ?
-    operation each(s: Sp, f: (q: T) -> Int64, z: T) -> Int64
+    operation each(s: Self, f: (q: T) -> Int64, z: T) -> Int64
   end
   sort Car
     entity car(n: Int64)
@@ -762,7 +785,7 @@ namespace wi0rp29r9.hint_exact
   import anthill.prelude.{Int64, String, List}
   sort Sp
     sort T = ?
-    operation each(s: Sp, f: (q: T) -> Int64, z: T) -> Int64
+    operation each(s: Self, f: (q: T) -> Int64, z: T) -> Int64
   end
   sort Car
     entity car(n: Int64)
@@ -791,14 +814,14 @@ namespace wi0rp29r9.seq_spec
   import anthill.prelude.{Int64, Bool, String, List, Option}
   sort Sp
     sort J = ?
-    operation op(s: Sp, p: List[T = (a: s.J, b: J)]) -> Int64
+    operation op(s: Self, p: List[T = (a: s.J, b: J)]) -> Int64
   end
   sort Car
     sort V = ?
     sort W = ?
     entity car(v: V, w: W)
-    provides Sp[J = List[T = Car[V = Int64]]]
-    operation op(c: Car, p: List[T = (a: c.J, b: List[T = Car[V = Int64]])]) -> Int64 = 42
+    provides Sp[J = List[T = Car[V = Int64, W = W]]]
+    operation op(c: Self, p: List[T = (a: c.J, b: List[T = Car[V = Int64, W = W]])]) -> Int64 = 42
   end
   operation go() -> Int64 =
     let k: Car[V = Int64, W = String] = car(v: 5, w: "s")
@@ -820,14 +843,14 @@ namespace wi0rp29r9.seq_param
   sort Sp
     sort T = ?
     sort J = ?
-    operation size(s: Sp) -> Int64
+    operation size(s: Self) -> Int64
   end
   sort Car
     sort V = ?
     sort W = ?
     entity car(v: V, w: W)
     provides Sp[T = V, J = W]
-    operation size(c: Car) -> Int64 = 1
+    operation size(c: Self) -> Int64 = 1
   end
   operation f1(c: Car, p1: List[T = (a: c.T, b: c.J)]) -> Int64 = 42
   operation go() -> Int64 =
@@ -1132,15 +1155,15 @@ namespace wi0rp29r9.ctor_type
   sort Sp
     sort T = ?
     effects E = ?
-    operation size(s: Sp) -> Int64
-    operation put(s: Sp, x: (a: some[T = T], b: List)) -> Int64
+    operation size(s: Self) -> Int64
+    operation put(s: Self, x: (a: some[T = T], b: List)) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V, E = {Error}]
-    operation size(c: Car) -> Int64 = 42
-    operation put(c: Car, x: (a: some[T = V], b: List)) -> Int64 = 1
+    operation size(c: Self) -> Int64 = 42
+    operation put(c: Self, x: (a: some[T = V], b: List)) -> Int64 = 1
   end
   operation go() -> Int64 =
     let k: Car[V = Int64] = car(v: 1)
@@ -1161,15 +1184,15 @@ namespace wi0rp29r9.ctor_callback
   sort Sp
     sort T = ?
     effects E = ?
-    operation size(s: Sp) -> Int64
-    operation put(s: Sp, x: (q: some[T = T]) -> List) -> Int64
+    operation size(s: Self) -> Int64
+    operation put(s: Self, x: (q: some[T = T]) -> List) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V, E = {Error}]
-    operation size(c: Car) -> Int64 = 42
-    operation put(c: Car, x: (q: some[T = V]) -> List) -> Int64 = 1
+    operation size(c: Self) -> Int64 = 42
+    operation put(c: Self, x: (q: some[T = V]) -> List) -> Int64 = 1
   end
   operation go() -> Int64 =
     let k: Car[V = Int64] = car(v: 1)
@@ -1206,8 +1229,8 @@ namespace wi0rp29r9.rigid_proj
     sort P = ?
     effects E = ?
     requires Storage[C = P]
-    operation size(s: Sp) -> Int64
-    operation op(s: Sp, x: (a: P.Key, b: List)) -> Int64
+    operation size(s: Self) -> Int64
+    operation op(s: Self, x: (a: P.Key, b: List)) -> Int64
   end
   sort Car
     entity car(n: Int64)
@@ -1554,7 +1577,7 @@ namespace wi0rp29r9.wider_stdlib
   import anthill.prelude.{Int64, String, List, FiniteCollection}
   sort Sp
     sort T = ?
-    operation count(s: Sp, xs: List[T = T]) -> Int64
+    operation count(s: Self, xs: List[T = T]) -> Int64
   end
   sort Car
     entity car(n: Int64)
@@ -1577,17 +1600,17 @@ namespace wi0rp29r9.wider_user
   import anthill.prelude.{Int64, String, List}
   sort Describe
     sort K = ?
-    operation tag(d: Describe) -> Int64
+    operation tag(d: Self) -> Int64
   end
   sort Box
     sort T = ?
     entity box(t: T)
     provides Describe[K = T]
-    operation tag(b: Box) -> Int64 = 41
+    operation tag(b: Self) -> Int64 = 41
   end
   sort Sp
     sort T = ?
-    operation op(s: Sp, x: Box[T = T]) -> Int64
+    operation op(s: Self, x: Box[T = T]) -> Int64
   end
   sort Car
     entity car(n: Int64)
@@ -1612,18 +1635,18 @@ namespace wi0rp29r9.narrower_return
   import anthill.prelude.{Int64, String, List}
   sort Describe
     sort K = ?
-    operation tag(d: Describe) -> Int64
+    operation tag(d: Self) -> Int64
   end
   sort Box
     sort T = ?
     entity box(n: Int64, t: T)
     provides Describe[K = T]
-    operation tag(b: Box) -> Int64 = b.n
+    operation tag(b: Self) -> Int64 = b.n
   end
   sort Sp
     sort T = ?
     sort K = ?
-    operation mk(s: Sp) -> Describe[K = K]
+    operation mk(s: Self) -> Describe[K = K]
   end
   sort Car
     entity car(n: Int64)
@@ -1646,17 +1669,17 @@ namespace wi0rp29r9.narrower_return_wrong
   import anthill.prelude.{Int64, String, List, Option}
   sort Describe
     sort K = ?
-    operation tag(d: Describe) -> Int64
+    operation tag(d: Self) -> Int64
   end
   sort Box
     sort T = ?
     entity box(n: Int64, t: T)
     provides Describe[K = T]
-    operation tag(b: Box) -> Int64 = b.n
+    operation tag(b: Self) -> Int64 = b.n
   end
   sort Sp
     sort T = ?
-    operation mk(s: Sp) -> T
+    operation mk(s: Self) -> T
   end
   sort Car
     entity car(n: Int64)
@@ -1687,8 +1710,8 @@ namespace wi0rp29r9.row_label
   import anthill.prelude.{Int64, String, List, Error}
   sort Sp
     effects E = ?
-    operation size(s: Sp) -> Int64
-    operation tail(s: Sp) -> Sp
+    operation size(s: Self) -> Int64
+    operation tail(s: Self) -> Self
   end
   sort Car
     entity car(v: Int64)
@@ -1710,8 +1733,8 @@ namespace wi0rp29r9.row_braced
   import anthill.prelude.{Int64, String, List, Error}
   sort Sp
     effects E = ?
-    operation size(s: Sp) -> Int64
-    operation tail(s: Sp) -> Sp
+    operation size(s: Self) -> Int64
+    operation tail(s: Self) -> Self
   end
   sort Car
     entity car(v: Int64)
@@ -1740,15 +1763,15 @@ namespace wi0rp29r9.recv_instance
   import anthill.prelude.Option.{some, none}
   sort Sp
     sort T = ?
-    operation size(s: Sp) -> Int64
-    operation step(s: Sp, k: Option[T = s.T]) -> Sp[T = s.T]
+    operation size(s: Self) -> Int64
+    operation step(s: Self, k: Option[T = s.T]) -> Sp[T = s.T]
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = Car[V = ?]]
-    operation size(c: Car) -> Int64 = 42
-    operation step(c: Car, k: Option[T = c.T]) -> Car = c
+    operation size(c: Self) -> Int64 = 42
+    operation step(c: Self, k: Option[T = c.T]) -> Self = c
   end
   operation go() -> Int64 =
     let c: Car[V = Int64] = car(v: 1)
@@ -1771,15 +1794,15 @@ namespace wi0rp29r9.recv_written
   end
   sort Sp
     sort T = ?
-    operation size(s: Sp) -> Int64
-    operation step(s: Sp, k: Option[T = s.T]) -> Sp[T = s.T]
+    operation size(s: Self) -> Int64
+    operation step(s: Self, k: Option[T = s.T]) -> Sp[T = s.T]
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = Box[B = Int64]]
-    operation size(c: Car) -> Int64 = 42
-    operation step(c: Car, k: Option[T = c.T]) -> Car = c
+    operation size(c: Self) -> Int64 = 42
+    operation step(c: Self, k: Option[T = c.T]) -> Self = c
   end
   operation go() -> Int64 =
     let c: Car[V = Int64] = car(v: 1)
@@ -1807,7 +1830,7 @@ namespace wi0rp29r9.return_open
   end
   sort Store
     sort State = ?
-    operation fresh(s: Store, n: Int64) -> State
+    operation fresh(s: Self, n: Int64) -> State
   end
   sort Carrier
     entity carrier(k: Int64)
@@ -1835,7 +1858,7 @@ namespace wi0rp29r9.returned_fn
   import anthill.prelude.{Int64, String, List}
   sort Base
     sort B = ?
-    operation tag(b: Base) -> Int64
+    operation tag(b: Self) -> Int64
   end
   sort Carrier
     entity carrier(n: Int64)
@@ -1844,7 +1867,7 @@ namespace wi0rp29r9.returned_fn
   end
   sort Sp
     sort T = ?
-    operation mk(s: Sp) -> (xs: List) -> Base
+    operation mk(s: Self) -> (xs: List) -> Base
   end
   sort Car
     entity car(n: Int64)
@@ -1878,7 +1901,7 @@ namespace wi0rp29r9.cp_at_provision
   sort Car
     sort V = ?
     entity car(v: V)
-    provides Sp[T = Car, E9 = {Error}]
+    provides Sp[T = Self, E9 = {Error}]
     operation size(y: Sp) -> Int64 = 42
   end
   operation go() -> Int64 =
@@ -1904,7 +1927,7 @@ namespace wi0rp29r9.byspec_witness
   sort Holder
     sort C = ?
     operation peek(c: C) -> Int64
-    operation size(h: Holder) -> Int64
+    operation size(h: Self) -> Int64
   end
   sort Box
     sort B = ?
@@ -1914,7 +1937,7 @@ namespace wi0rp29r9.byspec_witness
     import anthill.prelude.Int64
     provides Holder[C = Box]
     operation peek(c: Holder) -> Int64 = 40
-    operation size(h: Holder) -> Int64 = 1
+    operation size(h: Self) -> Int64 = 1
   end
   operation go() -> Int64 = Holder.peek(box(inner: 1)) + 2
 end
@@ -1940,13 +1963,13 @@ namespace wi0rp29r9.proj_untied
   end
   sort Sp
     sort T = ?
-    operation op(s: Sp, x: s.T) -> T
+    operation op(s: Self, x: s.T) -> T
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = Box]
-    operation op(c: Car, x: Box) -> Box = x
+    operation op(c: Self, x: Box) -> Box = x
   end
 end
 "#;
@@ -2360,13 +2383,13 @@ namespace wi0rp29r9.says_advice
   end
   sort Sp
     sort T = ?
-    operation op(s: Sp, t: T) -> Pair[A = Int64, B = List]
+    operation op(s: Self, t: T) -> Pair[A = Int64, B = List]
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation op(s: Car, t: V) -> Pair[A = String, B = List] = pair(a: "x", b: [])
+    operation op(s: Self, t: V) -> Pair[A = String, B = List] = pair(a: "x", b: [])
   end
 end
 "#;

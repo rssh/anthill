@@ -60,7 +60,14 @@ sort anthill.prelude.LogicalStream
   -- Logic-specific construction
   -- ================================================================
 
-  operation empty() -> LogicalStream[T = ?A, E = E]      -- zero results (failure)
+  -- `Self`: the empty stream at THIS instance's element, which the call fixes as it fixes
+  -- any parameter of the sort — a bracket, the expected type — and leaves open where
+  -- nothing does, so `mplus(empty(), pure(1))` is a stream of `Int64`. It was written `->
+  -- LogicalStream[T = ?A, E = E]`, a variable in the return alone: that is the OTHER
+  -- quantifier, a type the operation picks and no caller can name (kernel-language.md
+  -- §8.1), and it behaved as this one only while a `?` at a sort's own slot was read as
+  -- the sort's parameter (WI-20261001-80ZV8).
+  operation empty() -> Self                              -- zero results (failure)
 
   operation pure[A](x: A) -> LogicalStream[A, {}]          -- single result
 

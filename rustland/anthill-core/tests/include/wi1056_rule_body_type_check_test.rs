@@ -304,7 +304,7 @@ fn all_four_spellings_of_one_type_conform_alike() {
              \x20   sort T = ?\n\
              \x20   sort U = ?\n\
              \x20   entity Box(t: T, u: U)\n\
-             \x20   operation get(b: Box) -> Int64\n\
+             \x20   operation get(b: Self) -> Int64\n\
              \x20 end\n\
              \n\
              \x20 operation takes_full(b: Box[T = Int64, U = Bool]) -> Int64 = Box.get(b)\n\

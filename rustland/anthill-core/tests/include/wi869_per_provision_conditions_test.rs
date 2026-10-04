@@ -244,16 +244,16 @@ fn tower_with(carrier_clauses: &str, extra_driver_ops: &str) -> String {
 
 /// `Box`'s two members. Proposal 066: a member that reads a provision's condition is
 /// written in that provision's `where` block, so the clause strings below carry them.
-const WEAK_OP: &str = "      operation weak(x: Box) -> Int64 =\n        \
+const WEAK_OP: &str = "      operation weak(x: Self) -> Int64 =\n        \
                          match x\n          \
                            case box(v) -> Weak.weak(v)\n";
-const STRONG_OP: &str = "      operation strong(x: Box) -> Int64 =\n        \
+const STRONG_OP: &str = "      operation strong(x: Self) -> Int64 =\n        \
                            match x\n          \
                              case box(v) -> Strong.strong(v)\n";
 
-/// `provides <spec>[T = Box] :- <cond> where <op> end`.
+/// `provides <spec>[T = Self] :- <cond> where <op> end`.
 fn block(spec: &str, cond: &str, op: &str) -> String {
-    format!("    provides {spec}[T = Box] :- {cond} where\n{op}    end\n")
+    format!("    provides {spec}[T = Self] :- {cond} where\n{op}    end\n")
 }
 
 /// Both members written at sort level — for the spellings whose evidence is a
@@ -277,8 +277,8 @@ const STRONG_ON_WEAK: &str =
 /// `Box.strong`'s body needs `Strong[A]` evidence.
 fn shared_chain() -> String {
     "    requires Strong[A]\n    \
-     provides Weak[T = Box]\n    \
-     provides Strong[T = Box]\n"
+     provides Weak[T = Self]\n    \
+     provides Strong[T = Self]\n"
         .to_string()
         + &loose(WEAK_OP)
         + &loose(STRONG_OP)
@@ -470,7 +470,7 @@ fn reading_a_sibling_provisions_evidence_is_loud() {
 #[test]
 fn a_member_does_not_back_another_provision() {
     let src = tower_with(
-        &(per_provision() + "    provides Twin[T = Box]\n"),
+        &(per_provision() + "    provides Twin[T = Self]\n"),
         "    operation twinOnWeak(n: Int64) -> Int64 = Twin.weak(box(v: ow))\n",
     )
     .replacen(
@@ -493,7 +493,7 @@ fn a_member_does_not_back_another_provision() {
 #[test]
 fn a_sort_level_requires_and_a_provision_condition_compose() {
     let clauses = "    requires Weak[A]\n    \
-                   provides Weak[T = Box]\n"
+                   provides Weak[T = Self]\n"
         .to_string()
         + &loose(WEAK_OP)
         + &block("Strong", "Strong[A]", STRONG_OP);
@@ -960,7 +960,7 @@ fn a_second_clause_for_one_spec_only_widens() {
     }
     // …and a second, independent way for `Lo[D]` to hold must not break it.
     if let Err(errs) =
-        crate::common::try_load_kb_with(&tower("    provides Lo[T = D] :- SB[T = Q]\n"))
+        crate::common::try_load_kb_with(&tower("    provides Lo[T = Self] :- SB[T = Q]\n"))
     {
         panic!(
             "a second `Lo` clause is an ALTERNATIVE — it can only widen where `Lo[D]` \

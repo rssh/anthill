@@ -549,7 +549,7 @@ end
 /// The second supplier: an instance fact binding a different operation for `Coll`.
 const ABSTRACT_RIVAL: &str = "\n  operation otherDescribe(x: Coll) -> Int64 = 9\n\n  \
                               namespace Coll\n    \
-                              provides Desc[T = Coll, describe = otherDescribe]\n  end\n";
+                              provides Desc[T = Self, describe = otherDescribe]\n  end\n";
 
 /// Both spellings of the receiver call, driven together everywhere below: agreeing on the
 /// refusal is worth nothing if they disagree on the answer, and vice versa.

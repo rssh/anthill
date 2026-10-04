@@ -54,17 +54,17 @@ fn cell_tower(extra: &str, eq_cond: &str, ord_cond: &str) -> String {
          import anthill.prelude.{{Bool, Int64, PartialEq, Eq, PartialOrd, Ord, WeakOrd}}\n\
   sort Lawful\n    sort T = ?\n  end\n{extra}\
   enum Cell\n    sort E = ?\n    entity cell(v: E)\n    \
-    provides PartialEq[Cell] :- PartialEq[E] where\n      \
-      operation eq(a: Cell, b: Cell) -> Bool =\n        \
+    provides PartialEq[Self] :- PartialEq[E] where\n      \
+      operation eq(a: Self, b: Self) -> Bool =\n        \
         match a\n          case cell(x) ->\n            match b\n              case cell(y) -> PartialEq.eq(x, y)\n    \
     end\n    \
-    provides Eq[Cell] :- {eq_cond}\n    \
-    provides PartialOrd[Cell] :- PartialOrd[E]\n    \
-    provides WeakOrd[Cell] :- WeakOrd[E] where\n      \
-      operation compare(a: Cell, b: Cell) -> Int64 =\n        \
+    provides Eq[Self] :- {eq_cond}\n    \
+    provides PartialOrd[Self] :- PartialOrd[E]\n    \
+    provides WeakOrd[Self] :- WeakOrd[E] where\n      \
+      operation compare(a: Self, b: Self) -> Int64 =\n        \
         match a\n          case cell(x) ->\n            match b\n              case cell(y) -> WeakOrd.compare(x, y)\n    \
     end\n    \
-    provides Ord[Cell] :- {ord_cond}\n  end\nend\n"
+    provides Ord[Self] :- {ord_cond}\n  end\nend\n"
     )
 }
 
@@ -195,7 +195,7 @@ fn control_the_nested_requirement_is_refused_without_the_condition() {
 /// the refusal into a load.
 #[test]
 fn an_unconditioned_clause_is_checked_beside_a_conditioned_one() {
-    let errs = load_errs(&nested("\n    provides Big[T = Box] :- Cond[B]"));
+    let errs = load_errs(&nested("\n    provides Big[T = Self] :- Cond[B]"));
     assert!(
         errs.iter().any(|e| e.contains(
             "'p5g39.nested.Box' provides 'p5g39.nested.Big', which requires \

@@ -580,9 +580,9 @@ namespace {ns}
 
   sort Strm
     sort T = ?
-    operation head(s: Strm) -> s.T
+    operation head(s: Self) -> s.T
     provides Iter[C = Self, Element = T]
-    operation iterator(s: Strm) -> Strm[T = s.T] = s
+    operation iterator(s: Self) -> Strm[T = s.T] = s
   end
 
   sort Iter
@@ -596,7 +596,7 @@ namespace {ns}
     sort T = ?
     entity one(v: T)
     provides Strm[T = T]
-    operation head(o: One) -> T = o.v
+    operation head(o: Self) -> T = o.v
   end
 
 {rest}

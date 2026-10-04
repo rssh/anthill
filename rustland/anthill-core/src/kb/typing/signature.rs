@@ -337,11 +337,22 @@ pub(super) fn check_member_signature(
                         ..
                     } => {
                         let recv_short = kb.local_name_of(sort).to_string();
+                        // `Self` is the carrier's own word for it (proposal 070 §1.2); a
+                        // witness's receiver is another sort, which has no such word here.
+                        let at_own =
+                            if kb.canonical_sort_sym(sort) == kb.canonical_sort_sym(carrier) {
+                                format!(
+                                    "`{}` — `{recv_short}` at its own parameters —",
+                                    crate::intern::SELF_TYPE_NAME
+                                )
+                            } else {
+                                format!("`{recv_short}` at its own parameters,")
+                            };
                         narrower(format!(
                             "`{name}` is the receiver, and the spec receives every \
                              `{recv_short}` this provision covers, where the member's `{got}` \
-                             fixes what the spec leaves open; type `{name}` as `{recv_short}` at \
-                             its own parameters, or write the restriction into the spec's receiver"
+                             fixes what the spec leaves open; type `{name}` as {at_own} or \
+                             write the restriction into the spec's receiver"
                         ))
                     }
                     Narrower::Receiver { sort, .. } => {
@@ -358,23 +369,31 @@ pub(super) fn check_member_signature(
                          member's `{got}` only a `{carrier_short}`; type `{name}` by the spec, or \
                          make the spec parameter the receiver's type"
                     )),
+                    // WI-20261001-80ZV8 — said in the words that still mean it. It read "a
+                    // bare `Car`, or one written with `Car`'s own parameters", and offered
+                    // only "type arguments of its own": the bare name inside its own sort
+                    // is any `Car` since proposal 070 §1.3, as a written `?` is — which is
+                    // the repair, not the tie — and what ties is `Self`.
                     Narrower::Tied { with: None } => narrower(format!(
-                        "inside `{carrier_short}` a bare `{carrier_short}`, or one written with \
-                         `{carrier_short}`'s own parameters, is THIS instance (the parametricity \
-                         tie), so the member's `{got}` ties `{name}` to the receiver, where the \
-                         spec's `{want}` need not be the receiver's instance; give `{name}`'s \
-                         `{carrier_short}` type arguments of its own, or tie the two in the spec"
+                        "inside `{carrier_short}`, `{self_word}` — `{carrier_short}` at its own \
+                         parameters — is THIS instance (the parametricity tie), so the member's \
+                         `{got}` ties `{name}` to the receiver, where the spec's `{want}` need \
+                         not be the receiver's instance; write `{name}`'s `{carrier_short}` at \
+                         `?` (any `{carrier_short}`) or at type arguments of its own, or tie \
+                         the two in the spec",
+                        self_word = crate::intern::SELF_TYPE_NAME,
                     )),
                     // No receiver: the instance is whichever the first parameter naming it took.
                     Narrower::Tied { with: Some(j) } => {
                         let first = kb.local_name_of(impl_info.params[j].0).to_string();
                         narrower(format!(
-                            "inside `{carrier_short}` a bare `{carrier_short}`, or one written \
-                             with `{carrier_short}`'s own parameters, is THIS instance (the \
-                             parametricity tie), so the member's `{got}` ties `{name}` to \
-                             `{first}`, where the spec's `{want}` is an instance of its own; give \
-                             `{name}`'s `{carrier_short}` type arguments of its own, or tie the \
-                             two in the spec"
+                            "inside `{carrier_short}`, `{self_word}` — `{carrier_short}` at its \
+                             own parameters — is THIS instance (the parametricity tie), so the \
+                             member's `{got}` ties `{name}` to `{first}`, where the spec's \
+                             `{want}` is an instance of its own; write `{name}`'s \
+                             `{carrier_short}` at `?` (any `{carrier_short}`) or at type \
+                             arguments of its own, or tie the two in the spec",
+                            self_word = crate::intern::SELF_TYPE_NAME,
                         ))
                     }
                     Narrower::Other => narrower(format!(
@@ -384,12 +403,21 @@ pub(super) fn check_member_signature(
                     Narrower::Circular { binding, sort } => {
                         let recv_short = kb.local_name_of(sort).to_string();
                         let b = type_display_name_value(kb, &Value::term(binding));
+                        // Inside its own sort a slot left out is a `?` the loader writes
+                        // (proposal 070 §1.3), so "unwritten" is no state a binding there
+                        // can be in; a witness's binding names another sort, where it is.
+                        let leave = if kb.canonical_sort_sym(sort) == kb.canonical_sort_sym(carrier)
+                        {
+                            ""
+                        } else {
+                            " leave it unwritten,"
+                        };
                         format!(
                             "{at} is the receiver, and the provision binds its type to `{b}`, \
                              which writes one of `{recv_short}`'s own parameters inside its own \
                              slot — no `{recv_short}` is that type, so no call written against \
-                             the spec reaches this member; write that slot as `?` (any type), \
-                             leave it unwritten, or bind a parameter of the spec's to what it was \
+                             the spec reaches this member; write that slot as `?` (any type),\
+                             {leave} or bind a parameter of the spec's to what it was \
                              meant to name. {sigs}"
                         )
                     }
@@ -830,9 +858,26 @@ fn member_narrower_than_spec(
         }
     }
     if let Some(i) = self_recv {
-        let written = sort_application_parts(kb, &spec_info.params[i].1)
+        // WI-20261001-80ZV8 — A SLOT HOLDING THE SPEC'S OWN PARAMETER IS NOT A WRITTEN
+        // ARGUMENT. `s: Self` is `s: Sp[T = T]`: it names every provider of the spec at this
+        // instance, which is what the bare `s: Sp` it replaces received under the tie,
+        // and it restricts nothing. Read as written, the refusal took the wrong kind — "does
+        // not take them all; type `s` as the spec writes it" for a member that fixes what the
+        // spec leaves open — and each such slot was met with the provision's binding for
+        // nothing. Slot by slot, as [`is_this_instance`] reads the carrier's: `Sp[T = Int64,
+        // E = E]` still writes its `T`.
+        let own = own_params_of(kb, spec_canon);
+        let written: Vec<(Symbol, Value)> = sort_application_parts(kb, &spec_info.params[i].1)
             .map(|(_, w)| w)
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(k, v)| {
+                let Some(&(_, vid)) = own.iter().find(|(q, _)| same_label(kb, *q, *k)) else {
+                    return true;
+                };
+                declared_type_param_vid(kb, v) != Some(vid) && braced_row_var(kb, v) != Some(vid)
+            })
+            .collect();
         receiver_written = !written.is_empty();
         let spec_params = sort_type_params_as_pairs(kb, spec_canon);
         // A written argument the provision's binding does not meet excludes the provider ONLY
@@ -1125,7 +1170,17 @@ fn member_narrower_than_spec(
         }
         let arg = if projecting[i] {
             let prep_now = prep.clone();
-            match reader.eliminate(kb, spec_pty, &spec_args, None, &prep_now, &ctx) {
+            // A PARAMETER'S projection is the binding as written, an instance of its own
+            // ([`ProjectionReader::instance_of`]): any type on the spec's side.
+            match reader.eliminate(
+                kb,
+                spec_pty,
+                &spec_args,
+                None,
+                &prep_now,
+                &ctx,
+                Some(SlotVar::Rigid),
+            ) {
                 Ok(s) => spec_side(kb, &mut prep, &s, &template),
                 Err(why) => {
                     return Narrowing::at(i, Narrower::Unreadable { spec: true, why }).into()
@@ -1285,6 +1340,7 @@ fn member_narrower_than_spec(
             None,
             &prep_now,
             &ctx,
+            None,
         ) {
             Ok(s) => {
                 let s = sigma_subst_type_values(kb, &s, &template);
@@ -1997,6 +2053,8 @@ impl ProjectionReader {
     }
 
     /// `r.member` over a receiver of type `recv_ty`, or `None` for the call's own reading.
+    /// `instance` is how a provision's own variables read here ([`Self::instance_of`]).
+    #[allow(clippy::too_many_arguments)]
     fn read(
         &self,
         kb: &mut KnowledgeBase,
@@ -2005,6 +2063,7 @@ impl ProjectionReader {
         member: Symbol,
         rekey: Option<&HashMap<Symbol, Symbol>>,
         prep: &Substitution,
+        instance: Option<SlotVar>,
     ) -> Option<Value> {
         let name = kb.local_name_of(member).to_owned();
         if name == crate::intern::SELF_TYPE_NAME {
@@ -2049,7 +2108,7 @@ impl ProjectionReader {
         match projection_owner_spec(kb, receiver, &name).map(|s| kb.canonical_sort_sym(s)) {
             Some(spec) if spec == self.spec => {}
             Some(_) => return None,
-            None => return self.read_unowned(kb, recv_ty, &name, prep),
+            None => return self.read_unowned(kb, recv_ty, &name, prep, instance),
         }
         let Some(&(_, b)) = self.bindings.iter().find(|(s, _)| *s == name) else {
             // A spec parameter the provision leaves UNBOUND is a wildcard here as in every
@@ -2074,9 +2133,10 @@ impl ProjectionReader {
                     return None;
                 }
                 let v = resolve_type_deep_value(kb, &at, &Value::term(b));
+                let v = Self::instance_of(kb, b, v, instance);
                 Some(resolve_type_deep_value(kb, prep, &v))
             }
-            None => self.at_receiver(kb, recv_ty, b, prep),
+            None => self.at_receiver(kb, recv_ty, b, prep, instance),
         }
     }
 
@@ -2089,9 +2149,60 @@ impl ProjectionReader {
         recv_ty: &Value,
         b: TermId,
         prep: &Substitution,
+        instance: Option<SlotVar>,
     ) -> Option<Value> {
         let v = binding_at_receiver(kb, self.recv_sort, recv_ty, &Value::term(b))?;
+        let v = Self::instance_of(kb, b, v, instance);
         Some(resolve_type_deep_value(kb, prep, &v))
+    }
+
+    /// WI-20261001-80ZV8 — `read`, the provision's binding `b` at a receiver, AS AN INSTANCE
+    /// OF ITS OWN: a PARAMETER typed by a projection (`o: s.T`) reads the binding as written
+    /// (kernel-language.md §8.7), so each variable the provision itself wrote (`T = Car[V =
+    /// ?]`, [`ProvisionOpening`]) is fresh to this read — ANY TYPE on the spec's side
+    /// (`SlotVar::Rigid`), the member's to instantiate on its own (`SlotVar::Flexible`).
+    /// `None` is a RETURN's read, which leaves them as the rule holds them: a variable only
+    /// the return reads stays the open one the return leg asks about ([`leaves_open`]).
+    ///
+    /// BEFORE `prep` IS READ, and that order is the rule: `prep` holds the any-type the rule
+    /// made of a variable some parameter reads through the spec's own text (`a: T`), which is
+    /// ONE type per call, where each projection of it is a type of its own. Opened after —
+    /// and only the variables no parameter reads, as the first cut did — `f[W](s: Self, a:
+    /// Car[V = W], b: Car[V = W])` was admitted behind `f(s: Self, a: T, b: s.T)`, and
+    /// `Sp.f(x, car(v: "s"), car(v: true))` loaded against a body typed as if the two were
+    /// one `Car` (MEASURED, found by /code-review).
+    ///
+    /// The bare binding as the tie's readers met it (`T = Car`, a slot left out) had no
+    /// variable to leave open: its unwritten slot was expanded fresh at every read, rigid on
+    /// the spec's side. Written `?` — which is what the loader now makes of the bare name too
+    /// (proposal 070 §1.3) — the one variable stood on
+    /// both sides and unified with whatever the member wrote — a member typing `o` by `Self`
+    /// was admitted behind a spec that takes any `Car`, and `Sp.pick(car(v: 1), car(v: "s"))`
+    /// loaded against it (MEASURED).
+    fn instance_of(
+        kb: &mut KnowledgeBase,
+        b: TermId,
+        read: Value,
+        instance: Option<SlotVar>,
+    ) -> Value {
+        let Some(slot) = instance else {
+            return read;
+        };
+        let Some(opening) = ProvisionOpening::of(kb, [b]) else {
+            return read;
+        };
+        let mut fresh = Substitution::new();
+        for &v in opening.written() {
+            let to = match slot {
+                SlotVar::Rigid => fresh_rigid_named(kb, v.name()),
+                SlotVar::Flexible => {
+                    let vid = kb.fresh_var(v.name());
+                    kb.alloc(Term::Var(Var::Global(vid)))
+                }
+            };
+            fresh.bind_term(kb, v, to);
+        }
+        resolve_type_deep_value(kb, &fresh, &read)
     }
 
     /// `r.member` where the receiver's declaration names no spec: what the receiving sort's
@@ -2104,20 +2215,29 @@ impl ProjectionReader {
         recv_ty: &Value,
         name: &str,
         prep: &Substitution,
+        instance: Option<SlotVar>,
     ) -> Option<Value> {
-        let mut read: Option<Value> = None;
+        // AGREEMENT IS ASKED OF THE BINDINGS AS THE RULE HOLDS THEM — an instance of each
+        // would never agree with an instance of the next — and the one they agree on is then
+        // read as the instance asked for.
+        let mut read: Option<(TermId, Value)> = None;
         for (_, written) in unowned_member_bindings(kb, self.recv_sort, name) {
-            let this = self.at_receiver(kb, recv_ty, written, prep)?;
+            let this = self.at_receiver(kb, recv_ty, written, prep, None)?;
             match &read {
-                None => read = Some(this),
-                Some(prior) if types_agree(kb, prior, &this) => {}
+                None => read = Some((written, this)),
+                Some((_, prior)) if types_agree(kb, prior, &this) => {}
                 Some(_) => return None,
             }
         }
-        read
+        let (written, agreed) = read?;
+        match instance {
+            None => Some(agreed),
+            Some(_) => self.at_receiver(kb, recv_ty, written, prep, instance),
+        }
     }
 
-    /// `ty` (a spec side) with its projections read at `args`.
+    /// `ty` (a spec side) with its projections read at `args`, a provision's own variables as
+    /// `instance` says ([`Self::instance_of`]).
     #[allow(clippy::too_many_arguments)]
     fn eliminate(
         &self,
@@ -2127,9 +2247,10 @@ impl ProjectionReader {
         rekey: Option<&HashMap<Symbol, Symbol>>,
         prep: &Substitution,
         ctx: &TypeErrorContext,
+        instance: Option<SlotVar>,
     ) -> Result<Value, String> {
         let read = |kb: &mut KnowledgeBase, receiver: &Value, recv_ty: &Value, member: Symbol| {
-            self.read(kb, receiver, recv_ty, member, rekey, prep)
+            self.read(kb, receiver, recv_ty, member, rekey, prep, instance)
         };
         Discharge {
             arg_syms: rekey,
@@ -2159,7 +2280,14 @@ impl ProjectionReader {
         returned: bool,
     ) -> Result<Value, String> {
         let m = if value_contains_projection(kb, ty) {
-            self.eliminate(kb, ty, member_args, Some(impl_to_spec), prep, ctx)?
+            // The member's own projection reads the same binding, and in a PARAMETER is an
+            // instance of its own there too — the member's to instantiate, as a parameter's
+            // unwritten slot is. Left as the binding's variable itself, the two sides shared
+            // it: the spec's any-type bound it, and the return then read a slot only the
+            // return reads as fixed (MEASURED: `a_written_wildcard_only_the_return_reads_
+            // stays_open`, refused once the spec's side was made any type).
+            let instance = (!returned).then_some(SlotVar::Flexible);
+            self.eliminate(kb, ty, member_args, Some(impl_to_spec), prep, ctx, instance)?
         } else if impl_to_spec.is_empty() {
             ty.clone()
         } else {

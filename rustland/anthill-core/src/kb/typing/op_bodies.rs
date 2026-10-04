@@ -373,6 +373,33 @@ pub(super) fn check_operation_bodies(
                             },
                             op.span,
                         ) {
+                            // WI-20261001-80ZV8 — WHAT THE PROJECTION READ IS A PARAMETER'S
+                            // TYPE, so a slot it leaves open is the CALLER's to fix and
+                            // unknown here: the fill a written parameter type got when this
+                            // operation was collected ([`rigidify_unwritten_sort_params`],
+                            // `o.V`), which never saw this type — it saw `s.T`. Left as
+                            // read, `pick(s: Self, o: s.T) = takes_int(o)` loaded at `T =
+                            // Other` and at `T = Other[W = ?]` alike, and `Sp.pick(x,
+                            // other(w: "s"))` then ran `takes_int` on a `String` one
+                            // (MEASURED, found by /code-review; the bare binding's half
+                            // predates this ticket).
+                            //
+                            // NO ENCLOSING SORT (`sort: None`): what a provision's binding
+                            // names is not written in this sort's definition, so a bare
+                            // `Car` there is any `Car` (proposal 070 §1.3) even when this
+                            // body is `Car`'s own — never this instance's.
+                            let elim = rigidify_unwritten_sort_params(
+                                kb,
+                                UnwrittenFill::Projection(*name),
+                                &elim,
+                                SlotPosition::Body {
+                                    sort: None,
+                                    rigidify: &op.rigidify,
+                                },
+                                op.body_node.span,
+                                op.body_node.owner,
+                            )
+                            .unwrap_or(elim);
                             if !views_structurally_equal(kb, &elim, &cur) {
                                 decl.insert(*name, elim);
                                 changed = true;
@@ -680,7 +707,20 @@ pub(super) fn check_operation_bodies(
                 // sides; grounding only the body side would re-open the asymmetry WI-1059
                 // closed. Found by `/code-review`.
                 let body_ty = walk_type_deep_value(kb, &subst, &result.ty);
-                let conforms = types_compatible(kb, &mut subst, &body_ty, &effective_return)
+                // WI-20261001-80ZV8 — AND THE DECLARED SIDE'S HOLES FROM THE BODY. A
+                // variable still open in the declared return is one the SIGNATURE binds
+                // nowhere — the operation's and the sort's type parameters are rigids here
+                // — so it is the return's own `?`: a type the operation PICKS (opened at
+                // each call, WI-1063/1078), and the body is where it is picked. The unify
+                // above already bound it; the relation below is structural about a
+                // variable and never read that binding, so `some(s: Self) -> Car[V = ?] =
+                // car(v: "s")` was refused, `expected Car[V = ?_], got Car[V = String]`
+                // (MEASURED) — and that is what a bare `-> Car` inside `Car` is too, the
+                // loader writing its `?` (proposal 070 §1.3) — where the unwritten `->
+                // Other` it stands beside always packed. The message keeps the return AS
+                // DECLARED.
+                let declared = walk_type_deep_value(kb, &subst, &effective_return);
+                let conforms = types_compatible(kb, &mut subst, &body_ty, &declared)
                     || match refine_self_receiver_body_type(kb, &result.node, &body_ty) {
                         Some(refined) => {
                             let mut probe = Substitution::new();

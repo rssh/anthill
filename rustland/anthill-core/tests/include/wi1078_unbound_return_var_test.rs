@@ -158,18 +158,28 @@ fn the_headline_a_named_row_variable_is_opened_at_the_consumer() {
 
 /// ALL FOUR SPELLINGS OF ONE RETURN AGREE, which is what the ticket is for: WI-1063 kept three
 /// of them and let the fourth through. The omitted slot, the explicit `?` and the named `?E`
-/// are all refused at the CONSUMER; a named variable that the BODY contradicts is refused
-/// earlier still, at the DECLARATION, and that row is what says which way to fix the other
-/// three — the body check already reads a named return variable as universally quantified.
+/// are all refused at the CONSUMER, and none at the declaration: the producer packs a witness.
 ///
-/// WHY THE FIRST THREE ARE REFUSED AT THE CALL AND NOT AT THE DECLARATION, since the ticket
-/// left the choice open: a body-LESS declaration has no body to check, and `widen_*` here does
-/// have one only incidentally. The call is the only site both forms share, and it is where
-/// WI-1063 already mints. [`a_named_variable_only_in_the_return_is_opened_for_a_data_parameter_too`]
+/// WHY THEY ARE REFUSED AT THE CALL AND NOT AT THE DECLARATION, since the ticket left the
+/// choice open: a body-LESS declaration has no body to check, and `widen_*` here does have one
+/// only incidentally. The call is the only site both forms share, and it is where WI-1063
+/// already mints. [`a_named_variable_only_in_the_return_is_opened_for_a_data_parameter_too`]
 /// holds the body-less half.
 ///
-/// CONTROL: the `?E` row is the one that changes — it loads on main. The other three are
+/// CONTROL: the `?E` row is the one that changes — it loads on main. The other two are
 /// WI-1063's verdicts and are here to show they are UNCHANGED, not to measure this rule.
+///
+/// THE FOURTH ROW WAS THE OTHER WAY ROUND UNTIL WI-20261001-80ZV8, and said so: a named
+/// variable in a TYPE slot (`-> List[T = ?A] = cons(1, nil())`) was refused at the
+/// DECLARATION, `expected List[T = ?A], got List[T = Int64]`, and this row pinned that as the
+/// asymmetry showing the body check reads a named return variable as universally quantified.
+/// It read it so by accident: the return check compared the body against the declared
+/// variable structurally, and only a ROW variable absorbs what it meets. That is §8.1's
+/// "universal quantification in a positive position, the wrong quantifier", and it made a
+/// return written at `?` — "any instance", which a bare return inside a sort's own
+/// definition is too — one that could be declared and never returned. The body packs
+/// there now, as it does for a row, so the fourth spelling is refused at the consumer like
+/// the other three.
 #[test]
 fn the_four_return_spellings_agree() {
     for (label, ret) in [
@@ -187,13 +197,18 @@ fn the_four_return_spellings_agree() {
             "the `{label}` spelling must open at the consumer like the other two: {msg}",
         );
     }
-    // The fourth: a named variable the BODY contradicts. Refused at the declaration, by the
-    // return check — the body has an `Int64` list and cannot have one good for EVERY element.
-    let decl = refusal(&rows(" operation mk_ints() -> List[T = ?A] = cons(1, nil())\n"));
+    // The fourth: a named variable in a TYPE slot. The body packs `A := Int64`, and the
+    // consumer may not take the result for a list of `Int64` — the element is the
+    // producer's to pick, whatever it picked.
+    let msg = refusal(&rows(
+        " operation mk_ints() -> List[T = ?A] = cons(1, nil())\n\
+         \x20 operation want_ints(l: List[T = Int64]) -> Int64\n\
+         \x20 operation use_it() -> Int64 = want_ints(mk_ints())\n",
+    ));
     assert!(
-        decl.contains("mk_ints.return") && decl.contains("List[T = ?A]"),
-        "a named return variable the body contradicts is refused at the DECLARATION, and that \
-         asymmetry is what says the other three belong at the call: {decl}",
+        msg.contains("want_ints.l") && msg.contains("List[T = ?A]") && !msg.contains("mk_ints.return"),
+        "a named type variable only the return reads is packed by the body and opened at the \
+         use, like the other three: {msg}",
     );
 }
 
@@ -296,7 +311,7 @@ fn the_enclosing_sorts_parameter_is_threaded_from_the_receiver() {
         \x20 sort Holder\n\
         \x20   sort T = ?\n\
         \x20   entity holder(v: T)\n\
-        \x20   operation to_pair(h: Holder) -> Pair[A = T, B = T]\n\
+        \x20   operation to_pair(h: Self) -> Pair[A = T, B = T]\n\
         \x20 end\n\
         \x20 operation want_ints(p: Pair[A = Int64, B = Int64]) -> Int64\n\
         \x20 operation use_it(h: Holder[T = Int64]) -> Int64 = want_ints(Holder.to_pair(h))\n\
@@ -345,30 +360,27 @@ fn the_tie_survives_the_opening() {
     );
 }
 
-/// A SELF-sort return is not opened in EITHER spelling, and the two agreeing is the point: the
-/// §3 parametricity tie is what a reference to the callee's own sort names, so `E = ?E` and an
-/// omitted `E` are alike there exactly as they are now alike on a foreign one. This is the
-/// hatch `LogicalStream.empty` and `List.empty` both ride, and it is why neither had to move.
+/// A SELF-sort return that leaves a slot open — written at a VARIABLE, or OMITTED — is opened
+/// as a foreign one is: the two halves of proposal 070 (WI-20261001-80ZV8) on the row that
+/// used to pin the opposite.
 ///
-/// BOTH HALVES ARE NOW REFUSED, AND AT THE SAME PLACE — WI-1082 landed and this row carries its
-/// verdict. The fixture used to LOAD, handing `{Error}` to a parameter declaring `E = {}`,
-/// which was §8.1's headline exploit surviving on the self side. WI-1082 writes §3's tie into
-/// the declaration: `-> MyStream[T = Int64]` inside `sort MyStream` means "at THIS instance's
-/// `E`", within a member body that parameter is rigid (WI-424), and `= s` — pinned to `{Error}`
-/// by its own parameter — does not hold for every `E`. So the refusal is at `widen_self.return`,
-/// the declaration, not at the consumer.
+/// THE ROW'S HISTORY, which is why it reads as a flip. It first pinned the "hatch" a self
+/// reference rode: `-> MyStream[T = Int64, E = ?E]` and `-> MyStream[T = Int64]` inside
+/// `sort MyStream` were ONE type and neither was opened, so the fixture loaded and handed
+/// `{Error}` to a parameter declaring `E = {}`. WI-1082 then wrote §3's tie into the
+/// declaration, and both halves were refused at `widen_self.return`, message for message.
+/// Proposal 070 makes the two spellings one type again, and the other one:
 ///
-/// THE AGREEMENT IS STILL THE ASSERTION, and it is why this row stayed rather than moving to
-/// the WI-1082 file: `-> MyStream[T = Int64]` and `-> MyStream[T = Int64, E = ?E]` must be ONE
-/// type. WI-1082 keeps them so by reading `unbound_return_vars` — WI-1078's own classification
-/// — at the declaration, and answering the SELF case with the tie where the call answers the
-/// FOREIGN case with a fresh ρ. Elaborating only the omitted spelling would have reopened this
-/// ticket's gap from the other end, so the two halves are compared message-for-message.
+///  - a `?E` WRITTEN at the sort's own slot is a variable like any other (§1.3) — in a
+///    return, the type the operation picks — so the call opens it and the refusal is at the
+///    CONSUMER, exactly where the foreign twin has it
+///    ([`the_headline_a_named_row_variable_is_opened_at_the_consumer`]);
+///  - the OMITTED slot is the same `?`, inside the sort's own definition as everywhere
+///    (user, 2026-10-04; for one day it was a load error there), and is opened the same way.
 ///
-/// PASSES UNDER EVERY REVERT of this ticket, by design — it measures the boundary between the
-/// two rules, not either one. Back out WI-1082 instead and BOTH halves load again.
+/// What a member that means "this instance's `E`" writes is `E = E`, or `Self`.
 #[test]
-fn a_self_sort_return_is_not_opened_in_either_spelling() {
+fn a_self_sort_return_that_leaves_a_slot_open_is_opened_at_the_consumer() {
     const SELF: &str = "namespace test.wi1078.selfsort\n\
         \x20 import anthill.prelude.{Int64, Error}\n\
         \x20 sort MyStream\n\
@@ -382,24 +394,25 @@ fn a_self_sort_return_is_not_opened_in_either_spelling() {
         \x20 operation use_it(s: MyStream[T = Int64, E = {Error}]) -> Int64 = \
          takes_pure_s(MyStream.widen_self(s))\n\
         end\n";
-    let named = refusal_of(SELF);
-    // The omitted spelling of the same return — `-> MyStream[T = Int64]`, WI-1063's row A on a
-    // self reference. Refused identically, and that agreement is the whole assertion.
-    let omitted = refusal_of(
-        &SELF
-            .replace(", E = ?E] = s", "] = s")
-            .replace("selfsort", "selfomit"),
+    let omitted_src = crate::common::replace_in_fixture(SELF, ", E = ?E] = s", "] = s")
+        .replace("selfsort", "selfomit");
+    for (spelling, src) in [("`E = ?E`", SELF), ("`E` omitted", omitted_src.as_str())] {
+        let refusal = refusal_of(src);
+        assert!(
+            refusal.contains("takes_pure_s.s") && !refusal.contains("widen_self.return"),
+            "{spelling}: a slot the sort's own return leaves open is the operation's to \
+             pick — the call opens it and the CONSUMER refuses what it cannot see into, as \
+             for a foreign sort: {refusal}",
+        );
+    }
+    // …and the tie, WRITTEN: this instance's `E`, which a body pinned to `{Error}` is not.
+    let tied = refusal_of(
+        &crate::common::replace_in_fixture(SELF, "E = ?E] = s", "E = E] = s")
+            .replace("selfsort", "selftied"),
     );
     assert!(
-        named.contains("widen_self.return") && named.contains("E = ?E"),
-        "WI-1082: the self-sort return means THIS instance's `E`, which the body's `= s` \
-         (pinned to {{Error}}) does not satisfy — and the refusal names the DECLARATION: {named}",
-    );
-    assert_eq!(
-        named.replace("selfsort", "X"),
-        omitted.replace("selfomit", "X"),
-        "`E = ?E` and an omitted `E` are ONE type on a self reference too — the two spellings \
-         must be refused by the same rule with the same message",
+        tied.contains("widen_self.return"),
+        "`E = E` is this instance's row, so the refusal is at the DECLARATION: {tied}",
     );
 }
 

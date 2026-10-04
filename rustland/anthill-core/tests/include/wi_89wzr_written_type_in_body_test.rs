@@ -125,7 +125,7 @@ namespace wi89wzr.op3
   sort Box
     sort T = ?
     entity box(v: T)
-    operation keep[U](b: Box, u: U) -> U =
+    operation keep[U](b: Self, u: U) -> U =
       let x: U = u
       x
   end
@@ -389,7 +389,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation each[EffP](s: Strm, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
+    operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
   end
   operation pure1(x: Int64) -> Bool = true
   operation use[R](s: Strm[T = Int64, E = {{R}}]) -> Bool effects {{R}} = {call}
@@ -446,19 +446,23 @@ end
     assert_eq!(run_src(src, "wi89wzr.br5.go"), Ok(6));
 }
 
-/// … AND A RECEIVER'S OWN TYPE, WHICH TYPES A BARE RETURN, IS READ THE SAME WAY: `empty() ->
-/// Bag` returns the sort bare, so `Bag[T = Option[T = T]].empty()` is typed by what the
-/// receiver wrote (WI-20260829-W6JH0) — at this body's `T`, not at the callee's, which the
-/// receiver's own entry has just bound to that `Option`.
+/// … AND A RECEIVER'S OWN TYPE IS READ THE SAME WAY: `Bag[T = Option[T = T]].empty()` is
+/// typed by what the receiver wrote (WI-20260829-W6JH0) — at this body's `T`, not at the
+/// callee's, which the receiver's own entry has just bound to that `Option`.
+///
+/// `empty` returned the sort BARE when this row was written (`-> Bag`), and the receiver's
+/// type typed that bare return. Since proposal 070 a bare return is a `Bag` the operation
+/// picks, not this instance; `-> Self` is the instance the row is about, and it is the
+/// receiver's bracket that fixes it.
 #[test]
-fn a_receiver_bracket_types_a_bare_return_in_the_bodys_terms() {
+fn a_receiver_bracket_types_the_return_in_the_bodys_terms() {
     let src = r#"
 namespace wi89wzr.br6
   import anthill.prelude.{Int64, List, Option}
   import anthill.prelude.List.{cons, nil}
   sort Bag[T]
     entity bag(items: List[T = T])
-    operation empty() -> Bag = bag(items: nil)
+    operation empty() -> Self = bag(items: nil)
     operation nested(b: Self) -> Bag[T = Option[T = T]] = Bag[T = Option[T = T]].empty()
   end
   operation count(b: Bag[T = Option[T = Int64]]) -> Int64 = List.length(b.items)

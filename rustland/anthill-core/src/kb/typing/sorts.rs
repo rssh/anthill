@@ -243,6 +243,7 @@ pub(super) fn type_check_sorts_collect(
     // WI-398: signature well-formedness over EVERY operation — independent of the
     // sort/body split above, so a body-less FREE spec is covered too.
     errors.extend(check_operation_signatures(kb));
+    errors.extend(check_sort_parameter_carriers(kb));
 
     // WI-701 (proposal 054 §"Branch and External"): reject a declared effect row that
     // carries BOTH Branch and External — a Branch region may not perform External.
@@ -388,6 +389,177 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
                     names.join(" -> "),
                 ),
             ));
+        }
+    }
+    errors
+}
+
+/// WI-20261001-80ZV8 (user, 2026-10-04) — A SORT'S PARAMETER NEEDS A CARRIER WHERE THE
+/// OPERATION TAKES THE SORT.
+///
+/// ```anthill
+/// sort Cell
+///   sort V = ?
+///   operation get(c: Cell) -> V          -- refused: `V` has no carrier
+///   operation get(c: Self) -> V          -- `c` is the carrier
+///   operation get(c: Cell) -> c.V        -- no `V` used: `c`'s own, by projection
+/// end
+/// ```
+///
+/// A bare `Cell` inside `Cell` is `Cell[V = ?]`, ANY cell (proposal 070 §1.3), and `V` in
+/// the signature is the operation's type parameter, fixed at each call by a bracket, the
+/// arguments or the expected type (§1.1). The first `get` therefore takes any cell and
+/// returns whatever `V` its caller expects — `asString(c: Cell[V = Int64]) -> String =
+/// Cell.get(c)` loaded (MEASURED) — while every reader takes `c` for the cell whose `V` that
+/// is. So the pairing is refused at the definition, and the author says which was meant:
+/// `Self` for the carrier, or a projection off the parameter.
+///
+/// THE THREE CONDITIONS, all of them, per parameter `V` of the declaring sort:
+///
+/// * the signature USES `V` — in a parameter, the return or an effect;
+/// * some PARAMETER is, or holds, the sort at an OPEN `V`: the slot left out, or written
+///   `?`. A slot written with a NAME of its own (`[X](c: Cell[V = X])`) is another instance
+///   said aloud, and is not this;
+/// * no parameter is, or holds, the sort at `V` itself — which is what `Self` is.
+///
+/// WHAT IT LEAVES ALONE, each by a condition failing rather than by a list: an operation
+/// that takes no value of its sort (`new(x: V) -> Self`, `empty() -> Self`, a spec's `eq(a:
+/// T, b: T)` or `zero() -> T` — `V` is then only the type parameter it always was); one
+/// that has its carrier (`both(s: Self, o: Cell) -> V`); and one that does not use `V`
+/// (`same(a: Cell, b: Cell) -> Bool` — any two cells, which is what it says).
+///
+/// ONE REFUSAL PER OPERATION, at the first parameter of the sort that leaves the slot open.
+fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
+    /// Every application of `sort` in `ty`, as the bindings it writes (none for the bare
+    /// name) and whether it is NESTED in the type rather than the whole of it.
+    fn applications_of(
+        kb: &KnowledgeBase,
+        ty: &Value,
+        sort: Symbol,
+        nested: bool,
+        out: &mut Vec<(bool, Vec<(Symbol, Value)>)>,
+    ) {
+        match extract_type(kb, ty) {
+            TypeExtractor::SortRef(s) => {
+                if kb.canonical_sort_sym(s) == sort {
+                    out.push((nested, Vec::new()));
+                }
+            }
+            TypeExtractor::Parameterized { base, bindings } => {
+                for (_, v) in &bindings {
+                    applications_of(kb, v, sort, true, out);
+                }
+                if kb.canonical_sort_sym(base) == sort {
+                    out.push((nested, bindings));
+                }
+            }
+            TypeExtractor::NamedTuple(fields) => {
+                for (_, v) in &fields {
+                    applications_of(kb, v, sort, true, out);
+                }
+            }
+            TypeExtractor::Arrow { param, result, .. } => {
+                applications_of(kb, &param, sort, true, out);
+                applications_of(kb, &result, sort, true, out);
+            }
+            _ => {}
+        }
+    }
+    let mut errors: Vec<TypeError> = Vec::new();
+    let mut seen_ops: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+    for (op_sym, params) in crate::kb::op_info::all_operation_params(kb) {
+        if !seen_ops.insert(op_sym) {
+            continue;
+        }
+        let Some(sort) = impl_parent_sort_of_op(kb, op_sym).map(|s| kb.canonical_sort_sym(s))
+        else {
+            continue;
+        };
+        // The sort's parameters, each with its variable — read off the declaration itself and
+        // not through [`sort_type_params_as_pairs`], which ASSERTS that a variable was
+        // published for every one. This pass visits every operation of every sort, a sort
+        // the loader has already refused among them (a dotted `sort Inner.T = ?` binder
+        // registers a parameter that has no variable — `wi1000
+        // a_dotted_declaration_name_is_not_the_entrys_content`, which the first cut of this
+        // check turned from a refusal into a panic), and it has nothing to say about a
+        // parameter with none.
+        let sort_params: SmallVec<[(Symbol, TermId); 2]> = kb
+            .type_param_syms_of(sort)
+            .iter()
+            .filter_map(|&param| Some((param, kb.canonical_type_param_var(param)?)))
+            .collect();
+        if sort_params.is_empty() {
+            continue;
+        }
+        // The operation's parameters that are, or hold, its own sort — nearly every
+        // operation stops at this list being empty.
+        let mut refs: Vec<(Symbol, bool, Vec<(Symbol, Value)>)> = Vec::new();
+        for (name, ty) in &params {
+            let mut found = Vec::new();
+            applications_of(kb, ty, sort, false, &mut found);
+            refs.extend(
+                found
+                    .into_iter()
+                    .map(|(nested, bindings)| (*name, nested, bindings)),
+            );
+        }
+        if refs.is_empty() {
+            continue;
+        }
+        let Some(info) = lookup_operation_info_full(kb, op_sym) else {
+            continue;
+        };
+        // A signature stores a sort's parameter as a REFERENCE to it (`c: C` is `Ref(S.C)`,
+        // [`declared_type_param_vid`]), so the uses are read through that reader as well as
+        // off the variables a type holds.
+        let mut used: Vec<VarId> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for ty in info
+            .params
+            .iter()
+            .map(|(_, ty)| ty)
+            .chain(std::iter::once(&info.return_type))
+            .chain(info.effects.iter())
+        {
+            crate::kb::node_occurrence::collect_value_type(kb, ty, &mut used, &mut seen);
+            referenced_param_vars(kb, ty, &mut used);
+        }
+        for (sort_param, canonical) in sort_params.iter() {
+            let Term::Var(Var::Global(vid)) = kb.get_term(*canonical) else {
+                continue;
+            };
+            if !used.iter().any(|u| u.raw() == vid.raw()) {
+                continue;
+            }
+            let slot = |bindings: &[(Symbol, Value)]| {
+                bindings
+                    .iter()
+                    .find(|(k, _)| same_label(kb, *k, *sort_param))
+                    .map(|(_, v)| v.clone())
+            };
+            let carried = refs.iter().any(|(_, _, bindings)| {
+                slot(bindings).is_some_and(|v| {
+                    declared_type_param_vid(kb, &v).map(|h| h.raw()) == Some(vid.raw())
+                })
+            });
+            if carried {
+                continue;
+            }
+            let open = refs.iter().find(|(_, _, bindings)| match slot(bindings) {
+                None => true,
+                Some(v) => value_is_anonymous_wildcard(kb, &v),
+            });
+            if let Some((param, nested, _)) = open {
+                errors.push(TypeError::SortParamWithoutCarrier {
+                    span: kb.functor_span(op_sym).map(|s| s.span),
+                    op: op_sym,
+                    sort,
+                    sort_param: *sort_param,
+                    param: *param,
+                    nested: *nested,
+                });
+                break;
+            }
         }
     }
     errors

@@ -127,13 +127,17 @@ fn two_written_receivers_are_still_one_instance() {
     );
 }
 
-/// CONTROL — A RECEIVER STILL DECLARED BARE IS READ AS IT WAS. `rev(xs: Old) -> Old` leaves
-/// its receiver bare, so its call keeps the canonical channel: the argument's element
-/// reaches the result, and reading the result at another element is refused. Passes with
-/// or without the change by design — the change is for a signature that writes its sort.
+/// A RECEIVER DECLARED BARE — this file's control, when the bare name was this instance.
+/// `keep(xs: Old) -> Old` kept the unifier's canonical channel, since the change is for a
+/// signature that writes its sort, and the row passed with or without it by design. Since
+/// the user's 2026-10-04 decision the bare name is the sort at `?` inside its own definition
+/// (proposal 070 §1.3): `keep` takes ANY `Old` and returns one the operation picks, so its
+/// result is no `Old[T = Int64]` to the annotation that asks for one — where `Self` is this
+/// instance, and reads as the control did. (The loader writes the `?`, so no loaded member
+/// reaches the channel with its own sort left out; it is deleted at stage (e).)
 #[test]
-fn a_receiver_still_declared_bare_keeps_its_reading() {
-    let program = |ns: &str, annotated: &str| {
+fn a_receiver_declared_bare_is_any_instance_and_written_self_is_this_one() {
+    let program = |ns: &str, own: &str, annotated: &str| {
         format!(
             r#"
 namespace {ns}
@@ -141,9 +145,9 @@ namespace {ns}
   sort Old
     sort T = ?
     entity onil
-    entity ocons(head: T, tail: Old)
-    operation keep(xs: Old) -> Old = xs
-    operation olen(xs: Old) -> Int64 =
+    entity ocons(head: T, tail: {own})
+    operation keep(xs: {own}) -> {own} = xs
+    operation olen(xs: {own}) -> Int64 =
       match xs
         case onil() -> 0
         case ocons(_, rest) -> 1 + olen(rest)
@@ -155,9 +159,14 @@ end
 "#
         )
     };
-    assert_eq!(run_src(&program("wi80zv8w.d1", "Int64"), "wi80zv8w.d1.go"), Ok(1));
     assert_refused_naming(
-        &load_errors(&program("wi80zv8w.d2", "String")),
+        &load_errors(&program("wi80zv8w.d0", "Old", "Int64")),
+        &["kept.annotation (let-binding): expected Old[T = Int64], got Old[T = ?T]"],
+        "the result of a member whose receiver and return name the sort bare",
+    );
+    assert_eq!(run_src(&program("wi80zv8w.d1", "Self", "Int64"), "wi80zv8w.d1.go"), Ok(1));
+    assert_refused_naming(
+        &load_errors(&program("wi80zv8w.d2", "Self", "String")),
         &["kept.annotation (let-binding): expected Old[T = String], got Old[T = Int64]"],
         "a kept list of Int64 read as a list of String",
     );

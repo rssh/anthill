@@ -400,7 +400,7 @@ namespace {ns}
 
   sort Src
     effects E = ?
-    operation val(s: Src) -> Int64 effects s.E
+    operation val(s: Self) -> Int64 effects s.E
   end
 
   sort User
@@ -461,15 +461,19 @@ fn a_callees_requirement_is_supplied_at_the_value() {
     assert_eq!(answers("wiwbhtm.supply4", &body, "run4(buf(v: 1))"), 41);
 }
 
-/// THE SAME REQUIREMENT, the argument typed `User[S = …]` and the parameter the BARE sort
-/// `User`: the unifier binds `User.S` from the argument's binding, so the supply sees the
-/// value. Was refused "element `State = User.S` is unconstrained" on both builds.
+/// THE SAME REQUIREMENT, the argument typed `User[S = …]` and the parameter the sort at its
+/// own parameters: the unifier binds `User.S` from the argument's binding, so the supply sees
+/// the value. Was refused "element `State = User.S` is unconstrained" on both builds.
+///
+/// The parameter was written `u: User` — the bare sort, which inside its own definition meant
+/// this instance — until proposal 070 (WI-20261001-80ZV8) made the bare name the sort at `?`,
+/// any instance; `Self` is this instance, written.
 #[test]
-fn a_bare_sort_parameter_binds_the_value_in_type() {
+fn a_self_parameter_binds_the_value_in_type() {
     let body = format!(
         "{}\n  sort User\n    sort S = ?\n    requires Store[State = S]\n    \
          entity user(s: S)\n    \
-         operation via(u: User) -> Int64 =\n      match u\n        case user(s) -> Store.peek(s)\n  \
+         operation via(u: Self) -> Int64 =\n      match u\n        case user(s) -> Store.peek(s)\n  \
          end\n  \
          operation run3(u: User[S = {N3}]) -> Int64 = User.via(u)\n  \
          operation run4(u: User[S = {N4}]) -> Int64 = User.via(u)",

@@ -31,6 +31,29 @@
 //! where the row has one, so a row says the two now agree. The rows that assert a LOAD
 //! verdict say at their site why nothing can run.
 //!
+//! ── SINCE WI-20261001-80ZV8 (proposal 070 §1.3) ──────────────────────────────
+//!
+//! A SORT'S BARE NAME INSIDE ITS OWN DEFINITION NO LONGER MEANS THIS INSTANCE — it is the
+//! sort at `?`, any instance, as everywhere (and was, for one day, a load error) — so the
+//! fixtures here write what each bare name MEANT, and the row comments, which quote the
+//! declarations as they first stood (`both(s: Car, o: Car)`, `put(s: Sp, …)`, `T = Car`),
+//! describe a spelling the fixture no longer has:
+//!
+//!  * the carrier inside the carrier, and a spec's own RECEIVER, are `Self` — this instance;
+//!  * another parameter a spec types by itself, which the bare name read as any provider,
+//!    is the spec at `?` (`o: Sp[T = ?]`);
+//!  * a binding the rows call "bare" is `T = Self`, and an independent one is still
+//!    `T = Car[V = ?]`.
+//!
+//! The verdicts are the ones the rows pinned, with the refusal texts printing the member's
+//! `Self` as the carrier at its own parameters (`o: Car[V = V]`). THE BACK-OUT LEDGER BELOW
+//! WAS MEASURED ON THE BARE SPELLING and has not been taken again part by part: the rows the
+//! change of spelling moved, and what each of them fails under now, are in the ledgers of
+//! `wi_80zv8_bare_own_sort_test` and `wi_80zv8_written_wildcard_test`. Where a comment
+//! credits "§3's tie" for a verdict, the tie is now the written `Self`; the arms that read a
+//! reference to the declaring sort with a slot LEFT OUT are reached by no loaded program —
+//! the loader writes the `?` — and go at stage (e).
+//!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
 //! MEASURED by applying each part's back-out, present but wrong, and running this file's rows
@@ -514,7 +537,7 @@ namespace wi0rp29.shared_row_{tag}
     effects E = ?
     entity cnt(items: List[T])
     provides Stream[T = T, E = E]
-    operation splitFirst(c: Cnt) -> Option[Pair[A = T, B = Cnt[T = T, E = E]]] =
+    operation splitFirst(c: Self) -> Option[Pair[A = T, B = Cnt[T = T, E = E]]] =
       match List.splitFirst(c.items)
         case none() -> none
         case some(pair(h, t)) -> some(pair(h, cnt(t)))
@@ -601,7 +624,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation obs(s: Strm) -> Bool effects s.E = true
+    operation obs(s: Self) -> Bool effects s.E = true
   end
   sort Producer
     operation eff_stream(p: Producer) -> Strm[T = Int64, E = {{Modify[p]}}]
@@ -809,7 +832,7 @@ const CNT: &str = r#"
     effects EC = ?
     entity cnt(items: List[T])
     provides Stream[T = T, E = {EC}]
-    operation splitFirst(c: Cnt) -> Option[Pair[A = c.T, B = Cnt[T = c.T]]] =
+    operation splitFirst(c: Self) -> Option[Pair[A = c.T, B = Cnt[T = c.T, EC = EC]]] =
       match List.splitFirst(c.items)
         case none() -> none
         case some(pair(h, t)) -> some(pair(h, cnt(t)))
@@ -901,7 +924,7 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation pick(x: T, s: Sp) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E{spec_body}
+    operation pick(x: T, s: Self) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E{spec_body}
   end
 
   sort Car
@@ -930,18 +953,18 @@ end
 /// parametricity tie), so the member demands ONE `V` across them where the spec's `x: T` (`T
 /// = Car[V = ?, EC = ?]`, an independent instance WRITTEN — a bare `T = Car` is this instance
 /// too since the seventh pass) is any instance.
-const TIED_PICK: &str = "operation pick(x: Car, s: Car) -> Option[T = Pair[A = Car[V = x.V, EC = \
+const TIED_PICK: &str = "operation pick(x: Self, s: Self) -> Option[T = Pair[A = Car[V = x.V, EC = \
                          EC], B = Car[V = x.V, EC = EC]]] effects {EC} = some(pair(x, x))";
 
 /// `x` with type arguments of its own — `W` and `R`, which the first argument alone binds; the
 /// receiver `s` is the instance.
-const OWN_PARAM_PICK: &str = "operation pick[W, R](x: Car[V = W, EC = R], s: Car) -> Option[T = \
+const OWN_PARAM_PICK: &str = "operation pick[W, R](x: Car[V = W, EC = R], s: Self) -> Option[T = \
                               Pair[A = Car[V = W, EC = R], B = Car[V = V, EC = EC]]] effects {EC} = \
                               some(pair(x, s))";
 
 /// … with `A = x.V`, off the FIRST parameter — which the receiver is not — read through that
 /// argument's own type (δ).
-const PROJECTING_PICK: &str = "operation pick[W, R](x: Car[V = W, EC = R], s: Car) -> Option[T = \
+const PROJECTING_PICK: &str = "operation pick[W, R](x: Car[V = W, EC = R], s: Self) -> Option[T = \
                                Pair[A = Car[V = x.V, EC = R], B = Car[V = V, EC = EC]]] effects \
                                {EC} = some(pair(x, s))";
 
@@ -962,7 +985,7 @@ fn a_member_tied_tighter_than_its_spec_is_refused() {
         )),
         &[
             "does not fit",
-            "parameter 1 (`x: Car`) takes less than the spec's",
+            "parameter 1 (`x: Car[V = V, EC = EC]`) takes less than the spec's",
             "THIS instance",
         ],
         "a member tying x to the receiver, where the spec's x is any Car",
@@ -1059,7 +1082,7 @@ fn an_overrides_own_type_parameter_is_bound_by_its_argument_control() {
 }
 
 /// `X` appears in the return and in no parameter: no argument can bind it.
-const UNBOUND_PICK: &str = "operation pick[W, R, X](x: Car[V = W, EC = R], s: Car) -> Option[T = \
+const UNBOUND_PICK: &str = "operation pick[W, R, X](x: Car[V = W, EC = R], s: Self) -> Option[T = \
                             Pair[A = X, B = Car[V = V, EC = EC]]] effects {EC} = none";
 
 /// AN OVERRIDE TYPE PARAMETER NO ARGUMENT BINDS IS NOT THREADED: `A = X` would reach `v + 1` as
@@ -1085,10 +1108,15 @@ fn an_override_type_parameter_no_argument_binds_is_not_threaded() {
 /// `String` binds `V` twice. The fallback runs the member, so the conflict is the call's error,
 /// worded as `Car.pick(a, b)`'s. Declining left the spec's own unrelated refusal ("Car has no
 /// member E"), and before that the member's first binding was threaded.
+///
+/// THE WORDING IS THE ARGUMENT'S SINCE WI-20261001-80ZV8. While the tied member was written
+/// `pick(x: Car, s: Car)` the conflict was the member tie's — "consistent bindings for the
+/// sort's shared type parameter (first bound to Int64)". Written `Self` — the bare name being
+/// any instance since proposal 070 — the two parameters are one written type, and the second instance is an ordinary
+/// mismatch at its argument. What the row pins is unchanged: the two calls are refused alike.
 #[test]
 fn a_conflict_through_the_fallback_is_refused_as_the_qualified_call_refuses_it() {
-    let conflict =
-        "consistent bindings for the sort's shared type parameter (first bound to Int64)";
+    let conflict = "pick.s (op-arg): expected Car[V = Int64";
     for call in ["Sp.pick(a, b)", "Car.pick(a, b)"] {
         let errs = load_errors(&car_program(
             "wi0rp29.undecided",
@@ -1098,7 +1126,7 @@ fn a_conflict_through_the_fallback_is_refused_as_the_qualified_call_refuses_it()
             ("Int64", "41"),
             ("String", "\"str\""),
         ));
-        assert_refused_naming(&errs, &[conflict, "got String"], call);
+        assert_refused_naming(&errs, &[conflict, "got Car[V = String"], call);
         assert!(
             !errs.iter().any(|e| e.contains("pick.return")),
             "{call}: the conflict, not the spec's `s.E`: {errs:#?}"
@@ -1153,7 +1181,7 @@ namespace {ns}
   sort Sp2
     sort T = ?
     effects E = ?
-    operation touch(s: Sp2) -> Option[T = s.T] effects {{s.E}}
+    operation touch(s: Self) -> Option[T = s.T] effects {{s.E}}
   end
 
   sort Car2
@@ -1161,7 +1189,7 @@ namespace {ns}
     effects EC = ?
     entity car2(v: V)
     provides Sp2[T = V, E = {{EC}}]
-    operation touch(c: Car2) -> Option[T = V] effects {{EC}} = some(c.v)
+    operation touch(c: Self) -> Option[T = V] effects {{EC}} = some(c.v)
   end
 
   operation use[R](x: Car2[V = {elem}, EC = R]) -> Int64 effects {{R}} =
@@ -1223,7 +1251,7 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation pick3(a: T, b: T, s: Sp) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E
+    operation pick3(a: T, b: T, s: Self) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E
   end
 
   sort Car
@@ -1231,7 +1259,7 @@ namespace {ns}
     effects EC = ?
     entity car(v: V)
     provides Sp[T = Car[V = ?, EC = ?], E = {{EC}}]
-    operation pick3[W, R](a: Car[V = W, EC = R], b: Car[V = W, EC = R], s: Car) -> Option[T = Pair[A = {a_type}, B = Car[V = V, EC = {{Modify[a]}}]]] effects {{EC}} =
+    operation pick3[W, R](a: Car[V = W, EC = R], b: Car[V = W, EC = R], s: Self) -> Option[T = Pair[A = {a_type}, B = Car[V = V, EC = {{Modify[a]}}]]] effects {{EC}} =
       let r: Int64 = Sp.pick3(b, a, s)
       none
   end
@@ -1271,7 +1299,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation obs(s: Strm) -> Bool effects s.E = true
+    operation obs(s: Self) -> Bool effects s.E = true
   end
   sort Producer
     operation pure_stream(p: Producer) -> Strm[T = Int64, E = {{}}]
@@ -1319,7 +1347,7 @@ namespace {ns}
 
   sort Box
     effects Effect = ?
-    operation peek(x: Int64, b: Box, c: Box) -> Int64 effects Effect
+    operation peek(x: Int64, b: Self, c: Self) -> Int64 effects Effect
   end
 
   sort MutBox
@@ -1383,7 +1411,7 @@ namespace {ns}
     effects EC = ?
     entity cnt(items: List[T])
     provides Stream[T = T, E = {{EC}}]
-    operation splitFirst(c: Cnt) -> Option[Pair[A = T, B = Cnt[T = T, EC = {{Modify[c]}}]]] effects {{EC}} =
+    operation splitFirst(c: Self) -> Option[Pair[A = T, B = Cnt[T = T, EC = {{Modify[c]}}]]] effects {{EC}} =
       match List.splitFirst(c.items)
         case none() -> none
         case some(pair(h, t)) -> some(pair(h, cnt(t)))
@@ -1483,7 +1511,7 @@ namespace {ns}
     effects EC = ?
     entity cnt(items: List[T])
     provides Stream[T = T, E = {{EC}}]
-    operation splitFirst(c: Cnt) -> Option[Pair[A = T, B = Cnt[T = T, EC = EC]]] =
+    operation splitFirst(c: Self) -> Option[Pair[A = T, B = Cnt[T = T, EC = EC]]] =
       match List.splitFirst(c.items)
         case none() -> none
         case some(pair(h, t)) -> some(pair(h, cnt(t)))
@@ -1613,7 +1641,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation obs(s: Strm) -> Bool effects s.E = true
+    operation obs(s: Self) -> Bool effects s.E = true
   end
   sort Producer
     operation foo_stream(p: Producer) -> Strm[T = Int64, E = {{Error[Foo]}}]
@@ -1678,7 +1706,7 @@ namespace wi0rp29.arity
   sort Sp
     sort T = ?
     effects E = ?
-    operation peek(s: Sp) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E = none
+    operation peek(s: Self) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E = none
   end
 
   sort Car
@@ -1686,7 +1714,7 @@ namespace wi0rp29.arity
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {EC}]
-    operation peek(s: Car, k: String) -> Option[T = Pair[A = String, B = Car[V = V, EC = EC]]] effects {EC} = some(pair(k, s))
+    operation peek(s: Self, k: String) -> Option[T = Pair[A = String, B = Car[V = V, EC = EC]]] effects {EC} = some(pair(k, s))
   end
 
   operation use[R](a: Car[V = Int64, EC = R]) -> Int64 effects {R} =
@@ -1768,7 +1796,7 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation put(s: Sp, k: s.T) -> Option[T = s.T] effects s.E
+    operation put(s: Self, k: s.T) -> Option[T = s.T] effects s.E
   end
 
   sort Car
@@ -1776,7 +1804,7 @@ namespace {ns}
     effects EC = ?
     entity car(v: V)
     provides Sp[T = {t}, E = {{EC}}]
-    operation put(c: Car, k: c.V) -> Option[T = c.V] effects {{EC}} = some(k)
+    operation put(c: Self, k: c.V) -> Option[T = c.V] effects {{EC}} = some(k)
   end
 
   operation use[R](x: Car[V = Int64, EC = R], ks: {ks_ty}) -> Int64 effects {{R}} =
@@ -1844,7 +1872,7 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation pick(x: List, y: List, s: Sp) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E
+    operation pick(x: List, y: List, s: Self) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E
   end
 
   sort Car
@@ -1852,7 +1880,7 @@ namespace {ns}
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {{EC}}]
-    operation pick(x: List, y: List, s: Car) -> Option[T = Pair[A = V, B = Car[V = V, EC = EC]]] effects {{EC}} = some(pair(s.v, s))
+    operation pick(x: List, y: List, s: Self) -> Option[T = Pair[A = V, B = Car[V = V, EC = EC]]] effects {{EC}} = some(pair(s.v, s))
   end
 
   operation use[R](a: Car[V = Int64, EC = R], xs: List[T = Int64], ys: List[T = String]) -> Int64 effects {{R}} =
@@ -1994,7 +2022,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation obs(s: Strm, d: Int64) -> Bool effects {{s.E :- eq(d, 0)}} = true
+    operation obs(s: Self, d: Int64) -> Bool effects {{s.E :- eq(d, 0)}} = true
   end
   operation use(s: Strm[T = Int64, E = {{Error[Foo]}}]) -> Bool{declared} = Strm.obs(s, 0)
 end
@@ -2045,7 +2073,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation each[EffP](s: Strm, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
+    operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
   end
   operation use(s: Strm[T = Int64, E = {{Error[Foo]}}], b: Boom) -> Bool effects {{Error[Foo]}} =
     Strm.each(s, lambda (x: Int64) -> {lam})
@@ -2094,8 +2122,8 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation obs(s: Strm, d: Int64) -> Bool effects {{s.E :- eq(d, 0)}} = true
-    operation each[EffP](s: Strm, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
+    operation obs(s: Self, d: Int64) -> Bool effects {{s.E :- eq(d, 0)}} = true
+    operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
   end
   sort Car
     sort V = ?
@@ -2168,7 +2196,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation obs(s: Strm, d: Int64) -> Bool effects {{s.E :- eq(d, 0)}} = true
+    operation obs(s: Self, d: Int64) -> Bool effects {{s.E :- eq(d, 0)}} = true
   end
   operation use[R](s: Strm[T = Int64, E = {{Error[Foo], R}}]) -> Bool effects {{{declared}}} = Strm.obs(s, {d})
 end
@@ -2261,13 +2289,13 @@ namespace {ns}
   end
   sort Sp
     sort T = ?
-    operation op[U](s: Sp, a: U, b: U) -> Int64
+    operation op[U](s: Self, a: U, b: U) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation op[W](c: Car, a: W, b: W) -> Int64 effects {{Error[W]}} = Error.raise(b)
+    operation op[W](c: Self, a: W, b: W) -> Int64 effects {{Error[W]}} = Error.raise(b)
   end
   operation via(x: Car[V = Int64]) -> Int64 effects {{Error[{declared}]}} =
     let c1: cat = cat(n: 1)
@@ -2294,13 +2322,13 @@ namespace {ns}
   import anthill.prelude.List.{{cons, nil}}
   sort Sp
     sort T = ?
-    operation op[U](s: Sp, a: List[T = Int64], b: List[T = U], w: U) -> Int64
+    operation op[U](s: Self, a: List[T = Int64], b: List[T = U], w: U) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation op[W](c: Car, a: List[T = Int64], b: List[T = W], w: W) -> Int64 effects {{Error[W]}} = Error.raise(w)
+    operation op[W](c: Self, a: List[T = Int64], b: List[T = W], w: W) -> Int64 effects {{Error[W]}} = Error.raise(w)
   end
   operation via(x: Car[V = Int64]) -> Int64 effects {{Error[{declared}]}} =
     Sp.op(x, nil, nil, "boom")
@@ -2340,14 +2368,14 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation op(s: Sp, a: List[T = Int64], b: List[T = String]) -> Option[T = s.T] effects s.E
+    operation op(s: Self, a: List[T = Int64], b: List[T = String]) -> Option[T = s.T] effects s.E
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {{EC}}]
-    operation op(c: Car, a: List[T = Int64], b: List[T = String]) -> Option[T = V] effects {{EC}} = some(c.v)
+    operation op(c: Self, a: List[T = Int64], b: List[T = String]) -> Option[T = V] effects {{EC}} = some(c.v)
   end
   operation use[R](x: Car[V = Int64, EC = R]) -> Int64 effects {{R}} =
     match Sp.op(x, nil, nil)
@@ -2386,14 +2414,14 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation pick(x: T, s: Sp, p: Pair[A = List, B = List]) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E = none
+    operation pick(x: T, s: Self, p: Pair[A = List, B = List]) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E = none
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
     provides Sp[T = Car[V = ?, EC = ?], E = {{EC}}]
-    operation pick[W, R](x: Car[V = W, EC = R], s: Car, p: Pair[A = List, B = List]) -> Option[T = Pair[A = W, B = Car[V = V, EC = EC]]] effects {{EC}} = some(pair(x.v, s))
+    operation pick[W, R](x: Car[V = W, EC = R], s: Self, p: Pair[A = List, B = List]) -> Option[T = Pair[A = W, B = Car[V = V, EC = EC]]] effects {{EC}} = some(pair(x.v, s))
   end
   operation use[R](a: Car[V = Int64, EC = R], b: Car[V = Int64, EC = R]) -> Int64 effects {{R}} =
     let xs: List[T = Int64] = [1]
@@ -2430,14 +2458,14 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation pick2[W](x: T, s: Sp) -> Option[T = Pair[A = s.T, B = W]] effects s.E
+    operation pick2[W](x: T, s: Self) -> Option[T = Pair[A = s.T, B = W]] effects s.E
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
-    provides Sp[T = Car, E = {{EC}}]
-    operation pick2[W, U, R](x: Car[V = U, EC = R], s: Car) -> Option[T = Pair[A = Car[V = V, EC = EC], B = W]] effects {{EC}} = none
+    provides Sp[T = Self, E = {{EC}}]
+    operation pick2[W, U, R](x: Car[V = U, EC = R], s: Self) -> Option[T = Pair[A = Car[V = V, EC = EC], B = W]] effects {{EC}} = none
   end
   operation use[R](a: Car[V = Int64, EC = R], b: Car[V = Int64, EC = R]) -> Int64 effects {{R}} =
     {spec}
@@ -2481,14 +2509,14 @@ namespace wi0rp29.bracket_a
   sort Sp
     sort T = ?
     effects E = ?
-    operation pick3[W](x: T, s: Sp, w: W) -> Option[T = Pair[A = s.T, B = W]] effects s.E
+    operation pick3[W](x: T, s: Self, w: W) -> Option[T = Pair[A = s.T, B = W]] effects s.E
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
-    provides Sp[T = Car, E = {EC}]
-    operation pick3[W, U, R](x: Car[V = U, EC = R], s: Car, w: W) -> Option[T = Pair[A = Car[V = V, EC = EC], B = W]] effects {EC} = none
+    provides Sp[T = Self, E = {EC}]
+    operation pick3[W, U, R](x: Car[V = U, EC = R], s: Self, w: W) -> Option[T = Pair[A = Car[V = V, EC = EC], B = W]] effects {EC} = none
   end
   operation use[R](a: Car[V = Int64, EC = R], b: Car[V = Int64, EC = R]) -> Int64 effects {R} =
     match Sp.pick3[W = Int64](a, b, "s")
@@ -2563,8 +2591,8 @@ end
 fn the_fallback_refuses_an_argument_the_override_takes_as_an_option() {
     let src = fallback_verdict_program(
         "wi0rp29.fbws",
-        "operation put(s: Sp, o: Sp, k: o.T) -> Int64 effects s.E = 0",
-        "operation put(c: Car, o: Sp, k: Option[T = Int64]) -> Int64 effects {EC} =\n      match k\n        case some(v) -> v + 10\n        case none() -> 3",
+        "operation put(s: Self, o: Sp[T = ?, E = ?], k: o.T) -> Int64 effects s.E = 0",
+        "operation put(c: Self, o: Sp, k: Option[T = Int64]) -> Int64 effects {EC} =\n      match k\n        case some(v) -> v + 10\n        case none() -> 3",
         "Sp.put(x, y, 5)",
     );
     assert_refused_naming(
@@ -2582,8 +2610,8 @@ fn the_fallback_refuses_an_argument_the_override_takes_as_an_option() {
 fn the_fallback_judges_a_callback_row() {
     let src = fallback_verdict_program(
         "wi0rp29.fbcb",
-        "operation each[EP](s: Sp, o: Sp, f: (x: o.T) -> Int64 @ {EP}) -> Int64 effects {s.E, EP} = 0",
-        "operation each(c: Car, o: Sp, f: (x: Int64) -> Int64) -> Int64 effects {EC} = f(1)",
+        "operation each[EP](s: Self, o: Sp[T = ?, E = ?], f: (x: o.T) -> Int64 @ {EP}) -> Int64 effects {s.E, EP} = 0",
+        "operation each(c: Self, o: Sp, f: (x: Int64) -> Int64) -> Int64 effects {EC} = f(1)",
         "Sp.each[EP = {Modify[h]}](x, y, lambda (z: Int64) -> let _ = Cell.set(h, z + 40)\n      z)",
     );
     assert_refused_naming(
@@ -2611,7 +2639,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation each[EffP](s: Strm, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
+    operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
   end
   operation use[R](s: Strm[T = Int64, E = {e}], g: {g_ty}) -> Bool effects {{{declared}}} =
     Strm.each(s, g)
@@ -2711,14 +2739,14 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation pick2[W](x: T, s: Sp) -> Option[T = Pair[A = s.T, B = W]] effects {{s.E, Error[W]}}
+    operation pick2[W](x: T, s: Self) -> Option[T = Pair[A = s.T, B = W]] effects {{s.E, Error[W]}}
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
-    provides Sp[T = Car, E = {{EC}}]
-    operation pick2[W, U, R](x: Car[V = U, EC = R], s: Car) -> Option[T = Pair[A = Car[V = V, EC = EC], B = W]] effects {{EC, Error[W]}} = none
+    provides Sp[T = Self, E = {{EC}}]
+    operation pick2[W, U, R](x: Car[V = U, EC = R], s: Self) -> Option[T = Pair[A = Car[V = V, EC = EC], B = W]] effects {{EC, Error[W]}} = none
   end
   operation use[R](a: Car[V = Int64, EC = R], b: Car[V = Int64, EC = R]) -> Int64 effects {{R, Error[String]}} =
     let r: Option[T = Pair[A = Car, B = {annotated}]] = Sp.pick2(a, b)
@@ -2770,7 +2798,7 @@ namespace {ns}
   import anthill.prelude.{{Int64, List, Bool, Option, String, Error}}
   sort Sp
     sort T = ?
-    operation op(s: Sp, x: Int64) -> Int64
+    operation op(s: Self, x: Int64) -> Int64
   end
   sort Car
     sort V = ?
@@ -2808,7 +2836,7 @@ namespace wi0rp29.recv_row
   sort Sp
     sort T = ?
     effects E = ?
-    operation op(s: Sp, a: Int64) -> Int64
+    operation op(s: Self, a: Int64) -> Int64
   end
   sort Car
     sort V = ?
@@ -2846,14 +2874,14 @@ namespace wi0rp29.own_widen
   sort Sp
     sort T = ?
     effects E = ?
-    operation op(s: Sp, a: Animal) -> Option[T = Animal] effects s.E
+    operation op(s: Self, a: Animal) -> Option[T = Animal] effects s.E
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {EC}]
-    operation op[W](c: Car, a: W) -> Option[T = W] effects {EC} = some(a)
+    operation op[W](c: Self, a: W) -> Option[T = W] effects {EC} = some(a)
   end
   operation use[R](x: Car[V = Int64, EC = R]) -> Int64 effects {R} =
     let c1: cat = cat(n: 41)
@@ -2882,14 +2910,14 @@ namespace wi0rp29.fb_wrapped
   sort Sp
     sort T = ?
     effects E = ?
-    operation put(s: Sp, k: Option[T = Int64]) -> Int64 effects s.E
+    operation put(s: Self, k: Option[T = Int64]) -> Int64 effects s.E
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {EC}]
-    operation put(c: Car, k: Option[T = Int64]) -> Int64 effects {EC} =
+    operation put(c: Self, k: Option[T = Int64]) -> Int64 effects {EC} =
       match k
         case some(v) -> v + 10
         case none() -> 3
@@ -2919,14 +2947,14 @@ namespace wi0rp29.fb_head
   sort Sp
     sort T = ?
     effects E = ?
-    operation apply[EP](s: Sp, o: Sp, p: Cell[V = Int64], f: (u: o.T) -> Unit @ {EP}) -> Int64 effects {s.E, EP, Modify[p]} = 0
+    operation apply[EP](s: Self, o: Sp[T = ?, E = ?], p: Cell[V = Int64], f: (u: o.T) -> Unit @ {EP}) -> Int64 effects {s.E, EP, Modify[p]} = 0
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {EC}]
-    operation apply(c: Car, o: Sp, p: Cell[V = Int64], f: (u: Int64) -> Unit @ Modify[p]) -> Int64 effects {EC, Modify[p]} =
+    operation apply(c: Self, o: Sp, p: Cell[V = Int64], f: (u: Int64) -> Unit @ Modify[p]) -> Int64 effects {EC, Modify[p]} =
       let _ = f(5)
       7
   end
@@ -2976,14 +3004,14 @@ namespace wi0rp29.bracket_se
   sort Sp
     sort T = ?
     effects E = ?
-    operation pick2[W](x: T, s: Sp) -> Option[T = Pair[A = Sp[T = s.T, E = s.E], B = W]] effects s.E
+    operation pick2[W](x: T, s: Self) -> Option[T = Pair[A = Sp[T = s.T, E = s.E], B = W]] effects s.E
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
     provides Sp[T = Car[V = ?, EC = ?], E = {EC}]
-    operation pick2[W, U, R](x: Car[V = U, EC = R], s: Car) -> Option[T = Pair[A = Car[V = V, EC = EC], B = W]] effects {EC} = none
+    operation pick2[W, U, R](x: Car[V = U, EC = R], s: Self) -> Option[T = Pair[A = Car[V = V, EC = EC], B = W]] effects {EC} = none
   end
   operation use[R](a: Car[V = Int64, EC = R], b: Car[V = Int64, EC = R]) -> Int64 effects {R} =
     match Sp.pick2[W = Int64](a, b)
@@ -3012,14 +3040,14 @@ namespace wi0rp29.fb_written
   sort Sp
     sort T = ?
     effects E = ?
-    operation put(s: Sp, o: Sp, k: o.T) -> Int64 effects s.E = 0
+    operation put(s: Self, o: Sp[T = ?, E = ?], k: o.T) -> Int64 effects s.E = 0
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {EC}]
-    operation put(c: Car, o: Sp, k: List[T = Function[A = Int64, B = Int64]]) -> Int64 effects {EC} =
+    operation put(c: Self, o: Sp, k: List[T = Function[A = Int64, B = Int64]]) -> Int64 effects {EC} =
       match k
         case cons(f, _) -> f(1) + 1
         case nil() -> 0
@@ -3053,7 +3081,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation each[EffP](s: Strm, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
+    operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
   end
   operation use[R, Q](s: Strm[T = Int64, E = {{R}}], g: (x: Int64) -> Bool @ {g_ty}) -> Bool effects {{{declared}}} =
     Strm.each(s, g)
@@ -3142,7 +3170,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation each[EffP](s: Strm, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
+    operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
   end
   sort Holder
     effects Q2 = ?
@@ -3207,14 +3235,14 @@ namespace wi0rp29.fb_bare_option
   sort Sp
     sort T = ?
     effects E = ?
-    operation put(s: Sp, o: Sp, k: Option) -> Int64 effects s.E = 0
+    operation put(s: Self, o: Sp[T = ?, E = ?], k: Option) -> Int64 effects s.E = 0
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {EC}]
-    operation put(c: Car, o: Sp, k: Option[T = String]) -> Int64 effects {EC} =
+    operation put(c: Self, o: Sp, k: Option[T = String]) -> Int64 effects {EC} =
       match k
         case some(v) -> String.length(v)
         case none() -> 3
@@ -3309,7 +3337,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation each[EffP](s: Strm, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
+    operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
   end
   sort Holder
     effects Q2 = ?
@@ -3600,7 +3628,7 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation each[EffP](s: Strm, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
+    operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
   end
   operation pure1(x: Int64) -> Bool = true
   operation use(s: Strm[T = Int64, E = {{{stream_row}}}]) -> Bool effects {{Error[Foo]}} =
@@ -3655,7 +3683,7 @@ namespace {ns}
     sort T = ?
     effects E = ?
     entity strm(t: T)
-    operation each[EffP](s: Strm, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
+    operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {{EffP, -s.E}}) -> Bool effects {{EffP}} = true
   end
   operation bad(x: Int64) -> Bool effects {{Error[Foo]}} = true
   operation use{binder}(s: Strm[T = Int64], g: (x: Int64) -> Bool @ {{{g_row}}}) -> Bool effects {{{declared}}} =
@@ -3764,14 +3792,14 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation pick2[W](x: T, s: Sp) -> {spec_ret} effects {{s.E, Error[W]}}
+    operation pick2[W](x: T, s: Self) -> {spec_ret} effects {{s.E, Error[W]}}
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
-    provides Sp[T = Car, E = {{EC}}]
-    operation pick2[W, U, R](x: Car[V = U, EC = R], s: Car) -> {member_ret} effects {{EC, Error[W]}} = none
+    provides Sp[T = Self, E = {{EC}}]
+    operation pick2[W, U, R](x: Car[V = U, EC = R], s: Self) -> {member_ret} effects {{EC, Error[W]}} = none
   end
   operation use[R](a: Car[V = Int64, EC = R], b: Car[V = Int64, EC = R]) -> Int64 effects {{R, Error[String]}} =
     let r: {annotated} = Sp.pick2(a, b)
@@ -3788,7 +3816,7 @@ fn pin_shapes(w: &str) -> [(&'static str, &'static str, &'static str, String); 2
     [
         (
             "head",
-            "Option[T = Pair[A = W, B = Sp]]",
+            "Option[T = Pair[A = W, B = Self]]",
             "Option[T = Pair[A = W, B = Car[V = V, EC = EC]]]",
             format!("Option[T = Pair[A = {w}, B = Car]]"),
         ),
@@ -4348,7 +4376,7 @@ namespace wi0rp29.cbv_absent_closed
     sort T = ?
     effects E = ?
     entity strm(n: Int64)
-    operation each[EffP](s: Strm, f: (x: Int64) -> Bool @ {EffP, -s.E}) -> Bool effects {EffP} = f(1)
+    operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {EffP, -s.E}) -> Bool effects {EffP} = f(1)
   end
   operation each2[EffP](f: (x: Int64) -> Bool @ {EffP}) -> Bool effects {EffP} = f(1)
   operation noFoo[EffP](f: (x: Int64) -> Bool @ {EffP, -Error[Foo]}) -> Bool effects {EffP} = f(1)
@@ -4389,7 +4417,7 @@ namespace wi0rp29.cbv_absent_den
     sort T = ?
     effects E = ?
     entity strm(n: Int64)
-    operation each[EffP](s: Strm, f: (x: Int64) -> Bool @ {EffP, -s.E}) -> Bool effects {EffP} = f(1)
+    operation each[EffP](s: Self, f: (x: Int64) -> Bool @ {EffP, -s.E}) -> Bool effects {EffP} = f(1)
   end
   operation each2[EffP](f: (x: Int64) -> Bool @ {EffP}) -> Bool effects {EffP} = f(1)
   operation noFoo[EffP](f: (x: Int64) -> Bool @ {EffP, -Error[Foo]}) -> Bool effects {EffP} = f(1)
@@ -4525,7 +4553,7 @@ namespace wi0rp29.rigid_arrow
     sort T = ?
     effects E = ?
     entity strm(v: T)
-    operation each(s: Strm, f: (x: Int64) -> Int64 @ {s.E}) -> Int64 effects {s.E} = f(1)
+    operation each(s: Self, f: (x: Int64) -> Int64 @ {s.E}) -> Int64 effects {s.E} = f(1)
   end
   operation pure1(x: Int64) -> Int64 = x + 41
   operation use[R](s: Strm[T = Int64, E = {R}]) -> Int64 effects {R} = Strm.each(s, pure1)
@@ -4548,7 +4576,7 @@ namespace wi0rp29.rigid_fn
     sort T = ?
     effects E = ?
     entity strm(v: T)
-    operation each(s: Strm, f: Function[A = Int64, B = Int64, E = s.E]) -> Int64 effects {s.E} = f(1)
+    operation each(s: Self, f: Function[A = Int64, B = Int64, E = s.E]) -> Int64 effects {s.E} = f(1)
   end
   operation pure1(x: Int64) -> Int64 = x + 41
   operation use[R](s: Strm[T = Int64, E = {R}]) -> Int64 effects {R} = Strm.each(s, pure1)
@@ -4574,7 +4602,7 @@ namespace {ns}
     sort T = ?
     effects E = ?
     entity strm(v: T)
-    operation each(s: Strm, f: {slot}) -> Int64 effects {{s.E}} = f(1)
+    operation each(s: Self, f: {slot}) -> Int64 effects {{s.E}} = f(1)
   end
   operation pure1(x: Int64) -> Int64 = x + 41
   operation boom(x: Int64) -> Int64 effects {{Error[Foo]}} = Error.raise(foo(n: 9))

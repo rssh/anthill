@@ -487,15 +487,17 @@ end
     assert_eq!(eval_int(src, "test.wi836.wrap.drive"), 7);
 }
 
-/// CONTROL (d) — the BARE sort-ref spelling of the same conflict is owned by
-/// WI-374's member tie (`enforce_member_tie`), which runs BEFORE this check and
-/// reads σ's recorded contradictions. It stays that diagnostic: the written-out
-/// spelling reached this ticket's hole precisely because a nested conflict never
-/// attempts a rebind, so it records no contradiction for the member tie to see.
-/// Pinned so the two checks are not later collapsed on the assumption that either
-/// one covers both spellings.
+/// CONTROL (d) — the BARE sort-ref spelling of the same signature. It used to be the
+/// spelling WI-374's member tie (`enforce_member_tie`) owned: that check runs before this
+/// one and reads σ's recorded contradictions, which the written-out spelling never
+/// records. Since proposal 070 (WI-20261001-80ZV8) a sort's bare name is the sort at `?`
+/// inside its own definition as everywhere, so `union(a: Box, b: Box) -> Box` takes any two
+/// boxes and returns one the operation picks: no argument is held to another, neither check
+/// is reached, and the refusal is at whoever reads the result as one particular `Box` —
+/// which is what this row now pins, so that the two are not later collapsed on the
+/// assumption that a member's bare signature still ties its arguments.
 #[test]
-fn the_bare_sort_ref_spelling_stays_with_the_member_tie() {
+fn the_bare_sort_ref_spelling_is_any_instance_and_its_result_is_opened() {
     // The SAME program as `two_arguments_sharing_a_written_sort_param_must_agree`,
     // differing in exactly one token — `Box` where that one writes
     // `Box[T = T, O = O]` — so the spelling is the whole variable under test.
@@ -505,10 +507,7 @@ fn the_bare_sort_ref_spelling_stays_with_the_member_tie() {
              \n  operation go() -> Box[T = Int64, O = Q] = Box.union(mkq(), mkr())\nend\n",
             box_sort("Box")
         ),
-        &[
-            "op-type-params",
-            "consistent bindings for the sort's shared type parameter",
-        ],
-        "the bare spelling stays WI-374's member tie",
+        &["go.return (op-return): expected Box[T = Int64, O = Q], got Box[T = ?T, O = ?O]"],
+        "the bare spelling ties nothing and returns a `Box` its caller cannot see into",
     );
 }

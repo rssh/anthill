@@ -712,6 +712,25 @@ pub(super) fn bind_and_label_pattern(
                 .as_ref()
                 .zip(parent_sort)
                 .and_then(|(st, p)| build_pattern_subst(kb, st, p));
+            // WI-20261001-80ZV8: what a field leaves open is opened here, where it is taken
+            // out ([`FieldOpening`]) — once for the pattern, so a variable two fields share
+            // is one unknown for both binders.
+            let opening = field_types
+                .as_ref()
+                .map(|fields| FieldOpening::of(kb, parent_sort, fields, scrutinee_type.as_ref()));
+            let opened = |kb: &mut KnowledgeBase,
+                          field_type: Option<Value>,
+                          sub_pat: &Rc<NodeOccurrence>| {
+                let binder = match sub_pat.as_pattern() {
+                    Some(Pattern::Var { name }) => Some(*name),
+                    _ => None,
+                };
+                match &opening {
+                    Some(opening) => field_type
+                        .map(|ty| opening.open(kb, ty, binder, pattern.span, pattern.owner)),
+                    None => field_type,
+                }
+            };
             // WI-803: a constructor's sub-patterns may THEMSELVES be tuple binder
             // lists (`case Box((a, b)) ->`), so the rebuilt children are collected
             // in `for_each_pattern_child` order — positional then named — and
@@ -763,6 +782,7 @@ pub(super) fn bind_and_label_pattern(
                     (Some((_, ty)), None) => Some(ty.clone()),
                     (None, _) => None,
                 };
+                let field_type = opened(kb, field_type, sub_pat);
                 rebuilt.push(bind_and_label_pattern(
                     kb,
                     env,
@@ -793,6 +813,7 @@ pub(super) fn bind_and_label_pattern(
                     (Some((_, ty)), None) => Some(ty.clone()),
                     (None, _) => None,
                 };
+                let field_type = opened(kb, field_type, sub_pat);
                 rebuilt.push(bind_and_label_pattern(
                     kb,
                     env,

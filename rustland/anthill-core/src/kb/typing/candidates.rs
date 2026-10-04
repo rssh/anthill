@@ -941,8 +941,7 @@ pub(super) fn match_candidate_against_goal(
                 let key_match = BindingKeyMatch::for_bases(kb, c_base, c_base);
                 *specificity = specificity.saturating_add(1);
                 for (k, c_val) in &c_bindings {
-                    let Some(p_val) = binding_for_param(kb, &viewed, *k, key_match).copied()
-                    else {
+                    let Some(p_val) = binding_for_param(kb, &viewed, *k, key_match).copied() else {
                         return false;
                     };
                     if !match_candidate_against_goal(

@@ -334,6 +334,7 @@ pub(super) fn operation_as_function_value(
         sym,
         &op.return_type,
         &HashSet::new(),
+        &[],
         span,
         owner,
     )

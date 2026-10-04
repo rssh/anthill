@@ -268,7 +268,7 @@ fn a_self_reference_nested_in_a_binding_keeps_the_sort_tie() {
          \x20 sort Wrap\n\
          \x20   sort T = ?\n\
          \x20   entity Wrap(v: T)\n\
-         \x20   operation pack(w: Wrap, l: List[T = Wrap]) -> List[T = Wrap] = \
+         \x20   operation pack(w: Self, l: List[T = Self]) -> List[T = Self] = \
          cons(head: w, tail: l)\n\
          \x20 end\n\
          end\n",

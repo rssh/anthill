@@ -254,7 +254,7 @@ fn a_self_sort_return_is_not_opened_but_a_foreign_one_on_a_member_is() {
          \x20 sort Wrap\n\
          \x20   sort T = ?\n\
          \x20   entity Wrap(v: T)\n\
-         \x20   operation dup(w: Wrap) -> List[T = Wrap] = cons(head: w, tail: nil)\n\
+         \x20   operation dup(w: Self) -> List[T = Self] = cons(head: w, tail: nil)\n\
          \x20 end\n\
          \x20 operation takes_ints(l: List[T = Wrap[T = Int64]]) -> Int64\n\
          \x20 operation use_it(w: Wrap[T = Int64]) -> Int64 = takes_ints(Wrap.dup(w))\n\

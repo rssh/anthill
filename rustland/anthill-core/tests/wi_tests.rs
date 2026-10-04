@@ -1905,6 +1905,12 @@ mod wi_80zv8_sibling_call_test;
 mod wi_80zv8_unfixed_parameter_test;
 #[path = "include/wi_80zv8_written_receivers_test.rs"]
 mod wi_80zv8_written_receivers_test;
+
+#[path = "include/wi_80zv8_bare_own_sort_test.rs"]
+mod wi_80zv8_bare_own_sort_test;
+
+#[path = "include/wi_80zv8_written_wildcard_test.rs"]
+mod wi_80zv8_written_wildcard_test;
 #[path = "include/wi_89wzr_written_type_in_body_test.rs"]
 mod wi_89wzr_written_type_in_body_test;
 #[path = "include/wi_0rp29_review9_regressions_test.rs"]

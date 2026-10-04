@@ -49,9 +49,23 @@
 //!    nine fail with the suite. The row that names the difference is
 //!    [`the_carrier_slot_takes_the_arguments_whole_type`] (`ES = {?ES}`).
 //!
-//! Every row fails under at least one part but
-//! [`a_bare_carrier_binding_answers_for_each_carrier`], the control: the bare spelling of the
-//! first row, which ran before and runs now — it is what the written rows are now equal to.
+//! Every row failed under at least one part but the control, the bare spelling of the first
+//! row, which ran before and after.
+//!
+//! ── SINCE STAGE (d) ──────────────────────────────────────────────────────────
+//!
+//! THE FIGURES ABOVE ARE HISTORY, and cannot be measured again as stated: they were taken
+//! on fixtures that wrote their receivers bare (`head(s: Strm)`), with three rows that wrote
+//! the CARRIER bare, and with one stdlib line written bare so that the stdlib would load.
+//! Since proposal 070 each of those bare names is the sort at `?` — any instance — and no
+//! longer what the fixture meant. The fixtures now write `Self`; the control is
+//! [`a_bare_carrier_binding_provides_at_every_instance`]; the bare iteration of the chain
+//! row is the written form; and the bare wrapper row is gone with its reading.
+//!
+//! NOT TAKEN AGAIN PART BY PART on the rewritten fixtures: the parts above are measured as
+//! they stood, and this file's rows ride in the measurement binary behind the ledgers of
+//! `wi_80zv8_bare_own_sort_test` and `wi_80zv8_written_wildcard_test`, which name a row of
+//! this file wherever a part's back-out fails one.
 
 use crate::common::{assert_refused_naming, load_errors_of as load_errors, run_int64 as run_src};
 
@@ -85,9 +99,9 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation head(s: Strm) -> s.T effects s.E
+    operation head(s: Self) -> s.T effects s.E
     provides Iter[C = {carrier}, Element = T, E = E]
-    operation first(s: Strm) -> s.T effects s.E = head(s)
+    operation first(s: Self) -> s.T effects s.E = head(s)
   end
 
 {carrier_sort}
@@ -102,9 +116,9 @@ const PARAMETRIC_CARRIER: &str = r#"
     sort T = ?
     entity one(v: T)
     provides Strm[T, {}]
-    operation head(o: One) -> T = o.v
+    operation head(o: Self) -> T = o.v
     provides Fin[C = One[T], Element = T, E = {}]
-    operation count(o: One) -> Int64 = 1
+    operation count(o: Self) -> Int64 = 1
   end
 
   operation go() -> Int64 = Iter.firstTwice(one(v: 7)) + Fin.count(one(v: 1))
@@ -142,10 +156,13 @@ fn self_in_a_specs_own_provision_is_the_written_form() {
     assert_eq!(run_src(&src, "wi80zv8c.w2.go"), Ok(8));
 }
 
-/// CONTROL — the bare spelling. Passes with or without this change by design: it is what the
-/// two rows above are now equal to.
+/// THE BARE SPELLING, WHICH WAS THIS FILE'S CONTROL — it ran before the change and after it,
+/// and was what the two rows above had to equal. For one day (stage (d) as first delivered)
+/// it was a load error; since the user's 2026-10-04 decision a sort's bare name inside its
+/// own definition is the sort at `?`, so `C = Strm` provides `Iter` at EVERY `Strm`, and the
+/// program runs as the written rows do.
 #[test]
-fn a_bare_carrier_binding_answers_for_each_carrier() {
+fn a_bare_carrier_binding_provides_at_every_instance() {
     let src = provision_program("wi80zv8c.w3", "Strm", PARAMETRIC_CARRIER);
     assert_eq!(run_src(&src, "wi80zv8c.w3.go"), Ok(8));
 }
@@ -186,7 +203,7 @@ const TWO_HOP_CARRIER: &str = r#"
 /// is answered for as `One` is.
 #[test]
 fn a_written_carrier_binding_answers_through_a_chain_of_provisions() {
-    for (ns, carrier) in [("wi80zv8c.w5", "Self"), ("wi80zv8c.w6", "Strm")] {
+    for (ns, carrier) in [("wi80zv8c.w5", "Self"), ("wi80zv8c.w6", "Strm[T = T, E = E]")] {
         let src = provision_program(ns, carrier, TWO_HOP_CARRIER);
         assert_eq!(run_src(&src, &format!("{ns}.go")), Ok(10), "{carrier}");
     }
@@ -212,14 +229,14 @@ namespace wi80zv8c.w7
 
   sort Strm
     sort T = ?
-    operation head(s: Strm) -> s.T
+    operation head(s: Self) -> s.T
   end
 
   sort One
     sort T = ?
     entity one(v: T)
     provides Strm[T = T]
-    operation head(o: One) -> T = o.v
+    operation head(o: Self) -> T = o.v
   end
 
   sort StrmIter
@@ -260,9 +277,9 @@ namespace {ns}
   sort Strm
     sort T = ?
     effects E = ?
-    operation splitFirst(s: Strm) -> Option[Pair[A = s.T, B = Strm[T = s.T, E = s.E]]] effects s.E
+    operation splitFirst(s: Self) -> Option[Pair[A = s.T, B = Strm[T = s.T, E = s.E]]] effects s.E
     provides Iter[C = {carrier}, Element = T, E = E]
-    operation iterator(s: Strm) -> Strm[T = s.T, E = s.E] = s
+    operation iterator(s: Self) -> Strm[T = s.T, E = s.E] = s
   end
 
   sort Range
@@ -282,7 +299,7 @@ namespace {ns}
     requires Iter[C = Source, Element = T, E = ES]
     entity drop(source: Iter[C = Source, Element = T, E = ES], n: Int64)
     provides Strm[T = T, E = {{ES}}]
-    operation splitFirst(d: Drop) -> Option[Pair[A = T, B = Strm[T = T, E = {{ES}}]]] effects {{ES}} =
+    operation splitFirst(d: Self) -> Option[Pair[A = T, B = Strm[T = T, E = {{ES}}]]] effects {{ES}} =
       match d
         case drop(src, n) ->
           match Strm.splitFirst(Iter.iterator(src))
@@ -325,21 +342,6 @@ fn a_wrapper_over_a_rewrapped_tail_runs_with_a_written_provision() {
             "{carrier}"
         );
     }
-}
-
-/// …AND WITH THE BARE ONE. Not a control: it passes under part 1 backed out (the bare
-/// spelling never needed that step) and FAILS under part 2 — the wrapper's element is then
-/// not threaded from the tail at all, which the stdlib's `FilteredStream` never showed
-/// because its predicate field pins the element — and under part 3.
-#[test]
-fn a_wrapper_over_a_rewrapped_tail_runs_with_the_bare_provision() {
-    assert_eq!(
-        run_src(
-            &wrapper_program("wi80zv8c.d3", "Strm", REWRAP),
-            "wi80zv8c.d3.go"
-        ),
-        Ok(7)
-    );
 }
 
 /// THE RULE IN ITS OWN TERMS (user, 2026-10-03): an argument typed by a spec fills the

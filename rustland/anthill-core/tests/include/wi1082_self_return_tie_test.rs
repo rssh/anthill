@@ -60,6 +60,20 @@
 //! refusal is at the CONSUMER, where the argument's row now reaches it. The ticket's acceptance
 //! names the first as the other admissible verdict.
 //!
+//! ## Since WI-20261001-80ZV8 (proposal 070 §1.3)
+//!
+//! The spelling this file is about no longer means the tie: inside its own definition a
+//! sort that leaves a slot out is the sort at `?` there — any instance, as everywhere — and
+//! a `?` written there is the same variable. So the fixtures write the tie — `E = E`, `Self`
+//! — and each row keeps its verdict through ordinary typing of a written slot: the
+//! laundering declaration is still refused at `widen.return`, the destructured field still
+//! carries the instance's element. The loader writes the `?` into the elided slot, so
+//! `elaborate_self_ties` has nothing left to rewrite in a declaration a program loads, and
+//! goes at stage (e); THE TABLE BELOW IS ITS HISTORY, measured on the elided spelling. What
+//! the elided spelling means now is pinned in `wi_80zv8_bare_own_sort_test`, and
+//! `wi1078_…::a_self_sort_return_that_leaves_a_slot_open_is_opened_at_the_consumer` holds
+//! the three readings side by side.
+//!
 //! ## What fails when this is backed out — one revert each, whole `anthill-core` suite
 //!
 //! | revert | cost |
@@ -129,7 +143,7 @@ fn stream(body: &str, use_site: &str) -> String {
 #[test]
 fn the_headline_a_self_sort_return_no_longer_launders() {
     let member = errors_of(&stream(
-        "operation widen(s: MyStream[T = Int64, E = {Error}]) -> MyStream[T = Int64] = s",
+        "operation widen(s: MyStream[T = Int64, E = {Error}]) -> MyStream[T = Int64, E = E] = s",
         "operation use(s: MyStream[T = Int64, E = {Error}]) -> Int64 = \
          takes_pure(MyStream.widen(s))",
     ));
@@ -174,7 +188,7 @@ fn the_headline_a_self_sort_return_no_longer_launders() {
 fn the_body_check_was_the_other_producer() {
     let errs = errors_of(&stream(
         "operation raiser(x: Int64) -> MyStream[T = Int64, E = {Error}] = raising\n\
-         \x20   operation bad(s: MyStream[T = Int64, E = {}]) -> MyStream[T = Int64] = \
+         \x20   operation bad(s: MyStream[T = Int64, E = {}]) -> MyStream[T = Int64, E = E] = \
          MyStream.raiser(1)",
         "",
     ));
@@ -245,7 +259,7 @@ fn a_destructured_field_carries_the_instances_element() {
         \x20 sort Box\n\
         \x20   sort T = ?\n\
         \x20   entity leaf(v: T)\n\
-        \x20   entity node(next: Box)\n\
+        \x20   entity node(next: Self)\n\
         \x20 end\n\
         \x20 operation want(b: Box[T = DEMAND]) -> Int64\n\
         \x20 operation use(b: Box[T = Int64]) -> Int64 =\n\
@@ -401,7 +415,7 @@ fn an_elided_self_return_still_threads_the_element() {
 #[test]
 fn a_bodyless_member_cannot_launder_either() {
     let effects = errors_of(&stream(
-        "operation widen(s: MyStream[T = Int64]) -> MyStream",
+        "operation widen(s: MyStream[T = Int64, E = E]) -> Self",
         "operation use(s: MyStream[T = Int64, E = {Error}]) -> Int64 = \
          takes_pure(MyStream.widen(s))",
     ));
@@ -418,7 +432,7 @@ fn a_bodyless_member_cannot_launder_either() {
          \x20   sort T = ?\n\
          \x20   sort U = ?\n\
          \x20   entity box(n: Int64)\n\
-         \x20   operation pick(b: Box[T = Int64]) -> Box\n\
+         \x20   operation pick(b: Box[T = Int64, U = U]) -> Self\n\
          \x20 end\n\
          \x20 operation want_str(b: Box[T = Int64, U = String]) -> Int64\n\
          \x20 operation both(b: Box[T = Int64, U = Int64]) -> Int64 = want_str(Box.pick(b))\n\
@@ -480,7 +494,7 @@ fn the_field_tie_is_a_fixpoint() {
          \x20 sort Box\n\
          \x20   sort T = ?\n\
          \x20   entity leaf(v: T)\n\
-         \x20   entity node(next: Box)\n\
+         \x20   entity node(next: Self)\n\
          \x20 end\n\
          end\n",
     );
@@ -542,7 +556,7 @@ fn a_self_returning_member_result_shares_the_receivers_parameter() {
     let member = SRC
         .replace(
             "MEMBER",
-            "operation pick(p: DataProvider) -> DataProvider = p",
+            "operation pick(p: Self) -> Self = p",
         )
         .replace("FREE", "")
         .replace("CALL", "DataProvider.pick(p)");

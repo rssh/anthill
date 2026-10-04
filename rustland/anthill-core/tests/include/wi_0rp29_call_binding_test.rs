@@ -15,6 +15,29 @@
 //! Every row that can RUNS and names what was reached; the rows asserting a LOAD verdict say
 //! at their site why nothing runs.
 //!
+//! ── SINCE WI-20261001-80ZV8 (proposal 070 §1.3) ──────────────────────────────
+//!
+//! A SORT'S BARE NAME INSIDE ITS OWN DEFINITION NO LONGER MEANS THIS INSTANCE — it is the
+//! sort at `?`, any instance, as everywhere (and was, for one day, a load error) — so the
+//! fixtures here write what each bare name MEANT, and the row comments, which quote the
+//! declarations as they first stood (`both(s: Car, o: Car)`, `put(s: Sp, …)`, `T = Car`),
+//! describe a spelling the fixture no longer has:
+//!
+//!  * the carrier inside the carrier, and a spec's own RECEIVER, are `Self` — this instance;
+//!  * another parameter a spec types by itself, which the bare name read as any provider,
+//!    is the spec at `?` (`o: Sp[T = ?]`);
+//!  * a binding the rows call "bare" is `T = Self`, and an independent one is still
+//!    `T = Car[V = ?]`.
+//!
+//! The verdicts are the ones the rows pinned, with the refusal texts printing the member's
+//! `Self` as the carrier at its own parameters (`o: Car[V = V]`). THE BACK-OUT LEDGER BELOW
+//! WAS MEASURED ON THE BARE SPELLING and has not been taken again part by part: the rows the
+//! change of spelling moved, and what each of them fails under now, are in the ledgers of
+//! `wi_80zv8_bare_own_sort_test` and `wi_80zv8_written_wildcard_test`. Where a comment
+//! credits "§3's tie" for a verdict, the tie is now the written `Self`; the arms that read a
+//! reference to the declaring sort with a slot LEFT OUT are reached by no loaded program —
+//! the loader writes the `?` — and go at stage (e).
+//!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
 //! MEASURED with the main file's parts (its module doc numbers them), each present but wrong:
@@ -233,7 +256,7 @@ namespace wi0rp29cb.receiver
   sort Sp
     sort T = ?
     effects E = ?
-    operation op(s: Sp, a: Other, b: Int64) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E
+    operation op(s: Self, a: Other, b: Int64) -> Option[T = Pair[A = s.T, B = Sp[T = s.T, E = s.E]]] effects s.E
   end
 
   sort Car
@@ -241,7 +264,7 @@ namespace wi0rp29cb.receiver
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {EC}]
-    operation op(s: Car, a: Other, b: Int64) -> Option[T = Pair[A = V, B = Car[V = V, EC = EC]]] effects {EC} = some(pair(s.v, s))
+    operation op(s: Self, a: Other, b: Int64) -> Option[T = Pair[A = V, B = Car[V = V, EC = EC]]] effects {EC} = some(pair(s.v, s))
   end
 
   sort Other
@@ -473,7 +496,7 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation op(s: Sp, d: Int64) -> Int64 effects {{s.E, Error[DivisionByZero] :- eq(d, 0)}}
+    operation op(s: Self, d: Int64) -> Int64 effects {{s.E, Error[DivisionByZero] :- eq(d, 0)}}
   end
 
   sort Car
@@ -481,7 +504,7 @@ namespace {ns}
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {{EC}}]
-    operation op(c: Car, d: Int64) -> Int64 effects {{EC, Error[DivisionByZero] :- eq(d, 0)}} = 1
+    operation op(c: Self, d: Int64) -> Int64 effects {{EC, Error[DivisionByZero] :- eq(d, 0)}} = 1
   end
 
   operation viaSpec[R](x: Car[V = Int64, EC = R]) -> Int64 effects {{R}} = Sp.op(x, {d})
@@ -618,7 +641,7 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation op(s: Sp, t: Cell[V = Int64]) -> Option[T = s.T] effects {{s.E, Modify[t]}}
+    operation op(s: Self, t: Cell[V = Int64]) -> Option[T = s.T] effects {{s.E, Modify[t]}}
   end
 
   sort Car
@@ -626,7 +649,7 @@ namespace {ns}
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {{EC}}]
-    operation op(c: Car, t: Cell[V = Int64]) -> Option[T = V] effects {{EC, Modify[t]}} = some(c.v)
+    operation op(c: Self, t: Cell[V = Int64]) -> Option[T = V] effects {{EC, Modify[t]}} = some(c.v)
   end
 
   sort Holder
@@ -685,7 +708,7 @@ namespace wi0rp29cb.dp
     sort T = ?
     effects E = ?
     entity strm(v: T)
-    operation obs(s: Strm) -> Bool effects s.E = true
+    operation obs(s: Self) -> Bool effects s.E = true
   end
   sort Hold
     effects E = ?
@@ -694,14 +717,14 @@ namespace wi0rp29cb.dp
   sort Sp
     sort T = ?
     effects E = ?
-    operation op(s: Sp, k: Strm) -> Int64 effects {E, k.E}
+    operation op(s: Self, k: Strm) -> Int64 effects {E, k.E}
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {EC}]
-    operation op(s: Car, k: Strm) -> Int64 effects {EC, k.E} =
+    operation op(s: Self, k: Strm) -> Int64 effects {EC, k.E} =
       if Strm.obs(k) then 1 else 0
   end
   operation use_spec[R](c: Car[V = Int64, EC = R], h: Hold) -> Int64 effects {R, h.E} =
@@ -733,14 +756,14 @@ namespace {ns}
   sort Sp
     sort T = ?
     effects E = ?
-    operation op[U](s: Sp, w: U) -> Int64 effects {{s.E, Error[U]}}
+    operation op[U](s: Self, w: U) -> Int64 effects {{s.E, Error[U]}}
   end
   sort Car
     sort V = ?
     effects EC = ?
     entity car(v: V)
     provides Sp[T = V, E = {{EC}}]
-    operation op[W](c: Car, w: W) -> Int64 effects {{EC, Error[W]}} = 1
+    operation op[W](c: Self, w: W) -> Int64 effects {{EC, Error[W]}} = 1
   end
   operation via[R](x: Car[V = Int64, EC = R]) -> Int64 effects {{R, {declared}}} = Sp.op(x, "str")
 end
@@ -783,7 +806,7 @@ namespace wi0rp29cb.rk
   import anthill.prelude.{Int64, Modify, EffectsRuntime}
   sort Box
     effects Effect = ?
-    operation peek(b: Box) -> Int64 effects Effect
+    operation peek(b: Self) -> Int64 effects Effect
   end
   sort MutBox
     entity mb(fd: Int64)
@@ -901,8 +924,8 @@ namespace wi0rp29cb.cr
   sort Bag
     effects EB = ?
     entity bag(v: Int64)
-    provides Ctr[C = Bag, E = EB]
-    operation pick(c: Bag, o: Oth) -> Int64 effects EB = c.v
+    provides Ctr[C = Self, E = EB]
+    operation pick(c: Self, o: Oth) -> Int64 effects EB = c.v
   end
   sort Oth
     effects EB = ?
@@ -951,7 +974,7 @@ end
 
 // ── the sixth review's fixes: the carrier-param call holds what the declaration reads ──
 
-/// `Rel { left(a: A); right(b: B); mix(a: A, b: B) }` at `Car provides Rel[A = Car, B = Car]`,
+/// `Rel { left(a: A); right(b: B); mix(a: A, b: B) }` at `Car provides Rel[A = Self, B = Self]`,
 /// the member `mix(a: Car, b: Car)`, and `use` calling `Rel.mix(k1, second)`.
 fn rel_program(ns: &str, second_ty: &str, second: &str) -> String {
     format!(
@@ -968,10 +991,10 @@ namespace {ns}
   sort Car
     sort V = ?
     entity car(v: V, f: (x: V) -> Int64)
-    provides Rel[A = Car, B = Car]
-    operation left(a: Car) -> Int64 = 1
-    operation right(b: Car) -> Int64 = 2
-    operation mix(a: Car, b: Car) -> Int64 = match a case car(_, g) -> g(b.v)
+    provides Rel[A = Self, B = Self]
+    operation left(a: Self) -> Int64 = 1
+    operation right(b: Self) -> Int64 = 2
+    operation mix(a: Self, b: Self) -> Int64 = match a case car(_, g) -> g(b.v)
   end
   operation go() -> Int64 =
     let k1: Car[V = Int64] = car(v: 40, f: lambda (x: Int64) -> x + 1)
@@ -1043,9 +1066,9 @@ namespace wi0rp29cb6.once
   sort Car
     sort V = ?
     entity car(v: V)
-    provides Rel[A = Car, T = Pair[A = Box, B = Int64]]
-    operation left(a: Car) -> Int64 = 1
-    operation both[W](a: Car, x: Pair[A = Box[B = W], B = Int64], y: Pair[A = Box[B = W], B = Int64]) -> Int64 = 5
+    provides Rel[A = Self, T = Pair[A = Box, B = Int64]]
+    operation left(a: Self) -> Int64 = 1
+    operation both[W](a: Self, x: Pair[A = Box[B = W], B = Int64], y: Pair[A = Box[B = W], B = Int64]) -> Int64 = 5
   end
   operation go() -> Int64 =
     let c: Car[V = Int64] = car(v: 1)
@@ -1082,9 +1105,9 @@ namespace {ns}
   sort Car
     sort V = ?
     entity car(v: V, f: (x: V) -> Int64)
-    provides Rel[A = Car, B = {binding}]
-    operation left(a: Car) -> Int64 = 1
-    operation mix(a: Car, b: Car) -> Int64 = match a case car(_, g) -> g(b.v)
+    provides Rel[A = Self, B = {binding}]
+    operation left(a: Self) -> Int64 = 1
+    operation mix(a: Self, b: Self) -> Int64 = match a case car(_, g) -> g(b.v)
   end
   operation go() -> Int64 =
     let k1: Car[V = Int64] = car(v: 40, f: lambda (x: Int64) -> x + 1)
@@ -1111,7 +1134,7 @@ end
 /// ledger part 50.
 #[test]
 fn a_carrier_binding_is_the_receivers_instance_whether_or_not_received() {
-    for (tag, binding) in [("bare", "Car"), ("own", "Car[V = V]")] {
+    for (tag, binding) in [("self", "Self"), ("own", "Car[V = V]")] {
         let ns = format!("wi0rp29cb7.unrecv_{tag}");
         assert_eq!(
             run_src(
@@ -1257,13 +1280,13 @@ namespace {ns}
   import anthill.prelude.Option.{{some, none}}
   sort Sp
     sort T = ?
-    operation op(s: Sp, x: T) -> Int64 effects {{Error[T]}}
+    operation op(s: Self, x: T) -> Int64 effects {{Error[T]}}
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation op[W](s: Car, x: W) -> Int64 effects {{Error[W]}} = 1
+    operation op[W](s: Self, x: W) -> Int64 effects {{Error[W]}} = 1
   end
   operation use(c: Car[V = {v}]) -> Int64 effects {{{declared}}} =
     Sp.op(c, {arg})
@@ -1325,13 +1348,13 @@ namespace wi0rp29cb7.open_lambda
   import anthill.prelude.{Int64, Bool, String, List, Option, Error}
   sort Sp
     sort T = ?
-    operation apply(s: Sp, f: (x: T) -> Int64) -> Int64 effects {Error[T]}
+    operation apply(s: Self, f: (x: T) -> Int64) -> Int64 effects {Error[T]}
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation apply[W](s: Car, f: (x: W) -> Int64) -> Int64 effects {Error[W]} = 1
+    operation apply[W](s: Self, f: (x: W) -> Int64) -> Int64 effects {Error[W]} = 1
   end
   operation use(c: Car[V = String]) -> Int64 effects {Error[String]} =
     Sp.apply(c, lambda x -> 1)
@@ -1355,13 +1378,13 @@ namespace {ns}
   import anthill.prelude.Option.{{some, none}}
   sort Sp
     sort T = ?
-    operation op(s: Sp, a: Int64) -> Option[T = s.T]
+    operation op(s: Self, a: Int64) -> Option[T = s.T]
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation op[W](c: Car, a: Int64) -> Option[T = W] effects {{Error[W]}} = none
+    operation op[W](c: Self, a: Int64) -> Option[T = W] effects {{Error[W]}} = none
   end
   operation use(k: Car[V = Int64]) -> Int64 effects {{{declared}}} =
     match Sp.op(k, 1)
@@ -1411,19 +1434,19 @@ namespace {ns}
   import anthill.prelude.{{Int64, String, List}}
   sort Other
     sort E = ?
-    operation other(o: Other) -> Int64
+    operation other(o: Self) -> Int64
   end
   sort Sp
     sort E = ?
-    operation put(s: Sp, k: s.E) -> Int64
+    operation put(s: Self, k: s.E) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides {first}
     provides {second}
-    operation other(c: Car) -> Int64 = 0
-    operation put(c: Car, k: Int64) -> Int64 = k + 1
+    operation other(c: Self) -> Int64 = 0
+    operation put(c: Self, k: Int64) -> Int64 = k + 1
   end
   operation go() -> Int64 =
     let c: Car[V = Int64] = car(v: 1)
@@ -1563,19 +1586,19 @@ namespace {ns}
   sort Other
     sort E = ?
     sort T = ?
-    operation other(o: Other) -> Int64
+    operation other(o: Self) -> Int64
   end
   sort Sp
     sort E = ?
     sort T = ?
-    operation size(s: Sp) -> Int64
+    operation size(s: Self) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V)
 {provisions}
-    operation other(c: Car) -> Int64 = 0
-    operation size(c: Car) -> Int64 = 1
+    operation other(c: Self) -> Int64 = 0
+    operation size(c: Self) -> Int64 = 1
   end
   operation f(c: Car, k: c.{member}) -> Int64 = 1
   operation go() -> Int64 =
@@ -1662,14 +1685,14 @@ namespace wi0rp29cb8.owner_unbound
   import anthill.prelude.{Int64, String, List}
   sort Sp
     sort T = ?
-    operation size(s: Sp) -> Int64
-    operation put(s: Sp, k: s.T) -> Int64
+    operation size(s: Self) -> Int64
+    operation put(s: Self, k: s.T) -> Int64
   end
   sort Car
     entity car(v: Int64)
     provides Sp
-    operation size(c: Car) -> Int64 = 1
-    operation put(c: Car, k: Int64) -> Int64 = k + 1
+    operation size(c: Self) -> Int64 = 1
+    operation put(c: Self, k: Int64) -> Int64 = k + 1
   end
   operation go() -> Int64 =
     let c: Car = car(v: 1)
@@ -1694,13 +1717,13 @@ namespace {ns}
   import anthill.prelude.Option.{{some, none}}
   sort Sp
     sort T = ?
-    operation put(s: Sp, k: Option[T = Int64]) -> Int64 effects {{Error[k.T]}}
+    operation put(s: Self, k: Option[T = Int64]) -> Int64 effects {{Error[k.T]}}
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation put(c: Car, k: Option[T = Int64]) -> Int64 effects {{Error[k.T]}} = 1
+    operation put(c: Self, k: Option[T = Int64]) -> Int64 effects {{Error[k.T]}} = 1
   end
   operation use(x: Car[V = Int64]) -> Int64{declared} = Car.put(x, 5)
 end
@@ -1753,7 +1776,7 @@ namespace wi0rp29cb9.elem
   sort Mp
     sort W = ?
     sort K = ?
-    operation put(m: Mp, key: K, value: W) -> Int64
+    operation put(m: Self, key: K, value: W) -> Int64
   end
   sort Tbl
     entity tbl(n: Int64)
@@ -1779,7 +1802,7 @@ namespace wi0rp29cb9.two_lenders
   import anthill.prelude.{Int64, String, List, Bool}
   sort Sp
     sort T = ?
-    operation put(s: Sp, k: T) -> Int64
+    operation put(s: Self, k: T) -> Int64
   end
   sort Other
     sort C = ?
@@ -1822,13 +1845,13 @@ namespace wi0rp29cb9.nest_two
   import anthill.prelude.List.{cons, nil}
   sort Sp
     sort T = ?
-    operation both(s: Sp, o: T) -> Int64
+    operation both(s: Self, o: T) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V, f: (x: V) -> Int64)
-    provides Sp[T = List[T = Car]]
-    operation both(s: Car, o: List[T = Car]) -> Int64 =
+    provides Sp[T = List[T = Self]]
+    operation both(s: Self, o: List[T = Self]) -> Int64 =
       match s
         case car(_, g) ->
           match o
@@ -1862,13 +1885,13 @@ namespace wi0rp29cb9.nest_one
   import anthill.prelude.List.{cons, nil}
   sort Sp
     sort T = ?
-    operation both(s: Sp, o: T) -> Int64
+    operation both(s: Self, o: T) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V, f: (x: V) -> Int64)
-    provides Sp[T = List[T = Car]]
-    operation both(s: Car, o: List[T = Car]) -> Int64 =
+    provides Sp[T = List[T = Self]]
+    operation both(s: Self, o: List[T = Self]) -> Int64 =
       match s
         case car(_, g) ->
           match o
@@ -1905,10 +1928,10 @@ namespace wi0rp29cb9.own_gen
   sort Car
     sort V = ?
     entity car(v: V, f: (x: V) -> Int64)
-    provides Rel[A = Car, B = Car[V = V]]
-    operation left(a: Car) -> Int64 = 1
-    operation right(b: Car) -> Int64 = 2
-    operation mix(a: Car, b: Car) -> Int64 = match a case car(_, g) -> g(b.v)
+    provides Rel[A = Self, B = Car[V = V]]
+    operation left(a: Self) -> Int64 = 1
+    operation right(b: Self) -> Int64 = 2
+    operation mix(a: Self, b: Self) -> Int64 = match a case car(_, g) -> g(b.v)
   end
   operation use[W](k1: Car[V = W], k2: Car[V = String]) -> Int64 = Rel.mix(k1, k2)
   operation go() -> Int64 =
@@ -1941,10 +1964,10 @@ namespace wi0rp29cb9.own_gen_ok
   sort Car
     sort V = ?
     entity car(v: V, f: (x: V) -> Int64)
-    provides Rel[A = Car, B = Car[V = V]]
-    operation left(a: Car) -> Int64 = 1
-    operation right(b: Car) -> Int64 = 2
-    operation mix(a: Car, b: Car) -> Int64 = match a case car(_, g) -> g(b.v)
+    provides Rel[A = Self, B = Car[V = V]]
+    operation left(a: Self) -> Int64 = 1
+    operation right(b: Self) -> Int64 = 2
+    operation mix(a: Self, b: Self) -> Int64 = match a case car(_, g) -> g(b.v)
   end
   operation use[W](k1: Car[V = W], k2: Car[V = W]) -> Int64 = Rel.mix(k1, k2)
   operation go() -> Int64 =
@@ -1956,16 +1979,26 @@ end
     assert_eq!(run_src(src, "wi0rp29cb9.own_gen_ok.go"), Ok(41));
 }
 
-/// AN ALIAS OF THE DECLARING SORT IS THE SORT: `sort MyCar = Car`, `provides Rel[A = Car, B =
+/// AN ALIAS OF THE DECLARING SORT IS THE SORT: `sort MyCar = Car`, `provides Rel[A = Self, B =
 /// MyCar]`. Three readers gave the alias three readings — the rule this instance, one binder
 /// nothing at all — so `Rel.mix(x, 5)` passed an `Int64` where `B` is a `Car` and died
 /// "receiver is not an entity" (MEASURED). FAILS under ledger part 30, and under part 29 (a
 /// bare reference to the alias is no bare reference to the carrier).
+///
+/// SINCE WI-20261001-80ZV8 the sort's bare name — and so its alias — is the sort at `?`
+/// inside its own definition as everywhere: `B` is ANY `Car`, not this instance's. What the
+/// row guards is unchanged — an `Int64` is no `Car` — and its message now says so (`Car[V =
+/// ?_]`, where the tie read `Car[V = Int64]`); a second instance, which the tie refused, runs.
+/// The first cut of that reading left `B` unbound for the argument to bind, and the `5`
+/// loaded again (MEASURED: a binding not ground only by the provision's own `?` was skipped
+/// with the ones the receiver leaves open; `bind_spec_params_from_carrier_param`).
 #[test]
 fn an_alias_of_the_carrier_in_a_binding_is_the_carrier() {
-    let src = r#"
-namespace wi0rp29cb9.alias
-  import anthill.prelude.{Int64, String, List}
+    let program = |ns: &str, second: &str| {
+        format!(
+            r#"
+namespace {ns}
+  import anthill.prelude.{{Int64, String, List}}
   sort Rel
     sort A = ?
     sort B = ?
@@ -1974,72 +2007,108 @@ namespace wi0rp29cb9.alias
   sort Car
     sort V = ?
     entity car(v: V, n: Int64)
-    provides Rel[A = Car, B = MyCar]
-    operation mix[W](a: Car, b: Car[V = W]) -> Int64 = b.n + 1
+    provides Rel[A = Self, B = MyCar]
+    operation mix[W](a: Self, b: Car[V = W]) -> Int64 = b.n + 1
   end
   sort MyCar = Car
   operation go() -> Int64 =
     let x: Car[V = Int64] = car(v: 1, n: 1)
     let y: Car[V = String] = car(v: "s", n: 6)
-    Rel.mix(x, 5)
+    Rel.mix(x, {second})
 end
-"#;
+"#
+        )
+    };
     assert_refused_naming(
-        &load_errors(src),
-        &["type mismatch in mix.b (op-arg): expected Car[V = Int64], got Int64"],
+        &load_errors(&program("wi0rp29cb9.alias", "5")),
+        &["type mismatch in mix.b (op-arg): expected Car[V = ?_], got Int64"],
         "an argument held to nothing behind an alias of the carrier",
     );
+    assert_eq!(run_src(&program("wi0rp29cb9.alias2", "y"), "wi0rp29cb9.alias2.go"), Ok(7));
 }
 
-/// `pick(s: Sp, o: s.T)` at `Car provides Sp[T = Car]`, with `Car`'s member `member`.
-fn projected_bound_parameter_program(ns: &str, member: &str) -> String {
+/// `pick(s: Self, o: s.T)` at `Car provides Sp[T = {binding}]`, with `Car`'s member `member`.
+fn projected_bound_parameter_program(ns: &str, binding: &str, member: &str, second: &str) -> String {
     format!(
         r#"
 namespace {ns}
   import anthill.prelude.{{Int64, String, List}}
   sort Sp
     sort T = ?
-    operation pick(s: Sp, o: s.T) -> Int64
+    operation pick(s: Self, o: s.T) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V)
-    provides Sp[T = Car]
+    provides Sp[T = {binding}]
     operation {member} -> Int64 = 41
   end
-  operation go() -> Int64 = Sp.pick(car(v: 1), car(v: "s")) + 1
+  operation go() -> Int64 = Sp.pick(car(v: 1), {second}) + 1
 end
 "#
     )
 }
 
-/// WHAT THE READING ABOVE DOES NOT REACH — A PROJECTION OF THE BOUND PARAMETER. `o: s.T` at `T =
-/// Car` is no reference to the declaring sort that a binding writes: it reads the binding as
-/// written, an instance of its own, in the rule and at the call alike. So the member taking an
-/// instance of its own fits, and `Sp.pick(car(v: 1), car(v: "s"))` — two instances — runs to 41
-/// + 1; typed by the parameter itself (`o: T`) the same call is refused at its argument
-/// ([`a_carrier_binding_is_the_receivers_instance_whether_or_not_received`]). The scope line of
-/// the interim reading, which WI-20261001-80ZV8 settles with `Self`. Passes under every part of
-/// the three ledgers (MEASURED), by design: it pins what this pass does not reach.
+/// A PROJECTION OF THE BOUND PARAMETER READS THE BINDING AS IT IS WRITTEN. `o: s.T` at `T =
+/// Car[V = ?]` is any `Car`: the member taking an instance of its own fits, and
+/// `Sp.pick(car(v: 1), car(v: "s"))` — two instances — runs to 41 + 1.
+///
+/// THIS ROW PINNED THE SCOPE LINE OF THE INTERIM READING, and WI-20261001-80ZV8 has since drawn
+/// it. The binding was the bare `T = Car`, which a PARAMETER typed `o: T` read as the receiver's
+/// instance and a PROJECTION `o: s.T` read as written — an instance of its own: one text, two
+/// meanings, depending on how the spec reached it. The text now has one (proposal 070 §1.3:
+/// the bare name is the sort at `?`), and a definition says which it means: `Car[V = ?]` here
+/// — or `Car`, the same type — and `Self` in the row after next; both ways of reaching the
+/// binding read the same thing.
 #[test]
 fn a_projection_of_the_bound_parameter_is_an_instance_of_its_own() {
     let ns = "wi0rp29cb9.proj_own";
-    let src = projected_bound_parameter_program(ns, "pick[W](c: Car, o: Car[V = W])");
-    assert_eq!(run_src(&src, &format!("{ns}.go")), Ok(42));
+    for member in ["pick[W](c: Self, o: Car[V = W])", "pick(c: Self, o: Car[V = ?])"] {
+        let src = projected_bound_parameter_program(ns, "Car[V = ?]", member, "car(v: \"s\")");
+        assert_eq!(run_src(&src, &format!("{ns}.go")), Ok(42), "{member}");
+    }
 }
 
-/// … AND THE RULE READS IT SO: a member typing `o` by a bare `Car` — THIS instance — takes less
-/// than the spec's instance of its own, and is refused as tied. Under every part as its twin.
+/// … AND THE RULE READS IT SO: a member typing `o` by `Self` — THIS instance — takes less than
+/// the spec's instance of its own, and is refused as tied.
 #[test]
 fn a_projection_of_the_bound_parameter_is_an_instance_of_its_own_misfit() {
-    let src = projected_bound_parameter_program("wi0rp29cb9.proj_own_bad", "pick(c: Car, o: Car)");
+    let src = projected_bound_parameter_program(
+        "wi0rp29cb9.proj_own_bad",
+        "Car[V = ?]",
+        "pick(c: Self, o: Self)",
+        "car(v: \"s\")",
+    );
     assert_refused_naming(
         &load_errors(&src),
         &[
-            "parameter 2 (`o: Car`) takes less than the spec's",
+            "parameter 2 (`o: Car[V = V]`) takes less than the spec's",
             "ties `o` to the receiver",
         ],
         "a member tying what a projection of the bound parameter leaves an instance of its own",
+    );
+}
+
+/// … WHILE AT `T = Self` THE PROJECTION IS THE RECEIVER'S INSTANCE, as the parameter itself
+/// is: the member typing `o` by `Self` is exactly the spec's, one instance runs, and a second
+/// is refused at its argument. Before proposal 070 no spelling of the binding said this for a
+/// projection.
+#[test]
+fn a_projection_of_a_parameter_bound_to_self_is_the_receivers_instance() {
+    let ns = "wi0rp29cb9.proj_self";
+    let member = "pick(c: Self, o: Self)";
+    let one = projected_bound_parameter_program(ns, "Self", member, "car(v: 2)");
+    assert_eq!(run_src(&one, &format!("{ns}.go")), Ok(42));
+    let two = projected_bound_parameter_program(
+        "wi0rp29cb9.proj_self_two",
+        "Self",
+        member,
+        "car(v: \"s\")",
+    );
+    assert_refused_naming(
+        &load_errors(&two),
+        &["pick.o (op-arg): expected Car[V = Int64], got Car[V = String]"],
+        "a second instance behind a projection of a parameter bound to `Self`",
     );
 }
 
@@ -2282,19 +2351,19 @@ namespace wi0rp29cb9.agree_row
   end
   sort Other
     effects E = ?
-    operation other(o: Other) -> Int64
+    operation other(o: Self) -> Int64
   end
   sort Sp
     effects E = ?
-    operation size(s: Sp) -> Int64
+    operation size(s: Self) -> Int64
   end
   sort Car
     effects EC = ?
     entity car(v: Int64)
     provides Other[E = EC]
     provides Sp[E = {EC}]
-    operation other(c: Car) -> Int64 = 0
-    operation size(c: Car) -> Int64 = 1
+    operation other(c: Self) -> Int64 = 0
+    operation size(c: Self) -> Int64 = 1
   end
   operation pure1(x: Int64) -> Int64 = x + 41
   operation f(c: Car, g: (x: Int64) -> Int64 @ {c.E}) -> Int64 effects {c.E} = g(1)
@@ -2317,19 +2386,19 @@ namespace wi0rp29cb9.agree_alias
   sort MyList = List[T = Int64]
   sort Other
     sort E = ?
-    operation other(o: Other) -> Int64
+    operation other(o: Self) -> Int64
   end
   sort Sp
     sort E = ?
-    operation size(s: Sp) -> Int64
+    operation size(s: Self) -> Int64
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Other[E = MyInt]
     provides Sp[E = Int64]
-    operation other(c: Car) -> Int64 = 0
-    operation size(c: Car) -> Int64 = 1
+    operation other(c: Self) -> Int64 = 0
+    operation size(c: Self) -> Int64 = 1
   end
   operation f(c: Car, k: c.E) -> Int64 = 42
   operation go() -> Int64 =
@@ -2357,7 +2426,7 @@ namespace wi0rp29cb9.path_requires
   end
   sort Other
     sort K = ?
-    operation other(o: Other) -> Int64
+    operation other(o: Self) -> Int64
   end
   sort State
     sort P = ?

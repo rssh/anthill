@@ -241,7 +241,7 @@ namespace test.wi710.vars
 end
 
 namespace anthill.prelude.Cell
-  provides Modifiable[T = Cell]
+  provides Modifiable[T = Self]
 end
 "#;
     try_load_kb_with(src).unwrap_or_else(|errs| {

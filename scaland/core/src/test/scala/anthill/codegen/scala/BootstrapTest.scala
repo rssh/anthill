@@ -3033,6 +3033,10 @@ class BootstrapTest extends munit.FunSuite:
     //     §1.4 — no slot of a self reference is left out), so the arity is right and
     //     what is left to refuse is the variable. The ARITY arm is driven by
     //     fixtures of its own (`declares 2 type parameter(s), but 0 were written`).
+    //     AND ONE DECLARATION ON (the same ticket, proposal 070 §1.3): `empty`
+    //     returns `Self` — a `?A` written in the return alone is a type the operation
+    //     picks, which is not what an empty stream of every element type is — so
+    //     `empty` emits, and the first variable left is `mplus`'s.
     //
     // ONE FILE LEFT (WI-1022): sortedset.anthill's `requires O: Ord[T]` is a NAMED
     // requirement slot, and a named slot is a type PARAMETER whose value is a chosen
@@ -3057,7 +3061,7 @@ class BootstrapTest extends munit.FunSuite:
         ("sort `MatchFailed`", "imported from `anthill.reflect`"),
         ("sort `RelationFloundered`", "imported from `anthill.reflect`")),
       "logical_stream.anthill" -> Seq(
-        ("operation `empty`", "a type VARIABLE in a type position has no Scala form")),
+        ("operation `mplus`", "a type VARIABLE in a type position has no Scala form")),
       "meta.anthill" -> Seq(
         ("entity `Meta`", "imported from `anthill.reflect`"),
         ("sort `ProofResult`", "imported from `anthill.reflect`")),

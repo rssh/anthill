@@ -1148,6 +1148,7 @@ pub(super) fn check_bare_ref(
             sym,
             &ret,
             &HashSet::new(),
+            &[],
             occ.span,
             occ.owner,
         )

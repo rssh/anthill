@@ -184,7 +184,7 @@ fn a_member_naming_its_own_sort_still_resolves_its_dictionary() {
         \x20   requires anthill.prelude.Eq[T = T]\n\
         \x20   sort T = ?\n\
         \x20   entity Holder(seed: T)\n\
-        \x20   operation relabel[D](h: Holder, d: D) -> D = if eq(h.seed, h.seed) then d else d\n\
+        \x20   operation relabel[D](h: Self, d: D) -> D = if eq(h.seed, h.seed) then d else d\n\
         \x20 end\n\
         \x20 import test.wi1083.self.Holder.{relabel}\n\
         \x20 operation callit(f: (Holder[T = Int64], String) -> String, h: Holder[T = Int64]) \

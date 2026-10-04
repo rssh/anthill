@@ -223,10 +223,12 @@ fn the_repairs_the_refusal_names_load() {
 /// `Keyed[T = Int64]` loads (`WeakOrd[Int64]` holds); `Keyed[T = Float]` is refused naming
 /// the goal beneath the chosen provider, not the provider's absence.
 ///
-/// CONTROL (MEASURED): drop arm (2)'s `forwards_own_named_slot` case and the `Self` rows
-/// fail — `Int64` is refused "nothing provides `Rel[T = Keyed[T = Int64]]`", and `Float`
-/// with it. The bare-spelling rows pass either way by design: they are what `Self` must
-/// agree with, and they go away with the spelling (proposal 070 (d)).
+/// CONTROL (MEASURED): drop arm (2)'s `forwards_own_named_slot` case and both rows fail —
+/// `Int64` is refused "nothing provides `Rel[T = Keyed[T = Int64]]`", and `Float` with it.
+///
+/// The row first held the bare head `provides Rel[T = Keyed]` beside `Self`, to show that the
+/// two agreed; since proposal 070 the bare head is another type — `Keyed` at `?`, any
+/// instance — and the head written out is what stands beside `Self` now.
 fn constructorless(head: &str, element: &str) -> String {
     format!(
         r#"
@@ -254,7 +256,7 @@ end
 
 #[test]
 fn a_constructorless_carriers_unwritten_slot_is_searched_under_either_spelling() {
-    for head in ["Self", "Keyed"] {
+    for head in WRITTEN_HEADS {
         crate::common::expect_loaded(crate::common::try_load_kb_with(&constructorless(
             head, "Int64",
         )));

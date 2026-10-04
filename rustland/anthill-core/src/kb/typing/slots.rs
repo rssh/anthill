@@ -1250,9 +1250,9 @@ pub(super) fn call_is_at_callers_instance(
         .iter()
         .copied()
         .filter(|(vid, _)| {
-            params.iter().any(
-                |(_, var)| matches!(kb.get_term(*var), Term::Var(Var::Global(v)) if v == vid),
-            )
+            params
+                .iter()
+                .any(|(_, var)| matches!(kb.get_term(*var), Term::Var(Var::Global(v)) if v == vid))
         })
         .collect();
     open_params_at_callers_instance(kb, ctx.subst, &rigids).is_some()

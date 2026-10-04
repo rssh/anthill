@@ -1128,6 +1128,25 @@ pub(super) fn build_type(
             // value as the annotated type. (When the annotation merely fills a
             // still-free param it was threaded in as `expected` when the value
             // was typed, so `value_ty` already matches and this check passes.)
+            // WI-20261001-80ZV8 — A `?` THE ANNOTATION WRITES IS THE VALUE'S TO SAY, as a
+            // slot it leaves out is ([`unroll_annotation_with_inferred`], just below): the
+            // two are one type. The relation is structural about a variable, so `let t:
+            // Other[W = ?] = o` was refused, `expected Other[W = ?_], got Other[W = Int64]`
+            // (MEASURED), where `let t: Other = o` loaded — and a bare `Box` inside `sort
+            // Box`, which is `Box[T = ?]` (proposal 070 §1.3), would have been refused with
+            // it. Unified first, on a probe, and read back: the annotation the check and
+            // the binder see is the one with its holes filled.
+            let annotation = match (annotation, value_ty.as_ref()) {
+                (Some(ann), Some(vty)) if !kb.collect_vars(&ann).is_empty() => {
+                    let mut probe = Substitution::new();
+                    if unify_types(kb, &mut probe, vty, &ann) {
+                        Some(walk_type_deep_value(kb, &probe, &ann))
+                    } else {
+                        Some(ann)
+                    }
+                }
+                (annotation, _) => annotation,
+            };
             if let (Some(ann), Some(vty)) = (annotation.as_ref(), value_ty.as_ref()) {
                 let mut subst = Substitution::new();
                 if !types_compatible(kb, &mut subst, vty, ann) {

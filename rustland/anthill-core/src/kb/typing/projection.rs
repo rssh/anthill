@@ -2291,7 +2291,44 @@ fn provision_lends_binding(
         Some(s) => walk_pattern_field_type_deep(kb, &s, &Value::term(written)),
         None => Value::term(written),
     };
+    if let Some(opened) = provision_variables_opened(kb, recv_sort, written, &grounded) {
+        return Some(ProjResult::Grounded(opened));
+    }
     lent_member(kb, written, grounded)
+}
+
+/// WI-20261001-80ZV8 — `at_receiver`, the provision's binding `written` read at a receiver,
+/// with the variables the PROVISION wrote opened ([`ProvisionOpening`]): `Car provides Sp[T =
+/// Car[V = ?]]` lends `s.T` as a `Car` at a fresh variable, any `Car` — and so does the
+/// bare `T = Car`, whose `?` the loader writes (proposal 070 §1.3). Left as written, the `?` made
+/// the binding not ground and the projection stayed a neutral `s.T`, which no argument is
+/// (MEASURED: `pick.o (op-arg): expected s.T, got Car[V = String]`).
+///
+/// LENT EXACTLY WHERE THE BINDING WOULD BE WITH ITS `?`s FILLED, and `None` otherwise — the
+/// question is [`lent_member`]'s, asked of the binding with a concrete type standing where
+/// each of the provision's variables does. So a binding still resting on a parameter of the
+/// carrier that the receiver does not write stays neutral, and so does one resting on a
+/// variable of the RECEIVER's own type (`Car[V = List[T = ?e]]`): neither is the provision's,
+/// and opening it would give each read of one projection a type of its own. An effect-row
+/// member is left to [`lent_member`] whole: an unwritten row lends nothing (WI-396).
+///
+/// The result is the one non-ground type this reader answers `Grounded` with, and its
+/// variables are fresh to this reading: the argument, or the expected type, that meets it
+/// says which `Car` it is.
+fn provision_variables_opened(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    written: TermId,
+    at_receiver: &Value,
+) -> Option<Value> {
+    let Value::Term { id: term, .. } = at_receiver else {
+        return None;
+    };
+    if matches!(type_head(kb, at_receiver), TypeHead::EffectsRows) {
+        return None;
+    }
+    ProvisionOpening::instance_where_nothing_else_is_open(kb, carrier, written, *term)
+        .map(Value::term)
 }
 
 /// A provision's binding of a member (`written`), as it reads at a receiver (`at_receiver`).

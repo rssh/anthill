@@ -634,6 +634,27 @@ pub enum TypeError {
         param: Symbol,
         op: Symbol,
     },
+    /// WI-20261001-80ZV8 (user, 2026-10-04: "we should have error in get definition —
+    /// something like projection without carrier") — an operation's signature uses a
+    /// parameter of its sort, takes a value of that sort at an OPEN slot for it, and has no
+    /// carrier: `operation get(c: Cell) -> V` inside `sort Cell[V]`. A bare `Cell` there is
+    /// `Cell[V = ?]`, any cell (proposal 070 §1.3), so the `V` the signature uses is not
+    /// `c`'s — and nothing else says whose it is, though the reader's eye ties the two.
+    /// Left to load, `asString(c: Cell[V = Int64]) -> String = Cell.get(c)` did: the
+    /// caller's expected type chose `V` (MEASURED).
+    ///
+    /// `op` is the operation, `sort` its sort, `sort_param` the parameter used (`V`) and
+    /// `param` the operation's parameter that is the sort at an open `sort_param` (`c`) —
+    /// or, `nested`, holds one (`xs: List[T = Cell]`). The check and its scope are
+    /// [`check_sort_parameter_carriers`]'s.
+    SortParamWithoutCarrier {
+        span: Option<Span>,
+        op: Symbol,
+        sort: Symbol,
+        sort_param: Symbol,
+        param: Symbol,
+        nested: bool,
+    },
     /// WI-828: a cross-sort call (direct or op-as-function-value) to an
     /// operation of a `requires`-carrying sort whose requirement the call site
     /// can neither CONSTRUCT (no unique provider at the call's instantiation)
@@ -853,6 +874,46 @@ impl RuleField {
             RuleField::Whole => "rule",
         }
     }
+}
+
+/// The one wording of [`TypeError::SortParamWithoutCarrier`], as the two halves a mismatch
+/// is rendered from — what the signature needs, and what it has — shared by the two
+/// renderings so they cannot drift (WI-852).
+fn sort_param_without_carrier_detail(
+    kb: &KnowledgeBase,
+    sort: Symbol,
+    sort_param: Symbol,
+    param: Symbol,
+    nested: bool,
+) -> (String, String) {
+    let s = short_name_of(kb.local_name_of(sort));
+    let v = short_name_of(kb.local_name_of(sort_param));
+    let c = kb.local_name_of(param);
+    let me = crate::intern::SELF_TYPE_NAME;
+    let (is, repair) = if nested {
+        (
+            format!("`{c}` holds any `{s}`"),
+            format!("Write that `{s}` as `{me}` to make it the carrier"),
+        )
+    } else {
+        (
+            format!("`{c}` is any `{s}`"),
+            format!(
+                "Type `{c}` as `{me}` to make it the carrier, or write `{c}.{v}` where that \
+                 `{s}`'s `{v}` is meant"
+            ),
+        )
+    };
+    (
+        format!(
+            "a carrier for `{v}` — a parameter typed `{me}`, the `{s}` whose `{v}` the \
+             signature uses"
+        ),
+        format!(
+            "`{v}` used with no carrier: {is} — its `{v}` is left to a `?` — so it is not \
+             the one whose `{v}` this is, and no parameter is `{me}`. {repair}"
+        ),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -1545,6 +1606,21 @@ impl TypeError {
                     short_name_of(spec_qn),
                 )
             }
+            TypeError::SortParamWithoutCarrier {
+                op,
+                sort,
+                sort_param,
+                param,
+                nested,
+                ..
+            } => {
+                let (expected, got) =
+                    sort_param_without_carrier_detail(kb, *sort, *sort_param, *param, *nested);
+                format!(
+                    "in `{}`: expected {expected}, got {got}",
+                    kb.qualified_name_of(*op)
+                )
+            }
             // WI-20260919-N31XX — 065's message verbatim: the parameter, the read, and
             // the clause to add, on the operation that must carry it.
             TypeError::TypeValueReadUnbacked { param, op, .. } => {
@@ -1732,6 +1808,7 @@ impl TypeError {
             | TypeError::UnfillableOperationRequirement { span, .. }
             | TypeError::NoProvisionAtCarriers { span, .. }
             | TypeError::TypeValueReadUnbacked { span, .. }
+            | TypeError::SortParamWithoutCarrier { span, .. }
             | TypeError::AmbiguousConstrainedParamMember { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
             | TypeError::ExcessCallTypeArgs { span, .. }
@@ -2181,6 +2258,27 @@ impl TypeError {
                 actual_type: self.format(kb),
                 span: self.span(kb),
             },
+            // The operation is the entity and the parameter that looks like the carrier
+            // the field: that is the declaration to change.
+            TypeError::SortParamWithoutCarrier {
+                op,
+                sort,
+                sort_param,
+                param,
+                nested,
+                ..
+            } => {
+                let (expected_type, actual_type) =
+                    sort_param_without_carrier_detail(kb, *sort, *sort_param, *param, *nested);
+                LoadError::TypeMismatch {
+                    origin: None,
+                    entity_name: kb.qualified_name_of(*op).to_string(),
+                    field_name: kb.local_name_of(*param).to_string(),
+                    expected_type,
+                    actual_type,
+                    span: self.span(kb),
+                }
+            }
             // WI-20260919-N31XX — the operation is the entity (it is the signature that
             // must change) and `requires` the field, as the sibling above has it.
             TypeError::TypeValueReadUnbacked { param, op, .. } => {

@@ -1969,6 +1969,15 @@ pub(super) fn bind_spec_params_from_carrier_param(
     // Whether the view is the carrier's OWN provision — written inside the carrier — or a
     // witness's (computed on demand).
     let mut own_provision: Option<bool> = None;
+    // WI-20261001-80ZV8 — WHAT A COMPOUND BINDING STILL HOLDS OF ITS DECLARATION IS OPENED FOR
+    // THIS CALL (user, 2026-10-04: "now we open variables, so it should be fresh variables").
+    // Two things can be left once the receiver's type arguments are in: a parameter of the
+    // carrier the receiver does not write, and a variable the provision itself wrote (`?`).
+    // Both belong to the declaration, which every call shares, so neither may be bound as it
+    // stands — and each is ONE fresh variable for the call, shared by every binding of this
+    // provision that names it (`call_bindings` for the first, `opening` for the second).
+    let opening = ProvisionOpening::of(kb, view_bindings.iter().map(|(_, v)| *v));
+    let mut call_bindings: Option<Vec<(VarId, TermId)>> = None;
     for (spec_param_sym, carrier_value) in view_bindings {
         let spec_vid = type_param_vid_in_sort(kb, spec_sort, spec_param_sym);
         // (the carrier-param skip below runs BEFORE any instantiation: for a witness that
@@ -2136,13 +2145,54 @@ pub(super) fn bind_spec_params_from_carrier_param(
         } else {
             // WI-593: a COMPOUND provider binding still mentioning the carrier's own
             // params (`Map provides FiniteCollection[Element = Pair[A = K, B = V]]`).
-            // Substitute the receiver's type-args (`K ↦ Int64, V ↦ Int64`) into it and
-            // bind only if that grounds it FULLY; a carrier param left unresolved means
-            // the receiver did not pin it, so skip (the spec param stays unbound → a
-            // LOUD `unconstrained`, never a silently-wrong carrier-relative `?_`).
-            let grounded =
+            // Substitute the receiver's type-args (`K ↦ Int64, V ↦ Int64`) into it.
+            let at_receiver =
                 substitute_carrier_params(kb, carrier_value, carrier_sym, &recv_bindings);
-            type_value_is_ground(kb, grounded).then_some(grounded)
+            // DETERMINED, not concrete ([`type_value_is_ground_g`], WI-1059): a slot the
+            // receiver fills with the CALLER's own type parameter (`m: MapLike[K = Int64, V
+            // = W]`) is a rigid, which nothing later can decide — the binding is as known as
+            // it will ever be, and is the common case, bound as it stands.
+            if type_value_is_ground_g(kb, at_receiver, true) {
+                Some(at_receiver)
+            } else {
+                // NOT DETERMINED — AND BOUND ALL THE SAME. It used to be skipped here: "a
+                // carrier param left unresolved means the receiver did not pin it, so skip
+                // (the spec param stays unbound → a LOUD `unconstrained`, never a
+                // silently-wrong carrier-relative `?_`)". The loud error never came where
+                // an ARGUMENT is typed by the spec parameter: the argument bound it instead,
+                // and was then compared with nothing — `Rel.mix(x, 5)` loaded behind `B =
+                // Car[V = ?]`, and `Coll.has(m, 5)` behind `Element = Pair[A = K, B = V]`
+                // inside an operation generic in `V` (MEASURED; the second older than this
+                // ticket, and read as open only because a rigid counted as a variable).
+                //
+                // The skip's worry was the DECLARATION's variable reaching one call's types.
+                // Opened, it does not: each carrier parameter the receiver leaves out and
+                // each variable the provision wrote is a fresh variable of this call. What
+                // is then still open in the binding is the call's own — a type the receiver
+                // has not inferred yet — and binding it is how the argument gets to say it.
+                let bindings = match &mut call_bindings {
+                    Some(bindings) => bindings,
+                    unset => {
+                        let mut all = recv_bindings.clone();
+                        for (_, canonical) in sort_type_params_as_pairs(kb, carrier_sym).iter() {
+                            let Term::Var(Var::Global(vid)) = kb.get_term(*canonical) else {
+                                continue;
+                            };
+                            let vid = *vid;
+                            if !all.iter().any(|(written, _)| *written == vid) {
+                                let fresh = kb.fresh_var(vid.name());
+                                all.push((vid, kb.alloc(Term::Var(Var::Global(fresh)))));
+                            }
+                        }
+                        unset.insert(all)
+                    }
+                };
+                let at_call = substitute_carrier_params(kb, carrier_value, carrier_sym, bindings);
+                Some(match &opening {
+                    Some(opening) => opening.open(kb, at_call, None),
+                    None => at_call,
+                })
+            }
         };
         let Some(concrete) = concrete else { continue };
         if let Some(spec_vid) = spec_vid {
