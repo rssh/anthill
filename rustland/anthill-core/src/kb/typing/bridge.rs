@@ -1266,7 +1266,7 @@ pub(super) fn goal_from_requires_entry(
 /// `requires_chain` (Direct-call path; no SLD tree available).
 ///
 /// WI-20260925-4ZZKZ — `dispatch_dict` FIRST, because it is the dictionary EVAL
-/// threads (`CallClass::ConcreteApplyWithin::dispatch_dict`, built with the call's σ
+/// threads (the class's [`CalleeFrame::Dict`], built with the call's σ
 /// and pin). The σ-less rebuild below re-derives it in the CALLEE's own parameter
 /// space, where every element the call pinned is open again: a call pinning
 /// `SortedSet[T = String, O = ByLength]` was recorded as a dictionary for

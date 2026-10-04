@@ -158,7 +158,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                 enclosing_sort,
                 enclosing_op,
                 resolved_tree,
-                dispatch_dict,
+                frame,
                 ..
             } => {
                 let caller_requires = chain_for(kb, &mut chain_cache, enclosing_sort, enclosing_op);
@@ -171,7 +171,7 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<TypeError> {
                     spec_op_sym,
                     &caller_requires,
                     resolved_tree.as_ref(),
-                    dispatch_dict,
+                    frame.dispatch_dict(),
                 );
             }
             CallClass::DeferToRequirement {

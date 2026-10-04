@@ -18,7 +18,15 @@ sort anthill.prelude.Iterable
   sort Element = ?
   effects E = ?                       -- iteration/access effect; rides on the produced Stream
 
-  operation iterator(c: C) -> Stream[Element, E]
+  -- The result is written IN THE CARRIER'S TERMS (WI-20261001-80ZV8): `c.Element` and
+  -- `c.E` are what THIS carrier's iteration yields and incurs. It was `Stream[Element,
+  -- E]`, the spec's own parameters — which says what `c` yields only for a call at the
+  -- instance the caller is itself at, and a call fixes a sort's parameters afresh
+  -- (proposal 070 §1.1): on another carrier the argument fixes `C` and nothing fixes the
+  -- other two. Read off the receiver, the same line serves every caller: a member of
+  -- this spec (its own instance), a sort that `requires Iterable[C = S, …]` (what the
+  -- clause binds), and a concrete collection (its provision).
+  operation iterator(c: C) -> Stream[c.Element, c.E]
 
   -- General combinators (WI-424): every Iterable carrier gets these by deriving
   -- via `iterator(c)`; `Stream.find` stays the direct engine (it recurses on

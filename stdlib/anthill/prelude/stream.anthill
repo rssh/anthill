@@ -114,7 +114,10 @@ sort anthill.prelude.Stream
   -- written into the provision via `provides`, the type-aware path, so an
   -- `Iterable.find/map` over a Stream threads the observation effect instead of
   -- leaking a fresh `?_`).
-  provides Iterable[C = Stream, Element = T, E = E]
+  -- `C = Self` (WI-20261001-80ZV8; it was the bare `C = Stream`): the carrier is a
+  -- `Stream[T, E]`, and a `List` is one through its own `provides Stream[T, {}]` — which
+  -- is also where this provision's `T` and `E` are read from for it.
+  provides Iterable[C = Self, Element = T, E = E]
   -- WI-20260828-RJX44: the RETURN must write the projections too, and for the same reason
   -- the provision does. A bare `-> Stream` hands back a stream whose element and row are
   -- UNWRITTEN, so a consumer that pays the row (`takeN`, `effects s.E`) has nothing to read

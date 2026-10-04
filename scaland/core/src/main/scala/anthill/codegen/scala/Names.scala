@@ -3,6 +3,17 @@ package anthill.codegen.scala
 /** Identifier conversion per `docs/scala-forward-mapping.md` §5. */
 object Names:
 
+  /** The sort a declaration is written in, at its own parameters (proposal 070 §1.2).
+    * A reserved name: no sort, type parameter or member may be called this, which is
+    * what lets a reader recognise it before resolving anything. The Scala generator is
+    * scaland's reader of it — [[TypeScope]]'s `place` for an emitted type, and
+    * `Bootstrap`'s by-name readers of "the declaring sort" (`isSelfType`, `namesIn`);
+    * rustland's constant is `intern::SELF_TYPE_NAME`. A NEW reader of the declaring
+    * sort's name has to read this one too, and nothing forces it to: the last one missed
+    * emitted `trait Set[T] extends Eq[T]` without a diagnostic, and was caught only by
+    * the corpus row that compares that file's emission. */
+  val SelfTypeName: String = "Self"
+
   /** The hyphen rule (§5, WI-1054), applied FIRST at every entry point below.
     *
     * An anthill identifier is `[a-zA-Z_][a-zA-Z0-9_-]*` (`Tokens.identToken`), so `-`

@@ -2331,7 +2331,17 @@ pub(crate) fn classify_pin_or_apply_within(
             spec_op_sym: fn_sym,
             enclosing_sort,
             resolved_tree,
-            dispatch_dict,
+            // WI-20261001-80ZV8: the rule eval applied to this class until the frame was
+            // the typer's to state — no dictionary, and the callee's parent is the
+            // enclosing sort — written where it is decided. It asks the SORT and not the
+            // instance: a dispatched call lands on the carrier's own member, and whether
+            // that carrier is the caller's instance is the carrier binding's to say, which
+            // this arm does not read.
+            frame: match dispatch_dict {
+                Some(dict) => CalleeFrame::Dict(dict),
+                None if impl_sort == enclosing_sort => CalleeFrame::Inherited,
+                None => CalleeFrame::Absent,
+            },
             enclosing_op: op_supply.and_then(|c| c.enclosing_op),
         }
     } else {

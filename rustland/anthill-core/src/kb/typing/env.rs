@@ -94,11 +94,13 @@ pub struct TypingEnv {
     ///    Ord[T]` covers its own `Ord.compare(a, b)` — the call was refused
     ///    `MissingRequiresForSpecOp` demanding a `requires` "on enclosing sort"
     ///    that the author had already written on the operation.
-    ///  * [`Self::enclosing_instance_param_rigids`] — the SORT prefix alone, whose
-    ///    one consumer is `check_apply_iter`'s same-sort sibling-call seeding: it
-    ///    means "THIS instance's params" (`iterator(c)` inside an `Iterable` member
-    ///    body returns `Stream[Element, E]` at the enclosing rigids instead of
-    ///    dangling fresh `?_`), and a per-call op param is not one of them.
+    ///  * [`Self::enclosing_instance_param_rigids`] — the SORT prefix alone: "THIS
+    ///    instance's params", which is where a same-sort sibling call stands unless
+    ///    its bracket, an argument or the expected type places it at another
+    ///    (`place_sibling_call_at_callers_instance`; `iterator(c)` inside an
+    ///    `Iterable` member body returns a stream at the enclosing rigids instead of
+    ///    dangling fresh `?_`), and what a projection off the spec's own carrier
+    ///    reads (`this_instance_member`). A per-call op param is not one of them.
     ///    `enforce_member_tie` and `carrier_provision_short_bindings` also take
     ///    this view, but are indifferent to the choice: both look up only vids they
     ///    got from `sort_type_params_as_pairs`, which an op param's vid never is.
@@ -454,8 +456,8 @@ impl TypingEnv {
         &self.param_rigids
     }
 
-    /// The ENCLOSING SORT's params alone — "this instance's parameters". The
-    /// same-sort sibling-call seeding wants exactly these; see the field doc.
+    /// The ENCLOSING SORT's params alone — "this instance's parameters". A same-sort
+    /// sibling call's placement wants exactly these; see the field doc.
     pub(super) fn enclosing_instance_param_rigids(&self) -> &[(VarId, TermId)] {
         &self.param_rigids[..self.sort_rigid_len]
     }

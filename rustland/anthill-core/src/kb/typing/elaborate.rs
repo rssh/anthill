@@ -555,7 +555,9 @@ pub(super) fn elaborate_self_ties(kb: &mut KnowledgeBase, sort_names: &[Symbol])
             // enclosing instance's rigids before argument unification — then refuses a sibling
             // called at a DIFFERENT element. DRIVEN: `List.mapElems[Dst]`'s
             // `reverse(mapElemsOnto(xs, f, seed))` fails at `expected List[T = ?T], got List[T
-            // = ?Dst]`, and with it every corpus tier.
+            // = ?Dst]`, and with it every corpus tier. (WI-20261001-80ZV8 took that seeding
+            // out from in front of the arguments, so the refusal no longer follows; this skip
+            // goes with the tie itself at proposal 070's stage (e).)
             //
             // What is left is exactly the gap: a PARTIALLY written self reference, where
             // `unify_parameterized_view` width-ignores the slot the author elided and no

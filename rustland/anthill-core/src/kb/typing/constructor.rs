@@ -548,6 +548,21 @@ fn applied_spec_field(
 /// source-written `{s.E, EffP}` return wraps it — while a SORT parameter binds the value
 /// bare. A value already a row is kept as read (a provision may store it pre-wrapped), and
 /// so is a non-term carrier. The one wrap the three receiver projections each spelled.
+///
+/// WI-20261001-80ZV8 — AND A ROW VARIABLE IS A ROW ALREADY. Wrapped, `ES` became the
+/// one-tail row `{ES}`: the same row in a second spelling, which type unification equates
+/// and the resolver's slot reconciliation ([`match_impl_param`]) does not. So a field
+/// `Iterable[C = Source, Element = T, E = ES]` fed a `Stream[T = T, E = ES]` produced the
+/// goal `Iterable[C = Stream[T, E = ES], …, E = {ES}]`, whose carrier binds the provider's
+/// row to `ES` and whose own `E` then offers `{ES}` for the same slot — refused, `no impl
+/// matches` (MEASURED, and confirmed from the other side: the same field annotated `ES =
+/// {ES}` is refused where `ES = ES` loads — the reconciliation's own limit, which this
+/// only stops the constructor from reaching).
+///
+/// A VARIABLE TERM ONLY. [`KnowledgeBase::row_tail_var_of`] also reads a `Ref` to a sort's
+/// row parameter as one, and that spelling keeps the wrap it had: no program brings one
+/// here with the carrier named beside it, so changing it would be changing something
+/// nothing measures.
 fn effect_row_param_value(
     kb: &mut KnowledgeBase,
     field_base: Symbol,
@@ -558,6 +573,11 @@ fn effect_row_param_value(
         return val;
     }
     match &val {
+        Value::Term { id, .. }
+            if matches!(kb.get_term(*id), Term::Var(Var::Global(_) | Var::Rigid(_))) =>
+        {
+            val
+        }
         Value::Term { id, .. } if !is_effects_rows_term(kb, *id) => {
             Value::term(kb.build_canonical_effects_rows(&[*id]))
         }
@@ -1403,17 +1423,25 @@ pub(super) fn bare_spec_arg_provision_projection(
     // of that param (`xs.T`), which denotes the written argument just as well as an
     // unwritten one. Widened HERE and not inside `bare_receiver_sort`, which
     // [`bare_spec_arg_self_projection`] also reads and whose question is narrower.
-    let arg_sort = bare_receiver_sort(kb, &arg.ty, recv).or_else(|| {
-        // CONCRETE carriers only. A receiver whose sort is itself an abstract SPEC
-        // (`rest : Stream[T = …, E = …]`, the tail `MappedStream.splitFirst` re-wraps)
-        // has no carrier of its own to read a provision off; projecting through
-        // `Stream provides Iterable` would bind the field's `Source` to the SPEC
-        // `Stream` rather than to the tail's real carrier. MEASURED — without this
-        // clause the stdlib's own `mapped(rest, fn)` builds
-        // `MappedStream[Source = Stream, Src = rest.T, …]` and the file stops loading.
-        let base = sort_functor_of_view(kb, &arg.ty)?;
-        (!carrier_is_abstract_spec(kb, base)).then_some(base)
-    })?;
+    //
+    // WI-20261001-80ZV8 — AN ABSTRACT SPEC IS A CARRIER HERE TOO (user, 2026-10-03: "expand
+    // `Self` to the sort with all its type parameters, equal to the input's"). `rest :
+    // Stream[T = …, E = …]` — the tail a combinator re-wraps — is typed by a spec, and its
+    // real carrier is not known; what IS known is that it is a `Stream` at those
+    // arguments, and that whole type is what the field's carrier slot takes below
+    // (`arg.ty`), the other slots being read through `Stream`'s own provision.
+    //
+    // This clause used to DECLINE such a receiver, on a measurement: `mapped(rest, fn)`
+    // built `MappedStream[Source = Stream, …]` — the bare spec, read off the provision —
+    // and the stdlib stopped loading. The carrier slot has since stopped being read off
+    // the provision (BH1JZ, below), so the receiver's whole type is what is built; and
+    // declining left `Source` an OPEN VARIABLE instead — MEASURED: `filtered(rest, pred)`
+    // was `FilteredStream[T = ?T, Source = ??_, ES = ?ES, EF = ?EF]` — so the wrapper's
+    // `requires Iterable[C = Source, …]` was resolved for a carrier nobody had named, and
+    // only a provision written with the BARE spec, which accepts an undetermined carrier,
+    // could answer it.
+    let arg_sort = bare_receiver_sort(kb, &arg.ty, recv)
+        .or_else(|| sort_functor_of_view(kb, &arg.ty))?;
     if kb.canonical_sort_sym(arg_sort) == kb.canonical_sort_sym(field_base) {
         return None;
     }

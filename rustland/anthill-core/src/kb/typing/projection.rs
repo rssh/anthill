@@ -1646,6 +1646,85 @@ pub(super) fn resolve_field_type(
     Ok((resolved, decl_sort))
 }
 
+/// WI-20261001-80ZV8 — `c.Element` WHERE `c` IS TYPED BY THE CARRIER PARAMETER OF THE SPEC THE
+/// BODY IS WRITTEN IN: this instance's `Element`.
+///
+/// `sort Iterable { sort C = ?  sort Element = ?  effects E = ?  operation iterator(c: C) ->
+/// Stream[c.Element, c.E] … }` writes its result in the carrier's own terms (user,
+/// 2026-10-03), and a member of the same spec calls it on its own `c: C`. That `C` is not
+/// some carrier: it is the carrier of the instance the member belongs to, whose `Element`
+/// and `E` are the spec's own parameters — so the projection is read as the member's
+/// parameter of THIS instance, the body's rigid for it. [`project_type_member`] has no
+/// such reading: off a type variable it asks the `requires` bounds of the sort that
+/// declares it, and a spec is not a bound on its own carrier — it refused, "cannot project
+/// 'Element' off an abstract receiver with no concrete sort" (MEASURED at each of
+/// `Iterable`'s six sibling calls).
+///
+/// THE RECEIVER'S TYPE MUST BE THIS INSTANCE'S CARRIER RIGID, and `spec` the sort the body
+/// is written in: the caller asks only for a callee declared by that same sort, so `member`
+/// is read in the vocabulary it was written in. A receiver typed by another parameter, or by
+/// a carrier bounded through a `requires` clause, is not answered here — the bound decides
+/// what its `Element` is, and it need not be the enclosing sort's parameter of that name.
+///
+/// A SPEC WITH A CARRIER PARAMETER ONLY. [`spec_carrier_param`] answers "a parameter some
+/// operation takes", which for a sort that receives on ITSELF is its element (`push(s:
+/// Stack, x: T)` — its own doc asks a second gate of every new reader), and an element is no
+/// carrier: `x.T` off `x: T` there names nothing and stays the refusal it was.
+pub(super) fn this_instance_member(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    spec: Symbol,
+    recv_ty: &Value,
+    member: Symbol,
+) -> Option<Value> {
+    if spec_is_self_representing(kb, spec) {
+        return None;
+    }
+    let rigids = env.enclosing_instance_param_rigids();
+    let rigid_of = |param: Symbol| {
+        let vid = type_param_vid_in_sort(kb, spec, param)?;
+        rigids.iter().find(|(v, _)| *v == vid).map(|(_, r)| *r)
+    };
+    let carrier = rigid_of(spec_carrier_param(kb, spec)?)?;
+    if !matches!(recv_ty, Value::Term { id, .. } if *id == carrier) {
+        return None;
+    }
+    rigid_of(member).map(Value::term)
+}
+
+/// WI-20261001-80ZV8 — `src.Element` WHERE `src` IS TYPED BY A PARAMETER THE ENCLOSING SORT
+/// BOUNDS: what its `requires` clause binds the member to.
+///
+/// `sort Wrapper { sort Source = ?  sort T = ?  effects ES = ?  requires Iterable[C =
+/// Source, Element = T, E = ES] … }` says what a `Source` is as an `Iterable`, and a member
+/// calling `Iterable.iterator(src)` — declared `-> Stream[c.Element, c.E]` — asks exactly
+/// that of `src: Source`. The clause that LICENSES the call ([`LicensingClause`]) is the one
+/// that answers: its binding of the member, already at the body's rigids. While `iterator`
+/// returned the spec's own parameters the same clause was read to bind those
+/// (`bind_spec_params_from_enclosing_requires`); a projection has no such variable, and
+/// without this reading it was refused as off "an abstract receiver with no concrete sort"
+/// (MEASURED: `wi590_enclosing_requires_test`).
+///
+/// THE RECEIVER'S TYPE MUST BE THE CLAUSE'S OWN CARRIER — the parameter the clause is about.
+/// `spec` is the sort that declares the callee, whose vocabulary `member` is written in.
+pub(super) fn required_instance_member(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    clause: &LicensingClause,
+    recv_ty: &Value,
+    member: Symbol,
+) -> Option<Value> {
+    if !matches!(recv_ty, Value::Term { id, .. } if *id == clause.carrier) {
+        return None;
+    }
+    let vid = type_param_vid_in_sort(kb, spec, member)?;
+    clause
+        .bindings
+        .iter()
+        .find(|(v, _)| *v == vid)
+        .map(|(_, bound)| Value::term(*bound))
+}
+
 /// WI-475: project an expression-carried projection (`s.M`: the receiver `value`, the member
 /// `member`) against the receiver's argument type. `None` when it stays the neutral it was;
 /// otherwise the projected type, on whatever carrier the receiver's type binds the member on
@@ -2007,7 +2086,18 @@ fn project_via_provided_spec(
     span: Option<Span>,
 ) -> Option<Result<ProjResult, TypeError>> {
     if let Some(spec) = owner {
-        if let Some(bindings) = provider_spec_view_bindings(kb, recv_sort, spec) {
+        // WI-20261001-80ZV8: DIRECT, ELSE COMPOSED THROUGH THE PROVISION CHAIN. A carrier
+        // that reaches the owner only through an intermediate — `MappedStream provides
+        // Stream`, `Stream provides Iterable[…, Element = T, E = E]` — has no provision of
+        // it to read, and was refused "type 'MappedStream' has no member 'Element'"
+        // (MEASURED: three rows of `wi_bh1jz_carrier_arg_projection_test`, once
+        // `Iterable.iterator` wrote `c.Element`). The composed view is the one the
+        // carrier's dispatch and its constructor fields already read
+        // ([`transitive_provider_spec_view_bindings`]).
+        let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+        if let Some(bindings) =
+            transitive_provider_spec_view_bindings(kb, recv_sort, spec, &mut visited)
+        {
             let written = member_binding(kb, &bindings, member)?;
             return provision_lends_binding(kb, recv_ty, recv_sort, written).map(Ok);
         }

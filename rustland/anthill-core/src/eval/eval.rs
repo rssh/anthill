@@ -370,15 +370,13 @@ impl Interpreter {
                     Some(CallClass::ConcreteApplyWithin {
                         fn_target_sym,
                         spec_op_sym,
-                        enclosing_sort,
-                        dispatch_dict,
+                        frame,
                         enclosing_op,
                         ..
                     }) => self.start_apply_same_sort(
                         *fn_target_sym,
                         *spec_op_sym,
-                        *enclosing_sort,
-                        *dispatch_dict,
+                        *frame,
                         &op_dicts,
                         *enclosing_op,
                         pos_args,
@@ -1945,11 +1943,16 @@ impl Interpreter {
     ///    common case for multi-op bundles like anthill-todo's `Main`.
     ///    WI-841: **unless the typer supplied a dict anyway**, which on a same-sort
     ///    call means the call site EXPLICITLY SELECTED a provider (058 §4.1 tier 1 —
-    ///    inheriting is a forward, and explicit outranks a forward). Nothing else can
-    ///    produce one here: `build_concrete_dispatch_dict` returns `None` for a
-    ///    same-sort call in every other case, so this changes no existing program.
+    ///    inheriting is a forward, and explicit outranks a forward).
     ///    Measured before: `S.inner[Monoid = AnyM](a, b)` inside `S` inherited and
     ///    computed the SEARCHED answer with no diagnostic.
+    ///    WI-20261001-80ZV8: **and only at the caller's INSTANCE**, which the typer
+    ///    decides and the class states ([`CalleeFrame::Inherited`]). This arm used to
+    ///    infer it — no dictionary, and the callee's parent is the enclosing sort —
+    ///    and that cannot tell `Box[T = B]` from the `Box[T = A]` the caller runs at:
+    ///    MEASURED, `tagIn(other)` over an `other` of another instance ran the
+    ///    caller's `Tag` dictionary on it. Such a call now arrives with the dictionary
+    ///    of its own instance (2), or with none and no inherit (3).
     /// 2. **WI-415 compile-built dict** — a cross-sort / no-enclosing-sort
     ///    call (`member(2, [1,2,3])` from a plain namespace) cannot inherit;
     ///    when the typer pinned the callee parent's type params concretely it
@@ -1966,8 +1969,7 @@ impl Interpreter {
         // dispatch, and the callee itself on the WI-415 direct-call route. See
         // `start_apply_within`.
         spec_op: Symbol,
-        enclosing_sort: Option<Symbol>,
-        dispatch_dict: Option<TermId>,
+        frame: crate::kb::typing::CalleeFrame,
         // WI-822 LEG 1: the callee's own op-scoped slots, and the CALLER's operation
         // whose slots must not be inherited in their place. See
         // [`Self::push_op_scoped_slots`] / [`Self::strip_caller_op_slots`].
@@ -1976,47 +1978,42 @@ impl Interpreter {
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
     ) -> Result<StepOutcome, EvalError> {
-        let callee_parent = crate::kb::typing::impl_parent_of_op(&self.kb, target);
-        let inherit = dispatch_dict.is_none()
-            && matches!(
-                (callee_parent, enclosing_sort),
-                (Some(c), Some(e)) if c == e,
-            );
-        if inherit {
-            let mut caller_reqs = self
-                .stack
-                .top()
-                .ok_or_else(|| {
-                    EvalError::Internal("start_apply_same_sort with no current frame".into())
-                })?
-                .requirements
-                .clone();
-            // WI-822 LEG 1: the SORT's slots are shared by every member and inherit
-            // correctly; the caller OPERATION's are its own and must not ride along.
-            self.strip_caller_op_slots(enclosing_op, &mut caller_reqs)?;
-            self.push_op_scoped_slots(target, target, op_dicts, &mut caller_reqs)?;
-            return self.dispatch_apply_with_requirements(
-                target,
-                caller_reqs,
-                pos_args,
-                named_args,
-            );
+        use crate::kb::typing::CalleeFrame;
+        match frame {
+            CalleeFrame::Inherited => {
+                let mut caller_reqs = self
+                    .stack
+                    .top()
+                    .ok_or_else(|| {
+                        EvalError::Internal("start_apply_same_sort with no current frame".into())
+                    })?
+                    .requirements
+                    .clone();
+                // WI-822 LEG 1: the SORT's slots are shared by every member and inherit
+                // correctly; the caller OPERATION's are its own and must not ride along.
+                self.strip_caller_op_slots(enclosing_op, &mut caller_reqs)?;
+                self.push_op_scoped_slots(target, target, op_dicts, &mut caller_reqs)?;
+                self.dispatch_apply_with_requirements(target, caller_reqs, pos_args, named_args)
+            }
+            // WI-415: cross-sort / no-enclosing-sort call — install the
+            // compile-stage-built dispatching dict through the existing
+            // apply_within machinery.
+            CalleeFrame::Dict(dict_tid) => {
+                let dict_occ =
+                    crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict_tid);
+                self.start_apply_within(
+                    target,
+                    spec_op,
+                    pos_args,
+                    named_args,
+                    std::slice::from_ref(&dict_occ),
+                    op_dicts,
+                )
+            }
+            CalleeFrame::Absent => {
+                self.start_apply_with_op_slots(target, op_dicts, pos_args, named_args)
+            }
         }
-        // WI-415: cross-sort / no-enclosing-sort call — install the
-        // compile-stage-built dispatching dict (if any) through the existing
-        // apply_within machinery.
-        if let Some(dict_tid) = dispatch_dict {
-            let dict_occ = crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict_tid);
-            return self.start_apply_within(
-                target,
-                spec_op,
-                pos_args,
-                named_args,
-                std::slice::from_ref(&dict_occ),
-                op_dicts,
-            );
-        }
-        self.start_apply_with_op_slots(target, op_dicts, pos_args, named_args)
     }
 
     /// WI-822 LEG 1 — a call with NO instance dictionary whose callee may still have

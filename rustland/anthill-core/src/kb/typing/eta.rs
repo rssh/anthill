@@ -446,16 +446,21 @@ pub(super) fn attach_eta_dispatch_dict(
     }
     // WI-20260923-WN9P8 — and only where the capture IS the forward for every named slot
     // of the sort; otherwise the cross-sort build below answers each slot by its binder.
-    if env.enclosing_sort() == Some(parent)
-        && frame_serves_callee(env.enclosing_dict_chain(), callee_frame_key(kb, sym))
-        && inherit_answers_every_forward(
+    // WI-20261001-80ZV8: which is one case of "only at the instance this body runs at" —
+    // an expected arrow that places the reference at another instance of the sort takes the
+    // build below as well.
+    let another_instance = env.enclosing_sort() == Some(parent)
+        && !call_is_at_callers_instance(
             kb,
             parent,
             &SigmaCtx {
                 subst: &subst,
                 param_rigids: env.param_rigids(),
             },
-        )
+        );
+    if env.enclosing_sort() == Some(parent)
+        && !another_instance
+        && frame_serves_callee(env.enclosing_dict_chain(), callee_frame_key(kb, sym))
     {
         // Same-sort eta: the op needs its OWN sort's dispatching dict. A DIRECT
         // same-sort call inherits the enclosing frame at eval, but an eta'd
@@ -480,6 +485,14 @@ pub(super) fn attach_eta_dispatch_dict(
         return Ok(());
     }
     let caller_requires = env.enclosing_dict_chain().clone();
+    // WI-20261001-80ZV8: a reference into the caller's OWN sort at another instance reads
+    // the caller's clauses at the caller's — see [`chain_at_callers_instance`]. The same
+    // condition as the Direct-call site's.
+    let caller_requires = if another_instance {
+        chain_at_callers_instance(kb, &caller_requires, env.param_rigids())
+    } else {
+        caller_requires
+    };
     let callee_provision = op_owner_provision(kb, sym);
     match build_concrete_dispatch_dict(
         kb,

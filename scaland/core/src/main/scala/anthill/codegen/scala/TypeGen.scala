@@ -109,6 +109,15 @@ object TypeGen:
     // bare name the source never wrote. Identical to the leaf for a simple name, which
     // is every message this changed nothing about.
     val written = n.segments.map(sym.name).mkString(".")
+    // WI-20261001-80ZV8 (proposal 070 §1.2): `Self` takes no bindings — another
+    // instance is written with the sort's name. Refused here because below this line
+    // `Self` IS that name, and `Self[V = Int64]` would be rendered as the application
+    // the loader refuses.
+    if written == Names.SelfTypeName && args.nonEmpty then throw BootstrapError(
+      s"${scope.decl}: `${Names.SelfTypeName}` is the enclosing sort at its OWN " +
+      s"parameters and takes no bindings, but ${args.length} were written. Another " +
+      "instance is written with the sort's name",
+      n.span)
     scope.placeName(sym, n) match
       // WI-1081. A path-dependent projection the receiver's own occurrence answers —
       // `r1.T` against `r1: Relation[T = L]` IS `L`. The substitute is rendered with the

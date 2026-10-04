@@ -360,7 +360,7 @@ case: codegen can *prove* the emitted spelling would name a different type than 
 source wrote, so it says which readings it tried and stops. This is what took the
 whole-prelude closure to zero compile errors.
 
-**A projection is read off the receiver's declared type**, and there are exactly two
+**A projection is read off the receiver's declared type**, and there are exactly three
 ways that type can answer:
 
 * the receiver's occurrence **writes** the slot — `r1: Relation[T = L]` makes `r1.T`
@@ -373,7 +373,15 @@ ways that type can answer:
   bare self reference participates in the parametricity tie
   (`docs/design/type-parameter-scoping.md` §3), so `xs: List` inside `sort List[T]`
   makes `xs.T` this sort's `T`. The **sort's** parameters, not the operation's: `b.U`
-  for an operation's own `[U]` is not a member of the sort at all.
+  for an operation's own `[U]` is not a member of the sort at all;
+* the receiver is typed by the enclosing sort's **carrier parameter** — the parameter
+  its operations receive on, where they do not receive on the sort itself — and then
+  the projection is again that sort's parameter of that name (WI-20261001-80ZV8). A
+  spec states a result in its carrier's terms, `operation iterator(c: C) ->
+  Stream[c.Element, c.E]` in `sort Iterable`, and inside the spec that carrier's
+  `Element` is the spec's own, so the trait says `def iterator(c: C): Stream[Element]`
+  — the same text as when the declaration wrote `Element` directly. Only the carrier:
+  a receiver typed by any other parameter is an element, with no instance to read.
 
 Everything else is refused, and the list is closed:
 
@@ -383,7 +391,7 @@ Everything else is refused, and the list is closed:
 | an **unwritten** slot of an applied receiver (`r1.E` against `r1: Relation[T = L]`) | that slot is the receiver's *own* skolem, not the enclosing sort's parameter — tying them would collapse `join`'s `{r1.E, r2.E}` into one row |
 | a **positional** argument | it names no slot, and no table here carries a per-slot parameter name |
 | a **repeated** binding (`Box[T = L, T = R]`) | no one binding answers; last-wins would pick silently |
-| a receiver declared as an arrow, tuple, type variable, value-in-type or effect row | there is no sort occurrence to read a member off |
+| a receiver declared as an arrow, tuple, value-in-type or effect row, or as a type variable other than the enclosing sort's carrier parameter | there is no sort occurrence to read a member off |
 | a projection off a projection (`s.T.U`) | the tail is appended to what the head denotes and never looked up on its own |
 
 Each of these used to be answered by whatever the member *name* happened to mean at the
@@ -586,6 +594,17 @@ sort List {                                 enum List[T] {
     tail: List)
 }
 ```
+
+**`Self` is the sort's own name here** (proposal 070 §1.2, WI-20261001-80ZV8). `Self` —
+the sort a declaration is written in, at its own parameters — maps exactly as a bare
+mention of that sort's name does, and a sort written with one emits byte for byte what it
+emits written with the other: `tail: Self` is `tail: List[T]`, `operation get(c: Self) ->
+V` inside `sort Cell[V]` is `def get(c: Cell[V]): V`, and `xs.T` off a receiver `xs: Self`
+is the sort's own `T` (§2.1b). The readers that recognise the declaring sort by NAME read
+it too: a sort whose operations receive on `Self` is self-representing, and a requirement
+written over `Self` is over the sort (§2.7). Inside a scalar's own sort it is the host
+carrier, as that sort's name is (§2.1a). Outside a sort, and with bindings (`Self[V =
+Int64]`), it is refused — as the loader refuses both.
 
 ### 2.7 Requires → Trait Bounds or Context Parameters
 

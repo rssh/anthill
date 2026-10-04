@@ -94,7 +94,13 @@ enum ParamBinding:
   */
 case class EnclosingSort(
   anthillName: String, scalaName: String,
-  binders: IndexedSeq[(String, ParamBinding)]
+  binders: IndexedSeq[(String, ParamBinding)],
+  /** The parameter the sort's operations receive ON, by its anthill name — a spec's
+    * CARRIER parameter (`sort Iterable { sort C = ? … operation iterator(c: C) … }`) —
+    * or `None` for a sort that receives on itself. A projection off a receiver typed by
+    * it reads the sort's own parameters, as one off a receiver typed by the sort does
+    * (WI-20261001-80ZV8; see `TypeScope.projection`). */
+  carrier: Option[String] = None
 ):
   /** What a bare mention re-attaches: the parameters that survive erasure — which are
     * exactly the ones with a Scala name to re-attach. */
@@ -468,6 +474,23 @@ case class TypeScope(
     * that any of the three also answers). They are recorded here because the premise
     * that made them invisible is gone, and the ordering is the next thing to re-take. */
   private def place(anthillLeaf: String): Placement =
+    // WI-20261001-80ZV8 (proposal 070 §1.2): `Self` is the sort the declaration is
+    // written in, at its own parameters — and the name is RESERVED, so nothing below
+    // could answer for it. Read THROUGH the sort's own name rather than straight to
+    // [[Placement.Enclosing]], so `Self` cannot place differently from the name it
+    // stands for: inside a scalar's own file that name is the HOST carrier (the one
+    // inversion documented above), and `Self` there is `Long`, not the empty trait.
+    // Outside a sort it is refused, as the loader refuses it.
+    if anthillLeaf == Names.SelfTypeName then
+      enclosing match
+        case Some(sort) => placeNamed(sort.anthillName)
+        case None => Placement.Unplaceable(
+          s"`${Names.SelfTypeName}` is the sort a declaration is written in, and this " +
+          "one is written in none (proposal 070 §1.2: outside a sort it is a load error)")
+    else placeNamed(anthillLeaf)
+
+  /** [[place]] for a name that is not `Self` — the chain itself. */
+  private def placeNamed(anthillLeaf: String): Placement =
     // WI-1062 adds no link: an erased effect parameter is a PARAMETER, so it
     // answers from the same first link every other one does. That it cannot be
     // shadowed by a scalar or a sort of the same name is the ordinary
@@ -534,14 +557,25 @@ case class TypeScope(
         case ReceiverType.Bare(head) =>
           val self = headPlacement(head) match
             case Placement.Enclosing(sort) => Some(sort)
+            // WI-20261001-80ZV8: A RECEIVER TYPED BY THE SORT'S CARRIER PARAMETER IS THE
+            // CARRIER OF THIS INSTANCE. `sort Iterable { sort C = ?  sort Element = ? …
+            // operation iterator(c: C) -> Stream[c.Element, c.E] }` writes its result in
+            // the carrier's own terms, and inside the spec that carrier's `Element` is
+            // the spec's own parameter — which is the Scala trait's too: `def iterator(c:
+            // C): Stream[Element]`. Rustland reads the same projection the same way
+            // (`this_instance_member`). Only the CARRIER parameter: a receiver typed by
+            // any other parameter is an element, with no instance to be read at.
+            case Placement.TypeParam(_, _)
+                if head.length == 1 && enclosing.exists(_.carrier.contains(head.head)) =>
+              enclosing
             case _ => None
           self match
             case None => refuse(
               s"`$written` projects `$member` off `$receiver`, whose declared type " +
-              s"`${head.mkString(".")}` is not a bare occurrence of the enclosing sort. " +
-              "Only that ties to the sort's own parameters " +
-              "(`docs/design/type-parameter-scoping.md` §3); any other bare occurrence " +
-              "takes a fresh skolem, which Scala has no term for")
+              s"`${head.mkString(".")}` is not a bare occurrence of the enclosing sort, " +
+              "nor that sort's carrier parameter. Only those tie to the sort's own " +
+              "parameters (`docs/design/type-parameter-scoping.md` §3); any other bare " +
+              "occurrence takes a fresh skolem, which Scala has no term for")
             // THE SORT'S OWN BINDERS and not this declaration's `params`, which has the
             // OPERATION's type parameters merged in: `operation f[U](b: Box) -> b.U`
             // answered `U` off a name the sort never declared (WI-1081 review).

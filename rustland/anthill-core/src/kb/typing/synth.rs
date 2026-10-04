@@ -1984,6 +1984,13 @@ pub(super) fn format_term_for_goal(kb: &KnowledgeBase, t: TermId) -> String {
         // `TypeValue[T = anthill.prelude.List[T = <term#23484>]]`; it now reads
         // `List[T = ?]`, which shows the unwritten element and therefore the repair
         // (write it — `Holder[U = List[T = Int64]]` is that fixture's own control).
+        //
+        // WI-20261001-80ZV8 — A RIGID IS NOT THAT. It is a type parameter of the body in
+        // hand, a NAMED thing, and it reaches a refusal wherever a caller's own clause is
+        // stated at the caller's instance ([`chain_at_callers_instance`]): rendered `?` the
+        // clause read `requires Tag[T = ?]`, which says the caller left undetermined what
+        // it declared. `?T`, as every type diagnostic spells a parameter.
+        Term::Var(Var::Rigid(vid)) => format!("?{}", kb.local_name_of(vid.name())),
         Term::Var(_) => "?".to_owned(),
         _ => format!("<term#{}>", t.raw()),
     }

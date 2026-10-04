@@ -282,7 +282,7 @@ fn an_unbound_carrier_answers_nothing_rather_than_the_default() {
 #[test]
 fn a_rebuilt_call_carries_the_pin_so_the_woven_arm_must_restamp() {
     use anthill_core::kb::node_occurrence::{ApplyDispatch, Expr, NodeOccurrence};
-    use anthill_core::kb::typing::CallClass;
+    use anthill_core::kb::typing::{CalleeFrame, CallClass};
     use anthill_core::span::{SourceId, SourceSpan};
 
     let ns = "test.wi1037.restamp";
@@ -320,7 +320,7 @@ fn a_rebuilt_call_carries_the_pin_so_the_woven_arm_must_restamp() {
         spec_op_sym: spec,
         enclosing_sort: None,
         resolved_tree: None,
-        dispatch_dict: None,
+        frame: CalleeFrame::Absent,
         // WI-822 LEG 1: no op-scoped slots — this fixture's target writes no
         // `requires` of its own, and the classification under test is the
         // dictionary-carry, which the op half does not participate in.

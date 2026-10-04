@@ -551,15 +551,7 @@ pub(super) fn carrier_arg_impl_subst(
     let Some(carrier) = goal.carrier.as_ref() else {
         return;
     };
-    // The receiver's arguments re-keyed by the CARRIER SORT's own parameter symbols —
-    // the form [`substitute_impl_params_alloc`] matches, and the starting substitution of
-    // the walk below. At zero hops it IS the answer.
-    let carrier_params = impl_param_symbols(kb, carrier.sort);
-    let carrier_subst = align_by_short_name(kb, &carrier.args, &carrier_params);
-    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
-    let Some(path) =
-        provision_path_subst(kb, carrier.sort, &carrier_subst, impl_sort, &mut visited)
-    else {
+    let Some(path) = sort_args_viewed_at(kb, carrier.sort, &carrier.args, impl_sort) else {
         return;
     };
     // RE-KEYED THROUGH `impl_params`, the caller's own parameter symbols, rather than
@@ -577,6 +569,26 @@ pub(super) fn carrier_arg_impl_subst(
         }
         impl_subst.push((param, value));
     }
+}
+
+/// `sort` at the arguments `args`, read AT `base` — a sort it provides, or itself: `base`'s
+/// own parameters in the receiver's terms. The receiver's arguments are first re-keyed by
+/// `sort`'s own parameter symbols — the form [`substitute_impl_params_alloc`] matches, and
+/// the starting substitution of [`provision_path_subst`]'s walk; at zero hops that IS the
+/// answer. `None` when `sort` does not reach `base`.
+///
+/// The one spelling of that read for [`carrier_arg_impl_subst`], whose receiver is the
+/// goal's carrier, and [`carrier_viewed_at`], whose receiver is a binding's value.
+fn sort_args_viewed_at(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+    args: &[(Symbol, TermId)],
+    base: Symbol,
+) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+    let params = impl_param_symbols(kb, sort);
+    let own = align_by_short_name(kb, args, &params);
+    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+    provision_path_subst(kb, sort, &own, base, &mut visited)
 }
 
 /// WI-20260828-EKWDC — re-key `pairs` by the parameter symbols of one sort, joining on
@@ -894,6 +906,62 @@ pub(super) fn match_candidate_against_goal(
         parametric_value_parts(kb, candidate_value)
     };
     if let Some((c_base, c_bindings)) = candidate_parts {
+        // (2a) WI-20261001-80ZV8 — THE GOAL'S VALUE IS A CARRIER OF THE CANDIDATE'S SORT.
+        // `sort Strm … provides Iter[C = Strm[T = T, E = E], …]` — the form `C = Self`
+        // lowers to — against the goal `Iter[C = One[T = Int64], …]`, where `One provides
+        // Strm[T, {}]`: a `One[T = Int64]` IS a `Strm[T = Int64, E = {}]`, and that is the
+        // value this candidate is matched against. See [`carrier_viewed_at`].
+        //
+        // IT IS WHAT THE BARE SPELLING HAS ALWAYS MEANT. `C = Strm` reaches arm (3), whose
+        // `dispatch_values_match` asks the SUBTYPE relation and so accepts every carrier of
+        // `Strm`; an APPLICATION came here and was held to the same base, so the written
+        // form of one provision answered for a literal `Strm[…]` alone and every carrier
+        // lost the spec (MEASURED on a miniature and on the stdlib's `Stream provides
+        // Iterable[C = …]`: eleven load errors from one line, six `no impl matches` and
+        // five `provides …, which requires …, but … does not provide …`, the hand-written
+        // form and `Self` alike). The written form says MORE than the bare one — its
+        // bindings carry the provider's parameters — so here they are matched rather than
+        // ignored: `T` and `E` are bound from the carrier's own provision.
+        //
+        // STILL MATCHING, NOT UNIFICATION (WI-824, below): the goal's value is rewritten
+        // by a fact about its own sort and then matched as it stands. A bare type
+        // parameter has no provision to be read through and is refused exactly as before.
+        // TOP LEVEL ONLY, as arm (2.5) is and for its reason: this is the provision's
+        // carrier slot, not a type nested in one.
+        //
+        // GATED ON THE CANDIDATE'S SORT HAVING A PROVIDER AT ALL, which is an index read
+        // and is false for nearly every candidate head (`List[A]`, `Pair[A, B]` — data
+        // sorts nothing provides), so the provision walk below runs only where it can
+        // answer.
+        if top_level && spec_has_any_providers(kb, c_base) {
+            if let Some(viewed) = carrier_viewed_at(kb, per_call_value, c_base) {
+                // The view is keyed by `c_base`'s own parameters, as the candidate's
+                // bindings are: one sort on both sides, so the key rule is the same-base
+                // arm's ([`BindingKeyMatch::for_bases`] is its owner).
+                let key_match = BindingKeyMatch::for_bases(kb, c_base, c_base);
+                *specificity = specificity.saturating_add(1);
+                for (k, c_val) in &c_bindings {
+                    let Some(p_val) = binding_for_param(kb, &viewed, *k, key_match).copied()
+                    else {
+                        return false;
+                    };
+                    if !match_candidate_against_goal(
+                        kb,
+                        impl_sort,
+                        false,
+                        *c_val,
+                        p_val,
+                        impl_params,
+                        impl_subst,
+                        specificity,
+                        sigma,
+                    ) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        }
         // Per-call side must also be parametric with the same base.
         let (p_base, p_bindings) = match parametric_value_parts(kb, per_call_value) {
             Some(parts) => parts,
@@ -1070,6 +1138,37 @@ pub(super) fn match_candidate_against_goal(
         return true;
     }
     false
+}
+
+/// WI-20261001-80ZV8 — `value` READ AT `base`, a sort its own sort provides: the
+/// parameters of `base`, in the value's own terms ([`sort_args_viewed_at`]). `One[T =
+/// Int64]` at `Strm` is `[T ↦ Int64, E ↦ {}]` through `One provides Strm[T, {}]`; through
+/// more than one hop it is the composition [`provision_path_subst`] walks. `None` when the
+/// value heads no sort (a type parameter, a variable, a structural type), when its sort IS
+/// `base` — the same-base arm's case — or when that sort does not provide `base`.
+///
+/// A PARAMETERLESS carrier is a sort applied to nothing, and is read too:
+/// [`parametric_value_parts`] answers only for an application, so `Fin` — `sort Fin {
+/// provides Stream[T = Int64, E = {}] }` — would otherwise be the one carrier a written
+/// provision could not answer for (MEASURED: four rows of
+/// `wi590_conditional_finiteness_test`).
+fn carrier_viewed_at(
+    kb: &mut KnowledgeBase,
+    value: TermId,
+    base: Symbol,
+) -> Option<SmallVec<[(Symbol, TermId); 2]>> {
+    let (sort, args) = match parametric_value_parts(kb, value) {
+        Some(parts) => parts,
+        None if is_type_param_value(kb, value) => return None,
+        None => (
+            extract_sort_ref_sym(kb, &TermIdView(value))?,
+            SmallVec::new(),
+        ),
+    };
+    if same_sort_canonical(kb, sort, base) {
+        return None;
+    }
+    sort_args_viewed_at(kb, sort, &args, base)
 }
 
 /// WI-827 — reconcile an impl param `p` against a per-call element, recording

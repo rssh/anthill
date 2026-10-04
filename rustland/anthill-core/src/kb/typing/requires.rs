@@ -878,6 +878,60 @@ impl std::ops::Deref for DictChain {
 /// written in ([`op_owner_provision`]); `None` is the sort-level chain, the frame of an
 /// operation outside every block. Normalized through [`provision_layout_key`], so a
 /// carrier with no conditional provision answers the sort-level `Rc` for any of them.
+/// WI-20261001-80ZV8 — a caller's chain AT THE CALLER'S INSTANCE: every reference to a type
+/// parameter in the body's scope replaced by the body's rigid for it.
+///
+/// A clause is stored against the declared parameter (`requires Tag[T = T]` holds `T`'s own
+/// symbol), and a cover reads it through the CALL's substitution ([`sigma_class`]). From
+/// another sort that is the caller's own parameter either way — σ binds the CALLEE's
+/// variables, and the caller's canonicalize to their rigids. In a call INTO THE CALLER'S OWN
+/// SORT the two are one variable, and σ's binding of it is the callee's instance: a sibling
+/// call at `T = D` read the caller's `Tag[T = T]` as `Tag[T = D]`, which then "covered" the
+/// callee's requirement and forwarded the caller's dictionary for it (MEASURED: `tagIn(other)`
+/// over an `other: Box[T = D]` inside `sort Box requires Tag[T = T]` answered with the
+/// caller's provider, with or without a `requires Tag[T = D]` on the calling operation).
+/// Spelled in rigids, a clause is the caller's whatever σ says — a rigid is where the chase
+/// ends.
+///
+/// The chain's NAMES and layout are its owner's and do not move; only what each entry is
+/// ABOUT is restated.
+///
+/// PER CALL, NOT ONCE ON THE ENVIRONMENT, although every clause of a body could be stated
+/// this way: a rigid is minted per body check and must not outlive it (WI-1059), and the
+/// environment's chain is what a `DeferToRequirement` class copies its matched entry from
+/// — a class that is stored on the occurrence and read after the pass. Here the restated
+/// chain goes to a dictionary build and is dropped with it.
+pub(super) fn chain_at_callers_instance(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    param_rigids: &[(VarId, TermId)],
+) -> DictChain {
+    let entries: Vec<RequiresEntry> = chain
+        .entries()
+        .iter()
+        .map(|entry| RequiresEntry {
+            required_sort: entry.required_sort,
+            spec: rewrite_spec_value(kb, &entry.spec, &|kb, t| {
+                rewrite_term_leaves(kb, t, &|kb, t| {
+                    let (vid, is_rigid) = elem_var_step(kb, t)?;
+                    if is_rigid {
+                        return Some(t);
+                    }
+                    param_rigids
+                        .iter()
+                        .find(|(canonical, _)| *canonical == vid)
+                        .map(|(_, rigid)| *rigid)
+                })
+            }),
+            supply: entry.supply,
+        })
+        .collect();
+    DictChain {
+        entries: Rc::new(entries),
+        ..chain.clone()
+    }
+}
+
 pub fn provider_dict_entries(
     kb: &mut KnowledgeBase,
     sort_sym: Symbol,

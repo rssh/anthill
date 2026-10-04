@@ -517,6 +517,200 @@ class BootstrapTest extends munit.FunSuite:
     ScalaCompile.assertCompiles("pair.anthill's emission", files)
   }
 
+  // ── WI-20261001-80ZV8 (proposal 070): `Self` ───────────────────────────────
+
+  /** One sort, each mention of it inside its own body written `self` — `Self` or the
+    * sort's own name. The two spellings are one type, so the emission is asserted as
+    * BYTE EQUALITY with the named twin rather than as an expectation of its own: a
+    * reading of `Self` that drifted from the name's would show as a diff, whatever
+    * either emits. */
+  private def selfSort(self: String, requires: String = "") =
+    s"""namespace anthill.wi80zv8
+       |  sort Cell
+       |    sort V = ?
+       |$requires
+       |    operation get(c: $self) -> V
+       |    operation put(c: $self, v: V) -> $self
+       |    operation peek(xs: $self) -> xs.V
+       |  end
+       |end
+       |""".stripMargin
+
+  test("WI-20261001-80ZV8: `Self` emits what the sort's own name emits, and compiles") {
+    // FAILS WHEN BACKED OUT, MEASURED: without `TypeScope.place`'s `Self` arm all three
+    // rows of this group fail. Here the name falls to the last link, an ambient type
+    // called `Self`, and `peek` is refused — `xs.V` projects off a receiver "whose
+    // declared type `Self` is not a bare occurrence of the enclosing sort". The scalar
+    // row loses its equality and the row after it loses its outside-a-sort refusal.
+    val withSelf = gen(parseSource(selfSort("Self"), "self.anthill"))
+    val withName = gen(parseSource(selfSort("Cell"), "name.anthill"))
+    assert(withSelf.nonEmpty, "expected an emission to compare")
+    assertEquals(withSelf.map(f => (f.relPath, f.contents)),
+      withName.map(f => (f.relPath, f.contents)))
+    val src = withSelf.map(_.contents).mkString("\n")
+    // What the equality is OF — pinned so that two equally wrong emissions cannot pass:
+    // the sort's own parameters re-attached, and a projection off a `Self`-typed
+    // receiver read as the sort's own parameter.
+    assert(src.contains("def get(c: Cell[V]): V"), s"expected `def get(c: Cell[V]): V` in:\n$src")
+    assert(src.contains("def put(c: Cell[V], v: V): Cell[V]"), s"expected `put` at the sort's own parameters in:\n$src")
+    assert(src.contains("def peek(xs: Cell[V]): V"), s"expected `xs.V` off a `Self` receiver to be `V` in:\n$src")
+    ScalaCompile.assertCompiles("a sort written with `Self`", withSelf)
+  }
+
+  test("WI-20261001-80ZV8: a sort receiving on `Self` is self-representing, and `requires` reads `Self` as the sort") {
+    // TWO READERS of "the declaring sort", each by NAME, each outside `TypeScope`:
+    //
+    //  * `isSelfType` decides whether the sort's operations receive on the sort itself
+    //    (WI-1022's carrier). FAILS WHEN BACKED OUT, MEASURED: without its `Self` arm a
+    //    sort whose operations all write `Self` receives on nothing, its carrier becomes
+    //    its first parameter, and `requires Eq[V]` — a requirement on the ELEMENT — turns
+    //    into `extends Eq[V]`. That is the first pair below, and it is what a stdlib
+    //    migrated to `Self` did to `Set`, `Map` and `VectorSpace`.
+    //  * `namesIn` decides whether a requirement mentions the carrier. FAILS WHEN BACKED
+    //    OUT, MEASURED: read as the word, `requires Eq[T = Self]` does not mention the
+    //    sort and loses the supertrait its named twin keeps. That is the second pair.
+    for (requires, expected) <- List(
+      ("    requires Eq[V]", "trait Cell[V]:"),
+      ("    requires Eq[T = Self]", "trait Cell[V] extends _root_.anthill.prelude.Eq[Cell[V]]")
+    ) do
+      val withSelf = gen(parseSource(selfSort("Self", requires), "self.anthill"))
+      val named = requires.replace("Self", "Cell")
+      val withName = gen(parseSource(selfSort("Cell", named), "name.anthill"))
+      assertEquals(withSelf.map(f => (f.relPath, f.contents)),
+        withName.map(f => (f.relPath, f.contents)), s"under `$requires`")
+      val src = withSelf.map(_.contents).mkString("\n")
+      assert(src.contains(expected), s"under `$requires`, expected `$expected` in:\n$src")
+  }
+
+  test("WI-20261001-80ZV8: `Self` in an entity field emits what the sort's own name emits") {
+    // The DATA shape: `link`'s only mention of its sort's parameter is through the sort
+    // itself. Both spellings are read alike by the enum-case coverage rule (WI-1055) —
+    // `Self` contributes the sort's own name to it and nothing more, as a bare mention
+    // does — so both emit the same case, whichever that is.
+    def chain(self: String) =
+      s"""namespace anthill.wi80zv8
+         |  sort Chain
+         |    sort V = ?
+         |    entity stop(v: V)
+         |    entity link(next: $self)
+         |  end
+         |end
+         |""".stripMargin
+    val withSelf = gen(parseSource(chain("Self"), "self.anthill"))
+    val withName = gen(parseSource(chain("Chain"), "name.anthill"))
+    assert(withSelf.nonEmpty, "expected an emission to compare")
+    assertEquals(withSelf.map(f => (f.relPath, f.contents)),
+      withName.map(f => (f.relPath, f.contents)))
+    val src = withSelf.map(_.contents).mkString("\n")
+    assert(src.contains("next: Chain[V]"), s"expected the field at the sort's own parameters in:\n$src")
+    ScalaCompile.assertCompiles("a data sort written with `Self`", withSelf)
+  }
+
+  test("WI-20261001-80ZV8: a projection off a receiver typed by the sort's CARRIER parameter is the sort's own parameter") {
+    // `sort Iterable { sort C = ?  sort Element = ? … operation iterator(c: C) ->
+    // Stream[c.Element, c.E] }` (the stdlib's own line since this ticket) writes its
+    // result in the carrier's terms; inside the spec that carrier's `Element` is the
+    // spec's own, and the Scala trait's. Asserted as equality with the twin that writes
+    // the parameter directly.
+    //
+    // FAILS WHEN BACKED OUT, MEASURED: without `TypeScope.projection`'s carrier arm the
+    // projection is refused — "whose declared type `C` is not a bare occurrence of the
+    // enclosing sort" — here, and for `iterable.anthill` in seven corpus rows.
+    def spec(ret: String) =
+      s"""namespace anthill.wi80zv8
+         |  sort Walk
+         |    sort C = ?
+         |    sort Element = ?
+         |    operation first(c: C) -> $ret
+         |  end
+         |end
+         |""".stripMargin
+    val projected = gen(parseSource(spec("c.Element"), "projected.anthill"))
+    val direct = gen(parseSource(spec("Element"), "direct.anthill"))
+    assert(projected.nonEmpty, "expected an emission to compare")
+    assertEquals(projected.map(f => (f.relPath, f.contents)),
+      direct.map(f => (f.relPath, f.contents)))
+    val src = projected.map(_.contents).mkString("\n")
+    assert(src.contains("def first(c: C): Element"), s"expected `def first(c: C): Element` in:\n$src")
+    // CONTROL — only the CARRIER parameter. A receiver typed by another parameter is an
+    // element with no instance to be read at, and stays refused. Passes either way.
+    val element = intercept[BootstrapError](gen(parseSource(
+      """namespace anthill.wi80zv8
+        |  sort Walk
+        |    sort C = ?
+        |    sort Element = ?
+        |    operation first(c: C) -> Element
+        |    operation bad(c: C, e: Element) -> e.C
+        |  end
+        |end
+        |""".stripMargin, "element.anthill")))
+    assert(element.getMessage.contains("nor that sort's carrier parameter"),
+      s"a receiver typed by a non-carrier parameter has no tie: ${element.getMessage}")
+    // CONTROL — and a sort that receives on ITSELF has no carrier parameter at all: its
+    // `T` is an element, whatever position it is declared in (rustland's
+    // `spec_is_self_representing` gate, `wi_80zv8_sibling_call_test`). Passes either way.
+    val selfReceiving = intercept[BootstrapError](gen(parseSource(
+      """namespace anthill.wi80zv8
+        |  sort Stack
+        |    sort T = ?
+        |    entity stack(top: T)
+        |    operation push(s: Self, x: T) -> Self
+        |    operation odd(x: T) -> x.T
+        |  end
+        |end
+        |""".stripMargin, "stack.anthill")))
+    assert(selfReceiving.getMessage.contains("nor that sort's carrier parameter"),
+      s"a self-receiving sort's element has no tie: ${selfReceiving.getMessage}")
+  }
+
+  test("WI-20261001-80ZV8: inside a scalar's own sort `Self` is the host carrier, as its name is") {
+    // The one inversion of `TypeScope.place`'s order (WI-1021): a scalar's name denotes
+    // the HOST carrier everywhere, including inside the sort that declares it. `Self`
+    // is read through the sort's own name, so it cannot place differently.
+    //
+    // FAILS WHEN BACKED OUT, MEASURED, and it is the only row that does: send `Self`
+    // straight to `Placement.Enclosing` and it names the empty trait the file emits
+    // where the sort's name is `Long`.
+    def scalar(self: String) =
+      s"""namespace anthill.wi80zv8
+         |  sort Int64
+         |    operation twice(a: $self) -> $self
+         |  end
+         |end
+         |""".stripMargin
+    val withSelf = gen(parseSource(scalar("Self"), "self.anthill"))
+    val withName = gen(parseSource(scalar("Int64"), "name.anthill"))
+    assert(withSelf.nonEmpty, "expected an emission to compare")
+    assertEquals(withSelf.map(f => (f.relPath, f.contents)),
+      withName.map(f => (f.relPath, f.contents)))
+    val src = withSelf.map(_.contents).mkString("\n")
+    assert(src.contains("def twice(a: _root_.scala.Long): _root_.scala.Long"),
+      s"expected the host carrier in:\n$src")
+  }
+
+  test("WI-20261001-80ZV8: `Self` outside a sort, and `Self` with bindings, are refused") {
+    val outside = intercept[BootstrapError](gen(parseSource(
+      """namespace anthill.wi80zv8
+        |  operation f(a: Self) -> Int64
+        |end
+        |""".stripMargin, "outside.anthill")))
+    assert(outside.getMessage.contains("`Self` is the sort a declaration is written in"),
+      s"expected the outside-a-sort refusal, got: ${outside.getMessage}")
+    // FAILS WHEN BACKED OUT, MEASURED, this half alone: without `TypeGen.named`'s check
+    // `Self[V = Int64]` is rendered as the application of the sort's own name, which the
+    // loader refuses.
+    val bound = intercept[BootstrapError](gen(parseSource(
+      """namespace anthill.wi80zv8
+        |  sort Cell
+        |    sort V = ?
+        |    operation get(c: Self[V = Int64]) -> Int64
+        |  end
+        |end
+        |""".stripMargin, "bound.anthill")))
+    assert(bound.getMessage.contains("takes no bindings"),
+      s"expected the bindings refusal, got: ${bound.getMessage}")
+  }
+
   // ── WI-1021: which prelude names have a HOST counterpart, and which are the
   //    prelude's own emitted type ────────────────────────────────────────────
 

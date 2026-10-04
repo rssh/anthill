@@ -625,10 +625,10 @@ pub(super) fn mask_projections(kb: &mut KnowledgeBase, ty: &Value) -> Value {
 /// tie — shared by the operation-call and constructor checkers. Scans the
 /// per-var contradiction details recorded during argument/field unification;
 /// a conflict on one of `owner_sort`'s OWN canonical param vars is an error
-/// unless (a) its prior binding is one of the `exempt_rigids` (the WI-424
-/// seeded body rigids — a same-sort sibling call at a different instance
-/// keeps its pre-WI-374 acceptance; enforcing the rigid tie is a separate
-/// decision), or (b) the pair RE-UNIFIES through the real relation (bare
+/// unless (a) its prior binding is one of the `exempt_rigids` (the body's own
+/// rigids, which an argument typed at this instance binds — a same-sort sibling
+/// call at a different instance keeps its pre-WI-374 acceptance; enforcing the
+/// rigid tie is a separate decision), or (b) the pair RE-UNIFIES through the real relation (bare
 /// `List` vs `List[T = Int64]`, wildcards, equal rows in different
 /// carriers/orders are refinement — raw bind-level inequality over-reports).
 /// A FOREIGN sort's var conflicting through two foreign-typed positions is

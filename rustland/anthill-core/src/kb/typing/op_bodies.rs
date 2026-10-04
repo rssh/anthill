@@ -93,10 +93,11 @@ pub(super) fn check_operation_bodies(
         // abstract exactly like the op's own. The rigid asymmetry is what makes
         // the member-body threading land: a sibling call's flexible params solve
         // TO the rigids (a `Rigid` is never bound), so `iterator(c)`'s return
-        // `Stream[Element, E]` carries the enclosing rigids through to an inner
-        // `Stream.find`'s `[Elem, Eff]` and to the declared-effects check. The
-        // (vid → rigid) map rides `OpInfo` onto the body env for the same-sort
-        // sibling-call seeding in `check_apply_iter`.
+        // carries the enclosing rigids through to an inner `Stream.find`'s
+        // `[Elem, Eff]` and to the declared-effects check. The (vid → rigid) map
+        // rides `OpInfo` onto the body env for a sibling call's placement at this
+        // instance in `check_apply_iter` — after its arguments, where WI-424 seeded
+        // before them (WI-20261001-80ZV8, `place_sibling_call_at_callers_instance`).
         // WI-657(10): resolve the enclosing sort once; reused below for both
         // `parent_sort_params` and the `OpInfo.parent_sym` the body loop reads.
         let parent_of_op = impl_parent_of_op(kb, rec.op_sym);

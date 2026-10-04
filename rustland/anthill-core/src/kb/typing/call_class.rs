@@ -548,6 +548,50 @@ pub(crate) fn op_is_interpretable(kb: &KnowledgeBase, op: Symbol) -> bool {
     kb.is_interpreter_mapped_op(op) || op_has_runnable_body(kb, op)
 }
 
+/// WI-20261001-80ZV8 — WHERE A [`CallClass::ConcreteApplyWithin`] CALLEE'S FRAME COMES
+/// FROM: the sort-level requirement dictionaries its body reads by `__req_*` name.
+///
+/// ONE VALUE, THREE ANSWERS, because they exclude one another. It was a `dispatch_dict:
+/// Option<TermId>` field with the inherit INFERRED at eval — "no dictionary, and the
+/// callee's parent is the enclosing sort" — and that inference cannot tell an instance
+/// from its sort: MEASURED inside `sort Box requires Tag[T = T]`, a sibling call
+/// `tagIn(other)` over an `other: Box[T = B]` was handed the dictionaries of the `Box[T =
+/// A]` it was made from and answered with `A`'s `Tag`. The typer has the call's
+/// substitution and decides; eval matches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CalleeFrame {
+    /// THE CALLER'S OWN FRAME: a call into the caller's sort, at the instance the caller
+    /// runs at, that carries no dictionary of its own. The callee's `__req_*` slots are
+    /// the caller's (WI-418) — same chain, same names, same instance. The common case
+    /// for multi-op bundles like anthill-todo's `Main`.
+    Inherited,
+    /// WI-415: the parent-bundle dispatching dict (`Dictionary(<resolved sub-reqs>, impl:
+    /// callee_parent)`), built at COMPILE stage by the typer where the call-site
+    /// substitution pinned what the callee's `requires` are about — a cross-sort /
+    /// no-enclosing-sort direct call such as `member(2, [1,2,3])` from a plain namespace,
+    /// a sibling call at ANOTHER instance of the sort, a call that selected a provider
+    /// (WI-841), or a dispatched call whose resolved tree constructs one (WI-829). Eval
+    /// installs it into the callee's frame via the same path an explicit `apply_within`
+    /// dict takes, with no requirement re-resolution at runtime.
+    Dict(TermId),
+    /// NOTHING IS HANDED OVER: no dictionary was built and the caller's frame is not the
+    /// callee's. The callee is entered with its op-scoped slots alone, and a slot of its
+    /// sort it reads is resolved from the value where a value can direct it, or raises.
+    Absent,
+}
+
+impl CalleeFrame {
+    /// The dictionary the typer built, where it built one. This is what the class's
+    /// `dispatch_dict: Option<TermId>` field was, and the name the notes across the
+    /// typer and eval still use for it.
+    pub fn dispatch_dict(self) -> Option<TermId> {
+        match self {
+            CalleeFrame::Dict(dict) => Some(dict),
+            CalleeFrame::Inherited | CalleeFrame::Absent => None,
+        }
+    }
+}
+
 /// WI-231 — per-call-site classification produced by the typer for
 /// consumption by the requirement-insertion pass (`kb/req_insertion.rs`).
 /// Each tagged apply site carries its `CallClass` on the apply
@@ -587,20 +631,9 @@ pub enum CallClass {
         spec_op_sym: Symbol,
         enclosing_sort: Option<Symbol>,
         resolved_tree: Option<ResolvedRequiresNode>,
-        /// WI-415: the parent-bundle dispatching dict
-        /// (`Dictionary(<resolved sub-reqs>, impl: callee_parent)`),
-        /// built at COMPILE stage by the typer when the call-site
-        /// substitution pinned the callee parent sort's type params
-        /// concretely — a cross-sort / no-enclosing-sort direct call such
-        /// as `member(2, [1,2,3])` from a plain namespace, where the
-        /// same-sort requirement-inheritance path cannot supply the
-        /// callee's `requires`. Eval installs it into the callee's frame
-        /// via the same path an explicit `apply_within` dict takes, with
-        /// no requirement re-resolution at runtime. `None` when no param
-        /// binds concretely (an in-sort call inherits the enclosing frame's
-        /// requirement at eval; a cross-sort abstract call has no covering
-        /// requirement — a pre-existing gap) and for the Pin-now path.
-        dispatch_dict: Option<TermId>,
+        /// Where the callee's frame of sort-level dictionaries comes from — the
+        /// typer's decision, which eval follows. See [`CalleeFrame`].
+        frame: CalleeFrame,
         /// WI-822 LEG 1 — one entry per OP-SCOPED `requires` slot of
         /// `fn_target_sym` (WI-448/WI-562), in op-chain order, each the
         /// dictionary expression that fills it: a constructed
@@ -611,7 +644,7 @@ pub enum CallClass {
         /// [`build_op_scoped_dicts`]). EMPTY for an operation that declares no
         /// `requires` of its own, which is nearly all of them.
         ///
-        /// SEPARATE from `dispatch_dict`, not folded into it: that one is a spec
+        /// SEPARATE from the [`CalleeFrame::Dict`] above, not folded into it: that one is a spec
         /// INSTANCE and these are this CALL's evidence for this OPERATION. Eval
         /// appends them to the frame AFTER the sort half, matching the slot order
         /// [`op_dict_entries`] lays out.

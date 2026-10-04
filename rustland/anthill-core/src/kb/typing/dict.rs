@@ -1302,7 +1302,7 @@ pub(super) fn build_concrete_dispatch_dict(
     if caller_sort == Some(callee_spec_sort)
         && !pins_this_chain
         && frame_serves_callee(caller_requires, abstract_chain.provision())
-        && inherit_answers_every_forward(
+        && call_is_at_callers_instance(
             kb,
             callee_spec_sort,
             &SigmaCtx {

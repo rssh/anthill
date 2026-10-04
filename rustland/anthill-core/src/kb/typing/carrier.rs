@@ -1435,7 +1435,7 @@ pub(super) fn enclosing_requires_licensing_clause(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     pos_results: &[Result<TypeResult, TypeError>],
     named_results: &[Result<TypeResult, TypeError>],
-) -> Option<Vec<(VarId, TermId)>> {
+) -> Option<LicensingClause> {
     // Cheapest gates first — this runs on every call whose carrier-param classification
     // declined, and most of those are free ops with no enclosing sort at all.
     let encl = env.enclosing_sort()?;
@@ -1543,9 +1543,23 @@ pub(super) fn enclosing_requires_licensing_clause(
                 out.push((spec_vid, r));
             }
         }
-        return Some(out);
+        return Some(LicensingClause {
+            carrier: recv_carrier,
+            bindings: out,
+        });
     }
     None
+}
+
+/// The enclosing sort's `requires Spec[C = P, …]` clause that licenses a call on its
+/// parameter `P` ([`enclosing_requires_licensing_clause`]).
+pub(super) struct LicensingClause {
+    /// The receiver's carrier — `P`'s body rigid, which the clause's own carrier binding
+    /// resolved to.
+    pub(super) carrier: TermId,
+    /// What the clause binds the spec's OTHER parameters to, each by its canonical
+    /// variable: an enclosing parameter's body rigid, or a ground type.
+    pub(super) bindings: Vec<(VarId, TermId)>,
 }
 
 /// WI-20260918-R541X (A) / WI-20260919-H20YY — THE SOLE `requires` ENTRY OVER `spec` in
@@ -1617,8 +1631,10 @@ pub(super) fn sole_chain_entry_over_spec(
 ///   * TWO clauses over the callee's sort. No rule picks between `requires TypeTerm[T = P],
 ///     TypeTerm[T = Q]`, so neither is taken.
 ///   * a call that pinned ANY of the sort's parameters — an argument, a bracket,
-///     `expected`, the WI-424 same-sort seeding. Such a call names an instance of its own,
-///     which the clause need not be about (see the site for the measured case).
+///     `expected`, or a sibling call's placement at its caller's instance
+///     ([`place_sibling_call_at_callers_instance`], which runs just before this). Such a
+///     call names an instance of its own, which the clause need not be about (see the site
+///     for the measured case).
 ///   * a clause value that is neither an enclosing parameter (resolved to its BODY RIGID —
 ///     a clause is stored against the declared symbols, the body sees the rigids) nor a
 ///     ground type. Same resolution as WI-590's, by symbol identity.
@@ -1750,7 +1766,7 @@ fn clause_named_op_type_param(kb: &KnowledgeBase, t: TermId, own: &[VarId]) -> O
 ///
 /// FOUR THINGS IT WILL NOT DO, each leaving the loud `unconstrained` rather than a guess:
 ///   * bind a parameter the call already pinned. A written bracket ([`seed_op_type_args`],
-///     which runs above) outranks a clause, and so does the WI-424 same-sort rigid seeding;
+///     which runs above) outranks a clause;
 ///     this sits beside the WI-367/424 carrier grounding, above the `expected` seeding, for
 ///     the reason WI-367 states — a caller's return claim is not evidence about the carrier.
 ///     The skip is NOT INDEPENDENTLY DRIVABLE and says so here rather than claiming a
@@ -2324,7 +2340,7 @@ pub(super) fn parameterized_vid_bindings(
 /// descend the specs `carrier_sym` provides, find one that (transitively) provides
 /// `spec_sort`, and compose its view back through the carrier→intermediate hop via
 /// [`compose_provision_views`]. `visited` guards a cyclic `provides` chain.
-fn transitive_provider_spec_view_bindings(
+pub(super) fn transitive_provider_spec_view_bindings(
     kb: &KnowledgeBase,
     carrier_sym: Symbol,
     spec_sort: Symbol,

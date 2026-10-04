@@ -331,34 +331,21 @@ pub(super) fn check_apply_iter(
         // WI-20260911-RS2G4 (058 rule 1, the SORT half of the BINDING) — and the
         // receiver bracket, which writes the SAME channel. See
         // [`seed_receiver_type_args`] for why it is here and not at the W6JH0 result arm
-        // below: form (3) has to read as the callee bracket, including its diagnostics,
-        // and a WRITTEN receiver must beat the WI-424 rigid fill immediately following.
+        // below: form (3) has to read as the callee bracket, including its diagnostics.
         seed_receiver_type_args(kb, &mut subst, env, occ, callee_parent_sort, fn_sym, span)?;
-        // WI-424: a SAME-SORT sibling call inside a member body shares the
-        // enclosing instance's sort params — seed the callee's canonical param
-        // vars with the body's rigids (the WI-392 skolems, extended to sort
-        // params) BEFORE argument unification. The callee's signature references
-        // the same canonical vars, so its return/effects then thread the
-        // enclosing instance: `iterator(c)` inside `Iterable.find` returns
-        // `Stream[Element, E]` at the body's rigids rather than dangling vars.
-        // Within the sort's own definition this is exactly the parametricity tie
-        // (type-parameter-scoping.md §3) — `C`/`Element`/`E` denote ONE instance
-        // across all members; a different-instance argument is correctly
-        // rejected against the rigid.
-        if !env.enclosing_instance_param_rigids().is_empty() {
-            let same_sort = impl_parent_of_op(kb, fn_sym)
-                .zip(env.enclosing_sort())
-                .is_some_and(|(callee_parent, enclosing)| {
-                    kb.canonical_sort_sym(callee_parent) == kb.canonical_sort_sym(enclosing)
-                });
-            if same_sort {
-                for (vid, rigid) in env.enclosing_instance_param_rigids().iter() {
-                    if subst.resolve_as_value(*vid).is_none() {
-                        subst.bind_term(kb, *vid, *rigid);
-                    }
-                }
-            }
-        }
+        // WI-20261001-80ZV8 (proposal 070 §3, stage c) — NO SAME-SORT FILL HERE. A sibling
+        // call inside a member used to have the callee's sort parameters seeded at this
+        // point with the body's rigids, before its arguments were read (WI-424): the
+        // call-side half of the self tie. With a receiver written `Self` it refused a
+        // sibling call at ANOTHER instance — `List.mapElems` calling `reverse(xs: Self)` at
+        // `Dst`: `expected List[T = ?T], got List[T = ?Dst]` (MEASURED) — which is why it
+        // goes with the migration. A sort's parameters are type parameters of each of its
+        // operations (§1.1) and are fixed per call like any other: by the bracket above, by
+        // the arguments, by the expected type. What they leave open is decided AFTER them
+        // ([`place_sibling_call_at_callers_instance`], below the `expected` seeding), and
+        // what a spec's member needs of ITS OWN instance before that — to read an argument
+        // against — is written in the callee's signature and read off the receiver:
+        // `iterator(c: C) -> Stream[c.Element, c.E]`, [`this_instance_member`].
         // WI-367: a self-receiver spec op consumed on a CONCRETE carrier takes
         // its element type-params from that carrier — the receiver argument is
         // the ground truth for the element. Bind them BEFORE the WI-270
@@ -499,7 +486,9 @@ pub(super) fn check_apply_iter(
                 None => bind_spec_params_from_enclosing_requires(
                     kb,
                     &mut subst,
-                    enclosing_requires_clause.as_deref(),
+                    enclosing_requires_clause
+                        .as_ref()
+                        .map(|clause| clause.bindings.as_slice()),
                 ),
             },
         };
@@ -769,6 +758,30 @@ pub(super) fn check_apply_iter(
         let projection_receivers =
             projection_receivers(kb, &subst, &written_params, &param_to_arg_type, fn_sym);
         let mut effective_param_types: HashMap<Symbol, Value> = HashMap::new();
+        // WI-20261001-80ZV8: a projection off a receiver whose type is one of the body's own
+        // PARAMETERS has an instance to be read at, and the call knows which — the spec the
+        // body is written in, for its own carrier ([`this_instance_member`]), or the
+        // enclosing sort's `requires` clause about that parameter
+        // ([`required_instance_member`]). Tried before the call's ordinary reading, in the
+        // parameters and in the return alike.
+        let own_spec = callee_parent_sort.filter(|callee| {
+            env.enclosing_sort()
+                .is_some_and(|enclosing| same_sort_canonical(kb, *callee, enclosing))
+        });
+        let this_instance =
+            |kb: &mut KnowledgeBase, _receiver: &Value, recv_ty: &Value, member: Symbol| {
+                own_spec
+                    .and_then(|spec| this_instance_member(kb, env, spec, recv_ty, member))
+                    .or_else(|| {
+                        required_instance_member(
+                            kb,
+                            callee_parent_sort?,
+                            enclosing_requires_clause.as_ref()?,
+                            recv_ty,
+                            member,
+                        )
+                    })
+            };
         // Each argument that is a VALUE PATH — a variable, a field path, a `let` alias read as
         // the path it names — by the parameter it binds: what a neutral projection off that
         // parameter is re-keyed to ([`rekeyed_neutral`]), so `k: s.provider.K` at `check(w.st,
@@ -811,6 +824,7 @@ pub(super) fn check_apply_iter(
                     denoted_syms,
                     arg_paths: Some(&arg_paths),
                     selections: &selections,
+                    reading: Some(&this_instance),
                     ..Discharge::new(&projection_receivers, &ctx, span)
                 }
                 .eliminate(kb, param_type)?;
@@ -1082,10 +1096,12 @@ pub(super) fn check_apply_iter(
         //    on §3-bullet-2 foreign refs;
         //  - EVERY per-var detail is scanned (a single first-detail would let
         //    an earlier benign foreign conflict mask a member violation);
-        //  - a conflict whose prior binding is the body's WI-424 seeded rigid
-        //    is exempt — a same-sort sibling call at a different instance
-        //    keeps its pre-WI-374 acceptance (enforcing the rigid tie is a
-        //    separate decision);
+        //  - a conflict whose prior binding is the body's own rigid is exempt —
+        //    a same-sort sibling call at a different instance keeps its
+        //    pre-WI-374 acceptance. That prior was WI-424's seeded value until
+        //    WI-20261001-80ZV8 deleted the seeding; it is now what an argument
+        //    typed at this instance binds, and the argument conformance check
+        //    is what reports a second argument at another instance;
         //  - a UNIFIABLE pair (bare `List` vs `List[T = Int64]`, a `?_`
         //    wildcard vs a concrete, equal rows in different carriers/orders)
         //    is refinement, not violation — bind-level TermId/structural
@@ -1215,6 +1231,7 @@ pub(super) fn check_apply_iter(
                 row_syms: returned_rows.as_ref(),
                 arg_paths: Some(&arg_paths),
                 selections: &selections,
+                reading: Some(&this_instance),
                 ..Discharge::new(&projection_receivers, &ret_ctx, span)
             };
             let eliminated = cx.eliminate(kb, &op.return_type).and_then(|rt| {
@@ -1519,6 +1536,12 @@ pub(super) fn check_apply_iter(
         if let Some(exp) = &expected {
             unify_types(kb, &mut subst, &proj_return_type, exp);
         }
+
+        // WI-20261001-80ZV8 — a SIBLING call the bracket, the arguments and `expected` left
+        // at no other instance is at this one. BEFORE the clause-driven fill just below,
+        // which declines a call that pinned any parameter: while WI-424 seeded a sibling
+        // call first that fill never saw one open, and it still does not.
+        place_sibling_call_at_callers_instance(kb, &mut subst, env, callee_parent_sort);
 
         // WI-20260918-R541X (A) — what is STILL free after the arguments and `expected`,
         // the enclosing scope's own `requires` clause over the callee's sort may decide.
@@ -3945,6 +3968,23 @@ pub(super) fn check_apply_iter(
                             env.enclosing_dict_chain(),
                             callee_frame_key(kb, fn_sym),
                         );
+                    // WI-20261001-80ZV8 — …AND THE CALLER'S FRAME IS THE CALLEE'S ONLY AT
+                    // THE CALLER'S INSTANCE. A sibling call at another instance of the sort
+                    // owes its callee that instance's dictionaries, so it is supplied as a
+                    // call from another sort is — built below from what the call fixed, or
+                    // refused — and is never handed the frame it was made from. Decided
+                    // here, where σ is alive, and RECORDED in the class: eval used to infer
+                    // the inherit from "same sort and no dictionary", which cannot tell an
+                    // instance from its sort. See [`call_is_at_callers_instance`].
+                    let at_callers_instance = enclosing_sort == Some(parent_sym)
+                        && call_is_at_callers_instance(
+                            kb,
+                            parent_sym,
+                            &SigmaCtx {
+                                subst: &subst,
+                                param_rigids: env.param_rigids(),
+                            },
+                        );
                     // WI-20260921-159S9 — **THE WHOLE FRAME, UNCONDITIONALLY: a slot
                     // declared on the OPERATION is as good as one declared on its SORT.**
                     //
@@ -4012,6 +4052,19 @@ pub(super) fn check_apply_iter(
                     // subsumed by a general rule is the shape 3G1YT was closing. EE0EP's
                     // own rows are what say the subsumption holds, and they are run.
                     let caller_requires = env.enclosing_frame_chain().clone();
+                    // WI-20261001-80ZV8 — A SIBLING CALL AT ANOTHER INSTANCE READS THE
+                    // CALLER'S CLAUSES AT THE CALLER'S INSTANCE. Callee and caller are one
+                    // sort, so `requires Tag[T = T]` names ONE variable for both, and σ
+                    // binds it for the callee: read through σ, the caller's own clause
+                    // answered as the callee's instance and covered a requirement it does
+                    // not hold. See [`chain_at_callers_instance`].
+                    let another_instance =
+                        enclosing_sort == Some(parent_sym) && !at_callers_instance;
+                    let caller_requires = if another_instance {
+                        chain_at_callers_instance(kb, &caller_requires, env.param_rigids())
+                    } else {
+                        caller_requires
+                    };
                     // WI-828: a σ-refused requirement is a LOAD diagnostic —
                     // classifying `dispatch_dict: None` here loaded clean and
                     // died at eval reading the unbound `__req_*`.
@@ -4140,7 +4193,7 @@ pub(super) fn check_apply_iter(
                         occ,
                         &subst,
                         fn_sym,
-                        env.enclosing_frame_chain(),
+                        &caller_requires,
                         env.param_rigids(),
                         &selections,
                         OpSlotParkSite::for_call(
@@ -4164,7 +4217,11 @@ pub(super) fn check_apply_iter(
                             spec_op_sym: fn_sym,
                             enclosing_sort,
                             resolved_tree: None,
-                            dispatch_dict,
+                            frame: match dispatch_dict {
+                                Some(dict) => CalleeFrame::Dict(dict),
+                                None if at_callers_instance => CalleeFrame::Inherited,
+                                None => CalleeFrame::Absent,
+                            },
                             enclosing_op: env.enclosing_op(),
                         },
                     );

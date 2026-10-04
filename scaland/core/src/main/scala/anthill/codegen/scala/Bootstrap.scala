@@ -849,10 +849,38 @@ object Bootstrap:
       p.anthillName ->
         (if p.isEffect then ParamBinding.Effect
          else ParamBinding.Scala(p.scalaName, p.members.length)))
+    val ops = declaredOps(sort.items)
+    // WHAT THE SORT'S OPERATIONS RECEIVE ON, asked ONCE and before the scope exists:
+    // the scope needs it to place a projection off a receiver of that type
+    // ([[EnclosingSort.carrier]], WI-20261001-80ZV8), and [[requiresMapping]] needs it to
+    // sort the anonymous requirements into `extends` and `using`.
+    //
+    // A WITNESS SLOT IS NOT A CARRIER CANDIDATE (WI-1022), and the parameter list has to
+    // be filtered before [[carrierOf]] reads its head: a named slot is a parameter the
+    // AUTHOR introduced to hold a chosen provider (058 §4.7), never the thing the sort's
+    // operations are an algebra over. Written before the sort's own `sort T = ?` it would
+    // otherwise BE the head, and every anonymous requirement of that sort would then be
+    // judged against the wrong carrier — silently, since both answers emit. No corpus
+    // sort writes the shape; a fixture drives it. The slots are read off the declarations
+    // here, the rendered requirements not existing yet — the same `RequiresDeclItem`s.
+    val witnesses = sort.items.collect {
+      case Item.RequiresDeclItem(r) => r.binder.map(b => sym.name(b.last))
+    }.flatten.toSet
+    // `typeParams` and not `written`: the carrier is chosen from the parameters that
+    // SURVIVE erasure, through the one reading of which those are (`keepTypeArgs`).
+    // Reading `written` and filtering it again here would be a second answer to that
+    // question, and a parameter kind that erases for some new reason would make the
+    // two disagree — the carrier would name a binder the emitted type does not have.
+    val carrier = carrierOf(sym, sym.name(sort.name.last), effectivePkg,
+      typeParams.filterNot(p => witnesses.contains(p.anthillName)), ops)
+    val carrierParam = carrier match
+      case Carrier.Param(name) => Some(name)
+      case Carrier.TheSort(_) => None
     val scope = env.scopeAt(
       s"sort `${sym.name(sort.name.last)}`", sort.name.span, effectivePkg,
       importedNames(sym, sort.imports, outerImports),
-      enclosing = Some(EnclosingSort(sym.name(sort.name.last), sortName, binders)),
+      enclosing = Some(
+        EnclosingSort(sym.name(sort.name.last), sortName, binders, carrierParam)),
       params = binders.toMap)
     val requires = sort.items.collect {
       case Item.RequiresDeclItem(r) =>
@@ -895,15 +923,9 @@ object Bootstrap:
     val tpStr =
       if typeParams.isEmpty then ""
       else typeParams.map(_.declWith(bounds)).mkString("[", ", ", "]")
-    val ops = declaredOps(sort.items)
     val shape = shapeOf(sym, sort.name, sort.items.collect { case Item.EntityItem(e) => e })
-    // `typeParams` and not `written`: the carrier is chosen from the parameters that
-    // SURVIVE erasure, through the one reading of which those are (`keepTypeArgs`).
-    // Reading `written` and filtering it again here would be a second answer to that
-    // question, and a parameter kind that erases for some new reason would make the
-    // two disagree — the carrier would name a binder the emitted type does not have.
     val req = requiresMapping(
-      sym, sym.name(sort.name.last), shape, typeParams, ops, requires, conversions, scope,
+      sym, sym.name(sort.name.last), shape, carrier, ops, requires, conversions, scope,
       env.specMembers)
 
     // Rules + constraints are NOT emitted from bootstrap. Their bodies
@@ -1112,8 +1134,8 @@ object Bootstrap:
     * `checkDischarged` is asked only about the anonymous ones.
     */
   private def requiresMapping(
-    sym: SymbolTable, sortLeaf: String, shape: SortShape,
-    typeParams: IndexedSeq[TypeParamDecl], ops: IndexedSeq[Operation],
+    sym: SymbolTable, sortLeaf: String, shape: SortShape, carrier: Carrier,
+    ops: IndexedSeq[Operation],
     requires: IndexedSeq[SortRequirement], conversions: IndexedSeq[SortRequirement],
     scope: TypeScope, specMembers: Map[String, Set[String]]
   ): RequiresMapping =
@@ -1127,19 +1149,10 @@ object Bootstrap:
       // VALUE and not only the bodies), and `checkDischarged` is what says so.
       val (supertraits, note, evidence) = shape match
         case SortShape.Algebra =>
-          // A WITNESS SLOT IS NOT A CARRIER CANDIDATE (WI-1022), and the parameter
-          // list has to be filtered before [[carrierOf]] reads its head: a named slot
-          // is a parameter the AUTHOR introduced to hold a chosen provider (058
-          // §4.7), never the thing the sort's operations are an algebra over. Written
-          // before the sort's own `sort T = ?` it would otherwise BE the head, and
-          // every anonymous requirement of that sort would then be judged against the
-          // wrong carrier — silently, since both answers emit. No corpus sort writes
-          // the shape; a fixture drives it.
-          val witnesses = requires.flatMap(_.decl.binder).map(b => sym.name(b.last)).toSet
-          val carrier = carrierOf(sym, sortLeaf, scope.writtenIn,
-            typeParams.filterNot(p => witnesses.contains(p.anthillName)), ops)
+          // `carrier` is the sort's, asked once by [[emitSort]] with the witness slots
+          // already left out of the candidates (WI-1022) — see there.
           val (overCarrier, notOverCarrier) =
-            anonymous.partition(r => isOverCarrier(sym, r, carrier))
+            anonymous.partition(r => isOverCarrier(sym, r, carrier, selfNames(scope)))
           val (shadowed, kept) = overCarrier.partitionMap { r =>
             val members = shadowedMemberNames(sym, r, ops, specMembers)
             if members.nonEmpty then Left((r, members)) else Right(r)
@@ -1303,6 +1316,12 @@ object Bootstrap:
       sym.name(n.last) == sortLeaf &&
         (n.isSimple || Names.scalaPackagePath(n.segments.dropRight(1).map(sym.name)) == sortPkg)
     te match
+      // WI-20261001-80ZV8: `s: Self` IS a receiver of the declaring sort (proposal 070
+      // §1.2). Read by the leaf alone, a sort whose operations all write `Self` was
+      // taken to receive on nothing, its carrier became its first parameter, and its
+      // `requires Eq[T]` an `extends` — MEASURED on a stdlib migrated to `Self`: `trait
+      // Set[T] extends Eq[T]`.
+      case TypeExpr.Simple(n) if n.isSimple && sym.name(n.last) == Names.SelfTypeName => true
       // Deliberately blind to the ARGUMENTS — `s: Set` and `s: Set[T = X]` are both a
       // receiver of `Set`.
       case TypeExpr.Simple(n) => matches(n)
@@ -1349,12 +1368,21 @@ object Bootstrap:
     * unchecked — the same blind spot every ambient name has.
     */
   private def isOverCarrier(
-    sym: SymbolTable, req: SortRequirement, carrier: Carrier
+    sym: SymbolTable, req: SortRequirement, carrier: Carrier, self: Set[String]
   ): Boolean =
     val args = writtenArguments(req)
     args.isEmpty ||
-      args.foldLeft(Set.empty[String])((acc, a) => acc ++ namesIn(sym, a))
+      args.foldLeft(Set.empty[String])((acc, a) => acc ++ namesIn(sym, a, self))
         .contains(carrier.mentionName)
+
+  /** What `Self` is to [[namesIn]] in `scope` (WI-20261001-80ZV8): the enclosing sort's
+    * own LEAF, and nothing else — exactly what a bare mention of that name contributes,
+    * so a sort written with `Self` and one written with its own name are read alike and
+    * emit alike. (The written form `Cell[V = V]` would also mention `V`; a bare mention
+    * never has, and `Self` replaces the bare mention.) Empty outside a sort, where `Self`
+    * is refused by [[TypeScope]] before any reader of this could be asked about it. */
+  private def selfNames(scope: TypeScope): Set[String] =
+    scope.enclosing.map(_.anthillName).toSet
 
   /** The arguments a `requires` writes, or none where it writes a bare name.
     *
@@ -1599,7 +1627,7 @@ object Bootstrap:
           // `case class` always needs its `()`.
           if c.fields.isEmpty && typeParams.isEmpty then sb ++= s"  case $cName\n"
           else
-            val uncovered = uncoveredParams(sym, c, typeParams)
+            val uncovered = uncoveredParams(sym, c, typeParams, selfNames(scope))
             if uncovered.isEmpty then sb ++= s"  case $cName($fields)\n"
             else
               val parent = enumParent(cName, sortName, packagePath, c.name.span)
@@ -1687,25 +1715,31 @@ object Bootstrap:
     * the sort's own.
     */
   private def uncoveredParams(
-    sym: SymbolTable, ctor: Entity, typeParams: IndexedSeq[TypeParamDecl]
+    sym: SymbolTable, ctor: Entity, typeParams: IndexedSeq[TypeParamDecl], self: Set[String]
   ): Set[String] =
     val mentioned = ctor.fields.foldLeft(Set.empty[String])((acc, f) =>
-      acc ++ namesIn(sym, f.ty))
+      acc ++ namesIn(sym, f.ty, self))
     typeParams.map(_.anthillName).toSet -- mentioned
 
   /** Every type name written anywhere inside a type expression. Over-approximates
-    * on purpose — a name that is not a parameter simply never matches. */
-  private def namesIn(sym: SymbolTable, te: TypeExpr): Set[String] = te match
+    * on purpose — a name that is not a parameter simply never matches.
+    *
+    * `Self` IS READ AS THE NAME IT STANDS FOR (WI-20261001-80ZV8): `self`, the enclosing
+    * sort's own leaf ([[selfNames]]). Collected as the word, a requirement written over
+    * `Self` — `requires Eq[T = Self]` — did not mention the sort, and was taken for
+    * evidence where its named twin is the supertrait. */
+  private def namesIn(sym: SymbolTable, te: TypeExpr, self: Set[String]): Set[String] = te match
+    case TypeExpr.Simple(n) if n.isSimple && sym.name(n.last) == Names.SelfTypeName => self
     case TypeExpr.Simple(n) => Set(sym.name(n.last))
     case TypeExpr.Parameterized(n, bindings) =>
-      bindings.foldLeft(Set(sym.name(n.last)))((acc, b) => acc ++ namesIn(sym, b.bound))
+      bindings.foldLeft(Set(sym.name(n.last)))((acc, b) => acc ++ namesIn(sym, b.bound, self))
     case TypeExpr.TupleType(fields) =>
-      fields.foldLeft(Set.empty[String])((acc, f) => acc ++ namesIn(sym, f._2))
+      fields.foldLeft(Set.empty[String])((acc, f) => acc ++ namesIn(sym, f._2, self))
     case TypeExpr.Arrow(params, ret, effects) =>
-      (params ++ effects :+ ret).foldLeft(Set.empty[String])((acc, t) => acc ++ namesIn(sym, t))
+      (params ++ effects :+ ret).foldLeft(Set.empty[String])((acc, t) => acc ++ namesIn(sym, t, self))
     case TypeExpr.EffectRow(effects) =>
-      effects.foldLeft(Set.empty[String])((acc, t) => acc ++ namesIn(sym, t))
-    case TypeExpr.EffectGuarded(label, _) => namesIn(sym, label)
+      effects.foldLeft(Set.empty[String])((acc, t) => acc ++ namesIn(sym, t, self))
+    case TypeExpr.EffectGuarded(label, _) => namesIn(sym, label, self)
     // A logical variable and a value-in-type name no type. Both are refused by
     // `TypeGen` before an emission gets this far, so neither can hide a mention.
     case TypeExpr.Variable(_, _) | TypeExpr.Denoted(_) => Set.empty

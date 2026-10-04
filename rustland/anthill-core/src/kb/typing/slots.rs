@@ -407,16 +407,14 @@ pub(super) fn receiver_bracket_entries(
 /// than a missing feature: with nothing else carrying `T`, `Box[T = Int64].empty()` in an
 /// `Option[T = Letter]` position typed as whatever the context wanted.
 ///
-/// EARLY — before the WI-424 rigid fill and the WI-367 carrier pass — for three reasons,
-/// in order of force:
+/// EARLY — before the WI-367 carrier pass — for two reasons, in order of force:
 ///  * form (3) then reads EXACTLY as the callee bracket, including its diagnostics. The
 ///    rows `Box.empty[T = Int64]()`, `Map.size[…](…)`, `Map.put[…](…)` refuse at
 ///    `op-return` / `op-type-params` / `op-arg`; the receiver spelling now refuses at the
 ///    same site with the same bytes, which is what keeps 035's three forms one meaning.
-///  * a WRITTEN receiver must beat WI-424's IMPLICIT rigid fill (WI-1082: a written slot
-///    is never rewritten). A sibling call at another instance — `Box[T = Int64].empty()`
-///    inside `sort Box[T]` — types at `Int64`; seeding after the fill would refuse it
-///    against the enclosing instance's rigid.
+///    (It also had to beat WI-424's implicit rigid fill of a same-sort sibling call,
+///    which followed it; WI-20261001-80ZV8 moved what is left of that fill below the
+///    arguments, where it yields to everything the call says.)
 ///  * the W6JH0 arm stays as the RESULT rule for a BARE self-sort return (`empty() ->
 ///    Map`, WI-1082's untied return). It now finds the receiver already agreeing, reports
 ///    nothing new, and its merge is untouched.
@@ -1179,32 +1177,134 @@ fn forwarded_binder(
     declared.then_some(bound)
 }
 
-/// WI-20260923-WN9P8 — may a SAME-SORT call inherit its caller's frame? The inherit hands
-/// the callee the caller's own dictionary for each of the sort's named slots, which is the
-/// forward only where the call binds each slot to ITS OWN parameter. A bracket may bind it
-/// to another: `ins[OE = P](s, x)` inside the sort that declares `OE` and a plain `P`.
-/// MEASURED (found by `/code-review`): that inherited `OE`'s dictionary and inserted a
-/// set typed `O = P` in `OE`'s order, on all three spellings. Where this answers `false`
-/// the caller builds a dictionary instead, and the forward rule answers each slot
-/// ([`project_forwarded_slot`]) or refuses it.
+/// WI-20261001-80ZV8 — WHERE A SAME-SORT CALL STANDS relative to the instance its caller
+/// runs at: the sort's parameters NOTHING at the call fixed, each beside the caller's rigid
+/// for it, or `None` when one of them places the call at ANOTHER instance.
 ///
-/// A slot bound to a WITNESS is not asked about here: that is a selection, and the
-/// callers already decline the inherit for one (`pins_this_chain`).
-pub(super) fn inherit_answers_every_forward(
+/// Each parameter is read through the call's substitution exactly as [`forwarded_binder`]
+/// reads a slot binder. Bound to the caller's OWN rigid for it, the call is here. Unbound,
+/// it is open. Bound to anything else — another parameter's rigid, a concrete type, a
+/// witness — the call is somewhere else, and one such parameter decides for the call.
+/// `rigids` is the caller's bridge for the sort's parameters.
+///
+/// TWO PARAMETERS THE CALL MADE ONE ARE ELSEWHERE TOO. Open is not always independent:
+/// the call may have unified two of the sort's parameters with each other and fixed
+/// neither, and an instance whose `F` and `G` are one type is not the caller's, where they
+/// are two rigids. Read one at a time each would look open, and placing the first would
+/// bind the second to the wrong rigid. MEASURED where it arises without anyone writing it:
+/// `sort Box[F[T], G[T]]`, `confused[A](a: A) -> F[T = A] = wrapG(a)` — the expected-type
+/// unification of `G[T = ?]` with `F[T = A]` FAILS on the functors and still leaves `G`'s
+/// variable bound to `F`'s (the relation does not roll back).
+fn open_params_at_callers_instance(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    rigids: &[(VarId, TermId)],
+) -> Option<SmallVec<[(TermId, TermId); 4]>> {
+    let mut open: SmallVec<[(TermId, TermId); 4]> = SmallVec::new();
+    for (vid, rigid) in rigids {
+        let var = type_param_var_term(kb, Var::Global(*vid));
+        let walked = walk_type_deep(kb, subst, var);
+        let bound = surface_node_binding_to_term(kb, subst, walked);
+        if bound == *rigid {
+            continue;
+        }
+        if !matches!(kb.get_term(bound), Term::Var(Var::Global(_))) {
+            return None;
+        }
+        if open.iter().any(|(other, _)| *other == bound) {
+            return None;
+        }
+        open.push((bound, *rigid));
+    }
+    Some(open)
+}
+
+/// WI-20261001-80ZV8 — may a SAME-SORT call read its caller's frame as its own (WI-418's
+/// inherit)? Only AT THE CALLER'S INSTANCE: the frame is the dictionaries of the instance
+/// the caller runs at, and a call the bracket, an argument or the expected type placed at
+/// another instance of the sort owes its callee THAT instance's.
+///
+/// The question had one answer while WI-424's fill pinned every sibling call to the
+/// enclosing instance before its arguments were read; only a bracket could move a call, and
+/// only for a named slot was that noticed (WI-20260923-WN9P8: `ins[OE = P](s, x)` inside the
+/// sort that declares `OE` inherited `OE`'s dictionary and inserted in the wrong order). The
+/// anonymous clause had the same hole — MEASURED on the parent commit, inside `sort Box
+/// requires Tag[T = T]`: `tagIn[T = D](other)` and `Box[T = D].tagIn(other)` both ran the
+/// CALLER's `Tag`, answering 1 for a value whose provider answers 2 — and with the fill gone
+/// a plain argument reaches it too. So the test is of the INSTANCE, every parameter of the
+/// sort, and a slot binder is one of them: where this answers `false` the caller builds a
+/// dictionary at the call's own instance, exactly as a call from another sort does, and the
+/// forward rule answers each named slot ([`project_forwarded_slot`]) or refuses it.
+///
+/// A parameter nothing fixed does not place the call anywhere, and reads as here: a direct
+/// call has by then been placed ([`place_sibling_call_at_callers_instance`]), and an eta'd
+/// reference the expected arrow says nothing about captures the frame it is minted in.
+pub(super) fn call_is_at_callers_instance(
     kb: &mut KnowledgeBase,
     sort: Symbol,
     ctx: &SigmaCtx,
 ) -> bool {
-    let slots = kb.named_requirement_slots(sort).to_vec();
-    slots
+    let params = sort_type_params_as_pairs(kb, sort);
+    let rigids: SmallVec<[(VarId, TermId); 4]> = ctx
+        .param_rigids
         .iter()
-        .all(|slot| match forwarded_binder(kb, sort, slot, ctx) {
-            None => true,
-            Some(bound) => {
-                let own = kb.type_param_sym_of(sort, kb.local_name_of(slot.binder));
-                own.is_some() && param_of_rigid(kb, bound, ctx) == own
-            }
+        .copied()
+        .filter(|(vid, _)| {
+            params.iter().any(
+                |(_, var)| matches!(kb.get_term(*var), Term::Var(Var::Global(v)) if v == vid),
+            )
         })
+        .collect();
+    open_params_at_callers_instance(kb, ctx.subst, &rigids).is_some()
+}
+
+/// WI-20261001-80ZV8 (proposal 070 §3, stage c) — A SIBLING CALL NOTHING PLACED ELSEWHERE IS
+/// AT THE CALLER'S INSTANCE: whatever of the callee's sort parameters the bracket, the
+/// arguments and the expected type left open is the enclosing instance's.
+///
+/// THIS IS WHAT IS LEFT OF WI-424'S FILL, and the difference is the order. The fill bound
+/// the callee's sort parameters to the body's rigids BEFORE the arguments were read, which
+/// made every sibling call a call at this instance and refused one at another — `List.
+/// mapElems` calling `reverse(xs: Self)` at `Dst`: `expected List[T = ?T], got List[T =
+/// ?Dst]` (MEASURED). Run AFTER them, it decides only what they did not: a call one
+/// parameter of which stands elsewhere is a call at another instance and is left alone
+/// (`None` above), every parameter of it fixed as any call fixes them (§1.1).
+///
+/// WHY NOT NOTHING AT ALL. A call that fixes no parameter — `step()` in a sort whose
+/// operations take no receiver, `rest()` under a constructor the expected type does not
+/// reach — would keep them open, and the evaluator hands such a call its caller's frame
+/// (`kernel-language.md` §8.1: it "inherits the enclosing frame's"). Open in the typer and
+/// this instance at run time is two answers: a later unification could place the result at
+/// another instance than the one whose dictionaries ran. Placed here, the two agree.
+pub(super) fn place_sibling_call_at_callers_instance(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    env: &TypingEnv,
+    callee_parent_sort: Option<Symbol>,
+) {
+    let rigids = env.enclosing_instance_param_rigids();
+    if rigids.is_empty() {
+        return;
+    }
+    let same_sort = callee_parent_sort
+        .zip(env.enclosing_sort())
+        .is_some_and(|(callee, enclosing)| same_sort_canonical(kb, callee, enclosing));
+    if !same_sort {
+        return;
+    }
+    let Some(open) = open_params_at_callers_instance(kb, subst, rigids) else {
+        return;
+    };
+    for (var, rigid) in open {
+        let placed = unify_types(kb, subst, &TermIdView(var), &TermIdView(rigid));
+        // An unbound variable and the rigid it stands for in this body: nothing known
+        // refuses the pair. Were one refused the parameter would stay open here while
+        // the callee still read its caller's frame — the disagreement this pass closes.
+        debug_assert!(
+            placed,
+            "a sibling call's open parameter could not be placed at the enclosing instance"
+        );
+    }
 }
 
 /// WI-20260923-WN9P8 — the path into `slot` whose dictionary answers a demand of spec

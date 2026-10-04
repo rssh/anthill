@@ -656,7 +656,8 @@ pub(super) fn spec_is_self_representing(kb: &KnowledgeBase, sort_sym: Symbol) ->
 ///     self-recursion such as `FilteredStream`'s `splitFirst(filtered(...))`) keeps
 ///     its static self-call — the receiver's type already singles out the impl, so
 ///     the spec-op dispatch would only `PinNow` back to it, and keeping the direct
-///     call leaves the WI-424 same-sort seeding / WI-413 effect threading untouched;
+///     call leaves the same-sort placement (WI-424, WI-20261001-80ZV8) / WI-413 effect
+///     threading untouched;
 ///   * the enclosing sort `provides Spec` and `Spec` declares an op of the same short
 ///     name (the spec op, distinct from `fn_sym`).
 /// The existing spec-op dispatch then resolves the impl by the receiver's static type
