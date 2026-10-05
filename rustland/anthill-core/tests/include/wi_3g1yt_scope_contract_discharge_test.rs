@@ -9,8 +9,10 @@
 //!
 //! THE POPULATION THAT MADE THE WALKS LOOK NECESSARY is the first row here: 29 stdlib
 //! bodies "declare a chain and never read it", the stdlib's generic consumers among them.
-//! Not one needed the excuse — they are OWED AND HELD, because the caller holds a value
-//! whose type carries the contract.
+//! The consumers did not need the excuse — they are OWED AND HELD, because the caller holds
+//! a value whose type carries the contract. Two that were held only by a value the call
+//! never mentions, `MappedStream.map` and `FilteredStream.filter`, were repaired by deleting
+//! the clause no body read (WI-20261005-2KV4Y).
 //!
 //! AND THE ROW THAT BOUNDS IT was written by a review pass over this very change, against
 //! a fixture the suite did not have: an UNRELATED value in scope must not decide a call
@@ -34,10 +36,12 @@ fn refusal(src: &str, why: &str) -> String {
 /// `FiniteCollection`'s own `requires Iterable[…]` is carried BY `c`'s type; the call
 /// `size(c)` owes that chain and holds it.
 ///
-/// MEASURED AS THE ROW THIS LEG CARRIES: backing out the chain leg of
-/// `scope_contract_covers_dep` (its `direct_requires_chain` walk) refuses exactly this
-/// shape and nothing else in the probe set — the provision leg beside it carries a
-/// disjoint population (`wi599`, `wi508`).
+/// MEASURED AS A ROW THE ROUTE CARRIES: with `scope_contract_covers_dep` answering "nothing
+/// is held", this row is refused — one of eighteen over the sixteen modules that exercise
+/// the route: fourteen held by a value, the consumers of this same shape among them
+/// (`n01py`, `x13yv`, the capability matrix), and the four `require[…]` bracket rows of
+/// `wi_x9pb4` and `wi_nx4fd` (RE-MEASURED, WI-20261005-2KV4Y; the call site of the cover in
+/// `typing/dict.rs` lists them).
 #[test]
 fn a_spec_typed_parameter_carries_its_spec_s_requires_chain() {
     const SRC: &str = r#"
@@ -56,7 +60,8 @@ end
 }
 
 /// **AN UNRELATED VALUE IN SCOPE MUST NOT DECIDE A CALL THE CALL ITSELF PINNED**, and
-/// this row exists because the first cut of route 4's provision leg got it wrong.
+/// this row exists because the first cut of route 4 had a second leg that got it wrong
+/// (the leg is gone since WI-20261005-2KV4Y, which refuses the unpinned twin of this row).
 ///
 /// FOUND BY `/code-review` OVER THIS TICKET'S OWN DIFF, and it FAILED when written. The
 /// leg replaced the dep's CARRIER with the holder's type unconditionally, so a
@@ -112,12 +117,13 @@ end
 /// Before WI-456 this program loaded clean and died
 /// `Internal(… __req_weakord not bound … frame binds [])`; route 4 must not re-admit it.
 ///
-/// MEASURED: with the obtainability gate removed, this row and both `wi456_no_scope_route`
-/// refusals went green-to-red together. Since WI-20260923-WN9P8 the program is refused
-/// first as a FORWARD of `insertA`'s own `O`, which the frame holds no dictionary for
-/// (`project_forwarded_slot`, before route 4 is asked). So the gate alone no longer
-/// reddens this row: it reddens with the gate and that forward rule backed out together,
-/// measured, and so do wi456's three no-route rows.
+/// MEASURED: with the rule that it is a SPEC which holds a chain removed
+/// (`sort_is_a_provided_spec`, once one arm of an "obtainability gate"), this row and both
+/// `wi456_no_scope_route` refusals went green-to-red together. Since WI-20260923-WN9P8 the
+/// program is refused first as a FORWARD of `insertA`'s own `O`, which the frame holds no
+/// dictionary for (`project_forwarded_slot`, before route 4 is asked). So that rule alone
+/// no longer reddens this row: it reddens with the rule and that forward rule backed out
+/// together, measured, and so do wi456's three no-route rows.
 #[test]
 fn a_carriers_own_requires_is_not_held_by_a_value_of_it() {
     const SRC: &str = r#"

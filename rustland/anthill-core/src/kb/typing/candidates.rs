@@ -507,12 +507,14 @@ pub(super) fn collect_provides_candidates(
 /// `impl_subst` is what [`candidate_provider_sub_goals`] instantiates the carrier's
 /// `requires` chain through, and it is built by matching the PROVISION HEAD against the
 /// goal. A head names only the parameters the spec is about, so every other parameter of
-/// the carrier stays a bare reference into the carrier's own declaration — and
-/// `MappedStream requires Iterable[C = Source, Element = Src, E = ES]` mentions three
-/// parameters that `provides Stream[T = T, E = {ES, EF}]` does not write. The sub-goal
-/// that reached the resolver was therefore `Iterable[C = MappedStream.Source, …]`, which
-/// asks about a PARAMETER; nothing provides that, and `Stream.splitFirst(mapped(xs,
-/// inc))` was refused for a receiver whose type is fully ground.
+/// the carrier stays a bare reference into the carrier's own declaration. The stdlib's
+/// `MappedStream` was the measured case: it declared `requires Iterable[C = Source,
+/// Element = Src, E = ES]`, three parameters that `provides Stream[T = T, E = {ES, EF}]`
+/// does not write, so the sub-goal that reached the resolver was `Iterable[C =
+/// MappedStream.Source, …]`, which asks about a PARAMETER; nothing provides that, and
+/// `Stream.splitFirst(mapped(xs, inc))` was refused for a receiver whose type is fully
+/// ground. (That clause is deleted since WI-20261005-2KV4Y — no body read it; the shape is
+/// driven by `wi_ekwdc_carrier_requires_instantiation_test`'s `Pairer`.)
 ///
 /// ADDITIVE, NEVER OVERRIDING. Only a parameter the head match left unbound is filled.
 /// The head match is what the goal DEMANDED of this provision, so it stays the
@@ -1009,7 +1011,8 @@ pub(super) fn match_candidate_against_goal(
                 // so every σ-less `Eq[T = X.T]` / `Eq[T = ?]` "chose" `SortedSet`,
                 // built its dictionary and recorded its spec half absent (MEASURED:
                 // ~500 of the 720 load-time `Unavailable` slots across the suite,
-                // from the req-insertion DIAGNOSTIC dict and route 4's provision leg).
+                // from the req-insertion DIAGNOSTIC dict and route 4's provision leg,
+                // which WI-20261005-2KV4Y has since deleted).
                 // No answer is the honest one for a goal the call never pinned.
                 return false;
             }

@@ -35,6 +35,11 @@ sort anthill.prelude.MappedStream
   -- unbound at every construction and the provided `Stream[E = {ES, EF}]` row would leak.
   -- `Iterable` and not `Stream` because Stream is SELF-RECEIVER and cannot name WHICH
   -- carrier it is, while everything mappable provides Iterable.
+  --
+  -- The sort declares no `requires Iterable[…]` beside the field. The field's type is what
+  -- says the source is iterable, and `splitFirst` walks the source through the field's
+  -- value. A requirement on the sort would be owed by every call of `map` as well, which
+  -- builds another instance and fixes none of this one's parameters.
   sort Source = ?
   sort Src = ?
   sort T = ?
@@ -48,8 +53,6 @@ sort anthill.prelude.MappedStream
   -- on the PUBLIC signatures (map / Iterable.map), where the WI-440 call-site
   -- check enforces it — an entity FIELD has no registered binder places
   -- (the WI-341 arrow-binder context is operation-param scoped).
-  requires Iterable[C = Source, Element = Src, E = ES]
-
   entity mapped(source: Iterable[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {EF})
 
   provides Stream[T = T, E = {ES, EF}]
@@ -164,8 +167,6 @@ sort anthill.prelude.FilteredStream
   effects EF = ?
 
   -- Plain `{EF}` row — cf. the `mapped` field note (lacks on public sigs).
-  requires Iterable[C = Source, Element = T, E = ES]
-
   entity filtered(source: Iterable[C = Source, Element = T, E = ES], pred: (T) -> Bool @ {EF})
 
   provides Stream[T = T, E = {ES, EF}]

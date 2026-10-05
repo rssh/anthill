@@ -703,7 +703,7 @@ refused.
 - **A sort with constructors** *is* the carrier, so a requirement on it can only be over some
   other parameter and can never be an is-a claim. It produces **no `extends`**, decided from
   the shape without consulting the rule above — exact, not an approximation.
-  `combinators.anthill` writes
+  A sort that writes
 
   ```
   requires Iterable[C = Source, Element = Src, E = ES]
@@ -711,8 +711,9 @@ refused.
   provides Stream[T = T, E = {ES, EF}]
   ```
 
-  where the `requires` constrains the *source* carrier `Source` and the sort's claim about
-  itself is the `provides` below it. An `extends` built from the first is an is-a
+  has a `requires` that constrains the *source* carrier `Source`, and its claim about
+  itself is the `provides` below it. This was `combinators.anthill`'s `MappedStream`; the
+  library no longer writes the `requires` line, since the field's type says the same. An `extends` built from the first is an is-a
   claim about the wrong carrier — and, inheriting members no signature-only emission can
   define, produces `class Fmapped needs to be abstract, since it has 9 unimplemented
   members` (the symptom was measured on `finite_combinators.anthill`'s `FiniteMappedStream`,

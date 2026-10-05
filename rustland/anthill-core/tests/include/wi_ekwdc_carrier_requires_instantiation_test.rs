@@ -4,7 +4,8 @@
 //! A provision's sub-goals are built by substituting the impl-param bindings that
 //! matching the PROVISION HEAD against the dispatch goal produced. A head names only
 //! the parameters the spec is about, so every OTHER parameter of the carrier survives
-//! into the sub-goal as a bare reference to the declaration's own parameter:
+//! into the sub-goal as a bare reference to the declaration's own parameter. The stdlib's
+//! `MappedStream`, as it was written when this was measured:
 //!
 //!     sort MappedStream
 //!       sort Source = ?  sort Src = ?  sort T = ?  effects ES = ?  effects EF = ?
@@ -31,7 +32,13 @@
 //! head's own parameters — `Ord requires Eq[T]`, and `MappedStreamFinite requires
 //! FiniteCollection[C = S, …]` under `provides FiniteCollection[C = MappedStream[Source =
 //! S, …]]`, whose head DOES write `S` inside the carrier binding — or belong to specs
-//! with no carrier at all. Both members are driven here.
+//! with no carrier at all.
+//!
+//! THE STDLIB POPULATION IS EMPTY SINCE WI-20261005-2KV4Y, which deleted that clause from
+//! both sorts: no body read it, and the `source` field's type is what says the source is
+//! iterable. The shape is the `Pairer` fixture's alone now, and the stdlib row below passes
+//! with or without this change (MEASURED: with the receiver's arguments not filled in, the
+//! five `Pairer` / chain rows fail and the stdlib row does not).
 //!
 //! WHAT FAILS WHEN IT IS BACKED OUT is stated per test. The `Pairer` pair is the sharp
 //! one: ONE carrier, TWO receivers, and before this change both were refused with the
@@ -214,20 +221,19 @@ fn a_requirement_the_provision_head_does_name_already_worked() {
     assert_eq!(int_of(&mut interp, "wiekwdc.use.w", &[]), 7);
 }
 
-/// THE HEADLINE, on the stdlib carriers the ticket came from, and DRIVEN rather than
-/// merely loaded. Both members of the population are here: `MappedStream` (`requires
-/// Iterable[C = Source, Element = Src, E = ES]` under `provides Stream[T = T, E = {ES,
-/// EF}]`) and its sibling `FilteredStream`.
+/// THE STDLIB CARRIERS THE TICKET CAME FROM, DRIVEN rather than merely loaded:
+/// `MappedStream` and its sibling `FilteredStream`.
 ///
 /// The VALUES separate a stream that ran its combinator from one that did not: `[1,2,3]`
 /// mapped by `+1` splits to head 2 (an unmapped split gives 1), and filtered by `> 2`
 /// splits to head 3 (an unfiltered split gives 1).
 ///
-/// BACKED OUT: FAILS at load. Both calls report `expected Int64, got ?_` at the `match`
-/// — the dispatch resolved nothing, so `splitFirst`'s result never got an element type.
-/// Written without the `match`, the same call reports the ticket's own message:
-/// `Stream.splitFirst.dispatch: … unresolved: Iterable[C = anthill.prelude.MappedStream
-/// .Source, …]`.
+/// PASSES WITH OR WITHOUT THE CHANGE, by design, since WI-20261005-2KV4Y: the two sorts no
+/// longer declare the `requires Iterable[C = Source, …]` whose sub-goal this change
+/// instantiates, so there is nothing here for it to fill (MEASURED). While the clause was
+/// written the row failed at load when backed out — both calls reported `expected Int64,
+/// got ?_` at the `match`, the dispatch having resolved nothing. What it still says is that
+/// the stdlib's lazy carriers split and run their combinator.
 #[test]
 fn the_stdlib_lazy_stream_carriers_split_and_the_combinator_ran() {
     let src = r#"

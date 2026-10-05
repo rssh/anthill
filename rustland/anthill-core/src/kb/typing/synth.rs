@@ -42,7 +42,8 @@ pub struct SortGoal {
 ///
 /// THE SORT ALONE WAS NOT ENOUGH, and the gap is silent. A carrier's `requires`
 /// clause is written in the carrier's DECLARATION scope (`MappedStream requires
-/// Iterable[C = Source, Element = Src, E = ES]`), and
+/// Iterable[C = Source, Element = Src, E = ES]`, as the stdlib wrote it until
+/// WI-20261005-2KV4Y), and
 /// [`candidate_provider_sub_goals`] instantiates it through the substitution the
 /// PROVISION HEAD matched. A head that does not mention a parameter therefore leaves
 /// it standing as a bare reference to the declaration's own param: `MappedStream

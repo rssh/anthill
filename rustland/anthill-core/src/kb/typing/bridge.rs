@@ -543,7 +543,10 @@ pub(crate) fn resolve_bridge_requirements_supplied(
                 // and 2 on the SLD bridge (`size` below). None is read: their bodies'
                 // inner calls dispatch by value. Refusing at the entry would refuse every
                 // `map`/`filter` pipeline evaluated by value, and a slot that IS read is
-                // refused naming it.
+                // refused naming it. (COUNTED BEFORE WI-20261005-2KV4Y deleted the
+                // sort-level clause from `MappedStream` and `FilteredStream`: their
+                // `splitFirst` slots are gone, the two `…Finite.collect` witnesses keep
+                // theirs, and the census has not been re-taken.)
                 //
                 // MEASURED, and it is the ticket's acceptance row: `rule spec_len(?n)
                 // :- Box(items: ?ls), size(?ls, ?n)` answered `[]` beside a

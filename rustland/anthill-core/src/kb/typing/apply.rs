@@ -2093,17 +2093,7 @@ pub(super) fn check_apply_iter(
         // dictionary is built, so a call that builds none pays nothing. Both halves read
         // it: the SORT half through [`build_concrete_dispatch_dict`] and the OP half
         // through [`OpSupplyCtx::held`].
-        // THE ARGUMENT TYPES OF THIS CALL, off the typed results rather than off
-        // `param_to_arg_type`: that map is populated only for a callee whose signature
-        // writes a PROJECTION (`needs_param_arg_types`), so for `MappedStream.map` — the
-        // shape route 4 needs it for — it is empty. `collect_arg_errors` ran at the top of
-        // this function, so every result here is `Ok`.
-        let arg_types: Vec<Value> = pos_results
-            .iter()
-            .chain(named_results.iter())
-            .filter_map(|r| r.as_ref().ok().map(|t| t.ty.clone()))
-            .collect();
-        let held_views = held_spec_views(kb, env, &arg_types);
+        let held_views = held_spec_views(kb, env);
 
         // WI-841 (058 §4.4 check 1, binding-precise half): judge every selection
         // against the GOAL it will be applied to, now that argument unification has

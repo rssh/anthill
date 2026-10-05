@@ -1861,19 +1861,22 @@ class BootstrapTest extends munit.FunSuite:
       s"the supertrait control must be unchanged:\n$ord")
     assert(!ord.contains("using"),
       s"a supertrait requirement must not ALSO be passed as a dictionary:\n$ord")
-    // The data shape's control, for the same partition: `MappedStream`'s
-    // requirement is discharged by the constructor FIELD typed by it (WI-1064), which
-    // is a stronger position than a context parameter — it constrains the constructed
-    // value — so its `<Sort>Ops` operations stay bare too.
+    // The data shape, for the same partition: `MappedStream` says its source is
+    // iterable in the constructor FIELD's type, which constrains the constructed value,
+    // so its `<Sort>Ops` operations stay bare.
     //
-    // READ FROM combinators.anthill, and the move is WI-590's: this control used to
-    // read finite_combinators.anthill, whose `FiniteMappedStream` carried exactly this
-    // shape. That file now holds the finiteness WITNESSES, which declare no
-    // constructor at all — so their `requires FiniteCollection[C = S, …]` has no field
-    // to ride on and correctly BECOMES the dictionary (`trait MappedStreamFinite[S,
-    // Src, T]: def collect(…)(using FiniteCollection[S, Src])`, measured). Pointing
-    // this control at the file that still has the field keeps it a control instead of
-    // silently inverting into an assertion about the other arm.
+    // PASSES WITH OR WITHOUT WI-1022 SINCE WI-20261005-2KV4Y, by design. The sort used
+    // to declare `requires Iterable[C = Source, …]` beside that field, and this was the
+    // control that a field-discharged requirement is not ALSO passed as a dictionary.
+    // The clause is deleted — no body read it — so there is no requirement here to
+    // discharge; the row now only pins that the emission has no `using`. The rule
+    // itself is driven by the `boxed.anthill` fixture test (WI-1064).
+    //
+    // The finiteness WITNESSES in finite_combinators.anthill are the other arm: they
+    // declare no constructor, so their `requires FiniteCollection[C = S, …]` has no
+    // field to ride on and correctly BECOMES the dictionary (`trait
+    // MappedStreamFinite[S, Src, T]: def collect(…)(using FiniteCollection[S, Src])`,
+    // measured).
     val mapped = preludeClosure("combinators").head.contents
     assert(!mapped.contains("using"),
       s"a field-discharged requirement must not also be a dictionary:\n$mapped")
@@ -2132,20 +2135,17 @@ class BootstrapTest extends munit.FunSuite:
   }
 
   test("WI-1064 CORPUS: combinators.anthill emits no `extends`, and still names it") {
-    // THE MEASURED INSTANCE, on emitted TEXT rather than compiled, for the reason
-    // the fixture test states. Both sorts, because both carried the defect.
+    // THE EMISSION OF THE TWO LAZY CARRIERS, on emitted TEXT rather than compiled, for
+    // the reason the fixture test states.
     //
-    // READ FROM combinators.anthill SINCE WI-590. The instance that carried the
-    // defect was finite_combinators.anthill's `FiniteMappedStream`, a data sort whose
-    // `requires` was over its SOURCE parameter; WI-590 folded that twin carrier into
-    // the one `MappedStream`, which now writes the same `requires`-over-the-source
-    // beside the field that carries it. The defect's shape moved files; it did not
-    // stop existing, so the corpus assertion follows it rather than being retired.
-    //
-    // The `requires Iterable[C = Source, …]` these two write sits beside the `entity`
-    // field typed by it, while the sort's actual claim about itself is the `provides
-    // Stream[…]` below — which Bootstrap reads nothing of (`emitSort` has no
-    // `ProvidesClauseItem` arm). The `extends` was built from the wrong line.
+    // NO LONGER A CONTROL FOR WI-1064, AND SAID SO HERE: it passes with or without
+    // that change since WI-20261005-2KV4Y. These two sorts were the corpus instance of
+    // the defect — a data sort whose `requires Iterable[C = Source, …]` was over its
+    // SOURCE parameter, from which an `extends` was wrongly built — and that clause is
+    // deleted: no body read it, and the `source` field's type is what says the source
+    // is iterable. With no `requires` there is nothing to build an `extends` from. The
+    // rule is driven by the fixture test above (`boxed.anthill`); what this row still
+    // pins is the emitted declaration and field of the corpus sorts.
     //
     // `_root_`-ANCHORED SINCE WI-1060, and only the spelling changed: the required
     // spec used to reach [[Placement.Ambient]], which qualifies with the DECLARING
@@ -2153,10 +2153,10 @@ class BootstrapTest extends munit.FunSuite:
     // iterable.anthill's own declaration, which is also what checks the two arguments
     // against the two that declaration emits.
     //
-    // FAILS WHEN BACKED OUT: the pre-WI-1064 emission is `enum MappedStream[Source,
-    // Src, T] extends anthill.prelude.Iterable[Source, Src]:`, whose measured
-    // consequence (on the pre-WI-590 spelling of the same shape) was `class Fmapped
-    // needs to be abstract, since it has 9 unimplemented members`.
+    // The emission WI-1064 removed, while the clause was written: `enum
+    // MappedStream[Source, Src, T] extends anthill.prelude.Iterable[Source, Src]:`,
+    // whose measured consequence (on the pre-WI-590 spelling of the same shape) was
+    // `class Fmapped needs to be abstract, since it has 9 unimplemented members`.
     val files = preludeClosure("combinators")
     Seq(
       ("MappedStream", "enum MappedStream[Source, Src, T]:",

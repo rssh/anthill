@@ -1065,8 +1065,9 @@ object Bootstrap:
     *
     * ON A SORT WITH CONSTRUCTORS IT NEVER COINCIDES (WI-1064): the sort IS the
     * carrier, so a requirement can only be over some other parameter.
-    * `combinators.anthill` writes `requires Iterable[C = Source, …]`
-    * over its SOURCE parameter, while its claim about itself is the `provides
+    * `combinators.anthill` wrote `requires Iterable[C = Source, …]`
+    * over its SOURCE parameter (until WI-20261005-2KV4Y deleted the clause, which no
+    * body read), while its claim about itself is the `provides
     * Stream[…]` below. The `extends`
     * was built from the first, because `emitSort` reads `RequiresDeclItem` and
     * NOTHING reads `ProvidesClauseItem` — the is-a claim falls through a `case _`.
@@ -1511,11 +1512,12 @@ object Bootstrap:
     *
     * The question is asked of the EMISSION and not of the source, which is what
     * makes it the right question: the requirement survives when a constructor field
-    * is TYPED BY it, so the evidence reaches Scala as that field's type. Both
-    * corpus instances are exactly that — `requires Iterable[C = Source,
+    * is TYPED BY it, so the evidence reaches Scala as that field's type. The two
+    * corpus instances were exactly that — `requires Iterable[C = Source,
     * Element = Src, E = ES]` beside `entity mapped(source: Iterable[C =
-    * Source, Element = Src, E = ES], …)` — and there the omitted `extends` costs the
-    * emitted tree nothing. Rendering through the SAME `scope` the field list uses
+    * Source, Element = Src, E = ES], …)` — and there the omitted `extends` cost the
+    * emitted tree nothing. The corpus no longer writes the clause (WI-20261005-2KV4Y);
+    * the shape is driven by the `boxed.anthill` fixture. Rendering through the SAME `scope` the field list uses
     * (`at` varies only the diagnostic label) is what makes the two comparable.
     *
     * PER CONSTRUCTOR, not per sort. Over the flattened field list of a sum, one
