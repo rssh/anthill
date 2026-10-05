@@ -337,7 +337,7 @@ pub(super) fn declared_type_param_vid(kb: &KnowledgeBase, pty: &Value) -> Option
 /// so the two classifications cannot disagree about which argument names the
 /// carrier. The binding value is the plain application (`List[T = T]`, WI-600) or a
 /// bare `Ref(List)`; `provides_spec_base_sym` reads its head either way (its `SortView`
-/// unwrap serves the OUTER spec — a binding rides one only when over-applied).
+/// unwrap serves the OUTER spec — no binding rides one, WI-20260929-AAQT5).
 pub(super) fn provision_binds_param_to_carrier(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
@@ -2220,9 +2220,10 @@ pub(super) fn bind_spec_params_from_carrier_param(
 /// parameterized term `Fn{Pair, A = K, B = V}` (the loader no longer wraps a nested
 /// binding value in a `reflect.SortView`; see `sort_binding_to_value`) — a value-in-type
 /// one too since WI-20260924-F3FYJ, whose provision `lower_value_or_gate` files as a term
-/// fact like any other. So a compound reaching here is always this plain `Fn` (bar an
-/// over-application, which the loader refuses) — the generic-Fn recursion below handles
-/// it with no `SortView` unwrap / rebuild.
+/// fact like any other. So a compound reaching here is always this plain `Fn` (an
+/// over-applied one included: the argument no parameter took is refused where it is
+/// written and not built, WI-20260929-AAQT5) — the generic-Fn recursion below handles it
+/// with no `SortView` unwrap / rebuild.
 pub(super) fn substitute_carrier_params(
     kb: &mut KnowledgeBase,
     tid: TermId,

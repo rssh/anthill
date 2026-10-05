@@ -2120,11 +2120,15 @@ pub enum LoadError {
     /// (`Cell[Int64, String]`). This is the TYPE-position (written) face of
     /// [`crate::kb::TypeArgProblem`]; `TypeError::InvalidTypeArgument` is the
     /// VALUE-position (WI-707, `is_modifiable(Cell[W = Int64])`) one, and both decide it
-    /// with the same [`KnowledgeBase::check_sort_type_args`] — so one written type cannot
+    /// by the same rule ([`KnowledgeBase::fit_type_args`], which
+    /// [`KnowledgeBase::check_sort_type_args`] asks too) — so one written type cannot
     /// mean two things depending on where it appears. Load-blocking: the stray binding
     /// was previously kept in the type term (in type position) or dropped (an
     /// over-applied positional), and either way the type silently meant something other
     /// than what was written.
+    ///
+    /// WI-20260929-AAQT5 — also a type application whose HEAD takes no type argument at
+    /// all (`s: g[3]`, `g` an operation), which loaded with the argument dropped.
     InvalidTypeArgument {
         detail: String,
         span: Option<Span>,
@@ -8208,7 +8212,20 @@ fn requires_non_sort_message(written: &str, resolved: &str, kind: Option<SymbolK
     )
 }
 
-/// The kind half of both sentences above, so the two agree on how an undeclared
+/// WI-20260929-AAQT5 — the sentence for a type application whose head takes no type
+/// argument at all (`s: g[3]`, `g` an operation). Names the KIND, as its two siblings
+/// above do and for their reason: what the head turned out to be is what tells the author
+/// which name they meant to write.
+fn type_args_on_non_type_message(head: &str, kind: Option<SymbolKind>) -> String {
+    format!(
+        "`{head}` takes no type arguments: it is {}, and a type argument binds a type \
+         parameter of a sort — of the sort applied, or of the sort whose constructor is \
+         applied",
+        declaration_of_kind(kind)
+    )
+}
+
+/// The kind half of the sentences above, so they agree on how an undeclared
 /// symbol is described (WI-993).
 ///
 /// The `None` arm is for a symbol carrying NO category — a `SymbolDef::Unresolved`,
@@ -19667,11 +19684,10 @@ fn sort_view_substitution(
         .filter_map(|(k_sym, v_tid)| {
             // The base sort the binding names. A parameterized binding value is the
             // plain application (`C = List[T]` → `List[T = T]`, WI-600; a value-in-type
-            // one too, WI-20260924-F3FYJ); only an OVER-APPLIED one still rides a
-            // `SortView(base, …)` wrapper, which `provides_spec_base_sym` unwraps to its
-            // base where a raw functor read would yield the literal `SortView`. A bare
-            // op-valued binding stays its own functor, so the operation skip below is
-            // unaffected.
+            // one too, WI-20260924-F3FYJ; an over-applied one too, WI-20260929-AAQT5 —
+            // no binding rides a `SortView(base, …)` wrapper any more), whose head
+            // `provides_spec_base_sym` reads. A bare op-valued binding stays its own
+            // functor, so the operation skip below is unaffected.
             let value_sym = provides_spec_base_sym(kb, *v_tid);
             if let Some(vs) = value_sym {
                 if matches!(kb.kind_of(vs), Some(SymbolKind::Operation)) {
@@ -31254,6 +31270,110 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-20260929-AAQT5 — the KEY each written argument of a type application binds under,
+    /// in source order, or `None` for an argument that binds nothing: reported here, once
+    /// per application, and left out of the type the caller builds. The one reading of a
+    /// type application's arguments, for the two lowerings that have one — a type position
+    /// ([`Self::type_expr_to_child_inner`]) and a clause's binding value
+    /// ([`Self::sort_binding_to_value`]).
+    ///
+    /// `written` is the name as written and `head` what it applies — the same symbol, or
+    /// the sort a type alias stands for, with `fixed` the bindings that alias carries. Those
+    /// are GIVEN before any argument is read, as a named binding is: an argument naming one
+    /// again is two values for one parameter ([`Self::refuse_type_alias_rebinding`]), and a
+    /// positional skips them. What `head` resolved to then decides the reading:
+    ///
+    /// * NOTHING — the resolver has reported the name, and this adds no second report.
+    ///   Nothing is known of its parameters: a named argument is kept as written, and a
+    ///   positional has no parameter to take.
+    /// * A SORT, or a CONSTRUCTOR of one — the arguments bind that sort's parameters
+    ///   ([`KnowledgeBase::type_arg_owner`], [`KnowledgeBase::fit_type_args`]).
+    /// * ANYTHING ELSE — an operation, a namespace, a parameter — takes no type argument,
+    ///   and the application is refused.
+    ///
+    /// The keys are the DECLARED parameter names for a named and a positional argument
+    /// alike, so a label's binding symbols match across the two carriers (the display-name
+    /// comparison in the op-boundary check relies on this).
+    ///
+    /// The check used to stop at a head that is not a sort (`check_sort_type_args`' gate),
+    /// and each lowering then went on alone. MEASURED, each loading clean: `s: foo[3]`
+    /// (`foo` a constructor of a sort without parameters), `s: g[3]` (an operation), `x:
+    /// anthill.prelude[Int64]` (a namespace) — the argument dropped; and on a parametric
+    /// sort's constructor `o: Option.some[Int64]` took a `some("x")`, while
+    /// `Option.some[Zork = Int64]` was a type of its own that no value has.
+    fn type_application_keys(
+        &mut self,
+        written: Symbol,
+        head: Symbol,
+        fixed: &[(Symbol, TermId)],
+        bindings: &[SortBinding],
+        span: SourceSpan,
+    ) -> SmallVec<[Option<Symbol>; 4]> {
+        let params: SmallVec<[Option<Symbol>; 4]> = bindings
+            .iter()
+            .map(|b| b.param.as_ref().map(|p| self.reintern(p.last())))
+            .collect();
+        let named: SmallVec<[Symbol; 2]> = params.iter().flatten().copied().collect();
+        self.refuse_type_alias_rebinding(written, fixed, &named, span);
+        if !self.kb.symbols.is_resolved(head) {
+            return params;
+        }
+        let Some(owner) = self.kb.type_arg_owner(head) else {
+            self.errors.push(LoadError::InvalidTypeArgument {
+                detail: type_args_on_non_type_message(
+                    self.kb.qualified_name_of(head),
+                    self.kb.kind_of(head),
+                ),
+                span: Some(span.span),
+            });
+            return SmallVec::from_elem(None, params.len());
+        };
+        let declared = self.kb.type_params_of_sort(owner);
+        let given: SmallVec<[Symbol; 2]> = fixed.iter().map(|(p, _)| *p).collect();
+        let fit = self.kb.fit_type_args(&declared, &given, &params);
+        if let Some(problem) = &fit.problem {
+            let detail = problem.describe(self.kb, head);
+            self.errors.push(LoadError::InvalidTypeArgument {
+                detail,
+                span: Some(span.span),
+            });
+        }
+        fit.slots
+            .iter()
+            .map(|slot| slot.map(|i| self.kb.intern(&declared[i])))
+            .collect()
+    }
+
+    /// WI-835 — record one written type application for the post-load use-site checks
+    /// (`check_use_site_requires_eq`, the written-row check), under the sort whose
+    /// parameters its `bindings` name: `head` itself, or a constructor's sort.
+    ///
+    /// WI-20260929-AAQT5 — THE SORT, NOT THE HEAD. Both readers ask the recorded base for
+    /// what it requires of its parameters, and a constructor requires nothing: MEASURED,
+    /// over `sort Dict { sort K = ?  requires Eq[T = K]  entity dict(k: K) }` the type
+    /// `Dict[K = Float]` was refused as an unlawful key and `Dict.dict[K = Float]` loaded.
+    /// The fit check reads the constructor's arguments against its sort's parameters
+    /// ([`Self::type_application_keys`]), and these two must not disagree about which
+    /// instantiations they see.
+    ///
+    /// A head that owns no parameters at all — an unresolved name — records nothing: there
+    /// is no declaration to hold a requirement against.
+    fn record_type_application_site(
+        &mut self,
+        head: Symbol,
+        bindings: SmallVec<[(Symbol, crate::eval::value::Value); 2]>,
+        span: SourceSpan,
+    ) {
+        if let Some(base) = self.kb.type_arg_owner(head) {
+            self.kb
+                .record_parameterized_type_site(crate::kb::ParameterizedSite {
+                    base,
+                    bindings,
+                    span,
+                });
+        }
+    }
+
     /// WI-20260924-SNJPR — `Alias.Member` in a TYPE position, the head a type ALIAS: read
     /// as the member of the sort the alias stands for, with the bindings the alias fixes.
     /// A member the alias FIXES is its type (`WisStore.State` over `sort WisStore =
@@ -31958,6 +32078,13 @@ impl<'a> Loader<'a> {
     /// [`Self::type_expr_to_child_inner`]'s `Parameterized` arm, shared with
     /// [`Self::self_type_child`] so `Self` is assembled exactly as the written
     /// application is. `site_span` is the base name's own span.
+    ///
+    /// WI-20260929-AAQT5 — AN APPLICATION NONE OF WHOSE ARGUMENTS BOUND IS ITS HEAD, lowered
+    /// as the bare name is. That is every refused one whose head takes no argument it was
+    /// given (`g[3]`, `foo[3]`), and it is what keeps the builder from being handed a base
+    /// it refuses: `TypeExtractor.TypeVar[name = Int64]` binds nothing, since the type
+    /// meta-language's sort declares no parameters, and so never reaches
+    /// [`KnowledgeBase::make_parameterized_type`], which panicked on it.
     fn parameterized_child(
         &mut self,
         sort_sym: Symbol,
@@ -31966,63 +32093,40 @@ impl<'a> Loader<'a> {
         span: SourceSpan,
         owner: Option<Symbol>,
     ) -> node_occurrence::TypeChild {
+        use crate::eval::value::Value;
+        if child_bindings.is_empty() {
+            return self.type_name_child(sort_sym, span, owner);
+        }
+        let bindings: SmallVec<[(Symbol, Value); 2]> = child_bindings
+            .into_iter()
+            .map(|(s, c)| match c {
+                node_occurrence::TypeChild::Interned(t) => (s, Value::term(t)),
+                node_occurrence::TypeChild::Node(n) => (s, Value::Node(n)),
+            })
+            .collect();
+        // The carrier is the typer's own choice ([`super::typing::parameterized_value`]):
+        // hash-consed when every binding is, the occurrence carrier when one is a denoted
+        // — the split a clause's binding value makes too (`assemble_binding_value`), so
+        // the two lowerings of one written type cannot build it differently.
         let base_term = self.kb.make_sort_ref(sort_sym);
+        let built = super::typing::parameterized_value(self.kb, base_term, &bindings, span, owner);
         // WI-835: record the written instantiation for the post-load use-site
         // checks (`check_use_site_requires_eq`) — the semantic sibling of the
         // WI-709 arg-FIT check, deferred because it needs a `provides`
         // relation `eq_derive::run` has not built yet.
         //
-        // BEFORE the `any_node` split, and from `child_bindings` rather than
-        // the assembled term, so a denoted binding stays a binding of ITS OWN.
-        // The ground branch alone left `Map[K = Float, V = Buf[T = Int64, N =
-        // 3]]` unchecked: the literal `3` poisons the whole type to
-        // `Value::Node`, and `K = Float` went with it — an unrelated
+        // From the BINDINGS rather than the assembled type, so a denoted binding
+        // stays a binding of ITS OWN. The hash-consed carrier alone left `Map[K =
+        // Float, V = Buf[T = Int64, N = 3]]` unchecked: the literal `3` poisons the
+        // whole type to `Value::Node`, and `K = Float` went with it — an unrelated
         // value-in-type argument silently disabling the lawful-key check. The
-        // WI-709 check is branch-blind for the same reason; these two must
+        // WI-709 check is carrier-blind for the same reason; these two must
         // not disagree about which instantiations they see.
-        self.kb
-            .record_parameterized_type_site(crate::kb::ParameterizedSite {
-                base: sort_sym,
-                bindings: child_bindings
-                    .iter()
-                    .map(|(s, c)| match c {
-                        node_occurrence::TypeChild::Interned(t) => {
-                            (*s, crate::eval::value::Value::term(*t))
-                        }
-                        node_occurrence::TypeChild::Node(n) => {
-                            (*s, crate::eval::value::Value::Node(n.clone()))
-                        }
-                    })
-                    .collect(),
-                span: site_span,
-            });
-        let any_node = child_bindings
-            .iter()
-            .any(|(_, c)| matches!(c, node_occurrence::TypeChild::Node(_)));
-        if any_node {
-            node_occurrence::TypeChild::Node(self.kb.make_parameterized_occ(
-                node_occurrence::TypeChild::Interned(base_term),
-                child_bindings,
-                span,
-                owner,
-            ))
-        } else {
-            // No denoted binding ⇒ assemble the hash-consed parameterized
-            // term from the ground children already built (NOT a second
-            // structural walk; same `base_term` + the same
-            // positional→param-name mapping ⇒ the ground hash-consed form).
-            let ground_bindings: Vec<(Symbol, TermId)> = child_bindings
-                .into_iter()
-                .map(|(s, c)| match c {
-                    node_occurrence::TypeChild::Interned(t) => (s, t),
-                    node_occurrence::TypeChild::Node(_) => {
-                        unreachable!("checked !any_node")
-                    }
-                })
-                .collect();
-            node_occurrence::TypeChild::Interned(
-                self.kb.make_parameterized_type(base_term, &ground_bindings),
-            )
+        self.record_type_application_site(sort_sym, bindings, site_span);
+        match built {
+            Value::Term { id, .. } => node_occurrence::TypeChild::Interned(id),
+            Value::Node(occ) => node_occurrence::TypeChild::Node(occ),
+            other => unreachable!("a parameterized type is a term or an occurrence, got {other:?}"),
         }
     }
 
@@ -32217,77 +32321,31 @@ impl<'a> Loader<'a> {
                 // read as written, and so refused as an application of a name that
                 // declares no parameters.
                 let (sort_sym, fixed) = self.type_alias_application(written_sym);
-                // Same positional→declared-param-name mapping for both the node
-                // and the ground hash-consed form, so a label's binding
-                // symbols match across the two carriers (the display-name
-                // comparison in the op-boundary check relies on this).
-                let declared_params = self.kb.type_params_of_sort(sort_sym);
-                // WI-709: the arguments must FIT the sort's declared params — an
-                // undeclared name or an over-applied positional is load-blocking, decided
-                // by the same rule the VALUE position (WI-707) decides it by, so one
-                // written type cannot mean two things. Reported once here; the binding
-                // loop below then proceeds (a stray name still lands in the term, but the
-                // load already failed, so nothing downstream reads it).
-                let written_named: SmallVec<[Symbol; 2]> = bindings
-                    .iter()
-                    .filter_map(|b| b.param.as_ref().map(|p| self.reintern(p.last())))
-                    .collect();
-                let positional_count = bindings.len() - written_named.len();
-                self.refuse_type_alias_rebinding(written_sym, &fixed, &written_named, span);
-                // The alias's fixed parameters are GIVEN, as a named binding is: the fit
-                // check counts them, and a positional skips them.
-                let named_syms: SmallVec<[Symbol; 2]> = fixed
-                    .iter()
-                    .map(|(p, _)| *p)
-                    .chain(written_named.iter().copied())
-                    .collect();
-                if let Err(problem) = self.kb.check_sort_type_args(
-                    sort_sym,
-                    &declared_params,
-                    &named_syms,
-                    positional_count,
-                ) {
-                    let detail = problem.describe(&self.kb, sort_sym);
-                    self.errors.push(LoadError::InvalidTypeArgument {
-                        detail,
-                        span: Some(span.span),
-                    });
-                }
+                // WI-709: the arguments must FIT the parameters the head's arguments bind
+                // — an undeclared name or an over-applied positional is load-blocking,
+                // decided by the same rule the VALUE position (WI-707) decides it by, so
+                // one written type cannot mean two things. Reported once here, of ANY head
+                // that resolved (WI-20260929-AAQT5); an argument that does not fit is not
+                // built.
+                let keys = self.type_application_keys(written_sym, sort_sym, &fixed, bindings, span);
                 let mut child_bindings: Vec<(Symbol, node_occurrence::TypeChild)> = fixed
                     .iter()
                     .map(|(p, v)| (*p, node_occurrence::TypeChild::Interned(*v)))
                     .collect();
-                // A positional binds the next declared param NOT already given by name —
-                // `KnowledgeBase::positional_param_slots`, the rule's one owner, so
-                // `Map[K = K1, V1]` binds `V` rather than re-binding `K` to a second value
-                // (which would build a duplicate-key type term, a shape the evaluated
-                // spelling of the same type never produces). Over-applied — already
-                // reported above.
-                let mut slots = KnowledgeBase::positional_param_slots(
-                    &declared_params,
-                    |d| named_syms.iter().any(|n| self.kb.local_name_of(*n) == d),
-                    positional_count,
-                )
-                .into_iter();
                 // WI-20260823-4GBQV: is this `Modify`'s own target slot? Read ONCE, above
                 // the loop, since it is a property of the head, not of a binding.
                 let modify_target =
                     self.kb.try_resolve_symbol("anthill.prelude.Modify") == Some(sort_sym);
-                for b in bindings {
+                for (b, key) in bindings.iter().zip(keys) {
+                    // Lowered whether or not it binds: what is wrong INSIDE an argument is
+                    // reported even when the argument itself has no parameter to take.
                     let bound_child = if modify_target {
                         self.type_expr_to_child_modify_target(&b.bound, span, owner)
                     } else {
                         self.type_expr_to_child(&b.bound, span, owner)
                     };
-                    let param_sym = match &b.param {
-                        Some(p) => Some(self.reintern(p.last())),
-                        None => slots
-                            .next()
-                            .flatten()
-                            .map(|i| self.kb.intern(&declared_params[i])),
-                    };
-                    if let Some(sym) = param_sym {
-                        child_bindings.push((sym, bound_child));
+                    if let Some(key) = key {
+                        child_bindings.push((key, bound_child));
                     }
                 }
                 // The base name's OWN span (`type_expr_span`, that rule's owner), not
@@ -32661,13 +32719,8 @@ impl<'a> Loader<'a> {
                     return Value::term(self.kb.make_sort_ref(sort_sym));
                 }
                 let span = self.type_expr_span(ty);
-                self.kb
-                    .record_parameterized_type_site(crate::kb::ParameterizedSite {
-                        base: sort_sym,
-                        bindings: named.iter().cloned().collect(),
-                        span,
-                    });
-                self.assemble_binding_value(sort_sym, named, Vec::new(), span)
+                self.record_type_application_site(sort_sym, named.iter().cloned().collect(), span);
+                self.assemble_binding_value(sort_sym, named, span)
             }
             TypeExpr::Parameterized { name, .. } if self.is_self_type_name(name) => {
                 self.type_expr_to_value(ty)
@@ -32708,29 +32761,13 @@ impl<'a> Loader<'a> {
                     }
                     _ => (written, SmallVec::new()),
                 };
-                let declared_params = self.kb.type_params_of_sort(base_sym);
-                // Explicit named bindings first, then each positional onto the next
-                // declared param no name took. An OVERFLOW positional diverts to `pos`,
-                // which `assemble_binding_value` preserves (via the `SortView` carrier)
-                // rather than dropping — and which the arity check below reports for a
-                // SORT head (it does not check any other head).
-                let mut named: Vec<(Symbol, Value)> =
-                    fixed.iter().map(|&(p, t)| (p, Value::term(t))).collect();
-                let mut positionals: Vec<Value> = Vec::new();
-                let mut written_named: SmallVec<[Symbol; 2]> = SmallVec::new();
-                for b in bindings {
-                    let bound = self.sort_binding_to_value(&b.bound);
-                    match &b.param {
-                        Some(p) => {
-                            let sym = self.reintern(p.last());
-                            written_named.push(sym);
-                            named.push((sym, bound));
-                        }
-                        None => positionals.push(bound),
-                    }
-                }
+                // Each argument is lowered whether or not it binds: what is wrong INSIDE
+                // one is reported even when the argument itself has no parameter to take.
+                let bounds: Vec<Value> = bindings
+                    .iter()
+                    .map(|b| self.sort_binding_to_value(&b.bound))
+                    .collect();
                 let span = self.type_expr_span(ty);
-                self.refuse_type_alias_rebinding(written, &fixed, &written_named, span);
                 // WI-20260923-N3W68 (#9) — a positional binds the next declared param NOT
                 // already bound by name (`KnowledgeBase::positional_param_slots`). This arm
                 // paired by RAW INDEX and diverted a positional whose index a name had
@@ -32738,38 +32775,22 @@ impl<'a> Loader<'a> {
                 // bindings and the provision read as `Map[K = Int64]` — MEASURED: a use at
                 // `Map[K = Int64, V = String]` was refused — where the same `Map` in a type
                 // position binds `V`. And the same written type obeys the same argument rule
-                // here as there — WI-709's `check_sort_type_args` whole: an overflow
-                // positional (still carried in `pos`), and also an undeclared or duplicated
-                // parameter name, are now reported. A binding VALUE is a type, never an
-                // instance claim, so it has no operation bindings the full check would misread.
-                let named_syms: SmallVec<[Symbol; 2]> = named.iter().map(|(s, _)| *s).collect();
-                if let Err(problem) = self.kb.check_sort_type_args(
-                    base_sym,
-                    &declared_params,
-                    &named_syms,
-                    positionals.len(),
-                ) {
-                    let detail = problem.describe(&self.kb, base_sym);
-                    self.errors.push(LoadError::InvalidTypeArgument {
-                        detail,
-                        span: Some(span.span),
-                    });
-                }
-                let slots = KnowledgeBase::positional_param_slots(
-                    &declared_params,
-                    |d| named_syms.iter().any(|n| self.kb.local_name_of(*n) == d),
-                    positionals.len(),
-                );
-                let mut pos: Vec<Value> = Vec::new();
-                for (bound, slot) in positionals.into_iter().zip(slots) {
-                    match slot {
-                        Some(i) => {
-                            let sym = self.kb.intern(&declared_params[i]);
-                            named.push((sym, bound));
-                        }
-                        None => pos.push(bound),
-                    }
-                }
+                // here as there, through the one reading both have
+                // ([`Self::type_application_keys`], WI-20260929-AAQT5): an argument with no
+                // parameter to bind — an overflow positional, an undeclared or duplicated
+                // name, any argument of a head that takes none — is reported and not built.
+                // A binding VALUE is a type, never an instance claim, so it has no operation
+                // bindings that reading would misread.
+                let keys = self.type_application_keys(written, base_sym, &fixed, bindings, span);
+                let named: Vec<(Symbol, Value)> = fixed
+                    .iter()
+                    .map(|&(p, t)| (p, Value::term(t)))
+                    .chain(
+                        keys.into_iter()
+                            .zip(bounds)
+                            .filter_map(|(key, bound)| Some((key?, bound))),
+                    )
+                    .collect();
                 // WI-835: a container written as a binding VALUE inside a `requires` /
                 // `provides` clause (`requires Iterable[C = Map[K = Float]]`) is a use
                 // site like any other, but it reaches HERE, not `type_expr_to_child` —
@@ -32779,13 +32800,8 @@ impl<'a> Loader<'a> {
                 // matching the other recorder. WI-20260831-V25N3: every binding is
                 // recorded CARRIER-FAITHFULLY (a denoted one included) and each consumer
                 // filters by its OWN rule — see `ParameterizedSite::bindings`.
-                self.kb
-                    .record_parameterized_type_site(crate::kb::ParameterizedSite {
-                        base: base_sym,
-                        bindings: named.iter().map(|(s, v)| (*s, v.clone())).collect(),
-                        span,
-                    });
-                self.assemble_binding_value(base_sym, named, pos, span)
+                self.record_type_application_site(base_sym, named.iter().cloned().collect(), span);
+                self.assemble_binding_value(base_sym, named, span)
             }
             _ => self.sort_inst_to_value(ty),
         }
@@ -34680,47 +34696,42 @@ impl<'a> Loader<'a> {
     /// member `peek(s: Buf[T = Int64, N = 3])`, `N = 4` got the identical refusal, and the
     /// ground `Buf[T = Int64]` loaded (`wi_f3fyj_value_in_type_binding_test`).
     ///
-    /// The `reflect.SortView` carrier is left for what no type position builds: an
-    /// OVERFLOW positional (`pos` — a positional never double-binds, it takes the next
-    /// parameter no name took, WI-20260923-N3W68), and a child that is itself such a view
-    /// ON THE VALUE CARRIER (`Value::Entity`), which the type builder cannot take. A GROUND
-    /// over-applied child is a hash-consed `SortView` term and is embedded like any other
-    /// term child. Both are over-applications: `check_sort_type_args` has reported them for
-    /// a SORT head, and for any other head (`foo[3]`, an entity) nothing has, so the view is
-    /// what keeps the stray argument from being dropped silently (WI-20260929-AAQT5 reports
-    /// it where it is written, which retires this branch). The base name term is
-    /// prepended for the SortView subject slot, mirroring the outer spec view.
+    /// WI-20260929-AAQT5 — AND THE WRAPPER IS GONE FROM THIS LOWERING ALTOGETHER. It was
+    /// kept for an OVERFLOW positional, and for a child that was itself such a view on the
+    /// value carrier: for a sort head the over-application had been reported, for any
+    /// other head (`foo[3]`, a constructor) nothing had, and the view was what kept the
+    /// stray argument from vanishing. What it bought was a second error about the first —
+    /// MEASURED: `provides Store[State = Buf[Int64, 3, Bool]]` refused a member that fits,
+    /// printing `SortView(Buf, Bool)[T = Int64, N = 3]`; `sort X = Tagged[Int64, Bool]`
+    /// made `provides X` "not a sort"; and `Store[State = foo[3]]` was refused only by
+    /// that accident, as "the spec's is `SortView(foo, 3)`". An argument with no parameter
+    /// to bind is now reported where it is written and never reaches here
+    /// ([`Self::type_application_keys`]), so `named` is all there is.
+    ///
+    /// An application none of whose arguments bound is its HEAD, as the `Simple` arm of
+    /// [`sort_binding_to_value`] lowers the bare name — the same rule, and for the same
+    /// reason, as [`Self::parameterized_child`]'s.
     fn assemble_binding_value(
         &mut self,
         base_sym: Symbol,
         named: Vec<(Symbol, crate::eval::value::Value)>,
-        pos: Vec<crate::eval::value::Value>,
         span: SourceSpan,
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
-        // A child is a type carrier, or the value-carried view this builds below, one level
-        // down. EXHAUSTIVE on purpose: the type builder takes Term / Node / Var only, and a
-        // gate that sent "anything but a view" to it would crash on, or (beside a Node
-        // sibling) silently erase to `?ungrounded`, a carrier nobody meant to reach it.
-        let mut over_applied = !pos.is_empty();
+        // A child is a type carrier. EXHAUSTIVE on purpose: the type builder takes Term /
+        // Node / Var only, and handed anything else it would crash or (beside a Node
+        // sibling) silently erase it to `?ungrounded`.
         for (_, v) in &named {
             match v {
                 Value::Term { .. } | Value::Node(_) | Value::Var(_) => {}
-                Value::Entity { .. } => over_applied = true,
-                other => unreachable!(
-                    "a nested binding value is a type or an over-applied view, got {other:?}"
-                ),
+                other => unreachable!("a nested binding value is a type, got {other:?}"),
             }
         }
-        if over_applied {
-            let name_term = self.kb.make_name_term_from_sym(base_sym);
-            let mut all_pos = vec![Value::term(name_term)];
-            all_pos.extend(pos);
-            self.assemble_sort_view_value(all_pos, named)
-        } else {
-            let base_ref = self.kb.make_sort_ref(base_sym);
-            super::typing::parameterized_value(self.kb, base_ref, &named, span, self.current_owner)
+        let base_ref = self.kb.make_sort_ref(base_sym);
+        if named.is_empty() {
+            return Value::term(base_ref);
         }
+        super::typing::parameterized_value(self.kb, base_ref, &named, span, self.current_owner)
     }
 
     /// WI-582 — collect the type-variable INTRODUCER names declared on a rule

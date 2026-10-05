@@ -945,31 +945,17 @@ pub(crate) fn owns_members(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// An alias's recorded reading as a sort application — `(sort, named bindings)` — or
 /// `None` for a type that is not one, by the typer's own classification (`type_head`,
 /// which also keeps the tuple, arrow and effect-row meta-constructors out): a bare sort
-/// reference, a sort applied by name (the plain term a clause binding lowers to, a
-/// value-in-type one included since WI-20260924-F3FYJ), or the `SortView` over a base
-/// that a VALUE-carried over-applied binding beneath lowers to, decoded by
-/// [`unwrap_spec_view`] — reachable from a program that LOADS when the over-applied head
-/// is not a sort (`Store[State = foo[3]]`, an entity `foo`: `check_sort_type_args` checks
-/// sort heads only, WI-20260929-AAQT5). A positional left over at this level is an argument
-/// no parameter took, which the alias declaration has already refused, so it reads as no
-/// application rather than a partial one.
+/// reference, or a sort applied by name — the plain term a clause binding lowers to, a
+/// value-in-type one included since WI-20260924-F3FYJ. Nothing else is recorded: the
+/// `SortView` wrapper an over-applied binding used to lower to, which this decoded, went
+/// with WI-20260929-AAQT5 (an argument no parameter took is refused where it is written
+/// and not built).
 fn sort_application(
     kb: &KnowledgeBase,
     tid: TermId,
 ) -> Option<(Symbol, SmallVec<[(Symbol, TermId); 2]>)> {
     if let Some(sort) = extract_sort_ref_sym(kb, &TermIdView(tid)) {
         return Some((sort, SmallVec::new()));
-    }
-    if let Term::Fn {
-        functor, pos_args, ..
-    } = kb.get_term(tid)
-    {
-        if is_sort_view_functor(kb, *functor) {
-            return match pos_args.len() {
-                1 => unwrap_spec_view(kb, tid),
-                _ => None,
-            };
-        }
     }
     let (base, positional, named) = parameterized_parts(kb, tid)?;
     positional.is_empty().then_some((base, named))

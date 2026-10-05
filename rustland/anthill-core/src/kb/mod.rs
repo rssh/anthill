@@ -681,7 +681,10 @@ pub(crate) struct SortOpsTable {
 /// silently disabled the lawful-key check.
 #[derive(Clone, Debug)]
 pub(crate) struct ParameterizedSite {
-    /// The sort being instantiated (`anthill.prelude.Map`).
+    /// The sort being instantiated (`anthill.prelude.Map`) — the sort whose parameters the
+    /// bindings name, so for an application of a CONSTRUCTOR (`Option.some[T = Int64]`) its
+    /// sort, never the constructor ([`KnowledgeBase::type_arg_owner`], WI-20260929-AAQT5):
+    /// the readers ask this symbol what it requires of its parameters.
     pub base: Symbol,
     /// EVERY binding, by DECLARED parameter name (positionals already mapped),
     /// CARRIER-FAITHFULLY: a ground type as `Value::Term`, a `denoted`-bearing one
@@ -2340,26 +2343,38 @@ pub enum TypeArgProblem {
     /// takes the first, so `Relation[T = <right>, T = <wrong>]` checked clean while the
     /// reverse order rejected — a wrong schema accepted, order-dependently.
     ///
-    /// Scoped to a `Sort` head, like the rest of this check: a non-Sort head (a type-param
-    /// carrier `F` of a `sort Spec[F[T]]`, an entity head) returns early and is NOT covered,
-    /// so this is a gate on the common path rather than a universal guarantee — consumers
-    /// still must not depend on a bindings list being duplicate-free.
+    /// A WRITTEN TYPE never carries one (WI-20260929-AAQT5): both type lowerings leave the
+    /// second binding out of the type they build ([`KnowledgeBase::fit_type_args`]), for a
+    /// sort head and a constructor head alike. The value and term positions still gate on
+    /// a `Sort` head ([`KnowledgeBase::check_sort_type_args`]), so a consumer reading a
+    /// term built there must not depend on a bindings list being duplicate-free.
     DuplicateParam { param: String },
 }
 
 impl TypeArgProblem {
-    /// One message, shared by both positions' diagnostics.
-    pub fn describe(&self, kb: &KnowledgeBase, sort_sym: Symbol) -> String {
-        let sort = kb.qualified_name_of(sort_sym);
-        let declared = kb.type_params_of_sort(sort_sym);
+    /// One message, shared by both positions' diagnostics. `head` is the application's
+    /// head as written. A constructor's parameters are its sort's
+    /// ([`KnowledgeBase::type_arg_owner`]), and the message then says whose they are; any
+    /// other head answers for the parameters it declares itself — a spec clause reports
+    /// through here of heads no type lowering admits (`provides g[Int64, Bool]`, `g` an
+    /// operation with one bracket parameter).
+    pub fn describe(&self, kb: &KnowledgeBase, head: Symbol) -> String {
+        let sort = kb.qualified_name_of(head);
+        let owner = kb.type_arg_owner(head).unwrap_or(head);
+        let declared = kb.type_params_of_sort(owner);
         let declares = if declared.is_empty() {
             "declares no type parameters".to_owned()
         } else {
             format!("declares type parameter(s) {}", declared.join(", "))
         };
+        let declares = if owner == head {
+            format!("it {declares}")
+        } else {
+            format!("its sort `{}` {declares}", kb.qualified_name_of(owner))
+        };
         match self {
             TypeArgProblem::UndeclaredParam { param } => {
-                format!("`{sort}` has no type parameter named '{param}' — it {declares}")
+                format!("`{sort}` has no type parameter named '{param}' — {declares}")
             }
             TypeArgProblem::DuplicateParam { param } => format!(
                 "`{sort}` binds the type parameter '{param}' more than once — a type \
@@ -2368,10 +2383,22 @@ impl TypeArgProblem {
             ),
             TypeArgProblem::ExcessPositional { given, free } => format!(
                 "`{sort}` is over-applied: {given} positional type argument(s) but only \
-                 {free} declared type parameter(s) left to bind — it {declares}"
+                 {free} declared type parameter(s) left to bind — {declares}"
             ),
         }
     }
+}
+
+/// WI-20260929-AAQT5 — how the arguments of ONE written type application bind, argument
+/// by argument. From [`KnowledgeBase::fit_type_args`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeArgFit {
+    /// For each written argument, in source order: the index in `declared` of the
+    /// parameter it binds, or `None` for an argument the head has no parameter for — a
+    /// name it does not declare, a parameter already bound, a positional with none left.
+    pub slots: SmallVec<[Option<usize>; 4]>,
+    /// The first argument that does not fit, when one does not.
+    pub problem: Option<TypeArgProblem>,
 }
 
 /// WI-1046 — one positional slot of a goal CONNECTIVE that does not hold plain data,
@@ -3787,6 +3814,15 @@ impl KnowledgeBase {
     /// than a coincidence: the classifier decides which applications REACH this check, so
     /// a head it admits and this gate declines is a written type nobody validates.
     ///
+    /// WI-20260929-AAQT5 — THE TWO TYPE LOWERINGS DO NOT ASK THROUGH THIS GATE. In a type
+    /// position and in a clause's binding value the head is a type whatever it resolves
+    /// to, so "not a sort" is no reason to stay silent there: MEASURED, `s: foo[3]` (a
+    /// constructor), `s: g[3]` (an operation) and `x: anthill.prelude[Int64]` (a
+    /// namespace) loaded clean with the argument gone. They read
+    /// [`Self::type_arg_owner`] and [`Self::fit_type_args`] — the rule below, without the
+    /// gate — and this method stays what the VALUE and TERM positions ask, where a
+    /// bracket on a non-sort head is a call's or a predicate's and not a type's.
+    ///
     /// WI-20260824-Q0093 — `has_kind`, because that arm now asks `has_kind`
     /// ([`crate::kb::load::Loader::bare_name_denotes_type`] carries the reason). Found by
     /// `/code-review`, which measured the desync the moment the two spellings differed:
@@ -3805,37 +3841,119 @@ impl KnowledgeBase {
         if !self.has_kind(sort_sym, crate::intern::SymbolKind::Sort) {
             return Ok(());
         }
-        for (i, n) in named.iter().enumerate() {
-            let short = self.local_name_of(*n);
-            if !declared.iter().any(|d| d == short) {
-                return Err(TypeArgProblem::UndeclaredParam {
-                    param: short.to_owned(),
-                });
-            }
-            // WI-764: reject a param bound twice. Compared by the SHORT name the argument
-            // was written with (the same key `declared` is matched on just above), so the
-            // two spellings one slot can arrive under never read as two distinct params.
-            if named[..i].iter().any(|p| self.local_name_of(*p) == short) {
-                return Err(TypeArgProblem::DuplicateParam {
-                    param: short.to_owned(),
-                });
+        let written: SmallVec<[Option<Symbol>; 4]> = named
+            .iter()
+            .map(|n| Some(*n))
+            .chain(std::iter::repeat_n(None, positional_count))
+            .collect();
+        match self.fit_type_args(declared, &[], &written).problem {
+            Some(problem) => Err(problem),
+            None => Ok(()),
+        }
+    }
+
+    /// WI-20260929-AAQT5 — how the arguments of one type application bind, argument by
+    /// argument ([`TypeArgFit`]) — the rule [`Self::check_sort_type_args`] decides by,
+    /// answered per argument so a lowering can BUILD what the check admitted and nothing
+    /// else.
+    ///
+    /// `declared` are the parameters the head's arguments bind ([`Self::type_arg_owner`]'s,
+    /// by short name). `given` are the parameters bound before the written arguments are
+    /// read — the ones a type alias fixes (`IntPair[String]` over `sort IntPair = Pair[L =
+    /// Int64]`): a written name may not bind one again, and a positional skips it.
+    /// `written` is each argument's parameter name as written, `None` for a positional, in
+    /// source order.
+    ///
+    /// A NAME binds the declared parameter of that name, once: an undeclared name, and a
+    /// parameter already bound (WI-764 — compared by the SHORT name the argument was
+    /// written with, so the two spellings one slot can arrive under never read as two
+    /// parameters), bind nothing. A POSITIONAL binds the next declared parameter no name
+    /// took ([`Self::positional_param_slots`], that rule's one owner), wherever among the
+    /// names it is written; one that finds no parameter binds nothing.
+    ///
+    /// WHY PER ARGUMENT. The check used to answer yes or no, and each lowering then built
+    /// the application from the arguments AS WRITTEN: a refused name stayed in the type
+    /// ("the load already failed, so nothing downstream reads it"). The later phases do
+    /// read it — MEASURED: `h(s: Buf[W = Int64])` added `expected Buf[W = Int64], got
+    /// Buf[T = Int64, …]` at every call, a duplicated `T` read its first value twice
+    /// (`Buf[T = Int64, T = Int64]`), and on a constructor of the type meta-language the
+    /// stray name was the type's own field: `TypeExtractor.TypeVar[name = Int64]` built
+    /// the structural form of a type variable, which
+    /// [`Self::make_parameterized_type`] refuses by panicking.
+    pub fn fit_type_args(
+        &self,
+        declared: &[String],
+        given: &[Symbol],
+        written: &[Option<Symbol>],
+    ) -> TypeArgFit {
+        let mut problem: Option<TypeArgProblem> = None;
+        let mut slots: SmallVec<[Option<usize>; 4]> = SmallVec::from_elem(None, written.len());
+        let mut bound: SmallVec<[&str; 4]> =
+            given.iter().map(|g| self.local_name_of(*g)).collect();
+        for (i, name) in written.iter().enumerate() {
+            let Some(name) = name else { continue };
+            let short = self.local_name_of(*name);
+            match declared.iter().position(|d| d == short) {
+                None => {
+                    problem.get_or_insert_with(|| TypeArgProblem::UndeclaredParam {
+                        param: short.to_owned(),
+                    });
+                }
+                Some(_) if bound.contains(&short) => {
+                    problem.get_or_insert_with(|| TypeArgProblem::DuplicateParam {
+                        param: short.to_owned(),
+                    });
+                }
+                Some(k) => {
+                    slots[i] = Some(k);
+                    bound.push(short);
+                }
             }
         }
-        // Each positional binds the next declared param NOT already given by name
-        // ([`Self::positional_param_slots`], the rule's one owner), so an over-application
-        // is a positional it finds no slot for.
-        let slots = Self::positional_param_slots(
+        let positional_count = written.iter().filter(|w| w.is_none()).count();
+        let mut free = Self::positional_param_slots(
             declared,
-            |d| named.iter().any(|n| self.local_name_of(*n) == d),
+            |d| bound.iter().any(|b| *b == d),
             positional_count,
-        );
-        if slots.iter().any(Option::is_none) {
-            return Err(TypeArgProblem::ExcessPositional {
+        )
+        .into_iter();
+        let mut bound_positionals = 0usize;
+        for (slot, _) in slots.iter_mut().zip(written).filter(|(_, w)| w.is_none()) {
+            *slot = free.next().flatten();
+            bound_positionals += usize::from(slot.is_some());
+        }
+        if bound_positionals < positional_count {
+            problem.get_or_insert(TypeArgProblem::ExcessPositional {
                 given: positional_count,
-                free: slots.iter().flatten().count(),
+                free: bound_positionals,
             });
         }
-        Ok(())
+        TypeArgFit { slots, problem }
+    }
+
+    /// WI-20260929-AAQT5 — the declaration whose type parameters an application of `head`
+    /// binds, or `None` when no type argument applies to `head` at all.
+    ///
+    /// * a name that plays `Sort` — itself: a sort, a type parameter, a free-standing or
+    ///   eponymous entity (§6.3: its own sort);
+    /// * a CONSTRUCTOR of a sort — that sort. §8.2: "each constructor name is a sort in its
+    ///   own right", and its parametric form is `Option.some[T = Int64]`, the constructor
+    ///   carrying its sort's parameter and none of its own;
+    /// * anything else — an operation, a namespace, a constant, a parameter — `None`.
+    ///
+    /// A constructor's sort is read off the scope it was DECLARED in, not off
+    /// [`Self::strict_parent_sort`]: that index is filled as each sort's BODY loads, so a
+    /// type written above its sort, or in a file loaded before it, would be asked before
+    /// the answer exists. Pass 1 marks every constructor ([`Self::mark_constructor_symbol`])
+    /// and defines it in its sort's scope before any type is lowered.
+    pub fn type_arg_owner(&self, head: Symbol) -> Option<Symbol> {
+        if self.has_kind(head, crate::intern::SymbolKind::Sort) {
+            Some(head)
+        } else if self.is_constructor_symbol(head) {
+            self.declaring_scope_symbol(head)
+        } else {
+            None
+        }
     }
 
     /// Get the Term for a TermId.
@@ -10440,11 +10558,14 @@ impl KnowledgeBase {
         // (`check_sort_type_args`, since it IS a sort) and keeps building, as it does after
         // every refusal. MEASURED: `provides Store[State = Nothing[X = 3]]`, the ground
         // `Nothing[X = Int64]` in a binding, a signature and an alias target each crashed
-        // the loader instead of reporting. NOTHING WIDER: a TypeExtractor meta-constructor
-        // (`TypeExtractor.TypeVar[name = Int64]`) is not a sort, so nothing reports it, and
-        // a read that admitted any bare head built it — a signature parameter typed as a
-        // FORGED type variable loaded clean (MEASURED); refused where it is written by
-        // WI-20260929-AAQT5, it still panics here.
+        // the loader instead of reporting. NOTHING WIDER: a read that admitted any bare head
+        // built `TypeExtractor.TypeVar[name = Int64]` — the structural form of a type
+        // variable — and a signature parameter typed as that FORGED variable loaded clean
+        // (MEASURED). The loader no longer hands one over (WI-20260929-AAQT5): a
+        // constructor's arguments bind its sort's parameters, `TypeExtractor` declares
+        // none, and an argument that binds nothing is refused where it is written and not
+        // built. So this `expect` is a builder contract again, not a path a written
+        // program reaches.
         let view = crate::kb::term_view::TermIdView(base);
         let base_sym = crate::kb::typing::extract_sort_ref_sym(self, &view)
             .or_else(|| crate::kb::typing::bottom_sort_sym(self, &view))
