@@ -24,15 +24,16 @@ sort anthill.prelude.MappedStream
   import anthill.prelude.Pair.{pair}
 
   -- WI-590: the SOURCE's own sort, KEPT IN THE TYPE. The field used to be typed
-  -- `Stream[Src, ES]`, which ERASED which carrier the source was — and with it every
+  -- `Stream[SourceElement, SourceEffects]`, which ERASED which carrier the source was — and with it every
   -- property of that carrier, finiteness included. That erasure is the only reason a
   -- separate finite twin carrier had to exist: nothing could condition on the source.
   -- Threading `Source` gives a WITNESS the handle it needs to say "a mapped stream is
   -- finite WHEN its source is" (`MappedStreamFinite`, finite_combinators.anthill).
   --
   -- The field is typed on the `Iterable` SPEC VIEW rather than left a bare `Source`
-  -- because `Src` and `ES` appear in no other field: a bare param would leave both
-  -- unbound at every construction and the provided `Stream[E = {ES, EF}]` row would leak.
+  -- because `SourceElement` and `SourceEffects` appear in no other field: a bare param would
+  -- leave both unbound at every construction and the provided
+  -- `Stream[E = {SourceEffects, TransformEffects}]` row would leak.
   -- `Iterable` and not `Stream` because Stream is SELF-RECEIVER and cannot name WHICH
   -- carrier it is, while everything mappable provides Iterable.
   --
@@ -41,21 +42,23 @@ sort anthill.prelude.MappedStream
   -- value. A requirement on the sort would be owed by every call of `map` as well, which
   -- builds another instance and fixes none of this one's parameters.
   sort Source = ?
-  sort Src = ?
+  sort SourceElement = ?
   sort T = ?
   -- WI-441 decoupled rows: the SOURCE's observation row and the TRANSFORM's
   -- own row are independent; the provided Stream's row is their UNION
   -- (both are paid on consumption — splitFirst peels the source AND runs fn).
-  effects ES = ?
-  effects EF = ?
+  effects SourceEffects = ?
+  effects TransformEffects = ?
 
-  -- The field's arrow row is the PLAIN `{EF}`: the `-Modify[x]` lacks lives
+  -- The field's arrow row is the PLAIN `{TransformEffects}`: the `-Modify[x]` lacks lives
   -- on the PUBLIC signatures (map / Iterable.map), where the WI-440 call-site
   -- check enforces it — an entity FIELD has no registered binder places
   -- (the WI-341 arrow-binder context is operation-param scoped).
-  entity mapped(source: Iterable[C = Source, Element = Src, E = ES], fn: (Src) -> T @ {EF})
+  entity mapped(
+    source: Iterable[C = Source, Element = SourceElement, E = SourceEffects],
+    fn: (SourceElement) -> T @ {TransformEffects})
 
-  provides Stream[T = T, E = {ES, EF}]
+  provides Stream[T = T, E = {SourceEffects, TransformEffects}]
 
   -- WI-492: a mapped stream IS iterable, derived TRANSITIVELY — `MappedStream
   -- provides Stream` (above) and `Stream provides Iterable` (stream.anthill),
@@ -80,7 +83,9 @@ sort anthill.prelude.MappedStream
   -- the truth: the tail wraps the SOURCE's tail, so its `Source` is that tail's sort, NOT
   -- this carrier's — a `MappedStream[Source = Source]` tail would make the witness read
   -- finiteness off the wrong sort.
-  operation splitFirst(m: Self) -> Option[Pair[A = T, B = Stream[T = T, E = {ES, EF}]]] effects {ES, EF} =
+  operation splitFirst(m: Self)
+    -> Option[Pair[A = T, B = Stream[T = T, E = {SourceEffects, TransformEffects}]]]
+    effects {SourceEffects, TransformEffects} =
     match m
       case mapped(src, fn) ->
         match Stream.splitFirst(Iterable.iterator(src))
@@ -99,7 +104,8 @@ sort anthill.prelude.MappedStream
   -- chain, different member name, different route; the mixed chains are what localized it.
   --
   -- Landing here was fatal twice over. `EffS` did not ground from
-  -- `provides Stream[T = T, E = {ES, EF}]` (WI-594's gap 2), so the chain did not load;
+  -- `provides Stream[T = T, E = {SourceEffects, TransformEffects}]` (WI-594's gap 2), so the
+  -- chain did not load;
   -- and the return ERASED the source to a bare `Stream` — the erasure WI-590 removed the
   -- finite twin carriers to be rid of — so even grounded it would have yielded a value no
   -- finiteness witness can read, and `xs.map(f).map(g).size()` would still be refused.
@@ -129,7 +135,7 @@ sort anthill.prelude.MappedStream
   -- an infinite source still loads while only its CONSUMPTION is refused. `Iterable.map`
   -- remains the erasing spelling.
   operation map[Sc, S, Dst, EffS, EffP](s: Sc, f: (x: S) -> Dst @ {EffP, -Modify[x]})
-    -> MappedStream[Source = Sc, Src = S, T = Dst, ES = EffS, EF = EffP]
+    -> MappedStream[Source = Sc, SourceElement = S, T = Dst, SourceEffects = EffS, TransformEffects = EffP]
     requires Iterable[C = Sc, Element = S, E = EffS] =
     mapped(s, f)
 end
@@ -146,9 +152,9 @@ end
 --     thread through `splitFirst`'s destructured `Pair` (WI-356 / WI-357), and
 --   * the SKIP RECURSION re-incurs the carrier's effect, which must close to the
 --     declared row rather than leak an unresolved `??_`.
--- Both work off the sort's OWN params (`T`, `ES`, `EF`): the destructure threads
+-- Both work off the sort's OWN params (`T`, `SourceEffects`, `PredicateEffects`): the destructure threads
 -- the element and the source row in through the field-type deep-walk, and the
--- reconstructed carrier's row closes to `{ES, EF}` by ordinary unification. The
+-- reconstructed carrier's row closes to `{SourceEffects, PredicateEffects}` by ordinary unification. The
 -- skip is `Stream.splitFirst(filtered(rest, pred))` and NOT a static self-call —
 -- since WI-590 the reconstruction wraps the SOURCE'S TAIL, whose sort differs from
 -- the receiver's `Source`, so the value no longer has the receiver's own type;
@@ -163,13 +169,13 @@ sort anthill.prelude.FilteredStream
   sort T = ?
   -- WI-441 decoupled rows (cf. MappedStream): source row + pred row, the
   -- provided Stream's row is their union.
-  effects ES = ?
-  effects EF = ?
+  effects SourceEffects = ?
+  effects PredicateEffects = ?
 
-  -- Plain `{EF}` row — cf. the `mapped` field note (lacks on public sigs).
-  entity filtered(source: Iterable[C = Source, Element = T, E = ES], pred: (T) -> Bool @ {EF})
+  -- Plain `{PredicateEffects}` row — cf. the `mapped` field note (lacks on public sigs).
+  entity filtered(source: Iterable[C = Source, Element = T, E = SourceEffects], pred: (T) -> Bool @ {PredicateEffects})
 
-  provides Stream[T = T, E = {ES, EF}]
+  provides Stream[T = T, E = {SourceEffects, PredicateEffects}]
 
   -- WI-492: a filtered stream IS iterable, derived TRANSITIVELY (cf.
   -- MappedStream) — `FilteredStream provides Stream provides Iterable`, so
@@ -182,7 +188,9 @@ sort anthill.prelude.FilteredStream
   -- and the value no longer has the receiver's own type. Dispatching through `Stream` lands
   -- back here on that value's own instance, which drops the next element and threads the
   -- carrier effect (WI-413).
-  operation splitFirst(f: Self) -> Option[Pair[A = T, B = Stream[T = T, E = {ES, EF}]]] effects {ES, EF} =
+  operation splitFirst(f: Self)
+    -> Option[Pair[A = T, B = Stream[T = T, E = {SourceEffects, PredicateEffects}]]]
+    effects {SourceEffects, PredicateEffects} =
     match f
       case filtered(src, pred) ->
         match Stream.splitFirst(Iterable.iterator(src))
@@ -195,7 +203,7 @@ sort anthill.prelude.FilteredStream
   -- that operation's note for the mechanism. The element is kept VERBATIM by a filter, so
   -- the result's `T` IS the source's element where `map`'s becomes `Dst`.
   operation filter[Sc, S, EffS, EffP](s: Sc, p: (x: S) -> Bool @ {EffP, -Modify[x]})
-    -> FilteredStream[Source = Sc, T = S, ES = EffS, EF = EffP]
+    -> FilteredStream[Source = Sc, T = S, SourceEffects = EffS, PredicateEffects = EffP]
     requires Iterable[C = Sc, Element = S, E = EffS] =
     filtered(s, p)
 end

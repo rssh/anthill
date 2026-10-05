@@ -597,13 +597,13 @@ fn effect_row_param_value(
 /// A bare receiver `s: Stream` (no type-args written) carries its element and its
 /// effect row as the projections `s.T` / `s.E` — both equally. But its argument
 /// type, read from the env, is the bare sort ref `Stream`, which carries NEITHER.
-/// Unifying that bare ref against a parameterized field type `source: Stream[Src,
-/// ES]` therefore binds NOTHING — the field's own params stay free. The element
+/// Unifying that bare ref against a parameterized field type `source: Stream[SourceElement,
+/// SourceEffects]` therefore binds NOTHING — the field's own params stay free. The element
 /// only ever appeared to thread because a SIBLING field's declared type wrote the
-/// projection (`mapped`'s transform `fn: (Src) -> T`, fed `f: (x: s.T) -> Dst`,
-/// pins `Src = s.T`); the effect row, written nowhere a value flows through, was
-/// left an unresolved `??_` (and then the provided `Stream[E = {ES, EF}]` could
-/// not match the declared `Stream[E = {s.E, EffP}]` return).
+/// projection (`mapped`'s transform `fn: (SourceElement) -> T`, fed `f: (x: s.T) -> Dst`,
+/// pins `SourceElement = s.T`); the effect row, written nowhere a value flows through, was
+/// left an unresolved `??_` (and then the provided `Stream[E = {SourceEffects,
+/// TransformEffects}]` could not match the declared `Stream[E = {s.E, EffP}]` return).
 ///
 /// When the argument IS such a bare receiver and the field type applies the same
 /// base, rebuild the argument's type as the receiver's self-projection `B[p =
@@ -645,15 +645,15 @@ fn bare_spec_arg_self_projection(
     // receiver, so it must thread the same way — in particular the effect-row param must
     // still bind the single-label ROW `{s.E}` rather than the bare projection, which is
     // the whole point of the loop below. MEASURED: without it, `mapped(s, f)` built
-    // `MappedStream[ES = s.E, …]` where the provider view wants `ES = {s.E}`, and
-    // `bare_map`'s declared `Stream[E = {s.E, EffP}]` return stopped conforming (wi594).
-    // CANONICAL, not raw `Symbol`: one logical sort carries different `Symbol` ids across
-    // import scopes ([`provider_spec_view_bindings`] documents that it does). A raw compare
-    // declines here whenever the field type was resolved in another scope than the argument,
-    // and [`bare_spec_arg_provision_projection`] — which excludes the self case canonically —
-    // declines it too, so the receiver would thread NOWHERE and leak `??_`: the very WI-594
-    // symptom, reintroduced by a spelling. Both sides ask the same question, so both ask it
-    // the same way.
+    // `MappedStream[SourceEffects = s.E, …]` where the provider view wants `SourceEffects =
+    // {s.E}`, and `bare_map`'s declared `Stream[E = {s.E, EffP}]` return stopped conforming
+    // (wi594). CANONICAL, not raw `Symbol`: one logical sort carries different `Symbol` ids
+    // across import scopes ([`provider_spec_view_bindings`] documents that it does). A raw
+    // compare declines here whenever the field type was resolved in another scope than the
+    // argument, and [`bare_spec_arg_provision_projection`] — which excludes the self case
+    // canonically — declines it too, so the receiver would thread NOWHERE and leak `??_`: the
+    // very WI-594 symptom, reintroduced by a spelling. Both sides ask the same question, so
+    // both ask it the same way.
     if bare_receiver_sort(kb, &arg.ty, recv).map(|s| kb.canonical_sort_sym(s))
         != Some(kb.canonical_sort_sym(field_base))
     {
@@ -674,8 +674,9 @@ fn bare_spec_arg_self_projection(
         // `{s.E}`, not the bare projection. The field's effect param is a row TAIL,
         // and a projection in a row is an ATOM (`present`) — the source-written
         // `{s.E, EffP}` return wraps it exactly so. Binding the row keeps the
-        // provision's `{ES, EF}` structurally a present-atom + tail, matching the
-        // declared return. A SORT param threads the bare projection (`Src = s.T`).
+        // provision's `{SourceEffects, TransformEffects}` structurally a present-atom + tail,
+        // matching the declared return. A SORT param threads the bare projection
+        // (`SourceElement = s.T`).
         let proj_val = effect_row_param_value(kb, field_base, &member_short, Value::term(proj));
         // Key by the FIELD's binding symbol so `unify_parameterized_view`'s
         // by-symbol param match threads it.
@@ -1280,16 +1281,16 @@ fn validate_field_arg(
 /// WI-599 — a CARRIER-PARAM-spec constructor field fed a carrier VALUE that
 /// PROVIDES that spec. The THIN finite-combinator case: `FiniteCollection.map(c,
 /// f) = mapped(c, f)`, where `mapped`'s `source` field is typed
-/// `Iterable[C = Source, Element = Src, E = ES]` (WI-590) and the argument `c` has
-/// the carrier-param type `C` — NOT the spec itself.
+/// `Iterable[C = Source, Element = SourceElement, E = SourceEffects]` (WI-590) and the argument
+/// `c` has the carrier-param type `C` — NOT the spec itself.
 ///
 /// [`bare_spec_arg_self_projection`] (WI-594) threads a bare spec receiver whose
 /// argument type IS the field's spec base (`s : Stream` into `Stream[…]`) via the
 /// receiver's self-projection `s.T` / `s.E`. Here the argument's type is a
 /// DIFFERENT sort (the carrier param) that merely PROVIDES the spec, so that check
-/// fails and the field's params (`Source`, `Src`, `ES`) leak as `??_` — the source
-/// carrier and its access effect never thread (only the element pins, through the
-/// sibling `fn`'s `(x: Src)`).
+/// fails and the field's params (`Source`, `SourceElement`, `SourceEffects`) leak as `??_` —
+/// the source carrier and its access effect never thread (only the element pins, through the
+/// sibling `fn`'s `(x: SourceElement)`).
 ///
 /// When the argument is a bare carrier value whose sort provides the field's spec,
 /// rebuild the argument's type as that spec applied to the carrier's own provision
@@ -1453,10 +1454,10 @@ pub(super) fn bare_spec_arg_provision_projection(
     // and the stdlib stopped loading. The carrier slot has since stopped being read off
     // the provision (BH1JZ, below), so the receiver's whole type is what is built; and
     // declining left `Source` an OPEN VARIABLE instead — MEASURED: `filtered(rest, pred)`
-    // was `FilteredStream[T = ?T, Source = ??_, ES = ?ES, EF = ?EF]` — so the wrapper's
-    // `requires Iterable[C = Source, …]` was resolved for a carrier nobody had named, and
-    // only a provision written with the BARE spec, which accepts an undetermined carrier,
-    // could answer it.
+    // was `FilteredStream[T = ?T, Source = ??_, SourceEffects = ?SourceEffects,
+    // PredicateEffects = ?PredicateEffects]` — so the wrapper's `requires Iterable[C = Source,
+    // …]` was resolved for a carrier nobody had named, and only a provision written with the
+    // BARE spec, which accepts an undetermined carrier, could answer it.
     let arg_sort = bare_receiver_sort(kb, &arg.ty, recv)
         .or_else(|| sort_functor_of_view(kb, &arg.ty))?;
     if kb.canonical_sort_sym(arg_sort) == kb.canonical_sort_sym(field_base) {

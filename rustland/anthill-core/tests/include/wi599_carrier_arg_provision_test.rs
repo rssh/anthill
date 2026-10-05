@@ -2,14 +2,14 @@
 //! CARRIER-PARAM-spec constructor field.
 //!
 //! WI-594 threads a bare spec receiver `s : Stream` into a field typed with that
-//! SAME spec (`source: Stream[Src, ES]`) via the receiver's self-projection. The
-//! THIN finite `map` the user preferred for WI-588 wraps the bare CARRIER value
-//! directly — `FiniteCollection.map(c, f) = mapped(c, f)` — where `c` has the
-//! carrier-param type `C` (a sort that merely PROVIDES the spec) and the combinator's
-//! `source` field is typed with a spec (`Iterable[C = Source, …]` in the stdlib since
-//! WI-590; the fixture below writes the same shape over its own `Coll`). The
-//! carrier param `C`/`C2` is NOT the spec base, so WI-594's self-projection does not
-//! fire and the field's source carrier + access effect leak as `??_`.
+//! SAME spec (`source: Stream[SourceElement, SourceEffects]`) via the receiver's
+//! self-projection. The THIN finite `map` the user preferred for WI-588 wraps the bare CARRIER
+//! value directly — `FiniteCollection.map(c, f) = mapped(c, f)` — where `c` has the
+//! carrier-param type `C` (a sort that merely PROVIDES the spec) and the combinator's `source`
+//! field is typed with a spec (`Iterable[C = Source, …]` in the stdlib since WI-590; the
+//! fixture below writes the same shape over its own `Coll`). The carrier param `C`/`C2` is NOT
+//! the spec base, so WI-594's self-projection does not fire and the field's source carrier +
+//! access effect leak as `??_`.
 //!
 //! `carrier_arg_provision_projection` rebuilds the argument's type from the carrier's
 //! provision, keyed by the field's binding symbols so every param (carrier, element AND
@@ -239,7 +239,7 @@ namespace test.wi70xvh.call
   import anthill.prelude.FiniteCollection.{{collect}}
 
   operation gmap[Sc, Other, S, Dst, EffS, EffP](s: Sc, o: Other, f: (x: S) -> Dst @ {{EffP, -Modify[x]}})
-    -> MappedStream[Source = Sc, Src = S, T = Dst, ES = EffS, EF = EffP]
+    -> MappedStream[Source = Sc, SourceElement = S, T = Dst, SourceEffects = EffS, TransformEffects = EffP]
     requires Iterable[C = {clause_carrier}, Element = S, E = EffS] =
     mapped(s, f)
 
@@ -362,7 +362,7 @@ namespace test.wi70xvh.sortcarrier
     -- the carrier is the SORT's parameter; `El` is the OPERATION's.
     sort C = ?
     operation wrap[El, Dst, EffP](x: C, f: (y: El) -> Dst @ {EffP, -Modify[y]})
-      -> MappedStream[Source = C, Src = El, T = Dst, ES = {}, EF = EffP]
+      -> MappedStream[Source = C, SourceElement = El, T = Dst, SourceEffects = {}, TransformEffects = EffP]
       requires Iterable[C = C, Element = El, E = {}] =
       mapped(x, f)
   end

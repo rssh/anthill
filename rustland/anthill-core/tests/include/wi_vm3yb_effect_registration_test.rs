@@ -531,7 +531,7 @@ fn a_sorts_own_effect_row_parameter_is_not_a_label() {
     //
     // CONTROL: drop the `resolve_sort_alias` exemption from `effect_label_kind` and this
     // row is refused — along with seven prelude sorts (`Function.E`, `Iterable.E`,
-    // `MappedStream.EF`/`ES`, `FiniteCollection.E`, `Iteration.Effect`,
+    // `MappedStream.TransformEffects`/`SourceEffects`, `FiniteCollection.E`, `Iteration.Effect`,
     // `PersistentCollection.Effect`), i.e. the stdlib stops loading and every row in this
     // file fails with it.
     let errs = load_errors(

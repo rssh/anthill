@@ -314,9 +314,9 @@ end
 /// does NOT reach, recorded rather than left to be rediscovered (found by /code-review).
 ///
 /// `types_compatible` routes to `types_compatible_view_structural` whenever a side is not
-/// a hash-consed term, and a DENOTED effect row (`EF = {Modify[k]}`) is such a side. That
-/// arm's own comment promises provider admissibility stays carrier-symmetric, and with
-/// the witness leg it no longer is: the two rows below are the same program but for the
+/// a hash-consed term, and a DENOTED effect row (`TransformEffects = {Modify[k]}`) is such a
+/// side. That arm's own comment promises provider admissibility stays carrier-symmetric, and
+/// with the witness leg it no longer is: the two rows below are the same program but for the
 /// effect row, and they disagree.
 ///
 /// IT IS NOT A ONE-LINE OMISSION. `witness_provides_admissibly` asks through a
@@ -335,8 +335,8 @@ namespace n01pyden
   import anthill.prelude.{List, Int64, FiniteCollection, MappedStream, Cell, Modify}
   operation total(c: FiniteCollection) -> Int64 effects c.E = FiniteCollection.size(c)
   operation f(k: Cell[V = Int64],
-              m: MappedStream[Source = List[T = Int64], Src = Int64, T = Int64,
-                              ES = {}, EF = {Modify[k]}]) -> Int64 effects {Modify[k]} =
+              m: MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64,
+                              SourceEffects = {}, TransformEffects = {Modify[k]}]) -> Int64 effects {Modify[k]} =
     total(m)
 end
 "#;
@@ -344,8 +344,8 @@ end
 namespace n01pygr
   import anthill.prelude.{List, Int64, FiniteCollection, MappedStream}
   operation total(c: FiniteCollection) -> Int64 effects c.E = FiniteCollection.size(c)
-  operation f(m: MappedStream[Source = List[T = Int64], Src = Int64, T = Int64,
-                              ES = {}, EF = {}]) -> Int64 = total(m)
+  operation f(m: MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64,
+                              SourceEffects = {}, TransformEffects = {}]) -> Int64 = total(m)
 end
 "#;
     let errs = try_load_kb_with(DENOTED).err().unwrap_or_else(|| {
@@ -503,7 +503,7 @@ namespace n01pyinf
 
   operation total(c: FiniteCollection) -> Int64 effects c.E = FiniteCollection.size(c)
 
-  operation bad(m: MappedStream[Source = Nats, Src = Int64, T = Int64, ES = {}, EF = {}])
+  operation bad(m: MappedStream[Source = Nats, SourceElement = Int64, T = Int64, SourceEffects = {}, TransformEffects = {}])
     -> Int64 = total(m)
 end
 "#;
@@ -532,7 +532,7 @@ fn the_same_shape_over_a_finite_source_loads() {
 namespace n01pyfin
   import anthill.prelude.{Int64, List, FiniteCollection, MappedStream}
   operation total(c: FiniteCollection) -> Int64 effects c.E = FiniteCollection.size(c)
-  operation ok(m: MappedStream[Source = List[T = Int64], Src = Int64, T = Int64, ES = {}, EF = {}])
+  operation ok(m: MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64, SourceEffects = {}, TransformEffects = {}])
     -> Int64 = total(m)
 end
 "#;

@@ -42,18 +42,17 @@ pub struct SortGoal {
 ///
 /// THE SORT ALONE WAS NOT ENOUGH, and the gap is silent. A carrier's `requires`
 /// clause is written in the carrier's DECLARATION scope (`MappedStream requires
-/// Iterable[C = Source, Element = Src, E = ES]`, as the stdlib wrote it until
+/// Iterable[C = Source, Element = SourceElement, E = SourceEffects]`, as the stdlib wrote it until
 /// WI-20261005-2KV4Y), and
 /// [`candidate_provider_sub_goals`] instantiates it through the substitution the
 /// PROVISION HEAD matched. A head that does not mention a parameter therefore leaves
 /// it standing as a bare reference to the declaration's own param: `MappedStream
-/// provides Stream[T = T, E = {ES, EF}]` names neither `Source` nor `Src`, so
-/// `Stream.splitFirst(mapped(xs, inc))` asked for `Iterable[C = MappedStream.Source,
-/// …]` — a goal about a parameter rather than about the receiver — and no provider
-/// answers it. The receiver's type was FULLY GROUND at that point
-/// (`MappedStream[Source = List[T = Int64], Src = Int64, …]`, which WI-20260828-BH1JZ
-/// delivered); the dispatch simply could not see it, because a `Symbol` cannot carry
-/// it.
+/// provides Stream[T = T, E = {SourceEffects, TransformEffects}]` names neither `Source` nor
+/// `SourceElement`, so `Stream.splitFirst(mapped(xs, inc))` asked for `Iterable[C =
+/// MappedStream.Source, …]` — a goal about a parameter rather than about the receiver — and no
+/// provider answers it. The receiver's type was FULLY GROUND at that point
+/// (`MappedStream[Source = List[T = Int64], SourceElement = Int64, …]`, which WI-20260828-BH1JZ
+/// delivered); the dispatch simply could not see it, because a `Symbol` cannot carry it.
 ///
 /// The arguments ride IN THE GOAL, not beside it, for the reason WI-350 put the sort
 /// there: the goal is the `resolve_cache` key. Two receivers of one carrier at

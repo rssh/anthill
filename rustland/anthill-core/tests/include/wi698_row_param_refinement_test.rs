@@ -29,20 +29,18 @@
 //!      over `List` (E = {}) under a consumer declaring `effects {}`;
 //!   6. the 054 §Mechanism READ/WRITE SPLIT: a spec `Mir2` with TWO decoupled
 //!      row params (`ER`/`EW`, the WI-441 pair shipped as MappedStream
-//!      `ES`/`EF`) threads and refines INDEPENDENTLY. The GENUINE pin is the
-//!      param-to-param `Wrap2RW` (WRAP_SRC's idiom — typer-enforced both ways —
-//!      extended to two params): it threads its own `WR`/`WW` into
-//!      `Mir2[ER = WR, EW = WW]`, and a consumer instantiating
-//!      `Wrap2RW[WR = {External}, WW = {Reg}]` refines ER and EW to
-//!      DIFFERENT rows at the call site, each declared tightly — so a swap or a
-//!      dropped param fails to load (the `*_wrong` negatives). `StoreRW` pins
-//!      the UNION `{ER, EW}` at a NON-empty instantiation (a dropped component
-//!      is caught by `store_union_drops`). `FakeRW`/`GhRW` only ILLUSTRATE the
-//!      §Faking concrete shape (read pure vs tracked write; real both-External):
-//!      their `provides Mir2` effect-binding is fail-open today
-//!      (`check_override_refinement` defers denoted/parametric rows), so it is
-//!      `Wrap2RW`, not they, that pins the mechanism. Expected FREE — the same
-//!      type-arg substitution carries a second row param with no new typer work;
+//!      `SourceEffects`/`TransformEffects`) threads and refines INDEPENDENTLY. The GENUINE
+//!      pin is the param-to-param `Wrap2RW` (WRAP_SRC's idiom — typer-enforced both ways —
+//!      extended to two params): it threads its own `WR`/`WW` into `Mir2[ER = WR, EW = WW]`,
+//!      and a consumer instantiating `Wrap2RW[WR = {External}, WW = {Reg}]` refines ER and EW
+//!      to DIFFERENT rows at the call site, each declared tightly — so a swap or a dropped
+//!      param fails to load (the `*_wrong` negatives). `StoreRW` pins the UNION `{ER, EW}` at a
+//!      NON-empty instantiation (a dropped component is caught by `store_union_drops`).
+//!      `FakeRW`/`GhRW` only ILLUSTRATE the §Faking concrete shape (read pure vs tracked write;
+//!      real both-External): their `provides Mir2` effect-binding is fail-open today
+//!      (`check_override_refinement` defers denoted/parametric rows), so it is `Wrap2RW`, not
+//!      they, that pins the mechanism. Expected FREE — the same type-arg substitution carries a
+//!      second row param with no new typer work;
 //!   7. WI-700 DELIVERED — effect-row enforcement at an EXPLICIT instantiation
 //!      site, TWO independent probes over the generic `Outside` stand-in:
 //!      (a) `shield[EffP = {Outside}](poke)` is REJECTED: the instantiation makes
@@ -113,7 +111,8 @@ end
 "#;
 
 /// Param-to-param threading: Wrap2's OWN row param bound into its `provides`
-/// (the MappedStream `provides Stream[T = T, E = {ES, EF}]` idiom, C-style).
+/// (the MappedStream `provides Stream[T = T, E = {SourceEffects, TransformEffects}]` idiom,
+/// C-style).
 const WRAP_SRC: &str = r#"
 namespace smoke.c_wrap
   import anthill.prelude.{Int64}
@@ -171,7 +170,7 @@ end
 "#;
 
 /// 054 §Mechanism READ/WRITE SPLIT: a spec `Mir2` with TWO decoupled row params
-/// (`ER`/`EW`), the WI-441 pair shipped as MappedStream `ES`/`EF`.
+/// (`ER`/`EW`), the WI-441 pair shipped as MappedStream `SourceEffects`/`TransformEffects`.
 ///
 /// The GENUINE two-param pin is `Wrap2RW` — WRAP_SRC's param-to-param idiom
 /// (which the typer enforces both ways) extended to TWO params: it threads its

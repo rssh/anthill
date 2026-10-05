@@ -10,7 +10,7 @@
 //! `Iterable` rather than *providing* it — so `carrier_param_receiver`'s
 //! `provides`-only `transitive_provision_view` found nothing and the produced
 //! `Stream[Element, E]` leaked `??_` for both params, cascading into
-//! `mapped(…) : MappedStream[T = ??_, Src = ??_, ES = ??_]`.
+//! `mapped(…) : MappedStream[T = ??_, SourceElement = ??_, SourceEffects = ??_]`.
 //!
 //! `abstract_spec_required_view` builds the provision view from the `requires`
 //! clause instead (the same view shape a `provides` fact yields), so the spec's

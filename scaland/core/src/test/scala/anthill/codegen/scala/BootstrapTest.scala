@@ -1012,10 +1012,11 @@ class BootstrapTest extends munit.FunSuite:
     // carries NO supertrait where the non-shadowing fixture above keeps one.
     //
     // What IS this ticket's, and is asserted: the arities. The nested
-    // `MappedStream[Source = C, Src = Element, T = Dst, ES = E, EF = EffP]` is
-    // written with five arguments, of which `ES = E` is a sort effect parameter and
-    // `EF = EffP` is an operation type parameter this signature only ever uses
-    // inside a row — three survive, matching the three the emission declares.
+    // `MappedStream[Source = C, SourceElement = Element, T = Dst, SourceEffects = E,
+    // TransformEffects = EffP]` is written with five arguments, of which
+    // `SourceEffects = E` is a sort effect parameter and `TransformEffects = EffP` is
+    // an operation type parameter this signature only ever uses inside a row — three
+    // survive, matching the three the emission declares.
     val src = gen(parseStdlib("anthill/prelude/finite_collection.anthill"))
       .head.contents
     assert(src.contains("trait FiniteCollection[C, Element]:"),
@@ -1033,7 +1034,7 @@ class BootstrapTest extends munit.FunSuite:
     // WITNESSES, and the carrier this signature applies is `MappedStream`.
     val mapped = gen(parseStdlib("anthill/prelude/combinators.anthill"))
       .head.contents
-    assert(mapped.contains("enum MappedStream[Source, Src, T]"),
+    assert(mapped.contains("enum MappedStream[Source, SourceElement, T]"),
       s"the three surviving arguments must be the three the declaration emits:\n$mapped")
   }
 
@@ -1875,8 +1876,8 @@ class BootstrapTest extends munit.FunSuite:
     // The finiteness WITNESSES in finite_combinators.anthill are the other arm: they
     // declare no constructor, so their `requires FiniteCollection[C = S, …]` has no
     // field to ride on and correctly BECOMES the dictionary (`trait
-    // MappedStreamFinite[S, Src, T]: def collect(…)(using FiniteCollection[S, Src])`,
-    // measured).
+    // MappedStreamFinite[S, SourceElement, T]: def collect(…)(using FiniteCollection[S,
+    // SourceElement])`, measured).
     val mapped = preludeClosure("combinators").head.contents
     assert(!mapped.contains("using"),
       s"a field-discharged requirement must not also be a dictionary:\n$mapped")
@@ -2154,13 +2155,13 @@ class BootstrapTest extends munit.FunSuite:
     // against the two that declaration emits.
     //
     // The emission WI-1064 removed, while the clause was written: `enum
-    // MappedStream[Source, Src, T] extends anthill.prelude.Iterable[Source, Src]:`,
-    // whose measured consequence (on the pre-WI-590 spelling of the same shape) was
-    // `class Fmapped needs to be abstract, since it has 9 unimplemented members`.
+    // MappedStream[Source, SourceElement, T] extends anthill.prelude.Iterable[Source,
+    // SourceElement]:`, whose measured consequence (on the pre-WI-590 spelling of the same
+    // shape) was `class Fmapped needs to be abstract, since it has 9 unimplemented members`.
     val files = preludeClosure("combinators")
     Seq(
-      ("MappedStream", "enum MappedStream[Source, Src, T]:",
-        "case Mapped(source: _root_.anthill.prelude.Iterable[Source, Src],"),
+      ("MappedStream", "enum MappedStream[Source, SourceElement, T]:",
+        "case Mapped(source: _root_.anthill.prelude.Iterable[Source, SourceElement],"),
       ("FilteredStream", "enum FilteredStream[Source, T]:",
         "case Filtered(source: _root_.anthill.prelude.Iterable[Source, T],"),
     ).foreach { case (sort, decl, field) =>

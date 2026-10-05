@@ -5,21 +5,25 @@
 //! matching the PROVISION HEAD against the dispatch goal produced. A head names only
 //! the parameters the spec is about, so every OTHER parameter of the carrier survives
 //! into the sub-goal as a bare reference to the declaration's own parameter. The stdlib's
-//! `MappedStream`, as it was written when this was measured:
+//! `MappedStream` then declared, in today's parameter names:
 //!
 //!     sort MappedStream
-//!       sort Source = ?  sort Src = ?  sort T = ?  effects ES = ?  effects EF = ?
-//!       requires Iterable[C = Source, Element = Src, E = ES]   -- names Source, Src, ES
-//!       provides Stream[T = T, E = {ES, EF}]                   -- names T, ES, EF
+//!       sort Source = ?  sort SourceElement = ?  sort T = ?
+//!       effects SourceEffects = ?  effects TransformEffects = ?
+//!       requires Iterable[C = Source, Element = SourceElement, E = SourceEffects]
+//!       provides Stream[T = T, E = {SourceEffects, TransformEffects}]
+//!
+//! The `requires` names `Source`, `SourceElement` and `SourceEffects`; the `provides` head
+//! names `T`, `SourceEffects` and `TransformEffects`.
 //!
 //! `Stream.splitFirst(mapped(xs, inc))` therefore asked for `Iterable[C =
-//! MappedStream.Source, Element = MappedStream.Src, E = MappedStream.ES]` — a goal
-//! about a PARAMETER — and was refused `no impl provides Iterable`, for a receiver
-//! whose type is fully ground (`MappedStream[Source = List[T = Int64], Src = Int64,
-//! …]`, which WI-20260828-BH1JZ delivered and its suite pins). The dispatch could not
-//! see those arguments: [`SortGoal::carrier`] carried the receiver's SORT and nothing
-//! else. It now carries the receiver's own type arguments as well, and they fill the
-//! impl-param substitution wherever the head left it free.
+//! MappedStream.Source, Element = MappedStream.SourceElement, E = MappedStream.SourceEffects]`
+//! — a goal about a PARAMETER — and was refused `no impl provides Iterable`, for a receiver
+//! whose type is fully ground (`MappedStream[Source = List[T = Int64], SourceElement = Int64,
+//! …]`, which WI-20260828-BH1JZ delivered and its suite pins). The dispatch could not see those
+//! arguments: [`SortGoal::carrier`] carried the receiver's SORT and nothing else. It now
+//! carries the receiver's own type arguments as well, and they fill the impl-param substitution
+//! wherever the head left it free.
 //!
 //! ADDITIVE, so it cannot move a dispatch the head already decided: only a parameter
 //! the head match did NOT bind is filled. That is also what the `Elemental` control

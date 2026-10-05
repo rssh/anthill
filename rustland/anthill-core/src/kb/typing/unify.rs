@@ -297,7 +297,7 @@ fn unify_view_structural<A: TermView, B: TermView>(
         // WI-441 (was the weaker WI-320 structural unify): a top-level row
         // pair takes the FULL row algorithm — the structural inner-unify was
         // order-sensitive over `merge`, rejecting equal rows written in
-        // different binding orders (the two-row carriers' `{ES, EF}`).
+        // different binding orders (the two-row carriers' `{SourceEffects, TransformEffects}`).
         (Some("effects_rows"), Some("effects_rows")) => unify_effect_rows(kb, subst, a, b),
         // Mirrors `unify_term_dispatch`'s `_ => types_compatible(...)` — a unify of
         // any other (form-mismatched) pair falls back to the subtype check, which is

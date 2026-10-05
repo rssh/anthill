@@ -67,7 +67,7 @@ sort anthill.prelude.FiniteCollection
   -- eager-snapshot reading stays on `Iterable.map`, which does call `iterator(c)`.
   --
   -- The return is the BARE CARRIER, not the `FiniteCollection[C = …]` view: the view
-  -- spelling does not load (the value's `EF` is an OPEN row from the `-Modify[x]`
+  -- spelling does not load (the value's `TransformEffects` is an OPEN row from the `-Modify[x]`
   -- lack, and no source spelling produces that form — measured, WI-590). The bare
   -- carrier is what the witness in finite_combinators.anthill keys its provision on,
   -- so `.size()` / `.collect()` / a further `.map` all resolve on the result.
@@ -75,10 +75,10 @@ sort anthill.prelude.FiniteCollection
   -- the element under test (re-walkable lazy view, WI-440); decoupled rows (WI-441):
   -- result access row is the UNION `{E, EffP}`, paid on consume.
   operation map[Dst, EffP](c: C, f: (x: Element) -> Dst @ {EffP, -Modify[x]})
-    -> MappedStream[Source = C, Src = Element, T = Dst, ES = E, EF = EffP] =
+    -> MappedStream[Source = C, SourceElement = Element, T = Dst, SourceEffects = E, TransformEffects = EffP] =
     mapped(c, f)
 
   operation filter[EffP](c: C, p: (x: Element) -> Bool @ {EffP, -Modify[x]})
-    -> FilteredStream[Source = C, T = Element, ES = E, EF = EffP] =
+    -> FilteredStream[Source = C, T = Element, SourceEffects = E, PredicateEffects = EffP] =
     filtered(c, p)
 end

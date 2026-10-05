@@ -509,12 +509,12 @@ pub(super) fn collect_provides_candidates(
 /// goal. A head names only the parameters the spec is about, so every other parameter of
 /// the carrier stays a bare reference into the carrier's own declaration. The stdlib's
 /// `MappedStream` was the measured case: it declared `requires Iterable[C = Source,
-/// Element = Src, E = ES]`, three parameters that `provides Stream[T = T, E = {ES, EF}]`
-/// does not write, so the sub-goal that reached the resolver was `Iterable[C =
-/// MappedStream.Source, …]`, which asks about a PARAMETER; nothing provides that, and
-/// `Stream.splitFirst(mapped(xs, inc))` was refused for a receiver whose type is fully
-/// ground. (That clause is deleted since WI-20261005-2KV4Y — no body read it; the shape is
-/// driven by `wi_ekwdc_carrier_requires_instantiation_test`'s `Pairer`.)
+/// Element = SourceElement, E = SourceEffects]`, three parameters that `provides Stream[T = T,
+/// E = {SourceEffects, TransformEffects}]` does not write, so the sub-goal that reached the
+/// resolver was `Iterable[C = MappedStream.Source, …]`, which asks about a PARAMETER; nothing
+/// provides that, and `Stream.splitFirst(mapped(xs, inc))` was refused for a receiver whose
+/// type is fully ground. (That clause is deleted since WI-20261005-2KV4Y — no body read it; the
+/// shape is driven by `wi_ekwdc_carrier_requires_instantiation_test`'s `Pairer`.)
 ///
 /// ADDITIVE, NEVER OVERRIDING. Only a parameter the head match left unbound is filled.
 /// The head match is what the goal DEMANDED of this provision, so it stays the

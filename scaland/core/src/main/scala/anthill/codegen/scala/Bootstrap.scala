@@ -1514,10 +1514,11 @@ object Bootstrap:
     * makes it the right question: the requirement survives when a constructor field
     * is TYPED BY it, so the evidence reaches Scala as that field's type. The two
     * corpus instances were exactly that — `requires Iterable[C = Source,
-    * Element = Src, E = ES]` beside `entity mapped(source: Iterable[C =
-    * Source, Element = Src, E = ES], …)` — and there the omitted `extends` cost the
-    * emitted tree nothing. The corpus no longer writes the clause (WI-20261005-2KV4Y);
-    * the shape is driven by the `boxed.anthill` fixture. Rendering through the SAME `scope` the field list uses
+    * Element = SourceElement, E = SourceEffects]` beside `entity mapped(source:
+    * Iterable[C = Source, Element = SourceElement, E = SourceEffects], …)` — and there
+    * the omitted `extends` cost the emitted tree nothing. The corpus no longer writes the
+    * clause (WI-20261005-2KV4Y); the shape is driven by the `boxed.anthill` fixture.
+    * Rendering through the SAME `scope` the field list uses
     * (`at` varies only the diagnostic label) is what makes the two comparable.
     *
     * PER CONSTRUCTOR, not per sort. Over the flattened field list of a sum, one

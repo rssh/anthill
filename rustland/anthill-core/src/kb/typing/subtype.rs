@@ -377,9 +377,9 @@ pub(super) fn types_compatible_view_structural<A: TermView, B: TermView>(
                 // /code-review, which read the earlier "NOT HERE" as the wider claim).
                 //
                 // MEASURED, a drivable pair: a DENOTED effect row on the actual
-                // (`MappedStream[…, EF = {Modify[k]}]`) routes here instead of to the term
-                // dispatch, and is REFUSED at `total(c: FiniteCollection)` while the
-                // byte-identical ground-row twin is accepted. The pair is
+                // (`MappedStream[…, TransformEffects = {Modify[k]}]`) routes here instead of
+                // to the term dispatch, and is REFUSED at `total(c: FiniteCollection)` while
+                // the byte-identical ground-row twin is accepted. The pair is
                 // `n01py_witness_provision_subtype_test::a_denoted_effect_row_is_a_known_gap`.
                 //
                 // WHY IT CANNOT SIMPLY BE ADDED: `witness_provides_admissibly` asks its
@@ -811,12 +811,12 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
     };
     let cross_sort_provider = cross_sort_provider.map(|(view, _)| view);
     // WI-441: the provider view's binding values carry the CARRIER's canonical
-    // param vars (`provides Stream[T = T, E = {ES, EF}]` holds MappedStream's
-    // own ES/EF alias vars). Instantiate them through THIS actual instance's
-    // bindings (ES := the instance's ES value, …), so the per-param comparison
-    // below sees the instance's row, not the canon vars (a two-row provision
-    // `{ES, EF}` cannot pair against the expected row's tails without it —
-    // two-tail-to-two-tail pairing is ambiguous).
+    // param vars (`provides Stream[T = T, E = {SourceEffects, TransformEffects}]` holds
+    // MappedStream's own SourceEffects/TransformEffects alias vars). Instantiate them through
+    // THIS actual instance's bindings (SourceEffects := the instance's SourceEffects value, …),
+    // so the per-param comparison below sees the instance's row, not the canon vars (a two-row
+    // provision `{SourceEffects, TransformEffects}` cannot pair against the expected row's
+    // tails without it — two-tail-to-two-tail pairing is ambiguous).
     //
     // WI-20260829-9NJTX — THE INSTANTIATION IS A REWRITE OF THE VIEW, NOT A FACT ABOUT THE
     // CALLER'S WORLD, and it is applied here rather than published into `subst`. It used

@@ -3690,11 +3690,11 @@ pub fn check_declared_row_contradiction(kb: &mut KnowledgeBase) -> Vec<crate::kb
 ///   * EXEMPT while it is a HOLE: a sort's declared effect ROW PARAMETER. `effects
 ///     Effect = ?` (WI-320) lowers to a type parameter, so `effects Effect` inside
 ///     `PersistentCollection` heads as a `SortRef` to `PersistentCollection.Effect`.
-///     Seven are live in the prelude (`Function.E`, `Iterable.E`, `MappedStream.EF`/`ES`,
-///     …), all of them holes. A hole is a slot for a row, not a label — but a BOUND one
-///     (`effects E = Kind`, `sort X = Kind`) is a NAME for what it is bound to and IS
-///     judged; [`effect_label_kind`] carries that distinction and the two programs that
-///     forced it.
+///     Seven are live in the prelude (`Function.E`, `Iterable.E`,
+///     `MappedStream.TransformEffects`/`SourceEffects`, …), all of them holes. A hole is a
+///     slot for a row, not a label — but a BOUND one (`effects E = Kind`, `sort X = Kind`) is a
+///     NAME for what it is bound to and IS judged; [`effect_label_kind`] carries that
+///     distinction and the two programs that forced it.
 ///   * SKIPPED, having no name at all: the engine's own variables
 ///     ([`TypeHead::FlexVar`] / [`TypeHead::Skolem`] — 21 in the prelude, the opened
 ///     row params), and a receiver projection `s.E` ([`TypeHead::ExprCarried`] /

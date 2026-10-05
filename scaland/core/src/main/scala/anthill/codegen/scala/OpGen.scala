@@ -103,12 +103,12 @@ object OpGen:
     * (`effects E = ?`), and an operation has no such spelling — `operation
     * map[S, Dst, EffS, EffP]` writes its row variables in the same flat list as its
     * type variables. That is not an omission Bootstrap can route around: the
-    * emitted `MappedStream[Source, Src, T]` has no slot for `EffP`, so
-    * `MappedStream[Source = C, Src = Element, T = Dst, ES = E, EF = EffP]`
-    * either drops it or ships a four-argument application of a three-parameter
-    * type. Reading which parameters the signature USES as rows is the same thing a
-    * reader does, and it is entirely local — the declaration's own text, no KB and
-    * no other file (proposal 034).
+    * emitted `MappedStream[Source, SourceElement, T]` has no slot for `EffP`, so
+    * `MappedStream[Source = C, SourceElement = Element, T = Dst, SourceEffects = E,
+    * TransformEffects = EffP]` either drops it or ships a four-argument application of a
+    * three-parameter type. Reading which parameters the signature USES as rows is the same
+    * thing a reader does, and it is entirely local — the declaration's own text, no KB and no
+    * other file (proposal 034).
     *
     * A row VARIABLE only: `{EffP, -Modify[x]}` contributes `EffP` and not `Modify`
     * or `x`, because a parameterized element of a row is a concrete effect LABEL

@@ -10850,11 +10850,11 @@ impl KnowledgeBase {
         // as-is rather than wrapping the whole `guarded(…)` Fn in `present(…)`.
         let guarded_sym = self.try_resolve_symbol("anthill.prelude.EffectExpression.guarded");
         let mut atoms: Vec<TermId> = Vec::new();
-        // WI-441: ALL row-tail Vars are collected — a row UNION (`{ES, EF}`,
-        // the lazy combinators' merge row) folds each as its own `open(…)`.
-        // (Pre-WI-441 only the first Var became the tail; the rest were
-        // stuffed into the atoms list and wrapped `present(var)` — a
-        // malformed shape decompose read as a present LABEL.)
+        // WI-441: ALL row-tail Vars are collected — a row UNION (`{SourceEffects,
+        // TransformEffects}`, the lazy combinators' merge row) folds each as its own
+        // `open(…)`. (Pre-WI-441 only the first Var became the tail; the rest were stuffed into
+        // the atoms list and wrapped `present(var)` — a malformed shape decompose read as a
+        // present LABEL.)
         let mut tail_vars: Vec<TermId> = Vec::new();
         for &e in effects {
             // WI-441: a SORT-level row param referenced in a written row lowers

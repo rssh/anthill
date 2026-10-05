@@ -197,7 +197,7 @@ fn the_carrier_param_binds_to_the_receiver_not_to_the_provisions_self_reference(
           import anthill.prelude.MappedStream.{mapped}
           operation inc(x: Int64) -> Int64 = x + 1
           operation probe(xs: List[T = Int64])
-            -> MappedStream[Source = List[T = Int64], Src = Int64, T = Int64, ES = {}, EF = {}] =
+            -> MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64, SourceEffects = {}, TransformEffects = {}] =
             mapped(xs, inc)
         end
     "#,

@@ -706,9 +706,9 @@ refused.
   A sort that writes
 
   ```
-  requires Iterable[C = Source, Element = Src, E = ES]
-  entity mapped(source: Iterable[C = Source, Element = Src, E = ES], fn: …)
-  provides Stream[T = T, E = {ES, EF}]
+  requires Iterable[C = Source, Element = SourceElement, E = SourceEffects]
+  entity mapped(source: Iterable[C = Source, Element = SourceElement, E = SourceEffects], fn: …)
+  provides Stream[T = T, E = {SourceEffects, TransformEffects}]
   ```
 
   has a `requires` that constrains the *source* carrier `Source`, and its claim about

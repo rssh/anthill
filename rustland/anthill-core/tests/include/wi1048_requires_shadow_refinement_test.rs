@@ -375,7 +375,7 @@ fn finite_map_returns_the_mapped_carrier() {
         namespace wi1048.row_a
           import anthill.prelude.{List, Int64, MappedStream}
           operation probe(xs: List[T = Int64])
-            -> MappedStream[Source = List[T = Int64], Src = Int64, T = Int64, ES = {}, EF = {}] =
+            -> MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64, SourceEffects = {}, TransformEffects = {}] =
             xs.map(lambda x -> x)
         end
     "#,
@@ -397,7 +397,7 @@ fn iterable_map_refuses_the_mapped_carrier() {
         namespace wi1048.row_a_control
           import anthill.prelude.{List, Int64, MappedStream, Iterable}
           operation probe(xs: List[T = Int64])
-            -> MappedStream[Source = List[T = Int64], Src = Int64, T = Int64, ES = {}, EF = {}] =
+            -> MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64, SourceEffects = {}, TransformEffects = {}] =
             Iterable.map(xs, lambda x -> x)
         end
     "#,

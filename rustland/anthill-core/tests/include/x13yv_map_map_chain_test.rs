@@ -15,12 +15,12 @@
 //!
 //! Two things wrong with reaching it, and the second is why grounding `EffS` would not
 //! have been a fix. (1) `EffS` did not ground from `MappedStream provides Stream[T = T,
-//! E = {ES, EF}]` — WI-594's gap 2 — so the chain did not load: "expected a type for
-//! 'EffS', got unconstrained". (2) The return ERASED the source to a bare `Stream`, the
-//! erasure WI-590 deleted the finite twin carriers to be rid of, so even grounded the
-//! result would carry no `Source` for `MappedStreamFinite` to read and
-//! `xs.map(f).map(g).size()` would still have been refused — exactly as
-//! `total(Iterable.map(xs, f))` is, and must stay.
+//! E = {SourceEffects, TransformEffects}]` — WI-594's gap 2 — so the chain did not load:
+//! "expected a type for 'EffS', got unconstrained". (2) The return ERASED the source to a bare
+//! `Stream`, the erasure WI-590 deleted the finite twin carriers to be rid of, so even grounded
+//! the result would carry no `Source` for `MappedStreamFinite` to read and
+//! `xs.map(f).map(g).size()` would still have been refused — exactly as `total(Iterable.map(xs,
+//! f))` is, and must stay.
 //!
 //! THE REPAIR REUSES THE INPUT TYPE: the result names its input as its own `Source`, so the
 //! witness recurses and a two-hop chain is finite exactly when the ORIGINAL carrier is.
@@ -239,12 +239,12 @@ namespace x13yv.gate
   end
 
   operation twoHopMap(
-      m: MappedStream[Source = {SOURCE}, Src = Int64, T = Int64, ES = {}, EF = {}])
+      m: MappedStream[Source = {SOURCE}, SourceElement = Int64, T = Int64, SourceEffects = {}, TransformEffects = {}])
     -> List[T = Int64] =
     FiniteCollection.collect(m.map(lambda n -> n))
 
   operation twoHopFilter(
-      f: FilteredStream[Source = {SOURCE}, T = Int64, ES = {}, EF = {}])
+      f: FilteredStream[Source = {SOURCE}, T = Int64, SourceEffects = {}, PredicateEffects = {}])
     -> List[T = Int64] =
     FiniteCollection.collect(f.filter(lambda n -> true))
 end

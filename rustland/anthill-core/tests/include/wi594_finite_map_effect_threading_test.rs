@@ -25,12 +25,12 @@
 
 /// A bare-receiver `map` over the existing `MappedStream`: `mapped(s, f)` wraps a
 /// bare abstract `Stream` receiver `s` into the `mapped` carrier (`source` field
-/// `Stream[Src, ES]`). The result element comes from the transform `f` (`Dst`);
-/// the source element/effect come from `s`. Threading SHOULD give the carrier
-/// `ES = s.E` (provided row `{s.E, EffP}`), matching the declared return. Today
-/// the source ELEMENT threads (`Src = s.T`) but the source EFFECT does NOT (`ES`
-/// stays unbound), so the row is ungrounded and the return is rejected — the same
-/// gap that forces WI-588's `finiteIterator` indirection. WI-594 fixes it.
+/// `Stream[SourceElement, SourceEffects]`). The result element comes from the transform `f`
+/// (`Dst`); the source element/effect come from `s`. Threading SHOULD give the carrier
+/// `SourceEffects = s.E` (provided row `{s.E, EffP}`), matching the declared return. Today the
+/// source ELEMENT threads (`SourceElement = s.T`) but the source EFFECT does NOT
+/// (`SourceEffects` stays unbound), so the row is ungrounded and the return is rejected — the
+/// same gap that forces WI-588's `finiteIterator` indirection. WI-594 fixes it.
 #[test]
 fn bare_receiver_map_threads_source_effect() {
     let src = r#"
