@@ -1092,6 +1092,9 @@ mod wi896_labeled_predicate_head_test;
 #[path = "include/wi898_equation_functor_kind_test.rs"]
 mod wi898_equation_functor_kind_test;
 
+#[path = "include/wi899_builtin_clause_coexistence_test.rs"]
+mod wi899_builtin_clause_coexistence_test;
+
 #[path = "include/wi900_implicit_tier_agreement_test.rs"]
 mod wi900_implicit_tier_agreement_test;
 

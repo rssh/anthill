@@ -124,7 +124,9 @@ fn the_four_cases_are_decided_by_resolution_not_by_the_label() {
 /// position. That consistency is the argument: one spelling, one meaning, whichever side
 /// of the `:-` it is written on.
 ///
-/// What becomes of the user's own `or` clause is [`a_clause_on_a_builtin_backed_name_is_inert_at_sld`].
+/// WI-899 owns what becomes of the user's own `or` clause: at the native handler's
+/// arity it now contributes answers beside the native branches, and off that arity it
+/// remains an ordinary clause on the same resolved symbol.
 #[test]
 fn a_kernel_primitive_head_does_not_capture_the_scope() {
     const SRC: &str = r#"
@@ -279,48 +281,7 @@ end
     }
 }
 
-/// …AND THE RESIDUE, PINNED RATHER THAN HIDDEN. Once the head RESOLVES, the clause joins
-/// whatever it resolved to — and if that symbol is backed by a resolver builtin, the
-/// builtin decides the goal and the clause is never reached. No diagnostic says so.
-///
-/// This is NOT introduced here, and the ticket must not be read as introducing it: the
-/// smt-gen `bound` lemma has always been a clause on the builtin-backed
-/// `anthill.prelude.PartialOrd.gte`, inert at SLD and cited only by the SMT backend. What
-/// WI-896 changes is which names reach that state, not the state itself.
-///
-/// MEASURED, and the arity is the surprising half — which is why both are driven rather
-/// than one being assumed from the other. At the builtin's OWN arity the builtin wins:
-/// `or(?a, ?b)` enumerates disjunction choice points and leaves the user's clause
-/// unreached. At any OTHER arity there is no builtin behaviour to shadow it, and the
-/// clause resolves normally. So "a reserved-name head is dead" is false as stated, and
-/// the honest claim is narrower.
-///
-/// Filed as WI-899. When a refusal lands, this test fails and names what to update.
-#[test]
-fn a_clause_on_a_builtin_backed_name_is_inert_at_sld() {
-    const SRC: &str = r#"
-namespace wi896.inert
-  import anthill.prelude.{Int64}
-  import anthill.kernel.{or}
-  fact p896(1)
-  rule or(?a) :- p896(?a)
-  rule or(?a, ?b) :- p896(?a), p896(?b)
-end
-"#;
-    let mut kb = crate::common::load_kb_with(SRC);
-    let solve = |kb: &mut _, arity| {
-        crate::wi282_rule_body_dot_test::resolve_query(kb, "anthill.kernel.or", arity)
-    };
-    assert_eq!(
-        solve(&mut kb, 1),
-        1,
-        "PINNED (not an endorsement): off the builtin's arity the user's clause is \
-         reachable — `p896` has exactly one fact",
-    );
-    assert!(
-        solve(&mut kb, 2) > 1,
-        "PINNED (not an endorsement): at the builtin's own arity `or` is disjunction and \
-         the user's 2-ary clause is never reached, with no diagnostic. If this now FAILS, \
-         WI-899's refusal has landed — delete this test and assert the load error instead.",
-    );
-}
+// WI-899 removed the residue that used to live here: native predicate handling
+// short-circuited the clause path after WI-896 correctly landed a head on the
+// existing symbol. `wi899_builtin_clause_coexistence_test` now drives the
+// operation directly and distinguishes its native and written-clause answers.

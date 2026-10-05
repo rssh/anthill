@@ -19041,13 +19041,13 @@ fn head_arg_count(kb: &KnowledgeBase, rid: super::RuleId) -> Option<usize> {
 /// a clause exists, so asking it here — where a clause always exists — would always
 /// say no and the check could never fire.
 ///
-/// THE BUILTIN GATE IS WHAT KEEPS THE LEMMAS LEGAL, and it is not incidental. A
-/// clause on a BUILTIN-BACKED name is inert at SLD: the builtin decides the goal
-/// before any clause is consulted (§"A rule head functor is resolved, not declared"),
-/// so it suppresses nothing and really is a lemma. That is exactly `PartialOrd.gte` /
-/// `.lte`, whose SMT lemmas sit at their own arity — 26 sites the first cut refused.
-/// An operation with no builtin behind it has no such shield: its derived view WOULD
-/// have answered, and a clause there replaces it.
+/// THE BUILTIN GATE IS WHAT KEEPS THE LAWS LEGAL, and it is not incidental. A native
+/// relational implementation already supplies the operation's predicate view, and
+/// WI-899 makes clauses on that symbol ADDITIVE alternatives rather than replacements.
+/// That is exactly `PartialOrd.gte` / `.lte`, whose SMT laws sit at their own arity —
+/// 26 sites the first cut refused. An operation with no builtin behind it has no such
+/// independent implementation: its body-derived view WOULD have answered, and a clause
+/// there replaces it.
 fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
     if kb.builtin_of(f).is_some() {
         return false;
@@ -19098,11 +19098,11 @@ fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
 /// SOLUTIONS while the body says `true` — the clause both suppressed the derived view
 /// and contradicted it.
 ///
-/// AND THE BUILTIN GATE IS WHAT KEEPS THE LEMMAS LEGAL. `PartialOrd.gte` / `.lte` are
-/// bodied Bool ops carrying same-arity SMT lemmas — 26 sites, and §"A rule head
-/// functor is resolved, not declared" states the shape is intended. They survive
-/// because a clause on a BUILTIN-BACKED name is inert at SLD (the builtin decides the
-/// goal first), so it suppresses nothing; [`would_derive_bool_relation`] reads that.
+/// AND THE BUILTIN GATE IS WHAT KEEPS THE LAWS LEGAL. `PartialOrd.gte` / `.lte` are
+/// bodied Bool ops carrying same-arity SMT laws — 26 sites, and §"A rule head functor
+/// is resolved, not declared" states the shape is intended. They survive because
+/// WI-899 makes the native predicate and those clauses additive, so a clause suppresses
+/// nothing; [`would_derive_bool_relation`] reads that.
 ///
 /// THE BODY IS THE DISCRIMINATOR, AND THE STANDARD LIBRARY IS WHY. A BODY-LESS
 /// operation carrying clauses is ONE definition written relationally — that is
