@@ -29634,6 +29634,7 @@ impl<'a> Loader<'a> {
             let occ = self.lowered_child_occurrence(parse_pos[i], kb_child);
             pos.push(occ);
         }
+        let ctor_site = self.source_span_of(parse_id);
         let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::with_capacity(kb_named.len());
         for &(field, kb_child) in kb_named.iter() {
             // WI-20261001-KDMQS — A QUOTED FIELD IS RE-WALKED UNDER THE STATE ITS TERM WAS
@@ -29650,13 +29651,14 @@ impl<'a> Loader<'a> {
             let occ = match origins.iter().find(|(s, _)| *s == field) {
                 Some(&(_, pid)) => self.lowered_child_occurrence(pid, kb_child),
                 // AN INVENTED SLOT — `entity_slots::complete_named_slots`'s fresh var
-                // or WI-716's `none()`. No parse node exists, so there is nothing a
-                // table could say about it, and materializing the term is the whole of
-                // its content.
+                // or WI-716's `none()`. No parse node exists, so materializing the term
+                // is the whole of its content — one of the two synthesized cases WI-753
+                // keeps. It is LOCATED at the constructor that omitted the field, the
+                // only written site it has (not `term_spans`, which no fill ever wrote).
                 // BOTH FILLS ARE LEAVES by construction (`Term::Var`, or the nullary
                 // `none()`), so this cannot hide a subtree that WOULD have wanted spans —
                 // which is the failure the wrapped case above was measured to have.
-                None => node_occurrence::materialize_from_handle(self.kb, kb_child),
+                None => node_occurrence::materialize_at(self.kb, kb_child, ctor_site),
             };
             self.const_fold = prev_fold;
             named.push((field, occ));
