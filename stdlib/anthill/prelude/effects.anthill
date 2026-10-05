@@ -99,12 +99,9 @@ namespace anthill.prelude
   sort Modify
     sort T = ?
 
-    -- REGISTERED AS AN EFFECT KIND, here rather than in a namespace-level
-    -- `fact Effect[T = Modify[?]]` (WI-20260917-S8JYF retired that spelling).
-    -- A provision names its provider by WHERE it is written, so writing it in
-    -- the kind's own body IS the registration — nothing is derived from the
-    -- binding value. `[?]` reads well and is inert: a registration records the
-    -- KIND, its base sort (§5.5).
+    -- registed as en effect kind
+    -- TODO: in modify should be expression, which modified.  We have no syntax for it.
+    -- TODO: why Modify[?], not Modify[T]
     provides Effect[T = Modify[?]]
   end
 
