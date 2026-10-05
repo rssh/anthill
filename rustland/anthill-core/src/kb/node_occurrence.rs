@@ -480,21 +480,12 @@ impl NodeOccurrence {
     /// `entity_ctor_expr` builds one from its parse node rather than re-deriving it from
     /// its term.
     ///
-    /// [`build_frame`]'s `UnknownFn` arm reads a `HashSet<TermId>` filled by
-    /// `Loader::parse_dot_chain_table`, whose key is HASH-CONSED and therefore
-    /// many-to-one — so that table takes a set difference to withhold the bit wherever a
-    /// written `field_access` shares a `TermId` with a citation. That is a real
-    /// weakening: on a collision the bit is absent where the exact answer would be
-    /// `true`. It is never wrongly PRESENT, which is the direction that matters
-    /// (WI-20260901-92VA4), and the sentence this replaced claimed a safety property the
-    /// second caller does not have.
-    ///
-    /// THAT SECOND CALLER NOW SERVES ALMOST NOTHING. WI-20260902-2NXAC moved the
-    /// collection literals onto the first caller's footing as well, and with both tickets
-    /// in, emptying `parse_dot_chain_table` leaves the whole `wi_tests` binary green —
-    /// the second caller has no reader the suite can reach. It is kept for the ~92
-    /// `dot_apply` / control-flow nodes that still round-trip and that neither ticket
-    /// could drive; see that function's doc for why unreachable is not the same as dead.
+    /// WI-753 RETIRED THE SECOND CALLER. [`build_frame`]'s `UnknownFn` arm used to read a
+    /// `HashSet<TermId>` filled by `Loader::parse_dot_chain_table`, whose hash-consed key
+    /// forced a set difference that withheld the bit on a collision. Every written node is
+    /// now built by the loader from its parse node, so the bit is stamped exactly or — for
+    /// a materialized term, which the author never wrote — not at all; a reflect form the
+    /// loader built and [`rebuild_reflect_node`] re-reads keeps its node's own bit.
     pub fn new_expr_dot_chain(
         expr: Expr,
         span: SourceSpan,
@@ -6539,88 +6530,7 @@ fn subst_named(
 /// constant host stack regardless of source nesting; the loop builds
 /// Exprs bottom-up by popping completed children off `results`.
 pub fn materialize_from_handle(kb: &KnowledgeBase, root: TermId) -> Rc<NodeOccurrence> {
-    materialize_from_handle_spanned(kb, root, None, None)
-}
-
-/// WI-1039 — [`materialize_from_handle`] with a CALLER-SUPPLIED span table, consulted
-/// ahead of `kb.term_span` for every node it builds.
-///
-/// The gap it closes: `kb.term_spans` is populated only where the loader called
-/// `create_occurrence`, and a RULE BODY's terms never do — `build_body_atom_occurrence`'s
-/// doc has said so since WI-246 — so every node of a materialized rule-body atom came back
-/// at offset 0 of source 0, which renders as `1:1`. That is a WRONG location, not an
-/// absent one, and it is what a diagnostic on a chained `a.b().c()` reported.
-///
-/// WI-1035 stamped the ROOT alone (`respan_root`, now deleted); this replaces it, because
-/// half a span channel is worse than one — the root was located and its own receiver was
-/// not, from the same atom.
-///
-/// KEYED BY `TermId`, WHICH IS HASH-CONSED, so two STRUCTURALLY IDENTICAL nodes inside one
-/// materialized atom share an entry and the caller's first-write wins. Both are then
-/// reported at the first one's offset — a real site, and one of the two the diagnostic is
-/// about. The map is built per atom, so this cannot reach across atoms or files, and it
-/// cannot happen at all for a node the loader's own walk descends into (that walk respans
-/// each child at its OWN parse id). It needs two identical siblings INSIDE one reflect
-/// form — `x.m(y.n(), y.n())`. Exactness there costs a parse↔occurrence correspondence
-/// per reflect shape, which is a second producer of the mapping `visit_fn` already owns.
-///
-/// IF EXACTNESS IS EVER NEEDED, the fix is not a better key: carry the PARSE `TermId`
-/// beside the term one in `WorkOp::Visit` and read `parsed.terms.span()` directly — no
-/// allocation, no hash-cons collision, O(1) per node. It is not done here because it would
-/// give this module a dependency on the parse IR, which it does not otherwise have.
-/// `dot_chains` — WI-20260902-4NEKZ follow-up. THE ENTITY-HEADED / REFLECT-FORM EARLY
-/// RETURN IN `build_body_atom_occurrence` REACHES THIS FUNCTION, AND EVERYTHING IT BUILDS
-/// USED TO ARRIVE WITH `dot_chain: false`. So a dotted paren-less citation nested inside a
-/// list, set or tuple literal, or inside an entity constructor's argument, lost the
-/// provenance bit its bare sibling carries and the typer fell back to the per-leaf walk.
-/// MEASURED, one chain in one rule-body value slot, varying only what encloses it:
-///
-/// | body | before | after |
-/// |---|---|---|
-/// | `ns.inner.rel = 7`             | 1, the true one | 1 |
-/// | `[ns.inner.rel] = 7`           | **3** per-segment | 1 |
-/// | `{ns.inner.rel} = 7`           | **3** | 1 |
-/// | `(ns.inner.rel, 1) = 7`        | **3** | 1 |
-/// | `boxed(v: ns.inner.rel) = 7`   | **3** | 1 |
-///
-/// Keyed by the KB `TermId` the loader's `term_map` gives for each PARSE node, filled per
-/// atom by `Loader::parse_dot_chain_table` — WHICH IS A MANY-TO-ONE KEY, and that function
-/// documents the set difference that makes it safe. Everything else passes `None` and is
-/// unchanged.
-///
-/// WI-20260902-2SZ88 TOOK THE ENTITY CONSTRUCTORS OUT OF THIS PATH. [`crate::kb::load`]'s
-/// `entity_ctor_expr` builds them from the PARSE node instead, so their children take
-/// their spans and their `dot_chain` from their own parse terms and neither table can be
-/// wrong about them. WI-20260902-2NXAC then did the same for the three COLLECTION
-/// LITERALS (`collection_literal_expr`), which were 192 of the 284 reflect-keyed nodes
-/// that still took the early return.
-///
-/// WHAT STILL ARRIVES HERE is the ~92 left: `dot_apply` (49) and the control-flow forms,
-/// whose occurrence shape is not an `Expr::Apply` and whose arms live in [`visit_fn`].
-/// They reach a rule body only as reflection PATTERNS or not at all (`let` does not parse
-/// there), which is why neither ticket could drive them.
-///
-/// NOT AN ENUMERATION OF CALLERS, deliberately: `load.rs` has four `materialize_from_handle*`
-/// sites, not two, and only ONE of them passes a table — `bare_entity_goal_occurrence`
-/// walks a synthesized term no `term_map` key can reach (measured, and recorded at that
-/// site). (A written effect row, which this paragraph once listed as losing spans, is
-/// located at its site through [`materialize_at`] since WI-753.) A doc that counts callers
-/// goes stale the day one is added, and this one already had.
-pub(crate) fn materialize_from_handle_spanned(
-    kb: &KnowledgeBase,
-    root: TermId,
-    spans: Option<&std::collections::HashMap<TermId, SourceSpan>>,
-    dot_chains: Option<&std::collections::HashSet<TermId>>,
-) -> Rc<NodeOccurrence> {
-    run_rebuild(
-        kb,
-        Src::Term(root),
-        &Rebuild {
-            spans,
-            dot_chains,
-            ..Rebuild::default()
-        },
-    )
+    run_rebuild(kb, Src::Term(root), &Rebuild::default())
 }
 
 /// WI-753 — MATERIALIZE A TERM THAT HAS NO PARSE NODE OF ITS OWN, AT THE SITE THAT WROTE IT.
@@ -6690,15 +6600,17 @@ fn term_contains(kb: &KnowledgeBase, root: TermId, inner: TermId) -> bool {
 
 /// What one materializing walk is told beyond the root. Every field defaults to "nothing",
 /// which is the bare [`materialize_from_handle`].
+///
+/// WI-753: there were two more — per-atom `spans` and `dot_chains` tables keyed on the KB
+/// `TermId`, which located a rule-body node re-derived from its lowered term (WI-1039,
+/// WI-20260902-4NEKZ). A hash-consed key is many-to-one, so two identical siblings got one
+/// span; the loader now builds every written node from its parse node and materializes
+/// only what has none (a lowering's wrapper, a canonical row, a synthesized constructor),
+/// which `site` locates.
 #[derive(Default)]
-struct Rebuild<'a> {
-    /// Per-atom spans keyed on the KB `TermId` (WI-1039). See
-    /// [`materialize_from_handle_spanned`].
-    spans: Option<&'a std::collections::HashMap<TermId, SourceSpan>>,
-    /// Per-atom citation bits keyed on the KB `TermId` (WI-20260902-4NEKZ).
-    dot_chains: Option<&'a std::collections::HashSet<TermId>>,
-    /// The site every node is located at when `spans` has no entry — asked BEFORE the
-    /// cross-file `term_spans` (WI-753).
+struct Rebuild {
+    /// The site every node is located at — asked BEFORE the cross-file `term_spans`
+    /// (WI-753).
     site: Option<SourceSpan>,
     /// A term the walk does not descend into: it places the node instead (WI-753).
     splice: Option<(TermId, Rc<NodeOccurrence>)>,
@@ -6716,7 +6628,7 @@ pub(crate) fn rebuild_reflect_node(kb: &KnowledgeBase, node: Rc<NodeOccurrence>)
 
 /// The work-stack walk both entry points run. Iterative (WI-253): constant host stack
 /// whatever the nesting.
-fn run_rebuild(kb: &KnowledgeBase, root: Src, ctx: &Rebuild<'_>) -> Rc<NodeOccurrence> {
+fn run_rebuild(kb: &KnowledgeBase, root: Src, ctx: &Rebuild) -> Rc<NodeOccurrence> {
     let mut work: Vec<WorkOp> = vec![WorkOp::Visit(root)];
     let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
 
@@ -7127,8 +7039,9 @@ pub(crate) enum BuildFrame {
         functor: Symbol,
         pos_count: usize,
         named_keys: Vec<Symbol>,
-        /// WI-20260902-4NEKZ follow-up — see [`materialize_from_handle_spanned`]'s
-        /// `dot_chains` parameter. `false` for every caller that has no parse tree.
+        /// WI-20260902-4NEKZ follow-up — the citation bit of the node being rebuilt: its
+        /// own `is_dot_chain()` for a node the loader built, `false` for a materialized
+        /// term (WI-753).
         dot_chain: bool,
     },
 }
@@ -7142,7 +7055,7 @@ pub(crate) struct BranchMeta {
 fn visit_term(
     kb: &KnowledgeBase,
     t: TermId,
-    ctx: &Rebuild<'_>,
+    ctx: &Rebuild,
     work: &mut Vec<WorkOp>,
     results: &mut Vec<Rc<NodeOccurrence>>,
 ) {
@@ -7152,14 +7065,10 @@ fn visit_term(
             return;
         }
     }
-    // The caller's table first (WI-1039): it is the only source that can locate a
-    // rule-body node at all, and where BOTH have an entry the caller's is per-atom while
+    // The caller's SITE first (WI-753): where both answer, it is the written site while
     // `term_spans` is first-write-wins over a hash-consed key shared with every other file.
-    // Then the caller's SITE, for the same reason (WI-753).
     let span = ctx
-        .spans
-        .and_then(|m| m.get(&t).copied())
-        .or(ctx.site)
+        .site
         .or_else(|| kb.term_span(t))
         .unwrap_or_else(empty_span);
     let term = kb.get_term(t).clone();
@@ -7173,10 +7082,10 @@ fn visit_term(
             let qn = kb.qualified_name_of(functor);
             let short = kb.local_name_of(functor);
             let key = expr_form_key(qn, short);
-            // WI-20260902-4NEKZ follow-up: the caller's table, keyed exactly as `spans`
-            // is. Asked of THIS node only — the walk re-asks it of every child, which is
-            // what `parse_dot_chain_table` fills per level.
-            let dot_chain = ctx.dot_chains.is_some_and(|m| m.contains(&t));
+            // A materialized term is never a citation the author wrote: every written
+            // node is built by the loader, which stamps `dot_chain` of its own parse node
+            // (WI-753 retired the per-atom table that stamped it here).
+            let dot_chain = false;
             visit_fn(kb, &Src::Term(t), span, functor, key, dot_chain, work, results);
         }
         Term::ParseAux(_) => unreachable!(

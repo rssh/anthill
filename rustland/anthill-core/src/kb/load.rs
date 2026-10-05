@@ -28846,7 +28846,7 @@ impl<'a> Loader<'a> {
     /// (`lambda_expr(param: …, body: …)`) beside a `NodeKind::Pattern` occurrence for the
     /// binder. The rule-body occurrence walk had no such arm: `lambda_expr` is a
     /// [`node_occurrence::is_reflect_form_functor`] name, so a marker reached
-    /// [`node_occurrence::materialize_from_handle_spanned`], whose `visit_fn` reads the
+    /// `materialize_from_handle_spanned` (retired by WI-753), whose `visit_fn` reads the
     /// NAMED keys — found none — and built the form with `⊥` in every slot.
     ///
     /// WHAT THAT COST, MEASURED on the delivered WI-20260903-FCZ3N tree, one program per
@@ -28912,167 +28912,6 @@ impl<'a> Loader<'a> {
         self.compound_expr_occ
             .insert(parse_id.raw(), Rc::clone(&occ));
         Some(occ)
-    }
-
-    /// WI-1039 — every converted node of `parse_id`'s subtree, keyed by the `TermId`
-    /// `convert_term` produced for it, with the span the PARSE node carries.
-    ///
-    /// The one input [`node_occurrence::materialize_from_handle_spanned`] needs to locate
-    /// a rule-body atom: a rule body's terms get no `kb.term_spans` entry (they never go
-    /// through `create_occurrence`), so without this every node of a materialized atom
-    /// carries offset 0 of source 0.
-    ///
-    /// Built by walking the PARSE tree rather than the term tree, because the parse tree
-    /// is the one that HAS spans and the one that is not hash-consed. `term_map` is the
-    /// existing parse→term memo `convert_term` fills, so this adds no second conversion
-    /// and no second notion of which term a parse node became.
-    ///
-    /// WHAT IT CANNOT COVER, stated because the shape is systematic and not a stray miss:
-    /// a KB term the LOADER SYNTHESIZED has no parse node to be keyed by. The live case is
-    /// [`Self::convert_term_inner`]'s omitted-field fill — an absent optional becomes
-    /// `none()` and an absent required field a fresh var — so a diagnostic raised on one
-    /// of those still renders `1:1`. It is not reachable by ANY parse-keyed table, and the
-    /// author never wrote the node it would point at. (Every one of `convert_term_inner`'s
-    /// exits DOES insert into `term_map`, so an "early return skipped it" hazard is not
-    /// among the misses — checked, not assumed.) **OWNED BY WI-1041**: the reason is
-    /// recorded, but a residual `1:1` is still a mislocation, and the ticket that owns this
-    /// file's other span seams owns this one too.
-    ///
-    /// A node with no entry falls through to `kb.term_span` at the consumer, NOT to
-    /// nothing: that is the cross-file, first-write-wins table this exists to bypass, so a
-    /// miss is the pre-WI-1039 answer rather than a blank.
-    ///
-    /// FIRST WRITE WINS on a `TermId` two parse nodes share — see the consumer's doc for
-    /// what that costs and why exactness is not bought here. Order is therefore
-    /// load-bearing and is the walk's own: the outermost node is inserted before its
-    /// children, so an atom that IS its own child structurally keeps the outer span.
-    ///
-    /// Call it only where a subtree is about to be materialized. It allocates a map per
-    /// atom, and the atoms that reach it are the entity / reflect-form fallback alone —
-    /// the native walk below hands each of its children a span directly.
-    fn parse_span_table(&self, parse_id: TermId) -> HashMap<TermId, SourceSpan> {
-        let mut out: HashMap<TermId, SourceSpan> = HashMap::new();
-        let mut stack: Vec<TermId> = vec![parse_id];
-        while let Some(pid) = stack.pop() {
-            if let Some(&kb_id) = self.term_map.get(&pid.raw()) {
-                out.entry(kb_id).or_insert_with(|| self.source_span_of(pid));
-            }
-            // `Term::subterms` rather than a local `Term::Fn` match: a hand-written child
-            // enumeration goes stale in SILENCE the day a variant gains children, and the
-            // symptom would be a node with no span — `1:1`, the defect this closes. The
-            // trade is real and taken knowingly: `subterms` returns a
-            // `SmallVec<[TermId; 4]>`, so an entity constructor with more than four fields
-            // (there are several) heap-allocates where the inline match did not. Against
-            // the reach measured at this call site that is noise; a silent miss is not.
-            // Reversed, so the first positional child is popped first and an earlier
-            // sibling wins a `TermId` collision over a later one.
-            stack.extend(self.parsed.terms.get(pid).subterms().into_iter().rev());
-        }
-        out
-    }
-
-    /// WI-20260902-4NEKZ follow-up — WHICH NODES OF THIS ATOM ARE DOTS THE AUTHOR WROTE.
-    ///
-    /// The sibling of [`Self::parse_span_table`], walked identically and keyed identically
-    /// (by the KB `TermId` the `term_map` gives for each PARSE node), because it answers a
-    /// question with the same shape: something the PARSE tree knows and the KB term does
-    /// not. `build_body_atom_occurrence` stamps `dot_chain` on the node it builds itself,
-    /// but the entity-headed / reflect-form arm RETURNS EARLY into
-    /// [`node_occurrence::materialize_from_handle_spanned`], which walks the KB term and
-    /// so cannot ask `is_minted` of anything. Without this table every chain nested in a
-    /// list, set or tuple literal or in an entity constructor's argument arrived with the
-    /// bit clear — see that function's doc for the measured rows.
-    ///
-    /// Asked PER LEVEL, exactly as the stamp on the un-nested path is: `dotted_citation_name`
-    /// is the same three gates, so a hand-written `field_access(ns, rel)` nested in a list is
-    /// no more a citation than it is at top level.
-    ///
-    /// ── THE KEY IS MANY-TO-ONE, AND THAT IS WHY THIS SET IS A DIFFERENCE ─────────
-    ///
-    /// `term_map` maps a PARSE node to a HASH-CONSED KB term, so two parse nodes that are
-    /// structurally identical share one `TermId` — and a minted `ns.rel` and a
-    /// hand-written `anthill.reflect.field_access(ns, rel)` ARE structurally identical
-    /// once converted. That is the whole premise of WI-20260901-92VA4: they reach the
-    /// typer as the same `Expr::Apply`, which is why the bit exists rather than a shape
-    /// test. A set of "kb ids that some citation maps to" therefore CANNOT answer
-    /// "is THIS node a citation" — MEASURED, and it silently accepted the written call:
-    ///
-    /// | rule body, one entity with two `Int64` fields | before | with the difference |
-    /// |---|---|---|
-    /// | `boxedc(v: <written call>, w: 1)`             | refused, 3 errors | refused |
-    /// | `boxedc(v: <written call>, w: zzcol.inner.other)` | refused, 3 errors | refused |
-    /// | `boxedc(v: <written call>, w: zzcol.inner.rel)`   | **ACCEPTED, typed `Relation`** | refused |
-    ///
-    /// The two controls vary only structural identity: a DIFFERENTLY-named citation
-    /// beside the written call is a distinct `TermId` and never masked it. So the
-    /// collision is the axis, not the gate.
-    ///
-    /// The repair is a SET DIFFERENCE and it is deliberately conservative: a kb id is
-    /// stamped only if EVERY parse node in this atom that maps to it is a citation. On a
-    /// collision the bit is withheld and the typer falls back to the per-leaf walk — a
-    /// worse DIAGNOSTIC for the citation that shares the id, but never a wrong
-    /// ACCEPTANCE of a call the author wrote. Losing a diagnostic is recoverable; typing
-    /// a hand-written call as a name it does not spell is not.
-    ///
-    /// ── WI-20260902-2SZ88 REMOVED THE ENTITY HALF OF THIS TABLE'S JOB ───────────
-    ///
-    /// A plain entity constructor no longer reaches this table at all:
-    /// [`Loader::entity_ctor_expr`] builds its occurrence from the PARSE node, so every
-    /// child takes its `dot_chain` from `dotted_citation_name` of its own node —
-    /// exactly, with no key to collide. MEASURED with this function returning an EMPTY
-    /// set: the entity row of `wi_4nekz`'s enclosing-atom census goes from 3 errors and
-    /// none typed to 1 error typed `Relation`, and it is the only row that moves.
-    ///
-    /// WI-20260902-2NXAC THEN TOOK THE COLLECTION LITERALS TOO — `[a, b]`, `{a, b}`,
-    /// `(a, b)`, 192 of the 284 reflect-keyed nodes — via
-    /// [`Self::collection_literal_expr`]. WITH BOTH IN, THIS TABLE HAS NO READER THE
-    /// SUITE CAN REACH: made to return an EMPTY set, the whole `wi_tests` binary is
-    /// 4053 passed / 1 failed, and that one failure was the 2SZ88 row asserting the
-    /// collection literals still NEEDED it.
-    ///
-    /// ── WHAT THIS FUNCTION NOW ACTUALLY DOES, MEASURED ─────────────────────────
-    ///
-    /// Three separate facts, because collapsing them into "it is / is not reachable" is
-    /// what an earlier version of this paragraph did and it was not answerable:
-    ///
-    /// * IT IS STILL CALLED — 108 times over the `wi_tests` binary, dominated by
-    ///   `dot_apply` (76), then `int_lit` (12), `if_expr` (8), `lambda_expr` (4).
-    /// * IT RETURNS EMPTY EVERY TIME — 0 of those 108 produced a non-empty set. It is not
-    ///   structurally dead, though: a hand-written `?b.take(zz4n.inner.rel)` in a rule
-    ///   body (a citation as a `dot_apply` ARGUMENT) makes it `cited = 2`.
-    /// * AND ITS RESULT CHANGES NOTHING I CAN REACH — including that one. Emptying the
-    ///   set gives byte-identical diagnostics on the `cited = 2` program, and leaves the
-    ///   whole `wi_tests` binary green.
-    ///
-    /// SO IT IS KEPT ON AN ASYMMETRY, NOT ON EVIDENCE OF USE. Nothing measured here
-    /// depends on it. It stays because the two failure directions are not equal: a lost
-    /// diagnostic is recoverable, and a written `field_access` call LAUNDERED into a name
-    /// it does not spell is WI-20260901-92VA4's silent acceptance, which is not. The cost
-    /// is one subtree walk per reflect atom for a result nothing reads.
-    ///
-    /// A FUTURE READER DECIDING TO DELETE IT should re-run those three numbers first, and
-    /// should know why the residue could not be driven: `let` does not parse in a rule
-    /// body, `if` there answers 0 for every variant including a plain integer literal (so
-    /// its 0 is a different defect), and the remaining control-flow forms reach a rule
-    /// body only as reflection PATTERNS.
-    fn parse_dot_chain_table(&self, parse_id: TermId) -> std::collections::HashSet<TermId> {
-        let mut cited: std::collections::HashSet<TermId> = std::collections::HashSet::new();
-        let mut plain: std::collections::HashSet<TermId> = std::collections::HashSet::new();
-        let mut stack: Vec<TermId> = vec![parse_id];
-        while let Some(pid) = stack.pop() {
-            if let Some(&kb_id) = self.term_map.get(&pid.raw()) {
-                if dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, pid).is_some() {
-                    cited.insert(kb_id);
-                } else {
-                    plain.insert(kb_id);
-                }
-            }
-            // `Term::subterms` for the same reason `parse_span_table` uses it: a
-            // hand-written child enumeration goes stale in SILENCE.
-            stack.extend(self.parsed.terms.get(pid).subterms().into_iter().rev());
-        }
-        cited.retain(|k| !plain.contains(k));
-        cited
     }
 
     /// WI-20260902-2SZ88 — THE OCCURRENCE FOR ONE LOWERED CHILD OF AN ENTITY
@@ -29326,7 +29165,9 @@ impl<'a> Loader<'a> {
     /// body's list matches. Verified by dumping the occurrence tree for `[a] <=> [b]`,
     /// `{a} <=> {b}` and `(a, 1) <=> (b, 1)` before and after.
     ///
-    /// `None` — and the round-trip — whenever the pairing does not line up: an unexpected
+    /// `None` whenever the pairing does not line up — and since WI-753 there is no
+    /// round trip behind it: a decline no other builder reads ends in
+    /// `build_body_atom_occurrence`'s `unreachable!`. The cases: an unexpected
     /// lowered functor, a spine whose length differs from the written element count, a
     /// tuple slot naming no written child. Those are the shapes this pairing does not
     /// claim to understand, and guessing at one would be a wrong term rather than a worse
@@ -29479,7 +29320,8 @@ impl<'a> Loader<'a> {
     /// [`Self::lowered_child_occurrence`].
     ///
     /// REFUSES TO GUESS: a spine that runs out early, runs long, or is not `cons`/`nil`
-    /// all the way down returns `None` and the caller takes the round-trip. The
+    /// all the way down returns `None` (and, with no round trip left since WI-753, a
+    /// loud loader failure rather than a guess). The
     /// alternative — pairing whatever lines up — would put one element's occurrence at
     /// another's slot, which is a wrong term and not a worse diagnostic.
     fn cons_spine_expr(&mut self, kb_term: TermId, parse_pos: &[TermId]) -> Option<Expr> {
@@ -29487,7 +29329,7 @@ impl<'a> Loader<'a> {
         let head_sym = self.kb.intern("head");
         let tail_sym = self.kb.intern("tail");
         // Collect the spine's HEADS first, so a mismatch is caught before anything is
-        // built and the caller's fallback is reached with no side effects. Only the heads
+        // built and the caller's decline is reached with no side effects. Only the heads
         // are kept: the cell terms are the lowering's own nodes and are rebuilt below
         // rather than read, so carrying them would be a field whose comment could drift
         // from its use. Found by `/code-review`.
@@ -29566,10 +29408,10 @@ impl<'a> Loader<'a> {
     /// ── WHAT THIS DELETES ────────────────────────────────────────────────────────
     ///
     /// The arm that called this used to hand the whole subtree to
-    /// [`node_occurrence::materialize_from_handle_spanned`], which walks the KB TERM and
+    /// `materialize_from_handle_spanned` (retired by WI-753), which walks the KB TERM and
     /// therefore sees nothing the parse tree knew. Everything the parse tree knew had to
     /// be shipped alongside in side tables keyed by the KB `TermId` —
-    /// [`Self::parse_span_table`] and [`Self::parse_dot_chain_table`] — AND THAT KEY
+    /// `parse_span_table` and `parse_dot_chain_table` (both retired by WI-753) — AND THAT KEY
     /// CANNOT ANSWER THE QUESTION. `TermStore::alloc` returns an existing id on a hash
     /// hit, so a KB `TermId` denotes a STRUCTURE, not a place: a minted `ns.rel` and a
     /// hand-written `anthill.reflect.field_access(ns, rel)` are ONE id, which is the
@@ -29604,7 +29446,9 @@ impl<'a> Loader<'a> {
     /// not an `Expr::Apply` — `ListLiteral` builds `Expr::ListLit`, `if_expr` builds
     /// `Expr::If` — and those shapes live in `visit_fn`. The reflect functors ARE
     /// registered entities, so without the second half of the gate this arm would swallow
-    /// them and build an application. They keep the round-trip and the two tables.
+    /// them and build an application. (WI-753: they are now built through this function
+    /// too and re-read by `node_occurrence::rebuild_reflect_node`; the round trip and its
+    /// two tables are gone.)
     ///
     /// MEASURED, over the whole workspace test corpus with the early return
     /// instrumented: 127 097 nodes took it, of which 126 813 (99.78%) are plain entity
@@ -29615,8 +29459,8 @@ impl<'a> Loader<'a> {
     /// whose `ListLiteral` rows are the ones its own measurements are written on.
     ///
     /// `None` when the lowered term is neither a `Term::Fn` nor the `nullary_canon`
-    /// `Term::Ref` a 0-field constructor folds to — the caller then takes the
-    /// round-trip, which is what it did for every shape before this existed.
+    /// `Term::Ref` a 0-field constructor folds to. There is no round trip behind it
+    /// since WI-753: the caller fails loudly (`unreachable!`).
     fn entity_ctor_expr(&mut self, parse_id: TermId, functor: Symbol) -> Option<Expr> {
         let kb_term = self.convert_term(parse_id); // memoized hit
         let (kb_pos, kb_named) = match self.kb.get_term(kb_term).clone() {
@@ -29706,10 +29550,10 @@ impl<'a> Loader<'a> {
             Some(o) => o.clone(),
             // The conversion of THIS node did not run the `Fn` arm that writes the
             // origins — it cannot have produced the named args we are looking at. Loud
-            // in debug; in release the caller falls back to the round-trip, which is no
-            // worse than the behaviour this function replaced.
+            // in debug here, and in release too since WI-753: the caller has no round
+            // trip left and fails with `unreachable!`.
             None if kb_named.is_empty() => Vec::new(),
-            // A PANIC IN DEBUG WHERE RELEASE FALLS BACK, deliberately, but the invariant
+            // A PANIC IN DEBUG (and, via the caller, in release), deliberately; the invariant
             // it rests on is stated at the WRITE site (`convert_term_inner`'s
             // `entity_slot_origin.insert`) and not derivable here: that site gates on the
             // UN-ROUTED functor and this one is entered on the ROUTED one. They agree only
@@ -29735,6 +29579,7 @@ impl<'a> Loader<'a> {
             let occ = self.lowered_child_occurrence(parse_pos[i], kb_child);
             pos.push(occ);
         }
+        let ctor_site = self.source_span_of(parse_id);
         let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::with_capacity(kb_named.len());
         for &(field, kb_child) in kb_named.iter() {
             // WI-20261001-KDMQS — A QUOTED FIELD IS RE-WALKED UNDER THE STATE ITS TERM WAS
@@ -29751,13 +29596,14 @@ impl<'a> Loader<'a> {
             let occ = match origins.iter().find(|(s, _)| *s == field) {
                 Some(&(_, pid)) => self.lowered_child_occurrence(pid, kb_child),
                 // AN INVENTED SLOT — `entity_slots::complete_named_slots`'s fresh var
-                // or WI-716's `none()`. No parse node exists, so there is nothing a
-                // table could say about it, and materializing the term is the whole of
-                // its content.
+                // or WI-716's `none()`. No parse node exists, so materializing the term
+                // is the whole of its content — one of the two synthesized cases WI-753
+                // keeps. It is LOCATED at the constructor that omitted the field, the
+                // only written site it has (not `term_spans`, which no fill ever wrote).
                 // BOTH FILLS ARE LEAVES by construction (`Term::Var`, or the nullary
                 // `none()`), so this cannot hide a subtree that WOULD have wanted spans —
                 // which is the failure the wrapped case above was measured to have.
-                None => node_occurrence::materialize_from_handle(self.kb, kb_child),
+                None => node_occurrence::materialize_at(self.kb, kb_child, ctor_site),
             };
             self.const_fold = prev_fold;
             named.push((field, occ));
@@ -29878,25 +29724,12 @@ impl<'a> Loader<'a> {
             // and the caller's plain reading is right.
             return None;
         }
-        let spans = self.parse_span_table(parse_id);
-        // `None`, and MEASURED rather than assumed: the root walked here is
-        // `expand_bare_entity_subject(kb.alloc(Term::Ref(sym)))` — an all-fields-fresh
-        // constructor the loader SYNTHESIZED, which never came through `convert_term`, so
-        // no `term_map`-keyed table can intersect it. Instrumented on both routes into
-        // this arm (a bare entity subject, and the dotted `ns.Sort.ctor` spelling):
-        // `dot_table=0 span_table=0 nodes=2 dot_hits=0 span_hits=0` on every column.
-        // Passing a table here would cost a walk per call and stamp nothing, and — worse
-        // — would read as a second measured call site to anyone backing the repair out.
-        // (The `spans` argument beside it is dead for the same reason; WI-1039's span fix
-        // never reached this arm either. Left as-is: removing it is a separate question
-        // from this ticket, and it is recorded here so the next reader does not re-derive
-        // it.)
-        Some(node_occurrence::materialize_from_handle_spanned(
-            self.kb,
-            expanded,
-            Some(&spans),
-            None,
-        ))
+        // The constructor is SYNTHESIZED — all fields fresh, no parse node below the
+        // name — so it is the term's to read and the written NAME's to locate (WI-753:
+        // not `term_spans`, which is first-write-wins over the one hash-consed term every
+        // bare mention of this entity shares).
+        let site = self.source_span_of(parse_id);
+        Some(node_occurrence::materialize_at(self.kb, expanded, site))
     }
 
     fn build_body_atom_occurrence_inner(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
@@ -30187,25 +30020,21 @@ impl<'a> Loader<'a> {
                     // and no set difference. That is the ticket.
                     expr
                 } else if written_entity {
-                    let kb_term = self.convert_term(parse_id); // memoized hit
-                                                               // WI-1035/WI-1039: locate the materialized subtree from the PARSE
-                                                               // tree. The term-derived path has no spans of its own (see this
-                                                               // function's doc), and `1:1` is a wrong location, not a missing one —
-                                                               // for the atom AND for everything inside it, which is where the
-                                                               // loader's own walk stops descending.
-                    let spans = self.parse_span_table(parse_id);
-                    // WI-20260902-4NEKZ follow-up: THIS EARLY RETURN IS THE BUG THE TABLE
-                    // FIXES. It bypasses the `dot_chain` stamp at the end of this function,
-                    // so before the table every chain under an entity constructor or a
-                    // list/set/tuple literal reached the typer with the bit clear and got
-                    // the per-leaf walk its bare sibling no longer gets.
-                    let dot_chains = self.parse_dot_chain_table(parse_id);
-                    return node_occurrence::materialize_from_handle_spanned(
-                        self.kb,
-                        kb_term,
-                        Some(&spans),
-                        Some(&dot_chains),
-                    );
+                    // WI-753 — THERE IS NO ROUND TRIP LEFT TO TAKE. Every written entity —
+                    // plain constructor, collection literal, method call or reflect form —
+                    // is built above from its parse node, and the builders decline only on
+                    // a lowering whose shape they do not recognise. That used to fall back
+                    // to re-deriving the node from its term, located through per-atom
+                    // tables keyed on hash-consed ids (two identical siblings, one span);
+                    // the tables are gone, and a shape no builder reads is a loader bug to
+                    // name, not a node to approximate.
+                    let lowered = self.convert_term(parse_id); // memoized hit
+                    unreachable!(
+                        "build_body_atom_occurrence: no native builder read the written \
+                         entity `{}` (lowered to {:?})",
+                        self.kb.qualified_name_of(new_functor),
+                        self.kb.get_term(lowered),
+                    )
                 } else {
                     // WI-753 — an UNRESOLVED reflect form (`if_expr(…)` written as a
                     // pattern under `import anthill.reflect.Expr` alone — the corpus

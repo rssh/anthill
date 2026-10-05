@@ -41,6 +41,15 @@
 //! * A written EFFECT ROW. With `lower_effect_row_aux_occ` back on the unspanned
 //!   `materialize_from_handle`, `a_written_effect_row_is_located_at_its_own_site` FAILS (the
 //!   first row at `0`).
+//!
+//! Stage 4 — the round trip and its per-atom tables are deleted; a written entity no builder
+//! reads is an `unreachable!` (the full suite never reaches it). The one observable change is
+//! the SYNTHESIZED bare-entity goal: with `bare_entity_goal_occurrence` back on the unspanned
+//! `materialize_from_handle` (what its measured-dead table amounted to),
+//! `a_bare_entity_goal_is_located_at_its_written_name` FAILS (the goal at `0`).
+//! The other synthesized case, an omitted field's fill: with `entity_ctor_children`'s
+//! invented slot back on the unspanned `materialize_from_handle`,
+//! `an_omitted_fields_fill_is_located_at_its_constructor` FAILS (the fill at `0`).
 
 use crate::wi1012_static_supplier_tie_test::{located, refusal};
 use crate::wi1026_rule_body_spec_op_dispatch_test::{
@@ -373,4 +382,71 @@ end
             "{rule}: the row is located at its own `{{}}`"
         );
     }
+}
+
+/// STAGE 4 — A BARE ENTITY GOAL IS LOCATED AT ITS WRITTEN NAME. `:- acct` is §8.3's
+/// all-fields-fresh pattern, a constructor the loader SYNTHESIZES — no parse node below the
+/// name, so it is materialized from its term; it must be located at the name, not through
+/// `term_spans` (first-write-wins over the one term every bare `acct` shares).
+#[test]
+fn a_bare_entity_goal_is_located_at_its_written_name() {
+    let src = r#"namespace test.wi753.bare
+  import anthill.prelude.Int64
+
+  entity acct(n: Int64)
+  fact acct(n: 1)
+
+  rule first(1) :- acct
+  rule second(1) :- acct
+end
+"#;
+    let kb = crate::common::load_kb_with(src);
+    for (nth, rule) in ["first", "second"].into_iter().enumerate() {
+        let sym = kb
+            .try_resolve_symbol(&format!("test.wi753.bare.{rule}"))
+            .unwrap_or_else(|| panic!("rule {rule} not found"));
+        let rid = kb.rules_by_functor(sym)[0];
+        let goal = &kb.rule_body_nodes(rid)[0];
+        assert_eq!(
+            goal.span.span.start,
+            offset(src, ":- acct", nth) + 3,
+            "{rule}: the goal is located at its own `acct`: {goal:?}"
+        );
+    }
+}
+
+/// THE OTHER SYNTHESIZED CASE — AN OMITTED FIELD'S FILL IS LOCATED AT ITS CONSTRUCTOR. The
+/// fresh var `complete_named_slots` invents for `m` has no parse node; the constructor that
+/// omitted it is the only written site it has.
+#[test]
+fn an_omitted_fields_fill_is_located_at_its_constructor() {
+    use anthill_core::kb::node_occurrence::Expr;
+    let src = r#"namespace test.wi753.fill
+  import anthill.prelude.Int64
+
+  entity pt(n: Int64, m: Int64)
+  fact pt(n: 1, m: 2)
+
+  rule probe(1) :- pt(n: 1)
+end
+"#;
+    let kb = crate::common::load_kb_with(src);
+    let sym = kb.try_resolve_symbol("test.wi753.fill.probe").expect("probe");
+    let rid = kb.rules_by_functor(sym)[0];
+    let goal = &kb.rule_body_nodes(rid)[0];
+    let fill = match goal.as_expr() {
+        Some(Expr::Apply { named_args, .. }) | Some(Expr::Constructor { named_args, .. }) => {
+            named_args
+                .iter()
+                .find(|(k, _)| kb.local_name_of(*k) == "m")
+                .map(|(_, n)| n.clone())
+                .unwrap_or_else(|| panic!("the omitted `m` is filled: {goal:?}"))
+        }
+        other => panic!("the goal is the constructor: {other:?}"),
+    };
+    assert_eq!(
+        fill.span.span.start,
+        offset(src, "pt(n: 1)", 0),
+        "the invented `m` is located at the constructor that omitted it: {fill:?}"
+    );
 }
