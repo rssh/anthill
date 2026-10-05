@@ -6,17 +6,31 @@ use super::*;
 /// WI-20260929-WBHTM — the binding σ holds for a spec parameter at a call, as the `TermId`
 /// the dispatch readers compare a provision's against; `None` when σ leaves it unbound.
 ///
-/// A `Term` binding is returned as σ holds it — one hop, exactly as these readers always
-/// read it. A binding on another carrier is a type the term store could not hold when σ
-/// bound it: one carrying a VALUE (`Buf[T = Int64, N = 3]` rides as an occurrence, WI-477),
-/// or an entity spine `fn_value` rebuilt around one. It is first resolved through σ — the
-/// variables inside it, which a call-site bracket leaves to the argument
-/// (`[State = Buf[T = ?, N = 4]]`), otherwise stay variables and a specific provider is
-/// refused on them — and then LOWERED to its term twin ([`dispatch_type_term`]). That twin is
-/// what its provision was filed as (`lower_value_or_gate`), so the matchers relate the two
-/// as any two types, a value leaf by value. Lowering, not carrying the occurrence, because
-/// every reader of this is `TermId`-keyed at the boundary: a `SortGoal` is the resolve memo's
-/// key, and what it is matched against is a term fact.
+/// THE BINDING IS RESOLVED THROUGH σ, AND THE SAME WAY ON EVERY CARRIER (WI-20260929-020TH).
+/// It is read at the END of σ's chain of variable links ([`sigma_chain_end`]) — `S ↦ U`,
+/// `U ↦ Buf[…]` binds `S` to `Buf[…]` — and the variables INSIDE what the chain ends at are
+/// resolved too ([`walk_type_deep_value`]), which a call-site bracket leaves to the argument
+/// (`[State = Buf[T = ?, N = 4]]`): left as variables, a specific provider is refused on them
+/// and a generic one answers. An end that is still a variable — the chain ended unbound, or
+/// came back on itself — is that variable: nothing lies beneath it.
+///
+/// Each half was once decided by the carrier the first link happened to ride. A TERM link
+/// was returned as σ stored it: bound to a variable it read as that variable, so a
+/// requirement over the parameter stayed abstract and unbuilt while eval ran a provider at
+/// another binding (MEASURED, `wi_020th_two_hop_chain_test`); bound to a type it kept that
+/// type's inner variables, and `Store.peek[State = Buf[T = ?, N = Bool]](s)` ran the generic
+/// provider where its value-in-type twin reached the specific one. A variable link riding an
+/// OCCURRENCE read as that variable too. A link on the value carrier, and a type on any
+/// carrier but a term, were resolved in full. One binding, two answers.
+///
+/// The result is a TERM. A type on another carrier is one the term store could not hold when
+/// σ bound it — it carries a VALUE (`Buf[T = Int64, N = 3]` rides as an occurrence, WI-477),
+/// or is an entity spine `fn_value` rebuilt around one — and is LOWERED to its term twin
+/// ([`dispatch_type_term`]). That twin is what its provision was filed as
+/// (`lower_value_or_gate`), so the matchers relate the two as any two types, a value leaf by
+/// value. Lowering, not carrying the occurrence, because every reader of this is
+/// `TermId`-keyed at the boundary: a `SortGoal` is the resolve memo's key, and what it is
+/// matched against is a term fact.
 ///
 /// Such a binding used to be DROPPED by every one of these readers (a WI-348 "Phase C"
 /// `debug_assert` in the dispatch goal, the defer-match and the op-scoped licence; a
@@ -29,13 +43,53 @@ pub(super) fn spec_param_binding_term(
     subst: &Substitution,
     vid: VarId,
 ) -> Option<TermId> {
-    match subst.resolve_as_value(vid)? {
-        Value::Term { id, .. } => Some(*id),
-        other => {
-            let resolved = walk_type_deep_value(kb, subst, other);
-            Some(dispatch_type_term(kb, &resolved))
+    let end = sigma_chain_end(kb, subst, vid)?;
+    if kb.value_global_var(end).is_some() {
+        return Some(dispatch_type_term(kb, end));
+    }
+    // A ground term is what the walk below would hand back.
+    if let Value::Term { id, .. } = end {
+        if type_value_is_ground(kb, *id) {
+            return Some(*id);
         }
     }
+    let resolved = walk_type_deep_value(kb, subst, end);
+    Some(dispatch_type_term(kb, &resolved))
+}
+
+/// What σ binds `vid` to, read at the END of its chain of variable links; `None` when
+/// `vid` is unbound.
+///
+/// [`Substitution::resolve_as_value`] is ONE link, and a call's σ routinely binds one
+/// variable to another before either reaches a type (`?param := ?T_callee`, `?T_callee :=
+/// Int64`): a variable bound to another BOUND variable is an alias, not a binding. The link
+/// is followed on every carrier a variable rides ([`KnowledgeBase::value_global_var`]). A
+/// chain that ends at an unbound variable ends there, and so does one that comes back to a
+/// variable it has passed — a σ is not guaranteed acyclic here, `bind_value` raw-inserts on
+/// the unbound path (see [`report_call_solutions`], which performs its own occurs-check for
+/// the same reason), which is why this is not [`KnowledgeBase::chase_var`].
+///
+/// ONLY a variable is a link: a binding to a sort parameter's NAME (`Ref(User.S)`) ends this
+/// walk. What a caller makes of the end is its own — [`spec_param_binding_term`] resolves it
+/// through σ, a name through its alias variable included.
+pub(super) fn sigma_chain_end<'s>(
+    kb: &KnowledgeBase,
+    subst: &'s Substitution,
+    vid: VarId,
+) -> Option<&'s Value> {
+    let mut end = subst.resolve_as_value(vid)?;
+    let mut passed: SmallVec<[VarId; 4]> = SmallVec::from_elem(vid, 1);
+    while let Some(next) = kb.value_global_var(end) {
+        if passed.contains(&next) {
+            break;
+        }
+        let Some(bound) = subst.resolve_as_value(next) else {
+            break;
+        };
+        passed.push(next);
+        end = bound;
+    }
+    Some(end)
 }
 
 /// WI-20260929-WBHTM — a type on any carrier as the `TermId` the dispatch matchers compare:
@@ -3661,10 +3715,11 @@ pub fn dispatch_spec_op_cached(
     //
     // But the key is NOT sufficient on the σ-present path when the goal is
     // NON-GROUND: `resolve_at_goal` now reads `ctx.subst` (via `sigma_class`,
-    // which chases vars NESTED inside a goal binding), and `sort_goal_from_subst`
-    // stores only the shallow `resolve_as_value` — it does not deep-resolve a
-    // nested `Global`. So two σ-present dispatches sharing this goal `TermId` but
-    // binding a nested var differently would resolve differently yet collide on
+    // which chases vars NESTED inside a goal binding, through the rigid bridge
+    // too), and what `sort_goal_from_subst` stores is each binding as σ resolved
+    // it when the goal was built — a variable still inside it is one that walk
+    // could not close. So two σ-present dispatches sharing this goal `TermId` whose
+    // σ classes that variable differently would resolve differently yet collide on
     // the key. A FULLY-GROUND goal has nothing for σ to chase, so its result is
     // determined by the key and stays cacheable; a non-ground σ-present goal
     // bypasses the memo (recomputed, always sound). Every σ-less caller (the

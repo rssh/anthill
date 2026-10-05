@@ -952,46 +952,23 @@ impl WalkSolutions {
 /// WI-20260904-50B2K part (c) — the CONCRETE sort `var` stands for under `subst`, or
 /// `None` while it stands for nothing concrete.
 ///
-/// [`Substitution::resolve_as_value`] is ONE HOP (plus the parent chain), and a call's σ
-/// routinely binds one variable to another before either reaches a type — `?param :=
-/// ?T_callee`, `?T_callee := Int64`. Asking one hop would read that as "not concrete" and
-/// the walk would refuse a call its own evidence answers, so the chain is followed. Bounded
-/// and visited-guarded because a σ is not guaranteed acyclic here: `bind_value` raw-inserts
-/// on the unbound path (see [`report_call_solutions`], which performs its own occurs-check
-/// for the same reason).
+/// Read at the END of σ's chain of variable links ([`sigma_chain_end`]): a call's σ routinely
+/// binds one variable to another before either reaches a type — `?param := ?T_callee`,
+/// `?T_callee := Int64` — and asking one link would read that as "not concrete", so the walk
+/// would refuse a call its own evidence answers. A chain that ends at a variable, unbound or
+/// its own, has no sort.
+///
+/// THE CHAIN IS WHAT MAKES AN ESCAPED CLOSURE WORK — WI-817's original question, answered
+/// here rather than by the ∀ beside it. `Applier.ap(g, leaf())` with
+/// `ap[X](fn: Function[A = X, B = Int64], a: X)` binds the closure's carrier to `X` and `X`
+/// to `Leaf`, two links. It answers `Leaf`, `Desc[Leaf]` holds, and the call is licensed: 1
+/// at `Leaf`, 12 at `Wrap[Leaf]`, 1012 for both through ONE closure. MEASURED WITH THE
+/// GENERALIZATION BACKED OUT, which is what attributes it here and not to step 2. A first
+/// cut read the link on the `Value::Var` carrier alone — the one a type variable is LEAST
+/// likely to arrive on, since `bind_resolved` routes a variable in type position to
+/// `bind_term` — and was a no-op on its own motivating case; /code-review found it.
 fn resolved_carrier_sort(kb: &KnowledgeBase, subst: &Substitution, var: VarId) -> Option<Symbol> {
-    let mut cur = var;
-    let mut seen: SmallVec<[VarId; 4]> = SmallVec::new();
-    loop {
-        if seen.contains(&cur) {
-            return None;
-        }
-        seen.push(cur);
-        let val = subst.resolve_as_value(cur)?;
-        // BOTH CARRIERS, and the first cut read only `Value::Var` — which is the carrier a
-        // type variable is LEAST likely to arrive on here. A variable in type position is
-        // interned by construction, and `bind_resolved` routes a `Value::Term` binding to
-        // `bind_term`, so the very chain this loop's doc names (`?param := ?T_callee`,
-        // `?T_callee := Int64`) is stored as `Value::Term(Term::Var(…))` and fell straight
-        // to the `other` arm, where `sort_functor_of_view` answers `None` for a variable
-        // term. The chase was therefore a no-op on its own motivating case, and the
-        // consequence is the refusal it was written to prevent — the walk declining a call
-        // whose evidence it holds. `resolved_var` is the file's owner of "read a VarId off
-        // either carrier"; asking it is what makes the two spellings one question.
-        // /code-review found it.
-        //
-        // AND THE REPAIR IS WHAT MAKES AN ESCAPED CLOSURE WORK — WI-817's original question,
-        // answered here rather than by the ∀ beside it. `Applier.ap(g, leaf())` with
-        // `ap[X](fn: Function[A = X, B = Int64], a: X)` binds the closure's carrier to `X`
-        // and `X` to `Leaf`, a two-hop chain this loop could not follow. It now answers
-        // `Leaf`, `Desc[Leaf]` holds, and the call is licensed: 1 at `Leaf`, 12 at
-        // `Wrap[Leaf]`, 1012 for both through ONE closure. MEASURED WITH THE
-        // GENERALIZATION BACKED OUT, which is what attributes it here and not to step 2.
-        match resolved_var(kb, val) {
-            Some(next) => cur = next,
-            None => return sort_functor_of_view(kb, val),
-        }
-    }
+    sigma_chain_end(kb, subst, var).and_then(|end| sort_functor_of_view(kb, end))
 }
 
 /// WI-20260904-50B2K part (c) — does `carrier` supply `spec`? The discharge's question,

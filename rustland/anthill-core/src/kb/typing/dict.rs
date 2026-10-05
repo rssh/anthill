@@ -2468,8 +2468,7 @@ pub(super) fn scope_contract_covers_dep(
         // both channels, a sort's own out-edges transitively ([`sort_provides`]) and a
         // provision another sort declares for it ([`carrier_provided_by_witness`]). A
         // holder supplying the spec by NEITHER cannot answer, so the resolution is dead
-        // work; `wi599`'s `Mapped provides Coll[C = Mapped, …]` and `wi508`'s bare
-        // parametric carriers are this leg's whole population and both are admitted.
+        // work; the rows that reach the leg — named below — are all admitted.
         //
         // IT IS THE COUNTERPART OF THE CHAIN LEG'S same-sort filter, which deliberately
         // does not gate this leg (see above) — so before this, EVERY holder reached a full
@@ -2496,13 +2495,17 @@ pub(super) fn scope_contract_covers_dep(
         //
         // AND THE CONTROL IS NAMED, because this gate is verdict-neutral and so no row
         // fails when it is backed OUT. What fails is a gate that over-rejects: forcing this
-        // `continue` unconditionally — i.e. disabling the leg — reds exactly THREE rows,
+        // `continue` unconditionally — i.e. disabling the leg — reds exactly FOUR rows,
         // which are therefore the leg's whole population and this filter's control:
-        // `wi508 …wi508_concrete_new_element_inferred_from_use`,
-        // `wi508 …wi508_concrete_new_unpinned_element_loads`, and
-        // `wi599 …the_stdlib_combinators_are_general_over_any_iterable_source`
-        // (6423 passed / 3 failed). They pass with the filter, which is what says it does
-        // not over-reject; every other row in the suite passes either way by design.
+        // `wi599 …the_stdlib_combinators_are_general_over_any_iterable_source`,
+        // `wi_0rp29_nested_projection_value_in_type_test
+        // …the_fallback_over_a_carrier_written_with_its_parameters`, and
+        // `wi_jn09w_holder_gate_test`'s two refinement rows
+        // (`…an_unnamed_result_pins_the_bare_sort_and_its_own_type_refines_it`,
+        // `…an_unnamed_stack_is_measured`). RE-MEASURED with WI-20260929-JN09W over
+        // `-p anthill-core`: these four, and no other row of the crate. They pass with the
+        // filter, which is what says it does not over-reject; every other row passes either
+        // way by design.
         if !carrier_provides_spec(kb, holder.spec_sort, dep.required_sort) {
             continue;
         }
@@ -2521,33 +2524,44 @@ pub(super) fn scope_contract_covers_dep(
         // `Iterable[C = List[T = Int64], …]` and the program LOADED; with that parameter
         // removed — the same call, the same missing provision — it was correctly refused.
         // A value in scope that the call never mentions must not decide the call.
-        // A PIN THAT NAMES THE HOLDER'S OWN SORT IS NOT A SUBSTITUTION BUT A REFINEMENT,
-        // and that is the other half. `size(x)` at an `x: MutableStack` pins
-        // `C = MutableStack` — the holder's own sort, written BARE because the stdlib
-        // declares `operation new() -> MutableStack` — while the provision binds
-        // `MutableStack[T]`. Swapping there replaces a bare spelling with the applied one
-        // and names the same carrier; refusing it costs the two `wi508` rows and protects
-        // nothing.
-        if let Some(pinned) = binding_for_param(kb, &demand, carrier_param, BindingKeyMatch::Label)
-        {
-            let names_holder = unwrap_spec_view(kb, *pinned)
+        //
+        // A PIN THAT NAMES THE HOLDER'S OWN SORT MAY BE A REFINEMENT RATHER THAN A
+        // SUBSTITUTION, and that is the other half. `size(MutableStack.new())` pins
+        // `C = MutableStack` — the BARE sort, a result nothing has named keeps its slots open
+        // — while the provision binds `MutableStack[T]`: a goal carrying the bare spelling
+        // matches nothing, and swapping in the argument's own type, applied, names the same
+        // carrier more fully. Refusing it refuses a program that answers.
+        let pinned = binding_for_param(kb, &demand, carrier_param, BindingKeyMatch::Label).copied();
+        if let Some(pinned) = pinned {
+            let names_holder = unwrap_spec_view(kb, pinned)
                 .is_some_and(|(base, _)| same_sort_canonical(kb, base, holder.spec_sort));
             if !names_holder {
                 continue;
             }
         }
         // A BARE PARAMETRIC CARRIER IS EXPANDED FIRST, through the one owner of that
-        // rule ([`expand_sort_application`], WI-20260911-RS2G4). The stdlib wrote
-        // `operation new() -> MutableStack` bare (`-> Self` since proposal 070), while its
-        // provision binds `Iterable[C = MutableStack[T], …]` APPLIED — so a goal carrying
-        // the bare spelling matches nothing. MEASURED then: without this, `size(x)` after
-        // `let x = MutableStack.new()` is refused although the program answers 1, and it
-        // is the two `wi508` rows that say so.
+        // rule ([`expand_sort_application`], WI-20260911-RS2G4). A result nothing has named
+        // is typed at the bare sort, while its provision binds `Iterable[C =
+        // MutableStack[T], …]` APPLIED — so a goal carrying the bare spelling matches
+        // nothing. MEASURED: without this, `size(MutableStack.new())` is refused although
+        // the program answers 0, and it is `wi_jn09w_holder_gate_test`'s two refinement rows
+        // that say so.
         let holder_ty = expand_sort_application(kb, &holder.entry.spec)
             .unwrap_or_else(|| holder.entry.spec.clone());
         let Value::Term { id: carrier, .. } = holder_ty else {
             continue;
         };
+        // …AND A REFINEMENT IS ALL IT MAY BE: the holder's type must say every argument the
+        // pin states. Naming the pin's SORT was the whole test, and it let two holders through
+        // that are not the pinned carrier — one at ANOTHER binding of the sort (`c: Buf[T =
+        // String, N = Bool]` beside a call pinned at `Buf[T = Int64, N = Bool]`), and one
+        // whose own type leaves an argument open (the argument `buf(v: 1)`, whose `N` any
+        // provider then fills). Each, swapped in, discharged the pinned carrier's dep with no
+        // dictionary: a clean load that died "`__req_store` not bound in caller frame"
+        // (WI-20260929-JN09W, MEASURED). See [`holder_says_the_pin`].
+        if pinned.is_some_and(|pinned| !holder_says_the_pin(kb, disambig, pinned, carrier)) {
+            continue;
+        }
         let Some(mut goal) = goal_from_requires_entry(kb, dep) else {
             continue;
         };
@@ -2572,6 +2586,47 @@ pub(super) fn scope_contract_covers_dep(
         }
     }
     false
+}
+
+/// Does `holder` — the type of a value in scope — say every argument the carrier this call
+/// PINNED states? [`scope_contract_covers_dep`]'s provision leg swaps the holder's type in for
+/// the pinned carrier, which is sound only as a refinement: the same carrier, said more fully.
+///
+/// A pin that states nothing — the bare sort — is refined by any type of that sort. An
+/// argument the pin states must be the holder's: an applied argument is compared argument by
+/// argument, a leaf by [`binding_pair_covers`], the cover walks' own verdict on two elements.
+/// The holder may say MORE than the pin and never less: a holder whose own argument is the
+/// open slot of an unwritten constructor argument (`buf(v: 1)`'s `N`) does not say the pin's
+/// `String`, although the subtype relation that verdict ends in takes an open slot for
+/// anything.
+///
+/// WHAT THE PIN ITSELF LEAVES OPEN IS NOT JUDGED HERE, and any holder of the sort still fills
+/// it — the same reading the leg gives a carrier the call does not pin at all
+/// (WI-20261005-2KV4Y).
+fn holder_says_the_pin(
+    kb: &mut KnowledgeBase,
+    sigma: Option<&SigmaCtx>,
+    pinned: TermId,
+    holder: TermId,
+) -> bool {
+    let (Some((pin_base, pin_pos, pin_named)), Some((holder_base, holder_pos, holder_named))) = (
+        parameterized_parts(kb, pinned),
+        parameterized_parts(kb, holder),
+    ) else {
+        let holder_is_open = matches!(type_head(kb, &TermIdView(holder)), TypeHead::TypeVar(_));
+        return !holder_is_open && binding_pair_covers(kb, sigma, pinned, holder);
+    };
+    BindingKeyMatch::for_bases(kb, pin_base, holder_base) == BindingKeyMatch::Label
+        && pin_pos.len() == holder_pos.len()
+        && pin_pos
+            .iter()
+            .zip(holder_pos.iter())
+            .all(|(p, h)| holder_says_the_pin(kb, sigma, *p, *h))
+        && pin_named.iter().all(|(key, p)| {
+            binding_for_param(kb, &holder_named, *key, BindingKeyMatch::Label)
+                .copied()
+                .is_some_and(|h| holder_says_the_pin(kb, sigma, *p, h))
+        })
 }
 
 /// WI-20260921-3G1YT — DROP THE DEMAND KEYS THIS CALL PINS NOTHING FOR, so route 4 is

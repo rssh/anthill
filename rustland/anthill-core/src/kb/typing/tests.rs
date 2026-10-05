@@ -785,6 +785,151 @@ mod wi417_cycle_tests {
 }
 
 #[cfg(test)]
+mod sigma_chain_end_tests {
+    //! WI-20260929-020TH: [`super::super::spec_param_binding_term`] resolves a spec parameter's
+    //! binding through σ the same way whichever carrier it rides: read at the END of σ's chain
+    //! of variable links (`S ↦ U`, `U ↦ Buf` says `S` is `Buf`), the variables inside what the
+    //! chain ends at resolved too, and a chain that comes back on itself ended at one of its
+    //! variables. Each σ is built DIRECTLY in the `Substitution`, one row per carrier a link
+    //! rides. `wi_020th_two_hop_chain_test`'s programs put a chain of term links, and one
+    //! through a value link, into a call's σ; the occurrence link and the cycles are built
+    //! here only.
+    //!
+    //! WHICH ROWS FAIL WHEN A PART IS BACKED OUT, each APPLIED AND RUN:
+    //!
+    //! * THE WHOLE READ, the parent commit's — one link, a term as σ stored it, any other
+    //!   carrier resolved. 3 FAIL: [`a_term_link_is_followed_to_the_binding`] and
+    //!   [`an_occurrence_link_is_followed_to_the_binding`] (each reads the variable `U`) and
+    //!   [`a_term_binding_is_resolved_inside`].
+    //!   [`a_term_reached_through_a_value_link_is_resolved_inside`] passes there, by design: a
+    //!   link on the value carrier was resolved in full.
+    //! * THE CHAIN FOLLOWED AND A TERM AT ITS END HANDED OVER AS σ STORED IT. 2 FAIL:
+    //!   [`a_term_reached_through_a_value_link_is_resolved_inside`] and
+    //!   [`a_term_binding_is_resolved_inside`].
+    //! * A VARIABLE AT THE CHAIN'S END WALKED LIKE ANY OTHER END, and separately THE CHAIN'S
+    //!   OWN GUARD REMOVED: [`a_cycle_of_links_ends_at_one_of_its_variables`] overflows the
+    //!   stack under the first and does not return under the second (stopped after 300 s).
+    //!   It overflows on the parent commit's read too, at the cycle of value links.
+    use super::super::spec_param_binding_term;
+    use crate::eval::value::Value;
+    use crate::kb::subst::Substitution;
+    use crate::kb::term::{Term, TermId, Var, VarId};
+    use crate::kb::KnowledgeBase;
+    use crate::span::{SourceId, SourceSpan};
+    use smallvec::SmallVec;
+
+    /// `S`, `U` and the sort `Buf`.
+    fn vars_and_sort(kb: &mut KnowledgeBase) -> (VarId, VarId, TermId) {
+        let s = kb.intern("S");
+        let s = kb.fresh_var(s);
+        let u = kb.intern("U");
+        let u = kb.fresh_var(u);
+        let buf = kb.intern("Buf");
+        (s, u, kb.alloc(Term::Ref(buf)))
+    }
+
+    /// `F(t: child)`.
+    fn application(kb: &mut KnowledgeBase, child: TermId) -> TermId {
+        let functor = kb.intern("F");
+        let t = kb.intern("t");
+        kb.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_elem((t, child), 1),
+        })
+    }
+
+    /// `F(t: ?X)` with `?X ↦ Buf` bound in `subst`, and the `F(t: Buf)` it resolves to.
+    fn open_and_closed(
+        kb: &mut KnowledgeBase,
+        subst: &mut Substitution,
+        buf: TermId,
+    ) -> (TermId, TermId) {
+        let x = kb.intern("X");
+        let x = kb.fresh_var(x);
+        let tx = kb.alloc(Term::Var(Var::Global(x)));
+        subst.bind_term(kb, x, buf);
+        (application(kb, tx), application(kb, buf))
+    }
+
+    /// The link a unify of two variables writes: `S ↦ Term(Var(U))`.
+    #[test]
+    fn a_term_link_is_followed_to_the_binding() {
+        let mut kb = KnowledgeBase::new();
+        let (s, u, buf) = vars_and_sort(&mut kb);
+        let tu = kb.alloc(Term::Var(Var::Global(u)));
+        let mut subst = Substitution::new();
+        subst.bind_term(&kb, s, tu);
+        subst.bind_term(&kb, u, buf);
+        assert_eq!(spec_param_binding_term(&mut kb, &subst, s), Some(buf));
+    }
+
+    /// The same link as an occurrence: `S ↦ Node(TypeNode::Var(U))`.
+    #[test]
+    fn an_occurrence_link_is_followed_to_the_binding() {
+        let mut kb = KnowledgeBase::new();
+        let (s, u, buf) = vars_and_sort(&mut kb);
+        let span = SourceSpan::new(SourceId::from_raw(0), 0, 0);
+        let occ = kb.make_type_var_occ(Var::Global(u), span, None);
+        let mut subst = Substitution::new();
+        subst.bind_value(&kb, s, Value::Node(occ));
+        subst.bind_term(&kb, u, buf);
+        assert_eq!(spec_param_binding_term(&mut kb, &subst, s), Some(buf));
+    }
+
+    /// The same link on the value carrier, `S ↦ Value::Var(U)`, to a term with a bound
+    /// variable inside it: `U ↦ F(t: ?X)`, `?X ↦ Buf`.
+    #[test]
+    fn a_term_reached_through_a_value_link_is_resolved_inside() {
+        let mut kb = KnowledgeBase::new();
+        let (s, u, buf) = vars_and_sort(&mut kb);
+        let mut subst = Substitution::new();
+        let (open, closed) = open_and_closed(&mut kb, &mut subst, buf);
+        subst.bind_value(&kb, s, Value::Var(Var::Global(u)));
+        subst.bind_term(&kb, u, open);
+        assert_eq!(spec_param_binding_term(&mut kb, &subst, s), Some(closed));
+    }
+
+    /// No link at all, the binding a term: `S ↦ F(t: ?X)`, `?X ↦ Buf`.
+    #[test]
+    fn a_term_binding_is_resolved_inside() {
+        let mut kb = KnowledgeBase::new();
+        let (s, _, buf) = vars_and_sort(&mut kb);
+        let mut subst = Substitution::new();
+        let (open, closed) = open_and_closed(&mut kb, &mut subst, buf);
+        subst.bind_term(&kb, s, open);
+        assert_eq!(spec_param_binding_term(&mut kb, &subst, s), Some(closed));
+    }
+
+    /// `S ↦ U ↦ S` ends at a variable of the cycle, whichever carrier closes it:
+    /// term–term, term–value and value–value.
+    #[test]
+    fn a_cycle_of_links_ends_at_one_of_its_variables() {
+        for (first_on_value, second_on_value) in [(false, false), (false, true), (true, true)] {
+            let mut kb = KnowledgeBase::new();
+            let (s, u, _) = vars_and_sort(&mut kb);
+            let ts = kb.alloc(Term::Var(Var::Global(s)));
+            let tu = kb.alloc(Term::Var(Var::Global(u)));
+            let link = |on_value: bool, to: VarId, term: TermId| {
+                if on_value {
+                    Value::Var(Var::Global(to))
+                } else {
+                    Value::term(term)
+                }
+            };
+            let mut subst = Substitution::new();
+            subst.bind_value(&kb, s, link(first_on_value, u, tu));
+            subst.bind_value(&kb, u, link(second_on_value, s, ts));
+            let end = spec_param_binding_term(&mut kb, &subst, s);
+            assert!(
+                end == Some(ts) || end == Some(tu),
+                "a variable of the cycle, got {end:?} ({first_on_value}, {second_on_value})"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod wi394_surface_node_binding_tests {
     //! WI-394: a `TermId`-consuming caller (op type-arg write-back at the apply
     //! occurrence, the provider-binding "did it resolve?" probe) that walked a

@@ -1,0 +1,23 @@
+## Attributes
+
+- id: WI-20260929-JN09W-a-sort-s-requires-is-taken-as
+- created: 2026-09-29T20:16:48Z
+
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-05T10:39:31Z
+
+- acceptance: cargo-test, scaland-sbt-test
+
+- tags: typing
+
+## Description
+
+A SORT'S `requires` IS TAKEN AS SUPPLIED BY AN ARGUMENT OF THE RIGHT SORT AT ANOTHER BINDING, SO A CALL NO PROVIDER CAN SUPPLY LOADS CLEAN AND DIES AT RUN TIME. `sort U { requires Store[State = Buf[T = Int64, N = String]]; operation use(s: Buf[T = Int64, N = String]) -> Int64 = Store.peek(s) }`, the only provider `CB` at `Buf[T = Int64, N = Bool]`, called `U.use(buf(v: 1))` (from `main` or from a namespace-level operation alike): loads, and `anthill run` fails "internal evaluator error: DeferToRequirement: requirement param `__req_store` not bound in caller frame (running `U.use` …; frame binds [])". The same requirement with `use(n: Int64) = Store.peek(buf(v: n))`, called `U.use(1)`, is refused at load "requirement … cannot be supplied". Also with a holder in scope: `User requires Store[State = S]; go(s: S) = Store.peek(s)`, `run(b: Buf[T = Int64, N = Bool], c: Buf[T = String, N = Bool]) = User.go(b)`, providers at `Buf[T = Int64, N = String]` and `Buf[T = String, N = Bool]` — loads and dies the same way, and is refused without `c`. MEASURED on both builds of WI-20260929-WBHTM, typed and value-in-type spellings alike. MECHANISM (from WBHTM's review, V11): route 4's holder gate (`names_holder`, dict.rs ~2506) compares the holder's BASE SORT only, so an argument or local of sort `Buf` counts as naming a provider at any `Buf` binding; the pin gate is skipped, the dep is discharged with no dictionary, and the callee's frame lacks `__req_store`. The same route discharges WI-20260929-PFAGY's two-hop chain once its key is dropped. FOUND by WI-20260929-WBHTM's /code-review. ACCEPTANCE: both programs refused at load naming the requirement, as the `Int64`-parameter and no-holder twins are; full workspace green via rustland/scripts/test.sh.
+
+## Changes
+
+### 2026-10-05T10:38:53Z — feedback — claude
+
+DELIVERED with WI-20260929-020TH, whose fix made it necessary: once a requirement over a two-link chain is read at the chain's end it PINS the argument's type, and this gate then let an unrelated `Buf` in scope answer for it — WI-20260929-PFAGY's typed twin would have gone from a load refusal to a run-time death. REPRODUCED on the parent, both spellings: both of the ticket's programs loaded (the typed ones, run, died "__req_store not bound in caller frame"). CAUSE as filed: route 4's provision leg (`scope_contract_covers_dep`, typing/dict.rs) swapped a holder's type in for a PINNED carrier whenever the pin named the holder's SORT. FIX: the swap is held to being a refinement — the holder's type must say every argument the pin states (`holder_says_the_pin`): an applied argument compared argument by argument, a leaf by the cover walks' own verdict, and a holder whose own argument is still open refused (that is the ticket's first program: `buf(v: 1)` leaves `N` open and matched the provider at another N). A pin that states nothing is still refined by its own argument's type. A FIRST CUT skipped the leg for every pinned carrier; it measured green over anthill-core and was a regression all the same — a result nothing has named pins the BARE sort, and `size(MutableStack.new())` / `size(PBag.empty())` were refused where the parent loads them. /code-review found it; no test had that shape (the wi508 rows the gate's comment cited were rewritten by WI-20261001-80ZV8). Two rows drive it now. Tests: wi_jn09w_holder_gate_test (8 rows; four back-outs measured, ledger in its module doc). The leg's own control was RE-MEASURED: with the leg disabled exactly four rows of anthill-core fail (wi599's, wi_0rp29's `the_fallback_over_a_carrier_written_with_its_parameters`, and the two refinement rows); the comment said three and named a row that no longer exists. NOT FIXED, identical on the parent, filed as WI-20261005-2KV4Y: where the call leaves the carrier UNPINNED the leg still lets any value in scope answer — `User.ask()` with `requires Store[State = S]` and an unrelated `b: Buf[...]` in scope loads and dies at run time — and skips a holder whose type is not a term, which is why the sort-level `User.mkS()` loads in the typed spelling and is refused in the value one; and a slot the PIN leaves open is filled the same way (`User.go1(buf(v: 1))` beside an unrelated `c: Buf[T = Int64, N = Bool]`): the gate judges what the pin states, not what it leaves open. kernel-language section 8.7 says the rule (the sentence changed with the user's approval, 2026-10-05). GATE as WI-20260929-020TH's, one tree: rustland 8560 / 0 / 14, scaland 599.
+

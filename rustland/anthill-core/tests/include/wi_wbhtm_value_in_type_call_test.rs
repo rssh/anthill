@@ -94,9 +94,11 @@
 //!   `N = 4`) runs that provider, on every spelling — occurrence, `let`-annotated term, and
 //!   the typed twin alike: WI-20260929-05ZQE. Reading the binding abstract had refused the
 //!   occurrence spelling alone, by accident, and refused correct effect-row calls with it.
-//! * A bracket whose WHOLE binding is a hole (`[State = ?]`) reads σ one hop and meets a
-//!   variable, as its typed twin does on both builds; only the variables INSIDE a binding
-//!   are resolved here (`a_bracket_with_a_hole_reaches_the_specific_provider`).
+//! * THE TYPED TWINS OF THE HOLE ROW, which this ticket left as it found them: a hole inside a
+//!   TERM binding (`[State = Buf[T = ?, N = Bool]]`) ran the generic provider (55), and a
+//!   bracket whose WHOLE binding is a hole (`[State = ?]`) met a variable one link into σ on
+//!   both spellings. Both are read through σ on every carrier since WI-20260929-020TH, and
+//!   driven in `wi_020th_two_hop_chain_test`.
 
 use crate::common::{assert_refused_naming, interp_for, try_load_kb_with};
 use anthill_core::eval::Value;
@@ -131,7 +133,7 @@ end
 
 /// A carrier `name` providing `Store` at `state`; its `peek` answers `s.v + offset`, so the
 /// answer names the provider that ran.
-fn provider(name: &str, state: &str, offset: i64) -> String {
+pub(crate) fn provider(name: &str, state: &str, offset: i64) -> String {
     format!(
         r#"
   sort {name}
@@ -143,7 +145,7 @@ fn provider(name: &str, state: &str, offset: i64) -> String {
 }
 
 /// `Store` at `Other`, answering 99 — the provider no `Buf` may reach.
-const OTHER_IMPL: &str = r#"
+pub(crate) const OTHER_IMPL: &str = r#"
   sort OtherImpl
     provides Store[State = Other]
     operation peek(s: Other) -> Int64 = 99
