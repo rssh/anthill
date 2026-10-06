@@ -741,6 +741,19 @@ pub(crate) enum BridgeEqOutcome {
 /// queries now read `kb.op_bodies` (NodeOccurrence trees) directly.
 #[derive(Clone)]
 enum Candidate {
+    /// The resolver-native implementation of the current goal's predicate.
+    ///
+    /// WI-899: a registered builtin is one answer source beside written clauses,
+    /// not an exclusive dispatch tier. Selecting this candidate pushes the same
+    /// goal in [`FrameState::BuiltinInit`], which runs the existing builtin path
+    /// once without rebuilding the combined choice point.
+    Builtin,
+    /// The source-written SLD clauses for a builtin-backed predicate.
+    ///
+    /// Kept as a branch marker rather than eagerly materialized candidates so
+    /// ordinary clause selection can first evaluate value-position arguments.
+    /// The sibling [`Self::Builtin`] branch must see the original goal instead.
+    Clauses,
     /// Regular KB rule or fact.
     Rule(RuleId, Substitution),
     /// Frame-scoped assumed fact (introduced by `forall_impl` discharge —
@@ -998,6 +1011,16 @@ impl DelayMode {
 enum FrameState {
     /// First visit: classify goals[0] (builtin? non-builtin? empty?).
     Init { delay_mode: DelayMode },
+
+    /// WI-899: classify goals[0] exactly as [`Self::Init`], but do not combine a
+    /// registered builtin with written clauses again. This state exists only in
+    /// the child opened by [`Candidate::Builtin`].
+    BuiltinInit { delay_mode: DelayMode },
+
+    /// WI-899: the source-clause sibling of [`Self::BuiltinInit`]. It skips the
+    /// native handler and continues through ordinary argument evaluation and
+    /// discrimination-tree selection.
+    ClauseInit { delay_mode: DelayMode },
 
     /// Iterating over candidate rules/facts for a non-builtin goal.
     ChoicePoint {
@@ -1744,7 +1767,9 @@ impl SearchStream {
         let frame = self.stack.last_mut()?;
         self.stats.steps += 1;
         match frame.state {
-            FrameState::Init { .. } => self.step_init(kb),
+            FrameState::Init { .. }
+            | FrameState::BuiltinInit { .. }
+            | FrameState::ClauseInit { .. } => self.step_init(kb),
             FrameState::ChoicePoint { .. } => self.step_choice_point(kb),
         }
     }
@@ -1899,6 +1924,7 @@ impl SearchStream {
         within: Option<&Value>,
         depth: usize,
         delay_mode: &DelayMode,
+        clauses_only: bool,
     ) -> Option<Option<StepResult>> {
         let ViewHead::Functor {
             functor: Some(f),
@@ -1952,21 +1978,38 @@ impl SearchStream {
                 vec![Value::Var(Var::Global(hole.var)), hole.call],
             ));
         }
-        Some(self.continue_with_goals(
+        let stack_len = self.stack.len();
+        let step = self.continue_with_goals(
             kb,
             Substitution::new(),
             goals,
             depth,
             delay_mode.clone(),
-        ))
+        );
+        // `continue_with_goals` normally re-enters through `Init`. The WI-899
+        // clause branch must retain its mode after argument evaluation; otherwise
+        // the evaluated goal would rebuild the combined choice point and run the
+        // native handler a second time. A popped frame means this branch failed,
+        // so do not retag the parent choice point.
+        if clauses_only && self.stack.len() == stack_len {
+            let frame = self.stack.last_mut().unwrap();
+            if let FrameState::Init { delay_mode } = &frame.state {
+                frame.state = FrameState::ClauseInit {
+                    delay_mode: delay_mode.clone(),
+                };
+            }
+        }
+        Some(step)
     }
 
     /// Handle a frame in `Init` state — classify the current goal.
     fn step_init(&mut self, kb: &mut KnowledgeBase) -> Option<StepResult> {
         let frame = self.stack.last().unwrap();
         let depth = frame.depth;
-        let delay_mode = match &frame.state {
-            FrameState::Init { delay_mode } => delay_mode.clone(),
+        let (delay_mode, builtin_only, clauses_only) = match &frame.state {
+            FrameState::Init { delay_mode } => (delay_mode.clone(), false, false),
+            FrameState::BuiltinInit { delay_mode } => (delay_mode.clone(), true, false),
+            FrameState::ClauseInit { delay_mode } => (delay_mode.clone(), false, true),
             _ => unreachable!(),
         };
 
@@ -2210,7 +2253,55 @@ impl SearchStream {
         }
 
         // 4. Builtin goal — classify by functor read through TermView.
-        if let Some(tag) = kb.get_builtin_view(&goal_val) {
+        let registered_builtin_tag = kb.get_builtin_view(&goal_val);
+
+        // WI-899 — A BUILTIN IS AN ANSWER SOURCE, NOT AN EXCLUSIVE OWNER. If the
+        // same predicate has written clauses, put the native implementation and
+        // the ordinary clause search in one choice point. Do not query the
+        // discrimination tree here: clause matching must follow D3 argument
+        // evaluation, while the native candidate must receive the original goal
+        // (notably for semantic equality's WI-580 inverse-operation bridge).
+        //
+        // Only source-written, non-equational heads count. Loader-derived rows are
+        // implementation machinery, and an equation's storage functor is the
+        // `eq`/`unify` connective while its language-level subject is its LHS. An
+        // explicitly written `rule eq(...)` is not equational and remains eligible.
+        if registered_builtin_tag.is_some() && !builtin_only && !clauses_only {
+            let has_written_clauses = goal_val.head(kb).functor_sym().is_some_and(|functor| {
+                kb.rules_by_functor_iter(functor).any(|rid| {
+                    kb.clause_origin(rid) == super::ClauseOrigin::Source
+                        && !kb.has_equational_head(rid)
+                })
+            });
+            if has_written_clauses {
+                let f = self.stack.last_mut().unwrap();
+                f.state = FrameState::ChoicePoint {
+                    delay_mode,
+                    original_goal: within.unwrap_or_else(|| goal_val.clone()),
+                    candidates: vec![Candidate::Builtin, Candidate::Clauses],
+                    next: 0,
+                    extent_rows: Vec::new(),
+                    extent_next: 0,
+                    any_delayed: false,
+                    child_solutions: 0,
+                    cut_barrier: None,
+                };
+                return Some(StepResult::Continue);
+            }
+        }
+
+        // The clause child deliberately hides the builtin tag and takes the exact
+        // ordinary path below: D3 evaluation, then discrimination-tree lookup.
+        let builtin_tag = if clauses_only {
+            None
+        } else {
+            registered_builtin_tag
+        };
+        if builtin_only && builtin_tag.is_none() {
+            panic!("Candidate::Builtin opened a goal with no registered builtin");
+        }
+
+        if let Some(tag) = builtin_tag {
             // WI-20260822-J38JE item 1 — A BOOL-VALUED EXPRESSION IN GOAL POSITION IS A
             // CONDITION, and a bare dot projection (`:- b.flag`) is one. It lowers to
             // `field_access(b, flag)` at arity 2, which as a BUILTIN GOAL meant only
@@ -2990,7 +3081,14 @@ impl SearchStream {
         // goals bind, and a CLI query or a run-time goal takes this one path too. A goal
         // CONNECTIVE's arguments are goals, not values — they are scanned when a branch
         // becomes a goal of its own.
-        if let Some(step) = self.evaluate_goal_arguments(kb, &goal_val, within.as_ref(), depth, &delay_mode)
+        if let Some(step) = self.evaluate_goal_arguments(
+            kb,
+            &goal_val,
+            within.as_ref(),
+            depth,
+            &delay_mode,
+            clauses_only,
+        )
         {
             return step;
         }
@@ -3020,7 +3118,7 @@ impl SearchStream {
             let key = goal_fingerprint(kb, &goal_val, &Substitution::default());
             key.is_cacheable().then_some(key)
         };
-        let rule_candidates = match cache_key
+        let mut rule_candidates = match cache_key
             .as_ref()
             .and_then(|k| self.query_cache.get(k).cloned())
         {
@@ -3064,6 +3162,15 @@ impl SearchStream {
                 rc
             }
         };
+
+        // The clause-only child admits exactly the rows whose presence created
+        // the combined choice point above.
+        if clauses_only {
+            rule_candidates.retain(|(rid, _)| {
+                kb.clause_origin(*rid) == super::ClauseOrigin::Source
+                    && !kb.has_equational_head(*rid)
+            });
+        }
 
         candidates.extend(
             rule_candidates
@@ -4615,6 +4722,35 @@ impl SearchStream {
             }
         };
 
+        // WI-899: the two branch markers preserve the parent goal and substitution;
+        // only their initialization mode differs.
+        if let Candidate::Builtin = candidate {
+            let frame = self.stack.last().unwrap();
+            self.stack.push(ResolverFrame {
+                goals: frame.goals.clone(),
+                subst: frame.subst.clone(),
+                depth: frame.depth,
+                state: FrameState::BuiltinInit {
+                    delay_mode: delay_mode.clone(),
+                },
+                assumed_facts: frame.assumed_facts.clone(),
+            });
+            return Some(StepResult::Continue);
+        }
+        if let Candidate::Clauses = candidate {
+            let frame = self.stack.last().unwrap();
+            self.stack.push(ResolverFrame {
+                goals: frame.goals.clone(),
+                subst: frame.subst.clone(),
+                depth: frame.depth,
+                state: FrameState::ClauseInit {
+                    delay_mode: delay_mode.clone(),
+                },
+                assumed_facts: frame.assumed_facts.clone(),
+            });
+            return Some(StepResult::Continue);
+        }
+
         // Continuation inherits parent σ unchanged — no head match, so no
         // new bindings to merge and no walk of the tail to perform. See
         // proposal 033 §"TermId / Value asymmetry" for why σ is omitted
@@ -4642,6 +4778,8 @@ impl SearchStream {
             Candidate::Rule(rid, subst) => (Some(rid), subst),
             Candidate::Assumption(subst) => (None, subst),
             Candidate::ExtentRow(subst) => (None, subst),
+            Candidate::Builtin => unreachable!("handled above"),
+            Candidate::Clauses => unreachable!("handled above"),
             Candidate::Continuation(_) => unreachable!("handled above"),
         };
 
@@ -16740,9 +16878,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_precedence_over_rules() {
-        // Rules can be asserted for builtin functors, but builtins always
-        // take precedence at resolution time.
+    fn builtin_and_rules_are_alternative_answer_sources() {
         let mut kb = kb_with_prelude();
         let sort = ClauseKind::Fact;
         let domain = kb.intern("test");
@@ -16754,10 +16890,9 @@ mod tests {
             pos_args: SmallVec::from_elem(val, 1),
             named_args: SmallVec::new(),
         });
-        // Asserting a fact with a builtin functor is allowed
-        kb.assert_fact(head, sort, domain, None);
+        let written = kb.assert_fact(head, sort, domain, None);
+        kb.mark_source_clause(written);
 
-        // But the builtin still handles resolution (not the fact)
         let x_sym = kb.intern("x");
         let vx = kb.fresh_var(x_sym);
         let var_x = kb.alloc(Term::Var(Var::Global(vx)));
@@ -16766,15 +16901,25 @@ mod tests {
             pos_args: SmallVec::from_elem(var_x, 1),
             named_args: SmallVec::new(),
         });
-        // nonvar(?x) with unbound ?x should delay (builtin behavior),
-        // not succeed (which would happen if the ground fact were matched)
         let results = kb.resolve(&[goal], &ResolveConfig::default());
-        assert_eq!(results.len(), 1, "should residualize");
+        assert_eq!(results.len(), 2, "native and written branches must both answer");
         assert_eq!(
-            results[0].residual.len(),
+            results.iter().filter(|s| !s.residual.is_empty()).count(),
             1,
-            "nonvar(?x) should be in residual"
+            "the native nonvar(?x) branch must remain residual"
         );
+        assert_eq!(
+            results.iter().filter(|s| s.is_definite()).count(),
+            1,
+            "the written fact must add one definite answer"
+        );
+
+        // CONTROL: removing the native registration leaves the written clause
+        // reachable, so neither source depends on the other.
+        kb.builtins.remove(&nonvar_sym);
+        let written_only = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(written_only.len(), 1);
+        assert!(written_only[0].is_definite());
     }
 
     // ── Delay propagation through rules ────────────────────────

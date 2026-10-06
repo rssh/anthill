@@ -33,25 +33,17 @@
 //! exactly why they gained `import anthill.kernel.{unify}` in that ticket, and a reader
 //! trusting the old sentence would re-derive the wrong reason for those lines.
 //!
-//! A written connective-named head still does not RUN, and this file must not read as
-//! a promise that it does. Such a head RESOLVES rather
-//! than declares (WI-896) — to `anthill.prelude.PartialEq.eq` or
-//! `anthill.kernel.unify` — and its clause joins that builtin-backed name, where
-//! WI-139 unindexes it (`is_equational_head`) or the builtin decides the goal before
-//! any clause is consulted. Loaded, unreachable, silent. That is **WI-899**, still
-//! open, which names connective heads explicitly and whose acceptance is
-//! "a clause the resolver can never reach is refused or diagnosed rather than silently
-//! loaded". The inertness is PRE-EXISTING, not created by this guard, and one row of
-//! each of the first two tests MEASURES it on a shape that loads with the guard AND
-//! without it. Each such row is placed AHEAD of the row the fix is about, so the control
-//! run reaches it instead of short-circuiting on the failure. What the guard changes is
-//! the LOADER's reading of the head — which name pass 3 introduces, and where the head's
-//! `[t]` rides.
+//! A written connective-named PREDICATE head resolves rather than declares (WI-896) —
+//! to `anthill.prelude.PartialEq.eq` or `anthill.kernel.unify`. WI-899 makes an ordinary
+//! indexed clause participate beside that symbol's native handler; bodyless equations
+//! remain separately classified and unindexed by WI-139. What this file's guard changes
+//! is still only the LOADER's reading of the head — which name pass 3 introduces, and
+//! where the head's `[t]` rides.
 //!
 //! One verdict does flip: `rule eq[t](?x, ?y) :- Eq[t]` is refused today and loads
 //! after. It exchanges a refusal that named the wrong thing (`unresolved name 't'`,
-//! because the guard never folded) for WI-899's known silence. It does not become a
-//! working predicate, and the test says so at its site.
+//! because the guard never folded) for a working predicate clause on the resolved
+//! symbol; WI-899 supplies the native-plus-clause search.
 //!
 //! WHY THE DIRECTION-2 FIXTURES SAY `unify` AND NOT `struct_eq`. They said `struct_eq`
 //! when this landed, and WI-1090 then removed that spelling from

@@ -20,15 +20,15 @@
 //!      it, so the only diagnostic the author ever saw came from a CITATION and said
 //!      "defined by equations … no defining equation for it can be found" — about an
 //!      equation written three lines up.
-//!   3. The clause was filed under `anthill.kernel.struct_eq`, behind a resolver
-//!      builtin that answers first.
+//!   3. Before WI-899, the clause was filed under `anthill.kernel.struct_eq` behind
+//!      an exclusive resolver builtin. WI-899 later made native and written clauses
+//!      alternatives of one predicate, so the written-call spelling now runs.
 //!
 //! AND ONE CLAIM THE TICKET MADE THAT IS FALSE, corrected here rather than left
-//! standing: WI-1090's text said the un-unindexed law "drives automatic SLD rewriting"
-//! and that `f(?a, ?b) === f(?b, ?a)` would loop. MEASURED, on a ground goal the law
-//! makes true and the builtin makes false: 0 solutions WITH the law and 0 WITHOUT it.
-//! The builtin decides before any clause is consulted (WI-899's stated behaviour), so
-//! the clause was inert, not dangerous. Consequence 3 is a wasted clause, nothing more.
+//! standing: WI-1090's text said the un-unindexed law "drives automatic SLD rewriting".
+//! It is an ordinary predicate clause, never an automatic rewrite. Before WI-899 it was
+//! inert; after WI-899 the ground goal it states answers once through clause resolution,
+//! while the native structural-identity branch still answers false.
 //!
 //! THE CONTROLS, two of them, because this landed in two cuts and the second cut has to
 //! be defended against the FIRST as well as against the original.
@@ -327,18 +327,16 @@ end
     );
 }
 
-/// THE MEASUREMENT THAT CORRECTS THE TICKET. WI-1090's text claimed an un-unindexed
-/// `===` law "drives automatic SLD rewriting" and would loop. It does not: the goal is
-/// decided by the resolver builtin before any clause is consulted, so the clause was
-/// inert. Driven on the shape that would show it — a GROUND goal the law makes true and
-/// structural identity makes false.
+/// WI-899'S SUCCESSOR MEASUREMENT. WI-1090 correctly made a written-call head an
+/// ordinary predicate clause rather than an equation. The native structural-identity
+/// branch refutes this ground goal, while the written symmetry clause proves it once.
 ///
 /// Written against the WRITTEN-CALL spelling (`struct_eq(…)`, a predicate head), which
 /// the WI-1090 refusal deliberately does not touch: that is WI-899's clause-on-a-
 /// builtin-backed-name, and keeping it loadable is what lets this file measure the
-/// claim at all. EITHER WAY, and that is the finding — the clause never mattered.
+/// claim at all. This is clause resolution, not automatic rewriting.
 #[test]
-fn a_clause_on_the_struct_eq_builtin_never_decides_a_goal() {
+fn a_clause_on_the_struct_eq_builtin_contributes_an_sld_answer() {
     const WITH_LAW: &str = r#"
 namespace wi1090.inert
   sort S
@@ -377,9 +375,8 @@ end
     let without = crate::common::query_unary(&mut without_law, "wi1090.inert.S.drive1090").len();
     assert_eq!(
         (with, without),
-        (0, 0),
-        "the symmetry law would make this goal true if any clause of `===` were \
-         consulted; the builtin answers first, so the clause decides nothing — the \
-         ticket's 'drives automatic SLD rewriting / would loop' is FALSE",
+        (1, 0),
+        "the native branch refutes unequal structures, while WI-899 keeps the written \
+         symmetry clause as a second predicate branch",
     );
 }

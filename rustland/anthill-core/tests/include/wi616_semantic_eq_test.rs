@@ -219,7 +219,8 @@ fn struct_eq_over_the_symbolic_algebra_is_undecided() {
 #[test]
 fn eq_with_unbound_var_still_residualizes() {
     // eq(?x, 1) with ?x unbound: no definite solution — the goal delays and
-    // residualizes (WI-519), exactly the pre-WI-616 discipline.
+    // residualizes (WI-519). WI-899 does not reinterpret equations stored under
+    // the connective as explicit clauses about the `eq` predicate.
     let mut kb = load_kb();
     let x_name = kb.intern("x");
     let x_vid = kb.fresh_var(x_name);

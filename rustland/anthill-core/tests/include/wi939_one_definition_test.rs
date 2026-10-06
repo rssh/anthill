@@ -315,9 +315,10 @@ end
 
 /// THE CONTROL THAT KEEPS THE LEMMAS LEGAL, and the one the widening could break.
 /// `PartialOrd.gte` is Bool-returning AND bodied AND carries same-arity SMT lemmas —
-/// 26 such sites across the workspace. They stay legal because `gte` is
-/// BUILTIN-BACKED: a builtin decides its goal before any clause is consulted, so the
-/// clause suppresses nothing. `would_derive_bool_relation` reads that gate.
+/// 26 such sites across the workspace. They stay legal because `gte` has a native
+/// relational implementation: WI-899 makes that implementation and the clauses
+/// alternatives in one predicate search, so the clause suppresses nothing.
+/// `would_derive_bool_relation` reads that gate.
 ///
 /// PASSES EITHER WAY, BY DESIGN once the builtin gate is present — and FAILS if the
 /// widening is written without it, which is the trap.
